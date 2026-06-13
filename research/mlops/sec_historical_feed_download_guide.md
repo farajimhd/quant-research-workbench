@@ -120,6 +120,12 @@ The pipeline keeps at most roughly `--download-concurrency` archive downloads ah
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2020-01-01 --end-date 2026-06-08 --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500
 ```
 
+If the raw archives were created by `sec_daily_feed_archive_download.py`, they live under `sec_core\daily_archives` instead of `sec_core\archives`. In that case pass `--archive-subdir daily_archives` so the parser reuses the completed archive set instead of downloading a second copy:
+
+```powershell
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_historical_feed_pipeline.py --start-date 2019-01-01 --end-date 2026-06-11 --artifact-root-win D:/market-data/sec_core --archive-subdir daily_archives --temp-root-win D:/market-data/sec_edgar_feed_temp --normalized-root-win D:/market-data/sec_edgar_feed_normalized --output-root-win D:/market-data/prepared/sec_edgar_feed --download-concurrency 2 --archive-copy-concurrency 1 --header-concurrency 8 --sec-request-min-interval-seconds 0.11 --progress-interval-seconds 10 --progress-file-interval-mib 64 --progress-record-interval 500
+```
+
 Recommended dry-run smoke test. This validates discovery/config without writing partial normalized data:
 
 ```powershell

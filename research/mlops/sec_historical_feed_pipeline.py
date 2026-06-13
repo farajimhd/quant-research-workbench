@@ -13,7 +13,7 @@ import threading
 import time
 import traceback
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -376,6 +376,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-date", required=True, help="Inclusive archive date, YYYY-MM-DD.")
     parser.add_argument("--end-date", required=True, help="Exclusive archive date, YYYY-MM-DD.")
     parser.add_argument("--artifact-root-win", default=os.environ.get("SEC_HISTORICAL_ARTIFACT_ROOT_WIN", str(DEFAULT_ARTIFACT_ROOT_WIN)))
+    parser.add_argument(
+        "--archive-subdir",
+        default=os.environ.get("SEC_HISTORICAL_ARCHIVE_SUBDIR", "archives"),
+        help=(
+            "Subdirectory under artifact root that contains retained .nc.tar.gz archives. "
+            "Use daily_archives for archives produced by sec_daily_feed_archive_download.py."
+        ),
+    )
     parser.add_argument("--temp-root-win", default=os.environ.get("SEC_HISTORICAL_TEMP_ROOT_WIN", str(DEFAULT_TEMP_ROOT_WIN)))
     parser.add_argument("--normalized-root-win", default=os.environ.get("SEC_HISTORICAL_NORMALIZED_ROOT_WIN", str(DEFAULT_NORMALIZED_ROOT_WIN)))
     parser.add_argument("--output-root-win", default=os.environ.get("SEC_HISTORICAL_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
@@ -434,6 +442,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def with_archive_subdir(job: DayJob, artifact_root: Path, archive_subdir: str) -> DayJob:
+    archive_day = parse_date(job.archive_date)
+    archive_name = f"{archive_day:%Y%m%d}.nc.tar.gz"
+    archive_path = artifact_root / archive_subdir / f"{archive_day:%Y}" / quarter_name(archive_day) / archive_name
+    extract_dir = artifact_root / "extracted" / f"{archive_day:%Y}" / quarter_name(archive_day) / archive_name.replace(".tar.gz", "")
+    return replace(job, archive_path=str(archive_path), extract_dir=str(extract_dir))
+
+
 def main() -> None:
     args = parse_args()
     loaded_env_files = load_env_files(discover_env_files(REPO_ROOT), verbose=False)
@@ -469,6 +485,7 @@ def main() -> None:
     days = discover_available_archive_days(start_date, end_date, user_agent, request_timeout, max_retries, retry_base, discovery_limiter)
     if args.limit_days:
         days = days[: max(0, args.limit_days)]
+    archive_subdir = str(args.archive_subdir).strip().strip("\\/") or "archives"
     jobs = [
         build_day_job(
             day,
@@ -489,6 +506,8 @@ def main() -> None:
         )
         for day in days
     ]
+    if archive_subdir != "archives":
+        jobs = [with_archive_subdir(job, artifact_root, archive_subdir) for job in jobs]
 
     config = {
         "type": "config",
@@ -497,6 +516,7 @@ def main() -> None:
         "start_date": args.start_date,
         "end_date": args.end_date,
         "artifact_root": str(artifact_root),
+        "archive_subdir": archive_subdir,
         "temp_root": str(temp_root),
         "normalized_root": str(normalized_root),
         "output_root": str(output_root),
