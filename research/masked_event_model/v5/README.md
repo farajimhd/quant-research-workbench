@@ -79,6 +79,19 @@ python research\masked_event_model\v5\train_medium_bit_limited_shards.py --fresh
 This trains over 10 sample-cache shards and uses a shuffled 5% slice of the next
 shard for validation. Each epoch is one pass over the selected train shards.
 
+The final long-run launcher for the masked-query decoder path is:
+
+```powershell
+python research\masked_event_model\v5\train_10shard_long.py --fresh-start
+```
+
+Defaults are medium `d_model=256`, `embedding_dim=32`, `batch_size=4096`, 10
+training shards, 10 epochs, one cosine restart per shard, validation at each
+shard boundary, async latest checkpoints every 25 steps, and no shard
+interleaving. The launcher prints the equivalent low-level trainer command
+before starting and accepts direct overrides for model size, batch size, shard
+range, validation shard, W&B run name, and warm-start checkpoint.
+
 ## Artifacts
 
 Each run writes a single run directory with:
