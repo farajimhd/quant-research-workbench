@@ -41,7 +41,7 @@ DEFAULTS: dict[str, Any] = {
     "dropout": 0.08,
     "mask_ratio": 0.70,
     "header_mask_ratio": 0.50,
-    "learning_rate": 2e-4,
+    "learning_rate": 1e-3,
     "weight_decay": 1e-4,
     "scheduler": "cosine_warm_restarts",
     "scheduler_t_mult": 1,
