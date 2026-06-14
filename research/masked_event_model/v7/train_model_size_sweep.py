@@ -80,17 +80,11 @@ MODEL_SIZES: dict[str, dict[str, Any]] = {
 }
 
 PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int] | tuple[str, int, int, str] | tuple[str, int, int, str, int], ...] = (
-    ("tiny_d128", 16, 4096),
-    ("tiny_d128", 32, 4096),
-    ("small_plus", 16, 4096),
-    ("small_plus", 32, 4096),
-    ("small_plus", 32, 8192),
     ("medium", 32, 4096),
     ("medium", 32, 8192),
-    ("medium", 64, 4096),
-    ("high", 32, 1024),
-    ("high", 32, 2048),
-    ("high", 32, 4096),
+    ("large", 32, 1024),
+    ("large", 32, 2048),
+    ("large", 32, 4096),
 )
 
 
@@ -158,15 +152,15 @@ class SweepRun:
 
 def parse_args() -> argparse.Namespace:
     train_defaults = TrainConfig()
-    parser = argparse.ArgumentParser(description="Sequentially Profile v7 model sizes across embedding dimensions and batch sizes.")
+    parser = argparse.ArgumentParser(description="Sequentially profile v7 medium/large model sizes with 32-dim embeddings.")
     parser.add_argument("--cache-root", default=r"D:\market-data\prepared\event_sample_cache")
     parser.add_argument("--sweep-output-root", default="")
     parser.add_argument("--run-prefix", default="v7-eventmae-size-sweep")
     parser.add_argument("--profile-set", choices=("practical", "grid"), default="practical")
     parser.add_argument("--steps", type=int, default=200)
-    parser.add_argument("--embedding-dims", default="16,32,64")
+    parser.add_argument("--embedding-dims", default="32")
     parser.add_argument("--batch-sizes", default="4096,8192")
-    parser.add_argument("--model-sizes", default=",".join(MODEL_SIZES))
+    parser.add_argument("--model-sizes", default="medium,large")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--decoder-chunk-size", type=int, default=0)
     parser.add_argument("--learning-rate", type=float, default=train_defaults.learning_rate)
