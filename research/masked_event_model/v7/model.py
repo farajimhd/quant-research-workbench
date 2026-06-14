@@ -6,8 +6,8 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from research.masked_event_model.v6.config import ModelConfig
-from research.masked_event_model.v6.masking import EventMaskBatch, gather_events, maybe_corrupt_header, maybe_corrupt_visible_events
+from research.masked_event_model.v7.config import ModelConfig
+from research.masked_event_model.v7.masking import EventMaskBatch, gather_events, maybe_corrupt_header, maybe_corrupt_visible_events
 
 
 HEADER_BYTES = 14
@@ -115,6 +115,14 @@ class MaskedEventQueryRoleEmbedding(nn.Embedding):
     """Learned role vector shared by masked-event decoder queries."""
 
 
+class AttentionPoolingLayerNorm(nn.LayerNorm):
+    """LayerNorm applied before scoring encoded tokens for chunk pooling."""
+
+
+class AttentionPoolingScoreProjection(nn.Linear):
+    """Linear projection that maps each encoded token to one pooling logit."""
+
+
 class LearnedChunkClsToken(nn.Module):
     """Learned CLS token whose encoded state becomes the chunk embedding."""
 
@@ -217,28 +225,35 @@ class EncoderSequenceBuilder(nn.Module):
 
 
 class ChunkEmbeddingBottleneck(nn.Module):
-    """Create the exported embedding from all encoded tokens.
+    """Create the exported embedding with learned attention pooling.
 
-    Earlier v6 used only the projected CLS token as the chunk embedding. That
-    made the production embedding depend on one token's summary behavior. This
-    bottleneck now projects every encoded token to embedding space and averages
-    all projected tokens, so header and event tokens contribute directly to the
-    exported representation while the output shape remains `[B, embedding_dim]`.
+    v7 keeps the same compact `[B, embedding_dim]` output as v6, but replaces
+    fixed mean pooling with a trainable token-importance scorer. The scorer sees
+    the position-aware encoded CLS, header, and event tokens and learns a
+    softmax weight for each token. The final chunk embedding is the weighted sum
+    of projected token embeddings.
     """
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.encoder_token_to_embedding_space = nn.Linear(config.d_model, config.embedding_dim)
-        self.all_projected_tokens_mean_pool = nn.AdaptiveAvgPool1d(1)
+        self.encoded_token_to_attention_logit = nn.Sequential(
+            OrderedDict(
+                [
+                    ("attention_pooling_layer_norm", AttentionPoolingLayerNorm(config.d_model)),
+                    ("attention_pooling_score", AttentionPoolingScoreProjection(config.d_model, 1)),
+                ]
+            )
+        )
 
     def project_encoded_tokens(self, encoded_tokens: torch.Tensor) -> torch.Tensor:
         return self.encoder_token_to_embedding_space(encoded_tokens)
 
     def forward(self, encoded_tokens: torch.Tensor) -> torch.Tensor:
         token_embeddings = self.project_encoded_tokens(encoded_tokens)
-        # AdaptiveAvgPool1d expects channels first. The temporary projected-token
-        # tensor is consumed here and is no longer returned by the training path.
-        return self.all_projected_tokens_mean_pool(token_embeddings.transpose(1, 2)).squeeze(-1)
+        attention_logits = self.encoded_token_to_attention_logit(encoded_tokens).squeeze(-1)
+        attention_weights = torch.softmax(attention_logits, dim=1)
+        return (token_embeddings * attention_weights.unsqueeze(-1)).sum(dim=1)
 
 
 class ChunkEmbeddingToDecoderMemory(nn.Module):
@@ -355,7 +370,7 @@ class EventTokenMaskedAutoencoder(nn.Module):
         self.config = config
         self.input_representation = str(config.input_representation)
         if self.input_representation != "bit":
-            raise ValueError("v6 currently supports input_representation='bit' only")
+            raise ValueError("v7 currently supports input_representation='bit' only")
 
         self.header_token_encoder = HeaderTokenEncoder(config)
         self.visible_event_token_selector = VisibleEventTokenSelector()
@@ -493,3 +508,4 @@ class EventTokenMaskedAutoencoder(nn.Module):
         for decoder_layer in self.masked_query_cross_attention_decoder:
             masked_event_queries = decoder_layer(masked_event_queries, decoder_memory)
         return self.masked_event_bit_prediction_head(masked_event_queries)
+

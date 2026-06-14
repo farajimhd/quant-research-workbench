@@ -1,8 +1,8 @@
-# Masked Event Model v6
+# Masked Event Model v7
 
-v6 is the event-token masked autoencoder variant for compact market-event
+v7 is the event-token masked autoencoder variant for compact market-event
 samples. It is version-local: model, masking, loss, progress, training, and
-profiling code live under `research/masked_event_model/v6`.
+profiling code live under `research/masked_event_model/v7`.
 
 The main change is masking at the event-token level:
 
@@ -24,14 +24,15 @@ low-rate bit corruption. Visible event bytes can also receive low-rate bit
 corruption for robustness.
 
 All encoded tokens are projected through the exported chunk embedding bottleneck
-before the decoder sees the representation. The chunk embedding is the mean of
-the projected CLS, header, and visible event tokens rather than only the CLS
-token:
+before the decoder sees the representation. v7 learns a pooling score for each
+position-aware encoded token, applies a softmax over tokens, and uses the
+weighted sum of projected CLS, header, and visible event tokens:
 
 ```text
 encoded tokens [B, token_count, d_model]
   -> to_embedding [B, token_count, embedding_dim]
-  -> mean over token_count [B, embedding_dim]
+  -> learned attention weights [B, token_count]
+  -> weighted sum over token_count [B, embedding_dim]
   -> embedding_to_decoder [B, d_model]
   -> decoder memory [B, 1, d_model]
 ```
@@ -48,7 +49,7 @@ The decoder predicts only the removed event bytes:
 event_bit_logits: [B, masked_events, 16, 8]
 ```
 
-Loss is binary cross entropy with logits over masked event bits only. v6 weights
+Loss is binary cross entropy with logits over masked event bits only. v7 weights
 that BCE with a fixed semantic `[16, 8]` bit-weight matrix: numeric bytes use
 little-endian bit significance `[1, 2, ..., 128]`, while packed/categorical
 bytes such as event flags, exchanges, and conditions use the maximum weight for
@@ -72,7 +73,7 @@ event mask ratio: 0.70
 event mask schedule: mixed, high 50-80% for 70% of batches, zero policy for 10%, low 1-50% for 20%
 header bit corruption: 20% of samples, 5% of header bits
 visible event bit corruption: 30% of samples, 20% of visible event bits
-W&B project: June2026-event-token-mae-v6
+W&B project: June2026-event-token-mae-v7
 ```
 
 ## Profiling
@@ -80,13 +81,13 @@ W&B project: June2026-event-token-mae-v6
 One-shard profiling:
 
 ```powershell
-python research\masked_event_model\v6\run_profile_one_shard.py --steps 50 --batch-size 4096 --fresh-start
+python research\masked_event_model\v7\run_profile_one_shard.py --steps 50 --batch-size 4096 --fresh-start
 ```
 
 Model-size sweep:
 
 ```powershell
-python research\masked_event_model\v6\run_model_size_sweep.py --steps 200 --fresh-start
+python research\masked_event_model\v7\run_model_size_sweep.py --steps 200 --fresh-start
 ```
 
 The sweep includes practical combinations across embedding sizes 32 and 64,
@@ -95,7 +96,7 @@ batch sizes 1024/2048/4096/8192, and the tiny/small/medium/high model presets.
 ## Limited Real Training
 
 ```powershell
-python research\masked_event_model\v6\train_medium_bit_limited_shards.py --fresh-start
+python research\masked_event_model\v7\train_medium_bit_limited_shards.py --fresh-start
 ```
 
 This trains over 10 sample-cache shards and uses a shuffled 5% slice of the next
@@ -104,7 +105,7 @@ shard for validation. Each epoch is one pass over the selected train shards.
 The final long-run launcher for the masked-query decoder path is:
 
 ```powershell
-python research\masked_event_model\v6\train_10shard_long.py --fresh-start
+python research\masked_event_model\v7\train_10shard_long.py --fresh-start
 ```
 
 Defaults are medium `d_model=256`, `embedding_dim=32`, `batch_size=4096`, 10
@@ -134,3 +135,4 @@ artifacts/model/model_architecture_torchview.svg
 
 If optional graph packages are unavailable, matching `*_error.txt` files are
 written instead of silently skipping model artifacts.
+

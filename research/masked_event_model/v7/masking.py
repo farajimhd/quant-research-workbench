@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import torch
 
-from research.masked_event_model.v6.config import MaskConfig
+from research.masked_event_model.v7.config import MaskConfig
 
 
 @dataclass(slots=True)
@@ -143,3 +143,4 @@ def gather_events(events_uint8: torch.Tensor, indices: torch.Tensor) -> torch.Te
 
     gather_index = indices.unsqueeze(-1).expand(-1, -1, events_uint8.shape[-1])
     return torch.gather(events_uint8, dim=1, index=gather_index)
+

@@ -21,11 +21,11 @@ if str(REPO_ROOT) not in sys.path:
 import torch
 from torch.utils.data import DataLoader
 
-from research.masked_event_model.v6.config import DataConfig, ExperimentConfig, LossConfig, MaskConfig, ModelConfig, TrainConfig
-from research.masked_event_model.v6.losses import masked_event_bce_loss
-from research.masked_event_model.v6.masking import EventMaskBatch, build_event_masks
-from research.masked_event_model.v6.model import EventTokenMaskedAutoencoder
-from research.masked_event_model.v6.progress import TrainingProgressState, TrainingReporter
+from research.masked_event_model.v7.config import DataConfig, ExperimentConfig, LossConfig, MaskConfig, ModelConfig, TrainConfig
+from research.masked_event_model.v7.losses import masked_event_bce_loss
+from research.masked_event_model.v7.masking import EventMaskBatch, build_event_masks
+from research.masked_event_model.v7.model import EventTokenMaskedAutoencoder
+from research.masked_event_model.v7.progress import TrainingProgressState, TrainingReporter
 from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy
 from research.mlops.compact_events import (
     CompactEventDataConfig,
@@ -51,7 +51,7 @@ from research.mlops.wandb_utils import init_wandb as mlops_init_wandb
 
 
 MODEL_FAMILY = "masked_event_model"
-MODEL_VERSION = "v6"
+MODEL_VERSION = "v7"
 JOB_TYPE = "pretrain"
 
 
@@ -60,7 +60,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     model_defaults = ModelConfig()
     mask_defaults = MaskConfig()
     train_defaults = TrainConfig()
-    parser = argparse.ArgumentParser(description="Train v6 event-token MAE on compact event sample-cache batches.")
+    parser = argparse.ArgumentParser(description="Train v7 event-token MAE on compact event sample-cache batches.")
     parser.add_argument("--data-source", choices=("clickhouse_events", "sample_cache", "precomputed", "canonical"), default=data_defaults.data_source)
     parser.add_argument("--canonical-root", default=str(data_defaults.canonical_root))
     parser.add_argument("--precomputed-chunk-root", default=str(data_defaults.precomputed_chunk_root or ""))
@@ -185,7 +185,7 @@ def main(argv: list[str] | None = None) -> None:
     model_parameters = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {model_parameters:,}", flush=True)
     if config.train.decoder_chunk_size > 0:
-        print("WARN --decoder-chunk-size is ignored by v6; masked-query decoding only processes masked events.", flush=True)
+        print("WARN --decoder-chunk-size is ignored by v7; masked-query decoding only processes masked events.", flush=True)
     train_model = maybe_compile_model(model, config.train.compile_model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay)
     scheduler = build_scheduler(optimizer, config.train)
@@ -1203,7 +1203,7 @@ def save_model_artifacts(
 
 def build_model_summary_text(model: torch.nn.Module, details: dict[str, Any], parameters: list[dict[str, Any]]) -> str:
     lines = [
-        "EventTokenMaskedAutoencoder v6",
+        "EventTokenMaskedAutoencoder v7",
         "=" * 80,
         f"Input header_uint8: [B, 14]",
         f"Input events_uint8: [B, {details['events_per_chunk']}, 16]",
@@ -1243,7 +1243,9 @@ def build_model_mermaid(config: ExperimentConfig) -> str:
     POS --> TOK
     TOK --> ENC[\"Transformer encoder<br/>{config.model.encoder_layers} layers, d={config.model.d_model}, heads={config.model.n_heads}\"]
     ENC --> TOKEMB[\"project all encoded tokens<br/>B x token_count x {config.model.embedding_dim}\"]
-    TOKEMB --> EMB[\"mean-pooled chunk embedding<br/>B x {config.model.embedding_dim}\"]
+    ENC --> POOL[\"learn token attention weights<br/>B x token_count\"]
+    TOKEMB --> EMB[\"attention-pooled chunk embedding<br/>B x {config.model.embedding_dim}\"]
+    POOL --> EMB
     EMB --> MEM[\"decoder memory projection<br/>B x 1 x d_model\"]
     M --> MQ[\"masked event queries<br/>mask token + masked event position\"]
     MQ --> DEC[\"masked-query cross-attention decoder<br/>{config.model.decoder_layers} layers\"]
@@ -1360,7 +1362,7 @@ def install_fatal_exception_logger(run_paths: RunPaths) -> None:
 
 
 def default_run_name(args: argparse.Namespace) -> str:
-    return f"mem-v6-eventmae-emb{args.embedding_dim}-d{args.d_model}-e{args.encoder_layers}-mask{int(args.event_mask_ratio * 100)}-events{args.events_per_chunk}"
+    return f"mem-v7-eventmae-emb{args.embedding_dim}-d{args.d_model}-e{args.encoder_layers}-mask{int(args.event_mask_ratio * 100)}-events{args.events_per_chunk}"
 
 
 def format_metrics(step: int, metrics: dict[str, float]) -> str:
@@ -1415,3 +1417,4 @@ def sync_if_cuda(device: torch.device) -> None:
 
 if __name__ == "__main__":
     main()
+

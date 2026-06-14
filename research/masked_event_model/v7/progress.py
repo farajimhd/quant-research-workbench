@@ -321,3 +321,4 @@ class TrainingReporter:
             f"step_s={state.step_seconds:.3f} data_s={state.data_wait_seconds:.3f} "
             f"gpu_alloc_gib={state.gpu_allocated_gib:.2f}"
         )
+

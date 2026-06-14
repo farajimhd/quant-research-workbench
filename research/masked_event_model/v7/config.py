@@ -136,7 +136,7 @@ class TrainConfig:
     seed: int = 17
     amp: bool = True
     compile_model: bool = False
-    wandb_project: str = "June2026-event-token-mae-v6"
+    wandb_project: str = "June2026-event-token-mae-v7"
     wandb_entity: str = "mehdifaraji"
     wandb_run_name: str = ""
 
@@ -148,3 +148,4 @@ class ExperimentConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     losses: LossConfig = field(default_factory=LossConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
+

@@ -6,8 +6,8 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 
-from research.masked_event_model.v6.config import LossConfig
-from research.masked_event_model.v6.model import EventMAEOutput
+from research.masked_event_model.v7.config import LossConfig
+from research.masked_event_model.v7.model import EventMAEOutput
 
 
 BYTE_VALUE_BIT_WEIGHTS = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], dtype=torch.float32)
@@ -212,3 +212,4 @@ def byte_psnr_db(mse: torch.Tensor) -> torch.Tensor:
     """PSNR over reconstructed byte values; higher means lower byte-level MSE."""
 
     return 10.0 * torch.log10(mse.new_tensor(BYTE_MAX_VALUE**2) / mse.clamp_min(PSNR_EPSILON))
+
