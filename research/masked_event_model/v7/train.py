@@ -1256,18 +1256,30 @@ def build_model_mermaid(config: ExperimentConfig) -> str:
 
 
 def try_optional_torchinfo_summary(model: torch.nn.Module, config: ExperimentConfig, device: torch.device, artifact_dir: Path) -> None:
-    path = artifact_dir / "model_summary_torchinfo.txt"
-    error_path = artifact_dir / "model_summary_torchinfo_error.txt"
+    encoder_path = artifact_dir / "model_summary_torchinfo.txt"
+    encoder_error_path = artifact_dir / "model_summary_torchinfo_error.txt"
+    training_path = artifact_dir / "model_summary_training_torchinfo.txt"
+    training_error_path = artifact_dir / "model_summary_training_torchinfo_error.txt"
     try:
         from torchinfo import summary
 
-        wrapper = TorchInfoSummaryWrapper(model, config.data.events_per_chunk).to(device)
+        wrapper = EncoderSummaryWrapper(model).to(device)
         header = torch.zeros((1, 14), dtype=torch.uint8, device=device)
         events = torch.zeros((1, config.data.events_per_chunk, 16), dtype=torch.uint8, device=device)
         text = str(summary(wrapper, input_data=(header, events), depth=8, col_names=("input_size", "output_size", "num_params", "trainable"), verbose=0))
-        path.write_text(text + "\n", encoding="utf-8")
+        encoder_path.write_text(text + "\n", encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
-        error_path.write_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)), encoding="utf-8")
+        encoder_error_path.write_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)), encoding="utf-8")
+    try:
+        from torchinfo import summary
+
+        wrapper = MaskedTrainingSummaryWrapper(model, config.data.events_per_chunk).to(device)
+        header = torch.zeros((1, 14), dtype=torch.uint8, device=device)
+        events = torch.zeros((1, config.data.events_per_chunk, 16), dtype=torch.uint8, device=device)
+        text = str(summary(wrapper, input_data=(header, events), depth=8, col_names=("input_size", "output_size", "num_params", "trainable"), verbose=0))
+        training_path.write_text(text + "\n", encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        training_error_path.write_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)), encoding="utf-8")
 
 
 def try_optional_torchview_diagram(
@@ -1281,7 +1293,7 @@ def try_optional_torchview_diagram(
     try:
         from torchview import draw_graph
 
-        wrapper = MaskedSummaryWrapper(model, config.data.events_per_chunk).to(device)
+        wrapper = EncoderSummaryWrapper(model).to(device)
         header = torch.zeros((1, 14), dtype=torch.uint8, device=device)
         events = torch.zeros((1, config.data.events_per_chunk, 16), dtype=torch.uint8, device=device)
         graph = draw_graph(wrapper, input_data=(header, events), expand_nested=True, save_graph=False)
@@ -1293,7 +1305,31 @@ def try_optional_torchview_diagram(
         error_path.write_text(repr(exc) + "\n", encoding="utf-8")
 
 
-class MaskedSummaryWrapper(torch.nn.Module):
+class EncoderSummaryWrapper(torch.nn.Module):
+    """Expose the production embedding path as a single-output graph."""
+
+    def __init__(self, model: torch.nn.Module) -> None:
+        super().__init__()
+        self.visible_event_token_selector = model.visible_event_token_selector
+        self.header_token_encoder = model.header_token_encoder
+        self.visible_event_token_encoder = model.visible_event_token_encoder
+        self.encoder_sequence_builder = model.encoder_sequence_builder
+        self.visible_context_transformer_encoder = model.visible_context_transformer_encoder
+        self.encoded_token_output_layer_norm = model.encoded_token_output_layer_norm
+        self.chunk_embedding_bottleneck = model.chunk_embedding_bottleneck
+
+    def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
+        selected_events_uint8, selected_event_indices = self.visible_event_token_selector(events_uint8, None)
+        header_token = self.header_token_encoder(header_uint8)
+        visible_event_tokens = self.visible_event_token_encoder(selected_events_uint8, selected_event_indices)
+        encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
+        encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
+        return self.chunk_embedding_bottleneck(encoded_tokens)
+
+
+class MaskedTrainingSummaryWrapper(torch.nn.Module):
+    """Expose the MAE training graph with reconstruction logits as the only output."""
+
     def __init__(self, model: torch.nn.Module, events_per_chunk: int) -> None:
         super().__init__()
         self.events_per_chunk = int(events_per_chunk)
@@ -1309,7 +1345,7 @@ class MaskedSummaryWrapper(torch.nn.Module):
         self.masked_query_cross_attention_decoder = model.masked_query_cross_attention_decoder
         self.masked_event_bit_prediction_head = model.masked_event_bit_prediction_head
 
-    def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
         masked_count = max(1, int(round(self.events_per_chunk * 0.70)))
         visible_count = self.events_per_chunk - masked_count
         visible = torch.arange(visible_count, device=events_uint8.device).view(1, -1).expand(events_uint8.shape[0], -1)
@@ -1336,13 +1372,7 @@ class MaskedSummaryWrapper(torch.nn.Module):
         for decoder_layer in self.masked_query_cross_attention_decoder:
             masked_event_queries = decoder_layer(masked_event_queries, decoder_memory)
         event_bit_logits = self.masked_event_bit_prediction_head(masked_event_queries)
-        return event_bit_logits, chunk_embedding
-
-
-class TorchInfoSummaryWrapper(MaskedSummaryWrapper):
-    def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
-        event_logits, chunk_embedding = super().forward(header_uint8, events_uint8)
-        return torch.cat([event_logits.flatten(), chunk_embedding.flatten()]).unsqueeze(0)
+        return event_bit_logits
 
 
 def install_fatal_exception_logger(run_paths: RunPaths) -> None:

@@ -128,9 +128,10 @@ checkpoints/
 artifacts/model/model_details.json
 artifacts/model/model_parameters.jsonl
 artifacts/model/model_summary.txt
-artifacts/model/model_summary_torchinfo.txt
-artifacts/model/model_architecture_torchview.png
-artifacts/model/model_architecture_torchview.svg
+artifacts/model/model_summary_torchinfo.txt              # encoder-only production embedding path
+artifacts/model/model_architecture_torchview.png         # encoder-only production embedding path
+artifacts/model/model_architecture_torchview.svg         # encoder-only production embedding path
+artifacts/model/model_summary_training_torchinfo.txt     # masked reconstruction path, logits-only output
 ```
 
 If optional graph packages are unavailable, matching `*_error.txt` files are
