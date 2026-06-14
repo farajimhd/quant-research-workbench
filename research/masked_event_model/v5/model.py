@@ -131,7 +131,7 @@ class EventTokenMaskedAutoencoder(nn.Module):
         mask_config=None,
     ) -> EventMAEOutput:
         encoded_tokens, token_embeddings, chunk_embedding, target_events = self.encode_tokens_for_training(header_uint8, events_uint8, masks, mask_config)
-        decoder_memory = self.embedding_to_decoder(token_embeddings)
+        decoder_memory = self.embedding_to_decoder(chunk_embedding).unsqueeze(1)
         event_logits = self.decode_masked_events(decoder_memory, masks)
         return EventMAEOutput(
             event_bit_logits=event_logits,

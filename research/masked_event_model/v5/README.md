@@ -22,21 +22,23 @@ tokens instead of all 128. Header bytes are not removed; they can receive
 low-rate bit corruption. Visible event bytes can also receive low-rate bit
 corruption for robustness.
 
-The encoder output is projected through the exported embedding bottleneck before
-the decoder sees it:
+The encoded CLS token is projected through the exported chunk embedding
+bottleneck before the decoder sees it:
 
 ```text
-encoded tokens [B, tokens, d_model]
-  -> to_embedding [B, tokens, embedding_dim]
-  -> embedding_to_decoder [B, tokens, d_model]
+encoded CLS [B, d_model]
+  -> to_embedding [B, embedding_dim]
+  -> embedding_to_decoder [B, d_model]
+  -> decoder memory [B, 1, d_model]
 ```
 
-This keeps the production embedding head on the reconstruction loss path. The
-decoder uses learned queries for the removed event positions. Each masked query
-is the learned mask token plus the masked event position embedding, and it
-cross-attends to the embedding-projected `[CLS] + header + visible_event_tokens`
-memory. It does not build or process a full 128-event decoder sequence. The
-decoder predicts only the removed event bytes:
+This keeps the production chunk embedding on the reconstruction loss path and
+prevents the decoder from bypassing the exported `[B, embedding_dim]`
+bottleneck. The decoder uses learned queries for the removed event positions.
+Each masked query is the learned mask token plus the masked event position
+embedding, and it cross-attends only to the single embedding-projected chunk
+memory token. It does not build or process a full 128-event decoder sequence.
+The decoder predicts only the removed event bytes:
 
 ```text
 event_bit_logits: [B, masked_events, 16, 8]
