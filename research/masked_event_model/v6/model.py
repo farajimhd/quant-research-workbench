@@ -230,6 +230,7 @@ class ChunkEmbeddingBottleneck(nn.Module):
         super().__init__()
         self.encoder_token_to_embedding_space = nn.Linear(config.d_model, config.embedding_dim)
         self.all_projected_tokens_mean_pool = nn.AdaptiveAvgPool1d(1)
+        self.chunk_embedding_output = ChunkEmbeddingOutput()
 
     def project_encoded_tokens(self, encoded_tokens: torch.Tensor) -> torch.Tensor:
         return self.encoder_token_to_embedding_space(encoded_tokens)
@@ -238,7 +239,12 @@ class ChunkEmbeddingBottleneck(nn.Module):
         token_embeddings = self.project_encoded_tokens(encoded_tokens)
         # AdaptiveAvgPool1d expects channels first. The temporary projected-token
         # tensor is consumed here and is no longer returned by the training path.
-        return self.all_projected_tokens_mean_pool(token_embeddings.transpose(1, 2)).squeeze(-1)
+        pooled_embedding = self.all_projected_tokens_mean_pool(token_embeddings.transpose(1, 2)).squeeze(-1)
+        return self.chunk_embedding_output(pooled_embedding)
+
+
+class ChunkEmbeddingOutput(nn.Identity):
+    """Named terminal layer for the reusable chunk embedding."""
 
 
 class ChunkEmbeddingToDecoderMemory(nn.Module):

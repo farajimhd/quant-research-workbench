@@ -245,6 +245,7 @@ class ChunkEmbeddingBottleneck(nn.Module):
                 ]
             )
         )
+        self.chunk_embedding_output = ChunkEmbeddingOutput()
 
     def project_encoded_tokens(self, encoded_tokens: torch.Tensor) -> torch.Tensor:
         return self.encoder_token_to_embedding_space(encoded_tokens)
@@ -253,7 +254,12 @@ class ChunkEmbeddingBottleneck(nn.Module):
         token_embeddings = self.project_encoded_tokens(encoded_tokens)
         attention_logits = self.encoded_token_to_attention_logit(encoded_tokens).squeeze(-1)
         attention_weights = torch.softmax(attention_logits, dim=1)
-        return (token_embeddings * attention_weights.unsqueeze(-1)).sum(dim=1)
+        pooled_embedding = (token_embeddings * attention_weights.unsqueeze(-1)).sum(dim=1)
+        return self.chunk_embedding_output(pooled_embedding)
+
+
+class ChunkEmbeddingOutput(nn.Identity):
+    """Named terminal layer for the reusable chunk embedding."""
 
 
 class ChunkEmbeddingToDecoderMemory(nn.Module):
