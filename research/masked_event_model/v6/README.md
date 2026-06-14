@@ -22,12 +22,15 @@ tokens instead of all 128. Header bytes are not removed; they can receive
 low-rate bit corruption. Visible event bytes can also receive low-rate bit
 corruption for robustness.
 
-The encoded CLS token is projected through the exported chunk embedding
-bottleneck before the decoder sees it:
+All encoded tokens are projected through the exported chunk embedding bottleneck
+before the decoder sees the representation. The chunk embedding is the mean of
+the projected CLS, header, and visible event tokens rather than only the CLS
+token:
 
 ```text
-encoded CLS [B, d_model]
-  -> to_embedding [B, embedding_dim]
+encoded tokens [B, token_count, d_model]
+  -> to_embedding [B, token_count, embedding_dim]
+  -> mean over token_count [B, embedding_dim]
   -> embedding_to_decoder [B, d_model]
   -> decoder memory [B, 1, d_model]
 ```

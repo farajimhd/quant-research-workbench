@@ -213,15 +213,26 @@ class EncoderSequenceBuilder(nn.Module):
 
 
 class ChunkEmbeddingBottleneck(nn.Module):
-    """Create the exported embedding and make it the only information path to the decoder."""
+    """Create the exported embedding from all encoded tokens.
+
+    Earlier v6 used only the projected CLS token as the chunk embedding. That
+    made the production embedding depend on one token's summary behavior. This
+    bottleneck now projects every encoded token to embedding space and averages
+    all projected tokens, so header and event tokens contribute directly to the
+    exported representation while the output shape remains `[B, embedding_dim]`.
+    """
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.encoder_token_to_embedding_space = nn.Linear(config.d_model, config.embedding_dim)
+        self.all_projected_tokens_mean_pool = nn.AdaptiveAvgPool1d(1)
 
     def forward(self, encoded_tokens: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         token_embeddings = self.encoder_token_to_embedding_space(encoded_tokens)
-        chunk_embedding = token_embeddings[:, 0, :]
+        # AdaptiveAvgPool1d expects channels first. The transpose is only for
+        # pooling; `token_embeddings` keeps its original `[B, T, embedding_dim]`
+        # shape for inspection and downstream per-event experiments.
+        chunk_embedding = self.all_projected_tokens_mean_pool(token_embeddings.transpose(1, 2)).squeeze(-1)
         return token_embeddings, chunk_embedding
 
 

@@ -1226,8 +1226,8 @@ def build_model_mermaid(config: ExperimentConfig) -> str:
     HP --> TOK[\"encoder tokens<br/>CLS + header + visible events\"]
     POS --> TOK
     TOK --> ENC[\"Transformer encoder<br/>{config.model.encoder_layers} layers, d={config.model.d_model}, heads={config.model.n_heads}\"]
-    ENC --> CLSOUT[\"encoded CLS token\"]
-    CLSOUT --> EMB[\"chunk embedding bottleneck<br/>B x {config.model.embedding_dim}\"]
+    ENC --> TOKEMB[\"project all encoded tokens<br/>B x token_count x {config.model.embedding_dim}\"]
+    TOKEMB --> EMB[\"mean-pooled chunk embedding<br/>B x {config.model.embedding_dim}\"]
     EMB --> MEM[\"decoder memory projection<br/>B x 1 x d_model\"]
     M --> MQ[\"masked event queries<br/>mask token + masked event position\"]
     MQ --> DEC[\"masked-query cross-attention decoder<br/>{config.model.decoder_layers} layers\"]
@@ -1278,8 +1278,18 @@ def try_optional_torchview_diagram(
 class MaskedSummaryWrapper(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, events_per_chunk: int) -> None:
         super().__init__()
-        self.model = model
         self.events_per_chunk = int(events_per_chunk)
+        self.visible_event_token_selector = model.visible_event_token_selector
+        self.header_token_encoder = model.header_token_encoder
+        self.visible_event_token_encoder = model.visible_event_token_encoder
+        self.encoder_sequence_builder = model.encoder_sequence_builder
+        self.visible_context_transformer_encoder = model.visible_context_transformer_encoder
+        self.encoded_token_output_layer_norm = model.encoded_token_output_layer_norm
+        self.chunk_embedding_bottleneck = model.chunk_embedding_bottleneck
+        self.chunk_embedding_to_decoder_memory = model.chunk_embedding_to_decoder_memory
+        self.masked_event_query_builder = model.masked_event_query_builder
+        self.masked_query_cross_attention_decoder = model.masked_query_cross_attention_decoder
+        self.masked_event_bit_prediction_head = model.masked_event_bit_prediction_head
 
     def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         masked_count = max(1, int(round(self.events_per_chunk * 0.70)))
@@ -1287,8 +1297,18 @@ class MaskedSummaryWrapper(torch.nn.Module):
         visible = torch.arange(visible_count, device=events_uint8.device).view(1, -1).expand(events_uint8.shape[0], -1)
         masked = torch.arange(visible_count, self.events_per_chunk, device=events_uint8.device).view(1, -1).expand(events_uint8.shape[0], -1)
         masks = EventMaskBatch(visible_event_indices=visible, masked_event_indices=masked, visible_count=visible_count, masked_count=masked_count)
-        output = self.model(header_uint8, events_uint8, masks, mask_config=None)
-        return output.event_bit_logits, output.chunk_embedding
+        selected_events_uint8, selected_event_indices = self.visible_event_token_selector(events_uint8, masks.visible_event_indices)
+        header_token = self.header_token_encoder(header_uint8)
+        visible_event_tokens = self.visible_event_token_encoder(selected_events_uint8, selected_event_indices)
+        encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
+        encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
+        _token_embeddings, chunk_embedding = self.chunk_embedding_bottleneck(encoded_tokens)
+        decoder_memory = self.chunk_embedding_to_decoder_memory(chunk_embedding)
+        masked_event_queries = self.masked_event_query_builder(masks.masked_event_indices)
+        for decoder_layer in self.masked_query_cross_attention_decoder:
+            masked_event_queries = decoder_layer(masked_event_queries, decoder_memory)
+        event_bit_logits = self.masked_event_bit_prediction_head(masked_event_queries)
+        return event_bit_logits, chunk_embedding
 
 
 class TorchInfoSummaryWrapper(MaskedSummaryWrapper):
