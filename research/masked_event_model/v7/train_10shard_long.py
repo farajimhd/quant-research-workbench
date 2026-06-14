@@ -165,8 +165,22 @@ def main() -> None:
             batch_size=batch_size,
             max_validation_batches=int(args.validation_batches),
         )
-        steps_per_epoch = sum(shard.num_samples // batch_size for shard in train_shards)
-        steps_per_shard = train_shards[0].num_samples // batch_size
+        shard_batch_counts = [shard.num_samples // batch_size for shard in train_shards]
+        if any(count <= 0 for count in shard_batch_counts):
+            raise SystemExit(
+                "At least one selected training shard has no full batches after drop-last: "
+                f"batch_size={batch_size:,}, shard_batch_counts={shard_batch_counts}"
+            )
+        unique_shard_batch_counts = sorted(set(shard_batch_counts))
+        if len(unique_shard_batch_counts) != 1:
+            raise SystemExit(
+                "Selected training shards have different full-batch counts. The long launcher "
+                "intentionally uses one LR restart and one validation pass per shard, so unequal "
+                f"shards would make the schedule ambiguous. batch_size={batch_size:,}, "
+                f"shard_batch_counts={shard_batch_counts}"
+            )
+        steps_per_epoch = sum(shard_batch_counts)
+        steps_per_shard = unique_shard_batch_counts[0]
         validation_batches = max(1, validation_samples // batch_size)
     values = dict(DEFAULTS)
     values.update(

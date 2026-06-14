@@ -1209,7 +1209,7 @@ def build_model_summary_text(model: torch.nn.Module, details: dict[str, Any], pa
         f"Input events_uint8: [B, {details['events_per_chunk']}, 16]",
         f"Training encoder tokens: [B, 2 + visible_events, d_model]",
         f"Production encoder tokens: [B, 2 + {details['events_per_chunk']}, d_model]",
-        f"Chunk bottleneck: encoder CLS -> [B, {details['embedding_dim']}] -> decoder memory [B, 1, d_model]",
+        f"Chunk bottleneck: all encoded tokens -> mean-pooled [B, {details['embedding_dim']}] -> decoder memory [B, 1, d_model]",
         f"Decoder: masked event queries cross-attend only to the chunk bottleneck memory",
         f"Output event bit logits: [B, masked_events, 16, 8]",
         f"Embedding: [B, {details['embedding_dim']}]",
