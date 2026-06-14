@@ -104,6 +104,10 @@ class EventTokenMaskedAutoencoder(nn.Module):
         self.encoder = transformer_encoder(encoder_layer, num_layers=config.encoder_layers)
         self.encoder_norm = nn.LayerNorm(config.d_model)
         self.to_embedding = nn.Linear(config.d_model, config.embedding_dim)
+        self.embedding_to_decoder = nn.Sequential(
+            nn.LayerNorm(config.embedding_dim),
+            nn.Linear(config.embedding_dim, config.d_model),
+        )
 
         self.decoder_mask_token = nn.Parameter(torch.zeros(1, 1, config.d_model))
         self.decoder_event_position = nn.Embedding(self.events_per_chunk, config.d_model)
@@ -127,7 +131,8 @@ class EventTokenMaskedAutoencoder(nn.Module):
         mask_config=None,
     ) -> EventMAEOutput:
         encoded_tokens, token_embeddings, chunk_embedding, target_events = self.encode_tokens_for_training(header_uint8, events_uint8, masks, mask_config)
-        event_logits = self.decode_masked_events(encoded_tokens, masks)
+        decoder_memory = self.embedding_to_decoder(token_embeddings)
+        event_logits = self.decode_masked_events(decoder_memory, masks)
         return EventMAEOutput(
             event_bit_logits=event_logits,
             masked_event_indices=masks.masked_event_indices,
@@ -198,16 +203,16 @@ class EventTokenMaskedAutoencoder(nn.Module):
         embeddings = self.to_embedding(encoded)
         return encoded, embeddings, embeddings[:, 0, :]
 
-    def decode_masked_events(self, encoded_tokens: torch.Tensor, masks: EventMaskBatch) -> torch.Tensor:
-        batch_size = encoded_tokens.shape[0]
+    def decode_masked_events(self, decoder_memory: torch.Tensor, masks: EventMaskBatch) -> torch.Tensor:
+        batch_size = decoder_memory.shape[0]
         queries = self.decoder_mask_token.expand(batch_size, masks.masked_count, -1).clone()
         queries = queries + self.decoder_event_position(masks.masked_event_indices)
         queries = queries + self.decoder_token_type(
-            torch.full((1,), 2, dtype=torch.long, device=encoded_tokens.device)
+            torch.full((1,), 2, dtype=torch.long, device=decoder_memory.device)
         ).view(1, 1, -1)
 
         for layer in self.cross_decoder:
-            queries = layer(queries, encoded_tokens)
+            queries = layer(queries, decoder_memory)
         decoded = self.decoder_norm(queries)
         return self.event_bit_head(decoded).view(batch_size, masks.masked_count, EVENT_BYTES, BITS_PER_BYTE)
 

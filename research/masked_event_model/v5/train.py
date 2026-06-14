@@ -1190,7 +1190,8 @@ def build_model_summary_text(model: torch.nn.Module, details: dict[str, Any], pa
         f"Input events_uint8: [B, {details['events_per_chunk']}, 16]",
         f"Training encoder tokens: [B, 2 + visible_events, d_model]",
         f"Production encoder tokens: [B, 2 + {details['events_per_chunk']}, d_model]",
-        f"Decoder: masked event queries cross-attend to encoded CLS/header/visible tokens",
+        f"Embedding bottleneck: encoder tokens -> [B, tokens, {details['embedding_dim']}] -> decoder memory",
+        f"Decoder: masked event queries cross-attend to embedding-projected CLS/header/visible tokens",
         f"Output event bit logits: [B, masked_events, 16, 8]",
         f"Embedding: [B, {details['embedding_dim']}]",
         "",
@@ -1222,8 +1223,9 @@ def build_model_mermaid(config: ExperimentConfig) -> str:
     HP --> TOK[\"encoder tokens<br/>CLS + header + visible events\"]
     POS --> TOK
     TOK --> ENC[\"Transformer encoder<br/>{config.model.encoder_layers} layers, d={config.model.d_model}, heads={config.model.n_heads}\"]
-    ENC --> EMB[\"chunk embedding<br/>B x {config.model.embedding_dim}\"]
-    ENC --> MEM[\"decoder memory<br/>encoded CLS + header + visible events\"]
+    ENC --> EMBTOK[\"embedding bottleneck<br/>B x tokens x {config.model.embedding_dim}\"]
+    EMBTOK --> EMB[\"chunk embedding<br/>B x {config.model.embedding_dim}\"]
+    EMBTOK --> MEM[\"decoder memory projection<br/>embedding -> d_model\"]
     M --> MQ[\"masked event queries<br/>mask token + masked event position\"]
     MQ --> DEC[\"masked-query cross-attention decoder<br/>{config.model.decoder_layers} layers\"]
     MEM --> DEC
