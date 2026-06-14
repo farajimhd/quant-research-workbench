@@ -43,6 +43,17 @@ def transformer_encoder(layer: nn.TransformerEncoderLayer, *, num_layers: int) -
         return nn.TransformerEncoder(layer, num_layers=num_layers)
 
 
+def single_role_vector(role_embedding: nn.Embedding, *, device: torch.device) -> torch.Tensor:
+    """Return the single learned role vector through the embedding module.
+
+    Calling the module instead of reading `.weight` directly keeps diagram and
+    summary tools aware of which semantic role embedding is being used.
+    """
+
+    role_id = torch.zeros((1,), device=device, dtype=torch.long)
+    return role_embedding(role_id).view(1, 1, -1)
+
+
 class UInt8BytesToSignedBitFeatures(nn.Module):
     """Convert packed bytes into -1/+1 bit features that the linear layers can read.
 
@@ -76,6 +87,58 @@ class VisibleEventTokenSelector(nn.Module):
         return gather_events(events_uint8, visible_event_indices), visible_event_indices
 
 
+class HeaderRoleEmbedding(nn.Embedding):
+    """Learned role vector that marks the single header token."""
+
+
+class VisibleEventPositionEmbedding(nn.Embedding):
+    """Position embedding for visible event tokens entering the encoder."""
+
+
+class EventRoleEmbedding(nn.Embedding):
+    """Learned role vector shared by event tokens before the encoder."""
+
+
+class ChunkClsRoleEmbedding(nn.Embedding):
+    """Learned role vector added to the chunk-level CLS token."""
+
+
+class MaskedEventPositionEmbedding(nn.Embedding):
+    """Position embedding for decoder queries at masked event locations."""
+
+
+class MaskedEventQueryRoleEmbedding(nn.Embedding):
+    """Learned role vector shared by masked-event decoder queries."""
+
+
+class LearnedChunkClsToken(nn.Module):
+    """Learned CLS token whose encoded state becomes the chunk embedding."""
+
+    def __init__(self, d_model: int) -> None:
+        super().__init__()
+        self.token = nn.Parameter(torch.zeros(1, 1, d_model))
+
+    def reset_parameters(self) -> None:
+        nn.init.normal_(self.token, std=0.02)
+
+    def forward(self, batch_size: int) -> torch.Tensor:
+        return self.token.expand(batch_size, -1, -1)
+
+
+class LearnedMaskedEventQueryToken(nn.Module):
+    """Learned decoder query template used for every masked event."""
+
+    def __init__(self, d_model: int) -> None:
+        super().__init__()
+        self.token = nn.Parameter(torch.zeros(1, 1, d_model))
+
+    def reset_parameters(self) -> None:
+        nn.init.normal_(self.token, std=0.02)
+
+    def forward(self, batch_size: int, masked_count: int) -> torch.Tensor:
+        return self.token.expand(batch_size, masked_count, -1).clone()
+
+
 class HeaderTokenEncoder(nn.Module):
     """Project the 14-byte chunk header into one transformer token."""
 
@@ -91,12 +154,12 @@ class HeaderTokenEncoder(nn.Module):
                 ]
             )
         )
-        self.header_role_embedding = nn.Embedding(1, config.d_model)
+        self.header_role_embedding = HeaderRoleEmbedding(1, config.d_model)
 
     def forward(self, header_uint8: torch.Tensor) -> torch.Tensor:
         header_bits = self.header_bytes_to_signed_bits(header_uint8)
         header_token = self.header_bits_to_model_token(header_bits).unsqueeze(1)
-        return header_token + self.header_role_embedding.weight.view(1, 1, -1)
+        return header_token + single_role_vector(self.header_role_embedding, device=header_uint8.device)
 
 
 class EventTokenEncoder(nn.Module):
@@ -114,14 +177,14 @@ class EventTokenEncoder(nn.Module):
                 ]
             )
         )
-        self.event_position_embedding_for_encoder = nn.Embedding(events_per_chunk, config.d_model)
-        self.event_role_embedding = nn.Embedding(1, config.d_model)
+        self.event_position_embedding_for_encoder = VisibleEventPositionEmbedding(events_per_chunk, config.d_model)
+        self.event_role_embedding = EventRoleEmbedding(1, config.d_model)
 
     def forward(self, visible_events_uint8: torch.Tensor, visible_event_indices: torch.Tensor) -> torch.Tensor:
         event_bits = self.event_bytes_to_signed_bits(visible_events_uint8)
         event_tokens = self.event_bits_to_model_tokens(event_bits)
         event_tokens = event_tokens + self.event_position_embedding_for_encoder(visible_event_indices)
-        return event_tokens + self.event_role_embedding.weight.view(1, 1, -1)
+        return event_tokens + single_role_vector(self.event_role_embedding, device=visible_events_uint8.device)
 
 
 class EncoderSequenceBuilder(nn.Module):
@@ -129,17 +192,24 @@ class EncoderSequenceBuilder(nn.Module):
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.learned_chunk_cls_token = nn.Parameter(torch.zeros(1, 1, config.d_model))
-        self.cls_role_embedding = nn.Embedding(1, config.d_model)
+        self.learned_chunk_cls_token = LearnedChunkClsToken(config.d_model)
+        self.cls_role_embedding = ChunkClsRoleEmbedding(1, config.d_model)
 
     def reset_parameters(self) -> None:
-        nn.init.normal_(self.learned_chunk_cls_token, std=0.02)
+        self.learned_chunk_cls_token.reset_parameters()
 
     def forward(self, header_token: torch.Tensor, event_tokens: torch.Tensor) -> torch.Tensor:
         batch_size = int(header_token.shape[0])
-        cls_token = self.learned_chunk_cls_token.expand(batch_size, -1, -1)
-        cls_token = cls_token + self.cls_role_embedding.weight.view(1, 1, -1)
+        cls_token = self.learned_chunk_cls_token(batch_size)
+        cls_token = cls_token + single_role_vector(self.cls_role_embedding, device=header_token.device)
         return torch.cat([cls_token, header_token, event_tokens], dim=1)
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        old_key = prefix + "learned_chunk_cls_token"
+        new_key = prefix + "learned_chunk_cls_token.token"
+        if old_key in state_dict and new_key not in state_dict:
+            state_dict[new_key] = state_dict.pop(old_key)
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
 
 
 class ChunkEmbeddingBottleneck(nn.Module):
@@ -174,19 +244,26 @@ class MaskedEventQueryBuilder(nn.Module):
 
     def __init__(self, *, events_per_chunk: int, config: ModelConfig) -> None:
         super().__init__()
-        self.learned_masked_event_query_token = nn.Parameter(torch.zeros(1, 1, config.d_model))
-        self.masked_event_position_embedding_for_decoder = nn.Embedding(events_per_chunk, config.d_model)
-        self.masked_event_query_role_embedding = nn.Embedding(1, config.d_model)
+        self.learned_masked_event_query_token = LearnedMaskedEventQueryToken(config.d_model)
+        self.masked_event_position_embedding_for_decoder = MaskedEventPositionEmbedding(events_per_chunk, config.d_model)
+        self.masked_event_query_role_embedding = MaskedEventQueryRoleEmbedding(1, config.d_model)
 
     def reset_parameters(self) -> None:
-        nn.init.normal_(self.learned_masked_event_query_token, std=0.02)
+        self.learned_masked_event_query_token.reset_parameters()
 
     def forward(self, masked_event_indices: torch.Tensor) -> torch.Tensor:
         batch_size = int(masked_event_indices.shape[0])
         masked_count = int(masked_event_indices.shape[1])
-        queries = self.learned_masked_event_query_token.expand(batch_size, masked_count, -1).clone()
+        queries = self.learned_masked_event_query_token(batch_size, masked_count)
         queries = queries + self.masked_event_position_embedding_for_decoder(masked_event_indices)
-        return queries + self.masked_event_query_role_embedding.weight.view(1, 1, -1)
+        return queries + single_role_vector(self.masked_event_query_role_embedding, device=masked_event_indices.device)
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        old_key = prefix + "learned_masked_event_query_token"
+        new_key = prefix + "learned_masked_event_query_token.token"
+        if old_key in state_dict and new_key not in state_dict:
+            state_dict[new_key] = state_dict.pop(old_key)
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
 
 
 class MaskedQueryCrossAttentionDecoderLayer(nn.Module):
