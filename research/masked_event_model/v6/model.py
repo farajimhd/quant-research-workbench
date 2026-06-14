@@ -345,6 +345,92 @@ class MaskedEventBitPredictionHead(nn.Module):
         return logits.view(logits.shape[0], logits.shape[1], EVENT_BYTES, BITS_PER_BYTE)
 
 
+class EventChunkEncoder(nn.Module):
+    """Standalone encoder that ends at the reusable `[B, embedding_dim]` chunk embedding.
+
+    This module contains only the pieces that should survive after MAE-style
+    pretraining: header/event tokenization, visible-context transformer
+    encoding, and the chunk embedding bottleneck. It deliberately has no
+    decoder, no masked-event query tokens, and no reconstruction head, so it can
+    be exported and loaded by downstream models without pulling in pretraining
+    machinery.
+    """
+
+    def __init__(self, *, events_per_chunk: int, config: ModelConfig) -> None:
+        super().__init__()
+        self.events_per_chunk = int(events_per_chunk)
+        self.config = config
+        self.visible_event_token_selector = VisibleEventTokenSelector()
+        self.header_token_encoder = HeaderTokenEncoder(config)
+        self.visible_event_token_encoder = EventTokenEncoder(events_per_chunk=self.events_per_chunk, config=config)
+        self.encoder_sequence_builder = EncoderSequenceBuilder(config)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_heads,
+            dim_feedforward=config.ff_dim,
+            dropout=config.dropout,
+            batch_first=True,
+            activation="gelu",
+            norm_first=True,
+        )
+        self.visible_context_transformer_encoder = transformer_encoder(encoder_layer, num_layers=config.encoder_layers)
+        self.encoded_token_output_layer_norm = nn.LayerNorm(config.d_model)
+        self.chunk_embedding_bottleneck = ChunkEmbeddingBottleneck(config)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        self.encoder_sequence_builder.reset_parameters()
+
+    def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
+        """Production path: encode all event records and return only the chunk embedding."""
+
+        _, chunk_embedding = self.encode_tokens(
+            header_uint8,
+            events_uint8,
+            visible_event_indices=None,
+            mask_config=None,
+            training=False,
+        )
+        return chunk_embedding
+
+    def encode_tokens(
+        self,
+        header_uint8: torch.Tensor,
+        events_uint8: torch.Tensor,
+        *,
+        visible_event_indices: torch.Tensor | None,
+        mask_config,
+        training: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if training and mask_config is not None:
+            header_input_uint8 = maybe_corrupt_header(header_uint8, mask_config)
+        else:
+            header_input_uint8 = header_uint8
+
+        selected_events_uint8, selected_event_indices = self.visible_event_token_selector(events_uint8, visible_event_indices)
+        if training and visible_event_indices is not None and mask_config is not None:
+            selected_events_uint8 = maybe_corrupt_visible_events(selected_events_uint8, mask_config)
+
+        header_token = self.header_token_encoder(header_input_uint8)
+        visible_event_tokens = self.visible_event_token_encoder(selected_events_uint8, selected_event_indices)
+        encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
+        encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
+        chunk_embedding = self.chunk_embedding_bottleneck(encoded_tokens)
+        return encoded_tokens, chunk_embedding
+
+
+ENCODER_MODULE_NAMES = (
+    "visible_event_token_selector",
+    "header_token_encoder",
+    "visible_event_token_encoder",
+    "encoder_sequence_builder",
+    "visible_context_transformer_encoder",
+    "encoded_token_output_layer_norm",
+    "chunk_embedding_bottleneck",
+)
+
+
 class EventTokenMaskedAutoencoder(nn.Module):
     """Masked autoencoder over compact market-event chunks.
 
@@ -392,6 +478,26 @@ class EventTokenMaskedAutoencoder(nn.Module):
     def reset_parameters(self) -> None:
         self.encoder_sequence_builder.reset_parameters()
         self.masked_event_query_builder.reset_parameters()
+
+    def encoder_state_dict(self) -> dict[str, torch.Tensor]:
+        """Return a standalone encoder state dict with decoder weights excluded."""
+
+        state: dict[str, torch.Tensor] = {}
+        for module_name in ENCODER_MODULE_NAMES:
+            module = getattr(self, module_name)
+            for key, value in module.state_dict().items():
+                state[f"{module_name}.{key}"] = value.detach().clone()
+        return state
+
+    def build_encoder_model(self) -> EventChunkEncoder:
+        """Create an independent encoder module initialized from this pretrained model."""
+
+        encoder = EventChunkEncoder(events_per_chunk=self.events_per_chunk, config=self.config)
+        encoder.load_state_dict(self.encoder_state_dict(), strict=True)
+        first_parameter = next(self.parameters(), None)
+        if first_parameter is not None:
+            encoder = encoder.to(device=first_parameter.device, dtype=first_parameter.dtype)
+        return encoder
 
     def forward(
         self,

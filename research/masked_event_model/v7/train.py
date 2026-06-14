@@ -1293,7 +1293,7 @@ def try_optional_torchview_diagram(
     try:
         from torchview import draw_graph
 
-        wrapper = EncoderSummaryWrapper(model).to(device)
+        wrapper = MaskedTrainingSummaryWrapper(model, config.data.events_per_chunk).to(device)
         header = torch.zeros((1, 14), dtype=torch.uint8, device=device)
         events = torch.zeros((1, config.data.events_per_chunk, 16), dtype=torch.uint8, device=device)
         graph = draw_graph(wrapper, input_data=(header, events), expand_nested=True, save_graph=False)
@@ -1306,29 +1306,18 @@ def try_optional_torchview_diagram(
 
 
 class EncoderSummaryWrapper(torch.nn.Module):
-    """Expose the production embedding path as a single-output graph."""
+    """Expose the independently exportable production encoder as a single-output graph."""
 
     def __init__(self, model: torch.nn.Module) -> None:
         super().__init__()
-        self.visible_event_token_selector = model.visible_event_token_selector
-        self.header_token_encoder = model.header_token_encoder
-        self.visible_event_token_encoder = model.visible_event_token_encoder
-        self.encoder_sequence_builder = model.encoder_sequence_builder
-        self.visible_context_transformer_encoder = model.visible_context_transformer_encoder
-        self.encoded_token_output_layer_norm = model.encoded_token_output_layer_norm
-        self.chunk_embedding_bottleneck = model.chunk_embedding_bottleneck
+        self.reusable_event_chunk_encoder = model.build_encoder_model()
 
     def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
-        selected_events_uint8, selected_event_indices = self.visible_event_token_selector(events_uint8, None)
-        header_token = self.header_token_encoder(header_uint8)
-        visible_event_tokens = self.visible_event_token_encoder(selected_events_uint8, selected_event_indices)
-        encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
-        encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
-        return self.chunk_embedding_bottleneck(encoded_tokens)
+        return self.reusable_event_chunk_encoder(header_uint8, events_uint8)
 
 
 class MaskedTrainingSummaryWrapper(torch.nn.Module):
-    """Expose the MAE training graph with reconstruction logits as the only output."""
+    """Expose the MAE graph with both exported embedding and reconstruction outputs."""
 
     def __init__(self, model: torch.nn.Module, events_per_chunk: int) -> None:
         super().__init__()
@@ -1372,7 +1361,7 @@ class MaskedTrainingSummaryWrapper(torch.nn.Module):
         for decoder_layer in self.masked_query_cross_attention_decoder:
             masked_event_queries = decoder_layer(masked_event_queries, decoder_memory)
         event_bit_logits = self.masked_event_bit_prediction_head(masked_event_queries)
-        return event_bit_logits
+        return chunk_embedding, event_bit_logits
 
 
 def install_fatal_exception_logger(run_paths: RunPaths) -> None:
