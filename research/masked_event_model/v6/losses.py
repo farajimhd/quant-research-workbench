@@ -10,9 +10,49 @@ from research.masked_event_model.v6.config import LossConfig
 from research.masked_event_model.v6.model import EventMAEOutput
 
 
-BIT_WEIGHTS = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], dtype=torch.float32)
+BYTE_VALUE_BIT_WEIGHTS = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], dtype=torch.float32)
+MAX_SEMANTIC_BIT_WEIGHT = float(BYTE_VALUE_BIT_WEIGHTS[-1])
 BYTE_MAX_VALUE = 255.0
 PSNR_EPSILON = 1e-12
+
+
+def build_semantic_event_bit_weights() -> torch.Tensor:
+    """Return fixed loss weights for `[event_byte, bit]`.
+
+    Numeric bytes use the same little-endian bit significance as
+    `unpack_bits`: bit 0 has weight 1 and bit 7 has weight 128. Bytes that pack
+    several unrelated categorical/flag fields do not have a meaningful numeric
+    ordering, so every bit in those bytes receives the maximum weight. That
+    makes errors on event type, flags, exchange IDs, and condition IDs expensive
+    even when the changed bit is numerically low-order inside its byte.
+    """
+
+    numeric_byte_weights = BYTE_VALUE_BIT_WEIGHTS.tolist()
+    packed_or_categorical = [MAX_SEMANTIC_BIT_WEIGHT] * 8
+    return torch.tensor(
+        [
+            packed_or_categorical,  # byte 0: event type, presence flag, correction code.
+            numeric_byte_weights,  # byte 1: event time bucket, low byte.
+            numeric_byte_weights,  # byte 2: event time bucket, high byte.
+            numeric_byte_weights,  # byte 3: price delta 1, low byte.
+            numeric_byte_weights,  # byte 4: price delta 1, high byte.
+            numeric_byte_weights,  # byte 5: price delta 2, low byte.
+            numeric_byte_weights,  # byte 6: price delta 2, high byte.
+            numeric_byte_weights,  # byte 7: primary size bucket.
+            numeric_byte_weights,  # byte 8: secondary size bucket.
+            packed_or_categorical,  # byte 9: odd-lot flags plus tape code.
+            packed_or_categorical,  # byte 10: primary exchange dense ID.
+            packed_or_categorical,  # byte 11: secondary exchange dense ID.
+            packed_or_categorical,  # byte 12: condition 1 presence plus dense ID.
+            packed_or_categorical,  # byte 13: condition 2 presence plus dense ID.
+            packed_or_categorical,  # byte 14: condition 3 presence plus dense ID.
+            packed_or_categorical,  # byte 15: condition 4 presence plus dense ID.
+        ],
+        dtype=torch.float32,
+    )
+
+
+SEMANTIC_EVENT_BIT_WEIGHTS = build_semantic_event_bit_weights()
 
 
 @dataclass(slots=True)
@@ -42,17 +82,34 @@ def masked_event_bce_loss(
     logits = output.event_bit_logits
     target_bytes = output.target_events_uint8.long()
     target_bits = unpack_bits(target_bytes).to(dtype=logits.dtype, device=logits.device)
+    semantic_weights = SEMANTIC_EVENT_BIT_WEIGHTS.to(device=logits.device, dtype=logits.dtype).view(1, 1, 16, 8)
     if logits.is_cuda:
         with torch.amp.autocast("cuda", enabled=False):
-            loss = F.binary_cross_entropy_with_logits(logits.float(), target_bits.float())
+            unweighted_loss = F.binary_cross_entropy_with_logits(logits.float(), target_bits.float())
+            weighted_loss_terms = F.binary_cross_entropy_with_logits(
+                logits.float(),
+                target_bits.float(),
+                weight=semantic_weights.float(),
+                reduction="none",
+            )
+            loss = weighted_loss_terms.mean()
     else:
-        loss = F.binary_cross_entropy_with_logits(logits, target_bits)
+        unweighted_loss = F.binary_cross_entropy_with_logits(logits, target_bits)
+        weighted_loss_terms = F.binary_cross_entropy_with_logits(
+            logits,
+            target_bits,
+            weight=semantic_weights,
+            reduction="none",
+        )
+        loss = weighted_loss_terms.mean()
     loss = loss * float(config.event_weight)
 
     metrics_started = time.perf_counter()
     metrics = {
         "pretrain/loss_total": float(loss.detach().cpu()),
         "pretrain/loss_event": float(loss.detach().cpu()),
+        "pretrain/loss_event_unweighted": float(unweighted_loss.detach().cpu()),
+        "pretrain/loss_event_semantic_weight_mean": float(semantic_weights.mean().detach().cpu()),
     }
     if metric_level == "loss_only":
         # Full reconstruction metrics are useful, but they are not free at large
@@ -102,7 +159,7 @@ def masked_event_bce_loss(
             balanced_bit_acc = (one_acc + zero_acc) * 0.5 if one_mask.any() and zero_mask.any() else bit_acc
             target_float = target_bytes.float()
             hard_mae = (hard_bytes.float() - target_float).abs().mean()
-            soft_bytes = (probabilities.float() * BIT_WEIGHTS.to(probabilities.device)).sum(dim=-1)
+            soft_bytes = (probabilities.float() * BYTE_VALUE_BIT_WEIGHTS.to(probabilities.device)).sum(dim=-1)
             soft_mae = (soft_bytes - target_float).abs().mean()
             mode_count = torch.bincount(target_bytes.flatten(), minlength=256).max()
             byte_mode_baseline = mode_count.float() / target_bytes.numel()
@@ -145,7 +202,7 @@ def unpack_bits(values: torch.Tensor) -> torch.Tensor:
 def pack_bits(bits: torch.Tensor) -> torch.Tensor:
     """Invert `unpack_bits` for hard reconstruction metrics."""
 
-    weights = BIT_WEIGHTS.to(bits.device, dtype=torch.long)
+    weights = BYTE_VALUE_BIT_WEIGHTS.to(bits.device, dtype=torch.long)
     return (bits.long() * weights).sum(dim=-1)
 
 

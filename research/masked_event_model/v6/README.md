@@ -44,7 +44,12 @@ The decoder predicts only the removed event bytes:
 event_bit_logits: [B, masked_events, 16, 8]
 ```
 
-Loss is binary cross entropy with logits over masked event bits only. Production
+Loss is binary cross entropy with logits over masked event bits only. v6 weights
+that BCE with a fixed semantic `[16, 8]` bit-weight matrix: numeric bytes use
+little-endian bit significance `[1, 2, ..., 128]`, while packed/categorical
+bytes such as event flags, exchanges, and conditions use the maximum weight for
+every bit. The unweighted BCE is still logged as
+`pretrain/loss_event_unweighted` for comparison with older runs. Production
 embedding uses the explicit `encode(...)` path, which sees the full unmasked
 header and all 128 events:
 
