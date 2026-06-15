@@ -238,6 +238,7 @@ def main(argv: list[str] | None = None) -> None:
             save_best_val=args.checkpoint_best_val,
         ),
     )
+    failure_debug_dir = run_paths.artifacts_dir / "failure_debug"
 
     if args.dry_run:
         if config.data.data_source == "sample_cache":
@@ -278,56 +279,61 @@ def main(argv: list[str] | None = None) -> None:
             emit_progress_message(reporter, "Initial validation " + format_metrics(global_step, val_metrics))
             if reporter is not None:
                 reporter.update({}, step=global_step, validation_metrics=val_metrics)
-        if config.data.data_source == "sample_cache":
-            global_step = train_sample_cache_epochs(
-                model=model,
-                train_model=train_model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                scaler=scaler,
-                config=config,
-                args=args,
-                device=device,
-                global_step=global_step,
-                validation_batches=validation_batches,
-                metric_logger=metric_logger,
-                checkpointer=checkpointer,
-                reporter=reporter,
-            )
-        elif config.data.data_source == "precomputed":
-            global_step = train_precomputed_epochs(
-                model=model,
-                train_model=train_model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                scaler=scaler,
-                config=config,
-                args=args,
-                device=device,
-                global_step=global_step,
-                validation_batches=validation_batches,
-                metric_logger=metric_logger,
-                checkpointer=checkpointer,
-                reporter=reporter,
-            )
-        else:
-            global_step = train_streaming_loader(
-                model=model,
-                train_model=train_model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                scaler=scaler,
-                config=config,
-                args=args,
-                device=device,
-                global_step=global_step,
-                validation_batches=validation_batches,
-                metric_logger=metric_logger,
-                checkpointer=checkpointer,
-                reporter=reporter,
-            )
-        checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), force=True)
-        checkpointer.close()
+        try:
+            if config.data.data_source == "sample_cache":
+                global_step = train_sample_cache_epochs(
+                    model=model,
+                    train_model=train_model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler,
+                    config=config,
+                    args=args,
+                    device=device,
+                    global_step=global_step,
+                    validation_batches=validation_batches,
+                    metric_logger=metric_logger,
+                    checkpointer=checkpointer,
+                    reporter=reporter,
+                    failure_debug_dir=failure_debug_dir,
+                )
+            elif config.data.data_source == "precomputed":
+                global_step = train_precomputed_epochs(
+                    model=model,
+                    train_model=train_model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler,
+                    config=config,
+                    args=args,
+                    device=device,
+                    global_step=global_step,
+                    validation_batches=validation_batches,
+                    metric_logger=metric_logger,
+                    checkpointer=checkpointer,
+                    reporter=reporter,
+                    failure_debug_dir=failure_debug_dir,
+                )
+            else:
+                global_step = train_streaming_loader(
+                    model=model,
+                    train_model=train_model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler,
+                    config=config,
+                    args=args,
+                    device=device,
+                    global_step=global_step,
+                    validation_batches=validation_batches,
+                    metric_logger=metric_logger,
+                    checkpointer=checkpointer,
+                    reporter=reporter,
+                    failure_debug_dir=failure_debug_dir,
+                )
+            checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), force=True)
+        finally:
+            checkpointer.close()
         if wandb_run is not None and reporter is not None:
             reporter.message(f"W&B run: {getattr(wandb_run, 'url', '<unknown>')}")
 
@@ -347,6 +353,7 @@ def train_precomputed_epochs(
     metric_logger: JsonlMetricLogger,
     checkpointer: AsyncCheckpointManager,
     reporter: TrainingReporter | None,
+    failure_debug_dir: Path,
 ) -> int:
     data_config = precomputed_data_config(config, "train", args.seed)
     train_shards = discover_precomputed_chunk_shards(data_config)
@@ -396,6 +403,8 @@ def train_precomputed_epochs(
                 global_step=global_step,
                 data_wait_seconds=data_wait_seconds,
                 force_diagnostics=run_validation,
+                failure_debug_dir=failure_debug_dir,
+                args=args,
             )
             epoch_loss_sum += float(metrics.get("pretrain/loss_total", 0.0))
             effective_shard_count = int(batch.get("shard_count", shard_count) or shard_count)
@@ -457,6 +466,7 @@ def train_sample_cache_epochs(
     metric_logger: JsonlMetricLogger,
     checkpointer: AsyncCheckpointManager,
     reporter: TrainingReporter | None,
+    failure_debug_dir: Path,
 ) -> int:
     data_config = sample_cache_data_config(config, "train", args.seed)
     train_shards = discover_event_sample_shards(data_config)
@@ -507,6 +517,8 @@ def train_sample_cache_epochs(
                 global_step=global_step,
                 data_wait_seconds=data_wait_seconds,
                 force_diagnostics=run_validation,
+                failure_debug_dir=failure_debug_dir,
+                args=args,
             )
             epoch_loss_sum += float(metrics.get("pretrain/loss_total", 0.0))
             effective_shard_count = int(batch.get("shard_count", shard_count) or shard_count)
@@ -566,6 +578,7 @@ def train_streaming_loader(
     metric_logger: JsonlMetricLogger,
     checkpointer: AsyncCheckpointManager,
     reporter: TrainingReporter | None,
+    failure_debug_dir: Path,
 ) -> int:
     loader = make_loader(config, "train", args.seed)
     loader_iter = iter(loader)
@@ -585,6 +598,8 @@ def train_streaming_loader(
             device=device,
             global_step=global_step,
             data_wait_seconds=data_wait_seconds,
+            failure_debug_dir=failure_debug_dir,
+            args=args,
         )
         val_metrics = maybe_log_train_and_validation(
             model=model,
@@ -614,6 +629,8 @@ def run_training_step(
     global_step: int,
     data_wait_seconds: float,
     force_diagnostics: bool = False,
+    failure_debug_dir: Path | None = None,
+    args: argparse.Namespace | None = None,
 ) -> dict[str, float]:
     step_started = time.perf_counter()
     profile_step = should_profile_step(config, global_step)
@@ -646,29 +663,82 @@ def run_training_step(
             metric_level=metric_level,
         )
     if not torch.isfinite(result.loss).item():
-        raise_nonfinite_training_error(output, result.metrics, global_step)
+        debug_path = save_failure_debug_bundle(
+            reason="nonfinite_forward_loss",
+            failure_debug_dir=failure_debug_dir,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            config=config,
+            args=args,
+            global_step=global_step,
+            batch=batch,
+            masks=masks,
+            output=output,
+            metrics=result.metrics,
+        )
+        raise_nonfinite_training_error(output, result.metrics, global_step, debug_path=debug_path)
     if profile_step:
         sync_if_cuda(device)
     forward_loss_seconds = time.perf_counter() - forward_started
     backward_started = time.perf_counter()
     optimizer.zero_grad(set_to_none=True)
-    scaler.scale(result.loss).backward()
-    if profile_step:
-        sync_if_cuda(device)
-    backward_seconds = time.perf_counter() - backward_started
-    optimizer_started = time.perf_counter()
-    scaler.unscale_(optimizer)
-    grad_norm = torch.nn.utils.clip_grad_norm_(
-        model.parameters(),
-        config.train.grad_clip_norm,
-        error_if_nonfinite=True,
-    )
-    old_scale = scaler.get_scale()
-    scaler.step(optimizer)
-    scaler.update()
-    amp_step_skipped = bool(scaler.is_enabled() and scaler.get_scale() < old_scale)
-    if scheduler is not None and not amp_step_skipped:
-        scheduler.step(global_step)
+    try:
+        scaler.scale(result.loss).backward()
+        if profile_step:
+            sync_if_cuda(device)
+        backward_seconds = time.perf_counter() - backward_started
+        optimizer_started = time.perf_counter()
+        scaler.unscale_(optimizer)
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            model.parameters(),
+            config.train.grad_clip_norm,
+            error_if_nonfinite=True,
+        )
+        old_scale = scaler.get_scale()
+        scaler.step(optimizer)
+        scaler.update()
+        amp_step_skipped = bool(scaler.is_enabled() and scaler.get_scale() < old_scale)
+        if scheduler is not None and not amp_step_skipped:
+            scheduler.step(global_step)
+        nonfinite_parameter = find_first_nonfinite_parameter(model)
+        if nonfinite_parameter is not None:
+            debug_path = save_failure_debug_bundle(
+                reason="nonfinite_model_parameter",
+                failure_debug_dir=failure_debug_dir,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                config=config,
+                args=args,
+                global_step=global_step,
+                batch=batch,
+                masks=masks,
+                output=output,
+                metrics=result.metrics | {"debug/nonfinite_parameter": nonfinite_parameter},
+            )
+            raise FloatingPointError(f"Non-finite model parameter after optimizer step: {nonfinite_parameter}. Debug bundle: {debug_path}")
+    except Exception as exc:
+        if "Debug bundle:" in str(exc):
+            raise
+        debug_path = save_failure_debug_bundle(
+            reason="backward_or_optimizer_failure",
+            failure_debug_dir=failure_debug_dir,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            config=config,
+            args=args,
+            global_step=global_step,
+            batch=batch,
+            masks=masks,
+            output=output,
+            metrics=result.metrics | {"debug/exception": repr(exc)},
+        )
+        raise RuntimeError(f"Training step failed after debug bundle was saved to {debug_path}") from exc
     if profile_step:
         sync_if_cuda(device)
     optimizer_seconds = time.perf_counter() - optimizer_started
@@ -706,7 +776,7 @@ def run_training_step(
     return metrics
 
 
-def raise_nonfinite_training_error(output: Any, metrics: dict[str, float], global_step: int) -> None:
+def raise_nonfinite_training_error(output: Any, metrics: dict[str, float], global_step: int, *, debug_path: Path | None = None) -> None:
     logits = output.event_bit_logits.detach().float()
     finite = torch.isfinite(logits)
     finite_logits = logits[finite]
@@ -727,8 +797,94 @@ def raise_nonfinite_training_error(output: Any, metrics: dict[str, float], globa
         f"masked_events={metrics.get('mask/event_masked_events')}, "
         f"requested_mask_pct={metrics.get('mask/event_requested_mask_ratio_pct')}, "
         f"logit_bad={bad_count}/{total_count}, "
-        f"finite_logit_min={logit_min}, finite_logit_max={logit_max}, finite_logit_mean={logit_mean}"
+        f"finite_logit_min={logit_min}, finite_logit_max={logit_max}, finite_logit_mean={logit_mean}, "
+        f"debug_bundle={debug_path}"
     )
+
+
+def save_failure_debug_bundle(
+    *,
+    reason: str,
+    failure_debug_dir: Path | None,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    scaler: torch.amp.GradScaler,
+    config: ExperimentConfig,
+    args: argparse.Namespace | None,
+    global_step: int,
+    batch: dict[str, Any],
+    masks: EventMaskBatch,
+    output: Any,
+    metrics: dict[str, Any],
+) -> Path | None:
+    if failure_debug_dir is None:
+        return None
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    debug_dir = failure_debug_dir / f"step_{global_step:09d}_{reason}_{timestamp}"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "reason": reason,
+        "global_step": int(global_step),
+        "metrics": metrics,
+        "config": dataclass_tree(config),
+        "args": vars(args) if args is not None else {},
+        "model": to_cpu_debug(model.state_dict()),
+        "optimizer": to_cpu_debug(optimizer.state_dict()),
+        "scheduler": to_cpu_debug(scheduler.state_dict()) if scheduler is not None else None,
+        "scaler": to_cpu_debug(scaler.state_dict()),
+        "batch": to_cpu_debug({key: value for key, value in batch.items() if key != "profile"}),
+        "masks": to_cpu_debug(
+            {
+                "visible_event_indices": masks.visible_event_indices,
+                "masked_event_indices": masks.masked_event_indices,
+                "visible_count": masks.visible_count,
+                "masked_count": masks.masked_count,
+                "event_count": masks.event_count,
+                "requested_mask_ratio": masks.requested_mask_ratio,
+                "actual_mask_ratio": masks.actual_mask_ratio,
+                "mask_policy_id": masks.mask_policy_id,
+                "mask_policy_name": masks.mask_policy_name,
+            }
+        ),
+        "output": to_cpu_debug(
+            {
+                "event_bit_logits": output.event_bit_logits,
+                "target_events_uint8": output.target_events_uint8,
+                "chunk_embedding": output.chunk_embedding,
+                "masked_event_indices": output.masked_event_indices,
+            }
+        ),
+    }
+    torch.save(payload, debug_dir / "failure_debug.pt")
+    summary = {
+        "reason": reason,
+        "global_step": int(global_step),
+        "metrics": metrics,
+        "path": str(debug_dir / "failure_debug.pt"),
+    }
+    (debug_dir / "failure_summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+    return debug_dir / "failure_debug.pt"
+
+
+def to_cpu_debug(value: Any) -> Any:
+    if torch.is_tensor(value):
+        return value.detach().cpu().clone()
+    if isinstance(value, dict):
+        return {key: to_cpu_debug(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [to_cpu_debug(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(to_cpu_debug(item) for item in value)
+    return value
+
+
+def find_first_nonfinite_parameter(model: torch.nn.Module) -> str | None:
+    with torch.no_grad():
+        for name, parameter in model.named_parameters():
+            if not bool(torch.isfinite(parameter).all()):
+                return name
+    return None
 
 
 def should_profile_step(config: ExperimentConfig, global_step: int) -> bool:
