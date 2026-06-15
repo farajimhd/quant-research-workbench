@@ -82,7 +82,13 @@ def masked_event_bce_loss(
     logits = output.event_bit_logits
     target_bytes = output.target_events_uint8.long()
     target_bits = unpack_bits(target_bytes).to(dtype=logits.dtype, device=logits.device)
-    semantic_weights = SEMANTIC_EVENT_BIT_WEIGHTS.to(device=logits.device, dtype=logits.dtype).view(1, 1, 16, 8)
+    raw_semantic_weights = SEMANTIC_EVENT_BIT_WEIGHTS.to(device=logits.device, dtype=logits.dtype).view(1, 1, 16, 8)
+    # Keep the objective scale comparable to plain BCE while preserving the
+    # relative priority of high-significance and categorical bits. Without this
+    # normalization the average event loss is multiplied by ~80, which can push
+    # AMP/fp16 gradients and decoder activations into overflow.
+    semantic_weight_normalizer = raw_semantic_weights.mean()
+    semantic_weights = raw_semantic_weights / semantic_weight_normalizer
     if logits.is_cuda:
         with torch.amp.autocast("cuda", enabled=False):
             unweighted_loss = F.binary_cross_entropy_with_logits(logits.float(), target_bits.float())
@@ -109,6 +115,8 @@ def masked_event_bce_loss(
         "pretrain/loss_total": float(loss.detach().cpu()),
         "pretrain/loss_event_unweighted": float(unweighted_loss.detach().cpu()),
         "pretrain/loss_event_semantic_weight_mean": float(semantic_weights.mean().detach().cpu()),
+        "pretrain/loss_event_semantic_raw_weight_mean": float(raw_semantic_weights.mean().detach().cpu()),
+        "pretrain/loss_event_semantic_normalizer": float(semantic_weight_normalizer.detach().cpu()),
         "mask/event_mask_ratio_pct": float(output.actual_mask_ratio * 100.0),
         "mask/event_requested_mask_ratio_pct": float(output.requested_mask_ratio * 100.0),
         "mask/event_visible_events": float(output.visible_event_count),

@@ -711,11 +711,11 @@ def run_training_step(
                 output=output,
                 metrics=result.metrics | {"debug/nonfinite_gradient": nonfinite_gradient, "debug/amp_old_scale": old_scale},
             )
-            scaler.step(optimizer)
-            scaler.update()
             optimizer.zero_grad(set_to_none=True)
-            grad_norm = result.loss.new_tensor(float("nan"))
-            amp_step_skipped = True
+            raise FloatingPointError(
+                "AMP produced a non-finite gradient at "
+                f"step={global_step}: {nonfinite_gradient}. Debug bundle: {debug_path}"
+            )
         elif nonfinite_gradient is not None:
             debug_path = save_failure_debug_bundle(
                 reason="nonfinite_gradient",
