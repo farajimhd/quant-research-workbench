@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import shutil
@@ -63,10 +64,16 @@ class AsyncCheckpointManager:
         if force or self.policy.latest_steps > 0 and step % self.policy.latest_steps == 0:
             reasons.append((self.checkpoint_dir / "checkpoint_latest.pt", "latest"))
         train_loss = train_metrics.get(self.policy.monitor_train_key)
+        val_loss = val_metrics.get(self.policy.monitor_val_key)
+        if has_nonfinite_monitor(train_loss, val_loss):
+            self._message(
+                f"Skipped checkpoint at step {step}; monitored loss is non-finite "
+                f"(train={train_loss}, val={val_loss})."
+            )
+            return
         if self.policy.save_best_train and train_loss is not None and train_loss < self.best_train_loss:
             self.best_train_loss = float(train_loss)
             reasons.append((self.checkpoint_dir / "checkpoint_best_train.pt", "best_train"))
-        val_loss = val_metrics.get(self.policy.monitor_val_key)
         if self.policy.save_best_val and val_loss is not None and val_loss < self.best_val_loss:
             self.best_val_loss = float(val_loss)
             reasons.append((self.checkpoint_dir / "checkpoint_best_val.pt", "best_val"))
@@ -131,6 +138,18 @@ def to_cpu_payload(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(to_cpu_payload(item) for item in value)
     return value
+
+
+def has_nonfinite_monitor(*values: Any) -> bool:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            if not math.isfinite(float(value)):
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
 
 
 def atomic_torch_save(payload: dict[str, Any], path: Path) -> None:

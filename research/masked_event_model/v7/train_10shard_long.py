@@ -48,7 +48,7 @@ DEFAULTS: dict[str, Any] = {
     "header_bit_corruption_ratio": 0.05,
     "event_bit_corruption_prob": 0.30,
     "event_bit_corruption_ratio": 0.20,
-    "learning_rate": 1e-3,
+    "learning_rate": 2e-4,
     "weight_decay": 1e-4,
     "scheduler": "cosine_warm_restarts",
     "scheduler_t_mult": 1,
@@ -70,7 +70,7 @@ DEFAULTS: dict[str, Any] = {
     "wandb_project": "June2026-event-token-mae-v7",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
-    "wandb_run_name": "v7-medium-newdecoder-emb32-bs4096-10shards-long",
+    "wandb_run_name": "v7-medium-newdecoder-emb32-bs4096-10shards-lr2e4-guarded",
     "warm_start_checkpoint": "",
 }
 

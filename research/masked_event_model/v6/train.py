@@ -645,6 +645,8 @@ def run_training_step(
             profile_metrics=profile_step,
             metric_level=metric_level,
         )
+    if not torch.isfinite(result.loss).item():
+        raise_nonfinite_training_error(output, result.metrics, global_step)
     if profile_step:
         sync_if_cuda(device)
     forward_loss_seconds = time.perf_counter() - forward_started
@@ -656,10 +658,16 @@ def run_training_step(
     backward_seconds = time.perf_counter() - backward_started
     optimizer_started = time.perf_counter()
     scaler.unscale_(optimizer)
-    torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm)
+    grad_norm = torch.nn.utils.clip_grad_norm_(
+        model.parameters(),
+        config.train.grad_clip_norm,
+        error_if_nonfinite=True,
+    )
+    old_scale = scaler.get_scale()
     scaler.step(optimizer)
     scaler.update()
-    if scheduler is not None:
+    amp_step_skipped = bool(scaler.is_enabled() and scaler.get_scale() < old_scale)
+    if scheduler is not None and not amp_step_skipped:
         scheduler.step(global_step)
     if profile_step:
         sync_if_cuda(device)
@@ -672,6 +680,8 @@ def run_training_step(
             "train/lr": float(optimizer.param_groups[0]["lr"]),
             "train/step_seconds": step_seconds,
             "train/samples_per_second": batch_size / max(step_seconds, 1e-9),
+            "train/grad_norm": float(grad_norm.detach().cpu()),
+            "train/amp_step_skipped": float(amp_step_skipped),
             "profile/batch_size": batch_size,
         }
     )
@@ -694,6 +704,31 @@ def run_training_step(
     if config.train.profile_inference_every_steps > 0 and global_step % config.train.profile_inference_every_steps == 0:
         metrics.update(profile_encode(model, batch, device))
     return metrics
+
+
+def raise_nonfinite_training_error(output: Any, metrics: dict[str, float], global_step: int) -> None:
+    logits = output.event_bit_logits.detach().float()
+    finite = torch.isfinite(logits)
+    finite_logits = logits[finite]
+    if finite_logits.numel() > 0:
+        logit_min = float(finite_logits.min().cpu())
+        logit_max = float(finite_logits.max().cpu())
+        logit_mean = float(finite_logits.mean().cpu())
+    else:
+        logit_min = float("nan")
+        logit_max = float("nan")
+        logit_mean = float("nan")
+    bad_count = int((~finite).sum().cpu())
+    total_count = int(logits.numel())
+    raise FloatingPointError(
+        "Non-finite training loss at "
+        f"step={global_step}, loss={metrics.get('pretrain/loss_total')}, "
+        f"unweighted_loss={metrics.get('pretrain/loss_event_unweighted')}, "
+        f"masked_events={metrics.get('mask/event_masked_events')}, "
+        f"requested_mask_pct={metrics.get('mask/event_requested_mask_ratio_pct')}, "
+        f"logit_bad={bad_count}/{total_count}, "
+        f"finite_logit_min={logit_min}, finite_logit_max={logit_max}, finite_logit_mean={logit_mean}"
+    )
 
 
 def should_profile_step(config: ExperimentConfig, global_step: int) -> bool:
@@ -1005,6 +1040,8 @@ def evaluate_validation(model: EventTokenMaskedAutoencoder, batches: list[dict[s
             with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
                 output = model(batch["header_uint8"], batch["events_uint8"], masks, config.masks)
                 result = masked_event_bce_loss(output, config.losses, include_diagnostics=False, metric_level="cheap")
+            if not torch.isfinite(result.loss).item():
+                raise_nonfinite_training_error(output, result.metrics, global_step=-1)
             for key, value in result.metrics.items():
                 totals["validation/" + key] = totals.get("validation/" + key, 0.0) + float(value)
     count = max(1, len(batches))
