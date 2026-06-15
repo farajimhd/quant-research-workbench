@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+
+REPO_ROOT = next((parent for parent in Path(__file__).resolve().parents if (parent / "research").exists()), Path(__file__).resolve().parents[3])
+TRAIN = Path(__file__).with_name("train.py")
+
+
+DEFAULTS = {
+    "batch_size": 256,
+    "max_steps": 10000,
+    "epochs": 1,
+    "context_chunks": 16,
+    "target_chunks": 1,
+    "window_days": 15,
+    "train_stride_choices": "16,32,64,128",
+    "validation_stride_choices": "16,32,64,128",
+    "encoder_version": "v7",
+    "encoder_checkpoint": "",
+    "wandb_project": "June2026-single-ticker-temporal-event-model",
+    "wandb_mode": "online",
+    "device": "cuda",
+}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Launcher for temporal_event_model/v1 training.")
+    parser.add_argument("--print-only", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
+    parser.add_argument("--max-steps", type=int, default=DEFAULTS["max_steps"])
+    parser.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
+    parser.add_argument("--encoder-version", choices=("v6", "v7"), default=DEFAULTS["encoder_version"])
+    parser.add_argument("--encoder-checkpoint", default=DEFAULTS["encoder_checkpoint"])
+    parser.add_argument("--wandb-project", default=DEFAULTS["wandb_project"])
+    parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default=DEFAULTS["wandb_mode"])
+    parser.add_argument("--run-name", default="")
+    parser.add_argument("--device", default=DEFAULTS["device"])
+    known, extra = parser.parse_known_args()
+    known.extra = extra
+    return known
+
+
+def main() -> None:
+    args = parse_args()
+    command = [
+        sys.executable,
+        "-u",
+        str(TRAIN),
+        "--batch-size",
+        str(args.batch_size),
+        "--max-steps",
+        str(args.max_steps),
+        "--epochs",
+        str(args.epochs),
+        "--context-chunks",
+        str(DEFAULTS["context_chunks"]),
+        "--target-chunks",
+        str(DEFAULTS["target_chunks"]),
+        "--window-days",
+        str(DEFAULTS["window_days"]),
+        "--train-stride-choices",
+        str(DEFAULTS["train_stride_choices"]),
+        "--validation-stride-choices",
+        str(DEFAULTS["validation_stride_choices"]),
+        "--encoder-version",
+        args.encoder_version,
+        "--wandb-project",
+        args.wandb_project,
+        "--wandb-mode",
+        args.wandb_mode,
+        "--device",
+        args.device,
+    ]
+    if args.encoder_checkpoint:
+        command.extend(["--encoder-checkpoint", args.encoder_checkpoint])
+    if args.run_name:
+        command.extend(["--wandb-run-name", args.run_name])
+    if args.dry_run:
+        command.append("--dry-run")
+    command.extend(args.extra)
+    print("Equivalent command:", flush=True)
+    print(" ".join(f'"{part}"' if " " in part else part for part in command), flush=True)
+    if args.print_only:
+        return
+    raise SystemExit(subprocess.call(command, cwd=str(REPO_ROOT)))
+
+
+if __name__ == "__main__":
+    main()
+
