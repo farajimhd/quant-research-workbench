@@ -131,9 +131,29 @@ with more precision than the data representation itself contains.
 
 ## Stored Dataset Shape
 
-A practical dataset should store metadata plus chunk references first. It should
-not duplicate event bytes unnecessarily unless training throughput requires a
-precomputed cache.
+The first implementation does not need a new raw event store if ClickHouse block
+queries are fast enough. The source of truth should remain:
+
+```text
+market_sip_compact.events
+```
+
+For one ticker, a single ordered range query can return a long contiguous event
+timeline:
+
+```sql
+WHERE ticker = '<ticker>'
+  AND ordinal BETWEEN <start_ordinal> AND <end_ordinal>
+ORDER BY ordinal
+```
+
+The data loader can then create many rolling-window samples from that one block.
+This amortizes ClickHouse query cost over many samples and avoids duplicating raw
+event windows on SSD.
+
+A practical dataset index can still store metadata and references for sampling,
+debugging, and reproducibility. It should not duplicate event bytes unless online
+block queries become the bottleneck.
 
 Recommended index row:
 
@@ -166,6 +186,145 @@ y_events_uint8: [H, 128, 16]
 
 The index should keep ticker and timestamp metadata for sampling, debugging,
 auditing, and later joins. These fields do not have to be model inputs.
+
+## Online Block Loader
+
+The preferred first data-provider design for the temporal predictor is an online
+block loader:
+
+1. Pick a ticker and an ordinal range.
+2. Query a large contiguous block from `market_sip_compact.events`.
+3. Keep that block in memory.
+4. Generate many rolling-window samples from the block.
+5. While the GPU trains on the current block-derived batches, prefetch the next
+   block in a background worker.
+
+For a block with `B_events` rows:
+
+```text
+event_block: [B_events, event_row_fields]
+```
+
+For a sample origin `t` inside that block:
+
+```text
+x_raw_span = events[t - x_len + 1, ..., t]
+y_raw_span = events[t + 1, ..., t + y_len]
+```
+
+With:
+
+```text
+N = 128
+K_max = 16
+H = 1
+x_len = (K_max + 1) * N = 2176
+y_len = H * N = 128
+```
+
+The loader can decide at training time how to slice `x_raw_span` into context
+chunks. This keeps stride, overlap, and `K` experimental instead of hard-coding
+them into a stored dataset.
+
+Important separate parameters:
+
+```text
+events_per_chunk = 128
+context_stride_events = configurable
+target_stride_events = configurable
+origin_sampling_stride_events = configurable
+```
+
+`context_stride_events` controls the spacing between chunks inside one sample.
+`origin_sampling_stride_events` controls how densely origins are sampled for
+training. Production can still update every event even if training samples are
+subsampled.
+
+## Optional Raw Timeline Store
+
+If ClickHouse block queries become a bottleneck, the fallback is a ticker
+timeline store, not per-origin raw spans.
+
+Preferred unit:
+
+```text
+ticker-month parquet
+```
+
+Rows should be ordered compact unified events:
+
+```text
+ordinal
+sip_timestamp_us
+event_type
+price_primary_int
+price_secondary_int
+size_primary
+size_secondary
+exchange_primary
+exchange_secondary
+event_flags
+conditions_packed
+event_date
+```
+
+This store should include enough carry context around month boundaries so origins
+near boundaries can still build full context and target spans. It is optional and
+should only be built if online ClickHouse block loading cannot keep up.
+
+## Embedding Cache
+
+After an event encoder checkpoint is selected, the most valuable cache is an SSD
+embedding cache, not a duplicated raw event cache.
+
+Key:
+
+```text
+encoder_version
+schema_version
+ticker
+chunk_end_ordinal
+events_per_chunk
+```
+
+Value:
+
+```text
+embedding_float16: [embedding_dim]
+chunk_end_timestamp_us
+```
+
+For example, with:
+
+```text
+embedding_dim = 32
+float16 = 2 bytes
+```
+
+one embedding is roughly:
+
+```text
+64 bytes + metadata
+```
+
+This is much smaller than repeatedly storing raw event spans. The temporal
+predictor can then train mostly from:
+
+```text
+x_embeddings: [K, embedding_dim]
+```
+
+instead of repeatedly running the event encoder.
+
+Embedding stride should be configurable:
+
+```text
+embedding_stride = 1, 4, 8, ...
+```
+
+Stride `1` is closest to production because it has one embedding per event
+origin. Larger strides reduce storage and precompute time. Missing fresh
+production embeddings can be computed online for recently updated tickers.
 
 ## Sampling
 
@@ -224,3 +383,10 @@ metadata = ticker, origin timestamp, origin ordinal, split, chunk ids
 This gives a clean bridge from the event encoder to a practical production model:
 single-ticker learning, shared weights across the market, and batched inference
 over updated tickers.
+
+Implementation priority:
+
+1. Benchmark ClickHouse block-query loading from `market_sip_compact.events`.
+2. Build the temporal predictor loader on top of contiguous event blocks.
+3. After choosing an encoder checkpoint, materialize an SSD embedding cache.
+4. Only build a raw ticker timeline store if online block queries are too slow.
