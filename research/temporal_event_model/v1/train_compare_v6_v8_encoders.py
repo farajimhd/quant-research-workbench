@@ -50,9 +50,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--context-chunks", type=int, default=16)
+    parser.add_argument("--context-chunks", type=int, default=64)
     parser.add_argument("--target-chunks", type=int, default=1)
     parser.add_argument("--window-days", type=int, default=15)
+    parser.add_argument("--context-lag-schedule", choices=("dense_geometric", "consecutive"), default="dense_geometric")
+    parser.add_argument("--context-dense-fraction", type=float, default=0.5)
+    parser.add_argument("--context-max-lag-steps", type=int, default=512)
     parser.add_argument("--train-stride-choices", default="16,32,64,128")
     parser.add_argument("--validation-stride-choices", default="16,32,64,128")
     parser.add_argument("--validation-frequency", type=int, default=250)
@@ -202,6 +205,12 @@ def build_train_command(args: argparse.Namespace, model_name: str, checkpoint: P
         str(args.target_chunks),
         "--window-days",
         str(args.window_days),
+        "--context-lag-schedule",
+        args.context_lag_schedule,
+        "--context-dense-fraction",
+        str(args.context_dense_fraction),
+        "--context-max-lag-steps",
+        str(args.context_max_lag_steps),
         "--train-stride-choices",
         str(args.train_stride_choices),
         "--validation-stride-choices",

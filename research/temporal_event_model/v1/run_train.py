@@ -14,9 +14,12 @@ DEFAULTS = {
     "batch_size": 256,
     "max_steps": 10000,
     "epochs": 1,
-    "context_chunks": 16,
+    "context_chunks": 64,
     "target_chunks": 1,
     "window_days": 15,
+    "context_lag_schedule": "dense_geometric",
+    "context_dense_fraction": 0.5,
+    "context_max_lag_steps": 512,
     "train_stride_choices": "16,32,64,128",
     "validation_stride_choices": "16,32,64,128",
     "encoder_version": "v7",
@@ -36,6 +39,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
     parser.add_argument("--encoder-version", choices=("v6", "v7", "v8"), default=DEFAULTS["encoder_version"])
     parser.add_argument("--encoder-checkpoint", default=DEFAULTS["encoder_checkpoint"])
+    parser.add_argument("--context-chunks", type=int, default=DEFAULTS["context_chunks"])
+    parser.add_argument("--context-lag-schedule", choices=("dense_geometric", "consecutive"), default=DEFAULTS["context_lag_schedule"])
+    parser.add_argument("--context-dense-fraction", type=float, default=DEFAULTS["context_dense_fraction"])
+    parser.add_argument("--context-max-lag-steps", type=int, default=DEFAULTS["context_max_lag_steps"])
     parser.add_argument("--wandb-project", default=DEFAULTS["wandb_project"])
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default=DEFAULTS["wandb_mode"])
     parser.add_argument("--run-name", default="")
@@ -58,11 +65,17 @@ def main() -> None:
         "--epochs",
         str(args.epochs),
         "--context-chunks",
-        str(DEFAULTS["context_chunks"]),
+        str(args.context_chunks),
         "--target-chunks",
         str(DEFAULTS["target_chunks"]),
         "--window-days",
         str(DEFAULTS["window_days"]),
+        "--context-lag-schedule",
+        str(args.context_lag_schedule),
+        "--context-dense-fraction",
+        str(args.context_dense_fraction),
+        "--context-max-lag-steps",
+        str(args.context_max_lag_steps),
         "--train-stride-choices",
         str(DEFAULTS["train_stride_choices"]),
         "--validation-stride-choices",

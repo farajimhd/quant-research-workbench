@@ -98,6 +98,10 @@ def normalized_data_config(config: DataConfig) -> DataConfig:
         raise ValueError("v1 temporal loader currently supports target_chunks=1.")
     if config.context_chunks < 1:
         raise ValueError("context_chunks must be positive.")
+    if config.context_lag_schedule not in {"dense_geometric", "consecutive"}:
+        raise ValueError("context_lag_schedule must be dense_geometric or consecutive.")
+    if config.context_dense_fraction <= 0.0 or config.context_dense_fraction > 1.0:
+        raise ValueError("context_dense_fraction must be in (0, 1].")
     if not config.train_stride_choices:
         raise ValueError("At least one training stride is required.")
     if not config.validation_stride_choices:
@@ -113,6 +117,9 @@ def normalized_data_config(config: DataConfig) -> DataConfig:
         context_chunks=config.context_chunks,
         target_chunks=config.target_chunks,
         window_days=config.window_days,
+        context_lag_schedule=config.context_lag_schedule,
+        context_dense_fraction=float(config.context_dense_fraction),
+        context_max_lag_steps=max(config.context_chunks - 1, int(config.context_max_lag_steps)),
         train_stride_choices=tuple(int(value) for value in config.train_stride_choices),
         validation_stride_choices=tuple(int(value) for value in config.validation_stride_choices),
         origin_stride_events=max(1, int(config.origin_stride_events)),
@@ -168,7 +175,8 @@ FORMAT TSV
 
 
 def required_event_lookback(config: DataConfig, stride: int) -> int:
-    return config.events_per_chunk + (config.context_chunks - 1) * stride + config.events_per_chunk
+    max_lag = max(context_lag_steps(config))
+    return config.events_per_chunk + max_lag * stride + config.events_per_chunk
 
 
 def load_random_temporal_block(
@@ -322,7 +330,7 @@ def crop_random_event_subrange(rows: np.ndarray, config: DataConfig, stride: int
 
 
 def valid_origin_offsets(row_count: int, config: DataConfig, stride: int) -> np.ndarray:
-    oldest_start = (config.context_chunks - 1) * stride + config.events_per_chunk - 1
+    oldest_start = max(context_lag_steps(config)) * stride + config.events_per_chunk - 1
     latest_origin = row_count - config.events_per_chunk - 1
     if latest_origin < oldest_start:
         return np.empty((0,), dtype=np.int64)
@@ -386,6 +394,9 @@ def materialize_next_temporal_batch(
         {
             "data/batch_materialize_seconds": time.perf_counter() - started,
             "data/context_stride_events": float(stride),
+            "data/context_chunks": float(config.context_chunks),
+            "data/context_max_lag_steps": float(max(context_lag_steps(config))),
+            "data/context_max_lag_events": float(max(context_lag_steps(config)) * stride),
             "data/batch_samples": float(batch_size),
             "data/rejected_origins_in_materializer": float(rejected),
         }
@@ -422,7 +433,7 @@ def materialize_temporal_batch(
     origin_ts = np.zeros((batch_size,), dtype=np.int64)
     origin_ordinals = np.zeros((batch_size,), dtype=np.int64)
     for sample_idx, origin in enumerate(origins):
-        context_ends = [int(origin) - (config.context_chunks - 1 - chunk_idx) * stride for chunk_idx in range(config.context_chunks)]
+        context_ends = context_end_offsets(int(origin), config, stride)
         for chunk_idx, end in enumerate(context_ends):
             header, events = encode_window_or_raise(rows, end - config.events_per_chunk + 1, end + 1)
             context_headers[sample_idx, chunk_idx] = header
@@ -439,6 +450,9 @@ def materialize_temporal_batch(
         {
             "data/batch_materialize_seconds": time.perf_counter() - started,
             "data/context_stride_events": float(stride),
+            "data/context_chunks": float(config.context_chunks),
+            "data/context_max_lag_steps": float(max(context_lag_steps(config))),
+            "data/context_max_lag_events": float(max(context_lag_steps(config)) * stride),
             "data/batch_samples": float(batch_size),
         }
     )
@@ -463,7 +477,7 @@ def encode_one_temporal_sample(
     context_headers = np.zeros((config.context_chunks, HEADER_BYTES), dtype=np.uint8)
     context_events = np.zeros((config.context_chunks, config.events_per_chunk, EVENT_BYTES), dtype=np.uint8)
     try:
-        context_ends = [int(origin) - (config.context_chunks - 1 - chunk_idx) * stride for chunk_idx in range(config.context_chunks)]
+        context_ends = context_end_offsets(int(origin), config, stride)
         for chunk_idx, end in enumerate(context_ends):
             encoded = encode_window_or_raise(rows, end - config.events_per_chunk + 1, end + 1)
             context_headers[chunk_idx] = encoded[0]
@@ -473,6 +487,90 @@ def encode_one_temporal_sample(
         return context_headers, context_events, target_header, target_events
     except Exception:
         return None
+
+
+def context_end_offsets(origin: int, config: DataConfig, stride: int) -> list[int]:
+    """Return chunk end offsets in temporal order from oldest to newest.
+
+    Lags are expressed in embedding-stride units. With `stride=1`, this exactly
+    matches the rolling sequence `e1=[1..N]`, `e2=[2..N+1]`, and so on. With a
+    larger stride, the same logical lag schedule is sampled more sparsely:
+    `end = origin - lag_step * stride`.
+    """
+
+    return [int(origin) - lag_step * int(stride) for lag_step in reversed(context_lag_steps(config))]
+
+
+def context_lag_steps(config: DataConfig) -> tuple[int, ...]:
+    """Build dense-short / geometric-long context lags.
+
+    For `context_chunks=64`, the default schedule uses 32 dense recent lags
+    (`0..31`) and 32 geometric lags out to `context_max_lag_steps`. The temporal
+    model receives them oldest-to-newest after `context_end_offsets` reverses
+    this ascending tuple.
+    """
+
+    n = int(config.context_chunks)
+    if n <= 0:
+        raise ValueError("context_chunks must be positive.")
+    if str(config.context_lag_schedule) == "consecutive":
+        return tuple(range(n))
+
+    max_lag = max(n - 1, int(config.context_max_lag_steps))
+    dense_count = max(1, min(n, int(round(n * float(config.context_dense_fraction)))))
+    dense = list(range(dense_count))
+    tail_count = n - dense_count
+    if tail_count <= 0:
+        return tuple(dense[:n])
+
+    start = dense_count
+    selected: set[int] = set(dense)
+    if tail_count == 1:
+        selected.add(max_lag)
+    else:
+        ratio = (max_lag / max(1, start)) ** (1.0 / max(1, tail_count - 1))
+        for idx in range(tail_count):
+            raw = start * (ratio**idx)
+            selected.add(max(start, min(max_lag, int(round(raw)))))
+
+    if len(selected) < n:
+        fill_missing_lags(selected, start=start, max_lag=max_lag, target_count=n)
+    if len(selected) > n:
+        dense_set = set(dense)
+        tail = sorted(value for value in selected if value not in dense_set)
+        tail = choose_evenly_spaced(tail, n - dense_count)
+        selected = set(dense) | set(tail)
+    return tuple(sorted(selected))
+
+
+def fill_missing_lags(selected: set[int], *, start: int, max_lag: int, target_count: int) -> None:
+    candidates = [value for value in range(start, max_lag + 1) if value not in selected]
+    if not candidates:
+        return
+    need = target_count - len(selected)
+    for value in choose_evenly_spaced(candidates, need):
+        selected.add(value)
+
+
+def choose_evenly_spaced(values: list[int], count: int) -> list[int]:
+    if count <= 0:
+        return []
+    if count >= len(values):
+        return list(values)
+    if count == 1:
+        return [values[-1]]
+    positions = np.linspace(0, len(values) - 1, count)
+    chosen: list[int] = []
+    used: set[int] = set()
+    for position in positions:
+        index = int(round(float(position)))
+        while index in used and index + 1 < len(values):
+            index += 1
+        while index in used and index > 0:
+            index -= 1
+        used.add(index)
+        chosen.append(values[index])
+    return sorted(chosen)
 
 
 def encode_window_or_raise(rows: np.ndarray, start: int, end: int) -> tuple[np.ndarray, np.ndarray]:

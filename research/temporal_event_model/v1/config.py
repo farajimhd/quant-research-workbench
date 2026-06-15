@@ -20,9 +20,12 @@ class DataConfig:
     validation_index_table: str = "validation_2026"
     tickers: tuple[str, ...] = ("ALL",)
     events_per_chunk: int = 128
-    context_chunks: int = 16
+    context_chunks: int = 64
     target_chunks: int = 1
     window_days: int = 15
+    context_lag_schedule: str = "dense_geometric"
+    context_dense_fraction: float = 0.50
+    context_max_lag_steps: int = 512
     train_stride_choices: tuple[int, ...] = (16, 32, 64, 128)
     validation_stride_choices: tuple[int, ...] = (16, 32, 64, 128)
     origin_stride_events: int = 1

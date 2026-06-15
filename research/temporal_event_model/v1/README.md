@@ -20,21 +20,43 @@ For training, the loader repeatedly:
 4. samples one stride from `[16, 32, 64, 128]`,
 5. rolls every valid origin into context/target chunks.
 
-For origin event `t`, with `events_per_chunk=128`, `context_chunks=16`, and
-stride `s`:
+For origin event `t`, with `events_per_chunk=128`, `context_chunks=N`
+(`64` by default), and stride `s`, the model receives `N` already-rolled event
+chunks. If stride is `1`, this matches the direct rolling execution:
 
 ```text
-context[0]  = oldest chunk ending at t - 15*s
+events 1,2,3,4       -> e1 ending at 4
+events 2,3,4,5       -> e2 ending at 5
+events 3,4,5,6       -> e3 ending at 6
 ...
-context[15] = current chunk ending at t
+```
+
+At origin `t`, v1 chooses which cached `e` embeddings to pass to the temporal
+model using lag steps. The default schedule is `dense_geometric`:
+
+```text
+first half: dense recent lags 0,1,2,...
+second half: geometric older lags out to context_max_lag_steps
+chunk_end = t - lag_step * stride
+```
+
+For `N=64`, the default uses 32 dense recent lags and 32 geometric older lags
+out to `context_max_lag_steps=512`. Chunks are ordered oldest-to-newest before
+being sent to the temporal transformer. Use `--context-lag-schedule consecutive`
+to reproduce the old contiguous behavior.
+
+```text
+context[0]  = oldest selected chunk
+...
+context[N-1] = current chunk ending at t
 target[0]   = next chunk, events t+1 ... t+128
 ```
 
 Batch shapes:
 
 ```text
-context_header_uint8: [B, 16, 14]
-context_events_uint8: [B, 16, 128, 16]
+context_header_uint8: [B, 64, 14]
+context_events_uint8: [B, 64, 128, 16]
 target_header_uint8:  [B, 1, 14]
 target_events_uint8:  [B, 1, 128, 16]
 ```

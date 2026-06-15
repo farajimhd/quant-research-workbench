@@ -61,6 +61,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--context-chunks", type=int, default=data_defaults.context_chunks)
     parser.add_argument("--target-chunks", type=int, default=data_defaults.target_chunks)
     parser.add_argument("--window-days", type=int, default=data_defaults.window_days)
+    parser.add_argument("--context-lag-schedule", choices=("dense_geometric", "consecutive"), default=data_defaults.context_lag_schedule)
+    parser.add_argument("--context-dense-fraction", type=float, default=data_defaults.context_dense_fraction)
+    parser.add_argument("--context-max-lag-steps", type=int, default=data_defaults.context_max_lag_steps)
     parser.add_argument("--train-stride-choices", default="16,32,64,128")
     parser.add_argument("--validation-stride-choices", default="16,32,64,128")
     parser.add_argument("--origin-stride-events", type=int, default=data_defaults.origin_stride_events)
@@ -140,7 +143,9 @@ def main(argv: list[str] | None = None) -> None:
     print(
         "Temporal input: "
         f"context=[B,{config.data.context_chunks},14] + [B,{config.data.context_chunks},{config.data.events_per_chunk},16], "
-        f"target=[B,{config.data.target_chunks},14] + [B,{config.data.target_chunks},{config.data.events_per_chunk},16]",
+        f"target=[B,{config.data.target_chunks},14] + [B,{config.data.target_chunks},{config.data.events_per_chunk},16] "
+        f"lag_schedule={config.data.context_lag_schedule} dense_fraction={config.data.context_dense_fraction:.2f} "
+        f"max_lag_steps={config.data.context_max_lag_steps}",
         flush=True,
     )
     event_encoder = build_event_encoder(config.encoder, events_per_chunk=config.data.events_per_chunk, device=device)
@@ -295,6 +300,9 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         context_chunks=args.context_chunks,
         target_chunks=args.target_chunks,
         window_days=args.window_days,
+        context_lag_schedule=args.context_lag_schedule,
+        context_dense_fraction=args.context_dense_fraction,
+        context_max_lag_steps=args.context_max_lag_steps,
         train_stride_choices=parse_int_tuple(args.train_stride_choices),
         validation_stride_choices=parse_int_tuple(args.validation_stride_choices),
         origin_stride_events=args.origin_stride_events,
