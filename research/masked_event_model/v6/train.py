@@ -194,6 +194,7 @@ def main(argv: list[str] | None = None) -> None:
         model,
         optimizer,
         scheduler,
+        scaler,
         output_dir,
         fresh_start=args.fresh_start,
         warm_start_checkpoint=Path(args.warm_start_checkpoint) if args.warm_start_checkpoint else None,
@@ -331,7 +332,7 @@ def main(argv: list[str] | None = None) -> None:
                     reporter=reporter,
                     failure_debug_dir=failure_debug_dir,
                 )
-            checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), force=True)
+            checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args, scaler=scaler), force=True)
         finally:
             checkpointer.close()
         if wandb_run is not None and reporter is not None:
@@ -436,7 +437,7 @@ def train_precomputed_epochs(
                 reporter=reporter,
                 force_validation=run_validation,
             )
-            checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), train_metrics=metrics, val_metrics=val_metrics)
+            checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args, scaler=scaler), train_metrics=metrics, val_metrics=val_metrics)
         epoch_metrics = {
             "train/epoch": float(epoch),
             "train/epoch_seconds": time.perf_counter() - epoch_started,
@@ -548,7 +549,7 @@ def train_sample_cache_epochs(
                 reporter=reporter,
                 force_validation=run_validation,
             )
-            checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), train_metrics=metrics, val_metrics=val_metrics)
+            checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args, scaler=scaler), train_metrics=metrics, val_metrics=val_metrics)
         epoch_metrics = {
             "train/epoch": float(epoch),
             "train/epoch_seconds": time.perf_counter() - epoch_started,
@@ -612,7 +613,7 @@ def train_streaming_loader(
             metric_logger=metric_logger,
             reporter=reporter,
         )
-        checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args), train_metrics=metrics, val_metrics=val_metrics)
+        checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args, scaler=scaler), train_metrics=metrics, val_metrics=val_metrics)
     return global_step
 
 
@@ -691,21 +692,11 @@ def run_training_step(
         backward_seconds = time.perf_counter() - backward_started
         optimizer_started = time.perf_counter()
         scaler.unscale_(optimizer)
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            model.parameters(),
-            config.train.grad_clip_norm,
-            error_if_nonfinite=True,
-        )
         old_scale = scaler.get_scale()
-        scaler.step(optimizer)
-        scaler.update()
-        amp_step_skipped = bool(scaler.is_enabled() and scaler.get_scale() < old_scale)
-        if scheduler is not None and not amp_step_skipped:
-            scheduler.step(global_step)
-        nonfinite_parameter = find_first_nonfinite_parameter(model)
-        if nonfinite_parameter is not None:
+        nonfinite_gradient = find_first_nonfinite_gradient(model)
+        if nonfinite_gradient is not None and scaler.is_enabled():
             debug_path = save_failure_debug_bundle(
-                reason="nonfinite_model_parameter",
+                reason="amp_nonfinite_gradient",
                 failure_debug_dir=failure_debug_dir,
                 model=model,
                 optimizer=optimizer,
@@ -717,9 +708,59 @@ def run_training_step(
                 batch=batch,
                 masks=masks,
                 output=output,
-                metrics=result.metrics | {"debug/nonfinite_parameter": nonfinite_parameter},
+                metrics=result.metrics | {"debug/nonfinite_gradient": nonfinite_gradient, "debug/amp_old_scale": old_scale},
             )
-            raise FloatingPointError(f"Non-finite model parameter after optimizer step: {nonfinite_parameter}. Debug bundle: {debug_path}")
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+            grad_norm = result.loss.new_tensor(float("nan"))
+            amp_step_skipped = True
+        elif nonfinite_gradient is not None:
+            debug_path = save_failure_debug_bundle(
+                reason="nonfinite_gradient",
+                failure_debug_dir=failure_debug_dir,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                config=config,
+                args=args,
+                global_step=global_step,
+                batch=batch,
+                masks=masks,
+                output=output,
+                metrics=result.metrics | {"debug/nonfinite_gradient": nonfinite_gradient},
+            )
+            raise FloatingPointError(f"Non-finite gradient without AMP recovery path: {nonfinite_gradient}. Debug bundle: {debug_path}")
+        else:
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                config.train.grad_clip_norm,
+                error_if_nonfinite=True,
+            )
+            scaler.step(optimizer)
+            scaler.update()
+            amp_step_skipped = bool(scaler.is_enabled() and scaler.get_scale() < old_scale)
+            if scheduler is not None and not amp_step_skipped:
+                scheduler.step(global_step)
+            nonfinite_parameter = find_first_nonfinite_parameter(model)
+            if nonfinite_parameter is not None:
+                debug_path = save_failure_debug_bundle(
+                    reason="nonfinite_model_parameter",
+                    failure_debug_dir=failure_debug_dir,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler,
+                    config=config,
+                    args=args,
+                    global_step=global_step,
+                    batch=batch,
+                    masks=masks,
+                    output=output,
+                    metrics=result.metrics | {"debug/nonfinite_parameter": nonfinite_parameter},
+                )
+                raise FloatingPointError(f"Non-finite model parameter after optimizer step: {nonfinite_parameter}. Debug bundle: {debug_path}")
     except Exception as exc:
         if "Debug bundle:" in str(exc):
             raise
@@ -830,6 +871,7 @@ def save_failure_debug_bundle(
         "config": dataclass_tree(config),
         "args": vars(args) if args is not None else {},
         "model": to_cpu_debug(model.state_dict()),
+        "gradients": to_cpu_debug({name: parameter.grad for name, parameter in model.named_parameters() if parameter.grad is not None}),
         "optimizer": to_cpu_debug(optimizer.state_dict()),
         "scheduler": to_cpu_debug(scheduler.state_dict()) if scheduler is not None else None,
         "scaler": to_cpu_debug(scaler.state_dict()),
@@ -883,6 +925,14 @@ def find_first_nonfinite_parameter(model: torch.nn.Module) -> str | None:
     with torch.no_grad():
         for name, parameter in model.named_parameters():
             if not bool(torch.isfinite(parameter).all()):
+                return name
+    return None
+
+
+def find_first_nonfinite_gradient(model: torch.nn.Module) -> str | None:
+    with torch.no_grad():
+        for name, parameter in model.named_parameters():
+            if parameter.grad is not None and not bool(torch.isfinite(parameter.grad).all()):
                 return name
     return None
 
@@ -1252,6 +1302,7 @@ def maybe_resume_or_warm_start(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    scaler: torch.amp.GradScaler,
     output_dir: Path,
     *,
     fresh_start: bool,
@@ -1265,6 +1316,10 @@ def maybe_resume_or_warm_start(
         optimizer.load_state_dict(checkpoint["optimizer"])
         if scheduler is not None and checkpoint.get("scheduler") is not None:
             scheduler.load_state_dict(checkpoint["scheduler"])
+        if checkpoint.get("scaler") is not None:
+            scaler.load_state_dict(checkpoint["scaler"])
+        else:
+            print("WARN resumed checkpoint has no AMP scaler state; starting with a fresh GradScaler.", flush=True)
         print(f"Resumed checkpoint: {path} step={checkpoint.get('step', 0)}", flush=True)
         return int(checkpoint.get("step", 0))
     if warm_start_checkpoint is not None and str(warm_start_checkpoint) and warm_start_checkpoint.exists():
@@ -1274,6 +1329,10 @@ def maybe_resume_or_warm_start(
             optimizer.load_state_dict(checkpoint["optimizer"])
             for group in optimizer.param_groups:
                 group["lr"] = group.get("initial_lr", group["lr"])
+            if checkpoint.get("scaler") is not None:
+                scaler.load_state_dict(checkpoint["scaler"])
+            else:
+                print("WARN warm-start checkpoint has no AMP scaler state; starting with a fresh GradScaler.", flush=True)
         print(
             f"Warm-started model from checkpoint: {warm_start_checkpoint} "
             f"source_step={checkpoint.get('step', 0)} load_optimizer={warm_start_load_optimizer}",
@@ -1304,8 +1363,25 @@ def clean_run_output_dir(output_dir: Path, *, keep_paths: list[Path] | None = No
             shutil.rmtree(child)
 
 
-def checkpoint_payload(model: torch.nn.Module, optimizer: torch.optim.Optimizer, scheduler: torch.optim.lr_scheduler.LRScheduler | None, step: int, config: ExperimentConfig, args: argparse.Namespace) -> dict[str, Any]:
-    return {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict() if scheduler is not None else None, "step": step, "config": dataclass_tree(config), "args": vars(args)}
+def checkpoint_payload(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
+    step: int,
+    config: ExperimentConfig,
+    args: argparse.Namespace,
+    *,
+    scaler: torch.amp.GradScaler | None = None,
+) -> dict[str, Any]:
+    return {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler is not None else None,
+        "scaler": scaler.state_dict() if scaler is not None else None,
+        "step": step,
+        "config": dataclass_tree(config),
+        "args": vars(args),
+    }
 
 
 def resolve_output_dir(config: ExperimentConfig, args: argparse.Namespace) -> Path:
