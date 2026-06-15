@@ -83,11 +83,11 @@ def masked_event_bce_loss(
     target_bytes = output.target_events_uint8.long()
     target_bits = unpack_bits(target_bytes).to(dtype=logits.dtype, device=logits.device)
     raw_semantic_weights = SEMANTIC_EVENT_BIT_WEIGHTS.to(device=logits.device, dtype=logits.dtype).view(1, 1, 16, 8)
-    # Keep the objective scale comparable to plain BCE while preserving the
-    # relative priority of high-significance and categorical bits. Without this
-    # normalization the average event loss is multiplied by ~80, which can push
-    # AMP/fp16 gradients and decoder activations into overflow.
-    semantic_weight_normalizer = raw_semantic_weights.mean()
+    # Scale each semantic bit by the total numeric byte significance. For a
+    # numeric byte this makes the eight bit weights sum to one:
+    # (1 + 2 + ... + 128) / 255 = 1. Packed/categorical bytes keep max
+    # per-bit emphasis without multiplying the objective by the raw bit values.
+    semantic_weight_normalizer = BYTE_VALUE_BIT_WEIGHTS.to(device=logits.device, dtype=logits.dtype).sum()
     semantic_weights = raw_semantic_weights / semantic_weight_normalizer
     if logits.is_cuda:
         with torch.amp.autocast("cuda", enabled=False):
