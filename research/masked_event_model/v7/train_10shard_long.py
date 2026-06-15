@@ -66,7 +66,7 @@ DEFAULTS: dict[str, Any] = {
     "num_workers": 0,
     "progress_layout": "auto",
     "device": "cuda",
-    "amp": False,
+    "amp": True,
     "compile_model": False,
     "wandb_project": "June2026-event-token-mae-v7",
     "wandb_entity": "mehdifaraji",
