@@ -155,6 +155,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default="online")
     parser.add_argument("--wandb-init-timeout", type=int, default=60)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=train_defaults.amp)
+    parser.add_argument("--amp-initial-scale", type=float, default=train_defaults.amp_initial_scale)
+    parser.add_argument("--amp-overflow-fatal-threshold", type=int, default=train_defaults.amp_overflow_fatal_threshold)
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=train_defaults.compile_model)
     parser.add_argument("--warm-start-checkpoint", default="")
     parser.add_argument("--warm-start-load-optimizer", action=argparse.BooleanOptionalAction, default=False)
@@ -190,7 +192,11 @@ def main(argv: list[str] | None = None) -> None:
     train_model = maybe_compile_model(model, config.train.compile_model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay)
     scheduler = build_scheduler(optimizer, config.train)
-    scaler = torch.amp.GradScaler("cuda", enabled=config.train.amp and device.type == "cuda")
+    scaler = torch.amp.GradScaler(
+        "cuda",
+        init_scale=max(1.0, float(config.train.amp_initial_scale)),
+        enabled=config.train.amp and device.type == "cuda",
+    )
     global_step = maybe_resume_or_warm_start(
         model,
         optimizer,
@@ -696,26 +702,39 @@ def run_training_step(
         old_scale = scaler.get_scale()
         nonfinite_gradient = find_first_nonfinite_gradient(model)
         if nonfinite_gradient is not None and scaler.is_enabled():
-            debug_path = save_failure_debug_bundle(
-                reason="amp_nonfinite_gradient",
-                failure_debug_dir=failure_debug_dir,
-                model=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                scaler=scaler,
-                config=config,
-                args=args,
-                global_step=global_step,
-                batch=batch,
-                masks=masks,
-                output=output,
-                metrics=result.metrics | {"debug/nonfinite_gradient": nonfinite_gradient, "debug/amp_old_scale": old_scale},
-            )
+            amp_overflow_streak = int(getattr(scaler, "_qresearch_amp_overflow_streak", 0)) + 1
+            setattr(scaler, "_qresearch_amp_overflow_streak", amp_overflow_streak)
+            scaler.update(new_scale=max(1.0, float(old_scale) * 0.5))
+            amp_step_skipped = True
+            grad_norm = torch.tensor(float("nan"), device=device)
+            if amp_overflow_streak >= max(1, int(config.train.amp_overflow_fatal_threshold)):
+                debug_path = save_failure_debug_bundle(
+                    reason="amp_repeated_nonfinite_gradient",
+                    failure_debug_dir=failure_debug_dir,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=scaler,
+                    config=config,
+                    args=args,
+                    global_step=global_step,
+                    batch=batch,
+                    masks=masks,
+                    output=output,
+                    metrics=result.metrics
+                    | {
+                        "debug/nonfinite_gradient": nonfinite_gradient,
+                        "debug/amp_old_scale": old_scale,
+                        "debug/amp_new_scale": scaler.get_scale(),
+                        "debug/amp_overflow_streak": amp_overflow_streak,
+                    },
+                )
+                raise FloatingPointError(
+                    "AMP repeatedly produced non-finite gradients at "
+                    f"step={global_step}: {nonfinite_gradient}. "
+                    f"streak={amp_overflow_streak}. Debug bundle: {debug_path}"
+                )
             optimizer.zero_grad(set_to_none=True)
-            raise FloatingPointError(
-                "AMP produced a non-finite gradient at "
-                f"step={global_step}: {nonfinite_gradient}. Debug bundle: {debug_path}"
-            )
         elif nonfinite_gradient is not None:
             debug_path = save_failure_debug_bundle(
                 reason="nonfinite_gradient",
@@ -734,6 +753,7 @@ def run_training_step(
             )
             raise FloatingPointError(f"Non-finite gradient without AMP recovery path: {nonfinite_gradient}. Debug bundle: {debug_path}")
         else:
+            setattr(scaler, "_qresearch_amp_overflow_streak", 0)
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(),
                 config.train.grad_clip_norm,
@@ -794,6 +814,8 @@ def run_training_step(
             "train/samples_per_second": batch_size / max(step_seconds, 1e-9),
             "train/grad_norm": float(grad_norm.detach().cpu()),
             "train/amp_step_skipped": float(amp_step_skipped),
+            "train/amp_scale": float(scaler.get_scale()) if scaler.is_enabled() else 0.0,
+            "train/amp_overflow_streak": float(getattr(scaler, "_qresearch_amp_overflow_streak", 0)),
             "profile/batch_size": batch_size,
         }
     )
@@ -1074,7 +1096,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         ),
         model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
         losses=LossConfig(),
-        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, amp=args.amp, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
+        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, amp=args.amp, amp_initial_scale=args.amp_initial_scale, amp_overflow_fatal_threshold=args.amp_overflow_fatal_threshold, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )
 
 

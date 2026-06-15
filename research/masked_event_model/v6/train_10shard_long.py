@@ -71,6 +71,8 @@ DEFAULTS: dict[str, Any] = {
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
     "wandb_run_name": "v6-medium-newdecoder-emb32-bs4096-10shards-guarded",
+    "amp_initial_scale": 1024.0,
+    "amp_overflow_fatal_threshold": 8,
     "warm_start_checkpoint": "",
 }
 
@@ -319,6 +321,11 @@ def print_plan(
         f"logging_steps={values['logging_steps']} profile_first_steps={values['profile_first_steps']} "
         f"profile_training_every_steps={values['profile_training_every_steps']} "
         f"checkpoint_latest_steps={values['checkpoint_latest_steps']} checkpoint_archive_steps={values['checkpoint_archive_steps']}",
+        flush=True,
+    )
+    print(
+        f"amp_initial_scale={values['amp_initial_scale']} "
+        f"amp_overflow_fatal_threshold={values['amp_overflow_fatal_threshold']}",
         flush=True,
     )
     print(f"wandb_project={values['wandb_project']} run={values['wandb_run_name']} mode={values['wandb_mode']}", flush=True)
