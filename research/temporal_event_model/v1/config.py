@@ -104,4 +104,3 @@ class ExperimentConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     losses: LossConfig = field(default_factory=LossConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
-

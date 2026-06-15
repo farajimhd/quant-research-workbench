@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--max-steps", type=int, default=DEFAULTS["max_steps"])
     parser.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
-    parser.add_argument("--encoder-version", choices=("v6", "v7"), default=DEFAULTS["encoder_version"])
+    parser.add_argument("--encoder-version", choices=("v6", "v7", "v8"), default=DEFAULTS["encoder_version"])
     parser.add_argument("--encoder-checkpoint", default=DEFAULTS["encoder_checkpoint"])
     parser.add_argument("--wandb-project", default=DEFAULTS["wandb_project"])
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default=DEFAULTS["wandb_mode"])
@@ -92,4 +92,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

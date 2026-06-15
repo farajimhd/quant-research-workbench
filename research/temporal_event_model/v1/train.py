@@ -70,7 +70,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--validation-batches-per-block", type=int, default=data_defaults.validation_batches_per_block)
     parser.add_argument("--clickhouse-max-threads", type=int, default=data_defaults.clickhouse_max_threads)
     parser.add_argument("--clickhouse-max-memory-usage", default=data_defaults.clickhouse_max_memory_usage)
-    parser.add_argument("--encoder-version", choices=("v6", "v7"), default=encoder_defaults.version)
+    parser.add_argument("--encoder-version", choices=("v6", "v7", "v8"), default=encoder_defaults.version)
     parser.add_argument("--encoder-checkpoint", default=str(encoder_defaults.checkpoint))
     parser.add_argument("--freeze-encoder", action=argparse.BooleanOptionalAction, default=encoder_defaults.freeze)
     parser.add_argument("--encoder-d-byte", type=int, default=encoder_defaults.d_byte)

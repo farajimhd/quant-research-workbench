@@ -44,8 +44,8 @@ start from `validation_2026`. It does not resample on each validation call.
 
 ## Model
 
-The model uses a pretrained v6/v7 event encoder to turn each compact event chunk
-into one embedding. The encoder is frozen by default.
+The model uses a pretrained v6/v7/v8 event encoder to turn each compact event
+chunk into one embedding. The encoder is frozen by default.
 
 ```text
 [B, K, chunk] -> flatten -> event_encoder -> [B, K, embedding_dim]
@@ -78,3 +78,24 @@ python research\temporal_event_model\v1\run_train.py --encoder-version v7 --enco
 
 Use `--print-only` to show the equivalent command without running it.
 
+## Paired v6/v8 Encoder Comparison
+
+To compare downstream temporal learning with the same temporal v1 setup and only
+swap the frozen event encoder checkpoint:
+
+```powershell
+python research\temporal_event_model\v1\train_compare_v6_v8_encoders.py
+```
+
+The paired launcher defaults to:
+
+```text
+v6 checkpoint: D:\TradingML\runtimes\masked_event_model\v6\pretrain\v6-semantic-sumdivbatch-emb32-bs4096-10shards\checkpoints\checkpoint_step_000020340.pt
+v8 checkpoint: D:\TradingML\runtimes\masked_event_model\v8\pretrain\v8-semantic-sumdivbatch-emb32-bs4096-10shards-fixedmaskedratio\checkpoints\checkpoint_step_000020340.pt
+W&B project: June2026-temporal-v1-v6-v8-encoder-compare
+```
+
+It forces both encoders to the matching masked-event checkpoint architecture:
+`d_byte=40`, `d_model=256`, `embedding_dim=32`, `heads=8`,
+`encoder_layers=10`, `decoder_layers=4`, `ffn_mult=4`, and `dropout=0.08`.
+Use `--print-only` to inspect both exact training commands before running.

@@ -110,11 +110,11 @@ class TemporalEventPredictor(nn.Module):
 
 
 def build_event_encoder(config: EncoderConfig, *, events_per_chunk: int, device: torch.device) -> nn.Module:
-    """Build and optionally initialize a v6/v7 standalone event encoder."""
+    """Build and optionally initialize a standalone masked-event encoder."""
 
     version = config.version.lower().strip()
-    if version not in {"v6", "v7"}:
-        raise ValueError(f"Unsupported encoder version {config.version!r}; expected v6 or v7.")
+    if version not in {"v6", "v7", "v8"}:
+        raise ValueError(f"Unsupported encoder version {config.version!r}; expected v6, v7, or v8.")
     model_module = importlib.import_module(f"research.masked_event_model.{version}.model")
     config_module = importlib.import_module(f"research.masked_event_model.{version}.config")
     encoder_model_config = config_module.ModelConfig(
@@ -144,4 +144,3 @@ def load_pretrained_autoencoder(model: nn.Module, checkpoint: Path) -> None:
     if not isinstance(state, dict):
         raise RuntimeError(f"Checkpoint {checkpoint} does not contain a model state dict.")
     model.load_state_dict(state, strict=False)
-
