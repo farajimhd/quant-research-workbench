@@ -98,7 +98,7 @@ def masked_event_bce_loss(
                 weight=semantic_weights.float(),
                 reduction="none",
             )
-            loss = weighted_loss_terms.sum(dim=(-1, -2)).mean()
+            loss = weighted_loss_terms.sum()
     else:
         unweighted_loss = F.binary_cross_entropy_with_logits(logits, target_bits)
         weighted_loss_terms = F.binary_cross_entropy_with_logits(
@@ -107,7 +107,7 @@ def masked_event_bce_loss(
             weight=semantic_weights,
             reduction="none",
         )
-        loss = weighted_loss_terms.sum(dim=(-1, -2)).mean()
+        loss = weighted_loss_terms.sum()
     loss = loss * float(config.event_weight)
 
     metrics_started = time.perf_counter()
