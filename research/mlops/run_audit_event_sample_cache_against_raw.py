@@ -15,7 +15,7 @@ DEFAULTS: dict[str, Any] = {
     "events_table": "events",
     "quote_table": "quotes",
     "trade_table": "trades",
-    "clean_mode": "strict",
+    "clean_mode": "issue_flags_zero",
     "max_threads": 8,
     "max_memory_usage": "80G",
 }
