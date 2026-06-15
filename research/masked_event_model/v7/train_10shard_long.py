@@ -66,6 +66,7 @@ DEFAULTS: dict[str, Any] = {
     "num_workers": 0,
     "progress_layout": "auto",
     "device": "cuda",
+    "amp": False,
     "compile_model": False,
     "wandb_project": "June2026-event-token-mae-v7",
     "wandb_entity": "mehdifaraji",
@@ -324,7 +325,7 @@ def print_plan(
         flush=True,
     )
     print(
-        f"amp_initial_scale={values['amp_initial_scale']} "
+        f"amp={values['amp']} amp_initial_scale={values['amp_initial_scale']} "
         f"amp_overflow_fatal_threshold={values['amp_overflow_fatal_threshold']}",
         flush=True,
     )
