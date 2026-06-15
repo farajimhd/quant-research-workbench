@@ -98,7 +98,7 @@ def masked_event_bce_loss(
                 weight=semantic_weights.float(),
                 reduction="none",
             )
-            loss = weighted_loss_terms.sum()
+            loss = weighted_loss_terms.sum(dim=(-1, -2)).mean()
     else:
         unweighted_loss = F.binary_cross_entropy_with_logits(logits, target_bits)
         weighted_loss_terms = F.binary_cross_entropy_with_logits(
@@ -107,7 +107,7 @@ def masked_event_bce_loss(
             weight=semantic_weights,
             reduction="none",
         )
-        loss = weighted_loss_terms.sum()
+        loss = weighted_loss_terms.sum(dim=(-1, -2)).mean()
     loss = loss * float(config.event_weight)
 
     metrics_started = time.perf_counter()
@@ -118,6 +118,7 @@ def masked_event_bce_loss(
         "pretrain/loss_event_semantic_raw_weight_mean": float(raw_semantic_weights.mean().detach().cpu()),
         "pretrain/loss_event_semantic_normalizer": float(semantic_weight_normalizer.detach().cpu()),
         "pretrain/loss_event_weighted_terms": float(weighted_loss_terms.numel()),
+        "pretrain/loss_event_weighted_terms_per_event": float(weighted_loss_terms.shape[-1] * weighted_loss_terms.shape[-2]),
         "mask/event_mask_ratio_pct": float(output.actual_mask_ratio * 100.0),
         "mask/event_requested_mask_ratio_pct": float(output.requested_mask_ratio * 100.0),
         "mask/event_visible_events": float(output.visible_event_count),
