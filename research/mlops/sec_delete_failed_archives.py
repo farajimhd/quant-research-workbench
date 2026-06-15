@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
+import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
@@ -60,6 +60,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--status", default="failed", help="archive_summary status to delete. Default: failed.")
     parser.add_argument("--expected-count", type=int, default=0, help="Abort if the selected row count differs from this value.")
     parser.add_argument("--execute", action="store_true", help="Actually delete files. Without this flag the script is a dry-run.")
+    parser.add_argument(
+        "--windows-fix-acl",
+        action="store_true",
+        help=(
+            "On Windows, if deletion is denied, clear the read-only attribute and grant the "
+            "current user full control on the exact target file, then retry deletion."
+        ),
+    )
+    parser.add_argument(
+        "--windows-take-ownership",
+        action="store_true",
+        help=(
+            "With --windows-fix-acl, run takeown on the exact target file before granting "
+            "ACL rights. This usually requires an elevated terminal."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -109,6 +125,7 @@ def main() -> None:
         candidate_bytes += int(row.get("archive_bytes") or 0)
         action = "dry_run"
         error = ""
+        acl_actions: list[dict[str, Any]] = []
 
         if not exists_before:
             missing_count += 1
@@ -116,7 +133,25 @@ def main() -> None:
         elif args.execute:
             try:
                 target_path.unlink()
-            except Exception as exc:  # pragma: no cover - depends on local ACL/runtime
+            except PermissionError as exc:  # pragma: no cover - depends on local ACL/runtime
+                error = repr(exc)
+                if args.windows_fix_acl:
+                    acl_actions = repair_windows_file_acl(target_path, take_ownership=bool(args.windows_take_ownership))
+                    try:
+                        target_path.unlink()
+                    except Exception as retry_exc:  # pragma: no cover - depends on local ACL/runtime
+                        error_count += 1
+                        action = "error"
+                        error = f"{error}; retry_after_acl={retry_exc!r}"
+                    else:
+                        deleted_count += 1
+                        deleted_bytes += size_before
+                        action = "deleted_after_acl"
+                        error = ""
+                else:
+                    error_count += 1
+                    action = "error"
+            except Exception as exc:  # pragma: no cover - depends on local runtime
                 error_count += 1
                 action = "error"
                 error = repr(exc)
@@ -139,6 +174,7 @@ def main() -> None:
                 "exists_before": exists_before,
                 "exists_after": target_path.exists(),
                 "action": action,
+                "acl_actions": acl_actions,
                 "error": error,
             }
         )
@@ -155,6 +191,8 @@ def main() -> None:
         "created_at_utc": datetime.now(UTC).isoformat(),
         "script": str(Path(__file__).resolve()),
         "execute": bool(args.execute),
+        "windows_fix_acl": bool(args.windows_fix_acl),
+        "windows_take_ownership": bool(args.windows_take_ownership),
         "archive_summary_jsonl": str(summary_path),
         "source_archive_root": args.source_archive_root_win,
         "target_archive_root": str(archive_root_resolved),
@@ -272,6 +310,37 @@ def ensure_under_root(path: Path, root: Path) -> None:
         raise SystemExit(f"refusing target outside archive root: {path}") from exc
     if common != root_norm:
         raise SystemExit(f"refusing target outside archive root: {path}")
+
+
+def repair_windows_file_acl(path: Path, take_ownership: bool) -> list[dict[str, Any]]:
+    if os.name != "nt":
+        return [{"command": "windows_acl_repair", "returncode": 1, "stderr": "not running on Windows"}]
+
+    identity = current_windows_identity()
+    actions: list[dict[str, Any]] = []
+    actions.append(run_command(["attrib", "-R", str(path)]))
+    if take_ownership:
+        actions.append(run_command(["takeown", "/F", str(path)]))
+    actions.append(run_command(["icacls", str(path), "/grant", f"{identity}:F"]))
+    return actions
+
+
+def current_windows_identity() -> str:
+    username = os.environ.get("USERNAME") or os.environ.get("USER") or "Users"
+    domain = os.environ.get("USERDOMAIN", "")
+    if domain:
+        return f"{domain}\\{username}"
+    return username
+
+
+def run_command(command: list[str]) -> dict[str, Any]:
+    completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return {
+        "command": command,
+        "returncode": completed.returncode,
+        "stdout_tail": completed.stdout[-2000:],
+        "stderr_tail": completed.stderr[-2000:],
+    }
 
 
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
