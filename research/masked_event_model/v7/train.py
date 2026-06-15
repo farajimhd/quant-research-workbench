@@ -154,6 +154,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wandb-run-name", default="")
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default="online")
     parser.add_argument("--wandb-init-timeout", type=int, default=60)
+    parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=train_defaults.amp)
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=train_defaults.compile_model)
     parser.add_argument("--warm-start-checkpoint", default="")
     parser.add_argument("--warm-start-load-optimizer", action=argparse.BooleanOptionalAction, default=False)
@@ -813,7 +814,7 @@ def run_training_step(
             }
         )
     if config.train.profile_inference_every_steps > 0 and global_step % config.train.profile_inference_every_steps == 0:
-        metrics.update(profile_encode(model, batch, device))
+        metrics.update(profile_encode(model, batch, device, amp_enabled=config.train.amp))
     return metrics
 
 
@@ -1073,7 +1074,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         ),
         model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
         losses=LossConfig(),
-        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
+        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, amp=args.amp, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )
 
 
@@ -1267,12 +1268,12 @@ def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
     return moved
 
 
-def profile_encode(model: EventTokenMaskedAutoencoder, batch: dict[str, Any], device: torch.device) -> dict[str, float]:
+def profile_encode(model: EventTokenMaskedAutoencoder, batch: dict[str, Any], device: torch.device, *, amp_enabled: bool) -> dict[str, float]:
     was_training = model.training
     model.eval()
     sync_if_cuda(device)
     started = time.perf_counter()
-    with torch.no_grad(), torch.amp.autocast("cuda", enabled=device.type == "cuda"):
+    with torch.no_grad(), torch.amp.autocast("cuda", enabled=amp_enabled and device.type == "cuda"):
         embedding = model.encode(batch["header_uint8"], batch["events_uint8"])
     sync_if_cuda(device)
     elapsed = time.perf_counter() - started
