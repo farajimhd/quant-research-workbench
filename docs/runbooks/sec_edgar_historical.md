@@ -25,7 +25,7 @@ downloaded: 68
 reused: 1,792
 ```
 
-Last targeted validation:
+Previous targeted validation:
 
 ```text
 run_root: D:/market-data/prepared/sec_downloaded_archive_validation/20260615_222736
@@ -34,12 +34,36 @@ failed_archives: 19
 error: EOFError('Compressed file ended before the end-of-stream marker was reached')
 ```
 
+Latest delete/redownload cycle observed on the workstation share:
+
+```text
+delete_report: D:/market-data/prepared/sec_archive_failed_archive_delete/20260616_040725/failed_archive_delete_report.json
+deleted_count: 19
+error_count: 0
+
+redownload_summary: D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_summary_20260616_040809.json
+redownload_manifest: D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_20260616_040809.jsonl
+downloaded: 20
+reused: 1,841
+status: ok
+```
+
+The active validation run selected those 20 downloaded archives:
+
+```text
+run_root: D:/market-data/prepared/sec_downloaded_archive_validation/20260616_135437
+selected_archive_count: 20
+status_at_last_scan: in progress; archive_summary.jsonl was still 0 bytes
+```
+
+Do not start another validation of the same manifest while this workstation process is running.
+
 ## Delete Remaining Failed Archives
 
-Run on the workstation after a validation run reports failures:
+Run on the workstation after a validation run reports failures. Update the paths and expected count to the latest failed validation run:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_delete_failed_archives.py --archive-summary-jsonl D:/market-data/prepared/sec_downloaded_archive_validation/20260615_222736/archive_summary.jsonl --source-archive-root-win D:/market-data/sec_core/daily_archives --archive-root-win D:/market-data/sec_core/daily_archives --expected-count 19 --execute
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_delete_failed_archives.py --archive-summary-jsonl D:/market-data/prepared/sec_downloaded_archive_validation/<validation_run>/archive_summary.jsonl --source-archive-root-win D:/market-data/sec_core/daily_archives --archive-root-win D:/market-data/sec_core/daily_archives --expected-count <failed_archive_count> --execute
 ```
 
 If a local workstation delete raises `PermissionError(13, 'Access is denied')`, first test a simple one-file Python delete. If Windows still denies it, rerun from an elevated terminal with:
@@ -77,6 +101,15 @@ parse_errors=0
 
 Only after this is clean should we build normalized SEC filing text extraction.
 
+For the currently running 20-archive validation, wait for one of these files to appear or update:
+
+```text
+D:/market-data/prepared/sec_downloaded_archive_validation/20260616_135437/aggregate_summary.json
+D:/market-data/prepared/sec_downloaded_archive_validation/20260616_135437/archive_summary.jsonl
+```
+
+If `archive_summary.jsonl` remains 0 bytes while the process is still running, do not infer success or failure from that file.
+
 ## Why We Do Not Rerun Full Discovery
 
 `sec_archive_content_discovery.py` scans every archive and every filing. In the current setup it does not know which archives were already validated. For recovery loops, the targeted validator gives the same gzip/tar parse confidence for only the newly downloaded archives.
@@ -89,4 +122,3 @@ Only after this is clean should we build normalized SEC filing text extraction.
 | First delete attempt failed on backup share. | Share/NTFS did not grant delete rights even though files were readable/writable. | Add exact-file delete report and optional ACL repair mode. |
 | Validator could not find `D:\...` files from laptop. | Manifest paths were workstation-local. | Add manifest-root/archive-root remapping. |
 | 68 redownloads still had 19 corrupt archives. | Some replacement downloads were also truncated. | Repeat targeted delete/redownload/validate loop for only those 19. |
-

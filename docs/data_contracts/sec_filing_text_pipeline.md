@@ -2,6 +2,8 @@
 
 SEC normalized text extraction is the next stage after archive validation succeeds. This contract describes the target output that extraction scripts should produce.
 
+As of the 2026-06-16 ClickHouse check, `q_live.sec_filing_v2`, `q_live.sec_filing_document_v1`, and `q_live.sec_filing_text_v1` exist. `sec_filing_text_v1` has zero rows, so the text contract below is still the target for the next loader.
+
 The raw `.nc.tar.gz` archives remain on disk. ClickHouse should store compact metadata and normalized text, not every raw archive member.
 
 ## Existing Metadata Table: `q_live.sec_filing_v2`
@@ -33,7 +35,16 @@ source_content_sha256 String,
 inserted_at DateTime64(3, 'UTC')
 ```
 
-The accepted timestamp backfill is already handled. Text extraction should update or reload `text_status` only through a controlled loader.
+The accepted timestamp backfill is only partially handled in the current database. Text extraction should not try to repair acceptance timestamps implicitly; that belongs in a separate filing-metadata repair step. Text extraction should update or reload `text_status` only through a controlled loader.
+
+Current observed counts:
+
+```text
+q_live.sec_filing_v2 rows: 16,307,827
+q_live.sec_filing_v2 missing accepted_at_utc: 7,776,709
+q_live.sec_filing_document_v1 rows: 8,417,763
+q_live.sec_filing_text_v1 rows: 0
+```
 
 ## Document Metadata Table: `q_live.sec_filing_document_v1`
 
@@ -140,4 +151,3 @@ Before loading to ClickHouse:
 - no empty `accession_number` or `cik`;
 - primary filing text coverage is measured by form type;
 - sample `10-K`, `10-Q`, `8-K`, `6-K`, proxy, and `EX-99.1` rows are manually inspected.
-

@@ -21,6 +21,15 @@ format: JSONEachRow
 
 The next step is ClickHouse file-ingest preflight, then insert.
 
+ClickHouse verification from the laptop on 2026-06-16 found that these tables do not exist yet:
+
+```text
+q_live.benzinga_news_normalized_v1
+q_live.benzinga_news_file_ingest_manifest_v1
+```
+
+So the normalized JSONEachRow files are present on disk, but the current corpus has not been loaded into ClickHouse.
+
 ## Preflight
 
 Run on the workstation:
@@ -86,6 +95,7 @@ Expected first-pass count is about `2,512,931`, unless the table already contain
 | Preflight raised `manifest columns do not match current Benzinga news table contract`. | The output is a legacy 42-column single-table manifest, while the script expected the newer 34-column event table. | `news_benzinga_clickhouse_file_ingest.py` now honors manifest `clickhouse_columns` and `clickhouse_structure` for legacy output. |
 | It was tempting to rerun normalization. | The normalized parts already exist and are expensive to rebuild. | Start from the manifest above and use file ingest. |
 | Existing docs describe split event/text/url/attachment tables. | That is the future canonical shape, not this completed run. | Load current run into `benzinga_news_normalized_v1`; later convert/split with a controlled migration. |
+| Structure audit reports non-ASCII/mojibake examples. | Historical source text contains encoded characters and some extraction artifacts. | Preserve current legacy text for loading; address text repair in the future canonical migration so the raw lineage remains reproducible. |
 
 ## Future Canonical Path
 
@@ -99,4 +109,3 @@ benzinga_news_attachment_v1
 ```
 
 Do not mix a partially split future corpus with the already-built legacy corpus without a migration plan.
-

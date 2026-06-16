@@ -1,6 +1,6 @@
 # Current Pipeline State
 
-Last updated: 2026-06-16.
+Last updated: 2026-06-16 after scanning the workstation shares from the laptop.
 
 This file records the working state that should be used before proposing new SEC, news, live-trading, or gateway work. It is intentionally operational: run IDs, paths, known issues, and the next command matter more than old plans.
 
@@ -10,9 +10,9 @@ This file records the working state that should be used before proposing new SEC
 | --- | --- | --- |
 | Live trading app | UI and broker/data separation work exists, but historical data cleanup temporarily took priority. | Resume after historical news and SEC ingestion are stable. Keep live trading code separate from semi-auto modules. |
 | `qmd-gateway` | Rust service exists for live Massive trades/quotes, bars, indicators, signal catalog, and ClickHouse batching. | Later: run integration tests against live Massive and ClickHouse. |
-| Benzinga historical news | Enriched news has been normalized into legacy single-table JSONEachRow parts. | Preflight ClickHouse `file()` access, then insert into `q_live.benzinga_news_normalized_v1`. |
-| SEC daily archives | Full discovery found corrupt archives. A targeted re-download/validation loop is active. | Finish deleting/re-downloading the remaining failed archives, then validate only downloaded files. |
-| SEC normalized text | Not implemented yet. Target schema is documented. | Build extractor only after archive validation is clean. |
+| Benzinga historical news | Enriched news has been normalized into legacy single-table JSONEachRow parts. The target ClickHouse table is not present yet. | Preflight ClickHouse `file()` access, then insert into `q_live.benzinga_news_normalized_v1`. |
+| SEC daily archives | Full discovery found corrupt archives. The latest delete/redownload loop completed, and validation of the 20 downloaded archives is currently running on the workstation. | Wait for `20260616_135437` validation to finish; then handle any remaining failures only. |
+| SEC normalized text | Not implemented yet. `q_live.sec_filing_text_v1` exists but currently has zero rows. | Build extractor only after archive validation is clean. |
 
 ## Verified Benzinga News State
 
@@ -44,6 +44,34 @@ pdf_artifact_missing: 6,218
 ```
 
 The output is a legacy 42-column single-table format. It is not the newer split event/text/url/attachment table layout. The ingest script has been updated to accept this legacy manifest contract.
+
+ClickHouse verification from the laptop on 2026-06-16:
+
+```text
+q_live.benzinga_news_normalized_v1: table not found
+q_live.benzinga_news_file_ingest_manifest_v1: table not found
+```
+
+So the normalized files exist on disk, but they have not been loaded into `q_live`.
+
+The structure audit file exists at:
+
+```text
+D:/market-data/prepared/benzinga_news_normalized_rows/20260611_011906/normalized_structure_audit.json
+```
+
+Important audit facts:
+
+```text
+unique_canonical_news_id: 2,512,931
+duplicate_canonical_news_id: 0
+unique_raw_payload_hash: 2,512,931
+duplicate_raw_payload_hash: 0
+unique_text_hash: 2,478,389
+duplicate_text_hash: 34,542
+```
+
+The audit also reports non-ASCII/mojibake examples in text fields. This is not a blocker for loading the current legacy corpus, but it is a known quality issue to address in the future canonical news migration.
 
 ## Verified SEC State
 
@@ -91,7 +119,60 @@ The remaining 19 failures are all:
 EOFError('Compressed file ended before the end-of-stream marker was reached')
 ```
 
-They should be deleted, redownloaded, then validated with the targeted validator. Do not rerun the full 41-hour discovery unless the whole archive corpus changes.
+Those 19 failures were handled by the latest delete/redownload loop below. Do not rerun the full 41-hour discovery unless the whole archive corpus changes.
+
+Latest confirmed delete/redownload loop:
+
+```text
+delete_run: D:/market-data/prepared/sec_archive_failed_archive_delete/20260616_040725/failed_archive_delete_report.json
+deleted_count: 19
+deleted_bytes: 19,860,029,440
+error_count: 0
+
+redownload_summary: D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_summary_20260616_040809.json
+manifest: D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_20260616_040809.jsonl
+status: ok
+date_range: 2019-01-01 through 2026-06-17 exclusive
+archives: 1,861
+reused: 1,841
+downloaded: 20
+bytes_total: 2,640,695,005,932
+wall_seconds: 3,597.054
+```
+
+The 20 downloaded dates are:
+
+```text
+2020-04-22, 2020-04-28, 2020-05-06, 2021-03-26, 2023-02-28,
+2023-03-01, 2023-05-01, 2023-05-08, 2023-05-09, 2023-05-10,
+2023-05-11, 2023-05-15, 2023-11-02, 2024-08-07, 2025-08-04,
+2026-04-07, 2026-04-09, 2026-05-12, 2026-05-28, 2026-06-15
+```
+
+Latest validation run detected on the workstation share:
+
+```text
+run_root: D:/market-data/prepared/sec_downloaded_archive_validation/20260616_135437
+manifest: D:/market-data/prepared/sec_downloaded_archive_validation/20260616_135437/validation_manifest.json
+selected_archive_count: 20
+status: in_progress_or_not_yet_written
+archive_summary.jsonl size at scan time: 0 bytes
+scan_time_local: 2026-06-16T07:39:54-07:00
+```
+
+The user reported this 20-archive validation is executing on the workstation. Treat this run as in-progress until an aggregate summary or non-empty archive summary appears.
+
+Current `q_live` SEC table state from ClickHouse:
+
+```text
+q_live.sec_filing_v2 rows: 16,307,827
+q_live.sec_filing_v2 rows missing accepted_at_utc: 7,776,709
+q_live.sec_filing_v2 accepted_at_utc range: 1994-01-04 00:00:00.000000000 to 2026-05-20 16:16:29.000000000
+q_live.sec_filing_document_v1 rows: 8,417,763
+q_live.sec_filing_text_v1 rows: 0
+```
+
+This means SEC filing/document metadata exists in `q_live`, but normalized filing text has not been populated yet.
 
 ## Issues Encountered And Resolutions
 
@@ -104,4 +185,3 @@ They should be deleted, redownloaded, then validated with the targeted validator
 | 68 replacement archives still had 19 truncated files. | Some redownloads also produced incomplete gzip streams. | Repeat delete/redownload/targeted-validate loop for only the remaining failures. |
 | Benzinga ClickHouse preflight rejected manifest columns. | Normalized output was the older 42-column single-table contract; script expected newer 34-column event table. | Updated `news_benzinga_clickhouse_file_ingest.py` to honor legacy manifest columns and structure. |
 | `research/mlops` is overloaded. | Operational pipelines, research utilities, migration scripts, and runbooks all accumulated in one folder. | New docs define the target repository organization before moving files. |
-

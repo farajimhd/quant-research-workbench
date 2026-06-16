@@ -2,6 +2,8 @@
 
 This is the current legacy normalized Benzinga news contract produced by run `20260611_011906`. It is the table to load before any future split-table migration.
 
+As of the 2026-06-16 laptop-to-workstation check, this contract exists as JSONEachRow files on disk, but `q_live.benzinga_news_normalized_v1` has not been created or loaded in ClickHouse.
+
 ## Table Shape
 
 Engine:
@@ -90,6 +92,23 @@ D:/market-data/prepared/benzinga_news_normalized_rows/20260611_011906/benzinga_n
 
 The manifest declares this schema. The ClickHouse ingest script must use the manifest schema, not the newer split-table code defaults.
 
+The companion audit file is:
+
+```text
+D:/market-data/prepared/benzinga_news_normalized_rows/20260611_011906/normalized_structure_audit.json
+```
+
+Key audit facts:
+
+```text
+rows: 2,512,931
+duplicate_canonical_news_id: 0
+duplicate_raw_payload_hash: 0
+duplicate_text_hash: 34,542
+```
+
+The audit reports non-ASCII/mojibake examples in text fields. Do not silently strip these during the legacy load; any repair should be a later deterministic text-normalization migration with its own version.
+
 ## Future Split Contract
 
 The future canonical schema separates this table into:
@@ -102,4 +121,3 @@ benzinga_news_attachment_v1
 ```
 
 That split is not the current loaded corpus. Do not insert the 42-column files into the 34-column event table.
-
