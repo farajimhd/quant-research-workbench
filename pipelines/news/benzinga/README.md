@@ -14,4 +14,4 @@ Preferred module path:
 python -m pipelines.news.benzinga.news_benzinga_clickhouse_file_ingest --help
 ```
 
-Compatibility scripts remain available under `research/mlops/news_benzinga_*.py` for existing workstation commands.
+Old `research/mlops/news_benzinga_*.py` wrappers are archived under `pipelines/archive/legacy_wrappers/research_mlops/`. Do not use them for new runs.

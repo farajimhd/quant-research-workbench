@@ -28,13 +28,13 @@ The script prints a heartbeat every few seconds while workers are active. Press 
 ## Smoke Test
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_archive_content_discovery.py --artifact-root-win D:/market-data/sec_core --archive-subdir daily_archives --output-root-win D:/market-data/prepared/sec_archive_content_discovery --start-date 2026-06-05 --end-date 2026-06-06 --archive-workers 1 --max-filings-per-archive 50 --sample-limit 50
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_archive_content_discovery.py --artifact-root-win D:/market-data/sec_core --archive-subdir daily_archives --output-root-win D:/market-data/prepared/sec_archive_content_discovery --start-date 2026-06-05 --end-date 2026-06-06 --archive-workers 1 --max-filings-per-archive 50 --sample-limit 50
 ```
 
 ## Broader Sample
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_archive_content_discovery.py --artifact-root-win D:/market-data/sec_core --archive-subdir daily_archives --output-root-win D:/market-data/prepared/sec_archive_content_discovery --start-date 2026-01-01 --end-date 2026-06-11 --archive-workers 4 --max-filings-per-archive 250 --sample-limit 500
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_archive_content_discovery.py --artifact-root-win D:/market-data/sec_core --archive-subdir daily_archives --output-root-win D:/market-data/prepared/sec_archive_content_discovery --start-date 2026-01-01 --end-date 2026-06-11 --archive-workers 4 --max-filings-per-archive 250 --sample-limit 500
 ```
 
 ## Full Discovery
@@ -42,7 +42,7 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 This scans every downloaded archive and every filing inside each archive. It can take a while because it decompresses the SEC daily archives, but it does not duplicate archive storage.
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_archive_content_discovery.py --artifact-root-win D:/market-data/sec_core --archive-subdir daily_archives --output-root-win D:/market-data/prepared/sec_archive_content_discovery --start-date 2019-01-01 --end-date 2026-06-11 --archive-workers 4 --sample-limit 1000
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_archive_content_discovery.py --artifact-root-win D:/market-data/sec_core --archive-subdir daily_archives --output-root-win D:/market-data/prepared/sec_archive_content_discovery --start-date 2019-01-01 --end-date 2026-06-11 --archive-workers 4 --sample-limit 1000
 ```
 
 ## Important Arguments

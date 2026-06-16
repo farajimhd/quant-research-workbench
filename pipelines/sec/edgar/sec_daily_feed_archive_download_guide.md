@@ -43,19 +43,19 @@ If `--start-date` and `--end-date` are omitted, the script downloads all availab
 Dry-run the first five available archive days from the default 2019-to-today range:
 
 ```powershell
-python D:\TradingCodes\quant-research-workbench\research\mlops\sec_daily_feed_archive_download.py --dry-run --limit-days 5 --output-root-win D:/market-data/prepared/sec_daily_feed_archives
+python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_daily_feed_archive_download.py --dry-run --limit-days 5 --output-root-win D:/market-data/prepared/sec_daily_feed_archives
 ```
 
 Download five archive days with the default 429-tolerant settings:
 
 ```powershell
-python D:\TradingCodes\quant-research-workbench\research\mlops\sec_daily_feed_archive_download.py --limit-days 5 --output-root-win D:/market-data/prepared/sec_daily_feed_archives
+python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_daily_feed_archive_download.py --limit-days 5 --output-root-win D:/market-data/prepared/sec_daily_feed_archives
 ```
 
 Download an explicit date range:
 
 ```powershell
-python D:\TradingCodes\quant-research-workbench\research\mlops\sec_daily_feed_archive_download.py --start-date 2026-06-01 --end-date 2026-06-06 --output-root-win D:/market-data/prepared/sec_daily_feed_archives
+python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_daily_feed_archive_download.py --start-date 2026-06-01 --end-date 2026-06-06 --output-root-win D:/market-data/prepared/sec_daily_feed_archives
 ```
 
 ## Full Backfill
@@ -63,13 +63,13 @@ python D:\TradingCodes\quant-research-workbench\research\mlops\sec_daily_feed_ar
 Download all available daily archives from 2019-01-01 through today:
 
 ```powershell
-python D:\TradingCodes\quant-research-workbench\research\mlops\sec_daily_feed_archive_download.py --output-root-win D:/market-data/prepared/sec_daily_feed_archives
+python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_daily_feed_archive_download.py --output-root-win D:/market-data/prepared/sec_daily_feed_archives
 ```
 
 Workstation path:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_daily_feed_archive_download.py --output-root-win D:/market-data/prepared/sec_daily_feed_archives
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_daily_feed_archive_download.py --output-root-win D:/market-data/prepared/sec_daily_feed_archives
 ```
 
 ## Resume Behavior
@@ -94,7 +94,7 @@ Rerun the same command to resume. Existing archives are hashed and marked `reuse
 The default settings are intentionally conservative because daily feed archives can be multi-GB:
 
 ```powershell
-python D:\TradingCodes\quant-research-workbench\research\mlops\sec_daily_feed_archive_download.py --output-root-win D:/market-data/prepared/sec_daily_feed_archives
+python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_daily_feed_archive_download.py --output-root-win D:/market-data/prepared/sec_daily_feed_archives
 ```
 
 If this runs for a while without 429 responses, try `--download-concurrency 2`. I would not go above `2` for these large archives unless SEC stays stable for multiple hours.

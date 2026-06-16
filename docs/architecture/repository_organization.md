@@ -45,15 +45,15 @@ Do not keep domain workflows here long term. SEC, news, SIP, and reference-data 
 
 | Current Pattern | Target Folder |
 | --- | --- |
-| `research/mlops/news_benzinga_*` | `pipelines/news/benzinga/` |
-| `research/mlops/sec_*` archive/download/validation/text scripts | `pipelines/sec/edgar/` |
+| `pipelines/news/benzinga/news_benzinga_*` | `pipelines/news/benzinga/` |
+| `pipelines/sec/edgar/sec_*` archive/download/validation/text scripts | `pipelines/sec/edgar/` |
 | `research/mlops/clickhouse_ingest_sip_*` and quote compact builders | `pipelines/market_sip/` |
 | `research/mlops/clickhouse_load_market_references.py` | `pipelines/reference_data/` |
-| `research/mlops/migration/*` | `pipelines/reference_data/migration/` or `pipelines/sec/edgar/migration/` depending on table ownership |
+| `pipelines/reference_data/migration/*` | `pipelines/reference_data/migration/` |
 
-The Benzinga and SEC moves are implemented. The old `research/mlops/news_benzinga_*.py` and `research/mlops/sec_*.py` paths are now compatibility wrappers that import and execute the moved modules.
+The Benzinga, SEC, reference-data, and q_live migration moves are implemented. The old `pipelines/news/benzinga/news_benzinga_*.py` and `pipelines/sec/edgar/sec_*.py` compatibility wrappers are archived under `pipelines/archive/legacy_wrappers/research_mlops/` and are no longer active command paths.
 
-The market SIP and reference-data moves are still pending.
+The market SIP move is still pending.
 
 ## Compatibility Rule
 
@@ -62,15 +62,15 @@ Do not break active workstation commands in one large move. Use a two-stage migr
 1. Move the real implementation to the target folder.
 2. Leave a temporary wrapper at the old `research/mlops/...` path that imports or executes the new module and prints the new path.
 
-After active historical SEC/news loads are complete and workstation runtime guides are updated, remove wrappers in a dedicated cleanup commit.
+After active historical SEC/news loads are complete and workstation runtime guides are updated, remove wrappers in a dedicated cleanup commit. This has been done for the SEC and Benzinga wrappers; they are archived only.
 
 ## Active Scripts To Keep Working During Migration
 
-These old paths are currently compatibility wrappers:
+These old paths are archived, not active:
 
 ```text
-research/mlops/news_benzinga_*.py
-research/mlops/sec_*.py
+pipelines/archive/legacy_wrappers/research_mlops/news_benzinga_*.py
+pipelines/archive/legacy_wrappers/research_mlops/sec_*.py
 ```
 
 ## Candidates For Quarantine Or Removal
@@ -78,13 +78,8 @@ research/mlops/sec_*.py
 Do not delete these blindly. First confirm no guide, workstation run, or output manifest still references them.
 
 ```text
-research/mlops/sec_historical_feed_pipeline.py
-research/mlops/sec_historical_feed_download.py
-research/mlops/sec_initial_fill_download.py
-research/mlops/sec_bulk_clickhouse_ingest.py
-research/mlops/sec_acceptance_*              # likely completed migration helpers
-research/mlops/news_benzinga_historical_ingest.py
-research/mlops/news_benzinga_url_enrich.py   # superseded by separate URL download/extract/normalize flow
+pipelines/archive/legacy_workflows/sec_edgar/sec_historical_feed_pipeline.py
+pipelines/archive/legacy_workflows/news_benzinga/news_benzinga_historical_ingest.py
 ```
 
-The acceptance backfill helpers should be kept archived until SEC filing text extraction is validated, because they document how `accepted_at_utc` was recovered.
+The acceptance backfill helpers remain active under `pipelines/sec/edgar/` until SEC filing text extraction is validated, because they document how `accepted_at_utc` was recovered.

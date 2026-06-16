@@ -14,4 +14,4 @@ Preferred module path:
 python -m pipelines.sec.edgar.sec_validate_downloaded_archives --help
 ```
 
-Compatibility scripts remain available under `research/mlops/sec_*.py` for existing workstation commands.
+Old `research/mlops/sec_*.py` wrappers are archived under `pipelines/archive/legacy_wrappers/research_mlops/`. Do not use them for new runs.

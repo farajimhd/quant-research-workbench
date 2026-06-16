@@ -41,7 +41,7 @@ python -m pipelines.news.benzinga.news_benzinga_clickhouse_file_ingest --manifes
 Existing workstation compatibility command:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_clickhouse_file_ingest.py --manifest-json D:/market-data/prepared/benzinga_news_normalized_rows/20260611_011906/benzinga_news_normalized_manifest.json --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --preflight-only
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\news\benzinga\news_benzinga_clickhouse_file_ingest.py --manifest-json D:/market-data/prepared/benzinga_news_normalized_rows/20260611_011906/benzinga_news_normalized_manifest.json --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --preflight-only
 ```
 
 What this checks:
@@ -66,7 +66,7 @@ python -m pipelines.news.benzinga.news_benzinga_clickhouse_file_ingest --manifes
 Existing workstation compatibility command:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_clickhouse_file_ingest.py --manifest-json D:/market-data/prepared/benzinga_news_normalized_rows/20260611_011906/benzinga_news_normalized_manifest.json --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --execute
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\news\benzinga\news_benzinga_clickhouse_file_ingest.py --manifest-json D:/market-data/prepared/benzinga_news_normalized_rows/20260611_011906/benzinga_news_normalized_manifest.json --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --execute
 ```
 
 The script creates:

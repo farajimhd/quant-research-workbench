@@ -21,4 +21,3 @@ Start here before changing historical ingestion, live services, or trading UI co
 
 - [Benzinga Legacy Normalized Table](data_contracts/benzinga_news_normalized_v1.md): current 42-column loaded-news contract.
 - [SEC Filing Text Pipeline](data_contracts/sec_filing_text_pipeline.md): target SEC document and text contracts.
-

@@ -16,7 +16,7 @@ The validator:
 Validate one downloaded archive:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_validate_downloaded_archives.py --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_20260615_163812.jsonl --expected-count 68 --limit-archives 1 --archive-workers 1
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_validate_downloaded_archives.py --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_20260615_163812.jsonl --expected-count 68 --limit-archives 1 --archive-workers 1
 ```
 
 ## Validate The Redownloaded Set
@@ -24,13 +24,13 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 Validate the latest run that redownloaded 68 archives:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_validate_downloaded_archives.py --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_20260615_163812.jsonl --expected-count 68 --archive-workers 4 --pending-multiplier 1 --sample-limit 1000
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_validate_downloaded_archives.py --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_20260615_163812.jsonl --expected-count 68 --archive-workers 4 --pending-multiplier 1 --sample-limit 1000
 ```
 
 When running from a different machine against a shared archive folder, remap manifest paths:
 
 ```powershell
-python D:\TradingCodes\quant-research-workbench\research\mlops\sec_validate_downloaded_archives.py --manifest-jsonl \\DESKTOP-SAAI85T\Workstation-D\market-data\prepared\sec_daily_feed_archives\sec_daily_feed_archives_20260615_163812.jsonl --manifest-artifact-root-win D:/market-data/sec_core/daily_archives --archive-root-win \\DESKTOP-SAAI85T\Workstation-D\market-data\sec_core\daily_archives --expected-count 68 --limit-archives 1 --archive-workers 1
+python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_validate_downloaded_archives.py --manifest-jsonl \\DESKTOP-SAAI85T\Workstation-D\market-data\prepared\sec_daily_feed_archives\sec_daily_feed_archives_20260615_163812.jsonl --manifest-artifact-root-win D:/market-data/sec_core/daily_archives --archive-root-win \\DESKTOP-SAAI85T\Workstation-D\market-data\sec_core\daily_archives --expected-count 68 --limit-archives 1 --archive-workers 1
 ```
 
 If this finishes with `failed_archives=0`, we do not need to rerun the 41-hour full discovery before moving to normalized filing text extraction.

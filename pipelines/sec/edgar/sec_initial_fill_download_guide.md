@@ -34,13 +34,13 @@ $env:SEC_USER_AGENT="QuantResearchWorkbench SEC initial fill your_email@example.
 Laptop source of truth:
 
 ```powershell
-python D:\TradingCodes\quant-research-workbench\research\mlops\sec_initial_fill_download.py
+python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_initial_fill_download.py
 ```
 
 Workstation mirror:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_initial_fill_download.py
 ```
 
 ## Safe Dry Run
@@ -48,7 +48,7 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 Use this first to confirm paths and planned URLs without downloading:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --dry-run --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_initial_fill_download.py --dry-run --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core
 ```
 
 ## Phase 1A: Download Bulk Sources
@@ -56,7 +56,7 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\res
 Run this first. It downloads the required SEC bulk inputs for company identity, ticker mapping, accepted timestamps, and XBRL facts:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.11 --progress-layout auto
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_initial_fill_download.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 2 --sec-request-min-interval-seconds 0.11 --progress-layout auto
 ```
 
 Expected raw output:
@@ -83,13 +83,13 @@ Do not run this for normal historical backfill. Use it only for a narrow fallbac
 Small smoke test:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2026-06-05 --end-date 2026-06-06 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 0.11 --progress-layout auto
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2026-06-05 --end-date 2026-06-06 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 0.11 --progress-layout auto
 ```
 
 Avoid full historical archive downloads. They are very large and not the selected strategy for this project. If you intentionally need a bounded fallback range, keep the date range small:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2026-06-05 --end-date 2026-06-06 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 1.0 --progress-layout auto
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2026-06-05 --end-date 2026-06-06 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 1.0 --progress-layout auto
 ```
 
 Expected daily archive output:
@@ -103,7 +103,7 @@ D:\market-data\sec_core\daily_archives\YYYY\QTRN\YYYYMMDD.nc.tar.gz
 This downloads bulk sources plus daily archives. This is not recommended for the current SEC historical strategy; use it only for an intentional archive-mirroring experiment:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources all --include-daily-archives --start-date 2026-06-05 --end-date 2026-06-06 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 1.0 --progress-layout auto
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_initial_fill_download.py --sources all --include-daily-archives --start-date 2026-06-05 --end-date 2026-06-06 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 1.0 --progress-layout auto
 ```
 
 ## Arguments
@@ -153,7 +153,7 @@ If SEC returns 429, wait before restarting. The manifest tells you which files w
 Recommended restart after a 429:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2026-06-05 --end-date 2026-06-06 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 1.0 --progress-layout auto
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_initial_fill_download.py --sources none --include-daily-archives --start-date 2026-06-05 --end-date 2026-06-06 --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_core --download-concurrency 1 --sec-request-min-interval-seconds 1.0 --progress-layout auto
 ```
 
 Older interrupted runs may leave `*.part` files in the raw artifact tree. New runs ignore those stale partials. Delete them only after confirming no downloader process is running.

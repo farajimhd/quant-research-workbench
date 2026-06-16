@@ -73,7 +73,7 @@ python -m pipelines.sec.edgar.sec_delete_failed_archives --archive-summary-jsonl
 Existing workstation compatibility command:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_delete_failed_archives.py --archive-summary-jsonl D:/market-data/prepared/sec_downloaded_archive_validation/<validation_run>/archive_summary.jsonl --source-archive-root-win D:/market-data/sec_core/daily_archives --archive-root-win D:/market-data/sec_core/daily_archives --expected-count <failed_archive_count> --execute
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_delete_failed_archives.py --archive-summary-jsonl D:/market-data/prepared/sec_downloaded_archive_validation/<validation_run>/archive_summary.jsonl --source-archive-root-win D:/market-data/sec_core/daily_archives --archive-root-win D:/market-data/sec_core/daily_archives --expected-count <failed_archive_count> --execute
 ```
 
 If a local workstation delete raises `PermissionError(13, 'Access is denied')`, first test a simple one-file Python delete. If Windows still denies it, rerun from an elevated terminal with:
@@ -97,7 +97,7 @@ python -m pipelines.sec.edgar.sec_daily_feed_archive_download --artifact-root-wi
 Existing workstation compatibility command:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_daily_feed_archive_download.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_daily_feed_archives --download-concurrency 2
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_daily_feed_archive_download.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_daily_feed_archives --download-concurrency 2
 ```
 
 Why no `--force`: existing valid archives are reused, and only missing files are downloaded.
@@ -115,7 +115,7 @@ python -m pipelines.sec.edgar.sec_validate_downloaded_archives --manifest-jsonl 
 Existing workstation compatibility command:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_validate_downloaded_archives.py --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/<latest_manifest>.jsonl --expected-count <downloaded_count> --archive-workers 4 --pending-multiplier 1 --sample-limit 1000
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_validate_downloaded_archives.py --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/<latest_manifest>.jsonl --expected-count <downloaded_count> --archive-workers 4 --pending-multiplier 1 --sample-limit 1000
 ```
 
 Success condition:
