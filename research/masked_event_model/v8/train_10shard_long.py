@@ -170,6 +170,7 @@ def main() -> None:
         steps_per_epoch = 0
         steps_per_shard = 1
         validation_batches = int(args.validation_batches)
+        validation_batches_per_shard = max(1, math.ceil(validation_batches / max(1, len(validation_shards))))
     else:
         train_shards, validation_shards, validation_samples = resolve_shard_plan(
             cache_root=cache_root,
@@ -197,6 +198,7 @@ def main() -> None:
         steps_per_epoch = sum(shard_batch_counts)
         steps_per_shard = unique_shard_batch_counts[0]
         validation_batches = max(1, validation_samples // batch_size)
+        validation_batches_per_shard = max(1, math.ceil(validation_batches / max(1, len(validation_shards))))
     values = dict(DEFAULTS)
     values.update(
         {
@@ -207,7 +209,7 @@ def main() -> None:
             "sample_cache_validation_start_shard": validation_shards[0].shard_index,
             "sample_cache_validation_max_shards": len(validation_shards),
             "sample_cache_validation_max_samples": validation_batches * batch_size,
-            "sample_cache_validation_batches_per_shard": 1,
+            "sample_cache_validation_batches_per_shard": validation_batches_per_shard,
             # Keep interleave disabled. In v4/v6 testing, interleave retained
             # transient full-shard arrays and caused persistent RAM pressure and
             # large step-time regressions after shard transitions.
@@ -284,19 +286,21 @@ def resolve_shard_plan(
             f"Need train shard range {train_start_shard}..{train_start_shard + train_shards - 1}, "
             f"but only found {len(shards)} train shards under {cache_root}"
         )
-    if len(validation_candidates) < validation_shard_index + max_validation_batches:
+    if validation_shard_index >= len(validation_candidates):
         raise SystemExit(
-            f"Need validation shard range {validation_shard_index}..{validation_shard_index + max_validation_batches - 1}, "
+            f"Need validation start shard {validation_shard_index}, "
             f"but only found {len(validation_candidates)} validation shards under {cache_root}"
         )
     selected_train = shards[train_start_shard : train_start_shard + train_shards]
-    validation_shards = validation_candidates[validation_shard_index : validation_shard_index + max_validation_batches]
+    available_validation_shards = validation_candidates[validation_shard_index:]
+    validation_shard_count = min(len(available_validation_shards), max_validation_batches)
+    validation_shards = available_validation_shards[:validation_shard_count]
     too_small = [shard.shard_index for shard in validation_shards if shard.num_samples < batch_size]
     if too_small:
         raise SystemExit(
             f"Validation shards have fewer than one full batch at batch_size={batch_size:,}: {too_small}"
         )
-    validation_samples = len(validation_shards) * batch_size
+    validation_samples = max_validation_batches * batch_size
     return selected_train, validation_shards, validation_samples
 
 
@@ -323,7 +327,8 @@ def print_plan(
     )
     print(
         f"validation_split=validation shards={validation_shards[0].shard_index}..{validation_shards[-1].shard_index} "
-        f"batches_per_shard=1 validation_batches={validation_batches:,} validation_frequency=every_shard",
+        f"selected_shards={len(validation_shards):,} batches_per_shard={values['sample_cache_validation_batches_per_shard']:,} "
+        f"validation_batches={validation_batches:,} validation_frequency=every_shard",
         flush=True,
     )
     print(
