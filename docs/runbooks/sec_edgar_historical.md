@@ -136,6 +136,40 @@ D:/market-data/prepared/sec_downloaded_archive_validation/20260616_135437/archiv
 
 Success was confirmed by `aggregate_summary.json` and by all 20 rows in `archive_summary.jsonl` having status `ok`.
 
+## q_live SEC Table Lineage
+
+`q_live.sec_filing_v2` is the filing-level parent table. It was migrated from `trading_dashboard_dev.sec_filing_v1`, then repaired by the accepted-timestamp backfill workflow. Current `FINAL` checks show:
+
+```text
+sec_filing_v2 logical rows: 8,531,118
+missing accepted_at_utc: 0
+duplicate (cik, accession_number): 0
+accepted_at_utc range: 1994-01-04 00:00:00.000000000 to 2026-05-20 16:16:29.000000000
+2019+ filings: 4,016,857
+2019+ filings with primary_document: 4,016,857
+```
+
+`q_live.sec_filing_document_v1` is currently provisional. It was created by migration step 6 from `sec_filing_v2.primary_document`, not from daily archive `<DOCUMENT>` blocks.
+
+Observed fingerprint:
+
+```text
+source_run_id: step_06_bridge_features_20260609_161534
+extraction_status: metadata_only
+description: primary_document_from_sec_filing_metadata
+document_name equals sec_filing_v2.primary_document for all rows
+document_url equals sec_filing_v2.primary_document_url for all rows
+sequence_number = 1 for all rows
+document_type equals sec_filing_v2.form_type for all rows
+documents per accession: exactly 1
+```
+
+Therefore `sec_filing_document_v1` must not be used as the document source of truth for training. The normalized text extractor should parse the downloaded daily archives and either rebuild this table from real `<DOCUMENT>` blocks or write a new `sec_filing_document_v2` until coverage and quality are validated.
+
+`q_live.sec_filing_text_v1` exists but has zero rows. The next extractor should store clean LLM-ready body text only. Prompt headers should be assembled later by joining text rows to filing/document metadata.
+
+Structured XBRL/fact/frame data already exists in `q_live`, so XBRL sidecars should be skipped by the text extractor and handled through structured SEC features instead.
+
 ## Why We Do Not Rerun Full Discovery
 
 `sec_archive_content_discovery.py` scans every archive and every filing. In the current setup it does not know which archives were already validated. For recovery loops, the targeted validator gives the same gzip/tar parse confidence for only the newly downloaded archives.

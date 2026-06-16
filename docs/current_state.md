@@ -12,7 +12,7 @@ This file records the working state that should be used before proposing new SEC
 | `qmd-gateway` | Rust service exists for live Massive trades/quotes, bars, indicators, signal catalog, and ClickHouse batching. | Later: run integration tests against live Massive and ClickHouse. |
 | Benzinga historical news | Enriched news has been normalized into legacy single-table JSONEachRow parts. The target ClickHouse table is not present yet. | Preflight ClickHouse `file()` access, then insert into `q_live.benzinga_news_normalized_v1`. |
 | SEC daily archives | Full discovery found corrupt archives. The latest 20-archive redownload validation completed cleanly. | Move to normalized SEC filing text extraction. |
-| SEC normalized text | Not implemented yet. `q_live.sec_filing_text_v1` exists but currently has zero rows. | Build extractor only after archive validation is clean. |
+| SEC normalized text | Not implemented yet. `q_live.sec_filing_text_v1` exists but currently has zero rows. Current `sec_filing_document_v1` is only a synthetic primary-document bridge, not archive-derived. | Build SEC integrity audit, then build archive-derived document/text extractor. |
 
 ## Verified Benzinga News State
 
@@ -167,17 +167,31 @@ wall_seconds: 3,570.021
 
 All 20 archive summaries are `ok`. The SEC archive recovery loop is clean now.
 
-Current `q_live` SEC table state from ClickHouse:
+Current `q_live` SEC table state from ClickHouse, using logical `FINAL` rows where relevant:
 
 ```text
-q_live.sec_filing_v2 rows: 16,307,827
-q_live.sec_filing_v2 rows missing accepted_at_utc: 7,776,709
+q_live.sec_filing_v2 rows: 8,531,118
+q_live.sec_filing_v2 rows missing accepted_at_utc: 0
+q_live.sec_filing_v2 duplicate (cik, accession_number): 0
 q_live.sec_filing_v2 accepted_at_utc range: 1994-01-04 00:00:00.000000000 to 2026-05-20 16:16:29.000000000
 q_live.sec_filing_document_v1 rows: 8,417,763
 q_live.sec_filing_text_v1 rows: 0
 ```
 
-This means SEC filing/document metadata exists in `q_live`, but normalized filing text has not been populated yet.
+`sec_filing_v2` is the filing-level parent table and has repaired acceptance timestamps. `sec_filing_document_v1` is stale/provisional for text extraction: it was generated from `sec_filing_v2.primary_document` in migration step 6 and has exactly one metadata-only primary document row per accession with a primary document. It does not represent real archive `<DOCUMENT>` blocks.
+
+Observed `sec_filing_document_v1` fingerprint:
+
+```text
+source_run_id: step_06_bridge_features_20260609_161534
+extraction_status: metadata_only
+description: primary_document_from_sec_filing_metadata
+document rows without filing parent: 0
+filings without document rows: 113,355
+documents per accession: exactly 1
+```
+
+The next extractor should use `sec_filing_v2` as the parent metadata source, parse daily archives for real document blocks, and write clean LLM-ready body text without embedded metadata headers. Training/export jobs should add prompt headers by query joins.
 
 ## Issues Encountered And Resolutions
 
