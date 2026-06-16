@@ -137,7 +137,10 @@ class TrainConfig:
     prefetch_factor: int = 1
     seed: int = 17
     amp: bool = True
+    amp_dtype: str = "auto"
     amp_initial_scale: float = 1024.0
+    amp_growth_interval: int = 10_000
+    amp_max_scale: float = 2048.0
     amp_overflow_fatal_threshold: int = 8
     compile_model: bool = False
     wandb_project: str = "June2026-event-token-mae-v8-fixed-mask"

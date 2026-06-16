@@ -53,8 +53,11 @@ Loss is binary cross entropy with logits over masked event bits only. v8 weights
 that BCE with a fixed semantic `[16, 8]` bit-weight matrix: numeric bytes use
 little-endian bit significance `[1, 2, ..., 128]`, while packed/categorical
 bytes such as event flags, exchanges, and conditions use the maximum weight for
-every bit. The unweighted BCE is still logged as
-`pretrain/loss_event_unweighted` for comparison with older runs. Production
+every bit. The weighted objective is normalized by the semantic weight mass
+actually present in the batch, not by raw batch size, so the loss scale stays
+close to ordinary BCE and does not grow with the number of masked events. The
+unweighted BCE is still logged as `pretrain/loss_event_unweighted` for
+comparison with older runs. Production
 embedding uses the explicit `encode(...)` path, which sees the full unmasked
 header and all 128 events:
 
@@ -73,6 +76,8 @@ event mask ratio: 0.70
 event mask schedule: fixed 70%
 header bit corruption: 20% of samples, 5% of header bits
 visible event bit corruption: 30% of samples, 20% of visible event bits
+AMP dtype: auto, preferring BF16 on supported CUDA devices
+FP16 GradScaler cap: 2048 with growth interval 10000
 W&B project: June2026-event-token-mae-v8-fixed-mask
 ```
 

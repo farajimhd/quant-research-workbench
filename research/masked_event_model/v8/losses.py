@@ -98,8 +98,9 @@ def masked_event_bce_loss(
                 weight=semantic_weights.float(),
                 reduction="none",
             )
-            batch_size = max(1, int(weighted_loss_terms.shape[0]))
-            loss = weighted_loss_terms.sum() / batch_size
+            semantic_weight_mass = (semantic_weights.float().sum() * max(1, logits.shape[0]) * max(1, logits.shape[1])).clamp_min(1.0)
+            weighted_loss_sum = weighted_loss_terms.sum()
+            loss = weighted_loss_sum / semantic_weight_mass
     else:
         unweighted_loss = F.binary_cross_entropy_with_logits(logits, target_bits)
         weighted_loss_terms = F.binary_cross_entropy_with_logits(
@@ -108,8 +109,9 @@ def masked_event_bce_loss(
             weight=semantic_weights,
             reduction="none",
         )
-        batch_size = max(1, int(weighted_loss_terms.shape[0]))
-        loss = weighted_loss_terms.sum() / batch_size
+        semantic_weight_mass = (semantic_weights.sum() * max(1, logits.shape[0]) * max(1, logits.shape[1])).clamp_min(1.0)
+        weighted_loss_sum = weighted_loss_terms.sum()
+        loss = weighted_loss_sum / semantic_weight_mass
     loss = loss * float(config.event_weight)
 
     metrics_started = time.perf_counter()
@@ -119,9 +121,11 @@ def masked_event_bce_loss(
         "pretrain/loss_event_semantic_weight_mean": float(semantic_weights.mean().detach().cpu()),
         "pretrain/loss_event_semantic_raw_weight_mean": float(raw_semantic_weights.mean().detach().cpu()),
         "pretrain/loss_event_semantic_normalizer": float(semantic_weight_normalizer.detach().cpu()),
+        "pretrain/loss_event_weighted_sum": float(weighted_loss_sum.detach().cpu()),
+        "pretrain/loss_event_weight_mass": float(semantic_weight_mass.detach().cpu()),
         "pretrain/loss_event_weighted_terms": float(weighted_loss_terms.numel()),
         "pretrain/loss_event_weighted_terms_per_event": float(weighted_loss_terms.shape[-1] * weighted_loss_terms.shape[-2]),
-        "pretrain/loss_event_batch_size_normalizer": float(batch_size),
+        "pretrain/loss_event_batch_size_normalizer": float(max(1, int(weighted_loss_terms.shape[0]))),
         "mask/event_mask_ratio_pct": float(output.actual_mask_ratio * 100.0),
         "mask/event_requested_mask_ratio_pct": float(output.requested_mask_ratio * 100.0),
         "mask/event_visible_events": float(output.visible_event_count),
