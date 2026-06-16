@@ -14,6 +14,10 @@ HEADER_BYTES = 14
 EVENT_BYTES = 16
 BITS_PER_BYTE = 8
 
+# Shape shorthand used by the forward-path comments:
+# B = batch size, E = total events per chunk, V = visible events, M = masked events,
+# T = encoder tokens (CLS + header + visible events), D = model width, Z = embedding width.
+
 
 @dataclass(slots=True)
 class EventMAEOutput:
@@ -54,7 +58,9 @@ def single_role_vector(role_embedding: nn.Embedding, *, device: torch.device) ->
     summary tools aware of which semantic role embedding is being used.
     """
 
+    # Input shape: scalar role id. Output shape: [1].
     role_id = torch.zeros((1,), device=device, dtype=torch.long)
+    # Input shape: [1]. Output shape: [1, 1, D] for broadcast over batch/tokens.
     return role_embedding(role_id).view(1, 1, -1)
 
 
@@ -66,9 +72,13 @@ def build_signed_bit_lookup() -> torch.Tensor:
     keeps byte unpacking deterministic across training and inference.
     """
 
+    # Input shape: [256]. Output shape after view: [256, 1].
     values = torch.arange(256, dtype=torch.long).view(256, 1)
+    # Input shape: [8]. Output shape after view: [1, 8].
     shifts = torch.arange(BITS_PER_BYTE, dtype=torch.long).view(1, BITS_PER_BYTE)
+    # Input shapes: values [256, 1], shifts [1, 8]. Output shape: [256, 8].
     bits = ((values >> shifts) & 1).to(torch.float32)
+    # Input shape: [256, 8] in {0, 1}. Output shape: [256, 8] in {-1, +1}.
     return bits.mul(2.0).sub(1.0)
 
 
@@ -87,9 +97,12 @@ class UInt8BytesToSignedBitFeatures(nn.Module):
         self.register_buffer("signed_bit_lookup", build_signed_bit_lookup(), persistent=False)
 
     def forward(self, values_uint8: torch.Tensor) -> torch.Tensor:
+        # Input shape: [B, bytes] or [B, events, bytes]. Output shape: input + trailing [8].
         signed_bits = self.signed_bit_lookup[values_uint8.long()]
         if self.flatten_from_byte_axis:
+            # Input shape: [B, bytes, 8]. Output shape: [B, bytes * 8].
             return signed_bits.flatten(1)
+        # Input shape: [B, events, bytes, 8]. Output shape: [B, events, bytes * 8].
         return signed_bits.flatten(2)
 
 
@@ -99,8 +112,11 @@ class VisibleEventTokenSelector(nn.Module):
     def forward(self, events_uint8: torch.Tensor, visible_event_indices: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor]:
         if visible_event_indices is None:
             event_count = int(events_uint8.shape[1])
+            # Input shape: E. Output shape after expand: [B, E].
             event_indices = torch.arange(event_count, device=events_uint8.device).view(1, -1).expand(events_uint8.shape[0], -1)
+            # Input events shape: [B, E, 16]. Output events/indices shapes: [B, E, 16], [B, E].
             return events_uint8, event_indices
+        # Input shapes: events [B, E, 16], indices [B, V]. Output shapes: [B, V, 16], [B, V].
         return gather_events(events_uint8, visible_event_indices), visible_event_indices
 
 
@@ -139,6 +155,7 @@ class LearnedChunkClsToken(nn.Module):
         nn.init.normal_(self.token, std=0.02)
 
     def forward(self, batch_size: int) -> torch.Tensor:
+        # Input shape: learned [1, 1, D]. Output shape: [B, 1, D].
         return self.token.expand(batch_size, -1, -1)
 
 
@@ -153,6 +170,7 @@ class LearnedMaskedEventQueryToken(nn.Module):
         nn.init.normal_(self.token, std=0.02)
 
     def forward(self, batch_size: int, masked_count: int) -> torch.Tensor:
+        # Input shape: learned [1, 1, D]. Output shape: [B, M, D].
         return self.token.expand(batch_size, masked_count, -1).clone()
 
 
@@ -174,8 +192,11 @@ class HeaderTokenEncoder(nn.Module):
         self.header_role_embedding = HeaderRoleEmbedding(1, config.d_model)
 
     def forward(self, header_uint8: torch.Tensor) -> torch.Tensor:
+        # Input shape: [B, 14]. Output shape: [B, 112].
         header_bits = self.header_bytes_to_signed_bits(header_uint8)
+        # Input shape: [B, 112]. Output shape after unsqueeze: [B, 1, D].
         header_token = self.header_bits_to_model_token(header_bits).unsqueeze(1)
+        # Input shapes: header token [B, 1, D], role [1, 1, D]. Output shape: [B, 1, D].
         return header_token + single_role_vector(self.header_role_embedding, device=header_uint8.device)
 
 
@@ -198,9 +219,13 @@ class EventTokenEncoder(nn.Module):
         self.event_role_embedding = EventRoleEmbedding(1, config.d_model)
 
     def forward(self, visible_events_uint8: torch.Tensor, visible_event_indices: torch.Tensor) -> torch.Tensor:
+        # Input shape: [B, V, 16]. Output shape: [B, V, 128].
         event_bits = self.event_bytes_to_signed_bits(visible_events_uint8)
+        # Input shape: [B, V, 128]. Output shape: [B, V, D].
         event_tokens = self.event_bits_to_model_tokens(event_bits)
+        # Input shapes: tokens [B, V, D], positions [B, V]. Output shape: [B, V, D].
         event_tokens = event_tokens + self.event_position_embedding_for_encoder(visible_event_indices)
+        # Input shapes: tokens [B, V, D], role [1, 1, D]. Output shape: [B, V, D].
         return event_tokens + single_role_vector(self.event_role_embedding, device=visible_events_uint8.device)
 
 
@@ -217,8 +242,11 @@ class EncoderSequenceBuilder(nn.Module):
 
     def forward(self, header_token: torch.Tensor, event_tokens: torch.Tensor) -> torch.Tensor:
         batch_size = int(header_token.shape[0])
+        # Input shape: batch size B. Output shape: [B, 1, D].
         cls_token = self.learned_chunk_cls_token(batch_size)
+        # Input shapes: CLS [B, 1, D], role [1, 1, D]. Output shape: [B, 1, D].
         cls_token = cls_token + single_role_vector(self.cls_role_embedding, device=header_token.device)
+        # Input shapes: CLS [B, 1, D], header [B, 1, D], events [B, V, D]. Output shape: [B, 2 + V, D].
         return torch.cat([cls_token, header_token, event_tokens], dim=1)
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
@@ -246,13 +274,17 @@ class ChunkEmbeddingBottleneck(nn.Module):
         self.chunk_embedding_output = ChunkEmbeddingOutput()
 
     def project_encoded_tokens(self, encoded_tokens: torch.Tensor) -> torch.Tensor:
+        # Input shape: [B, T, D]. Output shape: [B, T, Z].
         return self.encoder_token_to_embedding_space(encoded_tokens)
 
     def forward(self, encoded_tokens: torch.Tensor) -> torch.Tensor:
+        # Input shape: [B, T, D]. Output shape: [B, T, Z].
         token_embeddings = self.project_encoded_tokens(encoded_tokens)
         # AdaptiveAvgPool1d expects channels first. The temporary projected-token
         # tensor is consumed here and is no longer returned by the training path.
+        # Input shape: [B, T, Z]. Output shape after transpose/pool/squeeze: [B, Z].
         pooled_embedding = self.all_projected_tokens_mean_pool(token_embeddings.transpose(1, 2)).squeeze(-1)
+        # Input shape: [B, Z]. Output shape: [B, Z].
         return self.chunk_embedding_output(pooled_embedding)
 
 
@@ -269,8 +301,11 @@ class ChunkEmbeddingToDecoderMemory(nn.Module):
         self.chunk_embedding_to_decoder_width = nn.Linear(config.embedding_dim, config.d_model)
 
     def forward(self, chunk_embedding: torch.Tensor) -> torch.Tensor:
+        # Input shape: [B, Z]. Output shape: [B, Z].
         normalized_embedding = self.chunk_embedding_layer_norm(chunk_embedding)
+        # Input shape: [B, Z]. Output shape: [B, D].
         decoder_memory_token = self.chunk_embedding_to_decoder_width(normalized_embedding)
+        # Input shape: [B, D]. Output shape: [B, 1, D].
         return decoder_memory_token.unsqueeze(1)
 
 
@@ -289,8 +324,11 @@ class MaskedEventQueryBuilder(nn.Module):
     def forward(self, masked_event_indices: torch.Tensor) -> torch.Tensor:
         batch_size = int(masked_event_indices.shape[0])
         masked_count = int(masked_event_indices.shape[1])
+        # Input shape: batch B and masked count M. Output shape: [B, M, D].
         queries = self.learned_masked_event_query_token(batch_size, masked_count)
+        # Input shapes: queries [B, M, D], masked positions [B, M]. Output shape: [B, M, D].
         queries = queries + self.masked_event_position_embedding_for_decoder(masked_event_indices)
+        # Input shapes: queries [B, M, D], role [1, 1, D]. Output shape: [B, M, D].
         return queries + single_role_vector(self.masked_event_query_role_embedding, device=masked_event_indices.device)
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
@@ -329,15 +367,20 @@ class MaskedQueryCrossAttentionDecoderLayer(nn.Module):
         )
 
     def forward(self, masked_event_queries: torch.Tensor, chunk_embedding_memory: torch.Tensor) -> torch.Tensor:
+        # Input shape: [B, M, D]. Output shape: [B, M, D].
         normalized_queries = self.masked_query_layer_norm_before_cross_attention(masked_event_queries)
+        # Input shape: [B, 1, D]. Output shape: [B, 1, D].
         normalized_memory = self.chunk_memory_layer_norm_before_cross_attention(chunk_embedding_memory)
+        # Input shapes: query [B, M, D], key/value [B, 1, D]. Output shape: [B, M, D].
         attended_queries, _ = self.masked_query_to_chunk_memory_cross_attention(
             normalized_queries,
             normalized_memory,
             normalized_memory,
             need_weights=False,
         )
+        # Input shapes: residual [B, M, D], attention [B, M, D]. Output shape: [B, M, D].
         masked_event_queries = masked_event_queries + self.cross_attention_residual_dropout(attended_queries)
+        # Input shape: [B, M, D]. Output shape after FFN residual: [B, M, D].
         masked_event_queries = masked_event_queries + self.masked_query_feed_forward(
             self.masked_query_layer_norm_before_ffn(masked_event_queries)
         )
@@ -353,8 +396,11 @@ class MaskedEventBitPredictionHead(nn.Module):
         self.masked_query_to_16x8_bit_logits = nn.Linear(config.d_model, EVENT_BYTES * BITS_PER_BYTE)
 
     def forward(self, decoded_masked_event_queries: torch.Tensor) -> torch.Tensor:
+        # Input shape: [B, M, D]. Output shape: [B, M, D].
         normalized_queries = self.masked_query_final_layer_norm(decoded_masked_event_queries)
+        # Input shape: [B, M, D]. Output shape: [B, M, 128].
         logits = self.masked_query_to_16x8_bit_logits(normalized_queries)
+        # Input shape: [B, M, 128]. Output shape: [B, M, 16, 8].
         return logits.view(logits.shape[0], logits.shape[1], EVENT_BYTES, BITS_PER_BYTE)
 
 
@@ -398,6 +444,7 @@ class EventChunkEncoder(nn.Module):
     def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
         """Production path: encode all event records and return only the chunk embedding."""
 
+        # Input shapes: header [B, 14], events [B, E, 16]. Output shapes: encoded [B, 2 + E, D], embedding [B, Z].
         _, chunk_embedding = self.encode_tokens(
             header_uint8,
             events_uint8,
@@ -417,18 +464,27 @@ class EventChunkEncoder(nn.Module):
         training: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if training and mask_config is not None:
+            # Input shape: [B, 14]. Output shape: [B, 14].
             header_input_uint8 = maybe_corrupt_header(header_uint8, mask_config)
         else:
+            # Input shape: [B, 14]. Output shape: [B, 14].
             header_input_uint8 = header_uint8
 
+        # Input shapes: events [B, E, 16], optional indices [B, V]. Output shapes: [B, V or E, 16], [B, V or E].
         selected_events_uint8, selected_event_indices = self.visible_event_token_selector(events_uint8, visible_event_indices)
         if training and visible_event_indices is not None and mask_config is not None:
+            # Input shape: [B, V, 16]. Output shape: [B, V, 16].
             selected_events_uint8 = maybe_corrupt_visible_events(selected_events_uint8, mask_config)
 
+        # Input shape: [B, 14]. Output shape: [B, 1, D].
         header_token = self.header_token_encoder(header_input_uint8)
+        # Input shapes: events [B, V or E, 16], indices [B, V or E]. Output shape: [B, V or E, D].
         visible_event_tokens = self.visible_event_token_encoder(selected_events_uint8, selected_event_indices)
+        # Input shapes: header [B, 1, D], events [B, V or E, D]. Output shape: [B, 2 + V or 2 + E, D].
         encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
+        # Input shape: [B, T, D]. Output shape: [B, T, D].
         encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
+        # Input shape: [B, T, D]. Output shape: [B, Z].
         chunk_embedding = self.chunk_embedding_bottleneck(encoded_tokens)
         return encoded_tokens, chunk_embedding
 
@@ -523,10 +579,13 @@ class EventTokenMaskedAutoencoder(nn.Module):
         # 1. encode visible context,
         # 2. pool all encoded tokens into the exported chunk embedding,
         # 3. reconstruct only the event records that were removed from context.
+        # Input shapes: header [B, 14], events [B, E, 16], masks [B, M]/[B, V]. Output shapes: [B, T, D], [B, Z], [B, M, 16].
         encoded_tokens, chunk_embedding, target_events = self.encode_tokens_for_training(
             header_uint8, events_uint8, masks, mask_config
         )
+        # Input shape: [B, Z]. Output shape: [B, 1, D].
         decoder_memory = self.chunk_embedding_to_decoder_memory(chunk_embedding)
+        # Input shapes: memory [B, 1, D], masks [B, M]. Output shape: [B, M, 16, 8].
         event_logits = self.decode_masked_events(decoder_memory, masks)
         return EventMAEOutput(
             event_bit_logits=event_logits,
@@ -543,6 +602,7 @@ class EventTokenMaskedAutoencoder(nn.Module):
     @torch.no_grad()
     def encode(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
         """Production embedding path: no masks, no decoder, no reconstruction work."""
+        # Input shapes: header [B, 14], events [B, E, 16]. Output shapes: encoded [B, 2 + E, D], embedding [B, Z].
         _, chunk_embedding = self._encode_tokens(
             header_uint8,
             events_uint8,
@@ -555,6 +615,7 @@ class EventTokenMaskedAutoencoder(nn.Module):
     @torch.no_grad()
     def encode_events(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
         """Return per-event embeddings for diagnostics or downstream sequence experiments."""
+        # Input shapes: header [B, 14], events [B, E, 16]. Output shapes: encoded [B, 2 + E, D], embedding [B, Z].
         encoded_tokens, _ = self._encode_tokens(
             header_uint8,
             events_uint8,
@@ -562,7 +623,9 @@ class EventTokenMaskedAutoencoder(nn.Module):
             mask_config=None,
             training=False,
         )
+        # Input shape: [B, 2 + E, D]. Output shape: [B, 2 + E, Z].
         token_embeddings = self.chunk_embedding_bottleneck.project_encoded_tokens(encoded_tokens)
+        # Input shape: [B, 2 + E, Z]. Output shape: [B, E, Z].
         return token_embeddings[:, 2:, :]
 
     def encode_tokens_for_training(
@@ -572,7 +635,9 @@ class EventTokenMaskedAutoencoder(nn.Module):
         masks: EventMaskBatch,
         mask_config,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Input shapes: events [B, E, 16], masked indices [B, M]. Output shape: [B, M, 16].
         target_events = gather_events(events_uint8, masks.masked_event_indices)
+        # Input shapes: header [B, 14], events [B, E, 16], visible indices [B, V]. Output shapes: [B, 2 + V, D], [B, Z].
         encoded_tokens, chunk_embedding = self._encode_tokens(
             header_uint8,
             events_uint8,
@@ -595,18 +660,27 @@ class EventTokenMaskedAutoencoder(nn.Module):
         # regularizes the encoder against missing/corrupt bits without changing
         # the sequence length semantics learned by the transformer.
         if training and mask_config is not None:
+            # Input shape: [B, 14]. Output shape: [B, 14].
             header_input_uint8 = maybe_corrupt_header(header_uint8, mask_config)
         else:
+            # Input shape: [B, 14]. Output shape: [B, 14].
             header_input_uint8 = header_uint8
 
+        # Input shapes: events [B, E, 16], optional indices [B, V]. Output shapes: [B, V or E, 16], [B, V or E].
         selected_events_uint8, selected_event_indices = self.visible_event_token_selector(events_uint8, visible_event_indices)
         if training and visible_event_indices is not None and mask_config is not None:
+            # Input shape: [B, V, 16]. Output shape: [B, V, 16].
             selected_events_uint8 = maybe_corrupt_visible_events(selected_events_uint8, mask_config)
 
+        # Input shape: [B, 14]. Output shape: [B, 1, D].
         header_token = self.header_token_encoder(header_input_uint8)
+        # Input shapes: events [B, V or E, 16], indices [B, V or E]. Output shape: [B, V or E, D].
         visible_event_tokens = self.visible_event_token_encoder(selected_events_uint8, selected_event_indices)
+        # Input shapes: header [B, 1, D], events [B, V or E, D]. Output shape: [B, 2 + V or 2 + E, D].
         encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
+        # Input shape: [B, T, D]. Output shape: [B, T, D].
         encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
+        # Input shape: [B, T, D]. Output shape: [B, Z].
         chunk_embedding = self.chunk_embedding_bottleneck(encoded_tokens)
         return encoded_tokens, chunk_embedding
 
@@ -614,7 +688,10 @@ class EventTokenMaskedAutoencoder(nn.Module):
         # The decoder queries contain position only, not masked event bytes. Any
         # successful reconstruction therefore has to come from the chunk
         # embedding memory and the learned market-structure priors.
+        # Input shape: masked indices [B, M]. Output shape: [B, M, D].
         masked_event_queries = self.masked_event_query_builder(masks.masked_event_indices)
         for decoder_layer in self.masked_query_cross_attention_decoder:
+            # Input shapes: queries [B, M, D], memory [B, 1, D]. Output shape: [B, M, D].
             masked_event_queries = decoder_layer(masked_event_queries, decoder_memory)
+        # Input shape: [B, M, D]. Output shape: [B, M, 16, 8].
         return self.masked_event_bit_prediction_head(masked_event_queries)
