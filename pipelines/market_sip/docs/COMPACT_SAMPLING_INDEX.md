@@ -87,19 +87,19 @@ policy changes, rebuild the index.
 Dry-run:
 
 ```powershell
-python -m research.mlops.run_build_compact_sampling_index --dry-run
+python -m pipelines.market_sip.events.run_build_compact_sampling_index --dry-run
 ```
 
 Build or refresh both default tables:
 
 ```powershell
-python -m research.mlops.run_build_compact_sampling_index
+python -m pipelines.market_sip.events.run_build_compact_sampling_index
 ```
 
 Drop and recreate both tables before filling:
 
 ```powershell
-python -m research.mlops.run_build_compact_sampling_index --rebuild
+python -m pipelines.market_sip.events.run_build_compact_sampling_index --rebuild
 ```
 
 The builder writes a JSONL report under:

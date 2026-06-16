@@ -55,7 +55,7 @@ ordinal helper index.
 Small smoke test:
 
 ```powershell
-python -m research.mlops.run_benchmark_compact_batch_provider --batch-size 16 --benchmark-batches 2 --workers 8
+python -m pipelines.market_sip.benchmarks.run_benchmark_compact_batch_provider --batch-size 16 --benchmark-batches 2 --workers 8
 ```
 
 Workstation test:

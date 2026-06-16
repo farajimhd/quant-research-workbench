@@ -75,19 +75,19 @@ fragment_bucket_id
 Build all stages:
 
 ```powershell
-python -m research.mlops.run_build_ticker_event_store --stage all --rebuild
+python -m pipelines.market_sip.legacy.run_build_ticker_event_store --stage all --rebuild
 ```
 
 Run only compaction after fragments exist:
 
 ```powershell
-python -m research.mlops.run_build_ticker_event_store --stage compact
+python -m pipelines.market_sip.legacy.run_build_ticker_event_store --stage compact
 ```
 
 Run only index after final event files exist:
 
 ```powershell
-python -m research.mlops.run_build_ticker_event_store --stage index
+python -m pipelines.market_sip.legacy.run_build_ticker_event_store --stage index
 ```
 
 The builder is restart-safe through `_state/*.SUCCESS.json` fingerprints. Re-running skips completed compatible work unless `--rebuild` is supplied.

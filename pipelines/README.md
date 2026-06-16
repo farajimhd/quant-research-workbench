@@ -10,4 +10,5 @@ pipelines/news/benzinga/   # Benzinga download, URL inventory, enrichment, norma
 pipelines/sec/edgar/       # SEC EDGAR archive download, validation, metadata repair, text extraction prep
 ```
 
-`research/mlops` still contains compatibility wrappers for the moved scripts so existing workstation commands keep working while guides and runtime folders are updated.
+`research/mlops` is reserved for shared research utilities. Operational commands
+for moved workflows should be run from their `pipelines/...` folders.

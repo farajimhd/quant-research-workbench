@@ -34,8 +34,9 @@ The sample-cache record contract is documented in
 
 ## Compatibility
 
-Temporary wrappers remain under `research/mlops` for active workstation commands.
-New commands and docs should prefer `pipelines/market_sip/...`.
+The old market-SIP compatibility wrappers under `research/mlops` have been
+removed. Use the scripts and module paths under `pipelines/market_sip/...` for
+all market-SIP operations.
 
 The shared utility code that model versions import directly remains in
 `research/mlops`, especially:
