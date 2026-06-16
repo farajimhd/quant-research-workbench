@@ -84,7 +84,7 @@ DEFAULTS: dict[str, Any] = {
 VALIDATION_BATCHES = 20
 PROFILED_TRAINING_PATH = (
     "v8 event-token MAE, masked-query cross-attention decoder, "
-    "fixed 70% event mask, sample-cache shards, shard-cycle scheduler, no interleave"
+    "fixed 70% event mask, sample-cache shards, epoch-cycle scheduler, no interleave"
 )
 
 
@@ -217,9 +217,11 @@ def main() -> None:
             "event_mask_ratio": float(args.event_mask_ratio),
             "event_mask_schedule": args.event_mask_schedule,
             "learning_rate": float(args.learning_rate),
-            # One scheduler cycle per shard keeps LR restarts aligned to the
-            # actual data regime instead of the whole 10-shard epoch.
-            "scheduler_t0_steps": steps_per_shard,
+            # One scheduler cycle per full selected-shard epoch avoids hard LR
+            # restarts at every shard boundary. Validation still runs at shard
+            # boundaries, but the optimizer no longer jumps back to max LR ten
+            # times per epoch.
+            "scheduler_t0_steps": max(1, steps_per_epoch),
             "pretrain_validation_frequency": steps_per_shard,
             "pretrain_validation_steps": validation_batches,
             "checkpoint_archive_steps": max(1, steps_per_epoch),
