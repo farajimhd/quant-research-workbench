@@ -32,10 +32,8 @@ from research.mlops.clickhouse_ingest_sip_flatfiles import (  # noqa: E402
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from research.mlops.news_benzinga_build_normalized_rows import (  # noqa: E402
     NEWS_DATASET_SPECS,
-    NEWS_TABLE_COLUMNS,
-    NEWS_TABLE_STRUCTURE,
 )
-from research.mlops.news_benzinga_clickhouse import create_news_database_and_tables  # noqa: E402
+from research.mlops.news_benzinga_clickhouse import create_news_database_and_tables, merge_tree_settings  # noqa: E402
 
 
 DEFAULT_MANIFEST_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_normalized_rows")
@@ -112,6 +110,7 @@ def main() -> None:
         raise SystemExit(f"normalized manifest does not exist: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     validate_manifest(manifest, manifest_path)
+    apply_manifest_defaults(args, manifest)
 
     parts = load_part_files(args, manifest)
     if args.limit_parts:
@@ -132,10 +131,10 @@ def main() -> None:
 
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     if not args.skip_create_tables and args.execute:
-        create_news_database_and_tables(client, database=args.database, news_table=args.table, storage_policy=args.storage_policy)
+        create_target_tables(client, args, manifest)
         create_part_manifest_table(client, args)
     elif not args.skip_create_tables:
-        print("dry_run=create target/news and file manifest tables", flush=True)
+        print("dry_run=create target and file manifest tables", flush=True)
 
     preflight = preflight_parts(client, args, parts)
     if args.preflight_only:
@@ -193,11 +192,30 @@ def validate_manifest(manifest: dict[str, Any], manifest_path: Path) -> None:
                 raise SystemExit(f"manifest dataset contains no part_files key: {name}")
         return
     columns = list(manifest.get("clickhouse_columns") or [])
-    if columns != NEWS_TABLE_COLUMNS:
-        raise SystemExit("manifest columns do not match current Benzinga news table contract")
+    structure = str(manifest.get("clickhouse_structure") or "").strip()
+    if not columns:
+        raise SystemExit("legacy manifest contains no clickhouse_columns")
+    if not structure:
+        raise SystemExit("legacy manifest contains no clickhouse_structure")
     part_files = manifest.get("normalized_part_files") or []
     if not part_files:
         raise SystemExit("manifest contains no normalized_part_files")
+
+
+def apply_manifest_defaults(args: argparse.Namespace, manifest: dict[str, Any]) -> None:
+    if not is_legacy_single_table_manifest(manifest):
+        return
+    manifest_database = str(manifest.get("clickhouse_target_database") or "").strip()
+    manifest_table = str(manifest.get("clickhouse_target_table") or "").strip()
+    if args.database == DEFAULT_DATABASE and manifest_database:
+        args.database = manifest_database
+    if args.table == DEFAULT_NEWS_TABLE and manifest_table:
+        args.table = manifest_table
+
+
+def is_legacy_single_table_manifest(manifest: dict[str, Any]) -> bool:
+    datasets = manifest.get("datasets")
+    return not (isinstance(datasets, dict) and datasets)
 
 
 def load_part_files(args: argparse.Namespace, manifest: dict[str, Any]) -> list[PartFile]:
@@ -217,7 +235,10 @@ def load_part_files(args: argparse.Namespace, manifest: dict[str, Any]) -> list[
                     continue
                 dataset_items.append((str(name), table, columns, structure, item))
     else:
-        dataset_items = [("event", args.table, NEWS_TABLE_COLUMNS, ", ".join(NEWS_TABLE_STRUCTURE), item) for item in manifest.get("normalized_part_files") or []]
+        columns = list(manifest.get("clickhouse_columns") or [])
+        structure = str(manifest.get("clickhouse_structure") or "")
+        table = str(manifest.get("clickhouse_target_table") or args.table)
+        dataset_items = [("normalized", table, columns, structure, item) for item in manifest.get("normalized_part_files") or []]
 
     for dataset_name, table, columns, structure, item in dataset_items:
         windows_path = Path(str(item.get("path") or ""))
@@ -242,6 +263,34 @@ def load_part_files(args: argparse.Namespace, manifest: dict[str, Any]) -> list[
             )
         )
     return parts
+
+
+def create_target_tables(client: ClickHouseHttpClient, args: argparse.Namespace, manifest: dict[str, Any]) -> None:
+    if is_legacy_single_table_manifest(manifest):
+        create_legacy_normalized_table(client, args, manifest)
+        return
+    create_news_database_and_tables(client, database=args.database, news_table=args.table, storage_policy=args.storage_policy)
+
+
+def create_legacy_normalized_table(client: ClickHouseHttpClient, args: argparse.Namespace, manifest: dict[str, Any]) -> None:
+    table = str(manifest.get("clickhouse_target_table") or args.table)
+    structure = str(manifest.get("clickhouse_structure") or "").strip()
+    if not structure:
+        raise SystemExit("legacy manifest contains no clickhouse_structure")
+    settings = merge_tree_settings(args.storage_policy)
+    client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.database)}")
+    client.execute(
+        f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(table)}
+(
+    {structure}
+)
+ENGINE = ReplacingMergeTree(updated_at_utc)
+PARTITION BY toYYYYMM(published_at_utc)
+ORDER BY (published_date, provider_article_id)
+SETTINGS {settings}
+"""
+    )
 
 
 def preflight_parts(client: ClickHouseHttpClient, args: argparse.Namespace, parts: list[PartFile]) -> dict[int, int]:
