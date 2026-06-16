@@ -33,7 +33,7 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 from pipelines.news.benzinga.news_benzinga_build_normalized_rows import (  # noqa: E402
     NEWS_DATASET_SPECS,
 )
-from pipelines.news.benzinga.news_benzinga_clickhouse import create_news_database_and_tables, merge_tree_settings  # noqa: E402
+from pipelines.news.benzinga.news_benzinga_clickhouse import create_news_database_and_tables  # noqa: E402
 
 
 DEFAULT_MANIFEST_ROOT_WIN = Path("D:/market-data/prepared/benzinga_news_normalized_rows")
@@ -288,7 +288,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(table)}
 ENGINE = ReplacingMergeTree(updated_at_utc)
 PARTITION BY toYYYYMM(published_at_utc)
 ORDER BY (published_date, provider_article_id)
-SETTINGS {settings}
+{settings}
 """
     )
 
