@@ -2,7 +2,7 @@
 
 SEC normalized text extraction is the next stage after archive validation succeeds. This contract describes the target output that extraction scripts should produce.
 
-As of the 2026-06-16 ClickHouse check, `q_live.sec_filing_v2`, `q_live.sec_filing_document_v1`, and `q_live.sec_filing_text_v1` exist. `sec_filing_text_v1` has zero rows, so the text contract below is still the target for the next loader.
+As of the 2026-06-16 ClickHouse check, `q_live.sec_filing_v2`, `q_live.sec_filing_document_v1`, and `q_live.sec_filing_text_v1` exist. `sec_filing_text_v1` has zero rows. The archive-derived extraction target is `sec_filing_document_v2` and `sec_filing_text_v2`.
 
 Important lineage finding: current `q_live.sec_filing_document_v1` is not archive-derived. It was built by migration step 6 from `q_live.sec_filing_v2.primary_document` as a provisional bridge. The archive extractor must not treat the current document rows as the final document source of truth.
 
@@ -89,26 +89,70 @@ filings without document rows: 113,355
 documents per accession: exactly 1
 ```
 
-Therefore `sec_filing_document_v1` should be rebuilt from daily archive `<DOCUMENT>` blocks or superseded by `sec_filing_document_v2`. Creating `v2` is safer until archive-derived coverage and quality are validated.
+Therefore `sec_filing_document_v1` is retained as historical/provisional metadata, while archive-derived extraction writes `sec_filing_document_v2`.
 
-## Text Table: `q_live.sec_filing_text_v1`
+## Archive-Derived Document Table: `q_live.sec_filing_document_v2`
+
+One row per parsed archive `<DOCUMENT>` block:
+
+```sql
+document_id String,
+filing_id String,
+accession_number String,
+accession_number_compact String,
+cik String,
+sequence_number UInt32,
+document_name String,
+document_type LowCardinality(String),
+document_role LowCardinality(String),
+description Nullable(String),
+document_url Nullable(String),
+source_archive_date Date,
+source_archive_member String,
+source_archive_path Nullable(String),
+file_extension LowCardinality(String),
+content_format LowCardinality(String),
+mime_type Nullable(String),
+byte_size UInt64,
+payload_char_count UInt64,
+content_sha256 String,
+text_sha256 Nullable(String),
+has_normalized_text UInt8,
+extraction_status LowCardinality(String),
+extraction_error Nullable(String),
+normalizer_version LowCardinality(String),
+source_run_id String,
+inserted_at DateTime64(3, 'UTC')
+```
+
+`document_role` should be deterministic and should separate primary documents, press releases, material exhibits, proxy documents, prospectuses, XBRL sidecars, graphics, PDFs, and unsupported attachments.
+
+## Text Table: `q_live.sec_filing_text_v2`
 
 One row per normalized text representation:
 
 ```sql
 document_id String,
+filing_id String,
 accession_number String,
+accession_number_compact String,
 cik String,
 text_kind LowCardinality(String),
 text String CODEC(ZSTD(6)),
 text_char_count UInt64,
+text_byte_count UInt64,
+text_sha256 String,
 extraction_method LowCardinality(String),
+normalizer_version LowCardinality(String),
+quality_flags Array(String),
+source_archive_date Date,
+source_archive_member String,
 extracted_at_utc DateTime64(3, 'UTC'),
 source_run_id String,
 inserted_at DateTime64(3, 'UTC')
 ```
 
-The `text` field should contain clean LLM-ready body text only. Do not embed filing metadata headers in the stored text. Training/export jobs can add prompt headers by joining `sec_filing_text_v1` to document and filing metadata.
+The `text` field should contain clean LLM-ready body text only. Do not embed filing metadata headers in the stored text. Training/export jobs can add prompt headers by joining `sec_filing_text_v2` to document and filing metadata.
 
 Recommended `text_kind` values:
 
@@ -131,6 +175,35 @@ Recommended `extraction_method` values:
 | `pdf_text_v1` | PDF text extraction when no better text source exists. |
 | `skipped_binary` | Binary/image/unsupported payload skipped. |
 | `skipped_xbrl` | XBRL sidecar skipped because structured XBRL belongs in fact/frame tables. |
+
+## Skip Table: `q_live.sec_filing_document_skip_v1`
+
+One row per parsed document block that is intentionally not written to `sec_filing_text_v2`:
+
+```sql
+skip_id String,
+document_id String,
+filing_id String,
+accession_number String,
+accession_number_compact String,
+cik String,
+sequence_number UInt32,
+document_name String,
+document_type LowCardinality(String),
+document_role LowCardinality(String),
+source_archive_date Date,
+source_archive_member String,
+content_format LowCardinality(String),
+file_extension LowCardinality(String),
+skip_reason LowCardinality(String),
+quality_flags Array(String),
+extraction_error Nullable(String),
+normalizer_version LowCardinality(String),
+source_run_id String,
+inserted_at DateTime64(3, 'UTC')
+```
+
+This table is for auditability. It lets us prove that images, XBRL sidecars, CSS/JS, unsupported binaries, duplicate equivalent text, or malformed blocks were seen and deliberately skipped.
 
 ## Extraction Rules
 

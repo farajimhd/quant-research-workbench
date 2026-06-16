@@ -164,11 +164,40 @@ document_type equals sec_filing_v2.form_type for all rows
 documents per accession: exactly 1
 ```
 
-Therefore `sec_filing_document_v1` must not be used as the document source of truth for training. The normalized text extractor should parse the downloaded daily archives and either rebuild this table from real `<DOCUMENT>` blocks or write a new `sec_filing_document_v2` until coverage and quality are validated.
+Therefore `sec_filing_document_v1` must not be used as the document source of truth for training. The normalized text extractor should parse the downloaded daily archives and write real `<DOCUMENT>` block metadata to `sec_filing_document_v2`.
 
-`q_live.sec_filing_text_v1` exists but has zero rows. The next extractor should store clean LLM-ready body text only. Prompt headers should be assembled later by joining text rows to filing/document metadata.
+`q_live.sec_filing_text_v1` exists but has zero rows and is superseded for archive-derived extraction by `sec_filing_text_v2`. The next extractor should store clean LLM-ready body text only. Prompt headers should be assembled later by joining text rows to filing/document metadata.
 
 Structured XBRL/fact/frame data already exists in `q_live`, so XBRL sidecars should be skipped by the text extractor and handled through structured SEC features instead.
+
+## Next Pre-Extractor Commands
+
+Run the read-only integrity audit first:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_integrity_audit.py --archive-root-win D:/market-data/sec_core/daily_archives
+```
+
+Create the v2 SEC document/text schema:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_text_v2_schema.py --execute
+```
+
+Then rerun the audit with v2 tables required:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_integrity_audit.py --archive-root-win D:/market-data/sec_core/daily_archives --require-v2-tables
+```
+
+Completed setup on 2026-06-16:
+
+```text
+schema_run: D:/market-data/prepared/sec_text_v2_schema/20260616_180125
+post_schema_audit: D:/market-data/prepared/sec_integrity_audit/20260616_180132
+post_schema_audit_status: fail=0, warn=5
+created_empty_tables: sec_filing_document_v2, sec_filing_text_v2, sec_filing_document_skip_v1
+```
 
 ## Why We Do Not Rerun Full Discovery
 

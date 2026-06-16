@@ -18,6 +18,11 @@ def discover_env_files(repo_root: Path, explicit: str | Path | None = None) -> l
         if raw.strip():
             paths.append(Path(raw.strip()))
     paths.append(repo_root / ".env")
+    for parent in (repo_root, *repo_root.parents):
+        if (parent / "codes").exists() and (parent / "secrets").exists():
+            paths.append(parent / ".env")
+            paths.append(parent / "secrets" / ".env")
+            break
     ml_root = MLOpsPathConfig.from_env().ml_root
     paths.append(ml_root / ".env")
     paths.append(ml_root / "secrets" / ".env")

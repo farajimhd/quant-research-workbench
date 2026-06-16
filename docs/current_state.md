@@ -12,7 +12,7 @@ This file records the working state that should be used before proposing new SEC
 | `qmd-gateway` | Rust service exists for live Massive trades/quotes, bars, indicators, signal catalog, and ClickHouse batching. | Later: run integration tests against live Massive and ClickHouse. |
 | Benzinga historical news | Enriched news has been normalized into legacy single-table JSONEachRow parts. The target ClickHouse table is not present yet. | Preflight ClickHouse `file()` access, then insert into `q_live.benzinga_news_normalized_v1`. |
 | SEC daily archives | Full discovery found corrupt archives. The latest 20-archive redownload validation completed cleanly. | Move to normalized SEC filing text extraction. |
-| SEC normalized text | Not implemented yet. `q_live.sec_filing_text_v1` exists but currently has zero rows. Current `sec_filing_document_v1` is only a synthetic primary-document bridge, not archive-derived. | Build SEC integrity audit, then build archive-derived document/text extractor. |
+| SEC normalized text | Not implemented yet. `q_live.sec_filing_text_v1` exists but currently has zero rows. Current `sec_filing_document_v1` is only a synthetic primary-document bridge, not archive-derived. `sec_filing_document_v2`, `sec_filing_text_v2`, and `sec_filing_document_skip_v1` now exist and are empty. | Build archive-derived document/text extractor. |
 
 ## Verified Benzinga News State
 
@@ -191,7 +191,33 @@ filings without document rows: 113,355
 documents per accession: exactly 1
 ```
 
-The next extractor should use `sec_filing_v2` as the parent metadata source, parse daily archives for real document blocks, and write clean LLM-ready body text without embedded metadata headers. Training/export jobs should add prompt headers by query joins.
+The next extractor should use `sec_filing_v2` as the parent metadata source, parse daily archives for real document blocks into `sec_filing_document_v2`, and write clean LLM-ready body text without embedded metadata headers into `sec_filing_text_v2`. Training/export jobs should add prompt headers by query joins.
+
+Pre-extractor scripts now exist:
+
+```text
+pipelines/sec/edgar/sec_integrity_audit.py
+pipelines/sec/edgar/sec_text_v2_schema.py
+```
+
+The v2 tables were created on 2026-06-16:
+
+```text
+schema_run: D:/market-data/prepared/sec_text_v2_schema/20260616_180125
+created_tables: sec_filing_document_v2, sec_filing_text_v2, sec_filing_document_skip_v1
+rows_after_create: 0 in each table
+```
+
+Post-DDL integrity audit:
+
+```text
+audit_run: D:/market-data/prepared/sec_integrity_audit/20260616_180132
+checks: 25
+pass: 20
+warn: 5
+fail: 0
+expected_warnings: provisional sec_filing_document_v1, empty text tables, sampled XBRL accession orphans
+```
 
 ## Issues Encountered And Resolutions
 
