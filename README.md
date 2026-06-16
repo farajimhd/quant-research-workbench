@@ -18,8 +18,9 @@ drive:
 ```
 
 Make code changes in the laptop repo first. Validate locally when practical,
-commit, push, and then sync the required runtime code to the workstation. Do not
-treat workstation runtime folders as the primary source of truth.
+commit, push, and then sync the required runtime code to the correct workstation
+runtime root. Do not treat workstation runtime folders as the primary source of
+truth.
 
 Research/model versions belong under `research/<model_family>/vN/`. A
 training-capable version should normally include `config.py`, `model.py`,
@@ -31,6 +32,14 @@ cross-version infrastructure there, such as environment loading, secret
 redaction, W&B setup, checkpoint helpers, path conventions, manifests, metrics,
 ClickHouse helpers, seed/device helpers, and shared data-provider helpers.
 Operational workflows belong under `pipelines/`, not `research/mlops/`.
+
+Workstation sync is subsystem-specific. If a task changes
+`research/<model_family>/vN/`, sync that model version and its required shared
+utilities to the corresponding model runtime. If a task changes `pipelines/...`,
+sync it to a pipeline runtime/code root, not inside a model-version folder. If a
+task changes shared `research/mlops` utilities, sync them only to the runtimes
+that depend on those utilities. Docs-only changes usually do not need
+workstation sync unless the document is needed for an active workstation run.
 
 Runnable jobs should prefer Python launchers over PowerShell-only workflows. A
 launcher should be runnable with `python run_train.py`, show its effective CLI
@@ -50,10 +59,11 @@ variables or env-file discovery and redact values for keys such as `*_KEY`,
 `*_TOKEN`, `*_SECRET`, and `*_PASSWORD`.
 
 Before finishing code changes, review the modified files, run compile/smoke
-checks when possible, sync workstation runtime code when the change affects
-workstation training, stage only relevant files, commit with a meaningful
-conventional-style message, and push to the configured remote branch. Do not
-commit temporary files, caches, logs, secrets, or unrelated dirty files.
+checks when possible, sync workstation runtime code to the right subsystem root
+when the change affects workstation execution, stage only relevant files, commit
+with a meaningful conventional-style message, and push to the configured remote
+branch. Do not commit temporary files, caches, logs, secrets, or unrelated dirty
+files.
 
 If a task starts a server or long-running helper, stop it gracefully before
 finishing. For current operational state and runbooks, start with
