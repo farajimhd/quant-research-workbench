@@ -88,6 +88,30 @@ class TrainingReporter:
         self._last_refresh_at = 0.0
         self._bottom_padding_lines = 5
 
+    @staticmethod
+    def _format_duration(seconds: float | None) -> str:
+        if seconds is None or seconds <= 0:
+            return "--"
+        seconds = float(seconds)
+        hours, remainder = divmod(int(seconds), 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return f"{hours:d}h {minutes:02d}m"
+        if minutes:
+            return f"{minutes:d}m {secs:02d}s"
+        return f"{secs:d}s"
+
+    @staticmethod
+    def _format_finish_time(seconds_from_now: float | None) -> str:
+        if seconds_from_now is None or seconds_from_now <= 0:
+            return "--"
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(time.time() + float(seconds_from_now)))
+
+    def _latest_step_seconds(self) -> float:
+        if self.history:
+            return sum(self.history) / len(self.history)
+        return max(0.0, float(self.state.step_seconds))
+
     def __enter__(self) -> "TrainingReporter":
         if self.layout in {"auto", "rich"}:
             try:
@@ -224,6 +248,17 @@ class TrainingReporter:
         epoch_progress = Progress(TextColumn("[bold]Epoch"), BarColumn(bar_width=None), TextColumn("{task.percentage:>6.2f}%"), expand=True)
         epoch_progress.add_task("epoch", total=100.0, completed=max(0.0, min(100.0, state.epoch_progress_pct)))
 
+        elapsed_seconds = max(0.0, time.perf_counter() - self.started)
+        avg_step_seconds = self._latest_step_seconds()
+        total_remaining_steps = max(0, total_steps - min(state.step, total_steps))
+        shard_remaining_steps = max(0, state.shard_steps - state.shard_step)
+        epoch_step_estimate = max(1, state.shard_count * max(1, state.shard_steps))
+        epoch_completed_steps = int(round(max(0.0, min(100.0, state.epoch_progress_pct)) / 100.0 * epoch_step_estimate))
+        epoch_remaining_steps = max(0, epoch_step_estimate - epoch_completed_steps)
+        shard_eta_seconds = shard_remaining_steps * avg_step_seconds if avg_step_seconds > 0 else None
+        epoch_eta_seconds = epoch_remaining_steps * avg_step_seconds if avg_step_seconds > 0 else None
+        total_eta_seconds = total_remaining_steps * avg_step_seconds if avg_step_seconds > 0 else None
+
         summary = Table.grid(expand=False, padding=(0, 4))
         summary.add_column(justify="left", no_wrap=True)
         summary.add_column(justify="left", no_wrap=True)
@@ -231,6 +266,9 @@ class TrainingReporter:
         summary.add_row(f"[bold]Step[/] {step_text}", f"[bold]Batch[/] {state.batch_size:,}")
         summary.add_row(f"[bold]Samples[/] {state.samples_seen_total:,}", f"[bold]Speed[/] {state.samples_per_second:,.1f}/s")
         summary.add_row(f"[bold]Epoch[/] {state.epoch}/{state.epochs}", f"[bold]Shard[/] {state.shard_index}/{state.shard_count} step {state.shard_step}/{state.shard_steps}")
+        summary.add_row(f"[bold]Elapsed[/] {self._format_duration(elapsed_seconds)}", f"[bold]Step avg[/] {avg_step_seconds:.3f}s")
+        summary.add_row(f"[bold]Shard ETA[/] {self._format_duration(shard_eta_seconds)}", f"[bold]Epoch ETA[/] {self._format_duration(epoch_eta_seconds)}")
+        summary.add_row(f"[bold]Run ETA[/] {self._format_duration(total_eta_seconds)}", f"[bold]Finish[/] {self._format_finish_time(total_eta_seconds)}")
         summary.add_row(f"[bold]Run[/] {state.run_name}", f"[bold]Device[/] {state.device}")
         summary.add_row(f"[bold]Data[/] {state.data_source}", f"[bold]Params[/] {state.model_parameters:,}")
 
@@ -319,5 +357,6 @@ class TrainingReporter:
             f"loss={state.loss:.6f} balanced_bit_acc={state.event_balanced_bit_acc_pct:.3f}% "
             f"bit_lift={state.event_bit_acc_lift_pct:+.3f}% byte_lift={state.byte_exact_lift_pct:+.3f}% "
             f"step_s={state.step_seconds:.3f} data_s={state.data_wait_seconds:.3f} "
+            f"elapsed={self._format_duration(time.perf_counter() - self.started)} "
             f"gpu_alloc_gib={state.gpu_allocated_gib:.2f}"
         )
