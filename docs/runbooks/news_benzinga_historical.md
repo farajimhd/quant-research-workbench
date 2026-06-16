@@ -32,7 +32,13 @@ So the normalized JSONEachRow files are present on disk, but the current corpus 
 
 ## Preflight
 
-Run on the workstation:
+Preferred module command:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_clickhouse_file_ingest --manifest-json D:/market-data/prepared/benzinga_news_normalized_rows/20260611_011906/benzinga_news_normalized_manifest.json --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --preflight-only
+```
+
+Existing workstation compatibility command:
 
 ```powershell
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_clickhouse_file_ingest.py --manifest-json D:/market-data/prepared/benzinga_news_normalized_rows/20260611_011906/benzinga_news_normalized_manifest.json --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --preflight-only
@@ -49,7 +55,15 @@ If this fails, do not insert. Fix path mapping or manifest/table contract first.
 
 ## Insert
 
-Run only after preflight succeeds:
+Run only after preflight succeeds.
+
+Preferred module command:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_clickhouse_file_ingest --manifest-json D:/market-data/prepared/benzinga_news_normalized_rows/20260611_011906/benzinga_news_normalized_manifest.json --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --execute
+```
+
+Existing workstation compatibility command:
 
 ```powershell
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\news_benzinga_clickhouse_file_ingest.py --manifest-json D:/market-data/prepared/benzinga_news_normalized_rows/20260611_011906/benzinga_news_normalized_manifest.json --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --execute

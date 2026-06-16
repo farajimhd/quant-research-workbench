@@ -11,7 +11,7 @@ This file records the working state that should be used before proposing new SEC
 | Live trading app | UI and broker/data separation work exists, but historical data cleanup temporarily took priority. | Resume after historical news and SEC ingestion are stable. Keep live trading code separate from semi-auto modules. |
 | `qmd-gateway` | Rust service exists for live Massive trades/quotes, bars, indicators, signal catalog, and ClickHouse batching. | Later: run integration tests against live Massive and ClickHouse. |
 | Benzinga historical news | Enriched news has been normalized into legacy single-table JSONEachRow parts. The target ClickHouse table is not present yet. | Preflight ClickHouse `file()` access, then insert into `q_live.benzinga_news_normalized_v1`. |
-| SEC daily archives | Full discovery found corrupt archives. The latest delete/redownload loop completed, and validation of the 20 downloaded archives is currently running on the workstation. | Wait for `20260616_135437` validation to finish; then handle any remaining failures only. |
+| SEC daily archives | Full discovery found corrupt archives. The latest 20-archive redownload validation completed cleanly. | Move to normalized SEC filing text extraction. |
 | SEC normalized text | Not implemented yet. `q_live.sec_filing_text_v1` exists but currently has zero rows. | Build extractor only after archive validation is clean. |
 
 ## Verified Benzinga News State
@@ -155,12 +155,17 @@ Latest validation run detected on the workstation share:
 run_root: D:/market-data/prepared/sec_downloaded_archive_validation/20260616_135437
 manifest: D:/market-data/prepared/sec_downloaded_archive_validation/20260616_135437/validation_manifest.json
 selected_archive_count: 20
-status: in_progress_or_not_yet_written
-archive_summary.jsonl size at scan time: 0 bytes
-scan_time_local: 2026-06-16T07:39:54-07:00
+status: complete
+archives: 20
+completed_archives: 20
+parse_errors: 0
+filings: 83,781
+documents: 892,766
+archive_bytes: 49,398,168,737
+wall_seconds: 3,570.021
 ```
 
-The user reported this 20-archive validation is executing on the workstation. Treat this run as in-progress until an aggregate summary or non-empty archive summary appears.
+All 20 archive summaries are `ok`. The SEC archive recovery loop is clean now.
 
 Current `q_live` SEC table state from ClickHouse:
 
@@ -184,4 +189,4 @@ This means SEC filing/document metadata exists in `q_live`, but normalized filin
 | SEC validator smoke failed from laptop. | Downloader manifests used workstation-local `D:\...` paths. | Added archive-root remapping options to validator. |
 | 68 replacement archives still had 19 truncated files. | Some redownloads also produced incomplete gzip streams. | Repeat delete/redownload/targeted-validate loop for only the remaining failures. |
 | Benzinga ClickHouse preflight rejected manifest columns. | Normalized output was the older 42-column single-table contract; script expected newer 34-column event table. | Updated `news_benzinga_clickhouse_file_ingest.py` to honor legacy manifest columns and structure. |
-| `research/mlops` is overloaded. | Operational pipelines, research utilities, migration scripts, and runbooks all accumulated in one folder. | New docs define the target repository organization before moving files. |
+| `research/mlops` is overloaded. | Operational pipelines, research utilities, migration scripts, and runbooks all accumulated in one folder. | SEC and Benzinga implementations now live under `pipelines/`; old `research/mlops` paths remain as wrappers. |

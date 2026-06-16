@@ -1,6 +1,6 @@
 # Repository Organization Plan
 
-The current repository mixes production services, historical ingestion scripts, research utilities, and one-off migration tools. The target organization should separate code by runtime ownership and data domain.
+The repository used to mix production services, historical ingestion scripts, research utilities, and one-off migration tools. The current direction is to separate code by runtime ownership and data domain.
 
 ## Target Layout
 
@@ -41,7 +41,7 @@ Keep only reusable utilities that are shared across research versions and pipeli
 
 Do not keep domain workflows here long term. SEC, news, SIP, and reference-data scripts should move to `pipelines/`.
 
-## Proposed Moves
+## Implemented Moves
 
 | Current Pattern | Target Folder |
 | --- | --- |
@@ -51,6 +51,10 @@ Do not keep domain workflows here long term. SEC, news, SIP, and reference-data 
 | `research/mlops/clickhouse_load_market_references.py` | `pipelines/reference_data/` |
 | `research/mlops/migration/*` | `pipelines/reference_data/migration/` or `pipelines/sec/edgar/migration/` depending on table ownership |
 
+The Benzinga and SEC moves are implemented. The old `research/mlops/news_benzinga_*.py` and `research/mlops/sec_*.py` paths are now compatibility wrappers that import and execute the moved modules.
+
+The market SIP and reference-data moves are still pending.
+
 ## Compatibility Rule
 
 Do not break active workstation commands in one large move. Use a two-stage migration:
@@ -58,23 +62,15 @@ Do not break active workstation commands in one large move. Use a two-stage migr
 1. Move the real implementation to the target folder.
 2. Leave a temporary wrapper at the old `research/mlops/...` path that imports or executes the new module and prints the new path.
 
-After active historical SEC/news loads are complete, remove wrappers and stale scripts in a dedicated cleanup commit.
+After active historical SEC/news loads are complete and workstation runtime guides are updated, remove wrappers in a dedicated cleanup commit.
 
 ## Active Scripts To Keep Working During Migration
 
-These paths are currently used by workstation commands and should keep wrappers if moved:
+These old paths are currently compatibility wrappers:
 
 ```text
-research/mlops/news_benzinga_clickhouse_file_ingest.py
-research/mlops/news_benzinga_build_normalized_rows.py
-research/mlops/news_benzinga_raw_download.py
-research/mlops/news_benzinga_url_inventory.py
-research/mlops/news_benzinga_url_fetch_plan.py
-research/mlops/news_benzinga_url_download.py
-research/mlops/sec_daily_feed_archive_download.py
-research/mlops/sec_delete_failed_archives.py
-research/mlops/sec_validate_downloaded_archives.py
-research/mlops/sec_archive_content_discovery.py
+research/mlops/news_benzinga_*.py
+research/mlops/sec_*.py
 ```
 
 ## Candidates For Quarantine Or Removal
@@ -92,4 +88,3 @@ research/mlops/news_benzinga_url_enrich.py   # superseded by separate URL downlo
 ```
 
 The acceptance backfill helpers should be kept archived until SEC filing text extraction is validated, because they document how `accepted_at_utc` was recovered.
-

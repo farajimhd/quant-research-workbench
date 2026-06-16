@@ -48,19 +48,29 @@ reused: 1,841
 status: ok
 ```
 
-The active validation run selected those 20 downloaded archives:
+The validation run selected those 20 downloaded archives and completed cleanly:
 
 ```text
 run_root: D:/market-data/prepared/sec_downloaded_archive_validation/20260616_135437
 selected_archive_count: 20
-status_at_last_scan: in progress; archive_summary.jsonl was still 0 bytes
+completed_archives: 20
+parse_errors: 0
+status: ok
 ```
 
-Do not start another validation of the same manifest while this workstation process is running.
+Do not start another validation of the same manifest unless the archive files change.
 
 ## Delete Remaining Failed Archives
 
-Run on the workstation after a validation run reports failures. Update the paths and expected count to the latest failed validation run:
+Run on the workstation after a validation run reports failures. Update the paths and expected count to the latest failed validation run.
+
+Preferred module command:
+
+```powershell
+python -m pipelines.sec.edgar.sec_delete_failed_archives --archive-summary-jsonl D:/market-data/prepared/sec_downloaded_archive_validation/<validation_run>/archive_summary.jsonl --source-archive-root-win D:/market-data/sec_core/daily_archives --archive-root-win D:/market-data/sec_core/daily_archives --expected-count <failed_archive_count> --execute
+```
+
+Existing workstation compatibility command:
 
 ```powershell
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_delete_failed_archives.py --archive-summary-jsonl D:/market-data/prepared/sec_downloaded_archive_validation/<validation_run>/archive_summary.jsonl --source-archive-root-win D:/market-data/sec_core/daily_archives --archive-root-win D:/market-data/sec_core/daily_archives --expected-count <failed_archive_count> --execute
@@ -76,7 +86,15 @@ Only use ACL repair on the exact failed-file list, never as a recursive folder o
 
 ## Redownload Missing Archives
 
-Run without `--force`:
+Run without `--force`.
+
+Preferred module command:
+
+```powershell
+python -m pipelines.sec.edgar.sec_daily_feed_archive_download --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_daily_feed_archives --download-concurrency 2
+```
+
+Existing workstation compatibility command:
 
 ```powershell
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_daily_feed_archive_download.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_daily_feed_archives --download-concurrency 2
@@ -87,6 +105,14 @@ Why no `--force`: existing valid archives are reused, and only missing files are
 ## Validate Only Downloaded Archives
 
 Use the latest downloader manifest. Set `--expected-count` to the `downloaded` count in the latest summary.
+
+Preferred module command:
+
+```powershell
+python -m pipelines.sec.edgar.sec_validate_downloaded_archives --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/<latest_manifest>.jsonl --expected-count <downloaded_count> --archive-workers 4 --pending-multiplier 1 --sample-limit 1000
+```
+
+Existing workstation compatibility command:
 
 ```powershell
 python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\research\mlops\sec_validate_downloaded_archives.py --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/<latest_manifest>.jsonl --expected-count <downloaded_count> --archive-workers 4 --pending-multiplier 1 --sample-limit 1000
@@ -101,14 +127,14 @@ parse_errors=0
 
 Only after this is clean should we build normalized SEC filing text extraction.
 
-For the currently running 20-archive validation, wait for one of these files to appear or update:
+For the completed 20-archive validation, these files contain the final status:
 
 ```text
 D:/market-data/prepared/sec_downloaded_archive_validation/20260616_135437/aggregate_summary.json
 D:/market-data/prepared/sec_downloaded_archive_validation/20260616_135437/archive_summary.jsonl
 ```
 
-If `archive_summary.jsonl` remains 0 bytes while the process is still running, do not infer success or failure from that file.
+Success was confirmed by `aggregate_summary.json` and by all 20 rows in `archive_summary.jsonl` having status `ok`.
 
 ## Why We Do Not Rerun Full Discovery
 
