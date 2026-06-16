@@ -98,7 +98,7 @@ def masked_event_bce_loss(
     masked_events = max(1, int(logits.shape[1]))
     calculate_unweighted_metric = objective == "unweighted" or metric_level != "loss_only"
     unweighted_loss: torch.Tensor | None = None
-    weighted_loss_sum: torch.Tensor | None = None
+    weighted_loss_mean: torch.Tensor | None = None
     weighted_term_count = int(logits.numel())
     if logits.is_cuda:
         with torch.amp.autocast("cuda", enabled=False):
@@ -106,13 +106,13 @@ def masked_event_bce_loss(
                 unweighted_loss = F.binary_cross_entropy_with_logits(logits.float(), target_bits.float())
                 loss = unweighted_loss
             else:
-                weighted_loss_sum = F.binary_cross_entropy_with_logits(
+                weighted_loss_mean = F.binary_cross_entropy_with_logits(
                     logits.float(),
                     target_bits.float(),
                     weight=semantic_weights.float(),
-                    reduction="sum",
+                    reduction="mean",
                 )
-                loss = weighted_loss_sum / batch_size
+                loss = weighted_loss_mean
                 if calculate_unweighted_metric:
                     unweighted_loss = F.binary_cross_entropy_with_logits(logits.float(), target_bits.float())
     else:
@@ -120,13 +120,13 @@ def masked_event_bce_loss(
             unweighted_loss = F.binary_cross_entropy_with_logits(logits, target_bits)
             loss = unweighted_loss
         else:
-            weighted_loss_sum = F.binary_cross_entropy_with_logits(
+            weighted_loss_mean = F.binary_cross_entropy_with_logits(
                 logits,
                 target_bits,
                 weight=semantic_weights,
-                reduction="sum",
+                reduction="mean",
             )
-            loss = weighted_loss_sum / batch_size
+            loss = weighted_loss_mean
             if calculate_unweighted_metric:
                 unweighted_loss = F.binary_cross_entropy_with_logits(logits, target_bits)
     loss = loss * float(config.event_weight)
@@ -150,9 +150,10 @@ def masked_event_bce_loss(
     }
     if unweighted_loss is not None:
         metrics["pretrain/loss_event_unweighted"] = float(unweighted_loss.detach().cpu())
-    if weighted_loss_sum is not None:
-        metrics["pretrain/loss_event_weighted_sum"] = float(weighted_loss_sum.detach().cpu())
-        metrics["pretrain/loss_event_weight_mass"] = float(batch_size)
+    if weighted_loss_mean is not None:
+        metrics["pretrain/loss_event_weighted_mean"] = float(weighted_loss_mean.detach().cpu())
+        metrics["pretrain/loss_event_weighted_sum_estimate"] = float((weighted_loss_mean.detach() * weighted_term_count).cpu())
+        metrics["pretrain/loss_event_weight_mass"] = float(weighted_term_count)
         metrics["pretrain/loss_event_masked_events_normalizer"] = float(masked_events)
     if metric_level == "loss_only":
         # Full reconstruction metrics are useful, but they are not free at large
