@@ -12,7 +12,7 @@ This file records the working state that should be used before proposing new SEC
 | `qmd-gateway` | Rust service exists for live Massive trades/quotes, bars, indicators, signal catalog, and ClickHouse batching. | Later: run integration tests against live Massive and ClickHouse. |
 | Benzinga historical news | Enriched news has been normalized into legacy single-table JSONEachRow parts. The target ClickHouse table is not present yet. | Preflight ClickHouse `file()` access, then insert into `q_live.benzinga_news_normalized_v1`. |
 | SEC daily archives | Full discovery found corrupt archives. The latest 20-archive redownload validation completed cleanly. | Move to normalized SEC filing text extraction. |
-| SEC normalized text | Not implemented yet. `q_live.sec_filing_text_v1` exists but currently has zero rows. Current `sec_filing_document_v1` is only a synthetic primary-document bridge, not archive-derived. `sec_filing_document_v2`, `sec_filing_text_v2`, and `sec_filing_document_skip_v1` now exist and are empty. | Build archive-derived document/text extractor. |
+| SEC normalized text | Extractor and ClickHouse file loader now exist. `sec_filing_document_v2`, `sec_filing_text_v2`, and `sec_filing_document_skip_v1` exist and are the intended targets. A capped 2025 smoke produced document/text/skip parts and loader preflight passed. | Run full extractor on the workstation, then preflight and execute the loader. |
 
 ## Verified Benzinga News State
 
@@ -193,11 +193,13 @@ documents per accession: exactly 1
 
 The next extractor should use `sec_filing_v2` as the parent metadata source, parse daily archives for real document blocks into `sec_filing_document_v2`, and write clean LLM-ready body text without embedded metadata headers into `sec_filing_text_v2`. Training/export jobs should add prompt headers by query joins.
 
-Pre-extractor scripts now exist:
+SEC text setup/extraction scripts now exist:
 
 ```text
 pipelines/sec/edgar/sec_integrity_audit.py
 pipelines/sec/edgar/sec_text_v2_schema.py
+pipelines/sec/edgar/sec_filing_text_extract_parts.py
+pipelines/sec/edgar/sec_filing_text_clickhouse_file_ingest.py
 ```
 
 The v2 tables were created on 2026-06-16:
@@ -218,6 +220,21 @@ warn: 5
 fail: 0
 expected_warnings: provisional sec_filing_document_v1, empty text tables, sampled XBRL accession orphans
 ```
+
+SEC text smoke on the workstation share:
+
+```text
+extract_run: D:/market-data/prepared/sec_filing_text_parts_smoke/20260616_181844
+archive: 2025-01-02
+filings: 25
+document_rows: 40
+text_rows: 8
+skip_rows: 32
+errors: 4
+loader_preflight: passed through ClickHouse file()
+```
+
+Use `pipelines/sec/edgar/sec_filing_text_extract_parts_guide.md` and `pipelines/sec/edgar/sec_filing_text_clickhouse_file_ingest_guide.md` for the next workstation commands.
 
 ## Issues Encountered And Resolutions
 

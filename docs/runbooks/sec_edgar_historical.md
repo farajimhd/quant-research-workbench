@@ -1,6 +1,6 @@
 # SEC EDGAR Historical Runbook
 
-This runbook documents the current archive recovery and validation flow. The next implementation after validation is normalized filing text extraction.
+This runbook documents the current archive recovery, validation, and normalized filing text flow.
 
 ## Current State
 
@@ -125,7 +125,7 @@ failed_archives=0
 parse_errors=0
 ```
 
-Only after this is clean should we build normalized SEC filing text extraction.
+Only after this is clean should normalized SEC filing text extraction run.
 
 For the completed 20-archive validation, these files contain the final status:
 
@@ -166,11 +166,11 @@ documents per accession: exactly 1
 
 Therefore `sec_filing_document_v1` must not be used as the document source of truth for training. The normalized text extractor should parse the downloaded daily archives and write real `<DOCUMENT>` block metadata to `sec_filing_document_v2`.
 
-`q_live.sec_filing_text_v1` exists but has zero rows and is superseded for archive-derived extraction by `sec_filing_text_v2`. The next extractor should store clean LLM-ready body text only. Prompt headers should be assembled later by joining text rows to filing/document metadata.
+`q_live.sec_filing_text_v1` exists but has zero rows and is superseded for archive-derived extraction by `sec_filing_text_v2`. The extractor stores clean LLM-ready body text only. Prompt headers should be assembled later by joining text rows to filing/document metadata.
 
 Structured XBRL/fact/frame data already exists in `q_live`, so XBRL sidecars should be skipped by the text extractor and handled through structured SEC features instead.
 
-## Next Pre-Extractor Commands
+## Extract SEC Filing Text
 
 Run the read-only integrity audit first:
 
@@ -197,6 +197,42 @@ schema_run: D:/market-data/prepared/sec_text_v2_schema/20260616_180125
 post_schema_audit: D:/market-data/prepared/sec_integrity_audit/20260616_180132
 post_schema_audit_status: fail=0, warn=5
 created_empty_tables: sec_filing_document_v2, sec_filing_text_v2, sec_filing_document_skip_v1
+```
+
+Smoke extraction command:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_extract_parts.py --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_filing_text_parts_smoke --start-date 2025-01-02 --end-date 2025-01-03 --archive-workers 1 --max-filings-per-archive 25 --sample-limit 20 --progress-every 1
+```
+
+Full extraction command:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_extract_parts.py --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_filing_text_parts --start-date 2019-01-01 --end-date 2026-06-17 --archive-workers 4 --pending-multiplier 2 --sample-limit 1000 --progress-every 1
+```
+
+Preflight the generated part files through ClickHouse:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_clickhouse_file_ingest.py --manifest-json D:/market-data/prepared/sec_filing_text_parts/<run_id>/sec_filing_text_extract_manifest.json --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --preflight-only
+```
+
+Load after preflight succeeds:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_clickhouse_file_ingest.py --manifest-json D:/market-data/prepared/sec_filing_text_parts/<run_id>/sec_filing_text_extract_manifest.json --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --execute
+```
+
+Laptop smoke completed on 2026-06-16:
+
+```text
+extract_run: D:/market-data/prepared/sec_filing_text_parts_smoke/20260616_181844
+archives: 1
+filings: 25
+document_rows: 40
+text_rows: 8
+skip_rows: 32
+loader_preflight: passed
 ```
 
 ## Why We Do Not Rerun Full Discovery
