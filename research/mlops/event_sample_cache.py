@@ -371,8 +371,9 @@ def iter_event_sample_cache_epoch_batches(
                     "shard_step": shard_step,
                     "shard_steps": shard_steps,
                     "profile": {
-                        "data/shard_load_seconds": load_seconds if shard_step == 1 else 0.0,
-                        "data/shard_shuffle_seconds": shuffle_seconds if shard_step == 1 else 0.0,
+                        "data/shard_load_seconds": load_seconds,
+                        "data/shard_shuffle_seconds": shuffle_seconds,
+                        "data/shard_first_step": 1.0 if shard_step == 1 else 0.0,
                         "data/shard_samples": float(records.shape[0]),
                         "data/shard_usable_samples": float(usable_samples),
                         "data/shard_dropped_samples": float(dropped_samples),
@@ -443,8 +444,9 @@ def iter_interleaved_event_sample_cache_epoch_batches(
                 "shard_step": shard_step,
                 "shard_steps": shard_steps,
                 "profile": {
-                    "data/shard_load_seconds": load_seconds if shard_step == 1 else 0.0,
-                    "data/shard_shuffle_seconds": shuffle_seconds if shard_step == 1 else 0.0,
+                    "data/shard_load_seconds": load_seconds,
+                    "data/shard_shuffle_seconds": shuffle_seconds,
+                    "data/shard_first_step": 1.0 if shard_step == 1 else 0.0,
                     "data/shard_samples": float(records.shape[0]),
                     "data/shard_usable_samples": float(usable_samples),
                     "data/shard_dropped_samples": float(dropped_samples),

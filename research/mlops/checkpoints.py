@@ -53,7 +53,8 @@ class AsyncCheckpointManager:
         self,
         *,
         step: int,
-        payload: dict[str, Any],
+        payload: dict[str, Any] | None = None,
+        payload_factory: Callable[[], dict[str, Any]] | None = None,
         train_metrics: dict[str, float] | None = None,
         val_metrics: dict[str, float] | None = None,
         force: bool = False,
@@ -85,6 +86,10 @@ class AsyncCheckpointManager:
         if latest_only and self.policy.skip_latest_if_busy and self.jobs.qsize() > 0:
             self._message(f"Skipped latest checkpoint at step {step}; checkpoint writer is still busy.")
             return
+        if payload is None:
+            if payload_factory is None:
+                raise ValueError("Checkpoint payload or payload_factory is required when a checkpoint is due.")
+            payload = payload_factory()
         cpu_payload = to_cpu_payload(payload)
         event = {
             "step": step,

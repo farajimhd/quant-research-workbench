@@ -224,6 +224,7 @@ def main() -> None:
             "scheduler_t0_steps": max(1, steps_per_epoch),
             "pretrain_validation_frequency": steps_per_shard,
             "pretrain_validation_steps": validation_batches,
+            "checkpoint_latest_steps": steps_per_shard,
             "checkpoint_archive_steps": max(1, steps_per_epoch),
             "device": args.device,
             "wandb_project": args.wandb_project,

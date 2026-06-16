@@ -13,6 +13,7 @@ from research.masked_event_model.v7.model import EventMAEOutput
 BYTE_VALUE_BIT_WEIGHTS = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], dtype=torch.float32)
 MAX_SEMANTIC_BIT_WEIGHT = float(BYTE_VALUE_BIT_WEIGHTS[-1])
 BYTE_MAX_VALUE = 255.0
+EVENT_BITS_PER_SAMPLE = 16 * 8
 PSNR_EPSILON = 1e-12
 
 
@@ -53,6 +54,7 @@ def build_semantic_event_bit_weights() -> torch.Tensor:
 
 
 SEMANTIC_EVENT_BIT_WEIGHTS = build_semantic_event_bit_weights()
+_BIT_LOOKUP_CACHE: dict[tuple[str, torch.dtype], torch.Tensor] = {}
 
 
 @dataclass(slots=True)
@@ -80,7 +82,7 @@ def masked_event_bce_loss(
     """
 
     logits = output.event_bit_logits
-    target_bytes = output.target_events_uint8.long()
+    target_bytes = output.target_events_uint8
     target_bits = unpack_bits(target_bytes).to(dtype=logits.dtype, device=logits.device)
     raw_semantic_weights = SEMANTIC_EVENT_BIT_WEIGHTS.to(device=logits.device, dtype=logits.dtype).view(1, 1, 16, 8)
     # Scale each semantic bit by the total numeric byte significance. For a
@@ -89,38 +91,55 @@ def masked_event_bce_loss(
     # per-bit emphasis without multiplying the objective by the raw bit values.
     semantic_weight_normalizer = BYTE_VALUE_BIT_WEIGHTS.to(device=logits.device, dtype=logits.dtype).sum()
     semantic_weights = raw_semantic_weights / semantic_weight_normalizer
+    objective = str(config.objective).lower()
+    if objective not in {"weighted", "unweighted"}:
+        raise ValueError(f"Unsupported loss objective {config.objective!r}; expected 'weighted' or 'unweighted'.")
+    batch_size = max(1, int(logits.shape[0]))
+    masked_events = max(1, int(logits.shape[1]))
+    calculate_unweighted_metric = objective == "unweighted" or metric_level != "loss_only"
+    unweighted_loss: torch.Tensor | None = None
+    weighted_loss_sum: torch.Tensor | None = None
+    weighted_term_count = int(logits.numel())
     if logits.is_cuda:
         with torch.amp.autocast("cuda", enabled=False):
-            unweighted_loss = F.binary_cross_entropy_with_logits(logits.float(), target_bits.float())
-            weighted_loss_terms = F.binary_cross_entropy_with_logits(
-                logits.float(),
-                target_bits.float(),
-                weight=semantic_weights.float(),
-                reduction="none",
-            )
-            batch_size = max(1, int(weighted_loss_terms.shape[0]))
-            loss = weighted_loss_terms.sum() / batch_size
+            if objective == "unweighted":
+                unweighted_loss = F.binary_cross_entropy_with_logits(logits.float(), target_bits.float())
+                loss = unweighted_loss
+            else:
+                weighted_loss_sum = F.binary_cross_entropy_with_logits(
+                    logits.float(),
+                    target_bits.float(),
+                    weight=semantic_weights.float(),
+                    reduction="sum",
+                )
+                loss = weighted_loss_sum / batch_size
+                if calculate_unweighted_metric:
+                    unweighted_loss = F.binary_cross_entropy_with_logits(logits.float(), target_bits.float())
     else:
-        unweighted_loss = F.binary_cross_entropy_with_logits(logits, target_bits)
-        weighted_loss_terms = F.binary_cross_entropy_with_logits(
-            logits,
-            target_bits,
-            weight=semantic_weights,
-            reduction="none",
-        )
-        batch_size = max(1, int(weighted_loss_terms.shape[0]))
-        loss = weighted_loss_terms.sum() / batch_size
+        if objective == "unweighted":
+            unweighted_loss = F.binary_cross_entropy_with_logits(logits, target_bits)
+            loss = unweighted_loss
+        else:
+            weighted_loss_sum = F.binary_cross_entropy_with_logits(
+                logits,
+                target_bits,
+                weight=semantic_weights,
+                reduction="sum",
+            )
+            loss = weighted_loss_sum / batch_size
+            if calculate_unweighted_metric:
+                unweighted_loss = F.binary_cross_entropy_with_logits(logits, target_bits)
     loss = loss * float(config.event_weight)
 
     metrics_started = time.perf_counter()
     metrics = {
         "pretrain/loss_total": float(loss.detach().cpu()),
-        "pretrain/loss_event_unweighted": float(unweighted_loss.detach().cpu()),
+        "pretrain/loss_objective_weighted": float(objective == "weighted"),
         "pretrain/loss_event_semantic_weight_mean": float(semantic_weights.mean().detach().cpu()),
         "pretrain/loss_event_semantic_raw_weight_mean": float(raw_semantic_weights.mean().detach().cpu()),
         "pretrain/loss_event_semantic_normalizer": float(semantic_weight_normalizer.detach().cpu()),
-        "pretrain/loss_event_weighted_terms": float(weighted_loss_terms.numel()),
-        "pretrain/loss_event_weighted_terms_per_event": float(weighted_loss_terms.shape[-1] * weighted_loss_terms.shape[-2]),
+        "pretrain/loss_event_weighted_terms": float(weighted_term_count),
+        "pretrain/loss_event_weighted_terms_per_event": float(EVENT_BITS_PER_SAMPLE),
         "pretrain/loss_event_batch_size_normalizer": float(batch_size),
         "mask/event_mask_ratio_pct": float(output.actual_mask_ratio * 100.0),
         "mask/event_requested_mask_ratio_pct": float(output.requested_mask_ratio * 100.0),
@@ -129,6 +148,12 @@ def masked_event_bce_loss(
         "mask/event_count": float(output.event_count),
         "mask/event_mask_policy_id": float(output.mask_policy_id),
     }
+    if unweighted_loss is not None:
+        metrics["pretrain/loss_event_unweighted"] = float(unweighted_loss.detach().cpu())
+    if weighted_loss_sum is not None:
+        metrics["pretrain/loss_event_weighted_sum"] = float(weighted_loss_sum.detach().cpu())
+        metrics["pretrain/loss_event_weight_mass"] = float(batch_size)
+        metrics["pretrain/loss_event_masked_events_normalizer"] = float(masked_events)
     if metric_level == "loss_only":
         # Full reconstruction metrics are useful, but they are not free at large
         # batch sizes. The training loop can request loss-only steps and reserve
@@ -149,7 +174,8 @@ def masked_event_bce_loss(
         target_bool = target_bits.bool()
         bit_acc = (hard_bits == target_bool).float().mean()
         hard_bytes = pack_bits(hard_bits)
-        exact = (hard_bytes == target_bytes).float().mean()
+        target_bytes_long = target_bytes.long()
+        exact = (hard_bytes == target_bytes_long).float().mean()
         confidence = (probabilities - 0.5).abs() * 2.0
         metrics.update(
             {
@@ -176,7 +202,7 @@ def masked_event_bce_loss(
             hard_mae = (hard_bytes.float() - target_float).abs().mean()
             soft_bytes = (probabilities.float() * BYTE_VALUE_BIT_WEIGHTS.to(probabilities.device)).sum(dim=-1)
             soft_mae = (soft_bytes - target_float).abs().mean()
-            mode_count = torch.bincount(target_bytes.flatten(), minlength=256).max()
+            mode_count = torch.bincount(target_bytes_long.flatten(), minlength=256).max()
             byte_mode_baseline = mode_count.float() / target_bytes.numel()
             metrics.update(
                 {
@@ -210,8 +236,22 @@ def masked_event_bce_loss(
 def unpack_bits(values: torch.Tensor) -> torch.Tensor:
     """Expand uint8 bytes into little-endian bit targets/probability axes."""
 
-    shifts = torch.arange(8, device=values.device, dtype=values.dtype)
-    return ((values.unsqueeze(-1) >> shifts) & 1).float()
+    lookup = bit_lookup(values.device, torch.float32)
+    return lookup[values.long()]
+
+
+def bit_lookup(device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Return a cached `[256, 8]` little-endian byte-to-bit lookup table."""
+
+    key = (str(device), dtype)
+    cached = _BIT_LOOKUP_CACHE.get(key)
+    if cached is not None:
+        return cached
+    values = torch.arange(256, device=device, dtype=torch.long).view(256, 1)
+    shifts = torch.arange(8, device=device, dtype=torch.long).view(1, 8)
+    lookup = ((values >> shifts) & 1).to(dtype=dtype)
+    _BIT_LOOKUP_CACHE[key] = lookup
+    return lookup
 
 
 def pack_bits(bits: torch.Tensor) -> torch.Tensor:

@@ -143,6 +143,7 @@ def main() -> None:
             "epochs": int(args.epochs),
             "pretrain_validation_frequency": steps_per_shard,
             "pretrain_validation_steps": validation_batches,
+            "checkpoint_latest_steps": steps_per_shard,
             "checkpoint_archive_steps": steps_per_epoch,
             "scheduler_t0_steps": steps_per_shard,
             "device": args.device,

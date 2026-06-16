@@ -59,6 +59,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     data_defaults = DataConfig()
     model_defaults = ModelConfig()
     mask_defaults = MaskConfig()
+    loss_defaults = LossConfig()
     train_defaults = TrainConfig()
     parser = argparse.ArgumentParser(description="Train v6 event-token MAE on compact event sample-cache batches.")
     parser.add_argument("--data-source", choices=("clickhouse_events", "sample_cache", "precomputed", "canonical"), default=data_defaults.data_source)
@@ -116,6 +117,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--logging-steps", type=int, default=train_defaults.logging_steps)
     parser.add_argument("--detailed-metrics-steps", type=int, default=train_defaults.detailed_metrics_steps)
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default=train_defaults.progress_layout)
+    parser.add_argument("--loss-objective", choices=("weighted", "unweighted"), default=loss_defaults.objective)
     parser.add_argument("--profile-first-steps", type=int, default=train_defaults.profile_first_steps)
     parser.add_argument("--profile-training-every-steps", type=int, default=train_defaults.profile_training_every_steps)
     parser.add_argument("--profile-inference-every-steps", type=int, default=train_defaults.profile_inference_every_steps)
@@ -346,7 +348,11 @@ def main(argv: list[str] | None = None) -> None:
                     reporter=reporter,
                     failure_debug_dir=failure_debug_dir,
                 )
-            checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args, scaler=scaler), force=True)
+            checkpointer.maybe_save(
+                step=global_step,
+                payload_factory=lambda step=global_step: checkpoint_payload(model, optimizer, scheduler, step, config, args, scaler=scaler),
+                force=True,
+            )
         finally:
             checkpointer.close()
         if wandb_run is not None and reporter is not None:
@@ -451,7 +457,12 @@ def train_precomputed_epochs(
                 reporter=reporter,
                 force_validation=run_validation,
             )
-            checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args, scaler=scaler), train_metrics=metrics, val_metrics=val_metrics)
+            checkpointer.maybe_save(
+                step=global_step,
+                payload_factory=lambda step=global_step: checkpoint_payload(model, optimizer, scheduler, step, config, args, scaler=scaler),
+                train_metrics=metrics,
+                val_metrics=val_metrics,
+            )
         epoch_metrics = {
             "train/epoch": float(epoch),
             "train/epoch_seconds": time.perf_counter() - epoch_started,
@@ -563,7 +574,12 @@ def train_sample_cache_epochs(
                 reporter=reporter,
                 force_validation=run_validation,
             )
-            checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args, scaler=scaler), train_metrics=metrics, val_metrics=val_metrics)
+            checkpointer.maybe_save(
+                step=global_step,
+                payload_factory=lambda step=global_step: checkpoint_payload(model, optimizer, scheduler, step, config, args, scaler=scaler),
+                train_metrics=metrics,
+                val_metrics=val_metrics,
+            )
         epoch_metrics = {
             "train/epoch": float(epoch),
             "train/epoch_seconds": time.perf_counter() - epoch_started,
@@ -627,7 +643,12 @@ def train_streaming_loader(
             metric_logger=metric_logger,
             reporter=reporter,
         )
-        checkpointer.maybe_save(step=global_step, payload=checkpoint_payload(model, optimizer, scheduler, global_step, config, args, scaler=scaler), train_metrics=metrics, val_metrics=val_metrics)
+        checkpointer.maybe_save(
+            step=global_step,
+            payload_factory=lambda step=global_step: checkpoint_payload(model, optimizer, scheduler, step, config, args, scaler=scaler),
+            train_metrics=metrics,
+            val_metrics=val_metrics,
+        )
     return global_step
 
 
@@ -662,12 +683,13 @@ def run_training_step(
         sync_if_cuda(device)
     mask_seconds = time.perf_counter() - mask_started
     forward_started = time.perf_counter()
-    will_log_metrics = global_step % max(1, config.train.logging_steps) == 0 or force_diagnostics
     include_diagnostics = force_diagnostics or (config.train.detailed_metrics_steps > 0 and global_step % config.train.detailed_metrics_steps == 0)
     # Detailed reconstruction metrics touch large masked-byte tensors. Most
     # steps keep the same BCE objective but skip that extra metric work so the
     # training loop measures model learning instead of metric bookkeeping.
-    metric_level = "standard" if (will_log_metrics or profile_step or include_diagnostics) else "loss_only"
+    metric_level = "cheap" if force_diagnostics else "loss_only"
+    if include_diagnostics:
+        metric_level = "standard"
     amp_dtype = resolve_amp_dtype(config.train, device)
     with torch.amp.autocast("cuda", enabled=amp_dtype is not None, dtype=amp_dtype):
         output = train_model(batch["header_uint8"], batch["events_uint8"], masks, config.masks)
@@ -708,7 +730,7 @@ def run_training_step(
         optimizer_started = time.perf_counter()
         scaler.unscale_(optimizer)
         old_scale = scaler.get_scale()
-        nonfinite_gradient = find_first_nonfinite_gradient(model)
+        nonfinite_gradient = find_first_nonfinite_gradient(model) if force_diagnostics else None
         if nonfinite_gradient is not None and scaler.is_enabled():
             amp_overflow_streak = int(getattr(scaler, "_qresearch_amp_overflow_streak", 0)) + 1
             setattr(scaler, "_qresearch_amp_overflow_streak", amp_overflow_streak)
@@ -766,7 +788,7 @@ def run_training_step(
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(),
                 config.train.grad_clip_norm,
-                error_if_nonfinite=True,
+                error_if_nonfinite=force_diagnostics,
             )
             scaler.step(optimizer)
             scaler.update()
@@ -774,7 +796,7 @@ def run_training_step(
             amp_step_skipped = bool(scaler.is_enabled() and scaler.get_scale() < old_scale)
             if scheduler is not None and not amp_step_skipped:
                 scheduler.step(global_step)
-            nonfinite_parameter = find_first_nonfinite_parameter(model)
+            nonfinite_parameter = find_first_nonfinite_parameter(model) if force_diagnostics else None
             if nonfinite_parameter is not None:
                 debug_path = save_failure_debug_bundle(
                     reason="nonfinite_model_parameter",
@@ -1150,7 +1172,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             event_bit_corruption_ratio=args.event_bit_corruption_ratio,
         ),
         model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
-        losses=LossConfig(),
+        losses=LossConfig(objective=args.loss_objective),
         train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, amp=args.amp, amp_dtype=args.amp_dtype, amp_initial_scale=args.amp_initial_scale, amp_growth_interval=args.amp_growth_interval, amp_max_scale=args.amp_max_scale, amp_overflow_fatal_threshold=args.amp_overflow_fatal_threshold, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )
 

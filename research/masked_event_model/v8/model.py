@@ -58,6 +58,20 @@ def single_role_vector(role_embedding: nn.Embedding, *, device: torch.device) ->
     return role_embedding(role_id).view(1, 1, -1)
 
 
+def build_signed_bit_lookup() -> torch.Tensor:
+    """Create a `[256, 8]` little-endian lookup for byte inputs.
+
+    The forward path indexes this buffer instead of shifting every input byte
+    into eight bits on every step. The table is tiny, moves with the module, and
+    keeps byte unpacking deterministic across training and inference.
+    """
+
+    values = torch.arange(256, dtype=torch.long).view(256, 1)
+    shifts = torch.arange(BITS_PER_BYTE, dtype=torch.long).view(1, BITS_PER_BYTE)
+    bits = ((values >> shifts) & 1).to(torch.float32)
+    return bits.mul(2.0).sub(1.0)
+
+
 class UInt8BytesToSignedBitFeatures(nn.Module):
     """Convert packed bytes into -1/+1 bit features that the linear layers can read.
 
@@ -70,11 +84,10 @@ class UInt8BytesToSignedBitFeatures(nn.Module):
     def __init__(self, *, flatten_from_byte_axis: bool) -> None:
         super().__init__()
         self.flatten_from_byte_axis = bool(flatten_from_byte_axis)
+        self.register_buffer("signed_bit_lookup", build_signed_bit_lookup(), persistent=False)
 
     def forward(self, values_uint8: torch.Tensor) -> torch.Tensor:
-        shifts = torch.arange(BITS_PER_BYTE, device=values_uint8.device, dtype=torch.long)
-        bits = ((values_uint8.long().unsqueeze(-1) >> shifts) & 1).to(torch.float32)
-        signed_bits = bits.mul(2.0).sub(1.0)
+        signed_bits = self.signed_bit_lookup[values_uint8.long()]
         if self.flatten_from_byte_axis:
             return signed_bits.flatten(1)
         return signed_bits.flatten(2)
