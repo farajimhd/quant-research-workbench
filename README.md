@@ -2,6 +2,63 @@
 
 This project is moving to a local-first research workflow. The goal is to develop, inspect, and improve momentum strategies on local historical data before translating anything to QuantConnect or live execution.
 
+## Coding And Training Workflow Rules
+
+The laptop repo is the source of truth:
+
+```text
+D:/TradingCodes/quant-research-workbench
+```
+
+The workstation is for heavier training and long-running jobs through the shared
+drive:
+
+```text
+//DESKTOP-SAAI85T/Workstation-D
+```
+
+Make code changes in the laptop repo first. Validate locally when practical,
+commit, push, and then sync the required runtime code to the workstation. Do not
+treat workstation runtime folders as the primary source of truth.
+
+Research/model versions belong under `research/<model_family>/vN/`. A
+training-capable version should normally include `config.py`, `model.py`,
+`data.py`, `train.py`, `run_train.py`, job-specific launchers, useful notebooks,
+and a `README.md` describing purpose, defaults, output roots, and assumptions.
+
+Shared research utilities belong in `research/mlops/`. Keep only stable
+cross-version infrastructure there, such as environment loading, secret
+redaction, W&B setup, checkpoint helpers, path conventions, manifests, metrics,
+ClickHouse helpers, seed/device helpers, and shared data-provider helpers.
+Operational workflows belong under `pipelines/`, not `research/mlops/`.
+
+Runnable jobs should prefer Python launchers over PowerShell-only workflows. A
+launcher should be runnable with `python run_train.py`, show its effective CLI
+command, expose simple overrides, resolve paths correctly from either the laptop
+repo or workstation runtime copy, and keep progress output clear.
+
+Each training or pipeline run should write logs, metrics, checkpoints, W&B
+files, config snapshots, artifacts, and run manifests under one run directory.
+Run manifests should include enough information to reproduce the run: model
+family/version, job type, run name, git commit, command args, resolved data and
+output roots, checkpoint paths, W&B project/run IDs when applicable, and secret
+presence status only.
+
+Never copy `.env` files or secret values into runtime folders, notebooks,
+checkpoints, logs, manifests, or W&B configs. Load secrets from environment
+variables or env-file discovery and redact values for keys such as `*_KEY`,
+`*_TOKEN`, `*_SECRET`, and `*_PASSWORD`.
+
+Before finishing code changes, review the modified files, run compile/smoke
+checks when possible, sync workstation runtime code when the change affects
+workstation training, stage only relevant files, commit with a meaningful
+conventional-style message, and push to the configured remote branch. Do not
+commit temporary files, caches, logs, secrets, or unrelated dirty files.
+
+If a task starts a server or long-running helper, stop it gracefully before
+finishing. For current operational state and runbooks, start with
+`docs/current_state.md` and `docs/README.md`.
+
 ## Development Workflow
 
 The strategy development process has four phases.
