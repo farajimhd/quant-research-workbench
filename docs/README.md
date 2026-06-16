@@ -14,6 +14,7 @@ Start here before changing historical ingestion, live services, or trading UI co
 
 ## Runbooks
 
+- [Market SIP Pipelines](../pipelines/market_sip/README.md): Massive SIP flatfile ingest, unified events, and event sample-cache workflows.
 - [Benzinga Historical News](runbooks/news_benzinga_historical.md): current normalized news preflight and ClickHouse load path.
 - [SEC EDGAR Historical](runbooks/sec_edgar_historical.md): archive recovery, targeted validation, and next text-extraction stage.
 

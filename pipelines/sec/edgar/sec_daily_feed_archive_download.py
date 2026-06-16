@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.mlops.clickhouse_ingest_sip_flatfiles import (  # noqa: E402
+from research.mlops.clickhouse import (  # noqa: E402
     ClickHouseHttpClient,
     default_clickhouse_password,
     default_clickhouse_url,

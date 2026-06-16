@@ -53,14 +53,16 @@ Do not keep domain workflows here long term. SEC, news, SIP, and reference-data 
 
 The Benzinga, SEC, reference-data, and q_live migration moves are implemented. The old `pipelines/news/benzinga/news_benzinga_*.py` and `pipelines/sec/edgar/sec_*.py` compatibility wrappers are archived under `pipelines/archive/legacy_wrappers/research_mlops/` and are no longer active command paths.
 
-The market SIP move is still pending.
+The market SIP operational move is implemented under `pipelines/market_sip/`.
+Temporary wrappers remain in `research/mlops` so active workstation commands do
+not break during the transition.
 
 ## Compatibility Rule
 
 Do not break active workstation commands in one large move. Use a two-stage migration:
 
 1. Move the real implementation to the target folder.
-2. Leave a temporary wrapper at the old `research/mlops/...` path that imports or executes the new module and prints the new path.
+2. Leave a temporary wrapper at the old `research/mlops/...` path that imports or executes the new module.
 
 After active historical SEC/news loads are complete and workstation runtime guides are updated, remove wrappers in a dedicated cleanup commit. This has been done for the SEC and Benzinga wrappers; they are archived only.
 

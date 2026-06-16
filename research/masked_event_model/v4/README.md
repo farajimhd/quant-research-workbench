@@ -89,13 +89,13 @@ This means the same cache can be reused with different training batch sizes.
 Build a first cache:
 
 ```powershell
-python research\mlops\run_build_event_sample_cache.py
+python pipelines\market_sip\sample_cache\run_build_event_sample_cache.py
 ```
 
 Validate it:
 
 ```powershell
-python research\mlops\run_validate_event_sample_cache.py --cache-root D:\market-data\prepared\event_sample_cache
+python pipelines\market_sip\sample_cache\run_validate_event_sample_cache.py --cache-root D:\market-data\prepared\event_sample_cache
 ```
 
 Run training:

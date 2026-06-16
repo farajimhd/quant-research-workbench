@@ -18,7 +18,7 @@ from research.mlops.clickhouse_events import (
     encode_unified_event_window,
     query_settings,
 )
-from research.mlops.clickhouse_ingest_sip_flatfiles import (
+from research.mlops.clickhouse import (
     ClickHouseHttpClient,
     default_clickhouse_password,
     default_clickhouse_user,

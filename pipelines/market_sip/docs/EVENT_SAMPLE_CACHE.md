@@ -68,7 +68,7 @@ against ClickHouse for sampled records.
 Use the Python launcher:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_build_event_sample_cache.py
+python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\sample_cache\run_build_event_sample_cache.py
 ```
 
 The default first build is intentionally modest:
@@ -85,7 +85,7 @@ workers=8
 Scale with overrides after the path is validated:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_build_event_sample_cache.py --train-cache-gib 4096 --validation-cache-gib 32 --workers 16
+python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\sample_cache\run_build_event_sample_cache.py --train-cache-gib 4096 --validation-cache-gib 32 --workers 16
 ```
 
 The builder still queries ClickHouse in efficient span bundles. The
@@ -125,7 +125,7 @@ heartbeat line and writes progress JSON with the current pending-worker count.
 Run fast structural checks plus sampled ClickHouse audit checks:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_validate_event_sample_cache.py --cache-root D:\market-data\prepared\event_sample_cache\cache_YYYYMMDD_HHMMSS
+python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\sample_cache\run_validate_event_sample_cache.py --cache-root D:\market-data\prepared\event_sample_cache\cache_YYYYMMDD_HHMMSS
 ```
 
 Add `--verify-sha256` only when needed; it rereads full shards and is slower.
@@ -134,7 +134,7 @@ To validate finalized shards while the builder is still running, skip audit
 checks because audit samples are written when the split closes:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_validate_event_sample_cache.py --allow-partial --splits train --audit-clickhouse-checks 0
+python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\sample_cache\run_validate_event_sample_cache.py --allow-partial --splits train --audit-clickhouse-checks 0
 ```
 
 Validation checks:
@@ -151,7 +151,7 @@ also verify that the final sample bytes trace back to the compact raw
 `quotes`/`trades` tables, run:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_audit_event_sample_cache_against_raw.py --cache-root D:\market-data\prepared\event_sample_cache\cache_YYYYMMDD_HHMMSS --checks 25
+python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\sample_cache\run_audit_event_sample_cache_against_raw.py --cache-root D:\market-data\prepared\event_sample_cache\cache_YYYYMMDD_HHMMSS --checks 25
 ```
 
 This audit uses the `*_audit_samples.jsonl` metadata, so it can trace only the

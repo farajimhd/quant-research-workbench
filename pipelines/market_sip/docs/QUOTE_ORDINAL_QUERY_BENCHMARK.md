@@ -47,13 +47,13 @@ and directly measures the lookup pattern we would want for training.
 Build and benchmark a small one-day subset:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_benchmark_quote_ordinal_query.py --rebuild --tickers AAPL,MSFT,NVDA,TSLA,AMD,SPY,QQQ --start-date 2026-05-15 --end-date 2026-05-15 --batch-size 256 --benchmark-batches 10 --workers 32
+python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\run_benchmark_quote_ordinal_query.py --rebuild --tickers AAPL,MSFT,NVDA,TSLA,AMD,SPY,QQQ --start-date 2026-05-15 --end-date 2026-05-15 --batch-size 256 --benchmark-batches 10 --workers 32
 ```
 
 Benchmark an already-built table without rebuilding:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_benchmark_quote_ordinal_query.py --no-build --batch-size 256 --benchmark-batches 10 --workers 32
+python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\run_benchmark_quote_ordinal_query.py --no-build --batch-size 256 --benchmark-batches 10 --workers 32
 ```
 
 Key metrics:

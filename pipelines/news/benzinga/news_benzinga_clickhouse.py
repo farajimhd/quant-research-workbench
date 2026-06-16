@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
 
-from research.mlops.clickhouse_ingest_sip_flatfiles import ClickHouseHttpClient, quote_ident, sql_string
+from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
 
 
 DEFAULT_NEWS_TABLE = "benzinga_news_event_v1"

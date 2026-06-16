@@ -61,7 +61,7 @@ python -m research.mlops.run_benchmark_compact_batch_provider --batch-size 16 --
 Workstation test:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\research\mlops\run_benchmark_compact_batch_provider.py --batch-size 256 --benchmark-batches 10 --workers 32 --query-mode per-sample
+python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\run_benchmark_compact_batch_provider.py --batch-size 256 --benchmark-batches 10 --workers 32 --query-mode per-sample
 ```
 
 Key metrics:

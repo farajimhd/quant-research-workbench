@@ -14,7 +14,7 @@ import numpy as np
 import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
-from research.mlops.clickhouse_ingest_sip_flatfiles import (
+from research.mlops.clickhouse import (
     ClickHouseHttpClient,
     default_clickhouse_password,
     default_clickhouse_user,

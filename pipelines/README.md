@@ -5,6 +5,7 @@ This folder owns historical and production-adjacent data workflows. These script
 ## Layout
 
 ```text
+pipelines/market_sip/       # Massive SIP flatfile ingest, event tables, sample cache, benchmarks
 pipelines/news/benzinga/   # Benzinga download, URL inventory, enrichment, normalization, ClickHouse load
 pipelines/sec/edgar/       # SEC EDGAR archive download, validation, metadata repair, text extraction prep
 ```

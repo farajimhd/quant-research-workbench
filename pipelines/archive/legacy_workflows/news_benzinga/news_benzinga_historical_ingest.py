@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.mlops.clickhouse_ingest_sip_flatfiles import ClickHouseHttpClient, discover_clickhouse_env_files  # noqa: E402
+from research.mlops.clickhouse import ClickHouseHttpClient, discover_clickhouse_env_files  # noqa: E402
 from research.mlops.env import load_env_files, secret_status  # noqa: E402
 from pipelines.news.benzinga.news_benzinga_clickhouse import (  # noqa: E402
     DEFAULT_MANIFEST_TABLE,
