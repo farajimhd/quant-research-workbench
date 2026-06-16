@@ -42,6 +42,7 @@ class EventSampleCacheDataConfig:
     start_shard_index: int = 0
     max_shards: int = 0
     max_samples: int = 0
+    max_batches_per_shard: int = 0
     shuffle_records: bool = True
     drop_last: bool = True
     interleave_shards: int = 1
@@ -346,6 +347,8 @@ def iter_event_sample_cache_epoch_batches(
                     flush=True,
                 )
             usable_samples = records.shape[0]
+            if config.max_batches_per_shard > 0:
+                usable_samples = min(usable_samples, int(config.max_batches_per_shard) * max(1, config.batch_size))
             if config.drop_last:
                 usable_samples = (usable_samples // max(1, config.batch_size)) * config.batch_size
             if remaining_samples > 0:
@@ -417,6 +420,8 @@ def iter_interleaved_event_sample_cache_epoch_batches(
                 flush=True,
             )
         usable_samples = records.shape[0]
+        if config.max_batches_per_shard > 0:
+            usable_samples = min(usable_samples, int(config.max_batches_per_shard) * max(1, config.batch_size))
         if config.drop_last:
             usable_samples = (usable_samples // max(1, config.batch_size)) * config.batch_size
         if remaining_samples > 0:

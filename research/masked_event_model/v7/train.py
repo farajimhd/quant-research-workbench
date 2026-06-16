@@ -96,6 +96,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sample-cache-validation-start-shard", type=int, default=data_defaults.sample_cache_validation_start_shard)
     parser.add_argument("--sample-cache-validation-max-shards", type=int, default=data_defaults.sample_cache_validation_max_shards)
     parser.add_argument("--sample-cache-validation-max-samples", type=int, default=data_defaults.sample_cache_validation_max_samples)
+    parser.add_argument("--sample-cache-validation-batches-per-shard", type=int, default=data_defaults.sample_cache_validation_batches_per_shard)
     parser.add_argument("--sample-cache-shuffle-records", action=argparse.BooleanOptionalAction, default=data_defaults.sample_cache_shuffle_records)
     parser.add_argument("--sample-cache-drop-last", action=argparse.BooleanOptionalAction, default=data_defaults.sample_cache_drop_last)
     parser.add_argument("--sample-cache-interleave-shards", type=int, default=data_defaults.sample_cache_interleave_shards)
@@ -1095,6 +1096,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             sample_cache_validation_start_shard=args.sample_cache_validation_start_shard,
             sample_cache_validation_max_shards=args.sample_cache_validation_max_shards,
             sample_cache_validation_max_samples=args.sample_cache_validation_max_samples,
+            sample_cache_validation_batches_per_shard=args.sample_cache_validation_batches_per_shard,
             sample_cache_shuffle_records=args.sample_cache_shuffle_records,
             sample_cache_drop_last=args.sample_cache_drop_last,
             sample_cache_interleave_shards=args.sample_cache_interleave_shards,
@@ -1228,6 +1230,7 @@ def sample_cache_data_config(config: ExperimentConfig, split: str, seed: int) ->
     start_shard_index = 0
     max_shards = data.max_index_files
     max_samples = 0
+    max_batches_per_shard = 0
     if split == "train":
         start_shard_index = data.sample_cache_train_start_shard
         max_shards = data.sample_cache_train_max_shards or data.max_index_files
@@ -1236,6 +1239,7 @@ def sample_cache_data_config(config: ExperimentConfig, split: str, seed: int) ->
         start_shard_index = data.sample_cache_validation_start_shard
         max_shards = data.sample_cache_validation_max_shards or data.max_index_files
         max_samples = data.sample_cache_validation_max_samples
+        max_batches_per_shard = data.sample_cache_validation_batches_per_shard
     return EventSampleCacheDataConfig(
         cache_root=data.sample_cache_root,
         split=cache_split,
@@ -1246,6 +1250,7 @@ def sample_cache_data_config(config: ExperimentConfig, split: str, seed: int) ->
         start_shard_index=start_shard_index,
         max_shards=max_shards,
         max_samples=max_samples,
+        max_batches_per_shard=max_batches_per_shard,
         shuffle_records=data.sample_cache_shuffle_records,
         drop_last=data.sample_cache_drop_last,
         interleave_shards=data.sample_cache_interleave_shards if split == "train" else 1,

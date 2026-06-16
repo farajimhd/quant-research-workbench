@@ -23,9 +23,10 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_drop_last": True,
     "sample_cache_train_start_shard": 0,
     "sample_cache_train_max_shards": 10,
-    "sample_cache_validation_split": "train",
-    "sample_cache_validation_start_shard": 10,
-    "sample_cache_validation_max_shards": 1,
+    "sample_cache_validation_split": "validation",
+    "sample_cache_validation_start_shard": 0,
+    "sample_cache_validation_max_shards": 8,
+    "sample_cache_validation_batches_per_shard": 1,
     "sample_cache_interleave_shards": 1,
     "batch_size": 4096,
     "epochs": 10,
@@ -72,7 +73,7 @@ DEFAULTS: dict[str, Any] = {
 }
 
 PROFILED_TRAINING_PATH = "v7 event-token MAE medium emb32 bs4096 no-compile, shard-cycle scheduler, no interleave"
-VALIDATION_BATCHES = 20
+VALIDATION_BATCHES = 8
 
 
 def parse_args() -> argparse.Namespace:
@@ -114,7 +115,7 @@ def main() -> None:
             flush=True,
         )
     interleave_shards = 1
-    train_shards, validation_shard, validation_samples = resolve_shard_plan(
+    train_shards, validation_shards, validation_samples = resolve_shard_plan(
         cache_root=cache_root,
         train_start_shard=int(args.train_start_shard),
         train_shards=int(args.train_shards),
@@ -132,8 +133,11 @@ def main() -> None:
             "sample_cache_root": str(cache_root),
             "sample_cache_train_start_shard": int(args.train_start_shard),
             "sample_cache_train_max_shards": len(train_shards),
-            "sample_cache_validation_start_shard": validation_shard.shard_index,
+            "sample_cache_validation_split": "validation",
+            "sample_cache_validation_start_shard": validation_shards[0].shard_index,
+            "sample_cache_validation_max_shards": len(validation_shards),
             "sample_cache_validation_max_samples": validation_batches * batch_size,
+            "sample_cache_validation_batches_per_shard": 1,
             # Keep interleave disabled until the loader is redesigned to avoid
             # transient copies of multiple full shard arrays. Interleave=2 caused
             # process RSS to jump by about 90 GiB and step time to degrade from
@@ -175,9 +179,8 @@ def main() -> None:
         flush=True,
     )
     print(
-        f"validation_shard={validation_shard.shard_index} requested_fraction={args.validation_fraction:.3f} "
-        f"validation_samples={validation_batches * batch_size:,} validation_batches={validation_batches:,} "
-        "selection=shuffle-full-shard-then-take-prefix",
+        f"validation_split=validation shards={validation_shards[0].shard_index}..{validation_shards[-1].shard_index} "
+        f"batches_per_shard=1 validation_samples={validation_batches * batch_size:,} validation_batches={validation_batches:,}",
         flush=True,
     )
     print(f"wandb_project={args.wandb_project} run={args.run_name}", flush=True)
@@ -213,31 +216,29 @@ def resolve_shard_plan(
         raise SystemExit("--train-start-shard must be non-negative")
     if not 0.0 < validation_fraction <= 1.0:
         raise SystemExit("--validation-fraction must be in (0, 1]")
-    shard_config = EventSampleCacheDataConfig(cache_root=cache_root, split="train", max_shards=0)
-    shards = discover_event_sample_shards(shard_config)
-    if len(shards) <= validation_shard_index:
-        raise SystemExit(f"Need validation shard index {validation_shard_index}, but only found {len(shards)} train shards under {cache_root}")
+    train_config = EventSampleCacheDataConfig(cache_root=cache_root, split="train", max_shards=0)
+    validation_config = EventSampleCacheDataConfig(cache_root=cache_root, split="validation", max_shards=0)
+    shards = discover_event_sample_shards(train_config)
+    validation_candidates = discover_event_sample_shards(validation_config)
     if len(shards) < train_start_shard + train_shards:
         raise SystemExit(
             f"Need train shard range {train_start_shard}..{train_start_shard + train_shards - 1}, "
             f"but only found {len(shards)} train shards under {cache_root}"
         )
+    if len(validation_candidates) < validation_shard_index + max_validation_batches:
+        raise SystemExit(
+            f"Need validation shard range {validation_shard_index}..{validation_shard_index + max_validation_batches - 1}, "
+            f"but only found {len(validation_candidates)} validation shards under {cache_root}"
+        )
     selected_train = shards[train_start_shard : train_start_shard + train_shards]
-    validation_shard = shards[validation_shard_index]
-    selected_ids = {shard.shard_index for shard in selected_train}
-    if validation_shard.shard_index in selected_ids:
+    validation_shards = validation_candidates[validation_shard_index : validation_shard_index + max_validation_batches]
+    too_small = [shard.shard_index for shard in validation_shards if shard.num_samples < batch_size]
+    if too_small:
         raise SystemExit(
-            f"Validation shard {validation_shard.shard_index} overlaps train shards "
-            f"{selected_train[0].shard_index}..{selected_train[-1].shard_index}; choose a non-overlapping validation shard."
+            f"Validation shards have fewer than one full batch at batch_size={batch_size:,}: {too_small}"
         )
-    raw_validation_samples = int(math.floor(validation_shard.num_samples * validation_fraction))
-    validation_samples = min(raw_validation_samples, max(1, int(max_validation_batches)) * batch_size)
-    validation_samples = (validation_samples // batch_size) * batch_size
-    if validation_samples <= 0:
-        raise SystemExit(
-            f"Validation slice is too small after drop-last: raw={raw_validation_samples:,}, batch_size={batch_size:,}"
-        )
-    return selected_train, validation_shard, validation_samples
+    validation_samples = len(validation_shards) * batch_size
+    return selected_train, validation_shards, validation_samples
 
 
 def build_train_args(values: dict[str, Any]) -> list[str]:

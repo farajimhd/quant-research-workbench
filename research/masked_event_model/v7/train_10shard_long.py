@@ -26,9 +26,10 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_drop_last": True,
     "sample_cache_train_start_shard": 0,
     "sample_cache_train_max_shards": 10,
-    "sample_cache_validation_split": "train",
-    "sample_cache_validation_start_shard": 10,
-    "sample_cache_validation_max_shards": 1,
+    "sample_cache_validation_split": "validation",
+    "sample_cache_validation_start_shard": 0,
+    "sample_cache_validation_max_shards": 8,
+    "sample_cache_validation_batches_per_shard": 1,
     "sample_cache_interleave_shards": 1,
     "batch_size": 4096,
     "epochs": 10,
@@ -77,7 +78,7 @@ DEFAULTS: dict[str, Any] = {
     "warm_start_checkpoint": "",
 }
 
-VALIDATION_BATCHES = 20
+VALIDATION_BATCHES = 8
 PROFILED_TRAINING_PATH = (
     "v7 event-token MAE, masked-query cross-attention decoder, "
     "sample-cache shards, shard-cycle scheduler, no interleave"
@@ -154,12 +155,15 @@ def main() -> None:
             ShardPreview(shard_index=index, num_samples=0)
             for index in range(int(args.train_start_shard), int(args.train_start_shard) + int(args.train_shards))
         ]
-        validation_shard = ShardPreview(shard_index=int(args.validation_shard_index), num_samples=0)
+        validation_shards = [
+            ShardPreview(shard_index=index, num_samples=0)
+            for index in range(int(args.validation_shard_index), int(args.validation_shard_index) + int(args.validation_batches))
+        ]
         steps_per_epoch = 0
         steps_per_shard = 1
         validation_batches = int(args.validation_batches)
     else:
-        train_shards, validation_shard, validation_samples = resolve_shard_plan(
+        train_shards, validation_shards, validation_samples = resolve_shard_plan(
             cache_root=cache_root,
             train_start_shard=int(args.train_start_shard),
             train_shards=int(args.train_shards),
@@ -191,8 +195,11 @@ def main() -> None:
             "sample_cache_root": str(cache_root),
             "sample_cache_train_start_shard": int(args.train_start_shard),
             "sample_cache_train_max_shards": len(train_shards),
-            "sample_cache_validation_start_shard": validation_shard.shard_index,
+            "sample_cache_validation_split": "validation",
+            "sample_cache_validation_start_shard": validation_shards[0].shard_index,
+            "sample_cache_validation_max_shards": len(validation_shards),
             "sample_cache_validation_max_samples": validation_batches * batch_size,
+            "sample_cache_validation_batches_per_shard": 1,
             # Keep interleave disabled. In v4/v7 testing, interleave retained
             # transient full-shard arrays and caused persistent RAM pressure and
             # large step-time regressions after shard transitions.
@@ -232,7 +239,7 @@ def main() -> None:
     if args.fresh_start:
         argv.append("--fresh-start")
     argv.extend(args.extra)
-    print_plan(args, values, train_shards, validation_shard, validation_batches, steps_per_epoch, steps_per_shard, argv)
+    print_plan(args, values, train_shards, validation_shards, validation_batches, steps_per_epoch, steps_per_shard, argv)
     if args.print_only:
         return
     train_main(argv)
@@ -256,38 +263,36 @@ def resolve_shard_plan(
         raise SystemExit("--validation-batches must be positive")
     if not 0.0 < validation_fraction <= 1.0:
         raise SystemExit("--validation-fraction must be in (0, 1]")
-    shard_config = EventSampleCacheDataConfig(cache_root=cache_root, split="train", max_shards=0)
-    shards = discover_event_sample_shards(shard_config)
-    if len(shards) <= validation_shard_index:
-        raise SystemExit(f"Need validation shard index {validation_shard_index}, but only found {len(shards)} train shards under {cache_root}")
+    train_config = EventSampleCacheDataConfig(cache_root=cache_root, split="train", max_shards=0)
+    validation_config = EventSampleCacheDataConfig(cache_root=cache_root, split="validation", max_shards=0)
+    shards = discover_event_sample_shards(train_config)
+    validation_candidates = discover_event_sample_shards(validation_config)
     if len(shards) < train_start_shard + train_shards:
         raise SystemExit(
             f"Need train shard range {train_start_shard}..{train_start_shard + train_shards - 1}, "
             f"but only found {len(shards)} train shards under {cache_root}"
         )
+    if len(validation_candidates) < validation_shard_index + max_validation_batches:
+        raise SystemExit(
+            f"Need validation shard range {validation_shard_index}..{validation_shard_index + max_validation_batches - 1}, "
+            f"but only found {len(validation_candidates)} validation shards under {cache_root}"
+        )
     selected_train = shards[train_start_shard : train_start_shard + train_shards]
-    validation_shard = shards[validation_shard_index]
-    selected_ids = {shard.shard_index for shard in selected_train}
-    if validation_shard.shard_index in selected_ids:
+    validation_shards = validation_candidates[validation_shard_index : validation_shard_index + max_validation_batches]
+    too_small = [shard.shard_index for shard in validation_shards if shard.num_samples < batch_size]
+    if too_small:
         raise SystemExit(
-            f"Validation shard {validation_shard.shard_index} overlaps train shards "
-            f"{selected_train[0].shard_index}..{selected_train[-1].shard_index}; choose a non-overlapping validation shard."
+            f"Validation shards have fewer than one full batch at batch_size={batch_size:,}: {too_small}"
         )
-    raw_validation_samples = int(math.floor(validation_shard.num_samples * validation_fraction))
-    validation_samples = min(raw_validation_samples, max_validation_batches * batch_size)
-    validation_samples = (validation_samples // batch_size) * batch_size
-    if validation_samples <= 0:
-        raise SystemExit(
-            f"Validation slice is too small after drop-last: raw={raw_validation_samples:,}, batch_size={batch_size:,}"
-        )
-    return selected_train, validation_shard, validation_samples
+    validation_samples = len(validation_shards) * batch_size
+    return selected_train, validation_shards, validation_samples
 
 
 def print_plan(
     args: argparse.Namespace,
     values: dict[str, Any],
     train_shards,
-    validation_shard,
+    validation_shards,
     validation_batches: int,
     steps_per_epoch: int,
     steps_per_shard: int,
@@ -305,8 +310,8 @@ def print_plan(
         flush=True,
     )
     print(
-        f"validation_shard={validation_shard.shard_index} requested_fraction={args.validation_fraction:.3f} "
-        f"validation_batches={validation_batches:,} validation_frequency=every_shard",
+        f"validation_split=validation shards={validation_shards[0].shard_index}..{validation_shards[-1].shard_index} "
+        f"batches_per_shard=1 validation_batches={validation_batches:,} validation_frequency=every_shard",
         flush=True,
     )
     print(

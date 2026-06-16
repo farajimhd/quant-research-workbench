@@ -58,6 +58,7 @@ class DataConfig:
     sample_cache_validation_start_shard: int = 0
     sample_cache_validation_max_shards: int = 0
     sample_cache_validation_max_samples: int = 0
+    sample_cache_validation_batches_per_shard: int = 0
     sample_cache_shuffle_records: bool = True
     sample_cache_drop_last: bool = True
     sample_cache_interleave_shards: int = 1
