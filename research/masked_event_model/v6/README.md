@@ -62,6 +62,19 @@ chunk_embedding: [B, embedding_dim]
 event_embeddings: [B, 128, embedding_dim]
 ```
 
+The weighted BCE is normalized by the actual semantic weight mass of the masked
+targets. This matters for mixed-ratio masking: normalizing only by batch size
+makes the loss scale change with the number of masked events, which destabilizes
+long mixed-precision runs. Weight-mass normalization keeps the objective scale
+comparable across low-mask and high-mask steps while preserving the semantic
+priority of important bits.
+
+AMP defaults to `--amp-dtype auto`. On CUDA devices with BF16 support this uses
+BF16 autocast and disables GradScaler, keeping mixed-precision speed without
+loss-scale growth. If BF16 is not available, the FP16 fallback uses a bounded
+GradScaler (`--amp-max-scale`) so long runs cannot silently grow into repeated
+overflow.
+
 ## Defaults
 
 ```text

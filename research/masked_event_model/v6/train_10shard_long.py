@@ -67,6 +67,9 @@ DEFAULTS: dict[str, Any] = {
     "progress_layout": "auto",
     "device": "cuda",
     "amp": True,
+    "amp_dtype": "auto",
+    "amp_growth_interval": 10000,
+    "amp_max_scale": 2048.0,
     "compile_model": False,
     "wandb_project": "June2026-event-token-mae-v6",
     "wandb_entity": "mehdifaraji",
@@ -126,6 +129,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-project", default=DEFAULTS["wandb_project"])
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default=DEFAULTS["wandb_mode"])
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default=DEFAULTS["progress_layout"])
+    parser.add_argument("--amp-dtype", choices=("auto", "bf16", "fp16"), default=DEFAULTS["amp_dtype"])
+    parser.add_argument("--amp-growth-interval", type=int, default=DEFAULTS["amp_growth_interval"])
+    parser.add_argument("--amp-max-scale", type=float, default=DEFAULTS["amp_max_scale"])
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=DEFAULTS["compile_model"])
     parser.add_argument("--warm-start-checkpoint", nargs="?", const="", default=DEFAULTS["warm_start_checkpoint"])
     parser.add_argument("--warm-start-load-optimizer", action=argparse.BooleanOptionalAction, default=False)
@@ -219,6 +225,9 @@ def main() -> None:
             "wandb_mode": args.wandb_mode,
             "wandb_run_name": args.run_name,
             "progress_layout": args.progress_layout,
+            "amp_dtype": args.amp_dtype,
+            "amp_growth_interval": int(args.amp_growth_interval),
+            "amp_max_scale": float(args.amp_max_scale),
             "compile_model": bool(args.compile_model),
             "warm_start_checkpoint": args.warm_start_checkpoint,
             "warm_start_load_optimizer": bool(args.warm_start_load_optimizer),
@@ -326,6 +335,8 @@ def print_plan(
     )
     print(
         f"amp={values['amp']} amp_initial_scale={values['amp_initial_scale']} "
+        f"amp_dtype={values['amp_dtype']} amp_growth_interval={values['amp_growth_interval']} "
+        f"amp_max_scale={values['amp_max_scale']} "
         f"amp_overflow_fatal_threshold={values['amp_overflow_fatal_threshold']}",
         flush=True,
     )
