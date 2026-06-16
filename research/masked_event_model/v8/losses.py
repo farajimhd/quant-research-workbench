@@ -61,7 +61,9 @@ _BIT_LOOKUP_CACHE: dict[tuple[str, torch.dtype], torch.Tensor] = {}
 class LossResult:
     """Loss tensor plus detached scalar metrics for logs/W&B."""
 
+    # Shape: []. Scalar differentiable objective used for `backward()`.
     loss: torch.Tensor
+    # Shape: dict[str, float]. Detached scalar metrics for logs and W&B.
     metrics: dict[str, float]
 
 

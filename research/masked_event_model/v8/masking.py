@@ -9,16 +9,28 @@ from research.masked_event_model.v8.config import MaskConfig
 
 @dataclass(slots=True)
 class EventMaskBatch:
-    """Per-sample event indices used to split context into visible and target sets."""
+    """Per-sample event indices used to split context into visible and target sets.
 
+    B = batch size, E = total event records, V = visible records, M = masked records.
+    """
+
+    # Shape: [B, V]. Sorted event positions that remain visible to the encoder.
     visible_event_indices: torch.Tensor
+    # Shape: [B, M]. Sorted event positions removed from encoder and reconstructed.
     masked_event_indices: torch.Tensor
+    # Scalar V. Number of visible event records per sample.
     visible_count: int
+    # Scalar M. Number of masked event records per sample.
     masked_count: int
+    # Scalar E. Total event records per compact sample.
     event_count: int
+    # Scalar. Mask ratio sampled or configured before integer rounding.
     requested_mask_ratio: float
+    # Scalar. Effective `M / E` mask ratio after rounding.
     actual_mask_ratio: float
+    # Scalar. Numeric identifier for the sampled masking policy.
     mask_policy_id: int
+    # Scalar string label for the sampled masking policy.
     mask_policy_name: str
 
 

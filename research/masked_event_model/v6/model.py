@@ -29,18 +29,28 @@ class EventMAEOutput:
     side path that will not exist at inference time.
     """
 
+    # Shape: [B, M, 16, 8]. Raw decoder logits for each reconstructed event bit.
     event_bit_logits: torch.Tensor
+    # Shape: [B, M]. Original event positions selected as decoder targets.
     masked_event_indices: torch.Tensor
+    # Shape: [B, M, 16]. Original uint8 event bytes gathered at masked positions.
     target_events_uint8: torch.Tensor
+    # Shape: [B, Z]. Exportable encoder representation for downstream models.
     chunk_embedding: torch.Tensor
+    # Scalar E. Total event records available in each compact sample.
     event_count: int
+    # Scalar V. Number of event records sent through the encoder.
     visible_event_count: int
+    # Scalar. Mask ratio requested by the active masking policy.
     requested_mask_ratio: float
+    # Scalar. Effective `M / E` ratio after integer event-count rounding.
     actual_mask_ratio: float
+    # Scalar. Numeric identifier for the sampled masking policy.
     mask_policy_id: int
 
     @property
     def event_bit_probs(self) -> torch.Tensor:
+        # Input shape: [B, M, 16, 8]. Output shape: [B, M, 16, 8].
         return torch.sigmoid(self.event_bit_logits)
 
 
