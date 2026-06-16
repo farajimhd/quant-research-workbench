@@ -32,6 +32,24 @@ archive-content-discovery
 - It stops at the first failed phase unless `--continue-on-error` is passed.
 - Daily archive phases require `--start-date` and `--end-date`; `--end-date` is exclusive.
 - The raw archives remain on disk. No full SEC archive or full raw document payload is inserted into ClickHouse.
+- Archive download/validation defaults match the successful workstation history: archive download concurrency `2`, archive request interval `0.2`, request timeout `60`, max retries `8`, retry base `30`, `--continue-on-429`, max 429 count `20`, validation/discovery pending multiplier `1`, and sample limit `1000`.
+
+## Observed Workstation Archive Order
+
+The saved PowerShell history confirms this archive-side sequence:
+
+```text
+sec_daily_feed_archive_download.py
+sec_archive_content_discovery.py
+sec_delete_failed_archives.py
+sec_daily_feed_archive_download.py
+sec_validate_downloaded_archives.py
+sec_delete_failed_archives.py
+sec_daily_feed_archive_download.py
+sec_validate_downloaded_archives.py
+```
+
+The orchestrator covers the repeatable forward stages: archive download, targeted validation, and optional content discovery. Failed-archive deletion remains a targeted repair step because it depends on the exact failed `archive_summary.jsonl` from a discovery or validation run.
 
 ## Dry-Run Plan
 
@@ -91,11 +109,17 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pip
 - `--archive-validation-output-root-win`: default `D:/market-data/prepared/sec_downloaded_archive_validation`.
 - `--archive-discovery-output-root-win`: default `D:/market-data/prepared/sec_archive_content_discovery`.
 - `--bulk-download-concurrency`: default `2`.
-- `--archive-download-concurrency`: default `1`.
+- `--archive-download-concurrency`: default `2`.
 - `--archive-validation-workers`: default `4`.
 - `--archive-discovery-workers`: default `4`.
 - `--sec-request-min-interval-seconds`: default `0.11` for small SEC API/header requests.
-- `--daily-archive-request-min-interval-seconds`: default `1.0` for large daily archive downloads.
+- `--daily-archive-request-min-interval-seconds`: default `0.2` for large daily archive downloads.
+- `--daily-archive-request-timeout-seconds`: default `60`.
+- `--daily-archive-max-retries`: default `8`.
+- `--daily-archive-retry-base-seconds`: default `30`.
+- `--daily-archive-max-429-before-stop`: default `20`.
+- `--archive-pending-multiplier`: default `1`.
+- `--archive-sample-limit`: default `1000`.
 - `--validation-status`: default `downloaded`; use `reused` if you deliberately want to validate reused manifest rows.
 
 ## Export Workstation PowerShell History

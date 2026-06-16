@@ -102,11 +102,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--archive-validation-output-root-win", default=os.environ.get("SEC_DOWNLOADED_ARCHIVE_VALIDATION_OUTPUT_ROOT_WIN", str(DEFAULT_ARCHIVE_VALIDATION_OUTPUT_ROOT_WIN)))
     parser.add_argument("--archive-discovery-output-root-win", default=os.environ.get("SEC_ARCHIVE_DISCOVERY_OUTPUT_ROOT_WIN", str(DEFAULT_ARCHIVE_DISCOVERY_OUTPUT_ROOT_WIN)))
     parser.add_argument("--bulk-download-concurrency", type=int, default=2)
-    parser.add_argument("--archive-download-concurrency", type=int, default=1)
+    parser.add_argument("--archive-download-concurrency", type=int, default=2)
     parser.add_argument("--sec-request-min-interval-seconds", type=float, default=0.11)
-    parser.add_argument("--daily-archive-request-min-interval-seconds", type=float, default=1.0)
+    parser.add_argument("--daily-archive-request-min-interval-seconds", type=float, default=0.2)
+    parser.add_argument("--daily-archive-request-timeout-seconds", type=float, default=60.0)
+    parser.add_argument("--daily-archive-max-retries", type=int, default=8)
+    parser.add_argument("--daily-archive-retry-base-seconds", type=float, default=30.0)
+    parser.add_argument("--daily-archive-max-429-before-stop", type=int, default=20)
     parser.add_argument("--archive-validation-workers", type=int, default=4)
     parser.add_argument("--archive-discovery-workers", type=int, default=4)
+    parser.add_argument("--archive-pending-multiplier", type=int, default=1)
+    parser.add_argument("--archive-sample-limit", type=int, default=1000)
     parser.add_argument("--acceptance-fragment-download-workers", type=int, default=8)
     parser.add_argument("--acceptance-header-download-workers", type=int, default=8)
     parser.add_argument("--limit-days", type=int, default=0, help="Smoke-test cap for archive download/discovery day selection.")
@@ -322,6 +328,15 @@ def build_commands(args: argparse.Namespace, phases: list[str]) -> list[PhaseCom
                 str(args.archive_download_concurrency),
                 "--sec-request-min-interval-seconds",
                 str(args.daily_archive_request_min_interval_seconds),
+                "--request-timeout-seconds",
+                str(args.daily_archive_request_timeout_seconds),
+                "--max-retries",
+                str(args.daily_archive_max_retries),
+                "--retry-base-seconds",
+                str(args.daily_archive_retry_base_seconds),
+                "--continue-on-429",
+                "--max-429-before-stop",
+                str(args.daily_archive_max_429_before_stop),
                 "--progress-layout",
                 args.progress_layout,
             ]
@@ -341,6 +356,10 @@ def build_commands(args: argparse.Namespace, phases: list[str]) -> list[PhaseCom
                 args.archive_validation_output_root_win,
                 "--archive-workers",
                 str(args.archive_validation_workers),
+                "--pending-multiplier",
+                str(args.archive_pending_multiplier),
+                "--sample-limit",
+                str(args.archive_sample_limit),
                 "--status",
                 args.validation_status,
             ]
@@ -363,6 +382,10 @@ def build_commands(args: argparse.Namespace, phases: list[str]) -> list[PhaseCom
                 args.end_date,
                 "--archive-workers",
                 str(args.archive_discovery_workers),
+                "--sample-limit",
+                str(args.archive_sample_limit),
+                "--pending-multiplier",
+                str(args.archive_pending_multiplier),
             ]
             add_positive(cmd, "--limit-archives", args.limit_archives)
             add_positive(cmd, "--max-filings-per-archive", args.max_filings_per_archive)
