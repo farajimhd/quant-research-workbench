@@ -9,6 +9,7 @@ This package contains the historical Benzinga news workflow:
 - ClickHouse file-based preflight and ingest.
 - ticker join-table backfill from loaded normalized news.
 - historical date-range gap-fill orchestration.
+- compact URL policy seeding and per-item pipeline smoke tests.
 
 Preferred module path:
 
@@ -26,6 +27,18 @@ Historical gap-fill orchestrator:
 
 ```powershell
 python -m pipelines.news.benzinga.news_benzinga_historical_gap_fill --help
+```
+
+URL policy table:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_url_policy --help
+```
+
+Per-item pipeline smoke:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_item_pipeline_smoke --help
 ```
 
 Old `research/mlops/news_benzinga_*.py` wrappers are archived under `pipelines/archive/legacy_wrappers/research_mlops/`. Do not use them for new runs.
