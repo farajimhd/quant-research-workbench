@@ -101,6 +101,12 @@ python -m pipelines.news.benzinga.news_benzinga_package_gap_fill --raw-root-win 
 
 The command above processes already downloaded raw Benzinga JSON files concurrently. Worker processes normalize and resolve URL policy per item. The parent process batches ClickHouse writes so the database is not hit by every worker.
 
+For missing provider data, use the provider-backed gap-fill runner:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_provider_gap_fill --start-utc 2026-06-01T00:00:00Z --end-utc 2026-06-02T00:00:00Z --workers 4 --execute
+```
+
 ```powershell
 python -m pipelines.news.benzinga.news_benzinga_live_ingest --once --lookback-minutes 15 --execute
 ```

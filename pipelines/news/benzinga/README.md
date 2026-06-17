@@ -55,6 +55,12 @@ Reusable package gap fill:
 python -m pipelines.news.benzinga.news_benzinga_package_gap_fill --help
 ```
 
+Provider-backed historical gap fill:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_provider_gap_fill --help
+```
+
 Live package ingest:
 
 ```powershell

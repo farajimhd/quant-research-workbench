@@ -105,16 +105,16 @@ Important fields:
 
 ## Live Gateway Contract
 
-`services/news-gateway` keeps `live_news_articles` only as a compatibility table for current UI streams. It also writes the four canonical split tables when `NEWS_BENZINGA_CANONICAL_ENABLED=true`.
+`services/news_gateway` is the Python live gateway. It uses the same item-level
+normalization package as historical gap fill, writes raw payloads under the
+workstation market-data root, and persists canonical rows to:
 
-The split table defaults are:
+- `benzinga_news_normalized_v1`
+- `benzinga_news_ticker_v1`
 
-- `NEWS_BENZINGA_EVENT_TABLE=benzinga_news_event_v1`
-- `NEWS_BENZINGA_TEXT_TABLE=benzinga_news_text_v1`
-- `NEWS_BENZINGA_URL_TABLE=benzinga_news_url_v1`
-- `NEWS_BENZINGA_ATTACHMENT_TABLE=benzinga_news_attachment_v1`
-
-`NEWS_BENZINGA_CANONICAL_TABLE` remains a backward-compatible alias for the event table.
+The old Rust gateway and its split-table canonical write path have been removed.
+Historical and live news now share one normalized-row contract plus the ticker
+link table.
 
 ## Historical Pipeline
 

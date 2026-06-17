@@ -7,7 +7,7 @@ The repository used to mix production services, historical ingestion scripts, re
 ```text
 services/
   qmd-gateway/              # live Massive trades/quotes, bars, indicators, scanner stream
-  news-gateway/             # live Benzinga polling, normalization, DB write
+  news_gateway/             # Python live Benzinga polling, normalization, DB write, websocket feed
   sec-gateway/              # live SEC feed polling and filing capture
   news-intelligence/        # model serving and news labeling APIs
 
