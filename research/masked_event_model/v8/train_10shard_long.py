@@ -79,6 +79,7 @@ DEFAULTS: dict[str, Any] = {
     "wandb_run_name": "v8-fixedmask070-emb32-bs4096-10shards",
     "amp_initial_scale": 1024.0,
     "amp_overflow_fatal_threshold": 8,
+    "float32_matmul_precision": "high",
     "warm_start_checkpoint": "",
 }
 
@@ -136,6 +137,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--amp-dtype", choices=("auto", "bf16", "fp16"), default=DEFAULTS["amp_dtype"])
     parser.add_argument("--amp-growth-interval", type=int, default=DEFAULTS["amp_growth_interval"])
     parser.add_argument("--amp-max-scale", type=float, default=DEFAULTS["amp_max_scale"])
+    parser.add_argument(
+        "--float32-matmul-precision",
+        choices=("highest", "high", "medium"),
+        default=DEFAULTS["float32_matmul_precision"],
+    )
     parser.add_argument("--warm-start-checkpoint", nargs="?", const="", default=DEFAULTS["warm_start_checkpoint"])
     parser.add_argument("--warm-start-load-optimizer", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--initial-validation", action=argparse.BooleanOptionalAction, default=False)
@@ -242,6 +248,7 @@ def main() -> None:
             "amp_dtype": args.amp_dtype,
             "amp_growth_interval": int(args.amp_growth_interval),
             "amp_max_scale": float(args.amp_max_scale),
+            "float32_matmul_precision": args.float32_matmul_precision,
             "warm_start_checkpoint": args.warm_start_checkpoint,
             "warm_start_load_optimizer": bool(args.warm_start_load_optimizer),
             "initial_validation": bool(args.initial_validation),
@@ -359,6 +366,7 @@ def print_plan(
         f"amp_overflow_fatal_threshold={values['amp_overflow_fatal_threshold']}",
         flush=True,
     )
+    print(f"float32_matmul_precision={values['float32_matmul_precision']}", flush=True)
     print(f"wandb_project={values['wandb_project']} run={values['wandb_run_name']} mode={values['wandb_mode']}", flush=True)
     print(f"warm_start_checkpoint={values['warm_start_checkpoint'] or '<none>'} load_optimizer={values['warm_start_load_optimizer']}", flush=True)
     print(f"compile_model={values['compile_model']} interleave_shards={values['sample_cache_interleave_shards']}", flush=True)

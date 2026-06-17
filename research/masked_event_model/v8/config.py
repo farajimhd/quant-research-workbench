@@ -149,6 +149,11 @@ class TrainConfig:
     amp_growth_interval: int = 10_000
     amp_max_scale: float = 2048.0
     amp_overflow_fatal_threshold: int = 8
+    # `high` enables TensorFloat-32 matmuls on NVIDIA GPUs for the FP32 decoder
+    # path. The encoder still runs under AMP/BF16; this setting mainly recovers
+    # speed from the decoder stability fix without reintroducing BF16 decoder
+    # backward instability.
+    float32_matmul_precision: str = "high"
     compile_model: bool = False
     wandb_project: str = "June2026-event-token-mae-v8-fixed-mask"
     wandb_entity: str = "mehdifaraji"

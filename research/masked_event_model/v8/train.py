@@ -163,6 +163,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--amp-growth-interval", type=int, default=train_defaults.amp_growth_interval)
     parser.add_argument("--amp-max-scale", type=float, default=train_defaults.amp_max_scale)
     parser.add_argument("--amp-overflow-fatal-threshold", type=int, default=train_defaults.amp_overflow_fatal_threshold)
+    parser.add_argument(
+        "--float32-matmul-precision",
+        choices=("highest", "high", "medium"),
+        default=train_defaults.float32_matmul_precision,
+        help="Controls PyTorch FP32 matmul precision; 'high' enables TF32 tensor cores on NVIDIA GPUs.",
+    )
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=train_defaults.compile_model)
     parser.add_argument("--warm-start-checkpoint", default="")
     parser.add_argument("--warm-start-load-optimizer", action=argparse.BooleanOptionalAction, default=False)
@@ -187,6 +193,7 @@ def main(argv: list[str] | None = None) -> None:
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
     print(f"Output directory: {output_dir}", flush=True)
     print(f"Device: {device}", flush=True)
+    configure_float32_matmul_precision(config.train, device)
     print(f"Input shape: header=[B,14] events=[B,{config.data.events_per_chunk},16]", flush=True)
     print(f"Input representation: {config.model.input_representation}", flush=True)
 
@@ -1036,6 +1043,29 @@ def resource_profile(device: torch.device) -> dict[str, float]:
     return metrics
 
 
+def configure_float32_matmul_precision(train_config: TrainConfig, device: torch.device) -> None:
+    precision = str(train_config.float32_matmul_precision).lower().strip()
+    if precision not in {"highest", "high", "medium"}:
+        raise ValueError(
+            f"Unsupported float32_matmul_precision={train_config.float32_matmul_precision!r}; "
+            "expected highest, high, or medium."
+        )
+    torch.set_float32_matmul_precision(precision)
+    if device.type == "cuda":
+        # Use the new PyTorch matmul-precision API instead of manually toggling
+        # backend flags. On NVIDIA GPUs, `high` enables TF32 matmuls for the
+        # FP32 decoder path; replay tests kept the stable FP32 gradients while
+        # improving step time versus full FP32 matmuls.
+        print(
+            "Float32 matmul precision: "
+            f"{torch.get_float32_matmul_precision()} "
+            f"(cuda.matmul.allow_tf32={torch.backends.cuda.matmul.allow_tf32})",
+            flush=True,
+        )
+    else:
+        print(f"Float32 matmul precision: {torch.get_float32_matmul_precision()} (device={device})", flush=True)
+
+
 def resolve_amp_dtype(train_config: TrainConfig, device: torch.device) -> torch.dtype | None:
     if not train_config.amp or device.type != "cuda":
         return None
@@ -1175,7 +1205,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         ),
         model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
         losses=LossConfig(objective=args.loss_objective),
-        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, amp=args.amp, amp_dtype=args.amp_dtype, amp_initial_scale=args.amp_initial_scale, amp_growth_interval=args.amp_growth_interval, amp_max_scale=args.amp_max_scale, amp_overflow_fatal_threshold=args.amp_overflow_fatal_threshold, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
+        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, amp=args.amp, amp_dtype=args.amp_dtype, amp_initial_scale=args.amp_initial_scale, amp_growth_interval=args.amp_growth_interval, amp_max_scale=args.amp_max_scale, amp_overflow_fatal_threshold=args.amp_overflow_fatal_threshold, float32_matmul_precision=args.float32_matmul_precision, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )
 
 
