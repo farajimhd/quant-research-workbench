@@ -72,7 +72,7 @@ DEFAULTS: dict[str, Any] = {
     "amp_dtype": "auto",
     "amp_growth_interval": 10000,
     "amp_max_scale": 2048.0,
-    "compile_model": False,
+    "compile_model": True,
     "wandb_project": "June2026-event-token-mae-v8-fixed-mask",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
@@ -86,7 +86,7 @@ DEFAULTS: dict[str, Any] = {
 VALIDATION_BATCHES = 8
 PROFILED_TRAINING_PATH = (
     "v8 event-token MAE, masked-query cross-attention decoder, "
-    "fixed 70% event mask, sample-cache shards, shard-cycle scheduler, no interleave"
+    "fixed 70% event mask, sample-cache shards, shard-cycle scheduler, no interleave, torch.compile enabled"
 )
 
 
@@ -370,8 +370,8 @@ def print_plan(
     print(f"wandb_project={values['wandb_project']} run={values['wandb_run_name']} mode={values['wandb_mode']}", flush=True)
     print(f"warm_start_checkpoint={values['warm_start_checkpoint'] or '<none>'} load_optimizer={values['warm_start_load_optimizer']}", flush=True)
     print(f"compile_model={values['compile_model']} interleave_shards={values['sample_cache_interleave_shards']}", flush=True)
-    if values["compile_model"]:
-        print("WARN compile_model=True differs from the profiled stable path.", flush=True)
+    if not values["compile_model"]:
+        print("WARN compile_model=False differs from the current profiled faster path.", flush=True)
     print("Equivalent trainer args:", flush=True)
     print(" ".join(argv), flush=True)
     print("=" * 104, flush=True)

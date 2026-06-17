@@ -56,6 +56,7 @@ DEFAULTS: dict[str, Any] = {
     "n_heads": 4,
     "encoder_layers": 6,
     "decoder_layers": 2,
+    "compile_model": True,
     "learning_rate": 2e-4,
     "wandb_project": "June2026-event-token-mae-v8-fixed-mask",
     "wandb_entity": "mehdifaraji",

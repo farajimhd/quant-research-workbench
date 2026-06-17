@@ -154,7 +154,7 @@ class TrainConfig:
     # speed from the decoder stability fix without reintroducing BF16 decoder
     # backward instability.
     float32_matmul_precision: str = "high"
-    compile_model: bool = False
+    compile_model: bool = True
     wandb_project: str = "June2026-event-token-mae-v8-fixed-mask"
     wandb_entity: str = "mehdifaraji"
     wandb_run_name: str = ""
