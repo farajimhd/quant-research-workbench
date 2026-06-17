@@ -10,7 +10,7 @@ This file records the working state that should be used before proposing new SEC
 | --- | --- | --- |
 | Live trading app | UI and broker/data separation work exists, but historical data cleanup temporarily took priority. | Resume after historical news and SEC ingestion are stable. Keep live trading code separate from semi-auto modules. |
 | `qmd-gateway` | Rust service exists for live Massive trades/quotes, bars, indicators, signal catalog, and ClickHouse batching. | Later: run integration tests against live Massive and ClickHouse. |
-| Benzinga historical news | Enriched news has been normalized into legacy single-table JSONEachRow parts. The target ClickHouse table is not present yet. | Preflight ClickHouse `file()` access, then insert into `q_live.benzinga_news_normalized_v1`. |
+| Benzinga historical news | Enriched news has been normalized into legacy single-table JSONEachRow parts and loaded into `q_live.benzinga_news_normalized_v1`. The derived ticker join table is loaded. | Use `q_live.benzinga_news_ticker_v1` for ticker/time training joins; keep no-ticker news in the normalized table for market-wide labels. |
 | SEC daily archives | Full discovery found corrupt archives. The latest 20-archive redownload validation completed cleanly. | Move to normalized SEC filing text extraction. |
 | SEC normalized text | Extractor and ClickHouse file loader now exist. The current extractor now writes missing archive-derived parent rows to `sec_filing_v2` before child document/text/skip rows. | Rerun full extraction with the updated script, then preflight and execute the new manifest. Do not load the old `20260616_182541` manifest because it dropped parentless filings. |
 
@@ -45,14 +45,25 @@ pdf_artifact_missing: 6,218
 
 The output is a legacy 42-column single-table format. It is not the newer split event/text/url/attachment table layout. The ingest script has been updated to accept this legacy manifest contract.
 
-ClickHouse verification from the laptop on 2026-06-16:
+ClickHouse verification after insertion:
 
 ```text
-q_live.benzinga_news_normalized_v1: table not found
-q_live.benzinga_news_file_ingest_manifest_v1: table not found
+q_live.benzinga_news_normalized_v1: 2,512,931 rows
+q_live.benzinga_news_file_ingest_manifest_v1: 46 ok parts
+source rows with tickers: 2,359,935
+expected ticker links: 4,309,119
+max distinct tickers per article: 2,649
 ```
 
-So the normalized files exist on disk, but they have not been loaded into `q_live`.
+The derived table `q_live.benzinga_news_ticker_v1` was built from the normalized table:
+
+```text
+q_live.benzinga_news_ticker_v1: 4,309,119 rows
+unique news with ticker rows: 2,359,935
+duplicate (canonical_news_id, ticker) links: 0
+```
+
+No-ticker news stays only in `benzinga_news_normalized_v1` for market-wide and macro labels.
 
 The structure audit file exists at:
 

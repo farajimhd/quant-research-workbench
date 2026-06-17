@@ -4,7 +4,7 @@ This runbook documents the path actually used for the current historical Benzing
 
 ## Current Stage
 
-Historical news has already been downloaded, enriched, and normalized into JSONEachRow part files.
+Historical news has already been downloaded, enriched, normalized into JSONEachRow part files, and loaded into ClickHouse.
 
 Current normalized run:
 
@@ -19,16 +19,14 @@ part_bytes: 12,185,155,246
 format: JSONEachRow
 ```
 
-The next step is ClickHouse file-ingest preflight, then insert.
-
-ClickHouse verification from the laptop on 2026-06-16 found that these tables do not exist yet:
+ClickHouse verification after insertion found:
 
 ```text
-q_live.benzinga_news_normalized_v1
-q_live.benzinga_news_file_ingest_manifest_v1
+q_live.benzinga_news_normalized_v1: 2,512,931 rows
+q_live.benzinga_news_file_ingest_manifest_v1: 46 ok parts
 ```
 
-So the normalized JSONEachRow files are present on disk, but the current corpus has not been loaded into ClickHouse.
+The normalized legacy table is now the source of truth for historical Benzinga article text.
 
 ## Preflight
 
@@ -101,6 +99,37 @@ LIMIT 20;
 ```
 
 Expected first-pass count is about `2,512,931`, unless the table already contains earlier test rows.
+
+## Ticker Join Table
+
+Build the ticker-time join index after the normalized table is loaded:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_ticker_links
+```
+
+If the dry-run/audit looks correct, execute:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_ticker_links --execute
+```
+
+Rerun from scratch:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_ticker_links --execute --rebuild
+```
+
+Expected source-derived counts for the current corpus:
+
+```text
+source_rows: 2,512,931
+rows_with_tickers: 2,359,935
+expected_ticker_links: 4,309,119
+max_distinct_tickers: 2,649
+```
+
+No-ticker news is not inserted into the ticker table. It remains available in `q_live.benzinga_news_normalized_v1` for market-wide and macro labels.
 
 ## Important Issue History
 

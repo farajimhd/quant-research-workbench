@@ -1,8 +1,8 @@
 # `q_live.benzinga_news_normalized_v1`
 
-This is the current legacy normalized Benzinga news contract produced by run `20260611_011906`. It is the table to load before any future split-table migration.
+This is the current legacy normalized Benzinga news contract produced by run `20260611_011906`. It is the loaded source-of-truth table for historical Benzinga article text.
 
-As of the 2026-06-16 laptop-to-workstation check, this contract exists as JSONEachRow files on disk, but `q_live.benzinga_news_normalized_v1` has not been created or loaded in ClickHouse.
+As of the post-insert check, `q_live.benzinga_news_normalized_v1` contains `2,512,931` rows and the file-ingest manifest has `46` ok parts.
 
 ## Table Shape
 
@@ -121,3 +121,9 @@ benzinga_news_attachment_v1
 ```
 
 That split is not the current loaded corpus. Do not insert the 42-column files into the 34-column event table.
+
+## Derived Ticker Join
+
+Use `q_live.benzinga_news_ticker_v1` for efficient ticker/time joins. It is derived from this table by exploding the normalized `tickers` array after uppercasing, trimming, removing empty values, and deduplicating per article.
+
+Rows without tickers remain only in this normalized table.
