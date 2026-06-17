@@ -37,9 +37,16 @@ DEFAULT_PART_MANIFEST_TABLE = "sec_filing_text_file_ingest_manifest_v1"
 DEFAULT_PARTS_ROOT_WIN = Path("D:/market-data")
 DEFAULT_PARTS_ROOT_CH = DEFAULT_CLICKHOUSE_FILE_ROOT
 EXPECTED_TARGET_TABLES = {
+    "filing": "sec_filing_v2",
     "document": "sec_filing_document_v2",
     "text": "sec_filing_text_v2",
     "skip": "sec_filing_document_skip_v1",
+}
+DATASET_ORDER = {
+    "filing": 0,
+    "document": 1,
+    "text": 2,
+    "skip": 3,
 }
 
 
@@ -92,7 +99,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-threads", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_MAX_THREADS", "24")))
     parser.add_argument("--max-memory-usage", default=os.environ.get("SEC_TEXT_FILE_INGEST_MAX_MEMORY", "0"))
     parser.add_argument("--limit-parts", type=int, default=int(os.environ.get("SEC_TEXT_FILE_INGEST_LIMIT_PARTS", "0")))
-    parser.add_argument("--dataset", choices=["all", "document", "text", "skip"], default="all")
+    parser.add_argument("--dataset", choices=["all", "filing", "document", "text", "skip"], default="all")
     parser.add_argument("--execute", action="store_true", help="Actually insert rows. Without this, only validate and print SQL.")
     parser.add_argument("--preflight-only", action="store_true", help="Validate ClickHouse file() access and exit before inserting.")
     parser.add_argument("--skip-preflight", action="store_true", help="Skip file() row-count preflight. Use only after a successful preflight-only run for the same manifest.")
@@ -237,7 +244,7 @@ def load_part_files(args: argparse.Namespace, manifest: dict[str, Any]) -> list[
     for part in parts:
         if not part.columns or not part.structure:
             raise SystemExit(f"part lacks columns/structure: {part.windows_path}")
-    return parts
+    return sorted(parts, key=lambda part: (DATASET_ORDER.get(part.dataset_name, 99), part.part_index))
 
 
 def resolve_part_windows_path(raw_path: str, root_win: Path) -> Path:

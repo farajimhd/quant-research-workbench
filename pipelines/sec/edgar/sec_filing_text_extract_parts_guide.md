@@ -4,6 +4,7 @@ This script parses SEC daily `.nc.tar.gz` archives and writes DB-ready JSONEachR
 
 Output datasets:
 
+- `sec_filing_v2_parts`: archive-derived parent rows for filings missing from `q_live.sec_filing_v2`.
 - `sec_filing_document_v2_parts`: real archive `<DOCUMENT>` metadata.
 - `sec_filing_text_v2_parts`: clean body text for useful text documents.
 - `sec_filing_document_skip_v1_parts`: explicit skip records for structured XML/XBRL, images, PDFs without extraction, and low-signal documents.
@@ -22,13 +23,14 @@ Expected shape from the laptop smoke:
 
 ```text
 archives=1/1
-documents=40
-text=8
-skips=32
-errors=4
+missing parent rows written=4
+documents=62
+text=12
+skips=50
+errors=0
 ```
 
-The small parent-missing count is acceptable in this capped sample because some filings in the daily archive have acceptance dates outside the small parent lookup window. It should be monitored in the full run.
+Parent-missing filings are not dropped. They are written as `sec_filing_v2` parent parts first, then document/text/skip rows are written against those generated parents.
 
 ## Full Historical Extract
 
@@ -64,6 +66,7 @@ sec_filing_text_extract_summary.md
 sec_filing_text_extract_errors.jsonl
 sec_filing_text_extract_samples.jsonl
 parts/sec_filing_document_v2_parts/*.jsonl
+parts/sec_filing_v2_parts/*.jsonl
 parts/sec_filing_text_v2_parts/*.jsonl
 parts/sec_filing_document_skip_v1_parts/*.jsonl
 ```

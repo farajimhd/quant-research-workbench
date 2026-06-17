@@ -38,6 +38,30 @@ DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_filing_text_parts")
 DEFAULT_DATABASE = "q_live"
 NORMALIZER_VERSION = "sec_text_normalizer_v1"
+FILING_COLUMNS = [
+    "filing_id",
+    "accession_number",
+    "accession_number_compact",
+    "cik",
+    "issuer_id",
+    "company_name",
+    "form_type",
+    "filing_date",
+    "report_date",
+    "accepted_at_utc",
+    "acceptance_datetime_raw",
+    "accepted_at_source",
+    "primary_document",
+    "primary_document_url",
+    "filing_detail_url",
+    "source_file_name",
+    "filing_size",
+    "items",
+    "text_status",
+    "source_run_id",
+    "source_content_sha256",
+    "inserted_at",
+]
 DOCUMENT_COLUMNS = [
     "document_id",
     "filing_id",
@@ -398,6 +422,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     part_prefix = f"{archive_date:%Y%m%d}_{int(payload['archive_index']):06d}"
     parts_root = Path(payload["parts_root"])
     part_paths = {
+        "filing": parts_root / "sec_filing_v2_parts" / f"sec_filing_v2_part_{part_prefix}.jsonl",
         "document": parts_root / "sec_filing_document_v2_parts" / f"sec_filing_document_v2_part_{part_prefix}.jsonl",
         "text": parts_root / "sec_filing_text_v2_parts" / f"sec_filing_text_v2_part_{part_prefix}.jsonl",
         "skip": parts_root / "sec_filing_document_skip_v1_parts" / f"sec_filing_document_skip_v1_part_{part_prefix}.jsonl",
@@ -421,6 +446,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "members": 0,
         "filings": 0,
         "documents": 0,
+        "filing_parent_rows": 0,
         "document_rows": 0,
         "text_rows": 0,
         "skip_rows": 0,
@@ -438,9 +464,10 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "errors": [],
         "samples": [],
     }
-    doc_count = text_count = skip_count = 0
+    filing_parent_count = doc_count = text_count = skip_count = 0
     try:
         with (
+            part_paths["filing"].open("w", encoding="utf-8") as filing_out,
             part_paths["document"].open("w", encoding="utf-8") as doc_out,
             part_paths["text"].open("w", encoding="utf-8") as text_out,
             part_paths["skip"].open("w", encoding="utf-8") as skip_out,
@@ -468,8 +495,11 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
                 parent = parents.get((filing["cik"], filing["accession_number"])) or parents.get(("", filing["accession_number"]))
                 if parent is None:
                     stats["parent_missing_filings"] += 1
-                    add_error(stats, archive_date_text, member.name, filing["cik"], filing["accession_number"], "parent_missing", "not found in sec_filing_v2 date window")
-                    continue
+                    parent_row, parent = build_missing_parent_row(payload, archive, archive_date, archive_date_text, member.name, raw, filing, inserted_at)
+                    filing_out.write(json.dumps(parent_row, ensure_ascii=False, sort_keys=True) + "\n")
+                    filing_parent_count += 1
+                    parents[(parent.cik, parent.accession_number)] = parent
+                    parents[("", parent.accession_number)] = parent
                 for document in filing["documents"]:
                     stats["documents"] += 1
                     doc_row, text_row, skip_row, sample_row = build_rows(payload, archive, archive_date_text, member.name, parent, document, inserted_at)
@@ -491,6 +521,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
         stats["status"] = "failed"
         add_error(stats, archive_date_text, "", "", "", "archive_error", repr(exc))
 
+    stats["filing_parent_rows"] = filing_parent_count
     stats["document_rows"] = doc_count
     stats["text_rows"] = text_count
     stats["skip_rows"] = skip_count
@@ -501,6 +532,7 @@ def process_archive_worker(payload: dict[str, Any]) -> dict[str, Any]:
     stats["content_formats"] = dict(stats["content_formats"])
     stats["form_types"] = dict(stats["form_types"])
     stats["part_files"] = [
+        part_file_summary("filing", "sec_filing_v2", part_paths["filing"], filing_parent_count, FILING_COLUMNS),
         part_file_summary("document", "sec_filing_document_v2", part_paths["document"], doc_count, DOCUMENT_COLUMNS),
         part_file_summary("text", "sec_filing_text_v2", part_paths["text"], text_count, TEXT_COLUMNS),
         part_file_summary("skip", "sec_filing_document_skip_v1", part_paths["skip"], skip_count, SKIP_COLUMNS),
@@ -555,6 +587,11 @@ def parse_filing(raw: bytes, member_name: str) -> dict[str, Any]:
     accession = normalize_accession(header_value(header_text, "ACCESSION NUMBER") or tag_value(header_text, "ACCESSION-NUMBER") or Path(member_name).stem)
     cik = extract_submission_cik(header_text)
     form_type = clean_label(header_value(header_text, "CONFORMED SUBMISSION TYPE") or tag_value(header_text, "TYPE")).upper()
+    filing_date = parse_sec_date_value(header_value(header_text, "FILED AS OF DATE") or tag_value(header_text, "FILING-DATE"))
+    report_date = parse_sec_date_value(header_value(header_text, "CONFORMED PERIOD OF REPORT") or tag_value(header_text, "PERIOD"))
+    acceptance_raw = clean_text_field(header_value(header_text, "ACCEPTANCE-DATETIME") or tag_value(header_text, "ACCEPTANCE-DATETIME"))
+    company_name = extract_submission_company_name(header_text)
+    items = extract_submission_items(header_text)
     documents = []
     for index, block in enumerate(re.findall(r"<DOCUMENT>\s*(.*?)\s*</DOCUMENT>", decoded, flags=re.S | re.I), start=1):
         sequence = parse_int(tag_value(block, "SEQUENCE")) or index
@@ -573,7 +610,75 @@ def parse_filing(raw: bytes, member_name: str) -> dict[str, Any]:
                 "payload_char_count": len(payload),
             }
         )
-    return {"member_name": member_name, "accession_number": accession, "cik": cik, "form_type": form_type, "documents": documents}
+    return {
+        "member_name": member_name,
+        "accession_number": accession,
+        "accession_number_compact": accession.replace("-", ""),
+        "cik": cik,
+        "company_name": company_name,
+        "form_type": form_type,
+        "filing_date": filing_date,
+        "report_date": report_date,
+        "acceptance_datetime_raw": acceptance_raw,
+        "items": items,
+        "documents": documents,
+    }
+
+
+def build_missing_parent_row(
+    payload: dict[str, Any],
+    archive: Path,
+    archive_date: date,
+    archive_date_text: str,
+    member_name: str,
+    raw: bytes,
+    filing: dict[str, Any],
+    inserted_at: str,
+) -> tuple[dict[str, Any], FilingParent]:
+    accession = normalize_accession(filing["accession_number"])
+    accession_compact = filing.get("accession_number_compact") or accession.replace("-", "")
+    cik = normalize_cik(filing["cik"])
+    primary_document = first_primary_document_name(filing["documents"])
+    accepted_at_utc, accepted_source = accepted_timestamp_for_missing_parent(filing, archive_date)
+    filing_id = deterministic_id("sec-filing-v2-archive-parent", cik, accession)
+    filing_detail_url = sec_filing_detail_url(cik, accession_compact)
+    primary_document_url = sec_document_url(cik, accession_compact, primary_document) if primary_document else ""
+    row = {
+        "filing_id": filing_id,
+        "accession_number": accession,
+        "accession_number_compact": accession_compact,
+        "cik": cik,
+        "issuer_id": None,
+        "company_name": filing.get("company_name") or None,
+        "form_type": filing.get("form_type") or "",
+        "filing_date": filing.get("filing_date") or archive_date_text,
+        "report_date": filing.get("report_date") or None,
+        "accepted_at_utc": accepted_at_utc,
+        "acceptance_datetime_raw": filing.get("acceptance_datetime_raw") or None,
+        "accepted_at_source": accepted_source,
+        "primary_document": primary_document or None,
+        "primary_document_url": primary_document_url or None,
+        "filing_detail_url": filing_detail_url or None,
+        "source_file_name": member_name,
+        "filing_size": len(raw),
+        "items": filing.get("items") or None,
+        "text_status": "archive_text_extracted",
+        "source_run_id": str(payload["source_run_id"]),
+        "source_content_sha256": sha256_bytes(raw),
+        "inserted_at": inserted_at,
+    }
+    parent = FilingParent(
+        filing_id=filing_id,
+        accession_number=accession,
+        accession_number_compact=accession_compact,
+        cik=cik,
+        form_type=row["form_type"],
+        accepted_at_utc=accepted_at_utc,
+        primary_document=primary_document,
+        primary_document_url=primary_document_url,
+        filing_detail_url=filing_detail_url,
+    )
+    return row, parent
 
 
 def build_rows(
@@ -931,12 +1036,30 @@ def structure_for_columns(columns: list[str]) -> str:
         "has_normalized_text": "UInt8",
         "text_char_count": "UInt64",
         "text_byte_count": "UInt64",
+        "filing_size": "Nullable(UInt64)",
         "quality_flags": "Array(String)",
+        "filing_date": "Nullable(Date)",
+        "report_date": "Nullable(Date)",
         "source_archive_date": "Date",
+        "accepted_at_utc": "Nullable(DateTime64(9, 'UTC'))",
         "inserted_at": "DateTime64(3, 'UTC')",
         "extracted_at_utc": "DateTime64(3, 'UTC')",
     }
-    nullable = {"description", "document_url", "source_archive_path", "mime_type", "text_sha256", "extraction_error"}
+    nullable = {
+        "description",
+        "document_url",
+        "source_archive_path",
+        "mime_type",
+        "text_sha256",
+        "extraction_error",
+        "issuer_id",
+        "company_name",
+        "acceptance_datetime_raw",
+        "primary_document",
+        "primary_document_url",
+        "filing_detail_url",
+        "items",
+    }
     parts = []
     for column in columns:
         if column in type_map:
@@ -967,6 +1090,7 @@ def aggregate_results(args: argparse.Namespace, source_run_id: str, loaded_env: 
             summary["failed_archives"] += 1
         for key in ("members", "filings", "documents", "document_rows", "text_rows", "skip_rows", "error_rows", "parent_rows_loaded", "parent_missing_filings", "parse_errors"):
             summary[key] += int(result.get(key) or 0)
+        summary["filing_parent_rows"] += int(result.get("filing_parent_rows") or 0)
         merge_counter(summary["document_roles"], result.get("document_roles") or {})
         merge_counter(summary["text_kinds"], result.get("text_kinds") or {})
         merge_counter(summary["skip_reasons"], result.get("skip_reasons") or {})
@@ -989,6 +1113,7 @@ def empty_summary(args: argparse.Namespace, source_run_id: str, loaded_env: list
         "members": 0,
         "filings": 0,
         "documents": 0,
+        "filing_parent_rows": 0,
         "document_rows": 0,
         "text_rows": 0,
         "skip_rows": 0,
@@ -1014,6 +1139,7 @@ def write_manifest(path: Path, args: argparse.Namespace, source_run_id: str, loa
         "clickhouse_format": "JSONEachRow",
         "database": args.database,
         "target_tables": {
+            "filing": "sec_filing_v2",
             "document": "sec_filing_document_v2",
             "text": "sec_filing_text_v2",
             "skip": "sec_filing_document_skip_v1",
@@ -1037,6 +1163,7 @@ def write_summary(path: Path, args: argparse.Namespace, source_run_id: str, summ
         f"- Failed archives: `{summary['failed_archives']:,}`",
         f"- Filings: `{summary['filings']:,}`",
         f"- Documents parsed: `{summary['documents']:,}`",
+        f"- Missing parent rows written: `{summary['filing_parent_rows']:,}`",
         f"- Document rows: `{summary['document_rows']:,}`",
         f"- Text rows: `{summary['text_rows']:,}`",
         f"- Skip rows: `{summary['skip_rows']:,}`",
@@ -1110,6 +1237,10 @@ def tag_value(text: str, tag: str) -> str:
     return clean_text_field(match.group(1)) if match else ""
 
 
+def all_tag_values(text: str, tag: str) -> list[str]:
+    return [clean_text_field(match.group(1)) for match in re.finditer(rf"<{re.escape(tag)}>\s*([^\n\r<]+)", text, flags=re.I)]
+
+
 def extract_submission_cik(header_text: str) -> str:
     preferred_blocks = ("ISSUER", "FILER", "REPORTING-OWNER")
     for block_name in preferred_blocks:
@@ -1126,6 +1257,53 @@ def extract_submission_cik(header_text: str) -> str:
     if company_match:
         return normalize_cik(tag_value(company_match.group(1), "CIK"))
     return normalize_cik(tag_value(header_text, "CIK"))
+
+
+def extract_submission_company_name(header_text: str) -> str:
+    for block_name in ("ISSUER", "FILER", "REPORTING-OWNER"):
+        block_match = re.search(rf"<{block_name}>\s*(.*?)(?=</{block_name}>|<(?:ISSUER|FILER|REPORTING-OWNER|DOCUMENT)>|\Z)", header_text, flags=re.I | re.S)
+        if not block_match:
+            continue
+        name = tag_value(block_match.group(1), "CONFORMED-NAME")
+        if name:
+            return name
+    return header_value(header_text, "COMPANY CONFORMED NAME") or tag_value(header_text, "CONFORMED-NAME")
+
+
+def extract_submission_items(header_text: str) -> str:
+    values = all_tag_values(header_text, "ITEMS")
+    if values:
+        return "; ".join(sorted(set(value for value in values if value)))
+    return header_value(header_text, "ITEM INFORMATION")
+
+
+def parse_sec_date_value(value: str | None) -> str:
+    digits = re.sub(r"\D+", "", str(value or ""))
+    if len(digits) >= 8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    return ""
+
+
+def accepted_timestamp_for_missing_parent(filing: dict[str, Any], archive_date: date) -> tuple[str, str]:
+    raw = re.sub(r"\D+", "", str(filing.get("acceptance_datetime_raw") or ""))
+    if len(raw) >= 14:
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]} {raw[8:10]}:{raw[10:12]}:{raw[12:14]}.000000000", "archive_acceptance_datetime"
+    filing_date = str(filing.get("filing_date") or "")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", filing_date):
+        return f"{filing_date} 00:00:00.000000000", "archive_filing_date_midnight"
+    return f"{archive_date.isoformat()} 00:00:00.000000000", "archive_date_midnight"
+
+
+def first_primary_document_name(documents: list[dict[str, Any]]) -> str:
+    if not documents:
+        return ""
+    for document in documents:
+        if int(document.get("sequence_number") or 0) == 1 and document.get("document_name"):
+            return str(document["document_name"])
+    for document in documents:
+        if document.get("document_name"):
+            return str(document["document_name"])
+    return ""
 
 
 def decode_sec_bytes(raw: bytes) -> str:
@@ -1188,10 +1366,21 @@ def build_document_url(parent: FilingParent, document_name: str) -> str:
         return parent.primary_document_url
     if not document_name:
         return ""
-    cik_int = str(int(parent.cik)) if parent.cik else ""
-    if not cik_int:
+    return sec_document_url(parent.cik, parent.accession_number_compact, document_name)
+
+
+def sec_filing_detail_url(cik: str, accession_compact: str) -> str:
+    cik_int = str(int(cik)) if cik else ""
+    if not cik_int or not accession_compact:
         return ""
-    return f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{parent.accession_number_compact}/{document_name}"
+    return f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_compact}/"
+
+
+def sec_document_url(cik: str, accession_compact: str, document_name: str) -> str:
+    base = sec_filing_detail_url(cik, accession_compact)
+    if not base or not document_name:
+        return ""
+    return base + document_name
 
 
 def parse_int(value: str) -> int | None:
@@ -1216,6 +1405,10 @@ def has_mojibake(text: str) -> bool:
 
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
+
+
+def sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
 
 
 def deterministic_id(*parts: str) -> str:

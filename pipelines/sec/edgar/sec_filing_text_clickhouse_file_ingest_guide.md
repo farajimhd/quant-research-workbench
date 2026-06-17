@@ -4,6 +4,7 @@ This script loads the extractor part files into ClickHouse through the server-si
 
 Targets:
 
+- `q_live.sec_filing_v2`
 - `q_live.sec_filing_document_v2`
 - `q_live.sec_filing_text_v2`
 - `q_live.sec_filing_document_skip_v1`
@@ -22,9 +23,10 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 Expected laptop smoke result:
 
 ```text
-preflight_part=1/3 dataset=document rows=40
-preflight_part=2/3 dataset=text rows=8
-preflight_part=3/3 dataset=skip rows=32
+preflight_part=1/4 dataset=filing rows=4
+preflight_part=2/4 dataset=document rows=62
+preflight_part=3/4 dataset=text rows=12
+preflight_part=4/4 dataset=skip rows=50
 preflight=done
 ```
 
@@ -54,7 +56,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 
 - `--parts-root-win`: Windows path prefix for the part files.
 - `--parts-root-ch`: matching ClickHouse server path prefix. On the workstation this is `/mnt/d/market-data`.
-- `--dataset`: optional `document`, `text`, or `skip` subset for debugging.
+- `--dataset`: optional `filing`, `document`, `text`, or `skip` subset for debugging.
 - `--limit-parts`: optional cap for smoke/debug only.
 - `--force`: insert even if the part manifest says the part already loaded. Use only for deliberate reprocessing.
 - `--retry-failed`: retry parts whose latest manifest status is `failed`.

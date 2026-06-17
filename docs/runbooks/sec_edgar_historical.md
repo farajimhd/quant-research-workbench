@@ -223,7 +223,7 @@ Load after preflight succeeds:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_clickhouse_file_ingest.py --manifest-json D:/market-data/prepared/sec_filing_text_parts/<run_id>/sec_filing_text_extract_manifest.json --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --execute
 ```
 
-Laptop smoke completed on 2026-06-16:
+Laptop smoke completed on 2026-06-16 before parent-row generation:
 
 ```text
 extract_run: D:/market-data/prepared/sec_filing_text_parts_smoke/20260616_181844
@@ -232,6 +232,22 @@ filings: 25
 document_rows: 40
 text_rows: 8
 skip_rows: 32
+loader_preflight: passed
+```
+
+The `20260616_182541` full extract manifest should not be loaded because it skipped archive filings missing from `q_live.sec_filing_v2`. Rerun extraction with the updated extractor, which writes `sec_filing_v2` parent parts before child document/text/skip parts.
+
+Parent-row smoke completed on 2026-06-17:
+
+```text
+extract_run: D:/market-data/prepared/sec_filing_text_parts_parent_smoke/20260617_141028
+archives: 1
+filings: 25
+missing_parent_rows_written: 4
+document_rows: 62
+text_rows: 12
+skip_rows: 50
+errors: 0
 loader_preflight: passed
 ```
 

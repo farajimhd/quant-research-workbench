@@ -12,7 +12,7 @@ This file records the working state that should be used before proposing new SEC
 | `qmd-gateway` | Rust service exists for live Massive trades/quotes, bars, indicators, signal catalog, and ClickHouse batching. | Later: run integration tests against live Massive and ClickHouse. |
 | Benzinga historical news | Enriched news has been normalized into legacy single-table JSONEachRow parts. The target ClickHouse table is not present yet. | Preflight ClickHouse `file()` access, then insert into `q_live.benzinga_news_normalized_v1`. |
 | SEC daily archives | Full discovery found corrupt archives. The latest 20-archive redownload validation completed cleanly. | Move to normalized SEC filing text extraction. |
-| SEC normalized text | Extractor and ClickHouse file loader now exist. `sec_filing_document_v2`, `sec_filing_text_v2`, and `sec_filing_document_skip_v1` exist and are the intended targets. A capped 2025 smoke produced document/text/skip parts and loader preflight passed. | Run full extractor on the workstation, then preflight and execute the loader. |
+| SEC normalized text | Extractor and ClickHouse file loader now exist. The current extractor now writes missing archive-derived parent rows to `sec_filing_v2` before child document/text/skip rows. | Rerun full extraction with the updated script, then preflight and execute the new manifest. Do not load the old `20260616_182541` manifest because it dropped parentless filings. |
 
 ## Verified Benzinga News State
 
@@ -221,7 +221,7 @@ fail: 0
 expected_warnings: provisional sec_filing_document_v1, empty text tables, sampled XBRL accession orphans
 ```
 
-SEC text smoke on the workstation share:
+SEC text smoke on the workstation share before parent-row generation:
 
 ```text
 extract_run: D:/market-data/prepared/sec_filing_text_parts_smoke/20260616_181844
@@ -231,6 +231,20 @@ document_rows: 40
 text_rows: 8
 skip_rows: 32
 errors: 4
+loader_preflight: passed through ClickHouse file()
+```
+
+Updated parent-row smoke on the workstation share:
+
+```text
+extract_run: D:/market-data/prepared/sec_filing_text_parts_parent_smoke/20260617_141028
+archive: 2025-01-02
+filings: 25
+missing_parent_rows_written: 4
+document_rows: 62
+text_rows: 12
+skip_rows: 50
+errors: 0
 loader_preflight: passed through ClickHouse file()
 ```
 
