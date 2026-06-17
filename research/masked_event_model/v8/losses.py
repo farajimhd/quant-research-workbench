@@ -299,25 +299,33 @@ def masked_event_semantic_metrics(
             "pretrain/semantic/trade_events": float(trade_mask.float().sum().detach().cpu()),
             "pretrain/semantic/event_type_acc_pct": masked_accuracy(predicted_fields["event_type"], target_fields["event_type"], valid_mask),
             "pretrain/semantic/event_presence_acc_pct": masked_accuracy(predicted_fields["presence"], target_fields["presence"], torch.ones_like(valid_mask, dtype=torch.bool)),
-            "pretrain/semantic/time_bucket_mae": masked_mae(predicted_fields["event_delta_bucket"], target_fields["event_delta_bucket"], valid_mask),
-            "pretrain/semantic/price1_delta_tick_mae": masked_mae(predicted_fields["price1_delta"], target_fields["price1_delta"], valid_mask),
-            "pretrain/semantic/price2_delta_tick_mae": masked_mae(predicted_fields["price2_delta"], target_fields["price2_delta"], valid_mask),
-            "pretrain/semantic/size1_bucket_mae": masked_mae(predicted_fields["size1_bucket"], target_fields["size1_bucket"], valid_mask),
-            "pretrain/semantic/size2_bucket_mae": masked_mae(predicted_fields["size2_bucket"], target_fields["size2_bucket"], valid_mask),
-            "pretrain/semantic/size1_small_flag_acc_pct": masked_accuracy(predicted_fields["size1_small_flag"], target_fields["size1_small_flag"], valid_mask),
-            "pretrain/semantic/size2_small_flag_acc_pct": masked_accuracy(predicted_fields["size2_small_flag"], target_fields["size2_small_flag"], valid_mask),
-            "pretrain/semantic/tape_acc_pct": masked_accuracy(predicted_fields["tape"], target_fields["tape"], valid_mask),
-            "pretrain/semantic/exchange1_acc_pct": masked_accuracy(predicted_fields["exchange1"], target_fields["exchange1"], valid_mask),
-            "pretrain/semantic/exchange2_acc_pct": masked_accuracy(predicted_fields["exchange2"], target_fields["exchange2"], valid_mask),
-            "pretrain/semantic/condition_slot_acc_pct": masked_accuracy(predicted_fields["conditions"], target_fields["conditions"], valid_mask),
-            "pretrain/semantic/all_condition_slots_exact_acc_pct": masked_boolean_rate((predicted_fields["conditions"] == target_fields["conditions"]).all(dim=-1), valid_mask),
+            "pretrain/semantic/quote_time_bucket_mae": masked_mae(predicted_fields["event_delta_bucket"], target_fields["event_delta_bucket"], quote_mask),
+            "pretrain/semantic/quote_ask_delta_tick_mae": masked_mae(predicted_fields["price1_delta"], target_fields["price1_delta"], quote_mask),
+            "pretrain/semantic/quote_spread_delta_tick_mae": masked_mae(predicted_fields["price2_delta"], target_fields["price2_delta"], quote_mask),
             "pretrain/semantic/quote_ask_tick_mae": masked_mae(predicted_fields["price1_abs_ticks"], target_fields["price1_abs_ticks"], quote_mask),
             "pretrain/semantic/quote_spread_tick_mae": masked_mae(predicted_fields["spread_ticks"], target_fields["spread_ticks"], quote_mask),
             "pretrain/semantic/quote_bid_tick_mae": masked_mae(predicted_fields["bid_ticks"], target_fields["bid_ticks"], quote_mask),
             "pretrain/semantic/quote_ask_price_mae": masked_price_mae(predicted_fields["price1_abs_ticks"], target_fields["price1_abs_ticks"], target_fields["tick_size"], quote_mask),
             "pretrain/semantic/quote_bid_price_mae": masked_price_mae(predicted_fields["bid_ticks"], target_fields["bid_ticks"], target_fields["tick_size"], quote_mask),
+            "pretrain/semantic/quote_bid_size_bucket_mae": masked_mae(predicted_fields["size1_bucket"], target_fields["size1_bucket"], quote_mask),
+            "pretrain/semantic/quote_ask_size_bucket_mae": masked_mae(predicted_fields["size2_bucket"], target_fields["size2_bucket"], quote_mask),
+            "pretrain/semantic/quote_bid_small_flag_acc_pct": masked_accuracy(predicted_fields["size1_small_flag"], target_fields["size1_small_flag"], quote_mask),
+            "pretrain/semantic/quote_ask_small_flag_acc_pct": masked_accuracy(predicted_fields["size2_small_flag"], target_fields["size2_small_flag"], quote_mask),
+            "pretrain/semantic/quote_tape_acc_pct": masked_accuracy(predicted_fields["tape"], target_fields["tape"], quote_mask),
+            "pretrain/semantic/quote_bid_exchange_acc_pct": masked_accuracy(predicted_fields["exchange1"], target_fields["exchange1"], quote_mask),
+            "pretrain/semantic/quote_ask_exchange_acc_pct": masked_accuracy(predicted_fields["exchange2"], target_fields["exchange2"], quote_mask),
+            "pretrain/semantic/quote_condition_slot_acc_pct": masked_accuracy(predicted_fields["conditions"], target_fields["conditions"], quote_mask),
+            "pretrain/semantic/quote_all_condition_slots_exact_acc_pct": masked_boolean_rate((predicted_fields["conditions"] == target_fields["conditions"]).all(dim=-1), quote_mask),
+            "pretrain/semantic/trade_time_bucket_mae": masked_mae(predicted_fields["event_delta_bucket"], target_fields["event_delta_bucket"], trade_mask),
+            "pretrain/semantic/trade_price_delta_tick_mae": masked_mae(predicted_fields["price1_delta"], target_fields["price1_delta"], trade_mask),
             "pretrain/semantic/trade_price_tick_mae": masked_mae(predicted_fields["price1_abs_ticks"], target_fields["price1_abs_ticks"], trade_mask),
             "pretrain/semantic/trade_price_mae": masked_price_mae(predicted_fields["price1_abs_ticks"], target_fields["price1_abs_ticks"], target_fields["tick_size"], trade_mask),
+            "pretrain/semantic/trade_size_bucket_mae": masked_mae(predicted_fields["size1_bucket"], target_fields["size1_bucket"], trade_mask),
+            "pretrain/semantic/trade_small_flag_acc_pct": masked_accuracy(predicted_fields["size1_small_flag"], target_fields["size1_small_flag"], trade_mask),
+            "pretrain/semantic/trade_tape_acc_pct": masked_accuracy(predicted_fields["tape"], target_fields["tape"], trade_mask),
+            "pretrain/semantic/trade_exchange_acc_pct": masked_accuracy(predicted_fields["exchange1"], target_fields["exchange1"], trade_mask),
+            "pretrain/semantic/trade_condition_slot_acc_pct": masked_accuracy(predicted_fields["conditions"], target_fields["conditions"], trade_mask),
+            "pretrain/semantic/trade_all_condition_slots_exact_acc_pct": masked_boolean_rate((predicted_fields["conditions"] == target_fields["conditions"]).all(dim=-1), trade_mask),
             "pretrain/semantic/trade_correction_acc_pct": masked_accuracy(predicted_fields["correction"], target_fields["correction"], trade_mask),
             "pretrain/semantic/predicted_quote_valid_pct": masked_boolean_rate(
                 (predicted_fields["price1_abs_ticks"] > 0)
@@ -336,8 +344,9 @@ def decode_masked_event_semantics(header_uint8: torch.Tensor, events_uint8: torc
     `[B, M]` except `conditions`, which is `[B, M, 4]`.
     """
 
-    ask_anchor_ticks = header_uint8[:, 0] | (header_uint8[:, 1] << 8) | ((header_uint8[:, 2] & 0x0F) << 16)
-    spread_anchor_ticks = header_uint8[:, 3] | (header_uint8[:, 4] << 8)
+    header_long = header_uint8.long()
+    ask_anchor_ticks = header_long[:, 0] | (header_long[:, 1] << 8) | ((header_long[:, 2] & 0x0F) << 16)
+    spread_anchor_ticks = header_long[:, 3] | (header_long[:, 4] << 8)
     tick_size = torch.where((header_uint8[:, 13] & 0x04) != 0, header_uint8.new_tensor(0.01, dtype=torch.float32), header_uint8.new_tensor(0.0001, dtype=torch.float32))
     ask_anchor = ask_anchor_ticks.unsqueeze(1)
     spread_anchor = spread_anchor_ticks.unsqueeze(1)

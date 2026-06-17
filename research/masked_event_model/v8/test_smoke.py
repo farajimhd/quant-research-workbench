@@ -12,7 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from research.masked_event_model.v8.config import LossConfig, MaskConfig, ModelConfig
-from research.masked_event_model.v8.losses import masked_event_bce_loss, masked_event_semantic_metrics
+from research.masked_event_model.v8.losses import decode_masked_event_semantics, masked_event_bce_loss, masked_event_semantic_metrics
 from research.masked_event_model.v8.masking import build_event_masks
 from research.masked_event_model.v8.model import EventTokenMaskedAutoencoder
 from research.mlops.clickhouse_events import DEFAULT_CONTEXT_EVENTS, EVENT_ROW_DTYPE, encode_unified_event_window
@@ -71,6 +71,24 @@ def test_final_events_schema_encoder_shapes() -> None:
     assert int(header[11]) == int(np.count_nonzero(rows["event_type"] == 0))
     assert int(header[12]) == int(np.count_nonzero(rows["event_type"] == 1))
     assert bytes(events[0, 12:16]) == int(0x04030201).to_bytes(4, "little")
+    decoded = decode_masked_event_semantics(
+        torch.from_numpy(header.reshape(1, -1)),
+        torch.from_numpy(events.reshape(1, DEFAULT_CONTEXT_EVENTS, 16)),
+    )
+    quote_index = 1
+    trade_index = 0
+    assert int(decoded["event_type"][0, quote_index]) == 0
+    assert int(decoded["price1_abs_ticks"][0, quote_index]) == 10010
+    assert int(decoded["spread_ticks"][0, quote_index]) == 10
+    assert int(decoded["bid_ticks"][0, quote_index]) == 10000
+    assert int(decoded["size1_bucket"][0, quote_index]) > 0
+    assert int(decoded["size2_bucket"][0, quote_index]) > 0
+    assert int(decoded["exchange1"][0, quote_index]) == 1
+    assert int(decoded["exchange2"][0, quote_index]) == 2
+    assert int(decoded["event_type"][0, trade_index]) == 1
+    assert int(decoded["price1_abs_ticks"][0, trade_index]) == 10005
+    assert int(decoded["size1_bucket"][0, trade_index]) > 0
+    assert int(decoded["exchange1"][0, trade_index]) == 3
     semantic_metrics = masked_event_semantic_metrics(
         torch.from_numpy(header.reshape(1, -1)),
         torch.from_numpy(events.reshape(1, DEFAULT_CONTEXT_EVENTS, 16)),
@@ -79,6 +97,11 @@ def test_final_events_schema_encoder_shapes() -> None:
     assert semantic_metrics["pretrain/semantic/event_type_acc_pct"] == 100.0
     assert semantic_metrics["pretrain/semantic/quote_ask_tick_mae"] == 0.0
     assert semantic_metrics["pretrain/semantic/trade_price_tick_mae"] == 0.0
+    assert semantic_metrics["pretrain/semantic/quote_bid_size_bucket_mae"] == 0.0
+    assert semantic_metrics["pretrain/semantic/trade_size_bucket_mae"] == 0.0
+    assert semantic_metrics["pretrain/semantic/quote_bid_exchange_acc_pct"] == 100.0
+    assert semantic_metrics["pretrain/semantic/quote_ask_exchange_acc_pct"] == 100.0
+    assert semantic_metrics["pretrain/semantic/trade_exchange_acc_pct"] == 100.0
 
 
 if __name__ == "__main__":
