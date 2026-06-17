@@ -32,7 +32,7 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_validation_batches_per_shard": 1,
     "sample_cache_interleave_shards": 1,
     "batch_size": 4096,
-    "epochs": 5,
+    "epochs": 4,
     "max_steps": 0,
     "input_representation": "bit",
     "d_byte": 40,
