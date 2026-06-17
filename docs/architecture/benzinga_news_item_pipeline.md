@@ -19,6 +19,7 @@ Benzinga raw payload
 -> optional extracted text attached
 -> final normalized row
 -> ticker link rows
+-> ClickHouse canonical write
 ```
 
 The core entry point is:
@@ -79,3 +80,26 @@ benzinga_news_ticker_v1
 ```
 
 The live news path should use this item pipeline directly.
+
+## Canonical Write Path
+
+After enrichment and final normalization, the write order is:
+
+```text
+q_live.benzinga_news_normalized_v1
+-> q_live.benzinga_news_ticker_v1
+```
+
+The writer validates both target tables before writing, checks that the normalized row has required fields such as `canonical_news_id`, `provider_article_id`, `published_at_utc`, `normalized_full_text`, `text_hash`, and `updated_at_utc`, and blocks an update if an existing news row has a different ticker set. This prevents stale ticker-link rows until we add a controlled ticker-link replacement mutation.
+
+One-item dry run:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_item_clickhouse_upsert --raw-json D:/market-data/news-benzinga/raw/2026/06/01/benzinga_<id>.json
+```
+
+One-item execute:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_item_clickhouse_upsert --raw-json D:/market-data/news-benzinga/raw/2026/06/01/benzinga_<id>.json --execute
+```
