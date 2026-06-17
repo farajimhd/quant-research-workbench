@@ -32,6 +32,9 @@ DEFAULT_RUN_DIR = Path(
     r"D:\TradingML\runtimes\masked_event_model\v8\pretrain"
     r"\v8-fixedmask070-emb32-bs4096-weightedmean-bf16-actuallrschedulerendofshard"
 )
+DEFAULT_CHECKPOINT_NAME = "checkpoint_best_val.pt"
+DEFAULT_TARGET_STEP = 15_160
+DEFAULT_INSPECT_WINDOW = 80
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,6 +52,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-shard-position", type=int, default=0, help="1-based inclusive position within selected train shards; 0 means same as start shard.")
     parser.add_argument("--start-shard-step", type=int, default=0, help="1-based batch step inside the first replayed shard; 0 means infer from checkpoint step.")
     parser.add_argument("--max-steps", type=int, default=0, help="0 means run through the selected shard range.")
+    parser.add_argument("--target-step", type=int, default=DEFAULT_TARGET_STEP, help="Global training step to inspect; 0 means inspect every replayed step.")
+    parser.add_argument("--inspect-window", type=int, default=DEFAULT_INSPECT_WINDOW, help="Inspect gradients in target_step +/- this many steps.")
+    parser.add_argument("--print-every", type=int, default=100, help="Fast-forward progress print frequency outside the inspection window.")
     parser.add_argument("--global-step", type=int, default=-1, help="Override global step; default reads checkpoint step.")
     parser.add_argument("--seed", type=int, default=-1, help="Override config seed.")
     parser.add_argument("--device", default="cuda")
@@ -73,7 +79,7 @@ def main() -> None:
     config.data.sample_cache_interleave_shards = 1
     set_seed(config.train.seed)
 
-    checkpoint_path = args.checkpoint or run_dir / "checkpoints" / "checkpoint_latest.pt"
+    checkpoint_path = args.checkpoint or run_dir / "checkpoints" / DEFAULT_CHECKPOINT_NAME
     if not checkpoint_path.exists():
         raise SystemExit(f"Checkpoint not found: {checkpoint_path}")
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
@@ -88,7 +94,8 @@ def main() -> None:
     print(
         f"requested_epoch={args.epoch or 'auto'} "
         f"requested_shard_position={args.start_shard_position or 'auto'}..{args.end_shard_position or 'auto'} "
-        f"requested_start_shard_step={args.start_shard_step or 'auto'} max_steps={args.max_steps or 'all'}",
+        f"requested_start_shard_step={args.start_shard_step or 'auto'} max_steps={args.max_steps or 'target-window/all'} "
+        f"target_step={args.target_step or 'disabled'} inspect_window={args.inspect_window}",
         flush=True,
     )
     print(f"device={device} force_fp32={args.force_fp32} disable_step={args.disable_step}", flush=True)
@@ -120,11 +127,19 @@ def main() -> None:
         start_shard_override=args.start_shard_position,
         start_shard_step_override=args.start_shard_step,
     )
-    end_shard_position = int(args.end_shard_position) if int(args.end_shard_position) > 0 else start_shard_position
+    end_shard_position = resolve_end_shard_position(
+        requested_end_shard_position=args.end_shard_position,
+        start_shard_position=start_shard_position,
+        target_step=args.target_step,
+        inspect_window=args.inspect_window,
+        steps_per_shard=steps_per_shard,
+        steps_per_epoch=steps_per_epoch,
+        shard_count=len(shards),
+    )
     print(
         f"Loaded checkpoint step={checkpoint_step} replay_global_step_start={global_step} "
         f"inferred_epoch={replay_epoch} inferred_start_shard={start_shard_position} "
-        f"inferred_start_shard_step={start_shard_step} steps_per_shard={steps_per_shard} "
+        f"inferred_start_shard_step={start_shard_step} end_shard={end_shard_position} steps_per_shard={steps_per_shard} "
         f"steps_per_epoch={steps_per_epoch}",
         flush=True,
     )
@@ -136,6 +151,7 @@ def main() -> None:
     iterator = iter_event_sample_cache_epoch_batches(train_config, epoch=replay_epoch, shards=selected)
 
     replayed = 0
+    target_stop_step = int(args.target_step) + max(0, int(args.inspect_window)) if int(args.target_step) > 0 else 0
     for batch in iterator:
         shard_position = int(batch.get("shard_position", 0)) + start_shard_position - 1
         shard_step = int(batch.get("shard_step", 0))
@@ -143,6 +159,11 @@ def main() -> None:
             continue
         global_step += 1
         replayed += 1
+        inspect_step = should_inspect_replay_step(
+            global_step=global_step,
+            target_step=args.target_step,
+            inspect_window=args.inspect_window,
+        )
         started = time.perf_counter()
         report = run_debug_step(
             model=model,
@@ -156,6 +177,7 @@ def main() -> None:
             amp_dtype=amp_dtype,
             disable_step=bool(args.disable_step),
             top_n=int(args.top_gradients),
+            inspect_gradients=inspect_step,
         )
         elapsed = time.perf_counter() - started
         report.update(
@@ -167,12 +189,15 @@ def main() -> None:
                 "elapsed_seconds": elapsed,
             }
         )
-        print(format_report(report), flush=True)
-        append_jsonl(output_dir / "gradient_replay_metrics.jsonl", report)
+        should_print = inspect_step or int(args.print_every) <= 1 or replayed % int(args.print_every) == 0
+        if should_print:
+            print(format_report(report), flush=True)
+            append_jsonl(output_dir / "gradient_replay_metrics.jsonl", report)
 
+        threshold_norm = report["total_norm64"] if report["gradients_inspected"] else report["clip_norm"]
         should_stop = (
             not report["total_norm_finite"]
-            or float(report["total_norm64"]) >= float(args.stop_grad_norm)
+            or (threshold_norm is not None and float(threshold_norm) >= float(args.stop_grad_norm))
             or report["nonfinite_gradient_count"] > 0
         )
         if should_stop:
@@ -182,6 +207,35 @@ def main() -> None:
             break
         if args.max_steps > 0 and replayed >= args.max_steps:
             break
+        if target_stop_step > 0 and global_step >= target_stop_step:
+            print(f"STOP: reached target replay window end at global_step={global_step}.", flush=True)
+            break
+
+
+def resolve_end_shard_position(
+    *,
+    requested_end_shard_position: int,
+    start_shard_position: int,
+    target_step: int,
+    inspect_window: int,
+    steps_per_shard: int,
+    steps_per_epoch: int,
+    shard_count: int,
+) -> int:
+    if int(requested_end_shard_position) > 0:
+        return min(shard_count, int(requested_end_shard_position))
+    if int(target_step) <= 0:
+        return int(start_shard_position)
+    target_window_end = max(1, int(target_step) + max(0, int(inspect_window)))
+    target_step_in_epoch = (target_window_end - 1) % int(steps_per_epoch) + 1
+    target_shard_position = (target_step_in_epoch - 1) // int(steps_per_shard) + 1
+    return min(shard_count, max(int(start_shard_position), int(target_shard_position)))
+
+
+def should_inspect_replay_step(*, global_step: int, target_step: int, inspect_window: int) -> bool:
+    if int(target_step) <= 0:
+        return True
+    return abs(int(global_step) - int(target_step)) <= max(0, int(inspect_window))
 
 
 def resolve_replay_position(
@@ -244,6 +298,7 @@ def run_debug_step(
     amp_dtype: torch.dtype | None,
     disable_step: bool,
     top_n: int,
+    inspect_gradients: bool,
 ) -> dict[str, Any]:
     model.train()
     optimizer.zero_grad(set_to_none=True)
@@ -259,7 +314,7 @@ def run_debug_step(
     else:
         loss.backward()
 
-    grad_report = inspect_gradients(model, top_n=top_n)
+    grad_report = inspect_model_gradients(model, top_n=top_n) if inspect_gradients else empty_gradient_report()
     clip_norm = None
     clip_error = ""
     try:
@@ -282,11 +337,24 @@ def run_debug_step(
         "clip_error": clip_error,
         "amp_enabled": bool(amp_dtype is not None),
         "scaler_enabled": bool(scaler.is_enabled()),
+        "gradients_inspected": bool(inspect_gradients),
         **grad_report,
     }
 
 
-def inspect_gradients(model: torch.nn.Module, *, top_n: int) -> dict[str, Any]:
+def empty_gradient_report() -> dict[str, Any]:
+    return {
+        "total_norm64": 0.0,
+        "total_norm32": 0.0,
+        "total_norm_finite": True,
+        "nonfinite_gradient_count": 0,
+        "nonfinite_gradients": [],
+        "top_abs_gradients": [],
+        "top_norm_gradients": [],
+    }
+
+
+def inspect_model_gradients(model: torch.nn.Module, *, top_n: int) -> dict[str, Any]:
     total_sq64 = 0.0
     total_sq32 = 0.0
     nonfinite: list[dict[str, Any]] = []
@@ -340,8 +408,9 @@ def inspect_gradients(model: torch.nn.Module, *, top_n: int) -> dict[str, Any]:
 
 def format_report(report: dict[str, Any]) -> str:
     top = report["top_abs_gradients"][0] if report["top_abs_gradients"] else {"name": "<none>", "value": 0.0}
+    mode = "inspect" if report.get("gradients_inspected") else "fast"
     return (
-        f"step={report['global_step']} epoch={report['epoch']} shard_pos={report['shard_position']} "
+        f"step={report['global_step']} mode={mode} epoch={report['epoch']} shard_pos={report['shard_position']} "
         f"shard_step={report['shard_step']} loss={report['loss']:.6f} lr={report['lr']:.3e} "
         f"norm64={report['total_norm64']:.3e} norm32={report['total_norm32']:.3e} "
         f"clip={report['clip_norm'] if report['clip_norm'] is not None else report['clip_error']} "
