@@ -96,6 +96,15 @@ PowerShell wrapper:
 .\scripts\run_news_gateway.ps1
 ```
 
+The wrapper runs with `conda run -n ml4t` by default so the service uses the same
+environment on the workstation regardless of the shell's active Python. Override
+when needed:
+
+```powershell
+.\scripts\run_news_gateway.ps1 -CondaEnv ml4t
+.\scripts\run_news_gateway.ps1 -PythonExe C:/path/to/python.exe
+```
+
 The service renders a Rich terminal dashboard when stdout is interactive. The
 dashboard is a separate async task that reads in-memory metrics and recent-news
 state; it does not run inside the provider polling or ClickHouse write path.
