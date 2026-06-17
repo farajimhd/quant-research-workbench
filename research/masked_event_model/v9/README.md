@@ -1,8 +1,8 @@
-# Masked Event Model v8
+# Masked Event Model v9
 
-v8 is the event-token masked autoencoder variant for compact market-event
+v9 is the event-token masked autoencoder variant for compact market-event
 samples. It is version-local: model, masking, loss, progress, training, and
-profiling code live under `research/masked_event_model/v8`.
+profiling code live under `research/masked_event_model/v9`.
 
 The main change is masking at the event-token level:
 
@@ -17,12 +17,12 @@ At training time the encoder sees:
 [CLS] + header_token + visible_event_tokens
 ```
 
-v8 is the fixed-mask ablation of v6. Every batch masks exactly 70% of the 128
+v9 is the unweighted-loss ablation of v8. Every batch masks exactly 70% of the 128
 event tokens, subject only to the existing `min_masked_events` clamp. Header
 bytes are not removed; they can receive low-rate bit corruption. Visible event
 bytes can also receive low-rate bit corruption for robustness. This keeps the
 architecture, objective, optimizer, scheduler, and data path aligned with v6
-while removing random mask-ratio variation from the training regime.
+while removing random mask-ratio variation from the training regime. Compared with v8, v9 changes only the reconstruction objective from semantic-weighted BCE to ordinary unweighted BCE.
 
 All encoded tokens are projected through the exported chunk embedding bottleneck
 before the decoder sees the representation. The chunk embedding is the mean of
@@ -49,15 +49,12 @@ The decoder predicts only the removed event bytes:
 event_bit_logits: [B, masked_events, 16, 8]
 ```
 
-Loss is binary cross entropy with logits over masked event bits only. v8 weights
-that BCE with a fixed semantic `[16, 8]` bit-weight matrix: numeric bytes use
-little-endian bit significance `[1, 2, ..., 128]`, while packed/categorical
-bytes such as event flags, exchanges, and conditions use the maximum weight for
-every bit. The weighted objective is normalized by the semantic weight mass
-actually present in the batch, not by raw batch size, so the loss scale stays
-close to ordinary BCE and does not grow with the number of masked events. The
-unweighted BCE is still logged as `pretrain/loss_event_unweighted` for
-comparison with older runs. Production
+Loss is ordinary binary cross entropy with logits over masked event bits only.
+v9 does not multiply semantic bit weights into the objective. The training loss
+uses the PyTorch default mean reduction over all masked event bits, which makes
+this version the clean unweighted-loss comparison against v8. Semantic-weighted
+metrics can still be emitted for diagnostics, but they are not used for
+backpropagation. Production
 embedding uses the explicit `encode(...)` path, which sees the full unmasked
 header and all 128 events:
 
@@ -78,7 +75,7 @@ header bit corruption: 20% of samples, 5% of header bits
 visible event bit corruption: 30% of samples, 20% of visible event bits
 AMP dtype: auto, preferring BF16 on supported CUDA devices
 FP16 GradScaler cap: 2048 with growth interval 10000
-W&B project: June2026-event-token-mae-v8-fixed-mask
+W&B project: June2026-event-token-mae-v9-unweighted
 ```
 
 ## Profiling
@@ -86,13 +83,13 @@ W&B project: June2026-event-token-mae-v8-fixed-mask
 One-shard profiling:
 
 ```powershell
-python research\masked_event_model\v8\run_profile_one_shard.py --steps 50 --batch-size 4096 --fresh-start
+python research\masked_event_model\v9\run_profile_one_shard.py --steps 50 --batch-size 4096 --fresh-start
 ```
 
 Model-size sweep:
 
 ```powershell
-python research\masked_event_model\v8\run_model_size_sweep.py --steps 200 --fresh-start
+python research\masked_event_model\v9\run_model_size_sweep.py --steps 200 --fresh-start
 ```
 
 The sweep includes practical combinations across embedding sizes 32 and 64,
@@ -101,7 +98,7 @@ batch sizes 1024/2048/4096/8192, and the tiny/small/medium/high model presets.
 ## Limited Real Training
 
 ```powershell
-python research\masked_event_model\v8\train_medium_bit_limited_shards.py --fresh-start
+python research\masked_event_model\v9\train_medium_bit_limited_shards.py --fresh-start
 ```
 
 This trains over 10 sample-cache shards and uses a shuffled 5% slice of the next
@@ -110,7 +107,7 @@ shard for validation. Each epoch is one pass over the selected train shards.
 The final long-run launcher for the masked-query decoder path is:
 
 ```powershell
-python research\masked_event_model\v8\train_10shard_long.py --fresh-start
+python research\masked_event_model\v9\train_10shard_long.py --fresh-start
 ```
 
 Defaults are medium `d_model=256`, `embedding_dim=32`, `batch_size=4096`, 10
