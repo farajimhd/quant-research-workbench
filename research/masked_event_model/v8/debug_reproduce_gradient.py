@@ -35,6 +35,7 @@ DEFAULT_RUN_DIR = Path(
 DEFAULT_CHECKPOINT_NAME = "checkpoint_best_val.pt"
 DEFAULT_TARGET_STEP = 15_160
 DEFAULT_INSPECT_WINDOW = 80
+DEFAULT_LOG_GRAD_NORM = 1.0
 DEFAULT_STOP_GRAD_NORM = 1_000.0
 
 
@@ -56,6 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-step", type=int, default=DEFAULT_TARGET_STEP, help="Global training step to inspect; 0 means inspect every replayed step.")
     parser.add_argument("--inspect-window", type=int, default=DEFAULT_INSPECT_WINDOW, help="Inspect gradients in target_step +/- this many steps.")
     parser.add_argument("--print-every", type=int, default=100, help="Fast-forward progress print frequency outside the inspection window.")
+    parser.add_argument("--log-grad-norm", type=float, default=DEFAULT_LOG_GRAD_NORM, help="When inspected raw grad norm exceeds this value, log full per-parameter gradient stats.")
     parser.add_argument("--global-step", type=int, default=-1, help="Override global step; default reads checkpoint step.")
     parser.add_argument("--seed", type=int, default=-1, help="Override config seed.")
     parser.add_argument("--device", default="cuda")
@@ -96,7 +98,8 @@ def main() -> None:
         f"requested_epoch={args.epoch or 'auto'} "
         f"requested_shard_position={args.start_shard_position or 'auto'}..{args.end_shard_position or 'auto'} "
         f"requested_start_shard_step={args.start_shard_step or 'auto'} max_steps={args.max_steps or 'target-window/all'} "
-        f"target_step={args.target_step or 'disabled'} inspect_window={args.inspect_window}",
+        f"target_step={args.target_step or 'disabled'} inspect_window={args.inspect_window} "
+        f"log_grad_norm={args.log_grad_norm} stop_grad_norm={args.stop_grad_norm}",
         flush=True,
     )
     print(f"device={device} force_fp32={args.force_fp32} disable_step={args.disable_step}", flush=True)
@@ -179,6 +182,7 @@ def main() -> None:
             disable_step=bool(args.disable_step),
             top_n=int(args.top_gradients),
             inspect_gradients=inspect_step,
+            log_grad_norm=float(args.log_grad_norm),
             stop_grad_norm=float(args.stop_grad_norm),
         )
         elapsed = time.perf_counter() - started
@@ -196,6 +200,8 @@ def main() -> None:
         if should_print:
             print(format_report(report), flush=True)
             append_jsonl(output_dir / "gradient_replay_metrics.jsonl", report)
+            if report.get("full_gradient_log"):
+                append_jsonl(output_dir / "gradient_replay_full_gradients.jsonl", report)
 
         threshold_norm = report["total_norm64"] if report["gradients_inspected"] else report["clip_norm"]
         should_stop = (
@@ -311,6 +317,7 @@ def run_debug_step(
     disable_step: bool,
     top_n: int,
     inspect_gradients: bool,
+    log_grad_norm: float,
     stop_grad_norm: float,
 ) -> dict[str, Any]:
     model.train()
@@ -329,6 +336,9 @@ def run_debug_step(
 
     grad_report = inspect_model_gradients(model, top_n=top_n) if inspect_gradients else empty_gradient_report()
     threshold_norm = grad_report["total_norm64"] if inspect_gradients else 0.0
+    full_gradient_log = inspect_gradients and float(threshold_norm) >= float(log_grad_norm)
+    if inspect_gradients and not full_gradient_log:
+        grad_report.pop("all_gradient_stats", None)
     threshold_reached = inspect_gradients and (
         not bool(grad_report["total_norm_finite"])
         or float(threshold_norm) >= float(stop_grad_norm)
@@ -360,6 +370,7 @@ def run_debug_step(
         "amp_enabled": bool(amp_dtype is not None),
         "scaler_enabled": bool(scaler.is_enabled()),
         "gradients_inspected": bool(inspect_gradients),
+        "full_gradient_log": bool(full_gradient_log),
         "stopped_before_optimizer_step": bool(threshold_reached),
         "_debug_masks": masks if threshold_reached else None,
         **grad_report,
@@ -375,6 +386,7 @@ def empty_gradient_report() -> dict[str, Any]:
         "nonfinite_gradients": [],
         "top_abs_gradients": [],
         "top_norm_gradients": [],
+        "all_gradient_stats": [],
     }
 
 
@@ -384,6 +396,7 @@ def inspect_model_gradients(model: torch.nn.Module, *, top_n: int) -> dict[str, 
     nonfinite: list[dict[str, Any]] = []
     top_abs: list[tuple[float, str, tuple[int, ...], str]] = []
     top_norm: list[tuple[float, str, tuple[int, ...], str]] = []
+    all_stats: list[dict[str, Any]] = []
     with torch.no_grad():
         for name, parameter in model.named_parameters():
             grad = parameter.grad
@@ -407,10 +420,29 @@ def inspect_model_gradients(model: torch.nn.Module, *, top_n: int) -> dict[str, 
             finite_values = grad32[finite]
             sq64 = float(finite_values.double().pow(2).sum().detach().cpu())
             sq32 = float(finite_values.pow(2).sum().detach().cpu())
+            numel = int(grad32.numel())
+            finite_count = int(finite.sum().item())
+            max_abs = float(finite_values.abs().max().item())
+            mean_abs = float(finite_values.abs().mean().item())
             total_sq64 += sq64
             total_sq32 += sq32
-            top_abs.append((float(finite_values.abs().max().item()), name, tuple(grad.shape), str(grad.dtype)))
+            top_abs.append((max_abs, name, tuple(grad.shape), str(grad.dtype)))
             top_norm.append((math.sqrt(sq64), name, tuple(grad.shape), str(grad.dtype)))
+            all_stats.append(
+                {
+                    "name": name,
+                    "shape": list(grad.shape),
+                    "dtype": str(grad.dtype),
+                    "numel": numel,
+                    "finite_count": finite_count,
+                    "bad_count": numel - finite_count,
+                    "max_abs": max_abs,
+                    "mean_abs": mean_abs,
+                    "rms": math.sqrt(sq64 / max(1, finite_count)),
+                    "norm64": math.sqrt(sq64),
+                    "norm32": math.sqrt(sq32),
+                }
+            )
     total_norm64 = math.sqrt(total_sq64)
     total_norm32 = math.sqrt(total_sq32)
     return {
@@ -427,6 +459,7 @@ def inspect_model_gradients(model: torch.nn.Module, *, top_n: int) -> dict[str, 
             {"value": value, "name": name, "shape": list(shape), "dtype": dtype}
             for value, name, shape, dtype in sorted(top_norm, reverse=True)[:top_n]
         ],
+        "all_gradient_stats": sorted(all_stats, key=lambda row: row["norm64"], reverse=True),
     }
 
 
@@ -438,6 +471,7 @@ def format_report(report: dict[str, Any]) -> str:
         f"shard_step={report['shard_step']} loss={report['loss']:.6f} lr={report['lr']:.3e} "
         f"norm64={report['total_norm64']:.3e} norm32={report['total_norm32']:.3e} "
         f"clip={report['clip_norm'] if report['clip_norm'] is not None else report['clip_error']} "
+        f"full_log={int(bool(report.get('full_gradient_log')))} "
         f"top_abs={top['value']:.3e} {top['name']}"
     )
 
