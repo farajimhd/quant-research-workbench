@@ -235,7 +235,7 @@ def decode_sample_records(records: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def discover_event_sample_shards(config: EventSampleCacheDataConfig) -> list[EventSampleShard]:
-    root = resolve_event_sample_cache_root(Path(config.cache_root))
+    root = resolve_event_sample_cache_root(Path(config.cache_root), split=config.split)
     manifest_path = root / "manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -273,30 +273,45 @@ def discover_event_sample_shards(config: EventSampleCacheDataConfig) -> list[Eve
     return shards
 
 
-def resolve_event_sample_cache_root(path: Path) -> Path:
-    if (path / "manifest.json").exists():
+def resolve_event_sample_cache_root(path: Path, *, split: str = "train") -> Path:
+    if (path / "manifest.json").exists() and cache_has_split(path, split):
         return path
-    if has_event_sample_shards(path):
+    if has_event_sample_shards(path, split=split):
         return path
-    candidates = [child for child in path.iterdir() if child.is_dir() and ((child / "manifest.json").exists() or has_event_sample_shards(child))] if path.exists() else []
+    candidates = [
+        child
+        for child in path.iterdir()
+        if child.is_dir() and cache_has_split(child, split)
+    ] if path.exists() else []
     if not candidates:
         return path
-    candidates.sort(key=event_sample_cache_mtime, reverse=True)
+    candidates.sort(key=lambda value: event_sample_cache_mtime(value, split=split), reverse=True)
     return candidates[0]
 
 
-def has_event_sample_shards(path: Path) -> bool:
-    return (path / "train").exists() and any((path / "train").glob("shard_*.samples.json"))
+def cache_has_split(path: Path, split: str) -> bool:
+    manifest_path = path / "manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return any(row.get("split") == split for row in manifest.get("shards", []))
+    return has_event_sample_shards(path, split=split)
 
 
-def event_sample_cache_mtime(path: Path) -> float:
+def has_event_sample_shards(path: Path, *, split: str = "train") -> bool:
+    return (path / split).exists() and any((path / split).glob("shard_*.samples.json"))
+
+
+def event_sample_cache_mtime(path: Path, *, split: str = "train") -> float:
     manifest = path / "manifest.json"
     if manifest.exists():
         return manifest.stat().st_mtime
-    progress = path / "train_progress.json"
+    progress = path / f"{split}_progress.json"
     if progress.exists():
         return progress.stat().st_mtime
-    shard_meta = list((path / "train").glob("shard_*.samples.json"))
+    shard_meta = list((path / split).glob("shard_*.samples.json"))
     if shard_meta:
         return max(item.stat().st_mtime for item in shard_meta)
     return path.stat().st_mtime
