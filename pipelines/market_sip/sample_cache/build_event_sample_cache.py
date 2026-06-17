@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import sys
 import time
@@ -17,7 +18,6 @@ REPO_ROOT = next(parent for parent in Path(__file__).resolve().parents if (paren
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipelines.market_sip.validation.clickhouse_delete_compact_audit_rows import default_clickhouse_url_with_network_fallback  # noqa: E402
 from research.mlops.clickhouse_events import (  # noqa: E402
     ClickHouseEventsDataConfig,
     PersistentClickHouseBytesClient,
@@ -25,7 +25,14 @@ from research.mlops.clickhouse_events import (  # noqa: E402
     load_event_index_rows,
     normalized_config,
 )
-from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password, default_clickhouse_user  # noqa: E402
+from research.mlops.clickhouse import (  # noqa: E402
+    CLICKHOUSE_ENDPOINT_ENV,
+    CLICKHOUSE_URL_ENV,
+    ClickHouseHttpClient,
+    default_clickhouse_password,
+    default_clickhouse_url as default_clickhouse_url_from_env,
+    default_clickhouse_user,
+)
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from research.mlops.event_sample_cache import (  # noqa: E402
     DEFAULT_SAMPLE_CACHE_ROOT,
@@ -411,7 +418,14 @@ def parse_tickers(raw: str) -> tuple[str, ...]:
 
 
 def default_clickhouse_url() -> str:
-    return default_clickhouse_url_with_network_fallback() or "http://localhost:18123"
+    return (
+        os.environ.get("REAL_LIVE_CLICKHOUSE_WRITE_URL")
+        or os.environ.get(CLICKHOUSE_URL_ENV)
+        or os.environ.get(CLICKHOUSE_ENDPOINT_ENV)
+        or os.environ.get("REAL_LIVE_CLICKHOUSE_READ_URL")
+        or default_clickhouse_url_from_env()
+        or "http://localhost:18123"
+    )
 
 
 if __name__ == "__main__":
