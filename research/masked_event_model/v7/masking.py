@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 
 import torch
@@ -87,10 +88,10 @@ def sample_event_mask_ratio(config: MaskConfig, *, device: torch.device) -> tupl
     if total <= 0.0:
         return min(max(float(config.event_mask_ratio), 0.0), 0.99), -1, "fixed"
 
-    # Draw scalar schedule choices on CPU to avoid a CUDA synchronization from
-    # `.item()` on every training step. The large per-event random score matrix
-    # below is still created on the batch device.
-    draw = float((torch.rand((), device="cpu") * total).item())
+    # Draw scalar schedule choices with Python RNG. This avoids tensor `.item()`
+    # in the mask-construction path, which can otherwise show up as a Dynamo
+    # graph-break candidate if the caller later compiles a wider train step.
+    draw = random.random() * total
     if draw < high_probability:
         ratio = uniform_ratio(config.event_mask_high_min, config.event_mask_high_max, device=device)
         return ratio, 2, "high"
@@ -105,7 +106,7 @@ def uniform_ratio(low: float, high: float, *, device: torch.device) -> float:
     high = min(max(float(high), 0.0), 0.99)
     if high < low:
         low, high = high, low
-    return float((torch.rand((), device="cpu") * (high - low) + low).item())
+    return random.random() * (high - low) + low
 
 
 def maybe_corrupt_header(header_uint8: torch.Tensor, config: MaskConfig) -> torch.Tensor:
@@ -138,8 +139,6 @@ def maybe_xor_corrupt_uint8(values: torch.Tensor, *, sample_probability: float, 
     batch_size = int(values.shape[0])
     device = values.device
     sample_gate = torch.rand((batch_size,), device=device) < sample_probability
-    if not bool(sample_gate.any()):
-        return values
 
     bit_shape = (*values.shape, 8)
     bit_mask = torch.rand(bit_shape, device=device) < bit_probability
@@ -155,4 +154,3 @@ def gather_events(events_uint8: torch.Tensor, indices: torch.Tensor) -> torch.Te
 
     gather_index = indices.unsqueeze(-1).expand(-1, -1, events_uint8.shape[-1])
     return torch.gather(events_uint8, dim=1, index=gather_index)
-

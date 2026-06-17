@@ -95,6 +95,11 @@ class ModelConfig:
     decoder_layers: int = 2
     ffn_mult: int = 4
     dropout: float = 0.08
+    # Keep the reusable encoder eligible for BF16 autocast, but run the
+    # reconstruction decoder in FP32. Replay diagnostics showed the BF16
+    # decoder backward path can amplify otherwise finite gradients by orders of
+    # magnitude at the chunk-embedding bridge.
+    decoder_force_fp32: bool = True
 
     @property
     def ff_dim(self) -> int:
@@ -112,7 +117,7 @@ class TrainConfig:
     output_root: Path = Path("")
     batch_size: int = 4096
     max_steps: int = 10000
-    epochs: int = 1
+    epochs: int = 5
     learning_rate: float = 2e-4
     weight_decay: float = 1e-4
     scheduler: str = "cosine_warm_restarts"
@@ -137,9 +142,17 @@ class TrainConfig:
     prefetch_factor: int = 1
     seed: int = 17
     amp: bool = True
+    amp_dtype: str = "auto"
     amp_initial_scale: float = 1024.0
+    amp_growth_interval: int = 10_000
+    amp_max_scale: float = 2048.0
     amp_overflow_fatal_threshold: int = 8
-    compile_model: bool = False
+    # `high` enables TensorFloat-32 matmuls on NVIDIA GPUs for the FP32 decoder
+    # path. The encoder still runs under AMP/BF16; this setting mainly recovers
+    # speed from the decoder stability fix without reintroducing BF16 decoder
+    # backward instability.
+    float32_matmul_precision: str = "high"
+    compile_model: bool = True
     wandb_project: str = "June2026-event-token-mae-v7"
     wandb_entity: str = "mehdifaraji"
     wandb_run_name: str = ""

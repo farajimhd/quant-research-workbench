@@ -119,7 +119,7 @@ class TrainConfig:
     output_root: Path = Path("")
     batch_size: int = 4096
     max_steps: int = 10000
-    epochs: int = 1
+    epochs: int = 5
     learning_rate: float = 2e-4
     weight_decay: float = 1e-4
     scheduler: str = "cosine_warm_restarts"

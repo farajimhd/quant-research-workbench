@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -68,6 +68,8 @@ class TrainingProgressState:
     validation_event_soft_byte_psnr_db: float | None = None
     validation_event_hard_byte_psnr_db: float | None = None
     validation_seconds: float | None = None
+    semantic_metrics: dict[str, float] = field(default_factory=dict)
+    validation_semantic_metrics: dict[str, float] = field(default_factory=dict)
     profiler_active: bool = False
     last_message: str = ""
 
@@ -198,6 +200,10 @@ class TrainingReporter:
         state.system_memory_available_gib = float(metrics.get("profile/system_memory_available_gib", state.system_memory_available_gib))
         state.system_memory_used_gib = float(metrics.get("profile/system_memory_used_gib", state.system_memory_used_gib))
         state.profiler_active = any(key.startswith("profile/") for key in metrics)
+        semantic_prefix = "pretrain/semantic/"
+        semantic_metrics = {key[len(semantic_prefix) :]: float(value) for key, value in metrics.items() if key.startswith(semantic_prefix)}
+        if semantic_metrics:
+            state.semantic_metrics = semantic_metrics
         if validation_metrics:
             state.validation_loss = float(validation_metrics.get("validation/pretrain/loss_total", state.validation_loss or 0.0))
             if "validation/pretrain/event_soft_byte_psnr_db" in validation_metrics:
@@ -205,6 +211,14 @@ class TrainingReporter:
             if "validation/pretrain/event_hard_byte_psnr_db" in validation_metrics:
                 state.validation_event_hard_byte_psnr_db = float(validation_metrics["validation/pretrain/event_hard_byte_psnr_db"])
             state.validation_seconds = float(validation_metrics.get("validation/pretrain/seconds", state.validation_seconds or 0.0))
+            validation_semantic_prefix = "validation/pretrain/semantic/"
+            validation_semantic_metrics = {
+                key[len(validation_semantic_prefix) :]: float(value)
+                for key, value in validation_metrics.items()
+                if key.startswith(validation_semantic_prefix)
+            }
+            if validation_semantic_metrics:
+                state.validation_semantic_metrics = validation_semantic_metrics
         if state.step_seconds > 0:
             self.history.append(state.step_seconds)
         self.refresh()
@@ -300,6 +314,32 @@ class TrainingReporter:
         if state.validation_event_hard_byte_psnr_db is not None:
             metrics.add_row("val event hard PSNR", f"{state.validation_event_hard_byte_psnr_db:.3f} dB")
 
+        semantic = Table.grid(expand=False, padding=(0, 1))
+        semantic.add_column("Metric", justify="right", no_wrap=True)
+        semantic.add_column("Train", justify="left", no_wrap=True)
+        semantic.add_column("Val", justify="left", no_wrap=True)
+        for label, key, fmt in [
+            ("masked events", "masked_events", ",.0f"),
+            ("valid events", "valid_events", ",.0f"),
+            ("quote/trade events", "__quote_trade_events__", ""),
+            ("event type acc", "event_type_acc_pct", ".2f"),
+            ("presence acc", "event_presence_acc_pct", ".2f"),
+            ("quote ask MAE", "quote_ask_price_mae", ".6f"),
+            ("quote bid MAE", "quote_bid_price_mae", ".6f"),
+            ("quote spread ticks", "quote_spread_tick_mae", ".2f"),
+            ("trade price MAE", "trade_price_mae", ".6f"),
+            ("quote exch acc", "__quote_exchange_acc__", ""),
+            ("trade exch acc", "trade_exchange_acc_pct", ".2f"),
+            ("quote cond exact", "quote_all_condition_slots_exact_acc_pct", ".2f"),
+            ("trade cond exact", "trade_all_condition_slots_exact_acc_pct", ".2f"),
+            ("pred quote valid", "predicted_quote_valid_pct", ".2f"),
+        ]:
+            semantic.add_row(
+                label,
+                self._format_semantic_metric(state.semantic_metrics, key, fmt),
+                self._format_semantic_metric(state.validation_semantic_metrics, key, fmt),
+            )
+
         profile = Table.grid(expand=False, padding=(0, 1))
         profile.add_column("Stage", justify="right", no_wrap=True)
         profile.add_column("Value", justify="left", no_wrap=True)
@@ -343,12 +383,35 @@ class TrainingReporter:
             progress,
             epoch_progress,
             Panel(Align.center(metrics), title="Learning", border_style="magenta"),
+            Panel(Align.center(semantic), title="Semantic Reconstruction", border_style="green"),
             Panel(Align.center(profile), title="Step Profile", border_style="yellow"),
             Panel(Align.center(memory), title="Memory", border_style="blue", height=12),
             Panel(messages, title="Messages", border_style="blue", height=10),
             Text("\n" * self._bottom_padding_lines),
         )
         return body
+
+    @staticmethod
+    def _format_semantic_metric(values: dict[str, float], key: str, fmt: str) -> str:
+        if not values:
+            return "--"
+        if key == "__quote_trade_events__":
+            quote_events = values.get("quote_events")
+            trade_events = values.get("trade_events")
+            if quote_events is None and trade_events is None:
+                return "--"
+            return f"{quote_events or 0:,.0f}/{trade_events or 0:,.0f}"
+        if key == "__quote_exchange_acc__":
+            bid_acc = values.get("quote_bid_exchange_acc_pct")
+            ask_acc = values.get("quote_ask_exchange_acc_pct")
+            if bid_acc is None and ask_acc is None:
+                return "--"
+            return f"{bid_acc or 0:.2f}/{ask_acc or 0:.2f}"
+        value = values.get(key)
+        if value is None:
+            return "--"
+        suffix = "%" if key.endswith("_pct") else ""
+        return f"{value:{fmt}}{suffix}"
 
     def _text_line(self) -> str:
         state = self.state
@@ -360,4 +423,3 @@ class TrainingReporter:
             f"elapsed={self._format_duration(time.perf_counter() - self.started)} "
             f"gpu_alloc_gib={state.gpu_allocated_gib:.2f}"
         )
-

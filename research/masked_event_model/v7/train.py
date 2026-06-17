@@ -158,8 +158,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default="online")
     parser.add_argument("--wandb-init-timeout", type=int, default=60)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=train_defaults.amp)
+    parser.add_argument("--amp-dtype", choices=("auto", "bf16", "fp16"), default=train_defaults.amp_dtype)
     parser.add_argument("--amp-initial-scale", type=float, default=train_defaults.amp_initial_scale)
+    parser.add_argument("--amp-growth-interval", type=int, default=train_defaults.amp_growth_interval)
+    parser.add_argument("--amp-max-scale", type=float, default=train_defaults.amp_max_scale)
     parser.add_argument("--amp-overflow-fatal-threshold", type=int, default=train_defaults.amp_overflow_fatal_threshold)
+    parser.add_argument(
+        "--float32-matmul-precision",
+        choices=("highest", "high", "medium"),
+        default=train_defaults.float32_matmul_precision,
+        help="Controls PyTorch FP32 matmul precision; 'high' enables TF32 tensor cores on NVIDIA GPUs.",
+    )
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=train_defaults.compile_model)
     parser.add_argument("--warm-start-checkpoint", default="")
     parser.add_argument("--warm-start-load-optimizer", action=argparse.BooleanOptionalAction, default=False)
@@ -184,6 +193,7 @@ def main(argv: list[str] | None = None) -> None:
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
     print(f"Output directory: {output_dir}", flush=True)
     print(f"Device: {device}", flush=True)
+    configure_float32_matmul_precision(config.train, device)
     print(f"Input shape: header=[B,14] events=[B,{config.data.events_per_chunk},16]", flush=True)
     print(f"Input representation: {config.model.input_representation}", flush=True)
 
@@ -195,11 +205,15 @@ def main(argv: list[str] | None = None) -> None:
     train_model = maybe_compile_model(model, config.train.compile_model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay)
     scheduler = build_scheduler(optimizer, config.train)
+    amp_dtype = resolve_amp_dtype(config.train, device)
+    scaler_enabled = amp_dtype == torch.float16
     scaler = torch.amp.GradScaler(
         "cuda",
         init_scale=max(1.0, float(config.train.amp_initial_scale)),
-        enabled=config.train.amp and device.type == "cuda",
+        growth_interval=max(1, int(config.train.amp_growth_interval)),
+        enabled=scaler_enabled,
     )
+    print(f"AMP: enabled={amp_dtype is not None} dtype={amp_dtype_name(amp_dtype)} grad_scaler={scaler.is_enabled()}", flush=True)
     global_step = maybe_resume_or_warm_start(
         model,
         optimizer,
@@ -261,7 +275,7 @@ def main(argv: list[str] | None = None) -> None:
         masks = build_event_masks(batch["events_uint8"], config.masks)
         with torch.no_grad():
             output = model(batch["header_uint8"], batch["events_uint8"], masks, config.masks)
-            result = masked_event_bce_loss(output, config.losses, include_diagnostics=True)
+            result = masked_event_bce_loss(output, config.losses, header_uint8=batch["header_uint8"], include_diagnostics=True)
             embedding = model.encode(batch["header_uint8"], batch["events_uint8"])
         print(f"Dry run loss={float(result.loss):.6f} embedding={tuple(embedding.shape)}", flush=True)
         print(json.dumps(result.metrics, indent=2), flush=True)
@@ -684,11 +698,13 @@ def run_training_step(
     metric_level = "cheap" if force_diagnostics else "loss_only"
     if include_diagnostics:
         metric_level = "standard"
-    with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
+    amp_dtype = resolve_amp_dtype(config.train, device)
+    with torch.amp.autocast("cuda", enabled=amp_dtype is not None, dtype=amp_dtype):
         output = train_model(batch["header_uint8"], batch["events_uint8"], masks, config.masks)
         result = masked_event_bce_loss(
             output,
             config.losses,
+            header_uint8=batch["header_uint8"],
             include_diagnostics=include_diagnostics,
             profile_metrics=profile_step,
             metric_level=metric_level,
@@ -728,6 +744,7 @@ def run_training_step(
             amp_overflow_streak = int(getattr(scaler, "_qresearch_amp_overflow_streak", 0)) + 1
             setattr(scaler, "_qresearch_amp_overflow_streak", amp_overflow_streak)
             scaler.update(new_scale=max(1.0, float(old_scale) * 0.5))
+            clamp_grad_scaler_(scaler, config.train)
             amp_step_skipped = True
             grad_norm = torch.tensor(float("nan"), device=device)
             if amp_overflow_streak >= max(1, int(config.train.amp_overflow_fatal_threshold)):
@@ -784,6 +801,7 @@ def run_training_step(
             )
             scaler.step(optimizer)
             scaler.update()
+            clamp_grad_scaler_(scaler, config.train)
             amp_step_skipped = bool(scaler.is_enabled() and scaler.get_scale() < old_scale)
             if scheduler is not None and not amp_step_skipped:
                 scheduler.step(global_step)
@@ -838,6 +856,7 @@ def run_training_step(
             "train/grad_norm": float(grad_norm.detach().cpu()),
             "train/amp_step_skipped": float(amp_step_skipped),
             "train/amp_scale": float(scaler.get_scale()) if scaler.is_enabled() else 0.0,
+            "train/amp_dtype_id": amp_dtype_id(amp_dtype),
             "train/amp_overflow_streak": float(getattr(scaler, "_qresearch_amp_overflow_streak", 0)),
             "profile/batch_size": batch_size,
         }
@@ -859,7 +878,7 @@ def run_training_step(
             }
         )
     if config.train.profile_inference_every_steps > 0 and global_step % config.train.profile_inference_every_steps == 0:
-        metrics.update(profile_encode(model, batch, device, amp_enabled=config.train.amp))
+        metrics.update(profile_encode(model, batch, device, amp_dtype=amp_dtype))
     return metrics
 
 
@@ -1025,6 +1044,73 @@ def resource_profile(device: torch.device) -> dict[str, float]:
     return metrics
 
 
+def configure_float32_matmul_precision(train_config: TrainConfig, device: torch.device) -> None:
+    precision = str(train_config.float32_matmul_precision).lower().strip()
+    if precision not in {"highest", "high", "medium"}:
+        raise ValueError(
+            f"Unsupported float32_matmul_precision={train_config.float32_matmul_precision!r}; "
+            "expected highest, high, or medium."
+        )
+    torch.set_float32_matmul_precision(precision)
+    if device.type == "cuda":
+        # Use the new PyTorch matmul-precision API instead of manually toggling
+        # backend flags. On NVIDIA GPUs, `high` enables TF32 matmuls for the
+        # FP32 decoder path; replay tests kept the stable FP32 gradients while
+        # improving step time versus full FP32 matmuls.
+        print(
+            "Float32 matmul precision: "
+            f"{torch.get_float32_matmul_precision()} "
+            f"(cuda.matmul.allow_tf32={torch.backends.cuda.matmul.allow_tf32})",
+            flush=True,
+        )
+    else:
+        print(f"Float32 matmul precision: {torch.get_float32_matmul_precision()} (device={device})", flush=True)
+
+
+def resolve_amp_dtype(train_config: TrainConfig, device: torch.device) -> torch.dtype | None:
+    if not train_config.amp or device.type != "cuda":
+        return None
+    requested = str(train_config.amp_dtype).lower().strip()
+    if requested == "bf16":
+        if not torch.cuda.is_bf16_supported():
+            raise RuntimeError("Requested --amp-dtype bf16, but this CUDA device does not report BF16 support.")
+        return torch.bfloat16
+    if requested == "fp16":
+        return torch.float16
+    if requested != "auto":
+        raise ValueError(f"Unsupported amp_dtype={train_config.amp_dtype!r}; expected auto, bf16, or fp16.")
+    return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+
+def amp_dtype_name(dtype: torch.dtype | None) -> str:
+    if dtype is None:
+        return "off"
+    if dtype == torch.bfloat16:
+        return "bf16"
+    if dtype == torch.float16:
+        return "fp16"
+    return str(dtype)
+
+
+def amp_dtype_id(dtype: torch.dtype | None) -> float:
+    if dtype == torch.bfloat16:
+        return 2.0
+    if dtype == torch.float16:
+        return 1.0
+    return 0.0
+
+
+def clamp_grad_scaler_(scaler: torch.amp.GradScaler, train_config: TrainConfig) -> None:
+    if not scaler.is_enabled():
+        return
+    max_scale = float(train_config.amp_max_scale)
+    if max_scale <= 0:
+        return
+    current = float(scaler.get_scale())
+    if current > max_scale:
+        scaler.update(new_scale=max_scale)
+
+
 def maybe_log_train_and_validation(
     *,
     model: EventTokenMaskedAutoencoder,
@@ -1120,7 +1206,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         ),
         model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
         losses=LossConfig(objective=args.loss_objective),
-        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, amp=args.amp, amp_initial_scale=args.amp_initial_scale, amp_overflow_fatal_threshold=args.amp_overflow_fatal_threshold, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
+        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, amp=args.amp, amp_dtype=args.amp_dtype, amp_initial_scale=args.amp_initial_scale, amp_growth_interval=args.amp_growth_interval, amp_max_scale=args.amp_max_scale, amp_overflow_fatal_threshold=args.amp_overflow_fatal_threshold, float32_matmul_precision=args.float32_matmul_precision, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )
 
 
@@ -1288,14 +1374,15 @@ def evaluate_validation(model: EventTokenMaskedAutoencoder, batches: list[dict[s
     model.eval()
     totals: dict[str, float] = {}
     started = time.perf_counter()
+    amp_dtype = resolve_amp_dtype(config.train, device)
     with torch.no_grad():
         for index, cpu_batch in enumerate(batches):
             torch.manual_seed(seed + index)
             batch = move_batch(cpu_batch, device)
             masks = build_event_masks(batch["events_uint8"], config.masks)
-            with torch.amp.autocast("cuda", enabled=config.train.amp and device.type == "cuda"):
+            with torch.amp.autocast("cuda", enabled=amp_dtype is not None, dtype=amp_dtype):
                 output = model(batch["header_uint8"], batch["events_uint8"], masks, config.masks)
-                result = masked_event_bce_loss(output, config.losses, include_diagnostics=False, metric_level="cheap")
+                result = masked_event_bce_loss(output, config.losses, header_uint8=batch["header_uint8"], include_diagnostics=False, metric_level="standard")
             if not torch.isfinite(result.loss).item():
                 raise_nonfinite_training_error(output, result.metrics, global_step=-1)
             for key, value in result.metrics.items():
@@ -1317,12 +1404,12 @@ def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
     return moved
 
 
-def profile_encode(model: EventTokenMaskedAutoencoder, batch: dict[str, Any], device: torch.device, *, amp_enabled: bool) -> dict[str, float]:
+def profile_encode(model: EventTokenMaskedAutoencoder, batch: dict[str, Any], device: torch.device, *, amp_dtype: torch.dtype | None) -> dict[str, float]:
     was_training = model.training
     model.eval()
     sync_if_cuda(device)
     started = time.perf_counter()
-    with torch.no_grad(), torch.amp.autocast("cuda", enabled=amp_enabled and device.type == "cuda"):
+    with torch.no_grad(), torch.amp.autocast("cuda", enabled=amp_dtype is not None, dtype=amp_dtype):
         embedding = model.encode(batch["header_uint8"], batch["events_uint8"])
     sync_if_cuda(device)
     elapsed = time.perf_counter() - started
@@ -1755,4 +1842,3 @@ def sync_if_cuda(device: torch.device) -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -593,10 +593,8 @@ class EventTokenMaskedAutoencoder(nn.Module):
         encoded_tokens, chunk_embedding, target_events = self.encode_tokens_for_training(
             header_uint8, events_uint8, masks, mask_config
         )
-        # Input shape: [B, Z]. Output shape: [B, 1, D].
-        decoder_memory = self.chunk_embedding_to_decoder_memory(chunk_embedding)
-        # Input shapes: memory [B, 1, D], masks [B, M]. Output shape: [B, M, 16, 8].
-        event_logits = self.decode_masked_events(decoder_memory, masks)
+        # Input shape: [B, Z]. Output shape: [B, M, 16, 8].
+        event_logits = self.decode_from_chunk_embedding(chunk_embedding, masks)
         return EventMAEOutput(
             event_bit_logits=event_logits,
             masked_event_indices=masks.masked_event_indices,
@@ -621,6 +619,28 @@ class EventTokenMaskedAutoencoder(nn.Module):
             training=False,
         )
         return chunk_embedding
+
+    def decode_from_chunk_embedding(self, chunk_embedding: torch.Tensor, masks: EventMaskBatch) -> torch.Tensor:
+        """Reconstruct masked events, optionally forcing the decoder path to FP32.
+
+        The encoder remains inside the training loop's autocast context, so it
+        keeps the BF16 speed benefit. The decoder bridge and cross-attention
+        operate on a single `[B, Z]` bottleneck representation; replay debugging
+        showed that BF16 backward through this bridge can create very large
+        finite gradients even when the same batch is stable in FP32.
+        """
+
+        if self.config.decoder_force_fp32 and chunk_embedding.is_cuda:
+            with torch.amp.autocast("cuda", enabled=False):
+                # Input shape: [B, Z]. Output shape: [B, 1, D].
+                decoder_memory = self.chunk_embedding_to_decoder_memory(chunk_embedding.float())
+                # Input shapes: memory [B, 1, D], masks [B, M]. Output shape: [B, M, 16, 8].
+                return self.decode_masked_events(decoder_memory, masks)
+
+        # Input shape: [B, Z]. Output shape: [B, 1, D].
+        decoder_memory = self.chunk_embedding_to_decoder_memory(chunk_embedding)
+        # Input shapes: memory [B, 1, D], masks [B, M]. Output shape: [B, M, 16, 8].
+        return self.decode_masked_events(decoder_memory, masks)
 
     @torch.no_grad()
     def encode_events(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:

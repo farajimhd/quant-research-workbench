@@ -37,7 +37,7 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_drop_last": True,
     "batch_size": 4096,
     "max_steps": 10000,
-    "epochs": 1,
+    "epochs": 5,
     "num_workers": 0,
     "progress_layout": "auto",
     "profile_first_steps": 0,

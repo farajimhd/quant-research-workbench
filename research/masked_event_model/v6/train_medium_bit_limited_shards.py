@@ -29,7 +29,7 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_validation_batches_per_shard": 1,
     "sample_cache_interleave_shards": 1,
     "batch_size": 4096,
-    "epochs": 10,
+    "epochs": 5,
     "max_steps": 0,
     "input_representation": "bit",
     "d_byte": 40,
@@ -64,7 +64,7 @@ DEFAULTS: dict[str, Any] = {
     "num_workers": 0,
     "progress_layout": "auto",
     "device": "cuda",
-    "compile_model": False,
+    "compile_model": True,
     "wandb_project": "June2026-event-token-mae-v6",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
@@ -72,7 +72,7 @@ DEFAULTS: dict[str, Any] = {
     "warm_start_checkpoint": "",
 }
 
-PROFILED_TRAINING_PATH = "v6 event-token MAE medium emb32 bs4096 no-compile, shard-cycle scheduler, no interleave"
+PROFILED_TRAINING_PATH = "v6 event-token MAE medium emb32 bs4096 compile-enabled, shard-cycle scheduler, no interleave"
 VALIDATION_BATCHES = 8
 
 
@@ -187,9 +187,9 @@ def main() -> None:
     print(f"profiled_training_path={PROFILED_TRAINING_PATH}", flush=True)
     print(f"compile_model={args.compile_model} decoder_chunk_size={args.decoder_chunk_size}", flush=True)
     print(f"warm_start_checkpoint={args.warm_start_checkpoint or '<none>'} load_optimizer={args.warm_start_load_optimizer}", flush=True)
-    if args.compile_model:
+    if not args.compile_model:
         print(
-            "WARN this differs from the profiled path; expected --no-compile-model.",
+            "WARN this differs from the current profiled faster path; expected --compile-model.",
             flush=True,
         )
     print("Equivalent trainer args:", flush=True)

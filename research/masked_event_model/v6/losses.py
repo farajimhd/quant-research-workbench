@@ -71,6 +71,7 @@ def masked_event_bce_loss(
     output: EventMAEOutput,
     config: LossConfig,
     *,
+    header_uint8: torch.Tensor | None = None,
     include_diagnostics: bool = False,
     profile_metrics: bool = False,
     metric_level: str = "standard",
@@ -100,7 +101,7 @@ def masked_event_bce_loss(
     masked_events = max(1, int(logits.shape[1]))
     calculate_unweighted_metric = objective == "unweighted" or metric_level != "loss_only"
     unweighted_loss: torch.Tensor | None = None
-    weighted_loss_sum: torch.Tensor | None = None
+    weighted_loss_mean: torch.Tensor | None = None
     weighted_term_count = int(logits.numel())
     if logits.is_cuda:
         with torch.amp.autocast("cuda", enabled=False):
@@ -108,13 +109,13 @@ def masked_event_bce_loss(
                 unweighted_loss = F.binary_cross_entropy_with_logits(logits.float(), target_bits.float())
                 loss = unweighted_loss
             else:
-                weighted_loss_sum = F.binary_cross_entropy_with_logits(
+                weighted_loss_mean = F.binary_cross_entropy_with_logits(
                     logits.float(),
                     target_bits.float(),
                     weight=semantic_weights.float(),
-                    reduction="sum",
+                    reduction="mean",
                 )
-                loss = weighted_loss_sum / batch_size
+                loss = weighted_loss_mean
                 if calculate_unweighted_metric:
                     unweighted_loss = F.binary_cross_entropy_with_logits(logits.float(), target_bits.float())
     else:
@@ -122,13 +123,13 @@ def masked_event_bce_loss(
             unweighted_loss = F.binary_cross_entropy_with_logits(logits, target_bits)
             loss = unweighted_loss
         else:
-            weighted_loss_sum = F.binary_cross_entropy_with_logits(
+            weighted_loss_mean = F.binary_cross_entropy_with_logits(
                 logits,
                 target_bits,
                 weight=semantic_weights,
-                reduction="sum",
+                reduction="mean",
             )
-            loss = weighted_loss_sum / batch_size
+            loss = weighted_loss_mean
             if calculate_unweighted_metric:
                 unweighted_loss = F.binary_cross_entropy_with_logits(logits, target_bits)
     loss = loss * float(config.event_weight)
@@ -152,9 +153,10 @@ def masked_event_bce_loss(
     }
     if unweighted_loss is not None:
         metrics["pretrain/loss_event_unweighted"] = float(unweighted_loss.detach().cpu())
-    if weighted_loss_sum is not None:
-        metrics["pretrain/loss_event_weighted_sum"] = float(weighted_loss_sum.detach().cpu())
-        metrics["pretrain/loss_event_weight_mass"] = float(batch_size)
+    if weighted_loss_mean is not None:
+        metrics["pretrain/loss_event_weighted_mean"] = float(weighted_loss_mean.detach().cpu())
+        metrics["pretrain/loss_event_weighted_sum_estimate"] = float((weighted_loss_mean.detach() * weighted_term_count).cpu())
+        metrics["pretrain/loss_event_weight_mass"] = float(weighted_term_count)
         metrics["pretrain/loss_event_masked_events_normalizer"] = float(masked_events)
     if metric_level == "loss_only":
         # Full reconstruction metrics are useful, but they are not free at large
@@ -227,6 +229,8 @@ def masked_event_bce_loss(
                 soft_mse = (soft_bytes - target_float).pow(2).mean()
                 metrics["pretrain/event_hard_byte_psnr_db"] = float(byte_psnr_db(hard_mse).detach().cpu())
                 metrics["pretrain/event_soft_byte_psnr_db"] = float(byte_psnr_db(soft_mse).detach().cpu())
+            if header_uint8 is not None:
+                metrics.update(masked_event_semantic_metrics(header_uint8, target_bytes, hard_bytes))
         if profile_metrics:
             if logits.is_cuda:
                 torch.cuda.synchronize(logits.device)
@@ -261,6 +265,159 @@ def pack_bits(bits: torch.Tensor) -> torch.Tensor:
 
     weights = BYTE_VALUE_BIT_WEIGHTS.to(bits.device, dtype=torch.long)
     return (bits.long() * weights).sum(dim=-1)
+
+
+def masked_event_semantic_metrics(
+    header_uint8: torch.Tensor,
+    target_events_uint8: torch.Tensor,
+    predicted_events_uint8: torch.Tensor,
+) -> dict[str, float]:
+    """Compare masked-event reconstructions after decoding byte fields.
+
+    The compact event bytes are not independent columns once prices are
+    interpreted: `E3-E6` are signed deltas that need the sample header's ask and
+    spread anchors to become quote/trade tick values. These metrics therefore
+    decode both target and prediction with the original header and report errors
+    in market-facing units for the masked event subset only.
+    """
+
+    with torch.no_grad():
+        device = predicted_events_uint8.device
+        header = header_uint8.to(device=device, dtype=torch.long)
+        target = target_events_uint8.to(device=device, dtype=torch.long)
+        predicted = predicted_events_uint8.to(device=device, dtype=torch.long)
+        target_fields = decode_masked_event_semantics(header, target)
+        predicted_fields = decode_masked_event_semantics(header, predicted)
+
+        valid_mask = target_fields["presence"] == 1
+        quote_mask = valid_mask & (target_fields["event_type"] == 0)
+        trade_mask = valid_mask & (target_fields["event_type"] == 1)
+        metrics = {
+            "pretrain/semantic/masked_events": float(target.shape[0] * target.shape[1]),
+            "pretrain/semantic/valid_events": float(valid_mask.float().sum().detach().cpu()),
+            "pretrain/semantic/quote_events": float(quote_mask.float().sum().detach().cpu()),
+            "pretrain/semantic/trade_events": float(trade_mask.float().sum().detach().cpu()),
+            "pretrain/semantic/event_type_acc_pct": masked_accuracy(predicted_fields["event_type"], target_fields["event_type"], valid_mask),
+            "pretrain/semantic/event_presence_acc_pct": masked_accuracy(predicted_fields["presence"], target_fields["presence"], torch.ones_like(valid_mask, dtype=torch.bool)),
+            "pretrain/semantic/quote_time_bucket_mae": masked_mae(predicted_fields["event_delta_bucket"], target_fields["event_delta_bucket"], quote_mask),
+            "pretrain/semantic/quote_ask_delta_tick_mae": masked_mae(predicted_fields["price1_delta"], target_fields["price1_delta"], quote_mask),
+            "pretrain/semantic/quote_spread_delta_tick_mae": masked_mae(predicted_fields["price2_delta"], target_fields["price2_delta"], quote_mask),
+            "pretrain/semantic/quote_ask_tick_mae": masked_mae(predicted_fields["price1_abs_ticks"], target_fields["price1_abs_ticks"], quote_mask),
+            "pretrain/semantic/quote_spread_tick_mae": masked_mae(predicted_fields["spread_ticks"], target_fields["spread_ticks"], quote_mask),
+            "pretrain/semantic/quote_bid_tick_mae": masked_mae(predicted_fields["bid_ticks"], target_fields["bid_ticks"], quote_mask),
+            "pretrain/semantic/quote_ask_price_mae": masked_price_mae(predicted_fields["price1_abs_ticks"], target_fields["price1_abs_ticks"], target_fields["tick_size"], quote_mask),
+            "pretrain/semantic/quote_bid_price_mae": masked_price_mae(predicted_fields["bid_ticks"], target_fields["bid_ticks"], target_fields["tick_size"], quote_mask),
+            "pretrain/semantic/quote_bid_size_bucket_mae": masked_mae(predicted_fields["size1_bucket"], target_fields["size1_bucket"], quote_mask),
+            "pretrain/semantic/quote_ask_size_bucket_mae": masked_mae(predicted_fields["size2_bucket"], target_fields["size2_bucket"], quote_mask),
+            "pretrain/semantic/quote_bid_small_flag_acc_pct": masked_accuracy(predicted_fields["size1_small_flag"], target_fields["size1_small_flag"], quote_mask),
+            "pretrain/semantic/quote_ask_small_flag_acc_pct": masked_accuracy(predicted_fields["size2_small_flag"], target_fields["size2_small_flag"], quote_mask),
+            "pretrain/semantic/quote_tape_acc_pct": masked_accuracy(predicted_fields["tape"], target_fields["tape"], quote_mask),
+            "pretrain/semantic/quote_bid_exchange_acc_pct": masked_accuracy(predicted_fields["exchange1"], target_fields["exchange1"], quote_mask),
+            "pretrain/semantic/quote_ask_exchange_acc_pct": masked_accuracy(predicted_fields["exchange2"], target_fields["exchange2"], quote_mask),
+            "pretrain/semantic/quote_condition_slot_acc_pct": masked_accuracy(predicted_fields["conditions"], target_fields["conditions"], quote_mask),
+            "pretrain/semantic/quote_all_condition_slots_exact_acc_pct": masked_boolean_rate((predicted_fields["conditions"] == target_fields["conditions"]).all(dim=-1), quote_mask),
+            "pretrain/semantic/trade_time_bucket_mae": masked_mae(predicted_fields["event_delta_bucket"], target_fields["event_delta_bucket"], trade_mask),
+            "pretrain/semantic/trade_price_delta_tick_mae": masked_mae(predicted_fields["price1_delta"], target_fields["price1_delta"], trade_mask),
+            "pretrain/semantic/trade_price_tick_mae": masked_mae(predicted_fields["price1_abs_ticks"], target_fields["price1_abs_ticks"], trade_mask),
+            "pretrain/semantic/trade_price_mae": masked_price_mae(predicted_fields["price1_abs_ticks"], target_fields["price1_abs_ticks"], target_fields["tick_size"], trade_mask),
+            "pretrain/semantic/trade_size_bucket_mae": masked_mae(predicted_fields["size1_bucket"], target_fields["size1_bucket"], trade_mask),
+            "pretrain/semantic/trade_small_flag_acc_pct": masked_accuracy(predicted_fields["size1_small_flag"], target_fields["size1_small_flag"], trade_mask),
+            "pretrain/semantic/trade_tape_acc_pct": masked_accuracy(predicted_fields["tape"], target_fields["tape"], trade_mask),
+            "pretrain/semantic/trade_exchange_acc_pct": masked_accuracy(predicted_fields["exchange1"], target_fields["exchange1"], trade_mask),
+            "pretrain/semantic/trade_condition_slot_acc_pct": masked_accuracy(predicted_fields["conditions"], target_fields["conditions"], trade_mask),
+            "pretrain/semantic/trade_all_condition_slots_exact_acc_pct": masked_boolean_rate((predicted_fields["conditions"] == target_fields["conditions"]).all(dim=-1), trade_mask),
+            "pretrain/semantic/trade_correction_acc_pct": masked_accuracy(predicted_fields["correction"], target_fields["correction"], trade_mask),
+            "pretrain/semantic/predicted_quote_valid_pct": masked_boolean_rate(
+                (predicted_fields["price1_abs_ticks"] > 0)
+                & (predicted_fields["spread_ticks"] >= 0)
+                & (predicted_fields["bid_ticks"] > 0),
+                quote_mask,
+            ),
+        }
+        return metrics
+
+
+def decode_masked_event_semantics(header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Decode compact masked event bytes into semantic integer fields.
+
+    Header shape: `[B, 14]`; event shape: `[B, M, 16]`. Returned tensors use
+    `[B, M]` except `conditions`, which is `[B, M, 4]`.
+    """
+
+    header_long = header_uint8.long()
+    ask_anchor_ticks = header_long[:, 0] | (header_long[:, 1] << 8) | ((header_long[:, 2] & 0x0F) << 16)
+    spread_anchor_ticks = header_long[:, 3] | (header_long[:, 4] << 8)
+    tick_size = torch.where((header_uint8[:, 13] & 0x04) != 0, header_uint8.new_tensor(0.01, dtype=torch.float32), header_uint8.new_tensor(0.0001, dtype=torch.float32))
+    ask_anchor = ask_anchor_ticks.unsqueeze(1)
+    spread_anchor = spread_anchor_ticks.unsqueeze(1)
+    event_type = events_uint8[:, :, 0] & 0x01
+    presence = (events_uint8[:, :, 0] >> 1) & 0x01
+    correction = (events_uint8[:, :, 0] >> 2) & 0x0F
+    event_delta_bucket = uint16_le(events_uint8[:, :, 1], events_uint8[:, :, 2]) & 0x03FF
+    price1_delta = int16_le(events_uint8[:, :, 3], events_uint8[:, :, 4])
+    price2_delta = int16_le(events_uint8[:, :, 5], events_uint8[:, :, 6])
+    price1_abs_ticks = ask_anchor + price1_delta
+    spread_ticks = spread_anchor + price2_delta
+    bid_ticks = price1_abs_ticks - spread_ticks
+    size_flags = events_uint8[:, :, 9]
+    conditions = events_uint8[:, :, 12:16]
+    return {
+        "event_type": event_type,
+        "presence": presence,
+        "correction": correction,
+        "event_delta_bucket": event_delta_bucket,
+        "price1_delta": price1_delta,
+        "price2_delta": price2_delta,
+        "price1_abs_ticks": price1_abs_ticks,
+        "spread_ticks": spread_ticks,
+        "bid_ticks": bid_ticks,
+        "size1_bucket": events_uint8[:, :, 7],
+        "size2_bucket": events_uint8[:, :, 8],
+        "size1_small_flag": size_flags & 0x01,
+        "size2_small_flag": (size_flags >> 1) & 0x01,
+        "tape": (size_flags >> 2) & 0x07,
+        "exchange1": events_uint8[:, :, 10] & 0x1F,
+        "exchange2": events_uint8[:, :, 11] & 0x1F,
+        "conditions": conditions,
+        "tick_size": tick_size.unsqueeze(1),
+    }
+
+
+def uint16_le(low: torch.Tensor, high: torch.Tensor) -> torch.Tensor:
+    return low.long() | (high.long() << 8)
+
+
+def int16_le(low: torch.Tensor, high: torch.Tensor) -> torch.Tensor:
+    value = uint16_le(low, high)
+    return torch.where(value >= 32768, value - 65536, value)
+
+
+def masked_accuracy(predicted: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> float:
+    if predicted.ndim == target.ndim + 1:
+        target = target.unsqueeze(-1).expand_as(predicted)
+    if mask.ndim < predicted.ndim:
+        mask = mask.unsqueeze(-1).expand_as(predicted)
+    if not bool(mask.any()):
+        return 0.0
+    return float(((predicted == target) & mask).float().sum().detach().cpu() * 100.0 / mask.float().sum().detach().cpu())
+
+
+def masked_mae(predicted: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> float:
+    if not bool(mask.any()):
+        return 0.0
+    return float((predicted.float().sub(target.float()).abs()[mask]).mean().detach().cpu())
+
+
+def masked_price_mae(predicted_ticks: torch.Tensor, target_ticks: torch.Tensor, tick_size: torch.Tensor, mask: torch.Tensor) -> float:
+    if not bool(mask.any()):
+        return 0.0
+    return float((predicted_ticks.float().sub(target_ticks.float()).abs() * tick_size)[mask].mean().detach().cpu())
+
+
+def masked_boolean_rate(values: torch.Tensor, mask: torch.Tensor) -> float:
+    if not bool(mask.any()):
+        return 0.0
+    return float(values[mask].float().mean().detach().cpu() * 100.0)
 
 
 def byte_psnr_db(mse: torch.Tensor) -> torch.Tensor:

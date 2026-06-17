@@ -32,7 +32,7 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_validation_batches_per_shard": 1,
     "sample_cache_interleave_shards": 1,
     "batch_size": 4096,
-    "epochs": 10,
+    "epochs": 5,
     "max_steps": 0,
     "input_representation": "bit",
     "d_byte": 40,
@@ -44,6 +44,7 @@ DEFAULTS: dict[str, Any] = {
     "ffn_mult": 4,
     "dropout": 0.08,
     "event_mask_ratio": 0.70,
+    "event_mask_schedule": "mixed",
     "min_masked_events": 1,
     "header_bit_corruption_prob": 0.20,
     "header_bit_corruption_ratio": 0.05,
@@ -71,20 +72,21 @@ DEFAULTS: dict[str, Any] = {
     "amp_dtype": "auto",
     "amp_growth_interval": 10000,
     "amp_max_scale": 2048.0,
-    "compile_model": False,
+    "compile_model": True,
     "wandb_project": "June2026-event-token-mae-v6",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
-    "wandb_run_name": "v6-medium-newdecoder-emb32-bs4096-10shards-guarded",
+    "wandb_run_name": "v6-mixedmask-emb32-bs4096-10shards",
     "amp_initial_scale": 1024.0,
     "amp_overflow_fatal_threshold": 8,
+    "float32_matmul_precision": "high",
     "warm_start_checkpoint": "",
 }
 
 VALIDATION_BATCHES = 8
 PROFILED_TRAINING_PATH = (
     "v6 event-token MAE, masked-query cross-attention decoder, "
-    "sample-cache shards, shard-cycle scheduler, no interleave"
+    "mixed random event mask, sample-cache shards, shard-cycle scheduler, no interleave, torch.compile enabled"
 )
 
 
@@ -124,16 +126,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ffn-mult", type=int, default=DEFAULTS["ffn_mult"])
     parser.add_argument("--dropout", type=float, default=DEFAULTS["dropout"])
     parser.add_argument("--event-mask-ratio", type=float, default=DEFAULTS["event_mask_ratio"])
+    parser.add_argument("--event-mask-schedule", choices=("fixed", "mixed"), default=DEFAULTS["event_mask_schedule"])
     parser.add_argument("--learning-rate", type=float, default=DEFAULTS["learning_rate"])
     parser.add_argument("--device", default=DEFAULTS["device"])
     parser.add_argument("--run-name", default=DEFAULTS["wandb_run_name"])
     parser.add_argument("--wandb-project", default=DEFAULTS["wandb_project"])
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default=DEFAULTS["wandb_mode"])
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default=DEFAULTS["progress_layout"])
+    parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=DEFAULTS["compile_model"])
     parser.add_argument("--amp-dtype", choices=("auto", "bf16", "fp16"), default=DEFAULTS["amp_dtype"])
     parser.add_argument("--amp-growth-interval", type=int, default=DEFAULTS["amp_growth_interval"])
     parser.add_argument("--amp-max-scale", type=float, default=DEFAULTS["amp_max_scale"])
-    parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=DEFAULTS["compile_model"])
+    parser.add_argument(
+        "--float32-matmul-precision",
+        choices=("highest", "high", "medium"),
+        default=DEFAULTS["float32_matmul_precision"],
+    )
     parser.add_argument("--warm-start-checkpoint", nargs="?", const="", default=DEFAULTS["warm_start_checkpoint"])
     parser.add_argument("--warm-start-load-optimizer", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--initial-validation", action=argparse.BooleanOptionalAction, default=False)
@@ -222,9 +230,10 @@ def main() -> None:
             "ffn_mult": int(args.ffn_mult),
             "dropout": float(args.dropout),
             "event_mask_ratio": float(args.event_mask_ratio),
+            "event_mask_schedule": args.event_mask_schedule,
             "learning_rate": float(args.learning_rate),
-            # One scheduler cycle per shard keeps LR restarts aligned to the
-            # actual data regime instead of the whole 10-shard epoch.
+            # One scheduler cycle per shard keeps LR restarts aligned to each
+            # newly loaded shard distribution.
             "scheduler_t0_steps": steps_per_shard,
             "pretrain_validation_frequency": steps_per_shard,
             "pretrain_validation_steps": validation_batches,
@@ -235,10 +244,11 @@ def main() -> None:
             "wandb_mode": args.wandb_mode,
             "wandb_run_name": args.run_name,
             "progress_layout": args.progress_layout,
+            "compile_model": bool(args.compile_model),
             "amp_dtype": args.amp_dtype,
             "amp_growth_interval": int(args.amp_growth_interval),
             "amp_max_scale": float(args.amp_max_scale),
-            "compile_model": bool(args.compile_model),
+            "float32_matmul_precision": args.float32_matmul_precision,
             "warm_start_checkpoint": args.warm_start_checkpoint,
             "warm_start_load_optimizer": bool(args.warm_start_load_optimizer),
             "initial_validation": bool(args.initial_validation),
@@ -334,6 +344,11 @@ def print_plan(
         flush=True,
     )
     print(
+        f"mask_schedule={values['event_mask_schedule']} event_mask_ratio={values['event_mask_ratio']:.3f} "
+        f"min_masked_events={values['min_masked_events']}",
+        flush=True,
+    )
+    print(
         f"optimizer=AdamW lr={values['learning_rate']} weight_decay={values['weight_decay']} "
         f"scheduler={values['scheduler']} t0_steps={values['scheduler_t0_steps']} eta_min={values['scheduler_eta_min']}",
         flush=True,
@@ -351,11 +366,12 @@ def print_plan(
         f"amp_overflow_fatal_threshold={values['amp_overflow_fatal_threshold']}",
         flush=True,
     )
+    print(f"float32_matmul_precision={values['float32_matmul_precision']}", flush=True)
     print(f"wandb_project={values['wandb_project']} run={values['wandb_run_name']} mode={values['wandb_mode']}", flush=True)
     print(f"warm_start_checkpoint={values['warm_start_checkpoint'] or '<none>'} load_optimizer={values['warm_start_load_optimizer']}", flush=True)
     print(f"compile_model={values['compile_model']} interleave_shards={values['sample_cache_interleave_shards']}", flush=True)
-    if values["compile_model"]:
-        print("WARN compile_model=True differs from the profiled stable path.", flush=True)
+    if not values["compile_model"]:
+        print("WARN compile_model=False differs from the current profiled faster path.", flush=True)
     print("Equivalent trainer args:", flush=True)
     print(" ".join(argv), flush=True)
     print("=" * 104, flush=True)
