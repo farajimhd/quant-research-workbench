@@ -8,6 +8,7 @@ This package contains the historical Benzinga news workflow:
 - normalized JSONEachRow row building;
 - ClickHouse file-based preflight and ingest.
 - ticker join-table backfill from loaded normalized news.
+- historical date-range gap-fill orchestration.
 
 Preferred module path:
 
@@ -19,6 +20,12 @@ Ticker join index:
 
 ```powershell
 python -m pipelines.news.benzinga.news_benzinga_ticker_links --help
+```
+
+Historical gap-fill orchestrator:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_historical_gap_fill --help
 ```
 
 Old `research/mlops/news_benzinga_*.py` wrappers are archived under `pipelines/archive/legacy_wrappers/research_mlops/`. Do not use them for new runs.

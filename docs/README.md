@@ -11,6 +11,7 @@ Start here before changing historical ingestion, live services, or trading UI co
 - [Repository Organization Plan](architecture/repository_organization.md): target folder layout and safe migration rules.
 - [Event-Based Market Engine](architecture/event_based_market_engine.md): quotes/trades based market engine design.
 - [Benzinga News Normalization Pipeline](architecture/benzinga_news_normalization_pipeline.md): future canonical split-table news design.
+- [Benzinga Historical Gap Fill](runbooks/news_benzinga_historical_gap_fill.md): date-range orchestrator around the successful historical news scripts.
 
 ## Runbooks
 

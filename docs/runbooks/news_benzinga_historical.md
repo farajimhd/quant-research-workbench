@@ -131,6 +131,16 @@ max_distinct_tickers: 2,649
 
 No-ticker news is not inserted into the ticker table. It remains available in `q_live.benzinga_news_normalized_v1` for market-wide and macro labels.
 
+## Date-Range Gap Fill
+
+Use the orchestrator when filling a historical gap from source:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_historical_gap_fill --start-utc 2026-06-01 --end-utc 2026-06-02 --execute-db --yes
+```
+
+The orchestrator preserves the successful manual stage order and arguments. See [news_benzinga_historical_gap_fill.md](news_benzinga_historical_gap_fill.md).
+
 ## Important Issue History
 
 | Symptom | Cause | Fix |
