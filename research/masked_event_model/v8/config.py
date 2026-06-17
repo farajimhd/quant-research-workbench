@@ -97,6 +97,11 @@ class ModelConfig:
     decoder_layers: int = 2
     ffn_mult: int = 4
     dropout: float = 0.08
+    # Keep the reusable encoder eligible for BF16 autocast, but run the
+    # reconstruction decoder in FP32. Replay diagnostics showed the BF16
+    # decoder backward path can amplify otherwise finite gradients by orders of
+    # magnitude at the chunk-embedding bridge.
+    decoder_force_fp32: bool = True
 
     @property
     def ff_dim(self) -> int:
