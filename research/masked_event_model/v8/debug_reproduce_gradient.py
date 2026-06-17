@@ -224,8 +224,8 @@ def run_debug_step(
 
 
 def inspect_gradients(model: torch.nn.Module, *, top_n: int) -> dict[str, Any]:
-    total_sq64 = torch.zeros((), dtype=torch.float64)
-    total_sq32 = torch.zeros((), dtype=torch.float32)
+    total_sq64 = 0.0
+    total_sq32 = 0.0
     nonfinite: list[dict[str, Any]] = []
     top_abs: list[tuple[float, str, tuple[int, ...], str]] = []
     top_norm: list[tuple[float, str, tuple[int, ...], str]] = []
@@ -250,14 +250,14 @@ def inspect_gradients(model: torch.nn.Module, *, top_n: int) -> dict[str, Any]:
             if not bool(finite.any()):
                 continue
             finite_values = grad32[finite]
-            sq64 = finite_values.double().pow(2).sum()
-            sq32 = finite_values.pow(2).sum()
+            sq64 = float(finite_values.double().pow(2).sum().detach().cpu())
+            sq32 = float(finite_values.pow(2).sum().detach().cpu())
             total_sq64 += sq64
             total_sq32 += sq32
             top_abs.append((float(finite_values.abs().max().item()), name, tuple(grad.shape), str(grad.dtype)))
-            top_norm.append((float(torch.sqrt(sq64).item()), name, tuple(grad.shape), str(grad.dtype)))
-    total_norm64 = float(torch.sqrt(total_sq64).item())
-    total_norm32 = float(torch.sqrt(total_sq32).item())
+            top_norm.append((math.sqrt(sq64), name, tuple(grad.shape), str(grad.dtype)))
+    total_norm64 = math.sqrt(total_sq64)
+    total_norm32 = math.sqrt(total_sq32)
     return {
         "total_norm64": total_norm64,
         "total_norm32": total_norm32,
