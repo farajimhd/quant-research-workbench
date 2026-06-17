@@ -7,7 +7,13 @@ from pathlib import Path
 
 
 REPO_ROOT = next((parent for parent in Path(__file__).resolve().parents if (parent / "research").exists()), Path(__file__).resolve().parents[3])
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from research.temporal_event_model.v1.config import LossConfig
+
 TRAIN = Path(__file__).with_name("train.py")
+LOSS_DEFAULTS = LossConfig()
 
 
 DEFAULTS = {
@@ -24,6 +30,8 @@ DEFAULTS = {
     "validation_stride_choices": "16,32,64,128",
     "encoder_version": "v7",
     "encoder_checkpoint": "",
+    "event_weight": LOSS_DEFAULTS.event_weight,
+    "header_weight": LOSS_DEFAULTS.header_weight,
     "wandb_project": "June2026-single-ticker-temporal-event-model",
     "wandb_mode": "online",
     "device": "cuda",
@@ -43,6 +51,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--context-lag-schedule", choices=("dense_geometric", "consecutive"), default=DEFAULTS["context_lag_schedule"])
     parser.add_argument("--context-dense-fraction", type=float, default=DEFAULTS["context_dense_fraction"])
     parser.add_argument("--context-max-lag-steps", type=int, default=DEFAULTS["context_max_lag_steps"])
+    parser.add_argument("--event-weight", type=float, default=DEFAULTS["event_weight"])
+    parser.add_argument("--header-weight", type=float, default=DEFAULTS["header_weight"])
     parser.add_argument("--wandb-project", default=DEFAULTS["wandb_project"])
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default=DEFAULTS["wandb_mode"])
     parser.add_argument("--run-name", default="")
@@ -82,6 +92,10 @@ def main() -> None:
         str(DEFAULTS["validation_stride_choices"]),
         "--encoder-version",
         args.encoder_version,
+        "--event-weight",
+        str(args.event_weight),
+        "--header-weight",
+        str(args.header_weight),
         "--wandb-project",
         args.wandb_project,
         "--wandb-mode",

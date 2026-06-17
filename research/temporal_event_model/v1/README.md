@@ -82,7 +82,11 @@ event_bit_logits:  [B, H, 128, 16, 8]
 ```
 
 Loss is `BCEWithLogitsLoss` over future header/event bits. Event bits use the
-same semantic bit weighting convention as masked-event v6/v7.
+same semantic bit weighting convention as masked-event v6/v7. The future header
+is weighted more heavily by default (`header_weight=2.0`, `event_weight=1.0`)
+because event prices are delta-coded against the target chunk header; a bad
+future header can make otherwise plausible event deltas decode to the wrong
+market price level.
 
 ## Run
 

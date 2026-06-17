@@ -44,11 +44,12 @@ def main() -> None:
     assert output.chunk_embeddings.shape == (batch_size, context_chunks, embedding_dim)
     assert output.header_bit_logits.shape == (batch_size, target_chunks, 14, 8)
     assert output.event_bit_logits.shape == (batch_size, target_chunks, 128, 16, 8)
-    loss = temporal_next_chunk_loss(output, target_header, target_events, LossConfig(), detailed=True)
+    loss_config = LossConfig()
+    assert loss_config.header_weight > loss_config.event_weight
+    loss = temporal_next_chunk_loss(output, target_header, target_events, loss_config, detailed=True)
     assert torch.isfinite(loss.loss)
     print("temporal_event_model/v1 smoke passed", flush=True)
 
 
 if __name__ == "__main__":
     main()
-

@@ -70,7 +70,7 @@ class ModelConfig:
 @dataclass(slots=True)
 class LossConfig:
     event_weight: float = 1.0
-    header_weight: float = 0.25
+    header_weight: float = 2.0
 
 
 @dataclass(slots=True)
