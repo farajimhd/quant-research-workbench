@@ -32,6 +32,12 @@ The sample-cache record contract is documented in
 `docs/EVENT_SAMPLE_CACHE.md`. The unified event table contract is documented in
 `docs/UNIFIED_EVENTS_TABLE.md`.
 
+To build only validation sample-cache shards, pass `--splits validation` to
+`sample_cache/run_build_event_sample_cache.py` or directly to
+`sample_cache/build_event_sample_cache.py`. The number of validation shards is
+approximately `ceil(validation_cache_gib / shard_size_gib)`, except the final
+shard may be partial.
+
 ## Compatibility
 
 The old market-SIP compatibility wrappers under `research/mlops` have been

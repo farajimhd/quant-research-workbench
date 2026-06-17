@@ -53,6 +53,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-id", default="", help="Folder name under --cache-root. Defaults to timestamp.")
     parser.add_argument("--train-cache-gib", type=float, default=128.0)
     parser.add_argument("--validation-cache-gib", type=float, default=4.0)
+    parser.add_argument(
+        "--splits",
+        default="train,validation",
+        help="Comma-separated splits to build. Use 'validation' to build only validation shards.",
+    )
     parser.add_argument("--shard-size-gib", type=float, default=16.0)
     parser.add_argument("--builder-micro-batch-samples", type=int, default=65536)
     parser.add_argument("--origins-per-span", type=int, default=512)
@@ -75,6 +80,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     started = time.perf_counter()
     args = parse_args()
+    requested_splits = parse_requested_splits(args.splits)
     loaded_env = load_env_files(discover_env_files(REPO_ROOT))
     cache_id = args.cache_id or f"cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     cache_root = Path(args.cache_root) / cache_id
@@ -87,6 +93,7 @@ def main() -> None:
     print(f"cache_root={cache_root}", flush=True)
     print(f"database={args.database} events_table={args.events_table}", flush=True)
     print(f"train_index_table={args.train_index_table} validation_index_table={args.validation_index_table}", flush=True)
+    print(f"splits={','.join(requested_splits)}", flush=True)
     print(f"train_cache_gib={args.train_cache_gib} validation_cache_gib={args.validation_cache_gib} shard_size_gib={args.shard_size_gib}", flush=True)
     print(f"workers={args.workers} micro_batch_samples={args.builder_micro_batch_samples}", flush=True)
     print(
@@ -132,10 +139,12 @@ def main() -> None:
         (cache_root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return
 
-    for split, target_gib, index_table in (
-        ("train", args.train_cache_gib, args.train_index_table),
-        ("validation", args.validation_cache_gib, args.validation_index_table),
-    ):
+    split_specs = {
+        "train": (args.train_cache_gib, args.train_index_table),
+        "validation": (args.validation_cache_gib, args.validation_index_table),
+    }
+    for split in requested_splits:
+        target_gib, index_table = split_specs[split]
         split_result = build_split(
             args=args,
             cache_root=cache_root,
@@ -154,6 +163,17 @@ def main() -> None:
     manifest["elapsed_seconds"] = time.perf_counter() - started
     (cache_root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(f"DONE cache={cache_root} elapsed_minutes={(time.perf_counter() - started) / 60.0:.1f}", flush=True)
+
+
+def parse_requested_splits(raw: str) -> tuple[str, ...]:
+    splits = tuple(part.strip().lower() for part in raw.split(",") if part.strip())
+    valid = {"train", "validation"}
+    invalid = [split for split in splits if split not in valid]
+    if invalid:
+        raise ValueError(f"--splits contains invalid value(s): {invalid}. Valid values are: train, validation")
+    if not splits:
+        raise ValueError("--splits must include at least one split: train or validation")
+    return splits
 
 
 def build_split(
