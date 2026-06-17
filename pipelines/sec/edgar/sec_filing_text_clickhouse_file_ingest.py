@@ -95,6 +95,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", choices=["all", "document", "text", "skip"], default="all")
     parser.add_argument("--execute", action="store_true", help="Actually insert rows. Without this, only validate and print SQL.")
     parser.add_argument("--preflight-only", action="store_true", help="Validate ClickHouse file() access and exit before inserting.")
+    parser.add_argument("--skip-preflight", action="store_true", help="Skip file() row-count preflight. Use only after a successful preflight-only run for the same manifest.")
     parser.add_argument("--force", action="store_true", help="Insert even when a part is already marked ok in the manifest table.")
     parser.add_argument("--retry-failed", action="store_true", help="Retry parts whose latest manifest status is failed.")
     parser.add_argument("--skip-create-manifest-table", action="store_true")
@@ -138,7 +139,12 @@ def main() -> None:
     elif not args.skip_create_manifest_table:
         print("dry_run=create SEC text file ingest manifest table", flush=True)
 
-    preflight_parts(client, args, parts)
+    if args.preflight_only and args.skip_preflight:
+        raise SystemExit("--preflight-only and --skip-preflight cannot be used together")
+    if args.skip_preflight:
+        print("preflight=skipped; assuming prior preflight-only run succeeded for this manifest", flush=True)
+    else:
+        preflight_parts(client, args, parts)
     if args.preflight_only:
         print("preflight_only=done", flush=True)
         return
