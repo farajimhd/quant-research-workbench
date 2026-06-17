@@ -275,7 +275,7 @@ def main(argv: list[str] | None = None) -> None:
         masks = build_event_masks(batch["events_uint8"], config.masks)
         with torch.no_grad():
             output = model(batch["header_uint8"], batch["events_uint8"], masks, config.masks)
-            result = masked_event_bce_loss(output, config.losses, include_diagnostics=True)
+            result = masked_event_bce_loss(output, config.losses, header_uint8=batch["header_uint8"], include_diagnostics=True)
             embedding = model.encode(batch["header_uint8"], batch["events_uint8"])
         print(f"Dry run loss={float(result.loss):.6f} embedding={tuple(embedding.shape)}", flush=True)
         print(json.dumps(result.metrics, indent=2), flush=True)
@@ -704,6 +704,7 @@ def run_training_step(
         result = masked_event_bce_loss(
             output,
             config.losses,
+            header_uint8=batch["header_uint8"],
             include_diagnostics=include_diagnostics,
             profile_metrics=profile_step,
             metric_level=metric_level,
@@ -1381,7 +1382,7 @@ def evaluate_validation(model: EventTokenMaskedAutoencoder, batches: list[dict[s
             masks = build_event_masks(batch["events_uint8"], config.masks)
             with torch.amp.autocast("cuda", enabled=amp_dtype is not None, dtype=amp_dtype):
                 output = model(batch["header_uint8"], batch["events_uint8"], masks, config.masks)
-                result = masked_event_bce_loss(output, config.losses, include_diagnostics=False, metric_level="cheap")
+                result = masked_event_bce_loss(output, config.losses, header_uint8=batch["header_uint8"], include_diagnostics=False, metric_level="standard")
             if not torch.isfinite(result.loss).item():
                 raise_nonfinite_training_error(output, result.metrics, global_step=-1)
             for key, value in result.metrics.items():

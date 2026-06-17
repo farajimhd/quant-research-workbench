@@ -12,7 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from research.masked_event_model.v8.config import LossConfig, MaskConfig, ModelConfig
-from research.masked_event_model.v8.losses import masked_event_bce_loss
+from research.masked_event_model.v8.losses import masked_event_bce_loss, masked_event_semantic_metrics
 from research.masked_event_model.v8.masking import build_event_masks
 from research.masked_event_model.v8.model import EventTokenMaskedAutoencoder
 from research.mlops.clickhouse_events import DEFAULT_CONTEXT_EVENTS, EVENT_ROW_DTYPE, encode_unified_event_window
@@ -34,8 +34,10 @@ def test_forward_and_encode_shapes() -> None:
     assert float(output.event_bit_probs.detach().min()) >= 0.0
     assert float(output.event_bit_probs.detach().max()) <= 1.0
     assert output.target_events_uint8.shape == (batch, masks.masked_count, 16)
-    result = masked_event_bce_loss(output, LossConfig(), include_diagnostics=True)
+    result = masked_event_bce_loss(output, LossConfig(), header_uint8=header, include_diagnostics=True)
     assert torch.isfinite(result.loss)
+    assert "pretrain/semantic/event_type_acc_pct" in result.metrics
+    assert "pretrain/semantic/quote_ask_tick_mae" in result.metrics
     embedding = model.encode(header, event_bytes)
     assert embedding.shape == (batch, 8)
     event_embedding = model.encode_events(header, event_bytes)
@@ -69,6 +71,14 @@ def test_final_events_schema_encoder_shapes() -> None:
     assert int(header[11]) == int(np.count_nonzero(rows["event_type"] == 0))
     assert int(header[12]) == int(np.count_nonzero(rows["event_type"] == 1))
     assert bytes(events[0, 12:16]) == int(0x04030201).to_bytes(4, "little")
+    semantic_metrics = masked_event_semantic_metrics(
+        torch.from_numpy(header.reshape(1, -1)),
+        torch.from_numpy(events.reshape(1, DEFAULT_CONTEXT_EVENTS, 16)),
+        torch.from_numpy(events.reshape(1, DEFAULT_CONTEXT_EVENTS, 16)),
+    )
+    assert semantic_metrics["pretrain/semantic/event_type_acc_pct"] == 100.0
+    assert semantic_metrics["pretrain/semantic/quote_ask_tick_mae"] == 0.0
+    assert semantic_metrics["pretrain/semantic/trade_price_tick_mae"] == 0.0
 
 
 if __name__ == "__main__":
