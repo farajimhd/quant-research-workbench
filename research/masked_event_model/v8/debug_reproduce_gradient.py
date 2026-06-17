@@ -44,10 +44,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN_DIR)
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--cache-root", type=Path, default=None)
-    parser.add_argument("--epoch", type=int, default=5)
-    parser.add_argument("--start-shard-position", type=int, default=2, help="1-based position within selected train shards.")
-    parser.add_argument("--end-shard-position", type=int, default=2, help="1-based inclusive position within selected train shards.")
-    parser.add_argument("--start-shard-step", type=int, default=1, help="1-based batch step inside the first replayed shard.")
+    parser.add_argument("--epoch", type=int, default=0, help="0 means infer from checkpoint step.")
+    parser.add_argument("--start-shard-position", type=int, default=0, help="1-based position within selected train shards; 0 means infer from checkpoint step.")
+    parser.add_argument("--end-shard-position", type=int, default=0, help="1-based inclusive position within selected train shards; 0 means same as start shard.")
+    parser.add_argument("--start-shard-step", type=int, default=0, help="1-based batch step inside the first replayed shard; 0 means infer from checkpoint step.")
     parser.add_argument("--max-steps", type=int, default=0, help="0 means run through the selected shard range.")
     parser.add_argument("--global-step", type=int, default=-1, help="Override global step; default reads checkpoint step.")
     parser.add_argument("--seed", type=int, default=-1, help="Override config seed.")
@@ -86,8 +86,9 @@ def main() -> None:
     print(f"checkpoint={checkpoint_path}", flush=True)
     print(f"cache_root={config.data.sample_cache_root}", flush=True)
     print(
-        f"epoch={args.epoch} shard_position={args.start_shard_position}..{args.end_shard_position} "
-        f"start_shard_step={args.start_shard_step} max_steps={args.max_steps or 'all'}",
+        f"requested_epoch={args.epoch or 'auto'} "
+        f"requested_shard_position={args.start_shard_position or 'auto'}..{args.end_shard_position or 'auto'} "
+        f"requested_start_shard_step={args.start_shard_step or 'auto'} max_steps={args.max_steps or 'all'}",
         flush=True,
     )
     print(f"device={device} force_fp32={args.force_fp32} disable_step={args.disable_step}", flush=True)
@@ -107,23 +108,38 @@ def main() -> None:
         scheduler.load_state_dict(checkpoint["scheduler"])
     if checkpoint.get("scaler") is not None:
         scaler.load_state_dict(checkpoint["scaler"])
-    global_step = int(checkpoint.get("step", 0) if args.global_step < 0 else args.global_step)
-    print(f"Loaded checkpoint step={checkpoint.get('step', 0)} replay_global_step_start={global_step}", flush=True)
-
     train_config = sample_cache_data_config(config, "train", config.train.seed)
     shards = discover_event_sample_shards(train_config)
+    checkpoint_step = int(checkpoint.get("step", 0))
+    global_step = int(checkpoint_step if args.global_step < 0 else args.global_step)
+    replay_epoch, start_shard_position, start_shard_step, steps_per_shard, steps_per_epoch = resolve_replay_position(
+        checkpoint_step=checkpoint_step,
+        shards=shards,
+        batch_size=config.train.batch_size,
+        epoch_override=args.epoch,
+        start_shard_override=args.start_shard_position,
+        start_shard_step_override=args.start_shard_step,
+    )
+    end_shard_position = int(args.end_shard_position) if int(args.end_shard_position) > 0 else start_shard_position
+    print(
+        f"Loaded checkpoint step={checkpoint_step} replay_global_step_start={global_step} "
+        f"inferred_epoch={replay_epoch} inferred_start_shard={start_shard_position} "
+        f"inferred_start_shard_step={start_shard_step} steps_per_shard={steps_per_shard} "
+        f"steps_per_epoch={steps_per_epoch}",
+        flush=True,
+    )
     selected = shards[
-        max(0, int(args.start_shard_position) - 1) : min(len(shards), int(args.end_shard_position))
+        max(0, start_shard_position - 1) : min(len(shards), end_shard_position)
     ]
     if not selected:
         raise SystemExit("No selected shards; check --start-shard-position/--end-shard-position")
-    iterator = iter_event_sample_cache_epoch_batches(train_config, epoch=int(args.epoch), shards=selected)
+    iterator = iter_event_sample_cache_epoch_batches(train_config, epoch=replay_epoch, shards=selected)
 
     replayed = 0
     for batch in iterator:
-        shard_position = int(batch.get("shard_position", 0)) + int(args.start_shard_position) - 1
+        shard_position = int(batch.get("shard_position", 0)) + start_shard_position - 1
         shard_step = int(batch.get("shard_step", 0))
-        if shard_position == int(args.start_shard_position) and shard_step < int(args.start_shard_step):
+        if shard_position == start_shard_position and shard_step < start_shard_step:
             continue
         global_step += 1
         replayed += 1
@@ -145,7 +161,7 @@ def main() -> None:
         report.update(
             {
                 "global_step": global_step,
-                "epoch": int(args.epoch),
+                "epoch": replay_epoch,
                 "shard_position": shard_position,
                 "shard_step": shard_step,
                 "elapsed_seconds": elapsed,
@@ -166,6 +182,53 @@ def main() -> None:
             break
         if args.max_steps > 0 and replayed >= args.max_steps:
             break
+
+
+def resolve_replay_position(
+    *,
+    checkpoint_step: int,
+    shards: list[Any],
+    batch_size: int,
+    epoch_override: int,
+    start_shard_override: int,
+    start_shard_step_override: int,
+) -> tuple[int, int, int, int, int]:
+    if not shards:
+        raise SystemExit("No train sample-cache shards discovered.")
+    full_batch_size = max(1, int(batch_size))
+    shard_steps = [max(0, int(shard.num_samples) // full_batch_size) for shard in shards]
+    if any(step_count <= 0 for step_count in shard_steps):
+        raise SystemExit(f"At least one selected train shard has no full batches: {shard_steps}")
+    unique_steps = sorted(set(shard_steps))
+    if len(unique_steps) != 1:
+        raise SystemExit(
+            "Gradient replay currently expects equal full-batch counts per shard; "
+            f"got shard_steps={shard_steps}"
+        )
+    steps_per_shard = unique_steps[0]
+    steps_per_epoch = sum(shard_steps)
+    if steps_per_epoch <= 0:
+        raise SystemExit("No full batches are available for replay.")
+
+    next_step_in_epoch = int(checkpoint_step) % steps_per_epoch + 1
+    inferred_epoch = int(checkpoint_step) // steps_per_epoch + 1
+    inferred_shard_position = (next_step_in_epoch - 1) // steps_per_shard + 1
+    inferred_shard_step = (next_step_in_epoch - 1) % steps_per_shard + 1
+
+    replay_epoch = int(epoch_override) if int(epoch_override) > 0 else inferred_epoch
+    start_shard_position = (
+        int(start_shard_override) if int(start_shard_override) > 0 else inferred_shard_position
+    )
+    start_shard_step = (
+        int(start_shard_step_override) if int(start_shard_step_override) > 0 else inferred_shard_step
+    )
+    if not 1 <= start_shard_position <= len(shards):
+        raise SystemExit(
+            f"Replay start shard {start_shard_position} outside available train shard count {len(shards)}"
+        )
+    if not 1 <= start_shard_step <= steps_per_shard:
+        raise SystemExit(f"Replay start shard step {start_shard_step} outside 1..{steps_per_shard}")
+    return replay_epoch, start_shard_position, start_shard_step, steps_per_shard, steps_per_epoch
 
 
 def run_debug_step(
