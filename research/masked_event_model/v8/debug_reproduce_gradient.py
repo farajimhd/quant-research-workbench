@@ -196,7 +196,12 @@ def main() -> None:
             }
         )
         debug_masks = report.pop("_debug_masks", None)
-        should_print = inspect_step or int(args.print_every) <= 1 or replayed % int(args.print_every) == 0
+        should_print = (
+            bool(report.get("full_gradient_log"))
+            or inspect_step
+            or int(args.print_every) <= 1
+            or replayed % int(args.print_every) == 0
+        )
         if should_print:
             print(format_report(report), flush=True)
             append_jsonl(output_dir / "gradient_replay_metrics.jsonl", report)
@@ -334,12 +339,15 @@ def run_debug_step(
     else:
         loss.backward()
 
-    grad_report = inspect_model_gradients(model, top_n=top_n) if inspect_gradients else empty_gradient_report()
-    threshold_norm = grad_report["total_norm64"] if inspect_gradients else 0.0
-    full_gradient_log = inspect_gradients and float(threshold_norm) >= float(log_grad_norm)
-    if inspect_gradients and not full_gradient_log:
+    raw_norm = measure_global_grad_norm(model)
+    full_gradient_log = inspect_gradients or float(raw_norm) >= float(log_grad_norm)
+    grad_report = inspect_model_gradients(model, top_n=top_n) if full_gradient_log else empty_gradient_report()
+    if not full_gradient_log:
         grad_report.pop("all_gradient_stats", None)
-    threshold_reached = inspect_gradients and (
+    else:
+        grad_report["total_norm64"] = max(float(grad_report["total_norm64"]), float(raw_norm))
+    threshold_norm = grad_report["total_norm64"]
+    threshold_reached = (
         not bool(grad_report["total_norm_finite"])
         or float(threshold_norm) >= float(stop_grad_norm)
         or int(grad_report["nonfinite_gradient_count"]) > 0
@@ -369,7 +377,7 @@ def run_debug_step(
         "clip_error": clip_error,
         "amp_enabled": bool(amp_dtype is not None),
         "scaler_enabled": bool(scaler.is_enabled()),
-        "gradients_inspected": bool(inspect_gradients),
+        "gradients_inspected": bool(full_gradient_log),
         "full_gradient_log": bool(full_gradient_log),
         "stopped_before_optimizer_step": bool(threshold_reached),
         "_debug_masks": masks if threshold_reached else None,
@@ -388,6 +396,24 @@ def empty_gradient_report() -> dict[str, Any]:
         "top_norm_gradients": [],
         "all_gradient_stats": [],
     }
+
+
+def measure_global_grad_norm(model: torch.nn.Module) -> float:
+    total_sq64 = 0.0
+    with torch.no_grad():
+        for parameter in model.parameters():
+            grad = parameter.grad
+            if grad is None:
+                continue
+            grad32 = grad.detach().float()
+            finite = torch.isfinite(grad32)
+            if not bool(finite.any()):
+                return float("inf")
+            values = grad32[finite]
+            total_sq64 += float(values.double().pow(2).sum().detach().cpu())
+            if not bool(finite.all()):
+                return float("inf")
+    return math.sqrt(total_sq64)
 
 
 def inspect_model_gradients(model: torch.nn.Module, *, top_n: int) -> dict[str, Any]:
