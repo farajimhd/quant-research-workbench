@@ -28,6 +28,16 @@ The core entry point is:
 process_benzinga_news_item(payload, policy, options)
 ```
 
+The higher-level package entry point is:
+
+```python
+from pipelines.news.benzinga.news_pipeline import BenzingaNewsPipeline
+
+pipeline = BenzingaNewsPipeline()
+processed = pipeline.process_payload(payload)
+pipeline.write_many([processed], execute=True)
+```
+
 It returns:
 
 ```text
@@ -80,6 +90,22 @@ benzinga_news_ticker_v1
 ```
 
 The live news path should use this item pipeline directly.
+
+## Package Runners
+
+Two runners now use the package directly:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_package_gap_fill --raw-root-win D:/market-data/news-benzinga/raw --start-utc 2026-06-01 --end-utc 2026-06-02 --processes 8 --batch-size 1000
+```
+
+The command above processes already downloaded raw Benzinga JSON files concurrently. Worker processes normalize and resolve URL policy per item. The parent process batches ClickHouse writes so the database is not hit by every worker.
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_live_ingest --once --lookback-minutes 15 --execute
+```
+
+The live runner polls the Massive-served Benzinga REST endpoint, sends each returned item through the same package, writes `benzinga_news_normalized_v1`, and then writes `benzinga_news_ticker_v1`. By default it skips news rows already present by `canonical_news_id`.
 
 ## Canonical Write Path
 

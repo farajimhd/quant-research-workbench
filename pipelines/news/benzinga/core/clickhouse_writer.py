@@ -97,6 +97,27 @@ class NewsWriteSummary:
     warnings: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True, slots=True)
+class NewsBatchWriteConfig:
+    database: str = DEFAULT_DATABASE
+    normalized_table: str = DEFAULT_NORMALIZED_TABLE
+    ticker_table: str = DEFAULT_TICKER_TABLE
+    execute: bool = False
+    skip_existing: bool = True
+    skip_table_validation: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class NewsBatchWriteSummary:
+    status: str
+    execute: bool
+    input_results: int
+    normalized_rows_inserted: int
+    ticker_rows_inserted: int
+    skipped_existing: int
+    warnings: list[str] = field(default_factory=list)
+
+
 def write_news_pipeline_result(
     client: ClickHouseHttpClient,
     result: NewsPipelineResult,
@@ -136,6 +157,66 @@ def write_news_pipeline_result(
         existing_tickers=existing_tickers,
         new_tickers=new_tickers,
         warnings=sanity_warnings,
+    )
+
+
+def write_many_news_pipeline_results(
+    client: ClickHouseHttpClient,
+    results: list[NewsPipelineResult],
+    *,
+    config: NewsBatchWriteConfig | None = None,
+) -> NewsBatchWriteSummary:
+    cfg = config or NewsBatchWriteConfig()
+    if not results:
+        return NewsBatchWriteSummary(
+            status="empty",
+            execute=cfg.execute,
+            input_results=0,
+            normalized_rows_inserted=0,
+            ticker_rows_inserted=0,
+            skipped_existing=0,
+        )
+    if not cfg.skip_table_validation:
+        validate_target_tables(
+            client,
+            NewsWriteConfig(
+                database=cfg.database,
+                normalized_table=cfg.normalized_table,
+                ticker_table=cfg.ticker_table,
+                skip_table_validation=True,
+            ),
+        )
+
+    normalized_rows: list[dict[str, Any]] = []
+    ticker_rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for result in results:
+        row = normalized_row_for_insert(result.normalized_row)
+        warnings.extend(sanity_check_normalized_row(row))
+        normalized_rows.append(row)
+        ticker_rows.extend(ticker_rows_for_insert(result.ticker_links))
+
+    skipped_existing = 0
+    if cfg.skip_existing:
+        existing = load_existing_news_ids(client, cfg, [str(row["canonical_news_id"]) for row in normalized_rows])
+        if existing:
+            skipped_existing = len(existing)
+            normalized_rows = [row for row in normalized_rows if str(row["canonical_news_id"]) not in existing]
+            ticker_rows = [row for row in ticker_rows if str(row["canonical_news_id"]) not in existing]
+
+    if cfg.execute and normalized_rows:
+        insert_json_each_row(client, cfg.database, cfg.normalized_table, NORMALIZED_COLUMNS, normalized_rows)
+        if ticker_rows:
+            insert_json_each_row(client, cfg.database, cfg.ticker_table, TICKER_LINK_COLUMNS, ticker_rows)
+
+    return NewsBatchWriteSummary(
+        status="written" if cfg.execute else "dry_run",
+        execute=cfg.execute,
+        input_results=len(results),
+        normalized_rows_inserted=len(normalized_rows) if cfg.execute else 0,
+        ticker_rows_inserted=len(ticker_rows) if cfg.execute else 0,
+        skipped_existing=skipped_existing,
+        warnings=sorted(set(warnings)),
     )
 
 
@@ -209,6 +290,25 @@ def load_existing_tickers(client: ClickHouseHttpClient, config: NewsWriteConfig,
         values = row.get("groupArray(ticker)") or row.get("groupArray(ticker)") or []
         return sorted({str(item) for item in values if str(item)})
     return []
+
+
+def load_existing_news_ids(client: ClickHouseHttpClient, config: NewsBatchWriteConfig, canonical_news_ids: list[str]) -> set[str]:
+    output: set[str] = set()
+    ids = sorted({item for item in canonical_news_ids if item})
+    for index in range(0, len(ids), 1_000):
+        chunk = ids[index : index + 1_000]
+        if not chunk:
+            continue
+        in_list = ", ".join(sql_string(item) for item in chunk)
+        sql = (
+            f"SELECT canonical_news_id FROM {table_name(config.database, config.normalized_table)} FINAL "
+            f"WHERE canonical_news_id IN ({in_list}) FORMAT JSONEachRow"
+        )
+        text = client.execute(sql)
+        for line in text.splitlines():
+            if line.strip():
+                output.add(str(json.loads(line).get("canonical_news_id") or ""))
+    return output
 
 
 def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bool:

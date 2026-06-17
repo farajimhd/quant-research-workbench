@@ -2,6 +2,11 @@
 
 Standalone Rust gateway for Benzinga news served through Massive REST.
 
+The current canonical normalization path is the shared Python package under
+`pipelines.news.benzinga.news_pipeline`. Historical gap fill and the Python live
+runner use that package so one raw Benzinga item follows the same normalization,
+URL-policy, and ticker-link logic in both modes.
+
 The service polls only:
 
 - Benzinga news: `/benzinga/v2/news`
@@ -16,11 +21,9 @@ It does not use the separate Massive news endpoint for canonical persistence. Be
 - Save `gateway_seen_at` so live provider delay can be measured.
 - Normalize every valid Benzinga article, including macro, crypto, no-ticker, title-only, PDF-backed, and link-only articles.
 - Keep the legacy live stream table, `live_news_articles`, for current UI compatibility.
-- Persist canonical compact rows into split Benzinga tables:
-  - `benzinga_news_event_v1`
-  - `benzinga_news_text_v1`
-  - `benzinga_news_url_v1`
-  - `benzinga_news_attachment_v1`
+- Persist canonical package rows into:
+  - `benzinga_news_normalized_v1`
+  - `benzinga_news_ticker_v1`
 - Clean HTML into text.
 - Optionally fetch article URLs when body text is short.
 - Optionally discover/download PDF links and extract text with `pdftotext`.
@@ -82,6 +85,15 @@ Check only:
 .\scripts\run_news_gateway.ps1 -CheckOnly
 ```
 
+Package-backed live ingest:
+
+```powershell
+python -m pipelines.news.benzinga.news_benzinga_live_ingest --once --lookback-minutes 15
+```
+
+Add `--execute` only when the target ClickHouse connection and tables have been
+validated.
+
 ## API
 
 ```text
@@ -111,11 +123,9 @@ It then normalizes the article and queues it for asynchronous batch persistence.
 
 `live_news_articles` remains a compatibility table for the current UI stream. It should not be treated as the training source of truth.
 
-Canonical Benzinga data is split:
+Canonical Benzinga package data is stored as:
 
-- `benzinga_news_event_v1`: one compact metadata/event row per article.
-- `benzinga_news_text_v1`: body, external, and PDF text rows keyed by `canonical_news_id`.
-- `benzinga_news_url_v1`: article, source, PDF, SEC, social, and other URL rows with policy/extraction metadata.
-- `benzinga_news_attachment_v1`: downloaded attachment metadata and extraction quality.
+- `benzinga_news_normalized_v1`: one normalized row per provider article.
+- `benzinga_news_ticker_v1`: one ticker link row per `(canonical_news_id, ticker)`.
 
 The canonical source value is `benzinga`.
