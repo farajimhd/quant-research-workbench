@@ -35,6 +35,7 @@ DEFAULT_RUN_DIR = Path(
 DEFAULT_CHECKPOINT_NAME = "checkpoint_best_val.pt"
 DEFAULT_TARGET_STEP = 15_160
 DEFAULT_INSPECT_WINDOW = 80
+DEFAULT_STOP_GRAD_NORM = 1_000.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--force-fp32", action="store_true", help="Disable autocast for the replay.")
     parser.add_argument("--disable-step", action="store_true", help="Run backward/inspect only; do not optimizer.step().")
-    parser.add_argument("--stop-grad-norm", type=float, default=1e12)
+    parser.add_argument("--stop-grad-norm", type=float, default=DEFAULT_STOP_GRAD_NORM)
     parser.add_argument("--top-gradients", type=int, default=12)
     parser.add_argument("--save-debug-on-stop", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--output-dir", type=Path, default=None)
@@ -178,6 +179,7 @@ def main() -> None:
             disable_step=bool(args.disable_step),
             top_n=int(args.top_gradients),
             inspect_gradients=inspect_step,
+            stop_grad_norm=float(args.stop_grad_norm),
         )
         elapsed = time.perf_counter() - started
         report.update(
@@ -189,6 +191,7 @@ def main() -> None:
                 "elapsed_seconds": elapsed,
             }
         )
+        debug_masks = report.pop("_debug_masks", None)
         should_print = inspect_step or int(args.print_every) <= 1 or replayed % int(args.print_every) == 0
         if should_print:
             print(format_report(report), flush=True)
@@ -203,7 +206,16 @@ def main() -> None:
         if should_stop:
             print("STOP: gradient threshold/non-finite condition reached.", flush=True)
             if args.save_debug_on_stop:
-                save_replay_debug(output_dir, report, model, optimizer, scheduler, scaler, batch)
+                save_replay_debug(
+                    output_dir,
+                    report,
+                    model,
+                    optimizer,
+                    scheduler,
+                    scaler,
+                    batch,
+                    masks=debug_masks,
+                )
             break
         if args.max_steps > 0 and replayed >= args.max_steps:
             break
@@ -299,6 +311,7 @@ def run_debug_step(
     disable_step: bool,
     top_n: int,
     inspect_gradients: bool,
+    stop_grad_norm: float,
 ) -> dict[str, Any]:
     model.train()
     optimizer.zero_grad(set_to_none=True)
@@ -315,14 +328,23 @@ def run_debug_step(
         loss.backward()
 
     grad_report = inspect_model_gradients(model, top_n=top_n) if inspect_gradients else empty_gradient_report()
+    threshold_norm = grad_report["total_norm64"] if inspect_gradients else 0.0
+    threshold_reached = inspect_gradients and (
+        not bool(grad_report["total_norm_finite"])
+        or float(threshold_norm) >= float(stop_grad_norm)
+        or int(grad_report["nonfinite_gradient_count"]) > 0
+    )
     clip_norm = None
     clip_error = ""
-    try:
-        clip_norm_tensor = torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm, error_if_nonfinite=True)
-        clip_norm = float(clip_norm_tensor.detach().cpu())
-    except Exception as exc:  # noqa: BLE001
-        clip_error = repr(exc)
-    if not disable_step and not clip_error:
+    if threshold_reached:
+        clip_error = "skipped_clip_and_step_for_debug_threshold"
+    else:
+        try:
+            clip_norm_tensor = torch.nn.utils.clip_grad_norm_(model.parameters(), config.train.grad_clip_norm, error_if_nonfinite=True)
+            clip_norm = float(clip_norm_tensor.detach().cpu())
+        except Exception as exc:  # noqa: BLE001
+            clip_error = repr(exc)
+    if not threshold_reached and not disable_step and not clip_error:
         if scaler.is_enabled():
             scaler.step(optimizer)
             scaler.update()
@@ -338,6 +360,8 @@ def run_debug_step(
         "amp_enabled": bool(amp_dtype is not None),
         "scaler_enabled": bool(scaler.is_enabled()),
         "gradients_inspected": bool(inspect_gradients),
+        "stopped_before_optimizer_step": bool(threshold_reached),
+        "_debug_masks": masks if threshold_reached else None,
         **grad_report,
     }
 
@@ -477,6 +501,7 @@ def save_replay_debug(
     scheduler: torch.optim.lr_scheduler.LRScheduler | None,
     scaler: torch.amp.GradScaler,
     batch: dict[str, Any],
+    masks: Any | None = None,
 ) -> None:
     path = output_dir / f"gradient_replay_stop_step_{report['global_step']:09d}.pt"
     torch.save(
@@ -487,10 +512,19 @@ def save_replay_debug(
             "scheduler": scheduler.state_dict() if scheduler is not None else None,
             "scaler": scaler.state_dict(),
             "batch": {key: value.detach().cpu() if torch.is_tensor(value) else value for key, value in batch.items()},
+            "masks": dataclass_to_cpu_dict(masks) if masks is not None else None,
         },
         path,
     )
     print(f"Saved replay debug bundle: {path}", flush=True)
+
+
+def dataclass_to_cpu_dict(value: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for field in fields(value):
+        item = getattr(value, field.name)
+        result[field.name] = item.detach().cpu() if torch.is_tensor(item) else item
+    return result
 
 
 if __name__ == "__main__":
