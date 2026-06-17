@@ -100,12 +100,20 @@ def gap_panel(metrics: dict[str, Any]) -> Panel:
     status = str(metrics.get("gap_status") or "not_started")
     message = str(metrics.get("gap_message") or "")
     command = str(metrics.get("manual_gap_fill_command") or "")
+    script = str(metrics.get("manual_gap_fill_script_win") or "")
+    manifest = str(metrics.get("manual_gap_fill_manifest_win") or "")
     text = Text()
     text.append(status, style="bold cyan")
     if message:
         text.append(f"\n{message}")
+    if script:
+        text.append("\nworkstation script:\n", style="bold yellow")
+        text.append(script, style="yellow")
+    if manifest:
+        text.append("\nmanifest:\n", style="bold yellow")
+        text.append(manifest, style="yellow")
     if command:
-        text.append("\nmanual command:\n", style="bold yellow")
+        text.append("\nfirst job command:\n", style="bold yellow")
         text.append(command, style="yellow")
     return Panel(text, title="Gap Handling", box=box.SIMPLE, padding=(0, 1))
 

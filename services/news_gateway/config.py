@@ -19,6 +19,9 @@ class NewsGatewayConfig:
     data_root_win: Path
     raw_root_win: Path
     prepared_root_win: Path
+    manual_gap_script_root_win: Path
+    workstation_code_root_win: Path
+    workstation_conda_env: str
     is_workstation: bool
     massive_api_key_present: bool
     benzinga_url: str
@@ -53,6 +56,12 @@ class NewsGatewayConfig:
         data_root = resolve_data_root()
         raw_root = Path(env_string("NEWS_BENZINGA_RAW_ROOT_WIN", str(data_root / "news-benzinga" / "raw")))
         prepared_root = Path(env_string("NEWS_BENZINGA_PREPARED_ROOT_WIN", str(data_root / "prepared")))
+        manual_gap_script_root = Path(
+            env_string(
+                "NEWS_BENZINGA_MANUAL_GAP_SCRIPT_ROOT_WIN",
+                str(prepared_root / "news_gateway_manual_gap_fill"),
+            )
+        )
         clickhouse_password = default_clickhouse_password()
         return cls(
             bind=bind,
@@ -61,6 +70,9 @@ class NewsGatewayConfig:
             data_root_win=data_root,
             raw_root_win=raw_root,
             prepared_root_win=prepared_root,
+            manual_gap_script_root_win=manual_gap_script_root,
+            workstation_code_root_win=Path(env_string("NEWS_GATEWAY_WORKSTATION_CODE_ROOT_WIN", "D:/TradingML/codes/quant_research_workbench_pipelines")),
+            workstation_conda_env=env_string("NEWS_GATEWAY_WORKSTATION_CONDA_ENV", "ml4t"),
             is_workstation=is_workstation_host(),
             massive_api_key_present=bool(env_string("MASSIVE_API_KEY", "")),
             benzinga_url=env_string("NEWS_BENZINGA_URL", env_string("NEWS_MASSIVE_BENZINGA_URL", "https://api.massive.com/benzinga/v2/news")),
@@ -94,6 +106,8 @@ class NewsGatewayConfig:
         payload["data_root_win"] = str(self.data_root_win)
         payload["raw_root_win"] = str(self.raw_root_win)
         payload["prepared_root_win"] = str(self.prepared_root_win)
+        payload["manual_gap_script_root_win"] = str(self.manual_gap_script_root_win)
+        payload["workstation_code_root_win"] = str(self.workstation_code_root_win)
         return payload
 
 

@@ -14,7 +14,12 @@ from pipelines.news.benzinga.news_pipeline.config import BenzingaPipelineConfig,
 from pipelines.news.benzinga.news_pipeline.pipeline import BenzingaNewsPipeline, ProcessedNewsItem
 from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident
-from services.news_gateway.config import NewsGatewayConfig, WORKSTATION_DATA_ROOT_WIN, default_clickhouse_password
+from services.news_gateway.config import (
+    NewsGatewayConfig,
+    WORKSTATION_DATA_ROOT_WIN,
+    WORKSTATION_SHARE_DATA_ROOT_WIN,
+    default_clickhouse_password,
+)
 from services.news_gateway.preflight import PreflightError, PreflightReport, run_preflight
 from services.news_gateway.state import NewsMemoryState
 
@@ -38,6 +43,8 @@ class GatewayMetrics:
     gap_status: str = "not_started"
     gap_message: str = ""
     manual_gap_fill_command: str = ""
+    manual_gap_fill_script_win: str = ""
+    manual_gap_fill_manifest_win: str = ""
     last_cycle_status: str = ""
     last_cycle_provider_rows: int = 0
     last_cycle_processed_rows: int = 0
@@ -48,6 +55,21 @@ class GatewayMetrics:
     preflight_status: str = "not_started"
     preflight_checked_at_utc: str = ""
     preflight_checks: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class GapFillInterval:
+    start_utc: datetime
+    end_utc: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ManualGapFillPlan:
+    script_path: Path
+    manifest_path: Path
+    workstation_script_path: Path
+    workstation_manifest_path: Path
+    intervals: list[GapFillInterval]
 
 
 class NewsGateway:
@@ -144,19 +166,23 @@ class NewsGateway:
             self.metrics.gap_message = f"Startup gap from {gap_start.isoformat()} to {now.isoformat()} will be filled in background."
             self._gap_task = asyncio.create_task(self._fill_gap(gap_start, now), name="benzinga-news-startup-gap-fill")
             return
-        command = historical_gap_command(gap_start, now, self.config)
-        self.metrics.manual_gap_fill_command = command
+        intervals = [GapFillInterval(gap_start, now)]
         if self.config.is_workstation:
             self.metrics.gap_status = "workstation_auto_started_large_gap"
             self.metrics.gap_message = f"Large startup gap is {gap_seconds / 86400:.2f} days; workstation run will fill automatically in background."
             self._gap_task = asyncio.create_task(self._fill_gap(gap_start, now), name="benzinga-news-large-gap-fill")
         else:
+            plan = await asyncio.to_thread(write_manual_gap_fill_plan, intervals, self.config)
+            self.metrics.manual_gap_fill_command = historical_gap_command(gap_start, now, self.config)
+            self.metrics.manual_gap_fill_script_win = str(plan.workstation_script_path)
+            self.metrics.manual_gap_fill_manifest_win = str(plan.workstation_manifest_path)
             self.metrics.gap_status = "manual_required_large_gap"
             self.metrics.gap_message = (
-                f"Large startup gap is {gap_seconds / 86400:.2f} days. Run the provided historical fill command on the workstation."
+                f"Large startup gap is {gap_seconds / 86400:.2f} days. "
+                f"Run the generated script on the workstation: {plan.workstation_script_path}"
             )
             print(self.metrics.gap_message, flush=True)
-            print(command, flush=True)
+            print(f"manifest: {plan.workstation_manifest_path}", flush=True)
 
     async def _fill_gap(self, start_utc: datetime, end_utc: datetime) -> None:
         current = start_utc
@@ -318,6 +344,175 @@ def historical_gap_command(start_utc: datetime, end_utc: datetime, config: NewsG
         f"--raw-root-win {quote_arg(str(raw_root))} "
         "--bucket-minutes 90 --workers 4 --batch-size 1000 --progress-interval 10 --execute"
     )
+
+
+def write_manual_gap_fill_plan(intervals: list[GapFillInterval], config: NewsGatewayConfig) -> ManualGapFillPlan:
+    if not intervals:
+        raise ValueError("manual gap fill plan requires at least one interval")
+    now = datetime.now(UTC)
+    run_id = "news_gateway_gap_" + now.strftime("%Y%m%d_%H%M%S")
+    run_root = config.manual_gap_script_root_win / run_id
+    run_root.mkdir(parents=True, exist_ok=True)
+    script_path = run_root / f"{run_id}_run_all.ps1"
+    manifest_path = run_root / f"{run_id}_manifest.json"
+    raw_root = WORKSTATION_DATA_ROOT_WIN / "news-benzinga" / "raw"
+    output_root = WORKSTATION_DATA_ROOT_WIN / "prepared" / "benzinga_news_provider_gap_fill"
+    jobs = []
+    for index, interval in enumerate(intervals, start=1):
+        start_text = interval.start_utc.isoformat().replace("+00:00", "Z")
+        end_text = interval.end_utc.isoformat().replace("+00:00", "Z")
+        child_name = f"{run_id}_job_{index:03d}_{filename_time(start_text)}_{filename_time(end_text)}.ps1"
+        jobs.append(
+            {
+                "index": index,
+                "start_utc": start_text,
+                "end_utc": end_text,
+                "script_name": child_name,
+                "script_path": str(workstation_path_for_share(run_root / child_name)),
+            }
+        )
+    manifest = {
+        "run_id": run_id,
+        "created_at_utc": now.isoformat().replace("+00:00", "Z"),
+        "created_by": "services.news_gateway",
+        "reason": "manual_required_large_gap",
+        "workstation_code_root_win": str(config.workstation_code_root_win),
+        "workstation_conda_env": config.workstation_conda_env,
+        "raw_root_win": str(raw_root),
+        "output_root_win": str(output_root),
+        "interval_count": len(jobs),
+        "intervals": jobs,
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    for job in jobs:
+        (run_root / str(job["script_name"])).write_text(manual_gap_fill_job_script(job, manifest, config), encoding="utf-8")
+    script_path.write_text(manual_gap_fill_master_script(manifest, config), encoding="utf-8")
+    return ManualGapFillPlan(
+        script_path=script_path,
+        manifest_path=manifest_path,
+        workstation_script_path=workstation_path_for_share(script_path),
+        workstation_manifest_path=workstation_path_for_share(manifest_path),
+        intervals=intervals,
+    )
+
+
+def manual_gap_fill_master_script(manifest: dict[str, Any], config: NewsGatewayConfig) -> str:
+    jobs = manifest["intervals"]
+    job_rows = "\n".join(
+        "  [pscustomobject]@{ Index = %d; StartUtc = '%s'; EndUtc = '%s'; ScriptName = '%s' }"
+        % (
+            int(job["index"]),
+            ps_single(str(job["start_utc"])),
+            ps_single(str(job["end_utc"])),
+            ps_single(str(job["script_name"])),
+        )
+        for job in jobs
+    )
+    code_root = ps_single(str(config.workstation_code_root_win))
+    conda_env = ps_single(config.workstation_conda_env)
+    manifest_path = ps_single(str(manifest["run_id"] + "_manifest.json"))
+    return f"""# Generated by services.news_gateway on {manifest['created_at_utc']}.
+# Master script. Run this script in PowerShell on the workstation.
+$ErrorActionPreference = "Stop"
+$CodeRoot = '{code_root}'
+$CondaEnv = '{conda_env}'
+$ManifestPath = Join-Path $PSScriptRoot '{manifest_path}'
+
+if (-not (Test-Path $CodeRoot)) {{
+  throw "Workstation code root was not found: $CodeRoot"
+}}
+if (-not (Get-Command conda -ErrorAction SilentlyContinue)) {{
+  throw "conda was not found. Open an Anaconda/Miniconda PowerShell prompt or activate conda first."
+}}
+
+$Jobs = @(
+{job_rows}
+)
+
+Set-Location $CodeRoot
+Write-Host "Benzinga news manual gap fill"
+Write-Host "manifest=$ManifestPath"
+Write-Host "jobs=$($Jobs.Count) code_root=$CodeRoot conda_env=$CondaEnv"
+
+foreach ($Job in $Jobs) {{
+  Write-Host ("=" * 96)
+  Write-Host "gap_job=$($Job.Index)/$($Jobs.Count) start=$($Job.StartUtc) end=$($Job.EndUtc)"
+  $ChildScriptPath = Join-Path $PSScriptRoot $Job.ScriptName
+  & $ChildScriptPath
+  if ($LASTEXITCODE -ne 0) {{
+    throw "gap job $($Job.Index) failed with exit code $LASTEXITCODE"
+  }}
+}}
+
+Write-Host ("=" * 96)
+Write-Host "Benzinga news manual gap fill completed."
+"""
+
+
+def manual_gap_fill_job_script(job: dict[str, Any], manifest: dict[str, Any], config: NewsGatewayConfig) -> str:
+    code_root = ps_single(str(config.workstation_code_root_win))
+    conda_env = ps_single(config.workstation_conda_env)
+    raw_root = ps_single(str(manifest["raw_root_win"]))
+    output_root = ps_single(str(manifest["output_root_win"]))
+    start_utc = ps_single(str(job["start_utc"]))
+    end_utc = ps_single(str(job["end_utc"]))
+    index = int(job["index"])
+    count = int(manifest["interval_count"])
+    return f"""# Generated by services.news_gateway on {manifest['created_at_utc']}.
+# Gap-fill child script {index} of {count}. Run the *_run_all.ps1 master script unless this interval is the only one you need.
+$ErrorActionPreference = "Stop"
+$CodeRoot = '{code_root}'
+$CondaEnv = '{conda_env}'
+$RawRoot = '{raw_root}'
+$OutputRoot = '{output_root}'
+$StartUtc = '{start_utc}'
+$EndUtc = '{end_utc}'
+
+if (-not (Test-Path $CodeRoot)) {{
+  throw "Workstation code root was not found: $CodeRoot"
+}}
+if (-not (Get-Command conda -ErrorAction SilentlyContinue)) {{
+  throw "conda was not found. Open an Anaconda/Miniconda PowerShell prompt or activate conda first."
+}}
+
+Set-Location $CodeRoot
+conda run --no-capture-output -n $CondaEnv python -m pipelines.news.benzinga.news_benzinga_provider_gap_fill `
+  --start-utc $StartUtc `
+  --end-utc $EndUtc `
+  --raw-root-win $RawRoot `
+  --output-root-win $OutputRoot `
+  --bucket-minutes 90 `
+  --workers 4 `
+  --batch-size 1000 `
+  --progress-interval 10 `
+  --execute
+if ($LASTEXITCODE -ne 0) {{
+  throw "gap child job {index} failed with exit code $LASTEXITCODE"
+}}
+"""
+
+
+def filename_time(value: str) -> str:
+    return (
+        value.replace(":", "")
+        .replace("-", "")
+        .replace(".", "")
+        .replace("+", "")
+        .replace("Z", "Z")
+    )
+
+
+def workstation_path_for_share(path: Path) -> Path:
+    text = str(path)
+    share = str(WORKSTATION_SHARE_DATA_ROOT_WIN)
+    if text.lower().startswith(share.lower()):
+        relative = text[len(share) :].lstrip("\\/")
+        return WORKSTATION_DATA_ROOT_WIN / relative
+    return path
+
+
+def ps_single(value: str) -> str:
+    return value.replace("'", "''")
 
 
 def quote_arg(value: str) -> str:

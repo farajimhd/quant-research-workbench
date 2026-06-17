@@ -112,14 +112,21 @@ Behavior:
 | Gap fits inside normal lookback | Live polling covers it. |
 | Gap is larger than lookback and <= 3 days | Service starts background gap fill. |
 | Gap is > 3 days and running on workstation | Service starts background gap fill automatically. |
-| Gap is > 3 days and not running on workstation | Service prints the exact manual historical fill command and continues live polling. |
+| Gap is > 3 days and not running on workstation | Service writes a workstation-ready PowerShell gap-fill script and manifest, prints their paths, and continues live polling. |
 
 Large non-workstation gaps are not auto-filled because the workstation has the
-correct storage root and compute. The printed command uses:
+correct storage root and compute. The generated script is written under:
 
-```powershell
-python -m pipelines.news.benzinga.news_benzinga_provider_gap_fill --start-utc <start> --end-utc <end> --raw-root-win D:/market-data/news-benzinga/raw --bucket-minutes 90 --workers 4 --batch-size 1000 --progress-interval 10 --execute
+```text
+<data-root>/prepared/news_gateway_manual_gap_fill/<run_id>/<run_id>_run_all.ps1
+<data-root>/prepared/news_gateway_manual_gap_fill/<run_id>/<run_id>_manifest.json
 ```
+
+The script is generated on the workstation share when the gateway runs on the
+laptop, so on the workstation it is available under the matching
+`D:/market-data/prepared/...` path. The gateway writes one master `*_run_all.ps1`
+script plus one child script per interval. This lets the same mechanism handle
+non-contiguous gap plans without asking the user to manually assemble commands.
 
 ## ClickHouse Writes
 
@@ -156,7 +163,8 @@ Dashboard content:
 - processed rows, written rows, skipped existing rows
 - raw payload save count
 - failures and last error
-- startup gap status and manual command when needed
+- startup gap status, generated workstation script, manifest, and first command
+  when a manual fill is needed
 - recent news table with time, tickers, title, and quality flags
 
 Controls:
@@ -260,6 +268,9 @@ Storage:
 NEWS_GATEWAY_DATA_ROOT_WIN=<optional explicit root>
 NEWS_BENZINGA_RAW_ROOT_WIN=<optional explicit raw root>
 NEWS_BENZINGA_PREPARED_ROOT_WIN=<optional explicit prepared root>
+NEWS_BENZINGA_MANUAL_GAP_SCRIPT_ROOT_WIN=<optional explicit script root>
+NEWS_GATEWAY_WORKSTATION_CODE_ROOT_WIN=D:/TradingML/codes/quant_research_workbench_pipelines
+NEWS_GATEWAY_WORKSTATION_CONDA_ENV=ml4t
 ```
 
 Provider:
@@ -353,6 +364,12 @@ backfill a known period:
 ```powershell
 python -m pipelines.news.benzinga.news_benzinga_provider_gap_fill --start-utc 2026-06-01T00:00:00Z --end-utc 2026-06-04T00:00:00Z --raw-root-win D:/market-data/news-benzinga/raw --bucket-minutes 90 --workers 4 --batch-size 1000 --progress-interval 10 --execute
 ```
+
+For service-detected large gaps from a laptop run, prefer the generated `.ps1`
+script shown in `/metrics` and the terminal dashboard. It runs from the
+workstation code root, uses `conda run --no-capture-output -n ml4t`, writes raw
+payloads under `D:/market-data/news-benzinga/raw`, and inserts normalized rows
+into ClickHouse with `--execute`.
 
 This script downloads provider data, saves raw payloads, normalizes items, and
 writes the same canonical tables as live.
