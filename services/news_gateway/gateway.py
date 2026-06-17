@@ -14,7 +14,7 @@ from pipelines.news.benzinga.news_pipeline.config import BenzingaPipelineConfig,
 from pipelines.news.benzinga.news_pipeline.pipeline import BenzingaNewsPipeline, ProcessedNewsItem
 from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident
-from services.news_gateway.config import NewsGatewayConfig
+from services.news_gateway.config import NewsGatewayConfig, WORKSTATION_DATA_ROOT_WIN, default_clickhouse_password
 from services.news_gateway.state import NewsMemoryState
 
 
@@ -287,11 +287,12 @@ def parse_clickhouse_dt64(value: str) -> datetime:
 
 
 def historical_gap_command(start_utc: datetime, end_utc: datetime, config: NewsGatewayConfig) -> str:
+    raw_root = config.raw_root_win if config.is_workstation else WORKSTATION_DATA_ROOT_WIN / "news-benzinga" / "raw"
     return (
         "python -m pipelines.news.benzinga.news_benzinga_provider_gap_fill "
         f"--start-utc {start_utc.isoformat().replace('+00:00', 'Z')} "
         f"--end-utc {end_utc.isoformat().replace('+00:00', 'Z')} "
-        f"--raw-root-win {quote_arg(str(config.raw_root_win))} "
+        f"--raw-root-win {quote_arg(str(raw_root))} "
         "--bucket-minutes 90 --workers 4 --batch-size 1000 --progress-interval 10 --execute"
     )
 
@@ -308,10 +309,4 @@ def massive_api_key() -> str:
 
 
 def clickhouse_password() -> str:
-    import os
-
-    return (
-        os.environ.get("NEWS_CLICKHOUSE_PASSWORD", "").strip()
-        or os.environ.get("QMD_CLICKHOUSE_PASSWORD", "").strip()
-        or os.environ.get("REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD", "").strip()
-    )
+    return default_clickhouse_password()

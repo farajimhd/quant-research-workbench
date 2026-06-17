@@ -53,7 +53,7 @@ class NewsGatewayConfig:
         data_root = resolve_data_root()
         raw_root = Path(env_string("NEWS_BENZINGA_RAW_ROOT_WIN", str(data_root / "news-benzinga" / "raw")))
         prepared_root = Path(env_string("NEWS_BENZINGA_PREPARED_ROOT_WIN", str(data_root / "prepared")))
-        clickhouse_password = env_string("NEWS_CLICKHOUSE_PASSWORD", "") or env_string("QMD_CLICKHOUSE_PASSWORD", "") or env_string("REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD", "")
+        clickhouse_password = default_clickhouse_password()
         return cls(
             bind=bind,
             host=host,
@@ -74,8 +74,8 @@ class NewsGatewayConfig:
             page_limit=env_int("NEWS_BENZINGA_PAGE_LIMIT", 1_000),
             max_pages=env_int("NEWS_BENZINGA_MAX_PAGES", 1_000),
             execute=env_bool("NEWS_BENZINGA_EXECUTE", True),
-            clickhouse_url=env_string("NEWS_CLICKHOUSE_URL", env_string("QMD_CLICKHOUSE_URL", env_string("REAL_LIVE_CLICKHOUSE_WRITE_URL", "http://localhost:8123"))).rstrip("/"),
-            clickhouse_user=env_string("NEWS_CLICKHOUSE_USER", env_string("QMD_CLICKHOUSE_USER", env_string("REAL_LIVE_CLICKHOUSE_WRITE_USER", "default"))),
+            clickhouse_url=default_clickhouse_url(),
+            clickhouse_user=default_clickhouse_user(),
             clickhouse_password_present=bool(clickhouse_password),
             clickhouse_database=env_string("NEWS_BENZINGA_CLICKHOUSE_DATABASE", env_string("NEWS_CLICKHOUSE_DATABASE", "q_live")),
             normalized_table=env_string("NEWS_BENZINGA_NORMALIZED_TABLE", "benzinga_news_normalized_v1"),
@@ -159,3 +159,49 @@ def env_bool_auto(name: str, default: bool) -> bool:
     if value is None or not value.strip() or value.strip().lower() == "auto":
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def first_env(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.environ.get(name)
+        if value and value.strip():
+            return value.strip()
+    return default
+
+
+def default_clickhouse_url() -> str:
+    return first_env(
+        "NEWS_CLICKHOUSE_URL",
+        "QLIVE_MIGRATION_CLICKHOUSE_URL",
+        "QMD_CLICKHOUSE_URL",
+        "REAL_LIVE_CLICKHOUSE_WRITE_URL",
+        "CLICKHOUSE_URL",
+        "TD__DATABASE__CLICKHOUSE__ENDPOINT_URL",
+        default="http://localhost:8123",
+    ).rstrip("/")
+
+
+def default_clickhouse_user() -> str:
+    return first_env(
+        "NEWS_CLICKHOUSE_USER",
+        "QLIVE_MIGRATION_CLICKHOUSE_USER",
+        "QMD_CLICKHOUSE_USER",
+        "REAL_LIVE_CLICKHOUSE_WRITE_USER",
+        "CLICKHOUSE_WORKSTATION_USER",
+        "CLICKHOUSE_USER",
+        "TD__DATABASE__CLICKHOUSE__USER",
+        default="default",
+    )
+
+
+def default_clickhouse_password() -> str:
+    return first_env(
+        "NEWS_CLICKHOUSE_PASSWORD",
+        "QLIVE_MIGRATION_CLICKHOUSE_PASSWORD",
+        "QMD_CLICKHOUSE_PASSWORD",
+        "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
+        "CLICKHOUSE_WORKSTATION_PASSWORD",
+        "CLICKHOUSE_PASSWORD",
+        "TD__DATABASE__CLICKHOUSE__PASSWORD",
+        default="",
+    )
