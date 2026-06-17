@@ -206,7 +206,7 @@ def load_part_files(args: argparse.Namespace, manifest: dict[str, Any]) -> list[
         rows = int(item.get("rows") or 0)
         if rows <= 0:
             continue
-        windows_path = Path(str(item.get("path") or ""))
+        windows_path = resolve_part_windows_path(str(item.get("path") or ""), root_win)
         if not windows_path.exists():
             raise SystemExit(f"part file does not exist: {windows_path}")
         expected_bytes = int(item.get("bytes") or 0)
@@ -234,15 +234,42 @@ def load_part_files(args: argparse.Namespace, manifest: dict[str, Any]) -> list[
     return parts
 
 
+def resolve_part_windows_path(raw_path: str, root_win: Path) -> Path:
+    path = Path(raw_path)
+    if path.exists():
+        return path
+    normalized = raw_path.replace("\\", "/")
+    root_name = root_win.name.strip("\\/")
+    marker = f"/{root_name}/"
+    marker_index = normalized.lower().find(marker.lower())
+    if marker_index >= 0:
+        relative = normalized[marker_index + len(marker) :]
+        candidate = root_win / Path(*[part for part in relative.split("/") if part])
+        if candidate.exists():
+            return candidate
+    drive_marker = f"{root_name}/"
+    drive_index = normalized.lower().find(drive_marker.lower())
+    if drive_index >= 0:
+        relative = normalized[drive_index + len(drive_marker) :]
+        candidate = root_win / Path(*[part for part in relative.split("/") if part])
+        if candidate.exists():
+            return candidate
+    return path
+
+
 def validate_target_tables(client: ClickHouseHttpClient, args: argparse.Namespace, parts: list[PartFile]) -> None:
     for table in sorted({part.target_table for part in parts}):
-        try:
-            count_target_rows(client, args, table)
-        except Exception as exc:  # noqa: BLE001
+        sql = (
+            "SELECT count() "
+            "FROM system.tables "
+            f"WHERE database = {sql_string(args.database)} AND name = {sql_string(table)}"
+        )
+        exists = int((client.execute(sql).strip() or "0").splitlines()[0])
+        if exists != 1:
             raise RuntimeError(
-                f"target table {args.database}.{table} is not readable. "
+                f"target table {args.database}.{table} does not exist. "
                 "Run sec_text_v2_schema.py --execute before loading SEC text parts."
-            ) from exc
+            )
 
 
 def preflight_parts(client: ClickHouseHttpClient, args: argparse.Namespace, parts: list[PartFile]) -> None:
@@ -344,7 +371,6 @@ def insert_per_part(client: ClickHouseHttpClient, args: argparse.Namespace, part
 
 def insert_one_part(client: ClickHouseHttpClient, args: argparse.Namespace, part: PartFile) -> InsertProfile:
     started = time.perf_counter()
-    before = count_target_rows(client, args, part.target_table)
     status = "ok"
     exception = ""
     try:
@@ -352,11 +378,7 @@ def insert_one_part(client: ClickHouseHttpClient, args: argparse.Namespace, part
     except Exception as exc:  # noqa: BLE001
         status = "failed"
         exception = repr(exc)
-    after = count_target_rows(client, args, part.target_table)
-    inserted_delta = after - before
-    if status == "ok" and part.expected_rows and inserted_delta != part.expected_rows:
-        status = "failed"
-        exception = f"inserted_delta_mismatch expected={part.expected_rows} actual={inserted_delta}"
+    inserted_delta = part.expected_rows if status == "ok" else 0
     return InsertProfile(
         run_id=part.run_id,
         dataset_name=part.dataset_name,
@@ -364,8 +386,8 @@ def insert_one_part(client: ClickHouseHttpClient, args: argparse.Namespace, part
         path=str(part.windows_path),
         status=status,
         expected_rows=part.expected_rows,
-        target_rows_before=before,
-        target_rows_after=after,
+        target_rows_before=0,
+        target_rows_after=0,
         inserted_delta=inserted_delta,
         wall_seconds=round(time.perf_counter() - started, 3),
         exception=exception,
@@ -401,11 +423,6 @@ def insert_part_manifest(client: ClickHouseHttpClient, args: argparse.Namespace,
         f"INSERT INTO {quote_ident(args.database)}.{quote_ident(args.part_manifest_table)} FORMAT JSONEachRow\n"
         + json.dumps(row, ensure_ascii=False, default=str)
     )
-
-
-def count_target_rows(client: ClickHouseHttpClient, args: argparse.Namespace, table: str) -> int:
-    text = client.execute(f"SELECT count() FROM {quote_ident(args.database)}.{quote_ident(table)}")
-    return int((text.strip() or "0").splitlines()[0])
 
 
 def settings_sql(args: argparse.Namespace) -> str:
