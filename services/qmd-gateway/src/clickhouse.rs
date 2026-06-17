@@ -94,9 +94,6 @@ impl ClickHouseWriter {
     }
 
     pub async fn run(self, mut receiver: mpsc::Receiver<MarketEvent>) {
-        if let Err(error) = self.initialize().await {
-            eprintln!("ClickHouse initialization failed: {error}");
-        }
         let mut quote_batch = Vec::with_capacity(self.config.max_clickhouse_batch);
         let mut trade_batch = Vec::with_capacity(self.config.max_clickhouse_batch);
         let mut flush_interval = interval(Duration::from_millis(self.config.flush_interval_ms));

@@ -1093,9 +1093,6 @@ impl BarClickHouseWriter {
     }
 
     pub async fn run(self, mut receiver: mpsc::Receiver<BarRow>) {
-        if let Err(error) = self.initialize().await {
-            eprintln!("ClickHouse bar initialization failed: {error}");
-        }
         let mut batch = Vec::with_capacity(self.config.max_clickhouse_batch);
         let mut flush_interval = interval(Duration::from_millis(self.config.flush_interval_ms));
         loop {

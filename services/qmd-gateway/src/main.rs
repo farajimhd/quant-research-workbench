@@ -27,11 +27,13 @@ use crate::replay::run_replay_service;
 use crate::scanner::{spawn_scanner_primitive_engine, ScannerPrimitive, SharedScannerStore};
 use crate::state::SharedMarketState;
 use std::net::SocketAddr;
+use std::{error::Error, io};
 use tokio::sync::{broadcast, mpsc};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = GatewayConfig::from_env();
+    preflight_config(&config).map_err(startup_error)?;
     let bind: SocketAddr = config.bind.parse()?;
     let metrics = SharedMetrics::new();
     let market = SharedMarketState::new();
@@ -55,10 +57,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (scanner_sender, _scanner_receiver) = broadcast::channel::<ScannerPrimitive>(10_000);
 
     let writer = ClickHouseWriter::new(config.clone());
-    tokio::spawn(writer.run(writer_receiver));
+    writer
+        .initialize()
+        .await
+        .map_err(|error| startup_error(format!("qmd-gateway raw event ClickHouse preflight failed: {error}")))?;
     let bar_writer = BarClickHouseWriter::new(config.clone());
-    tokio::spawn(bar_writer.run(bar_writer_receiver));
+    bar_writer
+        .initialize()
+        .await
+        .map_err(|error| startup_error(format!("qmd-gateway bar ClickHouse preflight failed: {error}")))?;
     let indicator_writer = IndicatorClickHouseWriter::new(config.clone());
+    if config.persist_indicators {
+        indicator_writer
+            .initialize()
+            .await
+            .map_err(|error| startup_error(format!("qmd-gateway indicator ClickHouse preflight failed: {error}")))?;
+    }
+
+    tokio::spawn(writer.run(writer_receiver));
+    tokio::spawn(bar_writer.run(bar_writer_receiver));
     tokio::spawn(indicator_writer.run(indicator_writer_receiver));
     let indicator_router = spawn_indicator_engines(
         indicators.clone(),
@@ -117,4 +134,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .await?;
     Ok(())
+}
+
+fn preflight_config(config: &GatewayConfig) -> Result<(), String> {
+    if config.massive_api_key.trim().is_empty() {
+        return Err("MASSIVE_API_KEY is required before qmd-gateway starts".to_string());
+    }
+    if config.subscription_channels().is_empty() {
+        return Err("at least one Massive subscription channel is required before qmd-gateway starts".to_string());
+    }
+    if config.clickhouse_url.trim().is_empty() {
+        return Err("QMD_CLICKHOUSE_URL is required before qmd-gateway starts".to_string());
+    }
+    if config.clickhouse_user.trim().is_empty() {
+        return Err("QMD_CLICKHOUSE_USER is required before qmd-gateway starts".to_string());
+    }
+    Ok(())
+}
+
+fn startup_error(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
+    Box::new(io::Error::new(io::ErrorKind::Other, message.into()))
 }

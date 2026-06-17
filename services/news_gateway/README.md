@@ -16,6 +16,7 @@ start service
 -> load .env files
 -> resolve workstation-first data root
 -> construct provider client, normalizer, ClickHouse target, in-memory state
+-> run dependency preflight
 -> read latest persisted published_at_utc from ClickHouse
 -> decide startup gap action
 -> start live polling loop
@@ -38,6 +39,23 @@ compute UTC window from lookback
 
 The service skips existing `canonical_news_id` rows by default through the shared
 batch writer. Overlapping lookbacks and restarts are expected.
+
+## Dependency Preflight
+
+The gateway is fail-fast. It does not start the live polling loop, startup gap
+fill, raw payload writes, or ClickHouse batch writes until preflight succeeds.
+
+Preflight checks:
+
+| Check | What It Verifies |
+| --- | --- |
+| Configuration | `MASSIVE_API_KEY`, ClickHouse URL, user, and password are present. |
+| Artifact storage | Raw and prepared roots can be created and written. |
+| ClickHouse | `SELECT 1` works and the normalized/news ticker tables exist with the expected columns. |
+| Benzinga provider | The Massive-served Benzinga endpoint accepts the API key and returns a valid JSON response. |
+
+`.\scripts\run_news_gateway.ps1 -CheckOnly` runs this same preflight and exits.
+Use it before leaving the gateway running.
 
 ## Storage Rule
 
@@ -132,6 +150,7 @@ call Massive, ClickHouse, or disk, and it does not run in the polling/write path
 
 Dashboard content:
 
+- dependency preflight status and timing
 - service status and current poll interval
 - total and last-cycle provider rows
 - processed rows, written rows, skipped existing rows
@@ -168,6 +187,8 @@ Check configuration only:
 ```powershell
 .\scripts\run_news_gateway.ps1 -CheckOnly
 ```
+
+This is now a full dependency preflight, not only config parsing.
 
 Overrides:
 
@@ -293,9 +314,9 @@ Startup fails while constructing the provider client. Set `MASSIVE_API_KEY`.
 
 ### ClickHouse latest-watermark query fails
 
-The service records `latest_persisted_query_failed` in `last_error`, marks gap
-status as `no_watermark`, and starts normal live polling. Poll cycles may still
-fail later if ClickHouse writes are unreachable.
+Startup fails before polling. The latest-watermark query uses the same
+ClickHouse dependency that preflight validated; if it fails, the service does
+not treat the failure as `no_watermark` and does not start batch work.
 
 ### ClickHouse write fails during a poll
 

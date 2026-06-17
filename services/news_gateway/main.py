@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -12,6 +13,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from research.mlops.env import discover_env_files, load_env_files
 from services.news_gateway.config import NewsGatewayConfig
 from services.news_gateway.gateway import NewsGateway
+from services.news_gateway.preflight import PreflightError
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -106,8 +108,15 @@ def main() -> None:
     cfg = NewsGatewayConfig.from_env()
     app = create_app(cfg, start_background=not args.no_background and not args.check_only)
     if args.check_only:
-        print("News gateway configuration OK", flush=True)
+        try:
+            report = asyncio.run(app.state.gateway.preflight())
+        except PreflightError as exc:
+            print("News gateway preflight FAILED", flush=True)
+            print(json.dumps(exc.report.public_dict(), indent=2), flush=True)
+            raise SystemExit(1) from None
+        print("News gateway preflight OK", flush=True)
         print(cfg.public_dict(), flush=True)
+        print(json.dumps(report.public_dict(), indent=2), flush=True)
         return
     uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="info")
 

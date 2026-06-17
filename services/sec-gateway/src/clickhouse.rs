@@ -30,9 +30,6 @@ impl SecClickHouse {
     }
 
     pub async fn run(self, mut receiver: mpsc::Receiver<SecGatewayMessage>) {
-        if let Err(error) = self.initialize().await {
-            eprintln!("SEC ClickHouse initialization failed: {error}");
-        }
         let mut events = Vec::with_capacity(self.config.max_batch);
         let mut documents = Vec::with_capacity(self.config.max_batch);
         let mut flush_interval = interval(Duration::from_millis(self.config.flush_interval_ms));

@@ -30,6 +30,7 @@ def render_dashboard(gateway: "NewsGateway", news_snapshot: dict[str, Any]) -> G
     now = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
     return Group(
         header_panel(gateway, metrics, now),
+        preflight_panel(metrics),
         metrics_table(gateway, metrics),
         gap_panel(metrics),
         news_table(news_snapshot),
@@ -47,6 +48,36 @@ def header_panel(gateway: "NewsGateway", metrics: dict[str, Any], now: str) -> P
     text.append(f"  poll={metrics.get('current_poll_seconds') or gateway.current_poll_seconds():.1f}s")
     text.append(f"  data={gateway.config.data_root_win}")
     return Panel(text, box=box.SIMPLE, padding=(0, 1))
+
+
+def preflight_panel(metrics: dict[str, Any]) -> Panel:
+    status = str(metrics.get("preflight_status") or "not_started")
+    color = "green" if status == "ok" else "red" if status == "failed" else "yellow"
+    checks = metrics.get("preflight_checks") or []
+    table = Table(box=box.SIMPLE, expand=True)
+    table.add_column("Dependency", style="cyan", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Time", justify="right", no_wrap=True)
+    table.add_column("Message", overflow="fold")
+    if isinstance(checks, list) and checks:
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            check_status = str(check.get("status") or "")
+            check_color = "green" if check_status == "ok" else "red"
+            table.add_row(
+                str(check.get("name") or "-"),
+                f"[{check_color}]{check_status or '-'}[/{check_color}]",
+                f"{float(check.get('wall_seconds') or 0.0):.2f}s",
+                str(check.get("message") or "-"),
+            )
+    else:
+        table.add_row("-", "[yellow]not_started[/yellow]", "-", "Dependency preflight has not run yet.")
+    title = f"Preflight [{color}]{status}[/{color}]"
+    checked = str(metrics.get("preflight_checked_at_utc") or "")
+    if checked:
+        title += f"  {checked}"
+    return Panel(table, title=title, box=box.SIMPLE, padding=(0, 1))
 
 
 def metrics_table(gateway: "NewsGateway", metrics: dict[str, Any]) -> Table:

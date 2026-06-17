@@ -15,6 +15,7 @@ from pipelines.news.benzinga.news_pipeline.pipeline import BenzingaNewsPipeline,
 from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident
 from services.news_gateway.config import NewsGatewayConfig, WORKSTATION_DATA_ROOT_WIN, default_clickhouse_password
+from services.news_gateway.preflight import PreflightError, PreflightReport, run_preflight
 from services.news_gateway.state import NewsMemoryState
 
 
@@ -44,6 +45,9 @@ class GatewayMetrics:
     last_cycle_skipped_existing: int = 0
     last_cycle_wall_seconds: float = 0.0
     current_poll_seconds: float = 0.0
+    preflight_status: str = "not_started"
+    preflight_checked_at_utc: str = ""
+    preflight_checks: list[dict[str, Any]] = field(default_factory=list)
 
 
 class NewsGateway:
@@ -55,6 +59,9 @@ class NewsGateway:
         self._poll_task: asyncio.Task[None] | None = None
         self._gap_task: asyncio.Task[None] | None = None
         self._terminal_task: asyncio.Task[None] | None = None
+        self._preflight_report: PreflightReport | None = None
+        self._clickhouse_password = default_clickhouse_password()
+        self._massive_api_key = massive_api_key()
         self.pipeline = BenzingaNewsPipeline(
             BenzingaPipelineConfig(
                 policy_json=config.policy_json,
@@ -66,7 +73,7 @@ class NewsGateway:
         self.target = ClickHouseTargetConfig(
             url=config.clickhouse_url,
             user=config.clickhouse_user,
-            password=clickhouse_password(),
+            password=self._clickhouse_password,
             database=config.clickhouse_database,
             normalized_table=config.normalized_table,
             ticker_table=config.ticker_table,
@@ -74,15 +81,14 @@ class NewsGateway:
         self.provider = BenzingaProviderClient(
             BenzingaProviderConfig(
                 endpoint_url=config.benzinga_url,
-                api_key=massive_api_key(),
+                api_key=self._massive_api_key,
                 page_limit=config.page_limit,
                 max_pages=config.max_pages,
             )
         )
 
     async def start(self) -> None:
-        self.config.raw_root_win.mkdir(parents=True, exist_ok=True)
-        self.config.prepared_root_win.mkdir(parents=True, exist_ok=True)
+        await self.preflight()
         await self._plan_startup_gap()
         self._poll_task = asyncio.create_task(self._poll_loop(), name="benzinga-news-poll-loop")
         if self.config.terminal_rich_enabled:
@@ -97,6 +103,27 @@ class NewsGateway:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def preflight(self) -> PreflightReport:
+        try:
+            report = await asyncio.to_thread(
+                run_preflight,
+                self.config,
+                clickhouse_password=self._clickhouse_password,
+                api_key=self._massive_api_key,
+            )
+        except PreflightError as exc:
+            self._record_preflight_report(exc.report)
+            self.metrics.last_error = repr(exc)
+            raise
+        self._record_preflight_report(report)
+        return report
+
+    def _record_preflight_report(self, report: PreflightReport) -> None:
+        self._preflight_report = report
+        self.metrics.preflight_status = report.status
+        self.metrics.preflight_checked_at_utc = report.checked_at_utc
+        self.metrics.preflight_checks = [asdict(check) for check in report.checks]
 
     async def _plan_startup_gap(self) -> None:
         latest = await asyncio.to_thread(self._latest_persisted_published_at)
@@ -249,11 +276,7 @@ class NewsGateway:
             f"SELECT max(published_at_utc) AS ts FROM {quote_ident(self.target.database)}.{quote_ident(self.target.normalized_table)} "
             "FORMAT JSONEachRow"
         )
-        try:
-            text = client.execute(sql)
-        except Exception as exc:  # noqa: BLE001
-            self.metrics.last_error = f"latest_persisted_query_failed: {exc!r}"
-            return None
+        text = client.execute(sql)
         for line in text.splitlines():
             if not line.strip():
                 continue
@@ -306,7 +329,3 @@ def massive_api_key() -> str:
     if not value:
         raise RuntimeError("MASSIVE_API_KEY is required")
     return value
-
-
-def clickhouse_password() -> str:
-    return default_clickhouse_password()

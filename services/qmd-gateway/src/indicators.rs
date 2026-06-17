@@ -844,9 +844,6 @@ impl IndicatorClickHouseWriter {
             while receiver.recv().await.is_some() {}
             return;
         }
-        if let Err(error) = self.initialize().await {
-            eprintln!("ClickHouse indicator initialization failed: {error}");
-        }
         let mut batch = Vec::with_capacity(self.config.max_clickhouse_batch);
         let mut flush_interval = interval(Duration::from_millis(self.config.flush_interval_ms));
         loop {
