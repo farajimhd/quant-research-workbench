@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -41,6 +42,9 @@ class NewsGatewayConfig:
     write_batch_size: int
     policy_json: str
     text_limit_chars: int
+    terminal_rich_enabled: bool
+    terminal_refresh_seconds: float
+    terminal_news_limit: int
 
     @classmethod
     def from_env(cls) -> "NewsGatewayConfig":
@@ -80,6 +84,9 @@ class NewsGatewayConfig:
             write_batch_size=env_int("NEWS_CLICKHOUSE_MAX_BATCH", 1_000),
             policy_json=env_string("NEWS_BENZINGA_URL_DOMAIN_POLICY_JSON", ""),
             text_limit_chars=env_int("NEWS_BENZINGA_TEXT_LIMIT_CHARS", 50_000),
+            terminal_rich_enabled=env_bool_auto("NEWS_TERMINAL_RICH_ENABLED", sys.stdout.isatty()),
+            terminal_refresh_seconds=env_float("NEWS_TERMINAL_REFRESH_SECONDS", 1.0),
+            terminal_news_limit=env_int("NEWS_TERMINAL_NEWS_LIMIT", 12),
         )
 
     def public_dict(self) -> dict[str, object]:
@@ -143,5 +150,12 @@ def env_float(name: str, default: float) -> float:
 def env_bool(name: str, default: bool) -> bool:
     value = os.environ.get(name)
     if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_bool_auto(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None or not value.strip() or value.strip().lower() == "auto":
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}

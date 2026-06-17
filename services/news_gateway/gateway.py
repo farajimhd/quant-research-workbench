@@ -37,6 +37,13 @@ class GatewayMetrics:
     gap_status: str = "not_started"
     gap_message: str = ""
     manual_gap_fill_command: str = ""
+    last_cycle_status: str = ""
+    last_cycle_provider_rows: int = 0
+    last_cycle_processed_rows: int = 0
+    last_cycle_written_rows: int = 0
+    last_cycle_skipped_existing: int = 0
+    last_cycle_wall_seconds: float = 0.0
+    current_poll_seconds: float = 0.0
 
 
 class NewsGateway:
@@ -47,6 +54,7 @@ class NewsGateway:
         self._stop_event = asyncio.Event()
         self._poll_task: asyncio.Task[None] | None = None
         self._gap_task: asyncio.Task[None] | None = None
+        self._terminal_task: asyncio.Task[None] | None = None
         self.pipeline = BenzingaNewsPipeline(
             BenzingaPipelineConfig(
                 policy_json=config.policy_json,
@@ -77,10 +85,14 @@ class NewsGateway:
         self.config.prepared_root_win.mkdir(parents=True, exist_ok=True)
         await self._plan_startup_gap()
         self._poll_task = asyncio.create_task(self._poll_loop(), name="benzinga-news-poll-loop")
+        if self.config.terminal_rich_enabled:
+            from services.news_gateway.terminal import run_terminal_dashboard
+
+            self._terminal_task = asyncio.create_task(run_terminal_dashboard(self), name="benzinga-news-terminal-dashboard")
 
     async def stop(self) -> None:
         self._stop_event.set()
-        tasks = [task for task in [self._poll_task, self._gap_task] if task is not None]
+        tasks = [task for task in [self._poll_task, self._gap_task, self._terminal_task] if task is not None]
         for task in tasks:
             task.cancel()
         if tasks:
@@ -132,7 +144,9 @@ class NewsGateway:
             end_utc = datetime.now(UTC)
             start_utc = end_utc - timedelta(minutes=max(1, self.config.lookback_minutes))
             await self.poll_window(start_utc, end_utc)
-            await asyncio.sleep(self.current_poll_seconds())
+            sleep_seconds = self.current_poll_seconds()
+            self.metrics.current_poll_seconds = sleep_seconds
+            await asyncio.sleep(sleep_seconds)
 
     async def poll_window(self, start_utc: datetime, end_utc: datetime) -> dict[str, Any]:
         started = time.perf_counter()
@@ -163,8 +177,14 @@ class NewsGateway:
             self.metrics.failed_rows += failed
             self.metrics.written_rows += write_summary.normalized_rows_inserted
             self.metrics.skipped_existing += write_summary.skipped_existing
+            self.metrics.last_cycle_status = "ok" if failed == 0 else "completed_with_errors"
+            self.metrics.last_cycle_provider_rows = len(fetch_result.items)
+            self.metrics.last_cycle_processed_rows = len(processed)
+            self.metrics.last_cycle_written_rows = write_summary.normalized_rows_inserted
+            self.metrics.last_cycle_skipped_existing = write_summary.skipped_existing
+            self.metrics.last_cycle_wall_seconds = time.perf_counter() - started
             return {
-                "status": "ok" if failed == 0 else "completed_with_errors",
+                "status": self.metrics.last_cycle_status,
                 "start_utc": start_utc.isoformat().replace("+00:00", "Z"),
                 "end_utc": end_utc.isoformat().replace("+00:00", "Z"),
                 "provider_rows": len(fetch_result.items),
@@ -173,11 +193,13 @@ class NewsGateway:
                 "pages": fetch_result.pages,
                 "saturated": fetch_result.saturated,
                 "write_summary": asdict(write_summary),
-                "wall_seconds": time.perf_counter() - started,
+                "wall_seconds": self.metrics.last_cycle_wall_seconds,
             }
         except Exception as exc:  # noqa: BLE001
             self.metrics.poll_failures += 1
             self.metrics.last_error = repr(exc)
+            self.metrics.last_cycle_status = "failed"
+            self.metrics.last_cycle_wall_seconds = time.perf_counter() - started
             return {"status": "failed", "exception": repr(exc), "wall_seconds": time.perf_counter() - started}
 
     def current_poll_seconds(self) -> float:

@@ -65,6 +65,9 @@ NEWS_BENZINGA_RESTART_GAP_MAX_DAYS=3
 NEWS_BENZINGA_PAGE_LIMIT=1000
 NEWS_BENZINGA_MAX_PAGES=1000
 NEWS_BENZINGA_EXECUTE=true
+NEWS_TERMINAL_RICH_ENABLED=auto
+NEWS_TERMINAL_REFRESH_SECONDS=1
+NEWS_TERMINAL_NEWS_LIMIT=12
 NEWS_CLICKHOUSE_URL
 NEWS_CLICKHOUSE_USER
 NEWS_CLICKHOUSE_PASSWORD
@@ -91,6 +94,15 @@ PowerShell wrapper:
 
 ```powershell
 .\scripts\run_news_gateway.ps1
+```
+
+The service renders a Rich terminal dashboard when stdout is interactive. The
+dashboard is a separate async task that reads in-memory metrics and recent-news
+state; it does not run inside the provider polling or ClickHouse write path.
+Disable it with:
+
+```powershell
+$env:NEWS_TERMINAL_RICH_ENABLED="false"
 ```
 
 ## API
