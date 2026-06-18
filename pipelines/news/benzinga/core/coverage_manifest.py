@@ -328,18 +328,30 @@ def supersede_bootstrap_snapshot(interval: CoverageInterval) -> CoverageSnapshot
 
 
 def insert_coverage_snapshot(client: ClickHouseHttpClient, config: CoverageManifestConfig, snapshot: CoverageSnapshot) -> None:
-    row = coverage_row(snapshot)
-    body = json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str)
-    columns = ", ".join(quote_ident(column) for column in COVERAGE_COLUMNS)
-    client.execute(f"INSERT INTO {table_name(config.database, config.coverage_table)} ({columns}) FORMAT JSONEachRow\n{body}")
+    insert_coverage_snapshots(client, config, [snapshot])
 
 
 def insert_coverage_snapshots(client: ClickHouseHttpClient, config: CoverageManifestConfig, snapshots: list[CoverageSnapshot]) -> None:
     if not snapshots:
         return
     columns = ", ".join(quote_ident(column) for column in COVERAGE_COLUMNS)
-    rows = "\n".join(json.dumps(coverage_row(snapshot), ensure_ascii=False, separators=(",", ":"), default=str) for snapshot in snapshots)
-    client.execute(f"INSERT INTO {table_name(config.database, config.coverage_table)} ({columns}) FORMAT JSONEachRow\n{rows}")
+    for partition_snapshots in group_snapshots_by_partition(snapshots).values():
+        rows = "\n".join(
+            json.dumps(coverage_row(snapshot), ensure_ascii=False, separators=(",", ":"), default=str)
+            for snapshot in partition_snapshots
+        )
+        client.execute(f"INSERT INTO {table_name(config.database, config.coverage_table)} ({columns}) FORMAT JSONEachRow\n{rows}")
+
+
+def group_snapshots_by_partition(snapshots: list[CoverageSnapshot]) -> dict[str, list[CoverageSnapshot]]:
+    grouped: dict[str, list[CoverageSnapshot]] = {}
+    for snapshot in snapshots:
+        grouped.setdefault(coverage_partition_key(snapshot), []).append(snapshot)
+    return dict(sorted(grouped.items()))
+
+
+def coverage_partition_key(snapshot: CoverageSnapshot) -> str:
+    return snapshot.coverage_start_utc.astimezone(UTC).strftime("%Y%m")
 
 
 def load_coverage_intervals(client: ClickHouseHttpClient, config: CoverageManifestConfig) -> list[CoverageInterval]:
