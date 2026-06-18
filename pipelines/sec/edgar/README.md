@@ -29,11 +29,10 @@ Acceptance timestamp repair path:
 python -m pipelines.sec.edgar.sec_acceptance_archive_repair --help
 ```
 
-Run the current archive-derived acceptance repair on the workstation from the runtime root:
+Run the current archive-derived acceptance repair on the workstation:
 
 ```powershell
-cd D:\TradingML\codes\quant_research_workbench_pipelines
-python -m pipelines.sec.edgar.sec_acceptance_archive_repair --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_acceptance_archive_repair --start-date 2019-01-01 --end-date 2026-06-16 --archive-workers 4 --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_archive_repair.py --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_acceptance_archive_repair --start-date 2019-01-01 --end-date 2026-06-16 --archive-workers 4 --execute
 ```
 
 See `sec_historical_backfill_orchestrator_guide.md` for one-command historical runs and PowerShell history export commands.
