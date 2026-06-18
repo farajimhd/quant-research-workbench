@@ -28,7 +28,7 @@ The script does not use ClickHouse mutations. It inserts replacement rows into t
 Use this first. It writes part files and diagnostics but does not insert into ClickHouse.
 
 ```powershell
-python -m pipelines.sec.edgar.sec_acceptance_archive_repair --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_acceptance_archive_repair --start-date 2026-06-01 --end-date 2026-06-16 --archive-workers 4
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_archive_repair.py --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_acceptance_archive_repair --start-date 2026-06-01 --end-date 2026-06-16 --archive-workers 4
 ```
 
 ## Execute
@@ -36,7 +36,7 @@ python -m pipelines.sec.edgar.sec_acceptance_archive_repair --archive-root-win D
 After reviewing the dry-run summary, insert replacement rows:
 
 ```powershell
-python -m pipelines.sec.edgar.sec_acceptance_archive_repair --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_acceptance_archive_repair --start-date 2026-06-01 --end-date 2026-06-16 --archive-workers 4 --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_archive_repair.py --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_acceptance_archive_repair --start-date 2026-06-01 --end-date 2026-06-16 --archive-workers 4 --execute
 ```
 
 ## Full Historical Repair
@@ -44,7 +44,7 @@ python -m pipelines.sec.edgar.sec_acceptance_archive_repair --archive-root-win D
 Run this on the workstation, not the laptop:
 
 ```powershell
-python -m pipelines.sec.edgar.sec_acceptance_archive_repair --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_acceptance_archive_repair --start-date 2019-01-01 --end-date 2026-06-16 --archive-workers 4 --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_archive_repair.py --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_acceptance_archive_repair --start-date 2019-01-01 --end-date 2026-06-16 --archive-workers 4 --execute
 ```
 
 ## Useful Arguments
