@@ -79,6 +79,18 @@ class GapFillInterval:
     end_utc: datetime
 
 
+@dataclass(slots=True)
+class GapCoverageRun:
+    start_utc: datetime
+    end_utc: datetime
+    chunk_count: int = 0
+    provider_rows: int = 0
+    processed_rows: int = 0
+    written_rows: int = 0
+    skipped_existing: int = 0
+    pages: int = 0
+
+
 @dataclass(frozen=True, slots=True)
 class ManualGapFillPlan:
     script_path: Path
@@ -251,11 +263,20 @@ class NewsGateway:
 
     async def _fill_gap(self, start_utc: datetime, end_utc: datetime) -> None:
         current = start_utc
+        coverage_run: GapCoverageRun | None = None
         while current < end_utc and not self._stop_event.is_set():
             chunk_end = min(current + timedelta(minutes=max(1, self.config.gap_fill_chunk_minutes)), end_utc)
             print(f"provider_gap_fill_window={current.isoformat()}->{chunk_end.isoformat()}", flush=True)
-            await self.poll_window(current, chunk_end, coverage_mode="gap_fill")
+            result = await self.poll_window(current, chunk_end, coverage_mode="gap_fill_deferred")
+            if result.get("status") == "ok":
+                coverage_run = extend_gap_coverage_run(coverage_run, current, chunk_end, result)
+            else:
+                if coverage_run is not None:
+                    await asyncio.to_thread(self._write_completed_gap_coverage_run, coverage_run)
+                    coverage_run = None
             current = chunk_end
+        if coverage_run is not None:
+            await asyncio.to_thread(self._write_completed_gap_coverage_run, coverage_run)
 
     async def _run_workstation_gap_fill_plan(self, plan: ManualGapFillPlan) -> None:
         script_path = str(plan.workstation_script_path)
@@ -528,7 +549,12 @@ class NewsGateway:
         processed_rows: int,
         written_rows: int,
         skipped_existing: int,
+        *,
+        chunk_count: int = 1,
+        pages: int = 0,
     ) -> None:
+        if not self.config.execute:
+            return
         self._gap_coverage_counter += 1
         now = datetime.now(UTC)
         snapshot = CoverageSnapshot(
@@ -541,14 +567,32 @@ class NewsGateway:
             started_at_utc=now,
             updated_at_utc=now,
             closed_at_utc=now,
-            poll_runs=1,
+            poll_runs=chunk_count,
             provider_rows=provider_rows,
             processed_rows=processed_rows,
             written_rows=written_rows,
             skipped_existing=skipped_existing,
-            metadata={"mode": "startup_gap_fill", "chunk_minutes": self.config.gap_fill_chunk_minutes},
+            metadata={
+                "mode": "startup_gap_fill",
+                "chunk_minutes": self.config.gap_fill_chunk_minutes,
+                "chunk_count": chunk_count,
+                "pages": pages,
+                "coverage_compaction": "contiguous_successful_chunks",
+            },
         )
         insert_coverage_snapshot(self._coverage_client(), self._coverage_config(), snapshot)
+
+    def _write_completed_gap_coverage_run(self, coverage_run: GapCoverageRun) -> None:
+        self._write_completed_gap_coverage(
+            coverage_run.start_utc,
+            coverage_run.end_utc,
+            coverage_run.provider_rows,
+            coverage_run.processed_rows,
+            coverage_run.written_rows,
+            coverage_run.skipped_existing,
+            chunk_count=coverage_run.chunk_count,
+            pages=coverage_run.pages,
+        )
 
     def _coverage_client(self) -> ClickHouseHttpClient:
         return ClickHouseHttpClient(self.target.url, self.target.user, self.target.password)
@@ -570,6 +614,25 @@ def save_raw_payload(raw_root: Path, payload: dict[str, Any]) -> tuple[Path, str
     raw_path = artifact_path_for_payload(raw_root.parent, payload, published)
     raw_hash = write_raw_payload(raw_path, payload)
     return raw_path, raw_hash
+
+
+def extend_gap_coverage_run(
+    coverage_run: GapCoverageRun | None,
+    start_utc: datetime,
+    end_utc: datetime,
+    result: dict[str, Any],
+) -> GapCoverageRun:
+    if coverage_run is None:
+        coverage_run = GapCoverageRun(start_utc=start_utc, end_utc=end_utc)
+    else:
+        coverage_run.end_utc = end_utc
+    coverage_run.chunk_count += 1
+    coverage_run.provider_rows += int(result.get("provider_rows") or 0)
+    coverage_run.processed_rows += int(result.get("processed_rows") or 0)
+    coverage_run.written_rows += int((result.get("write_summary") or {}).get("normalized_rows_inserted") or 0)
+    coverage_run.skipped_existing += int((result.get("write_summary") or {}).get("skipped_existing") or 0)
+    coverage_run.pages += int(result.get("pages") or 0)
+    return coverage_run
 
 
 def historical_gap_command(start_utc: datetime, end_utc: datetime, config: NewsGatewayConfig) -> str:

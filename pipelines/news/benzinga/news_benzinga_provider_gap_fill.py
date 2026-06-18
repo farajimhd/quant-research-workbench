@@ -282,12 +282,16 @@ def parse_utc(value: str) -> datetime:
 def coverage_snapshots_for_buckets(run_id: str, buckets: list[BucketResult]) -> list[CoverageSnapshot]:
     now = datetime.now(UTC)
     snapshots: list[CoverageSnapshot] = []
-    for bucket in buckets:
-        start = parse_utc(bucket.start_utc)
-        end = parse_utc(bucket.end_utc)
+    for run_index, run in enumerate(contiguous_bucket_runs(buckets), start=1):
+        start = parse_utc(run[0].start_utc)
+        end = parse_utc(run[-1].end_utc)
+        provider_rows = sum(bucket.provider_rows for bucket in run)
+        processed_rows = sum(bucket.processed_rows for bucket in run)
+        failed_rows = sum(bucket.failed_rows for bucket in run)
+        pages = sum(bucket.pages for bucket in run)
         snapshots.append(
             CoverageSnapshot(
-                coverage_id=f"provider_gap_fill_{run_id}_{bucket.bucket_index:08d}",
+                coverage_id=f"provider_gap_fill_{run_id}_{run_index:08d}",
                 run_id=f"provider_gap_fill_{run_id}",
                 source="provider_gap_fill",
                 status="completed",
@@ -296,21 +300,40 @@ def coverage_snapshots_for_buckets(run_id: str, buckets: list[BucketResult]) -> 
                 started_at_utc=now,
                 updated_at_utc=now,
                 closed_at_utc=now,
-                poll_runs=1,
-                provider_rows=bucket.provider_rows,
-                processed_rows=bucket.processed_rows,
+                poll_runs=len(run),
+                provider_rows=provider_rows,
+                processed_rows=processed_rows,
                 written_rows=0,
-                failed_rows=bucket.failed_rows,
+                failed_rows=failed_rows,
                 skipped_existing=0,
                 metadata={
-                    "bucket_index": bucket.bucket_index,
-                    "pages": bucket.pages,
-                    "saturated": bucket.saturated,
+                    "first_bucket_index": run[0].bucket_index,
+                    "last_bucket_index": run[-1].bucket_index,
+                    "chunk_count": len(run),
+                    "pages": pages,
+                    "saturated": any(bucket.saturated for bucket in run),
                     "mode": "provider_gap_fill",
+                    "coverage_compaction": "contiguous_successful_buckets",
                 },
             )
         )
     return snapshots
+
+
+def contiguous_bucket_runs(buckets: list[BucketResult]) -> list[list[BucketResult]]:
+    ordered = sorted(buckets, key=lambda bucket: (parse_utc(bucket.start_utc), parse_utc(bucket.end_utc), bucket.bucket_index))
+    runs: list[list[BucketResult]] = []
+    for bucket in ordered:
+        if not runs:
+            runs.append([bucket])
+            continue
+        previous_end = parse_utc(runs[-1][-1].end_utc)
+        current_start = parse_utc(bucket.start_utc)
+        if current_start == previous_end:
+            runs[-1].append(bucket)
+        else:
+            runs.append([bucket])
+    return runs
 
 
 if __name__ == "__main__":
