@@ -10,7 +10,6 @@ from rich.console import Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 if TYPE_CHECKING:
     from services.news_gateway.gateway import NewsGateway
@@ -18,11 +17,15 @@ if TYPE_CHECKING:
 
 async def run_terminal_dashboard(gateway: "NewsGateway") -> None:
     refresh_seconds = max(0.25, gateway.config.terminal_refresh_seconds)
-    refresh_per_second = max(1.0, min(4.0, 1.0 / refresh_seconds))
-    with Live(render_dashboard(gateway, {}), refresh_per_second=refresh_per_second, transient=False) as live:
+    with Live(
+        render_dashboard(gateway, {}),
+        auto_refresh=False,
+        transient=False,
+        vertical_overflow="crop",
+    ) as live:
         while not gateway._stop_event.is_set():  # noqa: SLF001
             snapshot = await gateway.state.recent_snapshot(gateway.config.terminal_news_limit)
-            live.update(render_dashboard(gateway, snapshot))
+            live.update(render_dashboard(gateway, snapshot), refresh=True)
             await asyncio.sleep(refresh_seconds)
 
 
