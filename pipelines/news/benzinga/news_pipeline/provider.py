@@ -36,6 +36,13 @@ class BenzingaFetchResult:
     next_url: str
 
 
+@dataclass(frozen=True, slots=True)
+class BenzingaProbeResult:
+    has_news: bool
+    rows_seen: int
+    pages: int
+
+
 class BenzingaProviderClient:
     def __init__(self, config: BenzingaProviderConfig | None = None) -> None:
         self.config = config or BenzingaProviderConfig.from_env()
@@ -56,6 +63,24 @@ class BenzingaProviderClient:
             if next_url:
                 next_url = append_api_key(str(next_url), self.config.api_key)
         return BenzingaFetchResult(items=items, pages=pages, saturated=bool(next_url), next_url=str(next_url or ""))
+
+    def probe_window(self, start_utc: datetime, end_utc: datetime) -> BenzingaProbeResult:
+        """Cheap existence probe for coverage validation.
+
+        This intentionally asks for only one provider row. It answers "does the
+        provider currently have any news in this interval?" without downloading
+        or logging article data.
+        """
+
+        probe_config = BenzingaProviderConfig(
+            endpoint_url=self.config.endpoint_url,
+            api_key=self.config.api_key,
+            page_limit=1,
+            max_pages=1,
+        )
+        response = fetch_json(build_benzinga_url(probe_config, start_utc, end_utc))
+        rows_seen = sum(1 for item in response.get("results") or [] if isinstance(item, dict))
+        return BenzingaProbeResult(has_news=rows_seen > 0, rows_seen=rows_seen, pages=1)
 
 
 def build_benzinga_url(config: BenzingaProviderConfig, start_utc: datetime, end_utc: datetime) -> str:

@@ -23,6 +23,7 @@ from pipelines.news.benzinga.core.coverage_manifest import (
     insert_coverage_snapshot,
     load_coverage_intervals,
     new_run_id,
+    parse_clickhouse_datetime,
 )
 from pipelines.news.benzinga.news_benzinga_normalize import artifact_path_for_payload, parse_provider_datetime, write_raw_payload
 from pipelines.news.benzinga.news_pipeline.config import BenzingaPipelineConfig, ClickHouseTargetConfig
@@ -658,11 +659,19 @@ class NewsGateway:
         client = self._coverage_client()
         config = self._coverage_config()
         ensure_coverage_manifest_table(client, config)
+        trusted_start = parse_optional_utc(self.config.bootstrap_trusted_coverage_start_utc)
+        trusted_end = parse_optional_utc(self.config.bootstrap_trusted_coverage_end_utc)
+        verify_after = parse_optional_utc(self.config.bootstrap_verify_gaps_after_utc)
+        gap_probe = self._probe_gap_is_empty if self.config.bootstrap_probe_recent_gaps else None
         summary = bootstrap_coverage_from_normalized_table(
             client,
             config,
             chunk_seconds=self.config.coverage_discovery_chunk_seconds,
             force_rebuild=self.config.rebuild_coverage_manifest,
+            trusted_coverage_start_utc=trusted_start,
+            trusted_coverage_end_utc=trusted_end,
+            verify_gaps_after_utc=verify_after,
+            gap_probe=gap_probe,
         )
         if self.config.coverage_compact_on_startup:
             compact_summary = compact_coverage_manifest(
@@ -673,6 +682,20 @@ class NewsGateway:
             )
             self._log_event("coverage_manifest_compacted", summary=compact_summary)
         return summary
+
+    def _probe_gap_is_empty(self, gap: CoverageGap) -> bool:
+        result = self.provider.probe_window(gap.start_utc, gap.end_utc)
+        is_empty = not result.has_news
+        self._log_event(
+            "coverage_gap_provider_probe",
+            start_utc=gap.start_utc,
+            end_utc=gap.end_utc,
+            has_news=result.has_news,
+            rows_seen=result.rows_seen,
+            pages=result.pages,
+            decision="covered_empty" if is_empty else "gap_requires_fill",
+        )
+        return is_empty
 
     def _load_coverage_intervals(self) -> list[CoverageInterval]:
         client = self._coverage_client()
@@ -906,6 +929,13 @@ def save_raw_payload(raw_root: Path, payload: dict[str, Any]) -> tuple[Path, str
     raw_path = artifact_path_for_payload(raw_root.parent, payload, published)
     raw_hash = write_raw_payload(raw_path, payload)
     return raw_path, raw_hash
+
+
+def parse_optional_utc(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return parse_clickhouse_datetime(text)
 
 
 def count_unique_utc_days_for_gaps(gaps: list[CoverageGap]) -> int:

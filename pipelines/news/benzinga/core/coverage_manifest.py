@@ -5,7 +5,7 @@ import os
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from pipelines.news.benzinga.core.clickhouse_writer import DEFAULT_COVERAGE_TABLE, DEFAULT_DATABASE, DEFAULT_NORMALIZED_TABLE, table_name
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
@@ -82,6 +82,10 @@ class CoverageBootstrapSummary:
     discovered_gap_intervals: int = 0
     discovered_gap_seconds: float = 0.0
     discovered_gap_unique_days: int = 0
+    trusted_coverage_start_utc: datetime | None = None
+    trusted_coverage_end_utc: datetime | None = None
+    verified_empty_gap_intervals: int = 0
+    provider_positive_gap_intervals: int = 0
     superseded_existing_bootstrap: bool = False
 
 
@@ -90,6 +94,15 @@ class BucketCount:
     start_utc: datetime
     end_utc: datetime
     rows: int
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapCoverageRun:
+    start_utc: datetime
+    end_utc: datetime
+    source: str
+    rows: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -157,13 +170,23 @@ def bootstrap_coverage_from_normalized_table(
     *,
     chunk_seconds: int = 3600,
     force_rebuild: bool = False,
+    trusted_coverage_start_utc: datetime | None = None,
+    trusted_coverage_end_utc: datetime | None = None,
+    verify_gaps_after_utc: datetime | None = None,
+    gap_probe: Callable[[CoverageGap], bool] | None = None,
 ) -> CoverageBootstrapSummary:
     seconds = max(1, int(chunk_seconds))
     row_count = coverage_row_count(client, config)
     existing_bootstrap = load_existing_bootstrap_intervals(client, config) if row_count > 0 else []
+    trusted_bootstrap_required = False
     if row_count > 0 and not force_rebuild:
+        if trusted_coverage_start_utc and trusted_coverage_end_utc and trusted_coverage_end_utc > trusted_coverage_start_utc:
+            active = load_coverage_intervals(client, config)
+            if trusted_interval_is_covered(active, trusted_coverage_start_utc, trusted_coverage_end_utc):
+                return CoverageBootstrapSummary(status="already_bootstrapped", executed=False, chunk_seconds=seconds)
+            trusted_bootstrap_required = True
         existing_chunk_seconds = load_existing_bootstrap_chunk_seconds(client, config) if existing_bootstrap else None
-        if not existing_bootstrap or existing_chunk_seconds == seconds:
+        if not trusted_bootstrap_required and (not existing_bootstrap or existing_chunk_seconds == seconds):
             return CoverageBootstrapSummary(status="already_bootstrapped", executed=False, chunk_seconds=seconds)
     sql = (
         "SELECT min(published_at_utc) AS start_utc, max(published_at_utc) AS end_utc, count() AS rows "
@@ -177,14 +200,42 @@ def bootstrap_coverage_from_normalized_table(
     normalized_rows = int(row.get("rows") or 0)
     bucket_start = floor_time(source_start, seconds)
     bucket_end = ceil_time(source_end, seconds)
-    buckets = load_non_empty_bucket_counts(client, config, bucket_start, bucket_end, seconds)
+    trusted_start = trusted_coverage_start_utc.astimezone(UTC) if trusted_coverage_start_utc else None
+    trusted_end = trusted_coverage_end_utc.astimezone(UTC) if trusted_coverage_end_utc else None
+    if trusted_start and trusted_end and trusted_end > trusted_start:
+        bucket_start = min(bucket_start, floor_time(trusted_start, seconds))
+        post_trusted_start = min(max(ceil_time(trusted_end, seconds), bucket_start), bucket_end)
+    else:
+        trusted_start = None
+        trusted_end = None
+        post_trusted_start = bucket_start
+    buckets = load_non_empty_bucket_counts(client, config, post_trusted_start, bucket_end, seconds) if post_trusted_start < bucket_end else []
     bucket_map = {bucket.start_utc: bucket for bucket in buckets}
     expected_buckets = int(max(0, (bucket_end - bucket_start).total_seconds()) // seconds)
-    covered_runs: list[list[BucketCount]] = []
+    covered_runs: list[BootstrapCoverageRun] = []
     gap_intervals: list[CoverageGap] = []
+    verified_empty_gaps: list[CoverageGap] = []
+    provider_positive_gaps: list[CoverageGap] = []
+    if trusted_start and trusted_end:
+        trusted_count = count_news_rows(client, config, trusted_start, trusted_end)
+        covered_runs.append(
+            BootstrapCoverageRun(
+                start_utc=trusted_start,
+                end_utc=trusted_end,
+                source="bootstrap_trusted_historical_download",
+                rows=trusted_count,
+                metadata={
+                    "bootstrap_mode": "trusted_historical_download",
+                    "source_table": f"{config.database}.{config.normalized_table}",
+                    "trusted_coverage_start_utc": clickhouse_datetime64(trusted_start),
+                    "trusted_coverage_end_utc": clickhouse_datetime64(trusted_end),
+                    "note": "operator asserted this historical range was fully downloaded",
+                },
+            )
+        )
     current_run: list[BucketCount] = []
     gap_start: datetime | None = None
-    cursor = bucket_start
+    cursor = post_trusted_start
     while cursor < bucket_end:
         bucket = bucket_map.get(cursor)
         next_cursor = cursor + timedelta(seconds=seconds)
@@ -195,16 +246,36 @@ def bootstrap_coverage_from_normalized_table(
             current_run.append(bucket)
         else:
             if current_run:
-                covered_runs.append(current_run)
+                covered_runs.append(bucket_run_to_bootstrap_run(current_run, seconds, config))
                 current_run = []
             if gap_start is None:
                 gap_start = cursor
         cursor = next_cursor
     if current_run:
-        covered_runs.append(current_run)
+        covered_runs.append(bucket_run_to_bootstrap_run(current_run, seconds, config))
     if gap_start is not None:
         gap_intervals.append(CoverageGap(gap_start, bucket_end))
-    snapshots = coverage_snapshots_from_bucket_runs(covered_runs, seconds, config)
+    for gap in gap_intervals:
+        if should_probe_gap(gap, verify_gaps_after_utc, gap_probe):
+            if gap_probe and gap_probe(gap):
+                verified_empty_gaps.append(gap)
+                covered_runs.append(
+                    BootstrapCoverageRun(
+                        start_utc=gap.start_utc,
+                        end_utc=gap.end_utc,
+                        source="bootstrap_verified_empty_provider_gap",
+                        rows=0,
+                        metadata={
+                            "bootstrap_mode": "provider_verified_empty_gap",
+                            "chunk_seconds": seconds,
+                            "probe_result": "empty",
+                        },
+                    )
+                )
+            else:
+                provider_positive_gaps.append(gap)
+    covered_runs = merge_bootstrap_coverage_runs(covered_runs)
+    snapshots = coverage_snapshots_from_bootstrap_runs(covered_runs, seconds, config)
     if existing_bootstrap:
         snapshots = [supersede_bootstrap_snapshot(interval) for interval in existing_bootstrap] + snapshots
     insert_coverage_snapshots(client, config, snapshots)
@@ -221,6 +292,10 @@ def bootstrap_coverage_from_normalized_table(
         discovered_gap_intervals=len(gap_intervals),
         discovered_gap_seconds=sum(gap.seconds for gap in gap_intervals),
         discovered_gap_unique_days=count_unique_utc_days(gap_intervals),
+        trusted_coverage_start_utc=trusted_start,
+        trusted_coverage_end_utc=trusted_end,
+        verified_empty_gap_intervals=len(verified_empty_gaps),
+        provider_positive_gap_intervals=len(provider_positive_gaps),
         superseded_existing_bootstrap=bool(existing_bootstrap),
     )
 
@@ -235,6 +310,9 @@ def load_existing_bootstrap_intervals(client: ClickHouseHttpClient, config: Cove
         "SELECT coverage_id, source, status, coverage_start_utc, coverage_end_utc "
         f"FROM {table_name(config.database, config.coverage_table)} FINAL "
         "WHERE (source = 'bootstrap_existing_news_rows' "
+        "OR source = 'bootstrap_trusted_historical_download' "
+        "OR source = 'bootstrap_verified_empty_provider_gap' "
+        "OR startsWith(source, 'bootstrap_') "
         "OR coverage_id = 'bootstrap_existing_normalized_table') "
         "AND status IN ('running', 'completed') "
         "ORDER BY coverage_start_utc, coverage_id FORMAT JSONEachRow"
@@ -260,7 +338,7 @@ def load_existing_bootstrap_chunk_seconds(client: ClickHouseHttpClient, config: 
     sql = (
         "SELECT metadata_json "
         f"FROM {table_name(config.database, config.coverage_table)} FINAL "
-        "WHERE source = 'bootstrap_existing_news_rows' "
+        "WHERE startsWith(source, 'bootstrap_') "
         "AND status IN ('running', 'completed') "
         "ORDER BY updated_at_utc DESC LIMIT 1 FORMAT JSONEachRow"
     )
@@ -299,6 +377,133 @@ def load_non_empty_bucket_counts(
         start = parse_clickhouse_datetime(str(row["bucket_start"]))
         buckets.append(BucketCount(start_utc=start, end_utc=start + timedelta(seconds=chunk_seconds), rows=int(row.get("rows") or 0)))
     return buckets
+
+
+def count_news_rows(
+    client: ClickHouseHttpClient,
+    config: CoverageManifestConfig,
+    start_utc: datetime,
+    end_utc: datetime,
+) -> int:
+    sql = (
+        "SELECT count() "
+        f"FROM {table_name(config.database, config.normalized_table)} "
+        f"WHERE published_at_utc >= {sql_string(clickhouse_datetime64(start_utc))} "
+        f"AND published_at_utc < {sql_string(clickhouse_datetime64(end_utc))}"
+    )
+    return int((client.execute(sql).strip() or "0").splitlines()[0])
+
+
+def trusted_interval_is_covered(intervals: list[CoverageInterval], start_utc: datetime, end_utc: datetime) -> bool:
+    if end_utc <= start_utc:
+        return True
+    merged = merge_intervals(intervals, tolerance=timedelta())
+    for interval in merged:
+        if interval.start_utc <= start_utc and interval.end_utc >= end_utc:
+            return True
+    return False
+
+
+def bucket_run_to_bootstrap_run(run: list[BucketCount], chunk_seconds: int, config: CoverageManifestConfig) -> BootstrapCoverageRun:
+    return BootstrapCoverageRun(
+        start_utc=run[0].start_utc,
+        end_utc=run[-1].end_utc,
+        source="bootstrap_existing_news_rows",
+        rows=sum(bucket.rows for bucket in run),
+        metadata={
+            "source_table": f"{config.database}.{config.normalized_table}",
+            "bootstrap_mode": "bucketed_existing_news_rows",
+            "chunk_seconds": chunk_seconds,
+            "bucket_count": len(run),
+        },
+    )
+
+
+def should_probe_gap(
+    gap: CoverageGap,
+    verify_gaps_after_utc: datetime | None,
+    gap_probe: Callable[[CoverageGap], bool] | None,
+) -> bool:
+    if gap_probe is None:
+        return False
+    if verify_gaps_after_utc is None:
+        return True
+    return gap.end_utc > verify_gaps_after_utc.astimezone(UTC)
+
+
+def merge_bootstrap_coverage_runs(runs: list[BootstrapCoverageRun]) -> list[BootstrapCoverageRun]:
+    ordered = sorted((run for run in runs if run.end_utc > run.start_utc), key=lambda item: (item.start_utc, item.end_utc))
+    merged: list[BootstrapCoverageRun] = []
+    for run in ordered:
+        if not merged:
+            merged.append(run)
+            continue
+        previous = merged[-1]
+        if run.start_utc <= previous.end_utc:
+            merged[-1] = BootstrapCoverageRun(
+                start_utc=previous.start_utc,
+                end_utc=max(previous.end_utc, run.end_utc),
+                source=merge_bootstrap_sources(previous.source, run.source),
+                rows=previous.rows + run.rows,
+                metadata=merge_bootstrap_metadata(previous.metadata, run.metadata),
+            )
+        else:
+            merged.append(run)
+    return merged
+
+
+def merge_bootstrap_sources(left: str, right: str) -> str:
+    if left == right:
+        return left
+    values = sorted({item for source in [left, right] for item in source.split("+") if item})
+    return "+".join(values)
+
+
+def merge_bootstrap_metadata(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    modes = sorted({str(left.get("bootstrap_mode") or ""), str(right.get("bootstrap_mode") or "")} - {""})
+    sources = sorted({str(left.get("source_table") or ""), str(right.get("source_table") or "")} - {""})
+    output = {
+        "bootstrap_mode": "merged_bootstrap_coverage",
+        "merged_modes": modes,
+    }
+    if sources:
+        output["source_table"] = sources[0] if len(sources) == 1 else sources
+    for key in ["trusted_coverage_start_utc", "trusted_coverage_end_utc", "chunk_seconds"]:
+        value = left.get(key) if key in left else right.get(key)
+        if value is not None:
+            output[key] = value
+    return output
+
+
+def coverage_snapshots_from_bootstrap_runs(
+    runs: list[BootstrapCoverageRun],
+    chunk_seconds: int,
+    config: CoverageManifestConfig,
+) -> list[CoverageSnapshot]:
+    now = datetime.now(UTC)
+    snapshots: list[CoverageSnapshot] = []
+    for index, run in enumerate(runs, start=1):
+        snapshots.append(
+            CoverageSnapshot(
+                coverage_id=f"{run.source}_{index:08d}_{filename_time(run.start_utc)}_{filename_time(run.end_utc)}",
+                run_id="bootstrap_normalized_news_coverage",
+                source=run.source,
+                status="completed",
+                coverage_start_utc=run.start_utc,
+                coverage_end_utc=run.end_utc,
+                started_at_utc=now,
+                updated_at_utc=now,
+                closed_at_utc=now,
+                provider_rows=run.rows,
+                processed_rows=run.rows,
+                written_rows=0,
+                metadata={
+                    **(run.metadata or {}),
+                    "chunk_seconds": chunk_seconds,
+                },
+            )
+        )
+    return snapshots
 
 
 def coverage_snapshots_from_bucket_runs(runs: list[list[BucketCount]], chunk_seconds: int, config: CoverageManifestConfig) -> list[CoverageSnapshot]:

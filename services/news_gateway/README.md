@@ -155,21 +155,29 @@ On startup:
 
 1. Preflight creates the coverage table if it does not already exist.
 2. If the coverage table is empty, the gateway discovers historical coverage
-   from the existing normalized news table. It reads the min/max
-   `published_at_utc`, splits that range into
-   `NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS` buckets, counts news in
-   every bucket, and writes merged coverage rows only for adjacent non-empty
-   buckets. The default bucket is one hour.
+   from the existing normalized news table. The default bootstrap treats
+   `2010-01-01T00:00:00Z` through `2026-06-01T00:00:00Z` as trusted historical
+   coverage because that range was fully downloaded in the historical Benzinga
+   backfill. This creates one coverage interval for the trusted range instead
+   of thousands of rows split by quiet news hours.
    This historical discovery is not repeated after the manifest has rows unless
    `NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST=true` is set.
-3. Buckets with zero existing news are treated as unknown gaps, not as proven
-   empty time. They must be checked against the provider before they become
-   covered.
-4. The gateway reads all coverage intervals from the manifest.
-5. Adjacent or overlapping intervals are merged using
+3. For data after the trusted historical end, the gateway splits the normalized
+   table range into `NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS` buckets,
+   currently one hour. Adjacent non-empty buckets become coverage candidates.
+4. Empty bucket runs after `NEWS_BENZINGA_BOOTSTRAP_VERIFY_GAPS_AFTER_UTC` are
+   checked with a cheap Benzinga provider probe that requests only one row. If
+   the provider returns zero rows, the interval is marked covered-empty and is
+   merged into neighboring coverage. If the provider returns at least one row,
+   the interval remains a real gap so normal startup gap fill can download and
+   insert the missing rows.
+5. Buckets with zero existing news that are outside the trusted range and are
+   not provider-verified remain unknown gaps.
+6. The gateway reads all coverage intervals from the manifest.
+7. Adjacent or overlapping intervals are merged using
    `NEWS_BENZINGA_POLL_OVERLAP_SECONDS` as tolerance.
-6. Gaps between merged coverage intervals are identified.
-7. The trailing gap from the last coverage timestamp to current UTC is always
+8. Gaps between merged coverage intervals are identified.
+9. The trailing gap from the last coverage timestamp to current UTC is always
    included in startup planning. That catch-up creates both news rows and
    coverage rows before normal polling continues.
 
@@ -408,6 +416,10 @@ NEWS_BENZINGA_POLL_OVERLAP_SECONDS=120
 NEWS_BENZINGA_STARTUP_AUTO_FILL_MAX_GAP_DAYS=30
 NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS=3600
 NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST=false
+NEWS_BENZINGA_BOOTSTRAP_TRUSTED_COVERAGE_START_UTC=2010-01-01T00:00:00Z
+NEWS_BENZINGA_BOOTSTRAP_TRUSTED_COVERAGE_END_UTC=2026-06-01T00:00:00Z
+NEWS_BENZINGA_BOOTSTRAP_VERIFY_GAPS_AFTER_UTC=2024-01-01T00:00:00Z
+NEWS_BENZINGA_BOOTSTRAP_PROBE_RECENT_GAPS=true
 NEWS_BENZINGA_GAP_FILL_CHUNK_MINUTES=90
 NEWS_BENZINGA_STARTUP_GAP_FILL_WORKERS=4
 ```
