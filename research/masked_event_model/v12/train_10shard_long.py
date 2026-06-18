@@ -43,7 +43,7 @@ DEFAULTS: dict[str, Any] = {
     "decoder_layers": 4,
     "ffn_mult": 4,
     "dropout": 0.08,
-    "decoder_force_fp32": True,
+    "decoder_force_fp32": False,
     "event_mask_ratio": 0.70,
     "event_mask_schedule": "fixed",
     "min_masked_events": 1,

@@ -117,16 +117,15 @@ The final long-run launcher for the per-masked-event MLP decoder path is:
 python research\masked_event_model\v12\train_10shard_long.py --fresh-start
 ```
 
-To test whether the cheaper MLP decoder is stable without the conservative FP32
-decoder path, run the same launcher with FP16 AMP and decoder FP32 disabled:
+By default this v12 launcher keeps the cheaper MLP decoder inside the active AMP
+dtype. To run the explicit FP16 decoder experiment:
 
 ```powershell
-python research\masked_event_model\v12\train_10shard_long.py --fresh-start --run-name v12-mlpdecoder-fp16decoder-fixedmask070-emb32-bs4096-10shards --amp-dtype fp16 --no-decoder-force-fp32
+python research\masked_event_model\v12\train_10shard_long.py --fresh-start --run-name v12-mlpdecoder-fp16decoder-fixedmask070-emb32-bs4096-10shards --amp-dtype fp16
 ```
 
-If the FP16 decoder run raises non-finite loss/gradient errors, revert to the
-stable default by removing `--no-decoder-force-fp32`; the launcher defaults back
-to `decoder_force_fp32=True`.
+If the FP16 decoder run raises non-finite loss/gradient errors, compare against
+the conservative decoder path with `--decoder-force-fp32`.
 
 Defaults are medium `d_model=256`, `embedding_dim=32`, `batch_size=4096`, 10
 training shards, 4 epochs, one cosine cycle per selected-shard epoch,
