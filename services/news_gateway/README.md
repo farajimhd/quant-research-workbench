@@ -94,25 +94,59 @@ are safe.
 
 ## Gap Handling
 
-On startup the service reads:
+The gateway uses a coverage manifest, not only the newest news timestamp. The
+manifest table records time windows that were successfully fetched and written.
+This is required because `max(published_at_utc)` can hide internal holes.
 
-```sql
-SELECT max(published_at_utc)
-FROM q_live.benzinga_news_normalized_v1
+Coverage is stored in:
+
+```text
+q_live.benzinga_news_coverage_manifest_v1
 ```
 
-Then it subtracts `NEWS_BENZINGA_POLL_OVERLAP_SECONDS` from that timestamp and
-compares the resulting gap against current UTC time.
+The table is a `ReplacingMergeTree` keyed by `coverage_id`. The gateway inserts
+replacement rows instead of using ClickHouse mutations. Query it with `FINAL`
+when the latest state of a coverage segment matters.
+
+On startup:
+
+1. Preflight creates the coverage table if it does not already exist.
+2. If the coverage table is empty, the gateway bootstraps one initial coverage
+   row from the existing normalized news table using the current min/max
+   `published_at_utc`. This preserves existing historical data as already
+   loaded, but future holes are tracked by explicit coverage rows.
+3. The gateway reads all coverage intervals from the manifest.
+4. Adjacent or overlapping intervals are merged using
+   `NEWS_BENZINGA_POLL_OVERLAP_SECONDS` as tolerance.
+5. Gaps between merged coverage intervals are identified.
+6. A trailing gap ending at current UTC is ignored only when normal live
+   lookback can still cover it.
 
 Behavior:
 
 | Situation | Action |
 | --- | --- |
-| No ClickHouse watermark | Live polling starts with normal lookback. |
-| Gap fits inside normal lookback | Live polling covers it. |
-| Gap is larger than lookback and <= 3 days | Service starts background gap fill. |
-| Gap is > 3 days and running on workstation | Service starts background gap fill automatically. |
-| Gap is > 3 days and not running on workstation | Service writes a workstation-ready PowerShell gap-fill script and manifest, prints their paths, and continues live polling. |
+| No coverage intervals | Live polling starts with normal lookback. |
+| Only trailing gap and live lookback covers it | Live polling covers it. |
+| One or more coverage gaps and largest gap is <= 3 days | Service starts background gap fill for all gaps. |
+| One or more coverage gaps, largest gap is > 3 days, and running on workstation | Service starts background gap fill for all gaps automatically. |
+| One or more coverage gaps, largest gap is > 3 days, and not running on workstation | Service writes workstation-ready PowerShell gap-fill scripts and a manifest, prints their paths, and continues live polling. |
+
+During live operation the gateway opens a live coverage segment. It extends that
+segment only after a provider window is fetched, normalized, and written without
+row-level normalization failures. If provider calls fail long enough that the
+next successful window no longer overlaps the prior segment, the gateway closes
+the old segment and opens a new one. That prevents a long-running but failing
+process from pretending that the failed interval was covered.
+
+Graceful shutdown writes a final replacement row for the live segment with
+`status=completed`. If the process is killed, the latest replacement row still
+contains the last successfully written `coverage_end_utc`, so the next startup
+can see the missing tail.
+
+Manual and automatic provider gap fills also write completed coverage rows after
+successful bucket processing. Without those rows, a manually filled interval
+would be loaded into the news table but still look uncovered to the gateway.
 
 Large non-workstation gaps are not auto-filled because the workstation has the
 correct storage root and compute. The generated manifest is written under
@@ -261,6 +295,7 @@ CLICKHOUSE_PASSWORD
 NEWS_BENZINGA_CLICKHOUSE_DATABASE=q_live
 NEWS_BENZINGA_NORMALIZED_TABLE=benzinga_news_normalized_v1
 NEWS_BENZINGA_TICKER_TABLE=benzinga_news_ticker_v1
+NEWS_BENZINGA_COVERAGE_TABLE=benzinga_news_coverage_manifest_v1
 ```
 
 Credential fallback order is `NEWS_*`, `QLIVE_MIGRATION_*`, `QMD_*`,
@@ -330,7 +365,7 @@ Startup fails while constructing the provider client. Set `MASSIVE_API_KEY`.
 
 ### ClickHouse latest-watermark query fails
 
-Startup fails before polling. The latest-watermark query uses the same
+Startup fails before polling. The coverage-manifest query uses the same
 ClickHouse dependency that preflight validated; if it fails, the service does
 not treat the failure as `no_watermark` and does not start batch work.
 

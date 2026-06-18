@@ -4,7 +4,12 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from pipelines.news.benzinga.core.clickhouse_writer import DEFAULT_DATABASE, DEFAULT_NORMALIZED_TABLE, DEFAULT_TICKER_TABLE
+from pipelines.news.benzinga.core.clickhouse_writer import (
+    DEFAULT_COVERAGE_TABLE,
+    DEFAULT_DATABASE,
+    DEFAULT_NORMALIZED_TABLE,
+    DEFAULT_TICKER_TABLE,
+)
 from pipelines.news.benzinga.news_benzinga_raw_download import DEFAULT_ENDPOINT
 from pipelines.news.benzinga.news_benzinga_url_policy import default_clickhouse_password, default_clickhouse_url, default_clickhouse_user
 
@@ -17,6 +22,7 @@ class ClickHouseTargetConfig:
     database: str = DEFAULT_DATABASE
     normalized_table: str = DEFAULT_NORMALIZED_TABLE
     ticker_table: str = DEFAULT_TICKER_TABLE
+    coverage_table: str = DEFAULT_COVERAGE_TABLE
 
     @classmethod
     def from_env(cls) -> "ClickHouseTargetConfig":
@@ -27,6 +33,7 @@ class ClickHouseTargetConfig:
             database=os.environ.get("NEWS_BENZINGA_CLICKHOUSE_DATABASE") or DEFAULT_DATABASE,
             normalized_table=os.environ.get("NEWS_BENZINGA_NORMALIZED_TABLE") or DEFAULT_NORMALIZED_TABLE,
             ticker_table=os.environ.get("NEWS_BENZINGA_TICKER_TABLE") or DEFAULT_TICKER_TABLE,
+            coverage_table=os.environ.get("NEWS_BENZINGA_COVERAGE_TABLE") or DEFAULT_COVERAGE_TABLE,
         )
 
 

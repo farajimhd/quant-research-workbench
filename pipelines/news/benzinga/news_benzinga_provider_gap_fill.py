@@ -16,10 +16,17 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from pipelines.news.benzinga.core.coverage_manifest import (  # noqa: E402
+    CoverageManifestConfig,
+    CoverageSnapshot,
+    ensure_coverage_manifest_table,
+    insert_coverage_snapshots,
+)
 from pipelines.news.benzinga.news_benzinga_normalize import artifact_path_for_payload, parse_provider_datetime, write_raw_payload  # noqa: E402
 from pipelines.news.benzinga.news_pipeline.config import BenzingaPipelineConfig, ClickHouseTargetConfig  # noqa: E402
 from pipelines.news.benzinga.news_pipeline.pipeline import BenzingaNewsPipeline, ProcessedNewsItem  # noqa: E402
 from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig  # noqa: E402
+from research.mlops.clickhouse import ClickHouseHttpClient  # noqa: E402
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 
 
@@ -75,6 +82,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--database", default=ClickHouseTargetConfig.from_env().database)
     parser.add_argument("--normalized-table", default=ClickHouseTargetConfig.from_env().normalized_table)
     parser.add_argument("--ticker-table", default=ClickHouseTargetConfig.from_env().ticker_table)
+    parser.add_argument("--coverage-table", default=ClickHouseTargetConfig.from_env().coverage_table)
     parser.add_argument("--execute", action="store_true")
     return parser.parse_args()
 
@@ -100,7 +108,17 @@ def main() -> None:
         database=args.database,
         normalized_table=args.normalized_table,
         ticker_table=args.ticker_table,
+        coverage_table=args.coverage_table,
     )
+    coverage_config = CoverageManifestConfig(
+        database=args.database,
+        coverage_table=args.coverage_table,
+        normalized_table=args.normalized_table,
+        storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
+    )
+    coverage_client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
+    if args.execute:
+        ensure_coverage_manifest_table(coverage_client, coverage_config)
     writer = BenzingaNewsPipeline(BenzingaPipelineConfig(policy_json=args.policy_json, text_limit_chars=args.text_limit_chars, raw_root_win=Path(args.raw_root_win), output_root_win=run_root))
     print("=" * 96, flush=True)
     print("Benzinga provider gap fill", flush=True)
@@ -113,6 +131,7 @@ def main() -> None:
     print("=" * 96, flush=True)
     completed = failed = provider_rows = processed_rows = failed_rows = skipped_existing = written_rows = 0
     pending: list[ProcessedNewsItem] = []
+    coverage_ready: list[BucketResult] = []
     with result_path.open("w", encoding="utf-8") as results, error_path.open("w", encoding="utf-8") as errors:
         with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, args.workers)) as pool:
             futures = [pool.submit(process_bucket, job) for job in jobs]
@@ -125,6 +144,8 @@ def main() -> None:
                     processed_rows += outcome.processed_rows
                     failed_rows += outcome.failed_rows
                     pending.extend(outcome.processed or [])
+                    if outcome.failed_rows == 0:
+                        coverage_ready.append(outcome)
                     results.write(json.dumps(public, ensure_ascii=False, default=str) + "\n")
                     while len(pending) >= args.batch_size:
                         batch = pending[: args.batch_size]
@@ -145,6 +166,11 @@ def main() -> None:
             summary = writer.write_many(pending, target=target, execute=args.execute, skip_existing=True)
             skipped_existing += summary.skipped_existing
             written_rows += summary.normalized_rows_inserted
+    coverage_rows_inserted = 0
+    if args.execute and coverage_ready:
+        snapshots = coverage_snapshots_for_buckets(run_id, coverage_ready)
+        insert_coverage_snapshots(coverage_client, coverage_config, snapshots)
+        coverage_rows_inserted = len(snapshots)
     summary_payload = {
         "status": "ok" if failed == 0 else "completed_with_errors",
         "buckets": len(jobs),
@@ -155,6 +181,7 @@ def main() -> None:
         "failed_rows": failed_rows,
         "written_rows": written_rows,
         "skipped_existing": skipped_existing,
+        "coverage_rows_inserted": coverage_rows_inserted,
         "execute": args.execute,
         "result_path": str(result_path),
         "error_path": str(error_path),
@@ -250,6 +277,40 @@ def parse_utc(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def coverage_snapshots_for_buckets(run_id: str, buckets: list[BucketResult]) -> list[CoverageSnapshot]:
+    now = datetime.now(UTC)
+    snapshots: list[CoverageSnapshot] = []
+    for bucket in buckets:
+        start = parse_utc(bucket.start_utc)
+        end = parse_utc(bucket.end_utc)
+        snapshots.append(
+            CoverageSnapshot(
+                coverage_id=f"provider_gap_fill_{run_id}_{bucket.bucket_index:08d}",
+                run_id=f"provider_gap_fill_{run_id}",
+                source="provider_gap_fill",
+                status="completed",
+                coverage_start_utc=start,
+                coverage_end_utc=end,
+                started_at_utc=now,
+                updated_at_utc=now,
+                closed_at_utc=now,
+                poll_runs=1,
+                provider_rows=bucket.provider_rows,
+                processed_rows=bucket.processed_rows,
+                written_rows=0,
+                failed_rows=bucket.failed_rows,
+                skipped_existing=0,
+                metadata={
+                    "bucket_index": bucket.bucket_index,
+                    "pages": bucket.pages,
+                    "saturated": bucket.saturated,
+                    "mode": "provider_gap_fill",
+                },
+            )
+        )
+    return snapshots
 
 
 if __name__ == "__main__":

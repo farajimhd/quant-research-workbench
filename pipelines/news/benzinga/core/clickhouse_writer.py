@@ -11,6 +11,7 @@ from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_str
 DEFAULT_DATABASE = "q_live"
 DEFAULT_NORMALIZED_TABLE = "benzinga_news_normalized_v1"
 DEFAULT_TICKER_TABLE = "benzinga_news_ticker_v1"
+DEFAULT_COVERAGE_TABLE = "benzinga_news_coverage_manifest_v1"
 
 NORMALIZED_COLUMNS = [
     "provider",

@@ -44,6 +44,7 @@ class NewsGatewayConfig:
     clickhouse_database: str
     normalized_table: str
     ticker_table: str
+    coverage_table: str
     recent_history_limit: int
     write_batch_size: int
     policy_json: str
@@ -103,6 +104,7 @@ class NewsGatewayConfig:
             clickhouse_database=env_string("NEWS_BENZINGA_CLICKHOUSE_DATABASE", env_string("NEWS_CLICKHOUSE_DATABASE", "q_live")),
             normalized_table=env_string("NEWS_BENZINGA_NORMALIZED_TABLE", "benzinga_news_normalized_v1"),
             ticker_table=env_string("NEWS_BENZINGA_TICKER_TABLE", "benzinga_news_ticker_v1"),
+            coverage_table=env_string("NEWS_BENZINGA_COVERAGE_TABLE", "benzinga_news_coverage_manifest_v1"),
             recent_history_limit=env_int("NEWS_RECENT_HISTORY_LIMIT", 5_000),
             write_batch_size=env_int("NEWS_CLICKHOUSE_MAX_BATCH", 1_000),
             policy_json=env_string("NEWS_BENZINGA_URL_DOMAIN_POLICY_JSON", ""),
