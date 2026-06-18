@@ -9,6 +9,8 @@ from pathlib import Path
 WORKSTATION_COMPUTER_NAME = "DESKTOP-SAAI85T"
 WORKSTATION_DATA_ROOT_WIN = Path("D:/market-data")
 WORKSTATION_SHARE_DATA_ROOT_WIN = Path(r"\\DESKTOP-SAAI85T\Workstation-D\market-data")
+WORKSTATION_CODE_ROOT_WIN = Path("D:/TradingML/codes/quant_research_workbench_pipelines")
+WORKSTATION_SHARE_CODE_ROOT_WIN = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines")
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +21,7 @@ class NewsGatewayConfig:
     data_root_win: Path
     raw_root_win: Path
     prepared_root_win: Path
+    manual_gap_manifest_root_win: Path
     manual_gap_script_root_win: Path
     workstation_code_root_win: Path
     workstation_conda_env: str
@@ -56,10 +59,17 @@ class NewsGatewayConfig:
         data_root = resolve_data_root()
         raw_root = Path(env_string("NEWS_BENZINGA_RAW_ROOT_WIN", str(data_root / "news-benzinga" / "raw")))
         prepared_root = Path(env_string("NEWS_BENZINGA_PREPARED_ROOT_WIN", str(data_root / "prepared")))
+        manual_gap_manifest_root = Path(
+            env_string(
+                "NEWS_BENZINGA_MANUAL_GAP_MANIFEST_ROOT_WIN",
+                str(prepared_root / "news_gateway_manual_gap_fill"),
+            )
+        )
+        workstation_code_root = Path(env_string("NEWS_GATEWAY_WORKSTATION_CODE_ROOT_WIN", str(WORKSTATION_CODE_ROOT_WIN)))
         manual_gap_script_root = Path(
             env_string(
                 "NEWS_BENZINGA_MANUAL_GAP_SCRIPT_ROOT_WIN",
-                str(prepared_root / "news_gateway_manual_gap_fill"),
+                str(workstation_code_root / "generated" / "news_gateway_manual_gap_fill"),
             )
         )
         clickhouse_password = default_clickhouse_password()
@@ -70,8 +80,9 @@ class NewsGatewayConfig:
             data_root_win=data_root,
             raw_root_win=raw_root,
             prepared_root_win=prepared_root,
+            manual_gap_manifest_root_win=manual_gap_manifest_root,
             manual_gap_script_root_win=manual_gap_script_root,
-            workstation_code_root_win=Path(env_string("NEWS_GATEWAY_WORKSTATION_CODE_ROOT_WIN", "D:/TradingML/codes/quant_research_workbench_pipelines")),
+            workstation_code_root_win=workstation_code_root,
             workstation_conda_env=env_string("NEWS_GATEWAY_WORKSTATION_CONDA_ENV", "ml4t"),
             is_workstation=is_workstation_host(),
             massive_api_key_present=bool(env_string("MASSIVE_API_KEY", "")),
@@ -106,6 +117,7 @@ class NewsGatewayConfig:
         payload["data_root_win"] = str(self.data_root_win)
         payload["raw_root_win"] = str(self.raw_root_win)
         payload["prepared_root_win"] = str(self.prepared_root_win)
+        payload["manual_gap_manifest_root_win"] = str(self.manual_gap_manifest_root_win)
         payload["manual_gap_script_root_win"] = str(self.manual_gap_script_root_win)
         payload["workstation_code_root_win"] = str(self.workstation_code_root_win)
         return payload

@@ -115,18 +115,22 @@ Behavior:
 | Gap is > 3 days and not running on workstation | Service writes a workstation-ready PowerShell gap-fill script and manifest, prints their paths, and continues live polling. |
 
 Large non-workstation gaps are not auto-filled because the workstation has the
-correct storage root and compute. The generated script is written under:
+correct storage root and compute. The generated manifest is written under
+`market-data`:
 
 ```text
-<data-root>/prepared/news_gateway_manual_gap_fill/<run_id>/<run_id>_run_all.ps1
 <data-root>/prepared/news_gateway_manual_gap_fill/<run_id>/<run_id>_manifest.json
 ```
 
-The script is generated on the workstation share when the gateway runs on the
-laptop, so on the workstation it is available under the matching
-`D:/market-data/prepared/...` path. The gateway writes one master `*_run_all.ps1`
-script plus one child script per interval. This lets the same mechanism handle
-non-contiguous gap plans without asking the user to manually assemble commands.
+Generated PowerShell code is written under the TradingML runtime/code tree:
+
+```text
+D:/TradingML/codes/quant_research_workbench_pipelines/generated/news_gateway_manual_gap_fill/<run_id>/<run_id>_run_all.ps1
+```
+
+The gateway writes one master `*_run_all.ps1` script plus one child script per
+interval. This lets the same mechanism handle non-contiguous gap plans without
+asking the user to manually assemble commands.
 
 ## ClickHouse Writes
 
@@ -268,7 +272,8 @@ Storage:
 NEWS_GATEWAY_DATA_ROOT_WIN=<optional explicit root>
 NEWS_BENZINGA_RAW_ROOT_WIN=<optional explicit raw root>
 NEWS_BENZINGA_PREPARED_ROOT_WIN=<optional explicit prepared root>
-NEWS_BENZINGA_MANUAL_GAP_SCRIPT_ROOT_WIN=<optional explicit script root>
+NEWS_BENZINGA_MANUAL_GAP_MANIFEST_ROOT_WIN=<optional explicit manifest root>
+NEWS_BENZINGA_MANUAL_GAP_SCRIPT_ROOT_WIN=<optional explicit script/code root>
 NEWS_GATEWAY_WORKSTATION_CODE_ROOT_WIN=D:/TradingML/codes/quant_research_workbench_pipelines
 NEWS_GATEWAY_WORKSTATION_CONDA_ENV=ml4t
 ```
