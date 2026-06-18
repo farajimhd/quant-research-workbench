@@ -164,7 +164,7 @@ On startup:
    `NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST=true` is set.
 3. For data after the trusted historical end, the gateway splits the normalized
    table range into `NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS` buckets,
-   currently one hour. Adjacent non-empty buckets become coverage candidates.
+   currently 300 seconds. Adjacent non-empty buckets become coverage candidates.
 4. Empty bucket runs after `NEWS_BENZINGA_BOOTSTRAP_VERIFY_GAPS_AFTER_UTC` are
    checked with a cheap Benzinga provider probe that requests only one row. If
    the provider returns zero rows, the interval is marked covered-empty and is
@@ -218,7 +218,7 @@ On startup the gateway also compacts active coverage rows in the table itself.
 It does not rely only on read-time merging. Existing active rows are written back
 as `superseded`, and merged replacement rows are inserted with source
 `coverage_compacted`. The compaction tolerance defaults to the coverage discovery
-bucket size, currently one hour. The tolerance is stored in `metadata_json` so a
+bucket size, currently 300 seconds. The tolerance is stored in `metadata_json` so a
 future audit can tell exactly why two neighboring intervals were treated as one
 continuous coverage interval.
 
@@ -226,7 +226,7 @@ Controls:
 
 ```text
 NEWS_BENZINGA_COVERAGE_COMPACT_ON_STARTUP=true
-NEWS_BENZINGA_COVERAGE_COMPACT_TOLERANCE_SECONDS=3600
+NEWS_BENZINGA_COVERAGE_COMPACT_TOLERANCE_SECONDS=300
 ```
 
 Large non-workstation gaps are not auto-filled because the workstation has the
@@ -414,7 +414,7 @@ NEWS_BENZINGA_CLOSED_POLL_SECONDS=60
 NEWS_BENZINGA_LOOKBACK_MINUTES=15
 NEWS_BENZINGA_POLL_OVERLAP_SECONDS=120
 NEWS_BENZINGA_STARTUP_AUTO_FILL_MAX_GAP_DAYS=30
-NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS=3600
+NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS=300
 NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST=false
 NEWS_BENZINGA_BOOTSTRAP_TRUSTED_COVERAGE_START_UTC=2010-01-01T00:00:00Z
 NEWS_BENZINGA_BOOTSTRAP_TRUSTED_COVERAGE_END_UTC=2026-06-01T00:00:00Z

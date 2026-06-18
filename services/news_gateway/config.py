@@ -75,7 +75,7 @@ class NewsGatewayConfig:
         raw_root = Path(env_string("NEWS_BENZINGA_RAW_ROOT_WIN", str(data_root / "news-benzinga" / "raw")))
         prepared_root = Path(env_string("NEWS_BENZINGA_PREPARED_ROOT_WIN", str(data_root / "prepared")))
         log_root = Path(env_string("NEWS_GATEWAY_LOG_ROOT_WIN", str(prepared_root / "news_gateway" / "logs")))
-        coverage_discovery_chunk_seconds = env_int("NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS", 3600)
+        coverage_discovery_chunk_seconds = env_int("NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS", 300)
         manual_gap_manifest_root = Path(
             env_string(
                 "NEWS_BENZINGA_MANUAL_GAP_MANIFEST_ROOT_WIN",

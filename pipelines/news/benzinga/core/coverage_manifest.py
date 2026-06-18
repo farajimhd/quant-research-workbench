@@ -168,7 +168,7 @@ def bootstrap_coverage_from_normalized_table(
     client: ClickHouseHttpClient,
     config: CoverageManifestConfig,
     *,
-    chunk_seconds: int = 3600,
+    chunk_seconds: int = 300,
     force_rebuild: bool = False,
     trusted_coverage_start_utc: datetime | None = None,
     trusted_coverage_end_utc: datetime | None = None,
