@@ -24,6 +24,9 @@ class NewsSummary:
     has_body: int
     has_external_text: int
     has_pdf: int
+    external_fetch_status: str
+    pdf_extract_status: str
+    normalizer_version: str
     text_hash: str
 
 
@@ -98,6 +101,9 @@ def row_to_summary(row: dict[str, Any]) -> NewsSummary:
         has_body=int(row.get("has_body") or 0),
         has_external_text=int(row.get("has_external_text") or 0),
         has_pdf=int(row.get("has_pdf") or 0),
+        external_fetch_status=str(row.get("external_fetch_status") or ""),
+        pdf_extract_status=str(row.get("pdf_extract_status") or ""),
+        normalizer_version=str(row.get("normalizer_version") or ""),
         text_hash=str(row.get("text_hash") or ""),
     )
 

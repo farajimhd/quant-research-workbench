@@ -309,7 +309,9 @@ Dashboard content:
   failed publish job counts
 - current operation phase and message, including bootstrap, provider fetch,
   processing, writing, and gap-fill chunks
-- recent news table with time, tickers, title, and quality flags
+- recent news table with fixed columns for market time, Vancouver time, UTC
+  time, tickers, title, quality flags, and compact enrichment/PDF/canonical
+  processing status
 
 Controls:
 

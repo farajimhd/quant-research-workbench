@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from rich import box
 from rich.columns import Columns
@@ -13,6 +14,10 @@ from rich.table import Table
 
 if TYPE_CHECKING:
     from services.news_gateway.gateway import NewsGateway
+
+
+MARKET_TZ = ZoneInfo("America/New_York")
+VANCOUVER_TZ = ZoneInfo("America/Vancouver")
 
 
 async def run_terminal_dashboard(gateway: "NewsGateway") -> None:
@@ -185,10 +190,10 @@ def preflight_panel(metrics: dict[str, Any]) -> Panel:
 def metrics_panel(gateway: "NewsGateway", metrics: dict[str, Any]) -> Panel:
     status = str(metrics.get("last_cycle_status") or "starting")
     color = status_color(status)
-    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
-    table.add_column("Metric", style="cyan", no_wrap=True, ratio=2)
-    table.add_column("Total", justify="right")
-    table.add_column("Last Cycle", justify="right")
+    table = Table(box=box.SIMPLE, expand=False, show_edge=False, padding=(0, 1))
+    table.add_column("Metric", style="cyan", no_wrap=True, width=18)
+    table.add_column("Total", justify="right", no_wrap=True, width=14)
+    table.add_column("Last Cycle", justify="right", no_wrap=True, width=18)
     table.add_row("Status", f"[{color}]{status_label(status)}[/{color}]", compact_time(str(metrics.get("last_poll_at_utc") or "")))
     table.add_row("Poll runs", fmt(metrics.get("poll_runs")), compact_time(str(metrics.get("last_poll_at_utc") or "")))
     table.add_row("Provider rows", fmt(metrics.get("provider_rows")), fmt(metrics.get("last_cycle_provider_rows")))
@@ -230,21 +235,28 @@ def news_table(snapshot: dict[str, Any]) -> Table:
     row_limit = max(1, int(snapshot.get("limit") or len(rows) or 1))
     display_rows = list(rows[:row_limit])
     table = Table(title=f"Latest News ({len(rows)})", box=box.ROUNDED, expand=True, header_style="bold cyan")
-    table.add_column("Published UTC", no_wrap=True, width=19, style="dim")
-    table.add_column("Tickers", no_wrap=True, max_width=30, style="bold magenta")
+    table.add_column("ET", no_wrap=True, width=8, style="cyan")
+    table.add_column("VAN", no_wrap=True, width=8, style="cyan")
+    table.add_column("UTC", no_wrap=True, width=16, style="dim")
+    table.add_column("Tickers", no_wrap=True, width=18, style="bold magenta")
     table.add_column("Headline", overflow="fold", ratio=1)
-    table.add_column("Flags", no_wrap=True, max_width=28, style="yellow")
+    table.add_column("Flags", no_wrap=True, width=24, style="yellow")
+    table.add_column("Process", no_wrap=True, width=30)
     for row in display_rows:
-        tickers = ", ".join(row.get("tickers") or []) or "-"
-        flags = ", ".join(row.get("content_quality_flags") or []) or "-"
+        published_at = str(row.get("published_at_utc") or "")
+        tickers = truncate(", ".join(row.get("tickers") or []) or "-", 18)
+        flags = truncate(", ".join(row.get("content_quality_flags") or []) or "-", 24)
         table.add_row(
-            compact_time(str(row.get("published_at_utc") or "")),
+            local_time(published_at, MARKET_TZ),
+            local_time(published_at, VANCOUVER_TZ),
+            compact_time(published_at)[:16] if published_at else "-",
             tickers,
             truncate(str(row.get("title") or ""), 220),
             flags,
+            processing_status(row),
         )
     while len(display_rows) < row_limit:
-        table.add_row("-", "-", "[dim]No news in memory yet.[/dim]" if not rows and not display_rows else "", "-")
+        table.add_row("-", "-", "-", "-", "[dim]No news in memory yet.[/dim]" if not rows and not display_rows else "", "-", "-")
         display_rows.append({})
     return table
 
@@ -259,6 +271,59 @@ def fmt(value: Any) -> str:
 def compact_time(value: str) -> str:
     text = value.replace("T", " ").replace("Z", "")
     return text[:19] if text else "-"
+
+
+def parse_utc_datetime(value: str) -> datetime | None:
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        if "T" in text:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(UTC)
+        return datetime.fromisoformat(text.replace(" ", "T") + "+00:00").astimezone(UTC)
+    except ValueError:
+        return None
+
+
+def local_time(value: str, timezone: ZoneInfo) -> str:
+    parsed = parse_utc_datetime(value)
+    if parsed is None:
+        return "-"
+    return parsed.astimezone(timezone).strftime("%H:%M:%S")
+
+
+def processing_status(row: dict[str, Any]) -> str:
+    flags = {str(item) for item in row.get("content_quality_flags") or []}
+    external_status = str(row.get("external_fetch_status") or "")
+    pdf_status = str(row.get("pdf_extract_status") or "")
+    has_external = int(row.get("has_external_text") or 0)
+    has_pdf = int(row.get("has_pdf") or 0)
+    normalizer = str(row.get("normalizer_version") or "")
+
+    enrich = "pending" if "background_pending" in flags or external_status == "background_pending" else "done"
+    if "background_enrichment_failed" in flags or "failed" in external_status:
+        enrich = "failed"
+    elif has_external:
+        enrich = "text"
+    elif external_status in {"", "not_attempted"}:
+        enrich = "base"
+    elif external_status:
+        enrich = short_status(external_status)
+
+    pdf = "pdf" if has_pdf else "no_pdf"
+    if "failed" in pdf_status:
+        pdf = "pdf_fail"
+    elif pdf_status and pdf_status not in {"not_attempted", "no_pdf"}:
+        pdf = short_status(pdf_status)
+
+    canonical = "canon" if normalizer else "canon?"
+    return truncate(f"E:{enrich} P:{pdf} C:{canonical}", 30)
+
+
+def short_status(value: str) -> str:
+    text = value.strip().lower().replace("background_", "bg_")
+    text = text.replace("provider_verified_", "").replace("_", "-")
+    return text[:10] if text else "-"
 
 
 def status_color(status: str) -> str:
