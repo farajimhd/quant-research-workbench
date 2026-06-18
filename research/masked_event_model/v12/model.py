@@ -279,13 +279,21 @@ class ChunkEmbeddingBottleneck(nn.Module):
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.encoder_token_to_embedding_space = nn.Linear(config.d_model, config.embedding_dim)
+        self.encoder_token_to_embedding_projection = nn.Sequential(
+            OrderedDict(
+                [
+                    ("encoded_token_to_embedding_width", nn.Linear(config.d_model, config.embedding_dim)),
+                    ("encoded_token_embedding_gelu", nn.GELU()),
+                    ("encoded_token_embedding_layer_norm", nn.LayerNorm(config.embedding_dim)),
+                ]
+            )
+        )
         self.all_projected_tokens_mean_pool = nn.AdaptiveAvgPool1d(1)
         self.chunk_embedding_output = ChunkEmbeddingOutput()
 
     def project_encoded_tokens(self, encoded_tokens: torch.Tensor) -> torch.Tensor:
         # Input shape: [B, T, D]. Output shape: [B, T, Z].
-        return self.encoder_token_to_embedding_space(encoded_tokens)
+        return self.encoder_token_to_embedding_projection(encoded_tokens)
 
     def forward(self, encoded_tokens: torch.Tensor) -> torch.Tensor:
         # Input shape: [B, T, D]. Output shape: [B, T, Z].
@@ -315,7 +323,15 @@ class PerMaskedEventMlpDecoder(nn.Module):
     def __init__(self, *, events_per_chunk: int, config: ModelConfig) -> None:
         super().__init__()
         self.chunk_embedding_layer_norm = nn.LayerNorm(config.embedding_dim)
-        self.chunk_embedding_to_decoder_context = nn.Linear(config.embedding_dim, config.d_model)
+        self.chunk_embedding_to_decoder_context = nn.Sequential(
+            OrderedDict(
+                [
+                    ("chunk_embedding_to_decoder_width", nn.Linear(config.embedding_dim, config.d_model)),
+                    ("chunk_embedding_decoder_context_gelu", nn.GELU()),
+                    ("chunk_embedding_decoder_context_layer_norm", nn.LayerNorm(config.d_model)),
+                ]
+            )
+        )
         self.masked_event_position_embedding_for_decoder = MaskedEventPositionEmbedding(events_per_chunk, config.d_model)
         self.position_memory_mlp_decoder = nn.Sequential(
             OrderedDict(
@@ -327,6 +343,8 @@ class PerMaskedEventMlpDecoder(nn.Module):
                     ("position_memory_contract_to_model_width", nn.Linear(config.ff_dim, config.d_model)),
                     ("position_memory_output_gelu", nn.GELU()),
                     ("position_memory_output_layer_norm", nn.LayerNorm(config.d_model)),
+                    # Deliberately no activation here: BCE-with-logits expects
+                    # unconstrained raw bit logits.
                     ("position_memory_to_16x8_bit_logits", nn.Linear(config.d_model, EVENT_BYTES * BITS_PER_BYTE)),
                 ]
             )
