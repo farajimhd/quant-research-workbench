@@ -118,7 +118,7 @@ def main() -> None:
         print(cfg.public_dict(), flush=True)
         print(json.dumps(report.public_dict(), indent=2), flush=True)
         return
-    uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="info")
+    uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="info", timeout_graceful_shutdown=10)
 
 
 if __name__ == "__main__":

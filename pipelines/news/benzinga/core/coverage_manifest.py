@@ -81,6 +81,7 @@ class CoverageBootstrapSummary:
     covered_intervals: int = 0
     discovered_gap_intervals: int = 0
     discovered_gap_seconds: float = 0.0
+    discovered_gap_unique_days: int = 0
     superseded_existing_bootstrap: bool = False
 
 
@@ -154,24 +155,26 @@ def bootstrap_coverage_from_normalized_table(
     client: ClickHouseHttpClient,
     config: CoverageManifestConfig,
     *,
-    chunk_seconds: int = 300,
+    chunk_seconds: int = 3600,
     force_rebuild: bool = False,
 ) -> CoverageBootstrapSummary:
+    seconds = max(1, int(chunk_seconds))
     row_count = coverage_row_count(client, config)
     existing_bootstrap = load_existing_bootstrap_intervals(client, config) if row_count > 0 else []
     if row_count > 0 and not force_rebuild:
-        return CoverageBootstrapSummary(status="already_bootstrapped", executed=False, chunk_seconds=max(1, chunk_seconds))
+        existing_chunk_seconds = load_existing_bootstrap_chunk_seconds(client, config) if existing_bootstrap else None
+        if not existing_bootstrap or existing_chunk_seconds == seconds:
+            return CoverageBootstrapSummary(status="already_bootstrapped", executed=False, chunk_seconds=seconds)
     sql = (
         "SELECT min(published_at_utc) AS start_utc, max(published_at_utc) AS end_utc, count() AS rows "
         f"FROM {table_name(config.database, config.normalized_table)} FORMAT JSONEachRow"
     )
     row = first_json_row(client.execute(sql))
     if not row or not row.get("start_utc") or not row.get("end_utc") or int(row.get("rows") or 0) == 0:
-        return CoverageBootstrapSummary(status="empty_normalized_table", executed=False, chunk_seconds=max(1, chunk_seconds))
+        return CoverageBootstrapSummary(status="empty_normalized_table", executed=False, chunk_seconds=seconds)
     source_start = parse_clickhouse_datetime(str(row["start_utc"]))
     source_end = parse_clickhouse_datetime(str(row["end_utc"]))
     normalized_rows = int(row.get("rows") or 0)
-    seconds = max(1, int(chunk_seconds))
     bucket_start = floor_time(source_start, seconds)
     bucket_end = ceil_time(source_end, seconds)
     buckets = load_non_empty_bucket_counts(client, config, bucket_start, bucket_end, seconds)
@@ -217,6 +220,7 @@ def bootstrap_coverage_from_normalized_table(
         covered_intervals=len(covered_runs),
         discovered_gap_intervals=len(gap_intervals),
         discovered_gap_seconds=sum(gap.seconds for gap in gap_intervals),
+        discovered_gap_unique_days=count_unique_utc_days(gap_intervals),
         superseded_existing_bootstrap=bool(existing_bootstrap),
     )
 
@@ -230,8 +234,9 @@ def load_existing_bootstrap_intervals(client: ClickHouseHttpClient, config: Cove
     sql = (
         "SELECT coverage_id, source, status, coverage_start_utc, coverage_end_utc "
         f"FROM {table_name(config.database, config.coverage_table)} FINAL "
-        "WHERE source = 'bootstrap_existing_news_rows' "
-        "OR coverage_id = 'bootstrap_existing_normalized_table' "
+        "WHERE (source = 'bootstrap_existing_news_rows' "
+        "OR coverage_id = 'bootstrap_existing_normalized_table') "
+        "AND status IN ('running', 'completed') "
         "ORDER BY coverage_start_utc, coverage_id FORMAT JSONEachRow"
     )
     intervals: list[CoverageInterval] = []
@@ -249,6 +254,25 @@ def load_existing_bootstrap_intervals(client: ClickHouseHttpClient, config: Cove
             )
         )
     return intervals
+
+
+def load_existing_bootstrap_chunk_seconds(client: ClickHouseHttpClient, config: CoverageManifestConfig) -> int | None:
+    sql = (
+        "SELECT metadata_json "
+        f"FROM {table_name(config.database, config.coverage_table)} FINAL "
+        "WHERE source = 'bootstrap_existing_news_rows' "
+        "AND status IN ('running', 'completed') "
+        "ORDER BY updated_at_utc DESC LIMIT 1 FORMAT JSONEachRow"
+    )
+    row = first_json_row(client.execute(sql))
+    if not row:
+        return None
+    try:
+        metadata = json.loads(str(row.get("metadata_json") or "{}"))
+        value = metadata.get("chunk_seconds")
+        return int(value) if value is not None else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def load_non_empty_bucket_counts(
@@ -425,6 +449,19 @@ def merge_intervals(intervals: list[CoverageInterval], *, tolerance: timedelta) 
         else:
             merged.append(interval)
     return merged
+
+
+def count_unique_utc_days(gaps: list[CoverageGap]) -> int:
+    days: set[str] = set()
+    for gap in gaps:
+        if gap.end_utc <= gap.start_utc:
+            continue
+        cursor = gap.start_utc.astimezone(UTC).date()
+        end_day = (gap.end_utc - timedelta(microseconds=1)).astimezone(UTC).date()
+        while cursor <= end_day:
+            days.add(cursor.isoformat())
+            cursor += timedelta(days=1)
+    return len(days)
 
 
 def coverage_row(snapshot: CoverageSnapshot) -> dict[str, Any]:

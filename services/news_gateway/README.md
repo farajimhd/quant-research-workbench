@@ -117,7 +117,7 @@ On startup:
    `published_at_utc`, splits that range into
    `NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS` buckets, counts news in
    every bucket, and writes merged coverage rows only for adjacent non-empty
-   buckets.
+   buckets. The default bucket is one hour.
    This historical discovery is not repeated after the manifest has rows unless
    `NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST=true` is set.
 3. Buckets with zero existing news are treated as unknown gaps, not as proven
@@ -152,10 +152,15 @@ Graceful shutdown writes a final replacement row for the live segment with
 contains the last successfully written `coverage_end_utc`, so the next startup
 can see the missing tail.
 
-Manual and automatic provider gap fills also write completed coverage rows after
-successful bucket processing. This includes provider windows that return zero
-news rows. A zero-row coverage row means "provider checked this interval and it
-was empty", so the gateway will not retry that interval on the next startup.
+Manual and automatic provider gap fills fetch provider windows in bounded
+chunks, but the coverage manifest is compacted. The service writes a running
+coverage row for each contiguous successful fill run and updates the same
+`coverage_id` after each successful chunk. If the process crashes, the manifest
+still records the latest successfully covered end time. When the run finishes,
+the same row is closed as `completed`. This includes provider windows that
+return zero news rows. A zero-row covered range means "provider checked this
+interval and it was empty", so the gateway will not retry that interval on the
+next startup.
 
 Large non-workstation gaps are not auto-filled because the workstation has the
 correct storage root and compute. The generated manifest is written under
@@ -212,6 +217,8 @@ Dashboard content:
 - failures and last error
 - startup gap status, generated workstation script, manifest, and first command
   when a manual fill is needed
+- current operation phase and message, including bootstrap, provider fetch,
+  processing, writing, and gap-fill chunks
 - recent news table with time, tickers, title, and quality flags
 
 Controls:
@@ -340,7 +347,7 @@ NEWS_BENZINGA_CLOSED_POLL_SECONDS=60
 NEWS_BENZINGA_LOOKBACK_MINUTES=15
 NEWS_BENZINGA_POLL_OVERLAP_SECONDS=120
 NEWS_BENZINGA_STARTUP_AUTO_FILL_MAX_GAP_DAYS=30
-NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS=300
+NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS=3600
 NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST=false
 NEWS_BENZINGA_GAP_FILL_CHUNK_MINUTES=90
 ```
@@ -405,8 +412,11 @@ and metrics.
 
 ### The service is stopped with Ctrl+C
 
-Uvicorn stops the app, the gateway sets its stop event, and the polling,
-gap-fill, and terminal dashboard tasks are cancelled.
+The launcher resolves the target conda environment's `python.exe` and runs it
+directly when possible, instead of wrapping the service in `conda run`. This
+keeps Ctrl+C delivery reliable in PowerShell. Uvicorn then stops the app, the
+gateway sets its stop event, and the polling, gap-fill, and terminal dashboard
+tasks are cancelled with a bounded graceful shutdown timeout.
 
 ## Historical Gap Fill
 

@@ -34,6 +34,7 @@ def render_dashboard(gateway: "NewsGateway", news_snapshot: dict[str, Any]) -> G
     now = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
     return Group(
         header_panel(gateway, metrics, now),
+        phase_panel(metrics),
         Columns(
             [preflight_panel(metrics), metrics_panel(gateway, metrics)],
             equal=True,
@@ -62,6 +63,20 @@ def header_panel(gateway: "NewsGateway", metrics: dict[str, Any], now: str) -> P
         f"[dim]data[/dim] {truncate(str(gateway.config.data_root_win), 96)}",
     )
     return Panel(grid, box=box.ROUNDED, border_style=color, padding=(0, 1))
+
+
+def phase_panel(metrics: dict[str, Any]) -> Panel:
+    phase = str(metrics.get("current_phase") or "starting")
+    message = str(metrics.get("current_phase_message") or "")
+    started = compact_time(str(metrics.get("current_phase_started_at_utc") or ""))
+    color = status_color(phase)
+    table = Table.grid(expand=True)
+    table.add_column(style="cyan", no_wrap=True, width=18)
+    table.add_column(ratio=1)
+    table.add_row("Current phase", f"[{color}]{status_label(phase)}[/{color}]")
+    table.add_row("Since", started)
+    table.add_row("Message", truncate(message, 220))
+    return Panel(table, title="Current Operation", box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
 def preflight_panel(metrics: dict[str, Any]) -> Panel:
@@ -172,7 +187,7 @@ def compact_time(value: str) -> str:
 
 def status_color(status: str) -> str:
     text = status.strip().lower()
-    if text in {"ok", "covered_by_live_lookback", "no_watermark"}:
+    if text in {"ok", "covered_by_live_lookback", "no_watermark", "polling", "live_write", "live_coverage"}:
         return "green"
     if text in {
         "starting",
@@ -181,6 +196,16 @@ def status_color(status: str) -> str:
         "auto_started",
         "workstation_auto_started_large_gap",
         "manual_required_large_gap",
+        "preflight",
+        "coverage_bootstrap",
+        "gap_planning",
+        "gap_fill",
+        "gap_fill_fetch",
+        "gap_fill_deferred_fetch",
+        "gap_fill_deferred_process",
+        "gap_fill_deferred_write",
+        "live_fetch",
+        "live_process",
     }:
         return "yellow"
     if text in {"failed"} or "failed" in text:
