@@ -68,6 +68,29 @@ class CoverageGap:
         return max(0.0, (self.end_utc - self.start_utc).total_seconds())
 
 
+@dataclass(frozen=True, slots=True)
+class CoverageBootstrapSummary:
+    status: str
+    executed: bool
+    chunk_seconds: int
+    normalized_rows: int = 0
+    source_start_utc: datetime | None = None
+    source_end_utc: datetime | None = None
+    expected_buckets: int = 0
+    non_empty_buckets: int = 0
+    covered_intervals: int = 0
+    discovered_gap_intervals: int = 0
+    discovered_gap_seconds: float = 0.0
+    superseded_legacy_bootstrap: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class BucketCount:
+    start_utc: datetime
+    end_utc: datetime
+    rows: int
+
+
 @dataclass(slots=True)
 class CoverageSnapshot:
     coverage_id: str
@@ -127,39 +150,177 @@ SETTINGS {", ".join(settings)}
     )
 
 
-def bootstrap_coverage_from_normalized_table(client: ClickHouseHttpClient, config: CoverageManifestConfig) -> bool:
-    if coverage_row_count(client, config) > 0:
-        return False
+def bootstrap_coverage_from_normalized_table(
+    client: ClickHouseHttpClient,
+    config: CoverageManifestConfig,
+    *,
+    chunk_seconds: int = 300,
+) -> CoverageBootstrapSummary:
+    row_count = coverage_row_count(client, config)
+    legacy = load_legacy_minmax_bootstrap(client, config) if row_count > 0 else None
+    if row_count > 0 and legacy is None:
+        return CoverageBootstrapSummary(status="already_bootstrapped", executed=False, chunk_seconds=max(1, chunk_seconds))
     sql = (
         "SELECT min(published_at_utc) AS start_utc, max(published_at_utc) AS end_utc, count() AS rows "
         f"FROM {table_name(config.database, config.normalized_table)} FORMAT JSONEachRow"
     )
     row = first_json_row(client.execute(sql))
     if not row or not row.get("start_utc") or not row.get("end_utc") or int(row.get("rows") or 0) == 0:
-        return False
-    now = datetime.now(UTC)
-    snapshot = CoverageSnapshot(
-        coverage_id="bootstrap_existing_normalized_table",
-        run_id="bootstrap_existing_normalized_table",
-        source="bootstrap_existing_news_rows",
-        status="completed",
-        coverage_start_utc=parse_clickhouse_datetime(str(row["start_utc"])),
-        coverage_end_utc=parse_clickhouse_datetime(str(row["end_utc"])),
-        started_at_utc=now,
-        updated_at_utc=now,
-        closed_at_utc=now,
-        provider_rows=int(row.get("rows") or 0),
-        processed_rows=int(row.get("rows") or 0),
-        written_rows=0,
-        metadata={"source_table": f"{config.database}.{config.normalized_table}", "bootstrap_mode": "min_max_existing_rows"},
+        return CoverageBootstrapSummary(status="empty_normalized_table", executed=False, chunk_seconds=max(1, chunk_seconds))
+    source_start = parse_clickhouse_datetime(str(row["start_utc"]))
+    source_end = parse_clickhouse_datetime(str(row["end_utc"]))
+    normalized_rows = int(row.get("rows") or 0)
+    seconds = max(1, int(chunk_seconds))
+    bucket_start = floor_time(source_start, seconds)
+    bucket_end = ceil_time(source_end, seconds)
+    buckets = load_non_empty_bucket_counts(client, config, bucket_start, bucket_end, seconds)
+    bucket_map = {bucket.start_utc: bucket for bucket in buckets}
+    expected_buckets = int(max(0, (bucket_end - bucket_start).total_seconds()) // seconds)
+    covered_runs: list[list[BucketCount]] = []
+    gap_intervals: list[CoverageGap] = []
+    current_run: list[BucketCount] = []
+    gap_start: datetime | None = None
+    cursor = bucket_start
+    while cursor < bucket_end:
+        bucket = bucket_map.get(cursor)
+        next_cursor = cursor + timedelta(seconds=seconds)
+        if bucket and bucket.rows > 0:
+            if gap_start is not None:
+                gap_intervals.append(CoverageGap(gap_start, cursor))
+                gap_start = None
+            current_run.append(bucket)
+        else:
+            if current_run:
+                covered_runs.append(current_run)
+                current_run = []
+            if gap_start is None:
+                gap_start = cursor
+        cursor = next_cursor
+    if current_run:
+        covered_runs.append(current_run)
+    if gap_start is not None:
+        gap_intervals.append(CoverageGap(gap_start, bucket_end))
+    snapshots = coverage_snapshots_from_bucket_runs(covered_runs, seconds, config)
+    if legacy is not None:
+        snapshots.insert(0, supersede_legacy_bootstrap_snapshot(legacy))
+    insert_coverage_snapshots(client, config, snapshots)
+    return CoverageBootstrapSummary(
+        status="bootstrapped",
+        executed=True,
+        chunk_seconds=seconds,
+        normalized_rows=normalized_rows,
+        source_start_utc=source_start,
+        source_end_utc=source_end,
+        expected_buckets=expected_buckets,
+        non_empty_buckets=len(buckets),
+        covered_intervals=len(covered_runs),
+        discovered_gap_intervals=len(gap_intervals),
+        discovered_gap_seconds=sum(gap.seconds for gap in gap_intervals),
+        superseded_legacy_bootstrap=legacy is not None,
     )
-    insert_coverage_snapshot(client, config, snapshot)
-    return True
 
 
 def coverage_row_count(client: ClickHouseHttpClient, config: CoverageManifestConfig) -> int:
     text = client.execute(f"SELECT count() FROM {table_name(config.database, config.coverage_table)} FINAL")
     return int((text.strip() or "0").splitlines()[0])
+
+
+def load_legacy_minmax_bootstrap(client: ClickHouseHttpClient, config: CoverageManifestConfig) -> CoverageInterval | None:
+    sql = (
+        "SELECT coverage_id, source, status, coverage_start_utc, coverage_end_utc, metadata_json "
+        f"FROM {table_name(config.database, config.coverage_table)} FINAL "
+        "WHERE coverage_id = 'bootstrap_existing_normalized_table' "
+        "LIMIT 1 FORMAT JSONEachRow"
+    )
+    row = first_json_row(client.execute(sql))
+    if not row:
+        return None
+    metadata = parse_metadata_json(str(row.get("metadata_json") or "{}"))
+    if metadata.get("bootstrap_mode") != "min_max_existing_rows":
+        return None
+    return CoverageInterval(
+        coverage_id=str(row.get("coverage_id") or ""),
+        source=str(row.get("source") or ""),
+        status=str(row.get("status") or ""),
+        start_utc=parse_clickhouse_datetime(str(row["coverage_start_utc"])),
+        end_utc=parse_clickhouse_datetime(str(row["coverage_end_utc"])),
+    )
+
+
+def load_non_empty_bucket_counts(
+    client: ClickHouseHttpClient,
+    config: CoverageManifestConfig,
+    start_utc: datetime,
+    end_utc: datetime,
+    chunk_seconds: int,
+) -> list[BucketCount]:
+    sql = (
+        "SELECT "
+        f"toStartOfInterval(published_at_utc, INTERVAL {int(chunk_seconds)} SECOND) AS bucket_start, "
+        "count() AS rows "
+        f"FROM {table_name(config.database, config.normalized_table)} "
+        f"WHERE published_at_utc >= {sql_string(clickhouse_datetime64(start_utc))} "
+        f"AND published_at_utc < {sql_string(clickhouse_datetime64(end_utc))} "
+        "GROUP BY bucket_start ORDER BY bucket_start FORMAT JSONEachRow"
+    )
+    buckets: list[BucketCount] = []
+    for line in client.execute(sql).splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        start = parse_clickhouse_datetime(str(row["bucket_start"]))
+        buckets.append(BucketCount(start_utc=start, end_utc=start + timedelta(seconds=chunk_seconds), rows=int(row.get("rows") or 0)))
+    return buckets
+
+
+def coverage_snapshots_from_bucket_runs(runs: list[list[BucketCount]], chunk_seconds: int, config: CoverageManifestConfig) -> list[CoverageSnapshot]:
+    now = datetime.now(UTC)
+    snapshots: list[CoverageSnapshot] = []
+    for index, run in enumerate(runs, start=1):
+        if not run:
+            continue
+        start = run[0].start_utc
+        end = run[-1].end_utc
+        rows = sum(bucket.rows for bucket in run)
+        snapshots.append(
+            CoverageSnapshot(
+                coverage_id=f"bootstrap_existing_news_rows_{index:08d}_{filename_time(start)}_{filename_time(end)}",
+                run_id="bootstrap_existing_bucketed_news_rows",
+                source="bootstrap_existing_news_rows",
+                status="completed",
+                coverage_start_utc=start,
+                coverage_end_utc=end,
+                started_at_utc=now,
+                updated_at_utc=now,
+                closed_at_utc=now,
+                provider_rows=rows,
+                processed_rows=rows,
+                written_rows=0,
+                metadata={
+                    "source_table": f"{config.database}.{config.normalized_table}",
+                    "bootstrap_mode": "bucketed_existing_news_rows",
+                    "chunk_seconds": chunk_seconds,
+                    "bucket_count": len(run),
+                },
+            )
+        )
+    return snapshots
+
+
+def supersede_legacy_bootstrap_snapshot(interval: CoverageInterval) -> CoverageSnapshot:
+    now = datetime.now(UTC)
+    return CoverageSnapshot(
+        coverage_id=interval.coverage_id,
+        run_id="bootstrap_existing_normalized_table",
+        source=interval.source,
+        status="superseded",
+        coverage_start_utc=interval.start_utc,
+        coverage_end_utc=interval.end_utc,
+        started_at_utc=now,
+        updated_at_utc=now,
+        closed_at_utc=now,
+        metadata={"bootstrap_mode": "min_max_existing_rows", "superseded_by": "bucketed_existing_news_rows"},
+    )
 
 
 def insert_coverage_snapshot(client: ClickHouseHttpClient, config: CoverageManifestConfig, snapshot: CoverageSnapshot) -> None:
@@ -280,3 +441,28 @@ def parse_clickhouse_datetime(value: str) -> datetime:
 
 def clickhouse_datetime64(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def floor_time(value: datetime, seconds: int) -> datetime:
+    epoch = int(value.astimezone(UTC).timestamp())
+    floored = epoch - (epoch % max(1, seconds))
+    return datetime.fromtimestamp(floored, tz=UTC)
+
+
+def ceil_time(value: datetime, seconds: int) -> datetime:
+    epoch = int(value.astimezone(UTC).timestamp())
+    size = max(1, seconds)
+    ceiled = epoch if epoch % size == 0 else epoch + (size - (epoch % size))
+    return datetime.fromtimestamp(ceiled, tz=UTC)
+
+
+def filename_time(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def parse_metadata_json(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}

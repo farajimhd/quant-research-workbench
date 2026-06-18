@@ -144,7 +144,7 @@ def main() -> None:
                     processed_rows += outcome.processed_rows
                     failed_rows += outcome.failed_rows
                     pending.extend(outcome.processed or [])
-                    if outcome.failed_rows == 0:
+                    if outcome.failed_rows == 0 and not outcome.saturated:
                         coverage_ready.append(outcome)
                     results.write(json.dumps(public, ensure_ascii=False, default=str) + "\n")
                     while len(pending) >= args.batch_size:

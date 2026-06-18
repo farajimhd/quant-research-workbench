@@ -104,22 +104,28 @@ Coverage is stored in:
 q_live.benzinga_news_coverage_manifest_v1
 ```
 
-The table is a `ReplacingMergeTree` keyed by `coverage_id`. The gateway inserts
-replacement rows instead of using ClickHouse mutations. Query it with `FINAL`
-when the latest state of a coverage segment matters.
+The table is a `ReplacingMergeTree` ordered by `(source, coverage_start_utc,
+coverage_id)`. The gateway inserts replacement rows instead of using ClickHouse
+mutations. Query it with `FINAL` when the latest state of a coverage segment
+matters.
 
 On startup:
 
 1. Preflight creates the coverage table if it does not already exist.
-2. If the coverage table is empty, the gateway bootstraps one initial coverage
-   row from the existing normalized news table using the current min/max
-   `published_at_utc`. This preserves existing historical data as already
-   loaded, but future holes are tracked by explicit coverage rows.
-3. The gateway reads all coverage intervals from the manifest.
-4. Adjacent or overlapping intervals are merged using
+2. If the coverage table is empty, the gateway discovers historical coverage
+   from the existing normalized news table. It reads the min/max
+   `published_at_utc`, splits that range into
+   `NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS` buckets, counts news in
+   every bucket, and writes merged coverage rows only for adjacent non-empty
+   buckets.
+3. Buckets with zero existing news are treated as unknown gaps, not as proven
+   empty time. They must be checked against the provider before they become
+   covered.
+4. The gateway reads all coverage intervals from the manifest.
+5. Adjacent or overlapping intervals are merged using
    `NEWS_BENZINGA_POLL_OVERLAP_SECONDS` as tolerance.
-5. Gaps between merged coverage intervals are identified.
-6. A trailing gap ending at current UTC is ignored only when normal live
+6. Gaps between merged coverage intervals are identified.
+7. A trailing gap ending at current UTC is ignored only when normal live
    lookback can still cover it.
 
 Behavior:
@@ -128,9 +134,8 @@ Behavior:
 | --- | --- |
 | No coverage intervals | Live polling starts with normal lookback. |
 | Only trailing gap and live lookback covers it | Live polling covers it. |
-| One or more coverage gaps and largest gap is <= 3 days | Service starts background gap fill for all gaps. |
-| One or more coverage gaps, largest gap is > 3 days, and running on workstation | Service starts background gap fill for all gaps automatically. |
-| One or more coverage gaps, largest gap is > 3 days, and not running on workstation | Service writes workstation-ready PowerShell gap-fill scripts and a manifest, prints their paths, and continues live polling. |
+| One or more coverage gaps and total gap time is <= 30 days | Service starts background gap fill for all gaps during startup. |
+| One or more coverage gaps and total gap time is > 30 days | Service writes workstation-ready PowerShell gap-fill scripts and a manifest, prints their paths, and continues live polling. |
 
 During live operation the gateway opens a live coverage segment. It extends that
 segment only after a provider window is fetched, normalized, and written without
@@ -145,8 +150,9 @@ contains the last successfully written `coverage_end_utc`, so the next startup
 can see the missing tail.
 
 Manual and automatic provider gap fills also write completed coverage rows after
-successful bucket processing. Without those rows, a manually filled interval
-would be loaded into the news table but still look uncovered to the gateway.
+successful bucket processing. This includes provider windows that return zero
+news rows. A zero-row coverage row means "provider checked this interval and it
+was empty", so the gateway will not retry that interval on the next startup.
 
 Large non-workstation gaps are not auto-filled because the workstation has the
 correct storage root and compute. The generated manifest is written under
@@ -330,7 +336,9 @@ NEWS_BENZINGA_AFTERHOURS_POLL_SECONDS=15
 NEWS_BENZINGA_CLOSED_POLL_SECONDS=60
 NEWS_BENZINGA_LOOKBACK_MINUTES=15
 NEWS_BENZINGA_POLL_OVERLAP_SECONDS=120
-NEWS_BENZINGA_RESTART_GAP_MAX_DAYS=3
+NEWS_BENZINGA_STARTUP_AUTO_FILL_MAX_GAP_DAYS=30
+NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS=300
+NEWS_BENZINGA_GAP_FILL_CHUNK_MINUTES=90
 ```
 
 Writes and memory:

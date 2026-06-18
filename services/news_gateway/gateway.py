@@ -15,6 +15,7 @@ from pipelines.news.benzinga.core.coverage_manifest import (
     CoverageInterval,
     CoverageManifestConfig,
     CoverageSnapshot,
+    CoverageBootstrapSummary,
     bootstrap_coverage_from_normalized_table,
     ensure_coverage_manifest_table,
     find_coverage_gaps,
@@ -197,44 +198,51 @@ class NewsGateway:
             self.metrics.gap_message = f"Coverage manifest is current enough; latest coverage ends at {latest_end.isoformat()}."
             return
         largest_gap_seconds = max(gap.seconds for gap in gaps)
-        threshold_seconds = self.config.restart_gap_max_days * 86_400
-        if largest_gap_seconds <= threshold_seconds:
+        total_gap_seconds = sum(gap.seconds for gap in gaps)
+        threshold_seconds = self.config.startup_auto_fill_max_gap_days * 86_400
+        if total_gap_seconds <= threshold_seconds:
             self.metrics.gap_status = "auto_started"
-            self.metrics.gap_message = f"{len(gaps)} coverage gap(s) will be filled in background."
+            self.metrics.gap_message = (
+                f"{len(gaps)} coverage gap(s), total {total_gap_seconds / 86400:.2f} days, "
+                "will be filled in background during startup."
+            )
+            print(self.metrics.gap_message, flush=True)
             self._gap_task = asyncio.create_task(self._fill_gaps(gaps), name="benzinga-news-startup-gap-fill")
             return
         gap_intervals = [GapFillInterval(gap.start_utc, gap.end_utc) for gap in gaps]
-        if self.config.is_workstation:
-            self.metrics.gap_status = "workstation_auto_started_large_gap"
-            self.metrics.gap_message = (
-                f"{len(gaps)} coverage gap(s) found; largest is {largest_gap_seconds / 86400:.2f} days. "
-                "Workstation run will fill automatically in background."
-            )
-            self._gap_task = asyncio.create_task(self._fill_gaps(gaps), name="benzinga-news-large-gap-fill")
-        else:
-            plan = await asyncio.to_thread(write_manual_gap_fill_plan, gap_intervals, self.config)
-            self.metrics.manual_gap_fill_command = historical_gap_command(gaps[0].start_utc, gaps[0].end_utc, self.config)
-            self.metrics.manual_gap_fill_script_win = str(plan.workstation_script_path)
-            self.metrics.manual_gap_fill_manifest_win = str(plan.workstation_manifest_path)
-            self.metrics.gap_status = "manual_required_large_gap"
-            self.metrics.gap_message = (
-                f"{len(gaps)} coverage gap(s) found; largest is {largest_gap_seconds / 86400:.2f} days. "
-                f"Run the generated script on the workstation: {plan.workstation_script_path}"
-            )
-            print(self.metrics.gap_message, flush=True)
-            print(f"manifest: {plan.workstation_manifest_path}", flush=True)
+        plan = await asyncio.to_thread(write_manual_gap_fill_plan, gap_intervals, self.config)
+        self.metrics.manual_gap_fill_command = historical_gap_command(gaps[0].start_utc, gaps[0].end_utc, self.config)
+        self.metrics.manual_gap_fill_script_win = str(plan.workstation_script_path)
+        self.metrics.manual_gap_fill_manifest_win = str(plan.workstation_manifest_path)
+        self.metrics.gap_status = "manual_required_large_gap"
+        self.metrics.gap_message = (
+            f"{len(gaps)} coverage gap(s) found; total {total_gap_seconds / 86400:.2f} days, "
+            f"largest {largest_gap_seconds / 86400:.2f} days. Run the generated script on the workstation: "
+            f"{plan.workstation_script_path}"
+        )
+        print(self.metrics.gap_message, flush=True)
+        print(f"manifest: {plan.workstation_manifest_path}", flush=True)
 
     async def _fill_gaps(self, gaps: list[CoverageGap]) -> None:
-        for gap in gaps:
+        total = len(gaps)
+        for index, gap in enumerate(gaps, start=1):
             if self._stop_event.is_set():
                 break
+            self.metrics.gap_status = "auto_running"
+            self.metrics.gap_message = (
+                f"Filling startup coverage gap {index}/{total}: "
+                f"{gap.start_utc.isoformat()} -> {gap.end_utc.isoformat()} ({gap.seconds / 60:.1f} minutes)."
+            )
+            print(self.metrics.gap_message, flush=True)
             await self._fill_gap(gap.start_utc, gap.end_utc)
         self.metrics.gap_status = "auto_completed"
+        self.metrics.gap_message = f"Startup coverage gap fill completed for {total} gap(s)."
 
     async def _fill_gap(self, start_utc: datetime, end_utc: datetime) -> None:
         current = start_utc
         while current < end_utc and not self._stop_event.is_set():
-            chunk_end = min(current + timedelta(hours=6), end_utc)
+            chunk_end = min(current + timedelta(minutes=max(1, self.config.gap_fill_chunk_minutes)), end_utc)
+            print(f"provider_gap_fill_window={current.isoformat()}->{chunk_end.isoformat()}", flush=True)
             await self.poll_window(current, chunk_end, coverage_mode="gap_fill")
             current = chunk_end
 
@@ -276,13 +284,15 @@ class NewsGateway:
             self.metrics.failed_rows += failed
             self.metrics.written_rows += write_summary.normalized_rows_inserted
             self.metrics.skipped_existing += write_summary.skipped_existing
-            self.metrics.last_cycle_status = "ok" if failed == 0 else "completed_with_errors"
+            if fetch_result.saturated:
+                self.metrics.last_error = "Benzinga provider response saturated; coverage was not advanced for this window."
+            self.metrics.last_cycle_status = "ok" if failed == 0 and not fetch_result.saturated else "completed_with_errors"
             self.metrics.last_cycle_provider_rows = len(fetch_result.items)
             self.metrics.last_cycle_processed_rows = len(processed)
             self.metrics.last_cycle_written_rows = write_summary.normalized_rows_inserted
             self.metrics.last_cycle_skipped_existing = write_summary.skipped_existing
             self.metrics.last_cycle_wall_seconds = time.perf_counter() - started
-            if failed == 0:
+            if failed == 0 and not fetch_result.saturated:
                 await self._record_successful_coverage(
                     start_utc,
                     end_utc,
@@ -355,13 +365,24 @@ class NewsGateway:
     async def _prepare_coverage_manifest(self) -> None:
         if not self.config.execute:
             return
-        await asyncio.to_thread(self._ensure_and_bootstrap_coverage_manifest)
+        summary = await asyncio.to_thread(self._ensure_and_bootstrap_coverage_manifest)
+        if summary.executed:
+            message = (
+                "Coverage manifest bootstrap completed: "
+                f"chunk={summary.chunk_seconds}s non_empty_buckets={summary.non_empty_buckets:,} "
+                f"covered_intervals={summary.covered_intervals:,} "
+                f"discovered_gap_intervals={summary.discovered_gap_intervals:,} "
+                f"discovered_gap_days={summary.discovered_gap_seconds / 86400:.2f}."
+            )
+            self.metrics.gap_status = "coverage_bootstrapped"
+            self.metrics.gap_message = message
+            print(message, flush=True)
 
-    def _ensure_and_bootstrap_coverage_manifest(self) -> None:
+    def _ensure_and_bootstrap_coverage_manifest(self) -> CoverageBootstrapSummary:
         client = self._coverage_client()
         config = self._coverage_config()
         ensure_coverage_manifest_table(client, config)
-        bootstrap_coverage_from_normalized_table(client, config)
+        return bootstrap_coverage_from_normalized_table(client, config, chunk_seconds=self.config.coverage_discovery_chunk_seconds)
 
     def _load_coverage_intervals(self) -> list[CoverageInterval]:
         client = self._coverage_client()
@@ -482,7 +503,7 @@ class NewsGateway:
             processed_rows=processed_rows,
             written_rows=written_rows,
             skipped_existing=skipped_existing,
-            metadata={"mode": "startup_gap_fill"},
+            metadata={"mode": "startup_gap_fill", "chunk_minutes": self.config.gap_fill_chunk_minutes},
         )
         insert_coverage_snapshot(self._coverage_client(), self._coverage_config(), snapshot)
 
@@ -515,7 +536,7 @@ def historical_gap_command(start_utc: datetime, end_utc: datetime, config: NewsG
         f"--start-utc {start_utc.isoformat().replace('+00:00', 'Z')} "
         f"--end-utc {end_utc.isoformat().replace('+00:00', 'Z')} "
         f"--raw-root-win {quote_arg(str(raw_root))} "
-        "--bucket-minutes 90 --workers 4 --batch-size 1000 --progress-interval 10 --execute"
+        f"--bucket-minutes {max(1, config.gap_fill_chunk_minutes)} --workers 4 --batch-size 1000 --progress-interval 10 --execute"
     )
 
 
@@ -659,7 +680,7 @@ conda run --no-capture-output -n $CondaEnv python -m pipelines.news.benzinga.new
   --end-utc $EndUtc `
   --raw-root-win $RawRoot `
   --output-root-win $OutputRoot `
-  --bucket-minutes 90 `
+  --bucket-minutes {max(1, config.gap_fill_chunk_minutes)} `
   --workers 4 `
   --batch-size 1000 `
   --progress-interval 10 `

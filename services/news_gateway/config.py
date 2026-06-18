@@ -33,7 +33,9 @@ class NewsGatewayConfig:
     afterhours_poll_seconds: float
     closed_poll_seconds: float
     lookback_minutes: int
-    restart_gap_max_days: int
+    startup_auto_fill_max_gap_days: int
+    coverage_discovery_chunk_seconds: int
+    gap_fill_chunk_minutes: int
     poll_overlap_seconds: int
     page_limit: int
     max_pages: int
@@ -93,7 +95,9 @@ class NewsGatewayConfig:
             afterhours_poll_seconds=env_float("NEWS_BENZINGA_AFTERHOURS_POLL_SECONDS", 15.0),
             closed_poll_seconds=env_float("NEWS_BENZINGA_CLOSED_POLL_SECONDS", 60.0),
             lookback_minutes=env_int("NEWS_BENZINGA_LOOKBACK_MINUTES", 15),
-            restart_gap_max_days=env_int("NEWS_BENZINGA_RESTART_GAP_MAX_DAYS", 3),
+            startup_auto_fill_max_gap_days=env_int("NEWS_BENZINGA_STARTUP_AUTO_FILL_MAX_GAP_DAYS", 30),
+            coverage_discovery_chunk_seconds=env_int("NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS", 300),
+            gap_fill_chunk_minutes=env_int("NEWS_BENZINGA_GAP_FILL_CHUNK_MINUTES", 90),
             poll_overlap_seconds=env_int("NEWS_BENZINGA_POLL_OVERLAP_SECONDS", 120),
             page_limit=env_int("NEWS_BENZINGA_PAGE_LIMIT", 1_000),
             max_pages=env_int("NEWS_BENZINGA_MAX_PAGES", 1_000),
