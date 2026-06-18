@@ -44,7 +44,7 @@ DEFAULTS: dict[str, Any] = {
     "ffn_mult": 4,
     "dropout": 0.08,
     "event_mask_ratio": 0.70,
-    "event_mask_schedule": "mixed",
+    "event_mask_schedule": "fixed",
     "min_masked_events": 1,
     "header_bit_corruption_prob": 0.20,
     "header_bit_corruption_ratio": 0.05,
@@ -76,7 +76,7 @@ DEFAULTS: dict[str, Any] = {
     "wandb_project": "June2026-event-token-mae-v7",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
-    "wandb_run_name": "v7-mixedmask-emb32-bs4096-10shards",
+    "wandb_run_name": "v7-fixedmask070-emb32-bs4096-10shards",
     "amp_initial_scale": 1024.0,
     "amp_overflow_fatal_threshold": 8,
     "float32_matmul_precision": "high",
@@ -86,7 +86,7 @@ DEFAULTS: dict[str, Any] = {
 VALIDATION_BATCHES = 8
 PROFILED_TRAINING_PATH = (
     "v7 event-token MAE, masked-query cross-attention decoder, "
-    "mixed random event mask, sample-cache shards, shard-cycle scheduler, no interleave, torch.compile enabled"
+    "fixed 70% event mask, sample-cache shards, shard-cycle scheduler, no interleave, torch.compile enabled"
 )
 
 

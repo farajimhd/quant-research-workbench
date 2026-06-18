@@ -67,7 +67,7 @@ data source: sample_cache
 sample cache root: D:\market-data\prepared\event_sample_cache
 events per chunk: 128
 event mask ratio: 0.70
-event mask schedule: mixed, high 50-80% for 70% of batches, zero policy for 10%, low 1-50% for 20%
+event mask schedule: fixed 70%
 header bit corruption: 20% of samples, 5% of header bits
 visible event bit corruption: 30% of samples, 20% of visible event bits
 W&B project: June2026-event-token-mae-v7

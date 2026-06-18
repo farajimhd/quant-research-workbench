@@ -69,7 +69,9 @@ class DataConfig:
 @dataclass(slots=True)
 class MaskConfig:
     event_mask_ratio: float = 0.70
-    event_mask_schedule: str = "mixed"
+    # v7 now uses the same fixed-mask setup as v8/v9 so the attention-pooling
+    # architecture can be compared without mask-ratio noise.
+    event_mask_schedule: str = "fixed"
     event_mask_high_probability: float = 0.70
     event_mask_zero_probability: float = 0.10
     event_mask_low_probability: float = 0.20
