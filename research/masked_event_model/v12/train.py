@@ -152,6 +152,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--decoder-layers", type=int, default=model_defaults.decoder_layers)
     parser.add_argument("--ffn-mult", type=int, default=model_defaults.ffn_mult)
     parser.add_argument("--dropout", type=float, default=model_defaults.dropout)
+    parser.add_argument(
+        "--decoder-force-fp32",
+        action=argparse.BooleanOptionalAction,
+        default=model_defaults.decoder_force_fp32,
+        help=(
+            "Run the disposable reconstruction decoder outside AMP. Use "
+            "--no-decoder-force-fp32 with --amp-dtype fp16 to test full-FP16 "
+            "v12 decoder training."
+        ),
+    )
     parser.add_argument("--wandb-project", default=train_defaults.wandb_project)
     parser.add_argument("--wandb-entity", default=train_defaults.wandb_entity)
     parser.add_argument("--wandb-run-name", default="")
@@ -1206,7 +1216,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             event_bit_corruption_prob=args.event_bit_corruption_prob,
             event_bit_corruption_ratio=args.event_bit_corruption_ratio,
         ),
-        model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
+        model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout, decoder_force_fp32=args.decoder_force_fp32),
         losses=LossConfig(objective=args.loss_objective),
         train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, amp=args.amp, amp_dtype=args.amp_dtype, amp_initial_scale=args.amp_initial_scale, amp_growth_interval=args.amp_growth_interval, amp_max_scale=args.amp_max_scale, amp_overflow_fatal_threshold=args.amp_overflow_fatal_threshold, float32_matmul_precision=args.float32_matmul_precision, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )

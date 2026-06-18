@@ -43,6 +43,7 @@ DEFAULTS: dict[str, Any] = {
     "decoder_layers": 4,
     "ffn_mult": 4,
     "dropout": 0.08,
+    "decoder_force_fp32": True,
     "event_mask_ratio": 0.70,
     "event_mask_schedule": "fixed",
     "min_masked_events": 1,
@@ -125,6 +126,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decoder-layers", type=int, default=DEFAULTS["decoder_layers"])
     parser.add_argument("--ffn-mult", type=int, default=DEFAULTS["ffn_mult"])
     parser.add_argument("--dropout", type=float, default=DEFAULTS["dropout"])
+    parser.add_argument("--decoder-force-fp32", action=argparse.BooleanOptionalAction, default=DEFAULTS["decoder_force_fp32"])
     parser.add_argument("--event-mask-ratio", type=float, default=DEFAULTS["event_mask_ratio"])
     parser.add_argument("--event-mask-schedule", choices=("fixed", "mixed"), default=DEFAULTS["event_mask_schedule"])
     parser.add_argument("--learning-rate", type=float, default=DEFAULTS["learning_rate"])
@@ -229,6 +231,7 @@ def main() -> None:
             "decoder_layers": int(args.decoder_layers),
             "ffn_mult": int(args.ffn_mult),
             "dropout": float(args.dropout),
+            "decoder_force_fp32": bool(args.decoder_force_fp32),
             "event_mask_ratio": float(args.event_mask_ratio),
             "event_mask_schedule": args.event_mask_schedule,
             "learning_rate": float(args.learning_rate),
@@ -341,7 +344,8 @@ def print_plan(
     print(
         f"model=d{values['d_model']} emb{values['embedding_dim']} heads{values['n_heads']} "
         f"enc{values['encoder_layers']} decoder=per_masked_event_mlp "
-        f"decoder_layers_arg_ignored={values['decoder_layers']} ffn_mult{values['ffn_mult']} dropout={values['dropout']}",
+        f"decoder_layers_arg_ignored={values['decoder_layers']} ffn_mult{values['ffn_mult']} dropout={values['dropout']} "
+        f"decoder_force_fp32={values['decoder_force_fp32']}",
         flush=True,
     )
     print(
