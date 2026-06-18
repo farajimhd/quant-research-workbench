@@ -223,6 +223,14 @@ Load after preflight succeeds:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_filing_text_clickhouse_file_ingest.py --manifest-json D:/market-data/prepared/sec_filing_text_parts/<run_id>/sec_filing_text_extract_manifest.json --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --execute
 ```
 
+After loading archive-derived parent rows, run the acceptance archive repair before using SEC filings for market-reaction labels. The extractor can create parent rows from archive date fallbacks when a filing was not already present in `sec_filing_v2`; those rows must be repaired with exact EDGAR `ACCEPTANCE-DATETIME` where possible:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_archive_repair.py --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_acceptance_archive_repair --start-date 2019-01-01 --end-date 2026-06-16 --archive-workers 4 --execute
+```
+
+The repair writes replacement rows into `sec_filing_v2`; use `FINAL` for validation queries. Rows still listed in `unresolved_rows.jsonl` should be excluded from timestamp-sensitive training unless later repaired by submissions API or accession header fetch.
+
 Laptop smoke completed on 2026-06-16 before parent-row generation:
 
 ```text

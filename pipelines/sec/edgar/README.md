@@ -6,6 +6,7 @@ This package contains the SEC EDGAR historical workflow:
 - daily archive validation and content discovery;
 - exact-file failed archive deletion;
 - acceptance timestamp repair helpers;
+- archive-derived acceptance timestamp repair for date-only parent rows;
 - archive-derived filing document/text extraction and ClickHouse file ingest;
 - historical backfill orchestration over the stages that exist today;
 - legacy bulk mirror ingest helpers retained for traceability.
@@ -20,6 +21,12 @@ Targeted validation path:
 
 ```powershell
 python -m pipelines.sec.edgar.sec_validate_downloaded_archives --help
+```
+
+Acceptance timestamp repair path:
+
+```powershell
+python -m pipelines.sec.edgar.sec_acceptance_archive_repair --help
 ```
 
 See `sec_historical_backfill_orchestrator_guide.md` for one-command historical runs and PowerShell history export commands.
