@@ -174,6 +174,7 @@ def bootstrap_coverage_from_normalized_table(
     trusted_coverage_end_utc: datetime | None = None,
     verify_gaps_after_utc: datetime | None = None,
     gap_probe: Callable[[CoverageGap], bool] | None = None,
+    gap_probe_plan: Callable[[list[CoverageGap]], None] | None = None,
 ) -> CoverageBootstrapSummary:
     seconds = max(1, int(chunk_seconds))
     row_count = coverage_row_count(client, config)
@@ -255,25 +256,27 @@ def bootstrap_coverage_from_normalized_table(
         covered_runs.append(bucket_run_to_bootstrap_run(current_run, seconds, config))
     if gap_start is not None:
         gap_intervals.append(CoverageGap(gap_start, bucket_end))
-    for gap in gap_intervals:
-        if should_probe_gap(gap, verify_gaps_after_utc, gap_probe):
-            if gap_probe and gap_probe(gap):
-                verified_empty_gaps.append(gap)
-                covered_runs.append(
-                    BootstrapCoverageRun(
-                        start_utc=gap.start_utc,
-                        end_utc=gap.end_utc,
-                        source="bootstrap_verified_empty_provider_gap",
-                        rows=0,
-                        metadata={
-                            "bootstrap_mode": "provider_verified_empty_gap",
-                            "chunk_seconds": seconds,
-                            "probe_result": "empty",
-                        },
-                    )
+    probeable_gaps = [gap for gap in gap_intervals if should_probe_gap(gap, verify_gaps_after_utc, gap_probe)]
+    if gap_probe_plan is not None:
+        gap_probe_plan(probeable_gaps)
+    for gap in probeable_gaps:
+        if gap_probe and gap_probe(gap):
+            verified_empty_gaps.append(gap)
+            covered_runs.append(
+                BootstrapCoverageRun(
+                    start_utc=gap.start_utc,
+                    end_utc=gap.end_utc,
+                    source="bootstrap_verified_empty_provider_gap",
+                    rows=0,
+                    metadata={
+                        "bootstrap_mode": "provider_verified_empty_gap",
+                        "chunk_seconds": seconds,
+                        "probe_result": "empty",
+                    },
                 )
-            else:
-                provider_positive_gaps.append(gap)
+            )
+        else:
+            provider_positive_gaps.append(gap)
     covered_runs = merge_bootstrap_coverage_runs(covered_runs)
     snapshots = coverage_snapshots_from_bootstrap_runs(covered_runs, seconds, config)
     if existing_bootstrap:

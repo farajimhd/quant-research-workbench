@@ -284,6 +284,8 @@ Dashboard content:
 - failures and last error
 - startup gap status, generated workstation script, manifest, and first command
   when a manual fill is needed
+- fixed background progress rows for provider bootstrap probes and concurrent
+  startup gap-fill chunks, including completed/total counts and in-flight work
 - current operation phase and message, including bootstrap, provider fetch,
   processing, writing, and gap-fill chunks
 - recent news table with time, tickers, title, and quality flags

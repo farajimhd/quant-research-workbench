@@ -78,6 +78,14 @@ class GatewayMetrics:
     preflight_checked_at_utc: str = ""
     preflight_checks: list[dict[str, Any]] = field(default_factory=list)
     run_log_path: str = ""
+    bootstrap_probe_total: int = 0
+    bootstrap_probe_completed: int = 0
+    bootstrap_probe_empty: int = 0
+    bootstrap_probe_positive: int = 0
+    gap_fill_total_chunks: int = 0
+    gap_fill_flushed_chunks: int = 0
+    gap_fill_submitted_chunks: int = 0
+    gap_fill_in_flight_chunks: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,6 +354,10 @@ class NewsGateway:
     async def _fill_gap(self, start_utc: datetime, end_utc: datetime) -> None:
         chunks = build_gap_fill_chunks(start_utc, end_utc, self.config.gap_fill_chunk_minutes)
         workers = max(1, self.config.startup_gap_fill_workers)
+        self.metrics.gap_fill_total_chunks = len(chunks)
+        self.metrics.gap_fill_flushed_chunks = 0
+        self.metrics.gap_fill_submitted_chunks = 0
+        self.metrics.gap_fill_in_flight_chunks = 0
         self.metrics.gap_message = (
             f"Concurrent startup gap fill: {len(chunks):,} chunk(s), workers={workers}, "
             f"range={start_utc.isoformat()}->{end_utc.isoformat()}."
@@ -370,12 +382,15 @@ class NewsGateway:
                     chunk = chunks[next_submit]
                     pending.add(asyncio.create_task(self._fill_gap_chunk(chunk), name=f"benzinga-gap-chunk-{chunk.index}"))
                     next_submit += 1
+                    self.metrics.gap_fill_submitted_chunks = next_submit
+                    self.metrics.gap_fill_in_flight_chunks = len(pending)
                 if not pending:
                     break
                 done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
                     outcome = task.result()
                     completed[outcome.chunk.index] = outcome
+                self.metrics.gap_fill_in_flight_chunks = len(pending)
                 while next_flush in completed:
                     outcome = completed.pop(next_flush)
                     result = outcome.result
@@ -392,6 +407,9 @@ class NewsGateway:
                             await asyncio.to_thread(self._write_gap_coverage_run, coverage_run, "completed", datetime.now(UTC))
                             coverage_run = None
                     next_flush += 1
+                    self.metrics.gap_fill_flushed_chunks = next_flush
+                    self.metrics.gap_fill_submitted_chunks = next_submit
+                    self.metrics.gap_fill_in_flight_chunks = len(pending)
                     self.metrics.gap_message = (
                         f"Startup gap fill progress: flushed={next_flush:,}/{len(chunks):,}, "
                         f"submitted={next_submit:,}, in_flight={len(pending):,}."
@@ -407,6 +425,9 @@ class NewsGateway:
         finally:
             if coverage_run is not None:
                 await asyncio.to_thread(self._write_gap_coverage_run, coverage_run, "completed", datetime.now(UTC))
+            self.metrics.gap_fill_flushed_chunks = next_flush
+            self.metrics.gap_fill_submitted_chunks = next_submit
+            self.metrics.gap_fill_in_flight_chunks = len(pending)
             self._log_event("gap_fill_finished", start_utc=start_utc, end_utc=end_utc, flushed=next_flush, total_chunks=len(chunks))
 
     async def _fill_gap_chunk(self, chunk: GapFillChunk) -> GapFillChunkOutcome:
@@ -665,6 +686,10 @@ class NewsGateway:
         self._bootstrap_probe_count = 0
         self._bootstrap_probe_empty = 0
         self._bootstrap_probe_positive = 0
+        self.metrics.bootstrap_probe_total = 0
+        self.metrics.bootstrap_probe_completed = 0
+        self.metrics.bootstrap_probe_empty = 0
+        self.metrics.bootstrap_probe_positive = 0
         summary = bootstrap_coverage_from_normalized_table(
             client,
             config,
@@ -674,6 +699,7 @@ class NewsGateway:
             trusted_coverage_end_utc=trusted_end,
             verify_gaps_after_utc=verify_after,
             gap_probe=gap_probe,
+            gap_probe_plan=self._record_bootstrap_probe_plan if gap_probe is not None else None,
         )
         if self.config.coverage_compact_on_startup:
             compact_summary = compact_coverage_manifest(
@@ -685,19 +711,47 @@ class NewsGateway:
             self._log_event("coverage_manifest_compacted", summary=compact_summary)
         return summary
 
+    def _record_bootstrap_probe_plan(self, gaps: list[CoverageGap]) -> None:
+        total = len(gaps)
+        self._bootstrap_probe_count = 0
+        self._bootstrap_probe_empty = 0
+        self._bootstrap_probe_positive = 0
+        self.metrics.bootstrap_probe_total = total
+        self.metrics.bootstrap_probe_completed = 0
+        self.metrics.bootstrap_probe_empty = 0
+        self.metrics.bootstrap_probe_positive = 0
+        if total <= 0:
+            return
+        first_gap = gaps[0]
+        last_gap = gaps[-1]
+        message = (
+            f"Coverage bootstrap will probe {total:,} recent gap(s): "
+            f"{first_gap.start_utc.isoformat()} -> {last_gap.end_utc.isoformat()}."
+        )
+        self.metrics.current_phase = "coverage_gap_probe_plan"
+        self.metrics.current_phase_message = message
+        self.metrics.current_phase_started_at_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        self._log_event(
+            "coverage_gap_provider_probe_plan",
+            gap_count=total,
+            first_start_utc=first_gap.start_utc,
+            last_end_utc=last_gap.end_utc,
+        )
+        self._print_status(message)
+
     def _probe_gap_is_empty(self, gap: CoverageGap) -> bool:
         self._bootstrap_probe_count += 1
         probe_index = self._bootstrap_probe_count
         started = time.perf_counter()
+        total = self.metrics.bootstrap_probe_total
         self.metrics.current_phase = "coverage_gap_probe"
-        self.metrics.current_phase_message = (
-            f"Probing recent coverage gap {probe_index}: "
-            f"{gap.start_utc.isoformat()} -> {gap.end_utc.isoformat()}."
-        )
+        progress_label = f"{probe_index:,}/{total:,}" if total else f"{probe_index:,}"
+        self.metrics.current_phase_message = f"Probing recent coverage gap {progress_label}: {gap.start_utc.isoformat()} -> {gap.end_utc.isoformat()}."
         self.metrics.current_phase_started_at_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         self._log_event(
             "coverage_gap_provider_probe_started",
             probe_index=probe_index,
+            probe_total=total,
             start_utc=gap.start_utc,
             end_utc=gap.end_utc,
         )
@@ -720,14 +774,18 @@ class NewsGateway:
             self._bootstrap_probe_empty += 1
         else:
             self._bootstrap_probe_positive += 1
+        self.metrics.bootstrap_probe_completed = probe_index
+        self.metrics.bootstrap_probe_empty = self._bootstrap_probe_empty
+        self.metrics.bootstrap_probe_positive = self._bootstrap_probe_positive
         message = (
-            f"Coverage probe {probe_index} complete: decision={'covered_empty' if is_empty else 'gap_requires_fill'} "
+            f"Coverage probe {progress_label} complete: decision={'covered_empty' if is_empty else 'gap_requires_fill'} "
             f"empty={self._bootstrap_probe_empty} positive={self._bootstrap_probe_positive}."
         )
         self.metrics.current_phase_message = message
         self._log_event(
             "coverage_gap_provider_probe",
             probe_index=probe_index,
+            probe_total=total,
             start_utc=gap.start_utc,
             end_utc=gap.end_utc,
             has_news=result.has_news,

@@ -38,6 +38,7 @@ def render_dashboard(gateway: "NewsGateway", news_snapshot: dict[str, Any]) -> G
     return Group(
         header_panel(gateway, metrics, now),
         phase_panel(metrics),
+        progress_panel(metrics),
         Columns(
             [preflight_panel(metrics), metrics_panel(gateway, metrics)],
             equal=True,
@@ -80,6 +81,40 @@ def phase_panel(metrics: dict[str, Any]) -> Panel:
     table.add_row("Since", started)
     table.add_row("Message", truncate(message, 220))
     return Panel(table, title="Current Operation", box=box.ROUNDED, border_style=color, padding=(0, 1))
+
+
+def progress_panel(metrics: dict[str, Any]) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Background Job", style="cyan", no_wrap=True, width=24)
+    table.add_column("Progress", no_wrap=True, width=48)
+    table.add_column("Done", justify="right", no_wrap=True, width=14)
+    table.add_column("Details", overflow="fold", ratio=1)
+
+    bootstrap_total = int(metrics.get("bootstrap_probe_total") or 0)
+    bootstrap_done = int(metrics.get("bootstrap_probe_completed") or 0)
+    bootstrap_empty = int(metrics.get("bootstrap_probe_empty") or 0)
+    bootstrap_positive = int(metrics.get("bootstrap_probe_positive") or 0)
+    gap_total = int(metrics.get("gap_fill_total_chunks") or 0)
+    gap_flushed = int(metrics.get("gap_fill_flushed_chunks") or 0)
+    gap_submitted = int(metrics.get("gap_fill_submitted_chunks") or 0)
+    gap_in_flight = int(metrics.get("gap_fill_in_flight_chunks") or 0)
+
+    table.add_row(
+        "Coverage probes",
+        progress_text(bootstrap_done, bootstrap_total),
+        progress_count(bootstrap_done, bootstrap_total),
+        f"empty={bootstrap_empty:,}  needs_fill={bootstrap_positive:,}" if bootstrap_total else "[dim]No bootstrap probe job active.[/dim]",
+    )
+    table.add_row(
+        "Startup gap fill",
+        progress_text(gap_flushed, gap_total),
+        progress_count(gap_flushed, gap_total),
+        f"submitted={gap_submitted:,}  in_flight={gap_in_flight:,}" if gap_total else "[dim]No startup gap-fill job active.[/dim]",
+    )
+    active = (bootstrap_total > 0 and bootstrap_done < bootstrap_total) or (gap_total > 0 and gap_flushed < gap_total)
+    color = "yellow" if active else "green"
+    title = "Background Progress" if active else "Background Progress [dim]idle[/dim]"
+    return Panel(table, title=title, box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
 def preflight_panel(metrics: dict[str, Any]) -> Panel:
@@ -204,6 +239,8 @@ def status_color(status: str) -> str:
         "manual_required_large_gap",
         "preflight",
         "coverage_bootstrap",
+        "coverage_gap_probe_plan",
+        "coverage_gap_probe",
         "gap_planning",
         "gap_fill",
         "gap_fill_fetch",
@@ -244,3 +281,19 @@ def truncate(value: str, limit: int) -> str:
     if len(text) <= limit:
         return text or "-"
     return text[: max(0, limit - 1)].rstrip() + "..."
+
+
+def progress_count(done: int, total: int) -> str:
+    if total <= 0:
+        return "-"
+    return f"{max(0, min(done, total)):,}/{total:,}"
+
+
+def progress_text(done: int, total: int, width: int = 30) -> str:
+    if total <= 0:
+        return "[dim]" + ("-" * width) + " -[/dim]"
+    bounded_done = max(0, min(done, total))
+    ratio = bounded_done / total
+    filled = int(round(ratio * width))
+    bar = "#" * filled + "-" * (width - filled)
+    return f"[green]{bar}[/green] {ratio * 100:5.1f}%"
