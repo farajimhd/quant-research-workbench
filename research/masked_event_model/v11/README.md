@@ -46,7 +46,8 @@ unmasked header and all 128 events:
 
 ```text
 training chunk_embedding: [B, 2 + visible_events, event_embedding_features]
-production chunk_embedding / event_embeddings: [B, 128, event_embedding_features]
+production encode(): [B, 2 + 128, event_embedding_features]
+production encode_events(): [B, 128, event_embedding_features]
 ```
 
 The default starts with `event_embedding_features=2` so each retained token

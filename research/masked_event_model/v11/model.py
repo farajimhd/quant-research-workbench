@@ -430,7 +430,7 @@ class MaskedEventBitPredictionHead(nn.Module):
 
 
 class EventChunkEncoder(nn.Module):
-    """Standalone encoder that ends at reusable `[B, E, F]` event embeddings.
+    """Standalone encoder that ends at reusable `[B, 2 + E, F]` token embeddings.
 
     This module contains only the pieces that should survive after MAE-style
     pretraining: header/event tokenization, visible-context transformer
@@ -467,9 +467,9 @@ class EventChunkEncoder(nn.Module):
         self.encoder_sequence_builder.reset_parameters()
 
     def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
-        """Production path: encode all event records and return only the chunk embedding."""
+        """Production path: encode all records and return CLS + header + events."""
 
-        # Input shapes: header [B, 14], events [B, E, 16]. Output shapes: encoded [B, 2 + E, D], embedding [B, E, F].
+        # Input shapes: header [B, 14], events [B, E, 16]. Output shapes: encoded [B, 2 + E, D], embedding [B, 2 + E, F].
         encoded_tokens, _ = self.encode_tokens(
             header_uint8,
             events_uint8,
@@ -477,7 +477,7 @@ class EventChunkEncoder(nn.Module):
             mask_config=None,
             training=False,
         )
-        return self.chunk_embedding_bottleneck.event_only(encoded_tokens)
+        return self.chunk_embedding_bottleneck(encoded_tokens)
 
     def encode_tokens(
         self,
@@ -625,8 +625,13 @@ class EventTokenMaskedAutoencoder(nn.Module):
 
     @torch.no_grad()
     def encode(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
-        """Production embedding path: no masks, no decoder, no reconstruction work."""
-        # Input shapes: header [B, 14], events [B, E, 16]. Output shapes: encoded [B, 2 + E, D], embedding [B, E, F].
+        """Production embedding path returning CLS + header + event embeddings.
+
+        Downstream models can keep the richer non-event summary tokens when
+        useful, while `encode_events()` remains available for strictly
+        event-aligned tensors.
+        """
+        # Input shapes: header [B, 14], events [B, E, 16]. Output shapes: encoded [B, 2 + E, D], embedding [B, 2 + E, F].
         encoded_tokens, _ = self._encode_tokens(
             header_uint8,
             events_uint8,
@@ -634,7 +639,7 @@ class EventTokenMaskedAutoencoder(nn.Module):
             mask_config=None,
             training=False,
         )
-        return self.chunk_embedding_bottleneck.event_only(encoded_tokens)
+        return self.chunk_embedding_bottleneck(encoded_tokens)
 
     def decode_from_chunk_embedding(self, chunk_embedding: torch.Tensor, masks: EventMaskBatch) -> torch.Tensor:
         """Reconstruct masked events, optionally forcing the decoder path to FP32.

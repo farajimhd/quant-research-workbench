@@ -52,12 +52,15 @@ def test_forward_and_encode_shapes() -> None:
     assert "pretrain/semantic/event_type_acc_pct" in result.metrics
     assert "pretrain/semantic/quote_ask_tick_mae" in result.metrics
     embedding = model.encode(header, event_bytes)
-    assert embedding.shape == (batch, events, 2)
+    assert embedding.shape == (batch, 2 + events, 2)
     assert output.chunk_embedding.shape == (batch, 2 + masks.visible_count, 2)
     decoder_memory = model.chunk_embedding_to_decoder_memory(output.chunk_embedding)
     assert decoder_memory.shape == (batch, 2, 32)
     event_embedding = model.encode_events(header, event_bytes)
     assert event_embedding.shape == (batch, events, 2)
+    standalone_encoder = model.build_encoder_model()
+    standalone_embedding = standalone_encoder(header, event_bytes)
+    assert standalone_embedding.shape == (batch, 2 + events, 2)
 
 
 def test_final_events_schema_encoder_shapes() -> None:
