@@ -271,30 +271,27 @@ class EncoderSequenceBuilder(nn.Module):
 class ChunkEmbeddingBottleneck(nn.Module):
     """Create the exported per-token embedding from encoded context tokens.
 
-    v11 keeps the event/token axis instead of mean-pooling it away. The first
-    projection keeps the v9 bottleneck width (`embedding_dim`, typically 32),
-    then a second projection compresses each token to
-    `event_embedding_features` features. v11 keeps those features as separate
-    decoder-memory slots, so the reusable representation and the decoder input
-    stay aligned around tokenwise feature channels instead of collapsing into a
-    single memory vector.
+    v11 keeps the event/token axis instead of mean-pooling it away. The encoded
+    transformer width is projected directly to `event_embedding_features`; there
+    is no intermediate `embedding_dim` projection here because two adjacent
+    linear layers without an activation collapse to one equivalent linear map.
+    v11 keeps those features as separate decoder-memory slots, so the reusable
+    representation and the decoder input stay aligned around tokenwise feature
+    channels instead of collapsing into a single memory vector.
     """
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.encoder_token_to_embedding_space = nn.Linear(config.d_model, config.embedding_dim)
-        self.embedding_space_to_event_features = nn.Linear(config.embedding_dim, config.event_embedding_features)
+        self.encoder_token_to_event_features = nn.Linear(config.d_model, config.event_embedding_features)
         self.chunk_embedding_output = ChunkEmbeddingOutput()
 
     def project_encoded_tokens(self, encoded_tokens: torch.Tensor) -> torch.Tensor:
-        # Input shape: [B, T, D]. Output shape: [B, T, Z].
-        return self.encoder_token_to_embedding_space(encoded_tokens)
+        # Input shape: [B, T, D]. Output shape: [B, T, F].
+        return self.encoder_token_to_event_features(encoded_tokens)
 
     def forward(self, encoded_tokens: torch.Tensor) -> torch.Tensor:
-        # Input shape: [B, T, D]. Output shape: [B, T, Z].
-        token_embeddings = self.project_encoded_tokens(encoded_tokens)
-        # Input shape: [B, T, Z]. Output shape: [B, T, F].
-        event_feature_embeddings = self.embedding_space_to_event_features(token_embeddings)
+        # Input shape: [B, T, D]. Output shape: [B, T, F].
+        event_feature_embeddings = self.project_encoded_tokens(encoded_tokens)
         # Input shape: [B, T, F]. Output shape: [B, T, F].
         return self.chunk_embedding_output(event_feature_embeddings)
 

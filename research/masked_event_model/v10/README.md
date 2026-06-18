@@ -20,12 +20,11 @@ At training time the encoder sees:
 
 The v10 change is the exported bottleneck geometry. v9 projected every encoded
 token to `embedding_dim` and mean-pooled the token axis into `[B, embedding_dim]`.
-v10 keeps the token axis and adds a second projection to compact per-token
-features:
+v10 keeps the token axis and now projects directly from the transformer width to
+compact per-token features:
 
 ```text
 encoded tokens [B, token_count, d_model]
-  -> to_embedding [B, token_count, embedding_dim]
   -> to_event_features [B, token_count, event_embedding_features]
   -> flatten [B, token_count * event_embedding_features]
   -> embedding_to_decoder [B, d_model]
@@ -50,8 +49,9 @@ production chunk_embedding / event_embeddings: [B, 128, event_embedding_features
 ```
 
 The default starts with `event_embedding_features=1` so each retained token
-exports one compact scalar feature while the intermediate projection remains
-`embedding_dim=32`.
+exports one compact scalar feature. `embedding_dim` is still accepted by the
+shared launchers for compatibility, but v10 no longer uses it in the chunk
+bottleneck.
 
 ## Defaults
 
@@ -61,7 +61,7 @@ sample cache root: D:\market-data\prepared\event_sample_cache
 events per chunk: 128
 event mask ratio: 0.70
 event mask schedule: fixed 70%
-embedding_dim: 32
+embedding_dim: accepted for launcher compatibility, not used by v10 bottleneck
 event_embedding_features: 1
 decoder_bottleneck_tokens: 40
 header bit corruption: 20% of samples, 5% of header bits
@@ -103,7 +103,7 @@ The final long-run launcher for the tokenwise bottleneck path is:
 python research\masked_event_model\v10\train_10shard_long.py --fresh-start
 ```
 
-Defaults are medium `d_model=256`, `embedding_dim=32`,
+Defaults are medium `d_model=256`,
 `event_embedding_features=1`, `decoder_bottleneck_tokens=40`,
 `batch_size=4096`, 10 training shards, 4 epochs, one cosine cycle per
 selected-shard epoch, validation at each shard boundary, async latest

@@ -21,12 +21,11 @@ At training time the encoder sees:
 The v11 change is the decoder-memory geometry. v10 exported one compact feature
 per retained token and flattened all retained token features into one decoder
 memory token. v11 exports two compact features per retained token and projects
-each feature channel across the retained-token axis into its own decoder memory
-token:
+directly from transformer width to those features. Each feature channel is then
+projected across the retained-token axis into its own decoder memory token:
 
 ```text
 encoded tokens [B, token_count, d_model]
-  -> to_embedding [B, token_count, embedding_dim]
   -> to_event_features [B, token_count, event_embedding_features]
   -> transpose [B, event_embedding_features, token_count]
   -> token_axis_to_decoder_width [B, event_embedding_features, d_model]
@@ -51,8 +50,9 @@ production chunk_embedding / event_embeddings: [B, 128, event_embedding_features
 ```
 
 The default starts with `event_embedding_features=2` so each retained token
-exports two compact scalar features while the intermediate projection remains
-`embedding_dim=32`.
+exports two compact scalar features. `embedding_dim` is still accepted by the
+shared launchers for compatibility, but v11 no longer uses it in the chunk
+bottleneck.
 
 ## Defaults
 
@@ -62,7 +62,7 @@ sample cache root: D:\market-data\prepared\event_sample_cache
 events per chunk: 128
 event mask ratio: 0.70
 event mask schedule: fixed 70%
-embedding_dim: 32
+embedding_dim: accepted for launcher compatibility, not used by v11 bottleneck
 event_embedding_features: 2
 decoder_bottleneck_tokens: 40
 header bit corruption: 20% of samples, 5% of header bits
@@ -104,7 +104,7 @@ The final long-run launcher for the tokenwise bottleneck path is:
 python research\masked_event_model\v11\train_10shard_long.py --fresh-start
 ```
 
-Defaults are medium `d_model=256`, `embedding_dim=32`,
+Defaults are medium `d_model=256`,
 `event_embedding_features=2`, `decoder_bottleneck_tokens=40`,
 `batch_size=4096`, 10 training shards, 4 epochs, one cosine cycle per
 selected-shard epoch, validation at each shard boundary, async latest

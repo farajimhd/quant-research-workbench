@@ -1619,7 +1619,7 @@ def build_model_summary_text(model: torch.nn.Module, details: dict[str, Any], pa
         f"Input events_uint8: [B, {details['events_per_chunk']}, 16]",
         f"Training encoder tokens: [B, 2 + visible_events, d_model]",
         f"Production encoder tokens: [B, 2 + {details['events_per_chunk']}, d_model]",
-        f"Chunk bottleneck: encoded tokens -> [B, token_count, {details['embedding_dim']}] -> [B, token_count, {details['event_embedding_features']}]",
+        f"Chunk bottleneck: encoded tokens -> [B, token_count, d_model] -> [B, token_count, {details['event_embedding_features']}]",
         f"Decoder memory: [B, {details['decoder_bottleneck_tokens']}, {details['event_embedding_features']}] -> transpose [B, {details['event_embedding_features']}, {details['decoder_bottleneck_tokens']}] -> [B, {details['event_embedding_features']}, d_model]",
         f"Decoder: masked event queries cross-attend to the compact feature-channel memory tokens",
         f"Output event bit logits: [B, masked_events, 16, 8]",
@@ -1654,8 +1654,7 @@ def build_model_mermaid(config: ExperimentConfig) -> str:
     HP --> TOK[\"encoder tokens<br/>CLS + header + visible events\"]
     POS --> TOK
     TOK --> ENC[\"Transformer encoder<br/>{config.model.encoder_layers} layers, d={config.model.d_model}, heads={config.model.n_heads}\"]
-    ENC --> TOKEMB[\"token bottleneck projection<br/>B x token_count x {config.model.embedding_dim}\"]
-    TOKEMB --> EMB[\"tokenwise embedding features<br/>B x token_count x {config.model.event_embedding_features}\"]
+    ENC --> EMB[\"direct tokenwise embedding features<br/>B x token_count x {config.model.event_embedding_features}\"]
     EMB --> TRANSPOSE[\"transpose token/features<br/>B x {config.model.event_embedding_features} x {config.model.decoder_bottleneck_tokens}\"]
     TRANSPOSE --> MEM[\"feature-channel decoder memory<br/>B x {config.model.event_embedding_features} x d_model\"]
     M --> MQ[\"masked event queries<br/>mask token + masked event position\"]
