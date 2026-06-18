@@ -75,6 +75,48 @@ Default folders:
 raw payloads: <data-root>/news-benzinga/raw/YYYY/MM/DD/benzinga_<id>.json
 prepared output: <data-root>/prepared
 gateway output: <data-root>/prepared/benzinga_news_gateway
+run logs: <data-root>/prepared/news_gateway/logs/<run_id>/news_gateway_events.jsonl
+```
+
+## Run Logs
+
+Every gateway run writes an async JSONL status log unless
+`NEWS_GATEWAY_RUN_LOG_ENABLED=false` is set. The log is not a copy of the
+terminal output. It is structured for debugging and later processing.
+
+Default path:
+
+```text
+<data-root>/prepared/news_gateway/logs/<run_id>/news_gateway_events.jsonl
+```
+
+Each row includes `ts_utc`, `run_id`, `event`, and event-specific status fields.
+The gateway logs operational state only:
+
+- startup, shutdown, and dependency preflight status
+- phase changes and timing context
+- provider fetch windows, row counts, page counts, and saturation status
+- item processing status keyed by provider article id and canonical news id
+- raw artifact path/hash, ticker count, warning count, and quality flags
+- ClickHouse write summaries
+- skipped-existing counts with sampled canonical ids and reason
+  `canonical_news_id_exists`
+- input duplicate id samples
+- coverage bootstrap, compaction, gap planning, gap fill, and live coverage
+  writes
+- error type/message for provider, processing, write, and startup failures
+
+The logger deliberately does not write titles, body text, extracted text, raw API
+payloads, or secret values. Long strings are truncated and keys that look like
+credentials are redacted.
+
+Controls:
+
+```text
+NEWS_GATEWAY_RUN_LOG_ENABLED=true
+NEWS_GATEWAY_LOG_ROOT_WIN=<data-root>/prepared/news_gateway/logs
+NEWS_GATEWAY_RUN_LOG_QUEUE_SIZE=10000
+NEWS_GATEWAY_RUN_LOG_SKIP_SAMPLE_SIZE=100
 ```
 
 ## Polling Schedule
@@ -163,6 +205,21 @@ latest successfully covered end time. When the run finishes, the same row is
 closed as `completed`. This includes provider windows that return zero news
 rows. A zero-row covered range means "provider checked this interval and it was
 empty", so the gateway will not retry that interval on the next startup.
+
+On startup the gateway also compacts active coverage rows in the table itself.
+It does not rely only on read-time merging. Existing active rows are written back
+as `superseded`, and merged replacement rows are inserted with source
+`coverage_compacted`. The compaction tolerance defaults to the coverage discovery
+bucket size, currently one hour. The tolerance is stored in `metadata_json` so a
+future audit can tell exactly why two neighboring intervals were treated as one
+continuous coverage interval.
+
+Controls:
+
+```text
+NEWS_BENZINGA_COVERAGE_COMPACT_ON_STARTUP=true
+NEWS_BENZINGA_COVERAGE_COMPACT_TOLERANCE_SECONDS=3600
+```
 
 Large non-workstation gaps are not auto-filled because the workstation has the
 correct storage root and compute. The generated manifest is written under

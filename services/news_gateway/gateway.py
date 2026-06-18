@@ -17,6 +17,7 @@ from pipelines.news.benzinga.core.coverage_manifest import (
     CoverageSnapshot,
     CoverageBootstrapSummary,
     bootstrap_coverage_from_normalized_table,
+    compact_coverage_manifest,
     ensure_coverage_manifest_table,
     find_coverage_gaps,
     insert_coverage_snapshot,
@@ -37,6 +38,7 @@ from services.news_gateway.config import (
     default_clickhouse_password,
 )
 from services.news_gateway.preflight import PreflightError, PreflightReport, run_preflight
+from services.news_gateway.run_logger import AsyncRunLogger
 from services.news_gateway.state import NewsMemoryState
 
 
@@ -74,6 +76,7 @@ class GatewayMetrics:
     preflight_status: str = "not_started"
     preflight_checked_at_utc: str = ""
     preflight_checks: list[dict[str, Any]] = field(default_factory=list)
+    run_log_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +145,13 @@ class NewsGateway:
         self._gap_coverage_counter = 0
         self._clickhouse_password = default_clickhouse_password()
         self._massive_api_key = massive_api_key()
+        self.logger = AsyncRunLogger(
+            root=config.log_root_win,
+            run_id=self._run_id,
+            enabled=config.run_log_enabled,
+            queue_size=config.run_log_queue_size,
+        )
+        self.metrics.run_log_path = str(self.logger.path) if config.run_log_enabled else ""
         self.pipeline = BenzingaNewsPipeline(
             BenzingaPipelineConfig(
                 policy_json=config.policy_json,
@@ -169,22 +179,31 @@ class NewsGateway:
         )
 
     async def start(self) -> None:
-        self._set_phase("preflight", "Checking ClickHouse, artifact storage, and Benzinga provider access.")
-        await self.preflight()
-        self._set_phase("coverage_bootstrap", "Preparing hourly coverage manifest from existing normalized news rows.")
-        await self._prepare_coverage_manifest()
-        self._set_phase("gap_planning", "Loading coverage intervals and planning startup gap handling.")
-        await self._plan_startup_gap()
-        self._set_phase("live_coverage", "Opening live coverage manifest row.")
-        await self._open_live_coverage()
-        self._set_phase("polling", "Live news polling is running.")
-        self._poll_task = asyncio.create_task(self._poll_loop(), name="benzinga-news-poll-loop")
-        if self.config.terminal_rich_enabled:
-            from services.news_gateway.terminal import run_terminal_dashboard
+        await self.logger.start()
+        self._log_event("service_starting", config=self.config.public_dict())
+        try:
+            self._set_phase("preflight", "Checking ClickHouse, artifact storage, and Benzinga provider access.")
+            await self.preflight()
+            self._set_phase("coverage_bootstrap", "Preparing hourly coverage manifest from existing normalized news rows.")
+            await self._prepare_coverage_manifest()
+            self._set_phase("gap_planning", "Loading coverage intervals and planning startup gap handling.")
+            await self._plan_startup_gap()
+            self._set_phase("live_coverage", "Opening live coverage manifest row.")
+            await self._open_live_coverage()
+            self._set_phase("polling", "Live news polling is running.")
+            self._poll_task = asyncio.create_task(self._poll_loop(), name="benzinga-news-poll-loop")
+            if self.config.terminal_rich_enabled:
+                from services.news_gateway.terminal import run_terminal_dashboard
 
-            self._terminal_task = asyncio.create_task(run_terminal_dashboard(self), name="benzinga-news-terminal-dashboard")
+                self._terminal_task = asyncio.create_task(run_terminal_dashboard(self), name="benzinga-news-terminal-dashboard")
+            self._log_event("service_started")
+        except Exception as exc:
+            self.logger.exception("service_start_failed", exc)
+            await self.logger.stop()
+            raise
 
     async def stop(self) -> None:
+        self._log_event("service_stopping")
         self._stop_event.set()
         tasks = [task for task in [self._poll_task, self._gap_task, self._terminal_task] if task is not None]
         for task in tasks:
@@ -192,6 +211,8 @@ class NewsGateway:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         await self._close_live_coverage()
+        self._log_event("service_stopped", metrics=self.snapshot_metrics())
+        await self.logger.stop()
 
     async def preflight(self) -> PreflightReport:
         try:
@@ -204,8 +225,10 @@ class NewsGateway:
         except PreflightError as exc:
             self._record_preflight_report(exc.report)
             self.metrics.last_error = repr(exc)
+            self.logger.exception("preflight_failed", exc, report=exc.report.public_dict())
             raise
         self._record_preflight_report(report)
+        self._log_event("preflight_completed", report=report.public_dict())
         return report
 
     def _record_preflight_report(self, report: PreflightReport) -> None:
@@ -218,6 +241,7 @@ class NewsGateway:
         self.metrics.current_phase = phase
         self.metrics.current_phase_message = message
         self.metrics.current_phase_started_at_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        self._log_event("phase_changed", phase=phase, message=message)
         if not self.config.terminal_rich_enabled or phase in {"preflight", "coverage_bootstrap", "gap_planning", "live_coverage", "polling", "gap_fill"}:
             print(f"news_gateway_phase={phase} message={message}", flush=True)
 
@@ -227,6 +251,7 @@ class NewsGateway:
         if not intervals:
             self.metrics.gap_status = "no_watermark"
             self.metrics.gap_message = "No coverage manifest intervals found; live polling will use normal lookback."
+            self._log_event("startup_gap_plan", status=self.metrics.gap_status, message=self.metrics.gap_message)
             return
         gaps = find_coverage_gaps(
             intervals,
@@ -238,6 +263,7 @@ class NewsGateway:
             latest_end = max(interval.end_utc for interval in intervals)
             self.metrics.gap_status = "covered_by_live_lookback"
             self.metrics.gap_message = f"Coverage manifest is current enough; latest coverage ends at {latest_end.isoformat()}."
+            self._log_event("startup_gap_plan", status=self.metrics.gap_status, message=self.metrics.gap_message)
             return
         largest_gap_seconds = max(gap.seconds for gap in gaps)
         total_gap_seconds = sum(gap.seconds for gap in gaps)
@@ -249,6 +275,7 @@ class NewsGateway:
                 f"{len(gaps)} coverage gap(s), {unique_gap_days} unique UTC day(s), "
                 f"{total_gap_seconds / 3600:.1f} total empty hour(s), will be filled in background during startup."
             )
+            self._log_event("startup_gap_plan", status=self.metrics.gap_status, gaps=len(gaps), unique_gap_days=unique_gap_days, total_gap_seconds=total_gap_seconds)
             print(self.metrics.gap_message, flush=True)
             self._gap_task = asyncio.create_task(self._fill_gaps(gaps), name="benzinga-news-startup-gap-fill")
             return
@@ -265,6 +292,15 @@ class NewsGateway:
                 "Running the generated workstation gap-fill script: "
                 f"{plan.workstation_script_path}"
             )
+            self._log_event(
+                "startup_gap_plan",
+                status=self.metrics.gap_status,
+                gaps=len(gaps),
+                unique_gap_days=unique_gap_days,
+                total_gap_seconds=total_gap_seconds,
+                script=str(plan.workstation_script_path),
+                manifest=str(plan.workstation_manifest_path),
+            )
             print(self.metrics.gap_message, flush=True)
             print(f"manifest: {plan.workstation_manifest_path}", flush=True)
             self._gap_task = asyncio.create_task(self._run_workstation_gap_fill_plan(plan), name="benzinga-news-workstation-gap-fill")
@@ -275,6 +311,15 @@ class NewsGateway:
             f"{total_gap_seconds / 3600:.1f} total empty hour(s), largest {largest_gap_seconds / 3600:.1f} hour(s). "
             "Run the generated script on the workstation: "
             f"{plan.workstation_script_path}"
+        )
+        self._log_event(
+            "startup_gap_plan",
+            status=self.metrics.gap_status,
+            gaps=len(gaps),
+            unique_gap_days=unique_gap_days,
+            total_gap_seconds=total_gap_seconds,
+            script=str(plan.workstation_script_path),
+            manifest=str(plan.workstation_manifest_path),
         )
         print(self.metrics.gap_message, flush=True)
         print(f"manifest: {plan.workstation_manifest_path}", flush=True)
@@ -303,6 +348,14 @@ class NewsGateway:
             f"range={start_utc.isoformat()}->{end_utc.isoformat()}."
         )
         self._set_phase("gap_fill_concurrent", self.metrics.gap_message)
+        self._log_event(
+            "gap_fill_started",
+            start_utc=start_utc,
+            end_utc=end_utc,
+            chunks=len(chunks),
+            workers=workers,
+            chunk_minutes=self.config.gap_fill_chunk_minutes,
+        )
         coverage_run: GapCoverageRun | None = None
         next_submit = 0
         next_flush = 0
@@ -341,6 +394,7 @@ class NewsGateway:
                         f"submitted={next_submit:,}, in_flight={len(pending):,}."
                     )
                     self._set_phase("gap_fill_progress", self.metrics.gap_message)
+                    self._log_event("gap_fill_progress", flushed=next_flush, total_chunks=len(chunks), submitted=next_submit, in_flight=len(pending))
         except asyncio.CancelledError:
             for task in pending:
                 task.cancel()
@@ -350,6 +404,7 @@ class NewsGateway:
         finally:
             if coverage_run is not None:
                 await asyncio.to_thread(self._write_gap_coverage_run, coverage_run, "completed", datetime.now(UTC))
+            self._log_event("gap_fill_finished", start_utc=start_utc, end_utc=end_utc, flushed=next_flush, total_chunks=len(chunks))
 
     async def _fill_gap_chunk(self, chunk: GapFillChunk) -> GapFillChunkOutcome:
         if self._stop_event.is_set():
@@ -397,9 +452,18 @@ class NewsGateway:
         started = time.perf_counter()
         self.metrics.poll_runs += 1
         self.metrics.last_poll_at_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        poll_id = f"{coverage_mode}_{self.metrics.poll_runs:012d}_{uuid.uuid4().hex[:8]}"
+        self._log_event("poll_started", poll_id=poll_id, coverage_mode=coverage_mode, start_utc=start_utc, end_utc=end_utc)
         try:
             self._set_phase(f"{coverage_mode}_fetch", f"Fetching Benzinga news {start_utc.isoformat()} -> {end_utc.isoformat()}.")
             fetch_result = await asyncio.to_thread(self.provider.fetch_window, start_utc, end_utc)
+            self._log_event(
+                "provider_fetch_completed",
+                poll_id=poll_id,
+                provider_rows=len(fetch_result.items),
+                pages=fetch_result.pages,
+                saturated=fetch_result.saturated,
+            )
             self._set_phase(f"{coverage_mode}_process", f"Processing {len(fetch_result.items):,} provider row(s).")
             processed: list[ProcessedNewsItem] = []
             failed = 0
@@ -414,10 +478,32 @@ class NewsGateway:
                         downloaded_at_utc=datetime.now(UTC),
                     )
                     processed.append(item)
+                    self._log_event(
+                        "item_processed",
+                        poll_id=poll_id,
+                        provider_article_id=item.result.provider_article_id,
+                        canonical_news_id=item.result.canonical_news_id,
+                        published_at_utc=item.result.normalized_row.get("published_at_utc"),
+                        ticker_count=len(item.result.ticker_links),
+                        fetch_task_count=len(item.result.url_resolution.fetch_tasks),
+                        warning_count=len(item.result.warnings),
+                        content_quality_flags=item.result.normalized_row.get("content_quality_flags"),
+                        raw_artifact_path=str(raw_path),
+                        raw_payload_hash=raw_hash,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     failed += 1
                     self.metrics.last_error = repr(exc)
+                    self.logger.exception(
+                        "item_processing_failed",
+                        exc,
+                        poll_id=poll_id,
+                        provider_article_id=str(payload.get("id") or payload.get("article_id") or ""),
+                    )
             write_summary = self._write_processed(processed)
+            skip_sample_size = max(0, self.config.run_log_skip_sample_size)
+            skipped_ids = list(getattr(write_summary, "skipped_existing_ids", []) or [])
+            duplicate_ids = list(getattr(write_summary, "input_duplicate_ids", []) or [])
             self._set_phase(
                 f"{coverage_mode}_write",
                 f"Wrote {write_summary.normalized_rows_inserted:,} row(s), skipped {write_summary.skipped_existing:,}.",
@@ -436,6 +522,30 @@ class NewsGateway:
             self.metrics.last_cycle_written_rows = write_summary.normalized_rows_inserted
             self.metrics.last_cycle_skipped_existing = write_summary.skipped_existing
             self.metrics.last_cycle_wall_seconds = time.perf_counter() - started
+            self._log_event(
+                "poll_completed",
+                poll_id=poll_id,
+                status=self.metrics.last_cycle_status,
+                coverage_mode=coverage_mode,
+                start_utc=start_utc,
+                end_utc=end_utc,
+                provider_rows=len(fetch_result.items),
+                processed_rows=len(processed),
+                failed_rows=failed,
+                pages=fetch_result.pages,
+                saturated=fetch_result.saturated,
+                normalized_rows_inserted=write_summary.normalized_rows_inserted,
+                ticker_rows_inserted=write_summary.ticker_rows_inserted,
+                skipped_existing=write_summary.skipped_existing,
+                skipped_reason="canonical_news_id_exists" if write_summary.skipped_existing else "",
+                skipped_existing_ids_sample=skipped_ids[:skip_sample_size],
+                skipped_existing_ids_sample_count=min(len(skipped_ids), skip_sample_size),
+                skipped_existing_ids_total=len(skipped_ids),
+                input_duplicate_ids_sample=duplicate_ids[:skip_sample_size],
+                input_duplicate_ids_total=len(duplicate_ids),
+                warnings=write_summary.warnings,
+                wall_seconds=self.metrics.last_cycle_wall_seconds,
+            )
             if failed == 0 and not fetch_result.saturated:
                 await self._record_successful_coverage(
                     start_utc,
@@ -463,6 +573,15 @@ class NewsGateway:
             self.metrics.last_error = repr(exc)
             self.metrics.last_cycle_status = "failed"
             self.metrics.last_cycle_wall_seconds = time.perf_counter() - started
+            self.logger.exception(
+                "poll_failed",
+                exc,
+                poll_id=poll_id,
+                coverage_mode=coverage_mode,
+                start_utc=start_utc,
+                end_utc=end_utc,
+                wall_seconds=self.metrics.last_cycle_wall_seconds,
+            )
             return {"status": "failed", "exception": repr(exc), "wall_seconds": time.perf_counter() - started}
 
     def current_poll_seconds(self) -> float:
@@ -504,6 +623,8 @@ class NewsGateway:
             ticker_rows_inserted=sum(item.ticker_rows_inserted for item in summaries),
             skipped_existing=sum(item.skipped_existing for item in summaries),
             warnings=sorted({warning for item in summaries for warning in item.warnings}),
+            skipped_existing_ids=sorted({skip_id for item in summaries for skip_id in getattr(item, "skipped_existing_ids", [])}),
+            input_duplicate_ids=sorted({duplicate_id for item in summaries for duplicate_id in getattr(item, "input_duplicate_ids", [])}),
         )
 
     async def _prepare_coverage_manifest(self) -> None:
@@ -526,21 +647,32 @@ class NewsGateway:
             self.metrics.gap_status = "coverage_bootstrapped"
             self.metrics.gap_message = message
             print(message, flush=True)
+            self._log_event("coverage_bootstrap_completed", summary=asdict(summary), message=message)
         else:
             message = f"Coverage manifest bootstrap skipped: status={summary.status} chunk={summary.chunk_seconds}s."
             self.metrics.gap_message = message
             print(message, flush=True)
+            self._log_event("coverage_bootstrap_skipped", summary=asdict(summary), message=message)
 
     def _ensure_and_bootstrap_coverage_manifest(self) -> CoverageBootstrapSummary:
         client = self._coverage_client()
         config = self._coverage_config()
         ensure_coverage_manifest_table(client, config)
-        return bootstrap_coverage_from_normalized_table(
+        summary = bootstrap_coverage_from_normalized_table(
             client,
             config,
             chunk_seconds=self.config.coverage_discovery_chunk_seconds,
             force_rebuild=self.config.rebuild_coverage_manifest,
         )
+        if self.config.coverage_compact_on_startup:
+            compact_summary = compact_coverage_manifest(
+                client,
+                config,
+                tolerance_seconds=max(0, self.config.coverage_compact_tolerance_seconds),
+                run_id=self._run_id,
+            )
+            self._log_event("coverage_manifest_compacted", summary=compact_summary)
+        return summary
 
     def _load_coverage_intervals(self) -> list[CoverageInterval]:
         client = self._coverage_client()
@@ -640,6 +772,18 @@ class NewsGateway:
             metadata={"mode": "live", "lookback_minutes": self.config.lookback_minutes},
         )
         insert_coverage_snapshot(self._coverage_client(), self._coverage_config(), snapshot)
+        self._log_event(
+            "coverage_live_snapshot_written",
+            coverage_id=snapshot.coverage_id,
+            status=snapshot.status,
+            start_utc=snapshot.coverage_start_utc,
+            end_utc=snapshot.coverage_end_utc,
+            poll_runs=snapshot.poll_runs,
+            provider_rows=snapshot.provider_rows,
+            processed_rows=snapshot.processed_rows,
+            written_rows=snapshot.written_rows,
+            skipped_existing=snapshot.skipped_existing,
+        )
 
     def _write_completed_gap_coverage(
         self,
@@ -684,6 +828,19 @@ class NewsGateway:
             },
         )
         insert_coverage_snapshot(self._coverage_client(), self._coverage_config(), snapshot)
+        self._log_event(
+            "coverage_gap_snapshot_written",
+            coverage_id=snapshot.coverage_id,
+            status=snapshot.status,
+            start_utc=snapshot.coverage_start_utc,
+            end_utc=snapshot.coverage_end_utc,
+            poll_runs=snapshot.poll_runs,
+            provider_rows=snapshot.provider_rows,
+            processed_rows=snapshot.processed_rows,
+            written_rows=snapshot.written_rows,
+            skipped_existing=snapshot.skipped_existing,
+            metadata=snapshot.metadata,
+        )
 
     def _write_gap_coverage_run(self, coverage_run: GapCoverageRun, status: str, closed_at: datetime | None) -> None:
         self._write_completed_gap_coverage(
@@ -736,6 +893,9 @@ class NewsGateway:
             normalized_table=self.target.normalized_table,
             storage_policy=__import__("os").environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
         )
+
+    def _log_event(self, event: str, **payload: Any) -> None:
+        self.logger.event(event, **payload)
 
 
 def save_raw_payload(raw_root: Path, payload: dict[str, Any]) -> tuple[Path, str]:

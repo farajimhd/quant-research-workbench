@@ -21,6 +21,7 @@ class NewsGatewayConfig:
     data_root_win: Path
     raw_root_win: Path
     prepared_root_win: Path
+    log_root_win: Path
     manual_gap_manifest_root_win: Path
     manual_gap_script_root_win: Path
     workstation_code_root_win: Path
@@ -39,6 +40,8 @@ class NewsGatewayConfig:
     gap_fill_chunk_minutes: int
     startup_gap_fill_workers: int
     poll_overlap_seconds: int
+    coverage_compact_tolerance_seconds: int
+    coverage_compact_on_startup: bool
     page_limit: int
     max_pages: int
     execute: bool
@@ -56,6 +59,9 @@ class NewsGatewayConfig:
     terminal_rich_enabled: bool
     terminal_refresh_seconds: float
     terminal_news_limit: int
+    run_log_enabled: bool
+    run_log_queue_size: int
+    run_log_skip_sample_size: int
 
     @classmethod
     def from_env(cls) -> "NewsGatewayConfig":
@@ -64,6 +70,8 @@ class NewsGatewayConfig:
         data_root = resolve_data_root()
         raw_root = Path(env_string("NEWS_BENZINGA_RAW_ROOT_WIN", str(data_root / "news-benzinga" / "raw")))
         prepared_root = Path(env_string("NEWS_BENZINGA_PREPARED_ROOT_WIN", str(data_root / "prepared")))
+        log_root = Path(env_string("NEWS_GATEWAY_LOG_ROOT_WIN", str(prepared_root / "news_gateway" / "logs")))
+        coverage_discovery_chunk_seconds = env_int("NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS", 3600)
         manual_gap_manifest_root = Path(
             env_string(
                 "NEWS_BENZINGA_MANUAL_GAP_MANIFEST_ROOT_WIN",
@@ -85,6 +93,7 @@ class NewsGatewayConfig:
             data_root_win=data_root,
             raw_root_win=raw_root,
             prepared_root_win=prepared_root,
+            log_root_win=log_root,
             manual_gap_manifest_root_win=manual_gap_manifest_root,
             manual_gap_script_root_win=manual_gap_script_root,
             workstation_code_root_win=workstation_code_root,
@@ -98,11 +107,13 @@ class NewsGatewayConfig:
             closed_poll_seconds=env_float("NEWS_BENZINGA_CLOSED_POLL_SECONDS", 60.0),
             lookback_minutes=env_int("NEWS_BENZINGA_LOOKBACK_MINUTES", 15),
             startup_auto_fill_max_gap_days=env_int("NEWS_BENZINGA_STARTUP_AUTO_FILL_MAX_GAP_DAYS", 30),
-            coverage_discovery_chunk_seconds=env_int("NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS", 3600),
+            coverage_discovery_chunk_seconds=coverage_discovery_chunk_seconds,
             rebuild_coverage_manifest=env_bool("NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST", False),
             gap_fill_chunk_minutes=env_int("NEWS_BENZINGA_GAP_FILL_CHUNK_MINUTES", 90),
             startup_gap_fill_workers=env_int("NEWS_BENZINGA_STARTUP_GAP_FILL_WORKERS", 4),
             poll_overlap_seconds=env_int("NEWS_BENZINGA_POLL_OVERLAP_SECONDS", 120),
+            coverage_compact_tolerance_seconds=env_int("NEWS_BENZINGA_COVERAGE_COMPACT_TOLERANCE_SECONDS", coverage_discovery_chunk_seconds),
+            coverage_compact_on_startup=env_bool("NEWS_BENZINGA_COVERAGE_COMPACT_ON_STARTUP", True),
             page_limit=env_int("NEWS_BENZINGA_PAGE_LIMIT", 1_000),
             max_pages=env_int("NEWS_BENZINGA_MAX_PAGES", 1_000),
             execute=env_bool("NEWS_BENZINGA_EXECUTE", True),
@@ -120,6 +131,9 @@ class NewsGatewayConfig:
             terminal_rich_enabled=env_bool_auto("NEWS_TERMINAL_RICH_ENABLED", sys.stdout.isatty()),
             terminal_refresh_seconds=env_float("NEWS_TERMINAL_REFRESH_SECONDS", 1.0),
             terminal_news_limit=env_int("NEWS_TERMINAL_NEWS_LIMIT", 12),
+            run_log_enabled=env_bool("NEWS_GATEWAY_RUN_LOG_ENABLED", True),
+            run_log_queue_size=env_int("NEWS_GATEWAY_RUN_LOG_QUEUE_SIZE", 10_000),
+            run_log_skip_sample_size=env_int("NEWS_GATEWAY_RUN_LOG_SKIP_SAMPLE_SIZE", 100),
         )
 
     def public_dict(self) -> dict[str, object]:
@@ -127,6 +141,7 @@ class NewsGatewayConfig:
         payload["data_root_win"] = str(self.data_root_win)
         payload["raw_root_win"] = str(self.raw_root_win)
         payload["prepared_root_win"] = str(self.prepared_root_win)
+        payload["log_root_win"] = str(self.log_root_win)
         payload["manual_gap_manifest_root_win"] = str(self.manual_gap_manifest_root_win)
         payload["manual_gap_script_root_win"] = str(self.manual_gap_script_root_win)
         payload["workstation_code_root_win"] = str(self.workstation_code_root_win)

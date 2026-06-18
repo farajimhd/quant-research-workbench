@@ -403,6 +403,85 @@ def load_coverage_intervals(client: ClickHouseHttpClient, config: CoverageManife
     return intervals
 
 
+def compact_coverage_manifest(
+    client: ClickHouseHttpClient,
+    config: CoverageManifestConfig,
+    *,
+    tolerance_seconds: int,
+    run_id: str,
+) -> dict[str, Any]:
+    """Supersede fragmented active coverage rows and insert merged intervals.
+
+    This keeps the manifest table itself compact instead of relying only on
+    read-time merging. A positive tolerance means a small hole between two
+    active coverage rows is considered covered for manifest purposes; the value
+    is recorded in metadata so the assumption is auditable.
+    """
+
+    active = load_coverage_intervals(client, config)
+    tolerance = timedelta(seconds=max(0, int(tolerance_seconds)))
+    merged = merge_intervals(active, tolerance=tolerance)
+    summary = {
+        "status": "skipped",
+        "active_intervals": len(active),
+        "merged_intervals": len(merged),
+        "tolerance_seconds": max(0, int(tolerance_seconds)),
+        "superseded_rows": 0,
+        "inserted_rows": 0,
+    }
+    if len(active) <= 1 or len(merged) >= len(active):
+        return summary
+
+    now = datetime.now(UTC)
+    superseded = [
+        CoverageSnapshot(
+            coverage_id=interval.coverage_id,
+            run_id=run_id,
+            source=interval.source,
+            status="superseded",
+            coverage_start_utc=interval.start_utc,
+            coverage_end_utc=interval.end_utc,
+            started_at_utc=now,
+            updated_at_utc=now,
+            closed_at_utc=now,
+            metadata={
+                "superseded_by": "coverage_manifest_compaction",
+                "compaction_run_id": run_id,
+                "compaction_tolerance_seconds": max(0, int(tolerance_seconds)),
+            },
+        )
+        for interval in active
+    ]
+    compacted = [
+        CoverageSnapshot(
+            coverage_id=f"coverage_compacted_{index:08d}_{filename_time(interval.start_utc)}_{filename_time(interval.end_utc)}",
+            run_id=run_id,
+            source="coverage_compacted",
+            status="completed",
+            coverage_start_utc=interval.start_utc,
+            coverage_end_utc=interval.end_utc,
+            started_at_utc=now,
+            updated_at_utc=now,
+            closed_at_utc=now,
+            metadata={
+                "compaction_run_id": run_id,
+                "compaction_tolerance_seconds": max(0, int(tolerance_seconds)),
+                "source": "merged_active_coverage_manifest_rows",
+            },
+        )
+        for index, interval in enumerate(merged, start=1)
+    ]
+    insert_coverage_snapshots(client, config, superseded + compacted)
+    summary.update(
+        {
+            "status": "compacted",
+            "superseded_rows": len(superseded),
+            "inserted_rows": len(compacted),
+        }
+    )
+    return summary
+
+
 def find_coverage_gaps(
     intervals: list[CoverageInterval],
     *,

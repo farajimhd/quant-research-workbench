@@ -116,6 +116,8 @@ class NewsBatchWriteSummary:
     normalized_rows_inserted: int
     ticker_rows_inserted: int
     skipped_existing: int
+    skipped_existing_ids: list[str] = field(default_factory=list)
+    input_duplicate_ids: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -176,6 +178,8 @@ def write_many_news_pipeline_results(
             normalized_rows_inserted=0,
             ticker_rows_inserted=0,
             skipped_existing=0,
+            skipped_existing_ids=[],
+            input_duplicate_ids=[],
         )
     if not cfg.skip_table_validation:
         validate_target_tables(
@@ -198,10 +202,13 @@ def write_many_news_pipeline_results(
         ticker_rows.extend(ticker_rows_for_insert(result.ticker_links))
 
     skipped_existing = 0
+    skipped_existing_ids: list[str] = []
+    input_duplicate_ids = duplicate_ids([str(row["canonical_news_id"]) for row in normalized_rows])
     if cfg.skip_existing:
         existing = load_existing_news_ids(client, cfg, [str(row["canonical_news_id"]) for row in normalized_rows])
         if existing:
             skipped_existing = len(existing)
+            skipped_existing_ids = sorted(existing)
             normalized_rows = [row for row in normalized_rows if str(row["canonical_news_id"]) not in existing]
             ticker_rows = [row for row in ticker_rows if str(row["canonical_news_id"]) not in existing]
 
@@ -217,6 +224,8 @@ def write_many_news_pipeline_results(
         normalized_rows_inserted=len(normalized_rows) if cfg.execute else 0,
         ticker_rows_inserted=len(ticker_rows) if cfg.execute else 0,
         skipped_existing=skipped_existing,
+        skipped_existing_ids=skipped_existing_ids,
+        input_duplicate_ids=input_duplicate_ids,
         warnings=sorted(set(warnings)),
     )
 
@@ -310,6 +319,18 @@ def load_existing_news_ids(client: ClickHouseHttpClient, config: NewsBatchWriteC
             if line.strip():
                 output.add(str(json.loads(line).get("canonical_news_id") or ""))
     return output
+
+
+def duplicate_ids(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        if value in seen:
+            duplicates.add(value)
+        seen.add(value)
+    return sorted(duplicates)
 
 
 def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bool:
