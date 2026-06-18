@@ -29,7 +29,7 @@ DEFAULTS: dict[str, Any] = {
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Run four focused v12 profile variations sequentially. Each variation "
+            "Run five focused v12 profile variations sequentially. Each variation "
             "trains for 200 steps by default, uses a fixed learning rate, and writes "
             "subprocess logs plus JSONL/CSV summaries for comparison."
         )
@@ -84,9 +84,10 @@ def main() -> None:
     print("v12 focused variation profile", flush=True)
     print("Variations:", flush=True)
     print("  1. medium      emb32 batch4096", flush=True)
-    print("  2. medium      emb64 batch4096", flush=True)
-    print("  3. medium_plus emb32 batch2048", flush=True)
-    print("  4. large       emb32 batch1024", flush=True)
+    print("  2. medium      emb32 batch8192", flush=True)
+    print("  3. medium      emb64 batch4096", flush=True)
+    print("  4. medium_plus emb32 batch2048", flush=True)
+    print("  5. large       emb32 batch1024", flush=True)
     print("Fixed LR:", known.learning_rate, flush=True)
     print("Equivalent command:", flush=True)
     print(" ".join(command), flush=True)

@@ -102,17 +102,17 @@ python research\masked_event_model\v12\run_model_size_sweep.py --steps 200 --fre
 The sweep includes practical combinations across embedding sizes 32 and 64,
 batch sizes 1024/2048/4096/8192, and the tiny/small/medium/high model presets.
 
-Focused four-run variation profile:
+Focused five-run variation profile:
 
 ```powershell
 python research\masked_event_model\v12\run_variation_profile.py --fresh-start
 ```
 
-This runs medium `emb32/bs4096`, medium `emb64/bs4096`,
+This runs medium `emb32/bs4096`, medium `emb32/bs8192`, medium `emb64/bs4096`,
 medium_plus `emb32/bs2048`, and large `emb32/bs1024` for 200 steps each with a
-fixed `2e-4` learning rate and no scheduler. It writes each subprocess log under
-the sweep `logs/` folder and writes comparison rows to `sweep_results.jsonl` and
-`sweep_results.csv`.
+fixed `2e-4` learning rate and no scheduler. It writes each subprocess log
+under the sweep `logs/` folder and writes comparison rows to
+`sweep_results.jsonl` and `sweep_results.csv`.
 
 ## Limited Real Training
 

@@ -89,6 +89,7 @@ PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int] | tuple[str, int, int, str] |
 
 FOCUSED_VARIATION_RUNS: tuple[tuple[str, int, int] | tuple[str, int, int, str] | tuple[str, int, int, str, int], ...] = (
     ("medium", 32, 4096),
+    ("medium", 32, 8192),
     ("medium", 64, 4096),
     ("medium_plus", 32, 2048),
     ("large", 32, 1024),
