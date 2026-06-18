@@ -31,14 +31,20 @@ compute UTC window from lookback
 -> fetch Benzinga news from Massive REST
 -> save every raw payload under workstation market-data
 -> normalize with pipelines.news.benzinga.news_pipeline
+-> extract deterministic URL/ticker/quality metadata and URL fetch tasks
 -> write q_live.benzinga_news_normalized_v1
 -> write q_live.benzinga_news_ticker_v1
+-> update live coverage only after the write succeeds
 -> update in-memory recent-news cache
 -> update metrics
 ```
 
 The service skips existing `canonical_news_id` rows by default through the shared
 batch writer. Overlapping lookbacks and restarts are expected.
+
+The live path does not perform slow external URL/PDF downloading in the hot
+polling loop. It records URL tasks and quality flags so a separate enrichment
+workflow can process external sources without delaying live news persistence.
 
 ## Dependency Preflight
 
@@ -286,6 +292,8 @@ Dashboard content:
   when a manual fill is needed
 - fixed background progress rows for provider bootstrap probes and concurrent
   startup gap-fill chunks, including completed/total counts and in-flight work
+- database publish status, active publish jobs, pending rows, and completed or
+  failed publish job counts
 - current operation phase and message, including bootstrap, provider fetch,
   processing, writing, and gap-fill chunks
 - recent news table with time, tickers, title, and quality flags
@@ -430,6 +438,7 @@ NEWS_BENZINGA_BOOTSTRAP_PROBE_RECENT_GAPS=true
 NEWS_BENZINGA_BOOTSTRAP_PROBE_PROGRESS_INTERVAL=25
 NEWS_BENZINGA_GAP_FILL_CHUNK_MINUTES=90
 NEWS_BENZINGA_STARTUP_GAP_FILL_WORKERS=4
+NEWS_GATEWAY_GRACEFUL_SHUTDOWN_SECONDS=300
 ```
 
 Writes and memory:
@@ -496,8 +505,17 @@ and metrics.
 The launcher resolves the target conda environment's `python.exe` and runs it
 directly when possible, instead of wrapping the service in `conda run`. This
 keeps Ctrl+C delivery reliable in PowerShell. Uvicorn then stops the app, the
-gateway sets its stop event, and the polling, gap-fill, and terminal dashboard
-tasks are cancelled with a bounded graceful shutdown timeout.
+gateway sets its stop event, and active polling or startup gap-fill work is
+given a bounded window to reach a safe stop point. If a ClickHouse publish job is
+active, shutdown waits for that database write to finish before closing the live
+coverage row and stopping the logger. The terminal dashboard shows this as
+`shutdown_waiting_for_publish`, with active publish jobs and pending rows.
+
+Control the bounded graceful shutdown window with:
+
+```text
+NEWS_GATEWAY_GRACEFUL_SHUTDOWN_SECONDS=300
+```
 
 ## Historical Gap Fill
 

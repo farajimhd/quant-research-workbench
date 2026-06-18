@@ -86,6 +86,12 @@ class GatewayMetrics:
     gap_fill_flushed_chunks: int = 0
     gap_fill_submitted_chunks: int = 0
     gap_fill_in_flight_chunks: int = 0
+    publish_status: str = "idle"
+    publish_active_jobs: int = 0
+    publish_pending_rows: int = 0
+    publish_completed_jobs: int = 0
+    publish_failed_jobs: int = 0
+    publish_last_message: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +145,8 @@ class NewsGateway:
         self._poll_task: asyncio.Task[None] | None = None
         self._gap_task: asyncio.Task[None] | None = None
         self._terminal_task: asyncio.Task[None] | None = None
+        self._publish_tasks: set[asyncio.Task[Any]] = set()
+        self._publish_task_rows: dict[asyncio.Task[Any], int] = {}
         self._preflight_report: PreflightReport | None = None
         self._run_id = new_run_id("news_gateway")
         self._live_coverage_id = f"{self._run_id}_live"
@@ -217,11 +225,14 @@ class NewsGateway:
     async def stop(self) -> None:
         self._log_event("service_stopping")
         self._stop_event.set()
+        await self._wait_for_service_tasks_to_quiesce()
+        await self._drain_publish_tasks("shutdown")
         tasks = [task for task in [self._poll_task, self._gap_task, self._terminal_task] if task is not None]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        await self._drain_publish_tasks("post_cancel")
         await self._close_live_coverage()
         self._log_event("service_stopped", metrics=self.snapshot_metrics())
         await self.logger.stop()
@@ -470,7 +481,10 @@ class NewsGateway:
             await self.poll_window(start_utc, end_utc, coverage_mode="live")
             sleep_seconds = self.current_poll_seconds()
             self.metrics.current_poll_seconds = sleep_seconds
-            await asyncio.sleep(sleep_seconds)
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=sleep_seconds)
+            except TimeoutError:
+                pass
 
     async def poll_window(self, start_utc: datetime, end_utc: datetime, *, coverage_mode: str = "live") -> dict[str, Any]:
         started = time.perf_counter()
@@ -524,7 +538,7 @@ class NewsGateway:
                         poll_id=poll_id,
                         provider_article_id=str(payload.get("id") or payload.get("article_id") or ""),
                     )
-            write_summary = self._write_processed(processed)
+            write_summary = await self._publish_processed(processed, poll_id=poll_id, coverage_mode=coverage_mode)
             skip_sample_size = max(0, self.config.run_log_skip_sample_size)
             skipped_ids = list(getattr(write_summary, "skipped_existing_ids", []) or [])
             duplicate_ids = list(getattr(write_summary, "input_duplicate_ids", []) or [])
@@ -621,6 +635,127 @@ class NewsGateway:
 
     def snapshot_metrics(self) -> dict[str, Any]:
         return asdict(self.metrics)
+
+    async def _publish_processed(self, processed: list[ProcessedNewsItem], *, poll_id: str, coverage_mode: str) -> Any:
+        row_count = len(processed)
+        task = asyncio.create_task(
+            asyncio.to_thread(self._write_processed, processed),
+            name=f"benzinga-news-publish-{poll_id}",
+        )
+        self._publish_tasks.add(task)
+        self._publish_task_rows[task] = row_count
+        self.metrics.publish_status = "running"
+        self.metrics.publish_active_jobs = len(self._publish_tasks)
+        self.metrics.publish_pending_rows += row_count
+        self.metrics.publish_last_message = f"Publishing {row_count:,} processed row(s) for {coverage_mode} poll {poll_id}."
+        self._set_phase(f"{coverage_mode}_write", self.metrics.publish_last_message)
+        self._log_event(
+            "publish_started",
+            poll_id=poll_id,
+            coverage_mode=coverage_mode,
+            processed_rows=row_count,
+            active_jobs=len(self._publish_tasks),
+        )
+        try:
+            summary = await asyncio.shield(task)
+        except Exception as exc:
+            self.metrics.publish_failed_jobs += 1
+            self.metrics.publish_status = "failed"
+            self.metrics.publish_last_message = f"Publish failed for {poll_id}: {exc!r}"
+            self.logger.exception(
+                "publish_failed",
+                exc,
+                poll_id=poll_id,
+                coverage_mode=coverage_mode,
+                processed_rows=row_count,
+            )
+            raise
+        finally:
+            if task.done():
+                self._publish_tasks.discard(task)
+                rows = self._publish_task_rows.pop(task, row_count)
+                self.metrics.publish_pending_rows = max(0, self.metrics.publish_pending_rows - rows)
+                self.metrics.publish_active_jobs = len(self._publish_tasks)
+                if self._publish_tasks:
+                    self.metrics.publish_status = "running"
+                elif self.metrics.publish_status != "failed":
+                    self.metrics.publish_status = "idle"
+        self.metrics.publish_completed_jobs += 1
+        self.metrics.publish_last_message = (
+            f"Publish completed for {poll_id}: "
+            f"inserted={getattr(summary, 'normalized_rows_inserted', 0):,}, "
+            f"skipped={getattr(summary, 'skipped_existing', 0):,}."
+        )
+        self._log_event(
+            "publish_completed",
+            poll_id=poll_id,
+            coverage_mode=coverage_mode,
+            processed_rows=row_count,
+            normalized_rows_inserted=getattr(summary, "normalized_rows_inserted", 0),
+            ticker_rows_inserted=getattr(summary, "ticker_rows_inserted", 0),
+            skipped_existing=getattr(summary, "skipped_existing", 0),
+            active_jobs=len(self._publish_tasks),
+        )
+        return summary
+
+    async def _drain_publish_tasks(self, reason: str) -> None:
+        while self._publish_tasks:
+            active = len(self._publish_tasks)
+            pending_rows = self.metrics.publish_pending_rows
+            message = (
+                f"Termination requested; waiting for {active:,} database publish job(s) "
+                f"with {pending_rows:,} row(s) still pending."
+            )
+            self.metrics.publish_status = "draining"
+            self.metrics.publish_active_jobs = active
+            self.metrics.publish_last_message = message
+            self._set_phase("shutdown_waiting_for_publish", message)
+            self._log_event("shutdown_waiting_for_publish", reason=reason, active_jobs=active, pending_rows=pending_rows)
+            self._print_status(message)
+            done, _pending = await asyncio.wait(self._publish_tasks, return_when=asyncio.ALL_COMPLETED)
+            for task in done:
+                self._publish_tasks.discard(task)
+                rows = self._publish_task_rows.pop(task, 0)
+                self.metrics.publish_pending_rows = max(0, self.metrics.publish_pending_rows - rows)
+                if task.cancelled():
+                    self.metrics.publish_failed_jobs += 1
+                    self._log_event("publish_task_cancelled_during_shutdown", reason=reason)
+                    continue
+                exc = task.exception()
+                if exc is not None:
+                    self.metrics.publish_failed_jobs += 1
+                    self.logger.exception("publish_task_failed_during_shutdown", exc, reason=reason)
+            self.metrics.publish_active_jobs = len(self._publish_tasks)
+        if self.metrics.publish_status == "draining":
+            self.metrics.publish_status = "idle"
+            self.metrics.publish_pending_rows = 0
+            message = "All pending database publish jobs finished; continuing graceful shutdown."
+            self.metrics.publish_last_message = message
+            self._set_phase("shutdown_publish_drained", message)
+            self._log_event("shutdown_publish_drained", reason=reason)
+
+    async def _wait_for_service_tasks_to_quiesce(self) -> None:
+        tasks = [task for task in [self._poll_task, self._gap_task] if task is not None and not task.done()]
+        if not tasks:
+            return
+        timeout = max(1.0, self.config.graceful_shutdown_seconds)
+        message = (
+            f"Termination requested; waiting up to {timeout:.0f}s for active polling/gap work "
+            "to reach a safe stop point before cancellation."
+        )
+        self._set_phase("shutdown_waiting_for_workers", message)
+        self._log_event("shutdown_waiting_for_workers", task_count=len(tasks), timeout_seconds=timeout)
+        self._print_status(message)
+        done, pending = await asyncio.wait(tasks, timeout=timeout, return_when=asyncio.ALL_COMPLETED)
+        if pending:
+            warning = (
+                f"Graceful worker wait timed out with {len(pending):,} task(s) still active; "
+                "pending database publish tasks will still be drained before shutdown completes."
+            )
+            self.metrics.last_error = warning
+            self._set_phase("shutdown_worker_wait_timeout", warning)
+            self._log_event("shutdown_worker_wait_timeout", done=len(done), pending=len(pending), timeout_seconds=timeout)
+            self._print_status(warning)
 
     def _write_processed(self, processed: list[ProcessedNewsItem]) -> Any:
         summaries = []

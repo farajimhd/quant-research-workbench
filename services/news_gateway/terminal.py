@@ -98,6 +98,11 @@ def progress_panel(metrics: dict[str, Any]) -> Panel:
     gap_flushed = int(metrics.get("gap_fill_flushed_chunks") or 0)
     gap_submitted = int(metrics.get("gap_fill_submitted_chunks") or 0)
     gap_in_flight = int(metrics.get("gap_fill_in_flight_chunks") or 0)
+    publish_status = str(metrics.get("publish_status") or "idle")
+    publish_active = int(metrics.get("publish_active_jobs") or 0)
+    publish_pending_rows = int(metrics.get("publish_pending_rows") or 0)
+    publish_completed = int(metrics.get("publish_completed_jobs") or 0)
+    publish_failed = int(metrics.get("publish_failed_jobs") or 0)
 
     table.add_row(
         "Coverage probes",
@@ -111,7 +116,18 @@ def progress_panel(metrics: dict[str, Any]) -> Panel:
         progress_count(gap_flushed, gap_total),
         f"submitted={gap_submitted:,}  in_flight={gap_in_flight:,}" if gap_total else "[dim]No startup gap-fill job active.[/dim]",
     )
-    active = (bootstrap_total > 0 and bootstrap_done < bootstrap_total) or (gap_total > 0 and gap_flushed < gap_total)
+    table.add_row(
+        "Database publish",
+        busy_text(publish_status, publish_active),
+        f"active={publish_active:,}",
+        f"pending_rows={publish_pending_rows:,}  completed={publish_completed:,}  failed={publish_failed:,}",
+    )
+    active = (
+        (bootstrap_total > 0 and bootstrap_done < bootstrap_total)
+        or (gap_total > 0 and gap_flushed < gap_total)
+        or publish_active > 0
+        or publish_status == "draining"
+    )
     color = "yellow" if active else "green"
     title = "Background Progress" if active else "Background Progress [dim]idle[/dim]"
     return Panel(table, title=title, box=box.ROUNDED, border_style=color, padding=(0, 1))
@@ -228,7 +244,7 @@ def compact_time(value: str) -> str:
 
 def status_color(status: str) -> str:
     text = status.strip().lower()
-    if text in {"ok", "covered_by_live_lookback", "no_watermark", "polling", "live_write", "live_coverage"}:
+    if text in {"ok", "covered_by_live_lookback", "no_watermark", "polling", "live_write", "live_coverage", "shutdown_publish_drained"}:
         return "green"
     if text in {
         "starting",
@@ -249,6 +265,9 @@ def status_color(status: str) -> str:
         "gap_fill_deferred_fetch",
         "gap_fill_deferred_process",
         "gap_fill_deferred_write",
+        "live_write",
+        "shutdown_waiting_for_workers",
+        "shutdown_waiting_for_publish",
         "live_fetch",
         "live_process",
     }:
@@ -297,3 +316,13 @@ def progress_text(done: int, total: int, width: int = 30) -> str:
     filled = int(round(ratio * width))
     bar = "#" * filled + "-" * (width - filled)
     return f"[green]{bar}[/green] {ratio * 100:5.1f}%"
+
+
+def busy_text(status: str, active: int, width: int = 30) -> str:
+    normalized = status.strip().lower()
+    if active <= 0 and normalized in {"", "idle"}:
+        return "[dim]" + ("-" * width) + " idle[/dim]"
+    if normalized == "failed":
+        return "[red]" + ("!" * min(width, 8)).ljust(width, "-") + " failed[/red]"
+    marker = "#" * min(width, max(3, active))
+    return f"[yellow]{marker.ljust(width, '-')}[/yellow] {status_label(normalized)}"

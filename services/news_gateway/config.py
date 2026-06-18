@@ -65,6 +65,7 @@ class NewsGatewayConfig:
     terminal_screen_enabled: bool
     terminal_refresh_seconds: float
     terminal_news_limit: int
+    graceful_shutdown_seconds: float
     run_log_enabled: bool
     run_log_queue_size: int
     run_log_skip_sample_size: int
@@ -143,6 +144,7 @@ class NewsGatewayConfig:
             terminal_screen_enabled=env_bool("NEWS_TERMINAL_SCREEN_ENABLED", True),
             terminal_refresh_seconds=env_float("NEWS_TERMINAL_REFRESH_SECONDS", 1.0),
             terminal_news_limit=env_int("NEWS_TERMINAL_NEWS_LIMIT", 12),
+            graceful_shutdown_seconds=env_float("NEWS_GATEWAY_GRACEFUL_SHUTDOWN_SECONDS", 300.0),
             run_log_enabled=env_bool("NEWS_GATEWAY_RUN_LOG_ENABLED", True),
             run_log_queue_size=env_int("NEWS_GATEWAY_RUN_LOG_QUEUE_SIZE", 10_000),
             run_log_skip_sample_size=env_int("NEWS_GATEWAY_RUN_LOG_SKIP_SAMPLE_SIZE", 100),
