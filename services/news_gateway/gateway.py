@@ -1508,7 +1508,7 @@ class NewsGateway:
         self.logger.event(event, **payload)
 
     def _print_status(self, message: str) -> None:
-        if self.config.terminal_rich_enabled:
+        if self.config.terminal_rich_enabled and self._terminal_task is not None and not self._terminal_task.done():
             return
         print(message, flush=True)
 

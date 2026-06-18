@@ -323,8 +323,12 @@ $env:NEWS_TERMINAL_NEWS_LIMIT="12"
 ```
 
 When Rich is enabled, routine gateway status messages are written to the JSONL
-run log and shown in the dashboard instead of being printed directly to stdout.
-This prevents normal log lines from fighting Rich's live render.
+run log and shown in the dashboard instead of being printed directly to stdout
+after the dashboard has started. Startup preflight, coverage bootstrap, and gap
+planning still print progress before the dashboard is active so Uvicorn's
+`Waiting for application startup` line is not the only visible feedback.
+This prevents normal log lines from fighting Rich's live render while preserving
+startup visibility.
 
 ## Run
 
