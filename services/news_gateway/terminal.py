@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from rich import box
+from rich.columns import Columns
 from rich.console import Group
 from rich.live import Live
 from rich.panel import Panel
@@ -30,8 +31,11 @@ def render_dashboard(gateway: "NewsGateway", news_snapshot: dict[str, Any]) -> G
     now = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
     return Group(
         header_panel(gateway, metrics, now),
-        preflight_panel(metrics),
-        metrics_table(gateway, metrics),
+        Columns(
+            [preflight_panel(metrics), metrics_panel(gateway, metrics)],
+            equal=True,
+            expand=True,
+        ),
         gap_panel(metrics),
         news_table(news_snapshot),
     )
@@ -39,61 +43,73 @@ def render_dashboard(gateway: "NewsGateway", news_snapshot: dict[str, Any]) -> G
 
 def header_panel(gateway: "NewsGateway", metrics: dict[str, Any], now: str) -> Panel:
     status = str(metrics.get("last_cycle_status") or "starting")
-    color = "green" if status in {"ok", "starting", ""} else "yellow" if status == "completed_with_errors" else "red"
-    text = Text()
-    text.append("Python News Gateway", style="bold")
-    text.append("  ")
-    text.append(status, style=f"bold {color}")
-    text.append(f"  now={now}")
-    text.append(f"  poll={metrics.get('current_poll_seconds') or gateway.current_poll_seconds():.1f}s")
-    text.append(f"  data={gateway.config.data_root_win}")
-    return Panel(text, box=box.SIMPLE, padding=(0, 1))
+    color = status_color(status)
+    mode = "execute" if gateway.config.execute else "dry-run"
+    location = "workstation" if gateway.config.is_workstation else "remote"
+    poll = float(metrics.get("current_poll_seconds") or gateway.current_poll_seconds())
+    grid = Table.grid(expand=True)
+    grid.add_column(ratio=2)
+    grid.add_column(justify="right", ratio=3)
+    grid.add_row(
+        f"[bold]Python News Gateway[/bold]  [{color}]{status_label(status)}[/{color}]",
+        f"[dim]UTC[/dim] {now}   [dim]poll[/dim] {poll:.1f}s   [dim]mode[/dim] {mode}/{location}",
+    )
+    grid.add_row(
+        f"[dim]bind[/dim] {gateway.config.bind}",
+        f"[dim]data[/dim] {truncate(str(gateway.config.data_root_win), 96)}",
+    )
+    return Panel(grid, box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
 def preflight_panel(metrics: dict[str, Any]) -> Panel:
     status = str(metrics.get("preflight_status") or "not_started")
-    color = "green" if status == "ok" else "red" if status == "failed" else "yellow"
+    color = status_color(status)
     checks = metrics.get("preflight_checks") or []
-    table = Table(box=box.SIMPLE, expand=True)
-    table.add_column("Dependency", style="cyan", no_wrap=True)
-    table.add_column("Status", no_wrap=True)
-    table.add_column("Time", justify="right", no_wrap=True)
-    table.add_column("Message", overflow="fold")
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Check", style="cyan", no_wrap=True, width=18)
+    table.add_column("Result", no_wrap=True, width=10)
+    table.add_column("Sec", justify="right", no_wrap=True, width=6)
+    table.add_column("Details", overflow="fold", ratio=1)
     if isinstance(checks, list) and checks:
         for check in checks:
             if not isinstance(check, dict):
                 continue
             check_status = str(check.get("status") or "")
-            check_color = "green" if check_status == "ok" else "red"
+            check_color = status_color(check_status)
             table.add_row(
-                str(check.get("name") or "-"),
-                f"[{check_color}]{check_status or '-'}[/{check_color}]",
+                labelize(str(check.get("name") or "-")),
+                f"[{check_color}]{status_label(check_status)}[/{check_color}]",
                 f"{float(check.get('wall_seconds') or 0.0):.2f}s",
-                str(check.get("message") or "-"),
+                truncate(str(check.get("message") or "-"), 140),
             )
     else:
-        table.add_row("-", "[yellow]not_started[/yellow]", "-", "Dependency preflight has not run yet.")
-    title = f"Preflight [{color}]{status}[/{color}]"
+        table.add_row("-", "[yellow]WAIT[/yellow]", "-", "Dependency preflight has not run yet.")
+    title = f"Dependencies [{color}]{status_label(status)}[/{color}]"
     checked = str(metrics.get("preflight_checked_at_utc") or "")
     if checked:
-        title += f"  {checked}"
-    return Panel(table, title=title, box=box.SIMPLE, padding=(0, 1))
+        title += f"  [dim]{compact_time(checked)}[/dim]"
+    return Panel(table, title=title, box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
-def metrics_table(gateway: "NewsGateway", metrics: dict[str, Any]) -> Table:
-    table = Table(title="Live Summary", box=box.SIMPLE_HEAVY, expand=True)
-    table.add_column("Metric", style="cyan", no_wrap=True)
+def metrics_panel(gateway: "NewsGateway", metrics: dict[str, Any]) -> Panel:
+    status = str(metrics.get("last_cycle_status") or "starting")
+    color = status_color(status)
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Metric", style="cyan", no_wrap=True, ratio=2)
     table.add_column("Total", justify="right")
     table.add_column("Last Cycle", justify="right")
-    table.add_row("Poll runs", fmt(metrics.get("poll_runs")), str(metrics.get("last_poll_at_utc") or "-"))
+    table.add_row("Status", f"[{color}]{status_label(status)}[/{color}]", compact_time(str(metrics.get("last_poll_at_utc") or "")))
+    table.add_row("Poll runs", fmt(metrics.get("poll_runs")), compact_time(str(metrics.get("last_poll_at_utc") or "")))
     table.add_row("Provider rows", fmt(metrics.get("provider_rows")), fmt(metrics.get("last_cycle_provider_rows")))
     table.add_row("Processed rows", fmt(metrics.get("processed_rows")), fmt(metrics.get("last_cycle_processed_rows")))
     table.add_row("Written rows", fmt(metrics.get("written_rows")), fmt(metrics.get("last_cycle_written_rows")))
     table.add_row("Skipped existing", fmt(metrics.get("skipped_existing")), fmt(metrics.get("last_cycle_skipped_existing")))
     table.add_row("Raw saved", fmt(metrics.get("raw_saved")), f"{float(metrics.get('last_cycle_wall_seconds') or 0.0):.2f}s")
-    table.add_row("Failures", fmt(metrics.get("poll_failures")), str(metrics.get("last_error") or "-"))
-    table.add_row("Mode", "execute" if gateway.config.execute else "dry-run", "workstation" if gateway.config.is_workstation else "remote")
-    return table
+    table.add_row("Failures", fmt(metrics.get("poll_failures")), truncate(str(metrics.get("last_error") or "-"), 120))
+    mode = "execute" if gateway.config.execute else "dry-run"
+    location = "workstation" if gateway.config.is_workstation else "remote"
+    table.add_row("Mode", mode, location)
+    return Panel(table, title="Runtime", box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
 def gap_panel(metrics: dict[str, Any]) -> Panel:
@@ -102,40 +118,40 @@ def gap_panel(metrics: dict[str, Any]) -> Panel:
     command = str(metrics.get("manual_gap_fill_command") or "")
     script = str(metrics.get("manual_gap_fill_script_win") or "")
     manifest = str(metrics.get("manual_gap_fill_manifest_win") or "")
-    text = Text()
-    text.append(status, style="bold cyan")
+    color = gap_color(status)
+    table = Table.grid(expand=True)
+    table.add_column(style="cyan", no_wrap=True, width=18)
+    table.add_column(ratio=1)
+    table.add_row("State", f"[{color}]{status_label(status)}[/{color}]")
     if message:
-        text.append(f"\n{message}")
+        table.add_row("Message", truncate(message, 180))
     if script:
-        text.append("\nworkstation script:\n", style="bold yellow")
-        text.append(script, style="yellow")
+        table.add_row("Script", f"[yellow]{script}[/yellow]")
     if manifest:
-        text.append("\nmanifest:\n", style="bold yellow")
-        text.append(manifest, style="yellow")
+        table.add_row("Manifest", f"[yellow]{manifest}[/yellow]")
     if command:
-        text.append("\nfirst job command:\n", style="bold yellow")
-        text.append(command, style="yellow")
-    return Panel(text, title="Gap Handling", box=box.SIMPLE, padding=(0, 1))
+        table.add_row("First command", f"[dim]{truncate(command, 220)}[/dim]")
+    return Panel(table, title="Gap Handling", box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
 def news_table(snapshot: dict[str, Any]) -> Table:
     rows = snapshot.get("rows") or []
-    table = Table(title=f"Latest News ({len(rows)})", box=box.SIMPLE, expand=True)
-    table.add_column("Time", no_wrap=True, width=19)
-    table.add_column("Tickers", no_wrap=True, max_width=28)
-    table.add_column("Title", overflow="fold")
-    table.add_column("Flags", no_wrap=True, max_width=24)
+    table = Table(title=f"Latest News ({len(rows)})", box=box.ROUNDED, expand=True, header_style="bold cyan")
+    table.add_column("Published UTC", no_wrap=True, width=19, style="dim")
+    table.add_column("Tickers", no_wrap=True, max_width=30, style="bold magenta")
+    table.add_column("Headline", overflow="fold", ratio=1)
+    table.add_column("Flags", no_wrap=True, max_width=28, style="yellow")
     for row in rows:
         tickers = ", ".join(row.get("tickers") or []) or "-"
         flags = ", ".join(row.get("content_quality_flags") or []) or "-"
         table.add_row(
             compact_time(str(row.get("published_at_utc") or "")),
             tickers,
-            str(row.get("title") or "")[:180],
+            truncate(str(row.get("title") or ""), 220),
             flags,
         )
     if not rows:
-        table.add_row("-", "-", "No news in memory yet.", "-")
+        table.add_row("-", "-", "[dim]No news in memory yet.[/dim]", "-")
     return table
 
 
@@ -149,3 +165,46 @@ def fmt(value: Any) -> str:
 def compact_time(value: str) -> str:
     text = value.replace("T", " ").replace("Z", "")
     return text[:19] if text else "-"
+
+
+def status_color(status: str) -> str:
+    text = status.strip().lower()
+    if text in {"ok", "covered_by_live_lookback", "no_watermark"}:
+        return "green"
+    if text in {
+        "starting",
+        "not_started",
+        "completed_with_errors",
+        "auto_started",
+        "workstation_auto_started_large_gap",
+        "manual_required_large_gap",
+    }:
+        return "yellow"
+    if text in {"failed"} or "failed" in text:
+        return "red"
+    return "cyan"
+
+
+def gap_color(status: str) -> str:
+    text = status.strip().lower()
+    if text in {"covered_by_live_lookback", "no_watermark", "auto_completed"}:
+        return "green"
+    if text in {"auto_started", "workstation_auto_started_large_gap", "manual_required_large_gap", "not_started"}:
+        return "yellow"
+    return status_color(status)
+
+
+def status_label(status: str) -> str:
+    text = status.strip().replace("_", " ").upper()
+    return text or "-"
+
+
+def labelize(value: str) -> str:
+    return value.replace("_", " ").title()
+
+
+def truncate(value: str, limit: int) -> str:
+    text = value.strip()
+    if len(text) <= limit:
+        return text or "-"
+    return text[: max(0, limit - 1)].rstrip() + "..."
