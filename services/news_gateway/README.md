@@ -294,9 +294,14 @@ Controls:
 $env:NEWS_TERMINAL_RICH_ENABLED="auto"   # default
 $env:NEWS_TERMINAL_RICH_ENABLED="true"   # force on
 $env:NEWS_TERMINAL_RICH_ENABLED="false"  # disable
+$env:NEWS_TERMINAL_SCREEN_ENABLED="true" # default; render in alternate screen to reduce flicker
 $env:NEWS_TERMINAL_REFRESH_SECONDS="1"
 $env:NEWS_TERMINAL_NEWS_LIMIT="12"
 ```
+
+When Rich is enabled, routine gateway status messages are written to the JSONL
+run log and shown in the dashboard instead of being printed directly to stdout.
+This prevents normal log lines from fighting Rich's live render.
 
 ## Run
 
@@ -438,6 +443,7 @@ Terminal:
 
 ```text
 NEWS_TERMINAL_RICH_ENABLED=auto
+NEWS_TERMINAL_SCREEN_ENABLED=true
 NEWS_TERMINAL_REFRESH_SECONDS=1
 NEWS_TERMINAL_NEWS_LIMIT=12
 ```

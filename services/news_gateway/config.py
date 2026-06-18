@@ -61,6 +61,7 @@ class NewsGatewayConfig:
     policy_json: str
     text_limit_chars: int
     terminal_rich_enabled: bool
+    terminal_screen_enabled: bool
     terminal_refresh_seconds: float
     terminal_news_limit: int
     run_log_enabled: bool
@@ -137,6 +138,7 @@ class NewsGatewayConfig:
             policy_json=env_string("NEWS_BENZINGA_URL_DOMAIN_POLICY_JSON", ""),
             text_limit_chars=env_int("NEWS_BENZINGA_TEXT_LIMIT_CHARS", 50_000),
             terminal_rich_enabled=env_bool_auto("NEWS_TERMINAL_RICH_ENABLED", sys.stdout.isatty()),
+            terminal_screen_enabled=env_bool("NEWS_TERMINAL_SCREEN_ENABLED", True),
             terminal_refresh_seconds=env_float("NEWS_TERMINAL_REFRESH_SECONDS", 1.0),
             terminal_news_limit=env_int("NEWS_TERMINAL_NEWS_LIMIT", 12),
             run_log_enabled=env_bool("NEWS_GATEWAY_RUN_LOG_ENABLED", True),

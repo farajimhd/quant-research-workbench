@@ -243,8 +243,7 @@ class NewsGateway:
         self.metrics.current_phase_message = message
         self.metrics.current_phase_started_at_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         self._log_event("phase_changed", phase=phase, message=message)
-        if not self.config.terminal_rich_enabled or phase in {"preflight", "coverage_bootstrap", "gap_planning", "live_coverage", "polling", "gap_fill"}:
-            print(f"news_gateway_phase={phase} message={message}", flush=True)
+        self._print_status(f"news_gateway_phase={phase} message={message}")
 
     async def _plan_startup_gap(self) -> None:
         now = datetime.now(UTC)
@@ -277,7 +276,7 @@ class NewsGateway:
                 f"{total_gap_seconds / 3600:.1f} total empty hour(s), will be filled in background during startup."
             )
             self._log_event("startup_gap_plan", status=self.metrics.gap_status, gaps=len(gaps), unique_gap_days=unique_gap_days, total_gap_seconds=total_gap_seconds)
-            print(self.metrics.gap_message, flush=True)
+            self._print_status(self.metrics.gap_message)
             self._gap_task = asyncio.create_task(self._fill_gaps(gaps), name="benzinga-news-startup-gap-fill")
             return
         gap_intervals = [GapFillInterval(gap.start_utc, gap.end_utc) for gap in gaps]
@@ -302,8 +301,8 @@ class NewsGateway:
                 script=str(plan.workstation_script_path),
                 manifest=str(plan.workstation_manifest_path),
             )
-            print(self.metrics.gap_message, flush=True)
-            print(f"manifest: {plan.workstation_manifest_path}", flush=True)
+            self._print_status(self.metrics.gap_message)
+            self._print_status(f"manifest: {plan.workstation_manifest_path}")
             self._gap_task = asyncio.create_task(self._run_workstation_gap_fill_plan(plan), name="benzinga-news-workstation-gap-fill")
             return
         self.metrics.gap_status = "manual_required_large_gap"
@@ -322,8 +321,8 @@ class NewsGateway:
             script=str(plan.workstation_script_path),
             manifest=str(plan.workstation_manifest_path),
         )
-        print(self.metrics.gap_message, flush=True)
-        print(f"manifest: {plan.workstation_manifest_path}", flush=True)
+        self._print_status(self.metrics.gap_message)
+        self._print_status(f"manifest: {plan.workstation_manifest_path}")
 
     async def _fill_gaps(self, gaps: list[CoverageGap]) -> None:
         total = len(gaps)
@@ -336,7 +335,7 @@ class NewsGateway:
                 f"{gap.start_utc.isoformat()} -> {gap.end_utc.isoformat()} ({gap.seconds / 60:.1f} minutes)."
             )
             self._set_phase("gap_fill", self.metrics.gap_message)
-            print(self.metrics.gap_message, flush=True)
+            self._print_status(self.metrics.gap_message)
             await self._fill_gap(gap.start_utc, gap.end_utc)
         self.metrics.gap_status = "auto_completed"
         self.metrics.gap_message = f"Startup coverage gap fill completed for {total} gap(s)."
@@ -430,7 +429,7 @@ class NewsGateway:
             line = raw_line.decode("utf-8", errors="replace").strip()
             if line:
                 self.metrics.gap_message = line
-                print(line, flush=True)
+                self._print_status(line)
         return_code = await process.wait()
         if return_code == 0:
             self.metrics.gap_status = "auto_completed"
@@ -631,10 +630,7 @@ class NewsGateway:
     async def _prepare_coverage_manifest(self) -> None:
         if not self.config.execute:
             return
-        print(
-            f"coverage_manifest_bootstrap=started chunk_seconds={self.config.coverage_discovery_chunk_seconds}",
-            flush=True,
-        )
+        self._print_status(f"coverage_manifest_bootstrap=started chunk_seconds={self.config.coverage_discovery_chunk_seconds}")
         summary = await asyncio.to_thread(self._ensure_and_bootstrap_coverage_manifest)
         if summary.executed:
             message = (
@@ -647,12 +643,12 @@ class NewsGateway:
             )
             self.metrics.gap_status = "coverage_bootstrapped"
             self.metrics.gap_message = message
-            print(message, flush=True)
+            self._print_status(message)
             self._log_event("coverage_bootstrap_completed", summary=asdict(summary), message=message)
         else:
             message = f"Coverage manifest bootstrap skipped: status={summary.status} chunk={summary.chunk_seconds}s."
             self.metrics.gap_message = message
-            print(message, flush=True)
+            self._print_status(message)
             self._log_event("coverage_bootstrap_skipped", summary=asdict(summary), message=message)
 
     def _ensure_and_bootstrap_coverage_manifest(self) -> CoverageBootstrapSummary:
@@ -919,6 +915,11 @@ class NewsGateway:
 
     def _log_event(self, event: str, **payload: Any) -> None:
         self.logger.event(event, **payload)
+
+    def _print_status(self, message: str) -> None:
+        if self.config.terminal_rich_enabled:
+            return
+        print(message, flush=True)
 
 
 def save_raw_payload(raw_root: Path, payload: dict[str, Any]) -> tuple[Path, str]:

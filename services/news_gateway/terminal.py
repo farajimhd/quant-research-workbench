@@ -17,14 +17,17 @@ if TYPE_CHECKING:
 
 async def run_terminal_dashboard(gateway: "NewsGateway") -> None:
     refresh_seconds = max(0.25, gateway.config.terminal_refresh_seconds)
+    initial_snapshot: dict[str, Any] = {"rows": [], "limit": gateway.config.terminal_news_limit}
     with Live(
-        render_dashboard(gateway, {}),
+        render_dashboard(gateway, initial_snapshot),
         auto_refresh=False,
         transient=False,
+        screen=gateway.config.terminal_screen_enabled,
         vertical_overflow="crop",
     ) as live:
         while not gateway._stop_event.is_set():  # noqa: SLF001
             snapshot = await gateway.state.recent_snapshot(gateway.config.terminal_news_limit)
+            snapshot["limit"] = gateway.config.terminal_news_limit
             live.update(render_dashboard(gateway, snapshot), refresh=True)
             await asyncio.sleep(refresh_seconds)
 
@@ -154,12 +157,14 @@ def gap_panel(metrics: dict[str, Any]) -> Panel:
 
 def news_table(snapshot: dict[str, Any]) -> Table:
     rows = snapshot.get("rows") or []
+    row_limit = max(1, int(snapshot.get("limit") or len(rows) or 1))
+    display_rows = list(rows[:row_limit])
     table = Table(title=f"Latest News ({len(rows)})", box=box.ROUNDED, expand=True, header_style="bold cyan")
     table.add_column("Published UTC", no_wrap=True, width=19, style="dim")
     table.add_column("Tickers", no_wrap=True, max_width=30, style="bold magenta")
     table.add_column("Headline", overflow="fold", ratio=1)
     table.add_column("Flags", no_wrap=True, max_width=28, style="yellow")
-    for row in rows:
+    for row in display_rows:
         tickers = ", ".join(row.get("tickers") or []) or "-"
         flags = ", ".join(row.get("content_quality_flags") or []) or "-"
         table.add_row(
@@ -168,8 +173,9 @@ def news_table(snapshot: dict[str, Any]) -> Table:
             truncate(str(row.get("title") or ""), 220),
             flags,
         )
-    if not rows:
-        table.add_row("-", "-", "[dim]No news in memory yet.[/dim]", "-")
+    while len(display_rows) < row_limit:
+        table.add_row("-", "-", "[dim]No news in memory yet.[/dim]" if not rows and not display_rows else "", "-")
+        display_rows.append({})
     return table
 
 
