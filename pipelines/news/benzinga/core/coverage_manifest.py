@@ -81,7 +81,7 @@ class CoverageBootstrapSummary:
     covered_intervals: int = 0
     discovered_gap_intervals: int = 0
     discovered_gap_seconds: float = 0.0
-    superseded_legacy_bootstrap: bool = False
+    superseded_existing_bootstrap: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,10 +155,11 @@ def bootstrap_coverage_from_normalized_table(
     config: CoverageManifestConfig,
     *,
     chunk_seconds: int = 300,
+    force_rebuild: bool = False,
 ) -> CoverageBootstrapSummary:
     row_count = coverage_row_count(client, config)
-    legacy = load_legacy_minmax_bootstrap(client, config) if row_count > 0 else None
-    if row_count > 0 and legacy is None:
+    existing_bootstrap = load_existing_bootstrap_intervals(client, config) if row_count > 0 else []
+    if row_count > 0 and not force_rebuild:
         return CoverageBootstrapSummary(status="already_bootstrapped", executed=False, chunk_seconds=max(1, chunk_seconds))
     sql = (
         "SELECT min(published_at_utc) AS start_utc, max(published_at_utc) AS end_utc, count() AS rows "
@@ -201,8 +202,8 @@ def bootstrap_coverage_from_normalized_table(
     if gap_start is not None:
         gap_intervals.append(CoverageGap(gap_start, bucket_end))
     snapshots = coverage_snapshots_from_bucket_runs(covered_runs, seconds, config)
-    if legacy is not None:
-        snapshots.insert(0, supersede_legacy_bootstrap_snapshot(legacy))
+    if existing_bootstrap:
+        snapshots = [supersede_bootstrap_snapshot(interval) for interval in existing_bootstrap] + snapshots
     insert_coverage_snapshots(client, config, snapshots)
     return CoverageBootstrapSummary(
         status="bootstrapped",
@@ -216,7 +217,7 @@ def bootstrap_coverage_from_normalized_table(
         covered_intervals=len(covered_runs),
         discovered_gap_intervals=len(gap_intervals),
         discovered_gap_seconds=sum(gap.seconds for gap in gap_intervals),
-        superseded_legacy_bootstrap=legacy is not None,
+        superseded_existing_bootstrap=bool(existing_bootstrap),
     )
 
 
@@ -225,26 +226,29 @@ def coverage_row_count(client: ClickHouseHttpClient, config: CoverageManifestCon
     return int((text.strip() or "0").splitlines()[0])
 
 
-def load_legacy_minmax_bootstrap(client: ClickHouseHttpClient, config: CoverageManifestConfig) -> CoverageInterval | None:
+def load_existing_bootstrap_intervals(client: ClickHouseHttpClient, config: CoverageManifestConfig) -> list[CoverageInterval]:
     sql = (
-        "SELECT coverage_id, source, status, coverage_start_utc, coverage_end_utc, metadata_json "
+        "SELECT coverage_id, source, status, coverage_start_utc, coverage_end_utc "
         f"FROM {table_name(config.database, config.coverage_table)} FINAL "
-        "WHERE coverage_id = 'bootstrap_existing_normalized_table' "
-        "LIMIT 1 FORMAT JSONEachRow"
+        "WHERE source = 'bootstrap_existing_news_rows' "
+        "OR coverage_id = 'bootstrap_existing_normalized_table' "
+        "ORDER BY coverage_start_utc, coverage_id FORMAT JSONEachRow"
     )
-    row = first_json_row(client.execute(sql))
-    if not row:
-        return None
-    metadata = parse_metadata_json(str(row.get("metadata_json") or "{}"))
-    if metadata.get("bootstrap_mode") != "min_max_existing_rows":
-        return None
-    return CoverageInterval(
-        coverage_id=str(row.get("coverage_id") or ""),
-        source=str(row.get("source") or ""),
-        status=str(row.get("status") or ""),
-        start_utc=parse_clickhouse_datetime(str(row["coverage_start_utc"])),
-        end_utc=parse_clickhouse_datetime(str(row["coverage_end_utc"])),
-    )
+    intervals: list[CoverageInterval] = []
+    for line in client.execute(sql).splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        intervals.append(
+            CoverageInterval(
+                coverage_id=str(row.get("coverage_id") or ""),
+                source=str(row.get("source") or ""),
+                status=str(row.get("status") or ""),
+                start_utc=parse_clickhouse_datetime(str(row["coverage_start_utc"])),
+                end_utc=parse_clickhouse_datetime(str(row["coverage_end_utc"])),
+            )
+        )
+    return intervals
 
 
 def load_non_empty_bucket_counts(
@@ -307,7 +311,7 @@ def coverage_snapshots_from_bucket_runs(runs: list[list[BucketCount]], chunk_sec
     return snapshots
 
 
-def supersede_legacy_bootstrap_snapshot(interval: CoverageInterval) -> CoverageSnapshot:
+def supersede_bootstrap_snapshot(interval: CoverageInterval) -> CoverageSnapshot:
     now = datetime.now(UTC)
     return CoverageSnapshot(
         coverage_id=interval.coverage_id,
@@ -319,7 +323,7 @@ def supersede_legacy_bootstrap_snapshot(interval: CoverageInterval) -> CoverageS
         started_at_utc=now,
         updated_at_utc=now,
         closed_at_utc=now,
-        metadata={"bootstrap_mode": "min_max_existing_rows", "superseded_by": "bucketed_existing_news_rows"},
+        metadata={"superseded_by": "bucketed_existing_news_rows"},
     )
 
 
@@ -380,11 +384,12 @@ def find_coverage_gaps(
             gaps.append(CoverageGap(cursor, interval.start_utc))
         if interval.end_utc > cursor:
             cursor = interval.end_utc
+    output = [gap for gap in gaps if gap.seconds > max(0, merge_tolerance_seconds)]
     if end_utc > cursor:
         trailing = CoverageGap(cursor, end_utc)
         if trailing.seconds > max(0, trailing_live_lookback_seconds):
-            gaps.append(trailing)
-    return [gap for gap in gaps if gap.seconds > max(0, merge_tolerance_seconds)]
+            output.append(trailing)
+    return output
 
 
 def merge_intervals(intervals: list[CoverageInterval], *, tolerance: timedelta) -> list[CoverageInterval]:
@@ -458,11 +463,3 @@ def ceil_time(value: datetime, seconds: int) -> datetime:
 
 def filename_time(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
-
-
-def parse_metadata_json(value: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(value or "{}")
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}

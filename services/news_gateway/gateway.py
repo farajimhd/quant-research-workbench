@@ -190,7 +190,7 @@ class NewsGateway:
             intervals,
             end_utc=now,
             merge_tolerance_seconds=max(0, self.config.poll_overlap_seconds),
-            trailing_live_lookback_seconds=max(1, self.config.lookback_minutes) * 60,
+            trailing_live_lookback_seconds=0,
         )
         if not gaps:
             latest_end = max(interval.end_utc for interval in intervals)
@@ -214,6 +214,17 @@ class NewsGateway:
         self.metrics.manual_gap_fill_command = historical_gap_command(gaps[0].start_utc, gaps[0].end_utc, self.config)
         self.metrics.manual_gap_fill_script_win = str(plan.workstation_script_path)
         self.metrics.manual_gap_fill_manifest_win = str(plan.workstation_manifest_path)
+        if self.config.is_workstation:
+            self.metrics.gap_status = "workstation_auto_started_large_gap"
+            self.metrics.gap_message = (
+                f"{len(gaps)} coverage gap(s) found; total {total_gap_seconds / 86400:.2f} days, "
+                f"largest {largest_gap_seconds / 86400:.2f} days. Running the generated workstation gap-fill script: "
+                f"{plan.workstation_script_path}"
+            )
+            print(self.metrics.gap_message, flush=True)
+            print(f"manifest: {plan.workstation_manifest_path}", flush=True)
+            self._gap_task = asyncio.create_task(self._run_workstation_gap_fill_plan(plan), name="benzinga-news-workstation-gap-fill")
+            return
         self.metrics.gap_status = "manual_required_large_gap"
         self.metrics.gap_message = (
             f"{len(gaps)} coverage gap(s) found; total {total_gap_seconds / 86400:.2f} days, "
@@ -245,6 +256,33 @@ class NewsGateway:
             print(f"provider_gap_fill_window={current.isoformat()}->{chunk_end.isoformat()}", flush=True)
             await self.poll_window(current, chunk_end, coverage_mode="gap_fill")
             current = chunk_end
+
+    async def _run_workstation_gap_fill_plan(self, plan: ManualGapFillPlan) -> None:
+        script_path = str(plan.workstation_script_path)
+        process = await asyncio.create_subprocess_exec(
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            script_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        assert process.stdout is not None
+        async for raw_line in process.stdout:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if line:
+                self.metrics.gap_message = line
+                print(line, flush=True)
+        return_code = await process.wait()
+        if return_code == 0:
+            self.metrics.gap_status = "auto_completed"
+            self.metrics.gap_message = f"Workstation gap-fill script completed: {script_path}"
+        else:
+            self.metrics.gap_status = "failed"
+            self.metrics.gap_message = f"Workstation gap-fill script failed with exit code {return_code}: {script_path}"
+            self.metrics.last_error = self.metrics.gap_message
 
     async def _poll_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -382,7 +420,12 @@ class NewsGateway:
         client = self._coverage_client()
         config = self._coverage_config()
         ensure_coverage_manifest_table(client, config)
-        return bootstrap_coverage_from_normalized_table(client, config, chunk_seconds=self.config.coverage_discovery_chunk_seconds)
+        return bootstrap_coverage_from_normalized_table(
+            client,
+            config,
+            chunk_seconds=self.config.coverage_discovery_chunk_seconds,
+            force_rebuild=self.config.rebuild_coverage_manifest,
+        )
 
     def _load_coverage_intervals(self) -> list[CoverageInterval]:
         client = self._coverage_client()

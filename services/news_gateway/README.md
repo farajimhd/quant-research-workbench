@@ -118,6 +118,8 @@ On startup:
    `NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS` buckets, counts news in
    every bucket, and writes merged coverage rows only for adjacent non-empty
    buckets.
+   This historical discovery is not repeated after the manifest has rows unless
+   `NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST=true` is set.
 3. Buckets with zero existing news are treated as unknown gaps, not as proven
    empty time. They must be checked against the provider before they become
    covered.
@@ -125,17 +127,18 @@ On startup:
 5. Adjacent or overlapping intervals are merged using
    `NEWS_BENZINGA_POLL_OVERLAP_SECONDS` as tolerance.
 6. Gaps between merged coverage intervals are identified.
-7. A trailing gap ending at current UTC is ignored only when normal live
-   lookback can still cover it.
+7. The trailing gap from the last coverage timestamp to current UTC is always
+   included in startup planning. That catch-up creates both news rows and
+   coverage rows before normal polling continues.
 
 Behavior:
 
 | Situation | Action |
 | --- | --- |
 | No coverage intervals | Live polling starts with normal lookback. |
-| Only trailing gap and live lookback covers it | Live polling covers it. |
 | One or more coverage gaps and total gap time is <= 30 days | Service starts background gap fill for all gaps during startup. |
-| One or more coverage gaps and total gap time is > 30 days | Service writes workstation-ready PowerShell gap-fill scripts and a manifest, prints their paths, and continues live polling. |
+| One or more coverage gaps, total gap time is > 30 days, and running on the workstation | Service writes and runs the workstation PowerShell gap-fill package automatically. |
+| One or more coverage gaps, total gap time is > 30 days, and not running on the workstation | Service writes workstation-ready PowerShell gap-fill scripts and a manifest, prints their paths, and continues live polling. |
 
 During live operation the gateway opens a live coverage segment. It extends that
 segment only after a provider window is fetched, normalized, and written without
@@ -338,6 +341,7 @@ NEWS_BENZINGA_LOOKBACK_MINUTES=15
 NEWS_BENZINGA_POLL_OVERLAP_SECONDS=120
 NEWS_BENZINGA_STARTUP_AUTO_FILL_MAX_GAP_DAYS=30
 NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS=300
+NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST=false
 NEWS_BENZINGA_GAP_FILL_CHUNK_MINUTES=90
 ```
 
