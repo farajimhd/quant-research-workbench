@@ -118,6 +118,8 @@ class NewsBatchWriteSummary:
     skipped_existing: int
     skipped_existing_ids: list[str] = field(default_factory=list)
     input_duplicate_ids: list[str] = field(default_factory=list)
+    input_duplicate_provider_keys: list[str] = field(default_factory=list)
+    stale_ticker_rows_deleted: int = 0
     warnings: list[str] = field(default_factory=list)
 
 
@@ -144,7 +146,9 @@ def write_news_pipeline_result(
             "Run a controlled ticker-link replacement before enabling this update."
         )
 
+    stale_ticker_rows_deleted = 0
     if cfg.execute:
+        stale_ticker_rows_deleted = delete_stale_ticker_links(client, cfg, [row])
         insert_json_each_row(client, cfg.database, cfg.normalized_table, NORMALIZED_COLUMNS, [row])
         if ticker_rows:
             insert_json_each_row(client, cfg.database, cfg.ticker_table, TICKER_LINK_COLUMNS, ticker_rows)
@@ -159,7 +163,7 @@ def write_news_pipeline_result(
         existing_normalized_rows=existing_count,
         existing_tickers=existing_tickers,
         new_tickers=new_tickers,
-        warnings=sanity_warnings,
+        warnings=[*sanity_warnings, *stale_ticker_cleanup_warnings(stale_ticker_rows_deleted)],
     )
 
 
@@ -180,6 +184,8 @@ def write_many_news_pipeline_results(
             skipped_existing=0,
             skipped_existing_ids=[],
             input_duplicate_ids=[],
+            input_duplicate_provider_keys=[],
+            stale_ticker_rows_deleted=0,
         )
     if not cfg.skip_table_validation:
         validate_target_tables(
@@ -193,13 +199,19 @@ def write_many_news_pipeline_results(
         )
 
     normalized_rows: list[dict[str, Any]] = []
-    ticker_rows: list[dict[str, Any]] = []
+    ticker_rows_by_canonical: dict[str, list[dict[str, Any]]] = {}
     warnings: list[str] = []
     for result in results:
         row = normalized_row_for_insert(result.normalized_row)
         warnings.extend(sanity_check_normalized_row(row))
         normalized_rows.append(row)
-        ticker_rows.extend(ticker_rows_for_insert(result.ticker_links))
+        ticker_rows_by_canonical[str(row["canonical_news_id"])] = ticker_rows_for_insert(result.ticker_links)
+
+    input_duplicate_provider_keys = duplicate_ids([provider_identity_key(row) for row in normalized_rows])
+    normalized_rows = latest_rows_by_provider_identity(normalized_rows)
+    ticker_rows: list[dict[str, Any]] = []
+    for row in normalized_rows:
+        ticker_rows.extend(ticker_rows_by_canonical.get(str(row["canonical_news_id"]), []))
 
     skipped_existing = 0
     skipped_existing_ids: list[str] = []
@@ -212,7 +224,9 @@ def write_many_news_pipeline_results(
             normalized_rows = [row for row in normalized_rows if str(row["canonical_news_id"]) not in existing]
             ticker_rows = [row for row in ticker_rows if str(row["canonical_news_id"]) not in existing]
 
+    stale_ticker_rows_deleted = 0
     if cfg.execute and normalized_rows:
+        stale_ticker_rows_deleted = delete_stale_ticker_links(client, cfg, normalized_rows)
         insert_json_each_row(client, cfg.database, cfg.normalized_table, NORMALIZED_COLUMNS, normalized_rows)
         if ticker_rows:
             insert_json_each_row(client, cfg.database, cfg.ticker_table, TICKER_LINK_COLUMNS, ticker_rows)
@@ -226,7 +240,9 @@ def write_many_news_pipeline_results(
         skipped_existing=skipped_existing,
         skipped_existing_ids=skipped_existing_ids,
         input_duplicate_ids=input_duplicate_ids,
-        warnings=sorted(set(warnings)),
+        input_duplicate_provider_keys=input_duplicate_provider_keys,
+        stale_ticker_rows_deleted=stale_ticker_rows_deleted,
+        warnings=sorted(set([*warnings, *stale_ticker_cleanup_warnings(stale_ticker_rows_deleted)])),
     )
 
 
@@ -331,6 +347,85 @@ def duplicate_ids(values: list[str]) -> list[str]:
             duplicates.add(value)
         seen.add(value)
     return sorted(duplicates)
+
+
+def provider_identity_key(row: dict[str, Any]) -> str:
+    return f"{row.get('published_date') or ''}|{row.get('provider_article_id') or ''}"
+
+
+def latest_rows_by_provider_identity(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Match the normalized table identity before writing ticker links.
+
+    q_live.benzinga_news_normalized_v1 is a ReplacingMergeTree ordered by
+    (published_date, provider_article_id). Benzinga can return duplicate or
+    revised payloads for the same article id in one polling window, so the
+    writer must keep the same final version that the normalized table will keep.
+    Otherwise stale ticker-link rows can point to a canonical_news_id that no
+    longer exists under FINAL.
+    """
+
+    selected: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for row in rows:
+        key = provider_identity_key(row)
+        if key not in selected:
+            order.append(key)
+        current = selected.get(key)
+        if current is None or str(row.get("updated_at_utc") or "") >= str(current.get("updated_at_utc") or ""):
+            selected[key] = row
+    return [selected[key] for key in order if key in selected]
+
+
+def stale_ticker_cleanup_warnings(stale_ticker_rows_deleted: int) -> list[str]:
+    if stale_ticker_rows_deleted <= 0:
+        return []
+    return [f"stale_ticker_links_deleted:{stale_ticker_rows_deleted}"]
+
+
+def delete_stale_ticker_links(client: ClickHouseHttpClient, config: NewsBatchWriteConfig | NewsWriteConfig, rows: list[dict[str, Any]]) -> int:
+    predicates = stale_ticker_predicates(rows)
+    if not predicates:
+        return 0
+    deleted = 0
+    for chunk in chunked(predicates, 100):
+        predicate = "(" + ") OR (".join(chunk) + ")"
+        count_sql = f"SELECT count() FROM {table_name(config.database, config.ticker_table)} FINAL WHERE {predicate}"
+        count = int((client.execute(count_sql).strip() or "0").splitlines()[0])
+        if count <= 0:
+            continue
+        delete_sql = f"ALTER TABLE {table_name(config.database, config.ticker_table)} DELETE WHERE {predicate} SETTINGS mutations_sync = 1"
+        client.execute(delete_sql)
+        deleted += count
+    return deleted
+
+
+def stale_ticker_predicates(rows: list[dict[str, Any]]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        provider_article_id = str(row.get("provider_article_id") or "")
+        canonical_news_id = str(row.get("canonical_news_id") or "")
+        published_date = str(row.get("published_date") or "")
+        if not provider_article_id or not canonical_news_id or not published_date:
+            continue
+        key = provider_identity_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(
+            " AND ".join(
+                [
+                    f"published_date = toDate({sql_string(published_date)})",
+                    f"provider_article_id = {sql_string(provider_article_id)}",
+                    f"canonical_news_id != {sql_string(canonical_news_id)}",
+                ]
+            )
+        )
+    return output
+
+
+def chunked(values: list[str], size: int) -> list[list[str]]:
+    return [values[index : index + size] for index in range(0, len(values), max(1, size))]
 
 
 def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bool:
