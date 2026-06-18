@@ -41,6 +41,7 @@ class NewsGatewayConfig:
     bootstrap_trusted_coverage_end_utc: str
     bootstrap_verify_gaps_after_utc: str
     bootstrap_probe_recent_gaps: bool
+    bootstrap_probe_progress_interval: int
     gap_fill_chunk_minutes: int
     startup_gap_fill_workers: int
     poll_overlap_seconds: int
@@ -118,6 +119,7 @@ class NewsGatewayConfig:
             bootstrap_trusted_coverage_end_utc=env_string("NEWS_BENZINGA_BOOTSTRAP_TRUSTED_COVERAGE_END_UTC", "2026-06-01T00:00:00Z"),
             bootstrap_verify_gaps_after_utc=env_string("NEWS_BENZINGA_BOOTSTRAP_VERIFY_GAPS_AFTER_UTC", "2024-01-01T00:00:00Z"),
             bootstrap_probe_recent_gaps=env_bool("NEWS_BENZINGA_BOOTSTRAP_PROBE_RECENT_GAPS", True),
+            bootstrap_probe_progress_interval=env_int("NEWS_BENZINGA_BOOTSTRAP_PROBE_PROGRESS_INTERVAL", 25),
             gap_fill_chunk_minutes=env_int("NEWS_BENZINGA_GAP_FILL_CHUNK_MINUTES", 90),
             startup_gap_fill_workers=env_int("NEWS_BENZINGA_STARTUP_GAP_FILL_WORKERS", 4),
             poll_overlap_seconds=env_int("NEWS_BENZINGA_POLL_OVERLAP_SECONDS", 120),

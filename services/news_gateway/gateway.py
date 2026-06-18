@@ -144,6 +144,9 @@ class NewsGateway:
         self._live_coverage_failed_rows = 0
         self._live_coverage_skipped_existing = 0
         self._gap_coverage_counter = 0
+        self._bootstrap_probe_count = 0
+        self._bootstrap_probe_empty = 0
+        self._bootstrap_probe_positive = 0
         self._clickhouse_password = default_clickhouse_password()
         self._massive_api_key = massive_api_key()
         self.logger = AsyncRunLogger(
@@ -659,6 +662,9 @@ class NewsGateway:
         trusted_end = parse_optional_utc(self.config.bootstrap_trusted_coverage_end_utc)
         verify_after = parse_optional_utc(self.config.bootstrap_verify_gaps_after_utc)
         gap_probe = self._probe_gap_is_empty if self.config.bootstrap_probe_recent_gaps else None
+        self._bootstrap_probe_count = 0
+        self._bootstrap_probe_empty = 0
+        self._bootstrap_probe_positive = 0
         summary = bootstrap_coverage_from_normalized_table(
             client,
             config,
@@ -680,18 +686,65 @@ class NewsGateway:
         return summary
 
     def _probe_gap_is_empty(self, gap: CoverageGap) -> bool:
-        result = self.provider.probe_window(gap.start_utc, gap.end_utc)
+        self._bootstrap_probe_count += 1
+        probe_index = self._bootstrap_probe_count
+        started = time.perf_counter()
+        self.metrics.current_phase = "coverage_gap_probe"
+        self.metrics.current_phase_message = (
+            f"Probing recent coverage gap {probe_index}: "
+            f"{gap.start_utc.isoformat()} -> {gap.end_utc.isoformat()}."
+        )
+        self.metrics.current_phase_started_at_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        self._log_event(
+            "coverage_gap_provider_probe_started",
+            probe_index=probe_index,
+            start_utc=gap.start_utc,
+            end_utc=gap.end_utc,
+        )
+        if self._should_print_bootstrap_probe_progress(probe_index):
+            self._print_status(self.metrics.current_phase_message)
+        try:
+            result = self.provider.probe_window(gap.start_utc, gap.end_utc)
+        except Exception as exc:
+            self.logger.exception(
+                "coverage_gap_provider_probe_failed",
+                exc,
+                probe_index=probe_index,
+                start_utc=gap.start_utc,
+                end_utc=gap.end_utc,
+                wall_seconds=time.perf_counter() - started,
+            )
+            raise
         is_empty = not result.has_news
+        if is_empty:
+            self._bootstrap_probe_empty += 1
+        else:
+            self._bootstrap_probe_positive += 1
+        message = (
+            f"Coverage probe {probe_index} complete: decision={'covered_empty' if is_empty else 'gap_requires_fill'} "
+            f"empty={self._bootstrap_probe_empty} positive={self._bootstrap_probe_positive}."
+        )
+        self.metrics.current_phase_message = message
         self._log_event(
             "coverage_gap_provider_probe",
+            probe_index=probe_index,
             start_utc=gap.start_utc,
             end_utc=gap.end_utc,
             has_news=result.has_news,
             rows_seen=result.rows_seen,
             pages=result.pages,
             decision="covered_empty" if is_empty else "gap_requires_fill",
+            wall_seconds=time.perf_counter() - started,
+            empty_count=self._bootstrap_probe_empty,
+            positive_count=self._bootstrap_probe_positive,
         )
+        if not is_empty or self._should_print_bootstrap_probe_progress(probe_index):
+            self._print_status(message)
         return is_empty
+
+    def _should_print_bootstrap_probe_progress(self, probe_index: int) -> bool:
+        interval = max(1, self.config.bootstrap_probe_progress_interval)
+        return probe_index <= 5 or probe_index % interval == 0
 
     def _load_coverage_intervals(self) -> list[CoverageInterval]:
         client = self._coverage_client()
