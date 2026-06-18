@@ -87,6 +87,13 @@ PRACTICAL_PROFILE_RUNS: tuple[tuple[str, int, int] | tuple[str, int, int, str] |
     ("large", 32, 4096),
 )
 
+FOCUSED_VARIATION_RUNS: tuple[tuple[str, int, int] | tuple[str, int, int, str] | tuple[str, int, int, str, int], ...] = (
+    ("medium", 32, 4096),
+    ("medium", 64, 4096),
+    ("medium_plus", 32, 2048),
+    ("large", 32, 1024),
+)
+
 
 SUMMARY_FIELDS = [
     "run_name",
@@ -156,7 +163,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-root", default=r"D:\market-data\prepared\event_sample_cache")
     parser.add_argument("--sweep-output-root", default="")
     parser.add_argument("--run-prefix", default="v12-eventmae-size-sweep")
-    parser.add_argument("--profile-set", choices=("practical", "grid"), default="practical")
+    parser.add_argument("--profile-set", choices=("practical", "focused", "grid"), default="practical")
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--embedding-dims", default="32")
     parser.add_argument("--batch-sizes", default="4096,8192")
@@ -164,6 +171,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--decoder-chunk-size", type=int, default=0)
     parser.add_argument("--learning-rate", type=float, default=train_defaults.learning_rate)
+    parser.add_argument("--scheduler", choices=("none", "cosine_warm_restarts"), default=train_defaults.scheduler)
     parser.add_argument("--scheduler-t0-steps", type=int, default=0)
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default="online")
     parser.add_argument("--wandb-project", default=train_defaults.wandb_project)
@@ -196,6 +204,7 @@ def main() -> None:
                 "args": vars(args),
                 "model_sizes": {name: MODEL_SIZES[name] for name in used_model_sizes},
                 "practical_profile_runs": PRACTICAL_PROFILE_RUNS,
+                "focused_variation_runs": FOCUSED_VARIATION_RUNS,
                 "run_count": len(runs),
                 "runs": [run_to_dict(run) for run in runs],
             },
@@ -276,6 +285,8 @@ def parse_model_sizes(raw: str) -> list[str]:
 def build_runs(args: argparse.Namespace, model_sizes: list[str], embedding_dims: list[int], batch_sizes: list[int]) -> list[SweepRun]:
     if args.profile_set == "practical":
         return build_explicit_runs(args, PRACTICAL_PROFILE_RUNS)
+    if args.profile_set == "focused":
+        return build_explicit_runs(args, FOCUSED_VARIATION_RUNS)
     return build_grid_runs(args, model_sizes, embedding_dims, batch_sizes)
 
 
@@ -469,7 +480,7 @@ def build_train_command(args: argparse.Namespace, run: SweepRun) -> list[str]:
         "--learning-rate",
         str(args.learning_rate),
         "--scheduler",
-        "cosine_warm_restarts",
+        args.scheduler,
         "--scheduler-t0-steps",
         str(args.scheduler_t0_steps),
         "--wandb-mode",
