@@ -109,7 +109,6 @@ class ModelConfig:
 @dataclass(slots=True)
 class LossConfig:
     event_weight: float = 1.0
-    objective: str = "weighted"
 
 
 @dataclass(slots=True)
