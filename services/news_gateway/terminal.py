@@ -300,30 +300,45 @@ def processing_status(row: dict[str, Any]) -> str:
     has_pdf = int(row.get("has_pdf") or 0)
     normalizer = str(row.get("normalizer_version") or "")
 
-    enrich = "pending" if "background_pending" in flags or external_status == "background_pending" else "done"
+    enrich = "PEND" if "background_pending" in flags or external_status == "background_pending" else "BASE"
     if "background_enrichment_failed" in flags or "failed" in external_status:
-        enrich = "failed"
+        enrich = "FAIL"
     elif has_external:
-        enrich = "text"
+        enrich = "TXT"
     elif external_status in {"", "not_attempted"}:
-        enrich = "base"
+        enrich = "BASE"
     elif external_status:
-        enrich = short_status(external_status)
+        enrich = compact_process_code(external_status)
 
-    pdf = "pdf" if has_pdf else "no_pdf"
+    pdf = "YES" if has_pdf else "NO"
     if "failed" in pdf_status:
-        pdf = "pdf_fail"
+        pdf = "FAIL"
     elif pdf_status and pdf_status not in {"not_attempted", "no_pdf"}:
-        pdf = short_status(pdf_status)
+        pdf = compact_process_code(pdf_status)
 
-    canonical = "canon" if normalizer else "canon?"
-    return truncate(f"E:{enrich} P:{pdf} C:{canonical}", 30)
+    canonical = "OK" if normalizer else "MISS"
+    return f"E:{enrich} PDF:{pdf} C:{canonical}"
 
 
-def short_status(value: str) -> str:
-    text = value.strip().lower().replace("background_", "bg_")
-    text = text.replace("provider_verified_", "").replace("_", "-")
-    return text[:10] if text else "-"
+def compact_process_code(value: str) -> str:
+    text = value.strip().lower()
+    if not text or text in {"not_attempted", "no_pdf"}:
+        return "-"
+    if "pending" in text:
+        return "PEND"
+    if "failed" in text or "error" in text:
+        return "FAIL"
+    if "partial" in text:
+        return "PART"
+    if "missing" in text:
+        return "MISS"
+    if "empty" in text:
+        return "EMPTY"
+    if "success" in text or "complete" in text or "extracted" in text:
+        return "OK"
+    if "artifact" in text:
+        return "ART"
+    return text.replace("background_", "bg_").replace("provider_verified_", "").replace("_", "-")[:6].upper()
 
 
 def status_color(status: str) -> str:
