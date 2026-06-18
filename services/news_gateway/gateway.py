@@ -97,6 +97,19 @@ class GapCoverageRun:
 
 
 @dataclass(frozen=True, slots=True)
+class GapFillChunk:
+    index: int
+    start_utc: datetime
+    end_utc: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class GapFillChunkOutcome:
+    chunk: GapFillChunk
+    result: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class ManualGapFillPlan:
     script_path: Path
     manifest_path: Path
@@ -283,23 +296,66 @@ class NewsGateway:
         self.metrics.gap_message = f"Startup coverage gap fill completed for {total} gap(s)."
 
     async def _fill_gap(self, start_utc: datetime, end_utc: datetime) -> None:
-        current = start_utc
+        chunks = build_gap_fill_chunks(start_utc, end_utc, self.config.gap_fill_chunk_minutes)
+        workers = max(1, self.config.startup_gap_fill_workers)
+        self.metrics.gap_message = (
+            f"Concurrent startup gap fill: {len(chunks):,} chunk(s), workers={workers}, "
+            f"range={start_utc.isoformat()}->{end_utc.isoformat()}."
+        )
+        self._set_phase("gap_fill_concurrent", self.metrics.gap_message)
         coverage_run: GapCoverageRun | None = None
-        while current < end_utc and not self._stop_event.is_set():
-            chunk_end = min(current + timedelta(minutes=max(1, self.config.gap_fill_chunk_minutes)), end_utc)
-            self.metrics.gap_message = f"Fetching startup gap chunk {current.isoformat()} -> {chunk_end.isoformat()}."
-            self._set_phase("gap_fill_fetch", self.metrics.gap_message)
-            result = await self.poll_window(current, chunk_end, coverage_mode="gap_fill_deferred")
-            if result.get("status") == "ok":
-                coverage_run = self._extend_gap_coverage_run(coverage_run, current, chunk_end, result)
-                await asyncio.to_thread(self._write_gap_coverage_run, coverage_run, "running", None)
-            else:
-                if coverage_run is not None:
-                    await asyncio.to_thread(self._write_gap_coverage_run, coverage_run, "completed", datetime.now(UTC))
-                    coverage_run = None
-            current = chunk_end
-        if coverage_run is not None:
-            await asyncio.to_thread(self._write_gap_coverage_run, coverage_run, "completed", datetime.now(UTC))
+        next_submit = 0
+        next_flush = 0
+        completed: dict[int, GapFillChunkOutcome] = {}
+        pending: set[asyncio.Task[GapFillChunkOutcome]] = set()
+        try:
+            while next_flush < len(chunks) and not self._stop_event.is_set():
+                while next_submit < len(chunks) and len(pending) < workers:
+                    chunk = chunks[next_submit]
+                    pending.add(asyncio.create_task(self._fill_gap_chunk(chunk), name=f"benzinga-gap-chunk-{chunk.index}"))
+                    next_submit += 1
+                if not pending:
+                    break
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    outcome = task.result()
+                    completed[outcome.chunk.index] = outcome
+                while next_flush in completed:
+                    outcome = completed.pop(next_flush)
+                    result = outcome.result
+                    if result.get("status") == "ok":
+                        coverage_run = self._extend_gap_coverage_run(
+                            coverage_run,
+                            outcome.chunk.start_utc,
+                            outcome.chunk.end_utc,
+                            result,
+                        )
+                        await asyncio.to_thread(self._write_gap_coverage_run, coverage_run, "running", None)
+                    else:
+                        if coverage_run is not None:
+                            await asyncio.to_thread(self._write_gap_coverage_run, coverage_run, "completed", datetime.now(UTC))
+                            coverage_run = None
+                    next_flush += 1
+                    self.metrics.gap_message = (
+                        f"Startup gap fill progress: flushed={next_flush:,}/{len(chunks):,}, "
+                        f"submitted={next_submit:,}, in_flight={len(pending):,}."
+                    )
+                    self._set_phase("gap_fill_progress", self.metrics.gap_message)
+        except asyncio.CancelledError:
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            raise
+        finally:
+            if coverage_run is not None:
+                await asyncio.to_thread(self._write_gap_coverage_run, coverage_run, "completed", datetime.now(UTC))
+
+    async def _fill_gap_chunk(self, chunk: GapFillChunk) -> GapFillChunkOutcome:
+        if self._stop_event.is_set():
+            return GapFillChunkOutcome(chunk=chunk, result={"status": "stopped"})
+        result = await self.poll_window(chunk.start_utc, chunk.end_utc, coverage_mode="gap_fill_deferred")
+        return GapFillChunkOutcome(chunk=chunk, result=result)
 
     async def _run_workstation_gap_fill_plan(self, plan: ManualGapFillPlan) -> None:
         script_path = str(plan.workstation_script_path)
@@ -703,6 +759,19 @@ def count_unique_utc_days_for_gaps(gaps: list[CoverageGap]) -> int:
             days.add(cursor.isoformat())
             cursor += timedelta(days=1)
     return len(days)
+
+
+def build_gap_fill_chunks(start_utc: datetime, end_utc: datetime, chunk_minutes: int) -> list[GapFillChunk]:
+    chunks: list[GapFillChunk] = []
+    current = start_utc
+    index = 0
+    step = timedelta(minutes=max(1, chunk_minutes))
+    while current < end_utc:
+        chunk_end = min(current + step, end_utc)
+        chunks.append(GapFillChunk(index=index, start_utc=current, end_utc=chunk_end))
+        current = chunk_end
+        index += 1
+    return chunks
 
 
 def historical_gap_command(start_utc: datetime, end_utc: datetime, config: NewsGatewayConfig) -> str:

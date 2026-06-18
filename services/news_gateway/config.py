@@ -37,6 +37,7 @@ class NewsGatewayConfig:
     coverage_discovery_chunk_seconds: int
     rebuild_coverage_manifest: bool
     gap_fill_chunk_minutes: int
+    startup_gap_fill_workers: int
     poll_overlap_seconds: int
     page_limit: int
     max_pages: int
@@ -100,6 +101,7 @@ class NewsGatewayConfig:
             coverage_discovery_chunk_seconds=env_int("NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS", 3600),
             rebuild_coverage_manifest=env_bool("NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST", False),
             gap_fill_chunk_minutes=env_int("NEWS_BENZINGA_GAP_FILL_CHUNK_MINUTES", 90),
+            startup_gap_fill_workers=env_int("NEWS_BENZINGA_STARTUP_GAP_FILL_WORKERS", 4),
             poll_overlap_seconds=env_int("NEWS_BENZINGA_POLL_OVERLAP_SECONDS", 120),
             page_limit=env_int("NEWS_BENZINGA_PAGE_LIMIT", 1_000),
             max_pages=env_int("NEWS_BENZINGA_MAX_PAGES", 1_000),

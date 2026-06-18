@@ -136,7 +136,7 @@ Behavior:
 | Situation | Action |
 | --- | --- |
 | No coverage intervals | Live polling starts with normal lookback. |
-| One or more coverage gaps and total gap time is <= 30 days | Service starts background gap fill for all gaps during startup. |
+| One or more coverage gaps and total gap time is <= 30 days | Service starts concurrent background gap fill for all gaps during startup. |
 | One or more coverage gaps, total gap time is > 30 days, and running on the workstation | Service writes and runs the workstation PowerShell gap-fill package automatically. |
 | One or more coverage gaps, total gap time is > 30 days, and not running on the workstation | Service writes workstation-ready PowerShell gap-fill scripts and a manifest, prints their paths, and continues live polling. |
 
@@ -153,14 +153,16 @@ contains the last successfully written `coverage_end_utc`, so the next startup
 can see the missing tail.
 
 Manual and automatic provider gap fills fetch provider windows in bounded
-chunks, but the coverage manifest is compacted. The service writes a running
-coverage row for each contiguous successful fill run and updates the same
-`coverage_id` after each successful chunk. If the process crashes, the manifest
-still records the latest successfully covered end time. When the run finishes,
-the same row is closed as `completed`. This includes provider windows that
-return zero news rows. A zero-row covered range means "provider checked this
-interval and it was empty", so the gateway will not retry that interval on the
-next startup.
+chunks, but the coverage manifest is compacted. Automatic startup fills run
+multiple chunks concurrently, controlled by
+`NEWS_BENZINGA_STARTUP_GAP_FILL_WORKERS`. Coverage is still advanced in
+chronological order: the service writes a running coverage row for each
+contiguous successful fill run and updates the same `coverage_id` as earlier
+chunks are confirmed. If the process crashes, the manifest still records the
+latest successfully covered end time. When the run finishes, the same row is
+closed as `completed`. This includes provider windows that return zero news
+rows. A zero-row covered range means "provider checked this interval and it was
+empty", so the gateway will not retry that interval on the next startup.
 
 Large non-workstation gaps are not auto-filled because the workstation has the
 correct storage root and compute. The generated manifest is written under
@@ -350,6 +352,7 @@ NEWS_BENZINGA_STARTUP_AUTO_FILL_MAX_GAP_DAYS=30
 NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS=3600
 NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST=false
 NEWS_BENZINGA_GAP_FILL_CHUNK_MINUTES=90
+NEWS_BENZINGA_STARTUP_GAP_FILL_WORKERS=4
 ```
 
 Writes and memory:

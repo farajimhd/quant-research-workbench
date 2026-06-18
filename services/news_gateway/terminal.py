@@ -201,6 +201,8 @@ def status_color(status: str) -> str:
         "gap_planning",
         "gap_fill",
         "gap_fill_fetch",
+        "gap_fill_concurrent",
+        "gap_fill_progress",
         "gap_fill_deferred_fetch",
         "gap_fill_deferred_process",
         "gap_fill_deferred_write",
