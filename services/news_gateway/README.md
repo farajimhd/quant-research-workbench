@@ -30,21 +30,32 @@ Each poll cycle:
 compute UTC window from lookback
 -> fetch Benzinga news from Massive REST
 -> save every raw payload under workstation market-data
--> normalize with pipelines.news.benzinga.news_pipeline
--> extract deterministic URL/ticker/quality metadata and URL fetch tasks
+-> build a fast initial normalized row for memory only
+-> add/update in-memory recent-news cache with background_pending quality flag
+-> enqueue a background batch for URL enrichment, PDF/text extraction,
+   canonical normalization, and database publish
+-> return to polling
+```
+
+Each background batch:
+
+```text
+download approved URL/PDF/text tasks
+-> extract clean text from HTML, PDF, or plain text artifacts
+-> rebuild the canonical normalized row with enrichment rows attached
 -> write q_live.benzinga_news_normalized_v1
 -> write q_live.benzinga_news_ticker_v1
--> update live coverage only after the write succeeds
--> update in-memory recent-news cache
--> update metrics
+-> replace the in-memory pending row with the final canonical row
+-> update live coverage only after the database write succeeds
 ```
 
 The service skips existing `canonical_news_id` rows by default through the shared
 batch writer. Overlapping lookbacks and restarts are expected.
 
-The live path does not perform slow external URL/PDF downloading in the hot
-polling loop. It records URL tasks and quality flags so a separate enrichment
-workflow can process external sources without delaying live news persistence.
+The live hot path does not perform slow external URL/PDF downloading. It records
+the initial provider item in memory immediately, then a bounded background worker
+performs enrichment and publishes the final canonical row. ClickHouse only gets
+final canonical rows; partial in-memory pending rows are not inserted.
 
 ## Dependency Preflight
 
@@ -292,6 +303,8 @@ Dashboard content:
   when a manual fill is needed
 - fixed background progress rows for provider bootstrap probes and concurrent
   startup gap-fill chunks, including completed/total counts and in-flight work
+- live news background queue, active enrichment batches, pending/completed
+  articles, failed articles, URL tasks, and enriched URL count
 - database publish status, active publish jobs, pending rows, and completed or
   failed publish job counts
 - current operation phase and message, including bootstrap, provider fetch,
@@ -439,6 +452,15 @@ NEWS_BENZINGA_BOOTSTRAP_PROBE_PROGRESS_INTERVAL=25
 NEWS_BENZINGA_GAP_FILL_CHUNK_MINUTES=90
 NEWS_BENZINGA_STARTUP_GAP_FILL_WORKERS=4
 NEWS_GATEWAY_GRACEFUL_SHUTDOWN_SECONDS=300
+NEWS_GATEWAY_BACKGROUND_WORKERS=2
+NEWS_GATEWAY_BACKGROUND_QUEUE_MAX_BATCHES=256
+NEWS_BENZINGA_LIVE_ENRICHMENT_ENABLED=true
+NEWS_BENZINGA_LIVE_URL_ARTIFACT_ROOT_WIN=<data-root>/news-benzinga/live-url-artifacts
+NEWS_BENZINGA_LIVE_URL_PER_DOMAIN_SECONDS=0.1
+NEWS_BENZINGA_LIVE_URL_TIMEOUT_SECONDS=5
+NEWS_BENZINGA_LIVE_URL_MAX_HTML_BYTES=4000000
+NEWS_BENZINGA_LIVE_URL_MAX_PDF_BYTES=12000000
+NEWS_BENZINGA_LIVE_URL_MAX_RETRIES=0
 ```
 
 Writes and memory:
@@ -505,11 +527,13 @@ and metrics.
 The launcher resolves the target conda environment's `python.exe` and runs it
 directly when possible, instead of wrapping the service in `conda run`. This
 keeps Ctrl+C delivery reliable in PowerShell. Uvicorn then stops the app, the
-gateway sets its stop event, and active polling or startup gap-fill work is
-given a bounded window to reach a safe stop point. If a ClickHouse publish job is
-active, shutdown waits for that database write to finish before closing the live
-coverage row and stopping the logger. The terminal dashboard shows this as
-`shutdown_waiting_for_publish`, with active publish jobs and pending rows.
+gateway sets its stop event, and active polling, startup gap-fill, and live
+background news work are given a bounded window to reach a safe stop point. If a
+background enrichment/canonicalization batch or ClickHouse publish job is active,
+shutdown waits for it before closing the live coverage row and stopping the
+logger. The terminal dashboard shows this as
+`shutdown_waiting_for_background_news` and `shutdown_waiting_for_publish`, with
+active batches/jobs and pending article/row counts.
 
 Control the bounded graceful shutdown window with:
 

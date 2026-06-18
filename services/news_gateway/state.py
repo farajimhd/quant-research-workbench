@@ -36,23 +36,28 @@ class NewsMemoryState:
         self._seen: set[str] = set()
 
     async def add_rows(self, rows: list[dict[str, Any]]) -> int:
+        return await self.upsert_rows(rows)
+
+    async def upsert_rows(self, rows: list[dict[str, Any]]) -> int:
         added = 0
         async with self._lock:
             for row in rows:
                 key = str(row.get("canonical_news_id") or "")
-                if not key or key in self._seen:
+                if not key:
                     continue
+                is_new = key not in self._seen
                 summary = row_to_summary(row)
                 self._seen.add(key)
                 self._recent.appendleft(summary)
                 for ticker in summary.tickers:
                     self._by_ticker[ticker.upper()].appendleft(summary)
-                added += 1
+                if is_new:
+                    added += 1
         return added
 
     async def recent_snapshot(self, limit: int = 250) -> dict[str, Any]:
         async with self._lock:
-            rows = list(self._recent)[: max(1, min(limit, self._history_limit))]
+            rows = latest_unique(list(self._recent), max(1, min(limit, self._history_limit)))
             return {
                 "as_of": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 "row_count": len(rows),
@@ -64,7 +69,7 @@ class NewsMemoryState:
         key = ticker.upper()
         now = datetime.now(UTC)
         async with self._lock:
-            rows = list(self._by_ticker.get(key, []))[: max(1, min(limit, self._history_limit))]
+            rows = latest_unique(list(self._by_ticker.get(key, [])), max(1, min(limit, self._history_limit)))
         parsed_times = [parse_dt(row.published_at_utc) for row in rows]
         return {
             "as_of": now.isoformat().replace("+00:00", "Z"),
@@ -95,6 +100,20 @@ def row_to_summary(row: dict[str, Any]) -> NewsSummary:
         has_pdf=int(row.get("has_pdf") or 0),
         text_hash=str(row.get("text_hash") or ""),
     )
+
+
+def latest_unique(rows: list[NewsSummary], limit: int) -> list[NewsSummary]:
+    output: list[NewsSummary] = []
+    seen: set[str] = set()
+    for row in rows:
+        key = row.canonical_news_id
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        output.append(row)
+        if len(output) >= limit:
+            break
+    return output
 
 
 def parse_dt(value: str) -> datetime | None:

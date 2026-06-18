@@ -66,6 +66,15 @@ class NewsGatewayConfig:
     terminal_refresh_seconds: float
     terminal_news_limit: int
     graceful_shutdown_seconds: float
+    background_workers: int
+    background_queue_max_batches: int
+    live_enrichment_enabled: bool
+    live_url_artifact_root_win: Path
+    live_url_per_domain_seconds: float
+    live_url_timeout_seconds: float
+    live_url_max_html_bytes: int
+    live_url_max_pdf_bytes: int
+    live_url_max_retries: int
     run_log_enabled: bool
     run_log_queue_size: int
     run_log_skip_sample_size: int
@@ -90,6 +99,12 @@ class NewsGatewayConfig:
             env_string(
                 "NEWS_BENZINGA_MANUAL_GAP_SCRIPT_ROOT_WIN",
                 str(workstation_code_root / "generated" / "news_gateway_manual_gap_fill"),
+            )
+        )
+        live_url_artifact_root = Path(
+            env_string(
+                "NEWS_BENZINGA_LIVE_URL_ARTIFACT_ROOT_WIN",
+                str(data_root / "news-benzinga" / "live-url-artifacts"),
             )
         )
         clickhouse_password = default_clickhouse_password()
@@ -145,6 +160,15 @@ class NewsGatewayConfig:
             terminal_refresh_seconds=env_float("NEWS_TERMINAL_REFRESH_SECONDS", 1.0),
             terminal_news_limit=env_int("NEWS_TERMINAL_NEWS_LIMIT", 12),
             graceful_shutdown_seconds=env_float("NEWS_GATEWAY_GRACEFUL_SHUTDOWN_SECONDS", 300.0),
+            background_workers=env_int("NEWS_GATEWAY_BACKGROUND_WORKERS", 2),
+            background_queue_max_batches=env_int("NEWS_GATEWAY_BACKGROUND_QUEUE_MAX_BATCHES", 256),
+            live_enrichment_enabled=env_bool("NEWS_BENZINGA_LIVE_ENRICHMENT_ENABLED", True),
+            live_url_artifact_root_win=live_url_artifact_root,
+            live_url_per_domain_seconds=env_float("NEWS_BENZINGA_LIVE_URL_PER_DOMAIN_SECONDS", 0.1),
+            live_url_timeout_seconds=env_float("NEWS_BENZINGA_LIVE_URL_TIMEOUT_SECONDS", 5.0),
+            live_url_max_html_bytes=env_int("NEWS_BENZINGA_LIVE_URL_MAX_HTML_BYTES", 4_000_000),
+            live_url_max_pdf_bytes=env_int("NEWS_BENZINGA_LIVE_URL_MAX_PDF_BYTES", 12_000_000),
+            live_url_max_retries=env_int("NEWS_BENZINGA_LIVE_URL_MAX_RETRIES", 0),
             run_log_enabled=env_bool("NEWS_GATEWAY_RUN_LOG_ENABLED", True),
             run_log_queue_size=env_int("NEWS_GATEWAY_RUN_LOG_QUEUE_SIZE", 10_000),
             run_log_skip_sample_size=env_int("NEWS_GATEWAY_RUN_LOG_SKIP_SAMPLE_SIZE", 100),
@@ -159,6 +183,7 @@ class NewsGatewayConfig:
         payload["manual_gap_manifest_root_win"] = str(self.manual_gap_manifest_root_win)
         payload["manual_gap_script_root_win"] = str(self.manual_gap_script_root_win)
         payload["workstation_code_root_win"] = str(self.workstation_code_root_win)
+        payload["live_url_artifact_root_win"] = str(self.live_url_artifact_root_win)
         return payload
 
 

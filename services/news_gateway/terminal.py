@@ -103,6 +103,13 @@ def progress_panel(metrics: dict[str, Any]) -> Panel:
     publish_pending_rows = int(metrics.get("publish_pending_rows") or 0)
     publish_completed = int(metrics.get("publish_completed_jobs") or 0)
     publish_failed = int(metrics.get("publish_failed_jobs") or 0)
+    background_queue = int(metrics.get("background_queue_size") or 0)
+    background_active = int(metrics.get("background_active_batches") or 0)
+    background_pending_articles = int(metrics.get("background_pending_articles") or 0)
+    background_completed_articles = int(metrics.get("background_completed_articles") or 0)
+    background_failed_articles = int(metrics.get("background_failed_articles") or 0)
+    background_fetch_tasks = int(metrics.get("background_fetch_tasks") or 0)
+    background_enriched_urls = int(metrics.get("background_enriched_urls") or 0)
 
     table.add_row(
         "Coverage probes",
@@ -117,6 +124,16 @@ def progress_panel(metrics: dict[str, Any]) -> Panel:
         f"submitted={gap_submitted:,}  in_flight={gap_in_flight:,}" if gap_total else "[dim]No startup gap-fill job active.[/dim]",
     )
     table.add_row(
+        "News background",
+        busy_text("running" if background_queue or background_active else "idle", background_queue + background_active),
+        f"queue={background_queue:,}",
+        (
+            f"active_batches={background_active:,}  pending_articles={background_pending_articles:,}  "
+            f"done={background_completed_articles:,}  failed={background_failed_articles:,}  "
+            f"url_tasks={background_fetch_tasks:,}  enriched_urls={background_enriched_urls:,}"
+        ),
+    )
+    table.add_row(
         "Database publish",
         busy_text(publish_status, publish_active),
         f"active={publish_active:,}",
@@ -125,6 +142,8 @@ def progress_panel(metrics: dict[str, Any]) -> Panel:
     active = (
         (bootstrap_total > 0 and bootstrap_done < bootstrap_total)
         or (gap_total > 0 and gap_flushed < gap_total)
+        or background_queue > 0
+        or background_active > 0
         or publish_active > 0
         or publish_status == "draining"
     )
@@ -244,10 +263,20 @@ def compact_time(value: str) -> str:
 
 def status_color(status: str) -> str:
     text = status.strip().lower()
-    if text in {"ok", "covered_by_live_lookback", "no_watermark", "polling", "live_write", "live_coverage", "shutdown_publish_drained"}:
+    if text in {
+        "ok",
+        "covered_by_live_lookback",
+        "no_watermark",
+        "polling",
+        "live_write",
+        "live_coverage",
+        "shutdown_background_drained",
+        "shutdown_publish_drained",
+    }:
         return "green"
     if text in {
         "starting",
+        "queued",
         "not_started",
         "completed_with_errors",
         "auto_started",
@@ -267,7 +296,11 @@ def status_color(status: str) -> str:
         "gap_fill_deferred_write",
         "live_write",
         "shutdown_waiting_for_workers",
+        "shutdown_waiting_for_background_news",
         "shutdown_waiting_for_publish",
+        "live_background_queue",
+        "live_background_process",
+        "live_background_write",
         "live_fetch",
         "live_process",
     }:

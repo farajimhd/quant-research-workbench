@@ -7,6 +7,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -29,6 +30,8 @@ from pipelines.news.benzinga.news_benzinga_normalize import artifact_path_for_pa
 from pipelines.news.benzinga.news_pipeline.config import BenzingaPipelineConfig, ClickHouseTargetConfig
 from pipelines.news.benzinga.news_pipeline.pipeline import BenzingaNewsPipeline, ProcessedNewsItem
 from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig
+from pipelines.news.benzinga.news_benzinga_url_download import DomainRateLimiter, download_row
+from pipelines.news.benzinga.news_benzinga_url_extract import extract_row
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.config import (
     NewsGatewayConfig,
@@ -92,6 +95,17 @@ class GatewayMetrics:
     publish_completed_jobs: int = 0
     publish_failed_jobs: int = 0
     publish_last_message: str = ""
+    background_queue_size: int = 0
+    background_active_batches: int = 0
+    background_queued_batches: int = 0
+    background_completed_batches: int = 0
+    background_failed_batches: int = 0
+    background_pending_articles: int = 0
+    background_completed_articles: int = 0
+    background_failed_articles: int = 0
+    background_fetch_tasks: int = 0
+    background_enriched_urls: int = 0
+    background_last_message: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +142,27 @@ class GapFillChunkOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class LiveNewsPayload:
+    payload: dict[str, Any]
+    raw_path: str
+    raw_hash: str
+    downloaded_at_utc: datetime
+    initial_item: ProcessedNewsItem
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundNewsBatch:
+    poll_id: str
+    coverage_mode: str
+    start_utc: datetime
+    end_utc: datetime
+    saturated: bool
+    pages: int
+    provider_rows: int
+    items: list[LiveNewsPayload]
+
+
+@dataclass(frozen=True, slots=True)
 class ManualGapFillPlan:
     script_path: Path
     manifest_path: Path
@@ -147,6 +182,9 @@ class NewsGateway:
         self._terminal_task: asyncio.Task[None] | None = None
         self._publish_tasks: set[asyncio.Task[Any]] = set()
         self._publish_task_rows: dict[asyncio.Task[Any], int] = {}
+        self._background_queue: asyncio.Queue[BackgroundNewsBatch | None] = asyncio.Queue(maxsize=max(1, config.background_queue_max_batches))
+        self._background_tasks: list[asyncio.Task[None]] = []
+        self._url_rate_limiter = DomainRateLimiter(config.live_url_per_domain_seconds)
         self._preflight_report: PreflightReport | None = None
         self._run_id = new_run_id("news_gateway")
         self._live_coverage_id = f"{self._run_id}_live"
@@ -210,6 +248,7 @@ class NewsGateway:
             await self._plan_startup_gap()
             self._set_phase("live_coverage", "Opening live coverage manifest row.")
             await self._open_live_coverage()
+            self._start_background_workers()
             self._set_phase("polling", "Live news polling is running.")
             self._poll_task = asyncio.create_task(self._poll_loop(), name="benzinga-news-poll-loop")
             if self.config.terminal_rich_enabled:
@@ -226,12 +265,14 @@ class NewsGateway:
         self._log_event("service_stopping")
         self._stop_event.set()
         await self._wait_for_service_tasks_to_quiesce()
+        await self._drain_background_queue("shutdown")
         await self._drain_publish_tasks("shutdown")
-        tasks = [task for task in [self._poll_task, self._gap_task, self._terminal_task] if task is not None]
+        tasks = [task for task in [self._poll_task, self._gap_task, self._terminal_task, *self._background_tasks] if task is not None]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        await self._drain_background_queue("post_cancel")
         await self._drain_publish_tasks("post_cancel")
         await self._close_live_coverage()
         self._log_event("service_stopped", metrics=self.snapshot_metrics())
@@ -504,18 +545,32 @@ class NewsGateway:
             )
             self._set_phase(f"{coverage_mode}_process", f"Processing {len(fetch_result.items):,} provider row(s).")
             processed: list[ProcessedNewsItem] = []
+            pending_memory_rows: list[dict[str, Any]] = []
+            live_items: list[LiveNewsPayload] = []
             failed = 0
             for payload in fetch_result.items:
                 try:
+                    downloaded_at = datetime.now(UTC)
                     raw_path, raw_hash = await asyncio.to_thread(save_raw_payload, self.config.raw_root_win, payload)
                     self.metrics.raw_saved += 1
                     item = self.pipeline.process_payload(
                         payload,
                         raw_artifact_path=str(raw_path),
                         raw_payload_hash=raw_hash,
-                        downloaded_at_utc=datetime.now(UTC),
+                        downloaded_at_utc=downloaded_at,
                     )
                     processed.append(item)
+                    if coverage_mode == "live":
+                        pending_memory_rows.append(self._pending_memory_row(item.result.normalized_row))
+                        live_items.append(
+                            LiveNewsPayload(
+                                payload=payload,
+                                raw_path=str(raw_path),
+                                raw_hash=raw_hash,
+                                downloaded_at_utc=downloaded_at,
+                                initial_item=item,
+                            )
+                        )
                     self._log_event(
                         "item_processed",
                         poll_id=poll_id,
@@ -538,6 +593,55 @@ class NewsGateway:
                         poll_id=poll_id,
                         provider_article_id=str(payload.get("id") or payload.get("article_id") or ""),
                     )
+            if coverage_mode == "live":
+                if pending_memory_rows:
+                    await self.state.upsert_rows(pending_memory_rows)
+                await self._enqueue_background_batch(
+                    BackgroundNewsBatch(
+                        poll_id=poll_id,
+                        coverage_mode=coverage_mode,
+                        start_utc=start_utc,
+                        end_utc=end_utc,
+                        saturated=fetch_result.saturated,
+                        pages=fetch_result.pages,
+                        provider_rows=len(fetch_result.items),
+                        items=live_items,
+                    )
+                )
+                self.metrics.provider_rows += len(fetch_result.items)
+                self.metrics.processed_rows += len(processed)
+                self.metrics.failed_rows += failed
+                self.metrics.last_cycle_status = "queued" if failed == 0 and not fetch_result.saturated else "completed_with_errors"
+                self.metrics.last_cycle_provider_rows = len(fetch_result.items)
+                self.metrics.last_cycle_processed_rows = len(processed)
+                self.metrics.last_cycle_written_rows = 0
+                self.metrics.last_cycle_skipped_existing = 0
+                self.metrics.last_cycle_wall_seconds = time.perf_counter() - started
+                self._log_event(
+                    "poll_queued_for_background_processing",
+                    poll_id=poll_id,
+                    coverage_mode=coverage_mode,
+                    start_utc=start_utc,
+                    end_utc=end_utc,
+                    provider_rows=len(fetch_result.items),
+                    queued_items=len(live_items),
+                    failed_rows=failed,
+                    pages=fetch_result.pages,
+                    saturated=fetch_result.saturated,
+                    wall_seconds=self.metrics.last_cycle_wall_seconds,
+                )
+                return {
+                    "status": self.metrics.last_cycle_status,
+                    "start_utc": start_utc.isoformat().replace("+00:00", "Z"),
+                    "end_utc": end_utc.isoformat().replace("+00:00", "Z"),
+                    "provider_rows": len(fetch_result.items),
+                    "processed_rows": len(processed),
+                    "failed_rows": failed,
+                    "pages": fetch_result.pages,
+                    "saturated": fetch_result.saturated,
+                    "queued_items": len(live_items),
+                    "wall_seconds": self.metrics.last_cycle_wall_seconds,
+                }
             write_summary = await self._publish_processed(processed, poll_id=poll_id, coverage_mode=coverage_mode)
             skip_sample_size = max(0, self.config.run_log_skip_sample_size)
             skipped_ids = list(getattr(write_summary, "skipped_existing_ids", []) or [])
@@ -636,6 +740,197 @@ class NewsGateway:
     def snapshot_metrics(self) -> dict[str, Any]:
         return asdict(self.metrics)
 
+    def _start_background_workers(self) -> None:
+        if self._background_tasks:
+            return
+        workers = max(1, self.config.background_workers)
+        self.config.live_url_artifact_root_win.mkdir(parents=True, exist_ok=True)
+        self._background_tasks = [
+            asyncio.create_task(self._background_worker(index), name=f"benzinga-news-background-worker-{index}")
+            for index in range(1, workers + 1)
+        ]
+        self._log_event("background_workers_started", workers=workers, queue_max_batches=self.config.background_queue_max_batches)
+
+    async def _enqueue_background_batch(self, batch: BackgroundNewsBatch) -> None:
+        article_count = len(batch.items)
+        fetch_task_count = sum(len(item.initial_item.result.url_resolution.fetch_tasks) for item in batch.items)
+        self.metrics.background_last_message = (
+            f"Queueing {article_count:,} article(s) for background enrichment and canonical database publish."
+        )
+        self._set_phase("live_background_queue", self.metrics.background_last_message)
+        await self._background_queue.put(batch)
+        self.metrics.background_queued_batches += 1
+        self.metrics.background_queue_size = self._background_queue.qsize()
+        self.metrics.background_pending_articles += article_count
+        self.metrics.background_fetch_tasks += fetch_task_count
+        self._log_event(
+            "background_batch_queued",
+            poll_id=batch.poll_id,
+            coverage_mode=batch.coverage_mode,
+            provider_rows=batch.provider_rows,
+            article_count=article_count,
+            fetch_task_count=fetch_task_count,
+            queue_size=self._background_queue.qsize(),
+        )
+
+    async def _background_worker(self, worker_index: int) -> None:
+        while True:
+            batch = await self._background_queue.get()
+            try:
+                if batch is None:
+                    return
+                await self._process_background_batch(worker_index, batch)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self.metrics.background_failed_batches += 1
+                self.metrics.last_error = repr(exc)
+                self.logger.exception("background_batch_failed_uncaught", exc, worker_index=worker_index)
+            finally:
+                self._background_queue.task_done()
+                self.metrics.background_queue_size = self._background_queue.qsize()
+
+    async def _process_background_batch(self, worker_index: int, batch: BackgroundNewsBatch) -> None:
+        started = time.perf_counter()
+        self.metrics.background_active_batches += 1
+        self.metrics.background_queue_size = self._background_queue.qsize()
+        self.metrics.background_last_message = (
+            f"Worker {worker_index} is enriching and publishing {len(batch.items):,} article(s) from {batch.poll_id}."
+        )
+        self._set_phase("live_background_process", self.metrics.background_last_message)
+        self._log_event(
+            "background_batch_started",
+            worker_index=worker_index,
+            poll_id=batch.poll_id,
+            coverage_mode=batch.coverage_mode,
+            article_count=len(batch.items),
+            queue_size=self._background_queue.qsize(),
+        )
+        final_items: list[ProcessedNewsItem] = []
+        article_failures = 0
+        enriched_urls = 0
+        try:
+            for live_item in batch.items:
+                try:
+                    enrichment_rows = await asyncio.to_thread(self._enrich_live_item, live_item)
+                    enriched_urls += sum(1 for row in enrichment_rows if row.get("extracted_text"))
+                    final_items.append(
+                        self.pipeline.process_payload(
+                            live_item.payload,
+                            raw_artifact_path=live_item.raw_path,
+                            raw_payload_hash=live_item.raw_hash,
+                            downloaded_at_utc=live_item.downloaded_at_utc,
+                            enrichment_rows=enrichment_rows,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    article_failures += 1
+                    final_items.append(self._fallback_final_item(live_item, exc))
+                    self.logger.exception(
+                        "background_article_enrichment_failed",
+                        exc,
+                        poll_id=batch.poll_id,
+                        provider_article_id=live_item.initial_item.result.provider_article_id,
+                        canonical_news_id=live_item.initial_item.result.canonical_news_id,
+                    )
+            write_summary = await self._publish_processed(final_items, poll_id=batch.poll_id, coverage_mode="live_background")
+            await self.state.upsert_rows([item.result.normalized_row for item in final_items])
+            self.metrics.written_rows += write_summary.normalized_rows_inserted
+            self.metrics.skipped_existing += write_summary.skipped_existing
+            self.metrics.background_completed_batches += 1
+            self.metrics.background_completed_articles += len(final_items)
+            self.metrics.background_failed_articles += article_failures
+            self.metrics.background_enriched_urls += enriched_urls
+            if not batch.saturated:
+                await self._record_successful_coverage(
+                    batch.start_utc,
+                    batch.end_utc,
+                    coverage_mode=batch.coverage_mode,
+                    provider_rows=batch.provider_rows,
+                    processed_rows=len(final_items),
+                    written_rows=write_summary.normalized_rows_inserted,
+                    skipped_existing=write_summary.skipped_existing,
+                )
+            self.metrics.background_last_message = (
+                f"Background batch {batch.poll_id} complete: "
+                f"articles={len(final_items):,}, inserted={write_summary.normalized_rows_inserted:,}, "
+                f"skipped={write_summary.skipped_existing:,}, enriched_urls={enriched_urls:,}."
+            )
+            self._log_event(
+                "background_batch_completed",
+                worker_index=worker_index,
+                poll_id=batch.poll_id,
+                coverage_mode=batch.coverage_mode,
+                article_count=len(final_items),
+                article_failures=article_failures,
+                enriched_urls=enriched_urls,
+                normalized_rows_inserted=write_summary.normalized_rows_inserted,
+                ticker_rows_inserted=write_summary.ticker_rows_inserted,
+                skipped_existing=write_summary.skipped_existing,
+                saturated=batch.saturated,
+                wall_seconds=time.perf_counter() - started,
+            )
+        finally:
+            self.metrics.background_active_batches = max(0, self.metrics.background_active_batches - 1)
+            self.metrics.background_pending_articles = max(0, self.metrics.background_pending_articles - len(batch.items))
+
+    def _enrich_live_item(self, live_item: LiveNewsPayload) -> list[dict[str, Any]]:
+        if not self.config.live_enrichment_enabled:
+            return []
+        rows: list[dict[str, Any]] = []
+        args = SimpleNamespace(
+            timeout_seconds=self.config.live_url_timeout_seconds,
+            max_html_bytes=self.config.live_url_max_html_bytes,
+            max_pdf_bytes=self.config.live_url_max_pdf_bytes,
+            max_retries=self.config.live_url_max_retries,
+            max_text_chars=self.config.text_limit_chars,
+        )
+        for task in live_item.initial_item.result.url_resolution.fetch_tasks:
+            download_result = download_row(task, args, self._url_rate_limiter, self.config.live_url_artifact_root_win)
+            if download_result.get("status") != "downloaded":
+                self._log_event(
+                    "live_url_download_not_downloaded",
+                    poll_id="",
+                    provider_article_id=live_item.initial_item.result.provider_article_id,
+                    canonical_news_id=live_item.initial_item.result.canonical_news_id,
+                    url_hash=download_result.get("url_hash") or task.get("url_hash") or "",
+                    status=download_result.get("status") or "",
+                    status_reason=download_result.get("status_reason") or "",
+                    http_status=download_result.get("http_status") or 0,
+                    error_type=download_result.get("error_type") or "",
+                )
+                continue
+            extraction = extract_row(download_result, self.config.text_limit_chars, self.config.live_url_max_pdf_bytes)
+            rows.append(extraction)
+        return rows
+
+    def _pending_memory_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        output = dict(row)
+        flags = [str(item) for item in output.get("content_quality_flags") or []]
+        if "background_pending" not in flags:
+            flags.append("background_pending")
+        output["content_quality_flags"] = flags
+        output["external_fetch_status"] = "background_pending" if output.get("external_fetch_status") in {"", "not_attempted"} else output.get("external_fetch_status")
+        output["updated_at_utc"] = datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "")
+        return output
+
+    def _fallback_final_item(self, live_item: LiveNewsPayload, exc: Exception) -> ProcessedNewsItem:
+        item = self.pipeline.process_payload(
+            live_item.payload,
+            raw_artifact_path=live_item.raw_path,
+            raw_payload_hash=live_item.raw_hash,
+            downloaded_at_utc=live_item.downloaded_at_utc,
+            enrichment_rows=[],
+        )
+        flags = [str(value) for value in item.result.normalized_row.get("content_quality_flags") or []]
+        for flag in ["background_enrichment_failed", type(exc).__name__]:
+            if flag and flag not in flags:
+                flags.append(flag)
+        item.result.normalized_row["content_quality_flags"] = flags
+        item.result.normalized_row["external_fetch_status"] = "background_enrichment_failed"
+        item.result.normalized_row["external_fetch_error"] = repr(exc)[:1000]
+        return item
+
     async def _publish_processed(self, processed: list[ProcessedNewsItem], *, poll_id: str, coverage_mode: str) -> Any:
         row_count = len(processed)
         task = asyncio.create_task(
@@ -733,6 +1028,56 @@ class NewsGateway:
             self.metrics.publish_last_message = message
             self._set_phase("shutdown_publish_drained", message)
             self._log_event("shutdown_publish_drained", reason=reason)
+
+    async def _drain_background_queue(self, reason: str) -> None:
+        if not self._background_tasks:
+            return
+        pending = self._background_queue.qsize()
+        active = self.metrics.background_active_batches
+        if pending == 0 and active == 0:
+            await self._stop_background_workers()
+            return
+        timeout = max(1.0, self.config.graceful_shutdown_seconds)
+        message = (
+            f"Termination requested; waiting up to {timeout:.0f}s for background news processing "
+            f"to finish pending_batches={pending:,} active_batches={active:,}."
+        )
+        self.metrics.background_last_message = message
+        self._set_phase("shutdown_waiting_for_background_news", message)
+        self._log_event("shutdown_waiting_for_background_news", reason=reason, pending_batches=pending, active_batches=active, timeout_seconds=timeout)
+        self._print_status(message)
+        try:
+            await asyncio.wait_for(self._background_queue.join(), timeout=timeout)
+        except TimeoutError:
+            warning = (
+                f"Background news drain timed out with pending_batches={self._background_queue.qsize():,} "
+                f"active_batches={self.metrics.background_active_batches:,}; shutdown will cancel remaining workers."
+            )
+            self.metrics.last_error = warning
+            self.metrics.background_last_message = warning
+            self._set_phase("shutdown_background_timeout", warning)
+            self._log_event(
+                "shutdown_background_timeout",
+                reason=reason,
+                pending_batches=self._background_queue.qsize(),
+                active_batches=self.metrics.background_active_batches,
+            )
+            self._print_status(warning)
+            return
+        await self._stop_background_workers()
+        message = "All background news processing finished; continuing graceful shutdown."
+        self.metrics.background_last_message = message
+        self._set_phase("shutdown_background_drained", message)
+        self._log_event("shutdown_background_drained", reason=reason)
+
+    async def _stop_background_workers(self) -> None:
+        alive = [task for task in self._background_tasks if not task.done()]
+        if not alive:
+            return
+        for _task in alive:
+            await self._background_queue.put(None)
+        await self._background_queue.join()
+        await asyncio.gather(*alive, return_exceptions=True)
 
     async def _wait_for_service_tasks_to_quiesce(self) -> None:
         tasks = [task for task in [self._poll_task, self._gap_task] if task is not None and not task.done()]
