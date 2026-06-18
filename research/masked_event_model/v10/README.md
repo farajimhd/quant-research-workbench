@@ -27,14 +27,15 @@ features:
 encoded tokens [B, token_count, d_model]
   -> to_embedding [B, token_count, embedding_dim]
   -> to_event_features [B, token_count, event_embedding_features]
-  -> embedding_to_decoder [B, token_count, d_model]
-  -> decoder memory [B, token_count, d_model]
+  -> flatten [B, token_count * event_embedding_features]
+  -> embedding_to_decoder [B, d_model]
+  -> decoder memory [B, 1, d_model]
 ```
 
 The decoder uses learned queries for the removed event positions. Each masked
 query is the learned mask token plus the masked event position embedding, and it
-cross-attends only to the compact tokenwise decoder memory. It does not see raw
-masked event bytes. The decoder predicts only the removed event bytes:
+cross-attends only to the single flattened decoder memory token. It does not see
+raw masked event bytes. The decoder predicts only the removed event bytes:
 
 ```text
 event_bit_logits: [B, masked_events, 16, 8]
@@ -62,6 +63,7 @@ event mask ratio: 0.70
 event mask schedule: fixed 70%
 embedding_dim: 32
 event_embedding_features: 1
+decoder_bottleneck_tokens: 40
 header bit corruption: 20% of samples, 5% of header bits
 visible event bit corruption: 30% of samples, 20% of visible event bits
 AMP dtype: auto, preferring BF16 on supported CUDA devices
@@ -102,12 +104,14 @@ python research\masked_event_model\v10\train_10shard_long.py --fresh-start
 ```
 
 Defaults are medium `d_model=256`, `embedding_dim=32`,
-`event_embedding_features=1`, `batch_size=4096`, 10 training shards, 4 epochs,
-one cosine cycle per selected-shard epoch, validation at each shard boundary,
-async latest checkpoints every 25 steps, and no shard interleaving. The launcher
-prints the equivalent low-level trainer command before starting and accepts
-direct overrides for model size, embedding feature count, batch size, shard
-range, validation shard, W&B run name, and warm-start checkpoint.
+`event_embedding_features=1`, `decoder_bottleneck_tokens=40`,
+`batch_size=4096`, 10 training shards, 4 epochs, one cosine cycle per
+selected-shard epoch, validation at each shard boundary, async latest
+checkpoints every 25 steps, and no shard interleaving. The launcher prints the
+equivalent low-level trainer command before starting and accepts direct
+overrides for model size, embedding feature count, decoder bridge token count,
+batch size, shard range, validation shard, W&B run name, and warm-start
+checkpoint.
 
 ## Artifacts
 

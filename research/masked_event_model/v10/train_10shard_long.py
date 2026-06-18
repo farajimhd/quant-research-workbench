@@ -39,6 +39,7 @@ DEFAULTS: dict[str, Any] = {
     "d_model": 256,
     "embedding_dim": 32,
     "event_embedding_features": 1,
+    "decoder_bottleneck_tokens": 40,
     "n_heads": 8,
     "encoder_layers": 10,
     "decoder_layers": 4,
@@ -122,6 +123,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--d-model", type=int, default=DEFAULTS["d_model"])
     parser.add_argument("--embedding-dim", type=int, default=DEFAULTS["embedding_dim"])
     parser.add_argument("--event-embedding-features", type=int, default=DEFAULTS["event_embedding_features"])
+    parser.add_argument("--decoder-bottleneck-tokens", type=int, default=DEFAULTS["decoder_bottleneck_tokens"])
     parser.add_argument("--n-heads", type=int, default=DEFAULTS["n_heads"])
     parser.add_argument("--encoder-layers", type=int, default=DEFAULTS["encoder_layers"])
     parser.add_argument("--decoder-layers", type=int, default=DEFAULTS["decoder_layers"])
@@ -227,6 +229,7 @@ def main() -> None:
             "d_model": int(args.d_model),
             "embedding_dim": int(args.embedding_dim),
             "event_embedding_features": int(args.event_embedding_features),
+            "decoder_bottleneck_tokens": int(args.decoder_bottleneck_tokens),
             "n_heads": int(args.n_heads),
             "encoder_layers": int(args.encoder_layers),
             "decoder_layers": int(args.decoder_layers),
@@ -343,7 +346,7 @@ def print_plan(
     )
     print(
         f"model=d{values['d_model']} emb{values['embedding_dim']} event_features={values['event_embedding_features']} "
-        f"heads{values['n_heads']} "
+        f"decoder_bottleneck_tokens={values['decoder_bottleneck_tokens']} heads{values['n_heads']} "
         f"enc{values['encoder_layers']} dec{values['decoder_layers']} ffn_mult{values['ffn_mult']} dropout={values['dropout']}",
         flush=True,
     )

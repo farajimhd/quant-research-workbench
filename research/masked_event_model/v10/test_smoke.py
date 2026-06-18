@@ -25,7 +25,16 @@ def test_forward_and_encode_shapes() -> None:
     event_bytes = torch.randint(0, 256, (batch, events, 16), dtype=torch.uint8)
     model = EventTokenMaskedAutoencoder(
         events_per_chunk=events,
-        config=ModelConfig(d_byte=8, d_model=32, embedding_dim=8, event_embedding_features=1, n_heads=4, encoder_layers=1, decoder_layers=1),
+        config=ModelConfig(
+            d_byte=8,
+            d_model=32,
+            embedding_dim=8,
+            event_embedding_features=1,
+            decoder_bottleneck_tokens=10,
+            n_heads=4,
+            encoder_layers=1,
+            decoder_layers=1,
+        ),
     )
     masks = build_event_masks(event_bytes, MaskConfig(event_mask_ratio=0.5))
     output = model(header, event_bytes, masks, MaskConfig(event_mask_ratio=0.5))
@@ -45,6 +54,8 @@ def test_forward_and_encode_shapes() -> None:
     embedding = model.encode(header, event_bytes)
     assert embedding.shape == (batch, events, 1)
     assert output.chunk_embedding.shape == (batch, 2 + masks.visible_count, 1)
+    decoder_memory = model.chunk_embedding_to_decoder_memory(output.chunk_embedding)
+    assert decoder_memory.shape == (batch, 1, 32)
     event_embedding = model.encode_events(header, event_bytes)
     assert event_embedding.shape == (batch, events, 1)
 

@@ -145,6 +145,7 @@ class SweepRun:
     decoder_chunk_size: int
     embedding_dim: int
     event_embedding_features: int
+    decoder_bottleneck_tokens: int
     batch_size: int
     run_name: str
     run_root: Path
@@ -161,6 +162,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--embedding-dims", default="32")
     parser.add_argument("--event-embedding-features", type=int, default=1)
+    parser.add_argument("--decoder-bottleneck-tokens", type=int, default=40)
     parser.add_argument("--batch-sizes", default="4096,8192")
     parser.add_argument("--model-sizes", default="medium,large")
     parser.add_argument("--device", default="cuda")
@@ -302,7 +304,7 @@ def build_explicit_runs(args: argparse.Namespace, combos: tuple[tuple[str, int, 
         model_size, embedding_dim, batch_size, input_representation, decoder_chunk_size = normalize_combo(combo, args.decoder_chunk_size)
         representation_suffix = "-eventmae-bit"
         decoder_suffix = ""
-        run_name = f"{args.run_prefix}-{model_size}{representation_suffix}{decoder_suffix}-emb{embedding_dim}-f{args.event_embedding_features}-bs{batch_size}"
+        run_name = f"{args.run_prefix}-{model_size}{representation_suffix}{decoder_suffix}-emb{embedding_dim}-f{args.event_embedding_features}-t{args.decoder_bottleneck_tokens}-bs{batch_size}"
         runs.append(
             SweepRun(
                 index=index,
@@ -312,6 +314,7 @@ def build_explicit_runs(args: argparse.Namespace, combos: tuple[tuple[str, int, 
                 decoder_chunk_size=decoder_chunk_size,
                 embedding_dim=embedding_dim,
                 event_embedding_features=int(args.event_embedding_features),
+                decoder_bottleneck_tokens=int(args.decoder_bottleneck_tokens),
                 batch_size=batch_size,
                 run_name=run_name,
                 run_root=resolve_run_root(args, run_name),
@@ -329,7 +332,7 @@ def build_grid_runs(args: argparse.Namespace, model_sizes: list[str], embedding_
         for embedding_dim in embedding_dims:
             for batch_size in batch_sizes:
                 index += 1
-                run_name = f"{args.run_prefix}-{model_size}-emb{embedding_dim}-f{args.event_embedding_features}-bs{batch_size}"
+                run_name = f"{args.run_prefix}-{model_size}-emb{embedding_dim}-f{args.event_embedding_features}-t{args.decoder_bottleneck_tokens}-bs{batch_size}"
                 run_root = resolve_run_root(args, run_name)
                 runs.append(
                     SweepRun(
@@ -340,6 +343,7 @@ def build_grid_runs(args: argparse.Namespace, model_sizes: list[str], embedding_
                         decoder_chunk_size=0,
                         embedding_dim=embedding_dim,
                         event_embedding_features=int(args.event_embedding_features),
+                        decoder_bottleneck_tokens=int(args.decoder_bottleneck_tokens),
                         batch_size=batch_size,
                         run_name=run_name,
                         run_root=run_root,
@@ -370,6 +374,7 @@ def run_to_dict(run: SweepRun) -> dict[str, Any]:
         "decoder_chunk_size": run.decoder_chunk_size,
         "embedding_dim": run.embedding_dim,
         "event_embedding_features": run.event_embedding_features,
+        "decoder_bottleneck_tokens": run.decoder_bottleneck_tokens,
         "batch_size": run.batch_size,
         "run_name": run.run_name,
         "run_root": str(run.run_root),
@@ -495,6 +500,8 @@ def build_train_command(args: argparse.Namespace, run: SweepRun) -> list[str]:
         str(run.embedding_dim),
         "--event-embedding-features",
         str(run.event_embedding_features),
+        "--decoder-bottleneck-tokens",
+        str(run.decoder_bottleneck_tokens),
         "--d-byte",
         str(cfg["d_byte"]),
         "--d-model",
@@ -556,6 +563,7 @@ def summarize_run(run: SweepRun, *, subprocess_seconds: float, status: str, erro
         "decoder_chunk_size": run.decoder_chunk_size,
         "embedding_dim": run.embedding_dim,
         "event_embedding_features": run.event_embedding_features,
+        "decoder_bottleneck_tokens": run.decoder_bottleneck_tokens,
         "batch_size": run.batch_size,
         "parameters": model_parameters,
         "steps": len(train_rows),

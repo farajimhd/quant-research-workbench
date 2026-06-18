@@ -36,6 +36,7 @@ DEFAULTS: dict[str, Any] = {
     "d_model": 256,
     "embedding_dim": 32,
     "event_embedding_features": 1,
+    "decoder_bottleneck_tokens": 40,
     "n_heads": 8,
     "encoder_layers": 10,
     "decoder_layers": 4,

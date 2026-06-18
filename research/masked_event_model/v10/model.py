@@ -274,9 +274,9 @@ class ChunkEmbeddingBottleneck(nn.Module):
     v10 keeps the event/token axis instead of mean-pooling it away. The first
     projection keeps the v9 bottleneck width (`embedding_dim`, typically 32),
     then a second projection compresses each token to
-    `event_embedding_features` features. The decoder cross-attends to this
-    compact token sequence, so downstream users can also reuse the same
-    per-token representation directly.
+    `event_embedding_features` features. The decoder bridge flattens this
+    compact token sequence into one v9-like memory token, while downstream users
+    can still reuse the tokenwise representation directly.
     """
 
     def __init__(self, config: ModelConfig) -> None:
@@ -307,18 +307,36 @@ class ChunkEmbeddingOutput(nn.Identity):
 
 
 class ChunkEmbeddingToDecoderMemory(nn.Module):
-    """Project compact per-token embeddings back to decoder memory width."""
+    """Flatten compact token embeddings into one v9-like decoder memory token."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.chunk_embedding_layer_norm = nn.LayerNorm(config.event_embedding_features)
-        self.chunk_embedding_to_decoder_width = nn.Linear(config.event_embedding_features, config.d_model)
+        self.decoder_bottleneck_tokens = int(config.decoder_bottleneck_tokens)
+        self.event_embedding_features = int(config.event_embedding_features)
+        self.flattened_bottleneck_width = self.decoder_bottleneck_tokens * self.event_embedding_features
+        self.chunk_embedding_layer_norm = nn.LayerNorm(self.flattened_bottleneck_width)
+        self.chunk_embedding_to_decoder_width = nn.Linear(self.flattened_bottleneck_width, config.d_model)
 
     def forward(self, chunk_embedding: torch.Tensor) -> torch.Tensor:
-        # Input shape: [B, T, F]. Output shape: [B, T, F].
-        normalized_embedding = self.chunk_embedding_layer_norm(chunk_embedding)
-        # Input shape: [B, T, F]. Output shape: [B, T, D].
-        return self.chunk_embedding_to_decoder_width(normalized_embedding)
+        if int(chunk_embedding.shape[1]) != self.decoder_bottleneck_tokens:
+            raise ValueError(
+                "v10 decoder bridge expects "
+                f"{self.decoder_bottleneck_tokens} bottleneck tokens, got {int(chunk_embedding.shape[1])}. "
+                "Update ModelConfig.decoder_bottleneck_tokens when changing the event mask ratio."
+            )
+        if int(chunk_embedding.shape[2]) != self.event_embedding_features:
+            raise ValueError(
+                "v10 decoder bridge expects "
+                f"{self.event_embedding_features} features per token, got {int(chunk_embedding.shape[2])}."
+            )
+        # Input shape: [B, T, F]. Output shape: [B, T * F].
+        flattened_embedding = chunk_embedding.reshape(chunk_embedding.shape[0], self.flattened_bottleneck_width)
+        # Input shape: [B, T * F]. Output shape: [B, T * F].
+        normalized_embedding = self.chunk_embedding_layer_norm(flattened_embedding)
+        # Input shape: [B, T * F]. Output shape: [B, D].
+        decoder_memory_token = self.chunk_embedding_to_decoder_width(normalized_embedding)
+        # Input shape: [B, D]. Output shape: [B, 1, D].
+        return decoder_memory_token.unsqueeze(1)
 
 
 class MaskedEventQueryBuilder(nn.Module):
@@ -635,14 +653,14 @@ class EventTokenMaskedAutoencoder(nn.Module):
 
         if self.config.decoder_force_fp32 and chunk_embedding.is_cuda:
             with torch.amp.autocast("cuda", enabled=False):
-                # Input shape: [B, T, F]. Output shape: [B, T, D].
+                # Input shape: [B, T, F]. Output shape: [B, 1, D].
                 decoder_memory = self.chunk_embedding_to_decoder_memory(chunk_embedding.float())
-                # Input shapes: memory [B, T, D], masks [B, M]. Output shape: [B, M, 16, 8].
+                # Input shapes: memory [B, 1, D], masks [B, M]. Output shape: [B, M, 16, 8].
                 return self.decode_masked_events(decoder_memory, masks)
 
-        # Input shape: [B, T, F]. Output shape: [B, T, D].
+        # Input shape: [B, T, F]. Output shape: [B, 1, D].
         decoder_memory = self.chunk_embedding_to_decoder_memory(chunk_embedding)
-        # Input shapes: memory [B, T, D], masks [B, M]. Output shape: [B, M, 16, 8].
+        # Input shapes: memory [B, 1, D], masks [B, M]. Output shape: [B, M, 16, 8].
         return self.decode_masked_events(decoder_memory, masks)
 
     @torch.no_grad()
@@ -721,7 +739,7 @@ class EventTokenMaskedAutoencoder(nn.Module):
         # Input shape: masked indices [B, M]. Output shape: [B, M, D].
         masked_event_queries = self.masked_event_query_builder(masks.masked_event_indices)
         for decoder_layer in self.masked_query_cross_attention_decoder:
-            # Input shapes: queries [B, M, D], memory [B, T, D]. Output shape: [B, M, D].
+            # Input shapes: queries [B, M, D], memory [B, 1, D]. Output shape: [B, M, D].
             masked_event_queries = decoder_layer(masked_event_queries, decoder_memory)
         # Input shape: [B, M, D]. Output shape: [B, M, 16, 8].
         return self.masked_event_bit_prediction_head(masked_event_queries)

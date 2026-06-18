@@ -93,6 +93,7 @@ class ModelConfig:
     d_model: int = 128
     embedding_dim: int = 32
     event_embedding_features: int = 1
+    decoder_bottleneck_tokens: int = 40
     n_heads: int = 4
     encoder_layers: int = 6
     decoder_layers: int = 2

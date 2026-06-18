@@ -148,6 +148,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--d-model", type=int, default=model_defaults.d_model)
     parser.add_argument("--embedding-dim", type=int, default=model_defaults.embedding_dim)
     parser.add_argument("--event-embedding-features", type=int, default=model_defaults.event_embedding_features)
+    parser.add_argument("--decoder-bottleneck-tokens", type=int, default=model_defaults.decoder_bottleneck_tokens)
     parser.add_argument("--n-heads", type=int, default=model_defaults.n_heads)
     parser.add_argument("--encoder-layers", type=int, default=model_defaults.encoder_layers)
     parser.add_argument("--decoder-layers", type=int, default=model_defaults.decoder_layers)
@@ -1205,7 +1206,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             event_bit_corruption_prob=args.event_bit_corruption_prob,
             event_bit_corruption_ratio=args.event_bit_corruption_ratio,
         ),
-        model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, event_embedding_features=args.event_embedding_features, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
+        model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, event_embedding_features=args.event_embedding_features, decoder_bottleneck_tokens=args.decoder_bottleneck_tokens, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout),
         losses=LossConfig(objective=args.loss_objective),
         train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, amp=args.amp, amp_dtype=args.amp_dtype, amp_initial_scale=args.amp_initial_scale, amp_growth_interval=args.amp_growth_interval, amp_max_scale=args.amp_max_scale, amp_overflow_fatal_threshold=args.amp_overflow_fatal_threshold, float32_matmul_precision=args.float32_matmul_precision, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )
@@ -1577,6 +1578,7 @@ def save_model_artifacts(
         "events_shape": [config.train.batch_size, config.data.events_per_chunk, 16],
         "embedding_dim": config.model.embedding_dim,
         "event_embedding_features": config.model.event_embedding_features,
+        "decoder_bottleneck_tokens": config.model.decoder_bottleneck_tokens,
         "d_model": config.model.d_model,
         "d_byte": config.model.d_byte,
         "n_heads": config.model.n_heads,
@@ -1618,8 +1620,8 @@ def build_model_summary_text(model: torch.nn.Module, details: dict[str, Any], pa
         f"Training encoder tokens: [B, 2 + visible_events, d_model]",
         f"Production encoder tokens: [B, 2 + {details['events_per_chunk']}, d_model]",
         f"Chunk bottleneck: encoded tokens -> [B, token_count, {details['embedding_dim']}] -> [B, token_count, {details['event_embedding_features']}]",
-        f"Decoder memory: [B, token_count, {details['event_embedding_features']}] -> [B, token_count, d_model]",
-        f"Decoder: masked event queries cross-attend only to compact tokenwise bottleneck memory",
+        f"Decoder memory: [B, {details['decoder_bottleneck_tokens']}, {details['event_embedding_features']}] -> flatten [B, {details['decoder_bottleneck_tokens'] * details['event_embedding_features']}] -> [B, 1, d_model]",
+        f"Decoder: masked event queries cross-attend only to the single flattened bottleneck memory token",
         f"Output event bit logits: [B, masked_events, 16, 8]",
         f"Training embedding: [B, 2 + visible_events, {details['event_embedding_features']}]",
         f"Production event embeddings: [B, {details['events_per_chunk']}, {details['event_embedding_features']}]",
@@ -1654,7 +1656,8 @@ def build_model_mermaid(config: ExperimentConfig) -> str:
     TOK --> ENC[\"Transformer encoder<br/>{config.model.encoder_layers} layers, d={config.model.d_model}, heads={config.model.n_heads}\"]
     ENC --> TOKEMB[\"token bottleneck projection<br/>B x token_count x {config.model.embedding_dim}\"]
     TOKEMB --> EMB[\"tokenwise embedding features<br/>B x token_count x {config.model.event_embedding_features}\"]
-    EMB --> MEM[\"decoder memory projection<br/>B x token_count x d_model\"]
+    EMB --> FLAT[\"flatten bottleneck tokens<br/>B x ({config.model.decoder_bottleneck_tokens} * {config.model.event_embedding_features})\"]
+    FLAT --> MEM[\"decoder memory projection<br/>B x 1 x d_model\"]
     M --> MQ[\"masked event queries<br/>mask token + masked event position\"]
     MQ --> DEC[\"masked-query cross-attention decoder<br/>{config.model.decoder_layers} layers\"]
     MEM --> DEC
@@ -1789,7 +1792,7 @@ def install_fatal_exception_logger(run_paths: RunPaths) -> None:
 
 
 def default_run_name(args: argparse.Namespace) -> str:
-    return f"mem-v10-eventmae-emb{args.embedding_dim}-f{args.event_embedding_features}-d{args.d_model}-e{args.encoder_layers}-mask{int(args.event_mask_ratio * 100)}-events{args.events_per_chunk}"
+    return f"mem-v10-eventmae-emb{args.embedding_dim}-f{args.event_embedding_features}-t{args.decoder_bottleneck_tokens}-d{args.d_model}-e{args.encoder_layers}-mask{int(args.event_mask_ratio * 100)}-events{args.events_per_chunk}"
 
 
 def format_metrics(step: int, metrics: dict[str, float]) -> str:
