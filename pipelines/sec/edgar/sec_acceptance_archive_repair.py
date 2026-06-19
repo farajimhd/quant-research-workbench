@@ -361,7 +361,9 @@ def process_archive_worker(job_payload: dict[str, Any], run_id: str) -> dict[str
     archive_path = Path(job_payload["archive_path"])
     archive_date = str(job_payload["archive_date"])
     candidates = [CandidateRow(row=item["row"]) for item in job_payload["candidates"]]
-    pending = {candidate.accession_number: candidate for candidate in candidates}
+    pending: dict[str, list[CandidateRow]] = {}
+    for candidate in candidates:
+        pending.setdefault(candidate.accession_number, []).append(candidate)
     repaired_rows: list[dict[str, Any]] = []
     unresolved_rows: list[dict[str, Any]] = []
     source_counts: Counter[str] = Counter()
@@ -385,28 +387,32 @@ def process_archive_worker(job_payload: dict[str, Any], run_id: str) -> dict[str
                 except Exception:  # noqa: BLE001
                     continue
                 accession = normalize_accession(str(filing.get("accession_number") or ""))
-                candidate = pending.pop(accession, None)
-                if candidate is None:
+                matched_candidates = pending.pop(accession, [])
+                if not matched_candidates:
                     continue
                 accepted_raw = str(filing.get("acceptance_datetime_raw") or "")
                 accepted_at_utc = acceptance_datetime_to_utc(accepted_raw)
                 if accepted_at_utc:
-                    replacement = dict(candidate.row)
-                    replacement["accepted_at_utc"] = accepted_at_utc
-                    replacement["acceptance_datetime_raw"] = re.sub(r"\D+", "", accepted_raw)[:14]
-                    replacement["accepted_at_source"] = repaired_source(candidate.accepted_at_source)
-                    replacement["source_run_id"] = run_id
-                    replacement["inserted_at"] = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
-                    repaired_rows.append(clean_filing_row(replacement))
-                    source_counts[replacement["accepted_at_source"]] += 1
+                    for candidate in matched_candidates:
+                        replacement = dict(candidate.row)
+                        replacement["accepted_at_utc"] = accepted_at_utc
+                        replacement["acceptance_datetime_raw"] = re.sub(r"\D+", "", accepted_raw)[:14]
+                        replacement["accepted_at_source"] = repaired_source(candidate.accepted_at_source)
+                        replacement["source_run_id"] = run_id
+                        replacement["inserted_at"] = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+                        repaired_rows.append(clean_filing_row(replacement))
+                        source_counts[replacement["accepted_at_source"]] += 1
                 else:
-                    unresolved_rows.append(unresolved_from_candidate(candidate.row, "acceptance_datetime_missing_in_archive_member", ""))
-        for candidate in pending.values():
-            unresolved_rows.append(unresolved_from_candidate(candidate.row, "accession_not_found_in_archive", ""))
+                    for candidate in matched_candidates:
+                        unresolved_rows.append(unresolved_from_candidate(candidate.row, "acceptance_datetime_missing_in_archive_member", ""))
+        for matching_candidates in pending.values():
+            for candidate in matching_candidates:
+                unresolved_rows.append(unresolved_from_candidate(candidate.row, "accession_not_found_in_archive", ""))
     except Exception as exc:  # noqa: BLE001
         status = "failed"
         error_text = repr(exc)
-        unresolved_rows.extend(unresolved_from_candidate(candidate.row, "archive_error", error_text) for candidate in pending.values())
+        for matching_candidates in pending.values():
+            unresolved_rows.extend(unresolved_from_candidate(candidate.row, "archive_error", error_text) for candidate in matching_candidates)
     result = ArchiveRepairResult(
         archive_path=str(archive_path),
         archive_date=archive_date,
