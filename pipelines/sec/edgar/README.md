@@ -7,6 +7,7 @@ This package contains the SEC EDGAR historical workflow:
 - exact-file failed archive deletion;
 - acceptance timestamp repair helpers;
 - archive-derived acceptance timestamp repair for date-only parent rows;
+- submissions-bulk acceptance timestamp repair for date-only parent rows;
 - archive-derived filing document/text extraction and ClickHouse file ingest;
 - historical backfill orchestration over the stages that exist today;
 - legacy bulk mirror ingest helpers retained for traceability.
@@ -33,6 +34,12 @@ Run the current archive-derived acceptance repair on the workstation:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_archive_repair.py --archive-root-win D:/market-data/sec_core/daily_archives --output-root-win D:/market-data/prepared/sec_acceptance_archive_repair --start-date 2019-01-01 --end-date 2026-06-16 --archive-workers 4 --execute
+```
+
+Run the submissions-bulk fallback timestamp repair on the workstation:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_fallback_submissions_repair.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_acceptance_fallback_submissions_repair --execute
 ```
 
 See `sec_historical_backfill_orchestrator_guide.md` for one-command historical runs and PowerShell history export commands.
