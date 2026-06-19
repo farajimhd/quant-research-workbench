@@ -257,11 +257,10 @@ class FixedGridChunkBottleneck(nn.Module):
 
     `[CLS, header, event_0, ..., event_127]`.
 
-    Masked event slots contain the shared global event-position embedding for
-    that slot. Visible event slots are replaced with the corresponding encoded
-    token, which already received the same global position embedding before the
-    transformer. This avoids the older zero-placeholder grid without introducing
-    a second event-position table or double-adding position to visible events.
+    The fixed grid starts as zeros. Encoded CLS/header tokens are placed in
+    slots 0 and 1. Visible encoded event tokens are placed at slots `2 + event
+    index`. Masked event slots remain zero, so the bottleneck receives no
+    learned placeholder content for hidden events.
     """
 
     def __init__(self, *, events_per_chunk: int, config: ModelConfig) -> None:
@@ -286,35 +285,27 @@ class FixedGridChunkBottleneck(nn.Module):
         self,
         encoded_tokens: torch.Tensor,
         visible_event_indices: torch.Tensor,
-        global_event_position_embedding: GlobalEventPositionEmbedding,
     ) -> torch.Tensor:
         # Input shapes: encoded [B, 2 + V, D], indices [B, V]. Output shape: [B, 130, D].
         fixed_tokens = encoded_tokens.new_zeros((encoded_tokens.shape[0], self.fixed_token_count, encoded_tokens.shape[-1]))
         # Input shape: [B, 2 + V, D]. Output shape: [B, 2, D] added into fixed CLS/header slots.
         fixed_tokens[:, :2, :] = encoded_tokens[:, :2, :]
-        event_slot_ids = torch.arange(self.events_per_chunk, device=encoded_tokens.device).view(1, -1)
-        # Input shape: [1, E]. Output shape after expand: [B, E, D].
-        event_position_tokens = global_event_position_embedding(event_slot_ids).to(dtype=encoded_tokens.dtype)
-        event_position_tokens = event_position_tokens.expand(encoded_tokens.shape[0], -1, -1)
-        # Input shape: [B, E, D]. Output shape: fixed event slots initialized by the shared position table.
-        fixed_tokens[:, 2:, :] = event_position_tokens
         # Input shape: [B, V, D]. Output shape: [B, V, D].
         visible_event_tokens = encoded_tokens[:, 2:, :]
         # Input shape: [B, V]. Output shape: [B, V, D] with event slots shifted by CLS/header.
         fixed_event_slots = (visible_event_indices.to(device=encoded_tokens.device, dtype=torch.long) + 2).unsqueeze(-1)
         fixed_event_slots = fixed_event_slots.expand(-1, -1, encoded_tokens.shape[-1])
         # Input shapes: fixed [B, 130, D], slots [B, V, D], visible tokens [B, V, D].
-        # Output shape: [B, 130, D], with masked slots represented by the shared position embedding.
+        # Output shape: [B, 130, D], with masked slots left as zero vectors.
         return fixed_tokens.scatter(1, fixed_event_slots, visible_event_tokens)
 
     def forward(
         self,
         encoded_tokens: torch.Tensor,
         visible_event_indices: torch.Tensor,
-        global_event_position_embedding: GlobalEventPositionEmbedding,
     ) -> torch.Tensor:
         # Input shapes: encoded [B, 2 + V, D], indices [B, V]. Output shape: [B, 130, D].
-        fixed_tokens = self.build_fixed_token_grid(encoded_tokens, visible_event_indices, global_event_position_embedding)
+        fixed_tokens = self.build_fixed_token_grid(encoded_tokens, visible_event_indices)
         # Input shape: [B, 130, D]. Output shape: [B, 130 * D].
         flattened_grid = fixed_tokens.flatten(1)
         # Input shape: [B, 130 * D]. Output shape: [B, Z].
@@ -466,7 +457,6 @@ class EventChunkEncoder(nn.Module):
         chunk_embedding = self.chunk_embedding_bottleneck(
             encoded_tokens,
             selected_event_indices,
-            self.global_event_position_embedding,
         )
         return encoded_tokens, chunk_embedding
 
@@ -664,7 +654,6 @@ class EventTokenMaskedAutoencoder(nn.Module):
         chunk_embedding = self.chunk_embedding_bottleneck(
             encoded_tokens,
             selected_event_indices,
-            self.global_event_position_embedding,
         )
         return encoded_tokens, chunk_embedding
 

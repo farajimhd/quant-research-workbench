@@ -34,7 +34,7 @@ encoded tokens [B, token_count, d_model]
        slot 0: CLS
        slot 1: header
        slot 2..129: event positions 0..127
-       masked event slots: shared global event-position embeddings
+       masked event slots: zero vectors
        visible event slots: encoded event tokens
   -> flatten [B, 130 * d_model]
   -> MLP [B, embedding_dim]
@@ -42,8 +42,11 @@ encoded tokens [B, token_count, d_model]
 
 This keeps the production chunk embedding on the reconstruction loss path while
 giving the bottleneck fixed slot semantics in both training and production. The
-transformer still processes only visible events during MAE training. The decoder
-is intentionally small, but it no longer receives separate masked-position
+event-position embedding is used only before the transformer for visible event
+tokens. It is not used to initialize masked fixed-grid slots, so the bottleneck
+does not receive learned placeholder content for hidden events. The transformer
+still processes only visible events during MAE training. The decoder is
+intentionally small, but it no longer receives separate masked-position
 embeddings:
 
 ```text

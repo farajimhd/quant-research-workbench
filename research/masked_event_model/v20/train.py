@@ -1628,7 +1628,7 @@ def build_model_summary_text(model: torch.nn.Module, details: dict[str, Any], pa
         f"Input events_uint8: [B, {details['events_per_chunk']}, 16]",
         f"Training encoder tokens: [B, 2 + visible_events, d_model]",
         f"Production encoder tokens: [B, 2 + {details['events_per_chunk']}, d_model]",
-        f"Chunk bottleneck: shared event-position fixed grid [B, 130, d_model] -> [B, {details['embedding_dim']}]",
+        f"Chunk bottleneck: zero-initialized fixed grid [B, 130, d_model] -> [B, {details['embedding_dim']}]",
         f"Decoder: projected chunk embedding -> all event logits -> gather masked positions",
         f"Output event bit logits: [B, masked_events, 16, 8]",
         f"Embedding: [B, {details['embedding_dim']}]",
@@ -1661,8 +1661,7 @@ def build_model_mermaid(config: ExperimentConfig) -> str:
     HP --> TOK[\"encoder tokens<br/>CLS + header + visible events\"]
     POS --> TOK
     TOK --> ENC[\"Transformer encoder<br/>{config.model.encoder_layers} layers, d={config.model.d_model}, heads={config.model.n_heads}\"]
-    ENC --> GRID[\"fixed grid bottleneck<br/>CLS + header + 128 event slots\"]
-    POS --> GRID
+    ENC --> GRID[\"zero-initialized fixed grid bottleneck<br/>CLS + header + visible event slots\"]
     GRID --> EMB[\"chunk embedding<br/>B x {config.model.embedding_dim}\"]
     EMB --> MEM[\"project chunk embedding<br/>B x d_model\"]
     M --> MPOS[\"masked event positions<br/>B x {masked}\"]
@@ -1779,7 +1778,6 @@ class MaskedTrainingSummaryWrapper(torch.nn.Module):
         chunk_embedding = self.chunk_embedding_bottleneck(
             encoded_tokens,
             selected_event_indices,
-            self.global_event_position_embedding,
         )
         event_bit_logits = self.all_event_mlp_decoder(chunk_embedding, masks.masked_event_indices)
         return chunk_embedding, event_bit_logits
