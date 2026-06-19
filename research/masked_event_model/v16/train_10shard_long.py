@@ -20,7 +20,7 @@ from research.mlops.event_sample_cache import EventSampleCacheDataConfig, discov
 
 DEFAULTS: dict[str, Any] = {
     "data_source": "sample_cache",
-    "sample_cache_root": r"D:\market-data\prepared\event_sample_cache",
+    "sample_cache_root": r"D:\market-data\prepared\event_sample_cache\cache_20260611_195259",
     "sample_cache_prefetch_shards": 2,
     "sample_cache_shuffle_records": True,
     "sample_cache_drop_last": True,
