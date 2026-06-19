@@ -43,6 +43,7 @@ from research.mlops.clickhouse import (  # noqa: E402
 from research.mlops.env import discover_env_files, load_env_files  # noqa: E402
 from research.mlops.event_sample_cache import (  # noqa: E402
     SAMPLE_BYTES,
+    encode_label_records,
     encode_sample_records,
     resolve_event_sample_cache_root,
 )
@@ -191,11 +192,22 @@ def audit_one(
     origin_ordinal = int(audit_row["origin_ordinal"])
     origin_timestamp_ns = int(audit_row.get("origin_timestamp_ns", 0))
     try:
-        shard_path = root / split / f"shard_{shard_index:06d}.samples.bin"
-        expected_record = read_one_record(shard_path, sample_index)
+        v2_meta_path = root / split / f"shard_{shard_index:06d}.json"
+        is_labeled = v2_meta_path.exists()
+        label_chunks = 0
+        if is_labeled:
+            meta = json.loads(v2_meta_path.read_text(encoding="utf-8"))
+            label_chunks = int(meta.get("label_chunks", audit_row.get("label_chunks", 8)))
+            expected_record = read_one_record(root / str(meta["x_path"]), sample_index)
+            expected_label_record = read_one_record(root / str(meta["y_path"]), sample_index, sample_bytes=label_chunks * SAMPLE_BYTES)
+        else:
+            shard_path = root / split / f"shard_{shard_index:06d}.samples.bin"
+            expected_record = read_one_record(shard_path, sample_index)
+            expected_label_record = None
         low_ordinal = max(0, origin_ordinal - DEFAULT_CONTEXT_EVENTS + 1)
-        event_rows_plus = fetch_events_window(client, config, ticker, low_ordinal, origin_ordinal)
-        expected_event_rows = DEFAULT_CONTEXT_EVENTS + (1 if low_ordinal > 0 else 0)
+        high_ordinal = origin_ordinal + label_chunks * DEFAULT_CONTEXT_EVENTS
+        event_rows_plus = fetch_events_window(client, config, ticker, low_ordinal, high_ordinal)
+        expected_event_rows = DEFAULT_CONTEXT_EVENTS + label_chunks * DEFAULT_CONTEXT_EVENTS + (1 if low_ordinal > 0 else 0)
         if event_rows_plus.shape[0] != expected_event_rows:
             return failure_result(
                 split,
@@ -208,9 +220,7 @@ def audit_one(
                 f"events row count mismatch expected={expected_event_rows} actual={event_rows_plus.shape[0]}",
                 event_rows=int(event_rows_plus.shape[0]),
             )
-        previous_sip_us = int(event_rows_plus["sip_timestamp_us"][0]) if low_ordinal > 0 else None
-        event_window = event_rows_plus[1:] if low_ordinal > 0 else event_rows_plus
-        event_encoded = encode_unified_event_window(event_window, previous_sip_us=previous_sip_us)
+        event_encoded = encode_x_y_from_rows(event_rows_plus, low_ordinal=low_ordinal, origin_ordinal=origin_ordinal, label_chunks=label_chunks)
         if isinstance(event_encoded, str):
             return failure_result(
                 split,
@@ -223,8 +233,10 @@ def audit_one(
                 f"events re-encode failed: {event_encoded}",
                 event_rows=int(event_rows_plus.shape[0]),
             )
-        event_record = encode_sample_records(event_encoded[0].reshape(1, -1), event_encoded[1].reshape(1, DEFAULT_CONTEXT_EVENTS, -1))[0]
-        events_match_sample = bool(np.array_equal(expected_record, event_record))
+        event_record, event_label_record, event_header, event_events = event_encoded
+        events_match_sample = bool(np.array_equal(expected_record, event_record)) and (
+            expected_label_record is None or bool(np.array_equal(expected_label_record, event_label_record))
+        )
 
         start_us = int(event_rows_plus["sip_timestamp_us"][0])
         end_us = int(event_rows_plus["sip_timestamp_us"][-1])
@@ -236,16 +248,16 @@ def audit_one(
         decoded: dict[str, Any] | None = None
         if raw_contains_events:
             raw_subset_plus = raw_rows[match_start : match_start + event_rows_plus.shape[0]]
-            raw_previous_sip_us = int(raw_subset_plus["sip_timestamp_us"][0]) if low_ordinal > 0 else None
-            raw_window = raw_subset_plus[1:] if low_ordinal > 0 else raw_subset_plus
-            raw_encoded = encode_unified_event_window(raw_window, previous_sip_us=raw_previous_sip_us)
+            raw_encoded = encode_x_y_from_rows(raw_subset_plus, low_ordinal=low_ordinal, origin_ordinal=origin_ordinal, label_chunks=label_chunks)
             if isinstance(raw_encoded, str):
                 error = f"raw re-encode failed: {raw_encoded}"
             else:
-                raw_record = encode_sample_records(raw_encoded[0].reshape(1, -1), raw_encoded[1].reshape(1, DEFAULT_CONTEXT_EVENTS, -1))[0]
-                raw_matches_sample = bool(np.array_equal(expected_record, raw_record))
+                raw_record, raw_label_record, raw_header, raw_events = raw_encoded
+                raw_matches_sample = bool(np.array_equal(expected_record, raw_record)) and (
+                    expected_label_record is None or bool(np.array_equal(expected_label_record, raw_label_record))
+                )
                 error = "" if events_match_sample and raw_matches_sample else "byte mismatch"
-                decoded = decoded_sample_summary(ticker, origin_ordinal, raw_encoded[0], raw_encoded[1])
+                decoded = decoded_sample_summary(ticker, origin_ordinal, raw_header, raw_events)
         else:
             error = "raw compact rows do not contain event window as a contiguous subsequence"
         status = "ok" if events_match_sample and raw_contains_events and raw_matches_events and raw_matches_sample else "failed"
@@ -324,7 +336,7 @@ def fetch_events_window(
     config: ClickHouseEventsDataConfig,
     ticker: str,
     low_ordinal: int,
-    origin_ordinal: int,
+    high_ordinal: int,
 ) -> np.ndarray:
     start_ordinal = max(0, int(low_ordinal) - 1)
     table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
@@ -345,12 +357,45 @@ SELECT
 FROM {table}
 PREWHERE ticker = {sql_string(ticker)}
   AND ordinal >= {start_ordinal}
-  AND ordinal <= {int(origin_ordinal)}
+  AND ordinal <= {int(high_ordinal)}
 ORDER BY ordinal
 {query_settings(config)}
 FORMAT RowBinary
 """
     return decode_event_rows(client.execute_bytes(sql))
+
+
+def encode_x_y_from_rows(
+    rows_plus: np.ndarray,
+    *,
+    low_ordinal: int,
+    origin_ordinal: int,
+    label_chunks: int,
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray, np.ndarray] | str:
+    offset = 1 if low_ordinal > 0 else 0
+    x_previous_sip_us = int(rows_plus["sip_timestamp_us"][0]) if offset else None
+    x_window = rows_plus[offset : offset + DEFAULT_CONTEXT_EVENTS]
+    x_encoded = encode_unified_event_window(x_window, previous_sip_us=x_previous_sip_us)
+    if isinstance(x_encoded, str):
+        return "x_" + x_encoded
+    x_header, x_events = x_encoded
+    x_record = encode_sample_records(x_header.reshape(1, -1), x_events.reshape(1, DEFAULT_CONTEXT_EVENTS, -1))[0]
+    if label_chunks <= 0:
+        return x_record, None, x_header, x_events
+    label_headers = np.zeros((1, label_chunks, x_header.shape[0]), dtype=np.uint8)
+    label_events = np.zeros((1, label_chunks, DEFAULT_CONTEXT_EVENTS, x_events.shape[1]), dtype=np.uint8)
+    for label_index in range(label_chunks):
+        label_start = offset + DEFAULT_CONTEXT_EVENTS + label_index * DEFAULT_CONTEXT_EVENTS
+        label_end = label_start + DEFAULT_CONTEXT_EVENTS
+        previous_sip_us = int(rows_plus["sip_timestamp_us"][label_start - 1])
+        label_encoded = encode_unified_event_window(rows_plus[label_start:label_end], previous_sip_us=previous_sip_us)
+        if isinstance(label_encoded, str):
+            return f"label_{label_index}_{label_encoded}"
+        label_header, label_event_bytes = label_encoded
+        label_headers[0, label_index] = label_header
+        label_events[0, label_index] = label_event_bytes
+    y_record = encode_label_records(label_headers, label_events)[0]
+    return x_record, y_record, x_header, x_events
 
 
 def fetch_raw_unified_rows(
@@ -518,11 +563,11 @@ def decoded_sample_summary(ticker: str, origin_ordinal: int, header: np.ndarray,
     return {"ticker": ticker, "origin_ordinal": origin_ordinal, "header": decoded_header, "events": decoded_events}
 
 
-def read_one_record(path: Path, sample_index: int) -> np.ndarray:
+def read_one_record(path: Path, sample_index: int, *, sample_bytes: int = SAMPLE_BYTES) -> np.ndarray:
     with path.open("rb") as handle:
-        handle.seek(sample_index * SAMPLE_BYTES)
-        payload = handle.read(SAMPLE_BYTES)
-    if len(payload) != SAMPLE_BYTES:
+        handle.seek(sample_index * sample_bytes)
+        payload = handle.read(sample_bytes)
+    if len(payload) != sample_bytes:
         raise RuntimeError(f"Could not read full sample from {path}:{sample_index}")
     return np.frombuffer(payload, dtype=np.uint8).copy()
 

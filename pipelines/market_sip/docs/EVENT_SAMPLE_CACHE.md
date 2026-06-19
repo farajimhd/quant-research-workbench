@@ -121,6 +121,34 @@ For labeled v2 caches, use:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_build_event_sample_cache_v2.py
 ```
 
+To run the full v2 cycle in one command, use:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_event_sample_cache_v2_cycle.py
+```
+
+That command builds the v2 cache, validates finalized shards, and then audits
+sampled records against the raw compact `quotes` and `trades` tables.
+
+Before a large run, execute a small end-to-end smoke cycle:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_event_sample_cache_v2_cycle.py --smoke
+```
+
+Smoke mode uses tiny cache targets:
+
+```text
+train_cache_gib=0.05
+validation_cache_gib=0.02
+shard_size_gib=0.05
+workers=2
+builder_micro_batch_samples=4096
+origins_per_span=64
+validation_clickhouse_checks=5
+raw_audit_checks=5
+```
+
 The v2 launcher passes:
 
 ```text
