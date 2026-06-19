@@ -208,7 +208,7 @@ class TrainingReporter:
         state.system_memory_available_gib = float(metrics.get("profile/system_memory_available_gib", state.system_memory_available_gib))
         state.system_memory_used_gib = float(metrics.get("profile/system_memory_used_gib", state.system_memory_used_gib))
         state.profiler_active = any(key.startswith("profile/") for key in metrics)
-        semantic_prefix = "pretrain/semantic/"
+        semantic_prefix = "semantic/train/"
         semantic_metrics = {key[len(semantic_prefix) :]: float(value) for key, value in metrics.items() if key.startswith(semantic_prefix)}
         if semantic_metrics:
             state.semantic_metrics = semantic_metrics
@@ -219,7 +219,7 @@ class TrainingReporter:
             if "validation/pretrain/event_hard_byte_psnr_db" in validation_metrics:
                 state.validation_event_hard_byte_psnr_db = float(validation_metrics["validation/pretrain/event_hard_byte_psnr_db"])
             state.validation_seconds = float(validation_metrics.get("validation/pretrain/seconds", state.validation_seconds or 0.0))
-            validation_semantic_prefix = "validation/pretrain/semantic/"
+            validation_semantic_prefix = "semantic/validation/"
             validation_semantic_metrics = {
                 key[len(validation_semantic_prefix) :]: float(value)
                 for key, value in validation_metrics.items()

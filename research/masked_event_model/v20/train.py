@@ -243,7 +243,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     wandb_run = init_wandb(args, config, output_dir)
-    metric_logger = JsonlMetricLogger(run_paths.metrics_path, wandb_run)
+    metric_logger = JsonlMetricLogger(run_paths.metrics_path, wandb_run, wandb_key_mapper=v20_wandb_metric_key)
     write_run_manifest(
         run_paths.manifest_path,
         repo_root=REPO_ROOT,
@@ -1494,7 +1494,8 @@ def evaluate_validation(model: EventTokenMaskedAutoencoder, batches: list[dict[s
             if not torch.isfinite(result.loss).item():
                 raise_nonfinite_training_error(output, result.metrics, global_step=-1)
             for key, value in result.metrics.items():
-                totals["validation/" + key] = totals.get("validation/" + key, 0.0) + float(value)
+                validation_key = validation_metric_key(key)
+                totals[validation_key] = totals.get(validation_key, 0.0) + float(value)
     count = max(1, len(batches))
     averaged = {key: value / count for key, value in totals.items()}
     averaged["validation/pretrain/batches"] = float(len(batches))
@@ -1502,6 +1503,33 @@ def evaluate_validation(model: EventTokenMaskedAutoencoder, batches: list[dict[s
     if was_training:
         model.train()
     return averaged
+
+
+def validation_metric_key(train_key: str) -> str:
+    """Map train metric keys into validation keys without burying semantic metrics.
+
+    Internal metrics keep the same shape expected by the Rich reporter and
+    checkpoint monitors. W&B receives a second mapping in `v20_wandb_metric_key`
+    so semantic metrics show in their own requested panel groups.
+    """
+
+    if train_key.startswith("semantic/train/"):
+        return "semantic/validation/" + train_key[len("semantic/train/") :]
+    return "validation/" + train_key
+
+
+def v20_wandb_metric_key(metric_key: str) -> str:
+    """Put v20 pretraining metrics into explicit W&B panel groups."""
+
+    if metric_key.startswith("semantic/train/"):
+        return "training_pretrain_semantic/" + metric_key[len("semantic/train/") :]
+    if metric_key.startswith("semantic/validation/"):
+        return "validation_pretrain_semantic/" + metric_key[len("semantic/validation/") :]
+    if metric_key.startswith("validation/pretrain/"):
+        return "validation_pretrain/" + metric_key[len("validation/pretrain/") :]
+    if metric_key.startswith("pretrain/"):
+        return "training_pretrain/" + metric_key[len("pretrain/") :]
+    return metric_key
 
 
 def move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:

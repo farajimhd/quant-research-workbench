@@ -40,8 +40,8 @@ def test_forward_and_encode_shapes() -> None:
     expected = torch.nn.functional.binary_cross_entropy_with_logits(output.event_bit_logits, target_bits)
     assert torch.allclose(result.loss, expected)
     assert result.metrics["pretrain/loss_objective_weighted"] == 0.0
-    assert "pretrain/semantic/event_type_acc_pct" in result.metrics
-    assert "pretrain/semantic/quote_ask_tick_mae" in result.metrics
+    assert "semantic/train/event_type_acc_pct" in result.metrics
+    assert "semantic/train/quote_ask_tick_mae" in result.metrics
     embedding = model.encode(header, event_bytes)
     assert embedding.shape == (batch, 8)
 
@@ -96,14 +96,14 @@ def test_final_events_schema_encoder_shapes() -> None:
         torch.from_numpy(events.reshape(1, DEFAULT_CONTEXT_EVENTS, 16)),
         torch.from_numpy(events.reshape(1, DEFAULT_CONTEXT_EVENTS, 16)),
     )
-    assert semantic_metrics["pretrain/semantic/event_type_acc_pct"] == 100.0
-    assert semantic_metrics["pretrain/semantic/quote_ask_tick_mae"] == 0.0
-    assert semantic_metrics["pretrain/semantic/trade_price_tick_mae"] == 0.0
-    assert semantic_metrics["pretrain/semantic/quote_bid_size_bucket_mae"] == 0.0
-    assert semantic_metrics["pretrain/semantic/trade_size_bucket_mae"] == 0.0
-    assert semantic_metrics["pretrain/semantic/quote_bid_exchange_acc_pct"] == 100.0
-    assert semantic_metrics["pretrain/semantic/quote_ask_exchange_acc_pct"] == 100.0
-    assert semantic_metrics["pretrain/semantic/trade_exchange_acc_pct"] == 100.0
+    assert semantic_metrics["semantic/train/event_type_acc_pct"] == 100.0
+    assert semantic_metrics["semantic/train/quote_ask_tick_mae"] == 0.0
+    assert semantic_metrics["semantic/train/trade_price_tick_mae"] == 0.0
+    assert semantic_metrics["semantic/train/quote_bid_size_bucket_mae"] == 0.0
+    assert semantic_metrics["semantic/train/trade_size_bucket_mae"] == 0.0
+    assert semantic_metrics["semantic/train/quote_bid_exchange_acc_pct"] == 100.0
+    assert semantic_metrics["semantic/train/quote_ask_exchange_acc_pct"] == 100.0
+    assert semantic_metrics["semantic/train/trade_exchange_acc_pct"] == 100.0
 
 
 if __name__ == "__main__":
