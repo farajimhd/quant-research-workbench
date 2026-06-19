@@ -80,7 +80,7 @@ DEFAULTS: dict[str, Any] = {
     "amp_growth_interval": 10000,
     "amp_max_scale": 2048.0,
     "compile_model": True,
-    "wandb_project": "June2026-event-token-mae-v20-full-sharddecay",
+    "wandb_project": "June2026-event-token-mae-full",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
     "wandb_run_name": "v20-fullpretrain-sharddecay-fixedmask070-emb32-bs4096-3epochs",
