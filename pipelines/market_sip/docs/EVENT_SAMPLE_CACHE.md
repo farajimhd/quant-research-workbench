@@ -91,7 +91,9 @@ ticker
 origin_ordinal
 origin_timestamp_us
 
-asof_* quote/trade state from past_span
+asof_* quote/trade state from the current 128-event x chunk, falling back to
+the immediately previous 128-event chunk when the current chunk has no matching
+quote/trade event
 past_2048_* counts and elapsed time
 
 future_H_* labels for H in 128, 256, 512, 1024, 2048
@@ -221,8 +223,12 @@ future_H_min_trade_elapsed_us
 ```
 
 `future_H_*` is expanded for `H in {128, 256, 512, 1024, 2048}`. These columns
-are labels only. The `asof_*` and `past_2048_*` columns are known at the origin
-event and may be used as features if a later model needs scalar context.
+are labels only. For quote-state labels such as `future_H_ask_*`,
+`future_H_bid_*`, `future_H_high_ask_*`, and `future_H_low_bid_*`, the label
+uses the latest quote in the 128-event chunk ending at horizon `H`; if that
+chunk has no quote, it falls back to the immediately previous 128-event chunk.
+The `asof_*` and `past_2048_*` columns are known at the origin event and may be
+used as features if a later model needs scalar context.
 
 Price labels use the compact integer/scale convention:
 

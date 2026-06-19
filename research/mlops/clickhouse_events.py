@@ -569,6 +569,7 @@ def encode_span_samples(
                 span_label_columns,
                 rows=rows,
                 origin_offset=origin_offset,
+                events_per_chunk=config.events_per_chunk,
                 past_span_events=max(int(config.past_span_events), int(config.events_per_chunk)),
                 future_span_events=max(int(config.future_span_events), label_chunks * int(config.events_per_chunk)),
                 ticker=span.ticker,
@@ -585,6 +586,7 @@ def add_sample_label_row(
     *,
     rows: np.ndarray,
     origin_offset: int,
+    events_per_chunk: int,
     past_span_events: int,
     future_span_events: int,
     ticker: str,
@@ -606,8 +608,18 @@ def add_sample_label_row(
     append_label_value(columns, "past_2048_trade_count_ratio", float(trade_positions.size) / max(1.0, float(past_rows.shape[0])))
     append_label_value(columns, "past_2048_elapsed_us", max(0, origin_sip_us - int(past_rows["sip_timestamp_us"][0])))
 
-    asof_quote = past_rows[int(quote_positions[-1])] if quote_positions.size else None
-    asof_trade = past_rows[int(trade_positions[-1])] if trade_positions.size else None
+    asof_quote = latest_event_in_current_chunk_with_previous_chunk_fallback(
+        rows=rows,
+        origin_offset=origin_offset,
+        events_per_chunk=events_per_chunk,
+        event_type=QUOTE_EVENT_TYPE,
+    )
+    asof_trade = latest_event_in_current_chunk_with_previous_chunk_fallback(
+        rows=rows,
+        origin_offset=origin_offset,
+        events_per_chunk=events_per_chunk,
+        event_type=TRADE_EVENT_TYPE,
+    )
     add_quote_state(columns, "asof", asof_quote)
     add_trade_state(columns, "asof_last_trade", asof_trade)
 
@@ -616,56 +628,137 @@ def add_sample_label_row(
         if horizon > max_future_events:
             continue
         future_rows = rows[origin_offset + 1 : origin_offset + 1 + horizon]
-        add_future_horizon_labels(columns, rows=future_rows, horizon=horizon, origin_sip_us=origin_sip_us, asof_quote=asof_quote)
+        add_future_horizon_labels(
+            columns,
+            rows=rows,
+            future_rows=future_rows,
+            horizon=horizon,
+            origin_offset=origin_offset,
+            events_per_chunk=events_per_chunk,
+            origin_sip_us=origin_sip_us,
+        )
+
+
+def latest_event_in_current_chunk_with_previous_chunk_fallback(
+    *,
+    rows: np.ndarray,
+    origin_offset: int,
+    events_per_chunk: int,
+    event_type: int,
+) -> np.void | None:
+    chunk_size = max(1, int(events_per_chunk))
+    current_start = max(0, int(origin_offset) - chunk_size + 1)
+    current_end = int(origin_offset) + 1
+    return latest_event_in_window_with_previous_chunk_fallback(
+        rows=rows,
+        window_start=current_start,
+        window_end=current_end,
+        events_per_chunk=chunk_size,
+        event_type=event_type,
+    )
+
+
+def latest_event_in_window_with_previous_chunk_fallback(
+    *,
+    rows: np.ndarray,
+    window_start: int,
+    window_end: int,
+    events_per_chunk: int,
+    event_type: int,
+) -> np.void | None:
+    chunk_size = max(1, int(events_per_chunk))
+    current_start = max(0, int(window_start))
+    current_end = min(int(rows.shape[0]), int(window_end))
+    current_rows = rows[current_start:current_end]
+    current_types = current_rows["event_type"].astype(np.uint8, copy=False)
+    current_positions = np.flatnonzero(current_types == int(event_type))
+    if current_positions.size:
+        return current_rows[int(current_positions[-1])]
+
+    previous_start = max(0, current_start - chunk_size)
+    previous_rows = rows[previous_start:current_start]
+    if not previous_rows.shape[0]:
+        return None
+    previous_types = previous_rows["event_type"].astype(np.uint8, copy=False)
+    previous_positions = np.flatnonzero(previous_types == int(event_type))
+    if previous_positions.size:
+        return previous_rows[int(previous_positions[-1])]
+    return None
 
 
 def add_future_horizon_labels(
     columns: dict[str, list[object]],
     *,
     rows: np.ndarray,
+    future_rows: np.ndarray,
     horizon: int,
+    origin_offset: int,
+    events_per_chunk: int,
     origin_sip_us: int,
-    asof_quote: np.void | None,
 ) -> None:
     prefix = f"future_{horizon}"
-    append_label_value(columns, f"{prefix}_elapsed_us", max(0, int(rows["sip_timestamp_us"][-1]) - origin_sip_us) if rows.shape[0] else 0)
-    event_types = rows["event_type"].astype(np.uint8, copy=False) if rows.shape[0] else np.empty((0,), dtype=np.uint8)
+    append_label_value(columns, f"{prefix}_elapsed_us", max(0, int(future_rows["sip_timestamp_us"][-1]) - origin_sip_us) if future_rows.shape[0] else 0)
+    event_types = future_rows["event_type"].astype(np.uint8, copy=False) if future_rows.shape[0] else np.empty((0,), dtype=np.uint8)
     quote_positions = np.flatnonzero(event_types == QUOTE_EVENT_TYPE)
     trade_positions = np.flatnonzero(event_types == TRADE_EVENT_TYPE)
     append_label_value(columns, f"{prefix}_quote_count", int(quote_positions.size))
     append_label_value(columns, f"{prefix}_trade_count", int(trade_positions.size))
 
-    last_quote = rows[int(quote_positions[-1])] if quote_positions.size else asof_quote
+    horizon_end = int(origin_offset) + 1 + int(horizon)
+    horizon_chunk_start = horizon_end - max(1, int(events_per_chunk))
+    last_quote = latest_event_in_window_with_previous_chunk_fallback(
+        rows=rows,
+        window_start=horizon_chunk_start,
+        window_end=horizon_end,
+        events_per_chunk=events_per_chunk,
+        event_type=QUOTE_EVENT_TYPE,
+    )
     add_quote_state(columns, prefix, last_quote)
 
-    if quote_positions.size:
-        quote_rows = rows[quote_positions]
+    if quote_positions.size or last_quote is not None:
+        quote_rows = future_rows[quote_positions] if quote_positions.size else np.empty((0,), dtype=future_rows.dtype)
+        high_price_int = int(last_quote["price_primary_int"]) if last_quote is not None else 0
+        high_price_scale = int(last_quote["event_flags"]) & 1 if last_quote is not None else 0
+        high_elapsed_us = 0
+        low_price_int = int(last_quote["price_secondary_int"]) if last_quote is not None else 0
+        low_price_scale = (int(last_quote["event_flags"]) >> 1) & 1 if last_quote is not None else 0
+        low_elapsed_us = 0
         ask_prices = quote_rows["price_primary_int"].astype(np.uint64, copy=False)
         bid_prices = quote_rows["price_secondary_int"].astype(np.uint64, copy=False)
-        high_pos = int(np.argmax(ask_prices))
-        low_pos = int(np.argmin(bid_prices))
-        high_quote = quote_rows[high_pos]
-        low_quote = quote_rows[low_pos]
+        if ask_prices.size:
+            high_pos = int(np.argmax(ask_prices))
+            high_quote = quote_rows[high_pos]
+            if last_quote is None or int(high_quote["price_primary_int"]) > high_price_int:
+                high_price_int = int(high_quote["price_primary_int"])
+                high_price_scale = int(high_quote["event_flags"]) & 1
+                high_elapsed_us = max(0, int(high_quote["sip_timestamp_us"]) - origin_sip_us)
+        if bid_prices.size:
+            low_pos = int(np.argmin(bid_prices))
+            low_quote = quote_rows[low_pos]
+            if last_quote is None or int(low_quote["price_secondary_int"]) < low_price_int:
+                low_price_int = int(low_quote["price_secondary_int"])
+                low_price_scale = (int(low_quote["event_flags"]) >> 1) & 1
+                low_elapsed_us = max(0, int(low_quote["sip_timestamp_us"]) - origin_sip_us)
         add_price_label(
             columns,
             f"{prefix}_high_ask",
-            price_int=int(high_quote["price_primary_int"]),
-            scale=int(high_quote["event_flags"]) & 1,
-            elapsed_us=max(0, int(high_quote["sip_timestamp_us"]) - origin_sip_us),
+            price_int=high_price_int,
+            scale=high_price_scale,
+            elapsed_us=high_elapsed_us,
         )
         add_price_label(
             columns,
             f"{prefix}_low_bid",
-            price_int=int(low_quote["price_secondary_int"]),
-            scale=(int(low_quote["event_flags"]) >> 1) & 1,
-            elapsed_us=max(0, int(low_quote["sip_timestamp_us"]) - origin_sip_us),
+            price_int=low_price_int,
+            scale=low_price_scale,
+            elapsed_us=low_elapsed_us,
         )
     else:
         add_price_label(columns, f"{prefix}_high_ask", price_int=0, scale=0, elapsed_us=0)
         add_price_label(columns, f"{prefix}_low_bid", price_int=0, scale=0, elapsed_us=0)
 
     if trade_positions.size:
-        trade_rows = rows[trade_positions]
+        trade_rows = future_rows[trade_positions]
         trade_prices = trade_rows["price_primary_int"].astype(np.uint64, copy=False)
         max_pos = int(np.argmax(trade_prices))
         min_pos = int(np.argmin(trade_prices))
