@@ -991,7 +991,7 @@ def encode_single_labeled_audit_window(
     encoded = encode_span_samples(rows, span, config)
     if isinstance(encoded, str):
         raise RuntimeError(f"Audit labeled sample re-encode failed for {ticker}:{origin_ordinal}: {encoded}")
-    headers, events, label_headers, label_event_bytes, _origin_ts, _origin_ordinals = encoded
+    headers, events, label_headers, label_event_bytes, _origin_ts, _origin_ordinals, _labels = encoded
     x_record = encode_sample_records(headers, events)[0]
     y_record = encode_label_records(label_headers, label_event_bytes)[0]
     return x_record, y_record
