@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 import time
@@ -16,15 +17,6 @@ REPO_ROOT = next(parent for parent in Path(__file__).resolve().parents if (paren
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noqa: E402
-    condition_code_expr,
-    condition_reference_subquery,
-    quote_clean_predicate,
-    quote_condition_pack_expr,
-    trade_clean_predicate,
-    trade_condition_pack_expr,
-)
-from pipelines.market_sip.validation.clickhouse_delete_compact_audit_rows import default_clickhouse_url_with_network_fallback  # noqa: E402
 from research.mlops.clickhouse_events import (  # noqa: E402
     DEFAULT_CONTEXT_EVENTS,
     EVENT_ROW_DTYPE,
@@ -35,7 +27,10 @@ from research.mlops.clickhouse_events import (  # noqa: E402
     query_settings,
 )
 from research.mlops.clickhouse import (  # noqa: E402
+    CLICKHOUSE_ENDPOINT_ENV,
+    CLICKHOUSE_URL_ENV,
     default_clickhouse_password,
+    default_clickhouse_url,
     default_clickhouse_user,
     quote_ident,
     sql_string,
@@ -112,7 +107,7 @@ def main() -> None:
     decoded_path = output_path.with_suffix(".decoded.jsonl")
     config = normalized_config(
         ClickHouseEventsDataConfig(
-            clickhouse_url=args.clickhouse_url or default_clickhouse_url_with_network_fallback() or "http://localhost:18123",
+            clickhouse_url=args.clickhouse_url or sample_cache_default_clickhouse_url(),
             user=args.user or default_clickhouse_user(),
             password=args.password or default_clickhouse_password(),
             database=args.database,
@@ -410,6 +405,69 @@ def fetch_raw_unified_rows(
     return decode_event_rows(client.execute_bytes(sql))
 
 
+def condition_code_expr(slot: int) -> str:
+    return f"toInt16OrZero(arrayElement(splitByChar(',', conditions), {slot}))"
+
+
+def quote_condition_pack_expr() -> str:
+    return """
+bitOr(
+    bitOr(toUInt32(coalesce(qc1.dense_id, 0)), bitShiftLeft(toUInt32(coalesce(qc2.dense_id, 0)), 8)),
+    bitOr(bitShiftLeft(toUInt32(coalesce(qc3.dense_id, 0)), 16), bitShiftLeft(toUInt32(coalesce(qc4.dense_id, 0)), 24))
+)
+""".strip()
+
+
+def trade_condition_pack_expr() -> str:
+    return """
+bitOr(
+    bitOr(toUInt32(coalesce(tc1.dense_id, 0)), bitShiftLeft(toUInt32(coalesce(tc2.dense_id, 0)), 6)),
+    bitOr(
+        bitOr(bitShiftLeft(toUInt32(coalesce(tc3.dense_id, 0)), 12), bitShiftLeft(toUInt32(coalesce(tc4.dense_id, 0)), 18)),
+        bitShiftLeft(toUInt32(coalesce(tc5.dense_id, 0)), 24)
+    )
+)
+""".strip()
+
+
+def condition_reference_subquery(args: argparse.Namespace, table: str) -> str:
+    return (
+        f"(SELECT modifier_int, min(dense_id) AS dense_id "
+        f"FROM {quote_ident(args.database)}.{quote_ident(table)} "
+        "GROUP BY modifier_int)"
+    )
+
+
+def quote_clean_predicate(args: argparse.Namespace) -> str:
+    base = """
+q.ticker != ''
+AND q.sip_timestamp_us > 0
+AND q.sequence_number > 0
+AND q.bid_price_int > 0
+AND q.ask_price_int > 0
+AND q.bid_size > 0
+AND q.ask_size > 0
+AND if(bitAnd(q.quote_flags, 1) = 1, q.bid_price_int / 10000.0, q.bid_price_int / 100.0)
+    <= if(bitAnd(bitShiftRight(q.quote_flags, 1), 1) = 1, q.ask_price_int / 10000.0, q.ask_price_int / 100.0)
+""".strip()
+    if args.clean_mode == "issue_flags_zero":
+        base += "\nAND q.issue_flags = 0"
+    return base
+
+
+def trade_clean_predicate(args: argparse.Namespace) -> str:
+    base = """
+t.ticker != ''
+AND t.sip_timestamp_us > 0
+AND t.sequence_number > 0
+AND t.price_int > 0
+AND t.size > 0
+""".strip()
+    if args.clean_mode == "issue_flags_zero":
+        base += "\nAND t.issue_flags = 0"
+    return base
+
+
 def raw_unified_query(config: ClickHouseEventsDataConfig, args: argparse.Namespace, ticker: str, start_us: int, end_us: int) -> str:
     db = quote_ident(config.database)
     quote_table = quote_ident(args.quote_table)
@@ -612,6 +670,17 @@ def decode_sample_for_humans(header: np.ndarray, events: np.ndarray) -> tuple[di
             row["trade_price"] = (ask_anchor_ticks + price_delta_1) * tick_size
         rows.append(row)
     return decoded_header, rows
+
+
+def sample_cache_default_clickhouse_url() -> str:
+    return (
+        os.environ.get("REAL_LIVE_CLICKHOUSE_WRITE_URL")
+        or os.environ.get(CLICKHOUSE_URL_ENV)
+        or os.environ.get(CLICKHOUSE_ENDPOINT_ENV)
+        or os.environ.get("REAL_LIVE_CLICKHOUSE_READ_URL")
+        or default_clickhouse_url()
+        or "http://localhost:18123"
+    )
 
 
 if __name__ == "__main__":

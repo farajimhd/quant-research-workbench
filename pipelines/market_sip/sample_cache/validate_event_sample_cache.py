@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import random
 import sys
 import time
@@ -16,9 +17,8 @@ REPO_ROOT = next(parent for parent in Path(__file__).resolve().parents if (paren
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipelines.market_sip.validation.clickhouse_delete_compact_audit_rows import default_clickhouse_url_with_network_fallback  # noqa: E402
 from research.mlops.clickhouse_events import ClickHouseEventsDataConfig, PersistentClickHouseBytesClient, normalized_config  # noqa: E402
-from research.mlops.clickhouse import default_clickhouse_password, default_clickhouse_user  # noqa: E402
+from research.mlops.clickhouse import CLICKHOUSE_ENDPOINT_ENV, CLICKHOUSE_URL_ENV, default_clickhouse_password, default_clickhouse_url, default_clickhouse_user  # noqa: E402
 from research.mlops.env import discover_env_files, load_env_files  # noqa: E402
 from research.mlops.event_sample_cache import (  # noqa: E402
     SAMPLE_CACHE_FORMAT_V2,
@@ -230,7 +230,7 @@ def validate_audit_samples(root: Path, args: argparse.Namespace, rng: random.Ran
         return {"checked": 0, "errors": ["No audit samples found."]}
     rng.shuffle(audit_rows)
     checks = audit_rows[: args.audit_clickhouse_checks]
-    clickhouse_url = args.clickhouse_url or default_clickhouse_url_with_network_fallback() or "http://localhost:18123"
+    clickhouse_url = args.clickhouse_url or sample_cache_default_clickhouse_url()
     config = normalized_config(
         ClickHouseEventsDataConfig(
             clickhouse_url=clickhouse_url,
@@ -279,7 +279,7 @@ def validate_audit_samples_labeled(root: Path, args: argparse.Namespace, rng: ra
         return {"checked": 0, "errors": ["No audit samples found."]}
     rng.shuffle(audit_rows)
     checks = audit_rows[: args.audit_clickhouse_checks]
-    clickhouse_url = args.clickhouse_url or default_clickhouse_url_with_network_fallback() or "http://localhost:18123"
+    clickhouse_url = args.clickhouse_url or sample_cache_default_clickhouse_url()
     config = normalized_config(
         ClickHouseEventsDataConfig(
             clickhouse_url=clickhouse_url,
@@ -348,6 +348,17 @@ def sha256_file(path: Path) -> str:
                 break
             digest.update(block)
     return digest.hexdigest()
+
+
+def sample_cache_default_clickhouse_url() -> str:
+    return (
+        os.environ.get("REAL_LIVE_CLICKHOUSE_WRITE_URL")
+        or os.environ.get(CLICKHOUSE_URL_ENV)
+        or os.environ.get(CLICKHOUSE_ENDPOINT_ENV)
+        or os.environ.get("REAL_LIVE_CLICKHOUSE_READ_URL")
+        or default_clickhouse_url()
+        or "http://localhost:18123"
+    )
 
 
 if __name__ == "__main__":
