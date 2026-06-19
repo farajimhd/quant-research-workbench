@@ -129,6 +129,8 @@ class TrainConfig:
     scheduler_t0_steps: int = 1000
     scheduler_t_mult: int = 2
     scheduler_eta_min: float = 1e-6
+    scheduler_epoch_decay_ratio: float = 0.80
+    scheduler_shard_decay_fraction: float = 0.60
     grad_clip_norm: float = 1.0
     logging_steps: int = 10
     detailed_metrics_steps: int = 50

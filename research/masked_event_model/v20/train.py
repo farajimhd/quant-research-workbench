@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import platform
 import shutil
@@ -111,10 +112,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=train_defaults.seed)
     parser.add_argument("--learning-rate", type=float, default=train_defaults.learning_rate)
     parser.add_argument("--weight-decay", type=float, default=train_defaults.weight_decay)
-    parser.add_argument("--scheduler", choices=("none", "cosine_warm_restarts"), default=train_defaults.scheduler)
+    parser.add_argument("--scheduler", choices=("none", "cosine_warm_restarts", "shard_decay_cosine"), default=train_defaults.scheduler)
     parser.add_argument("--scheduler-t0-steps", type=int, default=train_defaults.scheduler_t0_steps)
     parser.add_argument("--scheduler-t-mult", type=int, default=train_defaults.scheduler_t_mult)
     parser.add_argument("--scheduler-eta-min", type=float, default=train_defaults.scheduler_eta_min)
+    parser.add_argument("--scheduler-epoch-decay-ratio", type=float, default=train_defaults.scheduler_epoch_decay_ratio)
+    parser.add_argument("--scheduler-shard-decay-fraction", type=float, default=train_defaults.scheduler_shard_decay_fraction)
     parser.add_argument("--grad-clip-norm", type=float, default=train_defaults.grad_clip_norm)
     parser.add_argument("--logging-steps", type=int, default=train_defaults.logging_steps)
     parser.add_argument("--detailed-metrics-steps", type=int, default=train_defaults.detailed_metrics_steps)
@@ -429,6 +432,15 @@ def train_precomputed_epochs(
             shard_step = int(batch.get("shard_step", 0) or 0)
             shard_steps = max(1, int(batch.get("shard_steps", 1) or 1))
             run_validation = should_validate_step(config, global_step, shard_step=shard_step, shard_steps=shard_steps)
+            lr_metrics = apply_sample_cache_step_lr(
+                optimizer=optimizer,
+                train_config=config.train,
+                epoch=epoch,
+                shard_position=shard_position,
+                shard_count=int(batch.get("shard_count", shard_count) or shard_count),
+                shard_step=shard_step,
+                shard_steps=shard_steps,
+            )
             batch_size = int(batch["header_uint8"].shape[0])
             samples_seen_total += batch_size
             epoch_samples += batch_size
@@ -464,6 +476,7 @@ def train_precomputed_epochs(
                     "train/samples_seen_total": float(samples_seen_total),
                 }
             )
+            metrics.update(lr_metrics)
             if shard_step == shard_steps:
                 metrics["train/shard_completed"] = 1.0
             val_metrics = maybe_log_train_and_validation(
@@ -1220,7 +1233,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         ),
         model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout, decoder_force_fp32=args.decoder_force_fp32),
         losses=LossConfig(objective=args.loss_objective),
-        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, amp=args.amp, amp_dtype=args.amp_dtype, amp_initial_scale=args.amp_initial_scale, amp_growth_interval=args.amp_growth_interval, amp_max_scale=args.amp_max_scale, amp_overflow_fatal_threshold=args.amp_overflow_fatal_threshold, float32_matmul_precision=args.float32_matmul_precision, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
+        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, scheduler_epoch_decay_ratio=args.scheduler_epoch_decay_ratio, scheduler_shard_decay_fraction=args.scheduler_shard_decay_fraction, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, amp=args.amp, amp_dtype=args.amp_dtype, amp_initial_scale=args.amp_initial_scale, amp_growth_interval=args.amp_growth_interval, amp_max_scale=args.amp_max_scale, amp_overflow_fatal_threshold=args.amp_overflow_fatal_threshold, float32_matmul_precision=args.float32_matmul_precision, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )
 
 
@@ -1438,7 +1451,54 @@ def profile_encode(model: EventTokenMaskedAutoencoder, batch: dict[str, Any], de
 def build_scheduler(optimizer: torch.optim.Optimizer, train_config: TrainConfig) -> torch.optim.lr_scheduler.LRScheduler | None:
     if train_config.scheduler == "none":
         return None
+    if train_config.scheduler == "shard_decay_cosine":
+        return None
     return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=max(1, train_config.scheduler_t0_steps), T_mult=max(1, train_config.scheduler_t_mult), eta_min=max(0.0, train_config.scheduler_eta_min))
+
+
+def apply_sample_cache_step_lr(
+    *,
+    optimizer: torch.optim.Optimizer,
+    train_config: TrainConfig,
+    epoch: int,
+    shard_position: int,
+    shard_count: int,
+    shard_step: int,
+    shard_steps: int,
+) -> dict[str, float]:
+    """Apply the full-pretraining shard-decay schedule before a sample-cache step.
+
+    The epoch starts from `learning_rate * epoch_decay_ratio ** (epoch - 1)`.
+    Across the epoch, the start LR of each shard walks down by a fixed
+    `shard_decay`, computed from the greater 60% (configurable) of the current
+    epoch range between the epoch peak and `eta_min`. Within a shard, LR follows
+    a cosine from that shard's start LR toward `eta_min`.
+    """
+
+    if train_config.scheduler != "shard_decay_cosine":
+        return {}
+    base_lr = max(0.0, float(train_config.learning_rate))
+    eta_min = max(0.0, float(train_config.scheduler_eta_min))
+    epoch_decay_ratio = max(0.0, float(train_config.scheduler_epoch_decay_ratio))
+    shard_decay_fraction = min(max(0.0, float(train_config.scheduler_shard_decay_fraction)), 1.0)
+    epoch_index = max(0, int(epoch) - 1)
+    epoch_peak_lr = max(eta_min, base_lr * (epoch_decay_ratio ** epoch_index))
+    effective_shard_count = max(1, int(shard_count))
+    shard_decay = max(0.0, (epoch_peak_lr - eta_min) * shard_decay_fraction / effective_shard_count)
+    shard_index = max(0, min(effective_shard_count - 1, int(shard_position) - 1))
+    shard_peak_lr = max(eta_min, epoch_peak_lr - shard_index * shard_decay)
+    step_index = max(0, min(max(1, int(shard_steps)) - 1, int(shard_step) - 1))
+    progress = step_index / max(1, int(shard_steps) - 1)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    lr = eta_min + (shard_peak_lr - eta_min) * cosine
+    for group in optimizer.param_groups:
+        group["lr"] = lr
+    return {
+        "train/lr_epoch_peak": float(epoch_peak_lr),
+        "train/lr_shard_peak": float(shard_peak_lr),
+        "train/lr_shard_decay": float(shard_decay),
+        "train/lr_shard_cosine_progress": float(progress),
+    }
 
 
 def maybe_compile_model(model: torch.nn.Module, enabled: bool) -> torch.nn.Module:
