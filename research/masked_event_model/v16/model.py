@@ -20,6 +20,26 @@ BITS_PER_BYTE = 8
 # F = compact token-wise embedding feature count.
 
 
+class ScalarSafeRmsNorm(nn.Module):
+    """Normalize the compact embedding without erasing one-feature bottlenecks.
+
+    A standard `LayerNorm(1)` returns zero for every token because it subtracts
+    the only feature from itself. v16 commonly uses `F=1`, so the bottleneck
+    needs an RMS-style normalization that preserves signal while still bounding
+    the post-projection scale.
+    """
+
+    def __init__(self, feature_count: int, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.eps = float(eps)
+        self.scale = nn.Parameter(torch.ones(int(feature_count)))
+
+    def forward(self, values: torch.Tensor) -> torch.Tensor:
+        # Input shape: [B, T, F]. Output shape: [B, T, F].
+        rms = values.pow(2).mean(dim=-1, keepdim=True).add(self.eps).rsqrt()
+        return values * rms * self.scale
+
+
 @dataclass(slots=True)
 class EventMAEOutput:
     """Training output for the masked event objective.
@@ -281,7 +301,15 @@ class ChunkEmbeddingBottleneck(nn.Module):
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.encoder_token_to_event_feature_projection = nn.Linear(config.d_model, config.event_embedding_features)
+        self.encoder_token_to_event_feature_projection = nn.Sequential(
+            OrderedDict(
+                [
+                    ("encoded_token_to_event_feature_linear", nn.Linear(config.d_model, config.event_embedding_features)),
+                    ("encoded_token_to_event_feature_gelu", nn.GELU()),
+                    ("encoded_token_to_event_feature_rms_norm", ScalarSafeRmsNorm(config.event_embedding_features)),
+                ]
+            )
+        )
         self.chunk_embedding_output = ChunkEmbeddingOutput()
 
     def project_encoded_tokens(self, encoded_tokens: torch.Tensor) -> torch.Tensor:
@@ -317,14 +345,6 @@ class PerMaskedEventMlpDecoder(nn.Module):
         super().__init__()
         self.decoder_bottleneck_tokens = int(config.decoder_bottleneck_tokens)
         self.event_embedding_features = int(config.event_embedding_features)
-        # LayerNorm over a single scalar feature would subtract the scalar from
-        # itself and return exactly zero, which would disconnect the decoder
-        # from the encoder bottleneck for the default `event_embedding_features=1`.
-        self.chunk_embedding_feature_normalizer = (
-            nn.Identity()
-            if self.event_embedding_features == 1
-            else nn.LayerNorm(self.event_embedding_features)
-        )
         self.chunk_embedding_to_decoder_context = nn.Sequential(
             OrderedDict(
                 [
@@ -367,10 +387,8 @@ class PerMaskedEventMlpDecoder(nn.Module):
                 "v16 decoder bridge expects "
                 f"{self.event_embedding_features} features per token, got {int(chunk_embedding.shape[2])}."
             )
-        # Input shape: [B, T, F]. Output shape: [B, T, F].
-        normalized_chunk_embedding = self.chunk_embedding_feature_normalizer(chunk_embedding)
         # Input shape: [B, T, F]. Output shape after flatten: [B, T * F].
-        flattened_chunk_embedding = normalized_chunk_embedding.flatten(start_dim=1)
+        flattened_chunk_embedding = chunk_embedding.flatten(start_dim=1)
         # Input shape: [B, T * F]. Output shape after unsqueeze: [B, 1, D].
         chunk_context = self.chunk_embedding_to_decoder_context(flattened_chunk_embedding).unsqueeze(1)
         # Input shape: [B, M]. Output shape: [B, M, D].
@@ -413,7 +431,6 @@ class EventChunkEncoder(nn.Module):
             norm_first=True,
         )
         self.visible_context_transformer_encoder = transformer_encoder(encoder_layer, num_layers=config.encoder_layers)
-        self.encoded_token_output_layer_norm = nn.LayerNorm(config.d_model)
         self.chunk_embedding_bottleneck = ChunkEmbeddingBottleneck(config)
         self.reset_parameters()
 
@@ -462,7 +479,7 @@ class EventChunkEncoder(nn.Module):
         # Input shapes: header [B, 1, D], events [B, V or E, D]. Output shape: [B, 2 + V or 2 + E, D].
         encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
         # Input shape: [B, T, D]. Output shape: [B, T, D].
-        encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
+        encoded_tokens = self.visible_context_transformer_encoder(encoder_input_tokens)
         # Input shape: [B, T, D]. Output shape: [B, T, F].
         chunk_embedding = self.chunk_embedding_bottleneck(encoded_tokens)
         return encoded_tokens, chunk_embedding
@@ -474,7 +491,6 @@ ENCODER_MODULE_NAMES = (
     "visible_event_token_encoder",
     "encoder_sequence_builder",
     "visible_context_transformer_encoder",
-    "encoded_token_output_layer_norm",
     "chunk_embedding_bottleneck",
 )
 
@@ -512,7 +528,6 @@ class EventTokenMaskedAutoencoder(nn.Module):
             norm_first=True,
         )
         self.visible_context_transformer_encoder = transformer_encoder(encoder_layer, num_layers=config.encoder_layers)
-        self.encoded_token_output_layer_norm = nn.LayerNorm(config.d_model)
         self.chunk_embedding_bottleneck = ChunkEmbeddingBottleneck(config)
         self.per_masked_event_mlp_decoder = PerMaskedEventMlpDecoder(events_per_chunk=self.events_per_chunk, config=config)
         self.reset_parameters()
@@ -664,7 +679,7 @@ class EventTokenMaskedAutoencoder(nn.Module):
         # Input shapes: header [B, 1, D], events [B, V or E, D]. Output shape: [B, 2 + V or 2 + E, D].
         encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
         # Input shape: [B, T, D]. Output shape: [B, T, D].
-        encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
+        encoded_tokens = self.visible_context_transformer_encoder(encoder_input_tokens)
         # Input shape: [B, T, D]. Output shape: [B, T, F].
         chunk_embedding = self.chunk_embedding_bottleneck(encoded_tokens)
         return encoded_tokens, chunk_embedding
