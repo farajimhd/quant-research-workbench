@@ -1331,7 +1331,11 @@ def make_loader(config: ExperimentConfig, split: str, seed: int) -> DataLoader:
 
 
 def build_validation_cache(config: ExperimentConfig, seed: int, reporter: TrainingReporter | None = None) -> list[dict[str, Any]]:
-    if config.train.pretrain_validation_frequency <= 0 or config.train.pretrain_validation_steps <= 0:
+    # A validation frequency of 0 is meaningful for sample-cache full
+    # pretraining: it means validation is triggered by the shard boundary
+    # instead of by a fixed global-step interval. Validation batches must still
+    # be built when pretrain_validation_steps is positive.
+    if config.train.pretrain_validation_steps <= 0:
         return []
     if config.data.data_source == "precomputed":
         emit_progress_message(reporter, f"Building fixed validation cache batches={config.train.pretrain_validation_steps:,}")

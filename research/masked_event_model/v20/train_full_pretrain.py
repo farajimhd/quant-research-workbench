@@ -107,13 +107,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Full v20 pretraining over the larger event sample cache. By default it "
-            "uses all discovered training shards and a bounded validation set."
+            "uses the configured training cache shard range and fixed validation shards."
         )
     )
     parser.add_argument("--cache-root", "--train-cache-root", dest="cache_root", default=DEFAULTS["sample_cache_root"])
     parser.add_argument("--validation-cache-root", default=DEFAULTS["sample_cache_validation_root"])
     parser.add_argument("--train-start-shard", "--sample-cache-train-start-shard", dest="train_start_shard", type=int, default=DEFAULTS["sample_cache_train_start_shard"])
-    parser.add_argument("--train-shards", type=int, default=DEFAULTS["sample_cache_train_max_shards"], help="0 means all discovered train shards after start")
+    parser.add_argument("--train-shards", type=int, default=DEFAULTS["sample_cache_train_max_shards"], help="0 means all configured train shards after start")
     parser.add_argument("--validation-shard-index", type=int, default=DEFAULTS["sample_cache_validation_start_shard"])
     parser.add_argument("--validation-batches", type=int, default=VALIDATION_BATCHES, help="One shuffled validation batch per configured validation shard")
     parser.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
