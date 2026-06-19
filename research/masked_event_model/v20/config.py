@@ -70,8 +70,8 @@ class DataConfig:
 class MaskConfig:
     event_mask_ratio: float = 0.70
     # v20 keeps v9's fixed-mask schedule: every training batch masks the same
-    # 70% of event tokens while the decoder architecture changes to a smaller
-    # all-event MLP whose logits are gathered at masked indices.
+    # 70% of event tokens while the decoder architecture changes to the smaller
+    # v12-style per-masked-event MLP.
     event_mask_schedule: str = "fixed"
     event_mask_high_probability: float = 0.70
     event_mask_zero_probability: float = 0.10
@@ -96,7 +96,7 @@ class ModelConfig:
     n_heads: int = 4
     encoder_layers: int = 6
     # Accepted for launcher compatibility with earlier versions. v20 ignores
-    # this value because reconstruction uses an all-event MLP decoder.
+    # this value because reconstruction uses a per-masked-event MLP decoder.
     decoder_layers: int = 2
     ffn_mult: int = 4
     dropout: float = 0.08

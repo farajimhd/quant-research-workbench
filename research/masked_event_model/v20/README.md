@@ -45,17 +45,18 @@ giving the bottleneck fixed slot semantics in both training and production. The
 event-position embedding is used only before the transformer for visible event
 tokens. It is not used to initialize masked fixed-grid slots, so the bottleneck
 does not receive learned placeholder content for hidden events. The transformer
-still processes only visible events during MAE training. The decoder is
-intentionally small, and it receives no learned placeholder tokens for masked
-events:
+still processes only visible events during MAE training. The decoder matches
+the v12 low-cost reconstruction path: it receives the exported chunk embedding
+plus a decoder-only masked event position embedding. That position embedding is
+not used inside the fixed-grid bottleneck.
 
 ```text
 chunk_embedding [B, embedding_dim]
   -> Linear + GELU + LayerNorm [B, d_model]
-  -> MLP
-  -> all_event_logits [B, 128, 16, 8]
 masked_event_indices [B, masked_events]
-  -> gather masked indices
+  -> masked_event_position_embedding [B, masked_events, d_model]
+chunk_context + masked_event_position_embedding
+  -> per-masked-event MLP
   -> event_bit_logits [B, masked_events, 16, 8]
 ```
 

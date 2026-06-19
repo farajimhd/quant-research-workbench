@@ -86,7 +86,7 @@ DEFAULTS: dict[str, Any] = {
 
 VALIDATION_BATCHES = 8
 PROFILED_TRAINING_PATH = (
-    "v20 event-token MAE, all-event MLP decoder with masked-index gather, "
+    "v20 event-token MAE, v12-style per-masked-event MLP decoder, "
     "fixed 70% event mask, sample-cache shards, shard-cycle scheduler, no interleave, torch.compile enabled"
 )
 
@@ -343,7 +343,7 @@ def print_plan(
     )
     print(
         f"model=d{values['d_model']} emb{values['embedding_dim']} heads{values['n_heads']} "
-        f"enc{values['encoder_layers']} decoder=all_event_mlp_gather_masked "
+        f"enc{values['encoder_layers']} decoder=per_masked_event_mlp "
         f"decoder_layers_arg_ignored={values['decoder_layers']} ffn_mult{values['ffn_mult']} dropout={values['dropout']} "
         f"decoder_force_fp32={values['decoder_force_fp32']}",
         flush=True,
