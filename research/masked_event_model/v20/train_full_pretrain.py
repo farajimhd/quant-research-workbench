@@ -29,9 +29,9 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_train_max_shards": 0,
     "sample_cache_validation_split": "validation",
     "sample_cache_validation_start_shard": 0,
-    # 0 means all discovered validation shards after the start shard. The
-    # trainer takes one shuffled batch from each selected validation shard.
-    "sample_cache_validation_max_shards": 0,
+    # The trainer takes one shuffled batch from each configured validation
+    # shard and skips only a shard that cannot produce a full batch.
+    "sample_cache_validation_max_shards": 8,
     "sample_cache_validation_batches_per_shard": 1,
     "sample_cache_interleave_shards": 1,
     "batch_size": 8192,
@@ -90,7 +90,7 @@ DEFAULTS: dict[str, Any] = {
     "warm_start_checkpoint": "",
 }
 
-VALIDATION_BATCHES = 0
+VALIDATION_BATCHES = DEFAULTS["sample_cache_validation_max_shards"]
 PROFILED_TRAINING_PATH = (
     "v20 full pretraining, v12-style per-masked-event MLP decoder, fixed-grid bottleneck, "
     "full sample-cache shards, shard-decay cosine scheduler, no interleave, torch.compile enabled"
@@ -115,7 +115,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-start-shard", "--sample-cache-train-start-shard", dest="train_start_shard", type=int, default=DEFAULTS["sample_cache_train_start_shard"])
     parser.add_argument("--train-shards", type=int, default=DEFAULTS["sample_cache_train_max_shards"], help="0 means all discovered train shards after start")
     parser.add_argument("--validation-shard-index", type=int, default=DEFAULTS["sample_cache_validation_start_shard"])
-    parser.add_argument("--validation-batches", type=int, default=VALIDATION_BATCHES, help="0 means one batch from every selected validation shard")
+    parser.add_argument("--validation-batches", type=int, default=VALIDATION_BATCHES, help="One shuffled validation batch per configured validation shard")
     parser.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--d-model", type=int, default=DEFAULTS["d_model"])
@@ -192,8 +192,9 @@ def main() -> None:
             max_validation_batches=int(args.validation_batches),
         )
         shard_batch_counts = [shard.num_samples // batch_size for shard in train_shards]
+        positive_shard_batch_counts = [count for count in shard_batch_counts if count > 0]
         steps_per_epoch = sum(shard_batch_counts)
-        steps_per_shard = max(1, min(shard_batch_counts))
+        steps_per_shard = max(1, min(positive_shard_batch_counts))
         validation_batches_per_shard = 1
     checkpoint_latest_steps = int(args.checkpoint_latest_steps) if int(args.checkpoint_latest_steps) > 0 else steps_per_shard
     values = dict(DEFAULTS)
@@ -278,38 +279,18 @@ def resolve_shard_plan(
     if train_start_shard >= len(shards):
         raise SystemExit(f"Need train start shard {train_start_shard}, but only found {len(shards)} train shards under {train_cache_root}")
     available_train = shards[train_start_shard:]
-    requested_train = available_train[:train_shards] if train_shards > 0 else available_train
-    selected_train = []
-    for shard in requested_train:
-        if shard.num_samples < batch_size:
-            break
-        selected_train.append(shard)
+    selected_train = available_train[:train_shards] if train_shards > 0 else available_train
     if not selected_train:
-        raise SystemExit(
-            f"No training shards with at least one full batch at batch_size={batch_size:,} "
-            f"from {train_cache_root}"
-        )
+        raise SystemExit(f"No training shards selected from {train_cache_root}")
     if validation_shard_index >= len(validation_candidates):
         raise SystemExit(
             f"Need validation start shard {validation_shard_index}, "
             f"but only found {len(validation_candidates)} validation shards under {validation_cache_root}"
         )
     available_validation = validation_candidates[validation_shard_index:]
-    requested_validation = (
-        available_validation[: min(len(available_validation), max_validation_batches)]
-        if max_validation_batches > 0
-        else available_validation
-    )
-    validation_shards = []
-    for shard in requested_validation:
-        if shard.num_samples < batch_size:
-            break
-        validation_shards.append(shard)
+    validation_shards = available_validation[: min(len(available_validation), max_validation_batches)]
     if not validation_shards:
-        raise SystemExit(
-            f"No validation shards with at least one full batch at batch_size={batch_size:,} "
-            f"from {validation_cache_root}"
-        )
+        raise SystemExit(f"No validation shards selected from {validation_cache_root}")
     return selected_train, validation_shards, len(validation_shards)
 
 
