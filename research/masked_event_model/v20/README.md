@@ -34,7 +34,8 @@ encoded tokens [B, token_count, d_model]
        slot 0: CLS
        slot 1: header
        slot 2..129: event positions 0..127
-       masked event slots: zero
+       masked event slots: learned slot-position vectors
+       visible event slots: slot-position vector + encoded token
   -> flatten [B, 130 * d_model]
   -> MLP [B, embedding_dim]
 ```
@@ -72,7 +73,6 @@ header and all 128 events:
 
 ```text
 chunk_embedding: [B, embedding_dim]
-event_embeddings: [B, 128, embedding_dim]
 ```
 
 ## Defaults

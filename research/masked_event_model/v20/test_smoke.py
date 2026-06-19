@@ -44,8 +44,6 @@ def test_forward_and_encode_shapes() -> None:
     assert "pretrain/semantic/quote_ask_tick_mae" in result.metrics
     embedding = model.encode(header, event_bytes)
     assert embedding.shape == (batch, 8)
-    event_embedding = model.encode_events(header, event_bytes)
-    assert event_embedding.shape == (batch, events, 8)
 
 
 def test_final_events_schema_encoder_shapes() -> None:
