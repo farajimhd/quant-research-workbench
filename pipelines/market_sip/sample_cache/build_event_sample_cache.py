@@ -68,7 +68,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-root", default=str(DEFAULT_SAMPLE_CACHE_ROOT))
     parser.add_argument("--cache-id", default="", help="Folder name under --cache-root. Defaults to timestamp.")
     parser.add_argument("--cache-version", type=int, choices=(1, 2), default=1)
-    parser.add_argument("--label-chunks", type=int, default=DEFAULT_LABEL_CHUNKS, help="v2 only: number of next 128-event chunks stored as labels.")
+    parser.add_argument(
+        "--label-chunks",
+        type=int,
+        default=DEFAULT_LABEL_CHUNKS,
+        help="v2 only: number of future 128-event chunks stored as label-only y data.",
+    )
     parser.add_argument("--train-cache-gib", type=float, default=128.0)
     parser.add_argument("--validation-cache-gib", type=float, default=4.0)
     parser.add_argument(
@@ -79,6 +84,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shard-size-gib", type=float, default=16.0)
     parser.add_argument("--builder-micro-batch-samples", type=int, default=65536)
     parser.add_argument("--origins-per-span", type=int, default=512)
+    parser.add_argument(
+        "--past-span-events",
+        type=int,
+        default=128,
+        help="Events fetched before each base origin. Only as-of-origin/non-future labels may use this span.",
+    )
     parser.add_argument("--min-origin-stride", type=int, default=1)
     parser.add_argument("--max-origin-stride", type=int, default=16)
     parser.add_argument("--query-bundle-spans", type=int, default=64)
@@ -119,6 +130,11 @@ def main() -> None:
     print(f"train_index_table={args.train_index_table} validation_index_table={args.validation_index_table}", flush=True)
     print(f"splits={','.join(requested_splits)}", flush=True)
     print(f"cache_version={args.cache_version} label_chunks={args.label_chunks if args.cache_version == 2 else 0}", flush=True)
+    print(
+        f"past_span_events={args.past_span_events} "
+        f"future_label_events={(args.label_chunks * 128) if args.cache_version == 2 else 0}",
+        flush=True,
+    )
     print(f"train_cache_gib={args.train_cache_gib} validation_cache_gib={args.validation_cache_gib} shard_size_gib={args.shard_size_gib}", flush=True)
     print(
         f"workers={args.workers} pending_multiplier={args.pending_multiplier} "
@@ -163,6 +179,10 @@ def main() -> None:
             "cache_root": str(cache_root),
             "sample_bytes": SAMPLE_BYTES,
             "labeled_sample_bytes": LABELED_SAMPLE_BYTES if args.cache_version == 2 and args.label_chunks == DEFAULT_LABEL_CHUNKS else SAMPLE_BYTES + args.label_chunks * SAMPLE_BYTES,
+            "naming_contract": {
+                "future_prefix": "Fields containing 'future' are label-only and must not be used as features.",
+                "non_future_labels": "Fields without 'future' must be computable as of the origin event.",
+            },
         },
         "splits": {},
         "shards": [],
@@ -244,6 +264,7 @@ def build_split(
             batch_size=micro_batch_samples,
             num_spans=num_spans,
             origins_per_span=args.origins_per_span,
+            past_span_events=args.past_span_events,
             min_origin_stride=args.min_origin_stride,
             max_origin_stride=args.max_origin_stride,
             query_bundle_spans=args.query_bundle_spans,
@@ -268,7 +289,8 @@ def build_split(
         x_only_equivalent = int((target_gib * 1024**3) // SAMPLE_BYTES)
         print(
             f"SPLIT {split}: v2 labeled samples store x_bytes={SAMPLE_BYTES:,} "
-            f"y_bytes={int(args.label_chunks) * SAMPLE_BYTES:,} label_chunks={int(args.label_chunks):,}; "
+            f"y_bytes={int(args.label_chunks) * SAMPLE_BYTES:,} future_label_chunks={int(args.label_chunks):,} "
+            f"future_label_events={int(args.label_chunks) * int(data_config.events_per_chunk):,}; "
             f"same GiB would hold {x_only_equivalent:,} x-only v1 samples",
             flush=True,
         )
@@ -416,6 +438,8 @@ def build_split(
         "actual_gib": samples_written * sample_bytes_on_disk / 1024**3,
         "cache_version": int(args.cache_version),
         "label_chunks": int(args.label_chunks) if int(args.cache_version) == 2 else 0,
+        "future_label_events": int(args.label_chunks) * int(data_config.events_per_chunk) if int(args.cache_version) == 2 else 0,
+        "past_span_events": int(data_config.past_span_events),
         "sample_bytes_on_disk": sample_bytes_on_disk,
         "shard_count": len(writer.shards),
         "micro_batches_completed": micro_batches_completed,

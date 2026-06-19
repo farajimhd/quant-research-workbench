@@ -18,12 +18,18 @@ DEFAULTS: dict[str, Any] = {
     "validation_index_table": "validation_2026",
     "cache_root": r"D:\market-data\prepared\event_sample_cache",
     "cache_version": 2,
-    "label_chunks": 8,
+    # "future" means label-only. These 16 chunks are the next 2,048 events
+    # after the origin and must never be used as model features.
+    "label_chunks": 16,
+    # Fetch 2,048 events ending at the origin so non-future span labels/features
+    # can be computed without lookahead. The stored x chunk remains the last
+    # 128 events ending at the origin.
+    "past_span_events": 2048,
     # Args are GiB. 2720 + 64 = 2784 GiB, which is about 2.99 decimal TB on disk.
     "train_cache_gib": 2720,
     "validation_cache_gib": 64,
     "shard_size_gib": 16,
-    # v2 writes x plus eight future chunks, so one sample is about 9x larger
+    # v2 writes x plus sixteen future chunks, so one sample is about 17x larger
     # than v1. Keep microbatches smaller so progress is visible and each worker
     # does not hold a multi-GiB labeled batch before writing.
     "builder_micro_batch_samples": 8192,

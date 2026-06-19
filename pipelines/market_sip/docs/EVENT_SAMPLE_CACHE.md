@@ -25,12 +25,19 @@ and the training loader slices that stream into whatever batch size is requested
 ## v2 Labeled Record Format
 
 v2 keeps the same `x` record but adds a paired `y` record containing future
-chunks. The default label horizon is eight 128-event chunks:
+chunks. Naming is strict:
+
+- fields with `future` in the name are label-only and must never be used as
+  model features
+- fields without `future` must be computable as of the origin event and may be
+  used as features
+
+The default future label horizon is sixteen 128-event chunks:
 
 ```text
 x_sample_bytes = 2062
-y_sample_bytes = 8 * 2062 = 16,496
-sample_bytes_on_disk = 18,558
+y_sample_bytes = 16 * 2062 = 32,992
+sample_bytes_on_disk = 35,054
 ```
 
 The two files are written separately but share the same row order:
@@ -43,18 +50,27 @@ train/shard_000000.json
 
 Row `i` in `.x.bin` and row `i` in `.y.bin` are always the paired sample. The
 metadata stores both byte sizes, both SHA-256 digests, and `label_chunks`.
+For v2, `label_chunks` means future label chunks.
 
 For each origin ordinal `t`:
 
 ```text
 x = events[t-127 : t] inclusive, encoded as one header + 128 events
-y = events[t+1 : t+1024] split into eight 128-event encoded chunks
+y = events[t+1 : t+2048] split into sixteen 128-event encoded chunks
 ```
 
 Sampling bounds reserve the full future horizon inside the selected split. A
 training sample close to the train/validation boundary is rejected unless all
-1024 future label events still belong to the training index range. The same
+2048 future label events still belong to the training index range. The same
 rule applies to validation.
+
+The v2 builder also fetches a 2048-event past span ending at the origin. The
+stored `x` is still only the final 128 events of that span. The additional past
+span exists so future cache extensions can derive short-term as-of-origin labels
+or features without lookahead. Labels that need bars, indicators, market
+structure, or other timeframes should be built in separate offline tables keyed
+by ticker/timestamp and joined later; the event cache itself only uses labels
+that can be derived from the fetched event span.
 
 ## Shards
 
@@ -72,10 +88,10 @@ train/shard_000000.samples.json
 ```
 
 For v2, the same 16 GiB target produces fewer samples because every sample also
-stores the eight future chunks:
+stores the sixteen future chunks:
 
 ```text
-16 GiB / 18,558 ~= 925k paired samples
+16 GiB / 35,054 ~= 490k paired samples
 ```
 
 The metadata JSON stores sample count, byte size, format version, and SHA-256.
@@ -155,7 +171,8 @@ The v2 launcher passes:
 
 ```text
 cache_version=2
-label_chunks=8
+label_chunks=16
+past_span_events=2048
 train_cache_gib=2720
 validation_cache_gib=64
 shard_size_gib=16
@@ -203,8 +220,8 @@ origins_per_span = 512
 random origin_stride = 1..16
 ```
 
-For v2, one stored sample includes the current `x` chunk plus eight future
-label chunks. That makes each stored sample about nine times larger than v1, so
+For v2, one stored sample includes the current `x` chunk plus sixteen future
+label chunks. That makes each stored sample about seventeen times larger than v1, so
 the v2 launchers use smaller microbatches and fewer spans per ClickHouse query.
 This avoids waiting many minutes for the first multi-GiB worker result and keeps
 progress observable.

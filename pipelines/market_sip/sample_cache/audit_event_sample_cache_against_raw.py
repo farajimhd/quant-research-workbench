@@ -37,6 +37,7 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import discover_env_files, load_env_files  # noqa: E402
 from research.mlops.event_sample_cache import (  # noqa: E402
+    DEFAULT_LABEL_CHUNKS,
     SAMPLE_BYTES,
     encode_label_records,
     encode_sample_records,
@@ -192,7 +193,7 @@ def audit_one(
         label_chunks = 0
         if is_labeled:
             meta = json.loads(v2_meta_path.read_text(encoding="utf-8"))
-            label_chunks = int(meta.get("label_chunks", audit_row.get("label_chunks", 8)))
+            label_chunks = int(meta.get("label_chunks", audit_row.get("label_chunks", DEFAULT_LABEL_CHUNKS)))
             expected_record = read_one_record(root / str(meta["x_path"]), sample_index)
             expected_label_record = read_one_record(root / str(meta["y_path"]), sample_index, sample_bytes=label_chunks * SAMPLE_BYTES)
         else:

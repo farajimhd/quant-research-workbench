@@ -21,6 +21,7 @@ from research.mlops.clickhouse_events import ClickHouseEventsDataConfig, Persist
 from research.mlops.clickhouse import CLICKHOUSE_ENDPOINT_ENV, CLICKHOUSE_URL_ENV, default_clickhouse_password, default_clickhouse_url, default_clickhouse_user  # noqa: E402
 from research.mlops.env import discover_env_files, load_env_files  # noqa: E402
 from research.mlops.event_sample_cache import (  # noqa: E402
+    DEFAULT_LABEL_CHUNKS,
     SAMPLE_CACHE_FORMAT_V2,
     SAMPLE_BYTES,
     EventSampleCacheDataConfig,
@@ -306,7 +307,7 @@ def validate_audit_samples_labeled(root: Path, args: argparse.Namespace, rng: ra
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             x_path = root / str(meta["x_path"])
             y_path = root / str(meta["y_path"])
-            label_chunks = int(meta.get("label_chunks", row.get("label_chunks", 8)))
+            label_chunks = int(meta.get("label_chunks", row.get("label_chunks", DEFAULT_LABEL_CHUNKS)))
             expected_x = read_one_record(x_path, sample_index)
             expected_y = read_one_record(y_path, sample_index, sample_bytes=label_chunks * SAMPLE_BYTES)
             actual_x, actual_y = encode_single_labeled_audit_window(

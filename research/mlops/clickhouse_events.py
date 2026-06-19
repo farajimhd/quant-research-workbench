@@ -31,6 +31,7 @@ DEFAULT_EVENTS_TABLE = "events"
 DEFAULT_TRAIN_INDEX_TABLE = "train_2019_to_2025"
 DEFAULT_VALIDATION_INDEX_TABLE = "validation_2026"
 DEFAULT_CONTEXT_EVENTS = 128
+DEFAULT_PAST_SPAN_EVENTS = 128
 DEFAULT_ORIGINS_PER_SPAN = 32
 DEFAULT_MIN_ORIGIN_STRIDE = 1
 DEFAULT_MAX_ORIGIN_STRIDE = 16
@@ -79,6 +80,7 @@ class ClickHouseEventsDataConfig:
     max_index_rows: int = 0
     max_span_attempt_multiplier: int = 10
     strict_lossless: bool = True
+    past_span_events: int = DEFAULT_PAST_SPAN_EVENTS
     label_chunks: int = 0
     return_torch: bool = True
 
@@ -198,6 +200,7 @@ def normalized_config(config: ClickHouseEventsDataConfig) -> ClickHouseEventsDat
         raise ValueError(f"batch_size must equal num_spans * origins_per_span; got {batch_size} != {num_spans} * {origins_per_span}")
     if config.events_per_chunk != DEFAULT_CONTEXT_EVENTS:
         raise ValueError(f"ClickHouse events loader currently expects events_per_chunk={DEFAULT_CONTEXT_EVENTS}; got {config.events_per_chunk}")
+    past_span_events = max(int(config.past_span_events), int(config.events_per_chunk))
     if config.min_origin_stride < 1 or config.max_origin_stride < config.min_origin_stride:
         raise ValueError("origin stride bounds must satisfy 1 <= min_origin_stride <= max_origin_stride")
     return ClickHouseEventsDataConfig(
@@ -224,6 +227,7 @@ def normalized_config(config: ClickHouseEventsDataConfig) -> ClickHouseEventsDat
         max_index_rows=config.max_index_rows,
         max_span_attempt_multiplier=config.max_span_attempt_multiplier,
         strict_lossless=config.strict_lossless,
+        past_span_events=past_span_events,
         label_chunks=max(0, int(config.label_chunks)),
         return_torch=bool(config.return_torch),
     )
@@ -393,13 +397,14 @@ def sample_spans(
         row = rng.choice(index_rows)
         stride = rng.randint(config.min_origin_stride, config.max_origin_stride)
         high_extra = (config.origins_per_span - 1) * stride
-        min_base = row.first_ordinal + config.events_per_chunk - 1
+        past_span_events = max(int(config.past_span_events), int(config.events_per_chunk))
+        min_base = row.first_ordinal + past_span_events - 1
         label_events = max(0, int(config.label_chunks)) * config.events_per_chunk
         max_base = row.max_valid_ordinal - high_extra - label_events
         if max_base < min_base:
             continue
         base = rng.randint(min_base, max_base)
-        low = base - config.events_per_chunk + 1
+        low = base - past_span_events + 1
         high = base + high_extra + label_events
         spans.append(
             EventSpan(
@@ -523,7 +528,10 @@ def encode_span_samples(
     origin_ts = np.zeros((span.origins_per_span,), dtype=np.int64)
     origin_ordinals = np.zeros((span.origins_per_span,), dtype=np.int64)
     for index in range(span.origins_per_span):
-        origin_offset = config.events_per_chunk - 1 + index * span.stride
+        # The span may include more as-of-origin history than the 128-event x
+        # chunk. Locate each origin from its absolute ordinal so the x chunk
+        # remains the last 128 events ending at that origin.
+        origin_offset = int(span.base_origin - span.low_ordinal) + index * span.stride
         start = origin_offset - config.events_per_chunk + 1
         end = origin_offset + 1
         if start > 0:

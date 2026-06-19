@@ -30,7 +30,7 @@ SAMPLE_CACHE_FORMAT_V2 = "compact_byte_event_sample_cache_with_labels"
 SAMPLE_CACHE_VERSION = 1
 SAMPLE_CACHE_VERSION_V2 = 2
 SAMPLE_BYTES = HEADER_BYTES + DEFAULT_EVENTS_PER_CHUNK * EVENT_BYTES
-DEFAULT_LABEL_CHUNKS = 8
+DEFAULT_LABEL_CHUNKS = 16
 LABEL_SAMPLE_BYTES = DEFAULT_LABEL_CHUNKS * SAMPLE_BYTES
 LABELED_SAMPLE_BYTES = SAMPLE_BYTES + LABEL_SAMPLE_BYTES
 DEFAULT_SAMPLE_CACHE_ROOT = Path("D:/market-data/prepared/event_sample_cache")
@@ -406,6 +406,8 @@ class EventSampleLabeledShardWriter:
                 "origin_ordinal": int(origin_ordinals[local_index]) if origin_ordinals.size else 0,
                 "origin_timestamp_ns": int(origin_timestamps[local_index]) if origin_timestamps.size else 0,
                 "label_chunks": self.label_chunks,
+                "future_label_chunks": self.label_chunks,
+                "future_label_events": self.label_chunks * DEFAULT_EVENTS_PER_CHUNK,
             }
         )
 
@@ -439,6 +441,8 @@ class EventSampleLabeledShardWriter:
             "x_sample_bytes": SAMPLE_BYTES,
             "y_sample_bytes": self.y_sample_bytes,
             "label_chunks": self.label_chunks,
+            "future_label_chunks": self.label_chunks,
+            "future_label_events": self.label_chunks * DEFAULT_EVENTS_PER_CHUNK,
             "header_bytes": HEADER_BYTES,
             "event_bytes": EVENT_BYTES,
             "events_per_chunk": DEFAULT_EVENTS_PER_CHUNK,
