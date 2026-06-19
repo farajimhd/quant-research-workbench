@@ -85,6 +85,33 @@ The default W&B project is:
 June2026-event-token-mae-v16-token-bottleneck
 ```
 
+## Wait For v12, Then Train v16
+
+When another terminal is already training `v12`, use this foreground handoff
+launcher to wait and then start v16 in the same terminal:
+
+```powershell
+python D:\TradingML\codes\masked_event_model\v16\research\masked_event_model\v16\run_after_v12.py
+```
+
+The launcher watches for a process whose command line contains
+`masked_event_model`, `v12`, and `train_10shard_long`. When that process exits,
+the launcher uses `os.execv(...)` to replace itself with v16
+`train_10shard_long.py`; this avoids log-capturing subprocess behavior, so Rich
+renders in the terminal as if the training command were launched directly.
+
+Default handoff target:
+
+```text
+W&B project: June2026-event-token-mae
+run name: v16-v12mlp-v11tokenemb-f1-bs8192-10shards-after-v12
+AMP dtype: bf16
+fresh start: true
+```
+
+Extra arguments after the launcher options are forwarded to
+`train_10shard_long.py`.
+
 ## Important Assumptions
 
 `decoder_bottleneck_tokens` must match the training token count produced by the
