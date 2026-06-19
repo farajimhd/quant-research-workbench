@@ -32,6 +32,8 @@ DEFAULT_TRAIN_INDEX_TABLE = "train_2019_to_2025"
 DEFAULT_VALIDATION_INDEX_TABLE = "validation_2026"
 DEFAULT_CONTEXT_EVENTS = 128
 DEFAULT_PAST_SPAN_EVENTS = 128
+DEFAULT_FUTURE_SPAN_EVENTS = 0
+DEFAULT_FUTURE_LABEL_HORIZONS = (128, 256, 512, 1024, 2048)
 DEFAULT_ORIGINS_PER_SPAN = 32
 DEFAULT_MIN_ORIGIN_STRIDE = 1
 DEFAULT_MAX_ORIGIN_STRIDE = 16
@@ -81,6 +83,7 @@ class ClickHouseEventsDataConfig:
     max_span_attempt_multiplier: int = 10
     strict_lossless: bool = True
     past_span_events: int = DEFAULT_PAST_SPAN_EVENTS
+    future_span_events: int = DEFAULT_FUTURE_SPAN_EVENTS
     label_chunks: int = 0
     return_torch: bool = True
 
@@ -201,6 +204,7 @@ def normalized_config(config: ClickHouseEventsDataConfig) -> ClickHouseEventsDat
     if config.events_per_chunk != DEFAULT_CONTEXT_EVENTS:
         raise ValueError(f"ClickHouse events loader currently expects events_per_chunk={DEFAULT_CONTEXT_EVENTS}; got {config.events_per_chunk}")
     past_span_events = max(int(config.past_span_events), int(config.events_per_chunk))
+    future_span_events = max(int(config.future_span_events), max(0, int(config.label_chunks)) * int(config.events_per_chunk))
     if config.min_origin_stride < 1 or config.max_origin_stride < config.min_origin_stride:
         raise ValueError("origin stride bounds must satisfy 1 <= min_origin_stride <= max_origin_stride")
     return ClickHouseEventsDataConfig(
@@ -228,6 +232,7 @@ def normalized_config(config: ClickHouseEventsDataConfig) -> ClickHouseEventsDat
         max_span_attempt_multiplier=config.max_span_attempt_multiplier,
         strict_lossless=config.strict_lossless,
         past_span_events=past_span_events,
+        future_span_events=future_span_events,
         label_chunks=max(0, int(config.label_chunks)),
         return_torch=bool(config.return_torch),
     )
@@ -279,6 +284,7 @@ def build_clickhouse_events_batch(
     label_events = (
         np.zeros((config.batch_size, label_chunks, config.events_per_chunk, EVENT_BYTES), dtype=np.uint8) if label_chunks else None
     )
+    label_columns: dict[str, list[np.ndarray | list[str]]] = {}
     origin_ts = np.zeros((config.batch_size,), dtype=np.int64)
     origin_ordinals = np.zeros((config.batch_size,), dtype=np.int64)
     tickers: list[str] = []
@@ -326,7 +332,7 @@ def build_clickhouse_events_batch(
                 reject_counts[encoded] = reject_counts.get(encoded, 0) + 1
                 continue
             if label_chunks:
-                span_headers, span_events, span_label_headers, span_label_events, span_origin_ts, span_origin_ordinals = encoded
+                span_headers, span_events, span_label_headers, span_label_events, span_origin_ts, span_origin_ordinals, span_labels = encoded
             else:
                 span_headers, span_events, span_origin_ts, span_origin_ordinals = encoded
             take = min(span_headers.shape[0], config.batch_size - filled)
@@ -335,6 +341,7 @@ def build_clickhouse_events_batch(
             if label_chunks and label_headers is not None and label_events is not None:
                 label_headers[filled : filled + take] = span_label_headers[:take]
                 label_events[filled : filled + take] = span_label_events[:take]
+                append_label_columns(label_columns, span_labels, take)
             origin_ts[filled : filled + take] = span_origin_ts[:take]
             origin_ordinals[filled : filled + take] = span_origin_ordinals[:take]
             tickers.extend([span.ticker] * take)
@@ -378,6 +385,7 @@ def build_clickhouse_events_batch(
         batch["label_header_uint8"] = torch.from_numpy(label_headers) if config.return_torch else label_headers
         batch["label_events_uint8"] = torch.from_numpy(label_events) if config.return_torch else label_events
         batch["label_chunks"] = label_chunks
+        batch["labels"] = finalize_label_columns(label_columns)
     return batch
 
 
@@ -400,12 +408,13 @@ def sample_spans(
         past_span_events = max(int(config.past_span_events), int(config.events_per_chunk))
         min_base = row.first_ordinal + past_span_events - 1
         label_events = max(0, int(config.label_chunks)) * config.events_per_chunk
-        max_base = row.max_valid_ordinal - high_extra - label_events
+        future_span_events = max(int(config.future_span_events), label_events)
+        max_base = row.max_valid_ordinal - high_extra - future_span_events
         if max_base < min_base:
             continue
         base = rng.randint(min_base, max_base)
         low = base - past_span_events + 1
-        high = base + high_extra + label_events
+        high = base + high_extra + future_span_events
         spans.append(
             EventSpan(
                 span_id=start_span_id + len(spans),
@@ -527,6 +536,7 @@ def encode_span_samples(
     )
     origin_ts = np.zeros((span.origins_per_span,), dtype=np.int64)
     origin_ordinals = np.zeros((span.origins_per_span,), dtype=np.int64)
+    span_label_columns: dict[str, list[object]] = {}
     for index in range(span.origins_per_span):
         # The span may include more as-of-origin history than the 128-event x
         # chunk. Locate each origin from its absolute ordinal so the x chunk
@@ -555,11 +565,213 @@ def encode_span_samples(
                 label_header, label_event_bytes = encoded_label
                 label_headers[index, label_index] = label_header
                 label_events[index, label_index] = label_event_bytes
+            add_sample_label_row(
+                span_label_columns,
+                rows=rows,
+                origin_offset=origin_offset,
+                past_span_events=max(int(config.past_span_events), int(config.events_per_chunk)),
+                future_span_events=max(int(config.future_span_events), label_chunks * int(config.events_per_chunk)),
+                ticker=span.ticker,
+            )
         origin_ts[index] = int(rows["sip_timestamp_us"][origin_offset]) * 1000
         origin_ordinals[index] = int(rows["ordinal"][origin_offset])
     if label_chunks and label_headers is not None and label_events is not None:
-        return headers, events, label_headers, label_events, origin_ts, origin_ordinals
+        return headers, events, label_headers, label_events, origin_ts, origin_ordinals, label_columns_to_arrays(span_label_columns)
     return headers, events, origin_ts, origin_ordinals
+
+
+def add_sample_label_row(
+    columns: dict[str, list[object]],
+    *,
+    rows: np.ndarray,
+    origin_offset: int,
+    past_span_events: int,
+    future_span_events: int,
+    ticker: str,
+) -> None:
+    origin_sip_us = int(rows["sip_timestamp_us"][origin_offset])
+    origin_ordinal = int(rows["ordinal"][origin_offset])
+    past_start = max(0, int(origin_offset) - max(1, int(past_span_events)) + 1)
+    past_rows = rows[past_start : origin_offset + 1]
+    event_types = past_rows["event_type"].astype(np.uint8, copy=False)
+    quote_positions = np.flatnonzero(event_types == QUOTE_EVENT_TYPE)
+    trade_positions = np.flatnonzero(event_types == TRADE_EVENT_TYPE)
+    append_label_value(columns, "ticker", ticker)
+    append_label_value(columns, "origin_ordinal", origin_ordinal)
+    append_label_value(columns, "origin_timestamp_us", origin_sip_us)
+    append_label_value(columns, "past_2048_event_count", int(past_rows.shape[0]))
+    append_label_value(columns, "past_2048_quote_count", int(quote_positions.size))
+    append_label_value(columns, "past_2048_trade_count", int(trade_positions.size))
+    append_label_value(columns, "past_2048_quote_count_ratio", float(quote_positions.size) / max(1.0, float(past_rows.shape[0])))
+    append_label_value(columns, "past_2048_trade_count_ratio", float(trade_positions.size) / max(1.0, float(past_rows.shape[0])))
+    append_label_value(columns, "past_2048_elapsed_us", max(0, origin_sip_us - int(past_rows["sip_timestamp_us"][0])))
+
+    asof_quote = past_rows[int(quote_positions[-1])] if quote_positions.size else None
+    asof_trade = past_rows[int(trade_positions[-1])] if trade_positions.size else None
+    add_quote_state(columns, "asof", asof_quote)
+    add_trade_state(columns, "asof_last_trade", asof_trade)
+
+    max_future_events = max(0, int(future_span_events))
+    for horizon in DEFAULT_FUTURE_LABEL_HORIZONS:
+        if horizon > max_future_events:
+            continue
+        future_rows = rows[origin_offset + 1 : origin_offset + 1 + horizon]
+        add_future_horizon_labels(columns, rows=future_rows, horizon=horizon, origin_sip_us=origin_sip_us, asof_quote=asof_quote)
+
+
+def add_future_horizon_labels(
+    columns: dict[str, list[object]],
+    *,
+    rows: np.ndarray,
+    horizon: int,
+    origin_sip_us: int,
+    asof_quote: np.void | None,
+) -> None:
+    prefix = f"future_{horizon}"
+    append_label_value(columns, f"{prefix}_elapsed_us", max(0, int(rows["sip_timestamp_us"][-1]) - origin_sip_us) if rows.shape[0] else 0)
+    event_types = rows["event_type"].astype(np.uint8, copy=False) if rows.shape[0] else np.empty((0,), dtype=np.uint8)
+    quote_positions = np.flatnonzero(event_types == QUOTE_EVENT_TYPE)
+    trade_positions = np.flatnonzero(event_types == TRADE_EVENT_TYPE)
+    append_label_value(columns, f"{prefix}_quote_count", int(quote_positions.size))
+    append_label_value(columns, f"{prefix}_trade_count", int(trade_positions.size))
+
+    last_quote = rows[int(quote_positions[-1])] if quote_positions.size else asof_quote
+    add_quote_state(columns, prefix, last_quote)
+
+    if quote_positions.size:
+        quote_rows = rows[quote_positions]
+        ask_prices = quote_rows["price_primary_int"].astype(np.uint64, copy=False)
+        bid_prices = quote_rows["price_secondary_int"].astype(np.uint64, copy=False)
+        high_pos = int(np.argmax(ask_prices))
+        low_pos = int(np.argmin(bid_prices))
+        high_quote = quote_rows[high_pos]
+        low_quote = quote_rows[low_pos]
+        add_price_label(
+            columns,
+            f"{prefix}_high_ask",
+            price_int=int(high_quote["price_primary_int"]),
+            scale=int(high_quote["event_flags"]) & 1,
+            elapsed_us=max(0, int(high_quote["sip_timestamp_us"]) - origin_sip_us),
+        )
+        add_price_label(
+            columns,
+            f"{prefix}_low_bid",
+            price_int=int(low_quote["price_secondary_int"]),
+            scale=(int(low_quote["event_flags"]) >> 1) & 1,
+            elapsed_us=max(0, int(low_quote["sip_timestamp_us"]) - origin_sip_us),
+        )
+    else:
+        add_price_label(columns, f"{prefix}_high_ask", price_int=0, scale=0, elapsed_us=0)
+        add_price_label(columns, f"{prefix}_low_bid", price_int=0, scale=0, elapsed_us=0)
+
+    if trade_positions.size:
+        trade_rows = rows[trade_positions]
+        trade_prices = trade_rows["price_primary_int"].astype(np.uint64, copy=False)
+        max_pos = int(np.argmax(trade_prices))
+        min_pos = int(np.argmin(trade_prices))
+        max_trade = trade_rows[max_pos]
+        min_trade = trade_rows[min_pos]
+        add_price_label(
+            columns,
+            f"{prefix}_max_trade",
+            price_int=int(max_trade["price_primary_int"]),
+            scale=int(max_trade["event_flags"]) & 1,
+            elapsed_us=max(0, int(max_trade["sip_timestamp_us"]) - origin_sip_us),
+        )
+        add_price_label(
+            columns,
+            f"{prefix}_min_trade",
+            price_int=int(min_trade["price_primary_int"]),
+            scale=int(min_trade["event_flags"]) & 1,
+            elapsed_us=max(0, int(min_trade["sip_timestamp_us"]) - origin_sip_us),
+        )
+    else:
+        add_price_label(columns, f"{prefix}_max_trade", price_int=0, scale=0, elapsed_us=0)
+        add_price_label(columns, f"{prefix}_min_trade", price_int=0, scale=0, elapsed_us=0)
+
+
+def add_quote_state(columns: dict[str, list[object]], prefix: str, quote: np.void | None) -> None:
+    if quote is None:
+        append_label_value(columns, f"{prefix}_has_quote", 0)
+        append_label_value(columns, f"{prefix}_ask_price_int", 0)
+        append_label_value(columns, f"{prefix}_ask_price_scale", 0)
+        append_label_value(columns, f"{prefix}_ask_size", 0.0)
+        append_label_value(columns, f"{prefix}_bid_price_int", 0)
+        append_label_value(columns, f"{prefix}_bid_price_scale", 0)
+        append_label_value(columns, f"{prefix}_bid_size", 0.0)
+        return
+    append_label_value(columns, f"{prefix}_has_quote", 1)
+    append_label_value(columns, f"{prefix}_ask_price_int", int(quote["price_primary_int"]))
+    append_label_value(columns, f"{prefix}_ask_price_scale", int(quote["event_flags"]) & 1)
+    append_label_value(columns, f"{prefix}_ask_size", float(quote["size_primary"]))
+    append_label_value(columns, f"{prefix}_bid_price_int", int(quote["price_secondary_int"]))
+    append_label_value(columns, f"{prefix}_bid_price_scale", (int(quote["event_flags"]) >> 1) & 1)
+    append_label_value(columns, f"{prefix}_bid_size", float(quote["size_secondary"]))
+
+
+def add_trade_state(columns: dict[str, list[object]], prefix: str, trade: np.void | None) -> None:
+    if trade is None:
+        append_label_value(columns, f"{prefix}_has_trade", 0)
+        append_label_value(columns, f"{prefix}_price_int", 0)
+        append_label_value(columns, f"{prefix}_price_scale", 0)
+        append_label_value(columns, f"{prefix}_size", 0.0)
+        return
+    append_label_value(columns, f"{prefix}_has_trade", 1)
+    append_label_value(columns, f"{prefix}_price_int", int(trade["price_primary_int"]))
+    append_label_value(columns, f"{prefix}_price_scale", int(trade["event_flags"]) & 1)
+    append_label_value(columns, f"{prefix}_size", float(trade["size_primary"]))
+
+
+def add_price_label(columns: dict[str, list[object]], prefix: str, *, price_int: int, scale: int, elapsed_us: int) -> None:
+    append_label_value(columns, f"{prefix}_price_int", int(price_int))
+    append_label_value(columns, f"{prefix}_price_scale", int(scale))
+    append_label_value(columns, f"{prefix}_elapsed_us", int(elapsed_us))
+
+
+def append_label_value(columns: dict[str, list[object]], key: str, value: object) -> None:
+    columns.setdefault(key, []).append(value)
+
+
+def label_columns_to_arrays(columns: dict[str, list[object]]) -> dict[str, np.ndarray | list[str]]:
+    out: dict[str, np.ndarray | list[str]] = {}
+    for key, values in columns.items():
+        if key == "ticker":
+            out[key] = [str(value) for value in values]
+        elif key.endswith("_ratio") or key.endswith("_size"):
+            out[key] = np.asarray(values, dtype=np.float32)
+        elif key.endswith("_scale") or key.endswith("_has_quote") or key.endswith("_has_trade"):
+            out[key] = np.asarray(values, dtype=np.uint8)
+        elif key.endswith("_count"):
+            out[key] = np.asarray(values, dtype=np.uint16)
+        elif key.endswith("_price_int"):
+            out[key] = np.asarray(values, dtype=np.uint32)
+        else:
+            out[key] = np.asarray(values, dtype=np.int64)
+    return out
+
+
+def append_label_columns(target: dict[str, list[np.ndarray | list[str]]], source: dict[str, np.ndarray | list[str]], take: int) -> None:
+    for key, values in source.items():
+        if isinstance(values, np.ndarray):
+            target.setdefault(key, []).append(values[:take].copy())
+        else:
+            target.setdefault(key, []).append(list(values[:take]))
+
+
+def finalize_label_columns(columns: dict[str, list[np.ndarray | list[str]]]) -> dict[str, np.ndarray | list[str]]:
+    out: dict[str, np.ndarray | list[str]] = {}
+    for key, chunks in columns.items():
+        if not chunks:
+            continue
+        first = chunks[0]
+        if isinstance(first, np.ndarray):
+            out[key] = np.concatenate([chunk for chunk in chunks if isinstance(chunk, np.ndarray)])
+        else:
+            merged: list[str] = []
+            for chunk in chunks:
+                merged.extend(str(value) for value in chunk)
+            out[key] = merged
+    return out
 
 
 def encode_unified_event_window(rows: np.ndarray, *, previous_sip_us: int | None = None) -> tuple[np.ndarray, np.ndarray] | str:

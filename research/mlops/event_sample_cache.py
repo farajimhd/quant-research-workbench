@@ -27,10 +27,11 @@ from research.mlops.compact_events import DEFAULT_EVENTS_PER_CHUNK, EVENT_BYTES,
 
 SAMPLE_CACHE_FORMAT = "compact_byte_event_sample_cache"
 SAMPLE_CACHE_FORMAT_V2 = "compact_byte_event_sample_cache_with_labels"
+LABEL_SIDECAR_FORMAT = "compact_byte_event_sample_cache_labels_parquet"
 SAMPLE_CACHE_VERSION = 1
 SAMPLE_CACHE_VERSION_V2 = 2
 SAMPLE_BYTES = HEADER_BYTES + DEFAULT_EVENTS_PER_CHUNK * EVENT_BYTES
-DEFAULT_LABEL_CHUNKS = 16
+DEFAULT_LABEL_CHUNKS = 2
 LABEL_SAMPLE_BYTES = DEFAULT_LABEL_CHUNKS * SAMPLE_BYTES
 LABELED_SAMPLE_BYTES = SAMPLE_BYTES + LABEL_SAMPLE_BYTES
 DEFAULT_SAMPLE_CACHE_ROOT = Path("D:/market-data/prepared/event_sample_cache")
@@ -80,6 +81,7 @@ class EventSampleLabeledShard:
     y_sha256: str = ""
     x_byte_size: int = 0
     y_byte_size: int = 0
+    label_path: Path | None = None
 
 
 class EventSampleShardWriter:
@@ -269,6 +271,7 @@ class EventSampleLabeledShardWriter:
         self._y_file = None
         self._x_sha = hashlib.sha256()
         self._y_sha = hashlib.sha256()
+        self._label_columns: dict[str, list[np.ndarray | list[str]]] = {}
         self._shard_index = 0
         self._shard_samples = 0
         self._x_shard_bytes = 0
@@ -293,6 +296,7 @@ class EventSampleLabeledShardWriter:
         events = to_numpy_uint8(batch["events_uint8"])
         label_headers = to_numpy_uint8(batch["label_header_uint8"])
         label_events = to_numpy_uint8(batch["label_events_uint8"])
+        labels = batch.get("labels")
         if headers.ndim != 2 or headers.shape[1] != HEADER_BYTES:
             raise ValueError(f"Expected headers shape [N,{HEADER_BYTES}], got {headers.shape}")
         if events.ndim != 3 or events.shape[1:] != (DEFAULT_EVENTS_PER_CHUNK, EVENT_BYTES):
@@ -320,6 +324,9 @@ class EventSampleLabeledShardWriter:
                 tickers[offset : offset + take] if tickers else [],
                 origin_ordinals[offset : offset + take],
                 origin_timestamps[offset : offset + take],
+                labels,
+                offset,
+                take,
             )
             offset += take
             if self._shard_samples >= self.shard_sample_target:
@@ -336,6 +343,7 @@ class EventSampleLabeledShardWriter:
         self._y_tmp_path = self.split_dir / f"{stem}.y.bin.tmp"
         self._x_sha = hashlib.sha256()
         self._y_sha = hashlib.sha256()
+        self._label_columns = {}
         self._shard_samples = 0
         self._x_shard_bytes = 0
         self._y_shard_bytes = 0
@@ -349,6 +357,9 @@ class EventSampleLabeledShardWriter:
         tickers: list[str],
         origin_ordinals: np.ndarray,
         origin_timestamps: np.ndarray,
+        labels: object,
+        label_offset: int,
+        label_take: int,
     ) -> None:
         if self._x_file is None or self._y_file is None:
             self._open_next_shard()
@@ -358,6 +369,8 @@ class EventSampleLabeledShardWriter:
         self._y_file.write(y_payload)
         self._x_sha.update(x_payload)
         self._y_sha.update(y_payload)
+        if isinstance(labels, dict):
+            append_writer_label_columns(self._label_columns, labels, label_offset, label_take)
         sample_count = int(x_records.shape[0])
         if len(self.audit_rows) < self.audit_sample_limit:
             for local_index in range(sample_count):
@@ -406,8 +419,8 @@ class EventSampleLabeledShardWriter:
                 "origin_ordinal": int(origin_ordinals[local_index]) if origin_ordinals.size else 0,
                 "origin_timestamp_ns": int(origin_timestamps[local_index]) if origin_timestamps.size else 0,
                 "label_chunks": self.label_chunks,
-                "future_label_chunks": self.label_chunks,
-                "future_label_events": self.label_chunks * DEFAULT_EVENTS_PER_CHUNK,
+                "stored_future_y_chunks": self.label_chunks,
+                "stored_future_y_events": self.label_chunks * DEFAULT_EVENTS_PER_CHUNK,
             }
         )
 
@@ -441,8 +454,8 @@ class EventSampleLabeledShardWriter:
             "x_sample_bytes": SAMPLE_BYTES,
             "y_sample_bytes": self.y_sample_bytes,
             "label_chunks": self.label_chunks,
-            "future_label_chunks": self.label_chunks,
-            "future_label_events": self.label_chunks * DEFAULT_EVENTS_PER_CHUNK,
+            "stored_future_y_chunks": self.label_chunks,
+            "stored_future_y_events": self.label_chunks * DEFAULT_EVENTS_PER_CHUNK,
             "header_bytes": HEADER_BYTES,
             "event_bytes": EVENT_BYTES,
             "events_per_chunk": DEFAULT_EVENTS_PER_CHUNK,
@@ -451,6 +464,12 @@ class EventSampleLabeledShardWriter:
             "x_sha256": self._x_sha.hexdigest(),
             "y_sha256": self._y_sha.hexdigest(),
         }
+        labels_path = self._write_labels_sidecar()
+        if labels_path is not None:
+            meta["label_path"] = str(labels_path.relative_to(self.cache_root))
+            meta["label_format"] = LABEL_SIDECAR_FORMAT
+            meta["label_byte_size"] = labels_path.stat().st_size
+            meta["label_columns"] = sorted(self._label_columns.keys())
         meta_path = self.split_dir / f"shard_{self._shard_index:06d}.json"
         meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
         self.shards.append(meta)
@@ -458,6 +477,24 @@ class EventSampleLabeledShardWriter:
         self._shard_samples = 0
         self._x_shard_bytes = 0
         self._y_shard_bytes = 0
+        self._label_columns = {}
+
+    def _write_labels_sidecar(self) -> Path | None:
+        if not self._label_columns:
+            return None
+        import polars as pl
+
+        label_data = finalize_writer_label_columns(self._label_columns)
+        if not label_data:
+            return None
+        row_counts = {len(values) for values in label_data.values()}
+        if row_counts != {self._shard_samples}:
+            raise ValueError(f"Label sidecar row count mismatch for shard {self._shard_index}: {row_counts} expected={self._shard_samples}")
+        path = self.split_dir / f"shard_{self._shard_index:06d}.labels.parquet"
+        tmp_path = self.split_dir / f"shard_{self._shard_index:06d}.labels.parquet.tmp"
+        pl.DataFrame(label_data).write_parquet(tmp_path, compression="zstd")
+        tmp_path.replace(path)
+        return path
 
 
 def encode_sample_records(headers: np.ndarray, events: np.ndarray) -> np.ndarray:
@@ -497,6 +534,35 @@ def decode_sample_records(records: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     headers = records[:, :HEADER_BYTES]
     events = records[:, HEADER_BYTES:].reshape(records.shape[0], DEFAULT_EVENTS_PER_CHUNK, EVENT_BYTES)
     return headers, events
+
+
+def append_writer_label_columns(
+    target: dict[str, list[np.ndarray | list[str]]],
+    labels: dict[str, Any],
+    offset: int,
+    take: int,
+) -> None:
+    for key, values in labels.items():
+        if isinstance(values, np.ndarray):
+            target.setdefault(key, []).append(values[offset : offset + take].copy())
+        else:
+            target.setdefault(key, []).append(list(values[offset : offset + take]))
+
+
+def finalize_writer_label_columns(columns: dict[str, list[np.ndarray | list[str]]]) -> dict[str, np.ndarray | list[str]]:
+    out: dict[str, np.ndarray | list[str]] = {}
+    for key, chunks in columns.items():
+        if not chunks:
+            continue
+        first = chunks[0]
+        if isinstance(first, np.ndarray):
+            out[key] = np.concatenate([chunk for chunk in chunks if isinstance(chunk, np.ndarray)])
+        else:
+            merged: list[str] = []
+            for chunk in chunks:
+                merged.extend(str(value) for value in chunk)
+            out[key] = merged
+    return out
 
 
 def discover_event_sample_shards(config: EventSampleCacheDataConfig) -> list[EventSampleShard]:
@@ -580,6 +646,7 @@ def discover_event_sample_labeled_shards(config: EventSampleCacheDataConfig) -> 
                 y_sha256=str(row.get("y_sha256", "")),
                 x_byte_size=int(row.get("x_byte_size", int(row["num_samples"]) * int(row.get("x_sample_bytes", SAMPLE_BYTES)))),
                 y_byte_size=int(row.get("y_byte_size", int(row["num_samples"]) * int(row["y_sample_bytes"]))),
+                label_path=(root / str(row["label_path"])) if row.get("label_path") else None,
             )
         )
     shards.sort(key=lambda value: value.shard_index)

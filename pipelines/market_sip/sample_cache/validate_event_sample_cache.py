@@ -159,6 +159,14 @@ def validate_split_labeled(root: Path, split: str, args: argparse.Namespace, rng
         if y_size != expected_y_size:
             errors.append(f"{shard.y_path}: y size mismatch expected={expected_y_size} actual={y_size}")
             continue
+        if shard.label_path is not None:
+            if not shard.label_path.exists():
+                errors.append(f"{shard.label_path}: labels sidecar missing")
+                continue
+            label_rows = parquet_row_count(shard.label_path)
+            if label_rows != shard.num_samples:
+                errors.append(f"{shard.label_path}: label row mismatch expected={shard.num_samples} actual={label_rows}")
+                continue
         if args.verify_sha256:
             x_digest = sha256_file(shard.x_path)
             y_digest = sha256_file(shard.y_path)
@@ -349,6 +357,12 @@ def sha256_file(path: Path) -> str:
                 break
             digest.update(block)
     return digest.hexdigest()
+
+
+def parquet_row_count(path: Path) -> int:
+    import polars as pl
+
+    return int(pl.scan_parquet(str(path)).select(pl.len()).collect().item())
 
 
 def sample_cache_default_clickhouse_url() -> str:

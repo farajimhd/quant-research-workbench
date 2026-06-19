@@ -90,6 +90,12 @@ def parse_args() -> argparse.Namespace:
         default=128,
         help="Events fetched before each base origin. Only as-of-origin/non-future labels may use this span.",
     )
+    parser.add_argument(
+        "--future-span-events",
+        type=int,
+        default=0,
+        help="Future events fetched after each origin for future_* labels. Stored y chunks are still controlled by --label-chunks.",
+    )
     parser.add_argument("--min-origin-stride", type=int, default=1)
     parser.add_argument("--max-origin-stride", type=int, default=16)
     parser.add_argument("--query-bundle-spans", type=int, default=64)
@@ -132,7 +138,8 @@ def main() -> None:
     print(f"cache_version={args.cache_version} label_chunks={args.label_chunks if args.cache_version == 2 else 0}", flush=True)
     print(
         f"past_span_events={args.past_span_events} "
-        f"future_label_events={(args.label_chunks * 128) if args.cache_version == 2 else 0}",
+        f"future_span_events={args.future_span_events} "
+        f"stored_future_y_events={(args.label_chunks * 128) if args.cache_version == 2 else 0}",
         flush=True,
     )
     print(f"train_cache_gib={args.train_cache_gib} validation_cache_gib={args.validation_cache_gib} shard_size_gib={args.shard_size_gib}", flush=True)
@@ -265,6 +272,7 @@ def build_split(
             num_spans=num_spans,
             origins_per_span=args.origins_per_span,
             past_span_events=args.past_span_events,
+            future_span_events=args.future_span_events,
             min_origin_stride=args.min_origin_stride,
             max_origin_stride=args.max_origin_stride,
             query_bundle_spans=args.query_bundle_spans,
@@ -289,8 +297,9 @@ def build_split(
         x_only_equivalent = int((target_gib * 1024**3) // SAMPLE_BYTES)
         print(
             f"SPLIT {split}: v2 labeled samples store x_bytes={SAMPLE_BYTES:,} "
-            f"y_bytes={int(args.label_chunks) * SAMPLE_BYTES:,} future_label_chunks={int(args.label_chunks):,} "
-            f"future_label_events={int(args.label_chunks) * int(data_config.events_per_chunk):,}; "
+            f"y_bytes={int(args.label_chunks) * SAMPLE_BYTES:,} stored_future_y_chunks={int(args.label_chunks):,} "
+            f"stored_future_y_events={int(args.label_chunks) * int(data_config.events_per_chunk):,} "
+            f"future_span_events={int(data_config.future_span_events):,}; "
             f"same GiB would hold {x_only_equivalent:,} x-only v1 samples",
             flush=True,
         )
@@ -438,7 +447,8 @@ def build_split(
         "actual_gib": samples_written * sample_bytes_on_disk / 1024**3,
         "cache_version": int(args.cache_version),
         "label_chunks": int(args.label_chunks) if int(args.cache_version) == 2 else 0,
-        "future_label_events": int(args.label_chunks) * int(data_config.events_per_chunk) if int(args.cache_version) == 2 else 0,
+        "stored_future_y_events": int(args.label_chunks) * int(data_config.events_per_chunk) if int(args.cache_version) == 2 else 0,
+        "future_span_events": int(data_config.future_span_events),
         "past_span_events": int(data_config.past_span_events),
         "sample_bytes_on_disk": sample_bytes_on_disk,
         "shard_count": len(writer.shards),

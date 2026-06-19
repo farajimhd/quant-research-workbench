@@ -24,20 +24,27 @@ and the training loader slices that stream into whatever batch size is requested
 
 ## v2 Labeled Record Format
 
-v2 keeps the same `x` record but adds a paired `y` record containing future
-chunks. Naming is strict:
+v2 keeps the same `x` record, adds a paired `y` record containing the first
+future chunks, and writes a row-aligned labels sidecar. Naming is strict:
 
 - fields with `future` in the name are label-only and must never be used as
   model features
 - fields without `future` must be computable as of the origin event and may be
   used as features
 
-The default future label horizon is sixteen 128-event chunks:
+The default fetched span is:
+
+```text
+past_span   = 2048 events ending at origin t
+future_span = 2048 events after origin t
+```
+
+The stored `y` bytes contain only the first two future 128-event chunks:
 
 ```text
 x_sample_bytes = 2062
-y_sample_bytes = 16 * 2062 = 32,992
-sample_bytes_on_disk = 35,054
+y_sample_bytes = 2 * 2062 = 4,124
+binary_sample_bytes_on_disk = 6,186
 ```
 
 The two files are written separately but share the same row order:
@@ -45,18 +52,22 @@ The two files are written separately but share the same row order:
 ```text
 train/shard_000000.x.bin
 train/shard_000000.y.bin
+train/shard_000000.labels.parquet
 train/shard_000000.json
 ```
 
-Row `i` in `.x.bin` and row `i` in `.y.bin` are always the paired sample. The
-metadata stores both byte sizes, both SHA-256 digests, and `label_chunks`.
-For v2, `label_chunks` means future label chunks.
+Row `i` in `.x.bin`, row `i` in `.y.bin`, and row `i` in
+`.labels.parquet` are always the paired sample. The metadata stores both byte
+sizes, both SHA-256 digests, `label_chunks`, and the label sidecar path. For
+v2, `label_chunks` means stored future `y` chunks, not the full fetched future
+span.
 
 For each origin ordinal `t`:
 
 ```text
 x = events[t-127 : t] inclusive, encoded as one header + 128 events
-y = events[t+1 : t+2048] split into sixteen 128-event encoded chunks
+y = events[t+1 : t+256] split into two 128-event encoded chunks
+labels = scalar columns derived from events[t-2047 : t+2048]
 ```
 
 Sampling bounds reserve the full future horizon inside the selected split. A
@@ -64,13 +75,40 @@ training sample close to the train/validation boundary is rejected unless all
 2048 future label events still belong to the training index range. The same
 rule applies to validation.
 
-The v2 builder also fetches a 2048-event past span ending at the origin. The
-stored `x` is still only the final 128 events of that span. The additional past
-span exists so future cache extensions can derive short-term as-of-origin labels
-or features without lookahead. Labels that need bars, indicators, market
-structure, or other timeframes should be built in separate offline tables keyed
-by ticker/timestamp and joined later; the event cache itself only uses labels
-that can be derived from the fetched event span.
+The stored `x` is still only the final 128 events of the past span. The
+additional past span exists so the builder can derive short-term as-of-origin
+labels or features without lookahead. The future span beyond the first two
+stored `y` chunks is not stored as chunk bytes; it is only used to compute
+`future_*` label columns. Labels that need bars, indicators, market structure,
+or other timeframes should be built in separate offline tables keyed by
+ticker/timestamp and joined later; the event cache itself only uses labels that
+can be derived from the fetched event span.
+
+The labels sidecar currently includes:
+
+```text
+ticker
+origin_ordinal
+origin_timestamp_us
+
+asof_* quote/trade state from past_span
+past_2048_* counts and elapsed time
+
+future_H_* labels for H in 128, 256, 512, 1024, 2048
+```
+
+For future high/low labels, elapsed time is exact:
+
+```text
+future_H_high_ask_elapsed_us =
+  sip_timestamp_us(first event with max ask in events[t+1:t+H]) - origin_timestamp_us
+
+future_H_low_bid_elapsed_us =
+  sip_timestamp_us(first event with min bid in events[t+1:t+H]) - origin_timestamp_us
+```
+
+The same first-occurrence tie rule is used for `future_H_max_trade_*` and
+`future_H_min_trade_*`.
 
 ## Shards
 
@@ -87,11 +125,12 @@ train/shard_000000.samples.bin
 train/shard_000000.samples.json
 ```
 
-For v2, the same 16 GiB target produces fewer samples because every sample also
-stores the sixteen future chunks:
+For v2, the same 16 GiB binary shard target produces fewer samples because
+every sample also stores two future chunks. The labels sidecar is an additional
+compressed parquet file:
 
 ```text
-16 GiB / 35,054 ~= 490k paired samples
+16 GiB / 6,186 ~= 2.78M paired samples before label sidecar overhead
 ```
 
 The metadata JSON stores sample count, byte size, format version, and SHA-256.
@@ -106,6 +145,7 @@ D:\market-data\prepared\event_sample_cache\cache_YYYYMMDD_HHMMSS\
     shard_000000.samples.json
     shard_000000.x.bin
     shard_000000.y.bin
+    shard_000000.labels.parquet
     shard_000000.json
   validation\
     shard_000000.samples.bin
@@ -171,8 +211,9 @@ The v2 launcher passes:
 
 ```text
 cache_version=2
-label_chunks=16
+label_chunks=2
 past_span_events=2048
+future_span_events=2048
 train_cache_gib=2720
 validation_cache_gib=64
 shard_size_gib=16
@@ -220,11 +261,11 @@ origins_per_span = 512
 random origin_stride = 1..16
 ```
 
-For v2, one stored sample includes the current `x` chunk plus sixteen future
-label chunks. That makes each stored sample about seventeen times larger than v1, so
-the v2 launchers use smaller microbatches and fewer spans per ClickHouse query.
-This avoids waiting many minutes for the first multi-GiB worker result and keeps
-progress observable.
+For v2, one stored sample includes the current `x` chunk, two future `y` chunks,
+and a compressed labels sidecar row. The v2 launchers use smaller microbatches
+and fewer spans per ClickHouse query because each query fetches the full
+2048-event past span and 2048-event future span for label extraction. This
+keeps progress observable.
 
 Training reads shards in shard-index order, shuffles the full loaded shard once
 in memory, and then forms mini-batches by contiguous slices from that shuffled

@@ -18,6 +18,7 @@ NORMAL_DEFAULTS: dict[str, Any] = {
     "builder_micro_batch_samples": 8192,
     "origins_per_span": 128,
     "past_span_events": 2048,
+    "future_span_events": 2048,
     "query_bundle_spans": 16,
     "workers": 8,
     "pending_multiplier": 1,
@@ -35,6 +36,7 @@ SMOKE_DEFAULTS: dict[str, Any] = {
     "builder_micro_batch_samples": 4096,
     "origins_per_span": 64,
     "past_span_events": 2048,
+    "future_span_events": 2048,
     "query_bundle_spans": 8,
     "workers": 2,
     "pending_multiplier": 1,
@@ -57,8 +59,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--label-chunks",
         type=int,
-        default=16,
-        help="Number of future 128-event chunks stored in y. Future chunks are label-only.",
+        default=2,
+        help="Number of future 128-event chunks stored as y bytes. Future chunks are label-only.",
     )
     parser.add_argument("--train-cache-gib", type=float, default=None)
     parser.add_argument("--validation-cache-gib", type=float, default=None)
@@ -66,6 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--builder-micro-batch-samples", type=int, default=None)
     parser.add_argument("--origins-per-span", type=int, default=None)
     parser.add_argument("--past-span-events", type=int, default=None)
+    parser.add_argument("--future-span-events", type=int, default=None)
     parser.add_argument("--min-origin-stride", type=int, default=1)
     parser.add_argument("--max-origin-stride", type=int, default=16)
     parser.add_argument("--query-bundle-spans", type=int, default=None)
@@ -165,6 +168,8 @@ def build_command(args: argparse.Namespace, values: dict[str, Any], cache_id: st
         str(values["origins_per_span"]),
         "--past-span-events",
         str(values["past_span_events"]),
+        "--future-span-events",
+        str(values["future_span_events"]),
         "--min-origin-stride",
         str(args.min_origin_stride),
         "--max-origin-stride",
