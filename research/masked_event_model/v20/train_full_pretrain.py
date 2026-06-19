@@ -68,7 +68,8 @@ DEFAULTS: dict[str, Any] = {
     "profile_training_every_steps": 1000,
     "profile_inference_every_steps": 0,
     "decoder_chunk_size": 0,
-    "checkpoint_latest_steps": 1000,
+    # 0 means auto: overwrite checkpoint_latest.pt on a shard-scale cadence.
+    "checkpoint_latest_steps": 0,
     "checkpoint_best_train": False,
     "checkpoint_best_val": True,
     "num_workers": 0,
@@ -79,10 +80,10 @@ DEFAULTS: dict[str, Any] = {
     "amp_growth_interval": 10000,
     "amp_max_scale": 2048.0,
     "compile_model": True,
-    "wandb_project": "June2026-event-token-mae-v20-full-pretrain",
+    "wandb_project": "June2026-event-token-mae-v20-full-sharddecay",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
-    "wandb_run_name": "v20-fullpretrain-fixedmask070-emb32-bs4096-3epochs",
+    "wandb_run_name": "v20-fullpretrain-sharddecay-fixedmask070-emb32-bs4096-3epochs",
     "amp_initial_scale": 1024.0,
     "amp_overflow_fatal_threshold": 8,
     "float32_matmul_precision": "high",
@@ -177,6 +178,7 @@ def main() -> None:
             for index in range(int(args.validation_shard_index), int(args.validation_shard_index) + validation_count)
         ]
         steps_per_epoch = 0
+        steps_per_shard = 1
         validation_batches = validation_count
         validation_batches_per_shard = 1
     else:
@@ -189,8 +191,11 @@ def main() -> None:
             batch_size=batch_size,
             max_validation_batches=int(args.validation_batches),
         )
-        steps_per_epoch = sum(shard.num_samples // batch_size for shard in train_shards)
+        shard_batch_counts = [shard.num_samples // batch_size for shard in train_shards]
+        steps_per_epoch = sum(shard_batch_counts)
+        steps_per_shard = max(1, min(shard_batch_counts))
         validation_batches_per_shard = 1
+    checkpoint_latest_steps = int(args.checkpoint_latest_steps) if int(args.checkpoint_latest_steps) > 0 else steps_per_shard
     values = dict(DEFAULTS)
     values.update(
         {
@@ -225,7 +230,7 @@ def main() -> None:
             # sizes may differ and a single global frequency would drift.
             "pretrain_validation_frequency": 0,
             "pretrain_validation_steps": validation_batches,
-            "checkpoint_latest_steps": int(args.checkpoint_latest_steps),
+            "checkpoint_latest_steps": checkpoint_latest_steps,
             "checkpoint_archive_steps": max(1, steps_per_epoch),
             "device": args.device,
             "wandb_project": args.wandb_project,

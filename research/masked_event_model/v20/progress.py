@@ -23,6 +23,9 @@ class TrainingProgressState:
     shard_count: int = 0
     shard_step: int = 0
     shard_steps: int = 0
+    epoch_step: int = 0
+    planned_epoch_steps: int = 0
+    planned_total_steps: int = 0
     samples_seen_total: int = 0
     loss: float = 0.0
     event_bit_acc_pct: float = 0.0
@@ -154,6 +157,9 @@ class TrainingReporter:
         state.shard_count = int(metrics.get("train/shards_per_epoch", state.shard_count))
         state.shard_step = int(metrics.get("train/shard_step", state.shard_step))
         state.shard_steps = int(metrics.get("train/shard_steps", state.shard_steps))
+        state.epoch_step = int(metrics.get("train/epoch_step", state.epoch_step))
+        state.planned_epoch_steps = int(metrics.get("train/epoch_steps_planned", state.planned_epoch_steps))
+        state.planned_total_steps = int(metrics.get("train/total_steps_planned", state.planned_total_steps))
         state.samples_seen_total = int(metrics.get("train/samples_seen_total", state.samples_seen_total))
         state.loss = float(metrics.get("pretrain/loss_total", state.loss))
         state.event_bit_acc_pct = float(metrics.get("pretrain/event_bit_acc_pct", state.event_bit_acc_pct))
@@ -175,7 +181,9 @@ class TrainingReporter:
         if "train/epoch_loss_mean" in metrics:
             state.epoch_loss_mean = float(metrics["train/epoch_loss_mean"])
         state.step_seconds = float(metrics.get("train/step_seconds", state.step_seconds))
-        if state.step_seconds > 0:
+        if "train/samples_per_second" in metrics:
+            state.samples_per_second = float(metrics["train/samples_per_second"])
+        elif state.step_seconds > 0:
             state.samples_per_second = state.batch_size / state.step_seconds
         state.data_wait_seconds = float(metrics.get("profile/data_wait_seconds", state.data_wait_seconds))
         state.shard_load_seconds = float(metrics.get("profile/data/shard_load_seconds", state.shard_load_seconds))
@@ -257,21 +265,32 @@ class TrainingReporter:
             TextColumn("{task.percentage:>6.2f}%"),
             expand=True,
         )
-        total_steps = max(1, state.max_steps) if state.max_steps > 0 else max(1, state.shard_count * max(1, state.shard_steps) * max(1, state.epochs))
+        if state.max_steps > 0:
+            total_steps = max(1, state.max_steps)
+        elif state.planned_total_steps > 0:
+            total_steps = max(1, state.planned_total_steps)
+        else:
+            total_steps = max(1, state.shard_count * max(1, state.shard_steps) * max(1, state.epochs))
         progress.add_task("steps", total=total_steps, completed=min(state.step, total_steps))
         epoch_progress = Progress(TextColumn("[bold]Epoch"), BarColumn(bar_width=None), TextColumn("{task.percentage:>6.2f}%"), expand=True)
         epoch_progress.add_task("epoch", total=100.0, completed=max(0.0, min(100.0, state.epoch_progress_pct)))
 
         elapsed_seconds = max(0.0, time.perf_counter() - self.started)
         avg_step_seconds = self._latest_step_seconds()
+        validation_overhead_per_step = 0.0
+        if state.validation_seconds is not None and state.shard_steps > 0:
+            validation_overhead_per_step = max(0.0, float(state.validation_seconds)) / max(1, state.shard_steps)
+        eta_step_seconds = avg_step_seconds + validation_overhead_per_step
         total_remaining_steps = max(0, total_steps - min(state.step, total_steps))
         shard_remaining_steps = max(0, state.shard_steps - state.shard_step)
-        epoch_step_estimate = max(1, state.shard_count * max(1, state.shard_steps))
-        epoch_completed_steps = int(round(max(0.0, min(100.0, state.epoch_progress_pct)) / 100.0 * epoch_step_estimate))
+        epoch_step_estimate = max(1, state.planned_epoch_steps or state.shard_count * max(1, state.shard_steps))
+        epoch_completed_steps = max(0, state.epoch_step) if state.epoch_step > 0 else int(
+            round(max(0.0, min(100.0, state.epoch_progress_pct)) / 100.0 * epoch_step_estimate)
+        )
         epoch_remaining_steps = max(0, epoch_step_estimate - epoch_completed_steps)
-        shard_eta_seconds = shard_remaining_steps * avg_step_seconds if avg_step_seconds > 0 else None
-        epoch_eta_seconds = epoch_remaining_steps * avg_step_seconds if avg_step_seconds > 0 else None
-        total_eta_seconds = total_remaining_steps * avg_step_seconds if avg_step_seconds > 0 else None
+        shard_eta_seconds = shard_remaining_steps * eta_step_seconds if eta_step_seconds > 0 else None
+        epoch_eta_seconds = epoch_remaining_steps * eta_step_seconds if eta_step_seconds > 0 else None
+        total_eta_seconds = total_remaining_steps * eta_step_seconds if eta_step_seconds > 0 else None
 
         summary = Table.grid(expand=False, padding=(0, 4))
         summary.add_column(justify="left", no_wrap=True)
@@ -281,6 +300,8 @@ class TrainingReporter:
         summary.add_row(f"[bold]Samples[/] {state.samples_seen_total:,}", f"[bold]Speed[/] {state.samples_per_second:,.1f}/s")
         summary.add_row(f"[bold]Epoch[/] {state.epoch}/{state.epochs}", f"[bold]Shard[/] {state.shard_index}/{state.shard_count} step {state.shard_step}/{state.shard_steps}")
         summary.add_row(f"[bold]Elapsed[/] {self._format_duration(elapsed_seconds)}", f"[bold]Step avg[/] {avg_step_seconds:.3f}s")
+        if validation_overhead_per_step > 0:
+            summary.add_row(f"[bold]Val overhead[/] {validation_overhead_per_step:.3f}s/step", f"[bold]ETA step[/] {eta_step_seconds:.3f}s")
         summary.add_row(f"[bold]Shard ETA[/] {self._format_duration(shard_eta_seconds)}", f"[bold]Epoch ETA[/] {self._format_duration(epoch_eta_seconds)}")
         summary.add_row(f"[bold]Run ETA[/] {self._format_duration(total_eta_seconds)}", f"[bold]Finish[/] {self._format_finish_time(total_eta_seconds)}")
         summary.add_row(f"[bold]Run[/] {state.run_name}", f"[bold]Device[/] {state.device}")

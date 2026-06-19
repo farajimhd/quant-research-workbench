@@ -531,6 +531,19 @@ def shuffled_epoch_sample_cache_shards(
     return epoch_shards
 
 
+def sample_cache_shard_step_count(shard: Any, config: EventSampleCacheDataConfig) -> int:
+    """Return the number of emitted batches for one sample-cache shard."""
+
+    usable_samples = int(shard.num_samples)
+    if config.max_batches_per_shard > 0:
+        usable_samples = min(usable_samples, int(config.max_batches_per_shard) * max(1, int(config.batch_size)))
+    if config.drop_last:
+        usable_samples = (usable_samples // max(1, int(config.batch_size))) * max(1, int(config.batch_size))
+    if usable_samples <= 0:
+        return 0
+    return int(math.ceil(usable_samples / max(1, int(config.batch_size))))
+
+
 def train_sample_cache_epochs(
     *,
     model: EventTokenMaskedAutoencoder,
@@ -552,10 +565,14 @@ def train_sample_cache_epochs(
     train_shards = discover_event_sample_shards(data_config)
     shard_count = len(train_shards)
     total_samples = sum(shard.num_samples for shard in train_shards)
+    planned_shard_steps = [sample_cache_shard_step_count(shard, data_config) for shard in train_shards]
+    planned_epoch_steps = sum(planned_shard_steps)
+    planned_total_steps = planned_epoch_steps * max(1, int(config.train.epochs))
     emit_progress_message(
         reporter,
         f"Sample-cache training shards={shard_count:,} samples={total_samples:,} "
-        f"epochs={config.train.epochs:,} batch_size={config.train.batch_size:,} max_steps={config.train.max_steps:,}",
+        f"epochs={config.train.epochs:,} batch_size={config.train.batch_size:,} "
+        f"steps_per_epoch={planned_epoch_steps:,} max_steps={config.train.max_steps:,}",
     )
     samples_seen_total = 0
     stop_training = False
@@ -623,7 +640,9 @@ def train_sample_cache_epochs(
                 {
                     "train/epoch": float(epoch),
                     "train/epoch_step": float(epoch_steps),
-                    "train/epoch_progress_pct": 100.0 * ((max(0, shard_position - 1) + shard_step / shard_steps) / max(1, effective_shard_count)),
+                    "train/epoch_steps_planned": float(planned_epoch_steps),
+                    "train/total_steps_planned": float(planned_total_steps),
+                    "train/epoch_progress_pct": 100.0 * (epoch_steps / max(1, planned_epoch_steps)),
                     "train/shard_index": float(shard_index),
                     "train/shard_position": float(shard_position),
                     "train/shards_per_epoch": float(effective_shard_count),
