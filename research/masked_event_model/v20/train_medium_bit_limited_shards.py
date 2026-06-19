@@ -231,11 +231,16 @@ def resolve_shard_plan(
             f"but only found {len(validation_candidates)} validation shards under {cache_root}"
         )
     selected_train = shards[train_start_shard : train_start_shard + train_shards]
-    validation_shards = validation_candidates[validation_shard_index : validation_shard_index + max_validation_batches]
-    too_small = [shard.shard_index for shard in validation_shards if shard.num_samples < batch_size]
-    if too_small:
+    requested_validation = validation_candidates[validation_shard_index : validation_shard_index + max_validation_batches]
+    validation_shards = []
+    for shard in requested_validation:
+        if shard.num_samples < batch_size:
+            break
+        validation_shards.append(shard)
+    if not validation_shards:
         raise SystemExit(
-            f"Validation shards have fewer than one full batch at batch_size={batch_size:,}: {too_small}"
+            f"No validation shards with at least one full batch at batch_size={batch_size:,} "
+            f"from {cache_root}"
         )
     validation_samples = len(validation_shards) * batch_size
     return selected_train, validation_shards, validation_samples

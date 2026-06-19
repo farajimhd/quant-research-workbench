@@ -278,29 +278,38 @@ def resolve_shard_plan(
     if train_start_shard >= len(shards):
         raise SystemExit(f"Need train start shard {train_start_shard}, but only found {len(shards)} train shards under {train_cache_root}")
     available_train = shards[train_start_shard:]
-    selected_train = available_train[:train_shards] if train_shards > 0 else available_train
+    requested_train = available_train[:train_shards] if train_shards > 0 else available_train
+    selected_train = []
+    for shard in requested_train:
+        if shard.num_samples < batch_size:
+            break
+        selected_train.append(shard)
     if not selected_train:
-        raise SystemExit(f"No training shards selected from {train_cache_root}")
+        raise SystemExit(
+            f"No training shards with at least one full batch at batch_size={batch_size:,} "
+            f"from {train_cache_root}"
+        )
     if validation_shard_index >= len(validation_candidates):
         raise SystemExit(
             f"Need validation start shard {validation_shard_index}, "
             f"but only found {len(validation_candidates)} validation shards under {validation_cache_root}"
         )
     available_validation = validation_candidates[validation_shard_index:]
-    validation_shards = (
+    requested_validation = (
         available_validation[: min(len(available_validation), max_validation_batches)]
         if max_validation_batches > 0
         else available_validation
     )
+    validation_shards = []
+    for shard in requested_validation:
+        if shard.num_samples < batch_size:
+            break
+        validation_shards.append(shard)
     if not validation_shards:
-        raise SystemExit(f"No validation shards selected from {validation_cache_root}")
-    too_small = [shard.shard_index for shard in validation_shards if shard.num_samples < batch_size]
-    if too_small:
-        raise SystemExit(f"Validation shards have fewer than one full batch at batch_size={batch_size:,}: {too_small}")
-    full_batch_counts = [shard.num_samples // batch_size for shard in selected_train]
-    empty_train = [shard.shard_index for shard, count in zip(selected_train, full_batch_counts, strict=True) if count <= 0]
-    if empty_train:
-        raise SystemExit(f"Training shards have no full batches at batch_size={batch_size:,}: {empty_train}")
+        raise SystemExit(
+            f"No validation shards with at least one full batch at batch_size={batch_size:,} "
+            f"from {validation_cache_root}"
+        )
     return selected_train, validation_shards, len(validation_shards)
 
 
