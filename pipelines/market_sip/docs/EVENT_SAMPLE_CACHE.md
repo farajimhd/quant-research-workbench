@@ -229,6 +229,12 @@ heartbeat line and writes progress JSON with the current pending-worker count.
 The heartbeat also reports the oldest pending job age, which is the first thing
 to check if ClickHouse is slow or saturated.
 
+To stop a running v2 build or full cycle, press `Ctrl+C` in the terminal that
+started the Python launcher. The launcher forwards the interrupt to the active
+subprocess and kills it if it does not stop within the grace period. A direct
+builder run also exits immediately on `Ctrl+C` after closing the current shard
+writer; already finalized shards remain on disk.
+
 ## Validate
 
 Run fast structural checks plus sampled ClickHouse audit checks:

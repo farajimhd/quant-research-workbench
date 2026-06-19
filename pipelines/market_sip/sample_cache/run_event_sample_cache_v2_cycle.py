@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -104,7 +107,7 @@ def main() -> None:
         print("=" * 100, flush=True)
         print(f"RUN [{index}/{len(commands)}] {' '.join(command)}", flush=True)
         print("=" * 100, flush=True)
-        result = subprocess.call(command, cwd=str(repo_root()))
+        result = run_interruptible(command, cwd=repo_root())
         if result != 0:
             raise SystemExit(result)
     print("=" * 100, flush=True)
@@ -226,6 +229,36 @@ def default_cache_id(smoke: bool) -> str:
 
 def repo_root() -> Path:
     return next(parent for parent in Path(__file__).resolve().parents if (parent / "research").exists())
+
+
+def run_interruptible(command: list[str], *, cwd: Path) -> int:
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    process = subprocess.Popen(command, cwd=str(cwd), creationflags=creationflags)
+    try:
+        return process.wait()
+    except KeyboardInterrupt:
+        print("\nINTERRUPT: stopping active sample-cache cycle subprocess...", flush=True)
+        terminate_process(process)
+        return 130
+
+
+def terminate_process(process: subprocess.Popen[Any], *, grace_seconds: float = 10.0) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        except Exception:
+            process.terminate()
+    else:
+        process.terminate()
+    deadline = time.monotonic() + grace_seconds
+    while process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if process.poll() is None:
+        print("INTERRUPT: subprocess did not stop gracefully; killing it.", flush=True)
+        process.kill()
+        process.wait()
 
 
 if __name__ == "__main__":

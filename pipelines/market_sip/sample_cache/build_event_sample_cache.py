@@ -295,23 +295,24 @@ def build_split(
     split_errors: dict[str, int] = {}
     recent_points: deque[tuple[float, int]] = deque([(split_started, 0)], maxlen=max(2, int(args.eta_recent_window) + 1))
     max_pending_jobs = max(1, int(args.workers)) * max(1, int(args.pending_multiplier))
-    with ThreadPoolExecutor(max_workers=max(1, int(args.workers))) as executor:
-        futures: dict[Future[dict[str, Any]], dict[str, Any]] = {}
-        next_job = 0
+    executor = ThreadPoolExecutor(max_workers=max(1, int(args.workers)))
+    futures: dict[Future[dict[str, Any]], dict[str, Any]] = {}
+    next_job = 0
 
-        def submit_until_full() -> None:
-            nonlocal next_job
-            while samples_written + len(futures) * micro_batch_samples < target_samples and len(futures) < max_pending_jobs:
-                job_seed = args.seed + next_job * 1_009 + (10_000_000 if split == "validation" else 0)
-                job_id = next_job + 1
-                future = executor.submit(build_micro_batch, data_config, index_rows, job_seed, job_id)
-                futures[future] = {
-                    "job_id": job_id,
-                    "seed": job_seed,
-                    "submitted_at": time.perf_counter(),
-                }
-                next_job += 1
+    def submit_until_full() -> None:
+        nonlocal next_job
+        while samples_written + len(futures) * micro_batch_samples < target_samples and len(futures) < max_pending_jobs:
+            job_seed = args.seed + next_job * 1_009 + (10_000_000 if split == "validation" else 0)
+            job_id = next_job + 1
+            future = executor.submit(build_micro_batch, data_config, index_rows, job_seed, job_id)
+            futures[future] = {
+                "job_id": job_id,
+                "seed": job_seed,
+                "submitted_at": time.perf_counter(),
+            }
+            next_job += 1
 
+    try:
         submit_until_full()
         while samples_written < target_samples and futures:
             done, _pending = wait(set(futures), timeout=max(1.0, float(args.heartbeat_seconds)), return_when=FIRST_COMPLETED)
@@ -392,6 +393,21 @@ def build_split(
                     pending_workers=len(futures),
                 )
                 submit_until_full()
+    except KeyboardInterrupt:
+        print(
+            f"\nINTERRUPT {split}: cancelling {len(futures):,} pending microbatch job(s); "
+            "partial finalized shards remain on disk.",
+            flush=True,
+        )
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        writer.close()
+        # Worker threads may be blocked inside a ClickHouse HTTP read. Exiting the
+        # process is the only reliable Windows stop path for a direct builder run.
+        os._exit(130)
+    else:
+        executor.shutdown(wait=True)
     writer.close()
     summary = {
         "target_samples": target_samples,
