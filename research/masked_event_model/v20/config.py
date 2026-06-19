@@ -30,6 +30,7 @@ class DataConfig:
     canonical_root: Path = DEFAULT_CANONICAL_ROOT
     precomputed_chunk_root: Path | None = None
     sample_cache_root: Path | None = DEFAULT_SAMPLE_CACHE_ROOT
+    sample_cache_validation_root: Path | None = None
     reference_dir: Path = DEFAULT_REFERENCE_DIR
     clickhouse_url: str = ""
     clickhouse_database: str = DEFAULT_DATABASE

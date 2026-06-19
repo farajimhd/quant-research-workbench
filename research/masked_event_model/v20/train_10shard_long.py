@@ -20,7 +20,8 @@ from research.mlops.event_sample_cache import EventSampleCacheDataConfig, discov
 
 DEFAULTS: dict[str, Any] = {
     "data_source": "sample_cache",
-    "sample_cache_root": r"D:\market-data\prepared\event_sample_cache",
+    "sample_cache_root": r"D:\market-data\prepared\event_sample_cache\cache_20260611_195259",
+    "sample_cache_validation_root": r"D:\market-data\prepared\event_sample_cache\cache_20260617_112833",
     "sample_cache_prefetch_shards": 2,
     "sample_cache_shuffle_records": True,
     "sample_cache_drop_last": True,
@@ -105,7 +106,8 @@ def parse_args() -> argparse.Namespace:
             "same launcher can run high/small variants after profiling."
         )
     )
-    parser.add_argument("--cache-root", default=DEFAULTS["sample_cache_root"])
+    parser.add_argument("--cache-root", "--train-cache-root", dest="cache_root", default=DEFAULTS["sample_cache_root"])
+    parser.add_argument("--validation-cache-root", default=DEFAULTS["sample_cache_validation_root"])
     parser.add_argument(
         "--train-start-shard",
         "--sample-cache-train-start-shard",
@@ -163,6 +165,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     cache_root = Path(args.cache_root)
+    validation_cache_root = Path(args.validation_cache_root)
     batch_size = max(1, int(args.batch_size))
     if args.skip_shard_discovery:
         if not args.print_only:
@@ -181,7 +184,8 @@ def main() -> None:
         validation_batches_per_shard = max(1, math.ceil(validation_batches / max(1, len(validation_shards))))
     else:
         train_shards, validation_shards, validation_samples = resolve_shard_plan(
-            cache_root=cache_root,
+            train_cache_root=cache_root,
+            validation_cache_root=validation_cache_root,
             train_start_shard=int(args.train_start_shard),
             train_shards=int(args.train_shards),
             validation_shard_index=int(args.validation_shard_index),
@@ -211,6 +215,7 @@ def main() -> None:
     values.update(
         {
             "sample_cache_root": str(cache_root),
+            "sample_cache_validation_root": str(validation_cache_root),
             "sample_cache_train_start_shard": int(args.train_start_shard),
             "sample_cache_train_max_shards": len(train_shards),
             "sample_cache_validation_split": "validation",
@@ -271,7 +276,8 @@ def main() -> None:
 
 def resolve_shard_plan(
     *,
-    cache_root: Path,
+    train_cache_root: Path,
+    validation_cache_root: Path,
     train_start_shard: int,
     train_shards: int,
     validation_shard_index: int,
@@ -287,19 +293,19 @@ def resolve_shard_plan(
         raise SystemExit("--validation-batches must be positive")
     if not 0.0 < validation_fraction <= 1.0:
         raise SystemExit("--validation-fraction must be in (0, 1]")
-    train_config = EventSampleCacheDataConfig(cache_root=cache_root, split="train", max_shards=0)
-    validation_config = EventSampleCacheDataConfig(cache_root=cache_root, split="validation", max_shards=0)
+    train_config = EventSampleCacheDataConfig(cache_root=train_cache_root, split="train", max_shards=0)
+    validation_config = EventSampleCacheDataConfig(cache_root=validation_cache_root, split="validation", max_shards=0)
     shards = discover_event_sample_shards(train_config)
     validation_candidates = discover_event_sample_shards(validation_config)
     if len(shards) < train_start_shard + train_shards:
         raise SystemExit(
             f"Need train shard range {train_start_shard}..{train_start_shard + train_shards - 1}, "
-            f"but only found {len(shards)} train shards under {cache_root}"
+            f"but only found {len(shards)} train shards under {train_cache_root}"
         )
     if validation_shard_index >= len(validation_candidates):
         raise SystemExit(
             f"Need validation start shard {validation_shard_index}, "
-            f"but only found {len(validation_candidates)} validation shards under {cache_root}"
+            f"but only found {len(validation_candidates)} validation shards under {validation_cache_root}"
         )
     selected_train = shards[train_start_shard : train_start_shard + train_shards]
     available_validation_shards = validation_candidates[validation_shard_index:]
@@ -328,6 +334,7 @@ def print_plan(
     print("v20 long pretraining over sample-cache shards", flush=True)
     print(f"profiled_training_path={PROFILED_TRAINING_PATH}", flush=True)
     print(f"cache_root={values['sample_cache_root']}", flush=True)
+    print(f"validation_cache_root={values['sample_cache_validation_root']}", flush=True)
     print(f"train_shards={train_shards[0].shard_index}..{train_shards[-1].shard_index} count={len(train_shards)}", flush=True)
     print(f"train_samples_per_epoch={sum(shard.num_samples for shard in train_shards):,}", flush=True)
     print(

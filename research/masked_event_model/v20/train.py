@@ -66,6 +66,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--canonical-root", default=str(data_defaults.canonical_root))
     parser.add_argument("--precomputed-chunk-root", default=str(data_defaults.precomputed_chunk_root or ""))
     parser.add_argument("--sample-cache-root", default=str(data_defaults.sample_cache_root or ""))
+    parser.add_argument("--sample-cache-validation-root", default=str(data_defaults.sample_cache_validation_root or ""))
     parser.add_argument("--reference-dir", default=str(data_defaults.reference_dir))
     parser.add_argument("--clickhouse-url", default=data_defaults.clickhouse_url)
     parser.add_argument("--clickhouse-database", default=data_defaults.clickhouse_database)
@@ -1166,6 +1167,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             canonical_root=Path(args.canonical_root),
             precomputed_chunk_root=Path(args.precomputed_chunk_root) if args.precomputed_chunk_root else None,
             sample_cache_root=Path(args.sample_cache_root) if args.sample_cache_root else None,
+            sample_cache_validation_root=Path(args.sample_cache_validation_root) if args.sample_cache_validation_root else None,
             reference_dir=Path(args.reference_dir),
             clickhouse_url=args.clickhouse_url,
             clickhouse_database=args.clickhouse_database,
@@ -1324,6 +1326,7 @@ def sample_cache_data_config(config: ExperimentConfig, split: str, seed: int) ->
     data = config.data
     if data.sample_cache_root is None:
         raise ValueError("sample_cache_data_config requires data.sample_cache_root")
+    cache_root = data.sample_cache_root
     cache_split = split
     start_shard_index = 0
     max_shards = data.max_index_files
@@ -1333,13 +1336,14 @@ def sample_cache_data_config(config: ExperimentConfig, split: str, seed: int) ->
         start_shard_index = data.sample_cache_train_start_shard
         max_shards = data.sample_cache_train_max_shards or data.max_index_files
     elif split == "validation":
+        cache_root = data.sample_cache_validation_root or data.sample_cache_root
         cache_split = data.sample_cache_validation_split
         start_shard_index = data.sample_cache_validation_start_shard
         max_shards = data.sample_cache_validation_max_shards or data.max_index_files
         max_samples = data.sample_cache_validation_max_samples
         max_batches_per_shard = data.sample_cache_validation_batches_per_shard
     return EventSampleCacheDataConfig(
-        cache_root=data.sample_cache_root,
+        cache_root=cache_root,
         split=cache_split,
         batch_size=config.train.batch_size,
         events_per_chunk=data.events_per_chunk,
