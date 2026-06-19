@@ -79,6 +79,8 @@ class ClickHouseEventsDataConfig:
     max_index_rows: int = 0
     max_span_attempt_multiplier: int = 10
     strict_lossless: bool = True
+    label_chunks: int = 0
+    return_torch: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +224,8 @@ def normalized_config(config: ClickHouseEventsDataConfig) -> ClickHouseEventsDat
         max_index_rows=config.max_index_rows,
         max_span_attempt_multiplier=config.max_span_attempt_multiplier,
         strict_lossless=config.strict_lossless,
+        label_chunks=max(0, int(config.label_chunks)),
+        return_torch=bool(config.return_torch),
     )
 
 
@@ -264,8 +268,13 @@ def build_clickhouse_events_batch(
     rng: random.Random,
 ) -> dict[str, object]:
     batch_started = time.perf_counter()
+    label_chunks = max(0, int(config.label_chunks))
     headers = np.zeros((config.batch_size, HEADER_BYTES), dtype=np.uint8)
     events = np.zeros((config.batch_size, config.events_per_chunk, EVENT_BYTES), dtype=np.uint8)
+    label_headers = np.zeros((config.batch_size, label_chunks, HEADER_BYTES), dtype=np.uint8) if label_chunks else None
+    label_events = (
+        np.zeros((config.batch_size, label_chunks, config.events_per_chunk, EVENT_BYTES), dtype=np.uint8) if label_chunks else None
+    )
     origin_ts = np.zeros((config.batch_size,), dtype=np.int64)
     origin_ordinals = np.zeros((config.batch_size,), dtype=np.int64)
     tickers: list[str] = []
@@ -312,10 +321,16 @@ def build_clickhouse_events_batch(
                 spans_rejected += 1
                 reject_counts[encoded] = reject_counts.get(encoded, 0) + 1
                 continue
-            span_headers, span_events, span_origin_ts, span_origin_ordinals = encoded
+            if label_chunks:
+                span_headers, span_events, span_label_headers, span_label_events, span_origin_ts, span_origin_ordinals = encoded
+            else:
+                span_headers, span_events, span_origin_ts, span_origin_ordinals = encoded
             take = min(span_headers.shape[0], config.batch_size - filled)
             headers[filled : filled + take] = span_headers[:take]
             events[filled : filled + take] = span_events[:take]
+            if label_chunks and label_headers is not None and label_events is not None:
+                label_headers[filled : filled + take] = span_label_headers[:take]
+                label_events[filled : filled + take] = span_label_events[:take]
             origin_ts[filled : filled + take] = span_origin_ts[:take]
             origin_ordinals[filled : filled + take] = span_origin_ordinals[:take]
             tickers.extend([span.ticker] * take)
@@ -328,11 +343,11 @@ def build_clickhouse_events_batch(
     if filled < config.batch_size:
         raise RuntimeError(f"Could only build {filled:,}/{config.batch_size:,} samples; rejects={reject_counts}")
     total_seconds = time.perf_counter() - batch_started
-    return {
-        "header_uint8": torch.from_numpy(headers),
-        "events_uint8": torch.from_numpy(events),
-        "origin_timestamp_ns": torch.from_numpy(origin_ts),
-        "origin_ordinal": torch.from_numpy(origin_ordinals),
+    batch: dict[str, object] = {
+        "header_uint8": torch.from_numpy(headers) if config.return_torch else headers,
+        "events_uint8": torch.from_numpy(events) if config.return_torch else events,
+        "origin_timestamp_ns": torch.from_numpy(origin_ts) if config.return_torch else origin_ts,
+        "origin_ordinal": torch.from_numpy(origin_ordinals) if config.return_torch else origin_ordinals,
         "ticker": tickers,
         "row_bytes": HEADER_BYTES + config.events_per_chunk * EVENT_BYTES,
         "events_per_chunk": config.events_per_chunk,
@@ -355,6 +370,11 @@ def build_clickhouse_events_batch(
         },
         "reject_counts": reject_counts,
     }
+    if label_chunks and label_headers is not None and label_events is not None:
+        batch["label_header_uint8"] = torch.from_numpy(label_headers) if config.return_torch else label_headers
+        batch["label_events_uint8"] = torch.from_numpy(label_events) if config.return_torch else label_events
+        batch["label_chunks"] = label_chunks
+    return batch
 
 
 def sample_spans(
@@ -374,12 +394,13 @@ def sample_spans(
         stride = rng.randint(config.min_origin_stride, config.max_origin_stride)
         high_extra = (config.origins_per_span - 1) * stride
         min_base = row.first_ordinal + config.events_per_chunk - 1
-        max_base = row.max_valid_ordinal - high_extra
+        label_events = max(0, int(config.label_chunks)) * config.events_per_chunk
+        max_base = row.max_valid_ordinal - high_extra - label_events
         if max_base < min_base:
             continue
         base = rng.randint(min_base, max_base)
         low = base - config.events_per_chunk + 1
-        high = base + high_extra
+        high = base + high_extra + label_events
         spans.append(
             EventSpan(
                 span_id=start_span_id + len(spans),
@@ -403,7 +424,7 @@ def fetch_spans(client: PersistentClickHouseBytesClient, config: ClickHouseEvent
     payload = client.execute_bytes(span_query(config, spans))
     if len(payload) % EVENT_ROW_DTYPE.itemsize != 0:
         raise RuntimeError(f"RowBinary payload size {len(payload):,} is not divisible by row size {EVENT_ROW_DTYPE.itemsize}")
-    return np.frombuffer(payload, dtype=EVENT_ROW_DTYPE).copy()
+    return np.frombuffer(payload, dtype=EVENT_ROW_DTYPE)
 
 
 def span_query(config: ClickHouseEventsDataConfig, spans: list[EventSpan]) -> str:
@@ -480,7 +501,7 @@ def encode_span_samples(
     rows: np.ndarray,
     span: EventSpan,
     config: ClickHouseEventsDataConfig,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | str:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | str:
     previous_sip_us: int | None = None
     if rows.shape[0] == span.expected_rows + 1 and int(rows["ordinal"][0]) == span.low_ordinal - 1:
         previous_sip_us = int(rows["sip_timestamp_us"][0])
@@ -494,6 +515,11 @@ def encode_span_samples(
         return "ordinal_gap"
     headers = np.zeros((span.origins_per_span, HEADER_BYTES), dtype=np.uint8)
     events = np.zeros((span.origins_per_span, config.events_per_chunk, EVENT_BYTES), dtype=np.uint8)
+    label_chunks = max(0, int(config.label_chunks))
+    label_headers = np.zeros((span.origins_per_span, label_chunks, HEADER_BYTES), dtype=np.uint8) if label_chunks else None
+    label_events = (
+        np.zeros((span.origins_per_span, label_chunks, config.events_per_chunk, EVENT_BYTES), dtype=np.uint8) if label_chunks else None
+    )
     origin_ts = np.zeros((span.origins_per_span,), dtype=np.int64)
     origin_ordinals = np.zeros((span.origins_per_span,), dtype=np.int64)
     for index in range(span.origins_per_span):
@@ -510,8 +536,21 @@ def encode_span_samples(
         header, event_bytes = encoded
         headers[index] = header
         events[index] = event_bytes
+        if label_chunks and label_headers is not None and label_events is not None:
+            for label_index in range(label_chunks):
+                label_start = origin_offset + 1 + label_index * config.events_per_chunk
+                label_end = label_start + config.events_per_chunk
+                label_previous_sip_us = int(rows["sip_timestamp_us"][label_start - 1])
+                encoded_label = encode_unified_event_window(rows[label_start:label_end], previous_sip_us=label_previous_sip_us)
+                if isinstance(encoded_label, str):
+                    return "label_" + encoded_label
+                label_header, label_event_bytes = encoded_label
+                label_headers[index, label_index] = label_header
+                label_events[index, label_index] = label_event_bytes
         origin_ts[index] = int(rows["sip_timestamp_us"][origin_offset]) * 1000
         origin_ordinals[index] = int(rows["ordinal"][origin_offset])
+    if label_chunks and label_headers is not None and label_events is not None:
+        return headers, events, label_headers, label_events, origin_ts, origin_ordinals
     return headers, events, origin_ts, origin_ordinals
 
 

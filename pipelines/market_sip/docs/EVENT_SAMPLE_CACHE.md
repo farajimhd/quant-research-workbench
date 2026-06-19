@@ -3,9 +3,9 @@
 This cache decouples ClickHouse sampling from GPU training. ClickHouse is used to
 materialize immutable sample shards on SSD; training reads only local shard files.
 
-## Record Format
+## v1 Record Format
 
-Each stored sample is one fixed-width byte record:
+Each v1 stored sample is one fixed-width byte record:
 
 ```text
 sample_bytes = 2062
@@ -22,9 +22,43 @@ The on-disk record is:
 The cache is not tied to training batch size. A shard is a flat stream of samples,
 and the training loader slices that stream into whatever batch size is requested.
 
+## v2 Labeled Record Format
+
+v2 keeps the same `x` record but adds a paired `y` record containing future
+chunks. The default label horizon is eight 128-event chunks:
+
+```text
+x_sample_bytes = 2062
+y_sample_bytes = 8 * 2062 = 16,496
+sample_bytes_on_disk = 18,558
+```
+
+The two files are written separately but share the same row order:
+
+```text
+train/shard_000000.x.bin
+train/shard_000000.y.bin
+train/shard_000000.json
+```
+
+Row `i` in `.x.bin` and row `i` in `.y.bin` are always the paired sample. The
+metadata stores both byte sizes, both SHA-256 digests, and `label_chunks`.
+
+For each origin ordinal `t`:
+
+```text
+x = events[t-127 : t] inclusive, encoded as one header + 128 events
+y = events[t+1 : t+1024] split into eight 128-event encoded chunks
+```
+
+Sampling bounds reserve the full future horizon inside the selected split. A
+training sample close to the train/validation boundary is rejected unless all
+1024 future label events still belong to the training index range. The same
+rule applies to validation.
+
 ## Shards
 
-Default shard size is 16 GiB. With 2062 bytes per sample, that is roughly:
+Default shard size is 16 GiB. For v1, with 2062 bytes per sample, that is roughly:
 
 ```text
 16 GiB / 2062 ~= 8.33M samples
@@ -37,6 +71,13 @@ train/shard_000000.samples.bin
 train/shard_000000.samples.json
 ```
 
+For v2, the same 16 GiB target produces fewer samples because every sample also
+stores the eight future chunks:
+
+```text
+16 GiB / 18,558 ~= 925k paired samples
+```
+
 The metadata JSON stores sample count, byte size, format version, and SHA-256.
 
 ## Cache Layout
@@ -47,6 +88,9 @@ D:\market-data\prepared\event_sample_cache\cache_YYYYMMDD_HHMMSS\
   train\
     shard_000000.samples.bin
     shard_000000.samples.json
+    shard_000000.x.bin
+    shard_000000.y.bin
+    shard_000000.json
   validation\
     shard_000000.samples.bin
     shard_000000.samples.json
@@ -68,7 +112,20 @@ against ClickHouse for sampled records.
 Use the Python launcher:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\sample_cache\run_build_event_sample_cache.py
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_build_event_sample_cache.py
+```
+
+For labeled v2 caches, use:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_build_event_sample_cache_v2.py
+```
+
+The v2 launcher passes:
+
+```text
+cache_version=2
+label_chunks=8
 ```
 
 The default first build is intentionally modest:
@@ -85,7 +142,7 @@ workers=8
 Scale with overrides after the path is validated:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\sample_cache\run_build_event_sample_cache.py --train-cache-gib 4096 --validation-cache-gib 32 --workers 16
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_build_event_sample_cache.py --train-cache-gib 4096 --validation-cache-gib 32 --workers 16
 ```
 
 The builder still queries ClickHouse in efficient span bundles. The
@@ -125,7 +182,7 @@ heartbeat line and writes progress JSON with the current pending-worker count.
 Run fast structural checks plus sampled ClickHouse audit checks:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\sample_cache\run_validate_event_sample_cache.py --cache-root D:\market-data\prepared\event_sample_cache\cache_YYYYMMDD_HHMMSS
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_validate_event_sample_cache.py --cache-root D:\market-data\prepared\event_sample_cache\cache_YYYYMMDD_HHMMSS
 ```
 
 Add `--verify-sha256` only when needed; it rereads full shards and is slower.
@@ -134,15 +191,17 @@ To validate finalized shards while the builder is still running, skip audit
 checks because audit samples are written when the split closes:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\sample_cache\run_validate_event_sample_cache.py --allow-partial --splits train --audit-clickhouse-checks 0
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_validate_event_sample_cache.py --allow-partial --splits train --audit-clickhouse-checks 0
 ```
 
 Validation checks:
 
 - shard sizes match metadata
 - sampled records decode into valid header/event tensors
+- for v2, sampled label chunks decode into valid header/event tensors
 - sampled event presence/header flags are sane
 - audit records can be re-queried from ClickHouse and byte-compared
+- for v2, both `x` and `y` are byte-compared against ClickHouse re-encoding
 
 ## Raw Source Audit
 
@@ -151,7 +210,7 @@ also verify that the final sample bytes trace back to the compact raw
 `quotes`/`trades` tables, run:
 
 ```powershell
-python D:\TradingML\codes\masked_event_model\v4\pipelines\market_sip\sample_cache\run_audit_event_sample_cache_against_raw.py --cache-root D:\market-data\prepared\event_sample_cache\cache_YYYYMMDD_HHMMSS --checks 25
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_audit_event_sample_cache_against_raw.py --cache-root D:\market-data\prepared\event_sample_cache\cache_YYYYMMDD_HHMMSS --checks 25
 ```
 
 This audit uses the `*_audit_samples.jsonl` metadata, so it can trace only the

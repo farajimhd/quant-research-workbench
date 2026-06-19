@@ -26,8 +26,13 @@ from research.mlops.compact_events import DEFAULT_EVENTS_PER_CHUNK, EVENT_BYTES,
 
 
 SAMPLE_CACHE_FORMAT = "compact_byte_event_sample_cache"
+SAMPLE_CACHE_FORMAT_V2 = "compact_byte_event_sample_cache_with_labels"
 SAMPLE_CACHE_VERSION = 1
+SAMPLE_CACHE_VERSION_V2 = 2
 SAMPLE_BYTES = HEADER_BYTES + DEFAULT_EVENTS_PER_CHUNK * EVENT_BYTES
+DEFAULT_LABEL_CHUNKS = 8
+LABEL_SAMPLE_BYTES = DEFAULT_LABEL_CHUNKS * SAMPLE_BYTES
+LABELED_SAMPLE_BYTES = SAMPLE_BYTES + LABEL_SAMPLE_BYTES
 DEFAULT_SAMPLE_CACHE_ROOT = Path("D:/market-data/prepared/event_sample_cache")
 
 
@@ -58,6 +63,23 @@ class EventSampleShard:
     sample_bytes: int
     sha256: str = ""
     byte_size: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class EventSampleLabeledShard:
+    split: str
+    shard_index: int
+    x_path: Path
+    y_path: Path
+    meta_path: Path
+    num_samples: int
+    x_sample_bytes: int
+    y_sample_bytes: int
+    label_chunks: int
+    x_sha256: str = ""
+    y_sha256: str = ""
+    x_byte_size: int = 0
+    y_byte_size: int = 0
 
 
 class EventSampleShardWriter:
@@ -140,12 +162,14 @@ class EventSampleShardWriter:
             self._open_next_shard()
         payload = np.ascontiguousarray(records).tobytes()
         self._file.write(payload)
-        self._file.flush()
         self._sha.update(payload)
         sample_count = int(records.shape[0])
-        for local_index in range(sample_count):
-            self._maybe_record_audit_sample(tickers, origin_ordinals, origin_timestamps, local_index)
-            self._global_sample_index += 1
+        if len(self.audit_rows) < self.audit_sample_limit:
+            for local_index in range(sample_count):
+                self._maybe_record_audit_sample(tickers, origin_ordinals, origin_timestamps, local_index)
+                self._global_sample_index += 1
+        else:
+            self._global_sample_index += sample_count
         self._shard_samples += sample_count
         self._shard_bytes += len(payload)
 
@@ -219,11 +243,248 @@ class EventSampleShardWriter:
         self._shard_bytes = 0
 
 
+class EventSampleLabeledShardWriter:
+    def __init__(
+        self,
+        *,
+        cache_root: Path,
+        split: str,
+        shard_sample_target: int,
+        label_chunks: int,
+        audit_sample_limit: int,
+        audit_rng: random.Random,
+    ) -> None:
+        self.cache_root = cache_root
+        self.split = split
+        self.split_dir = cache_root / split
+        self.split_dir.mkdir(parents=True, exist_ok=True)
+        self.shard_sample_target = max(1, int(shard_sample_target))
+        self.label_chunks = max(1, int(label_chunks))
+        self.y_sample_bytes = self.label_chunks * SAMPLE_BYTES
+        self.audit_sample_limit = max(0, int(audit_sample_limit))
+        self.audit_rng = audit_rng
+        self.shards: list[dict[str, Any]] = []
+        self.audit_rows: list[dict[str, Any]] = []
+        self._x_file = None
+        self._y_file = None
+        self._x_sha = hashlib.sha256()
+        self._y_sha = hashlib.sha256()
+        self._shard_index = 0
+        self._shard_samples = 0
+        self._x_shard_bytes = 0
+        self._y_shard_bytes = 0
+        self._x_tmp_path: Path | None = None
+        self._y_tmp_path: Path | None = None
+        self._x_path: Path | None = None
+        self._y_path: Path | None = None
+        self._global_sample_index = 0
+        self._open_next_shard()
+
+    def close(self) -> None:
+        self._finalize_current_shard()
+        if self.audit_rows:
+            audit_path = self.cache_root / f"{self.split}_audit_samples.jsonl"
+            with audit_path.open("w", encoding="utf-8") as handle:
+                for row in self.audit_rows:
+                    handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+    def write_batch(self, batch: dict[str, Any]) -> int:
+        headers = to_numpy_uint8(batch["header_uint8"])
+        events = to_numpy_uint8(batch["events_uint8"])
+        label_headers = to_numpy_uint8(batch["label_header_uint8"])
+        label_events = to_numpy_uint8(batch["label_events_uint8"])
+        if headers.ndim != 2 or headers.shape[1] != HEADER_BYTES:
+            raise ValueError(f"Expected headers shape [N,{HEADER_BYTES}], got {headers.shape}")
+        if events.ndim != 3 or events.shape[1:] != (DEFAULT_EVENTS_PER_CHUNK, EVENT_BYTES):
+            raise ValueError(f"Expected events shape [N,{DEFAULT_EVENTS_PER_CHUNK},{EVENT_BYTES}], got {events.shape}")
+        if label_headers.ndim != 3 or label_headers.shape[1:] != (self.label_chunks, HEADER_BYTES):
+            raise ValueError(f"Expected label headers shape [N,{self.label_chunks},{HEADER_BYTES}], got {label_headers.shape}")
+        if label_events.ndim != 4 or label_events.shape[1:] != (self.label_chunks, DEFAULT_EVENTS_PER_CHUNK, EVENT_BYTES):
+            raise ValueError(
+                f"Expected label events shape [N,{self.label_chunks},{DEFAULT_EVENTS_PER_CHUNK},{EVENT_BYTES}], got {label_events.shape}"
+            )
+        if not (headers.shape[0] == events.shape[0] == label_headers.shape[0] == label_events.shape[0]):
+            raise ValueError("X/Y sample counts do not match")
+        x_records = encode_sample_records(headers, events)
+        y_records = encode_label_records(label_headers, label_events)
+        tickers = list(batch.get("ticker", []))
+        origin_ordinals = to_numpy_int64(batch.get("origin_ordinal", np.zeros((headers.shape[0],), dtype=np.int64)))
+        origin_timestamps = to_numpy_int64(batch.get("origin_timestamp_ns", np.zeros((headers.shape[0],), dtype=np.int64)))
+        offset = 0
+        while offset < x_records.shape[0]:
+            remaining = self.shard_sample_target - self._shard_samples
+            take = min(remaining, x_records.shape[0] - offset)
+            self._write_records(
+                x_records[offset : offset + take],
+                y_records[offset : offset + take],
+                tickers[offset : offset + take] if tickers else [],
+                origin_ordinals[offset : offset + take],
+                origin_timestamps[offset : offset + take],
+            )
+            offset += take
+            if self._shard_samples >= self.shard_sample_target:
+                self._finalize_current_shard()
+                if offset < x_records.shape[0]:
+                    self._open_next_shard()
+        return int(x_records.shape[0])
+
+    def _open_next_shard(self) -> None:
+        stem = f"shard_{self._shard_index:06d}"
+        self._x_path = self.split_dir / f"{stem}.x.bin"
+        self._y_path = self.split_dir / f"{stem}.y.bin"
+        self._x_tmp_path = self.split_dir / f"{stem}.x.bin.tmp"
+        self._y_tmp_path = self.split_dir / f"{stem}.y.bin.tmp"
+        self._x_sha = hashlib.sha256()
+        self._y_sha = hashlib.sha256()
+        self._shard_samples = 0
+        self._x_shard_bytes = 0
+        self._y_shard_bytes = 0
+        self._x_file = self._x_tmp_path.open("wb")
+        self._y_file = self._y_tmp_path.open("wb")
+
+    def _write_records(
+        self,
+        x_records: np.ndarray,
+        y_records: np.ndarray,
+        tickers: list[str],
+        origin_ordinals: np.ndarray,
+        origin_timestamps: np.ndarray,
+    ) -> None:
+        if self._x_file is None or self._y_file is None:
+            self._open_next_shard()
+        x_payload = np.ascontiguousarray(x_records).tobytes()
+        y_payload = np.ascontiguousarray(y_records).tobytes()
+        self._x_file.write(x_payload)
+        self._y_file.write(y_payload)
+        self._x_sha.update(x_payload)
+        self._y_sha.update(y_payload)
+        sample_count = int(x_records.shape[0])
+        if len(self.audit_rows) < self.audit_sample_limit:
+            for local_index in range(sample_count):
+                self._maybe_record_audit_sample(tickers, origin_ordinals, origin_timestamps, local_index)
+                self._global_sample_index += 1
+        else:
+            self._global_sample_index += sample_count
+        self._shard_samples += sample_count
+        self._x_shard_bytes += len(x_payload)
+        self._y_shard_bytes += len(y_payload)
+
+    def current_shard_status(self) -> dict[str, Any]:
+        x_path = self._x_tmp_path if self._x_file is not None else self._x_path
+        y_path = self._y_tmp_path if self._y_file is not None else self._y_path
+        x_disk_bytes = x_path.stat().st_size if x_path is not None and x_path.exists() else 0
+        y_disk_bytes = y_path.stat().st_size if y_path is not None and y_path.exists() else 0
+        return {
+            "split": self.split,
+            "shard_index": self._shard_index,
+            "x_tmp_path": str(self._x_tmp_path) if self._x_tmp_path is not None else "",
+            "y_tmp_path": str(self._y_tmp_path) if self._y_tmp_path is not None else "",
+            "samples_in_current_shard": self._shard_samples,
+            "x_bytes_in_current_shard": self._x_shard_bytes,
+            "y_bytes_in_current_shard": self._y_shard_bytes,
+            "x_disk_bytes_in_current_shard": x_disk_bytes,
+            "y_disk_bytes_in_current_shard": y_disk_bytes,
+            "target_samples_per_shard": self.shard_sample_target,
+            "completed_shards": len(self.shards),
+        }
+
+    def _maybe_record_audit_sample(self, tickers: list[str], origin_ordinals: np.ndarray, origin_timestamps: np.ndarray, local_index: int) -> None:
+        if len(self.audit_rows) >= self.audit_sample_limit:
+            return
+        remaining_needed = self.audit_sample_limit - len(self.audit_rows)
+        remaining_budget = max(1, self.audit_sample_limit * 100 - self._global_sample_index)
+        if self.audit_rng.random() > min(1.0, remaining_needed / remaining_budget):
+            return
+        ticker = tickers[local_index] if tickers else ""
+        self.audit_rows.append(
+            {
+                "split": self.split,
+                "shard_index": self._shard_index,
+                "sample_index_in_shard": self._shard_samples + local_index,
+                "global_sample_index": self._global_sample_index,
+                "ticker": ticker,
+                "origin_ordinal": int(origin_ordinals[local_index]) if origin_ordinals.size else 0,
+                "origin_timestamp_ns": int(origin_timestamps[local_index]) if origin_timestamps.size else 0,
+                "label_chunks": self.label_chunks,
+            }
+        )
+
+    def _finalize_current_shard(self) -> None:
+        if self._x_file is None or self._y_file is None:
+            return
+        self._x_file.flush()
+        self._y_file.flush()
+        os.fsync(self._x_file.fileno())
+        os.fsync(self._y_file.fileno())
+        self._x_file.close()
+        self._y_file.close()
+        self._x_file = None
+        self._y_file = None
+        assert self._x_path is not None and self._y_path is not None
+        assert self._x_tmp_path is not None and self._y_tmp_path is not None
+        if self._shard_samples == 0:
+            self._x_tmp_path.unlink(missing_ok=True)
+            self._y_tmp_path.unlink(missing_ok=True)
+            return
+        self._x_tmp_path.replace(self._x_path)
+        self._y_tmp_path.replace(self._y_path)
+        meta = {
+            "format": SAMPLE_CACHE_FORMAT_V2,
+            "version": SAMPLE_CACHE_VERSION_V2,
+            "split": self.split,
+            "shard_index": self._shard_index,
+            "x_path": str(self._x_path.relative_to(self.cache_root)),
+            "y_path": str(self._y_path.relative_to(self.cache_root)),
+            "num_samples": self._shard_samples,
+            "x_sample_bytes": SAMPLE_BYTES,
+            "y_sample_bytes": self.y_sample_bytes,
+            "label_chunks": self.label_chunks,
+            "header_bytes": HEADER_BYTES,
+            "event_bytes": EVENT_BYTES,
+            "events_per_chunk": DEFAULT_EVENTS_PER_CHUNK,
+            "x_byte_size": self._x_shard_bytes,
+            "y_byte_size": self._y_shard_bytes,
+            "x_sha256": self._x_sha.hexdigest(),
+            "y_sha256": self._y_sha.hexdigest(),
+        }
+        meta_path = self.split_dir / f"shard_{self._shard_index:06d}.json"
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        self.shards.append(meta)
+        self._shard_index += 1
+        self._shard_samples = 0
+        self._x_shard_bytes = 0
+        self._y_shard_bytes = 0
+
+
 def encode_sample_records(headers: np.ndarray, events: np.ndarray) -> np.ndarray:
     records = np.empty((headers.shape[0], SAMPLE_BYTES), dtype=np.uint8)
     records[:, :HEADER_BYTES] = headers
     records[:, HEADER_BYTES:] = events.reshape(headers.shape[0], DEFAULT_EVENTS_PER_CHUNK * EVENT_BYTES)
     return records
+
+
+def encode_label_records(label_headers: np.ndarray, label_events: np.ndarray) -> np.ndarray:
+    if label_headers.ndim != 3 or label_headers.shape[2] != HEADER_BYTES:
+        raise ValueError(f"Expected label_headers shape [N,K,{HEADER_BYTES}], got {label_headers.shape}")
+    if label_events.ndim != 4 or label_events.shape[1] != label_headers.shape[1] or label_events.shape[2:] != (DEFAULT_EVENTS_PER_CHUNK, EVENT_BYTES):
+        raise ValueError(
+            f"Expected label_events shape [N,K,{DEFAULT_EVENTS_PER_CHUNK},{EVENT_BYTES}], got {label_events.shape}; "
+            f"label_headers={label_headers.shape}"
+        )
+    chunks = []
+    for chunk_index in range(label_headers.shape[1]):
+        chunks.append(encode_sample_records(label_headers[:, chunk_index, :], label_events[:, chunk_index, :, :]))
+    return np.concatenate(chunks, axis=1)
+
+
+def decode_label_records(records: np.ndarray, *, label_chunks: int = DEFAULT_LABEL_CHUNKS) -> tuple[np.ndarray, np.ndarray]:
+    expected = int(label_chunks) * SAMPLE_BYTES
+    if records.ndim != 2 or records.shape[1] != expected:
+        raise ValueError(f"Expected label records shape [N,{expected}], got {records.shape}")
+    chunks = records.reshape(records.shape[0], int(label_chunks), SAMPLE_BYTES)
+    headers = chunks[:, :, :HEADER_BYTES]
+    events = chunks[:, :, HEADER_BYTES:].reshape(records.shape[0], int(label_chunks), DEFAULT_EVENTS_PER_CHUNK, EVENT_BYTES)
+    return headers, events
 
 
 def decode_sample_records(records: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -239,11 +500,17 @@ def discover_event_sample_shards(config: EventSampleCacheDataConfig) -> list[Eve
     manifest_path = root / "manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        shard_rows = [row for row in manifest.get("shards", []) if row.get("split") == config.split]
+        shard_rows = [
+            row
+            for row in manifest.get("shards", [])
+            if row.get("split") == config.split and (row.get("format", SAMPLE_CACHE_FORMAT) == SAMPLE_CACHE_FORMAT) and "path" in row
+        ]
     else:
         shard_rows = []
         for meta_path in sorted((root / config.split).glob("shard_*.json")):
-            shard_rows.append(json.loads(meta_path.read_text(encoding="utf-8")))
+            row = json.loads(meta_path.read_text(encoding="utf-8"))
+            if row.get("format", SAMPLE_CACHE_FORMAT) == SAMPLE_CACHE_FORMAT and "path" in row:
+                shard_rows.append(row)
     shards: list[EventSampleShard] = []
     for row in shard_rows:
         path = root / row["path"]
@@ -270,6 +537,62 @@ def discover_event_sample_shards(config: EventSampleCacheDataConfig) -> list[Eve
     for shard in shards:
         if shard.sample_bytes != SAMPLE_BYTES:
             raise ValueError(f"Unsupported sample_bytes={shard.sample_bytes} in {shard.meta_path}; expected {SAMPLE_BYTES}")
+    return shards
+
+
+def discover_event_sample_labeled_shards(config: EventSampleCacheDataConfig) -> list[EventSampleLabeledShard]:
+    root = resolve_event_sample_cache_root(Path(config.cache_root), split=config.split)
+    manifest_path = root / "manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        shard_rows = [
+            row
+            for row in manifest.get("shards", [])
+            if row.get("split") == config.split and (row.get("format") == SAMPLE_CACHE_FORMAT_V2 or "x_path" in row or "y_path" in row)
+        ]
+    else:
+        shard_rows = []
+        for meta_path in sorted((root / config.split).glob("shard_*.json")):
+            row = json.loads(meta_path.read_text(encoding="utf-8"))
+            if row.get("format") == SAMPLE_CACHE_FORMAT_V2 or "x_path" in row or "y_path" in row:
+                shard_rows.append(row)
+    shards: list[EventSampleLabeledShard] = []
+    for row in shard_rows:
+        x_path = root / row["x_path"]
+        y_path = root / row["y_path"]
+        meta_path = root / config.split / f"shard_{int(row['shard_index']):06d}.json"
+        shards.append(
+            EventSampleLabeledShard(
+                split=str(row["split"]),
+                shard_index=int(row["shard_index"]),
+                x_path=x_path,
+                y_path=y_path,
+                meta_path=meta_path,
+                num_samples=int(row["num_samples"]),
+                x_sample_bytes=int(row.get("x_sample_bytes", SAMPLE_BYTES)),
+                y_sample_bytes=int(row["y_sample_bytes"]),
+                label_chunks=int(row.get("label_chunks", int(row["y_sample_bytes"]) // SAMPLE_BYTES)),
+                x_sha256=str(row.get("x_sha256", "")),
+                y_sha256=str(row.get("y_sha256", "")),
+                x_byte_size=int(row.get("x_byte_size", int(row["num_samples"]) * int(row.get("x_sample_bytes", SAMPLE_BYTES)))),
+                y_byte_size=int(row.get("y_byte_size", int(row["num_samples"]) * int(row["y_sample_bytes"]))),
+            )
+        )
+    shards.sort(key=lambda value: value.shard_index)
+    if config.start_shard_index > 0:
+        shards = shards[int(config.start_shard_index) :]
+    if config.max_shards > 0:
+        shards = shards[: config.max_shards]
+    if not shards:
+        raise RuntimeError(f"No {config.split!r} labeled sample-cache shards found under {root}")
+    for shard in shards:
+        if shard.x_sample_bytes != SAMPLE_BYTES:
+            raise ValueError(f"Unsupported x_sample_bytes={shard.x_sample_bytes} in {shard.meta_path}; expected {SAMPLE_BYTES}")
+        if shard.y_sample_bytes != shard.label_chunks * SAMPLE_BYTES:
+            raise ValueError(
+                f"Unsupported y_sample_bytes={shard.y_sample_bytes} in {shard.meta_path}; "
+                f"expected {shard.label_chunks * SAMPLE_BYTES}"
+            )
     return shards
 
 
@@ -301,7 +624,7 @@ def cache_has_split(path: Path, split: str) -> bool:
 
 
 def has_event_sample_shards(path: Path, *, split: str = "train") -> bool:
-    return (path / split).exists() and any((path / split).glob("shard_*.samples.json"))
+    return (path / split).exists() and (any((path / split).glob("shard_*.samples.json")) or any((path / split).glob("shard_*.json")))
 
 
 def event_sample_cache_mtime(path: Path, *, split: str = "train") -> float:
@@ -311,7 +634,7 @@ def event_sample_cache_mtime(path: Path, *, split: str = "train") -> float:
     progress = path / f"{split}_progress.json"
     if progress.exists():
         return progress.stat().st_mtime
-    shard_meta = list((path / split).glob("shard_*.samples.json"))
+    shard_meta = list((path / split).glob("shard_*.samples.json")) + list((path / split).glob("shard_*.json"))
     if shard_meta:
         return max(item.stat().st_mtime for item in shard_meta)
     return path.stat().st_mtime
@@ -541,3 +864,63 @@ def encode_single_audit_window(
         raise RuntimeError(f"Audit sample re-encode failed for {ticker}:{origin_ordinal}: {encoded}")
     headers, events, _origin_ts, _origin_ordinals = encoded
     return encode_sample_records(headers, events)[0]
+
+
+def encode_single_labeled_audit_window(
+    *,
+    client: PersistentClickHouseBytesClient,
+    config: ClickHouseEventsDataConfig,
+    ticker: str,
+    origin_ordinal: int,
+    label_chunks: int = DEFAULT_LABEL_CHUNKS,
+) -> tuple[np.ndarray, np.ndarray]:
+    config = normalized_config(
+        ClickHouseEventsDataConfig(
+            clickhouse_url=config.clickhouse_url,
+            user=config.user,
+            password=config.password,
+            database=config.database,
+            events_table=config.events_table,
+            train_index_table=config.train_index_table,
+            validation_index_table=config.validation_index_table,
+            index_table=config.index_table,
+            split=config.split,
+            tickers=config.tickers,
+            events_per_chunk=config.events_per_chunk,
+            batch_size=1,
+            num_spans=1,
+            origins_per_span=1,
+            min_origin_stride=1,
+            max_origin_stride=1,
+            query_bundle_spans=1,
+            max_threads=config.max_threads,
+            max_memory_usage=config.max_memory_usage,
+            seed=config.seed,
+            max_index_rows=config.max_index_rows,
+            max_span_attempt_multiplier=config.max_span_attempt_multiplier,
+            strict_lossless=config.strict_lossless,
+            label_chunks=int(label_chunks),
+            return_torch=False,
+        )
+    )
+    label_events = int(label_chunks) * config.events_per_chunk
+    low = int(origin_ordinal) - config.events_per_chunk + 1
+    high = int(origin_ordinal) + label_events
+    span = EventSpan(
+        span_id=0,
+        ticker=ticker,
+        low_ordinal=low,
+        high_ordinal=high,
+        base_origin=int(origin_ordinal),
+        stride=1,
+        origins_per_span=1,
+        expected_rows=config.events_per_chunk + label_events,
+    )
+    rows = fetch_spans(client, config, [span])
+    encoded = encode_span_samples(rows, span, config)
+    if isinstance(encoded, str):
+        raise RuntimeError(f"Audit labeled sample re-encode failed for {ticker}:{origin_ordinal}: {encoded}")
+    headers, events, label_headers, label_event_bytes, _origin_ts, _origin_ordinals = encoded
+    x_record = encode_sample_records(headers, events)[0]
+    y_record = encode_label_records(label_headers, label_event_bytes)[0]
+    return x_record, y_record

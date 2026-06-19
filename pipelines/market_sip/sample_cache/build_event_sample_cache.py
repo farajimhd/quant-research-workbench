@@ -6,6 +6,7 @@ import math
 import os
 import random
 import sys
+import threading
 import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -35,8 +36,15 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from research.mlops.event_sample_cache import (  # noqa: E402
+    DEFAULT_LABEL_CHUNKS,
     DEFAULT_SAMPLE_CACHE_ROOT,
+    LABELED_SAMPLE_BYTES,
+    SAMPLE_CACHE_FORMAT,
+    SAMPLE_CACHE_FORMAT_V2,
+    SAMPLE_CACHE_VERSION,
+    SAMPLE_CACHE_VERSION_V2,
     SAMPLE_BYTES,
+    EventSampleLabeledShardWriter,
     EventSampleShardWriter,
 )
 
@@ -45,6 +53,7 @@ DEFAULT_DATABASE = "market_sip_compact"
 DEFAULT_EVENTS_TABLE = "events"
 DEFAULT_TRAIN_INDEX_TABLE = "train_2019_to_2025"
 DEFAULT_VALIDATION_INDEX_TABLE = "validation_2026"
+_THREAD_LOCAL = threading.local()
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,6 +67,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-index-table", default=DEFAULT_VALIDATION_INDEX_TABLE)
     parser.add_argument("--cache-root", default=str(DEFAULT_SAMPLE_CACHE_ROOT))
     parser.add_argument("--cache-id", default="", help="Folder name under --cache-root. Defaults to timestamp.")
+    parser.add_argument("--cache-version", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--label-chunks", type=int, default=DEFAULT_LABEL_CHUNKS, help="v2 only: number of next 128-event chunks stored as labels.")
     parser.add_argument("--train-cache-gib", type=float, default=128.0)
     parser.add_argument("--validation-cache-gib", type=float, default=4.0)
     parser.add_argument(
@@ -101,6 +112,7 @@ def main() -> None:
     print(f"database={args.database} events_table={args.events_table}", flush=True)
     print(f"train_index_table={args.train_index_table} validation_index_table={args.validation_index_table}", flush=True)
     print(f"splits={','.join(requested_splits)}", flush=True)
+    print(f"cache_version={args.cache_version} label_chunks={args.label_chunks if args.cache_version == 2 else 0}", flush=True)
     print(f"train_cache_gib={args.train_cache_gib} validation_cache_gib={args.validation_cache_gib} shard_size_gib={args.shard_size_gib}", flush=True)
     print(f"workers={args.workers} micro_batch_samples={args.builder_micro_batch_samples}", flush=True)
     print(
@@ -125,8 +137,8 @@ def main() -> None:
     print("=" * 96, flush=True)
 
     manifest: dict[str, Any] = {
-        "format": "compact_byte_event_sample_cache",
-        "version": 1,
+        "format": SAMPLE_CACHE_FORMAT_V2 if args.cache_version == 2 else SAMPLE_CACHE_FORMAT,
+        "version": SAMPLE_CACHE_VERSION_V2 if args.cache_version == 2 else SAMPLE_CACHE_VERSION,
         "cache_id": cache_id,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source": {
@@ -136,7 +148,12 @@ def main() -> None:
             "train_index_table": args.train_index_table,
             "validation_index_table": args.validation_index_table,
         },
-        "config": vars(args) | {"cache_root": str(cache_root), "sample_bytes": SAMPLE_BYTES},
+        "config": vars(args)
+        | {
+            "cache_root": str(cache_root),
+            "sample_bytes": SAMPLE_BYTES,
+            "labeled_sample_bytes": LABELED_SAMPLE_BYTES if args.cache_version == 2 and args.label_chunks == DEFAULT_LABEL_CHUNKS else SAMPLE_BYTES + args.label_chunks * SAMPLE_BYTES,
+        },
         "splits": {},
         "shards": [],
         "profiles": [],
@@ -194,8 +211,9 @@ def build_split(
     user: str,
     password: str,
 ) -> dict[str, Any]:
-    target_samples = max(1, int((target_gib * 1024**3) // SAMPLE_BYTES))
-    shard_samples = max(1, int((args.shard_size_gib * 1024**3) // SAMPLE_BYTES))
+    sample_bytes_on_disk = SAMPLE_BYTES if int(args.cache_version) == 1 else SAMPLE_BYTES + int(args.label_chunks) * SAMPLE_BYTES
+    target_samples = max(1, int((target_gib * 1024**3) // sample_bytes_on_disk))
+    shard_samples = max(1, int((args.shard_size_gib * 1024**3) // sample_bytes_on_disk))
     micro_batch_samples = max(1, int(args.builder_micro_batch_samples))
     if micro_batch_samples % int(args.origins_per_span) != 0:
         raise ValueError("--builder-micro-batch-samples must be divisible by --origins-per-span")
@@ -223,6 +241,8 @@ def build_split(
             max_memory_usage=args.clickhouse_max_memory_usage,
             seed=args.seed,
             max_index_rows=args.max_index_rows,
+            label_chunks=int(args.label_chunks) if int(args.cache_version) == 2 else 0,
+            return_torch=False,
         )
     )
     text_client = ClickHouseHttpClient(data_config.clickhouse_url, data_config.user, data_config.password)
@@ -230,16 +250,27 @@ def build_split(
     index_rows = load_event_index_rows(text_client, data_config)
     print(
         f"SPLIT {split}: index_rows={len(index_rows):,} target_samples={target_samples:,} "
-        f"target_gib={(target_samples * SAMPLE_BYTES) / 1024**3:.2f} shard_samples={shard_samples:,}",
+        f"target_gib={(target_samples * sample_bytes_on_disk) / 1024**3:.2f} shard_samples={shard_samples:,} "
+        f"cache_version={args.cache_version} sample_bytes_on_disk={sample_bytes_on_disk:,}",
         flush=True,
     )
-    writer = EventSampleShardWriter(
-        cache_root=cache_root,
-        split=split,
-        shard_sample_target=shard_samples,
-        audit_sample_limit=args.audit_samples_per_split,
-        audit_rng=random.Random(args.seed + (0 if split == "train" else 1_000_000)),
-    )
+    if int(args.cache_version) == 2:
+        writer = EventSampleLabeledShardWriter(
+            cache_root=cache_root,
+            split=split,
+            shard_sample_target=shard_samples,
+            label_chunks=int(args.label_chunks),
+            audit_sample_limit=args.audit_samples_per_split,
+            audit_rng=random.Random(args.seed + (0 if split == "train" else 1_000_000)),
+        )
+    else:
+        writer = EventSampleShardWriter(
+            cache_root=cache_root,
+            split=split,
+            shard_sample_target=shard_samples,
+            audit_sample_limit=args.audit_samples_per_split,
+            audit_rng=random.Random(args.seed + (0 if split == "train" else 1_000_000)),
+        )
     samples_written = 0
     micro_batches_completed = 0
     profiles: list[dict[str, Any]] = []
@@ -336,7 +367,10 @@ def build_split(
         "target_samples": target_samples,
         "samples_written": samples_written,
         "target_gib": target_gib,
-        "actual_gib": samples_written * SAMPLE_BYTES / 1024**3,
+        "actual_gib": samples_written * sample_bytes_on_disk / 1024**3,
+        "cache_version": int(args.cache_version),
+        "label_chunks": int(args.label_chunks) if int(args.cache_version) == 2 else 0,
+        "sample_bytes_on_disk": sample_bytes_on_disk,
         "shard_count": len(writer.shards),
         "micro_batches_completed": micro_batches_completed,
         "elapsed_seconds": time.perf_counter() - split_started,
@@ -358,7 +392,7 @@ def write_split_progress(
     eta_recent_seconds: float,
     rate_total_samples_per_sec: float,
     eta_total_seconds: float,
-    writer: EventSampleShardWriter,
+    writer: EventSampleShardWriter | EventSampleLabeledShardWriter,
     pending_workers: int,
 ) -> None:
     progress = {
@@ -390,11 +424,8 @@ def write_split_progress(
 
 def build_micro_batch(config: ClickHouseEventsDataConfig, index_rows: list[Any], seed: int) -> dict[str, Any]:
     rng = random.Random(seed)
-    client = PersistentClickHouseBytesClient(config.clickhouse_url, config.user, config.password)
-    try:
-        batch = build_clickhouse_events_batch(index_rows, config, client, rng)
-    finally:
-        client.close()
+    client = thread_local_client(config)
+    batch = build_clickhouse_events_batch(index_rows, config, client, rng)
     return {
         "batch": batch,
         "profile": batch.get("profile", {}),
@@ -402,9 +433,22 @@ def build_micro_batch(config: ClickHouseEventsDataConfig, index_rows: list[Any],
     }
 
 
+def thread_local_client(config: ClickHouseEventsDataConfig) -> PersistentClickHouseBytesClient:
+    key = (config.clickhouse_url, config.user, config.password)
+    current = getattr(_THREAD_LOCAL, "clickhouse_client_key", None)
+    client = getattr(_THREAD_LOCAL, "clickhouse_client", None)
+    if client is None or current != key:
+        if client is not None:
+            client.close()
+        client = PersistentClickHouseBytesClient(config.clickhouse_url, config.user, config.password)
+        _THREAD_LOCAL.clickhouse_client = client
+        _THREAD_LOCAL.clickhouse_client_key = key
+    return client
+
+
 def trim_batch(batch: dict[str, Any], keep: int) -> dict[str, Any]:
     out = dict(batch)
-    for key in ("header_uint8", "events_uint8", "origin_timestamp_ns", "origin_ordinal"):
+    for key in ("header_uint8", "events_uint8", "label_header_uint8", "label_events_uint8", "origin_timestamp_ns", "origin_ordinal"):
         if key in out:
             out[key] = out[key][:keep]
     if "ticker" in out:
