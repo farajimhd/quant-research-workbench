@@ -28,7 +28,7 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_validation_max_shards": 8,
     "sample_cache_validation_batches_per_shard": 1,
     "sample_cache_interleave_shards": 1,
-    "batch_size": 4096,
+    "batch_size": 8192,
     "epochs": 4,
     "max_steps": 0,
     "input_representation": "bit",
@@ -68,11 +68,11 @@ DEFAULTS: dict[str, Any] = {
     "wandb_project": "June2026-event-token-mae-v20-mlp-decoder",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
-    "wandb_run_name": "v20-mlpdecoder-medium-event-token-emb32-bs4096-10shards",
+    "wandb_run_name": "v20-mlpdecoder-medium-event-token-emb32-bs8192-10shards",
     "warm_start_checkpoint": "",
 }
 
-PROFILED_TRAINING_PATH = "v20 event-token MAE medium emb32 bs4096 compile-enabled, shard-cycle scheduler, no interleave"
+PROFILED_TRAINING_PATH = "v20 event-token MAE medium emb32 bs8192 compile-enabled, shard-cycle scheduler, no interleave"
 VALIDATION_BATCHES = 8
 
 

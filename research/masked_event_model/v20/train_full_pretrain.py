@@ -76,7 +76,7 @@ DEFAULTS: dict[str, Any] = {
     "progress_layout": "auto",
     "device": "cuda",
     "amp": True,
-    "amp_dtype": "auto",
+    "amp_dtype": "bf16",
     "amp_growth_interval": 10000,
     "amp_max_scale": 2048.0,
     "compile_model": True,

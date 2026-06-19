@@ -32,7 +32,7 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_validation_max_shards": 8,
     "sample_cache_validation_batches_per_shard": 1,
     "sample_cache_interleave_shards": 1,
-    "batch_size": 4096,
+    "batch_size": 8192,
     "epochs": 4,
     "max_steps": 0,
     "input_representation": "bit",
@@ -71,14 +71,14 @@ DEFAULTS: dict[str, Any] = {
     "progress_layout": "auto",
     "device": "cuda",
     "amp": True,
-    "amp_dtype": "auto",
+    "amp_dtype": "bf16",
     "amp_growth_interval": 10000,
     "amp_max_scale": 2048.0,
     "compile_model": True,
     "wandb_project": "June2026-event-token-mae-v20-mlp-decoder",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
-    "wandb_run_name": "v20-mlpdecoder-fixedmask070-emb32-bs4096-10shards",
+    "wandb_run_name": "v20-mlpdecoder-fixedmask070-emb32-bs8192-10shards",
     "amp_initial_scale": 1024.0,
     "amp_overflow_fatal_threshold": 8,
     "float32_matmul_precision": "high",
@@ -102,7 +102,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Long v20 pretraining over 10 sample-cache shards. Defaults target the "
-            "medium emb32 bs4096 setup; model-size arguments are explicit so the "
+            "medium emb32 bs8192 setup; model-size arguments are explicit so the "
             "same launcher can run high/small variants after profiling."
         )
     )

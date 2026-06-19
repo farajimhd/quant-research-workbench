@@ -90,7 +90,7 @@ event mask ratio: 0.70
 event mask schedule: fixed 70%
 header bit corruption: 20% of samples, 5% of header bits
 visible event bit corruption: 30% of samples, 20% of visible event bits
-AMP dtype: auto, preferring BF16 on supported CUDA devices
+AMP dtype: bf16
 FP16 GradScaler cap: 2048 with growth interval 10000
 W&B project: June2026-event-token-mae-v20-mlp-decoder
 ```
@@ -139,17 +139,17 @@ The final long-run launcher for the fixed-grid MLP decoder path is:
 python research\masked_event_model\v20\train_10shard_long.py --fresh-start
 ```
 
-By default this v20 launcher keeps the cheaper MLP decoder inside the active AMP
+By default this v20 launcher uses BF16 AMP and keeps the cheaper MLP decoder inside the active AMP
 dtype. To run the explicit FP16 decoder experiment:
 
 ```powershell
-python research\masked_event_model\v20\train_10shard_long.py --fresh-start --run-name v20-fixedgrid-fp16decoder-fixedmask070-emb32-bs4096-10shards --amp-dtype fp16
+python research\masked_event_model\v20\train_10shard_long.py --fresh-start --run-name v20-fixedgrid-fp16decoder-fixedmask070-emb32-bs8192-10shards --amp-dtype fp16
 ```
 
 If the FP16 decoder run raises non-finite loss/gradient errors, compare against
 the conservative decoder path with `--decoder-force-fp32`.
 
-Defaults are medium `d_model=256`, `embedding_dim=32`, `batch_size=4096`, 10
+Defaults are medium `d_model=256`, `embedding_dim=32`, `batch_size=8192`, 10
 training shards, 4 epochs, one cosine cycle per selected-shard epoch,
 validation at each shard boundary, async latest checkpoints every 25 steps, and no shard
 interleaving. The launcher prints the equivalent low-level trainer command

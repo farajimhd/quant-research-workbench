@@ -120,7 +120,7 @@ class LossConfig:
 @dataclass(slots=True)
 class TrainConfig:
     output_root: Path = Path("")
-    batch_size: int = 4096
+    batch_size: int = 8192
     max_steps: int = 10000
     epochs: int = 4
     learning_rate: float = 2e-4
@@ -149,7 +149,7 @@ class TrainConfig:
     prefetch_factor: int = 1
     seed: int = 17
     amp: bool = True
-    amp_dtype: str = "auto"
+    amp_dtype: str = "bf16"
     amp_initial_scale: float = 1024.0
     amp_growth_interval: int = 10_000
     amp_max_scale: float = 2048.0

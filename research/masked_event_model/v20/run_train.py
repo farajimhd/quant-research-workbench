@@ -35,7 +35,7 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_prefetch_shards": 2,
     "sample_cache_shuffle_records": True,
     "sample_cache_drop_last": True,
-    "batch_size": 4096,
+    "batch_size": 8192,
     "max_steps": 10000,
     "epochs": 4,
     "num_workers": 0,
