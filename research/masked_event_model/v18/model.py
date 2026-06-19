@@ -442,7 +442,6 @@ class EventChunkEncoder(nn.Module):
             norm_first=True,
         )
         self.visible_context_transformer_encoder = transformer_encoder(encoder_layer, num_layers=config.encoder_layers)
-        self.encoded_token_output_layer_norm = nn.LayerNorm(config.d_model)
         self.chunk_embedding_bottleneck = ChunkEmbeddingBottleneck(config)
         self.reset_parameters()
 
@@ -491,7 +490,7 @@ class EventChunkEncoder(nn.Module):
         # Input shapes: header [B, 1, D], events [B, V or E, D]. Output shape: [B, 2 + V or 2 + E, D].
         encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
         # Input shape: [B, T, D]. Output shape: [B, T, D].
-        encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
+        encoded_tokens = self.visible_context_transformer_encoder(encoder_input_tokens)
         # Input shape: [B, T, D]. Output shape: [B, Z].
         chunk_embedding = self.chunk_embedding_bottleneck(encoded_tokens)
         return encoded_tokens, chunk_embedding
@@ -503,7 +502,6 @@ ENCODER_MODULE_NAMES = (
     "visible_event_token_encoder",
     "encoder_sequence_builder",
     "visible_context_transformer_encoder",
-    "encoded_token_output_layer_norm",
     "chunk_embedding_bottleneck",
 )
 
@@ -541,7 +539,6 @@ class EventTokenMaskedAutoencoder(nn.Module):
             norm_first=True,
         )
         self.visible_context_transformer_encoder = transformer_encoder(encoder_layer, num_layers=config.encoder_layers)
-        self.encoded_token_output_layer_norm = nn.LayerNorm(config.d_model)
         self.chunk_embedding_bottleneck = ChunkEmbeddingBottleneck(config)
         self.per_masked_event_mlp_decoder = PerMaskedEventMlpDecoder(events_per_chunk=self.events_per_chunk, config=config)
         self.reset_parameters()
@@ -698,7 +695,7 @@ class EventTokenMaskedAutoencoder(nn.Module):
         # Input shapes: header [B, 1, D], events [B, V or E, D]. Output shape: [B, 2 + V or 2 + E, D].
         encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
         # Input shape: [B, T, D]. Output shape: [B, T, D].
-        encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
+        encoded_tokens = self.visible_context_transformer_encoder(encoder_input_tokens)
         # Input shape: [B, T, D]. Output shape: [B, Z].
         chunk_embedding = self.chunk_embedding_bottleneck(encoded_tokens)
         return encoded_tokens, chunk_embedding

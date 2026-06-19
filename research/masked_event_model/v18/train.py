@@ -1763,7 +1763,6 @@ class MaskedTrainingSummaryWrapper(torch.nn.Module):
         self.visible_event_token_encoder = model.visible_event_token_encoder
         self.encoder_sequence_builder = model.encoder_sequence_builder
         self.visible_context_transformer_encoder = model.visible_context_transformer_encoder
-        self.encoded_token_output_layer_norm = model.encoded_token_output_layer_norm
         self.chunk_embedding_bottleneck = model.chunk_embedding_bottleneck
         self.per_masked_event_mlp_decoder = model.per_masked_event_mlp_decoder
 
@@ -1787,7 +1786,7 @@ class MaskedTrainingSummaryWrapper(torch.nn.Module):
         header_token = self.header_token_encoder(header_uint8)
         visible_event_tokens = self.visible_event_token_encoder(selected_events_uint8, selected_event_indices)
         encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
-        encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
+        encoded_tokens = self.visible_context_transformer_encoder(encoder_input_tokens)
         chunk_embedding = self.chunk_embedding_bottleneck(encoded_tokens)
         event_bit_logits = self.per_masked_event_mlp_decoder(chunk_embedding, masks.masked_event_indices)
         return chunk_embedding, event_bit_logits
