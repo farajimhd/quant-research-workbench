@@ -110,6 +110,127 @@ future_H_low_bid_elapsed_us =
 The same first-occurrence tie rule is used for `future_H_max_trade_*` and
 `future_H_min_trade_*`.
 
+### v2 Stored Columns
+
+The binary shard files are not columnar. They store fixed-width byte records,
+and the logical columns are decoded from fixed offsets.
+
+Each row of `shard_*.x.bin` is:
+
+```text
+x_header_uint8: uint8[14]
+x_events_uint8: uint8[128, 16]
+```
+
+The physical byte order is:
+
+```text
+bytes 0..13      = x_header_uint8
+bytes 14..2061   = x_events_uint8 flattened row-major as event[0..127][byte0..15]
+```
+
+`x_header_uint8` is the compact event-chunk header for `events[t-127:t]`.
+`x_events_uint8` contains the 128 compact event rows ending at the origin
+event. Each event row uses the shared 16-byte compact event representation:
+
+```text
+event_byte_00     = event type / presence flags
+event_byte_01..02 = intra-window time delta bucket
+event_byte_03..04 = primary price delta, ask delta, or trade delta
+event_byte_05..06 = secondary price delta or spread delta
+event_byte_07     = primary size bucket
+event_byte_08     = secondary size bucket
+event_byte_09     = small-size / tape flags
+event_byte_10     = primary exchange dense id
+event_byte_11     = secondary exchange dense id
+event_byte_12..15 = packed condition ids
+```
+
+The exact byte-level encoder is `encode_unified_event_window` in
+`research/mlops/clickhouse_events.py`. The compact representation reference is
+`research/market_references/compact_market_microstructure_representation.md`.
+
+Each row of `shard_*.y.bin` is label-only future data:
+
+```text
+y_future_chunk_0_header_uint8: uint8[14]
+y_future_chunk_0_events_uint8: uint8[128, 16]
+y_future_chunk_1_header_uint8: uint8[14]
+y_future_chunk_1_events_uint8: uint8[128, 16]
+```
+
+The physical byte order is:
+
+```text
+chunk 0 = events[t+1:t+128]   encoded as header(14) + events(128 * 16)
+chunk 1 = events[t+129:t+256] encoded as header(14) + events(128 * 16)
+```
+
+`y` is future label data. It must not be used as a model feature.
+
+Each row of `shard_*.labels.parquet` is row-aligned with the same `x` and `y`
+row. The sidecar currently has 130 columns:
+
+```text
+ticker
+origin_ordinal
+origin_timestamp_us
+
+past_2048_event_count
+past_2048_quote_count
+past_2048_trade_count
+past_2048_quote_count_ratio
+past_2048_trade_count_ratio
+past_2048_elapsed_us
+
+asof_has_quote
+asof_ask_price_int
+asof_ask_price_scale
+asof_ask_size
+asof_bid_price_int
+asof_bid_price_scale
+asof_bid_size
+
+asof_last_trade_has_trade
+asof_last_trade_price_int
+asof_last_trade_price_scale
+asof_last_trade_size
+
+future_H_elapsed_us
+future_H_quote_count
+future_H_trade_count
+future_H_has_quote
+future_H_ask_price_int
+future_H_ask_price_scale
+future_H_ask_size
+future_H_bid_price_int
+future_H_bid_price_scale
+future_H_bid_size
+future_H_high_ask_price_int
+future_H_high_ask_price_scale
+future_H_high_ask_elapsed_us
+future_H_low_bid_price_int
+future_H_low_bid_price_scale
+future_H_low_bid_elapsed_us
+future_H_max_trade_price_int
+future_H_max_trade_price_scale
+future_H_max_trade_elapsed_us
+future_H_min_trade_price_int
+future_H_min_trade_price_scale
+future_H_min_trade_elapsed_us
+```
+
+`future_H_*` is expanded for `H in {128, 256, 512, 1024, 2048}`. These columns
+are labels only. The `asof_*` and `past_2048_*` columns are known at the origin
+event and may be used as features if a later model needs scalar context.
+
+Price labels use the compact integer/scale convention:
+
+```text
+scale = 0 -> price = price_int / 100
+scale = 1 -> price = price_int / 10000
+```
+
 ## Shards
 
 Default shard size is 16 GiB. For v1, with 2062 bytes per sample, that is roughly:
