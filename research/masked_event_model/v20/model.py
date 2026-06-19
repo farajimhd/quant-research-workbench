@@ -322,9 +322,9 @@ class AllEventMlpDecoder(nn.Module):
     """Decode all event positions from the chunk embedding, then gather masked ones.
 
     v20 already bakes fixed event-slot semantics into the chunk embedding. The
-    decoder therefore should not add another masked-position embedding. Instead,
-    it maps the chunk embedding to all 128 event reconstruction heads and then
-    gathers the masked positions used by the loss.
+    decoder therefore maps the chunk embedding to all 128 event reconstruction
+    heads and then gathers the masked indices used by the loss; it has no
+    learned placeholder token for masked events.
     """
 
     def __init__(self, *, events_per_chunk: int, config: ModelConfig) -> None:
@@ -658,8 +658,8 @@ class EventTokenMaskedAutoencoder(nn.Module):
         return encoded_tokens, chunk_embedding
 
     def decode_masked_events(self, chunk_embedding: torch.Tensor, masks: EventMaskBatch) -> torch.Tensor:
-        # The decoder never receives a separate masked-position embedding or the
-        # masked event bytes. Any position-specific reconstruction must be read
+        # The decoder never receives masked event bytes or learned masked-event
+        # placeholder tokens. Any position-specific reconstruction must be read
         # from the fixed-grid information compressed into the chunk embedding.
         # Input shapes: chunk embedding [B, Z], masked indices [B, M]. Output shape: [B, M, 16, 8].
         return self.all_event_mlp_decoder(chunk_embedding, masks.masked_event_indices)

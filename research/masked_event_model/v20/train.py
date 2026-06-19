@@ -211,9 +211,9 @@ def main(argv: list[str] | None = None) -> None:
     model_parameters = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {model_parameters:,}", flush=True)
     if config.train.decoder_chunk_size > 0:
-        print("WARN --decoder-chunk-size is ignored by v20; the MLP decoder only processes masked events.", flush=True)
+        print("WARN --decoder-chunk-size is ignored by v20; the MLP decoder predicts all event positions before gather.", flush=True)
     if config.model.decoder_layers != ModelConfig().decoder_layers:
-        print("WARN --decoder-layers is ignored by v20; reconstruction uses a per-masked-event MLP decoder.", flush=True)
+        print("WARN --decoder-layers is ignored by v20; reconstruction uses an all-event MLP decoder.", flush=True)
     train_model = maybe_compile_model(model, config.train.compile_model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay)
     scheduler = build_scheduler(optimizer, config.train)
@@ -1629,7 +1629,7 @@ def build_model_summary_text(model: torch.nn.Module, details: dict[str, Any], pa
         f"Training encoder tokens: [B, 2 + visible_events, d_model]",
         f"Production encoder tokens: [B, 2 + {details['events_per_chunk']}, d_model]",
         f"Chunk bottleneck: zero-initialized fixed grid [B, 130, d_model] -> [B, {details['embedding_dim']}]",
-        f"Decoder: projected chunk embedding -> all event logits -> gather masked positions",
+        f"Decoder: projected chunk embedding -> all event logits -> gather masked indices",
         f"Output event bit logits: [B, masked_events, 16, 8]",
         f"Embedding: [B, {details['embedding_dim']}]",
         "",
@@ -1664,10 +1664,10 @@ def build_model_mermaid(config: ExperimentConfig) -> str:
     ENC --> GRID[\"zero-initialized fixed grid bottleneck<br/>CLS + header + visible event slots\"]
     GRID --> EMB[\"chunk embedding<br/>B x {config.model.embedding_dim}\"]
     EMB --> MEM[\"project chunk embedding<br/>B x d_model\"]
-    M --> MPOS[\"masked event positions<br/>B x {masked}\"]
+    M --> MIDX[\"masked event indices<br/>gather only, no embedding\"]
     MEM --> DEC[\"all-event MLP decoder<br/>B x {events} x 16 x 8\"]
-    DEC --> GATHER[\"gather masked positions\"]
-    MPOS --> GATHER
+    DEC --> GATHER[\"gather masked indices\"]
+    MIDX --> GATHER
     GATHER --> HEAD[\"16 x 8 logits per masked event\"]
     HEAD --> LOSS[\"BCE on masked event bits only\"]
 """

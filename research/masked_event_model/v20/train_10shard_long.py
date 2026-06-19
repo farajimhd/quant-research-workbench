@@ -86,7 +86,7 @@ DEFAULTS: dict[str, Any] = {
 
 VALIDATION_BATCHES = 8
 PROFILED_TRAINING_PATH = (
-    "v20 event-token MAE, per-masked-event MLP decoder, "
+    "v20 event-token MAE, all-event MLP decoder with masked-index gather, "
     "fixed 70% event mask, sample-cache shards, shard-cycle scheduler, no interleave, torch.compile enabled"
 )
 

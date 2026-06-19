@@ -46,8 +46,8 @@ event-position embedding is used only before the transformer for visible event
 tokens. It is not used to initialize masked fixed-grid slots, so the bottleneck
 does not receive learned placeholder content for hidden events. The transformer
 still processes only visible events during MAE training. The decoder is
-intentionally small, but it no longer receives separate masked-position
-embeddings:
+intentionally small, and it receives no learned placeholder tokens for masked
+events:
 
 ```text
 chunk_embedding [B, embedding_dim]
@@ -55,7 +55,7 @@ chunk_embedding [B, embedding_dim]
   -> MLP
   -> all_event_logits [B, 128, 16, 8]
 masked_event_indices [B, masked_events]
-  -> gather masked positions
+  -> gather masked indices
   -> event_bit_logits [B, masked_events, 16, 8]
 ```
 

@@ -39,8 +39,9 @@ def build_event_masks(events_uint8: torch.Tensor, config: MaskConfig) -> EventMa
     """Choose event records to remove from the encoder and reconstruct later.
 
     Masking happens at the event-record level here, not at the byte level. The
-    encoder sees a shorter sequence of intact visible events; the decoder gets
-    learned queries at the masked event positions and predicts their 16 bytes.
+    encoder sees a shorter sequence of intact visible events. The decoder
+    predicts all event positions from the chunk embedding, and these masked
+    indices are used only to gather the positions that contribute to the loss.
     """
 
     if events_uint8.ndim != 3:
