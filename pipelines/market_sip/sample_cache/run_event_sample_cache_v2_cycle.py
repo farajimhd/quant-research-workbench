@@ -12,10 +12,11 @@ NORMAL_DEFAULTS: dict[str, Any] = {
     "train_cache_gib": 2720.0,
     "validation_cache_gib": 64.0,
     "shard_size_gib": 16.0,
-    "builder_micro_batch_samples": 65536,
-    "origins_per_span": 512,
-    "query_bundle_spans": 64,
+    "builder_micro_batch_samples": 8192,
+    "origins_per_span": 128,
+    "query_bundle_spans": 16,
     "workers": 8,
+    "pending_multiplier": 1,
     "audit_samples_per_split": 256,
     "sample_record_checks": 256,
     "validation_clickhouse_checks": 25,
@@ -31,6 +32,7 @@ SMOKE_DEFAULTS: dict[str, Any] = {
     "origins_per_span": 64,
     "query_bundle_spans": 8,
     "workers": 2,
+    "pending_multiplier": 1,
     "audit_samples_per_split": 64,
     "sample_record_checks": 64,
     "validation_clickhouse_checks": 5,
@@ -57,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-origin-stride", type=int, default=16)
     parser.add_argument("--query-bundle-spans", type=int, default=None)
     parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument("--pending-multiplier", type=int, default=None)
     parser.add_argument("--clickhouse-max-threads", type=int, default=8)
     parser.add_argument("--clickhouse-max-memory-usage", default="80G")
     parser.add_argument("--audit-samples-per-split", type=int, default=None)
@@ -157,6 +160,8 @@ def build_command(args: argparse.Namespace, values: dict[str, Any], cache_id: st
         str(values["query_bundle_spans"]),
         "--workers",
         str(values["workers"]),
+        "--pending-multiplier",
+        str(values["pending_multiplier"]),
         "--clickhouse-max-threads",
         str(args.clickhouse_max_threads),
         "--clickhouse-max-memory-usage",

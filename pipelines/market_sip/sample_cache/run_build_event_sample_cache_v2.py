@@ -20,12 +20,16 @@ DEFAULTS: dict[str, Any] = {
     "train_cache_gib": 2720,
     "validation_cache_gib": 64,
     "shard_size_gib": 16,
-    "builder_micro_batch_samples": 65536,
-    "origins_per_span": 512,
+    # v2 writes x plus eight future chunks, so one sample is about 9x larger
+    # than v1. Keep microbatches smaller so progress is visible and each worker
+    # does not hold a multi-GiB labeled batch before writing.
+    "builder_micro_batch_samples": 8192,
+    "origins_per_span": 128,
     "min_origin_stride": 1,
     "max_origin_stride": 16,
-    "query_bundle_spans": 64,
+    "query_bundle_spans": 16,
     "workers": 8,
+    "pending_multiplier": 1,
     "eta_recent_window": 50,
     "heartbeat_seconds": 30,
     "clickhouse_max_threads": 8,

@@ -83,6 +83,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-origin-stride", type=int, default=16)
     parser.add_argument("--query-bundle-spans", type=int, default=64)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument(
+        "--pending-multiplier",
+        type=int,
+        default=1,
+        help="Maximum queued microbatches as workers * pending_multiplier. Keep this at 1 for large labeled v2 samples.",
+    )
     parser.add_argument("--eta-recent-window", type=int, default=50, help="Completed microbatches used for rolling-rate ETA.")
     parser.add_argument("--heartbeat-seconds", type=float, default=30.0, help="Print pending-worker status if no microbatch completes within this interval.")
     parser.add_argument("--clickhouse-max-threads", type=int, default=8)
@@ -114,7 +120,11 @@ def main() -> None:
     print(f"splits={','.join(requested_splits)}", flush=True)
     print(f"cache_version={args.cache_version} label_chunks={args.label_chunks if args.cache_version == 2 else 0}", flush=True)
     print(f"train_cache_gib={args.train_cache_gib} validation_cache_gib={args.validation_cache_gib} shard_size_gib={args.shard_size_gib}", flush=True)
-    print(f"workers={args.workers} micro_batch_samples={args.builder_micro_batch_samples}", flush=True)
+    print(
+        f"workers={args.workers} pending_multiplier={args.pending_multiplier} "
+        f"micro_batch_samples={args.builder_micro_batch_samples}",
+        flush=True,
+    )
     print(
         "secret_status="
         + str(
@@ -255,6 +265,14 @@ def build_split(
         flush=True,
     )
     if int(args.cache_version) == 2:
+        x_only_equivalent = int((target_gib * 1024**3) // SAMPLE_BYTES)
+        print(
+            f"SPLIT {split}: v2 labeled samples store x_bytes={SAMPLE_BYTES:,} "
+            f"y_bytes={int(args.label_chunks) * SAMPLE_BYTES:,} label_chunks={int(args.label_chunks):,}; "
+            f"same GiB would hold {x_only_equivalent:,} x-only v1 samples",
+            flush=True,
+        )
+    if int(args.cache_version) == 2:
         writer = EventSampleLabeledShardWriter(
             cache_root=cache_root,
             split=split,
@@ -276,25 +294,36 @@ def build_split(
     profiles: list[dict[str, Any]] = []
     split_errors: dict[str, int] = {}
     recent_points: deque[tuple[float, int]] = deque([(split_started, 0)], maxlen=max(2, int(args.eta_recent_window) + 1))
+    max_pending_jobs = max(1, int(args.workers)) * max(1, int(args.pending_multiplier))
     with ThreadPoolExecutor(max_workers=max(1, int(args.workers))) as executor:
-        futures: set[Future[dict[str, Any]]] = set()
+        futures: dict[Future[dict[str, Any]], dict[str, Any]] = {}
         next_job = 0
 
         def submit_until_full() -> None:
             nonlocal next_job
-            while samples_written + len(futures) * micro_batch_samples < target_samples and len(futures) < max(1, int(args.workers)) * 2:
+            while samples_written + len(futures) * micro_batch_samples < target_samples and len(futures) < max_pending_jobs:
                 job_seed = args.seed + next_job * 1_009 + (10_000_000 if split == "validation" else 0)
-                futures.add(executor.submit(build_micro_batch, data_config, index_rows, job_seed))
+                job_id = next_job + 1
+                future = executor.submit(build_micro_batch, data_config, index_rows, job_seed, job_id)
+                futures[future] = {
+                    "job_id": job_id,
+                    "seed": job_seed,
+                    "submitted_at": time.perf_counter(),
+                }
                 next_job += 1
 
         submit_until_full()
         while samples_written < target_samples and futures:
-            done, _pending = wait(futures, timeout=max(1.0, float(args.heartbeat_seconds)), return_when=FIRST_COMPLETED)
+            done, _pending = wait(set(futures), timeout=max(1.0, float(args.heartbeat_seconds)), return_when=FIRST_COMPLETED)
             if not done:
                 elapsed = time.perf_counter() - split_started
+                now = time.perf_counter()
+                oldest_age_seconds = max((now - meta["submitted_at"] for meta in futures.values()), default=0.0)
+                oldest_job_id = max(futures.values(), key=lambda meta: now - meta["submitted_at"])["job_id"] if futures else 0
                 print(
                     f"{split.upper()} HEARTBEAT samples={samples_written:,}/{target_samples:,} "
                     f"completed_microbatches={micro_batches_completed:,} pending_workers={len(futures):,} "
+                    f"oldest_pending_job={oldest_job_id} oldest_pending_minutes={oldest_age_seconds / 60.0:.1f} "
                     f"elapsed_minutes={elapsed / 60.0:.1f}",
                     flush=True,
                 )
@@ -314,7 +343,7 @@ def build_split(
                 )
                 continue
             for future in done:
-                futures.remove(future)
+                job_meta = futures.pop(future)
                 result = future.result()
                 take_batch = result["batch"]
                 if samples_written + int(take_batch["header_uint8"].shape[0]) > target_samples:
@@ -342,6 +371,7 @@ def build_split(
                     f"rate_recent={rate_recent:,.0f}/s eta_recent_hours={eta_recent / 3600.0:.1f} "
                     f"rate_total={rate_total:,.0f}/s eta_total_hours={eta_total / 3600.0:.1f} "
                     f"shards={len(writer.shards):,} "
+                    f"job={int(result.get('job_id', job_meta['job_id']))} "
                     f"q={float(profile.get('data/query_seconds', 0.0)):.2f}s "
                     f"enc={float(profile.get('data/encode_seconds', 0.0)):.2f}s "
                     f"queries={float(profile.get('data/query_count', 0.0)):.0f}",
@@ -422,11 +452,14 @@ def write_split_progress(
     tmp_path.replace(final_path)
 
 
-def build_micro_batch(config: ClickHouseEventsDataConfig, index_rows: list[Any], seed: int) -> dict[str, Any]:
+def build_micro_batch(config: ClickHouseEventsDataConfig, index_rows: list[Any], seed: int, job_id: int = 0) -> dict[str, Any]:
     rng = random.Random(seed)
     client = thread_local_client(config)
+    started = time.perf_counter()
     batch = build_clickhouse_events_batch(index_rows, config, client, rng)
     return {
+        "job_id": job_id,
+        "job_seconds": time.perf_counter() - started,
         "batch": batch,
         "profile": batch.get("profile", {}),
         "reject_counts": batch.get("reject_counts", {}),

@@ -143,8 +143,10 @@ train_cache_gib=0.05
 validation_cache_gib=0.02
 shard_size_gib=0.05
 workers=2
+pending_multiplier=1
 builder_micro_batch_samples=4096
 origins_per_span=64
+query_bundle_spans=8
 validation_clickhouse_checks=5
 raw_audit_checks=5
 ```
@@ -156,6 +158,12 @@ cache_version=2
 label_chunks=8
 train_cache_gib=2720
 validation_cache_gib=64
+shard_size_gib=16
+workers=8
+pending_multiplier=1
+builder_micro_batch_samples=8192
+origins_per_span=128
+query_bundle_spans=16
 ```
 
 Those v2 defaults reserve at most about 3 decimal TB on SSD because the builder
@@ -186,7 +194,7 @@ The builder still queries ClickHouse in efficient span bundles. The
 `builder_micro_batch_samples` parameter controls query bundle output size, not
 training batch size.
 
-The high-throughput default intentionally creates many adjacent windows per
+The v1 high-throughput default intentionally creates many adjacent windows per
 sampled span:
 
 ```text
@@ -195,11 +203,16 @@ origins_per_span = 512
 random origin_stride = 1..16
 ```
 
-This keeps the cache format unchanged while greatly reducing ClickHouse query
-overhead per stored sample. Training reads shards in shard-index order, shuffles
-the full loaded shard once in memory, and then forms mini-batches by contiguous
-slices from that shuffled array. The final incomplete mini-batch in each shard is
-dropped by default so every optimizer step sees the configured batch size.
+For v2, one stored sample includes the current `x` chunk plus eight future
+label chunks. That makes each stored sample about nine times larger than v1, so
+the v2 launchers use smaller microbatches and fewer spans per ClickHouse query.
+This avoids waiting many minutes for the first multi-GiB worker result and keeps
+progress observable.
+
+Training reads shards in shard-index order, shuffles the full loaded shard once
+in memory, and then forms mini-batches by contiguous slices from that shuffled
+array. The final incomplete mini-batch in each shard is dropped by default so
+every optimizer step sees the configured batch size.
 
 Progress logs include both total and rolling-rate ETA:
 
@@ -213,6 +226,8 @@ usually more useful after warm-up.
 
 If no microbatch completes for `heartbeat_seconds`, the builder prints a
 heartbeat line and writes progress JSON with the current pending-worker count.
+The heartbeat also reports the oldest pending job age, which is the first thing
+to check if ClickHouse is slow or saturated.
 
 ## Validate
 
