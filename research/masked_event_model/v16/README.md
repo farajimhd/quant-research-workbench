@@ -57,6 +57,7 @@ training bottleneck:
 
 ```text
 chunk_embedding [B, 40, 1]
+  -> scalar-safe normalization  # Identity when event_embedding_features = 1
   -> flatten [B, 40]
   -> Linear/GELU/LayerNorm [B, d_model]
   + masked event position embedding [B, 90, d_model]
@@ -66,6 +67,11 @@ chunk_embedding [B, 40, 1]
 
 This keeps the fast `v12` decoder family while testing whether downstream tasks
 benefit from event-preserving encoder output.
+
+The scalar-safe normalization matters for the default one-feature bottleneck:
+`LayerNorm(1)` would collapse every token feature to zero and prevent the
+decoder from using encoder information. Multi-feature bottlenecks still use
+feature-wise LayerNorm.
 
 ## Default 10-Shard Training
 

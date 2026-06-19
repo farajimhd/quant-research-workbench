@@ -317,7 +317,14 @@ class PerMaskedEventMlpDecoder(nn.Module):
         super().__init__()
         self.decoder_bottleneck_tokens = int(config.decoder_bottleneck_tokens)
         self.event_embedding_features = int(config.event_embedding_features)
-        self.chunk_embedding_feature_layer_norm = nn.LayerNorm(config.event_embedding_features)
+        # LayerNorm over a single scalar feature would subtract the scalar from
+        # itself and return exactly zero, which would disconnect the decoder
+        # from the encoder bottleneck for the default `event_embedding_features=1`.
+        self.chunk_embedding_feature_normalizer = (
+            nn.Identity()
+            if self.event_embedding_features == 1
+            else nn.LayerNorm(self.event_embedding_features)
+        )
         self.chunk_embedding_to_decoder_context = nn.Sequential(
             OrderedDict(
                 [
@@ -361,7 +368,7 @@ class PerMaskedEventMlpDecoder(nn.Module):
                 f"{self.event_embedding_features} features per token, got {int(chunk_embedding.shape[2])}."
             )
         # Input shape: [B, T, F]. Output shape: [B, T, F].
-        normalized_chunk_embedding = self.chunk_embedding_feature_layer_norm(chunk_embedding)
+        normalized_chunk_embedding = self.chunk_embedding_feature_normalizer(chunk_embedding)
         # Input shape: [B, T, F]. Output shape after flatten: [B, T * F].
         flattened_chunk_embedding = normalized_chunk_embedding.flatten(start_dim=1)
         # Input shape: [B, T * F]. Output shape after unsqueeze: [B, 1, D].
