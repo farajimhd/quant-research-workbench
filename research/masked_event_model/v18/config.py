@@ -93,7 +93,7 @@ class ModelConfig:
     d_byte: int = 24
     d_model: int = 128
     embedding_dim: int = 32
-    perceiver_latent_tokens: int = 4
+    perceiver_latent_tokens: int = 16
     n_heads: int = 4
     encoder_layers: int = 6
     # Accepted for launcher compatibility with earlier versions. v18 ignores

@@ -85,7 +85,7 @@ visible event bit corruption: 30% of samples, 20% of visible event bits
 AMP dtype: auto, preferring BF16 on supported CUDA devices
 FP16 GradScaler cap: 2048 with growth interval 10000
 W&B project: June2026-event-token-mae-v18-mlp-decoder
-Perceiver pooling latents: 4
+Perceiver pooling latents: 16
 ```
 
 ## Profiling
@@ -142,7 +142,7 @@ python research\masked_event_model\v18\train_10shard_long.py --fresh-start --run
 If the FP16 decoder run raises non-finite loss/gradient errors, compare against
 the conservative decoder path with `--decoder-force-fp32`.
 
-Defaults are medium `d_model=256`, `embedding_dim=32`, `perceiver_latent_tokens=4`,
+Defaults are medium `d_model=256`, `embedding_dim=32`, `perceiver_latent_tokens=16`,
 `batch_size=4096`, 10 training shards, 4 epochs, one cosine cycle per selected
 shard, validation at each shard boundary, async latest checkpoints every 25
 steps, and no shard interleaving. The launcher prints the equivalent low-level

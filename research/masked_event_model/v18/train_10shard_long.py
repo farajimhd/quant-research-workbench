@@ -38,7 +38,7 @@ DEFAULTS: dict[str, Any] = {
     "d_byte": 40,
     "d_model": 256,
     "embedding_dim": 32,
-    "perceiver_latent_tokens": 4,
+    "perceiver_latent_tokens": 16,
     "n_heads": 8,
     "encoder_layers": 10,
     "decoder_layers": 4,
