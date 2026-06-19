@@ -126,9 +126,18 @@ The v2 launcher passes:
 ```text
 cache_version=2
 label_chunks=8
+train_cache_gib=2720
+validation_cache_gib=64
 ```
 
-The default first build is intentionally modest:
+Those v2 defaults reserve at most about 3 decimal TB on SSD because the builder
+arguments are in GiB:
+
+```text
+2720 GiB + 64 GiB = 2784 GiB ~= 2.99 TB
+```
+
+The v1 launcher remains intentionally modest:
 
 ```text
 train_cache_gib=128
@@ -139,7 +148,7 @@ origins_per_span=512
 workers=8
 ```
 
-Scale with overrides after the path is validated:
+Scale v1 with overrides after the path is validated:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_build_event_sample_cache.py --train-cache-gib 4096 --validation-cache-gib 32 --workers 16

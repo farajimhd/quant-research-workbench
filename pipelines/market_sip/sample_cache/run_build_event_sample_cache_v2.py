@@ -16,8 +16,9 @@ DEFAULTS: dict[str, Any] = {
     "cache_root": r"D:\market-data\prepared\event_sample_cache",
     "cache_version": 2,
     "label_chunks": 8,
-    "train_cache_gib": 128,
-    "validation_cache_gib": 4,
+    # Args are GiB. 2720 + 64 = 2784 GiB, which is about 2.99 decimal TB on disk.
+    "train_cache_gib": 2720,
+    "validation_cache_gib": 64,
     "shard_size_gib": 16,
     "builder_micro_batch_samples": 65536,
     "origins_per_span": 512,
