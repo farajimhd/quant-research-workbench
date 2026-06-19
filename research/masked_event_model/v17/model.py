@@ -284,7 +284,6 @@ class ChunkEmbeddingBottleneck(nn.Module):
                 [
                     ("encoded_token_to_embedding_width", nn.Linear(config.d_model, config.embedding_dim)),
                     ("encoded_token_embedding_gelu", nn.GELU()),
-                    ("encoded_token_embedding_layer_norm", nn.LayerNorm(config.embedding_dim)),
                 ]
             )
         )
@@ -322,7 +321,6 @@ class PerMaskedEventMlpDecoder(nn.Module):
 
     def __init__(self, *, events_per_chunk: int, config: ModelConfig) -> None:
         super().__init__()
-        self.chunk_embedding_layer_norm = nn.LayerNorm(config.embedding_dim)
         self.chunk_embedding_to_decoder_context = nn.Sequential(
             OrderedDict(
                 [
@@ -351,10 +349,8 @@ class PerMaskedEventMlpDecoder(nn.Module):
         )
 
     def forward(self, chunk_embedding: torch.Tensor, masked_event_indices: torch.Tensor) -> torch.Tensor:
-        # Input shape: [B, Z]. Output shape: [B, Z].
-        normalized_chunk_embedding = self.chunk_embedding_layer_norm(chunk_embedding)
         # Input shape: [B, Z]. Output shape after unsqueeze: [B, 1, D].
-        chunk_context = self.chunk_embedding_to_decoder_context(normalized_chunk_embedding).unsqueeze(1)
+        chunk_context = self.chunk_embedding_to_decoder_context(chunk_embedding).unsqueeze(1)
         # Input shape: [B, M]. Output shape: [B, M, D].
         masked_position_context = self.masked_event_position_embedding_for_decoder(masked_event_indices)
         # Input shapes: memory [B, 1, D], positions [B, M, D]. Output shape: [B, M, D].

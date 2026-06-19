@@ -31,7 +31,7 @@ token:
 
 ```text
 encoded tokens [B, token_count, d_model]
-  -> to_embedding [B, token_count, embedding_dim]
+  -> Linear + GELU [B, token_count, embedding_dim]
   -> max over token_count [B, embedding_dim]
 ```
 
@@ -41,7 +41,7 @@ bottleneck. The decoder is intentionally small and independent per masked event:
 
 ```text
 chunk_embedding [B, embedding_dim]
-  -> LayerNorm + Linear [B, d_model]
+  -> Linear + GELU + LayerNorm [B, d_model]
 masked_event_indices [B, masked_events]
   -> masked position embedding [B, masked_events, d_model]
 position embedding + projected chunk memory [B, masked_events, d_model]
