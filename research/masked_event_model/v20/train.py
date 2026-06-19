@@ -5,13 +5,14 @@ import json
 import math
 import os
 import platform
+import random
 import shutil
 import sys
 import time
 import traceback
 import importlib.util
 from contextlib import nullcontext
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -511,6 +512,25 @@ def train_precomputed_epochs(
     return global_step
 
 
+def shuffled_epoch_sample_cache_shards(
+    shards: list[Any],
+    *,
+    seed: int,
+    epoch: int,
+) -> list[Any]:
+    """Return a deterministic per-epoch shuffle of the selected shard files.
+
+    Record order is still shuffled inside each loaded shard by the shared
+    sample-cache iterator. This outer shuffle changes which shard files are
+    loaded first every epoch, so the epoch is not tied to the filesystem order.
+    """
+
+    epoch_shards = list(shards)
+    rng = random.Random(int(seed) + int(epoch) * 1_000_003)
+    rng.shuffle(epoch_shards)
+    return epoch_shards
+
+
 def train_sample_cache_epochs(
     *,
     model: EventTokenMaskedAutoencoder,
@@ -544,7 +564,15 @@ def train_sample_cache_epochs(
         epoch_steps = 0
         epoch_samples = 0
         epoch_loss_sum = 0.0
-        iterator = iter_event_sample_cache_epoch_batches(data_config, epoch=epoch, shards=train_shards)
+        epoch_shards = shuffled_epoch_sample_cache_shards(train_shards, seed=args.seed, epoch=epoch)
+        emit_progress_message(
+            reporter,
+            "Sample-cache epoch "
+            f"{epoch}/{config.train.epochs} shuffled_shards="
+            f"{epoch_shards[0].shard_index}..{epoch_shards[min(len(epoch_shards), 5) - 1].shard_index}"
+            f"{'...' if len(epoch_shards) > 5 else ''}",
+        )
+        iterator = iter_event_sample_cache_epoch_batches(data_config, epoch=epoch, shards=epoch_shards)
         while True:
             if config.train.max_steps > 0 and global_step >= config.train.max_steps:
                 stop_training = True
@@ -561,6 +589,15 @@ def train_sample_cache_epochs(
             shard_step = int(batch.get("shard_step", 0) or 0)
             shard_steps = max(1, int(batch.get("shard_steps", 1) or 1))
             run_validation = should_validate_step(config, global_step, shard_step=shard_step, shard_steps=shard_steps)
+            lr_metrics = apply_sample_cache_step_lr(
+                optimizer=optimizer,
+                train_config=config.train,
+                epoch=epoch,
+                shard_position=shard_position,
+                shard_count=int(batch.get("shard_count", shard_count) or shard_count),
+                shard_step=shard_step,
+                shard_steps=shard_steps,
+            )
             batch_size = int(batch["header_uint8"].shape[0])
             samples_seen_total += batch_size
             epoch_samples += batch_size
@@ -596,6 +633,7 @@ def train_sample_cache_epochs(
                     "train/samples_seen_total": float(samples_seen_total),
                 }
             )
+            metrics.update(lr_metrics)
             val_metrics = maybe_log_train_and_validation(
                 model=model,
                 config=config,
@@ -1276,8 +1314,8 @@ def make_loader(config: ExperimentConfig, split: str, seed: int) -> DataLoader:
 def build_validation_cache(config: ExperimentConfig, seed: int, reporter: TrainingReporter | None = None) -> list[dict[str, Any]]:
     if config.train.pretrain_validation_frequency <= 0 or config.train.pretrain_validation_steps <= 0:
         return []
-    emit_progress_message(reporter, f"Building fixed validation cache batches={config.train.pretrain_validation_steps:,}")
     if config.data.data_source == "precomputed":
+        emit_progress_message(reporter, f"Building fixed validation cache batches={config.train.pretrain_validation_steps:,}")
         batches = build_fixed_precomputed_validation_batches(
             precomputed_data_config(config, "validation", seed),
             batch_count=config.train.pretrain_validation_steps,
@@ -1294,16 +1332,38 @@ def build_validation_cache(config: ExperimentConfig, seed: int, reporter: Traini
         batches: list[dict[str, Any]] = []
         data_config = sample_cache_data_config(config, "validation", seed)
         shards = discover_event_sample_shards(data_config)
-        iterator = iter_event_sample_cache_epoch_batches(data_config, epoch=1, shards=shards)
-        for index in range(config.train.pretrain_validation_steps):
-            batch = next(iterator)
+        one_batch_config = replace(
+            data_config,
+            prefetch_shards=1,
+            max_samples=config.train.batch_size,
+            max_batches_per_shard=1,
+            drop_last=True,
+            interleave_shards=1,
+        )
+        emit_progress_message(
+            reporter,
+            f"Building sample-cache validation from {len(shards):,} shard(s), one shuffled batch per shard",
+        )
+        for shard in shards:
+            iterator = iter_event_sample_cache_epoch_batches(one_batch_config, epoch=1, shards=[shard])
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                emit_progress_message(
+                    reporter,
+                    f"validation cache skipped shard={shard.shard_index} because it has fewer than one full batch",
+                )
+                continue
             batches.append(batch)
             emit_progress_message(
                 reporter,
-                f"validation cache batch {index + 1}/{config.train.pretrain_validation_steps} "
+                f"validation cache batch {len(batches)}/{len(shards)} "
                 f"size={batch['header_uint8'].shape[0]} shard={batch.get('shard_index')}/{batch.get('shard_count')}",
             )
+        if not batches:
+            raise RuntimeError(f"No validation batches could be built from sample cache {data_config.cache_root}")
         return batches
+    emit_progress_message(reporter, f"Building fixed validation cache batches={config.train.pretrain_validation_steps:,}")
     loader = make_loader(config, "validation", seed)
     batches: list[dict[str, Any]] = []
     iterator = iter(loader)

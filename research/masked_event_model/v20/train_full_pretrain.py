@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -30,7 +29,9 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_train_max_shards": 0,
     "sample_cache_validation_split": "validation",
     "sample_cache_validation_start_shard": 0,
-    "sample_cache_validation_max_shards": 8,
+    # 0 means all discovered validation shards after the start shard. The
+    # trainer takes one shuffled batch from each selected validation shard.
+    "sample_cache_validation_max_shards": 0,
     "sample_cache_validation_batches_per_shard": 1,
     "sample_cache_interleave_shards": 1,
     "batch_size": 4096,
@@ -88,7 +89,7 @@ DEFAULTS: dict[str, Any] = {
     "warm_start_checkpoint": "",
 }
 
-VALIDATION_BATCHES = 8
+VALIDATION_BATCHES = 0
 PROFILED_TRAINING_PATH = (
     "v20 full pretraining, v12-style per-masked-event MLP decoder, fixed-grid bottleneck, "
     "full sample-cache shards, shard-decay cosine scheduler, no interleave, torch.compile enabled"
@@ -113,7 +114,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-start-shard", "--sample-cache-train-start-shard", dest="train_start_shard", type=int, default=DEFAULTS["sample_cache_train_start_shard"])
     parser.add_argument("--train-shards", type=int, default=DEFAULTS["sample_cache_train_max_shards"], help="0 means all discovered train shards after start")
     parser.add_argument("--validation-shard-index", type=int, default=DEFAULTS["sample_cache_validation_start_shard"])
-    parser.add_argument("--validation-batches", type=int, default=VALIDATION_BATCHES)
+    parser.add_argument("--validation-batches", type=int, default=VALIDATION_BATCHES, help="0 means one batch from every selected validation shard")
     parser.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--d-model", type=int, default=DEFAULTS["d_model"])
@@ -166,17 +167,18 @@ def main() -> None:
         if not args.print_only:
             raise SystemExit("--skip-shard-discovery is only allowed with --print-only")
         train_count = int(args.train_shards) if int(args.train_shards) > 0 else 1
+        validation_count = int(args.validation_batches) if int(args.validation_batches) > 0 else 1
         train_shards = [
             ShardPreview(shard_index=index, num_samples=0)
             for index in range(int(args.train_start_shard), int(args.train_start_shard) + train_count)
         ]
         validation_shards = [
             ShardPreview(shard_index=index, num_samples=0)
-            for index in range(int(args.validation_shard_index), int(args.validation_shard_index) + int(args.validation_batches))
+            for index in range(int(args.validation_shard_index), int(args.validation_shard_index) + validation_count)
         ]
         steps_per_epoch = 0
-        validation_batches = int(args.validation_batches)
-        validation_batches_per_shard = max(1, math.ceil(validation_batches / max(1, len(validation_shards))))
+        validation_batches = validation_count
+        validation_batches_per_shard = 1
     else:
         train_shards, validation_shards, validation_batches = resolve_shard_plan(
             train_cache_root=train_cache_root,
@@ -188,7 +190,7 @@ def main() -> None:
             max_validation_batches=int(args.validation_batches),
         )
         steps_per_epoch = sum(shard.num_samples // batch_size for shard in train_shards)
-        validation_batches_per_shard = max(1, math.ceil(validation_batches / max(1, len(validation_shards))))
+        validation_batches_per_shard = 1
     values = dict(DEFAULTS)
     values.update(
         {
@@ -264,8 +266,6 @@ def resolve_shard_plan(
 ):
     if train_start_shard < 0:
         raise SystemExit("--train-start-shard must be non-negative")
-    if max_validation_batches <= 0:
-        raise SystemExit("--validation-batches must be positive")
     train_config = EventSampleCacheDataConfig(cache_root=train_cache_root, split="train", max_shards=0)
     validation_config = EventSampleCacheDataConfig(cache_root=validation_cache_root, split="validation", max_shards=0)
     shards = discover_event_sample_shards(train_config)
@@ -282,7 +282,13 @@ def resolve_shard_plan(
             f"but only found {len(validation_candidates)} validation shards under {validation_cache_root}"
         )
     available_validation = validation_candidates[validation_shard_index:]
-    validation_shards = available_validation[: min(len(available_validation), max_validation_batches)]
+    validation_shards = (
+        available_validation[: min(len(available_validation), max_validation_batches)]
+        if max_validation_batches > 0
+        else available_validation
+    )
+    if not validation_shards:
+        raise SystemExit(f"No validation shards selected from {validation_cache_root}")
     too_small = [shard.shard_index for shard in validation_shards if shard.num_samples < batch_size]
     if too_small:
         raise SystemExit(f"Validation shards have fewer than one full batch at batch_size={batch_size:,}: {too_small}")
@@ -290,7 +296,7 @@ def resolve_shard_plan(
     empty_train = [shard.shard_index for shard, count in zip(selected_train, full_batch_counts, strict=True) if count <= 0]
     if empty_train:
         raise SystemExit(f"Training shards have no full batches at batch_size={batch_size:,}: {empty_train}")
-    return selected_train, validation_shards, max_validation_batches
+    return selected_train, validation_shards, len(validation_shards)
 
 
 def print_plan(values: dict[str, Any], train_shards, validation_shards, validation_batches: int, steps_per_epoch: int, argv: list[str]) -> None:
