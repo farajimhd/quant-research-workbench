@@ -1,8 +1,8 @@
 # Masked Event Model v20
 
 v20 is the event-token masked autoencoder variant that keeps the v12 fixed-mask
-training path and cheap per-masked-event MLP decoder, but replaces v12's
-mean-only chunk bottleneck with a fixed-grid chunk bottleneck. It is
+training path and cheap MLP decoder, but replaces v12's mean-only chunk
+bottleneck with a fixed-grid chunk bottleneck. It is
 version-local: model, masking, loss, progress, training, and profiling code live
 under `research/masked_event_model/v20`.
 
@@ -34,8 +34,8 @@ encoded tokens [B, token_count, d_model]
        slot 0: CLS
        slot 1: header
        slot 2..129: event positions 0..127
-       masked event slots: learned slot-position vectors
-       visible event slots: slot-position vector + encoded token
+       masked event slots: shared global event-position embeddings
+       visible event slots: encoded event tokens
   -> flatten [B, 130 * d_model]
   -> MLP [B, embedding_dim]
 ```
@@ -43,15 +43,16 @@ encoded tokens [B, token_count, d_model]
 This keeps the production chunk embedding on the reconstruction loss path while
 giving the bottleneck fixed slot semantics in both training and production. The
 transformer still processes only visible events during MAE training. The decoder
-is intentionally small and independent per masked event:
+is intentionally small, but it no longer receives separate masked-position
+embeddings:
 
 ```text
 chunk_embedding [B, embedding_dim]
-  -> LayerNorm + Linear [B, d_model]
-masked_event_indices [B, masked_events]
-  -> masked position embedding [B, masked_events, d_model]
-position embedding + projected chunk memory [B, masked_events, d_model]
+  -> Linear + GELU + LayerNorm [B, d_model]
   -> MLP
+  -> all_event_logits [B, 128, 16, 8]
+masked_event_indices [B, masked_events]
+  -> gather masked positions
   -> event_bit_logits [B, masked_events, 16, 8]
 ```
 
@@ -128,7 +129,7 @@ python research\masked_event_model\v20\train_medium_bit_limited_shards.py --fres
 This trains over 10 sample-cache shards and uses a shuffled 5% slice of the next
 shard for validation. Each epoch is one pass over the selected train shards.
 
-The final long-run launcher for the per-masked-event MLP decoder path is:
+The final long-run launcher for the fixed-grid MLP decoder path is:
 
 ```powershell
 python research\masked_event_model\v20\train_10shard_long.py --fresh-start

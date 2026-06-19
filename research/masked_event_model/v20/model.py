@@ -134,8 +134,8 @@ class HeaderRoleEmbedding(nn.Embedding):
     """Learned role vector that marks the single header token."""
 
 
-class VisibleEventPositionEmbedding(nn.Embedding):
-    """Position embedding for visible event tokens entering the encoder."""
+class GlobalEventPositionEmbedding(nn.Embedding):
+    """Shared event-position table for encoder tokens and fixed-grid placeholders."""
 
 
 class EventRoleEmbedding(nn.Embedding):
@@ -144,23 +144,6 @@ class EventRoleEmbedding(nn.Embedding):
 
 class ChunkClsRoleEmbedding(nn.Embedding):
     """Learned role vector added to the chunk-level CLS token."""
-
-
-class MaskedEventPositionEmbedding(nn.Embedding):
-    """Position embedding for decoder queries at masked event locations."""
-
-
-class FixedGridSlotPositionEmbedding(nn.Embedding):
-    """Learned slot vectors for `[CLS, header, event_0, ..., event_127]`.
-
-    The fixed-grid bottleneck receives a full grid in both MAE training and
-    production. Masked event slots use only this learned slot vector; visible
-    slots add the corresponding encoded token to the same slot vector.
-    """
-
-
-class MaskedEventQueryRoleEmbedding(nn.Embedding):
-    """Learned role vector shared by masked-event decoder queries."""
 
 
 class LearnedChunkClsToken(nn.Module):
@@ -176,21 +159,6 @@ class LearnedChunkClsToken(nn.Module):
     def forward(self, batch_size: int) -> torch.Tensor:
         # Input shape: learned [1, 1, D]. Output shape: [B, 1, D].
         return self.token.expand(batch_size, -1, -1)
-
-
-class LearnedMaskedEventQueryToken(nn.Module):
-    """Learned decoder query template used for every masked event."""
-
-    def __init__(self, d_model: int) -> None:
-        super().__init__()
-        self.token = nn.Parameter(torch.zeros(1, 1, d_model))
-
-    def reset_parameters(self) -> None:
-        nn.init.normal_(self.token, std=0.02)
-
-    def forward(self, batch_size: int, masked_count: int) -> torch.Tensor:
-        # Input shape: learned [1, 1, D]. Output shape: [B, M, D].
-        return self.token.expand(batch_size, masked_count, -1).clone()
 
 
 class HeaderTokenEncoder(nn.Module):
@@ -234,16 +202,20 @@ class EventTokenEncoder(nn.Module):
                 ]
             )
         )
-        self.event_position_embedding_for_encoder = VisibleEventPositionEmbedding(events_per_chunk, config.d_model)
         self.event_role_embedding = EventRoleEmbedding(1, config.d_model)
 
-    def forward(self, visible_events_uint8: torch.Tensor, visible_event_indices: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        visible_events_uint8: torch.Tensor,
+        visible_event_indices: torch.Tensor,
+        global_event_position_embedding: GlobalEventPositionEmbedding,
+    ) -> torch.Tensor:
         # Input shape: [B, V, 16]. Output shape: [B, V, 128].
         event_bits = self.event_bytes_to_signed_bits(visible_events_uint8)
         # Input shape: [B, V, 128]. Output shape: [B, V, D].
         event_tokens = self.event_bits_to_model_tokens(event_bits)
         # Input shapes: tokens [B, V, D], positions [B, V]. Output shape: [B, V, D].
-        event_tokens = event_tokens + self.event_position_embedding_for_encoder(visible_event_indices)
+        event_tokens = event_tokens + global_event_position_embedding(visible_event_indices)
         # Input shapes: tokens [B, V, D], role [1, 1, D]. Output shape: [B, V, D].
         return event_tokens + single_role_vector(self.event_role_embedding, device=visible_events_uint8.device)
 
@@ -285,19 +257,17 @@ class FixedGridChunkBottleneck(nn.Module):
 
     `[CLS, header, event_0, ..., event_127]`.
 
-    Masked event slots contain a learned slot-position vector instead of zeros.
-    Visible slots add their encoded event token to the same slot-position
-    vector. Production fills every event slot with slot-position plus encoded
-    token. The flattened fixed grid therefore keeps stable slot semantics while
-    avoiding a train/production split where masked slots are all-zero during
-    training but dense at inference time.
+    Masked event slots contain the shared global event-position embedding for
+    that slot. Visible event slots are replaced with the corresponding encoded
+    token, which already received the same global position embedding before the
+    transformer. This avoids the older zero-placeholder grid without introducing
+    a second event-position table or double-adding position to visible events.
     """
 
     def __init__(self, *, events_per_chunk: int, config: ModelConfig) -> None:
         super().__init__()
         self.events_per_chunk = int(events_per_chunk)
         self.fixed_token_count = 2 + self.events_per_chunk
-        self.fixed_grid_slot_position_embedding = FixedGridSlotPositionEmbedding(self.fixed_token_count, config.d_model)
         self.fixed_grid_to_chunk_embedding = nn.Sequential(
             OrderedDict(
                 [
@@ -312,26 +282,39 @@ class FixedGridChunkBottleneck(nn.Module):
         )
         self.chunk_embedding_output = ChunkEmbeddingOutput()
 
-    def build_fixed_token_grid(self, encoded_tokens: torch.Tensor, visible_event_indices: torch.Tensor) -> torch.Tensor:
+    def build_fixed_token_grid(
+        self,
+        encoded_tokens: torch.Tensor,
+        visible_event_indices: torch.Tensor,
+        global_event_position_embedding: GlobalEventPositionEmbedding,
+    ) -> torch.Tensor:
         # Input shapes: encoded [B, 2 + V, D], indices [B, V]. Output shape: [B, 130, D].
-        slot_ids = torch.arange(self.fixed_token_count, device=encoded_tokens.device).view(1, -1)
-        # Input shape: [1, 130]. Output shape: [B, 130, D].
-        fixed_tokens = self.fixed_grid_slot_position_embedding(slot_ids).expand(encoded_tokens.shape[0], -1, -1)
-        fixed_tokens = fixed_tokens.to(dtype=encoded_tokens.dtype).clone()
+        fixed_tokens = encoded_tokens.new_zeros((encoded_tokens.shape[0], self.fixed_token_count, encoded_tokens.shape[-1]))
         # Input shape: [B, 2 + V, D]. Output shape: [B, 2, D] added into fixed CLS/header slots.
-        fixed_tokens[:, :2, :] = fixed_tokens[:, :2, :] + encoded_tokens[:, :2, :]
+        fixed_tokens[:, :2, :] = encoded_tokens[:, :2, :]
+        event_slot_ids = torch.arange(self.events_per_chunk, device=encoded_tokens.device).view(1, -1)
+        # Input shape: [1, E]. Output shape after expand: [B, E, D].
+        event_position_tokens = global_event_position_embedding(event_slot_ids).to(dtype=encoded_tokens.dtype)
+        event_position_tokens = event_position_tokens.expand(encoded_tokens.shape[0], -1, -1)
+        # Input shape: [B, E, D]. Output shape: fixed event slots initialized by the shared position table.
+        fixed_tokens[:, 2:, :] = event_position_tokens
         # Input shape: [B, V, D]. Output shape: [B, V, D].
         visible_event_tokens = encoded_tokens[:, 2:, :]
         # Input shape: [B, V]. Output shape: [B, V, D] with event slots shifted by CLS/header.
         fixed_event_slots = (visible_event_indices.to(device=encoded_tokens.device, dtype=torch.long) + 2).unsqueeze(-1)
         fixed_event_slots = fixed_event_slots.expand(-1, -1, encoded_tokens.shape[-1])
         # Input shapes: fixed [B, 130, D], slots [B, V, D], visible tokens [B, V, D].
-        # Output shape: [B, 130, D], with masked event slots represented by slot embeddings.
-        return fixed_tokens.scatter_add(1, fixed_event_slots, visible_event_tokens)
+        # Output shape: [B, 130, D], with masked slots represented by the shared position embedding.
+        return fixed_tokens.scatter(1, fixed_event_slots, visible_event_tokens)
 
-    def forward(self, encoded_tokens: torch.Tensor, visible_event_indices: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        encoded_tokens: torch.Tensor,
+        visible_event_indices: torch.Tensor,
+        global_event_position_embedding: GlobalEventPositionEmbedding,
+    ) -> torch.Tensor:
         # Input shapes: encoded [B, 2 + V, D], indices [B, V]. Output shape: [B, 130, D].
-        fixed_tokens = self.build_fixed_token_grid(encoded_tokens, visible_event_indices)
+        fixed_tokens = self.build_fixed_token_grid(encoded_tokens, visible_event_indices, global_event_position_embedding)
         # Input shape: [B, 130, D]. Output shape: [B, 130 * D].
         flattened_grid = fixed_tokens.flatten(1)
         # Input shape: [B, 130 * D]. Output shape: [B, Z].
@@ -344,14 +327,13 @@ class ChunkEmbeddingOutput(nn.Identity):
     """Named terminal layer for the reusable chunk embedding."""
 
 
-class PerMaskedEventMlpDecoder(nn.Module):
-    """Reconstruct masked event bytes with a cheap independent MLP decoder.
+class AllEventMlpDecoder(nn.Module):
+    """Decode all event positions from the chunk embedding, then gather masked ones.
 
-    Each masked event receives the same projected chunk embedding plus its own
-    masked-position embedding. There is no masked-token self-attention and no
-    cross-attention stack, so reconstruction pressure still flows through the
-    exported `[B, Z]` encoder bottleneck while the disposable decoder stays
-    intentionally small.
+    v20 already bakes fixed event-slot semantics into the chunk embedding. The
+    decoder therefore should not add another masked-position embedding. Instead,
+    it maps the chunk embedding to all 128 event reconstruction heads and then
+    gathers the masked positions used by the loss.
     """
 
     def __init__(self, *, events_per_chunk: int, config: ModelConfig) -> None:
@@ -365,35 +347,34 @@ class PerMaskedEventMlpDecoder(nn.Module):
                 ]
             )
         )
-        self.masked_event_position_embedding_for_decoder = MaskedEventPositionEmbedding(events_per_chunk, config.d_model)
-        self.position_memory_mlp_decoder = nn.Sequential(
+        self.events_per_chunk = int(events_per_chunk)
+        self.all_event_mlp_decoder = nn.Sequential(
             OrderedDict(
                 [
-                    ("position_memory_layer_norm", nn.LayerNorm(config.d_model)),
-                    ("position_memory_expand_to_ffn_width", nn.Linear(config.d_model, config.ff_dim)),
-                    ("position_memory_gelu", nn.GELU()),
-                    ("position_memory_dropout_after_gelu", nn.Dropout(config.dropout)),
-                    ("position_memory_contract_to_model_width", nn.Linear(config.ff_dim, config.d_model)),
-                    ("position_memory_output_gelu", nn.GELU()),
-                    ("position_memory_output_layer_norm", nn.LayerNorm(config.d_model)),
+                    ("chunk_memory_expand_to_ffn_width", nn.Linear(config.d_model, config.ff_dim)),
+                    ("chunk_memory_gelu", nn.GELU()),
+                    ("chunk_memory_dropout_after_gelu", nn.Dropout(config.dropout)),
+                    ("chunk_memory_contract_to_model_width", nn.Linear(config.ff_dim, config.d_model)),
+                    ("chunk_memory_output_gelu", nn.GELU()),
+                    ("chunk_memory_output_layer_norm", nn.LayerNorm(config.d_model)),
                     # Deliberately no activation here: BCE-with-logits expects
                     # unconstrained raw bit logits.
-                    ("position_memory_to_16x8_bit_logits", nn.Linear(config.d_model, EVENT_BYTES * BITS_PER_BYTE)),
+                    ("chunk_memory_to_all_event_bit_logits", nn.Linear(config.d_model, self.events_per_chunk * EVENT_BYTES * BITS_PER_BYTE)),
                 ]
             )
         )
 
     def forward(self, chunk_embedding: torch.Tensor, masked_event_indices: torch.Tensor) -> torch.Tensor:
-        # Input shape: [B, Z]. Output shape after unsqueeze: [B, 1, D].
-        chunk_context = self.chunk_embedding_to_decoder_context(chunk_embedding).unsqueeze(1)
-        # Input shape: [B, M]. Output shape: [B, M, D].
-        masked_position_context = self.masked_event_position_embedding_for_decoder(masked_event_indices)
-        # Input shapes: memory [B, 1, D], positions [B, M, D]. Output shape: [B, M, D].
-        decoder_input = chunk_context + masked_position_context
-        # Input shape: [B, M, D]. Output shape: [B, M, 128].
-        logits = self.position_memory_mlp_decoder(decoder_input)
-        # Input shape: [B, M, 128]. Output shape: [B, M, 16, 8].
-        return logits.view(logits.shape[0], logits.shape[1], EVENT_BYTES, BITS_PER_BYTE)
+        # Input shape: [B, Z]. Output shape: [B, D].
+        chunk_context = self.chunk_embedding_to_decoder_context(chunk_embedding)
+        # Input shape: [B, D]. Output shape: [B, E * 16 * 8].
+        all_logits_flat = self.all_event_mlp_decoder(chunk_context)
+        # Input shape: [B, E * 128]. Output shape: [B, E, 16, 8].
+        all_event_logits = all_logits_flat.view(chunk_embedding.shape[0], self.events_per_chunk, EVENT_BYTES, BITS_PER_BYTE)
+        gather_index = masked_event_indices.to(device=chunk_embedding.device, dtype=torch.long)
+        gather_index = gather_index.view(gather_index.shape[0], gather_index.shape[1], 1, 1).expand(-1, -1, EVENT_BYTES, BITS_PER_BYTE)
+        # Input shapes: all logits [B, E, 16, 8], indices [B, M, 16, 8]. Output shape: [B, M, 16, 8].
+        return all_event_logits.gather(1, gather_index)
 
 
 class EventChunkEncoder(nn.Module):
@@ -412,6 +393,7 @@ class EventChunkEncoder(nn.Module):
         self.events_per_chunk = int(events_per_chunk)
         self.config = config
         self.visible_event_token_selector = VisibleEventTokenSelector()
+        self.global_event_position_embedding = GlobalEventPositionEmbedding(self.events_per_chunk, config.d_model)
         self.header_token_encoder = HeaderTokenEncoder(config)
         self.visible_event_token_encoder = EventTokenEncoder(events_per_chunk=self.events_per_chunk, config=config)
         self.encoder_sequence_builder = EncoderSequenceBuilder(config)
@@ -471,18 +453,27 @@ class EventChunkEncoder(nn.Module):
         # Input shape: [B, 14]. Output shape: [B, 1, D].
         header_token = self.header_token_encoder(header_input_uint8)
         # Input shapes: events [B, V or E, 16], indices [B, V or E]. Output shape: [B, V or E, D].
-        visible_event_tokens = self.visible_event_token_encoder(selected_events_uint8, selected_event_indices)
+        visible_event_tokens = self.visible_event_token_encoder(
+            selected_events_uint8,
+            selected_event_indices,
+            self.global_event_position_embedding,
+        )
         # Input shapes: header [B, 1, D], events [B, V or E, D]. Output shape: [B, 2 + V or 2 + E, D].
         encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
         # Input shape: [B, T, D]. Output shape: [B, T, D].
         encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
         # Input shapes: encoded [B, T, D], indices [B, V or E]. Output shape: [B, Z].
-        chunk_embedding = self.chunk_embedding_bottleneck(encoded_tokens, selected_event_indices)
+        chunk_embedding = self.chunk_embedding_bottleneck(
+            encoded_tokens,
+            selected_event_indices,
+            self.global_event_position_embedding,
+        )
         return encoded_tokens, chunk_embedding
 
 
 ENCODER_MODULE_NAMES = (
     "visible_event_token_selector",
+    "global_event_position_embedding",
     "header_token_encoder",
     "visible_event_token_encoder",
     "encoder_sequence_builder",
@@ -512,6 +503,7 @@ class EventTokenMaskedAutoencoder(nn.Module):
 
         self.header_token_encoder = HeaderTokenEncoder(config)
         self.visible_event_token_selector = VisibleEventTokenSelector()
+        self.global_event_position_embedding = GlobalEventPositionEmbedding(self.events_per_chunk, config.d_model)
         self.visible_event_token_encoder = EventTokenEncoder(events_per_chunk=self.events_per_chunk, config=config)
         self.encoder_sequence_builder = EncoderSequenceBuilder(config)
 
@@ -527,7 +519,7 @@ class EventTokenMaskedAutoencoder(nn.Module):
         self.visible_context_transformer_encoder = transformer_encoder(encoder_layer, num_layers=config.encoder_layers)
         self.encoded_token_output_layer_norm = nn.LayerNorm(config.d_model)
         self.chunk_embedding_bottleneck = FixedGridChunkBottleneck(events_per_chunk=self.events_per_chunk, config=config)
-        self.per_masked_event_mlp_decoder = PerMaskedEventMlpDecoder(events_per_chunk=self.events_per_chunk, config=config)
+        self.all_event_mlp_decoder = AllEventMlpDecoder(events_per_chunk=self.events_per_chunk, config=config)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -599,9 +591,9 @@ class EventTokenMaskedAutoencoder(nn.Module):
         """Reconstruct masked events, optionally forcing the decoder path to FP32.
 
         The encoder remains inside the training loop's autocast context, so it
-        keeps the BF16 speed benefit. The disposable decoder is a per-masked-event
-        MLP that receives only the projected `[B, Z]` chunk embedding and each
-        masked event's position embedding.
+        keeps the BF16 speed benefit. The disposable decoder maps the projected
+        `[B, Z]` chunk embedding to all event positions and gathers the masked
+        positions used by the loss.
         """
 
         if self.config.decoder_force_fp32 and chunk_embedding.is_cuda:
@@ -659,18 +651,26 @@ class EventTokenMaskedAutoencoder(nn.Module):
         # Input shape: [B, 14]. Output shape: [B, 1, D].
         header_token = self.header_token_encoder(header_input_uint8)
         # Input shapes: events [B, V or E, 16], indices [B, V or E]. Output shape: [B, V or E, D].
-        visible_event_tokens = self.visible_event_token_encoder(selected_events_uint8, selected_event_indices)
+        visible_event_tokens = self.visible_event_token_encoder(
+            selected_events_uint8,
+            selected_event_indices,
+            self.global_event_position_embedding,
+        )
         # Input shapes: header [B, 1, D], events [B, V or E, D]. Output shape: [B, 2 + V or 2 + E, D].
         encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
         # Input shape: [B, T, D]. Output shape: [B, T, D].
         encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
         # Input shapes: encoded [B, T, D], indices [B, V or E]. Output shape: [B, Z].
-        chunk_embedding = self.chunk_embedding_bottleneck(encoded_tokens, selected_event_indices)
+        chunk_embedding = self.chunk_embedding_bottleneck(
+            encoded_tokens,
+            selected_event_indices,
+            self.global_event_position_embedding,
+        )
         return encoded_tokens, chunk_embedding
 
     def decode_masked_events(self, chunk_embedding: torch.Tensor, masks: EventMaskBatch) -> torch.Tensor:
-        # The MLP decoder receives position information, but never the masked
-        # event bytes. Any successful reconstruction must flow through the
-        # exported chunk embedding.
+        # The decoder never receives a separate masked-position embedding or the
+        # masked event bytes. Any position-specific reconstruction must be read
+        # from the fixed-grid information compressed into the chunk embedding.
         # Input shapes: chunk embedding [B, Z], masked indices [B, M]. Output shape: [B, M, 16, 8].
-        return self.per_masked_event_mlp_decoder(chunk_embedding, masks.masked_event_indices)
+        return self.all_event_mlp_decoder(chunk_embedding, masks.masked_event_indices)

@@ -1591,7 +1591,7 @@ def save_model_artifacts(
         "d_byte": config.model.d_byte,
         "n_heads": config.model.n_heads,
         "encoder_layers": config.model.encoder_layers,
-        "decoder": "per_masked_event_mlp",
+        "decoder": "all_event_mlp_gather_masked",
         "decoder_layers_arg_ignored": config.model.decoder_layers,
         "ffn_mult": config.model.ffn_mult,
         "event_mask_ratio": config.masks.event_mask_ratio,
@@ -1628,8 +1628,8 @@ def build_model_summary_text(model: torch.nn.Module, details: dict[str, Any], pa
         f"Input events_uint8: [B, {details['events_per_chunk']}, 16]",
         f"Training encoder tokens: [B, 2 + visible_events, d_model]",
         f"Production encoder tokens: [B, 2 + {details['events_per_chunk']}, d_model]",
-        f"Chunk bottleneck: all encoded tokens -> mean-pooled [B, {details['embedding_dim']}]",
-        f"Decoder: masked position embedding + projected chunk embedding -> per-masked-event MLP",
+        f"Chunk bottleneck: shared event-position fixed grid [B, 130, d_model] -> [B, {details['embedding_dim']}]",
+        f"Decoder: projected chunk embedding -> all event logits -> gather masked positions",
         f"Output event bit logits: [B, masked_events, 16, 8]",
         f"Embedding: [B, {details['embedding_dim']}]",
         "",
@@ -1661,15 +1661,15 @@ def build_model_mermaid(config: ExperimentConfig) -> str:
     HP --> TOK[\"encoder tokens<br/>CLS + header + visible events\"]
     POS --> TOK
     TOK --> ENC[\"Transformer encoder<br/>{config.model.encoder_layers} layers, d={config.model.d_model}, heads={config.model.n_heads}\"]
-    ENC --> TOKEMB[\"project all encoded tokens<br/>B x token_count x {config.model.embedding_dim}\"]
-    TOKEMB --> EMB[\"mean-pooled chunk embedding<br/>B x {config.model.embedding_dim}\"]
+    ENC --> GRID[\"fixed grid bottleneck<br/>CLS + header + 128 event slots\"]
+    POS --> GRID
+    GRID --> EMB[\"chunk embedding<br/>B x {config.model.embedding_dim}\"]
     EMB --> MEM[\"project chunk embedding<br/>B x d_model\"]
     M --> MPOS[\"masked event positions<br/>B x {masked}\"]
-    MPOS --> POS[\"masked position embedding<br/>B x {masked} x d_model\"]
-    MEM --> ADD[\"position + projected chunk memory<br/>B x {masked} x d_model\"]
-    POS --> ADD
-    ADD --> DEC[\"per-masked-event MLP decoder\"]
-    DEC --> HEAD[\"16 x 8 logits per masked event\"]
+    MEM --> DEC[\"all-event MLP decoder<br/>B x {events} x 16 x 8\"]
+    DEC --> GATHER[\"gather masked positions\"]
+    MPOS --> GATHER
+    GATHER --> HEAD[\"16 x 8 logits per masked event\"]
     HEAD --> LOSS[\"BCE on masked event bits only\"]
 """
 
@@ -1743,12 +1743,13 @@ class MaskedTrainingSummaryWrapper(torch.nn.Module):
         self.events_per_chunk = int(events_per_chunk)
         self.visible_event_token_selector = model.visible_event_token_selector
         self.header_token_encoder = model.header_token_encoder
+        self.global_event_position_embedding = model.global_event_position_embedding
         self.visible_event_token_encoder = model.visible_event_token_encoder
         self.encoder_sequence_builder = model.encoder_sequence_builder
         self.visible_context_transformer_encoder = model.visible_context_transformer_encoder
         self.encoded_token_output_layer_norm = model.encoded_token_output_layer_norm
         self.chunk_embedding_bottleneck = model.chunk_embedding_bottleneck
-        self.per_masked_event_mlp_decoder = model.per_masked_event_mlp_decoder
+        self.all_event_mlp_decoder = model.all_event_mlp_decoder
 
     def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
         masked_count = max(1, int(round(self.events_per_chunk * 0.70)))
@@ -1768,11 +1769,19 @@ class MaskedTrainingSummaryWrapper(torch.nn.Module):
         )
         selected_events_uint8, selected_event_indices = self.visible_event_token_selector(events_uint8, masks.visible_event_indices)
         header_token = self.header_token_encoder(header_uint8)
-        visible_event_tokens = self.visible_event_token_encoder(selected_events_uint8, selected_event_indices)
+        visible_event_tokens = self.visible_event_token_encoder(
+            selected_events_uint8,
+            selected_event_indices,
+            self.global_event_position_embedding,
+        )
         encoder_input_tokens = self.encoder_sequence_builder(header_token, visible_event_tokens)
         encoded_tokens = self.encoded_token_output_layer_norm(self.visible_context_transformer_encoder(encoder_input_tokens))
-        chunk_embedding = self.chunk_embedding_bottleneck(encoded_tokens, selected_event_indices)
-        event_bit_logits = self.per_masked_event_mlp_decoder(chunk_embedding, masks.masked_event_indices)
+        chunk_embedding = self.chunk_embedding_bottleneck(
+            encoded_tokens,
+            selected_event_indices,
+            self.global_event_position_embedding,
+        )
+        event_bit_logits = self.all_event_mlp_decoder(chunk_embedding, masks.masked_event_indices)
         return chunk_embedding, event_bit_logits
 
 
