@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -81,6 +82,10 @@ DEFAULT_START_DATE = "2025-01-01"
 DEFAULT_END_DATE = "2026-12-31"
 DEFAULT_DOWNLOAD_WORKERS = 8
 DEFAULT_MAX_THREADS = 32
+DEFAULT_TEST_TABLE_PREFIX = "test_flatfile_event_update"
+DEFAULT_TEST_SAMPLE_SIZE = 100
+
+SAFE_TEST_TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +144,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry-started", action="store_true")
     parser.add_argument("--force-day-delete", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help=(
+            "Run a safety build into isolated temp events/manifest/continuity tables, then audit the "
+            "temp events against the main compact quote/trade tables. Production events are never touched."
+        ),
+    )
+    parser.add_argument(
+        "--test-table-prefix",
+        default=DEFAULT_TEST_TABLE_PREFIX,
+        help="Prefix for isolated test tables created by --test-mode. Must be an identifier-safe non-production prefix.",
+    )
+    parser.add_argument(
+        "--test-sample-size",
+        type=int,
+        default=DEFAULT_TEST_SAMPLE_SIZE,
+        help="Per-kind reference rows sampled from main quotes/trades and matched back to temp events.",
+    )
+    parser.add_argument("--test-reference-quote-table", default="quotes")
+    parser.add_argument("--test-reference-trade-table", default="trades")
+    parser.add_argument(
+        "--test-keep-tables",
+        action="store_true",
+        help="Keep isolated test tables after a successful audit for manual inspection.",
+    )
     return parser.parse_args()
 
 
@@ -479,6 +510,363 @@ def ensure_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> Non
     client.execute(create_continuity_table_sql(args))
 
 
+def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
+    prefix = str(args.test_table_prefix).strip()
+    if not SAFE_TEST_TABLE_RE.match(prefix):
+        raise ValueError(f"--test-table-prefix must be a safe ClickHouse identifier prefix, got {prefix!r}")
+    if prefix in {DEFAULT_EVENTS_TABLE, DEFAULT_MANIFEST_TABLE, DEFAULT_CONTINUITY_TABLE}:
+        raise ValueError("--test-table-prefix cannot be a production table name")
+    if args.dry_run:
+        raise ValueError("--test-mode needs to insert and audit temp tables; do not combine it with --dry-run")
+    if int(args.limit_days) <= 0:
+        args.limit_days = 1
+    args.events_table = f"{prefix}_{run_id}_events"
+    args.manifest_table = f"{prefix}_{run_id}_manifest"
+    args.continuity_table = f"{prefix}_{run_id}_continuity"
+    for table in (args.events_table, args.manifest_table, args.continuity_table):
+        if table in {DEFAULT_EVENTS_TABLE, DEFAULT_MANIFEST_TABLE, DEFAULT_CONTINUITY_TABLE} or not SAFE_TEST_TABLE_RE.match(table):
+            raise ValueError(f"Unsafe test table name generated: {table!r}")
+    args.retry_failed = True
+    args.retry_started = True
+    args.force_day_delete = True
+
+
+def drop_test_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+    if not args.test_mode:
+        return
+    prefix = f"{str(args.test_table_prefix).strip()}_"
+    tables = [args.events_table, args.manifest_table, args.continuity_table]
+    unsafe = [table for table in tables if not table.startswith(prefix) or not SAFE_TEST_TABLE_RE.match(table)]
+    if unsafe:
+        raise RuntimeError(f"Refusing to drop unsafe test table names: {unsafe}")
+    for table in tables:
+        client.execute(f"DROP TABLE IF EXISTS {quote_ident(args.database)}.{quote_ident(table)} SYNC")
+
+
+def first_tsv_row(client: ClickHouseHttpClient, sql: str) -> list[str]:
+    text = client.query_tsv(sql).strip()
+    return text.splitlines()[0].split("\t") if text else []
+
+
+def query_audit_counts(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles]) -> dict[str, int]:
+    dates = ", ".join(sql_string(day.source_date) for day in days)
+    row = first_tsv_row(
+        client,
+        f"""
+SELECT
+    count() AS rows,
+    countIf(ticker = '') AS blank_ticker_rows,
+    countIf(event_type NOT IN (0, 1)) AS bad_event_type_rows,
+    countIf(sip_timestamp_us = 0) AS zero_timestamp_rows,
+    countIf(event_date NOT IN ({dates})) AS wrong_event_date_rows,
+    countIf(event_type = 0 AND (price_primary_int = 0 OR price_secondary_int = 0 OR size_primary <= 0 OR size_secondary <= 0)) AS bad_quote_rows,
+    countIf(event_type = 1 AND (price_primary_int = 0 OR price_secondary_int != 0 OR size_primary <= 0 OR size_secondary != 0 OR exchange_secondary != 0)) AS bad_trade_rows,
+    count() - uniqExact(ticker, ordinal) AS duplicate_ticker_ordinal_rows
+FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
+WHERE event_date IN ({dates})
+""",
+    )
+    keys = [
+        "rows",
+        "blank_ticker_rows",
+        "bad_event_type_rows",
+        "zero_timestamp_rows",
+        "wrong_event_date_rows",
+        "bad_quote_rows",
+        "bad_trade_rows",
+        "duplicate_ticker_ordinal_rows",
+    ]
+    return {key: int(float(value or 0)) for key, value in zip(keys, row, strict=False)}
+
+
+def query_continuity_mismatches(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles]) -> int:
+    dates = ", ".join(sql_string(day.source_date) for day in days)
+    row = first_tsv_row(
+        client,
+        f"""
+SELECT count()
+FROM
+(
+    SELECT
+        coalesce(e.ticker, c.ticker) AS ticker,
+        coalesce(e.event_date, c.source_date) AS source_date,
+        coalesce(e.event_rows, toUInt64(0)) AS event_rows,
+        coalesce(c.continuity_rows, toUInt64(0)) AS continuity_rows
+    FROM
+    (
+        SELECT ticker, event_date, count() AS event_rows
+        FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
+        WHERE event_date IN ({dates})
+        GROUP BY ticker, event_date
+    ) AS e
+    FULL OUTER JOIN
+    (
+        SELECT ticker, source_date, argMax(event_count, updated_at) AS continuity_rows
+        FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+        WHERE source_date IN ({dates})
+        GROUP BY ticker, source_date
+    ) AS c ON c.ticker = e.ticker AND c.source_date = e.event_date
+)
+WHERE event_rows != continuity_rows
+""",
+    )
+    return int(float(row[0] or 0)) if row else 0
+
+
+def compact_quote_clean_predicate(alias: str) -> str:
+    return f"""
+{alias}.ticker != ''
+AND {alias}.sip_timestamp_us > 0
+AND {alias}.sequence_number > 0
+AND {alias}.bid_price_int > 0
+AND {alias}.ask_price_int > 0
+AND {alias}.bid_size > 0
+AND {alias}.ask_size > 0
+AND if(bitAnd({alias}.quote_flags, 1) = 1, {alias}.bid_price_int / 10000.0, {alias}.bid_price_int / 100.0)
+    <= if(bitAnd(bitShiftRight({alias}.quote_flags, 1), 1) = 1, {alias}.ask_price_int / 10000.0, {alias}.ask_price_int / 100.0)
+AND {alias}.issue_flags = 0
+""".strip()
+
+
+def compact_trade_clean_predicate(alias: str) -> str:
+    return f"""
+{alias}.ticker != ''
+AND {alias}.sip_timestamp_us > 0
+AND {alias}.sequence_number > 0
+AND {alias}.price_int > 0
+AND {alias}.size > 0
+AND {alias}.issue_flags = 0
+""".strip()
+
+
+def quote_reference_match_sql(args: argparse.Namespace, days: list[DayFiles], sample_size: int) -> str:
+    dates = ", ".join(sql_string(day.source_date) for day in days)
+    db = quote_ident(args.database)
+    events_table = quote_ident(args.events_table)
+    quote_table = quote_ident(args.test_reference_quote_table)
+    return f"""
+SELECT
+    count() AS sample_rows,
+    countIf(match_rows = 0) AS missing_event_rows
+FROM
+(
+    SELECT
+        x.ticker,
+        x.sip_timestamp_us,
+        x.sequence_number,
+        x.price_primary_int,
+        x.price_secondary_int,
+        x.size_primary,
+        x.size_secondary,
+        x.exchange_primary,
+        x.exchange_secondary,
+        x.event_flags,
+        x.conditions_packed,
+        x.event_date,
+        countIf(e.ticker != '') AS match_rows
+    FROM
+    (
+        SELECT
+            q.ticker AS ticker,
+            toUInt8(0) AS event_type,
+            q.sip_timestamp_us AS sip_timestamp_us,
+            q.sequence_number AS sequence_number,
+            q.ask_price_int AS price_primary_int,
+            q.bid_price_int AS price_secondary_int,
+            toFloat32(q.ask_size) AS size_primary,
+            toFloat32(q.bid_size) AS size_secondary,
+            q.ask_exchange AS exchange_primary,
+            q.bid_exchange AS exchange_secondary,
+            toUInt8(
+                bitOr(
+                    bitOr(bitAnd(bitShiftRight(q.quote_flags, 1), 1), bitShiftLeft(bitAnd(q.quote_flags, 1), 1)),
+                    bitShiftLeft(bitAnd(bitShiftRight(q.quote_flags, 2), 7), 2)
+                )
+            ) AS event_flags,
+            {quote_condition_pack_expr()} AS conditions_packed,
+            q.event_date AS event_date
+        FROM
+        (
+            SELECT
+                *,
+                {condition_code_expr(1)} AS condition_code_1,
+                {condition_code_expr(2)} AS condition_code_2,
+                {condition_code_expr(3)} AS condition_code_3,
+                {condition_code_expr(4)} AS condition_code_4
+            FROM {db}.{quote_table} AS q0
+            WHERE event_date IN ({dates})
+              AND {compact_quote_clean_predicate("q0")}
+            ORDER BY cityHash64(ticker, sip_timestamp_us, sequence_number)
+            LIMIT {int(sample_size)}
+        ) AS q
+        LEFT JOIN {condition_reference_subquery(args, "ref_quote_conditions")} AS qc1 ON qc1.modifier_int = q.condition_code_1
+        LEFT JOIN {condition_reference_subquery(args, "ref_quote_conditions")} AS qc2 ON qc2.modifier_int = q.condition_code_2
+        LEFT JOIN {condition_reference_subquery(args, "ref_quote_conditions")} AS qc3 ON qc3.modifier_int = q.condition_code_3
+        LEFT JOIN {condition_reference_subquery(args, "ref_quote_conditions")} AS qc4 ON qc4.modifier_int = q.condition_code_4
+    ) AS x
+    LEFT JOIN {db}.{events_table} AS e
+        ON e.ticker = x.ticker
+       AND e.event_type = x.event_type
+       AND e.sip_timestamp_us = x.sip_timestamp_us
+       AND e.price_primary_int = x.price_primary_int
+       AND e.price_secondary_int = x.price_secondary_int
+       AND e.size_primary = x.size_primary
+       AND e.size_secondary = x.size_secondary
+       AND e.exchange_primary = x.exchange_primary
+       AND e.exchange_secondary = x.exchange_secondary
+       AND e.event_flags = x.event_flags
+       AND e.conditions_packed = x.conditions_packed
+       AND e.event_date = x.event_date
+    GROUP BY
+        x.ticker, x.sip_timestamp_us, x.sequence_number, x.price_primary_int, x.price_secondary_int,
+        x.size_primary, x.size_secondary, x.exchange_primary, x.exchange_secondary, x.event_flags,
+        x.conditions_packed, x.event_date
+)
+"""
+
+
+def trade_reference_match_sql(args: argparse.Namespace, days: list[DayFiles], sample_size: int) -> str:
+    dates = ", ".join(sql_string(day.source_date) for day in days)
+    db = quote_ident(args.database)
+    events_table = quote_ident(args.events_table)
+    trade_table = quote_ident(args.test_reference_trade_table)
+    return f"""
+SELECT
+    count() AS sample_rows,
+    countIf(match_rows = 0) AS missing_event_rows
+FROM
+(
+    SELECT
+        x.ticker,
+        x.sip_timestamp_us,
+        x.sequence_number,
+        x.price_primary_int,
+        x.size_primary,
+        x.exchange_primary,
+        x.event_flags,
+        x.conditions_packed,
+        x.event_date,
+        countIf(e.ticker != '') AS match_rows
+    FROM
+    (
+        SELECT
+            t.ticker AS ticker,
+            toUInt8(1) AS event_type,
+            t.sip_timestamp_us AS sip_timestamp_us,
+            t.sequence_number AS sequence_number,
+            t.price_int AS price_primary_int,
+            toUInt32(0) AS price_secondary_int,
+            t.size AS size_primary,
+            toFloat32(0) AS size_secondary,
+            t.exchange AS exchange_primary,
+            toUInt8(0) AS exchange_secondary,
+            toUInt8(
+                bitOr(
+                    bitAnd(t.trade_flags, 1),
+                    bitShiftLeft(bitAnd(bitShiftRight(t.trade_flags, 1), 7), 2)
+                )
+            ) AS event_flags,
+            {trade_condition_pack_expr()} AS conditions_packed,
+            t.event_date AS event_date
+        FROM
+        (
+            SELECT
+                *,
+                {condition_code_expr(1)} AS condition_code_1,
+                {condition_code_expr(2)} AS condition_code_2,
+                {condition_code_expr(3)} AS condition_code_3,
+                {condition_code_expr(4)} AS condition_code_4,
+                {condition_code_expr(5)} AS condition_code_5
+            FROM {db}.{trade_table} AS t0
+            WHERE event_date IN ({dates})
+              AND {compact_trade_clean_predicate("t0")}
+            ORDER BY cityHash64(ticker, sip_timestamp_us, sequence_number)
+            LIMIT {int(sample_size)}
+        ) AS t
+        LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc1 ON tc1.modifier_int = t.condition_code_1
+        LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc2 ON tc2.modifier_int = t.condition_code_2
+        LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc3 ON tc3.modifier_int = t.condition_code_3
+        LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc4 ON tc4.modifier_int = t.condition_code_4
+        LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc5 ON tc5.modifier_int = t.condition_code_5
+    ) AS x
+    LEFT JOIN {db}.{events_table} AS e
+        ON e.ticker = x.ticker
+       AND e.event_type = x.event_type
+       AND e.sip_timestamp_us = x.sip_timestamp_us
+       AND e.price_primary_int = x.price_primary_int
+       AND e.price_secondary_int = x.price_secondary_int
+       AND e.size_primary = x.size_primary
+       AND e.size_secondary = x.size_secondary
+       AND e.exchange_primary = x.exchange_primary
+       AND e.exchange_secondary = x.exchange_secondary
+       AND e.event_flags = x.event_flags
+       AND e.conditions_packed = x.conditions_packed
+       AND e.event_date = x.event_date
+    GROUP BY
+        x.ticker, x.sip_timestamp_us, x.sequence_number, x.price_primary_int, x.size_primary,
+        x.exchange_primary, x.event_flags, x.conditions_packed, x.event_date
+)
+"""
+
+
+def query_reference_sample_match(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles], kind: str) -> dict[str, int]:
+    sample_size = max(1, int(args.test_sample_size))
+    sql = quote_reference_match_sql(args, days, sample_size) if kind == "quotes" else trade_reference_match_sql(args, days, sample_size)
+    row = first_tsv_row(client, sql)
+    sample_rows = int(float(row[0] or 0)) if row else 0
+    missing_rows = int(float(row[1] or 0)) if len(row) > 1 else sample_rows
+    return {"sample_rows": sample_rows, "missing_event_rows": missing_rows}
+
+
+def audit_test_events(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles], report_path: Path) -> None:
+    print("=" * 100, flush=True)
+    print("TEST AUDIT START", flush=True)
+    if not days:
+        raise RuntimeError("Test-mode audit has no completed source days to validate.")
+    counts = query_audit_counts(client, args, days)
+    continuity_mismatches = query_continuity_mismatches(client, args, days)
+    quote_match = query_reference_sample_match(client, args, days, "quotes")
+    trade_match = query_reference_sample_match(client, args, days, "trades")
+    audit = {
+        "type": "test_audit",
+        "status": "ok",
+        "events_table": args.events_table,
+        "manifest_table": args.manifest_table,
+        "continuity_table": args.continuity_table,
+        "source_dates": [day.source_date for day in days],
+        "counts": counts,
+        "continuity_mismatches": continuity_mismatches,
+        "reference_samples": {"quotes": quote_match, "trades": trade_match},
+    }
+    failures = {
+        key: value
+        for key, value in counts.items()
+        if key != "rows" and value
+    }
+    if counts.get("rows", 0) <= 0:
+        failures["rows"] = counts.get("rows", 0)
+    if continuity_mismatches:
+        failures["continuity_mismatches"] = continuity_mismatches
+    if quote_match["sample_rows"] <= 0 or quote_match["missing_event_rows"]:
+        failures["quote_reference_match"] = quote_match
+    if trade_match["sample_rows"] <= 0 or trade_match["missing_event_rows"]:
+        failures["trade_reference_match"] = trade_match
+    if failures:
+        audit["status"] = "failed"
+        audit["failures"] = failures
+        append_jsonl(report_path, audit)
+        print(f"TEST AUDIT FAILED failures={json.dumps(failures, sort_keys=True)}", flush=True)
+        raise RuntimeError(f"Test-mode audit failed; temp events were not promoted. Failures: {failures}")
+    append_jsonl(report_path, audit)
+    print(
+        "TEST AUDIT OK "
+        f"rows={counts['rows']:,} quote_samples={quote_match['sample_rows']:,} "
+        f"trade_samples={trade_match['sample_rows']:,}",
+        flush=True,
+    )
+    print("=" * 100, flush=True)
+
+
 def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles, run_id: str, report_path: Path) -> str:
     job = DayJob(source_date=day.source_date, build_step=build_step_for_date(day.source_date))
     status = latest_day_status(client, args, job)
@@ -534,10 +922,20 @@ def main() -> None:
     loaded_env_files = load_env_files(discover_clickhouse_env_files(), verbose=True)
     args = parse_args()
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if args.test_mode:
+        configure_test_tables(args, run_id)
     report_path = Path(args.output_root_win) / f"flatfile_event_update_{run_id}.jsonl"
     print("=" * 100, flush=True)
     print("Massive SIP flatfile download + direct event update", flush=True)
     print(f"database={args.database} events_table={args.events_table}", flush=True)
+    print(f"test_mode={args.test_mode}", flush=True)
+    if args.test_mode:
+        print(
+            f"test_tables manifest={args.manifest_table} continuity={args.continuity_table} "
+            f"reference_quotes={args.test_reference_quote_table} reference_trades={args.test_reference_trade_table} "
+            f"sample_size={args.test_sample_size}",
+            flush=True,
+        )
     print(f"date_range={args.start_date} -> {args.end_date}", flush=True)
     print(f"flatfiles_root_win={args.flatfiles_root_win}", flush=True)
     print(f"flatfiles_root_ch={args.flatfiles_root_ch}", flush=True)
@@ -556,6 +954,9 @@ def main() -> None:
     print(f"Discovered {len(days):,} complete quote/trade day pairs", flush=True)
 
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
+    if args.test_mode:
+        print("TEST MODE: dropping same-run temp tables before isolated build", flush=True)
+        drop_test_tables(client, args)
     ensure_tables(client, args)
 
     download_results: dict[str, dict[str, Any]] = {}
@@ -590,6 +991,13 @@ def main() -> None:
         if args.dry_run:
             continue
         run_day(client, args, day, run_id, report_path)
+
+    if args.test_mode and not args.dry_run:
+        audited_days = [day for day in sorted(days, key=lambda item: item.source_date) if download_results.get(day.source_date, {}).get("ok")]
+        audit_test_events(client, args, audited_days, report_path)
+        if not args.test_keep_tables:
+            print("TEST MODE: dropping temp tables after successful audit", flush=True)
+            drop_test_tables(client, args)
 
     print(f"DONE report={report_path}", flush=True)
 

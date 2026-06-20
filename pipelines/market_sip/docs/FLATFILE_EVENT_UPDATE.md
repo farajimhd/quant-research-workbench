@@ -83,6 +83,51 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
   --dry-run
 ```
 
+## Safe Test Mode
+
+Before updating production `events`, use `--test-mode`. This runs the same
+flatfile-to-events insert path over at least one complete quote/trade day, but
+it rewrites the destinations to isolated temp tables:
+
+```text
+<test-prefix>_<run-id>_events
+<test-prefix>_<run-id>_manifest
+<test-prefix>_<run-id>_continuity
+```
+
+The production `events`, `events_build_manifest`, and
+`events_ordinal_continuity` tables are not touched. Test mode also refuses
+`--dry-run`, because it must insert temp rows and then audit them.
+
+After the temp insert, the script audits:
+
+- structural event integrity: valid event type, timestamps, nonzero quote/trade
+  prices and sizes, quote/trade field semantics, and duplicate
+  `(ticker, ordinal)` rows
+- continuity integrity: temp event counts must match temp continuity counts per
+  ticker/day
+- reference-table integrity: deterministic random clean samples from the main
+  compact `quotes` and `trades` tables must match rows in the temp `events`
+  table after the same event conversion and condition packing
+
+By default, successfully audited temp tables are dropped. Failed temp tables are
+left in place for inspection. Pass `--test-keep-tables` to keep successful temp
+tables too.
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\flatfiles\download_update_events.py `
+  --database market_sip_compact `
+  --start-date 2026-06-01 `
+  --end-date 2026-06-03 `
+  --test-mode `
+  --download-workers 8 `
+  --max-threads 32 `
+  --test-sample-size 100
+```
+
+Use `--test-reference-quote-table` and `--test-reference-trade-table` only if
+the main compact quote/trade table names differ from `quotes` and `trades`.
+
 To run one real day:
 
 ```powershell
@@ -173,6 +218,11 @@ Retry and safety:
 - `--force-day-delete`: delete existing `events` and continuity rows for a day
   before retrying it. Use this with retry flags to avoid duplicate rows.
 - `--dry-run`: discover/download-plan only; no event inserts.
+- `--test-mode`: build isolated temp events/manifest/continuity tables and
+  audit them against the main compact quote/trade tables. Production event
+  tables are not modified.
+- `--test-keep-tables`: keep successful test-mode temp tables for manual
+  inspection. Failed test tables are always kept.
 
 ## Retry Safety
 
