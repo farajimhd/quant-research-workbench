@@ -10,9 +10,12 @@ from pipelines.sec.edgar.sec_filing_text_extract_parts import (
     build_missing_parent_row,
     build_rows,
     parse_filing,
+    sec_document_url,
+    sec_filing_detail_url,
 )
 from pipelines.sec.edgar.sec_pipeline.feed import SecFeedItem, accession_text_url
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
+from pipelines.sec.edgar.sec_pipeline.submissions import SecSubmissionFiling, SecSubmissionsClient
 from pipelines.sec.edgar.sec_pipeline.xbrl_live import LiveXbrlRows, SecLiveXbrlExtractor
 
 
@@ -32,6 +35,7 @@ class SecLiveFilingPipeline:
         self.raw_root_win = raw_root_win
         self.min_text_chars = min_text_chars
         self.max_text_chars = max_text_chars
+        self.submissions = SecSubmissionsClient(http=http)
         self.xbrl_extractor = SecLiveXbrlExtractor(http=http)
 
     def process_feed_item(self, item: SecFeedItem, *, source_run_id: str) -> LiveFilingRows:
@@ -60,6 +64,9 @@ class SecLiveFilingPipeline:
         )
         if item.filing_detail_url:
             filing_row["filing_detail_url"] = item.filing_detail_url
+        submission = self.submissions.fetch_recent_filing(cik=parent.cik, accession_number=parent.accession_number)
+        if submission is not None:
+            filing_row, parent = apply_submission_metadata(filing_row, parent, submission)
         document_rows: list[dict[str, Any]] = []
         text_rows: list[dict[str, Any]] = []
         skip_rows: list[dict[str, Any]] = []
@@ -74,7 +81,7 @@ class SecLiveFilingPipeline:
             if skip_row:
                 skip_rows.append(skip_row)
         xbrl_rows = LiveXbrlRows()
-        if has_xbrl_payload:
+        if has_xbrl_payload or (submission is not None and submission.has_xbrl):
             xbrl_rows = self.xbrl_extractor.extract_for_accession(
                 cik=parent.cik,
                 accession_number=parent.accession_number,
@@ -97,3 +104,43 @@ class SecLiveFilingPipeline:
         path = root / f"{item.accession_number}.txt"
         path.write_bytes(raw)
         return path
+
+
+def apply_submission_metadata(
+    filing_row: dict[str, Any],
+    parent: FilingParent,
+    submission: SecSubmissionFiling,
+) -> tuple[dict[str, Any], FilingParent]:
+    primary_document = submission.primary_document or filing_row.get("primary_document") or ""
+    filing_detail_url = sec_filing_detail_url(parent.cik, parent.accession_number_compact)
+    primary_document_url = sec_document_url(parent.cik, parent.accession_number_compact, primary_document) if primary_document else ""
+    form_type = submission.form_type or str(filing_row.get("form_type") or "")
+    accepted_at_utc = submission.accepted_at_utc or str(filing_row.get("accepted_at_utc") or "")
+    filing_row.update(
+        {
+            "company_name": submission.entity_name or filing_row.get("company_name"),
+            "form_type": form_type,
+            "filing_date": submission.filing_date or filing_row.get("filing_date"),
+            "report_date": submission.report_date or filing_row.get("report_date"),
+            "accepted_at_utc": accepted_at_utc or filing_row.get("accepted_at_utc"),
+            "acceptance_datetime_raw": submission.acceptance_datetime_raw or filing_row.get("acceptance_datetime_raw"),
+            "accepted_at_source": "submissions_recent" if submission.accepted_at_utc else filing_row.get("accepted_at_source"),
+            "primary_document": primary_document or None,
+            "primary_document_url": primary_document_url or filing_row.get("primary_document_url"),
+            "filing_detail_url": filing_detail_url or filing_row.get("filing_detail_url"),
+            "filing_size": submission.filing_size if submission.filing_size is not None else filing_row.get("filing_size"),
+            "items": submission.items or filing_row.get("items"),
+            "text_status": "live_text_extracted",
+        }
+    )
+    return filing_row, FilingParent(
+        filing_id=parent.filing_id,
+        accession_number=parent.accession_number,
+        accession_number_compact=parent.accession_number_compact,
+        cik=parent.cik,
+        form_type=form_type,
+        accepted_at_utc=accepted_at_utc,
+        primary_document=primary_document,
+        primary_document_url=primary_document_url,
+        filing_detail_url=filing_detail_url,
+    )

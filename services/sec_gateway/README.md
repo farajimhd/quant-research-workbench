@@ -18,6 +18,8 @@ start service
 -> detect filing/text/XBRL freshness gaps from q_live
 -> write workstation historical-fill command for old gaps
 -> poll SEC current Atom feed
+-> fetch SEC submissions JSON for each discovered CIK/accession
+-> canonicalize parent filing metadata from submissions.recent
 -> download new accession .txt filings
 -> parse SGML documents with the shared SEC text normalizer
 -> fetch SEC companyfacts for filings that expose XBRL or inline-XBRL documents
@@ -164,14 +166,33 @@ York extended-hours clock, using 04:00-20:00 ET as active.
 
 ## Live XBRL
 
-The SEC Atom feed itself does not contain companyfacts rows. For a feed item that
-contains XBRL sidecars or inline-XBRL content, the gateway fetches:
+The SEC Atom feed is only the low-latency discovery source. It does not contain
+canonical filing metadata or companyfacts rows. For each feed accession, the
+gateway first fetches:
+
+```text
+https://data.sec.gov/submissions/CIK##########.json
+```
+
+It finds the accession in `filings.recent` and uses that row to canonicalize:
+
+- form type
+- filing date
+- report date
+- accepted timestamp
+- primary document
+- filing size
+- filing items
+- XBRL / inline-XBRL flags
+
+For filings that submissions or the accession document set identifies as
+XBRL-bearing, the gateway then fetches:
 
 ```text
 https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json
 ```
 
-It then filters facts to the feed accession and writes:
+It filters facts to the exact accession and writes:
 
 - `sec_xbrl_concept_v1`
 - `sec_xbrl_company_fact_v1`
