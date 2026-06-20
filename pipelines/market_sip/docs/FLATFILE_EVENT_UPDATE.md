@@ -106,9 +106,11 @@ After the temp insert, the script audits:
   `(ticker, ordinal)` rows
 - continuity integrity: temp event counts must match temp continuity counts per
   ticker/day
-- reference-table integrity: deterministic random clean samples from the main
-  compact `quotes` and `trades` tables must match rows in the temp `events`
-  table after the same event conversion and condition packing
+- raw-source integrity: deterministic samples from the temp `events` table are
+  matched back to the exact quote/trade `.csv.gz` files used for the test run.
+  The validator scans those raw CSVs, converts candidate rows in memory with the
+  same event encoding and condition packing rules, and compares the decoded event
+  fields directly.
 
 By default, successfully audited temp tables are dropped. Failed temp tables are
 left in place for inspection. Pass `--test-keep-tables` to keep successful temp
@@ -124,9 +126,6 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
   --max-threads 32 `
   --test-sample-size 100
 ```
-
-Use `--test-reference-quote-table` and `--test-reference-trade-table` only if
-the main compact quote/trade table names differ from `quotes` and `trades`.
 
 To run one real day:
 
@@ -219,8 +218,8 @@ Retry and safety:
   before retrying it. Use this with retry flags to avoid duplicate rows.
 - `--dry-run`: discover/download-plan only; no event inserts.
 - `--test-mode`: build isolated temp events/manifest/continuity tables and
-  audit them against the main compact quote/trade tables. Production event
-  tables are not modified.
+  audit them against the raw quote/trade CSVs used for that run. Production
+  event tables are not modified.
 - `--test-keep-tables`: keep successful test-mode temp tables for manual
   inspection. Failed test tables are always kept.
 

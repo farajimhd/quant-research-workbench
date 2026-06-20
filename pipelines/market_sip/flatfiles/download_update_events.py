@@ -5,10 +5,12 @@ import concurrent.futures
 import json
 import os
 import re
+import struct
 import sys
 import time
+from collections import defaultdict
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +59,15 @@ from pipelines.market_sip.flatfiles.download_massive_sip_flatfiles import (  # n
 from pipelines.market_sip.ingest.clickhouse_ingest_sip_compact_codec import (  # noqa: E402
     DEFAULT_DATABASE,
     env_status_keys,
+)
+from pipelines.market_sip.validation.clickhouse_compact_schema_validate_sample import (  # noqa: E402
+    participant_delta_us,
+    price_int,
+    price_precision_clipped,
+    scale_code,
+    tape_code,
+    to_decimal_or_zero,
+    to_int_or_zero,
 )
 from pipelines.market_sip.validation.clickhouse_delete_compact_audit_rows import default_clickhouse_url_with_network_fallback  # noqa: E402
 from research.mlops.clickhouse import (  # noqa: E402
@@ -149,7 +160,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Run a safety build into isolated temp events/manifest/continuity tables, then audit the "
-            "temp events against the main compact quote/trade tables. Production events are never touched."
+            "temp events against the raw quote/trade CSVs used for the run. Production events are never touched."
         ),
     )
     parser.add_argument(
@@ -163,8 +174,6 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_TEST_SAMPLE_SIZE,
         help="Per-kind reference rows sampled from main quotes/trades and matched back to temp events.",
     )
-    parser.add_argument("--test-reference-quote-table", default="quotes")
-    parser.add_argument("--test-reference-trade-table", default="trades")
     parser.add_argument(
         "--test-keep-tables",
         action="store_true",
@@ -613,209 +622,295 @@ WHERE event_rows != continuity_rows
     return int(float(row[0] or 0)) if row else 0
 
 
-def compact_quote_clean_predicate(alias: str) -> str:
-    return f"""
-{alias}.ticker != ''
-AND {alias}.sip_timestamp_us > 0
-AND {alias}.sequence_number > 0
-AND {alias}.bid_price_int > 0
-AND {alias}.ask_price_int > 0
-AND {alias}.bid_size > 0
-AND {alias}.ask_size > 0
-AND if(bitAnd({alias}.quote_flags, 1) = 1, {alias}.bid_price_int / 10000.0, {alias}.bid_price_int / 100.0)
-    <= if(bitAnd(bitShiftRight({alias}.quote_flags, 1), 1) = 1, {alias}.ask_price_int / 10000.0, {alias}.ask_price_int / 100.0)
-AND {alias}.issue_flags = 0
-""".strip()
-
-
-def compact_trade_clean_predicate(alias: str) -> str:
-    return f"""
-{alias}.ticker != ''
-AND {alias}.sip_timestamp_us > 0
-AND {alias}.sequence_number > 0
-AND {alias}.price_int > 0
-AND {alias}.size > 0
-AND {alias}.issue_flags = 0
-""".strip()
-
-
-def quote_reference_match_sql(args: argparse.Namespace, days: list[DayFiles], sample_size: int) -> str:
+def query_sample_events(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles], event_type: int) -> list[dict[str, Any]]:
     dates = ", ".join(sql_string(day.source_date) for day in days)
-    db = quote_ident(args.database)
-    events_table = quote_ident(args.events_table)
-    quote_table = quote_ident(args.test_reference_quote_table)
-    return f"""
+    sql = f"""
 SELECT
-    count() AS sample_rows,
-    countIf(match_rows = 0) AS missing_event_rows
-FROM
-(
-    SELECT
-        x.ticker,
-        x.sip_timestamp_us,
-        x.sequence_number,
-        x.price_primary_int,
-        x.price_secondary_int,
-        x.size_primary,
-        x.size_secondary,
-        x.exchange_primary,
-        x.exchange_secondary,
-        x.event_flags,
-        x.conditions_packed,
-        x.event_date,
-        countIf(e.ticker != '') AS match_rows
-    FROM
-    (
-        SELECT
-            q.ticker AS ticker,
-            toUInt8(0) AS event_type,
-            q.sip_timestamp_us AS sip_timestamp_us,
-            q.sequence_number AS sequence_number,
-            q.ask_price_int AS price_primary_int,
-            q.bid_price_int AS price_secondary_int,
-            toFloat32(q.ask_size) AS size_primary,
-            toFloat32(q.bid_size) AS size_secondary,
-            q.ask_exchange AS exchange_primary,
-            q.bid_exchange AS exchange_secondary,
-            toUInt8(
-                bitOr(
-                    bitOr(bitAnd(bitShiftRight(q.quote_flags, 1), 1), bitShiftLeft(bitAnd(q.quote_flags, 1), 1)),
-                    bitShiftLeft(bitAnd(bitShiftRight(q.quote_flags, 2), 7), 2)
-                )
-            ) AS event_flags,
-            {quote_condition_pack_expr()} AS conditions_packed,
-            q.event_date AS event_date
-        FROM
-        (
-            SELECT
-                *,
-                {condition_code_expr(1)} AS condition_code_1,
-                {condition_code_expr(2)} AS condition_code_2,
-                {condition_code_expr(3)} AS condition_code_3,
-                {condition_code_expr(4)} AS condition_code_4
-            FROM {db}.{quote_table} AS q0
-            WHERE event_date IN ({dates})
-              AND {compact_quote_clean_predicate("q0")}
-            ORDER BY cityHash64(ticker, sip_timestamp_us, sequence_number)
-            LIMIT {int(sample_size)}
-        ) AS q
-        LEFT JOIN {condition_reference_subquery(args, "ref_quote_conditions")} AS qc1 ON qc1.modifier_int = q.condition_code_1
-        LEFT JOIN {condition_reference_subquery(args, "ref_quote_conditions")} AS qc2 ON qc2.modifier_int = q.condition_code_2
-        LEFT JOIN {condition_reference_subquery(args, "ref_quote_conditions")} AS qc3 ON qc3.modifier_int = q.condition_code_3
-        LEFT JOIN {condition_reference_subquery(args, "ref_quote_conditions")} AS qc4 ON qc4.modifier_int = q.condition_code_4
-    ) AS x
-    LEFT JOIN {db}.{events_table} AS e
-        ON e.ticker = x.ticker
-       AND e.event_type = x.event_type
-       AND e.sip_timestamp_us = x.sip_timestamp_us
-       AND e.price_primary_int = x.price_primary_int
-       AND e.price_secondary_int = x.price_secondary_int
-       AND e.size_primary = x.size_primary
-       AND e.size_secondary = x.size_secondary
-       AND e.exchange_primary = x.exchange_primary
-       AND e.exchange_secondary = x.exchange_secondary
-       AND e.event_flags = x.event_flags
-       AND e.conditions_packed = x.conditions_packed
-       AND e.event_date = x.event_date
-    GROUP BY
-        x.ticker, x.sip_timestamp_us, x.sequence_number, x.price_primary_int, x.price_secondary_int,
-        x.size_primary, x.size_secondary, x.exchange_primary, x.exchange_secondary, x.event_flags,
-        x.conditions_packed, x.event_date
-)
+    ticker,
+    ordinal,
+    event_type,
+    sip_timestamp_us,
+    price_primary_int,
+    price_secondary_int,
+    size_primary,
+    size_secondary,
+    exchange_primary,
+    exchange_secondary,
+    event_flags,
+    conditions_packed,
+    event_date
+FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
+WHERE event_date IN ({dates})
+  AND event_type = toUInt8({int(event_type)})
+ORDER BY cityHash64(ticker, ordinal, sip_timestamp_us, event_type)
+LIMIT {max(1, int(args.test_sample_size))}
+FORMAT JSONEachRow
 """
+    rows = []
+    for line in client.execute(sql).splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
 
 
-def trade_reference_match_sql(args: argparse.Namespace, days: list[DayFiles], sample_size: int) -> str:
-    dates = ", ".join(sql_string(day.source_date) for day in days)
-    db = quote_ident(args.database)
-    events_table = quote_ident(args.events_table)
-    trade_table = quote_ident(args.test_reference_trade_table)
-    return f"""
-SELECT
-    count() AS sample_rows,
-    countIf(match_rows = 0) AS missing_event_rows
-FROM
-(
-    SELECT
-        x.ticker,
-        x.sip_timestamp_us,
-        x.sequence_number,
-        x.price_primary_int,
-        x.size_primary,
-        x.exchange_primary,
-        x.event_flags,
-        x.conditions_packed,
-        x.event_date,
-        countIf(e.ticker != '') AS match_rows
-    FROM
-    (
-        SELECT
-            t.ticker AS ticker,
-            toUInt8(1) AS event_type,
-            t.sip_timestamp_us AS sip_timestamp_us,
-            t.sequence_number AS sequence_number,
-            t.price_int AS price_primary_int,
-            toUInt32(0) AS price_secondary_int,
-            t.size AS size_primary,
-            toFloat32(0) AS size_secondary,
-            t.exchange AS exchange_primary,
-            toUInt8(0) AS exchange_secondary,
-            toUInt8(
-                bitOr(
-                    bitAnd(t.trade_flags, 1),
-                    bitShiftLeft(bitAnd(bitShiftRight(t.trade_flags, 1), 7), 2)
-                )
-            ) AS event_flags,
-            {trade_condition_pack_expr()} AS conditions_packed,
-            t.event_date AS event_date
-        FROM
-        (
-            SELECT
-                *,
-                {condition_code_expr(1)} AS condition_code_1,
-                {condition_code_expr(2)} AS condition_code_2,
-                {condition_code_expr(3)} AS condition_code_3,
-                {condition_code_expr(4)} AS condition_code_4,
-                {condition_code_expr(5)} AS condition_code_5
-            FROM {db}.{trade_table} AS t0
-            WHERE event_date IN ({dates})
-              AND {compact_trade_clean_predicate("t0")}
-            ORDER BY cityHash64(ticker, sip_timestamp_us, sequence_number)
-            LIMIT {int(sample_size)}
-        ) AS t
-        LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc1 ON tc1.modifier_int = t.condition_code_1
-        LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc2 ON tc2.modifier_int = t.condition_code_2
-        LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc3 ON tc3.modifier_int = t.condition_code_3
-        LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc4 ON tc4.modifier_int = t.condition_code_4
-        LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc5 ON tc5.modifier_int = t.condition_code_5
-    ) AS x
-    LEFT JOIN {db}.{events_table} AS e
-        ON e.ticker = x.ticker
-       AND e.event_type = x.event_type
-       AND e.sip_timestamp_us = x.sip_timestamp_us
-       AND e.price_primary_int = x.price_primary_int
-       AND e.price_secondary_int = x.price_secondary_int
-       AND e.size_primary = x.size_primary
-       AND e.size_secondary = x.size_secondary
-       AND e.exchange_primary = x.exchange_primary
-       AND e.exchange_secondary = x.exchange_secondary
-       AND e.event_flags = x.event_flags
-       AND e.conditions_packed = x.conditions_packed
-       AND e.event_date = x.event_date
-    GROUP BY
-        x.ticker, x.sip_timestamp_us, x.sequence_number, x.price_primary_int, x.size_primary,
-        x.exchange_primary, x.event_flags, x.conditions_packed, x.event_date
-)
+def load_condition_dense_map(client: ClickHouseHttpClient, args: argparse.Namespace, table: str) -> dict[int, int]:
+    rows = client.query_tsv(
+        f"""
+SELECT modifier_int, min(dense_id)
+FROM {quote_ident(args.database)}.{quote_ident(table)}
+GROUP BY modifier_int
 """
+    ).strip().splitlines()
+    dense: dict[int, int] = {}
+    for line in rows:
+        if not line.strip():
+            continue
+        modifier, dense_id = line.split("\t")
+        dense[int(modifier or 0)] = int(dense_id or 0)
+    return dense
 
 
-def query_reference_sample_match(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles], kind: str) -> dict[str, int]:
-    sample_size = max(1, int(args.test_sample_size))
-    sql = quote_reference_match_sql(args, days, sample_size) if kind == "quotes" else trade_reference_match_sql(args, days, sample_size)
-    row = first_tsv_row(client, sql)
-    sample_rows = int(float(row[0] or 0)) if row else 0
-    missing_rows = int(float(row[1] or 0)) if len(row) > 1 else sample_rows
-    return {"sample_rows": sample_rows, "missing_event_rows": missing_rows}
+def collect_lazy(frame: Any):
+    try:
+        return frame.collect(engine="streaming")
+    except (TypeError, ValueError):
+        return frame.collect()
+
+
+def float32_value(value: Any) -> float:
+    return struct.unpack("f", struct.pack("f", float(to_decimal_or_zero(value))))[0]
+
+
+def condition_codes(raw_conditions: Any, slots: int) -> list[int]:
+    parts = str(raw_conditions or "").split(",")
+    values: list[int] = []
+    for index in range(slots):
+        values.append(to_int_or_zero(parts[index] if index < len(parts) else ""))
+    return values
+
+
+def pack_quote_conditions(raw_conditions: Any, dense_map: dict[int, int]) -> int:
+    codes = [dense_map.get(code, 0) for code in condition_codes(raw_conditions, 4)]
+    return int(codes[0]) | (int(codes[1]) << 8) | (int(codes[2]) << 16) | (int(codes[3]) << 24)
+
+
+def pack_trade_conditions(raw_conditions: Any, dense_map: dict[int, int]) -> int:
+    codes = [dense_map.get(code, 0) for code in condition_codes(raw_conditions, 5)]
+    return int(codes[0]) | (int(codes[1]) << 6) | (int(codes[2]) << 12) | (int(codes[3]) << 18) | (int(codes[4]) << 24)
+
+
+def event_key(row: dict[str, Any]) -> tuple[str, int, int, int]:
+    return (str(row["ticker"]), int(row["event_type"]), int(row["sip_timestamp_us"]), int(row["ordinal"]))
+
+
+def raw_lookup_key(row: dict[str, Any], event_type: int) -> tuple[str, int, int, int]:
+    return (str(row["ticker"]), int(event_type), int(row["sip_timestamp_us"]), int(row["sequence_number"]))
+
+
+def sampled_raw_lookup_keys(events: list[dict[str, Any]]) -> set[tuple[str, int, int]]:
+    return {(str(row["ticker"]), int(row["sip_timestamp_us"]), int(row["event_type"])) for row in events}
+
+
+def event_values_match(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+    int_fields = [
+        "event_type",
+        "sip_timestamp_us",
+        "price_primary_int",
+        "price_secondary_int",
+        "exchange_primary",
+        "exchange_secondary",
+        "event_flags",
+        "conditions_packed",
+    ]
+    for field in int_fields:
+        if int(expected[field]) != int(actual[field]):
+            return False
+    for field in ("size_primary", "size_secondary"):
+        if abs(float(expected[field]) - float(actual[field])) > 1e-4:
+            return False
+    return str(expected["ticker"]) == str(actual["ticker"]) and str(expected["event_date"]) == str(actual["event_date"])
+
+
+def quote_raw_row_to_event(row: dict[str, Any], dense_map: dict[int, int]) -> dict[str, Any] | None:
+    bid = to_decimal_or_zero(row.get("bid_price"))
+    ask = to_decimal_or_zero(row.get("ask_price"))
+    bid_int = price_int(bid)
+    ask_int = price_int(ask)
+    bid_size = to_decimal_or_zero(row.get("bid_size"))
+    ask_size = to_decimal_or_zero(row.get("ask_size"))
+    bid_size_int = int(float(bid_size)) if bid_size > 0 else 0
+    ask_size_int = int(float(ask_size)) if ask_size > 0 else 0
+    delta_us, _ = participant_delta_us(row)
+    if not row.get("ticker") or to_int_or_zero(row.get("sip_timestamp")) <= 0 or to_int_or_zero(row.get("sequence_number")) <= 0:
+        return None
+    if bid_int <= 0 or ask_int <= 0 or bid_size_int <= 0 or ask_size_int <= 0:
+        return None
+    if delta_us < -2147483648 or delta_us > 2147483647 or price_precision_clipped(bid) or price_precision_clipped(ask):
+        return None
+    bid_scale = scale_code(bid)
+    ask_scale = scale_code(ask)
+    bid_price = bid_int / (10000.0 if bid_scale else 100.0)
+    ask_price = ask_int / (10000.0 if ask_scale else 100.0)
+    if bid_price > ask_price:
+        return None
+    return {
+        "ticker": str(row["ticker"]),
+        "event_type": 0,
+        "sip_timestamp_us": to_int_or_zero(row.get("sip_timestamp")) // 1000,
+        "sequence_number": to_int_or_zero(row.get("sequence_number")),
+        "price_primary_int": ask_int,
+        "price_secondary_int": bid_int,
+        "size_primary": float32_value(ask_size_int),
+        "size_secondary": float32_value(bid_size_int),
+        "exchange_primary": to_int_or_zero(row.get("ask_exchange")),
+        "exchange_secondary": to_int_or_zero(row.get("bid_exchange")),
+        "event_flags": int(ask_scale | (bid_scale << 1) | (tape_code(row.get("tape")) << 2)),
+        "conditions_packed": pack_quote_conditions(row.get("conditions"), dense_map),
+        "event_date": datetime.fromtimestamp((to_int_or_zero(row.get("sip_timestamp")) // 1000) / 1_000_000, tz=timezone.utc).date().isoformat(),
+    }
+
+
+def trade_raw_row_to_event(row: dict[str, Any], dense_map: dict[int, int]) -> dict[str, Any] | None:
+    trade_price = to_decimal_or_zero(row.get("price"))
+    trade_int = price_int(trade_price)
+    size = to_decimal_or_zero(row.get("size"))
+    delta_us, _ = participant_delta_us(row)
+    if not row.get("ticker") or to_int_or_zero(row.get("sip_timestamp")) <= 0 or to_int_or_zero(row.get("sequence_number")) <= 0:
+        return None
+    if trade_int <= 0 or size <= 0:
+        return None
+    if delta_us < -2147483648 or delta_us > 2147483647 or price_precision_clipped(trade_price):
+        return None
+    trade_scale = scale_code(trade_price)
+    trade_flags = int(trade_scale | (tape_code(row.get("tape")) << 1) | (max(0, min(15, to_int_or_zero(row.get("correction")))) << 3))
+    return {
+        "ticker": str(row["ticker"]),
+        "event_type": 1,
+        "sip_timestamp_us": to_int_or_zero(row.get("sip_timestamp")) // 1000,
+        "sequence_number": to_int_or_zero(row.get("sequence_number")),
+        "price_primary_int": trade_int,
+        "price_secondary_int": 0,
+        "size_primary": float32_value(size),
+        "size_secondary": 0.0,
+        "exchange_primary": to_int_or_zero(row.get("exchange")),
+        "exchange_secondary": 0,
+        "event_flags": int((trade_flags & 1) | (((trade_flags >> 1) & 7) << 2)),
+        "conditions_packed": pack_trade_conditions(row.get("conditions"), dense_map),
+        "event_date": datetime.fromtimestamp((to_int_or_zero(row.get("sip_timestamp")) // 1000) / 1_000_000, tz=timezone.utc).date().isoformat(),
+    }
+
+
+def read_raw_event_candidates(path: Path, kind: str, sampled_events: list[dict[str, Any]], dense_map: dict[int, int]) -> list[dict[str, Any]]:
+    if not sampled_events:
+        return []
+    try:
+        import polars as pl
+    except ImportError as exc:
+        raise RuntimeError("polars is required for raw CSV test-mode validation") from exc
+    tickers = sorted({str(row["ticker"]) for row in sampled_events})
+    sip_us_values = sorted({int(row["sip_timestamp_us"]) for row in sampled_events})
+    event_type = 0 if kind == "quotes" else 1
+    if kind == "quotes":
+        columns = [
+            "ticker",
+            "ask_exchange",
+            "ask_price",
+            "ask_size",
+            "bid_exchange",
+            "bid_price",
+            "bid_size",
+            "conditions",
+            "participant_timestamp",
+            "sequence_number",
+            "sip_timestamp",
+            "tape",
+        ]
+    else:
+        columns = [
+            "ticker",
+            "conditions",
+            "correction",
+            "exchange",
+            "participant_timestamp",
+            "price",
+            "sequence_number",
+            "sip_timestamp",
+            "size",
+            "tape",
+        ]
+    scan = pl.scan_csv(str(path), schema_overrides={column: pl.Utf8 for column in columns}, infer_schema_length=0).select(columns)
+    sip_us_expr = (pl.col("sip_timestamp").cast(pl.UInt64, strict=False) // 1000).alias("sip_timestamp_us")
+    filtered = (
+        scan.with_columns(sip_us_expr)
+        .filter(pl.col("ticker").is_in(tickers))
+        .filter(pl.col("sip_timestamp_us").is_in(sip_us_values))
+    )
+    rows = collect_lazy(filtered).to_dicts()
+    converted: list[dict[str, Any]] = []
+    converter = quote_raw_row_to_event if kind == "quotes" else trade_raw_row_to_event
+    for row in rows:
+        event = converter(row, dense_map)
+        if event is not None:
+            converted.append(event)
+    sampled_keys = sampled_raw_lookup_keys(sampled_events)
+    return [row for row in converted if (row["ticker"], row["sip_timestamp_us"], event_type) in sampled_keys]
+
+
+def validate_events_against_raw_csv(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    days: list[DayFiles],
+) -> dict[str, dict[str, Any]]:
+    quote_dense = load_condition_dense_map(client, args, "ref_quote_conditions")
+    trade_dense = load_condition_dense_map(client, args, "ref_trade_conditions")
+    sample_by_kind = {
+        "quotes": query_sample_events(client, args, days, 0),
+        "trades": query_sample_events(client, args, days, 1),
+    }
+    days_by_date = {day.source_date: day for day in days}
+    result: dict[str, dict[str, Any]] = {}
+    for kind, sampled_events in sample_by_kind.items():
+        grouped_samples: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for event in sampled_events:
+            grouped_samples[str(event["event_date"])].append(event)
+        expected_by_key: dict[tuple[str, int, int], list[dict[str, Any]]] = defaultdict(list)
+        for source_date, events_for_day in grouped_samples.items():
+            day = days_by_date.get(source_date)
+            if day is None:
+                continue
+            path = Path(day.quote_job.destination if kind == "quotes" else day.trade_job.destination)
+            dense_map = quote_dense if kind == "quotes" else trade_dense
+            for event in read_raw_event_candidates(path, kind, events_for_day, dense_map):
+                expected_by_key[(event["ticker"], event["sip_timestamp_us"], event["sequence_number"])].append(event)
+        mismatches: list[dict[str, Any]] = []
+        matched = 0
+        for event in sampled_events:
+            key = (str(event["ticker"]), int(event["sip_timestamp_us"]), None)
+            candidates = [
+                candidate
+                for candidate_key, candidate_rows in expected_by_key.items()
+                if candidate_key[0] == key[0] and candidate_key[1] == key[1]
+                for candidate in candidate_rows
+            ]
+            if not any(event_values_match(candidate, event) for candidate in candidates):
+                mismatches.append(
+                    {
+                        "ticker": event["ticker"],
+                        "event_type": event["event_type"],
+                        "sip_timestamp_us": event["sip_timestamp_us"],
+                        "ordinal": event["ordinal"],
+                        "candidate_count": len(candidates),
+                    }
+                )
+            else:
+                matched += 1
+        result[kind] = {
+            "sample_rows": len(sampled_events),
+            "matched_rows": matched,
+            "mismatch_rows": len(mismatches),
+            "mismatches_preview": mismatches[:10],
+        }
+    return result
 
 
 def audit_test_events(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles], report_path: Path) -> None:
@@ -825,8 +920,7 @@ def audit_test_events(client: ClickHouseHttpClient, args: argparse.Namespace, da
         raise RuntimeError("Test-mode audit has no completed source days to validate.")
     counts = query_audit_counts(client, args, days)
     continuity_mismatches = query_continuity_mismatches(client, args, days)
-    quote_match = query_reference_sample_match(client, args, days, "quotes")
-    trade_match = query_reference_sample_match(client, args, days, "trades")
+    raw_csv_validation = validate_events_against_raw_csv(client, args, days)
     audit = {
         "type": "test_audit",
         "status": "ok",
@@ -836,7 +930,7 @@ def audit_test_events(client: ClickHouseHttpClient, args: argparse.Namespace, da
         "source_dates": [day.source_date for day in days],
         "counts": counts,
         "continuity_mismatches": continuity_mismatches,
-        "reference_samples": {"quotes": quote_match, "trades": trade_match},
+        "raw_csv_validation": raw_csv_validation,
     }
     failures = {
         key: value
@@ -847,10 +941,9 @@ def audit_test_events(client: ClickHouseHttpClient, args: argparse.Namespace, da
         failures["rows"] = counts.get("rows", 0)
     if continuity_mismatches:
         failures["continuity_mismatches"] = continuity_mismatches
-    if quote_match["sample_rows"] <= 0 or quote_match["missing_event_rows"]:
-        failures["quote_reference_match"] = quote_match
-    if trade_match["sample_rows"] <= 0 or trade_match["missing_event_rows"]:
-        failures["trade_reference_match"] = trade_match
+    for kind, validation in raw_csv_validation.items():
+        if validation["sample_rows"] <= 0 or validation["mismatch_rows"]:
+            failures[f"{kind}_raw_csv_match"] = validation
     if failures:
         audit["status"] = "failed"
         audit["failures"] = failures
@@ -860,8 +953,8 @@ def audit_test_events(client: ClickHouseHttpClient, args: argparse.Namespace, da
     append_jsonl(report_path, audit)
     print(
         "TEST AUDIT OK "
-        f"rows={counts['rows']:,} quote_samples={quote_match['sample_rows']:,} "
-        f"trade_samples={trade_match['sample_rows']:,}",
+        f"rows={counts['rows']:,} quote_samples={raw_csv_validation['quotes']['sample_rows']:,} "
+        f"trade_samples={raw_csv_validation['trades']['sample_rows']:,}",
         flush=True,
     )
     print("=" * 100, flush=True)
@@ -932,8 +1025,7 @@ def main() -> None:
     if args.test_mode:
         print(
             f"test_tables manifest={args.manifest_table} continuity={args.continuity_table} "
-            f"reference_quotes={args.test_reference_quote_table} reference_trades={args.test_reference_trade_table} "
-            f"sample_size={args.test_sample_size}",
+            f"raw_csv_sample_size={args.test_sample_size}",
             flush=True,
         )
     print(f"date_range={args.start_date} -> {args.end_date}", flush=True)
