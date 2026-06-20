@@ -29,6 +29,9 @@ class NewsGatewayConfig:
     is_workstation: bool
     massive_api_key_present: bool
     benzinga_url: str
+    market_status_url: str
+    market_status_enabled: bool
+    market_status_refresh_seconds: float
     market_poll_seconds: float
     closed_poll_seconds: float
     market_lookback_minutes: int
@@ -122,6 +125,9 @@ class NewsGatewayConfig:
             is_workstation=is_workstation_host(),
             massive_api_key_present=bool(env_string("MASSIVE_API_KEY", "")),
             benzinga_url=env_string("NEWS_BENZINGA_URL", env_string("NEWS_MASSIVE_BENZINGA_URL", "https://api.massive.com/benzinga/v2/news")),
+            market_status_url=env_string("NEWS_MARKET_STATUS_URL", "https://api.massive.com/v1/marketstatus/now"),
+            market_status_enabled=env_bool("NEWS_MARKET_STATUS_ENABLED", True),
+            market_status_refresh_seconds=env_float("NEWS_MARKET_STATUS_REFRESH_SECONDS", 10.0),
             market_poll_seconds=env_float("NEWS_BENZINGA_MARKET_POLL_SECONDS", 5.0),
             closed_poll_seconds=env_float("NEWS_BENZINGA_CLOSED_POLL_SECONDS", 300.0),
             market_lookback_minutes=env_int("NEWS_BENZINGA_MARKET_LOOKBACK_MINUTES", 5),

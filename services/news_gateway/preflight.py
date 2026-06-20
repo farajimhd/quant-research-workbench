@@ -9,7 +9,7 @@ from typing import Callable
 
 from pipelines.news.benzinga.core.coverage_manifest import CoverageManifestConfig, ensure_coverage_manifest_table
 from pipelines.news.benzinga.core.clickhouse_writer import NewsWriteConfig, validate_target_tables
-from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig
+from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig, MassiveMarketStatusClient
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.config import NewsGatewayConfig
 
@@ -50,6 +50,8 @@ def run_preflight(config: NewsGatewayConfig, *, clickhouse_password: str, api_ke
     checks.append(timed_check("artifact_storage", lambda: check_artifact_storage(config)))
     checks.append(timed_check("clickhouse", lambda: check_clickhouse(config, clickhouse_password)))
     checks.append(timed_check("benzinga_provider", lambda: check_benzinga_provider(config, api_key)))
+    if config.market_status_enabled:
+        checks.append(timed_check("market_status", lambda: check_market_status(config, api_key)))
     status = "ok" if all(check.status == "ok" for check in checks) else "failed"
     report = PreflightReport(
         status=status,
@@ -140,3 +142,11 @@ def check_benzinga_provider(config: NewsGatewayConfig, api_key: str) -> str:
     start_utc = end_utc - timedelta(seconds=1)
     result = provider.fetch_window(start_utc, end_utc)
     return f"reachable pages={result.pages} rows={len(result.items)}"
+
+
+def check_market_status(config: NewsGatewayConfig, api_key: str) -> str:
+    result = MassiveMarketStatusClient(endpoint_url=config.market_status_url, api_key=api_key).fetch_now()
+    return (
+        f"market={result.market or '-'} earlyHours={result.early_hours} "
+        f"afterHours={result.after_hours} serverTime={result.server_time or '-'}"
+    )

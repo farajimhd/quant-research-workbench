@@ -43,6 +43,16 @@ class BenzingaProbeResult:
     pages: int
 
 
+@dataclass(frozen=True, slots=True)
+class MarketStatusResult:
+    raw: dict[str, Any]
+    market: str
+    early_hours: bool
+    after_hours: bool
+    server_time: str
+    fetched_at_utc: datetime
+
+
 class BenzingaProviderClient:
     def __init__(self, config: BenzingaProviderConfig | None = None) -> None:
         self.config = config or BenzingaProviderConfig.from_env()
@@ -81,6 +91,25 @@ class BenzingaProviderClient:
         response = fetch_json(build_benzinga_url(probe_config, start_utc, end_utc))
         rows_seen = sum(1 for item in response.get("results") or [] if isinstance(item, dict))
         return BenzingaProbeResult(has_news=rows_seen > 0, rows_seen=rows_seen, pages=1)
+
+
+class MassiveMarketStatusClient:
+    def __init__(self, *, endpoint_url: str, api_key: str) -> None:
+        self.endpoint_url = endpoint_url
+        self.api_key = api_key
+        if not self.api_key:
+            raise RuntimeError("MASSIVE_API_KEY is required for market status fetches")
+
+    def fetch_now(self) -> MarketStatusResult:
+        response = fetch_json(append_api_key(self.endpoint_url, self.api_key))
+        return MarketStatusResult(
+            raw=response,
+            market=str(response.get("market") or "").strip().lower(),
+            early_hours=bool(response.get("earlyHours")),
+            after_hours=bool(response.get("afterHours")),
+            server_time=str(response.get("serverTime") or ""),
+            fetched_at_utc=datetime.now(UTC),
+        )
 
 
 def build_benzinga_url(config: BenzingaProviderConfig, start_utc: datetime, end_utc: datetime) -> str:

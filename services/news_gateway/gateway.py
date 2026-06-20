@@ -29,7 +29,12 @@ from pipelines.news.benzinga.core.coverage_manifest import (
 from pipelines.news.benzinga.news_benzinga_normalize import artifact_path_for_payload, parse_provider_datetime, write_raw_payload
 from pipelines.news.benzinga.news_pipeline.config import BenzingaPipelineConfig, ClickHouseTargetConfig
 from pipelines.news.benzinga.news_pipeline.pipeline import BenzingaNewsPipeline, ProcessedNewsItem
-from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig
+from pipelines.news.benzinga.news_pipeline.provider import (
+    BenzingaProviderClient,
+    BenzingaProviderConfig,
+    MarketStatusResult,
+    MassiveMarketStatusClient,
+)
 from pipelines.news.benzinga.news_benzinga_url_download import DomainRateLimiter, download_row
 from pipelines.news.benzinga.news_benzinga_url_extract import extract_row
 from research.mlops.clickhouse import ClickHouseHttpClient
@@ -80,6 +85,11 @@ class GatewayMetrics:
     current_poll_seconds: float = 0.0
     current_lookback_minutes: int = 0
     current_market_session: str = ""
+    market_status: str = ""
+    market_status_source: str = "local_clock"
+    market_status_server_time: str = ""
+    market_status_updated_at_utc: str = ""
+    market_status_error: str = ""
     current_phase: str = "starting"
     current_phase_message: str = "Starting news gateway."
     current_phase_started_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"))
@@ -184,6 +194,29 @@ class PollStrategy:
     lookback_minutes: int
 
 
+def market_status_is_active(status: MarketStatusResult) -> bool:
+    if status.early_hours or status.after_hours:
+        return True
+    if status.market in {"open", "early-hours", "after-hours", "early_hours", "after_hours"}:
+        return True
+    exchanges = status.raw.get("exchanges")
+    if isinstance(exchanges, dict):
+        for name in ("nasdaq", "nyse"):
+            if str(exchanges.get(name) or "").strip().lower() == "open":
+                return True
+    return False
+
+
+def market_status_session(status: MarketStatusResult) -> str:
+    if status.early_hours:
+        return "early_hours"
+    if status.after_hours:
+        return "after_hours"
+    if status.market:
+        return status.market
+    return "market"
+
+
 class NewsGateway:
     def __init__(self, config: NewsGatewayConfig) -> None:
         self.config = config
@@ -249,6 +282,9 @@ class NewsGateway:
                 max_pages=config.max_pages,
             )
         )
+        self.market_status_provider = MassiveMarketStatusClient(endpoint_url=config.market_status_url, api_key=self._massive_api_key)
+        self._market_status: MarketStatusResult | None = None
+        self._market_status_next_refresh = 0.0
 
     async def start(self) -> None:
         await self.logger.start()
@@ -531,6 +567,7 @@ class NewsGateway:
 
     async def _poll_loop(self) -> None:
         while not self._stop_event.is_set():
+            await asyncio.to_thread(self.refresh_market_status_if_needed)
             strategy = self.current_poll_strategy()
             self.metrics.current_poll_seconds = strategy.poll_seconds
             self.metrics.current_lookback_minutes = strategy.lookback_minutes
@@ -777,11 +814,45 @@ class NewsGateway:
         return self.current_poll_strategy().poll_seconds
 
     def current_poll_strategy(self) -> PollStrategy:
+        status = self._market_status
+        if status is not None:
+            if market_status_is_active(status):
+                return PollStrategy(market_status_session(status), self.config.market_poll_seconds, self.config.market_lookback_minutes)
+            return PollStrategy("closed", self.config.closed_poll_seconds, self.config.closed_lookback_minutes)
         now_et = datetime.now(EASTERN)
         minutes = now_et.hour * 60 + now_et.minute
         if 4 * 60 <= minutes < 20 * 60:
-            return PollStrategy("market", self.config.market_poll_seconds, self.config.market_lookback_minutes)
+            return PollStrategy("local_market", self.config.market_poll_seconds, self.config.market_lookback_minutes)
         return PollStrategy("closed", self.config.closed_poll_seconds, self.config.closed_lookback_minutes)
+
+    def refresh_market_status_if_needed(self) -> None:
+        if not self.config.market_status_enabled:
+            self.metrics.market_status_source = "disabled"
+            return
+        now = time.monotonic()
+        if self._market_status is not None and now < self._market_status_next_refresh:
+            return
+        self._market_status_next_refresh = now + max(1.0, self.config.market_status_refresh_seconds)
+        try:
+            status = self.market_status_provider.fetch_now()
+        except Exception as exc:  # noqa: BLE001
+            self.metrics.market_status_error = repr(exc)
+            self.metrics.market_status_source = "local_clock_fallback"
+            self._log_event("market_status_fetch_failed", error=repr(exc))
+            return
+        self._market_status = status
+        self.metrics.market_status = status.market or "unknown"
+        self.metrics.market_status_source = "massive"
+        self.metrics.market_status_server_time = status.server_time
+        self.metrics.market_status_updated_at_utc = status.fetched_at_utc.isoformat(timespec="seconds").replace("+00:00", "Z")
+        self.metrics.market_status_error = ""
+        self._log_event(
+            "market_status_updated",
+            market=status.market,
+            early_hours=status.early_hours,
+            after_hours=status.after_hours,
+            server_time=status.server_time,
+        )
 
     def seconds_until_next_poll_boundary(self, poll_seconds: float) -> float:
         interval = max(1.0, float(poll_seconds))

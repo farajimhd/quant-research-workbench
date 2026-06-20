@@ -151,6 +151,12 @@ Existing rows are skipped by canonical news ID, so the intentionally overlapping
 windows are safe. The overlap is kept because provider rows can arrive late or a
 single poll can fail while the service keeps running.
 
+The gateway uses Massive market status (`/v1/marketstatus/now`) as the source of
+truth for active versus closed market state. It refreshes the status at most once
+every 10 seconds. If the status endpoint fails, the service keeps running and
+falls back to the local Eastern-time schedule until the next successful status
+refresh.
+
 ## Gap Handling
 
 The gateway uses a coverage manifest, not only the newest news timestamp. The
@@ -445,6 +451,9 @@ NEWS_BENZINGA_MARKET_POLL_SECONDS=5
 NEWS_BENZINGA_CLOSED_POLL_SECONDS=300
 NEWS_BENZINGA_MARKET_LOOKBACK_MINUTES=5
 NEWS_BENZINGA_CLOSED_LOOKBACK_MINUTES=10
+NEWS_MARKET_STATUS_ENABLED=true
+NEWS_MARKET_STATUS_URL=https://api.massive.com/v1/marketstatus/now
+NEWS_MARKET_STATUS_REFRESH_SECONDS=10
 NEWS_BENZINGA_POLL_OVERLAP_SECONDS=120
 NEWS_BENZINGA_STARTUP_AUTO_FILL_MAX_GAP_DAYS=30
 NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS=300

@@ -63,6 +63,8 @@ def header_panel(gateway: "NewsGateway", metrics: dict[str, Any], now: str) -> P
     poll = float(metrics.get("current_poll_seconds") or strategy.poll_seconds)
     lookback = int(metrics.get("current_lookback_minutes") or strategy.lookback_minutes)
     session = str(metrics.get("current_market_session") or strategy.session)
+    market_status = str(metrics.get("market_status") or "-")
+    status_source = str(metrics.get("market_status_source") or "-")
     lookback_text = f"   [dim]window[/dim] {lookback}m" if lookback else ""
     grid = Table.grid(expand=True)
     grid.add_column(ratio=2)
@@ -73,7 +75,7 @@ def header_panel(gateway: "NewsGateway", metrics: dict[str, Any], now: str) -> P
     )
     grid.add_row(
         f"[dim]bind[/dim] {gateway.config.bind}",
-        f"[dim]data[/dim] {truncate(str(gateway.config.data_root_win), 96)}",
+        f"[dim]market[/dim] {market_status}/{status_source}   [dim]data[/dim] {truncate(str(gateway.config.data_root_win), 80)}",
     )
     return Panel(grid, box=box.ROUNDED, border_style=color, padding=(0, 1))
 
@@ -216,6 +218,7 @@ def metrics_panel(gateway: "NewsGateway", metrics: dict[str, Any]) -> Panel:
     poll_seconds = float(metrics.get("current_poll_seconds") or strategy.poll_seconds)
     lookback_minutes = int(metrics.get("current_lookback_minutes") or strategy.lookback_minutes)
     table.add_row("Schedule", f"{poll_seconds:.1f}s", f"{lookback_minutes:,}m window")
+    table.add_row("Market", str(metrics.get("market_status") or "-"), str(metrics.get("market_status_source") or "-"))
     return Panel(table, title="Runtime", box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
