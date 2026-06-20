@@ -53,6 +53,7 @@ class RunPaths:
     accepted_jsonl: Path
     unresolved_jsonl: Path
     source_results_jsonl: Path
+    scan_status_json: Path
     manifest_json: Path
     summary_md: Path
 
@@ -60,7 +61,7 @@ class RunPaths:
     def create(cls, output_root: Path, run_id: str) -> "RunPaths":
         run_root = output_root / run_id
         candidate_root = run_root / "candidate_cik_buckets"
-        parts_root = run_root / "parts" / "sec_filing_v2_fallback_submissions_repair_parts"
+        parts_root = run_root / "parts" / "filing"
         candidate_root.mkdir(parents=True, exist_ok=True)
         parts_root.mkdir(parents=True, exist_ok=True)
         return cls(
@@ -70,6 +71,7 @@ class RunPaths:
             accepted_jsonl=run_root / "accepted_rows.jsonl",
             unresolved_jsonl=run_root / "unresolved_rows.jsonl",
             source_results_jsonl=run_root / "source_results.jsonl",
+            scan_status_json=run_root / "scan_status.json",
             manifest_json=run_root / "sec_acceptance_fallback_submissions_repair_manifest.json",
             summary_md=run_root / "sec_acceptance_fallback_submissions_repair_summary.md",
         )
@@ -99,6 +101,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit-ciks", type=int, default=0)
     parser.add_argument("--limit-zip-entries", type=int, default=0)
     parser.add_argument("--progress-interval", type=int, default=10000)
+    parser.add_argument("--row-progress-interval", type=int, default=10000)
+    parser.add_argument("--status-interval-seconds", type=float, default=30.0)
     parser.add_argument("--execute", action="store_true", help="Insert replacement rows into ClickHouse. Without this, only part files are written.")
     parser.add_argument("--skip-insert", action="store_true", help="Build parts even when --execute is passed, but do not insert.")
     return parser.parse_args()
@@ -160,6 +164,10 @@ def validate_args(args: argparse.Namespace) -> None:
     for name in ("limit_rows", "limit_ciks", "limit_zip_entries"):
         if int(getattr(args, name)) < 0:
             raise SystemExit(f"--{name.replace('_', '-')} must be >= 0")
+    if int(args.row_progress_interval) < 1:
+        raise SystemExit("--row-progress-interval must be >= 1")
+    if float(args.status_interval_seconds) < 1.0:
+        raise SystemExit("--status-interval-seconds must be >= 1")
 
 
 def resolve_submissions_zip(args: argparse.Namespace) -> Path:
@@ -275,64 +283,119 @@ def scan_submissions_zip(
     zip_entries_with_candidates = 0
     candidate_files_used: set[str] = set()
     new_source_counts: Counter[str] = Counter()
-    part_state = {"part_index": 0, "rows_in_part": 0, "current_path": None}
+    part_state = {
+        "part_index": 0,
+        "rows_in_part": 0,
+        "current_path": None,
+        "handle": None,
+        "total_rows": 0,
+    }
     started = time.perf_counter()
+    last_status_at = started
     with (
         zipfile.ZipFile(submissions_zip) as archive,
-        paths.accepted_jsonl.open("w", encoding="utf-8") as accepted_out,
-        paths.unresolved_jsonl.open("w", encoding="utf-8") as unresolved_out,
-        paths.source_results_jsonl.open("w", encoding="utf-8") as source_out,
+        paths.accepted_jsonl.open("w", encoding="utf-8", buffering=1) as accepted_out,
+        paths.unresolved_jsonl.open("w", encoding="utf-8", buffering=1) as unresolved_out,
+        paths.source_results_jsonl.open("w", encoding="utf-8", buffering=1) as source_out,
     ):
-        names = sorted((name for name in archive.namelist() if name.lower().endswith(".json")), key=zip_sort_key)
-        current_cik = ""
-        candidates: dict[str, list[dict[str, Any]]] = {}
-        for name in names:
-            if args.limit_zip_entries and zip_entries_scanned >= args.limit_zip_entries:
-                break
-            zip_entries_scanned += 1
-            cik = cik_from_zip_name(name)
-            if not cik:
-                continue
-            if cik != current_cik:
-                if current_cik and candidates:
-                    unresolved_rows += write_unresolved(unresolved_out, current_cik, candidates, "not_found_in_submissions_zip")
-                current_cik = cik
-                candidates = load_candidates(paths.candidate_root, cik)
-                if candidates:
-                    candidate_files_used.add(cik)
-            if not candidates:
-                continue
-            zip_entries_with_candidates += 1
-            payload = json.loads(archive.read(name).decode("utf-8", errors="replace"))
-            source_kind = "fragment" if "-submissions-" in Path(name).name else "recent"
-            matched = match_submission_payload(payload, cik, candidates, source_kind, run_id)
-            for row in matched:
-                accepted_out.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n")
-                write_repaired_row(paths, part_state, row, args.rows_per_part)
-                matched_rows += 1
-                new_source_counts[str(row.get("accepted_at_source") or "")] += 1
-            result = {
-                "zip_entry": name,
-                "cik": cik,
-                "source_kind": source_kind,
-                "matched_rows": len(matched),
-                "remaining_candidates": sum(len(items) for items in candidates.values()),
-            }
-            source_out.write(json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n")
-            if zip_entries_scanned % max(1, int(args.progress_interval)) == 0:
-                print(
-                    "submissions_scan "
-                    f"entries={zip_entries_scanned:,}/{len(names):,} matched={matched_rows:,} "
-                    f"ciks_used={len(candidate_files_used):,} elapsed={time.perf_counter() - started:.1f}s",
-                    flush=True,
-                )
-        if current_cik and candidates:
-            unresolved_rows += write_unresolved(unresolved_out, current_cik, candidates, "not_found_in_submissions_zip")
-        for path in sorted(paths.candidate_root.glob("*.jsonl")):
-            cik = path.stem
-            if cik in candidate_files_used:
-                continue
-            unresolved_rows += write_unresolved(unresolved_out, cik, load_candidates(paths.candidate_root, cik), "cik_not_found_in_submissions_zip")
+        try:
+            names = sorted((name for name in archive.namelist() if name.lower().endswith(".json")), key=zip_sort_key)
+            current_cik = ""
+            candidates: dict[str, list[dict[str, Any]]] = {}
+            for name in names:
+                if args.limit_zip_entries and zip_entries_scanned >= args.limit_zip_entries:
+                    break
+                zip_entries_scanned += 1
+                cik = cik_from_zip_name(name)
+                if not cik:
+                    continue
+                if cik != current_cik:
+                    if current_cik and candidates:
+                        unresolved_rows += write_unresolved(unresolved_out, current_cik, candidates, "not_found_in_submissions_zip")
+                    current_cik = cik
+                    candidates = load_candidates(paths.candidate_root, cik)
+                    if candidates:
+                        candidate_files_used.add(cik)
+                        print(
+                            "submissions_cik "
+                            f"cik={cik} candidate_accessions={len(candidates):,} "
+                            f"entries={zip_entries_scanned:,}/{len(names):,} matched={matched_rows:,}",
+                            flush=True,
+                        )
+                if not candidates:
+                    continue
+                zip_entries_with_candidates += 1
+                payload = json.loads(archive.read(name).decode("utf-8", errors="replace"))
+                source_kind = "fragment" if "-submissions-" in Path(name).name else "recent"
+                entry_matched = 0
+                for row in iter_submission_replacements(payload, cik, candidates, source_kind, run_id):
+                    accepted_out.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n")
+                    write_repaired_row(paths, part_state, row, args.rows_per_part)
+                    matched_rows += 1
+                    entry_matched += 1
+                    new_source_counts[str(row.get("accepted_at_source") or "")] += 1
+                    now = time.perf_counter()
+                    if matched_rows % int(args.row_progress_interval) == 0 or now - last_status_at >= float(args.status_interval_seconds):
+                        write_scan_status(
+                            paths,
+                            zip_entries_scanned=zip_entries_scanned,
+                            total_entries=len(names),
+                            current_cik=cik,
+                            current_entry=name,
+                            matched_rows=matched_rows,
+                            unresolved_rows=unresolved_rows,
+                            candidate_ciks_seen=len(candidate_files_used),
+                            part_state=part_state,
+                            started=started,
+                            new_source_counts=new_source_counts,
+                        )
+                        print(
+                            "submissions_rows "
+                            f"entries={zip_entries_scanned:,}/{len(names):,} cik={cik} "
+                            f"entry_matched={entry_matched:,} matched={matched_rows:,} "
+                            f"part={int(part_state['part_index']):,} elapsed={now - started:.1f}s",
+                            flush=True,
+                        )
+                        last_status_at = now
+                result = {
+                    "zip_entry": name,
+                    "cik": cik,
+                    "source_kind": source_kind,
+                    "matched_rows": entry_matched,
+                    "remaining_candidates": sum(len(items) for items in candidates.values()),
+                }
+                source_out.write(json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n")
+                now = time.perf_counter()
+                if zip_entries_scanned % max(1, int(args.progress_interval)) == 0 or now - last_status_at >= float(args.status_interval_seconds):
+                    write_scan_status(
+                        paths,
+                        zip_entries_scanned=zip_entries_scanned,
+                        total_entries=len(names),
+                        current_cik=cik,
+                        current_entry=name,
+                        matched_rows=matched_rows,
+                        unresolved_rows=unresolved_rows,
+                        candidate_ciks_seen=len(candidate_files_used),
+                        part_state=part_state,
+                        started=started,
+                        new_source_counts=new_source_counts,
+                    )
+                    print(
+                        "submissions_scan "
+                        f"entries={zip_entries_scanned:,}/{len(names):,} matched={matched_rows:,} "
+                        f"ciks_used={len(candidate_files_used):,} elapsed={now - started:.1f}s",
+                        flush=True,
+                    )
+                    last_status_at = now
+            if current_cik and candidates:
+                unresolved_rows += write_unresolved(unresolved_out, current_cik, candidates, "not_found_in_submissions_zip")
+            for path in sorted(paths.candidate_root.glob("*.jsonl")):
+                cik = path.stem
+                if cik in candidate_files_used:
+                    continue
+                unresolved_rows += write_unresolved(unresolved_out, cik, load_candidates(paths.candidate_root, cik), "cik_not_found_in_submissions_zip")
+        finally:
+            close_part_writer(part_state)
     print(
         f"submissions_done entries={zip_entries_scanned:,} matched={matched_rows:,} "
         f"unresolved={unresolved_rows:,} elapsed={time.perf_counter() - started:.1f}s",
@@ -348,19 +411,18 @@ def scan_submissions_zip(
     }
 
 
-def match_submission_payload(
+def iter_submission_replacements(
     payload: dict[str, Any],
     cik: str,
     candidates: dict[str, list[dict[str, Any]]],
     source_kind: str,
     run_id: str,
-) -> list[dict[str, Any]]:
+) -> Any:
     recent = payload.get("filings", {}).get("recent", {}) if isinstance(payload.get("filings"), dict) else payload
     if not isinstance(recent, dict):
-        return []
+        return
     lengths = [len(value) for value in recent.values() if isinstance(value, list)]
     count = max(lengths) if lengths else 0
-    rows: list[dict[str, Any]] = []
     for index in range(count):
         accession = clean_string(recent_value(recent, "accessionNumber", index))
         if not accession:
@@ -381,8 +443,7 @@ def match_submission_payload(
             replacement["accepted_at_source"] = f"submissions_bulk_{source_kind}_fallback_repair"
             replacement["source_run_id"] = run_id
             replacement["inserted_at"] = clickhouse_now64_ms()
-            rows.append(clean_filing_row(replacement))
-    return rows
+            yield clean_filing_row(replacement)
 
 
 def load_candidates(root: Path, cik: str) -> dict[str, list[dict[str, Any]]]:
@@ -403,13 +464,65 @@ def load_candidates(root: Path, cik: str) -> dict[str, list[dict[str, Any]]]:
 
 def write_repaired_row(paths: RunPaths, part_state: dict[str, Any], row: dict[str, Any], rows_per_part: int) -> None:
     if part_state["current_path"] is None or int(part_state["rows_in_part"]) >= rows_per_part:
+        close_part_writer(part_state)
         part_state["part_index"] = int(part_state["part_index"]) + 1
         part_state["rows_in_part"] = 0
-        part_state["current_path"] = paths.parts_root / f"sec_filing_v2_fallback_submissions_repair_part_{int(part_state['part_index']):06d}.jsonl"
+        part_state["current_path"] = paths.parts_root / f"part_{int(part_state['part_index']):06d}.jsonl"
     path = Path(part_state["current_path"])
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n")
+    handle = part_state.get("handle")
+    if handle is None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a", encoding="utf-8", buffering=1)
+        part_state["handle"] = handle
+    handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n")
     part_state["rows_in_part"] = int(part_state["rows_in_part"]) + 1
+    part_state["total_rows"] = int(part_state.get("total_rows") or 0) + 1
+
+
+def close_part_writer(part_state: dict[str, Any]) -> None:
+    handle = part_state.get("handle")
+    if handle is not None:
+        handle.flush()
+        handle.close()
+        part_state["handle"] = None
+
+
+def write_scan_status(
+    paths: RunPaths,
+    *,
+    zip_entries_scanned: int,
+    total_entries: int,
+    current_cik: str,
+    current_entry: str,
+    matched_rows: int,
+    unresolved_rows: int,
+    candidate_ciks_seen: int,
+    part_state: dict[str, Any],
+    started: float,
+    new_source_counts: Counter[str],
+) -> None:
+    current_path = Path(part_state["current_path"]) if part_state.get("current_path") else None
+    status = {
+        "updated_at_utc": datetime.now(UTC).isoformat(),
+        "zip_entries_scanned": zip_entries_scanned,
+        "total_entries": total_entries,
+        "progress_pct": 100.0 * zip_entries_scanned / max(1, total_entries),
+        "current_cik": current_cik,
+        "current_entry": current_entry,
+        "matched_rows": matched_rows,
+        "unresolved_rows": unresolved_rows,
+        "candidate_ciks_seen": candidate_ciks_seen,
+        "part_index": int(part_state.get("part_index") or 0),
+        "part_rows": int(part_state.get("rows_in_part") or 0),
+        "part_total_rows": int(part_state.get("total_rows") or 0),
+        "part_path": "" if current_path is None else str(current_path),
+        "part_bytes": 0 if current_path is None or not current_path.exists() else current_path.stat().st_size,
+        "new_source_counts": dict(new_source_counts),
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+    }
+    tmp_path = paths.scan_status_json.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(status, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(paths.scan_status_json)
 
 
 def write_unresolved(handle: Any, cik: str, candidates: dict[str, list[dict[str, Any]]], reason: str) -> int:

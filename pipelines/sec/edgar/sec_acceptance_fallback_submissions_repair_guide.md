@@ -45,6 +45,8 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 - `--limit-zip-entries`: cap SEC submissions zip entries scanned for a smoke test.
 - `--rows-per-part`: replacement rows per JSONEachRow part. Default `50000`.
 - `--insert-batch-size`: rows per ClickHouse insert batch. Default `50000`.
+- `--row-progress-interval`: print/write row progress during very large CIK entries. Default `10000`.
+- `--status-interval-seconds`: write `scan_status.json` at least this often while rows are moving. Default `30`.
 - `--skip-insert`: build parts even when `--execute` is present, but do not insert.
 
 ## Outputs
@@ -59,10 +61,11 @@ Important files:
 
 - `sec_acceptance_fallback_submissions_repair_manifest.json`
 - `sec_acceptance_fallback_submissions_repair_summary.md`
+- `scan_status.json`
 - `accepted_rows.jsonl`
 - `unresolved_rows.jsonl`
 - `source_results.jsonl`
-- `parts/sec_filing_v2_fallback_submissions_repair_parts/*.jsonl`
+- `parts/filing/part_*.jsonl`
 
 ## Validation Query
 
