@@ -60,12 +60,14 @@ def header_panel(gateway: "NewsGateway", metrics: dict[str, Any], now: str) -> P
     mode = "execute" if gateway.config.execute else "dry-run"
     location = "workstation" if gateway.config.is_workstation else "remote"
     poll = float(metrics.get("current_poll_seconds") or gateway.current_poll_seconds())
+    lookback = int(getattr(gateway.config, "lookback_minutes", 0) or 0)
+    lookback_text = f"   [dim]lookback[/dim] {lookback}m" if lookback else ""
     grid = Table.grid(expand=True)
     grid.add_column(ratio=2)
     grid.add_column(justify="right", ratio=3)
     grid.add_row(
         f"[bold]Python News Gateway[/bold]  [{color}]{status_label(status)}[/{color}]",
-        f"[dim]UTC[/dim] {now}   [dim]poll[/dim] {poll:.1f}s   [dim]mode[/dim] {mode}/{location}",
+        f"[dim]UTC[/dim] {now}   [dim]poll[/dim] {poll:.1f}s{lookback_text}   [dim]mode[/dim] {mode}/{location}",
     )
     grid.add_row(
         f"[dim]bind[/dim] {gateway.config.bind}",
@@ -190,14 +192,16 @@ def preflight_panel(metrics: dict[str, Any]) -> Panel:
 def metrics_panel(gateway: "NewsGateway", metrics: dict[str, Any]) -> Panel:
     status = str(metrics.get("last_cycle_status") or "starting")
     color = status_color(status)
-    table = Table(box=box.SIMPLE, expand=False, show_edge=False, padding=(0, 1))
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
     table.add_column("Metric", style="cyan", no_wrap=True, width=18)
-    table.add_column("Total", justify="right", no_wrap=True, width=14)
-    table.add_column("Last Cycle", justify="right", no_wrap=True, width=18)
+    table.add_column("Total", justify="right", no_wrap=True, width=13)
+    table.add_column("Last Cycle", justify="right", no_wrap=True, min_width=19, width=21)
     table.add_row("Status", f"[{color}]{status_label(status)}[/{color}]", compact_time(str(metrics.get("last_poll_at_utc") or "")))
     table.add_row("Poll runs", fmt(metrics.get("poll_runs")), compact_time(str(metrics.get("last_poll_at_utc") or "")))
     table.add_row("Provider rows", fmt(metrics.get("provider_rows")), fmt(metrics.get("last_cycle_provider_rows")))
     table.add_row("Processed rows", fmt(metrics.get("processed_rows")), fmt(metrics.get("last_cycle_processed_rows")))
+    table.add_row("Unique news", fmt(metrics.get("unique_news_rows")), fmt(metrics.get("last_cycle_unique_news_rows")))
+    table.add_row("Duplicate rows", fmt(metrics.get("duplicate_news_rows")), fmt(metrics.get("last_cycle_duplicate_news_rows")))
     table.add_row("Written rows", fmt(metrics.get("written_rows")), fmt(metrics.get("last_cycle_written_rows")))
     table.add_row("Skipped existing", fmt(metrics.get("skipped_existing")), fmt(metrics.get("last_cycle_skipped_existing")))
     table.add_row("Raw saved", fmt(metrics.get("raw_saved")), f"{float(metrics.get('last_cycle_wall_seconds') or 0.0):.2f}s")
@@ -345,6 +349,7 @@ def status_color(status: str) -> str:
     text = status.strip().lower()
     if text in {
         "ok",
+        "no_rows",
         "covered_by_live_lookback",
         "no_watermark",
         "polling",

@@ -57,6 +57,8 @@ class GatewayMetrics:
     provider_rows: int = 0
     processed_rows: int = 0
     failed_rows: int = 0
+    unique_news_rows: int = 0
+    duplicate_news_rows: int = 0
     written_rows: int = 0
     skipped_existing: int = 0
     raw_saved: int = 0
@@ -70,6 +72,8 @@ class GatewayMetrics:
     last_cycle_status: str = ""
     last_cycle_provider_rows: int = 0
     last_cycle_processed_rows: int = 0
+    last_cycle_unique_news_rows: int = 0
+    last_cycle_duplicate_news_rows: int = 0
     last_cycle_written_rows: int = 0
     last_cycle_skipped_existing: int = 0
     last_cycle_wall_seconds: float = 0.0
@@ -197,6 +201,7 @@ class NewsGateway:
         self._live_coverage_written_rows = 0
         self._live_coverage_failed_rows = 0
         self._live_coverage_skipped_existing = 0
+        self._seen_canonical_news_ids: set[str] = set()
         self._gap_coverage_counter = 0
         self._bootstrap_probe_count = 0
         self._bootstrap_probe_empty = 0
@@ -594,6 +599,7 @@ class NewsGateway:
                         provider_article_id=str(payload.get("id") or payload.get("article_id") or ""),
                     )
             if coverage_mode == "live":
+                unique_rows, duplicate_rows = self._count_run_unique_news(processed)
                 if pending_memory_rows:
                     await self.state.upsert_rows(pending_memory_rows)
                 await self._enqueue_background_batch(
@@ -611,9 +617,13 @@ class NewsGateway:
                 self.metrics.provider_rows += len(fetch_result.items)
                 self.metrics.processed_rows += len(processed)
                 self.metrics.failed_rows += failed
-                self.metrics.last_cycle_status = "queued" if failed == 0 and not fetch_result.saturated else "completed_with_errors"
+                self.metrics.unique_news_rows += unique_rows
+                self.metrics.duplicate_news_rows += duplicate_rows
+                self.metrics.last_cycle_status = self._live_cycle_status(len(fetch_result.items), failed, fetch_result.saturated)
                 self.metrics.last_cycle_provider_rows = len(fetch_result.items)
                 self.metrics.last_cycle_processed_rows = len(processed)
+                self.metrics.last_cycle_unique_news_rows = unique_rows
+                self.metrics.last_cycle_duplicate_news_rows = duplicate_rows
                 self.metrics.last_cycle_written_rows = 0
                 self.metrics.last_cycle_skipped_existing = 0
                 self.metrics.last_cycle_wall_seconds = time.perf_counter() - started
@@ -625,6 +635,8 @@ class NewsGateway:
                     end_utc=end_utc,
                     provider_rows=len(fetch_result.items),
                     queued_items=len(live_items),
+                    unique_news_rows=unique_rows,
+                    duplicate_news_rows=duplicate_rows,
                     failed_rows=failed,
                     pages=fetch_result.pages,
                     saturated=fetch_result.saturated,
@@ -636,6 +648,8 @@ class NewsGateway:
                     "end_utc": end_utc.isoformat().replace("+00:00", "Z"),
                     "provider_rows": len(fetch_result.items),
                     "processed_rows": len(processed),
+                    "unique_news_rows": unique_rows,
+                    "duplicate_news_rows": duplicate_rows,
                     "failed_rows": failed,
                     "pages": fetch_result.pages,
                     "saturated": fetch_result.saturated,
@@ -654,6 +668,9 @@ class NewsGateway:
             self.metrics.provider_rows += len(fetch_result.items)
             self.metrics.processed_rows += len(processed)
             self.metrics.failed_rows += failed
+            unique_rows, duplicate_rows = self._count_run_unique_news(processed)
+            self.metrics.unique_news_rows += unique_rows
+            self.metrics.duplicate_news_rows += duplicate_rows
             self.metrics.written_rows += write_summary.normalized_rows_inserted
             self.metrics.skipped_existing += write_summary.skipped_existing
             if fetch_result.saturated:
@@ -661,6 +678,8 @@ class NewsGateway:
             self.metrics.last_cycle_status = "ok" if failed == 0 and not fetch_result.saturated else "completed_with_errors"
             self.metrics.last_cycle_provider_rows = len(fetch_result.items)
             self.metrics.last_cycle_processed_rows = len(processed)
+            self.metrics.last_cycle_unique_news_rows = unique_rows
+            self.metrics.last_cycle_duplicate_news_rows = duplicate_rows
             self.metrics.last_cycle_written_rows = write_summary.normalized_rows_inserted
             self.metrics.last_cycle_skipped_existing = write_summary.skipped_existing
             self.metrics.last_cycle_wall_seconds = time.perf_counter() - started
@@ -673,6 +692,8 @@ class NewsGateway:
                 end_utc=end_utc,
                 provider_rows=len(fetch_result.items),
                 processed_rows=len(processed),
+                unique_news_rows=unique_rows,
+                duplicate_news_rows=duplicate_rows,
                 failed_rows=failed,
                 pages=fetch_result.pages,
                 saturated=fetch_result.saturated,
@@ -704,6 +725,8 @@ class NewsGateway:
                 "end_utc": end_utc.isoformat().replace("+00:00", "Z"),
                 "provider_rows": len(fetch_result.items),
                 "processed_rows": len(processed),
+                "unique_news_rows": unique_rows,
+                "duplicate_news_rows": duplicate_rows,
                 "failed_rows": failed,
                 "pages": fetch_result.pages,
                 "saturated": fetch_result.saturated,
@@ -854,7 +877,9 @@ class NewsGateway:
             self.metrics.background_last_message = (
                 f"Background batch {batch.poll_id} complete: "
                 f"articles={len(final_items):,}, inserted={write_summary.normalized_rows_inserted:,}, "
-                f"skipped={write_summary.skipped_existing:,}, enriched_urls={enriched_urls:,}."
+                f"skipped={write_summary.skipped_existing:,}, "
+                f"batch_dupes={len(getattr(write_summary, 'input_duplicate_ids', []) or []):,}, "
+                f"enriched_urls={enriched_urls:,}."
             )
             self._log_event(
                 "background_batch_completed",
@@ -867,6 +892,7 @@ class NewsGateway:
                 normalized_rows_inserted=write_summary.normalized_rows_inserted,
                 ticker_rows_inserted=write_summary.ticker_rows_inserted,
                 skipped_existing=write_summary.skipped_existing,
+                input_duplicate_ids_total=len(getattr(write_summary, "input_duplicate_ids", []) or []),
                 saturated=batch.saturated,
                 wall_seconds=time.perf_counter() - started,
             )
@@ -989,9 +1015,31 @@ class NewsGateway:
             normalized_rows_inserted=getattr(summary, "normalized_rows_inserted", 0),
             ticker_rows_inserted=getattr(summary, "ticker_rows_inserted", 0),
             skipped_existing=getattr(summary, "skipped_existing", 0),
+            input_duplicate_ids_total=len(getattr(summary, "input_duplicate_ids", []) or []),
             active_jobs=len(self._publish_tasks),
         )
         return summary
+
+    def _count_run_unique_news(self, processed: list[ProcessedNewsItem]) -> tuple[int, int]:
+        unique_rows = 0
+        duplicate_rows = 0
+        for item in processed:
+            canonical_id = str(item.result.canonical_news_id or "")
+            if not canonical_id:
+                continue
+            if canonical_id in self._seen_canonical_news_ids:
+                duplicate_rows += 1
+            else:
+                self._seen_canonical_news_ids.add(canonical_id)
+                unique_rows += 1
+        return unique_rows, duplicate_rows
+
+    def _live_cycle_status(self, provider_rows: int, failed_rows: int, saturated: bool) -> str:
+        if failed_rows or saturated:
+            return "completed_with_errors"
+        if provider_rows == 0:
+            return "no_rows"
+        return "queued"
 
     async def _drain_publish_tasks(self, reason: str) -> None:
         while self._publish_tasks:
