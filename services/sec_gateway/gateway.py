@@ -86,8 +86,12 @@ class SecGateway:
         self.logger.path = self.logger.path.with_name("sec_gateway_events.jsonl")
         self.metrics.run_log_path = str(self.logger.path) if config.run_log_enabled else ""
         self._client = ClickHouseHttpClient(config.pipeline.clickhouse.url, config.pipeline.clickhouse.user, config.pipeline.clickhouse.password)
-        self._coverage = SecCoverageConfig(database=config.pipeline.clickhouse.database, coverage_table=config.pipeline.clickhouse.coverage_table, storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "")
-        self._writer = SecClickHouseWriter(self._client, database=config.pipeline.clickhouse.database)
+        self._coverage = SecCoverageConfig(
+            database=config.pipeline.clickhouse.write_database,
+            coverage_table=config.pipeline.clickhouse.coverage_table,
+            storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
+        )
+        self._writer = SecClickHouseWriter(self._client, database=config.pipeline.clickhouse.write_database)
         self._limiter = SecRateLimiter(config.pipeline.request_min_interval_seconds)
         self._http = SecHttpClient(user_agent=config.pipeline.sec_user_agent, rate_limiter=self._limiter, timeout_seconds=config.pipeline.request_timeout_seconds)
         self._feed = SecCurrentFeedClient(feed_url=self.feed_url(), http=self._http)
@@ -166,11 +170,18 @@ class SecGateway:
 
     def _prepare_coverage(self) -> None:
         ensure_coverage_table(self._client, self._coverage)
-        inserted = bootstrap_from_existing_tables(self._client, self._coverage, run_id=self._run_id, host_role=self.host_role())
+        inserted = bootstrap_from_existing_tables(
+            self._client,
+            self._coverage,
+            run_id=self._run_id,
+            host_role=self.host_role(),
+            source_database=self.config.pipeline.clickhouse.read_database,
+        )
         self._log("coverage_bootstrap", inserted=len(inserted))
+        self._run_write_audit(reason="coverage_prepare")
 
     def _plan_startup_gaps(self) -> None:
-        gaps = plan_freshness_gaps(self._client, database=self.config.pipeline.clickhouse.database, now_utc=datetime.now(UTC))
+        gaps = plan_freshness_gaps(self._client, database=self.config.pipeline.clickhouse.read_database, now_utc=datetime.now(UTC))
         self.metrics.gap_count = len(gaps)
         if not gaps:
             self.metrics.gap_status = "ok"
@@ -261,6 +272,8 @@ class SecGateway:
                 metadata={"last_feed_items": len(items), "last_written": written, "last_skipped_existing": skipped, "last_failed": failed},
             )
         self._log("poll_complete", feed_items=len(items), written=written, skipped_existing=skipped, failed=failed)
+        if written:
+            self._run_write_audit(reason="poll_write")
 
     def _finalize_live_coverage(self) -> None:
         if not self.config.execute or self._live_coverage_start_utc is None:
@@ -291,12 +304,29 @@ class SecGateway:
         out = self._client.execute(
             f"""
             SELECT accession_number
-            FROM {qi(self.config.pipeline.clickhouse.database)}.sec_filing_v2 FINAL
+            FROM {qi(self.config.pipeline.clickhouse.write_database)}.sec_filing_v2 FINAL
             WHERE accession_number IN ({values})
             FORMAT TSV
             """
         )
         return {line.strip() for line in out.splitlines() if line.strip()}
+
+    def _run_write_audit(self, *, reason: str) -> None:
+        try:
+            audit = self._writer.audit_integrity()
+        except Exception as exc:  # noqa: BLE001
+            self.metrics.audit_status = "failed"
+            self.metrics.audit_message = repr(exc)
+            self.logger.exception("write_database_audit_failed", exc, reason=reason)
+            return
+        self.metrics.audit_status = "ok" if audit.ok else "warn"
+        self.metrics.audit_message = (
+            f"write_db={self.config.pipeline.clickhouse.write_database} "
+            f"filings={audit.filing_rows} documents={audit.document_rows} texts={audit.text_rows} skips={audit.skip_rows} "
+            f"duplicate_filings={audit.duplicate_filing_keys} orphan_documents={audit.documents_without_filing} "
+            f"orphan_text_documents={audit.texts_without_document} orphan_text_filings={audit.texts_without_filing}"
+        )
+        self._log("write_database_audit", reason=reason, ok=audit.ok, audit=asdict(audit))
 
     def _process_item(self, item: SecFeedItem, existing: set[str]) -> SecWriteResult:
         if item.accession_number in existing:

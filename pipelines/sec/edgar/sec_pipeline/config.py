@@ -7,7 +7,8 @@ from pathlib import Path
 from research.mlops.clickhouse import default_clickhouse_password, default_clickhouse_url, default_clickhouse_user
 
 
-DEFAULT_DATABASE = "q_live"
+DEFAULT_READ_DATABASE = "q_live"
+DEFAULT_WRITE_DATABASE = "q_sec_tmp"
 DEFAULT_COVERAGE_TABLE = "sec_coverage_manifest_v1"
 DEFAULT_FEED_URL = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&output=atom&count=100"
 DEFAULT_DATA_ROOT_WIN = Path("D:/market-data")
@@ -20,16 +21,19 @@ class SecClickHouseConfig:
     url: str
     user: str
     password: str
-    database: str = DEFAULT_DATABASE
+    read_database: str = DEFAULT_READ_DATABASE
+    write_database: str = DEFAULT_WRITE_DATABASE
     coverage_table: str = DEFAULT_COVERAGE_TABLE
 
     @classmethod
     def from_env(cls) -> "SecClickHouseConfig":
+        legacy_database = env_string("SEC_CLICKHOUSE_DATABASE", DEFAULT_READ_DATABASE)
         return cls(
             url=default_clickhouse_url(),
             user=default_clickhouse_user(),
             password=default_clickhouse_password(),
-            database=env_string("SEC_CLICKHOUSE_DATABASE", DEFAULT_DATABASE),
+            read_database=env_string("SEC_CLICKHOUSE_READ_DATABASE", legacy_database),
+            write_database=env_string("SEC_CLICKHOUSE_WRITE_DATABASE", env_string("SEC_GATEWAY_WRITE_DATABASE", DEFAULT_WRITE_DATABASE)),
             coverage_table=env_string("SEC_COVERAGE_TABLE", DEFAULT_COVERAGE_TABLE),
         )
 

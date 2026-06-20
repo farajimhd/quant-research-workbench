@@ -140,10 +140,17 @@ def load_intervals(client: ClickHouseHttpClient, config: SecCoverageConfig) -> l
     ]
 
 
-def bootstrap_from_existing_tables(client: ClickHouseHttpClient, config: SecCoverageConfig, *, run_id: str, host_role: str) -> list[CoverageInterval]:
+def bootstrap_from_existing_tables(
+    client: ClickHouseHttpClient,
+    config: SecCoverageConfig,
+    *,
+    run_id: str,
+    host_role: str,
+    source_database: str | None = None,
+) -> list[CoverageInterval]:
     if load_intervals(client, config):
         return []
-    database = qi(config.database)
+    database = qi(source_database or config.database)
     specs = [
         (KIND_LIVE_FEED, f"SELECT min(accepted_at_utc), max(accepted_at_utc), count() FROM {database}.sec_filing_v2 FINAL"),
         (

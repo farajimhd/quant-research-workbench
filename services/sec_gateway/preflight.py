@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Callable
 
-from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import SecClickHouseWriter
+from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import SecClickHouseWriter, ensure_sec_write_database
 from pipelines.sec.edgar.sec_pipeline.coverage import SecCoverageConfig, ensure_coverage_table
 from pipelines.sec.edgar.sec_pipeline.feed import SecCurrentFeedClient
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
@@ -75,7 +75,8 @@ def check_configuration(config: SecGatewayConfig) -> str:
         missing.append("ClickHouse password")
     if missing:
         raise RuntimeError(f"missing required configuration: {missing}")
-    return f"bind={config.bind} execute={config.execute} db={config.pipeline.clickhouse.database}"
+    ch = config.pipeline.clickhouse
+    return f"bind={config.bind} execute={config.execute} read_db={ch.read_database} write_db={ch.write_database}"
 
 
 def check_artifact_storage(config: SecGatewayConfig) -> str:
@@ -92,12 +93,19 @@ def check_clickhouse(config: SecGatewayConfig) -> str:
     ch = config.pipeline.clickhouse
     client = ClickHouseHttpClient(ch.url, ch.user, ch.password)
     client.execute("SELECT 1")
+    tables = ensure_sec_write_database(client, read_database=ch.read_database, write_database=ch.write_database)
     ensure_coverage_table(
         client,
-        SecCoverageConfig(database=ch.database, coverage_table=ch.coverage_table, storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or ""),
+        SecCoverageConfig(database=ch.write_database, coverage_table=ch.coverage_table, storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or ""),
     )
-    SecClickHouseWriter(client, database=ch.database).validate_tables()
-    return f"tables={ch.database}.sec_filing_v2,sec_filing_document_v2,sec_filing_text_v2,{ch.coverage_table}"
+    writer = SecClickHouseWriter(client, database=ch.write_database)
+    writer.validate_tables()
+    audit = writer.audit_integrity()
+    return (
+        f"read={ch.read_database} write={ch.write_database} "
+        f"tables={len(tables)} coverage={ch.coverage_table} "
+        f"audit={'ok' if audit.ok else 'warn'} filings={audit.filing_rows} docs={audit.document_rows} texts={audit.text_rows}"
+    )
 
 
 def check_sec_feed(config: SecGatewayConfig) -> str:

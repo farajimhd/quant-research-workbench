@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +21,27 @@ class SecWriteResult:
     text_rows: int = 0
     skip_rows: int = 0
     skipped_existing: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SecWriteAudit:
+    filing_rows: int
+    document_rows: int
+    text_rows: int
+    skip_rows: int
+    duplicate_filing_keys: int
+    documents_without_filing: int
+    texts_without_document: int
+    texts_without_filing: int
+
+    @property
+    def ok(self) -> bool:
+        return (
+            self.duplicate_filing_keys == 0
+            and self.documents_without_filing == 0
+            and self.texts_without_document == 0
+            and self.texts_without_filing == 0
+        )
 
 
 class SecClickHouseWriter:
@@ -42,6 +64,55 @@ class SecClickHouseWriter:
         missing = sorted(required - present)
         if missing:
             raise RuntimeError(f"missing SEC target tables in {self.database}: {missing}")
+
+    def audit_integrity(self) -> SecWriteAudit:
+        return SecWriteAudit(
+            filing_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(FILING_TABLE)} FINAL"),
+            document_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(DOCUMENT_TABLE)} FINAL"),
+            text_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(TEXT_TABLE)} FINAL"),
+            skip_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(SKIP_TABLE)} FINAL"),
+            duplicate_filing_keys=scalar_int(
+                self.client,
+                f"""
+                SELECT count()
+                FROM (
+                    SELECT cik, accession_number, count() AS c
+                    FROM {qi(self.database)}.{qi(FILING_TABLE)} FINAL
+                    GROUP BY cik, accession_number
+                    HAVING c > 1
+                )
+                """,
+            ),
+            documents_without_filing=scalar_int(
+                self.client,
+                f"""
+                SELECT count()
+                FROM (SELECT cik, accession_number FROM {qi(self.database)}.{qi(DOCUMENT_TABLE)} FINAL) AS d
+                LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(self.database)}.{qi(FILING_TABLE)} FINAL) AS f
+                ON d.cik = f.cik AND d.accession_number = f.accession_number
+                """,
+            ),
+            texts_without_document=scalar_int(
+                self.client,
+                f"""
+                SELECT count()
+                FROM (SELECT cik, accession_number, document_id FROM {qi(self.database)}.{qi(TEXT_TABLE)} FINAL) AS t
+                LEFT ANTI JOIN (SELECT cik, accession_number, document_id FROM {qi(self.database)}.{qi(DOCUMENT_TABLE)} FINAL) AS d
+                ON t.cik = d.cik
+                   AND t.accession_number = d.accession_number
+                   AND t.document_id = d.document_id
+                """,
+            ),
+            texts_without_filing=scalar_int(
+                self.client,
+                f"""
+                SELECT count()
+                FROM (SELECT cik, accession_number FROM {qi(self.database)}.{qi(TEXT_TABLE)} FINAL) AS t
+                LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(self.database)}.{qi(FILING_TABLE)} FINAL) AS f
+                ON t.cik = f.cik AND t.accession_number = f.accession_number
+                """,
+            ),
+        )
 
     def filing_exists(self, cik: str, accession_number: str) -> bool:
         out = self.client.execute(
@@ -91,3 +162,59 @@ def qi(value: str) -> str:
 
 def sql_string(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def ensure_sec_write_database(
+    client: ClickHouseHttpClient,
+    *,
+    read_database: str,
+    write_database: str,
+) -> list[str]:
+    client.execute(f"CREATE DATABASE IF NOT EXISTS {qi(write_database)}")
+    required = [FILING_TABLE, DOCUMENT_TABLE, TEXT_TABLE, SKIP_TABLE]
+    created_or_present: list[str] = []
+    for table in required:
+        if not table_exists(client, read_database, table):
+            raise RuntimeError(f"source SEC table is missing: {read_database}.{table}")
+        if not table_exists(client, write_database, table):
+            clone_table_schema(client, source_database=read_database, target_database=write_database, table=table)
+        created_or_present.append(f"{write_database}.{table}")
+    return created_or_present
+
+
+def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bool:
+    out = client.execute(
+        f"""
+        SELECT count()
+        FROM system.tables
+        WHERE database = {sql_string(database)}
+          AND name = {sql_string(table)}
+        FORMAT TSV
+        """
+    )
+    return int(out.strip() or "0") > 0
+
+
+def clone_table_schema(client: ClickHouseHttpClient, *, source_database: str, target_database: str, table: str) -> None:
+    ddl = client.execute(f"SHOW CREATE TABLE {qi(source_database)}.{qi(table)} FORMAT TSVRaw").strip()
+    pattern = re.compile(
+        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+        + r"(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)\."
+        + r"(?:`"
+        + re.escape(table)
+        + r"`|"
+        + re.escape(table)
+        + r")",
+        flags=re.IGNORECASE,
+    )
+    replacement = f"CREATE TABLE IF NOT EXISTS {qi(target_database)}.{qi(table)}"
+    cloned = pattern.sub(replacement, ddl, count=1)
+    if cloned == ddl:
+        raise RuntimeError(f"could not rewrite SHOW CREATE TABLE DDL for {source_database}.{table}")
+    cloned = re.sub(r"\s+UUID\s+'[^']+'", "", cloned, count=1, flags=re.IGNORECASE)
+    client.execute(cloned)
+
+
+def scalar_int(client: ClickHouseHttpClient, sql: str) -> int:
+    out = client.execute(sql + " FORMAT TSV").strip()
+    return int(out or "0")
