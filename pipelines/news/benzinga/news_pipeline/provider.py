@@ -105,8 +105,8 @@ class MassiveMarketStatusClient:
         return MarketStatusResult(
             raw=response,
             market=str(response.get("market") or "").strip().lower(),
-            early_hours=bool(response.get("earlyHours")),
-            after_hours=bool(response.get("afterHours")),
+            early_hours=parse_bool(response.get("earlyHours")),
+            after_hours=parse_bool(response.get("afterHours")),
             server_time=str(response.get("serverTime") or ""),
             fetched_at_utc=datetime.now(UTC),
         )
@@ -128,6 +128,15 @@ def append_api_key(url: str, api_key: str) -> str:
     if "apiKey=" in url:
         return url
     return url + ("&" if "?" in url else "?") + parse.urlencode({"apiKey": api_key})
+
+
+def parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "on"}
 
 
 def fetch_json(url: str) -> dict[str, Any]:

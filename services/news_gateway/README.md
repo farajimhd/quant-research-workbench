@@ -157,6 +157,10 @@ every 10 seconds. If the status endpoint fails, the service keeps running and
 falls back to the local Eastern-time schedule until the next successful status
 refresh.
 
+For news polling, premarket and after-hours count as active market. The gateway
+therefore treats `earlyHours=true` or `afterHours=true` as active even if the
+provider's aggregate `market` field is not `open`.
+
 ## Gap Handling
 
 The gateway uses a coverage manifest, not only the newest news timestamp. The

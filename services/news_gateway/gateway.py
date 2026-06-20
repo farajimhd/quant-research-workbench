@@ -195,6 +195,8 @@ class PollStrategy:
 
 
 def market_status_is_active(status: MarketStatusResult) -> bool:
+    # For news polling, extended-hours sessions are active even if the provider's
+    # aggregate "market" field is not "open".
     if status.early_hours or status.after_hours:
         return True
     if status.market in {"open", "early-hours", "after-hours", "early_hours", "after_hours"}:
