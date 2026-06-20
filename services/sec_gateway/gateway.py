@@ -100,6 +100,10 @@ class SecGateway:
     async def start(self) -> None:
         await self.logger.start()
         self._log("service_starting", config=self.config.public_dict())
+        if self.config.terminal_rich_enabled and self._terminal_task is None:
+            from services.sec_gateway.terminal import run_terminal_dashboard
+
+            self._terminal_task = asyncio.create_task(run_terminal_dashboard(self), name="sec-gateway-terminal-dashboard")
         try:
             self._set_phase("preflight", "Checking SEC gateway dependencies.")
             await self.preflight()
@@ -109,10 +113,6 @@ class SecGateway:
             await asyncio.to_thread(self._plan_startup_gaps)
             self._set_phase("polling", "SEC current feed polling is running.")
             self._poll_task = asyncio.create_task(self._poll_loop(), name="sec-gateway-poll-loop")
-            if self.config.terminal_rich_enabled:
-                from services.sec_gateway.terminal import run_terminal_dashboard
-
-                self._terminal_task = asyncio.create_task(run_terminal_dashboard(self), name="sec-gateway-terminal-dashboard")
             self._log("service_started")
         except Exception as exc:
             self.logger.exception("service_start_failed", exc)
@@ -137,6 +137,7 @@ class SecGateway:
         await self.logger.stop()
 
     async def preflight(self) -> PreflightReport:
+        self.metrics.preflight_status = "running"
         try:
             report = await asyncio.to_thread(run_preflight, self.config)
         except PreflightError as exc:
