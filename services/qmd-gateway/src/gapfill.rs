@@ -1,34 +1,44 @@
 use crate::config::GatewayConfig;
-use crate::clickhouse::RAW_EVENT_SCHEMA_VERSION;
-use crate::metrics::{SharedMetrics, TimingTarget};
+use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
+use crate::massive::{fanout_market_event, MarketEventFanout};
+use crate::metrics::TimingTarget;
 use crate::session::{is_streaming_phase, session_phase};
-use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::time::{interval, Duration};
 
-pub async fn run_gap_fill_service(config: GatewayConfig, metrics: SharedMetrics) {
+pub async fn run_gap_fill_service(config: GatewayConfig, fanout: MarketEventFanout) {
     if !config.gap_fill_enabled {
         return;
     }
-    let filler = GapFillService::new(config, metrics);
-    if is_streaming_phase(Utc::now()) && matches!(filler.config.gap_fill_mode.as_str(), "auto" | "session" | "session_catch_up") {
+    let filler = GapFillService::new(config, fanout);
+    if is_streaming_phase(Utc::now()) && should_run_session_catch_up(filler.config.gap_fill_mode.as_str()) {
         if let Err(error) = filler.run_once("session_catch_up").await {
-            filler.metrics.inc_gap_fill_failure();
+            filler.fanout.metrics.inc_gap_fill_failure();
             eprintln!("Session catch-up gap fill failed: {error}");
         }
     }
+
     let mut timer = interval(Duration::from_millis(filler.config.gap_fill_interval_ms));
     loop {
         timer.tick().await;
-        if is_streaming_phase(Utc::now()) {
-            continue;
-        }
-        if !matches!(filler.config.gap_fill_mode.as_str(), "auto" | "after_hours" | "repair") {
-            continue;
-        }
-        if let Err(error) = filler.run_once("after_hours_repair").await {
-            filler.metrics.inc_gap_fill_failure();
+        let mode = if is_streaming_phase(Utc::now()) {
+            if !should_run_session_catch_up(filler.config.gap_fill_mode.as_str()) {
+                continue;
+            }
+            "session_catch_up"
+        } else {
+            if !matches!(
+                filler.config.gap_fill_mode.as_str(),
+                "auto" | "after_hours" | "repair"
+            ) {
+                continue;
+            }
+            "after_hours_repair"
+        };
+        if let Err(error) = filler.run_once(mode).await {
+            filler.fanout.metrics.inc_gap_fill_failure();
             eprintln!("Gap fill cycle failed: {error}");
         }
     }
@@ -38,111 +48,180 @@ pub async fn run_gap_fill_service(config: GatewayConfig, metrics: SharedMetrics)
 struct GapFillService {
     client: Client,
     config: GatewayConfig,
-    metrics: SharedMetrics,
+    fanout: MarketEventFanout,
 }
 
 impl GapFillService {
-    fn new(config: GatewayConfig, metrics: SharedMetrics) -> Self {
+    fn new(config: GatewayConfig, fanout: MarketEventFanout) -> Self {
         Self {
             client: Client::new(),
             config,
-            metrics,
+            fanout,
         }
     }
 
     async fn run_once(&self, mode: &str) -> Result<(), String> {
-        let _timing = self.metrics.timing(TimingTarget::GapFillRun);
-        self.metrics.inc_gap_fill_run();
+        let _timing = self.fanout.metrics.timing(TimingTarget::GapFillRun);
+        self.fanout.metrics.inc_gap_fill_run();
         self.initialize_tables().await?;
         let started_at = Utc::now();
         let phase = format!("{:?}", session_phase(started_at));
         if self.config.massive_api_key.is_empty() {
-            self.record_run(started_at, mode, &phase, "", "skipped", 0, "MASSIVE_API_KEY is not configured").await?;
+            self.record_run(
+                started_at,
+                mode,
+                &phase,
+                "",
+                "skipped",
+                0,
+                "MASSIVE_API_KEY is not configured",
+            )
+            .await?;
             return Ok(());
         }
         let symbols = self.gap_fill_symbols().await?;
         if symbols.is_empty() {
-            self.record_run(started_at, mode, &phase, "", "skipped", 0, "No gap-fill symbols were configured or discovered").await?;
+            self.record_run(
+                started_at,
+                mode,
+                &phase,
+                "",
+                "skipped",
+                0,
+                "No gap-fill symbols were configured or discovered",
+            )
+            .await?;
             return Ok(());
         }
         for symbol in symbols {
-            let trade_rows = self.fill_kind(&symbol, "trades").await.unwrap_or_else(|error| {
-                eprintln!("Trade gap fill failed for {symbol}: {error}");
+            let rows = self.fill_symbol(&symbol).await.unwrap_or_else(|error| {
+                eprintln!("Gap fill failed for {symbol}: {error}");
                 0
             });
-            let quote_rows = self.fill_kind(&symbol, "quotes").await.unwrap_or_else(|error| {
-                eprintln!("Quote gap fill failed for {symbol}: {error}");
-                0
-            });
-            let rows = trade_rows + quote_rows;
-            self.metrics.inc_gap_fill_rows(rows);
-            self.record_run(started_at, mode, &phase, &symbol, "completed", rows, "").await?;
+            self.fanout.metrics.inc_gap_fill_rows(rows);
+            self.record_run(started_at, mode, &phase, &symbol, "completed", rows, "")
+                .await?;
         }
         Ok(())
     }
 
-    async fn fill_kind(&self, symbol: &str, kind: &str) -> Result<u64, String> {
-        let table = if kind == "trades" { "live_massive_trades" } else { "live_massive_quotes" };
-        let latest = self.latest_ts(table, symbol).await?;
+    async fn fill_symbol(&self, symbol: &str) -> Result<u64, String> {
         let now = Utc::now();
-        let start = latest.unwrap_or(now - ChronoDuration::minutes(self.config.gap_fill_lookback_minutes));
+        let latest = self.latest_compact_ts(symbol).await?;
+        let requested_start =
+            latest.unwrap_or(now - ChronoDuration::minutes(self.config.gap_fill_lookback_minutes));
+        let max_start = now - ChronoDuration::days(self.config.gap_fill_max_lookback_days.max(1));
+        let start = requested_start.max(max_start);
         if (now - start).num_seconds() < self.config.gap_fill_min_gap_seconds {
             return Ok(0);
         }
-        let mut next_url = Some(self.rest_url(symbol, kind, start, now));
+
+        let mut events = Vec::new();
+        events.extend(self.fetch_events(symbol, "trades", start, now).await?);
+        events.extend(self.fetch_events(symbol, "quotes", start, now).await?);
+        events.sort_by_key(|event| {
+            let tie_breaker = match event {
+                MarketEvent::Quote(_) => 0u8,
+                MarketEvent::Trade(_) => 1u8,
+            };
+            (event.ts(), tie_breaker)
+        });
+
+        let mut count = 0u64;
+        for event in events {
+            fanout_market_event(event, &self.fanout).await;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    async fn fetch_events(
+        &self,
+        symbol: &str,
+        kind: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<MarketEvent>, String> {
+        let mut next_url = Some(self.rest_url(symbol, kind, start, end));
         let mut pages = 0usize;
-        let mut inserted = 0u64;
+        let mut out = Vec::new();
         while let Some(url) = next_url.take() {
             if pages >= self.config.gap_fill_max_pages_per_symbol {
                 break;
             }
             pages += 1;
-            let payload: Value = self.client.get(url).send().await.map_err(|error| error.to_string())?.json().await.map_err(|error| error.to_string())?;
-            let rows = payload.get("results").and_then(Value::as_array).cloned().unwrap_or_default();
+            let payload: Value = self
+                .client
+                .get(url)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?
+                .json()
+                .await
+                .map_err(|error| error.to_string())?;
+            let rows = payload
+                .get("results")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             if rows.is_empty() {
                 break;
             }
-            if kind == "trades" {
-                inserted += self.insert_rest_trades(symbol, &rows).await? as u64;
-            } else {
-                inserted += self.insert_rest_quotes(symbol, &rows).await? as u64;
+            for row in rows {
+                let event = if kind == "trades" {
+                    rest_trade_event(symbol, row)
+                } else {
+                    rest_quote_event(symbol, row)
+                };
+                if let Some(event) = event {
+                    out.push(event);
+                }
             }
-            next_url = payload.get("next_url").and_then(Value::as_str).map(|url| append_api_key(url, &self.config.massive_api_key));
+            next_url = payload
+                .get("next_url")
+                .and_then(Value::as_str)
+                .map(|url| append_api_key(url, &self.config.massive_api_key));
         }
-        Ok(inserted)
+        Ok(out)
     }
 
     async fn gap_fill_symbols(&self) -> Result<Vec<String>, String> {
         if !self.config.gap_fill_symbols.is_empty() {
             return Ok(self.config.gap_fill_symbols.clone());
         }
+        if !self.config.compact_events_enabled {
+            return Ok(Vec::new());
+        }
         let session_date = Utc::now().date_naive().to_string();
         let sql = format!(
             r#"
-            SELECT DISTINCT sym
-            FROM
-            (
-                SELECT sym FROM live_massive_trades WHERE session_date = toDate('{session_date}')
-                UNION ALL
-                SELECT sym FROM live_massive_quotes WHERE session_date = toDate('{session_date}')
-            )
-            WHERE sym != ''
-            ORDER BY sym
+            SELECT DISTINCT ticker
+            FROM {table}
+            WHERE event_date >= toDate('{session_date}') - 1
+              AND ticker != ''
+            ORDER BY ticker
             FORMAT JSONEachRow
-            "#
+            "#,
+            table = self.config.compact_event_table,
         );
         let text = self.query(&sql, true).await?;
         let mut symbols = Vec::new();
         for line in text.lines().filter(|line| !line.trim().is_empty()) {
             let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
-            if let Some(symbol) = value.get("sym").and_then(Value::as_str) {
+            if let Some(symbol) = value.get("ticker").and_then(Value::as_str) {
                 symbols.push(symbol.to_ascii_uppercase());
             }
         }
         Ok(symbols)
     }
 
-    fn rest_url(&self, symbol: &str, kind: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> String {
+    fn rest_url(
+        &self,
+        symbol: &str,
+        kind: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> String {
         let endpoint = if kind == "trades" { "trades" } else { "quotes" };
         format!(
             "https://api.massive.com/v3/{endpoint}/{symbol}?timestamp.gte={}&timestamp.lt={}&order=asc&sort=timestamp&limit=50000&apiKey={}",
@@ -152,105 +231,38 @@ impl GapFillService {
         )
     }
 
-    async fn latest_ts(&self, table: &str, symbol: &str) -> Result<Option<DateTime<Utc>>, String> {
+    async fn latest_compact_ts(&self, symbol: &str) -> Result<Option<DateTime<Utc>>, String> {
+        if !self.config.compact_events_enabled {
+            return Ok(None);
+        }
         let sql = format!(
-            "SELECT max(ts) AS ts FROM {table} WHERE sym = '{}' FORMAT JSONEachRow",
-            symbol.replace('\'', "''")
+            "SELECT max(sip_timestamp_us) AS sip_timestamp_us FROM {table} WHERE ticker = '{}' FORMAT JSONEachRow",
+            symbol.replace('\'', "''"),
+            table = self.config.compact_event_table,
         );
         let text = self.query(&sql, true).await?;
         let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
             return Ok(None);
         };
         let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
-        let Some(text) = value.get("ts").and_then(Value::as_str) else {
+        let Some(us) = value.get("sip_timestamp_us").and_then(json_u64) else {
             return Ok(None);
         };
-        if text.is_empty() || text.starts_with("1970-") {
+        if us == 0 {
             return Ok(None);
         }
-        DateTime::parse_from_rfc3339(text)
-            .map(|value| Some(value.with_timezone(&Utc)))
-            .or_else(|_| NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f").map(|value| Some(value.and_utc())))
-            .map_err(|error| error.to_string())
-    }
-
-    async fn insert_rest_trades(&self, symbol: &str, rows: &[Value]) -> Result<usize, String> {
-        let body = rows
-            .iter()
-            .map(|row| {
-                let ts = ns_to_rfc3339(row.get("sip_timestamp").and_then(Value::as_i64).unwrap_or_default());
-                json!({
-                    "session_date": ts.get(0..10).unwrap_or("1970-01-01"),
-                    "schema_version": RAW_EVENT_SCHEMA_VERSION,
-                    "ts": ts,
-                    "participant_ts": optional_ns_to_rfc3339(row.get("participant_timestamp").and_then(Value::as_i64)),
-                    "trf_ts": optional_ns_to_rfc3339(row.get("trf_timestamp").and_then(Value::as_i64)),
-                    "ingest_ts": Utc::now().to_rfc3339(),
-                    "sym": symbol,
-                    "trade_id": row.get("id").and_then(Value::as_str).unwrap_or_default(),
-                    "seq": row.get("sequence_number").and_then(Value::as_u64).unwrap_or_default(),
-                    "exchange": row.get("exchange").and_then(Value::as_u64).unwrap_or_default(),
-                    "tape": row.get("tape").and_then(Value::as_u64).unwrap_or_default(),
-                    "price": row.get("price").and_then(Value::as_f64).unwrap_or_default(),
-                    "size": row.get("size").and_then(Value::as_f64).unwrap_or_default(),
-                    "conditions": row.get("conditions").cloned().unwrap_or_else(|| json!([])),
-                    "trf_id": row.get("trf_id").and_then(Value::as_u64).unwrap_or_default(),
-                    "raw": row.to_string(),
-                }).to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.query(&format!("INSERT INTO live_massive_trades FORMAT JSONEachRow\n{body}"), true).await?;
-        Ok(rows.len())
-    }
-
-    async fn insert_rest_quotes(&self, symbol: &str, rows: &[Value]) -> Result<usize, String> {
-        let body = rows
-            .iter()
-            .map(|row| {
-                let ts = ns_to_rfc3339(row.get("sip_timestamp").and_then(Value::as_i64).unwrap_or_default());
-                json!({
-                    "session_date": ts.get(0..10).unwrap_or("1970-01-01"),
-                    "schema_version": RAW_EVENT_SCHEMA_VERSION,
-                    "ts": ts,
-                    "ingest_ts": Utc::now().to_rfc3339(),
-                    "sym": symbol,
-                    "seq": row.get("sequence_number").and_then(Value::as_u64).unwrap_or_default(),
-                    "bid_exchange": row.get("bid_exchange").and_then(Value::as_u64).unwrap_or_default(),
-                    "ask_exchange": row.get("ask_exchange").and_then(Value::as_u64).unwrap_or_default(),
-                    "bid_price": row.get("bid_price").and_then(Value::as_f64).unwrap_or_default(),
-                    "ask_price": row.get("ask_price").and_then(Value::as_f64).unwrap_or_default(),
-                    "bid_size": row.get("bid_size").and_then(Value::as_u64).unwrap_or_default(),
-                    "ask_size": row.get("ask_size").and_then(Value::as_u64).unwrap_or_default(),
-                    "conditions": row.get("conditions").cloned().unwrap_or_else(|| json!([])),
-                    "indicators": row.get("indicators").cloned().unwrap_or_else(|| json!([])),
-                    "tape": row.get("tape").and_then(Value::as_u64).unwrap_or_default(),
-                    "raw": row.to_string(),
-                }).to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.query(&format!("INSERT INTO live_massive_quotes FORMAT JSONEachRow\n{body}"), true).await?;
-        Ok(rows.len())
+        Ok(us_to_datetime(us))
     }
 
     async fn initialize_tables(&self) -> Result<(), String> {
-        self.query(&format!("CREATE DATABASE IF NOT EXISTS `{}`", self.config.clickhouse_database), false)
-            .await?;
         self.query(
-            "ALTER TABLE live_massive_trades ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
-            true,
+            &format!(
+                "CREATE DATABASE IF NOT EXISTS `{}`",
+                self.config.clickhouse_database
+            ),
+            false,
         )
-        .await
-        .map(|_| ())
-        .unwrap_or(());
-        self.query(
-            "ALTER TABLE live_massive_quotes ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
-            true,
-        )
-        .await
-        .map(|_| ())
-        .unwrap_or(());
+        .await?;
         self.query(
             r#"
             CREATE TABLE IF NOT EXISTS qmd_gap_fill_runs
@@ -269,16 +281,19 @@ impl GapFillService {
             true,
         )
         .await
-        .map(|_| ())?;
-        self.query(
-            "ALTER TABLE qmd_gap_fill_runs ADD COLUMN IF NOT EXISTS mode LowCardinality(String) AFTER started_at",
-            true,
-        )
-        .await
         .map(|_| ())
     }
 
-    async fn record_run(&self, started_at: DateTime<Utc>, mode: &str, phase: &str, symbol: &str, status: &str, rows_written: u64, message: &str) -> Result<(), String> {
+    async fn record_run(
+        &self,
+        started_at: DateTime<Utc>,
+        mode: &str,
+        phase: &str,
+        symbol: &str,
+        status: &str,
+        rows_written: u64,
+        message: &str,
+    ) -> Result<(), String> {
         let row = json!({
             "started_at": started_at.to_rfc3339(),
             "mode": mode,
@@ -288,14 +303,21 @@ impl GapFillService {
             "rows_written": rows_written,
             "message": message,
         });
-        self.query(&format!("INSERT INTO qmd_gap_fill_runs FORMAT JSONEachRow\n{}", row), true)
-            .await
-            .map(|_| ())
+        self.query(
+            &format!("INSERT INTO qmd_gap_fill_runs FORMAT JSONEachRow\n{}", row),
+            true,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn query(&self, body: &str, use_database: bool) -> Result<String, String> {
         let url = if use_database {
-            format!("{}/?database={}", self.config.clickhouse_url, urlencoding::encode(&self.config.clickhouse_database))
+            format!(
+                "{}/?database={}",
+                self.config.clickhouse_url,
+                urlencoding::encode(&self.config.clickhouse_database)
+            )
         } else {
             format!("{}/", self.config.clickhouse_url)
         };
@@ -319,6 +341,10 @@ impl GapFillService {
     }
 }
 
+fn should_run_session_catch_up(mode: &str) -> bool {
+    matches!(mode, "auto" | "session" | "session_catch_up")
+}
+
 fn append_api_key(url: &str, api_key: &str) -> String {
     if url.contains("apiKey=") {
         url.to_string()
@@ -329,14 +355,129 @@ fn append_api_key(url: &str, api_key: &str) -> String {
     }
 }
 
-fn ns_to_rfc3339(ns: i64) -> String {
+fn rest_trade_event(symbol: &str, row: Value) -> Option<MarketEvent> {
+    Some(MarketEvent::Trade(TradeEvent {
+        conditions: u16_array_field(&row, "conditions"),
+        exchange: u16_field(&row, "exchange"),
+        ingest_ts: Utc::now(),
+        participant_ts: optional_ns_field(&row, "participant_timestamp"),
+        price: f64_field(&row, "price"),
+        raw: row.clone(),
+        sequence: u64_field(&row, "sequence_number"),
+        size: f64_field(&row, "size"),
+        tape: u8_field(&row, "tape"),
+        ticker: symbol.to_ascii_uppercase(),
+        trade_id: string_or_number_field(&row, "id"),
+        trf_id: u16_field(&row, "trf_id"),
+        trf_ts: optional_ns_field(&row, "trf_timestamp"),
+        ts: optional_ns_field(&row, "sip_timestamp")?,
+    }))
+}
+
+fn rest_quote_event(symbol: &str, row: Value) -> Option<MarketEvent> {
+    Some(MarketEvent::Quote(QuoteEvent {
+        ask_exchange: u16_field(&row, "ask_exchange"),
+        ask_price: f64_field(&row, "ask_price"),
+        ask_size: u32_field(&row, "ask_size"),
+        bid_exchange: u16_field(&row, "bid_exchange"),
+        bid_price: f64_field(&row, "bid_price"),
+        bid_size: u32_field(&row, "bid_size"),
+        conditions: u16_array_field(&row, "conditions"),
+        indicators: u16_array_field(&row, "indicators"),
+        ingest_ts: Utc::now(),
+        raw: row.clone(),
+        sequence: u64_field(&row, "sequence_number"),
+        tape: u8_field(&row, "tape"),
+        ticker: symbol.to_ascii_uppercase(),
+        ts: optional_ns_field(&row, "sip_timestamp")?,
+    }))
+}
+
+fn optional_ns_field(item: &Value, key: &str) -> Option<DateTime<Utc>> {
+    let ns = item.get(key).and_then(json_i64)?;
+    if ns <= 0 {
+        return None;
+    }
+    ns_to_datetime(ns)
+}
+
+fn ns_to_datetime(ns: i64) -> Option<DateTime<Utc>> {
     let seconds = ns.div_euclid(1_000_000_000);
     let nanos = ns.rem_euclid(1_000_000_000) as u32;
     DateTime::<Utc>::from_timestamp(seconds, nanos)
-        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).expect("epoch timestamp"))
-        .to_rfc3339()
 }
 
-fn optional_ns_to_rfc3339(ns: Option<i64>) -> Option<String> {
-    ns.filter(|value| *value > 0).map(ns_to_rfc3339)
+fn us_to_datetime(us: u64) -> Option<DateTime<Utc>> {
+    let seconds = (us / 1_000_000) as i64;
+    let micros = (us % 1_000_000) as u32;
+    DateTime::<Utc>::from_timestamp(seconds, micros * 1_000)
+}
+
+fn string_or_number_field(item: &Value, key: &str) -> String {
+    match item.get(key) {
+        Some(Value::String(value)) => value.clone(),
+        Some(Value::Number(value)) => value.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn f64_field(item: &Value, key: &str) -> f64 {
+    item.get(key).and_then(json_f64).unwrap_or_default()
+}
+
+fn u64_field(item: &Value, key: &str) -> u64 {
+    item.get(key).and_then(json_u64).unwrap_or_default()
+}
+
+fn u32_field(item: &Value, key: &str) -> u32 {
+    u64_field(item, key).min(u32::MAX as u64) as u32
+}
+
+fn u16_field(item: &Value, key: &str) -> u16 {
+    u64_field(item, key).min(u16::MAX as u64) as u16
+}
+
+fn u8_field(item: &Value, key: &str) -> u8 {
+    u64_field(item, key).min(u8::MAX as u64) as u8
+}
+
+fn u16_array_field(item: &Value, key: &str) -> Vec<u16> {
+    item.get(key)
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(json_u64)
+                .map(|value| value.min(u16::MAX as u64) as u16)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn json_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn json_i64(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_u64().and_then(|value| i64::try_from(value).ok())),
+        Value::String(text) => text.parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+fn json_u64(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(number) => number
+            .as_u64()
+            .or_else(|| number.as_i64().and_then(|value| u64::try_from(value).ok())),
+        Value::String(text) => text.parse::<u64>().ok(),
+        _ => None,
+    }
 }

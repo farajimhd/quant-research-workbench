@@ -41,7 +41,7 @@ The gateway outputs market-data primitives. The app backend combines those primi
 | `scanner.rs` | Massive-only scanner primitives | Closed bars | Primitive snapshot/stream | Broker/reference-aware signals |
 | `compact_event.rs` | Live compact event contract | Market events | `/stream/compact-events`, `live_market_events_v1` | Encoder chunk construction |
 | `clickhouse.rs` | Optional raw Massive persistence | Market events | `live_massive_trades`, `live_massive_quotes` | Primary ML surface |
-| `gapfill.rs` | Massive REST gap fill | ClickHouse latest timestamps, Massive REST | Repaired raw rows, gap-fill audit rows | Compact-event gap fill |
+| `gapfill.rs` | Massive REST gap fill | Live compact latest timestamps, Massive REST | Same event fan-out as websocket, gap-fill audit rows | Deep historical repair |
 | `replay.rs` | Raw-data replay | ClickHouse raw rows | Same in-memory pipeline as live | Re-persist raw events |
 | `metrics.rs` | Operational counters | Hot-path observations | `/metrics` payload | External monitoring service |
 | `api.rs` | Local API and websocket streams | Shared stores | REST/websocket responses | UI-specific formatting |
@@ -102,15 +102,16 @@ Default durable writes:
 | Table | Written By | Default | Purpose |
 |---|---|---:|---|
 | `live_market_events_v1` | `compact_event.rs` | yes | Live ML-serving event stream/table |
-| `live_massive_trades` | `clickhouse.rs`, `gapfill.rs` | no | Optional raw trade replay/debug source |
-| `live_massive_quotes` | `clickhouse.rs`, `gapfill.rs` | no | Optional raw quote replay/debug source |
+| `live_massive_trades` | `clickhouse.rs` | no | Optional raw trade replay/debug source |
+| `live_massive_quotes` | `clickhouse.rs` | no | Optional raw quote replay/debug source |
 | `live_market_bars` | `bars.rs` | yes | Published bar history |
 | `live_market_indicators` | `indicators.rs` | no | Optional promoted indicator rows |
 | `qmd_gap_fill_runs` | `gapfill.rs` | yes | Gap-fill audit log |
 
-Gap fill currently writes repaired raw quote/trade rows, so it only runs when
-`QMD_PERSIST_RAW_EVENTS=true`. Add a compact-event gap-fill path before using
-gap fill in compact-only production mode.
+Gap fill is a recent-window repair path. It converts REST rows to normalized
+events and uses the same fan-out as websocket ingest. Deeper historical history
+belongs to the read-only `market_sip_compact.events` table maintained by the
+flatfile pipelines.
 
 Set `QMD_PERSIST_INDICATORS=true` only after choosing the indicator set that should become durable.
 

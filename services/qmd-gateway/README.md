@@ -68,6 +68,7 @@ Environment variables:
 - `QMD_GAP_FILL_MODE`, default `auto`; allowed values are `auto`, `session_catch_up`, `after_hours`, `repair`, or `session`
 - `QMD_GAP_FILL_INTERVAL_MS`, default `300000`
 - `QMD_GAP_FILL_LOOKBACK_MINUTES`, default `120`
+- `QMD_GAP_FILL_MAX_LOOKBACK_DAYS`, default `3`
 - `QMD_GAP_FILL_MIN_GAP_SECONDS`, default `60`
 - `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL`, default `5`
 - `QMD_GAP_FILL_SYMBOLS`, optional comma-separated priority symbols
@@ -276,22 +277,26 @@ It treats 04:00-20:00 New York time on weekdays as the active streaming window:
 - 09:30-15:59 ET: regular
 - 16:00-19:59 ET: aftermarket
 
-Gap fill has two modes, but it currently runs only when
-`QMD_PERSIST_RAW_EVENTS=true` because the repair worker still writes raw
-quote/trade rows. If the gateway starts during premarket, regular market, or
-aftermarket and `QMD_GAP_FILL_MODE` is `auto`, `session`, or
-`session_catch_up`, it immediately runs a high-priority session catch-up pass.
-Outside streaming hours, `auto`, `after_hours`, and `repair` run lower-priority
-database repair cycles. Gap fill uses Massive REST historical trades and quotes:
+Gap fill uses the same normalized event fan-out as the live websocket path:
+REST quote/trade rows are converted to `MarketEvent`, then routed through
+in-memory state, local streams, bars, indicators, compact-event persistence, and
+optional raw persistence. It does not require raw quote/trade persistence. If
+the gateway starts during premarket, regular market, or aftermarket and
+`QMD_GAP_FILL_MODE` is `auto`, `session`, or `session_catch_up`, it immediately
+runs a high-priority session catch-up pass. Outside streaming hours, `auto`,
+`after_hours`, and `repair` run lower-priority repair cycles. Gap fill uses
+Massive REST historical trades and quotes:
 
 - `/v3/trades/{stockTicker}`
 - `/v3/quotes/{stockTicker}`
 
 If `QMD_GAP_FILL_SYMBOLS` is set, only those symbols are checked. Otherwise the
-worker discovers symbols already present in `live_massive_trades` and
-`live_massive_quotes` for the current date, then fills from each symbol's latest
-stored timestamp to now. This is meant for crash/restart recovery without
-blocking the live ingest fast path.
+worker discovers symbols already present in the live compact event table, then
+fills from each symbol's latest compact timestamp to now. REST gap fill is
+bounded by `QMD_GAP_FILL_MAX_LOOKBACK_DAYS`, default `3`, because the REST path
+is for recent crash/restart recovery. Deeper historical event history should be
+read from the read-only `market_sip_compact.events` table, which is maintained
+by the flatfile pipelines up to the prior day.
 
 ## Replay Mode
 

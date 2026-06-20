@@ -32,6 +32,11 @@ The sample-cache record contract is documented in
 `docs/EVENT_SAMPLE_CACHE.md`. The unified event table contract is documented in
 `docs/UNIFIED_EVENTS_TABLE.md`.
 
+For incremental flatfile updates that should keep quotes/trades only on disk
+and write only unified events to ClickHouse, use
+`flatfiles/download_update_events.py`. Its runbook is documented in
+`docs/FLATFILE_EVENT_UPDATE.md`.
+
 To build only validation sample-cache shards, pass `--splits validation` to
 `sample_cache/run_build_event_sample_cache.py` or directly to
 `sample_cache/build_event_sample_cache.py`. The number of validation shards is

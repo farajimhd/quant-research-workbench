@@ -29,7 +29,7 @@ use crate::gapfill::run_gap_fill_service;
 use crate::indicators::{
     spawn_indicator_engines, IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore,
 };
-use crate::massive::run_massive_ingest;
+use crate::massive::{run_massive_ingest, MarketEventFanout};
 use crate::metrics::SharedMetrics;
 use crate::replay::run_replay_service;
 use crate::scanner::{spawn_scanner_primitive_engine, ScannerPrimitive, SharedScannerStore};
@@ -144,30 +144,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         metrics.clone(),
     );
 
-    tokio::spawn(run_massive_ingest(
-        config.clone(),
-        market.clone(),
-        if config.persist_raw_events {
+    let event_fanout = MarketEventFanout {
+        state: market.clone(),
+        writer_sender: if config.persist_raw_events {
             Some(writer_sender)
         } else {
             None
         },
-        if config.compact_events_enabled {
+        compact_writer_sender: if config.compact_events_enabled {
             Some(compact_writer_sender)
         } else {
             None
         },
-        bar_router.clone(),
-        indicator_router.clone(),
-        event_sender.clone(),
-        metrics.clone(),
-    ));
-    if config.gap_fill_enabled && config.persist_raw_events {
-        tokio::spawn(run_gap_fill_service(config.clone(), metrics.clone()));
-    } else if config.gap_fill_enabled {
-        eprintln!(
-            "Gap fill is disabled because raw quote/trade persistence is disabled. Set QMD_PERSIST_RAW_EVENTS=true or add compact-event gap fill before enabling it."
-        );
+        bar_router: bar_router.clone(),
+        indicator_router: indicator_router.clone(),
+        event_sender: event_sender.clone(),
+        metrics: metrics.clone(),
+    };
+
+    tokio::spawn(run_massive_ingest(config.clone(), event_fanout.clone()));
+    if config.gap_fill_enabled {
+        tokio::spawn(run_gap_fill_service(config.clone(), event_fanout.clone()));
     }
     tokio::spawn(run_replay_service(
         config.clone(),

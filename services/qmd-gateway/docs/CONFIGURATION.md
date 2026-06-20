@@ -76,15 +76,14 @@ The gateway uses non-blocking queue sends. A full queue means the downstream ite
 | `QMD_GAP_FILL_MODE` | `auto` | Gap-fill mode: `auto`, `session`, `session_catch_up`, `after_hours`, or `repair`. | `auto` does startup catch-up during streaming and repair after hours. |
 | `QMD_GAP_FILL_INTERVAL_MS` | `300000` | After-hours repair interval. | Default is 5 minutes. |
 | `QMD_GAP_FILL_LOOKBACK_MINUTES` | `120` | Lookback when no latest timestamp exists. | Session catch-up uses this to warm recent memory. |
+| `QMD_GAP_FILL_MAX_LOOKBACK_DAYS` | `3` | Maximum recent REST repair window. | Older history should come from read-only `market_sip_compact.events`. |
 | `QMD_GAP_FILL_MIN_GAP_SECONDS` | `60` | Ignore gaps shorter than this. | Prevents excessive REST calls for tiny gaps. |
 | `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL` | `5` | Max Massive REST pages per symbol per cycle. | Rate-limit control. |
-| `QMD_GAP_FILL_SYMBOLS` | empty | Optional comma-separated symbol list. | If empty, symbols are discovered from existing `q_live` raw rows for the date. |
+| `QMD_GAP_FILL_SYMBOLS` | empty | Optional comma-separated symbol list. | If empty, symbols are discovered from recent live compact event rows. |
 
-Gap fill currently repairs raw quote/trade tables. It is skipped unless
-`QMD_PERSIST_RAW_EVENTS=true`; add a compact-event gap-fill path before using
-gap fill in compact-only production mode.
-
-Current limitation: session catch-up writes recovered rows to ClickHouse but does not yet feed recovered REST rows through the in-memory bar/indicator/scanner pipeline. That is the next gap-fill improvement if scanner warm-up must be immediate for all tickers.
+Gap fill converts Massive REST rows to the same normalized `MarketEvent` type
+used by the websocket path, then feeds the same state, stream, bar, indicator,
+compact-event, and optional raw-persistence queues.
 
 ## Scanner Primitives
 

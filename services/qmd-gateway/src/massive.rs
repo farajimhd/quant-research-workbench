@@ -10,18 +10,22 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-pub async fn run_massive_ingest(
-    config: GatewayConfig,
-    state: SharedMarketState,
-    writer_sender: Option<mpsc::Sender<MarketEvent>>,
-    compact_writer_sender: Option<mpsc::Sender<MarketEvent>>,
-    bar_router: BarEventRouter,
-    indicator_router: IndicatorEventRouter,
-    event_sender: broadcast::Sender<MarketEvent>,
-    metrics: SharedMetrics,
-) {
+#[derive(Clone)]
+pub struct MarketEventFanout {
+    pub state: SharedMarketState,
+    pub writer_sender: Option<mpsc::Sender<MarketEvent>>,
+    pub compact_writer_sender: Option<mpsc::Sender<MarketEvent>>,
+    pub bar_router: BarEventRouter,
+    pub indicator_router: IndicatorEventRouter,
+    pub event_sender: broadcast::Sender<MarketEvent>,
+    pub metrics: SharedMetrics,
+}
+
+pub async fn run_massive_ingest(config: GatewayConfig, fanout: MarketEventFanout) {
     if config.massive_api_key.is_empty() {
-        eprintln!("MASSIVE_API_KEY is not configured; qmd-gateway API is running without live ingest.");
+        eprintln!(
+            "MASSIVE_API_KEY is not configured; qmd-gateway API is running without live ingest."
+        );
         return;
     }
     let subscriptions = config.subscription_channels();
@@ -38,7 +42,8 @@ pub async fn run_massive_ingest(
                     sleep(Duration::from_secs(3)).await;
                     continue;
                 }
-                let subscribe = json!({"action": "subscribe", "params": subscriptions.join(",")}).to_string();
+                let subscribe =
+                    json!({"action": "subscribe", "params": subscriptions.join(",")}).to_string();
                 if let Err(error) = websocket.send(Message::Text(subscribe.into())).await {
                     eprintln!("Massive subscribe send failed: {error}");
                     sleep(Duration::from_secs(3)).await;
@@ -53,39 +58,11 @@ pub async fn run_massive_ingest(
                             match parse_massive_payload(&text) {
                                 Ok(events) => {
                                     for event in events {
-                                        let kind = match &event {
-                                            MarketEvent::Trade(_) => "trade",
-                                            MarketEvent::Quote(_) => "quote",
-                                        };
-                                        metrics.observe_event(kind, event.ts());
-                                        state.apply_event(&event).await;
-                                        if event_sender.send(event.clone()).is_err() {
-                                            metrics.inc_event_broadcast_dropped();
-                                        }
-                                        if bar_router.try_send(event.clone()).is_err() {
-                                            metrics.inc_bar_event_dropped();
-                                            eprintln!("Bar engine shard queue is full; dropped one aggregation event.");
-                                        }
-                                        if indicator_router.try_send_event(event.clone()).is_err() {
-                                            metrics.inc_indicator_event_dropped();
-                                            eprintln!("Indicator shard queue is full; dropped one indicator event.");
-                                        }
-                                        if let Some(sender) = &compact_writer_sender {
-                                            if sender.try_send(event.clone()).is_err() {
-                                                metrics.inc_compact_event_queue_dropped();
-                                                eprintln!("Compact event writer queue is full; dropped one compact event.");
-                                            }
-                                        }
-                                        if let Some(sender) = &writer_sender {
-                                            if sender.try_send(event).is_err() {
-                                                metrics.inc_clickhouse_event_dropped();
-                                                eprintln!("Raw ClickHouse writer queue is full; dropped one raw persistence event.");
-                                            }
-                                        }
+                                        fanout_market_event(event, &fanout).await;
                                     }
                                 }
                                 Err(error) => {
-                                    metrics.inc_parse_failure();
+                                    fanout.metrics.inc_parse_failure();
                                     eprintln!("Massive parse failed: {error}");
                                 }
                             }
@@ -95,13 +72,13 @@ pub async fn run_massive_ingest(
                             let _ = websocket.send(Message::Pong(payload)).await;
                         }
                         Ok(Message::Close(frame)) => {
-                            metrics.inc_massive_disconnect();
+                            fanout.metrics.inc_massive_disconnect();
                             eprintln!("Massive websocket closed: {frame:?}");
                             break;
                         }
                         Ok(_) => {}
                         Err(error) => {
-                            metrics.inc_massive_disconnect();
+                            fanout.metrics.inc_massive_disconnect();
                             eprintln!("Massive websocket error: {error}");
                             break;
                         }
@@ -109,10 +86,46 @@ pub async fn run_massive_ingest(
                 }
             }
             Err(error) => {
-                metrics.inc_massive_connect_failure();
+                fanout.metrics.inc_massive_connect_failure();
                 eprintln!("Massive websocket connect failed: {error}");
             }
         }
         sleep(Duration::from_secs(3)).await;
+    }
+}
+
+pub async fn fanout_market_event(event: MarketEvent, fanout: &MarketEventFanout) {
+    let kind = match &event {
+        MarketEvent::Trade(_) => "trade",
+        MarketEvent::Quote(_) => "quote",
+    };
+    fanout.metrics.observe_event(kind, event.ts());
+    fanout.state.apply_event(&event).await;
+    if fanout.event_sender.send(event.clone()).is_err() {
+        fanout.metrics.inc_event_broadcast_dropped();
+    }
+    if fanout.bar_router.try_send(event.clone()).is_err() {
+        fanout.metrics.inc_bar_event_dropped();
+        eprintln!("Bar engine shard queue is full; dropped one aggregation event.");
+    }
+    if fanout
+        .indicator_router
+        .try_send_event(event.clone())
+        .is_err()
+    {
+        fanout.metrics.inc_indicator_event_dropped();
+        eprintln!("Indicator shard queue is full; dropped one indicator event.");
+    }
+    if let Some(sender) = &fanout.compact_writer_sender {
+        if sender.try_send(event.clone()).is_err() {
+            fanout.metrics.inc_compact_event_queue_dropped();
+            eprintln!("Compact event writer queue is full; dropped one compact event.");
+        }
+    }
+    if let Some(sender) = &fanout.writer_sender {
+        if sender.try_send(event).is_err() {
+            fanout.metrics.inc_clickhouse_event_dropped();
+            eprintln!("Raw ClickHouse writer queue is full; dropped one raw persistence event.");
+        }
     }
 }

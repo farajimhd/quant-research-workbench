@@ -24,6 +24,7 @@ pub struct GatewayConfig {
     pub gap_fill_interval_ms: u64,
     pub gap_fill_mode: String,
     pub gap_fill_lookback_minutes: i64,
+    pub gap_fill_max_lookback_days: i64,
     pub gap_fill_max_pages_per_symbol: usize,
     pub gap_fill_min_gap_seconds: i64,
     pub gap_fill_symbols: Vec<String>,
@@ -63,7 +64,10 @@ impl GatewayConfig {
             bar_channel_capacity: env_usize("QMD_BAR_CHANNEL_CAPACITY", 250_000),
             bar_history_limit: env_usize("QMD_BAR_HISTORY_LIMIT", 1_000),
             bar_shard_count: env_usize("QMD_BAR_SHARD_COUNT", 8),
-            bar_timeframes: env_list_with_default("QMD_BAR_TIMEFRAMES", &["1s", "10s", "30s", "1m", "5m", "1h"]),
+            bar_timeframes: env_list_with_default(
+                "QMD_BAR_TIMEFRAMES",
+                &["1s", "10s", "30s", "1m", "5m", "1h"],
+            ),
             bind: env_string("QMD_GATEWAY_BIND", "127.0.0.1:8795"),
             clickhouse_database: env_string("QMD_CLICKHOUSE_DATABASE", "q_live"),
             clickhouse_password_present: !clickhouse_password.is_empty(),
@@ -71,9 +75,14 @@ impl GatewayConfig {
                 "QMD_CLICKHOUSE_STORAGE_POLICY",
                 &env_string("CLICKHOUSE_LIVE_STORAGE_POLICY", ""),
             ),
-            clickhouse_url: env_string("QMD_CLICKHOUSE_URL", "http://localhost:8123").trim_end_matches('/').to_string(),
+            clickhouse_url: env_string("QMD_CLICKHOUSE_URL", "http://localhost:8123")
+                .trim_end_matches('/')
+                .to_string(),
             clickhouse_user: env_string("QMD_CLICKHOUSE_USER", "default"),
-            compact_event_channel_capacity: env_usize("QMD_COMPACT_EVENT_CHANNEL_CAPACITY", 250_000),
+            compact_event_channel_capacity: env_usize(
+                "QMD_COMPACT_EVENT_CHANNEL_CAPACITY",
+                250_000,
+            ),
             compact_event_table: env_string("QMD_COMPACT_EVENT_TABLE", "live_market_events_v1"),
             compact_events_enabled: env_bool("QMD_COMPACT_EVENTS_ENABLED", true),
             event_channel_capacity: env_usize("QMD_EVENT_CHANNEL_CAPACITY", 250_000),
@@ -82,10 +91,14 @@ impl GatewayConfig {
             gap_fill_interval_ms: env_u64("QMD_GAP_FILL_INTERVAL_MS", 300_000),
             gap_fill_mode: env_string("QMD_GAP_FILL_MODE", "auto").to_ascii_lowercase(),
             gap_fill_lookback_minutes: env_i64("QMD_GAP_FILL_LOOKBACK_MINUTES", 120),
+            gap_fill_max_lookback_days: env_i64("QMD_GAP_FILL_MAX_LOOKBACK_DAYS", 3),
             gap_fill_max_pages_per_symbol: env_usize("QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL", 5),
             gap_fill_min_gap_seconds: env_i64("QMD_GAP_FILL_MIN_GAP_SECONDS", 60),
             gap_fill_symbols: env_list("QMD_GAP_FILL_SYMBOLS"),
-            indicator_bar_channel_capacity: env_usize("QMD_INDICATOR_BAR_CHANNEL_CAPACITY", 250_000),
+            indicator_bar_channel_capacity: env_usize(
+                "QMD_INDICATOR_BAR_CHANNEL_CAPACITY",
+                250_000,
+            ),
             indicator_channel_capacity: env_usize("QMD_INDICATOR_CHANNEL_CAPACITY", 250_000),
             indicator_history_by_timeframe: env_timeframe_limit_map(
                 "QMD_INDICATOR_HISTORY_BY_TIMEFRAME",
@@ -111,8 +124,14 @@ impl GatewayConfig {
             replay_max_rows: env_usize("QMD_REPLAY_MAX_ROWS", 1_000_000),
             replay_symbols: env_list("QMD_REPLAY_SYMBOLS"),
             reference_dir: env_string("QMD_REFERENCE_DIR", &default_reference_dir()),
-            scanner_primitive_channel_capacity: env_usize("QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY", 250_000),
-            scanner_primitive_history_limit: env_usize("QMD_SCANNER_PRIMITIVE_HISTORY_LIMIT", 10_000),
+            scanner_primitive_channel_capacity: env_usize(
+                "QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY",
+                250_000,
+            ),
+            scanner_primitive_history_limit: env_usize(
+                "QMD_SCANNER_PRIMITIVE_HISTORY_LIMIT",
+                10_000,
+            ),
             scanner_broadcast_ms: env_u64("QMD_SCANNER_BROADCAST_MS", 1_000),
             subscribe_all_symbols: env_bool("QMD_SUBSCRIBE_ALL_SYMBOLS", true),
             subscribe_quotes: env_bool("QMD_SUBSCRIBE_QUOTES", true),
@@ -150,7 +169,10 @@ fn env_string(name: &str, default: &str) -> String {
 }
 
 fn env_bool(name: &str, default: bool) -> bool {
-    match env::var(name).ok().map(|value| value.trim().to_ascii_lowercase()) {
+    match env::var(name)
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+    {
         Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on") => true,
         Some(value) if matches!(value.as_str(), "0" | "false" | "no" | "off") => false,
         _ => default,
@@ -196,7 +218,10 @@ fn env_list_with_default(name: &str, default: &[&str]) -> Vec<String> {
     if values.is_empty() {
         default.iter().map(|value| value.to_string()).collect()
     } else {
-        values.into_iter().map(|value| value.to_ascii_lowercase()).collect()
+        values
+            .into_iter()
+            .map(|value| value.to_ascii_lowercase())
+            .collect()
     }
 }
 

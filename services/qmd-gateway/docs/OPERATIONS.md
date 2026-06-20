@@ -16,7 +16,7 @@ Main tasks:
 | Bar workers | Build bars by ticker shard. | Bars, bar indicators, and scanner primitives lag or drop. |
 | Indicator workers | Build tick and bar indicators by ticker shard. | Indicator snapshots lag or drop. |
 | Scanner primitive worker | Emits Massive-only primitive candidates. | Primitive stream becomes stale. |
-| Gap-fill worker | Repairs raw quote/trade gaps with Massive REST when raw persistence is enabled. | Missing raw rows remain until next repair. |
+| Gap-fill worker | Repairs recent quote/trade gaps with Massive REST through the same event fan-out as websocket ingest. | Missing recent events remain until next repair. |
 | Replay worker | Optional one-shot replay from ClickHouse raw rows. | Only active when replay env vars enable it. |
 | Local API server | Exposes health, metrics, snapshots, and streams. | App cannot consume gateway data. |
 
@@ -110,18 +110,21 @@ Gap fill uses Massive REST:
 /v3/quotes/{ticker}
 ```
 
-It writes repaired rows to `live_massive_trades` and `live_massive_quotes`, then records audit rows in `qmd_gap_fill_runs`.
-Because it is still raw-table based, the worker is skipped unless `QMD_PERSIST_RAW_EVENTS=true`.
+It converts repaired rows to normalized market events, feeds the same state,
+stream, bar, indicator, compact-event, and optional raw-persistence queues as
+websocket ingest, then records audit rows in `qmd_gap_fill_runs`.
 
 | Mode | When It Runs | Purpose |
 |---|---|---|
-| `session_catch_up` or `session` | Once at startup if current New York time is premarket, regular, or after-hours. | Quickly repair recent raw-data gaps after a restart during a session. |
+| `session_catch_up` or `session` | Once at startup if current New York time is premarket, regular, or after-hours. | Quickly repair recent event gaps after a restart during a session. |
 | `after_hours` or `repair` | On timer outside active streaming hours. | Repair database gaps without competing with live ingest. |
 | `auto` | Session catch-up during active hours, after-hours repair outside active hours. | Default mode. |
 
-If `QMD_GAP_FILL_SYMBOLS` is set, only those tickers are checked. If it is empty, the worker discovers symbols already present in today's raw tables.
-
-Current limitation: REST-repaired rows are persisted, but session catch-up does not yet feed those REST rows into the live in-memory bar/indicator/scanner state. Immediate scanner warm-up from REST rows is a future improvement.
+If `QMD_GAP_FILL_SYMBOLS` is set, only those tickers are checked. If it is
+empty, the worker discovers symbols already present in recent live compact
+events. REST gap fill is bounded by `QMD_GAP_FILL_MAX_LOOKBACK_DAYS`; older
+history should be read from the read-only historical `market_sip_compact.events`
+table.
 
 ## Replay Mode
 
@@ -142,8 +145,8 @@ Use replay in a separate run from live trading unless you are deliberately testi
 | Table | Required | Purpose |
 |---|---:|---|
 | `live_market_events_v1` | yes | Durable live compact event source for ML-serving and live replay. |
-| `live_massive_trades` | optional | Raw trade source for replay/debug/gap fill when `QMD_PERSIST_RAW_EVENTS=true`. |
-| `live_massive_quotes` | optional | Raw quote source for replay/debug/gap fill when `QMD_PERSIST_RAW_EVENTS=true`. |
+| `live_massive_trades` | optional | Raw trade source for replay/debug when `QMD_PERSIST_RAW_EVENTS=true`. |
+| `live_massive_quotes` | optional | Raw quote source for replay/debug when `QMD_PERSIST_RAW_EVENTS=true`. |
 | `live_market_bars` | yes | Published bars built from quotes/trades. |
 | `live_market_indicators` | optional | Published indicators when `QMD_PERSIST_INDICATORS=true`. |
 | `qmd_gap_fill_runs` | yes if gap fill enabled | Audit trail for gap-fill attempts. |
@@ -173,8 +176,8 @@ Before live use:
 | Indicators are missing but bars arrive | Check `indicator_events_dropped`, `bar_rows_indicator_dropped`, and indicator history limits. |
 | Scanner primitives are missing | Confirm bars close, then check whether current market activity meets primitive thresholds. |
 | API is slow | Lower broadcast frequency, inspect websocket clients, and watch drop counters. |
-| Gap fill does not run | It is skipped unless `QMD_PERSIST_RAW_EVENTS=true`; compact-only gap fill is not implemented yet. |
-| Gap fill keeps writing many rows | Live ingest may be dropping raw persistence, or the gateway was offline for longer than expected. |
+| Gap fill does not run | Check `QMD_GAP_FILL_ENABLED`, `MASSIVE_API_KEY`, `QMD_GAP_FILL_MODE`, and whether symbols are configured or discoverable from compact events. |
+| Gap fill keeps writing many rows | Live ingest may be dropping compact events, or the gateway was offline for longer than expected. |
 
 ## Security Notes
 
