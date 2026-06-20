@@ -55,19 +55,21 @@ def render_dashboard(gateway: "NewsGateway", news_snapshot: dict[str, Any]) -> G
 
 
 def header_panel(gateway: "NewsGateway", metrics: dict[str, Any], now: str) -> Panel:
-    status = str(metrics.get("last_cycle_status") or "starting")
+    status = operational_status(metrics)
     color = status_color(status)
     mode = "execute" if gateway.config.execute else "dry-run"
     location = "workstation" if gateway.config.is_workstation else "remote"
-    poll = float(metrics.get("current_poll_seconds") or gateway.current_poll_seconds())
-    lookback = int(getattr(gateway.config, "lookback_minutes", 0) or 0)
-    lookback_text = f"   [dim]lookback[/dim] {lookback}m" if lookback else ""
+    strategy = gateway.current_poll_strategy()
+    poll = float(metrics.get("current_poll_seconds") or strategy.poll_seconds)
+    lookback = int(metrics.get("current_lookback_minutes") or strategy.lookback_minutes)
+    session = str(metrics.get("current_market_session") or strategy.session)
+    lookback_text = f"   [dim]window[/dim] {lookback}m" if lookback else ""
     grid = Table.grid(expand=True)
     grid.add_column(ratio=2)
     grid.add_column(justify="right", ratio=3)
     grid.add_row(
         f"[bold]Python News Gateway[/bold]  [{color}]{status_label(status)}[/{color}]",
-        f"[dim]UTC[/dim] {now}   [dim]poll[/dim] {poll:.1f}s{lookback_text}   [dim]mode[/dim] {mode}/{location}",
+        f"[dim]UTC[/dim] {now}   [dim]poll[/dim] {poll:.1f}s{lookback_text}   [dim]session[/dim] {session}   [dim]mode[/dim] {mode}/{location}",
     )
     grid.add_row(
         f"[dim]bind[/dim] {gateway.config.bind}",
@@ -190,13 +192,14 @@ def preflight_panel(metrics: dict[str, Any]) -> Panel:
 
 
 def metrics_panel(gateway: "NewsGateway", metrics: dict[str, Any]) -> Panel:
-    status = str(metrics.get("last_cycle_status") or "starting")
+    status = operational_status(metrics)
     color = status_color(status)
     table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
     table.add_column("Metric", style="cyan", no_wrap=True, width=18)
     table.add_column("Total", justify="right", no_wrap=True, width=13)
     table.add_column("Last Cycle", justify="right", no_wrap=True, min_width=19, width=21)
     table.add_row("Status", f"[{color}]{status_label(status)}[/{color}]", compact_time(str(metrics.get("last_poll_at_utc") or "")))
+    table.add_row("Last poll", status_label(str(metrics.get("last_cycle_status") or "-")), compact_time(str(metrics.get("last_poll_at_utc") or "")))
     table.add_row("Poll runs", fmt(metrics.get("poll_runs")), compact_time(str(metrics.get("last_poll_at_utc") or "")))
     table.add_row("Provider rows", fmt(metrics.get("provider_rows")), fmt(metrics.get("last_cycle_provider_rows")))
     table.add_row("Processed rows", fmt(metrics.get("processed_rows")), fmt(metrics.get("last_cycle_processed_rows")))
@@ -209,6 +212,10 @@ def metrics_panel(gateway: "NewsGateway", metrics: dict[str, Any]) -> Panel:
     mode = "execute" if gateway.config.execute else "dry-run"
     location = "workstation" if gateway.config.is_workstation else "remote"
     table.add_row("Mode", mode, location)
+    strategy = gateway.current_poll_strategy()
+    poll_seconds = float(metrics.get("current_poll_seconds") or strategy.poll_seconds)
+    lookback_minutes = int(metrics.get("current_lookback_minutes") or strategy.lookback_minutes)
+    table.add_row("Schedule", f"{poll_seconds:.1f}s", f"{lookback_minutes:,}m window")
     return Panel(table, title="Runtime", box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
@@ -324,6 +331,30 @@ def processing_status(row: dict[str, Any]) -> str:
     return f"E:{enrich} PDF:{pdf} C:{canonical}"
 
 
+def operational_status(metrics: dict[str, Any]) -> str:
+    phase = str(metrics.get("current_phase") or "").strip().lower()
+    last_status = str(metrics.get("last_cycle_status") or "").strip().lower()
+    if phase == "failed" or int(metrics.get("publish_failed_jobs") or 0) or int(metrics.get("background_failed_batches") or 0):
+        return "failed"
+    if phase.startswith("shutdown"):
+        return "stopping"
+    if int(metrics.get("publish_active_jobs") or 0) or str(metrics.get("publish_status") or "").lower() in {"running", "draining"}:
+        return "publishing"
+    if (
+        int(metrics.get("background_queue_size") or 0)
+        or int(metrics.get("background_active_batches") or 0)
+        or int(metrics.get("background_pending_articles") or 0)
+    ):
+        return "processing"
+    if int(metrics.get("gap_fill_in_flight_chunks") or 0) or phase.startswith("gap_fill"):
+        return "gap fill"
+    if phase in {"preflight", "coverage_bootstrap", "gap_planning", "live_fetch", "live_process"}:
+        return phase
+    if phase == "polling":
+        return "idle" if last_status in {"queued", "no_rows", "ok"} else (last_status or "polling")
+    return last_status or phase or "starting"
+
+
 def compact_process_code(value: str) -> str:
     text = value.strip().lower()
     if not text or text in {"not_attempted", "no_pdf"}:
@@ -353,6 +384,7 @@ def status_color(status: str) -> str:
         "covered_by_live_lookback",
         "no_watermark",
         "polling",
+        "idle",
         "live_write",
         "live_coverage",
         "shutdown_background_drained",
@@ -362,6 +394,10 @@ def status_color(status: str) -> str:
     if text in {
         "starting",
         "queued",
+        "publishing",
+        "processing",
+        "gap fill",
+        "stopping",
         "not_started",
         "completed_with_errors",
         "auto_started",

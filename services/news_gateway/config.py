@@ -30,10 +30,9 @@ class NewsGatewayConfig:
     massive_api_key_present: bool
     benzinga_url: str
     market_poll_seconds: float
-    premarket_poll_seconds: float
-    afterhours_poll_seconds: float
     closed_poll_seconds: float
-    lookback_minutes: int
+    market_lookback_minutes: int
+    closed_lookback_minutes: int
     startup_auto_fill_max_gap_days: int
     coverage_discovery_chunk_seconds: int
     rebuild_coverage_manifest: bool
@@ -124,10 +123,9 @@ class NewsGatewayConfig:
             massive_api_key_present=bool(env_string("MASSIVE_API_KEY", "")),
             benzinga_url=env_string("NEWS_BENZINGA_URL", env_string("NEWS_MASSIVE_BENZINGA_URL", "https://api.massive.com/benzinga/v2/news")),
             market_poll_seconds=env_float("NEWS_BENZINGA_MARKET_POLL_SECONDS", 5.0),
-            premarket_poll_seconds=env_float("NEWS_BENZINGA_PREMARKET_POLL_SECONDS", 10.0),
-            afterhours_poll_seconds=env_float("NEWS_BENZINGA_AFTERHOURS_POLL_SECONDS", 15.0),
-            closed_poll_seconds=env_float("NEWS_BENZINGA_CLOSED_POLL_SECONDS", 60.0),
-            lookback_minutes=env_int("NEWS_BENZINGA_LOOKBACK_MINUTES", 15),
+            closed_poll_seconds=env_float("NEWS_BENZINGA_CLOSED_POLL_SECONDS", 300.0),
+            market_lookback_minutes=env_int("NEWS_BENZINGA_MARKET_LOOKBACK_MINUTES", 5),
+            closed_lookback_minutes=env_int("NEWS_BENZINGA_CLOSED_LOOKBACK_MINUTES", 10),
             startup_auto_fill_max_gap_days=env_int("NEWS_BENZINGA_STARTUP_AUTO_FILL_MAX_GAP_DAYS", 30),
             coverage_discovery_chunk_seconds=coverage_discovery_chunk_seconds,
             rebuild_coverage_manifest=env_bool("NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST", False),

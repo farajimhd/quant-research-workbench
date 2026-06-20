@@ -142,14 +142,14 @@ Polling is based on Eastern Time:
 
 | Session | Time ET | Default |
 | --- | ---: | ---: |
-| Premarket | 04:00-09:30 | 10 sec |
-| Market | 09:30-16:00 | 5 sec |
-| After-hours | 16:00-20:00 | 15 sec |
-| Closed | 20:00-04:00 | 60 sec |
+| Active market window | 04:00-20:00 | poll every 5 sec, fetch last 5 min |
+| Closed | 20:00-04:00 | poll every 5 min, fetch last 10 min |
 
-The live poll window is `now - NEWS_BENZINGA_LOOKBACK_MINUTES` to `now`.
-Default lookback is 15 minutes. Existing rows are skipped, so overlapping windows
-are safe.
+Polls are aligned to wall-clock boundaries from the top of the hour. For
+example, a 5-second active-market poll runs on `:00`, `:05`, `:10`, and so on.
+Existing rows are skipped by canonical news ID, so the intentionally overlapping
+windows are safe. The overlap is kept because provider rows can arrive late or a
+single poll can fail while the service keeps running.
 
 ## Gap Handling
 
@@ -442,10 +442,9 @@ Polling:
 
 ```text
 NEWS_BENZINGA_MARKET_POLL_SECONDS=5
-NEWS_BENZINGA_PREMARKET_POLL_SECONDS=10
-NEWS_BENZINGA_AFTERHOURS_POLL_SECONDS=15
-NEWS_BENZINGA_CLOSED_POLL_SECONDS=60
-NEWS_BENZINGA_LOOKBACK_MINUTES=15
+NEWS_BENZINGA_CLOSED_POLL_SECONDS=300
+NEWS_BENZINGA_MARKET_LOOKBACK_MINUTES=5
+NEWS_BENZINGA_CLOSED_LOOKBACK_MINUTES=10
 NEWS_BENZINGA_POLL_OVERLAP_SECONDS=120
 NEWS_BENZINGA_STARTUP_AUTO_FILL_MAX_GAP_DAYS=30
 NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS=300

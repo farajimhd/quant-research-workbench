@@ -78,6 +78,8 @@ class GatewayMetrics:
     last_cycle_skipped_existing: int = 0
     last_cycle_wall_seconds: float = 0.0
     current_poll_seconds: float = 0.0
+    current_lookback_minutes: int = 0
+    current_market_session: str = ""
     current_phase: str = "starting"
     current_phase_message: str = "Starting news gateway."
     current_phase_started_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"))
@@ -173,6 +175,13 @@ class ManualGapFillPlan:
     workstation_script_path: Path
     workstation_manifest_path: Path
     intervals: list[GapFillInterval]
+
+
+@dataclass(frozen=True, slots=True)
+class PollStrategy:
+    session: str
+    poll_seconds: float
+    lookback_minutes: int
 
 
 class NewsGateway:
@@ -522,11 +531,14 @@ class NewsGateway:
 
     async def _poll_loop(self) -> None:
         while not self._stop_event.is_set():
+            strategy = self.current_poll_strategy()
+            self.metrics.current_poll_seconds = strategy.poll_seconds
+            self.metrics.current_lookback_minutes = strategy.lookback_minutes
+            self.metrics.current_market_session = strategy.session
             end_utc = datetime.now(UTC)
-            start_utc = end_utc - timedelta(minutes=max(1, self.config.lookback_minutes))
+            start_utc = end_utc - timedelta(minutes=max(1, strategy.lookback_minutes))
             await self.poll_window(start_utc, end_utc, coverage_mode="live")
-            sleep_seconds = self.current_poll_seconds()
-            self.metrics.current_poll_seconds = sleep_seconds
+            sleep_seconds = self.seconds_until_next_poll_boundary(strategy.poll_seconds)
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=sleep_seconds)
             except TimeoutError:
@@ -602,18 +614,30 @@ class NewsGateway:
                 unique_rows, duplicate_rows = self._count_run_unique_news(processed)
                 if pending_memory_rows:
                     await self.state.upsert_rows(pending_memory_rows)
-                await self._enqueue_background_batch(
-                    BackgroundNewsBatch(
-                        poll_id=poll_id,
-                        coverage_mode=coverage_mode,
-                        start_utc=start_utc,
-                        end_utc=end_utc,
-                        saturated=fetch_result.saturated,
-                        pages=fetch_result.pages,
-                        provider_rows=len(fetch_result.items),
-                        items=live_items,
+                if live_items:
+                    await self._enqueue_background_batch(
+                        BackgroundNewsBatch(
+                            poll_id=poll_id,
+                            coverage_mode=coverage_mode,
+                            start_utc=start_utc,
+                            end_utc=end_utc,
+                            saturated=fetch_result.saturated,
+                            pages=fetch_result.pages,
+                            provider_rows=len(fetch_result.items),
+                            items=live_items,
+                        )
                     )
-                )
+                elif failed == 0 and not fetch_result.saturated:
+                    await self._record_successful_coverage(
+                        start_utc,
+                        end_utc,
+                        coverage_mode=coverage_mode,
+                        provider_rows=0,
+                        processed_rows=0,
+                        written_rows=0,
+                        skipped_existing=0,
+                    )
+                    self._set_phase("polling", "No provider rows in the last poll; waiting for the next scheduled poll.")
                 self.metrics.provider_rows += len(fetch_result.items)
                 self.metrics.processed_rows += len(processed)
                 self.metrics.failed_rows += failed
@@ -750,15 +774,22 @@ class NewsGateway:
             return {"status": "failed", "exception": repr(exc), "wall_seconds": time.perf_counter() - started}
 
     def current_poll_seconds(self) -> float:
+        return self.current_poll_strategy().poll_seconds
+
+    def current_poll_strategy(self) -> PollStrategy:
         now_et = datetime.now(EASTERN)
         minutes = now_et.hour * 60 + now_et.minute
-        if 4 * 60 <= minutes < 9 * 60 + 30:
-            return self.config.premarket_poll_seconds
-        if 9 * 60 + 30 <= minutes < 16 * 60:
-            return self.config.market_poll_seconds
-        if 16 * 60 <= minutes < 20 * 60:
-            return self.config.afterhours_poll_seconds
-        return self.config.closed_poll_seconds
+        if 4 * 60 <= minutes < 20 * 60:
+            return PollStrategy("market", self.config.market_poll_seconds, self.config.market_lookback_minutes)
+        return PollStrategy("closed", self.config.closed_poll_seconds, self.config.closed_lookback_minutes)
+
+    def seconds_until_next_poll_boundary(self, poll_seconds: float) -> float:
+        interval = max(1.0, float(poll_seconds))
+        now = datetime.now(EASTERN)
+        seconds_since_hour = (now.minute * 60) + now.second + (now.microsecond / 1_000_000)
+        remainder = seconds_since_hour % interval
+        delay = interval - remainder if remainder else interval
+        return max(0.25, delay)
 
     def snapshot_metrics(self) -> dict[str, Any]:
         return asdict(self.metrics)
@@ -899,6 +930,8 @@ class NewsGateway:
         finally:
             self.metrics.background_active_batches = max(0, self.metrics.background_active_batches - 1)
             self.metrics.background_pending_articles = max(0, self.metrics.background_pending_articles - len(batch.items))
+            if not self._stop_event.is_set() and self.metrics.background_active_batches == 0 and self._background_queue.qsize() == 0:
+                self._set_phase("polling", "Background processing is idle; waiting for the next scheduled poll.")
 
     def _enrich_live_item(self, live_item: LiveNewsPayload) -> list[dict[str, Any]]:
         if not self.config.live_enrichment_enabled:
@@ -1427,7 +1460,12 @@ class NewsGateway:
             failed_rows=self._live_coverage_failed_rows,
             skipped_existing=self._live_coverage_skipped_existing,
             last_error=self.metrics.last_error,
-            metadata={"mode": "live", "lookback_minutes": self.config.lookback_minutes},
+            metadata={
+                "mode": "live",
+                "session": self.metrics.current_market_session,
+                "poll_seconds": self.metrics.current_poll_seconds,
+                "lookback_minutes": self.metrics.current_lookback_minutes,
+            },
         )
         insert_coverage_snapshot(self._coverage_client(), self._coverage_config(), snapshot)
         self._log_event(
