@@ -13,7 +13,8 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 pub async fn run_massive_ingest(
     config: GatewayConfig,
     state: SharedMarketState,
-    writer_sender: mpsc::Sender<MarketEvent>,
+    writer_sender: Option<mpsc::Sender<MarketEvent>>,
+    compact_writer_sender: Option<mpsc::Sender<MarketEvent>>,
     bar_router: BarEventRouter,
     indicator_router: IndicatorEventRouter,
     event_sender: broadcast::Sender<MarketEvent>,
@@ -69,9 +70,17 @@ pub async fn run_massive_ingest(
                                             metrics.inc_indicator_event_dropped();
                                             eprintln!("Indicator shard queue is full; dropped one indicator event.");
                                         }
-                                        if writer_sender.try_send(event).is_err() {
-                                            metrics.inc_clickhouse_event_dropped();
-                                            eprintln!("ClickHouse writer queue is full; dropped one persistence event.");
+                                        if let Some(sender) = &compact_writer_sender {
+                                            if sender.try_send(event.clone()).is_err() {
+                                                metrics.inc_compact_event_queue_dropped();
+                                                eprintln!("Compact event writer queue is full; dropped one compact event.");
+                                            }
+                                        }
+                                        if let Some(sender) = &writer_sender {
+                                            if sender.try_send(event).is_err() {
+                                                metrics.inc_clickhouse_event_dropped();
+                                                eprintln!("Raw ClickHouse writer queue is full; dropped one raw persistence event.");
+                                            }
                                         }
                                     }
                                 }

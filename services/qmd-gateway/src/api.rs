@@ -1,4 +1,5 @@
 use crate::bars::{BarSnapshot, SharedBarStore};
+use crate::compact_event::LiveCompactEvent;
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
 use crate::indicator_catalog::{indicator_catalog, IndicatorCatalogEntry};
@@ -22,6 +23,7 @@ use tower_http::cors::CorsLayer;
 #[derive(Clone)]
 pub struct AppState {
     pub bars: SharedBarStore,
+    pub compact_events: broadcast::Sender<LiveCompactEvent>,
     pub config: GatewayConfig,
     pub events: broadcast::Sender<MarketEvent>,
     pub indicators: SharedIndicatorStore,
@@ -64,6 +66,7 @@ pub fn app(state: AppState) -> Router {
         .route("/snapshot/ticker/{ticker}", get(ticker_snapshot))
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
         .route("/snapshot/indicators/{ticker}", get(indicator_snapshot))
+        .route("/stream/compact-events", get(compact_event_stream))
         .route("/stream/events", get(event_stream))
         .route("/stream/scanner", get(scanner_stream))
         .route("/stream/scanner-primitives", get(scanner_primitive_stream))
@@ -225,6 +228,36 @@ async fn event_stream(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) 
     ws.on_upgrade(move |socket| async move {
         stream_events(socket, state).await;
     })
+}
+
+async fn compact_event_stream(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        stream_compact_events(socket, state).await;
+    })
+}
+
+async fn stream_compact_events(mut socket: WebSocket, state: Arc<AppState>) {
+    let mut receiver = state.compact_events.subscribe();
+    loop {
+        match receiver.recv().await {
+            Ok(event) => match serde_json::to_string(&event) {
+                Ok(text) if socket.send(Message::Text(text.into())).await.is_err() => break,
+                Ok(_) => {}
+                Err(error) => {
+                    if socket.send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into())).await.is_err() {
+                        break;
+                    }
+                }
+            },
+            Err(broadcast::error::RecvError::Lagged(count)) => {
+                let warning = format!(r#"{{"warning":"compact_event_stream_lagged","skipped":{count}}}"#);
+                if socket.send(Message::Text(warning.into())).await.is_err() {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
 }
 
 async fn stream_events(mut socket: WebSocket, state: Arc<AppState>) {

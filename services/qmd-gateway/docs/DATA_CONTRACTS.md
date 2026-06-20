@@ -6,6 +6,7 @@ This file documents the values produced by `qmd-gateway`. A **formula** is the e
 
 | Contract | Version Field | Current Version | Rule |
 |---|---|---:|---|
+| Live compact unified events | `schema_version` | `1` | Increment when the live unified event table semantics change. |
 | Raw Massive trades | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Raw Massive quotes | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Bars | `schema_version` | `1` | Increment when bar fields or formulas change. |
@@ -13,6 +14,69 @@ This file documents the values produced by `qmd-gateway`. A **formula** is the e
 | Scanner primitives | `schema_version` | `1` | Increment when primitive output contract changes. |
 
 Once production data is written under a version, do not change that version's field meaning. Add a new version or field.
+
+## Live Compact Unified Event Row
+
+Table: `live_market_events_v1`
+
+This is the live ML-serving event surface. It mirrors the historical
+`market_sip_compact.events` row shape closely enough that downstream encoders
+can build the same `header_uint8 + events_uint8` chunks from either historical
+or live rows. The gateway emits the same rows on `/stream/compact-events`.
+
+Raw quote/trade tables are optional debug/replay support. They are not the
+primary model-serving contract.
+
+| Field | Meaning |
+|---|---|
+| `event_date` | UTC date from SIP timestamp, used for partitioning. |
+| `schema_version` | Live compact event contract version. |
+| `ingest_ts` | Gateway receive/parse timestamp. |
+| `ticker` | Uppercase ticker. |
+| `ordinal` | Clean ticker-local event ordinal assigned after quote/trade merge into the live compact stream. |
+| `event_type` | `0 = quote`, `1 = trade`. |
+| `sip_timestamp_us` | SIP timestamp in UTC microseconds. Massive websocket timestamps are millisecond precision, so live rows currently land on millisecond boundaries. |
+| `price_primary_int` | Quote: ask price integer. Trade: trade price integer. |
+| `price_secondary_int` | Quote: bid price integer. Trade: `0`. |
+| `size_primary` | Quote: ask size. Trade: trade size. |
+| `size_secondary` | Quote: bid size. Trade: `0`. |
+| `exchange_primary` | Quote: ask exchange. Trade: trade exchange. |
+| `exchange_secondary` | Quote: bid exchange. Trade: `0`. |
+| `event_flags` | bit0 primary price scale, bit1 secondary price scale, bits2-4 tape code. |
+| `conditions_packed` | Quote: four 8-bit dense quote condition ids. Trade: five 6-bit dense trade condition ids. |
+| `source_sequence` | Massive sequence number from the original quote/trade event. |
+| `issue_flags` | Reserved for future issue classification. Current compact writer drops structurally invalid events before emit/insert, so persisted rows use `0`. |
+
+Price integer scale:
+
+```text
+scale=0: price_int = round(price * 100)
+scale=1: price_int = round(price * 10000)
+```
+
+The writer uses `scale=1` when the price is below `$1` or when the value is not
+cent-exact; otherwise it uses `scale=0`. This preserves sub-cent prices without
+promoting all prices to 64-bit floats.
+
+Condition packing:
+
+```text
+quote conditions:
+bits 0-7    quote condition 1 dense_id
+bits 8-15   quote condition 2 dense_id
+bits 16-23  quote condition 3 dense_id
+bits 24-31  quote condition 4 dense_id
+
+trade conditions:
+bits 0-5    trade condition 1 dense_id
+bits 6-11   trade condition 2 dense_id
+bits 12-17  trade condition 3 dense_id
+bits 18-23  trade condition 4 dense_id
+bits 24-29  trade condition 5 dense_id
+```
+
+Dense IDs are loaded from `conditions_indicators_glossary.json` under
+`QMD_REFERENCE_DIR`. Missing or unknown codes encode as `0`.
 
 ## Raw Massive Trade Row
 

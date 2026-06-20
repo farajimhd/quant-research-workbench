@@ -1,6 +1,7 @@
 mod api;
 mod bars;
 mod clickhouse;
+mod compact_event;
 mod config;
 mod event;
 mod gapfill;
@@ -17,6 +18,7 @@ mod state;
 use crate::api::{app, AppState};
 use crate::bars::{spawn_bar_engines, BarClickHouseWriter, BarRow, SharedBarStore};
 use crate::clickhouse::ClickHouseWriter;
+use crate::compact_event::{CompactEventClickHouseWriter, CompactEventReferences, LiveCompactEvent};
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
 use crate::gapfill::run_gap_fill_service;
@@ -50,17 +52,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     let scanner = SharedScannerStore::new(config.scanner_primitive_history_limit);
     let (writer_sender, writer_receiver) = mpsc::channel::<MarketEvent>(config.event_channel_capacity);
+    let (compact_writer_sender, compact_writer_receiver) =
+        mpsc::channel::<MarketEvent>(config.compact_event_channel_capacity);
     let (bar_writer_sender, bar_writer_receiver) = mpsc::channel::<BarRow>(config.bar_channel_capacity);
     let (indicator_writer_sender, indicator_writer_receiver) =
         mpsc::channel::<IndicatorRow>(config.indicator_channel_capacity);
     let (event_sender, _event_receiver) = broadcast::channel::<MarketEvent>(10_000);
+    let (compact_event_sender, _compact_event_receiver) = broadcast::channel::<LiveCompactEvent>(10_000);
     let (scanner_sender, _scanner_receiver) = broadcast::channel::<ScannerPrimitive>(10_000);
 
-    let writer = ClickHouseWriter::new(config.clone());
-    writer
-        .initialize()
-        .await
-        .map_err(|error| startup_error(format!("qmd-gateway raw event ClickHouse preflight failed: {error}")))?;
+    if config.persist_raw_events {
+        let writer = ClickHouseWriter::new(config.clone());
+        writer
+            .initialize()
+            .await
+            .map_err(|error| startup_error(format!("qmd-gateway raw event ClickHouse preflight failed: {error}")))?;
+        tokio::spawn(writer.run(writer_receiver));
+    } else {
+        drop(writer_receiver);
+        eprintln!("Raw quote/trade ClickHouse persistence is disabled. Set QMD_PERSIST_RAW_EVENTS=true to enable it.");
+    }
+    if config.compact_events_enabled {
+        let references = CompactEventReferences::load(&config.reference_dir)
+            .map_err(|error| startup_error(format!("qmd-gateway compact reference load failed: {error}")))?;
+        let compact_writer = CompactEventClickHouseWriter::new(
+            config.clone(),
+            references,
+            compact_event_sender.clone(),
+            metrics.clone(),
+        );
+        compact_writer
+            .initialize()
+            .await
+            .map_err(|error| startup_error(format!("qmd-gateway compact event ClickHouse preflight failed: {error}")))?;
+        tokio::spawn(compact_writer.run(compact_writer_receiver));
+    } else {
+        drop(compact_writer_receiver);
+        eprintln!("Compact event stream is disabled. Set QMD_COMPACT_EVENTS_ENABLED=true to enable it.");
+    }
     let bar_writer = BarClickHouseWriter::new(config.clone());
     bar_writer
         .initialize()
@@ -74,7 +103,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .map_err(|error| startup_error(format!("qmd-gateway indicator ClickHouse preflight failed: {error}")))?;
     }
 
-    tokio::spawn(writer.run(writer_receiver));
     tokio::spawn(bar_writer.run(bar_writer_receiver));
     tokio::spawn(indicator_writer.run(indicator_writer_receiver));
     let indicator_router = spawn_indicator_engines(
@@ -101,13 +129,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::spawn(run_massive_ingest(
         config.clone(),
         market.clone(),
-        writer_sender,
+        if config.persist_raw_events { Some(writer_sender) } else { None },
+        if config.compact_events_enabled {
+            Some(compact_writer_sender)
+        } else {
+            None
+        },
         bar_router.clone(),
         indicator_router.clone(),
         event_sender.clone(),
         metrics.clone(),
     ));
-    tokio::spawn(run_gap_fill_service(config.clone(), metrics.clone()));
+    if config.gap_fill_enabled && config.persist_raw_events {
+        tokio::spawn(run_gap_fill_service(config.clone(), metrics.clone()));
+    } else if config.gap_fill_enabled {
+        eprintln!(
+            "Gap fill is disabled because raw quote/trade persistence is disabled. Set QMD_PERSIST_RAW_EVENTS=true or add compact-event gap fill before enabling it."
+        );
+    }
     tokio::spawn(run_replay_service(
         config.clone(),
         metrics.clone(),
@@ -118,6 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let app = app(AppState {
         bars,
+        compact_events: compact_event_sender,
         config,
         events: event_sender,
         indicators,
@@ -148,6 +188,9 @@ fn preflight_config(config: &GatewayConfig) -> Result<(), String> {
     }
     if config.clickhouse_user.trim().is_empty() {
         return Err("QMD_CLICKHOUSE_USER is required before qmd-gateway starts".to_string());
+    }
+    if config.compact_events_enabled && config.reference_dir.trim().is_empty() {
+        return Err("QMD_REFERENCE_DIR is required when compact events are enabled".to_string());
     }
     Ok(())
 }

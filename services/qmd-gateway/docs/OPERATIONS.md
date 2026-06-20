@@ -11,11 +11,12 @@ Main tasks:
 | Task | Purpose | Failure Effect |
 |---|---|---|
 | Massive websocket ingest | Reads `T.*` trades and `Q.*` quotes. | Live market state stops updating if disconnected. |
-| Raw ClickHouse writer | Batches raw trades/quotes. | Replay durability is delayed or missing. |
+| Compact event writer | Batches unified compact events and emits `/stream/compact-events`. | Live ML event durability/streaming is delayed or missing. |
+| Raw ClickHouse writer | Optionally batches raw trades/quotes. | Raw replay/debug durability is delayed or missing. |
 | Bar workers | Build bars by ticker shard. | Bars, bar indicators, and scanner primitives lag or drop. |
 | Indicator workers | Build tick and bar indicators by ticker shard. | Indicator snapshots lag or drop. |
 | Scanner primitive worker | Emits Massive-only primitive candidates. | Primitive stream becomes stale. |
-| Gap-fill worker | Repairs raw quote/trade gaps with Massive REST. | Missing raw rows remain until next repair. |
+| Gap-fill worker | Repairs raw quote/trade gaps with Massive REST when raw persistence is enabled. | Missing raw rows remain until next repair. |
 | Replay worker | Optional one-shot replay from ClickHouse raw rows. | Only active when replay env vars enable it. |
 | Local API server | Exposes health, metrics, snapshots, and streams. | App cannot consume gateway data. |
 
@@ -60,6 +61,7 @@ Stop it with `Ctrl+C`. The API server has graceful shutdown on `Ctrl+C`.
 
 | Endpoint | Sends |
 |---|---|
+| `/stream/compact-events` | Unified compact event rows for live ML consumers. |
 | `/stream/events` | Raw normalized Massive events. |
 | `/stream/scanner` | Periodic scanner market-state snapshots. |
 | `/stream/scanner-primitives` | Primitive candidate events as they are emitted. |
@@ -76,7 +78,10 @@ Stop it with `Ctrl+C`. The API server has graceful shutdown on `Ctrl+C`.
 | `massive_connect_failures` | Failed websocket connection attempts. | Check API key, network, and Massive service status. |
 | `massive_disconnects` | Websocket disconnect count. | Watch for recurring disconnects or local network instability. |
 | `parse_failures` | Massive payloads that could not be parsed. | Inspect recent raw payload shape; provider schema may differ. |
-| `clickhouse_events_dropped` | Raw events not queued for persistence. | Increase queue size or improve ClickHouse write throughput. |
+| `compact_event_queue_dropped` | Events not queued for compact conversion/persistence. | Increase compact queue size or improve compact writer throughput. |
+| `compact_event_rejected` | Structurally invalid events dropped before compact emit/insert. | Inspect provider data quality; raw persistence can be enabled for debugging. |
+| `compact_events_persisted` | Compact rows inserted into ClickHouse. | Should rise during active feed when `QMD_PERSIST_COMPACT_EVENTS=true`. |
+| `clickhouse_events_dropped` | Raw events not queued for optional raw persistence. | Relevant only when `QMD_PERSIST_RAW_EVENTS=true`. |
 | `bar_events_dropped` | Events not queued to bar workers. | Increase bar shards/capacity or profile bar aggregation. |
 | `indicator_events_dropped` | Events not queued to tick indicators. | Increase indicator shards/capacity or reduce indicator work. |
 | `bar_rows_writer_dropped` | Closed bars not queued for persistence. | Increase bar writer queue or ClickHouse throughput. |
@@ -106,6 +111,7 @@ Gap fill uses Massive REST:
 ```
 
 It writes repaired rows to `live_massive_trades` and `live_massive_quotes`, then records audit rows in `qmd_gap_fill_runs`.
+Because it is still raw-table based, the worker is skipped unless `QMD_PERSIST_RAW_EVENTS=true`.
 
 | Mode | When It Runs | Purpose |
 |---|---|---|
@@ -135,8 +141,9 @@ Use replay in a separate run from live trading unless you are deliberately testi
 
 | Table | Required | Purpose |
 |---|---:|---|
-| `live_massive_trades` | yes | Durable raw trade source for replay, audit, and later historical processing. |
-| `live_massive_quotes` | yes | Durable raw quote source for replay, audit, and later historical processing. |
+| `live_market_events_v1` | yes | Durable live compact event source for ML-serving and live replay. |
+| `live_massive_trades` | optional | Raw trade source for replay/debug/gap fill when `QMD_PERSIST_RAW_EVENTS=true`. |
+| `live_massive_quotes` | optional | Raw quote source for replay/debug/gap fill when `QMD_PERSIST_RAW_EVENTS=true`. |
 | `live_market_bars` | yes | Published bars built from quotes/trades. |
 | `live_market_indicators` | optional | Published indicators when `QMD_PERSIST_INDICATORS=true`. |
 | `qmd_gap_fill_runs` | yes if gap fill enabled | Audit trail for gap-fill attempts. |
@@ -151,7 +158,7 @@ Before live use:
 4. `/health` returns `status: running`.
 5. `/metrics` shows rising `ingest_trades` and `ingest_quotes` during active market data.
 6. Drop counters stay at zero or remain explainable during bursts.
-7. `live_massive_trades` and `live_massive_quotes` receive rows.
+7. `live_market_events_v1` receives rows or `/stream/compact-events` emits rows.
 8. `live_market_bars` receives closed bars.
 
 ## Failure Triage
@@ -160,11 +167,13 @@ Before live use:
 |---|---|
 | `/health` says `api_only_missing_massive_key` | Check env loading and `MASSIVE_API_KEY`. |
 | No quote/trade counts during market hours | Check Massive websocket auth, subscription channels, and network. |
-| Raw rows not written | Check ClickHouse URL, user/password, database permissions, and `clickhouse_events_dropped`. |
+| Compact rows not written | Check ClickHouse URL, user/password, database permissions, `compact_event_queue_dropped`, and `compact_event_rejected`. |
+| Raw rows not written | Raw persistence is optional; check `QMD_PERSIST_RAW_EVENTS=true`, ClickHouse permissions, and `clickhouse_events_dropped`. |
 | Bars are missing but raw rows arrive | Check `bar_events_dropped`, bar shard count, and configured timeframes. |
 | Indicators are missing but bars arrive | Check `indicator_events_dropped`, `bar_rows_indicator_dropped`, and indicator history limits. |
 | Scanner primitives are missing | Confirm bars close, then check whether current market activity meets primitive thresholds. |
 | API is slow | Lower broadcast frequency, inspect websocket clients, and watch drop counters. |
+| Gap fill does not run | It is skipped unless `QMD_PERSIST_RAW_EVENTS=true`; compact-only gap fill is not implemented yet. |
 | Gap fill keeps writing many rows | Live ingest may be dropping raw persistence, or the gateway was offline for longer than expected. |
 
 ## Security Notes

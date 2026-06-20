@@ -11,6 +11,7 @@ All settings are read from environment variables at process start. Changing a va
 | `QMD_CLICKHOUSE_DATABASE` | `q_live` | App-owned database for gateway writes. | Keep separate from read-only external databases. |
 | `QMD_CLICKHOUSE_USER` | `default` | ClickHouse user. | Use a user with write access only to the app-owned database. |
 | `QMD_CLICKHOUSE_PASSWORD` | empty | ClickHouse password. | Never commit this value. |
+| `QMD_CLICKHOUSE_STORAGE_POLICY` | `CLICKHOUSE_LIVE_STORAGE_POLICY` or empty | Optional storage policy for gateway-created compact tables. | Use the live SSD policy when available. |
 
 ## API And Massive Connection
 
@@ -28,7 +29,13 @@ All settings are read from environment variables at process start. Changing a va
 
 | Env Var | Default | Meaning | Tuning Note |
 |---|---:|---|---|
-| `QMD_EVENT_CHANNEL_CAPACITY` | `250000` | Queue size for raw ClickHouse persistence. | If drops occur, raise this or improve writer throughput. |
+| `QMD_EVENT_CHANNEL_CAPACITY` | `250000` | Queue size for optional raw ClickHouse persistence. | Relevant only when `QMD_PERSIST_RAW_EVENTS=true`. |
+| `QMD_COMPACT_EVENTS_ENABLED` | `true` | Enable compact unified event conversion and websocket streaming. | Keep enabled for live ML consumers. |
+| `QMD_COMPACT_EVENT_CHANNEL_CAPACITY` | `250000` | Queue size for compact event conversion/persistence. | If `compact_event_queue_dropped` rises, increase this or improve writer throughput. |
+| `QMD_COMPACT_EVENT_TABLE` | `live_market_events_v1` | ClickHouse table for compact live events. | Version the table name when the durable live event contract changes. |
+| `QMD_PERSIST_COMPACT_EVENTS` | `true` | Persist compact live events to ClickHouse. | Disable only for stream-only tests. |
+| `QMD_PERSIST_RAW_EVENTS` | `false` | Persist raw quote/trade rows. | Enable only for debug/replay/gap-fill workflows. |
+| `QMD_REFERENCE_DIR` | repo `research/market_references/massive` | Massive reference files used for condition packing. | Must contain `conditions_indicators_glossary.json`. |
 | `QMD_BAR_CHANNEL_CAPACITY` | `250000` | Queue size for bar aggregation shards. | If drops occur, raise this or increase bar shards. |
 | `QMD_INDICATOR_CHANNEL_CAPACITY` | `250000` | Queue size for tick-indicator event shards. | If drops occur, raise this or increase indicator shards. |
 | `QMD_INDICATOR_BAR_CHANNEL_CAPACITY` | `250000` | Queue size for closed bars sent to indicator engine. | Relevant when many timeframes close at once. |
@@ -72,6 +79,10 @@ The gateway uses non-blocking queue sends. A full queue means the downstream ite
 | `QMD_GAP_FILL_MIN_GAP_SECONDS` | `60` | Ignore gaps shorter than this. | Prevents excessive REST calls for tiny gaps. |
 | `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL` | `5` | Max Massive REST pages per symbol per cycle. | Rate-limit control. |
 | `QMD_GAP_FILL_SYMBOLS` | empty | Optional comma-separated symbol list. | If empty, symbols are discovered from existing `q_live` raw rows for the date. |
+
+Gap fill currently repairs raw quote/trade tables. It is skipped unless
+`QMD_PERSIST_RAW_EVENTS=true`; add a compact-event gap-fill path before using
+gap fill in compact-only production mode.
 
 Current limitation: session catch-up writes recovered rows to ClickHouse but does not yet feed recovered REST rows through the in-memory bar/indicator/scanner pipeline. That is the next gap-fill improvement if scanner warm-up must be immediate for all tickers.
 

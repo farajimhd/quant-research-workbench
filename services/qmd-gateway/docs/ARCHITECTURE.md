@@ -15,7 +15,8 @@ Massive websocket
       -> in-memory bars
       -> in-memory indicators
       -> Massive-only scanner primitives
-      -> ClickHouse q_live raw/bars/optional indicators
+      -> compact live event stream/table
+      -> ClickHouse q_live compact events/bars/optional raw/optional indicators
       -> local REST/websocket API
   -> app backend
       -> reference joins
@@ -33,13 +34,14 @@ The gateway outputs market-data primitives. The app backend combines those primi
 |---|---|---|---|---|
 | `config.rs` | Env configuration | `QMD_*`, `MASSIVE_API_KEY` | `GatewayConfig` | Validate trading strategy |
 | `event.rs` | Massive payload parsing | Massive websocket JSON | `MarketEvent::Trade`, `MarketEvent::Quote` | Business logic |
-| `massive.rs` | Websocket connection and fan-out | Massive websocket | Queues for state, bars, indicators, raw writer | Blocking writes |
+| `massive.rs` | Websocket connection and fan-out | Massive websocket | Queues for state, bars, indicators, compact writer, optional raw writer | Blocking writes |
 | `state.rs` | Simple latest market snapshot | Market events | `/snapshot/scanner`, `/snapshot/ticker` | Final scanner scoring |
 | `bars.rs` | Live bar aggregation | Market events | `BarRow`, `live_market_bars` | Historical chart storage |
 | `indicators.rs` | Streaming tick and bar indicators | Market events, closed bars | Tick snapshots, `IndicatorRow` | Wide research feature generation |
 | `scanner.rs` | Massive-only scanner primitives | Closed bars | Primitive snapshot/stream | Broker/reference-aware signals |
-| `clickhouse.rs` | Raw Massive persistence | Market events | `live_massive_trades`, `live_massive_quotes` | Query service for UI |
-| `gapfill.rs` | Massive REST gap fill | ClickHouse latest timestamps, Massive REST | Repaired raw rows, gap-fill audit rows | App reference repair |
+| `compact_event.rs` | Live compact event contract | Market events | `/stream/compact-events`, `live_market_events_v1` | Encoder chunk construction |
+| `clickhouse.rs` | Optional raw Massive persistence | Market events | `live_massive_trades`, `live_massive_quotes` | Primary ML surface |
+| `gapfill.rs` | Massive REST gap fill | ClickHouse latest timestamps, Massive REST | Repaired raw rows, gap-fill audit rows | Compact-event gap fill |
 | `replay.rs` | Raw-data replay | ClickHouse raw rows | Same in-memory pipeline as live | Re-persist raw events |
 | `metrics.rs` | Operational counters | Hot-path observations | `/metrics` payload | External monitoring service |
 | `api.rs` | Local API and websocket streams | Shared stores | REST/websocket responses | UI-specific formatting |
@@ -53,7 +55,8 @@ Massive websocket text
   -> event broadcast stream
   -> bar queue
   -> indicator tick queue
-  -> raw ClickHouse queue
+  -> compact event queue
+  -> optional raw ClickHouse queue
 ```
 
 Every hot-path send uses `try_send`. If a downstream queue is full, the gateway drops that downstream item, increments a counter, and keeps reading Massive data.
@@ -98,11 +101,16 @@ Default durable writes:
 
 | Table | Written By | Default | Purpose |
 |---|---|---:|---|
-| `live_massive_trades` | `clickhouse.rs`, `gapfill.rs` | yes | Raw trade replay source |
-| `live_massive_quotes` | `clickhouse.rs`, `gapfill.rs` | yes | Raw quote replay source |
+| `live_market_events_v1` | `compact_event.rs` | yes | Live ML-serving event stream/table |
+| `live_massive_trades` | `clickhouse.rs`, `gapfill.rs` | no | Optional raw trade replay/debug source |
+| `live_massive_quotes` | `clickhouse.rs`, `gapfill.rs` | no | Optional raw quote replay/debug source |
 | `live_market_bars` | `bars.rs` | yes | Published bar history |
 | `live_market_indicators` | `indicators.rs` | no | Optional promoted indicator rows |
 | `qmd_gap_fill_runs` | `gapfill.rs` | yes | Gap-fill audit log |
+
+Gap fill currently writes repaired raw quote/trade rows, so it only runs when
+`QMD_PERSIST_RAW_EVENTS=true`. Add a compact-event gap-fill path before using
+gap fill in compact-only production mode.
 
 Set `QMD_PERSIST_INDICATORS=true` only after choosing the indicator set that should become durable.
 

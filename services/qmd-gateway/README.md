@@ -17,7 +17,9 @@ Current responsibilities:
 - build sharded streaming tick and bar-level indicators
 - build Massive-only scanner primitive candidates from live bars
 - publish compact local snapshots/streams to the quant app
-- batch-write raw events to the app-owned ClickHouse database
+- stream compact unified market events for live ML consumers
+- batch-write compact unified market events to the app-owned ClickHouse database
+- optionally batch-write raw quote/trade events to the app-owned ClickHouse database
 - batch-write closed bars to the app-owned ClickHouse database
 - optionally batch-write closed indicator rows to the app-owned ClickHouse database
 - expose a documented indicator catalog for live/offline compute policy
@@ -46,9 +48,16 @@ Environment variables:
 - `QMD_CLICKHOUSE_DATABASE`, default `q_live`
 - `QMD_CLICKHOUSE_USER`, default `default`
 - `QMD_CLICKHOUSE_PASSWORD`
+- `QMD_CLICKHOUSE_STORAGE_POLICY`, optional; falls back to `CLICKHOUSE_LIVE_STORAGE_POLICY`
 - `QMD_CLICKHOUSE_MAX_BATCH`, default `10000`
 - `QMD_CLICKHOUSE_FLUSH_INTERVAL_MS`, default `1000`
 - `QMD_EVENT_CHANNEL_CAPACITY`, default `250000`
+- `QMD_COMPACT_EVENTS_ENABLED`, default `true`
+- `QMD_PERSIST_COMPACT_EVENTS`, default `true`
+- `QMD_COMPACT_EVENT_TABLE`, default `live_market_events_v1`
+- `QMD_COMPACT_EVENT_CHANNEL_CAPACITY`, default `250000`
+- `QMD_REFERENCE_DIR`, default resolves to repo `research/market_references/massive`
+- `QMD_PERSIST_RAW_EVENTS`, default `false`
 - `QMD_BAR_CHANNEL_CAPACITY`, default `250000`
 - `QMD_BAR_HISTORY_LIMIT`, default `1000`
 - `QMD_BAR_SHARD_COUNT`, default `8`
@@ -78,11 +87,17 @@ Environment variables:
 
 The service writes to:
 
-- `live_massive_trades`
-- `live_massive_quotes`
+- `live_market_events_v1`
+- `live_massive_trades`, only when `QMD_PERSIST_RAW_EVENTS=true`
+- `live_massive_quotes`, only when `QMD_PERSIST_RAW_EVENTS=true`
 - `live_market_bars`
 - `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`
 - `qmd_gap_fill_runs`
+
+The live ML path should consume `/stream/compact-events` or
+`q_live.live_market_events_v1`. Raw quote/trade persistence is intentionally
+optional because the compact event row is the durable live equivalent of the
+historical `market_sip_compact.events` training table.
 
 ## Live Bars
 
@@ -261,8 +276,10 @@ It treats 04:00-20:00 New York time on weekdays as the active streaming window:
 - 09:30-15:59 ET: regular
 - 16:00-19:59 ET: aftermarket
 
-Gap fill has two modes. If the gateway starts during premarket, regular market,
-or aftermarket and `QMD_GAP_FILL_MODE` is `auto`, `session`, or
+Gap fill has two modes, but it currently runs only when
+`QMD_PERSIST_RAW_EVENTS=true` because the repair worker still writes raw
+quote/trade rows. If the gateway starts during premarket, regular market, or
+aftermarket and `QMD_GAP_FILL_MODE` is `auto`, `session`, or
 `session_catch_up`, it immediately runs a high-priority session catch-up pass.
 Outside streaming hours, `auto`, `after_hours`, and `repair` run lower-priority
 database repair cycles. Gap fill uses Massive REST historical trades and quotes:

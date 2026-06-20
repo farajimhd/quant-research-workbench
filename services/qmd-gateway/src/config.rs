@@ -12,8 +12,12 @@ pub struct GatewayConfig {
     pub bind: String,
     pub clickhouse_database: String,
     pub clickhouse_password_present: bool,
+    pub clickhouse_storage_policy: String,
     pub clickhouse_url: String,
     pub clickhouse_user: String,
+    pub compact_event_channel_capacity: usize,
+    pub compact_event_table: String,
+    pub compact_events_enabled: bool,
     pub event_channel_capacity: usize,
     pub flush_interval_ms: u64,
     pub gap_fill_enabled: bool,
@@ -28,6 +32,8 @@ pub struct GatewayConfig {
     pub indicator_history_by_timeframe: HashMap<String, usize>,
     pub indicator_history_limit: usize,
     pub persist_indicators: bool,
+    pub persist_compact_events: bool,
+    pub persist_raw_events: bool,
     pub indicator_shard_count: usize,
     pub max_clickhouse_batch: usize,
     #[serde(skip_serializing)]
@@ -37,6 +43,7 @@ pub struct GatewayConfig {
     pub replay_date: String,
     pub replay_max_rows: usize,
     pub replay_symbols: Vec<String>,
+    pub reference_dir: String,
     pub scanner_primitive_channel_capacity: usize,
     pub scanner_primitive_history_limit: usize,
     pub scanner_broadcast_ms: u64,
@@ -60,8 +67,15 @@ impl GatewayConfig {
             bind: env_string("QMD_GATEWAY_BIND", "127.0.0.1:8795"),
             clickhouse_database: env_string("QMD_CLICKHOUSE_DATABASE", "q_live"),
             clickhouse_password_present: !clickhouse_password.is_empty(),
+            clickhouse_storage_policy: env_string(
+                "QMD_CLICKHOUSE_STORAGE_POLICY",
+                &env_string("CLICKHOUSE_LIVE_STORAGE_POLICY", ""),
+            ),
             clickhouse_url: env_string("QMD_CLICKHOUSE_URL", "http://localhost:8123").trim_end_matches('/').to_string(),
             clickhouse_user: env_string("QMD_CLICKHOUSE_USER", "default"),
+            compact_event_channel_capacity: env_usize("QMD_COMPACT_EVENT_CHANNEL_CAPACITY", 250_000),
+            compact_event_table: env_string("QMD_COMPACT_EVENT_TABLE", "live_market_events_v1"),
+            compact_events_enabled: env_bool("QMD_COMPACT_EVENTS_ENABLED", true),
             event_channel_capacity: env_usize("QMD_EVENT_CHANNEL_CAPACITY", 250_000),
             flush_interval_ms: env_u64("QMD_CLICKHOUSE_FLUSH_INTERVAL_MS", 1_000),
             gap_fill_enabled: env_bool("QMD_GAP_FILL_ENABLED", true),
@@ -86,6 +100,8 @@ impl GatewayConfig {
             ),
             indicator_history_limit: env_usize("QMD_INDICATOR_HISTORY_LIMIT", 1_000),
             persist_indicators: env_bool("QMD_PERSIST_INDICATORS", false),
+            persist_compact_events: env_bool("QMD_PERSIST_COMPACT_EVENTS", true),
+            persist_raw_events: env_bool("QMD_PERSIST_RAW_EVENTS", false),
             indicator_shard_count: env_usize("QMD_INDICATOR_SHARD_COUNT", 8),
             max_clickhouse_batch: env_usize("QMD_CLICKHOUSE_MAX_BATCH", 10_000),
             massive_api_key,
@@ -94,6 +110,7 @@ impl GatewayConfig {
             replay_date: env_string("QMD_REPLAY_DATE", ""),
             replay_max_rows: env_usize("QMD_REPLAY_MAX_ROWS", 1_000_000),
             replay_symbols: env_list("QMD_REPLAY_SYMBOLS"),
+            reference_dir: env_string("QMD_REFERENCE_DIR", &default_reference_dir()),
             scanner_primitive_channel_capacity: env_usize("QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY", 250_000),
             scanner_primitive_history_limit: env_usize("QMD_SCANNER_PRIMITIVE_HISTORY_LIMIT", 10_000),
             scanner_broadcast_ms: env_u64("QMD_SCANNER_BROADCAST_MS", 1_000),
@@ -181,6 +198,17 @@ fn env_list_with_default(name: &str, default: &[&str]) -> Vec<String> {
     } else {
         values.into_iter().map(|value| value.to_ascii_lowercase()).collect()
     }
+}
+
+fn default_reference_dir() -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("research")
+        .join("market_references")
+        .join("massive")
+        .to_string_lossy()
+        .to_string()
 }
 
 fn env_timeframe_limit_map(name: &str, default: &[(&str, usize)]) -> HashMap<String, usize> {

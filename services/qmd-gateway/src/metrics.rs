@@ -17,6 +17,11 @@ struct MetricsInner {
     bar_rows_indicator_dropped: AtomicU64,
     bar_rows_writer_dropped: AtomicU64,
     clickhouse_events_dropped: AtomicU64,
+    compact_event_broadcast_dropped: AtomicU64,
+    compact_event_queue_dropped: AtomicU64,
+    compact_event_rejected: AtomicU64,
+    compact_events_emitted: AtomicU64,
+    compact_events_persisted: AtomicU64,
     events_broadcast_dropped: AtomicU64,
     gap_fill_failures: AtomicU64,
     gap_fill_last_duration_ms: AtomicU64,
@@ -44,6 +49,11 @@ pub struct MetricsSnapshot {
     pub bar_rows_scanner_dropped: u64,
     pub bar_rows_writer_dropped: u64,
     pub clickhouse_events_dropped: u64,
+    pub compact_event_broadcast_dropped: u64,
+    pub compact_event_queue_dropped: u64,
+    pub compact_event_rejected: u64,
+    pub compact_events_emitted: u64,
+    pub compact_events_persisted: u64,
     pub events_broadcast_dropped: u64,
     pub gap_fill_failures: u64,
     pub gap_fill_last_duration_ms: u64,
@@ -86,6 +96,11 @@ impl SharedMetrics {
                 bar_rows_indicator_dropped: AtomicU64::new(0),
                 bar_rows_writer_dropped: AtomicU64::new(0),
                 clickhouse_events_dropped: AtomicU64::new(0),
+                compact_event_broadcast_dropped: AtomicU64::new(0),
+                compact_event_queue_dropped: AtomicU64::new(0),
+                compact_event_rejected: AtomicU64::new(0),
+                compact_events_emitted: AtomicU64::new(0),
+                compact_events_persisted: AtomicU64::new(0),
                 events_broadcast_dropped: AtomicU64::new(0),
                 gap_fill_failures: AtomicU64::new(0),
                 gap_fill_last_duration_ms: AtomicU64::new(0),
@@ -118,6 +133,11 @@ impl SharedMetrics {
             bar_rows_scanner_dropped: self.get(&self.inner.bar_rows_scanner_dropped),
             bar_rows_writer_dropped: self.get(&self.inner.bar_rows_writer_dropped),
             clickhouse_events_dropped: self.get(&self.inner.clickhouse_events_dropped),
+            compact_event_broadcast_dropped: self.get(&self.inner.compact_event_broadcast_dropped),
+            compact_event_queue_dropped: self.get(&self.inner.compact_event_queue_dropped),
+            compact_event_rejected: self.get(&self.inner.compact_event_rejected),
+            compact_events_emitted: self.get(&self.inner.compact_events_emitted),
+            compact_events_persisted: self.get(&self.inner.compact_events_persisted),
             events_broadcast_dropped: self.get(&self.inner.events_broadcast_dropped),
             gap_fill_failures: self.get(&self.inner.gap_fill_failures),
             gap_fill_last_duration_ms: self.get(&self.inner.gap_fill_last_duration_ms),
@@ -178,6 +198,26 @@ impl SharedMetrics {
 
     pub fn inc_clickhouse_event_dropped(&self) {
         self.inc(&self.inner.clickhouse_events_dropped, 1);
+    }
+
+    pub fn inc_compact_event_broadcast_dropped(&self) {
+        self.inc(&self.inner.compact_event_broadcast_dropped, 1);
+    }
+
+    pub fn inc_compact_event_queue_dropped(&self) {
+        self.inc(&self.inner.compact_event_queue_dropped, 1);
+    }
+
+    pub fn inc_compact_event_rejected(&self) {
+        self.inc(&self.inner.compact_event_rejected, 1);
+    }
+
+    pub fn inc_compact_events_emitted(&self, count: u64) {
+        self.inc(&self.inner.compact_events_emitted, count);
+    }
+
+    pub fn inc_compact_events_persisted(&self, count: u64) {
+        self.inc(&self.inner.compact_events_persisted, count);
     }
 
     pub fn inc_event_broadcast_dropped(&self) {
