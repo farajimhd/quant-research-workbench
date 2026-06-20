@@ -194,7 +194,7 @@ def preflight_panel(metrics: dict[str, Any]) -> Panel:
 def metrics_panel(gateway: "NewsGateway", metrics: dict[str, Any]) -> Panel:
     status = operational_status(metrics)
     color = status_color(status)
-    table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
+    table = Table(box=box.SIMPLE, expand=False, show_edge=False, padding=(0, 1))
     table.add_column("Metric", style="cyan", no_wrap=True, width=18)
     table.add_column("Total", justify="right", no_wrap=True, width=13)
     table.add_column("Last Cycle", justify="right", no_wrap=True, min_width=19, width=21)
