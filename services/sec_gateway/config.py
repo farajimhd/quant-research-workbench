@@ -24,6 +24,9 @@ class SecGatewayConfig:
     execute: bool
     poll_seconds: float
     closed_poll_seconds: float
+    market_status_url: str
+    market_status_enabled: bool
+    market_status_refresh_seconds: float
     current_feed_count: int
     startup_auto_fill_max_gap_days: int
     auto_run_historical_on_workstation: bool
@@ -46,8 +49,11 @@ class SecGatewayConfig:
             pipeline=pipeline,
             is_workstation=is_workstation_host(),
             execute=env_bool("SEC_GATEWAY_EXECUTE", True),
-            poll_seconds=env_float("SEC_GATEWAY_POLL_SECONDS", 30.0),
+            poll_seconds=env_float("SEC_GATEWAY_POLL_SECONDS", env_float("SEC_GATEWAY_MARKET_POLL_SECONDS", 30.0)),
             closed_poll_seconds=env_float("SEC_GATEWAY_CLOSED_POLL_SECONDS", 300.0),
+            market_status_url=env_string("SEC_MARKET_STATUS_URL", env_string("NEWS_MARKET_STATUS_URL", "https://api.massive.com/v1/marketstatus/now")),
+            market_status_enabled=env_bool("SEC_MARKET_STATUS_ENABLED", True),
+            market_status_refresh_seconds=env_float("SEC_MARKET_STATUS_REFRESH_SECONDS", 10.0),
             current_feed_count=env_int("SEC_GATEWAY_CURRENT_FEED_COUNT", 100),
             startup_auto_fill_max_gap_days=env_int("SEC_GATEWAY_STARTUP_AUTO_FILL_MAX_GAP_DAYS", 3),
             auto_run_historical_on_workstation=env_bool("SEC_GATEWAY_AUTO_RUN_HISTORICAL_ON_WORKSTATION", is_workstation_host()),

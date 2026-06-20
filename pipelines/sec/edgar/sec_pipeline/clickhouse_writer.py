@@ -12,6 +12,20 @@ FILING_TABLE = "sec_filing_v2"
 DOCUMENT_TABLE = "sec_filing_document_v2"
 TEXT_TABLE = "sec_filing_text_v2"
 SKIP_TABLE = "sec_filing_document_skip_v1"
+XBRL_CONCEPT_TABLE = "sec_xbrl_concept_v1"
+XBRL_COMPANY_FACT_TABLE = "sec_xbrl_company_fact_v1"
+XBRL_FRAME_TABLE = "sec_xbrl_frame_v1"
+XBRL_FRAME_OBSERVATION_TABLE = "sec_xbrl_frame_observation_v1"
+WRITE_TABLES = [
+    FILING_TABLE,
+    DOCUMENT_TABLE,
+    TEXT_TABLE,
+    SKIP_TABLE,
+    XBRL_CONCEPT_TABLE,
+    XBRL_COMPANY_FACT_TABLE,
+    XBRL_FRAME_TABLE,
+    XBRL_FRAME_OBSERVATION_TABLE,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +34,10 @@ class SecWriteResult:
     document_rows: int = 0
     text_rows: int = 0
     skip_rows: int = 0
+    xbrl_concept_rows: int = 0
+    xbrl_company_fact_rows: int = 0
+    xbrl_frame_rows: int = 0
+    xbrl_frame_observation_rows: int = 0
     skipped_existing: bool = False
 
 
@@ -29,10 +47,16 @@ class SecWriteAudit:
     document_rows: int
     text_rows: int
     skip_rows: int
+    xbrl_concept_rows: int
+    xbrl_company_fact_rows: int
+    xbrl_frame_rows: int
+    xbrl_frame_observation_rows: int
     duplicate_filing_keys: int
     documents_without_filing: int
     texts_without_document: int
     texts_without_filing: int
+    company_facts_without_filing: int
+    frame_observations_without_company_fact: int
 
     @property
     def ok(self) -> bool:
@@ -41,6 +65,8 @@ class SecWriteAudit:
             and self.documents_without_filing == 0
             and self.texts_without_document == 0
             and self.texts_without_filing == 0
+            and self.company_facts_without_filing == 0
+            and self.frame_observations_without_company_fact == 0
         )
 
 
@@ -50,7 +76,7 @@ class SecClickHouseWriter:
         self.database = database
 
     def validate_tables(self) -> None:
-        required = {FILING_TABLE, DOCUMENT_TABLE, TEXT_TABLE, SKIP_TABLE}
+        required = set(WRITE_TABLES)
         rows = self.client.execute(
             f"""
             SELECT name
@@ -71,6 +97,10 @@ class SecClickHouseWriter:
             document_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(DOCUMENT_TABLE)} FINAL"),
             text_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(TEXT_TABLE)} FINAL"),
             skip_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(SKIP_TABLE)} FINAL"),
+            xbrl_concept_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(XBRL_CONCEPT_TABLE)} FINAL"),
+            xbrl_company_fact_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(XBRL_COMPANY_FACT_TABLE)} FINAL"),
+            xbrl_frame_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(XBRL_FRAME_TABLE)} FINAL"),
+            xbrl_frame_observation_rows=scalar_int(self.client, f"SELECT count() FROM {qi(self.database)}.{qi(XBRL_FRAME_OBSERVATION_TABLE)} FINAL"),
             duplicate_filing_keys=scalar_int(
                 self.client,
                 f"""
@@ -112,6 +142,36 @@ class SecClickHouseWriter:
                 ON t.cik = f.cik AND t.accession_number = f.accession_number
                 """,
             ),
+            company_facts_without_filing=scalar_int(
+                self.client,
+                f"""
+                SELECT count()
+                FROM (SELECT cik, accession_number FROM {qi(self.database)}.{qi(XBRL_COMPANY_FACT_TABLE)} FINAL WHERE accession_number IS NOT NULL AND accession_number != '') AS x
+                LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(self.database)}.{qi(FILING_TABLE)} FINAL) AS f
+                ON x.cik = f.cik AND x.accession_number = f.accession_number
+                """,
+            ),
+            frame_observations_without_company_fact=scalar_int(
+                self.client,
+                f"""
+                SELECT count()
+                FROM (
+                    SELECT cik, accession_number, taxonomy, tag, unit_code, period_end_date
+                    FROM {qi(self.database)}.{qi(XBRL_FRAME_OBSERVATION_TABLE)} FINAL
+                ) AS o
+                LEFT ANTI JOIN (
+                    SELECT cik, accession_number, taxonomy, tag, unit_code, period_end_date
+                    FROM {qi(self.database)}.{qi(XBRL_COMPANY_FACT_TABLE)} FINAL
+                    WHERE accession_number IS NOT NULL
+                ) AS f
+                ON o.cik = f.cik
+                   AND o.accession_number = f.accession_number
+                   AND o.taxonomy = f.taxonomy
+                   AND o.tag = f.tag
+                   AND o.unit_code = f.unit_code
+                   AND o.period_end_date = f.period_end_date
+                """,
+            ),
         )
 
     def filing_exists(self, cik: str, accession_number: str) -> bool:
@@ -133,6 +193,10 @@ class SecClickHouseWriter:
         document_rows: list[dict[str, Any]],
         text_rows: list[dict[str, Any]],
         skip_rows: list[dict[str, Any]],
+        xbrl_concept_rows: list[dict[str, Any]] | None = None,
+        xbrl_company_fact_rows: list[dict[str, Any]] | None = None,
+        xbrl_frame_rows: list[dict[str, Any]] | None = None,
+        xbrl_frame_observation_rows: list[dict[str, Any]] | None = None,
         skip_existing: bool = True,
     ) -> SecWriteResult:
         if skip_existing and self.filing_exists(str(filing_row["cik"]), str(filing_row["accession_number"])):
@@ -141,11 +205,19 @@ class SecClickHouseWriter:
         self.insert_rows(DOCUMENT_TABLE, document_rows)
         self.insert_rows(TEXT_TABLE, text_rows)
         self.insert_rows(SKIP_TABLE, skip_rows)
+        self.insert_rows(XBRL_CONCEPT_TABLE, xbrl_concept_rows or [])
+        self.insert_rows(XBRL_COMPANY_FACT_TABLE, xbrl_company_fact_rows or [])
+        self.insert_rows(XBRL_FRAME_TABLE, xbrl_frame_rows or [])
+        self.insert_rows(XBRL_FRAME_OBSERVATION_TABLE, xbrl_frame_observation_rows or [])
         return SecWriteResult(
             filing_rows=1,
             document_rows=len(document_rows),
             text_rows=len(text_rows),
             skip_rows=len(skip_rows),
+            xbrl_concept_rows=len(xbrl_concept_rows or []),
+            xbrl_company_fact_rows=len(xbrl_company_fact_rows or []),
+            xbrl_frame_rows=len(xbrl_frame_rows or []),
+            xbrl_frame_observation_rows=len(xbrl_frame_observation_rows or []),
             skipped_existing=False,
         )
 
@@ -171,7 +243,7 @@ def ensure_sec_write_database(
     write_database: str,
 ) -> list[str]:
     client.execute(f"CREATE DATABASE IF NOT EXISTS {qi(write_database)}")
-    required = [FILING_TABLE, DOCUMENT_TABLE, TEXT_TABLE, SKIP_TABLE]
+    required = WRITE_TABLES
     created_or_present: list[str] = []
     for table in required:
         if not table_exists(client, read_database, table):

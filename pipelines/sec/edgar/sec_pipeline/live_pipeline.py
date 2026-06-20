@@ -13,6 +13,7 @@ from pipelines.sec.edgar.sec_filing_text_extract_parts import (
 )
 from pipelines.sec.edgar.sec_pipeline.feed import SecFeedItem, accession_text_url
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
+from pipelines.sec.edgar.sec_pipeline.xbrl_live import LiveXbrlRows, SecLiveXbrlExtractor
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +22,7 @@ class LiveFilingRows:
     document_rows: list[dict[str, Any]]
     text_rows: list[dict[str, Any]]
     skip_rows: list[dict[str, Any]]
+    xbrl_rows: LiveXbrlRows
     raw_path: Path
 
 
@@ -30,6 +32,7 @@ class SecLiveFilingPipeline:
         self.raw_root_win = raw_root_win
         self.min_text_chars = min_text_chars
         self.max_text_chars = max_text_chars
+        self.xbrl_extractor = SecLiveXbrlExtractor(http=http)
 
     def process_feed_item(self, item: SecFeedItem, *, source_run_id: str) -> LiveFilingRows:
         url = accession_text_url(item.cik, item.accession_number)
@@ -60,14 +63,32 @@ class SecLiveFilingPipeline:
         document_rows: list[dict[str, Any]] = []
         text_rows: list[dict[str, Any]] = []
         skip_rows: list[dict[str, Any]] = []
+        has_xbrl_payload = False
         for document in filing.get("documents") or []:
             doc_row, text_row, skip_row, _sample = build_rows(payload, raw_path, archive_date_text, raw_path.name, parent, document, inserted_at)
             document_rows.append(doc_row)
+            if doc_row.get("document_role") == "xbrl_sidecar" or doc_row.get("content_format") == "xbrl":
+                has_xbrl_payload = True
             if text_row:
                 text_rows.append(text_row)
             if skip_row:
                 skip_rows.append(skip_row)
-        return LiveFilingRows(filing_row=filing_row, document_rows=document_rows, text_rows=text_rows, skip_rows=skip_rows, raw_path=raw_path)
+        xbrl_rows = LiveXbrlRows()
+        if has_xbrl_payload:
+            xbrl_rows = self.xbrl_extractor.extract_for_accession(
+                cik=parent.cik,
+                accession_number=parent.accession_number,
+                source_run_id=source_run_id,
+                inserted_at=inserted_at,
+            )
+        return LiveFilingRows(
+            filing_row=filing_row,
+            document_rows=document_rows,
+            text_rows=text_rows,
+            skip_rows=skip_rows,
+            xbrl_rows=xbrl_rows,
+            raw_path=raw_path,
+        )
 
     def write_raw(self, item: SecFeedItem, raw: bytes) -> Path:
         dt = item.updated_at_utc or datetime.now(UTC)

@@ -20,7 +20,9 @@ start service
 -> poll SEC current Atom feed
 -> download new accession .txt filings
 -> parse SGML documents with the shared SEC text normalizer
+-> fetch SEC companyfacts for filings that expose XBRL or inline-XBRL documents
 -> write sec_filing_v2/document_v2/text_v2/skip rows to the configured write database
+-> write sec_xbrl_* rows to the configured write database when matching companyfacts are available
 -> audit the write database for duplicate and orphan SEC rows
 -> update live feed coverage
 -> show Rich terminal status and expose HTTP/websocket snapshots
@@ -64,6 +66,9 @@ SEC_GATEWAY_BIND=127.0.0.1:8797
 SEC_GATEWAY_DATA_ROOT_WIN=D:/market-data
 SEC_GATEWAY_POLL_SECONDS=30
 SEC_GATEWAY_CLOSED_POLL_SECONDS=300
+SEC_MARKET_STATUS_URL=https://api.massive.com/v1/marketstatus/now
+SEC_MARKET_STATUS_ENABLED=true
+SEC_MARKET_STATUS_REFRESH_SECONDS=10
 SEC_REQUEST_MIN_INTERVAL_SECONDS=0.12
 SEC_GATEWAY_AUTO_RUN_HISTORICAL_ON_WORKSTATION=true
 ```
@@ -126,6 +131,10 @@ sec_filing_v2
 sec_filing_document_v2
 sec_filing_text_v2
 sec_filing_document_skip_v1
+sec_xbrl_concept_v1
+sec_xbrl_company_fact_v1
+sec_xbrl_frame_v1
+sec_xbrl_frame_observation_v1
 ```
 
 The gateway write audit checks:
@@ -134,6 +143,41 @@ The gateway write audit checks:
 - document rows without filing parents
 - text rows without matching document rows
 - text rows without filing parents
+- XBRL company facts without filing parents
+- XBRL frame observations without matching company facts
 
 The latest audit status appears in `/metrics` under `audit_status` and
 `audit_message`.
+
+## Poll Cadence
+
+The SEC gateway uses Massive market status when `SEC_MARKET_STATUS_ENABLED=true`.
+Premarket and after-hours are treated as active trading sessions:
+
+```text
+active/premarket/after-hours: SEC_GATEWAY_POLL_SECONDS
+closed:                       SEC_GATEWAY_CLOSED_POLL_SECONDS
+```
+
+If Massive market status is unavailable, the gateway falls back to the local New
+York extended-hours clock, using 04:00-20:00 ET as active.
+
+## Live XBRL
+
+The SEC Atom feed itself does not contain companyfacts rows. For a feed item that
+contains XBRL sidecars or inline-XBRL content, the gateway fetches:
+
+```text
+https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json
+```
+
+It then filters facts to the feed accession and writes:
+
+- `sec_xbrl_concept_v1`
+- `sec_xbrl_company_fact_v1`
+- `sec_xbrl_frame_v1`
+- `sec_xbrl_frame_observation_v1`
+
+Ownership XML filings such as Forms 3/4/5 are still recorded as structured
+documents and skip rows, but they do not create companyfacts XBRL rows unless SEC
+companyfacts exposes matching financial facts for that accession.

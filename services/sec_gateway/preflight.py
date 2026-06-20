@@ -11,6 +11,7 @@ from pipelines.sec.edgar.sec_pipeline.coverage import SecCoverageConfig, ensure_
 from pipelines.sec.edgar.sec_pipeline.feed import SecCurrentFeedClient
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
 from pipelines.sec.edgar.sec_pipeline.rate_limit import SecRateLimiter
+from pipelines.news.benzinga.news_pipeline.provider import MassiveMarketStatusClient
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.sec_gateway.config import SecGatewayConfig
 
@@ -47,6 +48,8 @@ def run_preflight(config: SecGatewayConfig) -> PreflightReport:
         timed_check("clickhouse", lambda: check_clickhouse(config)),
         timed_check("sec_feed", lambda: check_sec_feed(config)),
     ]
+    if config.market_status_enabled:
+        checks.append(timed_check("market_status", lambda: check_market_status(config)))
     status = "ok" if all(check.status == "ok" for check in checks) else "failed"
     report = PreflightReport(status=status, checked_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"), checks=checks)
     if status != "ok":
@@ -104,7 +107,8 @@ def check_clickhouse(config: SecGatewayConfig) -> str:
     return (
         f"read={ch.read_database} write={ch.write_database} "
         f"tables={len(tables)} coverage={ch.coverage_table} "
-        f"audit={'ok' if audit.ok else 'warn'} filings={audit.filing_rows} docs={audit.document_rows} texts={audit.text_rows}"
+        f"audit={'ok' if audit.ok else 'warn'} filings={audit.filing_rows} docs={audit.document_rows} "
+        f"texts={audit.text_rows} xbrl_facts={audit.xbrl_company_fact_rows} xbrl_frames={audit.xbrl_frame_rows}"
     )
 
 
@@ -114,3 +118,11 @@ def check_sec_feed(config: SecGatewayConfig) -> str:
     feed = SecCurrentFeedClient(feed_url=config.pipeline.feed_url, http=http)
     rows = feed.fetch()
     return f"feed_reachable rows={len(rows)}"
+
+
+def check_market_status(config: SecGatewayConfig) -> str:
+    api_key = os.environ.get("MASSIVE_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("MASSIVE_API_KEY is required when SEC_MARKET_STATUS_ENABLED=true")
+    result = MassiveMarketStatusClient(endpoint_url=config.market_status_url, api_key=api_key).fetch_now()
+    return f"market={result.market or 'unknown'} early={result.early_hours} after={result.after_hours} server_time={result.server_time}"

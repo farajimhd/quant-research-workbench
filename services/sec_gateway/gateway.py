@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, time as dt_time, timedelta
@@ -25,6 +26,7 @@ from pipelines.sec.edgar.sec_pipeline.historical_fill import build_historical_fi
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
 from pipelines.sec.edgar.sec_pipeline.live_pipeline import SecLiveFilingPipeline
 from pipelines.sec.edgar.sec_pipeline.rate_limit import SecRateLimiter
+from pipelines.news.benzinga.news_pipeline.provider import MarketStatusResult, MassiveMarketStatusClient
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.run_logger import AsyncRunLogger
 from services.sec_gateway.config import SecGatewayConfig
@@ -60,6 +62,16 @@ class SecGatewayMetrics:
     manual_gap_fill_command: str = ""
     audit_status: str = "not_started"
     audit_message: str = ""
+    market_status: str = ""
+    market_status_source: str = "local_clock"
+    market_status_server_time: str = ""
+    market_status_updated_at_utc: str = ""
+    market_status_error: str = ""
+    current_poll_seconds: float = 0.0
+    xbrl_concept_rows: int = 0
+    xbrl_company_fact_rows: int = 0
+    xbrl_frame_rows: int = 0
+    xbrl_frame_observation_rows: int = 0
     run_log_path: str = ""
 
 
@@ -96,6 +108,14 @@ class SecGateway:
         self._http = SecHttpClient(user_agent=config.pipeline.sec_user_agent, rate_limiter=self._limiter, timeout_seconds=config.pipeline.request_timeout_seconds)
         self._feed = SecCurrentFeedClient(feed_url=self.feed_url(), http=self._http)
         self._live_pipeline = SecLiveFilingPipeline(http=self._http, raw_root_win=config.pipeline.raw_live_root_win)
+        self._market_status: MarketStatusResult | None = None
+        self._market_status_next_refresh = 0.0
+        self._massive_api_key = os.environ.get("MASSIVE_API_KEY", "").strip()
+        self.market_status_provider = (
+            MassiveMarketStatusClient(endpoint_url=config.market_status_url, api_key=self._massive_api_key)
+            if self._massive_api_key
+            else None
+        )
 
     async def start(self) -> None:
         await self.logger.start()
@@ -164,10 +184,14 @@ class SecGateway:
         return f"{base}{sep}count={self.config.current_feed_count}"
 
     def current_poll_seconds(self) -> float:
+        status = self._market_status
+        if status is not None:
+            return self.config.poll_seconds if market_status_is_active(status) else self.config.closed_poll_seconds
+        return self.config.poll_seconds if self.local_extended_session_active() else self.config.closed_poll_seconds
+
+    def local_extended_session_active(self) -> bool:
         now_et = datetime.now(EASTERN).time()
-        if dt_time(4, 0) <= now_et <= dt_time(20, 0):
-            return self.config.poll_seconds
-        return self.config.closed_poll_seconds
+        return dt_time(4, 0) <= now_et <= dt_time(20, 0)
 
     def _prepare_coverage(self) -> None:
         ensure_coverage_table(self._client, self._coverage)
@@ -213,6 +237,8 @@ class SecGateway:
         while not self._stop_event.is_set():
             started = datetime.now(UTC)
             try:
+                await asyncio.to_thread(self.refresh_market_status_if_needed)
+                self.metrics.current_poll_seconds = self.current_poll_seconds()
                 await asyncio.to_thread(self._poll_once)
             except Exception as exc:  # noqa: BLE001
                 self.metrics.poll_failures += 1
@@ -241,6 +267,10 @@ class SecGateway:
                     skipped += 1
                 else:
                     written += result.filing_rows
+                    self.metrics.xbrl_concept_rows += result.xbrl_concept_rows
+                    self.metrics.xbrl_company_fact_rows += result.xbrl_company_fact_rows
+                    self.metrics.xbrl_frame_rows += result.xbrl_frame_rows
+                    self.metrics.xbrl_frame_observation_rows += result.xbrl_frame_observation_rows
                 self.metrics.last_accession = item.accession_number
                 self.metrics.last_form_type = item.form_type
                 self._remember(item, result)
@@ -324,10 +354,50 @@ class SecGateway:
         self.metrics.audit_message = (
             f"write_db={self.config.pipeline.clickhouse.write_database} "
             f"filings={audit.filing_rows} documents={audit.document_rows} texts={audit.text_rows} skips={audit.skip_rows} "
+            f"xbrl_facts={audit.xbrl_company_fact_rows} xbrl_frames={audit.xbrl_frame_rows} "
             f"duplicate_filings={audit.duplicate_filing_keys} orphan_documents={audit.documents_without_filing} "
             f"orphan_text_documents={audit.texts_without_document} orphan_text_filings={audit.texts_without_filing}"
         )
         self._log("write_database_audit", reason=reason, ok=audit.ok, audit=asdict(audit))
+
+    def refresh_market_status_if_needed(self) -> None:
+        if not self.config.market_status_enabled:
+            self.metrics.market_status_source = "disabled"
+            self.metrics.current_poll_seconds = self.current_poll_seconds()
+            return
+        now = time.monotonic()
+        if self._market_status is not None and now < self._market_status_next_refresh:
+            self.metrics.current_poll_seconds = self.current_poll_seconds()
+            return
+        self._market_status_next_refresh = now + max(1.0, self.config.market_status_refresh_seconds)
+        if self.market_status_provider is None:
+            self.metrics.market_status_source = "local_clock_missing_key"
+            self.metrics.market_status = "local_extended" if self.local_extended_session_active() else "closed"
+            self.metrics.current_poll_seconds = self.current_poll_seconds()
+            return
+        try:
+            status = self.market_status_provider.fetch_now()
+        except Exception as exc:  # noqa: BLE001
+            self.metrics.market_status_error = repr(exc)
+            self.metrics.market_status_source = "local_clock_fallback"
+            self.metrics.market_status = "local_extended" if self.local_extended_session_active() else "closed"
+            self.metrics.current_poll_seconds = self.current_poll_seconds()
+            self._log("market_status_fetch_failed", error=repr(exc))
+            return
+        self._market_status = status
+        self.metrics.market_status = market_status_session(status)
+        self.metrics.market_status_source = "massive"
+        self.metrics.market_status_server_time = status.server_time
+        self.metrics.market_status_updated_at_utc = status.fetched_at_utc.isoformat(timespec="seconds").replace("+00:00", "Z")
+        self.metrics.market_status_error = ""
+        self.metrics.current_poll_seconds = self.current_poll_seconds()
+        self._log(
+            "market_status_updated",
+            market=status.market,
+            early_hours=status.early_hours,
+            after_hours=status.after_hours,
+            server_time=status.server_time,
+        )
 
     def _process_item(self, item: SecFeedItem, existing: set[str]) -> SecWriteResult:
         if item.accession_number in existing:
@@ -340,6 +410,10 @@ class SecGateway:
             document_rows=rows.document_rows,
             text_rows=rows.text_rows,
             skip_rows=rows.skip_rows,
+            xbrl_concept_rows=rows.xbrl_rows.concept_rows,
+            xbrl_company_fact_rows=rows.xbrl_rows.company_fact_rows,
+            xbrl_frame_rows=rows.xbrl_rows.frame_rows,
+            xbrl_frame_observation_rows=rows.xbrl_rows.frame_observation_rows,
             skip_existing=True,
         )
 
@@ -354,6 +428,7 @@ class SecGateway:
             "documents": result.document_rows,
             "texts": result.text_rows,
             "skips": result.skip_rows,
+            "xbrl_facts": result.xbrl_company_fact_rows,
         }
         self._recent.insert(0, row)
         del self._recent[250:]
@@ -368,3 +443,24 @@ class SecGateway:
 
     def _log(self, event: str, **payload: Any) -> None:
         self.logger.event(event, **payload)
+
+
+def market_status_is_active(status: MarketStatusResult) -> bool:
+    if status.early_hours or status.after_hours:
+        return True
+    if status.market in {"open", "early-hours", "after-hours", "early_hours", "after_hours"}:
+        return True
+    exchanges = status.raw.get("exchanges")
+    if isinstance(exchanges, dict):
+        for name in ("nasdaq", "nyse"):
+            if str(exchanges.get(name) or "").strip().lower() == "open":
+                return True
+    return False
+
+
+def market_status_session(status: MarketStatusResult) -> str:
+    if status.early_hours:
+        return "early_hours"
+    if status.after_hours:
+        return "after_hours"
+    return status.market or "unknown"

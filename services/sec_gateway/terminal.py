@@ -61,8 +61,11 @@ def status_panel(metrics: dict[str, Any]) -> Panel:
     table.add_row("Message", str(metrics.get("current_phase_message") or "-"))
     table.add_row("Preflight", style_status(str(metrics.get("preflight_status") or "-")))
     table.add_row("Audit", style_status(str(metrics.get("audit_status") or "-")))
+    table.add_row("Market", f"{str(metrics.get('market_status') or '-')} / {str(metrics.get('market_status_source') or '-')}")
     if metrics.get("audit_message"):
         table.add_row("Audit detail", str(metrics.get("audit_message") or "-"))
+    if metrics.get("market_status_error"):
+        table.add_row("Market error", str(metrics.get("market_status_error") or "-"))
     return Panel(table, title="Current Operation", box=box.ROUNDED, padding=(0, 1))
 
 
@@ -92,12 +95,14 @@ def runtime_panel(gateway: "SecGateway", metrics: dict[str, Any]) -> Panel:
     table.add_column("Last / Detail", overflow="fold", ratio=1)
     table.add_row("Status", style_status(str(metrics.get("current_phase") or "-")), str(metrics.get("current_phase_message") or "-"))
     table.add_row("Poll cadence", f"{gateway.current_poll_seconds():.1f}s", "SEC current feed")
+    table.add_row("Market", str(metrics.get("market_status") or "-"), str(metrics.get("market_status_source") or "-"))
     table.add_row("Last poll", "-", full_time_text(metrics.get("last_poll_at_utc")))
     table.add_row("Poll runs", fmt(metrics.get("poll_runs")), "")
     table.add_row("Feed items", fmt(metrics.get("feed_items")), "")
     table.add_row("Processed", fmt(metrics.get("processed_filings")), "")
     table.add_row("Written", fmt(metrics.get("written_filings")), "")
     table.add_row("Skipped existing", fmt(metrics.get("skipped_existing")), "")
+    table.add_row("XBRL facts", fmt(metrics.get("xbrl_company_fact_rows")), f"concepts {fmt(metrics.get('xbrl_concept_rows'))}, frames {fmt(metrics.get('xbrl_frame_rows'))}, observations {fmt(metrics.get('xbrl_frame_observation_rows'))}")
     table.add_row("Failures", fmt(metrics.get("poll_failures")), str(metrics.get("last_error") or "-"))
     table.add_row("Last accession", str(metrics.get("last_form_type") or "-"), str(metrics.get("last_accession") or "-"))
     return Panel(table, title="Runtime", box=box.ROUNDED, padding=(0, 1))
@@ -125,6 +130,7 @@ def recent_table(snapshot: dict[str, Any]) -> Table:
     table.add_column("Form", no_wrap=True, width=10)
     table.add_column("Accession", no_wrap=True, width=22)
     table.add_column("Status", no_wrap=True, width=16)
+    table.add_column("XBRL", justify="right", no_wrap=True, width=8)
     table.add_column("Title", overflow="fold", ratio=1)
     for row in rows:
         updated = parse_utc(row.get("updated_at_utc"))
@@ -136,10 +142,11 @@ def recent_table(snapshot: dict[str, Any]) -> Table:
             str(row.get("form_type") or "-"),
             str(row.get("accession_number") or "-"),
             str(row.get("status") or "-"),
+            fmt(row.get("xbrl_facts")),
             str(row.get("title") or ""),
         )
     if not rows:
-        table.add_row("-", "-", "-", "-", "-", "-", "-", "[dim]No SEC feed items processed yet.[/dim]")
+        table.add_row("-", "-", "-", "-", "-", "-", "-", "-", "[dim]No SEC feed items processed yet.[/dim]")
     return table
 
 
