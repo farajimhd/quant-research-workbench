@@ -18,16 +18,16 @@ Preferred current historical orchestration path:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2019-01-01 --end-date 2026-06-17
 ```
 
-Run a historical gap fill on the workstation:
+Run a full historical fill on the workstation. This refreshes SEC bulk files first, including `submissions.zip`:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2026-06-17 --end-date 2026-06-21 --execute
 ```
 
-Run a full initial fill on the workstation:
+Run a filing-content gap fill only when SEC bulk files are already current:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2019-01-01 --end-date 2026-06-17 --stages initial-fill --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2026-06-17 --end-date 2026-06-21 --stages gap-fill --execute
 ```
 
 Targeted validation path:

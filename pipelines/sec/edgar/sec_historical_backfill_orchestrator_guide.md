@@ -6,9 +6,11 @@ It does not insert raw SEC archives into ClickHouse. Daily `.nc.tar.gz` archives
 
 ## Current Stage Order
 
-Default gap-fill stages:
+Default historical stages:
 
 ```text
+bulk-download
+bulk-ingest
 daily-archive-download
 validate-downloaded
 text-extract
@@ -18,11 +20,14 @@ timestamp-repair
 integrity-audit
 ```
 
-Initial fill preset:
+The first two stages intentionally refresh the SEC bulk inputs before filing-content work:
+
+- `bulk-download` downloads the latest `submissions.zip`, `companyfacts.zip`, and ticker mapping JSON files.
+- `bulk-ingest` pushes those bulk files into the SEC bulk mirror tables.
+
+Gap-fill preset:
 
 ```text
-bulk-download
-bulk-ingest
 daily-archive-download
 validate-downloaded
 text-extract
@@ -78,20 +83,20 @@ Run this before any heavy run. It writes the exact child commands without execut
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2019-01-01 --end-date 2026-06-17
 ```
 
-## Full Initial Fill
+## Full Historical Fill
 
-Use this when bulk SEC source files and ClickHouse bulk mirror tables also need to be refreshed:
+This is the normal command. It refreshes SEC bulk files first, then downloads/parses/loads filing archives for the period:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2019-01-01 --end-date 2026-06-17 --stages initial-fill --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2019-01-01 --end-date 2026-06-17 --execute
 ```
 
 ## Historical Gap Fill
 
-Use this when bulk SEC metadata already exists and you need to fill a filing-content period:
+Use this only when bulk SEC metadata is already current and you need to fill a filing-content period without refreshing `submissions.zip` and the other bulk files:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2026-06-17 --end-date 2026-06-21 --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2026-06-17 --end-date 2026-06-21 --stages gap-fill --execute
 ```
 
 ## Text-Only Continuation
@@ -120,7 +125,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 
 ## Important Arguments
 
-- `--stages`: comma-separated stage list, or preset `default`, `initial-fill`, `archive-to-text`, `all`.
+- `--stages`: comma-separated stage list, or preset `default`, `initial-fill`, `gap-fill`, `archive-to-text`, `all`.
 - `--execute`: required to run child scripts. Without it, the orchestrator only writes a plan.
 - `--continue-on-error`: continue after failed stages.
 - `--artifact-root-win`: raw SEC artifact root. Default `D:/market-data/sec_core`.

@@ -45,7 +45,7 @@ STAGES = (
     "integrity-audit",
 )
 
-DEFAULT_STAGES = (
+GAP_FILL_STAGES = (
     "daily-archive-download",
     "validate-downloaded",
     "text-extract",
@@ -55,11 +55,13 @@ DEFAULT_STAGES = (
     "integrity-audit",
 )
 
-INITIAL_FILL_STAGES = (
+DEFAULT_STAGES = (
     "bulk-download",
     "bulk-ingest",
-    *DEFAULT_STAGES,
+    *GAP_FILL_STAGES,
 )
+
+INITIAL_FILL_STAGES = DEFAULT_STAGES
 
 ARCHIVE_TO_TEXT_STAGES = (
     "daily-archive-download",
@@ -114,7 +116,7 @@ def parse_args() -> argparse.Namespace:
         "--stages",
         default=",".join(DEFAULT_STAGES),
         help=(
-            "Comma-separated stages, or a preset: default, initial-fill, archive-to-text, all. "
+            "Comma-separated stages, or a preset: default, initial-fill, gap-fill, archive-to-text, all. "
             f"Valid stages: {', '.join(STAGES)}"
         ),
     )
@@ -259,6 +261,8 @@ def parse_stages(text: str) -> list[str]:
         return list(DEFAULT_STAGES)
     if normalized in {"initial-fill", "initial_all", "initial-all"}:
         return list(INITIAL_FILL_STAGES)
+    if normalized in {"gap-fill", "gap_fill"}:
+        return list(GAP_FILL_STAGES)
     if normalized in {"archive-to-text", "archive_text"}:
         return list(ARCHIVE_TO_TEXT_STAGES)
     if normalized == "all":
