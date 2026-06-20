@@ -12,10 +12,22 @@ This package contains the SEC EDGAR historical workflow:
 - historical backfill orchestration over the stages that exist today;
 - legacy bulk mirror ingest helpers retained for traceability.
 
-Preferred current orchestration path:
+Preferred current historical orchestration path:
 
 ```powershell
-python -m pipelines.sec.edgar.sec_historical_backfill_orchestrator --help
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2019-01-01 --end-date 2026-06-17
+```
+
+Run a historical gap fill on the workstation:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2026-06-17 --end-date 2026-06-21 --execute
+```
+
+Run a full initial fill on the workstation:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2019-01-01 --end-date 2026-06-17 --stages initial-fill --execute
 ```
 
 Targeted validation path:
@@ -42,7 +54,7 @@ Run the submissions-bulk fallback timestamp repair on the workstation:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_fallback_submissions_repair.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_acceptance_fallback_submissions_repair --execute
 ```
 
-See `sec_historical_backfill_orchestrator_guide.md` for one-command historical runs and PowerShell history export commands.
+See `sec_historical_backfill_orchestrator_guide.md` for the full stage order, one-command historical runs, smoke tests, and operational notes from the manual runs.
 
 SEC filing text path:
 
