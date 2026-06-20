@@ -62,7 +62,10 @@ pub fn app(state: AppState) -> Router {
         .route("/indicator-catalog", get(indicator_catalog_snapshot))
         .route("/signal-catalog", get(signal_catalog_snapshot))
         .route("/snapshot/scanner", get(scanner_snapshot))
-        .route("/snapshot/scanner-primitives", get(scanner_primitive_snapshot))
+        .route(
+            "/snapshot/scanner-primitives",
+            get(scanner_primitive_snapshot),
+        )
         .route("/snapshot/ticker/{ticker}", get(ticker_snapshot))
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
         .route("/snapshot/indicators/{ticker}", get(indicator_snapshot))
@@ -112,14 +115,24 @@ async fn scanner_snapshot(
     State(state): State<Arc<AppState>>,
     Query(query): Query<LimitQuery>,
 ) -> Json<ScannerSnapshot> {
-    Json(state.market.scanner_snapshot(query.limit.unwrap_or(250).min(5_000)).await)
+    Json(
+        state
+            .market
+            .scanner_snapshot(query.limit.unwrap_or(250).min(5_000))
+            .await,
+    )
 }
 
 async fn scanner_primitive_snapshot(
     State(state): State<Arc<AppState>>,
     Query(query): Query<LimitQuery>,
 ) -> Json<ScannerPrimitiveSnapshot> {
-    Json(state.scanner.snapshot(query.limit.unwrap_or(250).min(5_000)).await)
+    Json(
+        state
+            .scanner
+            .snapshot(query.limit.unwrap_or(250).min(5_000))
+            .await,
+    )
 }
 
 async fn ticker_snapshot(
@@ -140,7 +153,10 @@ async fn bar_snapshot(
             .snapshot(
                 &ticker,
                 query.timeframe.as_deref().unwrap_or("1m"),
-                query.limit.unwrap_or(500).min(state.config.bar_history_limit),
+                query
+                    .limit
+                    .unwrap_or(500)
+                    .min(state.config.bar_history_limit),
             )
             .await,
     )
@@ -166,13 +182,19 @@ async fn indicator_snapshot(
     )
 }
 
-async fn scanner_stream(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn scanner_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
         stream_scanner(socket, state).await;
     })
 }
 
-async fn scanner_primitive_stream(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn scanner_primitive_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
         stream_scanner_primitives(socket, state).await;
     })
@@ -224,13 +246,19 @@ async fn indicator_stream(
     })
 }
 
-async fn event_stream(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn event_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
         stream_events(socket, state).await;
     })
 }
 
-async fn compact_event_stream(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn compact_event_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
         stream_compact_events(socket, state).await;
     })
@@ -241,16 +269,24 @@ async fn stream_compact_events(mut socket: WebSocket, state: Arc<AppState>) {
     loop {
         match receiver.recv().await {
             Ok(event) => match serde_json::to_string(&event) {
-                Ok(text) if socket.send(Message::Text(text.into())).await.is_err() => break,
-                Ok(_) => {}
+                Ok(text) => {
+                    if socket.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
                 Err(error) => {
-                    if socket.send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into())).await.is_err() {
+                    if socket
+                        .send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
             },
             Err(broadcast::error::RecvError::Lagged(count)) => {
-                let warning = format!(r#"{{"warning":"compact_event_stream_lagged","skipped":{count}}}"#);
+                let warning =
+                    format!(r#"{{"warning":"compact_event_stream_lagged","skipped":{count}}}"#);
                 if socket.send(Message::Text(warning.into())).await.is_err() {
                     break;
                 }
@@ -265,10 +301,17 @@ async fn stream_events(mut socket: WebSocket, state: Arc<AppState>) {
     loop {
         match receiver.recv().await {
             Ok(event) => match serde_json::to_string(&event) {
-                Ok(text) if socket.send(Message::Text(text.into())).await.is_err() => break,
-                Ok(_) => {}
+                Ok(text) => {
+                    if socket.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
                 Err(error) => {
-                    if socket.send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into())).await.is_err() {
+                    if socket
+                        .send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -290,10 +333,17 @@ async fn stream_scanner(mut socket: WebSocket, state: Arc<AppState>) {
         timer.tick().await;
         let snapshot = state.market.scanner_snapshot(250).await;
         match serde_json::to_string(&snapshot) {
-            Ok(text) if socket.send(Message::Text(text.into())).await.is_err() => break,
-            Ok(_) => {}
+            Ok(text) => {
+                if socket.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
             Err(error) => {
-                if socket.send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into())).await.is_err() {
+                if socket
+                    .send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into()))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -306,16 +356,24 @@ async fn stream_scanner_primitives(mut socket: WebSocket, state: Arc<AppState>) 
     loop {
         match receiver.recv().await {
             Ok(event) => match serde_json::to_string(&event) {
-                Ok(text) if socket.send(Message::Text(text.into())).await.is_err() => break,
-                Ok(_) => {}
+                Ok(text) => {
+                    if socket.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
                 Err(error) => {
-                    if socket.send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into())).await.is_err() {
+                    if socket
+                        .send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
             },
             Err(broadcast::error::RecvError::Lagged(count)) => {
-                let warning = format!(r#"{{"warning":"scanner_primitive_stream_lagged","skipped":{count}}}"#);
+                let warning =
+                    format!(r#"{{"warning":"scanner_primitive_stream_lagged","skipped":{count}}}"#);
                 if socket.send(Message::Text(warning.into())).await.is_err() {
                     break;
                 }
@@ -331,10 +389,17 @@ async fn stream_ticker(mut socket: WebSocket, state: Arc<AppState>, ticker: Stri
         timer.tick().await;
         let snapshot = state.market.ticker_snapshot(&ticker).await;
         match serde_json::to_string(&snapshot) {
-            Ok(text) if socket.send(Message::Text(text.into())).await.is_err() => break,
-            Ok(_) => {}
+            Ok(text) => {
+                if socket.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
             Err(error) => {
-                if socket.send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into())).await.is_err() {
+                if socket
+                    .send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into()))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -354,13 +419,24 @@ async fn stream_bars(
         timer.tick().await;
         let snapshot = state
             .bars
-            .snapshot(&ticker, &timeframe, limit.min(state.config.bar_history_limit))
+            .snapshot(
+                &ticker,
+                &timeframe,
+                limit.min(state.config.bar_history_limit),
+            )
             .await;
         match serde_json::to_string(&snapshot) {
-            Ok(text) if socket.send(Message::Text(text.into())).await.is_err() => break,
-            Ok(_) => {}
+            Ok(text) => {
+                if socket.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
             Err(error) => {
-                if socket.send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into())).await.is_err() {
+                if socket
+                    .send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into()))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -387,10 +463,17 @@ async fn stream_indicators(
             )
             .await;
         match serde_json::to_string(&snapshot) {
-            Ok(text) if socket.send(Message::Text(text.into())).await.is_err() => break,
-            Ok(_) => {}
+            Ok(text) => {
+                if socket.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
             Err(error) => {
-                if socket.send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into())).await.is_err() {
+                if socket
+                    .send(Message::Text(format!(r#"{{"error":"{error}"}}"#).into()))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }

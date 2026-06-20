@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 mod api;
 mod bars;
 mod clickhouse;
@@ -11,18 +13,22 @@ mod massive;
 mod metrics;
 mod replay;
 mod scanner;
-mod signal_catalog;
 mod session;
+mod signal_catalog;
 mod state;
 
 use crate::api::{app, AppState};
 use crate::bars::{spawn_bar_engines, BarClickHouseWriter, BarRow, SharedBarStore};
 use crate::clickhouse::ClickHouseWriter;
-use crate::compact_event::{CompactEventClickHouseWriter, CompactEventReferences, LiveCompactEvent};
+use crate::compact_event::{
+    CompactEventClickHouseWriter, CompactEventReferences, LiveCompactEvent,
+};
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
 use crate::gapfill::run_gap_fill_service;
-use crate::indicators::{spawn_indicator_engines, IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore};
+use crate::indicators::{
+    spawn_indicator_engines, IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore,
+};
 use crate::massive::run_massive_ingest;
 use crate::metrics::SharedMetrics;
 use crate::replay::run_replay_service;
@@ -51,56 +57,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.indicator_shard_count,
     );
     let scanner = SharedScannerStore::new(config.scanner_primitive_history_limit);
-    let (writer_sender, writer_receiver) = mpsc::channel::<MarketEvent>(config.event_channel_capacity);
+    let (writer_sender, writer_receiver) =
+        mpsc::channel::<MarketEvent>(config.event_channel_capacity);
     let (compact_writer_sender, compact_writer_receiver) =
         mpsc::channel::<MarketEvent>(config.compact_event_channel_capacity);
-    let (bar_writer_sender, bar_writer_receiver) = mpsc::channel::<BarRow>(config.bar_channel_capacity);
+    let (bar_writer_sender, bar_writer_receiver) =
+        mpsc::channel::<BarRow>(config.bar_channel_capacity);
     let (indicator_writer_sender, indicator_writer_receiver) =
         mpsc::channel::<IndicatorRow>(config.indicator_channel_capacity);
     let (event_sender, _event_receiver) = broadcast::channel::<MarketEvent>(10_000);
-    let (compact_event_sender, _compact_event_receiver) = broadcast::channel::<LiveCompactEvent>(10_000);
+    let (compact_event_sender, _compact_event_receiver) =
+        broadcast::channel::<LiveCompactEvent>(10_000);
     let (scanner_sender, _scanner_receiver) = broadcast::channel::<ScannerPrimitive>(10_000);
 
     if config.persist_raw_events {
         let writer = ClickHouseWriter::new(config.clone());
-        writer
-            .initialize()
-            .await
-            .map_err(|error| startup_error(format!("qmd-gateway raw event ClickHouse preflight failed: {error}")))?;
+        writer.initialize().await.map_err(|error| {
+            startup_error(format!(
+                "qmd-gateway raw event ClickHouse preflight failed: {error}"
+            ))
+        })?;
         tokio::spawn(writer.run(writer_receiver));
     } else {
         drop(writer_receiver);
         eprintln!("Raw quote/trade ClickHouse persistence is disabled. Set QMD_PERSIST_RAW_EVENTS=true to enable it.");
     }
     if config.compact_events_enabled {
-        let references = CompactEventReferences::load(&config.reference_dir)
-            .map_err(|error| startup_error(format!("qmd-gateway compact reference load failed: {error}")))?;
+        let references = CompactEventReferences::load(&config.reference_dir).map_err(|error| {
+            startup_error(format!(
+                "qmd-gateway compact reference load failed: {error}"
+            ))
+        })?;
         let compact_writer = CompactEventClickHouseWriter::new(
             config.clone(),
             references,
             compact_event_sender.clone(),
             metrics.clone(),
         );
-        compact_writer
-            .initialize()
-            .await
-            .map_err(|error| startup_error(format!("qmd-gateway compact event ClickHouse preflight failed: {error}")))?;
+        compact_writer.initialize().await.map_err(|error| {
+            startup_error(format!(
+                "qmd-gateway compact event ClickHouse preflight failed: {error}"
+            ))
+        })?;
         tokio::spawn(compact_writer.run(compact_writer_receiver));
     } else {
         drop(compact_writer_receiver);
-        eprintln!("Compact event stream is disabled. Set QMD_COMPACT_EVENTS_ENABLED=true to enable it.");
+        eprintln!(
+            "Compact event stream is disabled. Set QMD_COMPACT_EVENTS_ENABLED=true to enable it."
+        );
     }
     let bar_writer = BarClickHouseWriter::new(config.clone());
-    bar_writer
-        .initialize()
-        .await
-        .map_err(|error| startup_error(format!("qmd-gateway bar ClickHouse preflight failed: {error}")))?;
+    bar_writer.initialize().await.map_err(|error| {
+        startup_error(format!(
+            "qmd-gateway bar ClickHouse preflight failed: {error}"
+        ))
+    })?;
     let indicator_writer = IndicatorClickHouseWriter::new(config.clone());
     if config.persist_indicators {
-        indicator_writer
-            .initialize()
-            .await
-            .map_err(|error| startup_error(format!("qmd-gateway indicator ClickHouse preflight failed: {error}")))?;
+        indicator_writer.initialize().await.map_err(|error| {
+            startup_error(format!(
+                "qmd-gateway indicator ClickHouse preflight failed: {error}"
+            ))
+        })?;
     }
 
     tokio::spawn(bar_writer.run(bar_writer_receiver));
@@ -129,7 +147,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::spawn(run_massive_ingest(
         config.clone(),
         market.clone(),
-        if config.persist_raw_events { Some(writer_sender) } else { None },
+        if config.persist_raw_events {
+            Some(writer_sender)
+        } else {
+            None
+        },
         if config.compact_events_enabled {
             Some(compact_writer_sender)
         } else {
@@ -181,7 +203,10 @@ fn preflight_config(config: &GatewayConfig) -> Result<(), String> {
         return Err("MASSIVE_API_KEY is required before qmd-gateway starts".to_string());
     }
     if config.subscription_channels().is_empty() {
-        return Err("at least one Massive subscription channel is required before qmd-gateway starts".to_string());
+        return Err(
+            "at least one Massive subscription channel is required before qmd-gateway starts"
+                .to_string(),
+        );
     }
     if config.clickhouse_url.trim().is_empty() {
         return Err("QMD_CLICKHOUSE_URL is required before qmd-gateway starts".to_string());
