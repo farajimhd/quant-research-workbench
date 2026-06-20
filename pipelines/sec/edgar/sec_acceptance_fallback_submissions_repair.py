@@ -76,6 +76,20 @@ class RunPaths:
             summary_md=run_root / "sec_acceptance_fallback_submissions_repair_summary.md",
         )
 
+    @classmethod
+    def from_existing(cls, run_root: Path) -> "RunPaths":
+        return cls(
+            run_root=run_root,
+            candidate_root=run_root / "candidate_cik_buckets",
+            parts_root=run_root / "parts" / "filing",
+            accepted_jsonl=run_root / "accepted_rows.jsonl",
+            unresolved_jsonl=run_root / "unresolved_rows.jsonl",
+            source_results_jsonl=run_root / "source_results.jsonl",
+            scan_status_json=run_root / "scan_status.json",
+            manifest_json=run_root / "sec_acceptance_fallback_submissions_repair_manifest.json",
+            summary_md=run_root / "sec_acceptance_fallback_submissions_repair_summary.md",
+        )
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -97,6 +111,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fallback-sources", default=",".join(DEFAULT_FALLBACK_SOURCES))
     parser.add_argument("--rows-per-part", type=int, default=int(os.environ.get("SEC_ACCEPTANCE_FALLBACK_REPAIR_ROWS_PER_PART", "50000")))
     parser.add_argument("--insert-batch-size", type=int, default=int(os.environ.get("SEC_ACCEPTANCE_FALLBACK_REPAIR_INSERT_BATCH_SIZE", "50000")))
+    parser.add_argument("--insert-partition-batch-size", type=int, default=int(os.environ.get("SEC_ACCEPTANCE_FALLBACK_REPAIR_INSERT_PARTITION_BATCH_SIZE", "5000")))
+    parser.add_argument("--insert-max-pending-rows", type=int, default=int(os.environ.get("SEC_ACCEPTANCE_FALLBACK_REPAIR_INSERT_MAX_PENDING_ROWS", "50000")))
+    parser.add_argument("--insert-skip-rows", type=int, default=0, help="Skip this many part rows before inserting. Use to resume after a failed insert.")
+    parser.add_argument("--insert-from-run-root-win", default="", help="Existing repair run folder containing parts to insert without rescanning submissions.zip.")
     parser.add_argument("--limit-rows", type=int, default=0)
     parser.add_argument("--limit-ciks", type=int, default=0)
     parser.add_argument("--limit-zip-entries", type=int, default=0)
@@ -113,17 +131,20 @@ def main() -> None:
     args = parse_args()
     validate_args(args)
     fallback_sources = parse_sources(args.fallback_sources)
+    client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
+    if args.insert_from_run_root_win:
+        run_insert_from_existing(args, loaded_env_files, client)
+        return
     run_id = f"sec_acceptance_fallback_submissions_repair_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
     paths = RunPaths.create(Path(args.output_root_win), run_id)
     submissions_zip = resolve_submissions_zip(args)
-    client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     print_header(args, paths, loaded_env_files, run_id, submissions_zip, fallback_sources)
 
     started = time.perf_counter()
     source_sha256 = sha256_file(submissions_zip)
     candidate_stats = write_candidate_buckets(client, args, paths, fallback_sources)
     scan_stats = scan_submissions_zip(args, paths, submissions_zip, run_id)
-    part_files = sorted(paths.parts_root.glob("*.jsonl"))
+    part_files = find_part_files(paths)
     inserted_rows = 0
     if args.execute and not args.skip_insert and part_files:
         inserted_rows = insert_part_files(client, args, part_files)
@@ -161,6 +182,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--rows-per-part must be >= 1")
     if args.insert_batch_size < 1:
         raise SystemExit("--insert-batch-size must be >= 1")
+    if args.insert_partition_batch_size < 1:
+        raise SystemExit("--insert-partition-batch-size must be >= 1")
+    if args.insert_max_pending_rows < 1:
+        raise SystemExit("--insert-max-pending-rows must be >= 1")
+    if args.insert_skip_rows < 0:
+        raise SystemExit("--insert-skip-rows must be >= 0")
     for name in ("limit_rows", "limit_ciks", "limit_zip_entries"):
         if int(getattr(args, name)) < 0:
             raise SystemExit(f"--{name.replace('_', '-')} must be >= 0")
@@ -175,6 +202,42 @@ def resolve_submissions_zip(args: argparse.Namespace) -> Path:
     if not path.exists():
         raise SystemExit(f"SEC submissions zip not found: {path}")
     return path
+
+
+def run_insert_from_existing(args: argparse.Namespace, loaded_env_files: list[Path], client: ClickHouseHttpClient) -> None:
+    paths = RunPaths.from_existing(Path(args.insert_from_run_root_win))
+    if not paths.run_root.exists():
+        raise SystemExit(f"--insert-from-run-root-win does not exist: {paths.run_root}")
+    print("=" * 96, flush=True)
+    print("SEC fallback acceptance submissions repair insert-only resume", flush=True)
+    print(f"run_root={paths.run_root}", flush=True)
+    print(f"target={args.database}.{args.target_table}", flush=True)
+    print(f"execute={args.execute} skip_insert={args.skip_insert} insert_skip_rows={args.insert_skip_rows:,}", flush=True)
+    print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
+    print("secret_status=" + json.dumps(secret_status(secret_keys()), sort_keys=True), flush=True)
+    print("=" * 96, flush=True)
+    part_files = find_part_files(paths)
+    if not part_files:
+        raise SystemExit(f"No repair part files found under {paths.run_root}")
+    print(f"part_files={len(part_files):,} part_rows={sum(count_lines(path) for path in part_files):,}", flush=True)
+    inserted_rows = 0
+    if args.execute and not args.skip_insert:
+        inserted_rows = insert_part_files(client, args, part_files)
+    summary = {
+        "run_root": str(paths.run_root),
+        "part_files": len(part_files),
+        "part_rows": sum(count_lines(path) for path in part_files),
+        "inserted_rows": inserted_rows,
+        "execute": bool(args.execute),
+        "skip_insert": bool(args.skip_insert),
+        "insert_skip_rows": int(args.insert_skip_rows),
+        "insert_partition_batch_size": int(args.insert_partition_batch_size),
+        "insert_max_pending_rows": int(args.insert_max_pending_rows),
+    }
+    resume_summary = paths.run_root / f"insert_resume_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.json"
+    resume_summary.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    print("insert_resume_summary=" + str(resume_summary), flush=True)
+    print("summary=" + json.dumps(summary, sort_keys=True), flush=True)
 
 
 def print_header(
@@ -554,30 +617,91 @@ def insert_part_files(client: ClickHouseHttpClient, args: argparse.Namespace, pa
     target = f"{quote_ident(args.database)}.{quote_ident(args.target_table)}"
     columns = ", ".join(quote_ident(column) for column in FILING_COLUMNS)
     inserted = 0
-    batch: list[str] = []
+    skipped = 0
+    batches: dict[str, list[str]] = {}
+    pending_rows = 0
     started = time.perf_counter()
     for path in part_files:
         with path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 if not line.strip():
                     continue
-                batch.append(line.rstrip("\n"))
-                if len(batch) >= args.insert_batch_size:
-                    inserted += insert_batch(client, target, columns, batch)
+                if skipped < int(args.insert_skip_rows):
+                    skipped += 1
+                    continue
+                row_text = line.rstrip("\n")
+                partition = partition_key_from_json_line(row_text)
+                batch = batches.setdefault(partition, [])
+                batch.append(row_text)
+                pending_rows += 1
+                if len(batch) >= int(args.insert_partition_batch_size):
+                    inserted += insert_batch(client, target, columns, batch, partition)
+                    pending_rows -= len(batch)
                     batch.clear()
-                    print(f"inserted_rows={inserted:,} elapsed={time.perf_counter() - started:.1f}s", flush=True)
-    if batch:
-        inserted += insert_batch(client, target, columns, batch)
-    print(f"insert_done rows={inserted:,} elapsed={time.perf_counter() - started:.1f}s", flush=True)
+                    print(
+                        f"inserted_rows={inserted:,} skipped_rows={skipped:,} "
+                        f"partition={partition} pending_rows={pending_rows:,} elapsed={time.perf_counter() - started:.1f}s",
+                        flush=True,
+                    )
+                elif pending_rows >= int(args.insert_max_pending_rows):
+                    flush_partition = largest_pending_partition(batches)
+                    flush_batch = batches[flush_partition]
+                    inserted += insert_batch(client, target, columns, flush_batch, flush_partition)
+                    pending_rows -= len(flush_batch)
+                    flush_batch.clear()
+                    print(
+                        f"inserted_rows={inserted:,} skipped_rows={skipped:,} "
+                        f"partition={flush_partition} pending_rows={pending_rows:,} elapsed={time.perf_counter() - started:.1f}s",
+                        flush=True,
+                    )
+    for partition in sorted(batches):
+        batch = batches[partition]
+        if not batch:
+            continue
+        inserted += insert_batch(client, target, columns, batch, partition)
+        pending_rows -= len(batch)
+        print(
+            f"inserted_rows={inserted:,} skipped_rows={skipped:,} "
+            f"partition={partition} pending_rows={pending_rows:,} elapsed={time.perf_counter() - started:.1f}s",
+            flush=True,
+        )
+    print(f"insert_done rows={inserted:,} skipped_rows={skipped:,} elapsed={time.perf_counter() - started:.1f}s", flush=True)
     return inserted
 
 
-def insert_batch(client: ClickHouseHttpClient, target: str, columns: str, rows: list[str]) -> int:
+def insert_batch(client: ClickHouseHttpClient, target: str, columns: str, rows: list[str], partition: str) -> int:
     if not rows:
         return 0
     body = "\n".join(rows)
     client.execute(f"INSERT INTO {target} ({columns}) FORMAT JSONEachRow\n{body}")
     return len(rows)
+
+
+def largest_pending_partition(batches: dict[str, list[str]]) -> str:
+    non_empty = ((partition, len(rows)) for partition, rows in batches.items() if rows)
+    try:
+        return max(non_empty, key=lambda item: item[1])[0]
+    except ValueError as exc:
+        raise RuntimeError("No pending insert partition to flush") from exc
+
+
+def partition_key_from_json_line(row_text: str) -> str:
+    row = json.loads(row_text)
+    accepted = clean_string(row.get("accepted_at_utc"))
+    if accepted and len(accepted) >= 7:
+        return accepted[:7]
+    filing_date = clean_string(row.get("filing_date"))
+    if filing_date and len(filing_date) >= 7:
+        return filing_date[:7]
+    return "1970-01"
+
+
+def find_part_files(paths: RunPaths) -> list[Path]:
+    files = sorted(paths.parts_root.glob("*.jsonl"))
+    if files:
+        return files
+    legacy_root = paths.run_root / "parts" / "sec_filing_v2_fallback_submissions_repair_parts"
+    return sorted(legacy_root.glob("*.jsonl"))
 
 
 def build_summary(

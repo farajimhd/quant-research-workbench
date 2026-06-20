@@ -28,6 +28,18 @@ After reviewing the dry-run summary, insert the replacement rows:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_fallback_submissions_repair.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_acceptance_fallback_submissions_repair --execute
 ```
 
+## Resume A Failed Insert
+
+If scanning finished but insert failed, do not rescan the SEC zip. Resume from the existing run folder. Use `--insert-skip-rows` with the last printed `inserted_rows` count.
+
+Example for a failure after `inserted_rows=550,000`:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_fallback_submissions_repair.py --insert-from-run-root-win D:/market-data/prepared/sec_acceptance_fallback_submissions_repair/<run_id> --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_acceptance_fallback_submissions_repair --execute --insert-skip-rows 550000
+```
+
+The insert path batches rows by `accepted_at_utc` month so each ClickHouse insert block targets one partition.
+
 ## Smoke Test
 
 Use a small row cap before a full run:
@@ -45,6 +57,10 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 - `--limit-zip-entries`: cap SEC submissions zip entries scanned for a smoke test.
 - `--rows-per-part`: replacement rows per JSONEachRow part. Default `50000`.
 - `--insert-batch-size`: rows per ClickHouse insert batch. Default `50000`.
+- `--insert-partition-batch-size`: maximum rows per insert for one target month partition. Default `5000`.
+- `--insert-max-pending-rows`: maximum queued rows across month partitions before flushing the largest pending partition. Default `50000`.
+- `--insert-from-run-root-win`: existing repair run folder to insert without rescanning.
+- `--insert-skip-rows`: number of already inserted part rows to skip during resume.
 - `--row-progress-interval`: print/write row progress during very large CIK entries. Default `10000`.
 - `--status-interval-seconds`: write `scan_status.json` at least this often while rows are moving. Default `30`.
 - `--skip-insert`: build parts even when `--execute` is present, but do not insert.
