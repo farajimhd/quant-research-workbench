@@ -9,7 +9,7 @@ import re
 import struct
 import sys
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -136,6 +136,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--partition-buckets", type=int, default=256)
     parser.add_argument("--download-workers", type=int, default=DEFAULT_DOWNLOAD_WORKERS)
     parser.add_argument("--max-threads", type=int, default=DEFAULT_MAX_THREADS)
+    parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
+    parser.add_argument("--progress-refresh-per-second", type=float, default=4.0)
+    parser.add_argument("--progress-log-lines", type=int, default=14)
     parser.add_argument("--max-partitions-per-insert-block", type=int, default=1024)
     parser.add_argument("--max-memory-usage", default="400G")
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN / "flatfile_event_update"))
@@ -257,7 +260,220 @@ def format_bytes(value: int) -> str:
     return f"{size:.1f} TiB"
 
 
-def drain_download_progress(progress_queue: queue_module.Queue, file_states: dict[str, dict[str, Any]], *, force: bool = False) -> None:
+class UpdateProgressReporter:
+    def __init__(self, args: argparse.Namespace, *, total_days: int, total_files: int, total_bytes: int) -> None:
+        self.mode = str(args.progress_layout)
+        self.refresh_per_second = max(1.0, float(args.progress_refresh_per_second))
+        self.total_days = max(0, int(total_days))
+        self.total_files = max(0, int(total_files))
+        self.total_bytes = max(0, int(total_bytes))
+        self.started_at = time.time()
+        self.stage = "starting"
+        self.completed_days = 0
+        self.success_days = 0
+        self.failed_days = 0
+        self.completed_files = 0
+        self.completed_bytes = 0
+        self.file_states: dict[str, dict[str, Any]] = {}
+        self.day_status: dict[str, str] = {}
+        self.logs: deque[str] = deque(maxlen=max(5, int(args.progress_log_lines)))
+        self._rich = False
+        self._live: Any = None
+        self._layout: Any = None
+        self._last_text_download = 0.0
+
+    def __enter__(self) -> "UpdateProgressReporter":
+        if self.mode in {"auto", "rich"}:
+            try:
+                from rich.console import Group
+                from rich.layout import Layout
+                from rich.live import Live
+                from rich.panel import Panel
+                from rich.table import Table
+                from rich.text import Text
+            except ImportError:
+                if self.mode == "rich":
+                    raise
+                self.log("Rich is not installed; using text progress.")
+            else:
+                self._rich = True
+                self._group_cls = Group
+                self._layout_cls = Layout
+                self._live_cls = Live
+                self._panel_cls = Panel
+                self._table_cls = Table
+                self._text_cls = Text
+                self._layout = Layout(name="root")
+                self._layout.split_column(
+                    Layout(self._summary_panel(), name="summary", size=7),
+                    Layout(self._download_panel(), name="download", size=12),
+                    Layout(self._day_panel(), name="days", size=8),
+                    Layout(self._log_panel(), name="logs", ratio=1),
+                )
+                self._live = Live(
+                    self._layout,
+                    refresh_per_second=self.refresh_per_second,
+                    transient=False,
+                    vertical_overflow="crop",
+                    redirect_stdout=True,
+                    redirect_stderr=True,
+                )
+                self._live.start()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self._live is not None:
+            self._refresh()
+            self._live.stop()
+
+    def log(self, message: str) -> None:
+        line = f"{datetime.now().strftime('%H:%M:%S')} {message}"
+        if self._rich:
+            self.logs.append(line)
+            self._refresh()
+        else:
+            print(line, flush=True)
+
+    def set_stage(self, stage: str) -> None:
+        self.stage = stage
+        self.log(f"stage={stage}")
+
+    def handle_download_event(self, event: dict[str, Any]) -> None:
+        label = str(event.get("job_label") or f"{event.get('kind')}:{event.get('session_date')}")
+        state = self.file_states.setdefault(label, {})
+        previous_type = state.get("type")
+        previous_status = state.get("status")
+        state.update(event)
+        if event.get("type") == "result" and previous_type != "result":
+            self.completed_files += 1
+            expected = int(event.get("bytes_expected") or 0)
+            written = int(event.get("bytes_written") or 0)
+            self.completed_bytes += expected if event.get("status") in {"downloaded", "skipped_complete", "would_download"} else min(expected, written)
+            if event.get("status") not in {"downloaded", "skipped_complete", "would_download"}:
+                self.log(f"download file failed {label} status={event.get('status')} exception={event.get('exception')}")
+        elif event.get("status") != previous_status and event.get("status") in {"checking", "downloading"}:
+            self.log(f"download {label} {event.get('status')}")
+        self._refresh()
+
+    def handle_day_start(self, day: str, index: int) -> None:
+        self.day_status[day] = "running"
+        self.completed_days = max(self.completed_days, index - 1)
+        self.log(f"day start [{index:,}/{self.total_days:,}] {day}")
+        self._refresh()
+
+    def handle_day_done(self, day: str, status: str) -> None:
+        prior = self.day_status.get(day)
+        self.day_status[day] = status
+        if prior != status:
+            self.completed_days += 1
+            if status == "ok":
+                self.success_days += 1
+            elif status not in {"skipped", "dry_run"}:
+                self.failed_days += 1
+        self.log(f"day {status} {day}")
+        self._refresh()
+
+    def _refresh(self) -> None:
+        if not self._rich or self._layout is None:
+            return
+        self._layout["summary"].update(self._summary_panel())
+        self._layout["download"].update(self._download_panel())
+        self._layout["days"].update(self._day_panel())
+        self._layout["logs"].update(self._log_panel())
+
+    def _summary_panel(self) -> Any:
+        elapsed = max(1e-6, time.time() - self.started_at)
+        day_rate = self.completed_days / elapsed if self.completed_days else 0.0
+        eta = self._format_duration((self.total_days - self.completed_days) / day_rate) if day_rate > 0 else "-"
+        byte_speed = self._covered_download_bytes() / elapsed
+        table = self._table_cls.grid(expand=True)
+        table.add_column(justify="right", width=18)
+        table.add_column(justify="left")
+        table.add_column(justify="right", width=18)
+        table.add_column(justify="left")
+        table.add_row("stage", self.stage, "elapsed", self._format_duration(elapsed))
+        table.add_row("days", f"{self.completed_days:,}/{self.total_days:,}", "finish eta", eta)
+        table.add_row("downloaded", f"{self._format_bytes(self._covered_download_bytes())}/{self._format_bytes(self.total_bytes)}", "speed", f"{self._format_bytes(byte_speed)}/s")
+        return self._panel_cls(table, title="Flatfile Event Update", border_style="cyan")
+
+    def _download_panel(self) -> Any:
+        table = self._table_cls(expand=True, show_header=True, header_style="bold", box=None, pad_edge=False)
+        table.add_column("File", ratio=2, overflow="ellipsis")
+        table.add_column("Progress", ratio=3, overflow="ellipsis")
+        table.add_column("Speed", width=12)
+        table.add_column("Status", width=14)
+        active_or_recent = sorted(
+            self.file_states.items(),
+            key=lambda item: (0 if item[1].get("type") != "result" else 1, str(item[0])),
+        )[:8]
+        if not active_or_recent:
+            table.add_row("-", "-", "-", "waiting")
+        for label, state in active_or_recent:
+            expected = int(state.get("bytes_expected") or 0)
+            written = int(state.get("bytes_written") or 0)
+            pct = written / expected if expected else 0.0
+            table.add_row(
+                label,
+                f"{self._mini_bar(pct, 24)} {pct:5.1%} {self._format_bytes(written)}/{self._format_bytes(expected)}",
+                self._speed_cell(state),
+                str(state.get("status") or "pending"),
+            )
+        return self._panel_cls(table, title=f"Downloads files={self.completed_files:,}/{self.total_files:,}", border_style="green")
+
+    def _day_panel(self) -> Any:
+        table = self._table_cls(expand=True, show_header=True, header_style="bold", box=None, pad_edge=False)
+        table.add_column("Metric", justify="right", width=18)
+        table.add_column("Value", justify="left")
+        day_pct = self.completed_days / self.total_days if self.total_days else 0.0
+        table.add_row("progress", f"{self._mini_bar(day_pct, 32)} {day_pct:5.1%}")
+        table.add_row("ok", f"{self.success_days:,}")
+        table.add_row("failed", f"{self.failed_days:,}")
+        running = [day for day, status in self.day_status.items() if status == "running"]
+        table.add_row("current", ", ".join(running[-3:]) if running else "-")
+        return self._panel_cls(table, title="Event Inserts and Audit", border_style="magenta")
+
+    def _log_panel(self) -> Any:
+        text = self._text_cls("\n".join(self.logs) if self.logs else "No messages yet.")
+        return self._panel_cls(text, title="Messages", border_style="white")
+
+    def _covered_download_bytes(self) -> int:
+        active = 0
+        for state in self.file_states.values():
+            if state.get("type") != "result":
+                active += int(state.get("bytes_written") or 0)
+        return min(self.total_bytes, self.completed_bytes + active)
+
+    def _speed_cell(self, state: dict[str, Any]) -> str:
+        written = int(state.get("bytes_written") or 0)
+        started_at = float(state.get("started_at") or 0.0)
+        if not written or not started_at:
+            return "-"
+        return f"{self._format_bytes(written / max(1e-6, time.time() - started_at))}/s"
+
+    def _mini_bar(self, fraction: float, width: int) -> str:
+        filled = int(round(max(0.0, min(1.0, float(fraction))) * width))
+        return "#" * filled + "-" * (width - filled)
+
+    def _format_bytes(self, value: float) -> str:
+        size = float(value or 0)
+        for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+            if abs(size) < 1024.0 or unit == "TiB":
+                return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+            size /= 1024.0
+        return f"{size:.1f} TiB"
+
+    def _format_duration(self, seconds: float) -> str:
+        seconds = max(0, int(seconds))
+        if seconds < 60:
+            return f"{seconds}s"
+        minutes, sec = divmod(seconds, 60)
+        if minutes < 60:
+            return f"{minutes}m{sec:02d}s"
+        hours, minute = divmod(minutes, 60)
+        return f"{hours}h{minute:02d}m"
+
+
+def drain_download_progress(progress_queue: queue_module.Queue, file_states: dict[str, dict[str, Any]], *, reporter: UpdateProgressReporter | None = None, force: bool = False) -> None:
     saw_event = False
     while True:
         try:
@@ -265,6 +481,9 @@ def drain_download_progress(progress_queue: queue_module.Queue, file_states: dic
         except queue_module.Empty:
             break
         saw_event = True
+        if reporter is not None:
+            reporter.handle_download_event(event)
+            continue
         label = str(event.get("job_label") or f"{event.get('kind')}:{event.get('session_date')}")
         state = file_states.setdefault(label, {})
         state.update(event)
@@ -1113,78 +1332,66 @@ def main() -> None:
     print(f"Discovered {len(days):,} complete quote/trade day pairs", flush=True)
 
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
-    if args.test_mode:
-        print("TEST MODE: dropping same-run temp tables before isolated build", flush=True)
-        drop_test_tables(client, args)
-    ensure_tables(client, args)
-
-    download_results: dict[str, dict[str, Any]] = {}
-    download_started_at = time.time()
-    progress_queue: queue_module.Queue = queue_module.Queue()
-    file_states: dict[str, dict[str, Any]] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(args.download_workers))) as executor:
-        futures = {
-            executor.submit(ensure_day_files, day, config, progress_queue, day_index * 2): day
-            for day_index, day in enumerate(days)
-        }
-        pending = set(futures)
-        finished_count = 0
-        print(f"DOWNLOAD START days={len(days):,} files={len(days) * 2:,}", flush=True)
-        while pending:
-            done, pending = concurrent.futures.wait(pending, timeout=1.0, return_when=concurrent.futures.FIRST_COMPLETED)
-            drain_download_progress(progress_queue, file_states)
-            if not done:
-                elapsed = time.time() - download_started_at
-                completed_files = sum(1 for state in file_states.values() if state.get("type") == "result")
-                print(
-                    f"DOWNLOAD HEARTBEAT days_done={finished_count:,}/{len(days):,} "
-                    f"files_done={completed_files:,}/{len(days) * 2:,} pending_days={len(pending):,} "
-                    f"elapsed_minutes={elapsed / 60:.1f}",
-                    flush=True,
-                )
-                continue
-            for future in done:
-                day = futures[future]
-                result = future.result()
-                finished_count += 1
-                download_results[day.source_date] = result
-                append_jsonl(report_path, {"type": "download", **result})
-                elapsed = time.time() - download_started_at
-                rate = finished_count / elapsed if elapsed > 0 else 0.0
-                eta = (len(days) - finished_count) / rate if rate > 0 else 0.0
-                print(
-                    f"DOWNLOAD DAY [{finished_count:,}/{len(days):,}] {day.source_date} "
-                    f"ok={result['ok']} seconds={result['seconds']:.1f} "
-                    f"elapsed_minutes={elapsed / 60:.1f} eta_minutes={eta / 60:.1f} statuses={result['statuses']}",
-                    flush=True,
-                )
-        drain_download_progress(progress_queue, file_states, force=True)
-
-    completed = 0
-    started = time.time()
-    for day in sorted(days, key=lambda item: item.source_date):
-        if not download_results.get(day.source_date, {}).get("ok"):
-            print(f"DAY SKIP {day.source_date} because download was not complete", flush=True)
-            continue
-        completed += 1
-        elapsed = time.time() - started
-        rate = completed / elapsed if elapsed > 0 else 0.0
-        eta = (len(days) - completed) / rate if rate > 0 else 0.0
-        print(
-            f"DAY START [{completed:,}/{len(days):,}] {day.source_date} "
-            f"elapsed_hours={elapsed / 3600:.2f} eta_hours={eta / 3600:.2f}",
-            flush=True,
-        )
-        if args.dry_run:
-            continue
-        run_day(client, args, day, run_id, report_path)
-
-    if args.test_mode and not args.dry_run:
-        audited_days = [day for day in sorted(days, key=lambda item: item.source_date) if download_results.get(day.source_date, {}).get("ok")]
-        audit_test_events(client, args, audited_days, report_path)
-        if not args.test_keep_tables:
-            print("TEST MODE: dropping temp tables after successful audit", flush=True)
+    total_download_bytes = sum(int(day.quote_job.remote_size or 0) + int(day.trade_job.remote_size or 0) for day in days)
+    with UpdateProgressReporter(args, total_days=len(days), total_files=len(days) * 2, total_bytes=total_download_bytes) as reporter:
+        reporter.log(f"report={report_path}")
+        reporter.log(f"database={args.database} events_table={args.events_table} test_mode={args.test_mode}")
+        if args.test_mode:
+            reporter.set_stage("prepare test tables")
+            reporter.log("dropping same-run temp tables before isolated build")
             drop_test_tables(client, args)
+        reporter.set_stage("ensure tables")
+        ensure_tables(client, args)
+
+        download_results: dict[str, dict[str, Any]] = {}
+        progress_queue: queue_module.Queue = queue_module.Queue()
+        file_states: dict[str, dict[str, Any]] = {}
+        reporter.set_stage("download flatfiles")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(args.download_workers))) as executor:
+            futures = {
+                executor.submit(ensure_day_files, day, config, progress_queue, day_index * 2): day
+                for day_index, day in enumerate(days)
+            }
+            pending = set(futures)
+            finished_count = 0
+            while pending:
+                done, pending = concurrent.futures.wait(pending, timeout=1.0, return_when=concurrent.futures.FIRST_COMPLETED)
+                drain_download_progress(progress_queue, file_states, reporter=reporter)
+                if not done:
+                    continue
+                for future in done:
+                    day = futures[future]
+                    result = future.result()
+                    finished_count += 1
+                    download_results[day.source_date] = result
+                    append_jsonl(report_path, {"type": "download", **result})
+                    reporter.log(
+                        f"download day [{finished_count:,}/{len(days):,}] {day.source_date} "
+                        f"ok={result['ok']} seconds={result['seconds']:.1f} statuses={result['statuses']}"
+                    )
+            drain_download_progress(progress_queue, file_states, reporter=reporter, force=True)
+
+        reporter.set_stage("insert events")
+        completed = 0
+        for day in sorted(days, key=lambda item: item.source_date):
+            if not download_results.get(day.source_date, {}).get("ok"):
+                reporter.handle_day_done(day.source_date, "download_failed")
+                continue
+            completed += 1
+            reporter.handle_day_start(day.source_date, completed)
+            if args.dry_run:
+                reporter.handle_day_done(day.source_date, "dry_run")
+                continue
+            result_status = run_day(client, args, day, run_id, report_path)
+            reporter.handle_day_done(day.source_date, result_status)
+
+        if args.test_mode and not args.dry_run:
+            reporter.set_stage("test audit")
+            audited_days = [day for day in sorted(days, key=lambda item: item.source_date) if download_results.get(day.source_date, {}).get("ok")]
+            audit_test_events(client, args, audited_days, report_path)
+            if not args.test_keep_tables:
+                reporter.set_stage("drop test tables")
+                drop_test_tables(client, args)
 
     print(f"DONE report={report_path}", flush=True)
 
