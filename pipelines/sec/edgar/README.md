@@ -54,7 +54,16 @@ Run the submissions-bulk fallback timestamp repair on the workstation:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_acceptance_fallback_submissions_repair.py --artifact-root-win D:/market-data/sec_core --output-root-win D:/market-data/prepared/sec_acceptance_fallback_submissions_repair --execute
 ```
 
+Run the XBRL companyfacts catch-up when filing/text tables are newer than
+`sec_xbrl_company_fact_v1`:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_xbrl_companyfacts_catchup.py --read-database q_live --write-database q_live --workers 4 --batch-size 10000 --execute
+```
+
 See `sec_historical_backfill_orchestrator_guide.md` for the full stage order, one-command historical runs, smoke tests, and operational notes from the manual runs.
+See `sec_xbrl_companyfacts_catchup_guide.md` for dry runs, temp-db smoke tests,
+and XBRL catch-up behavior.
 
 SEC filing text path:
 

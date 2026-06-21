@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import SecClickHouseWriter, SecWriteResult, qi, sql_string
 from pipelines.sec.edgar.sec_pipeline.coverage import (
+    KIND_BULK_COMPANYFACTS,
     KIND_LIVE_FEED,
     SecCoverageConfig,
     SecGap,
@@ -22,7 +23,12 @@ from pipelines.sec.edgar.sec_pipeline.coverage import (
     plan_freshness_gaps,
 )
 from pipelines.sec.edgar.sec_pipeline.feed import SecCurrentFeedClient, SecFeedItem
-from pipelines.sec.edgar.sec_pipeline.historical_fill import build_historical_fill_plan, run_historical_fill, write_plan_script
+from pipelines.sec.edgar.sec_pipeline.historical_fill import (
+    build_historical_fill_plan,
+    build_xbrl_companyfacts_catchup_plan,
+    run_plan_script,
+    write_multi_plan_script,
+)
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
 from pipelines.sec.edgar.sec_pipeline.live_pipeline import SecLiveFilingPipeline
 from pipelines.sec.edgar.sec_pipeline.rate_limit import SecRateLimiter
@@ -222,16 +228,38 @@ class SecGateway:
         start = min(gap.start_utc.date() for gap in gaps)
         end = (datetime.now(UTC).date() + timedelta(days=1))
         root = self.config.pipeline.workstation_code_root_win / "generated" / "sec_gateway_manual_gap_fill" / self._run_id
-        plan = build_historical_fill_plan(start_date=start, end_date=end, code_root_win=self.config.pipeline.workstation_code_root_win, execute=True)
-        script_path = write_plan_script(plan, root / f"{self._run_id}_run_all.ps1")
+        plans = []
+        non_xbrl_gaps = [gap for gap in gaps if gap.coverage_kind != KIND_BULK_COMPANYFACTS]
+        xbrl_gaps = [gap for gap in gaps if gap.coverage_kind == KIND_BULK_COMPANYFACTS]
+        if non_xbrl_gaps:
+            plans.append(
+                build_historical_fill_plan(
+                    start_date=min(gap.start_utc.date() for gap in non_xbrl_gaps),
+                    end_date=end,
+                    code_root_win=self.config.pipeline.workstation_code_root_win,
+                    execute=True,
+                )
+            )
+        if xbrl_gaps:
+            plans.append(
+                build_xbrl_companyfacts_catchup_plan(
+                    start_date=min(gap.start_utc.date() for gap in xbrl_gaps),
+                    end_date=end,
+                    code_root_win=self.config.pipeline.workstation_code_root_win,
+                    read_database=self.config.pipeline.clickhouse.read_database,
+                    write_database=self.config.pipeline.clickhouse.write_database,
+                    execute=True,
+                )
+            )
+        script_path = write_multi_plan_script(plans, root / f"{self._run_id}_run_all.ps1")
         self.metrics.manual_gap_fill_script_win = str(script_path)
-        self.metrics.manual_gap_fill_command = plan.command_text
-        self._log("historical_gap_fill_script_written", script_path=str(script_path), command=plan.command)
+        self.metrics.manual_gap_fill_command = "\n".join(plan.command_text for plan in plans)
+        self._log("historical_gap_fill_script_written", script_path=str(script_path), commands=[plan.command for plan in plans])
         if self.config.is_workstation and self.config.auto_run_historical_on_workstation and self.config.execute:
-            process = run_historical_fill(plan, cwd=self.config.pipeline.workstation_code_root_win)
+            process = run_plan_script(script_path, cwd=self.config.pipeline.workstation_code_root_win)
             self.metrics.gap_status = "historical_fill_started"
             self.metrics.gap_message = f"Started workstation historical fill pid={process.pid}."
-            self._log("historical_gap_fill_started", pid=process.pid, command=plan.command)
+            self._log("historical_gap_fill_started", pid=process.pid, script_path=str(script_path))
 
     async def _poll_loop(self) -> None:
         while not self._stop_event.is_set():
