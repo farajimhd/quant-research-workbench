@@ -33,6 +33,7 @@ from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import JsonlMetricLogger
 from research.mlops.paths import RunPaths, default_run_root
 from research.mlops.wandb_utils import init_wandb
+from research.temporal_event_model.v1.model import SingleChunkFutureLabelPredictor
 from research.temporal_event_model.v1.progress import ProbeProgressState, ProbeTrainingReporter
 
 
@@ -94,36 +95,6 @@ class ProbeConfig:
     progress_refresh_per_second: float = 1.0
 
 
-class PriceDirectionProbe(nn.Module):
-    """Small downstream head over a frozen event-chunk embedding.
-
-    The frozen encoder maps one compact chunk to `[B, embedding_dim]`. This
-    probe predicts five directional classes for each stored future chunk. The
-    target comes directly from `y.bin`: decode each future chunk, take the max
-    price across quote/trade events inside that chunk, compare it to the max
-    price in the current `x.bin` chunk, then train BCE against the one-hot class.
-    """
-
-    def __init__(self, *, embedding_dim: int, hidden_dim: int, horizons: int, classes: int, dropout: float) -> None:
-        super().__init__()
-        self.backbone = nn.Sequential(
-            nn.LayerNorm(embedding_dim),
-            nn.Linear(embedding_dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.GELU(),
-            nn.LayerNorm(hidden_dim),
-        )
-        self.classification_head = nn.Linear(hidden_dim, horizons * classes)
-        self.horizons = int(horizons)
-        self.classes = int(classes)
-
-    def forward(self, embedding: torch.Tensor) -> torch.Tensor:
-        features = self.backbone(embedding)
-        return self.classification_head(features).view(features.shape[0], self.horizons, self.classes)
-
-
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     repo_root = Path(__file__).resolve().parents[3]
@@ -160,14 +131,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f"validation_shards={[s.shard_index for s in validation_shards]}", flush=True)
 
     encoder = build_frozen_encoder(config, device)
-    probe = PriceDirectionProbe(
+    model = SingleChunkFutureLabelPredictor(
+        event_encoder=encoder,
         embedding_dim=config.encoder_embedding_dim,
         hidden_dim=config.hidden_dim,
-        horizons=len(config.horizons),
+        target_chunks=len(config.horizons),
         classes=len(CLASS_NAMES),
         dropout=config.dropout,
     ).to(device)
-    optimizer = torch.optim.AdamW(probe.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    optimizer = torch.optim.AdamW(
+        (parameter for parameter in model.parameters() if parameter.requires_grad),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+    )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=max(1, config.epochs * sum(steps_in_shard(s, config.batch_size, config.max_batches_per_shard) for s in train_shards)),
@@ -186,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         total_steps=planned_total_steps,
         train_shard_count=len(train_shards),
         validation_shard_count=len(validation_shards),
-        probe_parameters=sum(p.numel() for p in probe.parameters()),
+        probe_parameters=sum(p.numel() for p in model.decoder.parameters()),
         frozen_encoder_parameters=sum(p.numel() for p in encoder.parameters()),
     )
     amp_dtype = resolve_amp_dtype(config.amp_dtype)
@@ -232,8 +208,7 @@ def main(argv: list[str] | None = None) -> int:
                 reporter.message(f"EPOCH START {epoch}/{config.epochs} shard_order={[s.shard_index for s in order]}")
                 for shard_position, shard in enumerate(order, start=1):
                     shard_metrics, global_step = train_one_shard(
-                        encoder=encoder,
-                        probe=probe,
+                        model=model,
                         optimizer=optimizer,
                         scheduler=scheduler,
                         shard=shard,
@@ -249,8 +224,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     if shard_position % max(1, config.validation_frequency_shards) == 0:
                         validation_metrics = evaluate_probe(
-                            encoder=encoder,
-                            probe=probe,
+                            model=model,
                             shards=validation_shards,
                             config=config,
                             device=device,
@@ -261,15 +235,15 @@ def main(argv: list[str] | None = None) -> int:
                         reporter.update({}, step=global_step, validation_metrics=validation_metrics)
                         val_loss = validation_metrics.get("validation/loss", math.inf)
                         reporter.message(format_metric_line("VALIDATION", global_step, validation_metrics))
-                        save_checkpoint(paths.checkpoints_dir / "checkpoint_latest.pt", probe, optimizer, scheduler, config, global_step, epoch)
+                        save_checkpoint(paths.checkpoints_dir / "checkpoint_latest.pt", model, optimizer, scheduler, config, global_step, epoch)
                         reporter.message(f"Saved checkpoint latest: {paths.checkpoints_dir / 'checkpoint_latest.pt'}")
                         if val_loss < best_validation_loss:
                             best_validation_loss = val_loss
-                            save_checkpoint(paths.checkpoints_dir / "checkpoint_best_val.pt", probe, optimizer, scheduler, config, global_step, epoch)
+                            save_checkpoint(paths.checkpoints_dir / "checkpoint_best_val.pt", model, optimizer, scheduler, config, global_step, epoch)
                             reporter.message(f"Saved checkpoint best_val: {paths.checkpoints_dir / 'checkpoint_best_val.pt'}")
                     metric_logger.log({f"training/shard_{key}": value for key, value in shard_metrics.items()}, global_step)
                 epoch_checkpoint = paths.checkpoints_dir / f"checkpoint_epoch_{epoch:03d}.pt"
-                save_checkpoint(epoch_checkpoint, probe, optimizer, scheduler, config, global_step, epoch)
+                save_checkpoint(epoch_checkpoint, model, optimizer, scheduler, config, global_step, epoch)
                 reporter.message(f"Saved checkpoint epoch {epoch}: {epoch_checkpoint}")
     finally:
         if wandb_run is not None:
@@ -446,8 +420,7 @@ def steps_in_shard(shard: EventSampleLabeledShard, batch_size: int, max_batches:
 
 def train_one_shard(
     *,
-    encoder: nn.Module,
-    probe: PriceDirectionProbe,
+    model: SingleChunkFutureLabelPredictor,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     shard: EventSampleLabeledShard,
@@ -461,7 +434,8 @@ def train_one_shard(
     run_start_time: float,
     reporter: ProbeTrainingReporter,
 ) -> tuple[dict[str, float], int]:
-    probe.train()
+    model.train()
+    model.event_encoder.eval()
     x_records = np.memmap(shard.x_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, SAMPLE_BYTES))
     y_records = np.memmap(shard.y_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, shard.y_sample_bytes))
     rng = np.random.default_rng(config.seed + epoch * 100_000 + shard.shard_index)
@@ -482,10 +456,10 @@ def train_one_shard(
         optimizer.zero_grad(set_to_none=True)
         encode_started = time.perf_counter()
         with torch.no_grad(), autocast_context(device, amp_dtype):
-            embedding = encoder(batch["header_uint8"], batch["events_uint8"])
+            embedding = model.encode_chunk(batch["header_uint8"], batch["events_uint8"])
         encode_seconds = time.perf_counter() - encode_started
         forward_started = time.perf_counter()
-        class_logits = probe(embedding.float())
+        class_logits = model.decode_embedding(embedding.float())
         loss, metrics = probe_loss_and_metrics(
             class_logits=class_logits,
             target_one_hot=batch["target_one_hot"],
@@ -498,7 +472,7 @@ def train_one_shard(
         backward_started = time.perf_counter()
         loss.backward()
         if config.grad_clip_norm > 0:
-            torch.nn.utils.clip_grad_norm_(probe.parameters(), config.grad_clip_norm)
+            torch.nn.utils.clip_grad_norm_(model.decoder.parameters(), config.grad_clip_norm)
         backward_seconds = time.perf_counter() - backward_started
         optimizer_started = time.perf_counter()
         optimizer.step()
@@ -545,15 +519,14 @@ def train_one_shard(
 @torch.no_grad()
 def evaluate_probe(
     *,
-    encoder: nn.Module,
-    probe: PriceDirectionProbe,
+    model: SingleChunkFutureLabelPredictor,
     shards: list[EventSampleLabeledShard],
     config: ProbeConfig,
     device: torch.device,
     amp_dtype: torch.dtype | None,
 ) -> dict[str, float]:
     started = time.perf_counter()
-    probe.eval()
+    model.eval()
     sums: dict[str, float] = {}
     batches = 0
     for shard in shards:
@@ -566,8 +539,8 @@ def evaluate_probe(
             batch_index = order[step * config.batch_size : (step + 1) * config.batch_size]
             batch = build_probe_batch(x_records, y_records, batch_index, config, device)
             with autocast_context(device, amp_dtype):
-                embedding = encoder(batch["header_uint8"], batch["events_uint8"])
-            class_logits = probe(embedding.float())
+                embedding = model.encode_chunk(batch["header_uint8"], batch["events_uint8"])
+                class_logits = model.decode_embedding(embedding.float())
             _, metrics = probe_loss_and_metrics(
                 class_logits=class_logits,
                 target_one_hot=batch["target_one_hot"],
@@ -752,7 +725,7 @@ def memory_profile(device: torch.device) -> dict[str, float]:
 
 def save_checkpoint(
     path: Path,
-    probe: PriceDirectionProbe,
+    model: SingleChunkFutureLabelPredictor,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     config: ProbeConfig,
@@ -762,7 +735,8 @@ def save_checkpoint(
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
-            "model": probe.state_dict(),
+            "model": model.state_dict(),
+            "decoder": model.decoder.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "config": to_manifest_config(config),

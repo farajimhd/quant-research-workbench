@@ -10,9 +10,7 @@ if str(REPO_ROOT) not in sys.path:
 import torch
 from torch import nn
 
-from research.temporal_event_model.v1.config import LossConfig, ModelConfig
-from research.temporal_event_model.v1.losses import temporal_next_chunk_loss
-from research.temporal_event_model.v1.model import TemporalEventPredictor
+from research.temporal_event_model.v1.model import SingleChunkFutureLabelPredictor
 
 
 class DummyEventEncoder(nn.Module):
@@ -27,27 +25,24 @@ class DummyEventEncoder(nn.Module):
 
 def main() -> None:
     batch_size = 2
-    context_chunks = 16
-    target_chunks = 1
+    target_chunks = 2
+    classes = 5
     embedding_dim = 32
-    model = TemporalEventPredictor(
+    model = SingleChunkFutureLabelPredictor(
         event_encoder=DummyEventEncoder(embedding_dim),
-        config=ModelConfig(embedding_dim=embedding_dim, temporal_d_model=64, temporal_layers=1, temporal_heads=4, decoder_layers=1),
-        context_chunks=context_chunks,
+        embedding_dim=embedding_dim,
+        hidden_dim=64,
         target_chunks=target_chunks,
+        classes=classes,
+        dropout=0.0,
     )
-    context_header = torch.randint(0, 256, (batch_size, context_chunks, 14), dtype=torch.uint8)
-    context_events = torch.randint(0, 256, (batch_size, context_chunks, 128, 16), dtype=torch.uint8)
-    target_header = torch.randint(0, 256, (batch_size, target_chunks, 14), dtype=torch.uint8)
-    target_events = torch.randint(0, 256, (batch_size, target_chunks, 128, 16), dtype=torch.uint8)
-    output = model(context_header, context_events)
-    assert output.chunk_embeddings.shape == (batch_size, context_chunks, embedding_dim)
-    assert output.header_bit_logits.shape == (batch_size, target_chunks, 14, 8)
-    assert output.event_bit_logits.shape == (batch_size, target_chunks, 128, 16, 8)
-    loss_config = LossConfig()
-    assert loss_config.header_weight > loss_config.event_weight
-    loss = temporal_next_chunk_loss(output, target_header, target_events, loss_config, detailed=True)
-    assert torch.isfinite(loss.loss)
+    header = torch.randint(0, 256, (batch_size, 14), dtype=torch.uint8)
+    events = torch.randint(0, 256, (batch_size, 128, 16), dtype=torch.uint8)
+    output = model(header, events)
+    assert output.chunk_embedding.shape == (batch_size, embedding_dim)
+    assert output.class_logits.shape == (batch_size, target_chunks, classes)
+    loss = torch.nn.functional.binary_cross_entropy_with_logits(output.class_logits, torch.zeros_like(output.class_logits))
+    assert torch.isfinite(loss)
     print("temporal_event_model/v1 smoke passed", flush=True)
 
 

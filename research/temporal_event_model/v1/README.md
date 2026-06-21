@@ -1,6 +1,26 @@
 # temporal_event_model v1
 
-First single-ticker temporal predictor over compact unified SIP event chunks.
+First downstream test for pretrained compact-event encoders.
+
+The active v1 training path is the cache-v2 single-chunk price-direction probe:
+
+```text
+x.bin current chunk [B,14] + [B,128,16]
+        -> frozen masked_event_model encoder
+        -> chunk embedding [B,32]
+        -> nonlinear MLP decoder
+        -> class_logits [B,2,5]
+```
+
+The two output chunks correspond to the two stored future chunks in cache v2.
+The five classes are `strong_down`, `down`, `flat`, `up`, and `strong_up`.
+This is intentionally simple and fast; it does not use the older multi-context
+temporal transformer decoder.
+
+The older ClickHouse-window temporal trainer is still present for future
+experiments that build true multi-chunk temporal context, but cache v2 does not
+store that context today. Do not use the old `CONTEXT_CHUNKS` notebook path for
+cache-v2 linear probing.
 
 ## Data Contract
 

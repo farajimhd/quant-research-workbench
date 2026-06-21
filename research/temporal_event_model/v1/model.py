@@ -23,6 +23,85 @@ class TemporalEventOutput:
     chunk_embeddings: torch.Tensor
 
 
+@dataclass(slots=True)
+class FutureChunkLabelOutput:
+    class_logits: torch.Tensor
+    chunk_embedding: torch.Tensor
+
+
+class FutureChunkMLPDecoder(nn.Module):
+    """Fast nonlinear head for cache-v2 future-label prediction.
+
+    The cache-v2 downstream experiment has only one current chunk as input.
+    The frozen event encoder converts that chunk into `[B, embedding_dim]`.
+    This decoder maps the embedding directly to the labels for the stored
+    future chunks, avoiding the old temporal transformer/decoder path.
+    """
+
+    def __init__(self, *, embedding_dim: int, hidden_dim: int, target_chunks: int, classes: int, dropout: float) -> None:
+        super().__init__()
+        self.feature_mlp = nn.Sequential(
+            nn.LayerNorm(embedding_dim),
+            nn.Linear(embedding_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+        )
+        self.label_head = nn.Linear(hidden_dim, int(target_chunks) * int(classes))
+        self.target_chunks = int(target_chunks)
+        self.classes = int(classes)
+
+    def forward(self, chunk_embedding: torch.Tensor) -> torch.Tensor:
+        features = self.feature_mlp(chunk_embedding)
+        return self.label_head(features).view(features.shape[0], self.target_chunks, self.classes)
+
+
+class SingleChunkFutureLabelPredictor(nn.Module):
+    """Frozen event encoder plus simple MLP decoder for cache-v2 labels.
+
+    Input is exactly one compact event chunk:
+
+    - `header_uint8`: `[B, 14]`
+    - `events_uint8`: `[B, 128, 16]`
+
+    Output is `class_logits`: `[B, target_chunks, classes]`, where the default
+    cache-v2 probe uses two target chunks and five price-direction classes.
+    """
+
+    def __init__(
+        self,
+        *,
+        event_encoder: nn.Module,
+        embedding_dim: int,
+        hidden_dim: int,
+        target_chunks: int,
+        classes: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        self.event_encoder = event_encoder
+        self.decoder = FutureChunkMLPDecoder(
+            embedding_dim=embedding_dim,
+            hidden_dim=hidden_dim,
+            target_chunks=target_chunks,
+            classes=classes,
+            dropout=dropout,
+        )
+
+    def encode_chunk(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
+        return self.event_encoder(header_uint8, events_uint8)
+
+    def decode_embedding(self, chunk_embedding: torch.Tensor) -> torch.Tensor:
+        return self.decoder(chunk_embedding)
+
+    def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> FutureChunkLabelOutput:
+        chunk_embedding = self.encode_chunk(header_uint8, events_uint8)
+        class_logits = self.decode_embedding(chunk_embedding.float())
+        return FutureChunkLabelOutput(class_logits=class_logits, chunk_embedding=chunk_embedding)
+
+
 def transformer_encoder(layer: nn.TransformerEncoderLayer, *, num_layers: int) -> nn.TransformerEncoder:
     try:
         return nn.TransformerEncoder(layer, num_layers=num_layers, enable_nested_tensor=False)
