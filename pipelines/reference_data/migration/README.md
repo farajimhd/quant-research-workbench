@@ -306,11 +306,13 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pip
 Step 6 builds:
 
 - `id_sec_market_bridge_v1` from issuer CIK identifiers to active security/listing/symbol rows
-- `sec_filing_document_v1` metadata rows from `sec_filing_v2.primary_document`
 - `feature_tradable_universe_v1` for the requested feature date
 - `feature_scanner_static_v1` for the requested feature date
 
-This step intentionally does not invent SEC accepted timestamps or filing text. Those require SEC submissions/daily-feed artifacts and must be produced by the SEC bulk/feed parser before `feature_sec_event_market_bridge_v1` can be populated.
+This step intentionally does not invent SEC accepted timestamps, SEC document
+metadata, or filing text. Those require SEC submissions/daily-feed artifacts and
+are handled by the SEC EDGAR pipeline, which writes `sec_filing_document_v2` and
+`sec_filing_text_v2`.
 
 ## Step 7: Backfill Existing SEC Filing Accepted Timestamps
 

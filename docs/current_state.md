@@ -185,11 +185,11 @@ q_live.sec_filing_v2 rows: 8,531,118
 q_live.sec_filing_v2 rows missing accepted_at_utc: 0
 q_live.sec_filing_v2 duplicate (cik, accession_number): 0
 q_live.sec_filing_v2 accepted_at_utc range: 1994-01-04 00:00:00.000000000 to 2026-05-20 16:16:29.000000000
-q_live.sec_filing_document_v1 rows: 8,417,763
-q_live.sec_filing_text_v1 rows: 0
+q_live.sec_filing_document_v1 rows before cleanup: 8,417,763
+q_live.sec_filing_text_v1 rows before cleanup: 0
 ```
 
-`sec_filing_v2` is the filing-level parent table and has repaired acceptance timestamps. `sec_filing_document_v1` is stale/provisional for text extraction: it was generated from `sec_filing_v2.primary_document` in migration step 6 and has exactly one metadata-only primary document row per accession with a primary document. It does not represent real archive `<DOCUMENT>` blocks.
+`sec_filing_v2` is the filing-level parent table and has repaired acceptance timestamps. `sec_filing_document_v1` was stale/provisional for text extraction: it was generated from `sec_filing_v2.primary_document` in migration step 6 and had exactly one metadata-only primary document row per accession with a primary document. It did not represent real archive `<DOCUMENT>` blocks and is no longer part of the active schema.
 
 Observed `sec_filing_document_v1` fingerprint:
 
@@ -229,7 +229,7 @@ checks: 25
 pass: 20
 warn: 5
 fail: 0
-expected_warnings: provisional sec_filing_document_v1, empty text tables, sampled XBRL accession orphans
+expected_warnings_at_that_time: provisional sec_filing_document_v1, empty text tables, sampled XBRL accession orphans
 ```
 
 SEC text smoke on the workstation share before parent-row generation:

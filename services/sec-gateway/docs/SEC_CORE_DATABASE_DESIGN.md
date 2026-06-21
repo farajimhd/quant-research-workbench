@@ -183,7 +183,7 @@ Suggested columns:
 | `source_file_id` | `String` | Parent submissions bulk artifact id. |
 | `last_seen_at_utc` | `DateTime64(9, 'UTC')` | Load/reconciliation time. |
 
-### `sec_filing_document_v1`
+### `sec_filing_document_v2`
 
 One row per filing document.
 
@@ -215,15 +215,15 @@ Recommended engine:
 - Partition by `toYYYYMM(downloaded_at_utc)`
 - Order by `(accession_number, sequence, document_name)`
 
-### `sec_filing_text_v1`
+### `sec_filing_text_v2`
 
-Stores extracted text in ClickHouse. This table is intentionally separate from `sec_filing_document_v1` so metadata queries do not scan large text columns.
+Stores extracted text in ClickHouse. This table is intentionally separate from `sec_filing_document_v2` so metadata queries do not scan large text columns.
 
 Suggested columns:
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `document_id` | `String` | Same id as `sec_filing_document_v1`. |
+| `document_id` | `String` | Same id as `sec_filing_document_v2`. |
 | `accession_number` | `String` | Parent accession. |
 | `cik` | `String` | Parent CIK. |
 | `sequence` | `UInt16` | SEC document sequence. |
@@ -318,8 +318,8 @@ Recommended engine:
    - filter by form type, event timestamp, and market-data coverage around `accepted_at_utc`
    - produce a selected accession `.txt` download queue
 8. Download only selected accession `.txt` files:
-   - populate or refine `sec_filing_document_v1`
-   - populate `sec_filing_text_v1`
+   - populate or refine `sec_filing_document_v2`
+   - populate `sec_filing_text_v2`
 9. Run reconciliation:
    - missing accession in submissions
    - missing `accepted_at_utc`
@@ -356,8 +356,8 @@ Live flow should write into the same canonical tables as historical fill.
 4. If missing or missing `accepted_at_utc`, query submissions API for that CIK/accession.
 5. Insert or update `sec_filing_v1`.
 6. Download detail page and documents asynchronously.
-7. Insert `sec_filing_document_v1`.
-8. Extract text and insert `sec_filing_text_v1`.
+7. Insert `sec_filing_document_v2`.
+8. Extract text and insert `sec_filing_text_v2`.
 9. Keep recent filings in memory for app APIs.
 10. Emit canonical filing events to downstream model/news systems.
 
@@ -375,8 +375,8 @@ Live flow should write into the same canonical tables as historical fill.
 
 ## Text Storage Rules
 
-- Store extracted text in `sec_filing_text_v1`.
-- Keep document metadata in `sec_filing_document_v1`.
+- Store extracted text in `sec_filing_text_v2`.
+- Keep document metadata in `sec_filing_document_v2`.
 - Use `text_sha256` to dedupe and validate extracted text.
 - Use stronger compression for text table than metadata tables.
 - Preserve artifact paths for raw document bytes even when text is stored in ClickHouse.
@@ -388,14 +388,14 @@ SEC filings should be treated as first-class news-like events for model training
 The eventual model event stream should combine:
 - Benzinga/news events from `news-gateway`.
 - SEC filing events from `sec-gateway`.
-- Filing text from `sec_filing_text_v1`.
+- Filing text from `sec_filing_text_v2`.
 - Ticker/security mappings from `sec_company_ticker_v1` plus the market reference bridge.
 - Market state at `accepted_at_utc`.
 
 ## Open Implementation Questions
 
 - Exact `sec_core` storage policy name.
-- Whether `sec_filing_text_v1.text` should use default compression or explicit ZSTD codec.
+- Whether `sec_filing_text_v2.text` should use default compression or explicit ZSTD codec.
 - Whether `sec_fundamental_snapshot_v1` should be one wide table or multiple feature-family tables.
 - How to map CIK to durable security/listing ids when one CIK maps to many share classes or tickers.
 - Whether daily feed archives should be retained at all, or only used as on-demand fallback for rare missing accession text.

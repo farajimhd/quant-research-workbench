@@ -33,8 +33,6 @@ DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_integrity_audit")
 DEFAULT_ARCHIVE_ROOT_WIN = Path("D:/market-data/sec_core/daily_archives")
 SEC_TABLES = (
     "sec_filing_v2",
-    "sec_filing_document_v1",
-    "sec_filing_text_v1",
     "sec_filing_document_v2",
     "sec_filing_text_v2",
     "sec_filing_document_skip_v1",
@@ -108,10 +106,6 @@ def main() -> None:
     checks.extend(check_required_tables(table_meta, args.require_v2_tables))
     if "sec_filing_v2" in table_meta:
         checks.extend(check_filing_parent(client, args.database, scope_start))
-    if "sec_filing_document_v1" in table_meta and "sec_filing_v2" in table_meta:
-        checks.extend(check_document_v1(client, args.database))
-    if "sec_filing_text_v1" in table_meta:
-        checks.extend(check_text_table(client, args.database, text_table="sec_filing_text_v1", document_table="sec_filing_document_v1"))
     if "sec_filing_document_v2" in table_meta:
         checks.extend(check_document_v2_shape(column_map))
     if "sec_filing_text_v2" in table_meta:
@@ -156,7 +150,7 @@ def default_sec_clickhouse_password() -> str:
 
 def check_required_tables(table_meta: dict[str, dict[str, Any]], require_v2_tables: bool) -> list[dict[str, Any]]:
     rows = []
-    required = {"sec_filing_v2", "sec_filing_document_v1", "sec_filing_text_v1"}
+    required = {"sec_filing_v2"}
     if require_v2_tables:
         required |= {"sec_filing_document_v2", "sec_filing_text_v2", "sec_filing_document_skip_v1"}
     for table in SEC_TABLES:
@@ -238,81 +232,6 @@ def check_filing_parent(client: ClickHouseHttpClient, db: str, scope_start: date
             details={"scope_start_date": scope_start.isoformat(), "duplicates": scoped_duplicate_count},
         )
     )
-    return rows
-
-
-def check_document_v1(client: ClickHouseHttpClient, db: str) -> list[dict[str, Any]]:
-    rows = []
-    relations = query_rows(
-        client,
-        f"""
-        SELECT 'doc_without_filing' AS metric, count() AS value
-        FROM (SELECT cik, accession_number FROM {qi(db)}.sec_filing_document_v1 FINAL) AS d
-        LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(db)}.sec_filing_v2 FINAL) AS f
-        ON d.cik = f.cik AND d.accession_number = f.accession_number
-        UNION ALL
-        SELECT 'filing_without_doc', count()
-        FROM (SELECT cik, accession_number FROM {qi(db)}.sec_filing_v2 FINAL) AS f
-        LEFT ANTI JOIN (SELECT cik, accession_number FROM {qi(db)}.sec_filing_document_v1 FINAL) AS d
-        ON d.cik = f.cik AND d.accession_number = f.accession_number
-        UNION ALL
-        SELECT 'duplicate_documents', count()
-        FROM (
-            SELECT document_id, count() AS c
-            FROM {qi(db)}.sec_filing_document_v1 FINAL
-            GROUP BY document_id
-            HAVING c > 1
-        )
-        FORMAT TSVWithNames
-        """,
-    )
-    relation_details = {row["metric"]: int(row["value"]) for row in relations}
-    relation_status = "pass" if relation_details.get("doc_without_filing", 0) == 0 and relation_details.get("duplicate_documents", 0) == 0 else "fail"
-    rows.append(check("sec_filing_document_v1_relations", relation_status, "current document v1 relation checks", table="sec_filing_document_v1", details=relation_details))
-
-    fingerprint = query_one(
-        client,
-        f"""
-        SELECT
-            count() AS joined_docs,
-            countIf(d.document_name = ifNull(f.primary_document, '')) AS doc_name_matches_primary,
-            countIf(d.document_url = ifNull(f.primary_document_url, '')) AS doc_url_matches_primary,
-            countIf(d.sequence_number = 1) AS sequence_one,
-            countIf(d.document_type = f.form_type) AS doc_type_matches_form,
-            countIf(d.description = 'primary_document_from_sec_filing_metadata') AS bridge_description
-        FROM (SELECT * FROM {qi(db)}.sec_filing_document_v1 FINAL) AS d
-        INNER JOIN (SELECT * FROM {qi(db)}.sec_filing_v2 FINAL) AS f
-        ON d.cik = f.cik AND d.accession_number = f.accession_number
-        FORMAT TSVWithNames
-        """,
-    )
-    joined_docs = int(fingerprint["joined_docs"])
-    is_synthetic_bridge = joined_docs > 0 and all(int(fingerprint[key]) == joined_docs for key in ("doc_name_matches_primary", "doc_url_matches_primary", "sequence_one", "doc_type_matches_form", "bridge_description"))
-    rows.append(
-        check(
-            "sec_filing_document_v1_synthetic_bridge",
-            "warn" if is_synthetic_bridge else "pass",
-            "document v1 is synthetic primary-document bridge" if is_synthetic_bridge else "document v1 is not a pure synthetic bridge",
-            table="sec_filing_document_v1",
-            details=fingerprint,
-        )
-    )
-    distribution = query_rows(
-        client,
-        f"""
-        SELECT docs_per_accession, count() AS accessions
-        FROM (
-            SELECT cik, accession_number, count() AS docs_per_accession
-            FROM {qi(db)}.sec_filing_document_v1 FINAL
-            GROUP BY cik, accession_number
-        )
-        GROUP BY docs_per_accession
-        ORDER BY docs_per_accession
-        LIMIT 20
-        FORMAT TSVWithNames
-        """,
-    )
-    rows.append(check("sec_filing_document_v1_docs_per_accession", "warn", "document v1 distribution shows provisional one-row-per-accession shape", table="sec_filing_document_v1", details={"distribution": distribution}))
     return rows
 
 

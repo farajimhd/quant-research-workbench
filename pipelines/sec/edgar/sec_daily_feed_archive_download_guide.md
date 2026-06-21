@@ -6,7 +6,9 @@ This script downloads only SEC EDGAR daily Feed archives:
 https://www.sec.gov/Archives/edgar/Feed/YYYY/QTRN/YYYYMMDD.nc.tar.gz
 ```
 
-It does not decompress, parse, fetch headers, or write to ClickHouse. The next script should parse these archives and populate `q_live.sec_filing_text_v1`.
+It does not decompress, parse, fetch headers, or write to ClickHouse. The next
+scripts should parse these archives and populate `q_live.sec_filing_document_v2`,
+`q_live.sec_filing_text_v2`, and `q_live.sec_filing_document_skip_v1`.
 
 ## What It Saves
 

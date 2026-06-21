@@ -144,8 +144,9 @@ SEC should be linked to canonical identities but still keep its own source truth
 | Table | Purpose |
 | --- | --- |
 | `sec_filing_v2` | Filing metadata with exact acceptance timestamp and accession URLs. |
-| `sec_filing_document_v1` | One row per filing document. |
-| `sec_filing_text_v1` | Extracted text, separated from document metadata. |
+| `sec_filing_document_v2` | Archive-derived filing document metadata. |
+| `sec_filing_text_v2` | Archive-derived normalized text, separated from document metadata. |
+| `sec_filing_document_skip_v1` | Archive-derived document skip records and reasons. |
 | `sec_xbrl_concept_v1` | Concept metadata from company facts. |
 | `sec_xbrl_company_fact_v1` | Company facts by CIK/accession/tag/unit/period. |
 | `sec_xbrl_frame_v1` | Frame metadata. |

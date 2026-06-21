@@ -259,8 +259,6 @@ def validate_operational_state(client: ClickHouseHttpClient, args: argparse.Name
     rows.extend(
         [
             count_check(client, "sec_missing_accepted_at", "sec_filing_v2", f"SELECT countIf(isNull(accepted_at_utc)) FROM {db}.sec_filing_v2 FINAL", expected_zero=True, severity="warning", message="SEC accepted timestamp backfill should populate every migrated filing row."),
-            count_check(client, "sec_filing_documents", "sec_filing_document_v1", f"SELECT count() FROM {db}.sec_filing_document_v1", expected_zero=False, pass_if_positive=True, severity="warning", message="Document extraction has not been populated yet."),
-            count_check(client, "sec_filing_text", "sec_filing_text_v1", f"SELECT count() FROM {db}.sec_filing_text_v1", expected_zero=False, pass_if_positive=True, severity="warning", message="Filing text extraction has not been populated yet."),
             count_check(client, "sec_market_bridge", "id_sec_market_bridge_v1", f"SELECT count() FROM {db}.id_sec_market_bridge_v1", expected_zero=False, pass_if_positive=True, severity="warning", message="SEC CIK-to-market bridge has not been built yet."),
             count_check(client, "tradable_universe_features", "feature_tradable_universe_v1", f"SELECT count() FROM {db}.feature_tradable_universe_v1", expected_zero=False, pass_if_positive=True, severity="warning", message="Derived tradable universe features are not built yet."),
             count_check(client, "scanner_static_features", "feature_scanner_static_v1", f"SELECT count() FROM {db}.feature_scanner_static_v1", expected_zero=False, pass_if_positive=True, severity="warning", message="Derived scanner static features are not built yet."),

@@ -6,7 +6,9 @@ Use this script to create the archive-derived SEC document/text targets:
 - `q_live.sec_filing_text_v2`
 - `q_live.sec_filing_document_skip_v1`
 
-These tables are separate from the existing provisional `sec_filing_document_v1`.
+These tables are the current archive-derived SEC document/text targets. The old
+provisional `sec_filing_document_v1` and `sec_filing_text_v1` tables are not part
+of the current schema.
 
 ## Local Dry Run
 

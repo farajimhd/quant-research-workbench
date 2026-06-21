@@ -2,7 +2,11 @@
 
 SEC normalized text extraction is the next stage after archive validation succeeds. This contract describes the target output that extraction scripts should produce.
 
-As of the 2026-06-16 ClickHouse check, `q_live.sec_filing_v2`, `q_live.sec_filing_document_v1`, and `q_live.sec_filing_text_v1` exist. `sec_filing_text_v1` has zero rows. The archive-derived extraction target is `sec_filing_document_v2` and `sec_filing_text_v2`.
+As of the 2026-06-21 cleanup, `q_live.sec_filing_v2`,
+`sec_filing_document_v2`, `sec_filing_text_v2`, and
+`sec_filing_document_skip_v1` are the active SEC filing/text tables. The old
+`sec_filing_document_v1` and `sec_filing_text_v1` tables were provisional and
+should be dropped.
 
 Important lineage finding: current `q_live.sec_filing_document_v1` is not archive-derived. It was built by migration step 6 from `q_live.sec_filing_v2.primary_document` as a provisional bridge. The archive extractor must not treat the current document rows as the final document source of truth.
 
@@ -89,7 +93,8 @@ filings without document rows: 113,355
 documents per accession: exactly 1
 ```
 
-Therefore `sec_filing_document_v1` is retained as historical/provisional metadata, while archive-derived extraction writes `sec_filing_document_v2`.
+Therefore `sec_filing_document_v1` is not retained as an active data contract.
+Archive-derived extraction writes `sec_filing_document_v2`.
 
 ## Archive-Derived Document Table: `q_live.sec_filing_document_v2`
 

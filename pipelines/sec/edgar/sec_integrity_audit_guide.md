@@ -5,8 +5,7 @@ Run this before building or loading archive-derived SEC filing text. The audit i
 ## What It Checks
 
 - `q_live.sec_filing_v2` exists, has logical rows, has no missing `accepted_at_utc`, and has no duplicate `(cik, accession_number)`.
-- Current `q_live.sec_filing_document_v1` relation integrity and its known synthetic bridge fingerprint.
-- Current text tables have no duplicate text keys or text rows without document parents when populated.
+- Current v2 text tables have no duplicate text keys or text rows without document parents.
 - `sec_filing_document_v2`, `sec_filing_text_v2`, and `sec_filing_document_skip_v1` presence when `--require-v2-tables` is passed.
 - Required v2 columns such as `text_sha256`, `normalizer_version`, `quality_flags`, `source_archive_date`, and `source_archive_member`.
 - Structured SEC/XBRL table presence.
@@ -19,7 +18,9 @@ Run this before building or loading archive-derived SEC filing text. The audit i
   documents belong in `sec_xbrl_company_fact_v1`.
 - Local daily archive inventory without scanning archive contents.
 
-Warnings are expected before v2 schema creation because the v2 tables do not exist yet and `sec_filing_document_v1` is intentionally provisional.
+`sec_filing_document_v1` and `sec_filing_text_v1` were legacy/provisional tables
+and are no longer part of the current schema or audit target. The archive-derived
+document/text path is v2 only.
 
 ## Local Laptop Command
 
@@ -69,4 +70,4 @@ sec_integrity_audit_checks.jsonl
 sec_integrity_audit_summary.md
 ```
 
-Treat failures as blockers before extractor implementation or loading. Treat warnings as explicit decisions to review; the known `sec_filing_document_v1` synthetic bridge warning is expected until v2 archive-derived metadata is loaded.
+Treat failures as blockers before extractor implementation or loading. Treat warnings as explicit decisions to review.

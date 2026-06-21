@@ -61,9 +61,19 @@ Run the XBRL companyfacts catch-up when filing/text tables are newer than
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_xbrl_companyfacts_catchup.py --read-database q_live --write-database q_live --workers 4 --batch-size 10000 --execute
 ```
 
+Run the XBRL integrity repair after an audit reports missing XBRL filing parents
+or frame parents. This also drops stale `sec_filing_document_v1` and
+`sec_filing_text_v1`:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_xbrl_integrity_repair.py --database q_live --scope-start-date 2019-01-01 --execute
+```
+
 See `sec_historical_backfill_orchestrator_guide.md` for the full stage order, one-command historical runs, smoke tests, and operational notes from the manual runs.
 See `sec_xbrl_companyfacts_catchup_guide.md` for dry runs, temp-db smoke tests,
 and XBRL catch-up behavior.
+See `sec_xbrl_integrity_repair_guide.md` for the XBRL relationship repair and
+legacy v1 table drop commands.
 
 SEC filing text path:
 

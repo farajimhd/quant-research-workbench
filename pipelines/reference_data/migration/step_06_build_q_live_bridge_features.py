@@ -237,36 +237,6 @@ FROM bridge_source
 """,
         ),
         BuildSpec(
-            name="sec_filing_document_metadata",
-            target_table="sec_filing_document_v1",
-            critical_columns=("document_id", "accession_number", "cik", "document_name", "extraction_status"),
-            expected_sql=f"SELECT count() FROM {db}.sec_filing_v2 WHERE primary_document IS NOT NULL AND primary_document != ''",
-            target_count_sql=f"SELECT count() FROM {db}.sec_filing_document_v1 FINAL",
-            insert_sql=f"""
-INSERT INTO {db}.sec_filing_document_v1
-(document_id, accession_number, cik, sequence_number, document_name, document_type, description, document_url, local_artifact_path, mime_type, byte_size, content_sha256, extraction_status, extraction_error, source_run_id, inserted_at)
-SELECT
-    concat('sec-document:', cik, ':', accession_number_compact, ':primary') AS document_id,
-    accession_number,
-    cik,
-    CAST(1, 'Nullable(UInt16)') AS sequence_number,
-    primary_document AS document_name,
-    form_type AS document_type,
-    'primary_document_from_sec_filing_metadata' AS description,
-    primary_document_url AS document_url,
-    CAST(NULL, 'Nullable(String)') AS local_artifact_path,
-    CAST(NULL, 'Nullable(String)') AS mime_type,
-    filing_size AS byte_size,
-    CAST(NULL, 'Nullable(String)') AS content_sha256,
-    'metadata_only' AS extraction_status,
-    CAST(NULL, 'Nullable(String)') AS extraction_error,
-    {literal_run_id} AS source_run_id,
-    {inserted_expr} AS inserted_at
-FROM {db}.sec_filing_v2
-WHERE primary_document IS NOT NULL AND primary_document != ''
-""",
-        ),
-        BuildSpec(
             name="tradable_universe",
             target_table="feature_tradable_universe_v1",
             critical_columns=("universe_date", "symbol_id", "listing_id", "security_id", "issuer_id", "ticker"),
