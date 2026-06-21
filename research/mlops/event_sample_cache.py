@@ -616,24 +616,28 @@ def discover_event_sample_labeled_shards(config: EventSampleCacheDataConfig) -> 
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         shard_rows = [
-            row
+            (row, root / config.split / f"shard_{int(row['shard_index']):06d}.json", False)
             for row in manifest.get("shards", [])
             if row.get("split") == config.split and (row.get("format") == SAMPLE_CACHE_FORMAT_V2 or "x_path" in row or "y_path" in row)
         ]
     else:
         shard_rows = []
-        for meta_path in sorted((root / config.split).glob("shard_*.json")):
+        for meta_path, flat_layout in iter_labeled_shard_meta_paths(root, config.split):
             row = json.loads(meta_path.read_text(encoding="utf-8"))
             if row.get("format") == SAMPLE_CACHE_FORMAT_V2 or "x_path" in row or "y_path" in row:
-                shard_rows.append(row)
+                shard_rows.append((row, meta_path, flat_layout))
     shards: list[EventSampleLabeledShard] = []
-    for row in shard_rows:
-        x_path = root / row["x_path"]
-        y_path = root / row["y_path"]
-        meta_path = root / config.split / f"shard_{int(row['shard_index']):06d}.json"
+    for row, meta_path, flat_layout in shard_rows:
+        x_path = resolve_labeled_shard_sidecar(root, meta_path, row, "x_path", ".x.bin")
+        y_path = resolve_labeled_shard_sidecar(root, meta_path, row, "y_path", ".y.bin")
+        label_path = (
+            resolve_labeled_shard_sidecar(root, meta_path, row, "label_path", ".labels.parquet")
+            if row.get("label_path")
+            else None
+        )
         shards.append(
             EventSampleLabeledShard(
-                split=str(row["split"]),
+                split=str(config.split if flat_layout else row["split"]),
                 shard_index=int(row["shard_index"]),
                 x_path=x_path,
                 y_path=y_path,
@@ -646,7 +650,7 @@ def discover_event_sample_labeled_shards(config: EventSampleCacheDataConfig) -> 
                 y_sha256=str(row.get("y_sha256", "")),
                 x_byte_size=int(row.get("x_byte_size", int(row["num_samples"]) * int(row.get("x_sample_bytes", SAMPLE_BYTES)))),
                 y_byte_size=int(row.get("y_byte_size", int(row["num_samples"]) * int(row["y_sample_bytes"]))),
-                label_path=(root / str(row["label_path"])) if row.get("label_path") else None,
+                label_path=label_path,
             )
         )
     shards.sort(key=lambda value: value.shard_index)
@@ -665,6 +669,32 @@ def discover_event_sample_labeled_shards(config: EventSampleCacheDataConfig) -> 
                 f"expected {shard.label_chunks * SAMPLE_BYTES}"
             )
     return shards
+
+
+def iter_labeled_shard_meta_paths(root: Path, split: str) -> Iterator[tuple[Path, bool]]:
+    split_dir = root / split
+    if split_dir.exists():
+        split_meta_paths = sorted(split_dir.glob("shard_*.json"))
+        if split_meta_paths:
+            for meta_path in split_meta_paths:
+                yield meta_path, False
+            return
+    # Laptop/debug copies often contain a few v2 shard files directly under the
+    # cache root. Treat those as a local shard pool for the requested split.
+    for meta_path in sorted(root.glob("shard_*.json")):
+        yield meta_path, True
+
+
+def resolve_labeled_shard_sidecar(root: Path, meta_path: Path, row: dict[str, Any], key: str, suffix: str) -> Path:
+    raw_value = str(row.get(key, ""))
+    if raw_value:
+        candidate = root / raw_value.replace("\\", "/")
+        if candidate.exists():
+            return candidate
+        candidate = meta_path.parent / Path(raw_value).name
+        if candidate.exists():
+            return candidate
+    return meta_path.with_suffix(suffix)
 
 
 def resolve_event_sample_cache_root(path: Path, *, split: str = "train") -> Path:
