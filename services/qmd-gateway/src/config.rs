@@ -16,6 +16,11 @@ pub struct GatewayConfig {
     pub clickhouse_url: String,
     pub clickhouse_user: String,
     pub compact_event_channel_capacity: usize,
+    pub compact_event_continuity_table: String,
+    pub compact_event_live_buffer_events_per_ticker: usize,
+    pub compact_event_reorder_force_flush_ms: u64,
+    pub compact_event_reorder_lag_ms: u64,
+    pub compact_event_reorder_max_events_per_ticker: usize,
     pub compact_event_table: String,
     pub compact_events_enabled: bool,
     pub event_channel_capacity: usize,
@@ -82,6 +87,23 @@ impl GatewayConfig {
             compact_event_channel_capacity: env_usize(
                 "QMD_COMPACT_EVENT_CHANNEL_CAPACITY",
                 250_000,
+            ),
+            compact_event_continuity_table: env_string(
+                "QMD_COMPACT_EVENT_CONTINUITY_TABLE",
+                "live_event_ordinal_continuity",
+            ),
+            compact_event_live_buffer_events_per_ticker: env_usize(
+                "QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER",
+                512,
+            ),
+            compact_event_reorder_force_flush_ms: env_u64(
+                "QMD_COMPACT_EVENT_REORDER_FORCE_FLUSH_MS",
+                2_000,
+            ),
+            compact_event_reorder_lag_ms: env_u64("QMD_COMPACT_EVENT_REORDER_LAG_MS", 500),
+            compact_event_reorder_max_events_per_ticker: env_usize(
+                "QMD_COMPACT_EVENT_REORDER_MAX_EVENTS_PER_TICKER",
+                4_096,
             ),
             compact_event_table: env_string("QMD_COMPACT_EVENT_TABLE", "live_market_events_v1"),
             compact_events_enabled: env_bool("QMD_COMPACT_EVENTS_ENABLED", true),

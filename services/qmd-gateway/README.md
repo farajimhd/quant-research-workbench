@@ -28,11 +28,13 @@ Current responsibilities:
 The gateway keeps two paths separate:
 
 ```text
-fast path: Massive -> memory/scanner/bars -> local app stream
-persistence path: Massive -> queues -> ClickHouse batch inserts
+fast path: Massive -> compact memory buffers/scanner/bars -> local app stream
+persistence path: Massive -> compact reorder buffers -> ClickHouse batch inserts
 ```
 
 ClickHouse writes must never block the live trading decision path.
+The historical `market_sip_compact.events` table remains flatfile-only. Live
+QMD events are written only to the app-owned `q_live` database.
 
 ## Configuration
 
@@ -55,7 +57,12 @@ Environment variables:
 - `QMD_COMPACT_EVENTS_ENABLED`, default `true`
 - `QMD_PERSIST_COMPACT_EVENTS`, default `true`
 - `QMD_COMPACT_EVENT_TABLE`, default `live_market_events_v1`
+- `QMD_COMPACT_EVENT_CONTINUITY_TABLE`, default `live_event_ordinal_continuity`
 - `QMD_COMPACT_EVENT_CHANNEL_CAPACITY`, default `250000`
+- `QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER`, default `512`
+- `QMD_COMPACT_EVENT_REORDER_LAG_MS`, default `500`
+- `QMD_COMPACT_EVENT_REORDER_FORCE_FLUSH_MS`, default `2000`
+- `QMD_COMPACT_EVENT_REORDER_MAX_EVENTS_PER_TICKER`, default `4096`
 - `QMD_REFERENCE_DIR`, default resolves to repo `research/market_references/massive`
 - `QMD_PERSIST_RAW_EVENTS`, default `false`
 - `QMD_BAR_CHANNEL_CAPACITY`, default `250000`
@@ -89,16 +96,19 @@ Environment variables:
 The service writes to:
 
 - `live_market_events_v1`
+- `live_event_ordinal_continuity`
 - `live_massive_trades`, only when `QMD_PERSIST_RAW_EVENTS=true`
 - `live_massive_quotes`, only when `QMD_PERSIST_RAW_EVENTS=true`
 - `live_market_bars`
 - `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`
 - `qmd_gap_fill_runs`
 
-The live ML path should consume `/stream/compact-events` or
-`q_live.live_market_events_v1`. Raw quote/trade persistence is intentionally
-optional because the compact event row is the durable live equivalent of the
-historical `market_sip_compact.events` training table.
+The lowest-latency live ML path should consume the in-memory compact event
+buffer through `/snapshot/compact-events/{ticker}?limit=128` or the websocket
+stream `/stream/compact-events`. ClickHouse is the durability/audit path. Raw
+quote/trade persistence is intentionally optional because the compact event row
+is the durable live equivalent of the historical `market_sip_compact.events`
+training table.
 
 ## Live Bars
 

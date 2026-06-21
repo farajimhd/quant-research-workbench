@@ -33,6 +33,11 @@ All settings are read from environment variables at process start. Changing a va
 | `QMD_COMPACT_EVENTS_ENABLED` | `true` | Enable compact unified event conversion and websocket streaming. | Keep enabled for live ML consumers. |
 | `QMD_COMPACT_EVENT_CHANNEL_CAPACITY` | `250000` | Queue size for compact event conversion/persistence. | If `compact_event_queue_dropped` rises, increase this or improve writer throughput. |
 | `QMD_COMPACT_EVENT_TABLE` | `live_market_events_v1` | ClickHouse table for compact live events. | Version the table name when the durable live event contract changes. |
+| `QMD_COMPACT_EVENT_CONTINUITY_TABLE` | `live_event_ordinal_continuity` | Append-only live ordinal continuity snapshots. | Used to audit and bootstrap ticker-local live ordinals. |
+| `QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER` | `512` | Recent compact events retained in memory per ticker for ML/app snapshots. | Must be at least the largest live inference context, e.g. 128. |
+| `QMD_COMPACT_EVENT_REORDER_LAG_MS` | `500` | Per-ticker persistence reorder watermark lag before assigning final DB ordinals. | Higher values improve late-arrival ordering but delay durable writes. |
+| `QMD_COMPACT_EVENT_REORDER_FORCE_FLUSH_MS` | `2000` | Maximum persistence wait before flushing reorder buffers. | Keeps DB lag bounded. |
+| `QMD_COMPACT_EVENT_REORDER_MAX_EVENTS_PER_TICKER` | `4096` | Per-ticker persistence reorder buffer cap. | Protects memory during liquid bursts. |
 | `QMD_PERSIST_COMPACT_EVENTS` | `true` | Persist compact live events to ClickHouse. | Disable only for stream-only tests. |
 | `QMD_PERSIST_RAW_EVENTS` | `false` | Persist raw quote/trade rows. | Enable only for debug/replay/gap-fill workflows. |
 | `QMD_REFERENCE_DIR` | repo `research/market_references/massive` | Massive reference files used for condition packing. | Must contain `conditions_indicators_glossary.json`. |
@@ -41,7 +46,7 @@ All settings are read from environment variables at process start. Changing a va
 | `QMD_INDICATOR_BAR_CHANNEL_CAPACITY` | `250000` | Queue size for closed bars sent to indicator engine. | Relevant when many timeframes close at once. |
 | `QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY` | `250000` | Queue size for closed bars sent to scanner primitive engine. | Relevant when scanner primitive evaluation lags. |
 
-The gateway uses non-blocking queue sends. A full queue means the downstream item is dropped and a metric counter is incremented. Massive ingest is not blocked.
+The gateway uses non-blocking queue sends. A full queue means the downstream item is dropped and a metric counter is incremented. Massive ingest is not blocked. Compact live inference does not wait for DB ordinals: the ML/app path reads the in-memory per-ticker buffer, while final ticker-local ordinals are assigned only when sorted rows are flushed to `q_live`.
 
 ## Bars
 

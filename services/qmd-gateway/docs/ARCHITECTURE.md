@@ -39,7 +39,7 @@ The gateway outputs market-data primitives. The app backend combines those primi
 | `bars.rs` | Live bar aggregation | Market events | `BarRow`, `live_market_bars` | Historical chart storage |
 | `indicators.rs` | Streaming tick and bar indicators | Market events, closed bars | Tick snapshots, `IndicatorRow` | Wide research feature generation |
 | `scanner.rs` | Massive-only scanner primitives | Closed bars | Primitive snapshot/stream | Broker/reference-aware signals |
-| `compact_event.rs` | Live compact event contract | Market events | `/stream/compact-events`, `live_market_events_v1` | Encoder chunk construction |
+| `compact_event.rs` | Live compact event contract, live ring buffers, sorted persistence ordinals | Market events | `/stream/compact-events`, `/snapshot/compact-events/{ticker}`, `live_market_events_v1` | Encoder chunk construction |
 | `clickhouse.rs` | Optional raw Massive persistence | Market events | `live_massive_trades`, `live_massive_quotes` | Primary ML surface |
 | `gapfill.rs` | Massive REST gap fill | Live compact latest timestamps, Massive REST | Same event fan-out as websocket, gap-fill audit rows | Deep historical repair |
 | `replay.rs` | Raw-data replay | ClickHouse raw rows | Same in-memory pipeline as live | Re-persist raw events |
@@ -60,6 +60,34 @@ Massive websocket text
 ```
 
 Every hot-path send uses `try_send`. If a downstream queue is full, the gateway drops that downstream item, increments a counter, and keeps reading Massive data.
+
+## Compact Event Flow
+
+Live compact events have two separate paths:
+
+```text
+low-latency path:
+  MarketEvent
+    -> compact LiveCompactEvent with arrival_sequence and ordinal=0
+    -> /stream/compact-events
+    -> per-ticker in-memory ring buffer
+    -> /snapshot/compact-events/{ticker}?limit=128
+
+persistence path:
+  same compact LiveCompactEvent
+    -> per-ticker reorder buffer
+    -> sort by sip_timestamp_us, source_sequence, event_type, arrival_sequence
+    -> assign final ticker-local ordinal
+    -> batch insert q_live.live_market_events_v1
+    -> append q_live.live_event_ordinal_continuity snapshots
+```
+
+The live ML/app path does not wait for the persistence reorder watermark.
+Readers that need a model context should request a recent window from the
+in-memory buffer and sort by `sip_timestamp_us, source_sequence, event_type,
+arrival_sequence` before taking the latest 128 events. The ClickHouse ordinal is
+for durable replay/audit and is assigned only after the persistence buffer is
+sorted.
 
 ## Bar Flow
 
@@ -102,6 +130,7 @@ Default durable writes:
 | Table | Written By | Default | Purpose |
 |---|---|---:|---|
 | `live_market_events_v1` | `compact_event.rs` | yes | Live ML-serving event stream/table |
+| `live_event_ordinal_continuity` | `compact_event.rs` | yes | Append-only live ticker ordinal snapshots |
 | `live_massive_trades` | `clickhouse.rs` | no | Optional raw trade replay/debug source |
 | `live_massive_quotes` | `clickhouse.rs` | no | Optional raw quote replay/debug source |
 | `live_market_bars` | `bars.rs` | yes | Published bar history |
@@ -111,7 +140,7 @@ Default durable writes:
 Gap fill is a recent-window repair path. It converts REST rows to normalized
 events and uses the same fan-out as websocket ingest. Deeper historical history
 belongs to the read-only `market_sip_compact.events` table maintained by the
-flatfile pipelines.
+flatfile pipelines. QMD live events are never merged into that historical table.
 
 Set `QMD_PERSIST_INDICATORS=true` only after choosing the indicator set that should become durable.
 

@@ -1,5 +1,5 @@
 use crate::bars::{BarSnapshot, SharedBarStore};
-use crate::compact_event::LiveCompactEvent;
+use crate::compact_event::{LiveCompactEvent, SharedCompactEventStore};
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
 use crate::indicator_catalog::{indicator_catalog, IndicatorCatalogEntry};
@@ -23,6 +23,7 @@ use tower_http::cors::CorsLayer;
 #[derive(Clone)]
 pub struct AppState {
     pub bars: SharedBarStore,
+    pub compact_event_store: SharedCompactEventStore,
     pub compact_events: broadcast::Sender<LiveCompactEvent>,
     pub config: GatewayConfig,
     pub events: broadcast::Sender<MarketEvent>,
@@ -68,6 +69,10 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/snapshot/ticker/{ticker}", get(ticker_snapshot))
         .route("/snapshot/bars/{ticker}", get(bar_snapshot))
+        .route(
+            "/snapshot/compact-events/{ticker}",
+            get(compact_event_snapshot),
+        )
         .route("/snapshot/indicators/{ticker}", get(indicator_snapshot))
         .route("/stream/compact-events", get(compact_event_stream))
         .route("/stream/events", get(event_stream))
@@ -157,6 +162,25 @@ async fn bar_snapshot(
                     .limit
                     .unwrap_or(500)
                     .min(state.config.bar_history_limit),
+            )
+            .await,
+    )
+}
+
+async fn compact_event_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<LimitQuery>,
+) -> Json<Vec<LiveCompactEvent>> {
+    Json(
+        state
+            .compact_event_store
+            .latest_sorted(
+                &ticker,
+                query
+                    .limit
+                    .unwrap_or(128)
+                    .min(state.config.compact_event_live_buffer_events_per_ticker),
             )
             .await,
     )

@@ -21,7 +21,7 @@ use crate::api::{app, AppState};
 use crate::bars::{spawn_bar_engines, BarClickHouseWriter, BarRow, SharedBarStore};
 use crate::clickhouse::ClickHouseWriter;
 use crate::compact_event::{
-    CompactEventClickHouseWriter, CompactEventReferences, LiveCompactEvent,
+    CompactEventClickHouseWriter, CompactEventReferences, LiveCompactEvent, SharedCompactEventStore,
 };
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
@@ -57,6 +57,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.indicator_shard_count,
     );
     let scanner = SharedScannerStore::new(config.scanner_primitive_history_limit);
+    let compact_event_store =
+        SharedCompactEventStore::new(config.compact_event_live_buffer_events_per_ticker);
     let (writer_sender, writer_receiver) =
         mpsc::channel::<MarketEvent>(config.event_channel_capacity);
     let (compact_writer_sender, compact_writer_receiver) =
@@ -92,6 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config.clone(),
             references,
             compact_event_sender.clone(),
+            compact_event_store.clone(),
             metrics.clone(),
         );
         compact_writer.initialize().await.map_err(|error| {
@@ -176,6 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let app = app(AppState {
         bars,
+        compact_event_store,
         compact_events: compact_event_sender,
         config,
         events: event_sender,

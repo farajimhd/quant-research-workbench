@@ -20,8 +20,13 @@ struct MetricsInner {
     compact_event_broadcast_dropped: AtomicU64,
     compact_event_queue_dropped: AtomicU64,
     compact_event_rejected: AtomicU64,
+    compact_event_reorder_forced_flushes: AtomicU64,
+    compact_event_reorder_late_arrivals: AtomicU64,
     compact_events_emitted: AtomicU64,
     compact_events_persisted: AtomicU64,
+    compact_events_reorder_buffered: AtomicU64,
+    compact_events_reorder_flushed: AtomicU64,
+    compact_events_reorder_pending: AtomicU64,
     events_broadcast_dropped: AtomicU64,
     gap_fill_failures: AtomicU64,
     gap_fill_last_duration_ms: AtomicU64,
@@ -52,8 +57,13 @@ pub struct MetricsSnapshot {
     pub compact_event_broadcast_dropped: u64,
     pub compact_event_queue_dropped: u64,
     pub compact_event_rejected: u64,
+    pub compact_event_reorder_forced_flushes: u64,
+    pub compact_event_reorder_late_arrivals: u64,
     pub compact_events_emitted: u64,
     pub compact_events_persisted: u64,
+    pub compact_events_reorder_buffered: u64,
+    pub compact_events_reorder_flushed: u64,
+    pub compact_events_reorder_pending: u64,
     pub events_broadcast_dropped: u64,
     pub gap_fill_failures: u64,
     pub gap_fill_last_duration_ms: u64,
@@ -99,8 +109,13 @@ impl SharedMetrics {
                 compact_event_broadcast_dropped: AtomicU64::new(0),
                 compact_event_queue_dropped: AtomicU64::new(0),
                 compact_event_rejected: AtomicU64::new(0),
+                compact_event_reorder_forced_flushes: AtomicU64::new(0),
+                compact_event_reorder_late_arrivals: AtomicU64::new(0),
                 compact_events_emitted: AtomicU64::new(0),
                 compact_events_persisted: AtomicU64::new(0),
+                compact_events_reorder_buffered: AtomicU64::new(0),
+                compact_events_reorder_flushed: AtomicU64::new(0),
+                compact_events_reorder_pending: AtomicU64::new(0),
                 events_broadcast_dropped: AtomicU64::new(0),
                 gap_fill_failures: AtomicU64::new(0),
                 gap_fill_last_duration_ms: AtomicU64::new(0),
@@ -136,8 +151,15 @@ impl SharedMetrics {
             compact_event_broadcast_dropped: self.get(&self.inner.compact_event_broadcast_dropped),
             compact_event_queue_dropped: self.get(&self.inner.compact_event_queue_dropped),
             compact_event_rejected: self.get(&self.inner.compact_event_rejected),
+            compact_event_reorder_forced_flushes: self
+                .get(&self.inner.compact_event_reorder_forced_flushes),
+            compact_event_reorder_late_arrivals: self
+                .get(&self.inner.compact_event_reorder_late_arrivals),
             compact_events_emitted: self.get(&self.inner.compact_events_emitted),
             compact_events_persisted: self.get(&self.inner.compact_events_persisted),
+            compact_events_reorder_buffered: self.get(&self.inner.compact_events_reorder_buffered),
+            compact_events_reorder_flushed: self.get(&self.inner.compact_events_reorder_flushed),
+            compact_events_reorder_pending: self.get(&self.inner.compact_events_reorder_pending),
             events_broadcast_dropped: self.get(&self.inner.events_broadcast_dropped),
             gap_fill_failures: self.get(&self.inner.gap_fill_failures),
             gap_fill_last_duration_ms: self.get(&self.inner.gap_fill_last_duration_ms),
@@ -148,7 +170,11 @@ impl SharedMetrics {
             ingest_events: self.get(&self.inner.ingest_events),
             ingest_quotes: self.get(&self.inner.ingest_quotes),
             ingest_trades: self.get(&self.inner.ingest_trades),
-            last_event_lag_ms: if last_event_ms > 0 { Some(now_ms - last_event_ms) } else { None },
+            last_event_lag_ms: if last_event_ms > 0 {
+                Some(now_ms - last_event_ms)
+            } else {
+                None
+            },
             last_event_ts: if last_event_ms > 0 {
                 DateTime::<Utc>::from_timestamp_millis(last_event_ms)
             } else {
@@ -164,7 +190,9 @@ impl SharedMetrics {
 
     pub fn observe_event(&self, kind: &str, ts: DateTime<Utc>) {
         self.inc(&self.inner.ingest_events, 1);
-        self.inner.last_event_unix_ms.store(ts.timestamp_millis(), Ordering::Relaxed);
+        self.inner
+            .last_event_unix_ms
+            .store(ts.timestamp_millis(), Ordering::Relaxed);
         match kind {
             "trade" => self.inc(&self.inner.ingest_trades, 1),
             "quote" => self.inc(&self.inner.ingest_quotes, 1),
@@ -212,12 +240,32 @@ impl SharedMetrics {
         self.inc(&self.inner.compact_event_rejected, 1);
     }
 
+    pub fn inc_compact_event_reorder_forced_flush(&self) {
+        self.inc(&self.inner.compact_event_reorder_forced_flushes, 1);
+    }
+
+    pub fn inc_compact_event_reorder_late_arrival(&self) {
+        self.inc(&self.inner.compact_event_reorder_late_arrivals, 1);
+    }
+
     pub fn inc_compact_events_emitted(&self, count: u64) {
         self.inc(&self.inner.compact_events_emitted, count);
     }
 
     pub fn inc_compact_events_persisted(&self, count: u64) {
         self.inc(&self.inner.compact_events_persisted, count);
+    }
+
+    pub fn inc_compact_events_reorder_buffered(&self, count: u64) {
+        self.inc(&self.inner.compact_events_reorder_buffered, count);
+    }
+
+    pub fn inc_compact_events_reorder_flushed(&self, count: u64) {
+        self.inc(&self.inner.compact_events_reorder_flushed, count);
+    }
+
+    pub fn set_compact_events_reorder_pending(&self, count: u64) {
+        self.set(&self.inner.compact_events_reorder_pending, count);
     }
 
     pub fn inc_event_broadcast_dropped(&self) {
@@ -279,11 +327,17 @@ impl SharedMetrics {
 
 impl Drop for TimingGuard {
     fn drop(&mut self) {
-        let elapsed_ms = self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let elapsed_ms = self
+            .started_at
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
         match self.target {
             TimingTarget::GapFillRun => {
-                self.metrics.set(&self.metrics.inner.gap_fill_last_duration_ms, elapsed_ms);
-                self.metrics.inc(&self.metrics.inner.gap_fill_total_duration_ms, elapsed_ms);
+                self.metrics
+                    .set(&self.metrics.inner.gap_fill_last_duration_ms, elapsed_ms);
+                self.metrics
+                    .inc(&self.metrics.inner.gap_fill_total_duration_ms, elapsed_ms);
             }
         }
     }

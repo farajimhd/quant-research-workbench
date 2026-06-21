@@ -19,10 +19,14 @@ Once production data is written under a version, do not change that version's fi
 
 Table: `live_market_events_v1`
 
-This is the live ML-serving event surface. It mirrors the historical
+This is the durable live ML-serving event surface. It mirrors the historical
 `market_sip_compact.events` row shape closely enough that downstream encoders
 can build the same `header_uint8 + events_uint8` chunks from either historical
-or live rows. The gateway emits the same rows on `/stream/compact-events`.
+or live rows. The gateway emits compact rows immediately on
+`/stream/compact-events` and keeps a bounded per-ticker memory buffer exposed by
+`/snapshot/compact-events/{ticker}?limit=128`. The historical
+`market_sip_compact.events` table remains flatfile-only; QMD live events are
+not merged into it.
 
 Raw quote/trade tables are optional debug/replay support. They are not the
 primary model-serving contract.
@@ -32,8 +36,9 @@ primary model-serving contract.
 | `event_date` | UTC date from SIP timestamp, used for partitioning. |
 | `schema_version` | Live compact event contract version. |
 | `ingest_ts` | Gateway receive/parse timestamp. |
+| `arrival_sequence` | Gateway-local monotonically increasing sequence. Used only as a deterministic tie-breaker for equal timestamp/sequence rows. |
 | `ticker` | Uppercase ticker. |
-| `ordinal` | Clean ticker-local event ordinal assigned after quote/trade merge into the live compact stream. |
+| `ordinal` | Durable ticker-local event ordinal assigned only on sorted ClickHouse persistence flush. In-memory live stream rows may carry `0` before persistence. |
 | `event_type` | `0 = quote`, `1 = trade`. |
 | `sip_timestamp_us` | SIP timestamp in UTC microseconds. Massive websocket timestamps are millisecond precision, so live rows currently land on millisecond boundaries. |
 | `price_primary_int` | Quote: ask price integer. Trade: trade price integer. |
@@ -46,6 +51,31 @@ primary model-serving contract.
 | `conditions_packed` | Quote: four 8-bit dense quote condition ids. Trade: five 6-bit dense trade condition ids. |
 | `source_sequence` | Massive sequence number from the original quote/trade event. |
 | `issue_flags` | Reserved for future issue classification. Current compact writer drops structurally invalid events before emit/insert, so persisted rows use `0`. |
+
+Live ordering contract:
+
+```text
+sip_timestamp_us, source_sequence, event_type, arrival_sequence
+```
+
+The in-memory live buffer is optimized for low-latency inference and does not
+wait for final DB ordinals. The persistence path uses a short per-ticker reorder
+buffer, assigns final ordinals in the order above, inserts
+`live_market_events_v1`, and periodically appends
+`live_event_ordinal_continuity` snapshots.
+
+Continuity table: `live_event_ordinal_continuity`
+
+| Field | Meaning |
+|---|---|
+| `ticker` | Uppercase ticker. |
+| `next_ordinal` | Next durable ordinal to assign after the latest persisted row. |
+| `last_ordinal` | Last durable ordinal assigned for the ticker. |
+| `last_sip_timestamp_us` | SIP timestamp of the last durable row. |
+| `last_source_sequence` | Massive sequence number of the last durable row. |
+| `last_event_type` | Event type of the last durable row. |
+| `updated_at` | Snapshot write time. |
+| `schema_version` | Live compact event contract version. |
 
 Price integer scale:
 
