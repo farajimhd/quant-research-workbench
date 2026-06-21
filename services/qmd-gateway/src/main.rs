@@ -17,22 +17,22 @@ mod session;
 mod signal_catalog;
 mod state;
 
-use crate::api::{app, AppState};
-use crate::bars::{spawn_bar_engines, BarClickHouseWriter, BarRow, SharedBarStore};
+use crate::api::{AppState, app};
+use crate::bars::{BarClickHouseWriter, BarRow, SharedBarStore, spawn_bar_engines};
 use crate::clickhouse::ClickHouseWriter;
 use crate::compact_event::{
     CompactEventClickHouseWriter, CompactEventReferences, LiveCompactEvent, SharedCompactEventStore,
 };
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
-use crate::gapfill::run_gap_fill_service;
+use crate::gapfill::{run_gap_fill_service, run_startup_maintenance};
 use crate::indicators::{
-    spawn_indicator_engines, IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore,
+    IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore, spawn_indicator_engines,
 };
-use crate::massive::{run_massive_ingest, MarketEventFanout};
+use crate::massive::{MarketEventFanout, run_massive_ingest};
 use crate::metrics::SharedMetrics;
 use crate::replay::run_replay_service;
-use crate::scanner::{spawn_scanner_primitive_engine, ScannerPrimitive, SharedScannerStore};
+use crate::scanner::{ScannerPrimitive, SharedScannerStore, spawn_scanner_primitive_engine};
 use crate::state::SharedMarketState;
 use std::net::SocketAddr;
 use std::{error::Error, io};
@@ -82,7 +82,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tokio::spawn(writer.run(writer_receiver));
     } else {
         drop(writer_receiver);
-        eprintln!("Raw quote/trade ClickHouse persistence is disabled. Set QMD_PERSIST_RAW_EVENTS=true to enable it.");
+        eprintln!(
+            "Raw quote/trade ClickHouse persistence is disabled. Set QMD_PERSIST_RAW_EVENTS=true to enable it."
+        );
     }
     if config.compact_events_enabled {
         let references = CompactEventReferences::load(&config.reference_dir).map_err(|error| {
@@ -164,6 +166,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         event_sender: event_sender.clone(),
         metrics: metrics.clone(),
     };
+
+    run_startup_maintenance(config.clone(), event_fanout.clone()).await;
 
     tokio::spawn(run_massive_ingest(config.clone(), event_fanout.clone()));
     if config.gap_fill_enabled {

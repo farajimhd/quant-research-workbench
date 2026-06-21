@@ -77,6 +77,27 @@ Continuity table: `live_event_ordinal_continuity`
 | `updated_at` | Snapshot write time. |
 | `schema_version` | Live compact event contract version. |
 
+Coverage manifest: `qmd_market_coverage_manifest_v1`
+
+This table is coarse and run-scoped. It records startup live event audits,
+recent REST tail-repair attempts, and historical flatfile update plans. It is
+not used to decide whether the recent live event table has holes; that decision
+is made by querying `live_market_events_v1` directly.
+
+| Field | Meaning |
+|---|---|
+| `started_at` | Maintenance run start time. |
+| `finished_at` | Maintenance run finish or plan record time. |
+| `coverage_kind` | `q_live_recent_events` or `historical_flatfile_events`. |
+| `status` | `ok`, `repair_failed`, `needs_manual_rebuild`, `planned`, `launched`, or `launch_failed`. |
+| `start_ts_utc` | UTC start of the audited or planned coverage range. |
+| `end_ts_utc` | UTC end of the audited or planned coverage range. |
+| `action` | Startup or periodic action that wrote the row. |
+| `rows_written` | Rows routed through recent REST repair when applicable. |
+| `host_role` | `workstation` or `laptop` after host-role resolution. |
+| `command` | Historical flatfile update command when one is planned. |
+| `summary_json` | JSON summary of audit counts, command planning, and messages. |
+
 Price integer scale:
 
 ```text

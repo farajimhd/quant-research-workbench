@@ -126,6 +126,35 @@ events. REST gap fill is bounded by `QMD_GAP_FILL_MAX_LOOKBACK_DAYS`; older
 history should be read from the read-only historical `market_sip_compact.events`
 table.
 
+## Startup Maintenance And Coverage
+
+Startup maintenance is enabled by default with
+`QMD_STARTUP_MAINTENANCE_ENABLED=true`. It runs before the Massive websocket
+task starts. The gateway audits recent rows in the actual
+`q_live.live_market_events_v1` table and checks:
+
+- duplicate `(ticker, ordinal)` rows
+- ticker-local ordinal holes
+- ticker-local rows whose ordinal order disagrees with timestamp/sequence order
+
+This audit intentionally does not rely on the coverage manifest. If the recent
+event table is structurally clean, the gateway performs a bounded Massive REST
+tail repair through the normal fan-out path, so repaired rows update memory,
+streams, bars, indicators, compact persistence, and optional raw persistence in
+the same way as live websocket rows. If the audit finds committed ordinal
+structure problems, the gateway records `needs_manual_rebuild` and refuses to
+silently rewrite existing rows.
+
+`qmd_market_coverage_manifest_v1` is a coarse per-run manifest. It records
+startup live repair checks and historical flatfile update plans. It should not
+have one row per symbol or per file.
+
+After-hours historical flatfile maintenance is only a planner from the gateway.
+It compares historical `events_ordinal_continuity` coverage with the configured
+safe lag. The command it prints or launches uses
+`download_update_events.py` against the read-only historical event pipeline. QMD
+does not insert live websocket rows into `market_sip_compact.events`.
+
 ## Replay Mode
 
 Replay is for validation and future backtest integration.
@@ -150,6 +179,7 @@ Use replay in a separate run from live trading unless you are deliberately testi
 | `live_market_bars` | yes | Published bars built from quotes/trades. |
 | `live_market_indicators` | optional | Published indicators when `QMD_PERSIST_INDICATORS=true`. |
 | `qmd_gap_fill_runs` | yes if gap fill enabled | Audit trail for gap-fill attempts. |
+| `qmd_market_coverage_manifest_v1` | yes if startup maintenance or historical planning is enabled | Coarse run-level live repair and historical flatfile planning manifest. |
 
 ## Common Checks
 
@@ -178,6 +208,7 @@ Before live use:
 | API is slow | Lower broadcast frequency, inspect websocket clients, and watch drop counters. |
 | Gap fill does not run | Check `QMD_GAP_FILL_ENABLED`, `MASSIVE_API_KEY`, `QMD_GAP_FILL_MODE`, and whether symbols are configured or discoverable from compact events. |
 | Gap fill keeps writing many rows | Live ingest may be dropping compact events, or the gateway was offline for longer than expected. |
+| Startup maintenance records `needs_manual_rebuild` | Recent `q_live` committed ordinals are structurally inconsistent. Do not rely on automatic tail repair; inspect/rebuild the affected live event range. |
 
 ## Security Notes
 

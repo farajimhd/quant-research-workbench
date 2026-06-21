@@ -1,26 +1,34 @@
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
-use crate::massive::{fanout_market_event, MarketEventFanout};
+use crate::massive::{MarketEventFanout, fanout_market_event};
 use crate::metrics::TimingTarget;
 use crate::session::{is_streaming_phase, session_phase};
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, Utc};
 use reqwest::Client;
-use serde_json::{json, Value};
-use tokio::time::{interval, Duration};
+use serde_json::{Value, json};
+use std::path::Path as FsPath;
+use std::process::Command;
+use tokio::time::{Duration, interval};
+
+pub async fn run_startup_maintenance(config: GatewayConfig, fanout: MarketEventFanout) {
+    if !config.gap_fill_enabled || !config.qmd_startup_maintenance_enabled {
+        return;
+    }
+    let filler = GapFillService::new(config, fanout);
+    eprintln!("QMD startup maintenance: checking recent q_live event coverage.");
+    if let Err(error) = filler.run_startup_maintenance().await {
+        filler.fanout.metrics.inc_gap_fill_failure();
+        eprintln!("QMD startup maintenance failed: {error}");
+    }
+}
 
 pub async fn run_gap_fill_service(config: GatewayConfig, fanout: MarketEventFanout) {
     if !config.gap_fill_enabled {
         return;
     }
     let filler = GapFillService::new(config, fanout);
-    if is_streaming_phase(Utc::now()) && should_run_session_catch_up(filler.config.gap_fill_mode.as_str()) {
-        if let Err(error) = filler.run_once("session_catch_up").await {
-            filler.fanout.metrics.inc_gap_fill_failure();
-            eprintln!("Session catch-up gap fill failed: {error}");
-        }
-    }
-
     let mut timer = interval(Duration::from_millis(filler.config.gap_fill_interval_ms));
+    timer.tick().await;
     loop {
         timer.tick().await;
         let mode = if is_streaming_phase(Utc::now()) {
@@ -44,6 +52,15 @@ pub async fn run_gap_fill_service(config: GatewayConfig, fanout: MarketEventFano
     }
 }
 
+#[derive(Default)]
+struct LiveEventAudit {
+    duplicate_ticker_ordinal_rows: u64,
+    hole_ticker_count: u64,
+    out_of_order_ticker_count: u64,
+    recent_rows: u64,
+    ticker_count: u64,
+}
+
 #[derive(Clone)]
 struct GapFillService {
     client: Client,
@@ -60,7 +77,69 @@ impl GapFillService {
         }
     }
 
-    async fn run_once(&self, mode: &str) -> Result<(), String> {
+    async fn run_startup_maintenance(&self) -> Result<(), String> {
+        self.initialize_tables().await?;
+        let started_at = Utc::now();
+        let phase = format!("{:?}", session_phase(started_at));
+        let host_role = self.host_role();
+        let audit = self.audit_recent_live_events().await?;
+        eprintln!(
+            "QMD startup q_live audit: rows={} tickers={} duplicate_ordinals={} ordinal_hole_tickers={} out_of_order_tickers={}",
+            audit.recent_rows,
+            audit.ticker_count,
+            audit.duplicate_ticker_ordinal_rows,
+            audit.hole_ticker_count,
+            audit.out_of_order_ticker_count
+        );
+        let mut status = if audit.duplicate_ticker_ordinal_rows == 0
+            && audit.hole_ticker_count == 0
+            && audit.out_of_order_ticker_count == 0
+        {
+            "ok"
+        } else {
+            "needs_manual_rebuild"
+        };
+        let mut rows_written = 0u64;
+        let mut message = String::new();
+        if status == "ok" {
+            rows_written = self
+                .run_once("startup_recent_repair")
+                .await
+                .unwrap_or_else(|error| {
+                    message = error;
+                    0
+                });
+            if !message.is_empty() {
+                status = "repair_failed";
+            }
+        } else {
+            message = "Recent q_live event table has structural ordinal/order issues. Not rewriting committed ordinals automatically.".to_string();
+        }
+        self.record_coverage_run(
+            started_at,
+            "q_live_recent_events",
+            status,
+            Utc::now() - ChronoDuration::days(self.config.gap_fill_max_lookback_days.max(1)),
+            Utc::now(),
+            "startup_maintenance",
+            rows_written,
+            &host_role,
+            "",
+            &json!({
+                "phase": phase,
+                "recent_rows": audit.recent_rows,
+                "ticker_count": audit.ticker_count,
+                "duplicate_ticker_ordinal_rows": audit.duplicate_ticker_ordinal_rows,
+                "hole_ticker_count": audit.hole_ticker_count,
+                "out_of_order_ticker_count": audit.out_of_order_ticker_count,
+                "message": message,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn run_once(&self, mode: &str) -> Result<u64, String> {
         let _timing = self.fanout.metrics.timing(TimingTarget::GapFillRun);
         self.fanout.metrics.inc_gap_fill_run();
         self.initialize_tables().await?;
@@ -77,7 +156,7 @@ impl GapFillService {
                 "MASSIVE_API_KEY is not configured",
             )
             .await?;
-            return Ok(());
+            return Ok(0);
         }
         let symbols = self.gap_fill_symbols().await?;
         if symbols.is_empty() {
@@ -91,18 +170,24 @@ impl GapFillService {
                 "No gap-fill symbols were configured or discovered",
             )
             .await?;
-            return Ok(());
+            return Ok(0);
         }
+        let mut total_rows = 0u64;
         for symbol in symbols {
             let rows = self.fill_symbol(&symbol).await.unwrap_or_else(|error| {
                 eprintln!("Gap fill failed for {symbol}: {error}");
                 0
             });
+            total_rows += rows;
             self.fanout.metrics.inc_gap_fill_rows(rows);
             self.record_run(started_at, mode, &phase, &symbol, "completed", rows, "")
                 .await?;
         }
-        Ok(())
+        if !is_streaming_phase(Utc::now()) && self.config.historical_flatfile_update_enabled {
+            self.plan_historical_flatfile_update(started_at, mode)
+                .await?;
+        }
+        Ok(total_rows)
     }
 
     async fn fill_symbol(&self, symbol: &str) -> Result<u64, String> {
@@ -215,6 +300,156 @@ impl GapFillService {
         Ok(symbols)
     }
 
+    async fn audit_recent_live_events(&self) -> Result<LiveEventAudit, String> {
+        if !self.config.compact_events_enabled {
+            return Ok(LiveEventAudit::default());
+        }
+        let lookback_days = self.config.gap_fill_max_lookback_days.max(1);
+        let table = &self.config.compact_event_table;
+        let sql = format!(
+            r#"
+            WITH recent AS
+            (
+                SELECT
+                    ticker,
+                    ordinal,
+                    sip_timestamp_us,
+                    source_sequence,
+                    event_type,
+                    arrival_sequence
+                FROM {table}
+                WHERE event_date >= today('UTC') - {lookback_days}
+                  AND ticker != ''
+            ),
+            ticker_ranges AS
+            (
+                SELECT
+                    ticker,
+                    count() AS rows,
+                    min(ordinal) AS min_ordinal,
+                    max(ordinal) AS max_ordinal
+                FROM recent
+                GROUP BY ticker
+            ),
+            order_checks AS
+            (
+                SELECT
+                    ticker,
+                    countIf(
+                        has_prev = 1
+                        AND tuple(sip_timestamp_us, source_sequence, event_type, arrival_sequence)
+                            < tuple(prev_sip_timestamp_us, prev_source_sequence, prev_event_type, prev_arrival_sequence)
+                    ) AS order_errors
+                FROM
+                (
+                    SELECT
+                        ticker,
+                        ordinal,
+                        sip_timestamp_us,
+                        source_sequence,
+                        event_type,
+                        arrival_sequence,
+                        lagInFrame(sip_timestamp_us, 1, sip_timestamp_us) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_sip_timestamp_us,
+                        lagInFrame(source_sequence, 1, source_sequence) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_source_sequence,
+                        lagInFrame(event_type, 1, event_type) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_event_type,
+                        lagInFrame(arrival_sequence, 1, arrival_sequence) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_arrival_sequence,
+                        row_number() OVER (PARTITION BY ticker ORDER BY ordinal) > 1 AS has_prev
+                    FROM recent
+                )
+                GROUP BY ticker
+            )
+            SELECT
+                (SELECT count() FROM recent) AS recent_rows,
+                (SELECT uniqExact(ticker) FROM recent) AS ticker_count,
+                (SELECT count() - uniqExact(ticker, ordinal) FROM recent) AS duplicate_ticker_ordinal_rows,
+                (SELECT count() FROM ticker_ranges WHERE rows != max_ordinal - min_ordinal + 1) AS hole_ticker_count,
+                (SELECT count() FROM order_checks WHERE order_errors > 0) AS out_of_order_ticker_count
+            FORMAT JSONEachRow
+            "#,
+            table = table,
+            lookback_days = lookback_days,
+        );
+        let text = self.query(&sql, true).await?;
+        let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
+            return Ok(LiveEventAudit::default());
+        };
+        let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
+        Ok(LiveEventAudit {
+            duplicate_ticker_ordinal_rows: value
+                .get("duplicate_ticker_ordinal_rows")
+                .and_then(json_u64)
+                .unwrap_or(0),
+            hole_ticker_count: value
+                .get("hole_ticker_count")
+                .and_then(json_u64)
+                .unwrap_or(0),
+            out_of_order_ticker_count: value
+                .get("out_of_order_ticker_count")
+                .and_then(json_u64)
+                .unwrap_or(0),
+            recent_rows: value.get("recent_rows").and_then(json_u64).unwrap_or(0),
+            ticker_count: value.get("ticker_count").and_then(json_u64).unwrap_or(0),
+        })
+    }
+
+    async fn plan_historical_flatfile_update(
+        &self,
+        started_at: DateTime<Utc>,
+        mode: &str,
+    ) -> Result<(), String> {
+        let Some(target_end) = self.historical_safe_target_date() else {
+            return Ok(());
+        };
+        let latest = self
+            .latest_historical_event_date()
+            .await
+            .unwrap_or_else(|error| {
+                eprintln!("Historical flatfile coverage query failed: {error}");
+                self.config.historical_known_coverage_end_date.clone()
+            });
+        if latest >= target_end.to_string() {
+            return Ok(());
+        }
+        let Some(start_date) = next_date(&latest) else {
+            return Ok(());
+        };
+        let command =
+            self.historical_update_command(&start_date.to_string(), &target_end.to_string());
+        eprintln!("Historical flatfile update needed: {start_date} to {target_end}");
+        eprintln!("Run command: {command}");
+        let mut status = "planned";
+        let host_role = self.host_role();
+        if host_role == "workstation" && self.config.historical_flatfile_autorun {
+            match spawn_command(&command) {
+                Ok(()) => {
+                    status = "launched";
+                    eprintln!("Historical flatfile update launched asynchronously.");
+                }
+                Err(error) => {
+                    status = "launch_failed";
+                    eprintln!("Historical flatfile update launch failed: {error}");
+                }
+            }
+        }
+        self.record_coverage_run(
+            started_at,
+            "historical_flatfile_events",
+            status,
+            date_start_utc(start_date),
+            date_start_utc(target_end) + ChronoDuration::days(1),
+            mode,
+            0,
+            &host_role,
+            &command,
+            &json!({
+                "latest_historical_event_date": latest,
+                "target_end_date": target_end.to_string(),
+                "autorun": self.config.historical_flatfile_autorun,
+            }),
+        )
+        .await
+    }
+
     fn rest_url(
         &self,
         symbol: &str,
@@ -281,6 +516,32 @@ impl GapFillService {
             true,
         )
         .await
+        .map(|_| ())?;
+        self.query(
+            &format!(
+                r#"
+                CREATE TABLE IF NOT EXISTS {table}
+                (
+                    started_at DateTime64(3, 'UTC'),
+                    finished_at DateTime64(3, 'UTC'),
+                    coverage_kind LowCardinality(String),
+                    status LowCardinality(String),
+                    start_ts_utc DateTime64(3, 'UTC'),
+                    end_ts_utc DateTime64(3, 'UTC'),
+                    action LowCardinality(String),
+                    rows_written UInt64,
+                    host_role LowCardinality(String),
+                    command String,
+                    summary_json String
+                )
+                ENGINE = MergeTree
+                ORDER BY (coverage_kind, started_at)
+                "#,
+                table = self.config.qmd_coverage_table
+            ),
+            true,
+        )
+        .await
         .map(|_| ())
     }
 
@@ -309,6 +570,95 @@ impl GapFillService {
         )
         .await
         .map(|_| ())
+    }
+
+    async fn record_coverage_run(
+        &self,
+        started_at: DateTime<Utc>,
+        coverage_kind: &str,
+        status: &str,
+        start_ts_utc: DateTime<Utc>,
+        end_ts_utc: DateTime<Utc>,
+        action: &str,
+        rows_written: u64,
+        host_role: &str,
+        command: &str,
+        summary: &Value,
+    ) -> Result<(), String> {
+        let row = json!({
+            "started_at": started_at.to_rfc3339(),
+            "finished_at": Utc::now().to_rfc3339(),
+            "coverage_kind": coverage_kind,
+            "status": status,
+            "start_ts_utc": start_ts_utc.to_rfc3339(),
+            "end_ts_utc": end_ts_utc.to_rfc3339(),
+            "action": action,
+            "rows_written": rows_written,
+            "host_role": host_role,
+            "command": command,
+            "summary_json": summary.to_string(),
+        });
+        self.query(
+            &format!(
+                "INSERT INTO {} FORMAT JSONEachRow\n{}",
+                self.config.qmd_coverage_table, row
+            ),
+            true,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn latest_historical_event_date(&self) -> Result<String, String> {
+        let sql = format!(
+            "SELECT max(source_date) FROM {}.events_ordinal_continuity FORMAT TSV",
+            self.config.historical_clickhouse_database.replace('`', "")
+        );
+        let value = self.query(&sql, false).await?.trim().to_string();
+        if value.is_empty() || value == "0000-00-00" {
+            Ok(self.config.historical_known_coverage_end_date.clone())
+        } else {
+            Ok(value)
+        }
+    }
+
+    fn historical_update_command(&self, start_date: &str, end_date: &str) -> String {
+        format!(
+            "python {}\\pipelines\\market_sip\\flatfiles\\download_update_events.py --database {} --start-date {} --end-date {}",
+            self.config.historical_pipeline_code_root,
+            self.config.historical_clickhouse_database,
+            start_date,
+            end_date,
+        )
+    }
+
+    fn historical_safe_target_date(&self) -> Option<NaiveDate> {
+        let today = Utc::now().date_naive();
+        let lag = self.config.historical_flatfile_safe_lag_days.max(1);
+        Some(previous_weekday(today - ChronoDuration::days(lag)))
+    }
+
+    fn host_role(&self) -> String {
+        if self.config.qmd_host_role != "auto" {
+            return self.config.qmd_host_role.clone();
+        }
+        let computer = std::env::var("COMPUTERNAME")
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        let pipeline_root_exists = FsPath::new(&self.config.historical_pipeline_code_root).exists();
+        if computer.contains("DESKTOP-SAAI85T")
+            || (pipeline_root_exists
+                && self
+                    .config
+                    .historical_pipeline_code_root
+                    .to_ascii_lowercase()
+                    .starts_with("d:\\tradingml"))
+        {
+            "workstation".to_string()
+        } else {
+            "laptop".to_string()
+        }
     }
 
     async fn query(&self, body: &str, use_database: bool) -> Result<String, String> {
@@ -343,6 +693,36 @@ impl GapFillService {
 
 fn should_run_session_catch_up(mode: &str) -> bool {
     matches!(mode, "auto" | "session" | "session_catch_up")
+}
+
+fn previous_weekday(mut date: NaiveDate) -> NaiveDate {
+    while date.weekday().number_from_monday() > 5 {
+        date -= ChronoDuration::days(1);
+    }
+    date
+}
+
+fn next_date(value: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .ok()
+        .map(|date| date + ChronoDuration::days(1))
+}
+
+fn date_start_utc(date: NaiveDate) -> DateTime<Utc> {
+    date.and_hms_opt(0, 0, 0)
+        .expect("midnight is valid for every NaiveDate")
+        .and_utc()
+}
+
+fn spawn_command(command: &str) -> Result<(), String> {
+    let status = if cfg!(windows) {
+        Command::new("cmd")
+            .args(["/C", "start", "", "cmd", "/C", command])
+            .spawn()
+    } else {
+        Command::new("sh").arg("-lc").arg(command).spawn()
+    };
+    status.map(|_| ()).map_err(|error| error.to_string())
 }
 
 fn append_api_key(url: &str, api_key: &str) -> String {

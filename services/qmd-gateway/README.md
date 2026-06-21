@@ -79,6 +79,15 @@ Environment variables:
 - `QMD_GAP_FILL_MIN_GAP_SECONDS`, default `60`
 - `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL`, default `5`
 - `QMD_GAP_FILL_SYMBOLS`, optional comma-separated priority symbols
+- `QMD_STARTUP_MAINTENANCE_ENABLED`, default `true`
+- `QMD_COVERAGE_TABLE`, default `qmd_market_coverage_manifest_v1`
+- `QMD_HOST_ROLE`, default `auto`; use `workstation` or `laptop` to override
+- `QMD_HISTORICAL_CLICKHOUSE_DATABASE`, default `market_sip_compact`
+- `QMD_HISTORICAL_FLATFILE_UPDATE_ENABLED`, default `true`
+- `QMD_HISTORICAL_FLATFILE_AUTORUN`, default `false`
+- `QMD_HISTORICAL_FLATFILE_SAFE_LAG_DAYS`, default `1`
+- `QMD_HISTORICAL_KNOWN_COVERAGE_END_DATE`, default `2026-06-05`
+- `QMD_HISTORICAL_PIPELINE_CODE_ROOT`, default `D:\TradingML\codes\quant_research_workbench_pipelines`
 - `QMD_INDICATOR_CHANNEL_CAPACITY`, default `250000`
 - `QMD_INDICATOR_BAR_CHANNEL_CAPACITY`, default `250000`
 - `QMD_INDICATOR_HISTORY_LIMIT`, default `1000`
@@ -102,6 +111,7 @@ The service writes to:
 - `live_market_bars`
 - `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`
 - `qmd_gap_fill_runs`
+- `qmd_market_coverage_manifest_v1`
 
 The lowest-latency live ML path should consume the in-memory compact event
 buffer through `/snapshot/compact-events/{ticker}?limit=128` or the websocket
@@ -307,6 +317,25 @@ bounded by `QMD_GAP_FILL_MAX_LOOKBACK_DAYS`, default `3`, because the REST path
 is for recent crash/restart recovery. Deeper historical event history should be
 read from the read-only `market_sip_compact.events` table, which is maintained
 by the flatfile pipelines up to the prior day.
+
+At startup, when `QMD_STARTUP_MAINTENANCE_ENABLED=true`, the gateway audits the
+recent `q_live.live_market_events_v1` rows directly. This check is based on the
+actual event table, not the coverage manifest, so failed live inserts can be
+detected. The audit reports duplicate ticker ordinals, ordinal holes, and
+out-of-order ticker-local rows. If recent rows are structurally sound, the
+gateway runs a bounded Massive REST tail repair before opening the websocket.
+If committed ordinals already have structural problems, the gateway records
+`needs_manual_rebuild` in the coverage manifest and does not silently rewrite
+existing rows.
+
+The coverage manifest is coarse and run-scoped. It records startup live repair
+checks and historical flatfile update plans; it is not the source of truth for
+recent live gap detection. Historical `market_sip_compact.events` updates remain
+flatfile-only. After hours, the gateway can plan the `download_update_events.py`
+command for missing historical flatfile days. On a workstation host with
+`QMD_HISTORICAL_FLATFILE_AUTORUN=true`, it launches that command
+asynchronously; otherwise it prints the command for manual workstation
+execution.
 
 ## Replay Mode
 

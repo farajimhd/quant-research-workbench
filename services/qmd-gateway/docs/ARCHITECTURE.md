@@ -41,7 +41,7 @@ The gateway outputs market-data primitives. The app backend combines those primi
 | `scanner.rs` | Massive-only scanner primitives | Closed bars | Primitive snapshot/stream | Broker/reference-aware signals |
 | `compact_event.rs` | Live compact event contract, live ring buffers, sorted persistence ordinals | Market events | `/stream/compact-events`, `/snapshot/compact-events/{ticker}`, `live_market_events_v1` | Encoder chunk construction |
 | `clickhouse.rs` | Optional raw Massive persistence | Market events | `live_massive_trades`, `live_massive_quotes` | Primary ML surface |
-| `gapfill.rs` | Massive REST gap fill | Live compact latest timestamps, Massive REST | Same event fan-out as websocket, gap-fill audit rows | Deep historical repair |
+| `gapfill.rs` | Startup live coverage audit, Massive REST tail repair, historical flatfile planning | Live compact event rows, Massive REST, historical continuity rows | Same event fan-out as websocket, gap-fill audit rows, coarse coverage manifest | Deep historical row generation |
 | `replay.rs` | Raw-data replay | ClickHouse raw rows | Same in-memory pipeline as live | Re-persist raw events |
 | `metrics.rs` | Operational counters | Hot-path observations | `/metrics` payload | External monitoring service |
 | `api.rs` | Local API and websocket streams | Shared stores | REST/websocket responses | UI-specific formatting |
@@ -136,11 +136,21 @@ Default durable writes:
 | `live_market_bars` | `bars.rs` | yes | Published bar history |
 | `live_market_indicators` | `indicators.rs` | no | Optional promoted indicator rows |
 | `qmd_gap_fill_runs` | `gapfill.rs` | yes | Gap-fill audit log |
+| `qmd_market_coverage_manifest_v1` | `gapfill.rs` | yes | Coarse startup repair and historical flatfile planning manifest |
 
-Gap fill is a recent-window repair path. It converts REST rows to normalized
-events and uses the same fan-out as websocket ingest. Deeper historical history
-belongs to the read-only `market_sip_compact.events` table maintained by the
-flatfile pipelines. QMD live events are never merged into that historical table.
+Startup maintenance audits recent `q_live.live_market_events_v1` rows directly
+before websocket ingest begins. It detects committed ordinal duplicates, holes,
+and order errors from the event table itself. Clean recent tails can be repaired
+with Massive REST rows through the same fan-out as websocket ingest. Structural
+ordinal corruption is recorded in the coverage manifest and left for explicit
+rebuild; QMD does not rewrite committed historical rows silently.
+
+After-hours historical planning compares the read-only
+`market_sip_compact.events_ordinal_continuity` coverage with the configured
+safe lag and prints or launches the flatfile `download_update_events.py`
+command. Deeper historical history belongs to the read-only
+`market_sip_compact.events` table maintained by the flatfile pipelines. QMD live
+events are never merged into that historical table.
 
 Set `QMD_PERSIST_INDICATORS=true` only after choosing the indicator set that should become durable.
 
