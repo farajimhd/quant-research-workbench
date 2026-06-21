@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import queue as queue_module
 import re
 import struct
 import sys
@@ -202,6 +203,7 @@ def download_config(args: argparse.Namespace) -> DownloadConfig:
 def source_days(args: argparse.Namespace, config: DownloadConfig) -> list[DayFiles]:
     flatfiles_root = Path(args.flatfiles_root_win)
     jobs = build_remote_jobs(flatfiles_root, args.start_date, args.end_date, parse_kinds("quotes,trades"), config)
+    jobs = [normalize_download_job_destination(job, flatfiles_root) for job in jobs]
     by_day: dict[str, dict[str, DownloadJob]] = {}
     for job in jobs:
         by_day.setdefault(job.session_date, {})[job.kind] = job
@@ -217,17 +219,82 @@ def source_days(args: argparse.Namespace, config: DownloadConfig) -> list[DayFil
     return days
 
 
-def ensure_day_files(day: DayFiles, config: DownloadConfig) -> dict[str, Any]:
+def normalize_download_job_destination(job: DownloadJob, flatfiles_root: Path) -> DownloadJob:
+    key_parts = Path(job.key).parts
+    root_name = flatfiles_root.name.replace("\\", "/").rstrip("/")
+    if key_parts and key_parts[0] == root_name:
+        destination = flatfiles_root.joinpath(*key_parts[1:])
+    else:
+        destination = flatfiles_root.joinpath(*key_parts)
+    return DownloadJob(
+        kind=job.kind,
+        session_date=job.session_date,
+        key=job.key,
+        destination=str(destination),
+        remote_size=job.remote_size,
+    )
+
+
+def ensure_day_files(day: DayFiles, config: DownloadConfig, progress_queue: queue_module.Queue | None = None, worker_base: int = 0) -> dict[str, Any]:
     t0 = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
-            executor.submit(download_one, config, day.quote_job, 0, None),
-            executor.submit(download_one, config, day.trade_job, 1, None),
+            executor.submit(download_one, config, day.quote_job, worker_base, progress_queue),
+            executor.submit(download_one, config, day.trade_job, worker_base + 1, progress_queue),
         ]
         results = [future.result() for future in concurrent.futures.as_completed(futures)]
     statuses = {f"{result.kind}:{result.session_date}": result.status for result in results}
     ok = all(result.status in {"downloaded", "skipped_complete"} for result in results)
     return {"source_date": day.source_date, "ok": ok, "statuses": statuses, "seconds": time.time() - t0}
+
+
+def format_bytes(value: int) -> str:
+    size = float(value or 0)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024.0 or unit == "TiB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024.0
+    return f"{size:.1f} TiB"
+
+
+def drain_download_progress(progress_queue: queue_module.Queue, file_states: dict[str, dict[str, Any]], *, force: bool = False) -> None:
+    saw_event = False
+    while True:
+        try:
+            event = progress_queue.get_nowait()
+        except queue_module.Empty:
+            break
+        saw_event = True
+        label = str(event.get("job_label") or f"{event.get('kind')}:{event.get('session_date')}")
+        state = file_states.setdefault(label, {})
+        state.update(event)
+        if event.get("type") == "result":
+            expected = int(event.get("bytes_expected") or 0)
+            written = int(event.get("bytes_written") or 0)
+            print(
+                f"DOWNLOAD FILE DONE {label} status={event.get('status')} "
+                f"bytes={format_bytes(written)}/{format_bytes(expected)}"
+                + (f" exception={event.get('exception')}" if event.get("exception") else ""),
+                flush=True,
+            )
+    now = time.time()
+    last_print = getattr(drain_download_progress, "_last_print", 0.0)
+    if force or saw_event or now - float(last_print) >= 10.0:
+        active = [
+            (label, state)
+            for label, state in sorted(file_states.items())
+            if state.get("type") != "result" and state.get("status") not in {"skipped_complete", "downloaded"}
+        ]
+        if active:
+            parts = []
+            for label, state in active[:8]:
+                expected = int(state.get("bytes_expected") or 0)
+                written = int(state.get("bytes_written") or 0)
+                pct = (100.0 * written / expected) if expected else 0.0
+                parts.append(f"{label} {state.get('status')} {pct:.1f}% {format_bytes(written)}/{format_bytes(expected)}")
+            suffix = f" (+{len(active) - 8} more)" if len(active) > 8 else ""
+            print("DOWNLOAD LIVE " + " | ".join(parts) + suffix, flush=True)
+        drain_download_progress._last_print = now
 
 
 def event_date_expr_from_us(expr: str) -> str:
@@ -298,13 +365,13 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
         q.ticker AS ticker,
         toUInt8(0) AS event_type,
         q.sip_timestamp_us AS sip_timestamp_us,
-        q.sequence_number AS sequence_number,
+        q.sequence_number_u32 AS sequence_number,
         q.ask_price_int AS price_primary_int,
         q.bid_price_int AS price_secondary_int,
-        toFloat32(q.ask_size) AS size_primary,
-        toFloat32(q.bid_size) AS size_secondary,
-        q.ask_exchange AS exchange_primary,
-        q.bid_exchange AS exchange_secondary,
+        toFloat32(q.ask_size_u32) AS size_primary,
+        toFloat32(q.bid_size_u32) AS size_secondary,
+        q.ask_exchange_u8 AS exchange_primary,
+        q.bid_exchange_u8 AS exchange_secondary,
         toUInt8(
             bitOr(
                 bitOr(bitAnd(bitShiftRight(q.quote_flags, 1), 1), bitShiftLeft(bitAnd(q.quote_flags, 1), 1)),
@@ -318,13 +385,13 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
         SELECT
             ticker,
             toUInt64(intDiv(toUInt64OrZero(sip_timestamp), 1000)) AS sip_timestamp_us,
-            toUInt32OrZero(sequence_number) AS sequence_number,
+            toUInt32OrZero(sequence_number) AS sequence_number_u32,
             {price_int_sql(bid_price)} AS bid_price_int,
             {price_int_sql(ask_price)} AS ask_price_int,
-            toUInt32(toFloat64OrZero(bid_size)) AS bid_size,
-            toUInt32(toFloat64OrZero(ask_size)) AS ask_size,
-            toUInt8OrZero(bid_exchange) AS bid_exchange,
-            toUInt8OrZero(ask_exchange) AS ask_exchange,
+            toUInt32(toFloat64OrZero(bid_size)) AS bid_size_u32,
+            toUInt32(toFloat64OrZero(ask_size)) AS ask_size_u32,
+            toUInt8OrZero(bid_exchange) AS bid_exchange_u8,
+            toUInt8OrZero(ask_exchange) AS ask_exchange_u8,
             conditions,
             indicators,
             {quote_flags} AS quote_flags,
@@ -347,12 +414,12 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
         t.ticker AS ticker,
         toUInt8(1) AS event_type,
         t.sip_timestamp_us AS sip_timestamp_us,
-        t.sequence_number AS sequence_number,
+        t.sequence_number_u32 AS sequence_number,
         t.price_int AS price_primary_int,
         toUInt32(0) AS price_secondary_int,
-        t.size AS size_primary,
+        t.size_f32 AS size_primary,
         toFloat32(0) AS size_secondary,
-        t.exchange AS exchange_primary,
+        t.exchange_u8 AS exchange_primary,
         toUInt8(0) AS exchange_secondary,
         toUInt8(
             bitOr(
@@ -367,10 +434,10 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
         SELECT
             ticker,
             toUInt64(intDiv(toUInt64OrZero(sip_timestamp), 1000)) AS sip_timestamp_us,
-            toUInt32OrZero(sequence_number) AS sequence_number,
+            toUInt32OrZero(sequence_number) AS sequence_number_u32,
             {price_int_sql(trade_price)} AS price_int,
-            toFloat32OrZero(size) AS size,
-            toUInt8OrZero(exchange) AS exchange,
+            toFloat32OrZero(size) AS size_f32,
+            toUInt8OrZero(exchange) AS exchange_u8,
             conditions,
             {trade_flags} AS trade_flags,
             {event_date_expr_from_us("intDiv(toUInt64OrZero(sip_timestamp), 1000)")} AS event_date,
@@ -1052,18 +1119,46 @@ def main() -> None:
     ensure_tables(client, args)
 
     download_results: dict[str, dict[str, Any]] = {}
+    download_started_at = time.time()
+    progress_queue: queue_module.Queue = queue_module.Queue()
+    file_states: dict[str, dict[str, Any]] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(args.download_workers))) as executor:
-        futures = {executor.submit(ensure_day_files, day, config): day for day in days}
-        for index, future in enumerate(concurrent.futures.as_completed(futures), start=1):
-            day = futures[future]
-            result = future.result()
-            download_results[day.source_date] = result
-            append_jsonl(report_path, {"type": "download", **result})
-            print(
-                f"DOWNLOAD [{index:,}/{len(days):,}] {day.source_date} "
-                f"ok={result['ok']} seconds={result['seconds']:.1f} statuses={result['statuses']}",
-                flush=True,
-            )
+        futures = {
+            executor.submit(ensure_day_files, day, config, progress_queue, day_index * 2): day
+            for day_index, day in enumerate(days)
+        }
+        pending = set(futures)
+        finished_count = 0
+        print(f"DOWNLOAD START days={len(days):,} files={len(days) * 2:,}", flush=True)
+        while pending:
+            done, pending = concurrent.futures.wait(pending, timeout=1.0, return_when=concurrent.futures.FIRST_COMPLETED)
+            drain_download_progress(progress_queue, file_states)
+            if not done:
+                elapsed = time.time() - download_started_at
+                completed_files = sum(1 for state in file_states.values() if state.get("type") == "result")
+                print(
+                    f"DOWNLOAD HEARTBEAT days_done={finished_count:,}/{len(days):,} "
+                    f"files_done={completed_files:,}/{len(days) * 2:,} pending_days={len(pending):,} "
+                    f"elapsed_minutes={elapsed / 60:.1f}",
+                    flush=True,
+                )
+                continue
+            for future in done:
+                day = futures[future]
+                result = future.result()
+                finished_count += 1
+                download_results[day.source_date] = result
+                append_jsonl(report_path, {"type": "download", **result})
+                elapsed = time.time() - download_started_at
+                rate = finished_count / elapsed if elapsed > 0 else 0.0
+                eta = (len(days) - finished_count) / rate if rate > 0 else 0.0
+                print(
+                    f"DOWNLOAD DAY [{finished_count:,}/{len(days):,}] {day.source_date} "
+                    f"ok={result['ok']} seconds={result['seconds']:.1f} "
+                    f"elapsed_minutes={elapsed / 60:.1f} eta_minutes={eta / 60:.1f} statuses={result['statuses']}",
+                    flush=True,
+                )
+        drain_download_progress(progress_queue, file_states, force=True)
 
     completed = 0
     started = time.time()

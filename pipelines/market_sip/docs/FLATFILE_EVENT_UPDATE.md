@@ -87,13 +87,13 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
 
 Before updating production `events`, use `--test-mode`. This runs the same
 flatfile-to-events insert path over at least one complete quote/trade day, but
-it rewrites the destinations to isolated temp tables:
+it rewrites the destinations to isolated temp tables.
 
-```text
-<test-prefix>_<run-id>_events
-<test-prefix>_<run-id>_manifest
-<test-prefix>_<run-id>_continuity
-```
+Temp table names use this pattern:
+
+- `{test_prefix}_{run_id}_events`
+- `{test_prefix}_{run_id}_manifest`
+- `{test_prefix}_{run_id}_continuity`
 
 The production `events`, `events_build_manifest`, and
 `events_ordinal_continuity` tables are not touched. Test mode also refuses

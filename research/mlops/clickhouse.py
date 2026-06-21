@@ -114,6 +114,7 @@ KIND_ROOTS = {
     "trades": "trades_v1",
 }
 
+@dataclass
 class SourceFile:
     kind: str
     date: str
@@ -121,6 +122,7 @@ class SourceFile:
     clickhouse_path: str
     bytes: int
 
+@dataclass
 class QueryProfile:
     label: str
     query_id: str
@@ -133,11 +135,13 @@ class QueryProfile:
     written_bytes: int | None = None
     exception: str = ""
 
+@dataclass
 class RowStats:
     rows: int
     min_sip_timestamp: int
     max_sip_timestamp: int
 
+@dataclass
 class SourcePreflight:
     source_key: str
     stats: RowStats
