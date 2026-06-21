@@ -421,9 +421,9 @@ def check_xbrl_scoped_integrity(client: ClickHouseHttpClient, db: str, scope_sta
         UNION ALL
         SELECT 'xbrl_frame_observations_without_frame_in_scope', count()
         FROM (
-            SELECT o.frame_id
+            SELECT o.taxonomy, o.tag, o.unit_code, o.calendar_period_code
             FROM (
-                SELECT frame_id, cik, accession_number, taxonomy, tag, unit_code, period_end_date
+                SELECT cik, accession_number, taxonomy, tag, unit_code, calendar_period_code, period_end_date
                 FROM {qi(db)}.sec_xbrl_frame_observation_v1 FINAL
             ) AS o
             INNER JOIN (
@@ -440,8 +440,11 @@ def check_xbrl_scoped_integrity(client: ClickHouseHttpClient, db: str, scope_sta
                AND o.unit_code = x.unit_code
                AND o.period_end_date = x.period_end_date
         ) AS scoped_obs
-        LEFT ANTI JOIN (SELECT frame_id FROM {qi(db)}.sec_xbrl_frame_v1 FINAL) AS fr
-        ON scoped_obs.frame_id = fr.frame_id
+        LEFT ANTI JOIN (SELECT taxonomy, tag, unit_code, calendar_period_code FROM {qi(db)}.sec_xbrl_frame_v1 FINAL) AS fr
+        ON scoped_obs.taxonomy = fr.taxonomy
+           AND scoped_obs.tag = fr.tag
+           AND scoped_obs.unit_code = fr.unit_code
+           AND scoped_obs.calendar_period_code = fr.calendar_period_code
         UNION ALL
         SELECT 'xbrl_facts_without_concept_in_scope', count()
         FROM (

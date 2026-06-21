@@ -9,7 +9,8 @@ The script is idempotent and dry-run by default. It handles three repair stages:
 - `filing-parents`: inserts missing `sec_filing_v2` parent rows for 2019+
   companyfacts accessions that do not currently join to `sec_filing_v2`.
 - `frame-parents`: inserts missing `sec_xbrl_frame_v1` rows derived from
-  `sec_xbrl_frame_observation_v1`.
+  `sec_xbrl_frame_observation_v1`, keyed by
+  `(taxonomy, tag, unit_code, calendar_period_code)`.
 
 It does not call SEC APIs. It repairs relationships from data that is already in
 ClickHouse.
@@ -90,4 +91,5 @@ Expected outcome:
 
 - no `sec_filing_document_v1` or `sec_filing_text_v1` table checks;
 - `xbrl_company_facts_without_filing_in_scope = 0`;
-- `xbrl_frame_observations_without_frame_in_scope = 0`.
+- `xbrl_frame_observations_without_frame_in_scope = 0` by the frame table's
+  natural key.

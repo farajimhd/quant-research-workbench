@@ -217,21 +217,21 @@ def run_frame_parent_repair(client: ClickHouseHttpClient, args: argparse.Namespa
     sql_path.write_text(sql_text, encoding="utf-8")
     print(
         "[stage frame-parents] "
-        f"orphan_rows={before['rows']:,} orphan_frames={before['frames']:,}",
+        f"orphan_rows={before['rows']:,} orphan_frame_keys={before['frame_keys']:,}",
         flush=True,
     )
-    if args.execute and before["frames"] > 0:
+    if args.execute and before["frame_keys"] > 0:
         print("[stage frame-parents] inserting missing sec_xbrl_frame_v1 parents", flush=True)
         timed_execute(client, sql_text, query_id=run_id + "_frame_parents")
     elif not args.execute:
         print(f"[stage frame-parents] dry-run; SQL written to {sql_path}", flush=True)
     after = frame_orphan_counts(client, args.database, args.scope_start_date)
-    inserted_frames = max(0, int(before["frames"]) - int(after["frames"]))
+    inserted_frames = max(0, int(before["frame_keys"]) - int(after["frame_keys"]))
     status = "pass" if after["rows"] == 0 else ("planned" if not args.execute else "warn")
     print(
         "[stage frame-parents] "
         f"status={status} inserted_frames_estimate={inserted_frames:,} "
-        f"remaining_rows={after['rows']:,} remaining_frames={after['frames']:,}",
+        f"remaining_rows={after['rows']:,} remaining_frame_keys={after['frame_keys']:,}",
         flush=True,
     )
     return {
@@ -251,7 +251,7 @@ def snapshot_counts(client: ClickHouseHttpClient, database: str, scope_start_dat
         "xbrl_company_fact_orphan_rows": xbrl_counts["rows"],
         "xbrl_company_fact_orphan_accessions": xbrl_counts["accessions"],
         "frame_observation_orphan_rows": frame_counts["rows"],
-        "frame_observation_orphan_frames": frame_counts["frames"],
+        "frame_observation_orphan_frame_keys": frame_counts["frame_keys"],
     }
     return {"stage": f"snapshot-{label}", "status": "pass", "created_at_utc": utc_now(), "details": details}
 
@@ -264,7 +264,7 @@ def print_count_snapshot(event: dict[str, Any]) -> None:
         f"xbrl_orphan_rows={details['xbrl_company_fact_orphan_rows']:,} "
         f"xbrl_orphan_accessions={details['xbrl_company_fact_orphan_accessions']:,} "
         f"frame_orphan_rows={details['frame_observation_orphan_rows']:,} "
-        f"frame_orphan_frames={details['frame_observation_orphan_frames']:,}",
+        f"frame_orphan_frame_keys={details['frame_observation_orphan_frame_keys']:,}",
         flush=True,
     )
 
@@ -296,11 +296,13 @@ def frame_orphan_counts(client: ClickHouseHttpClient, database: str, scope_start
     row = query_one_json(
         client,
         f"""
-        SELECT count() AS rows, uniqExact(scoped_obs.frame_id) AS frames
+        SELECT
+            count() AS rows,
+            uniqExact(tuple(scoped_obs.taxonomy, scoped_obs.tag, scoped_obs.unit_code, scoped_obs.calendar_period_code)) AS frame_keys
         FROM (
-            SELECT o.frame_id
+            SELECT o.taxonomy, o.tag, o.unit_code, o.calendar_period_code
             FROM (
-                SELECT frame_id, cik, accession_number, taxonomy, tag, unit_code, period_end_date
+                SELECT cik, accession_number, taxonomy, tag, unit_code, calendar_period_code, period_end_date
                 FROM {qi(database)}.sec_xbrl_frame_observation_v1 FINAL
             ) AS o
             INNER JOIN (
@@ -317,12 +319,15 @@ def frame_orphan_counts(client: ClickHouseHttpClient, database: str, scope_start
                AND o.unit_code = x.unit_code
                AND o.period_end_date = x.period_end_date
         ) AS scoped_obs
-        LEFT ANTI JOIN (SELECT frame_id FROM {qi(database)}.sec_xbrl_frame_v1 FINAL) AS fr
-        ON scoped_obs.frame_id = fr.frame_id
+        LEFT ANTI JOIN (SELECT taxonomy, tag, unit_code, calendar_period_code FROM {qi(database)}.sec_xbrl_frame_v1 FINAL) AS fr
+        ON scoped_obs.taxonomy = fr.taxonomy
+           AND scoped_obs.tag = fr.tag
+           AND scoped_obs.unit_code = fr.unit_code
+           AND scoped_obs.calendar_period_code = fr.calendar_period_code
         FORMAT JSONEachRow
         """,
     )
-    return {"rows": int(row["rows"]), "frames": int(row["frames"])}
+    return {"rows": int(row["rows"]), "frame_keys": int(row["frame_keys"])}
 
 
 def filing_parent_insert_sql(database: str, scope_start_date: str, run_id: str) -> str:
@@ -451,14 +456,14 @@ WITH
     {sql_string(run_id)} AS repair_run_id,
     now64(3, 'UTC') AS repair_inserted_at
 SELECT
-    scoped_obs.frame_id,
-    any(scoped_obs.taxonomy) AS taxonomy,
-    any(scoped_obs.tag) AS tag,
-    any(scoped_obs.unit_code) AS unit_code,
-    any(scoped_obs.calendar_period_code) AS calendar_period_code,
+    any(scoped_obs.frame_id) AS frame_id,
+    scoped_obs.taxonomy,
+    scoped_obs.tag,
+    scoped_obs.unit_code,
+    scoped_obs.calendar_period_code,
     max(scoped_obs.recorded_at_utc) AS recorded_at_utc,
     repair_run_id AS source_run_id,
-    lower(hex(SHA256(concat('sec-xbrl-frame-parent-repair|', scoped_obs.frame_id, '|', any(scoped_obs.taxonomy), '|', any(scoped_obs.tag), '|', any(scoped_obs.unit_code), '|', any(scoped_obs.calendar_period_code))))) AS source_content_sha256,
+    lower(hex(SHA256(concat('sec-xbrl-frame-parent-repair|', scoped_obs.taxonomy, '|', scoped_obs.tag, '|', scoped_obs.unit_code, '|', scoped_obs.calendar_period_code)))) AS source_content_sha256,
     repair_inserted_at AS inserted_at
 FROM (
     SELECT o.frame_id, o.taxonomy, o.tag, o.unit_code, o.calendar_period_code, o.cik, o.accession_number, o.period_end_date, o.recorded_at_utc
@@ -480,9 +485,12 @@ FROM (
        AND o.unit_code = x.unit_code
        AND o.period_end_date = x.period_end_date
 ) AS scoped_obs
-LEFT ANTI JOIN (SELECT frame_id FROM {qi(database)}.sec_xbrl_frame_v1 FINAL) AS fr
-ON scoped_obs.frame_id = fr.frame_id
-GROUP BY scoped_obs.frame_id
+LEFT ANTI JOIN (SELECT taxonomy, tag, unit_code, calendar_period_code FROM {qi(database)}.sec_xbrl_frame_v1 FINAL) AS fr
+ON scoped_obs.taxonomy = fr.taxonomy
+   AND scoped_obs.tag = fr.tag
+   AND scoped_obs.unit_code = fr.unit_code
+   AND scoped_obs.calendar_period_code = fr.calendar_period_code
+GROUP BY scoped_obs.taxonomy, scoped_obs.tag, scoped_obs.unit_code, scoped_obs.calendar_period_code
 """
 
 
