@@ -514,7 +514,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_raw_source_fi
 )
 ENGINE = ReplacingMergeTree(downloaded_at_utc)
 PARTITION BY toYYYYMM(downloaded_at_utc)
-ORDER BY (source_kind, source_date, source_file_id)
+ORDER BY (source_kind, ifNull(source_date, toDate('1970-01-01')), source_file_id)
 SETTINGS {merge_tree_settings(storage_policy)}
 """
 
