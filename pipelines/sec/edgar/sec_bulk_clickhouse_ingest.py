@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import zipfile
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -492,9 +493,46 @@ def flush(client: ClickHouseHttpClient, database: str, table: str, rows: list[di
 def insert_rows(client: ClickHouseHttpClient, database: str, table: str, rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
+    partitioned = partition_rows_for_insert(table, rows)
+    if len(partitioned) > 1:
+        for bucket_rows in partitioned.values():
+            insert_rows_json(client, database, table, bucket_rows)
+        return len(rows)
+    insert_rows_json(client, database, table, rows)
+    return len(rows)
+
+
+def insert_rows_json(client: ClickHouseHttpClient, database: str, table: str, rows: list[dict[str, Any]]) -> None:
     body = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) for row in rows)
     client.execute(f"INSERT INTO {quote_ident(database)}.{quote_ident(table)} FORMAT JSONEachRow\n{body}")
-    return len(rows)
+
+
+def partition_rows_for_insert(table: str, rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    if table == "sec_bulk_mirror_raw_source_file_v1":
+        return group_rows_by_yyyymm(rows, "downloaded_at_utc")
+    if table == "sec_bulk_mirror_filing_v1":
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            key = yyyymm_from_value(row.get("accepted_at_utc")) or yyyymm_from_value(row.get("filing_date")) or "197001"
+            grouped[key].append(row)
+        return dict(grouped)
+    if table == "sec_bulk_mirror_xbrl_fact_v1":
+        return group_rows_by_yyyymm(rows, "end_date", default="197001")
+    return {"all": rows}
+
+
+def group_rows_by_yyyymm(rows: list[dict[str, Any]], key: str, *, default: str = "197001") -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[yyyymm_from_value(row.get(key)) or default].append(row)
+    return dict(grouped)
+
+
+def yyyymm_from_value(value: Any) -> str | None:
+    text = clean_string(value)
+    if len(text) >= 7 and text[4] == "-" and text[5:7].isdigit():
+        return text[:4] + text[5:7]
+    return None
 
 
 def raw_source_file_table_sql(database: str, storage_policy: str) -> str:
