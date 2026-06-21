@@ -84,6 +84,50 @@ def build_xbrl_companyfacts_catchup_plan(
     return HistoricalFillPlan(start_date=start_date, end_date=end_date, command=command)
 
 
+def build_xbrl_integrity_repair_plan(
+    *,
+    code_root_win: Path,
+    database: str,
+    python_executable: str = "python",
+    execute: bool = True,
+    scope_start_date: date = date(2019, 1, 1),
+) -> HistoricalFillPlan:
+    script = code_root_win / "pipelines" / "sec" / "edgar" / "sec_xbrl_integrity_repair.py"
+    command = [
+        python_executable,
+        str(script),
+        "--database",
+        database,
+        "--scope-start-date",
+        scope_start_date.isoformat(),
+        "--stages",
+        "drop-legacy,filing-parents,frame-parents",
+    ]
+    if execute:
+        command.append("--execute")
+    return HistoricalFillPlan(start_date=scope_start_date, end_date=date.today(), command=command)
+
+
+def build_integrity_audit_plan(
+    *,
+    code_root_win: Path,
+    database: str,
+    python_executable: str = "python",
+    scope_start_date: date = date(2019, 1, 1),
+) -> HistoricalFillPlan:
+    script = code_root_win / "pipelines" / "sec" / "edgar" / "sec_integrity_audit.py"
+    command = [
+        python_executable,
+        str(script),
+        "--database",
+        database,
+        "--scope-start-date",
+        scope_start_date.isoformat(),
+        "--require-v2-tables",
+    ]
+    return HistoricalFillPlan(start_date=scope_start_date, end_date=date.today(), command=command)
+
+
 def write_plan_script(plan: HistoricalFillPlan, script_path: Path) -> Path:
     return write_multi_plan_script([plan], script_path)
 

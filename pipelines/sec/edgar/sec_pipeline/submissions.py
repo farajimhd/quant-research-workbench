@@ -38,6 +38,7 @@ class SecSubmissionFiling:
 class SecSubmissionsClient:
     def __init__(self, *, http: SecHttpClient) -> None:
         self.http = http
+        self._payload_cache: dict[str, tuple[dict[str, Any], str]] = {}
 
     def fetch_recent_filing(self, *, cik: str, accession_number: str) -> SecSubmissionFiling | None:
         payload, source_sha = self.fetch_payload(cik=cik)
@@ -46,9 +47,15 @@ class SecSubmissionsClient:
     def fetch_payload(self, *, cik: str) -> tuple[dict[str, Any], str]:
         import hashlib
 
+        cik_text = str(cik).zfill(10)
+        cached = self._payload_cache.get(cik_text)
+        if cached is not None:
+            return cached
         response = self.http.get(SUBMISSIONS_URL.format(cik=str(cik).zfill(10)))
         source_sha = hashlib.sha256(response.body).hexdigest()
-        return json.loads(response.body.decode("utf-8", errors="replace")), source_sha
+        payload = json.loads(response.body.decode("utf-8", errors="replace"))
+        self._payload_cache[cik_text] = (payload, source_sha)
+        return payload, source_sha
 
 
 def find_recent_filing(payload: dict[str, Any], *, source_sha: str, accession_number: str) -> SecSubmissionFiling | None:

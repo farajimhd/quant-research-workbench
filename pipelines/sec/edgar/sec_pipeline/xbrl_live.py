@@ -26,15 +26,22 @@ class LiveXbrlRows:
 class SecLiveXbrlExtractor:
     def __init__(self, *, http: SecHttpClient) -> None:
         self.http = http
+        self._payload_cache: dict[str, tuple[dict[str, Any], str]] = {}
 
     def extract_for_accession(self, *, cik: str, accession_number: str, source_run_id: str, inserted_at: str) -> LiveXbrlRows:
         return self.extract_for_accessions(cik=cik, accession_numbers={accession_number}, source_run_id=source_run_id, inserted_at=inserted_at)
 
     def extract_for_accessions(self, *, cik: str, accession_numbers: set[str], source_run_id: str, inserted_at: str) -> LiveXbrlRows:
-        url = COMPANYFACTS_URL.format(cik=str(cik).zfill(10))
-        response = self.http.get(url)
-        source_sha = hashlib.sha256(response.body).hexdigest()
-        payload = json.loads(response.body.decode("utf-8", errors="replace"))
+        cik_text = str(cik).zfill(10)
+        cached = self._payload_cache.get(cik_text)
+        if cached is None:
+            url = COMPANYFACTS_URL.format(cik=cik_text)
+            response = self.http.get(url)
+            source_sha = hashlib.sha256(response.body).hexdigest()
+            payload = json.loads(response.body.decode("utf-8", errors="replace"))
+            self._payload_cache[cik_text] = (payload, source_sha)
+        else:
+            payload, source_sha = cached
         return extract_companyfacts_payload(
             payload,
             cik=cik,

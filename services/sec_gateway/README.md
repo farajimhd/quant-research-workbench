@@ -15,9 +15,10 @@ start service
 -> clone SEC write-table schemas from q_live when the write database is empty
 -> create/validate the write database sec_coverage_manifest_v1
 -> bootstrap write-database coverage from existing q_live SEC tables when the manifest is empty
--> detect filing/text/XBRL freshness gaps from q_live
--> write workstation historical-fill command for old gaps
+-> detect filing/text/XBRL coverage gaps from the manifest, falling back to q_live recency only when needed
+-> write workstation historical-fill command for old gaps, including repair and audit steps
 -> poll SEC current Atom feed
+-> enqueue new accessions into a bounded live worker pool
 -> fetch SEC submissions JSON for each discovered CIK/accession
 -> canonicalize parent filing metadata from submissions.recent
 -> download new accession .txt filings
@@ -26,7 +27,7 @@ start service
 -> write sec_filing_v2/document_v2/text_v2/skip rows to the configured write database
 -> write sec_xbrl_* rows to the configured write database when matching companyfacts are available
 -> audit the write database for duplicate and orphan SEC rows
--> update live feed coverage
+-> keep one live-run coverage row current, including empty/all-duplicate polls
 -> show Rich terminal status and expose HTTP/websocket snapshots
 ```
 
@@ -68,6 +69,10 @@ SEC_GATEWAY_BIND=127.0.0.1:8797
 SEC_GATEWAY_DATA_ROOT_WIN=D:/market-data
 SEC_GATEWAY_POLL_SECONDS=30
 SEC_GATEWAY_CLOSED_POLL_SECONDS=300
+SEC_GATEWAY_LIVE_WORKERS=4
+SEC_GATEWAY_LIVE_QUEUE_MAX_ITEMS=500
+SEC_GATEWAY_FULL_AUDIT_ON_STARTUP=true
+SEC_GATEWAY_FULL_AUDIT_AFTER_WRITE_BATCHES=0
 SEC_MARKET_STATUS_URL=https://api.massive.com/v1/marketstatus/now
 SEC_MARKET_STATUS_ENABLED=true
 SEC_MARKET_STATUS_REFRESH_SECONDS=10
@@ -103,6 +108,17 @@ With `SEC_GATEWAY_AUTO_RUN_HISTORICAL_ON_WORKSTATION=true`, the gateway starts
 that script automatically. From a laptop or other remote host, it only writes
 the script and reports the command in the Rich terminal and HTTP metrics.
 
+The generated script runs the required historical backfill/catchup commands and
+then appends:
+
+```text
+sec_xbrl_integrity_repair.py
+sec_integrity_audit.py
+```
+
+That makes gateway-created gap fills self-repairing and self-auditing before
+the result is trusted.
+
 ## Coverage
 
 Coverage is stored in:
@@ -120,8 +136,16 @@ Coverage kinds include:
 - `sec_text_extraction`
 - `sec_integrity_audit`
 
-The gateway updates live coverage only after a poll window is fetched and rows
-are written or confirmed as existing.
+The gateway updates one live coverage row for the whole service run. The row is
+opened on the first successful poll and its end time is updated after every
+successful feed fetch, including empty polls and polls where every accession is
+already present. This avoids repeatedly rechecking a window that was already
+observed. Graceful shutdown marks the row `completed`.
+
+Historical coverage is interval based. SEC filings are sparse, so the gateway
+does not infer a gap just because a short time bucket has zero filings. It uses
+coverage rows written by historical/live jobs first and only falls back to
+source-table recency when a coverage kind has no manifest rows yet.
 
 ## Temp Database Audit
 
@@ -147,9 +171,32 @@ The gateway write audit checks:
 - text rows without filing parents
 - XBRL company facts without filing parents
 - XBRL frame observations without matching company facts
+- XBRL frame observations without a frame parent, matched by the natural frame
+  key `(taxonomy, tag, unit_code, calendar_period_code)`
 
 The latest audit status appears in `/metrics` under `audit_status` and
 `audit_message`.
+
+Full audits can be expensive against `q_live`. The default temp-write workflow
+keeps them safe because `q_sec_tmp` is small. In production mode, keep startup
+audits enabled but use `SEC_GATEWAY_FULL_AUDIT_AFTER_WRITE_BATCHES=0` unless
+you explicitly want periodic full-table audits after live writes.
+
+## Live Worker Queue
+
+The feed poller is intentionally lightweight. It fetches the Atom feed,
+identifies accessions already present in the write database, and queues only new
+accessions. Worker tasks then download accession text, fetch submissions and
+companyfacts, parse documents, extract text, write ClickHouse rows, and update
+in-memory metrics.
+
+Shutdown is graceful: the service stops polling, waits for queued workers to
+finish up to `SEC_GATEWAY_GRACEFUL_SHUTDOWN_SECONDS`, writes final coverage, and
+then exits. If the timeout is exceeded, the event is logged in the run JSONL log.
+
+The submissions and companyfacts SEC API responses are cached per gateway run by
+CIK. This reduces duplicate SEC requests when a feed poll contains multiple
+filings for the same company.
 
 ## Poll Cadence
 

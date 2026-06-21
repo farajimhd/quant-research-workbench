@@ -46,6 +46,13 @@ class SecCoverageConfig:
     storage_policy: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class CoverageGapPlan:
+    gaps: list[SecGap]
+    interval_count: int
+    kinds_checked: int
+
+
 def new_coverage_id(prefix: str) -> str:
     return f"{prefix}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:10]}"
 
@@ -202,6 +209,90 @@ def plan_freshness_gaps(client: ClickHouseHttpClient, *, database: str, now_utc:
     if latest_xbrl and now_utc - latest_xbrl > timedelta(days=2):
         gaps.append(SecGap(KIND_BULK_COMPANYFACTS, latest_xbrl, now_utc, "latest XBRL companyfacts filed date is stale"))
     return gaps
+
+
+def plan_coverage_gaps(
+    client: ClickHouseHttpClient,
+    config: SecCoverageConfig,
+    *,
+    read_database: str,
+    now_utc: datetime,
+    max_live_staleness: timedelta = timedelta(hours=12),
+    max_text_staleness: timedelta = timedelta(days=2),
+    max_xbrl_staleness: timedelta = timedelta(days=2),
+) -> CoverageGapPlan:
+    """Plan SEC startup gaps from durable coverage first, then table recency.
+
+    SEC filings are sparse, so a zero-row hour is not necessarily a gap. The
+    durable coverage contract is therefore interval based: historical jobs and
+    live runs report the time range they checked or filled. When a kind has no
+    coverage row yet, we fall back to source-table recency so old deployments
+    still produce useful action plans.
+    """
+
+    intervals = merge_intervals(load_intervals(client, config))
+    latest_by_kind: dict[str, datetime] = {}
+    for interval in intervals:
+        latest = latest_by_kind.get(interval.coverage_kind)
+        if latest is None or interval.end_utc > latest:
+            latest_by_kind[interval.coverage_kind] = interval.end_utc
+    checks = [
+        (KIND_LIVE_FEED, max_live_staleness, "latest live-feed coverage is stale"),
+        (KIND_TEXT_EXTRACTION, max_text_staleness, "latest filing text coverage is stale"),
+        (KIND_BULK_COMPANYFACTS, max_xbrl_staleness, "latest XBRL companyfacts coverage is stale"),
+    ]
+    gaps: list[SecGap] = []
+    for kind, tolerance, reason in checks:
+        latest = latest_by_kind.get(kind)
+        if latest is not None:
+            if now_utc - latest > tolerance:
+                gaps.append(SecGap(kind, latest, now_utc, reason))
+            continue
+        gaps.extend(plan_freshness_fallback_for_kind(client, database=read_database, now_utc=now_utc, kind=kind))
+    return CoverageGapPlan(gaps=gaps, interval_count=len(intervals), kinds_checked=len(checks))
+
+
+def merge_intervals(intervals: list[CoverageInterval]) -> list[CoverageInterval]:
+    if not intervals:
+        return []
+    ordered = sorted(intervals, key=lambda item: (item.coverage_kind, item.start_utc, item.end_utc))
+    merged: list[CoverageInterval] = []
+    for interval in ordered:
+        if not merged or merged[-1].coverage_kind != interval.coverage_kind or interval.start_utc > merged[-1].end_utc:
+            merged.append(interval)
+            continue
+        previous = merged[-1]
+        if interval.end_utc > previous.end_utc:
+            merged[-1] = CoverageInterval(
+                coverage_kind=previous.coverage_kind,
+                start_utc=previous.start_utc,
+                end_utc=interval.end_utc,
+                status=previous.status,
+                row_count=previous.row_count + interval.row_count,
+            )
+    return merged
+
+
+def plan_freshness_fallback_for_kind(
+    client: ClickHouseHttpClient,
+    *,
+    database: str,
+    now_utc: datetime,
+    kind: str,
+) -> list[SecGap]:
+    if kind == KIND_LIVE_FEED:
+        latest = scalar_dt(client, f"SELECT max(accepted_at_utc) FROM {qi(database)}.sec_filing_v2 FINAL")
+        if latest and now_utc - latest > timedelta(hours=12):
+            return [SecGap(KIND_LIVE_FEED, latest, now_utc, "latest filing parent is stale")]
+    if kind == KIND_TEXT_EXTRACTION:
+        latest = scalar_dt(client, f"SELECT max(toDateTime64(source_archive_date, 3, 'UTC')) FROM {qi(database)}.sec_filing_text_v2 FINAL")
+        if latest and now_utc - latest > timedelta(days=2):
+            return [SecGap(KIND_TEXT_EXTRACTION, latest, now_utc, "latest filing text archive date is stale")]
+    if kind == KIND_BULK_COMPANYFACTS:
+        latest = scalar_dt(client, f"SELECT max(filed_at_utc) FROM {qi(database)}.sec_xbrl_company_fact_v1 FINAL")
+        if latest and now_utc - latest > timedelta(days=2):
+            return [SecGap(KIND_BULK_COMPANYFACTS, latest, now_utc, "latest XBRL companyfacts filed date is stale")]
+    return []
 
 
 def scalar_dt(client: ClickHouseHttpClient, sql: str) -> datetime | None:

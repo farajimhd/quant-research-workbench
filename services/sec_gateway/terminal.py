@@ -97,11 +97,17 @@ def runtime_panel(gateway: "SecGateway", metrics: dict[str, Any]) -> Panel:
     table.add_row("Poll cadence", f"{gateway.current_poll_seconds():.1f}s", "SEC current feed")
     table.add_row("Market", str(metrics.get("market_status") or "-"), str(metrics.get("market_status_source") or "-"))
     table.add_row("Last poll", "-", full_time_text(metrics.get("last_poll_at_utc")))
+    table.add_row(
+        "Live workers",
+        f"{fmt(metrics.get('live_active_workers'))}/{fmt(metrics.get('live_workers'))}",
+        f"queue {fmt(metrics.get('live_queue_size'))}/{fmt(metrics.get('live_queue_max_items'))}; {str(metrics.get('last_worker_message') or '-')}",
+    )
     table.add_row("Poll runs", fmt(metrics.get("poll_runs")), "")
     table.add_row("Feed items", fmt(metrics.get("feed_items")), "")
     table.add_row("Processed", fmt(metrics.get("processed_filings")), "")
     table.add_row("Written", fmt(metrics.get("written_filings")), "")
     table.add_row("Skipped existing", fmt(metrics.get("skipped_existing")), "")
+    table.add_row("Queued / completed", fmt(metrics.get("live_queued_filings")), f"completed {fmt(metrics.get('live_completed_filings'))}, worker failures {fmt(metrics.get('live_worker_failures'))}")
     table.add_row("XBRL facts", fmt(metrics.get("xbrl_company_fact_rows")), f"concepts {fmt(metrics.get('xbrl_concept_rows'))}, frames {fmt(metrics.get('xbrl_frame_rows'))}, observations {fmt(metrics.get('xbrl_frame_observation_rows'))}")
     table.add_row("Failures", fmt(metrics.get("poll_failures")), str(metrics.get("last_error") or "-"))
     table.add_row("Last accession", str(metrics.get("last_form_type") or "-"), str(metrics.get("last_accession") or "-"))
@@ -114,6 +120,7 @@ def gaps_panel(metrics: dict[str, Any]) -> Panel:
     table.add_column(ratio=1, overflow="fold")
     table.add_row("State", style_status(str(metrics.get("gap_status") or "-")))
     table.add_row("Count", fmt(metrics.get("gap_count")))
+    table.add_row("Intervals", fmt(metrics.get("coverage_interval_count")))
     table.add_row("Message", str(metrics.get("gap_message") or "-"))
     if metrics.get("manual_gap_fill_script_win"):
         table.add_row("Script", str(metrics.get("manual_gap_fill_script_win")))

@@ -30,6 +30,10 @@ class SecGatewayConfig:
     current_feed_count: int
     startup_auto_fill_max_gap_days: int
     auto_run_historical_on_workstation: bool
+    live_workers: int
+    live_queue_max_items: int
+    full_audit_on_startup: bool
+    full_audit_after_write_batches: int
     terminal_rich_enabled: bool
     terminal_screen_enabled: bool
     terminal_refresh_seconds: float
@@ -57,6 +61,10 @@ class SecGatewayConfig:
             current_feed_count=env_int("SEC_GATEWAY_CURRENT_FEED_COUNT", 100),
             startup_auto_fill_max_gap_days=env_int("SEC_GATEWAY_STARTUP_AUTO_FILL_MAX_GAP_DAYS", 3),
             auto_run_historical_on_workstation=env_bool("SEC_GATEWAY_AUTO_RUN_HISTORICAL_ON_WORKSTATION", is_workstation_host()),
+            live_workers=env_int("SEC_GATEWAY_LIVE_WORKERS", 4),
+            live_queue_max_items=env_int("SEC_GATEWAY_LIVE_QUEUE_MAX_ITEMS", 500),
+            full_audit_on_startup=env_bool("SEC_GATEWAY_FULL_AUDIT_ON_STARTUP", True),
+            full_audit_after_write_batches=env_int("SEC_GATEWAY_FULL_AUDIT_AFTER_WRITE_BATCHES", 0),
             terminal_rich_enabled=env_bool_auto("SEC_GATEWAY_TERMINAL_RICH_ENABLED", sys.stdout.isatty()),
             terminal_screen_enabled=env_bool("SEC_GATEWAY_TERMINAL_SCREEN_ENABLED", True),
             terminal_refresh_seconds=env_float("SEC_GATEWAY_TERMINAL_REFRESH_SECONDS", 1.0),

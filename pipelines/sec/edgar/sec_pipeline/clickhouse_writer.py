@@ -57,6 +57,7 @@ class SecWriteAudit:
     texts_without_filing: int
     company_facts_without_filing: int
     frame_observations_without_company_fact: int
+    frame_observations_without_frame_parent: int
 
     @property
     def ok(self) -> bool:
@@ -67,6 +68,7 @@ class SecWriteAudit:
             and self.texts_without_filing == 0
             and self.company_facts_without_filing == 0
             and self.frame_observations_without_company_fact == 0
+            and self.frame_observations_without_frame_parent == 0
         )
 
 
@@ -170,6 +172,24 @@ class SecClickHouseWriter:
                    AND o.tag = f.tag
                    AND o.unit_code = f.unit_code
                    AND o.period_end_date = f.period_end_date
+                """,
+            ),
+            frame_observations_without_frame_parent=scalar_int(
+                self.client,
+                f"""
+                SELECT count()
+                FROM (
+                    SELECT taxonomy, tag, unit_code, calendar_period_code
+                    FROM {qi(self.database)}.{qi(XBRL_FRAME_OBSERVATION_TABLE)} FINAL
+                ) AS o
+                LEFT ANTI JOIN (
+                    SELECT taxonomy, tag, unit_code, calendar_period_code
+                    FROM {qi(self.database)}.{qi(XBRL_FRAME_TABLE)} FINAL
+                ) AS f
+                ON o.taxonomy = f.taxonomy
+                   AND o.tag = f.tag
+                   AND o.unit_code = f.unit_code
+                   AND o.calendar_period_code = f.calendar_period_code
                 """,
             ),
         )
