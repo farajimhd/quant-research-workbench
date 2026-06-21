@@ -8,7 +8,7 @@ from research.mlops.clickhouse import default_clickhouse_password, default_click
 
 
 DEFAULT_READ_DATABASE = "q_live"
-DEFAULT_WRITE_DATABASE = "q_sec_tmp"
+DEFAULT_WRITE_DATABASE = "q_live"
 DEFAULT_COVERAGE_TABLE = "sec_coverage_manifest_v1"
 DEFAULT_FEED_URL = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&output=atom&count=100"
 DEFAULT_DATA_ROOT_WIN = Path("D:/market-data")

@@ -21,7 +21,7 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_bulk_to_canonical")
 SEC_CORE_DATABASE = "sec_core"
-DEFAULT_TARGET_DATABASE = "q_sec_tmp"
+DEFAULT_TARGET_DATABASE = "q_live"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Build canonical SEC parent and XBRL rows from the SEC bulk mirror. "
-            "This is the bulk-first bridge from sec_core to q_sec_tmp/q_live."
+            "This is the bulk-first bridge from sec_core to the configured SEC write database."
         )
     )
     parser.add_argument("--source-database", default=os.environ.get("SEC_BULK_MIRROR_DATABASE", SEC_CORE_DATABASE))

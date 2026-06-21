@@ -73,7 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--python-executable", default=sys.executable)
     parser.add_argument("--read-database", default=env_string("SEC_CLICKHOUSE_READ_DATABASE", "q_live"))
-    parser.add_argument("--write-database", default=env_string("SEC_CLICKHOUSE_WRITE_DATABASE", env_string("SEC_GATEWAY_WRITE_DATABASE", "q_sec_tmp")))
+    parser.add_argument("--write-database", default=env_string("SEC_CLICKHOUSE_WRITE_DATABASE", env_string("SEC_GATEWAY_WRITE_DATABASE", "q_live")))
     parser.add_argument("--coverage-table", default=env_string("SEC_COVERAGE_TABLE", "sec_coverage_manifest_v1"))
     parser.add_argument("--bulk-mirror-database", default=env_string("SEC_BULK_MIRROR_DATABASE", "sec_core"))
     parser.add_argument("--artifact-root-win", default=env_string("SEC_CORE_ARTIFACT_ROOT_WIN", "D:/market-data/sec_core"))

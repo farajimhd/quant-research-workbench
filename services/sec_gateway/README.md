@@ -64,7 +64,7 @@ REAL_LIVE_CLICKHOUSE_WRITE_USER
 REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD
 CLICKHOUSE_LIVE_STORAGE_POLICY
 SEC_CLICKHOUSE_READ_DATABASE=q_live
-SEC_CLICKHOUSE_WRITE_DATABASE=q_sec_tmp
+SEC_CLICKHOUSE_WRITE_DATABASE=q_live
 SEC_GATEWAY_BIND=127.0.0.1:8797
 SEC_GATEWAY_DATA_ROOT_WIN=D:/market-data
 SEC_GATEWAY_POLL_SECONDS=30
@@ -82,21 +82,20 @@ SEC_REQUEST_MIN_INTERVAL_SECONDS=0.12
 SEC_GATEWAY_AUTO_RUN_HISTORICAL_ON_WORKSTATION=true
 ```
 
-The default gateway mode is a sandbox:
+The default gateway mode is production write-through:
 
 ```text
 read database:  q_live
-write database: q_sec_tmp
+write database: q_live
 ```
 
-That keeps the migrated `q_live` tables as the reference source while new live
-gateway rows, coverage rows, and write-audit checks land in `q_sec_tmp`. After
-the temp data has been audited and accepted, production mode is only a config
-change:
+That means live SEC feed rows, coverage rows, write-audit checks, and generated
+historical gap-fill scripts use `q_live` unless explicitly overridden. For a
+temp smoke test, override only the write database:
 
 ```text
 SEC_CLICKHOUSE_READ_DATABASE=q_live
-SEC_CLICKHOUSE_WRITE_DATABASE=q_live
+SEC_CLICKHOUSE_WRITE_DATABASE=q_sec_tmp
 ```
 
 When the gateway is started on the workstation and historical gaps are found,
@@ -179,9 +178,9 @@ baseline starts at `2019-01-01` and ends at the conservative latest timestamp
 supported by filing parents, filing text, and XBRL companyfacts. The gateway does
 not plan historical backfills before `2019-01-01`.
 
-## Temp Database Audit
+## Write Database Audit
 
-Preflight creates the temp database if needed, clones these schemas from the
+Preflight creates the write database if needed, clones these schemas from the
 read database, and validates them before polling starts:
 
 ```text
@@ -209,10 +208,9 @@ The gateway write audit checks:
 The latest audit status appears in `/metrics` under `audit_status` and
 `audit_message`.
 
-Full audits can be expensive against `q_live`. The default temp-write workflow
-keeps them safe because `q_sec_tmp` is small. In production mode, keep startup
-audits enabled but use `SEC_GATEWAY_FULL_AUDIT_AFTER_WRITE_BATCHES=0` unless
-you explicitly want periodic full-table audits after live writes.
+Full audits can be expensive against `q_live`. Keep startup audits enabled, but
+use `SEC_GATEWAY_FULL_AUDIT_AFTER_WRITE_BATCHES=0` unless you explicitly want
+periodic full-table audits after live writes.
 
 ## Live Worker Queue
 
