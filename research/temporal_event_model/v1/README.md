@@ -177,6 +177,19 @@ python D:\TradingML\codes\temporal_event_model\v1\research\temporal_event_model\
 python D:\TradingML\codes\temporal_event_model\v1\research\temporal_event_model\v1\run_cache_probe.py
 ```
 
+From the laptop, use the UNC-configured launcher so the cache and checkpoint
+are read from the workstation shared drive:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_cache_probe_laptop.py --checkpoint epoch1 --print-only
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_cache_probe_laptop.py --checkpoint epoch1
+```
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_cache_probe_laptop.py --checkpoint epoch2 --print-only
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_cache_probe_laptop.py --checkpoint epoch2
+```
+
 Run the first v20 checkpoint comparison, using the same 10 training shards and
 one validation shard:
 
