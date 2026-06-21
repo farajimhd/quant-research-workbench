@@ -9,23 +9,23 @@ from pathlib import Path
 DEFAULTS = {
     "cache_root": r"D:\market-data\prepared\event_sample_cache\cache_v2_cycle_20260619_134422",
     "output_root": r"D:\TradingML\runtimes\temporal_event_model\v1\cache_price_probe",
-    "wandb_project": "June2026-temporal-v1-cache-price-probe",
+    "wandb_project": "June2026-event-encoder-linear-probes",
     "train_start_shard": 0,
     "train_max_shards": 10,
     "validation_start_shard": 10,
     "validation_max_shards": 1,
     "validation_batches": 32,
-    "batch_size": 8192,
+    "batch_size": 512,
     "epochs": 3,
     "epoch1_checkpoint": (
         r"D:\TradingML\runtimes\masked_event_model\v20\pretrain"
         r"\v20-fullpretrain-sharddecay-fixedmask070-emb32-bs8192-3epochs"
         r"\checkpoints\checkpoint_step_000130176.pt"
     ),
-    "epoch3_checkpoint": (
+    "epoch2_checkpoint": (
         r"D:\TradingML\runtimes\masked_event_model\v20\pretrain"
         r"\v20-fullpretrain-sharddecay-fixedmask070-emb32-bs8192-3epochs"
-        r"\checkpoints\checkpoint_latest.pt"
+        r"\checkpoints\checkpoint_step_000260352.pt"
     ),
 }
 
@@ -50,13 +50,13 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
     parser.add_argument("--max-batches-per-shard", type=int, default=0)
     parser.add_argument("--epoch1-checkpoint", default=DEFAULTS["epoch1_checkpoint"])
-    parser.add_argument("--epoch3-checkpoint", default=DEFAULTS["epoch3_checkpoint"])
+    parser.add_argument("--epoch2-checkpoint", default=DEFAULTS["epoch2_checkpoint"])
     args = parser.parse_args()
 
     script = Path(__file__).with_name("cache_probe.py")
     runs = [
-        ("v1-cache-probe-v20-epoch1-10train-1val", args.epoch1_checkpoint),
-        ("v1-cache-probe-v20-epoch3-10train-1val", args.epoch3_checkpoint),
+        ("v1-cache-probe-v20-epoch1-ychunk-bce-bs512", args.epoch1_checkpoint),
+        ("v1-cache-probe-v20-epoch2-ychunk-bce-bs512", args.epoch2_checkpoint),
     ]
     for run_name, checkpoint in runs:
         command = [

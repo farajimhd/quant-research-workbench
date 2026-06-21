@@ -140,20 +140,25 @@ For each sample, it reads:
 
 ```text
 x:      current compact chunk from shard_*.x.bin
-labels: as-of quote and future quote labels from shard_*.labels.parquet
+y:      first two future compact chunks from shard_*.y.bin
 ```
 
 The frozen masked-event encoder turns `x` into one chunk embedding. A small MLP
-probe then predicts, for each horizon in:
+probe then predicts the class of the max future price in the two stored future
+chunks from `y.bin`:
 
 ```text
-future_128, future_256, future_512, future_1024, future_2048
+future chunk 1: events t+1   ... t+128
+future chunk 2: events t+129 ... t+256
 ```
 
-both:
+Targets are built only from compact bytes:
 
-- a 5-class direction label: `strong_down`, `down`, `flat`, `up`, `strong_up`
-- a regression target: future mid-price return in basis points
+1. decode current `x.bin` chunk and take max quote/trade price,
+2. decode each stored future `y.bin` chunk and take max quote/trade price,
+3. convert each future max-price return into one of:
+   `strong_down`, `down`, `flat`, `up`, `strong_up`,
+4. train `BCEWithLogitsLoss` on the two one-hot 5-class targets.
 
 The default class thresholds are:
 
@@ -162,8 +167,8 @@ flat:   abs(return_bps) < 2
 strong: abs(return_bps) >= 20
 ```
 
-Rows without a valid as-of quote or valid future quote for a horizon are masked
-out of both classification and regression losses for that horizon.
+Rows whose current or future chunk cannot decode a positive price are masked out
+for that future chunk.
 
 Run one probe:
 
@@ -184,6 +189,7 @@ The comparison defaults are:
 
 ```text
 epoch 1 checkpoint: checkpoint_step_000130176.pt
-epoch 3/latest:     checkpoint_latest.pt
-W&B project:        June2026-temporal-v1-cache-price-probe
+epoch 2 checkpoint: checkpoint_step_000260352.pt
+batch size:         512
+W&B project:        June2026-event-encoder-linear-probes
 ```

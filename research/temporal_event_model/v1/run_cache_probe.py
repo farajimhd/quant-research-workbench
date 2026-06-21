@@ -13,7 +13,7 @@ DEFAULTS = {
     "validation_start_shard": 10,
     "validation_max_shards": 1,
     "validation_batches": 32,
-    "batch_size": 8192,
+    "batch_size": 512,
     "epochs": 3,
     "encoder_version": "v20",
     "encoder_checkpoint": (
@@ -21,8 +21,8 @@ DEFAULTS = {
         r"\v20-fullpretrain-sharddecay-fixedmask070-emb32-bs8192-3epochs"
         r"\checkpoints\checkpoint_latest.pt"
     ),
-    "run_name": "v1-cache-probe-v20-latest-10train-1val",
-    "wandb_project": "June2026-temporal-v1-cache-price-probe",
+    "run_name": "v1-cache-probe-v20-latest-ychunk-bce-bs512",
+    "wandb_project": "June2026-event-encoder-linear-probes",
     "output_root": r"D:\TradingML\runtimes\temporal_event_model\v1\cache_price_probe",
 }
 

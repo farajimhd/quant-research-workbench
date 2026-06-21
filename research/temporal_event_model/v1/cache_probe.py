@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import polars as pl
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -26,6 +25,7 @@ from research.mlops.event_sample_cache import (
     SAMPLE_BYTES,
     EventSampleCacheDataConfig,
     EventSampleLabeledShard,
+    decode_label_records,
     decode_sample_records,
     discover_event_sample_labeled_shards,
 )
@@ -39,10 +39,10 @@ MODEL_FAMILY = "temporal_event_model"
 MODEL_VERSION = "v1"
 JOB_TYPE = "cache_price_probe"
 CLASS_NAMES = ("strong_down", "down", "flat", "up", "strong_up")
-DEFAULT_HORIZONS = (128, 256, 512, 1024, 2048)
+DEFAULT_HORIZONS = (128, 256)
 DEFAULT_CACHE_ROOT = Path("D:/market-data/prepared/event_sample_cache/cache_v2_cycle_20260619_134422")
 DEFAULT_OUTPUT_ROOT = Path("D:/TradingML/runtimes/temporal_event_model/v1/cache_price_probe")
-DEFAULT_WANDB_PROJECT = "June2026-temporal-v1-cache-price-probe"
+DEFAULT_WANDB_PROJECT = "June2026-event-encoder-linear-probes"
 DEFAULT_ENCODER_VERSION = "v20"
 DEFAULT_V20_RUN_ROOT = Path(
     "D:/TradingML/runtimes/masked_event_model/v20/pretrain/"
@@ -59,14 +59,12 @@ class ProbeConfig:
     validation_start_shard: int = 10
     validation_max_shards: int = 1
     validation_batches: int = 32
-    batch_size: int = 8192
+    batch_size: int = 512
     epochs: int = 3
     max_batches_per_shard: int = 0
     horizons: tuple[int, ...] = DEFAULT_HORIZONS
     flat_threshold_bps: float = 2.0
     strong_threshold_bps: float = 20.0
-    regression_scale_bps: float = 50.0
-    regression_loss_weight: float = 1.0
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
     grad_clip_norm: float = 1.0
@@ -97,10 +95,10 @@ class PriceDirectionProbe(nn.Module):
     """Small downstream head over a frozen event-chunk embedding.
 
     The frozen encoder maps one compact chunk to `[B, embedding_dim]`. This
-    probe predicts five directional classes plus a continuous return in bps for
-    each configured horizon. The head is intentionally small so the experiment
-    measures the semantic usefulness of the pretrained embedding rather than
-    the capacity of a large downstream model.
+    probe predicts five directional classes for each stored future chunk. The
+    target comes directly from `y.bin`: decode each future chunk, take the max
+    price across quote/trade events inside that chunk, compare it to the max
+    price in the current `x.bin` chunk, then train BCE against the one-hot class.
     """
 
     def __init__(self, *, embedding_dim: int, hidden_dim: int, horizons: int, classes: int, dropout: float) -> None:
@@ -115,15 +113,12 @@ class PriceDirectionProbe(nn.Module):
             nn.LayerNorm(hidden_dim),
         )
         self.classification_head = nn.Linear(hidden_dim, horizons * classes)
-        self.regression_head = nn.Linear(hidden_dim, horizons)
         self.horizons = int(horizons)
         self.classes = int(classes)
 
-    def forward(self, embedding: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, embedding: torch.Tensor) -> torch.Tensor:
         features = self.backbone(embedding)
-        class_logits = self.classification_head(features).view(features.shape[0], self.horizons, self.classes)
-        return_bps = self.regression_head(features)
-        return class_logits, return_bps
+        return self.classification_head(features).view(features.shape[0], self.horizons, self.classes)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -146,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"device={device}", flush=True)
     print(f"cache_root={config.cache_root}", flush=True)
     print(f"encoder={config.encoder_version} checkpoint={config.encoder_checkpoint}", flush=True)
-    print(f"horizons={config.horizons} classes={CLASS_NAMES}", flush=True)
+    print(f"future_chunks={config.horizons} classes={CLASS_NAMES}", flush=True)
     print(f"thresholds flat={config.flat_threshold_bps}bps strong={config.strong_threshold_bps}bps", flush=True)
     print(f"secrets={secret_status(('WANDB_API_KEY',))}", flush=True)
     print("=" * 100, flush=True)
@@ -261,14 +256,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--validation-start-shard", type=int, default=10)
     parser.add_argument("--validation-max-shards", type=int, default=1)
     parser.add_argument("--validation-batches", type=int, default=32)
-    parser.add_argument("--batch-size", type=int, default=8192)
+    parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--max-batches-per-shard", type=int, default=0)
-    parser.add_argument("--horizons", default="128,256,512,1024,2048")
+    parser.add_argument("--horizons", default="128,256")
     parser.add_argument("--flat-threshold-bps", type=float, default=2.0)
     parser.add_argument("--strong-threshold-bps", type=float, default=20.0)
-    parser.add_argument("--regression-scale-bps", type=float, default=50.0)
-    parser.add_argument("--regression-loss-weight", type=float, default=1.0)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
@@ -316,8 +309,6 @@ def build_config(args: argparse.Namespace) -> ProbeConfig:
         horizons=horizons,
         flat_threshold_bps=args.flat_threshold_bps,
         strong_threshold_bps=args.strong_threshold_bps,
-        regression_scale_bps=args.regression_scale_bps,
-        regression_loss_weight=args.regression_loss_weight,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         grad_clip_norm=args.grad_clip_norm,
@@ -435,8 +426,8 @@ def train_one_shard(
     run_start_time: float,
 ) -> tuple[dict[str, float], int]:
     probe.train()
-    records = np.memmap(shard.x_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, SAMPLE_BYTES))
-    labels = load_label_columns(shard, config.horizons)
+    x_records = np.memmap(shard.x_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, SAMPLE_BYTES))
+    y_records = np.memmap(shard.y_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, shard.y_sample_bytes))
     rng = np.random.default_rng(config.seed + epoch * 100_000 + shard.shard_index)
     order = rng.permutation(shard.num_samples)
     max_steps = steps_in_shard(shard, config.batch_size, config.max_batches_per_shard)
@@ -449,16 +440,16 @@ def train_one_shard(
     )
     for shard_step in range(max_steps):
         batch_index = order[shard_step * config.batch_size : (shard_step + 1) * config.batch_size]
-        batch = build_probe_batch(records, labels, batch_index, config, device)
+        batch = build_probe_batch(x_records, y_records, batch_index, config, device)
         optimizer.zero_grad(set_to_none=True)
         with torch.no_grad(), autocast_context(device, amp_dtype):
             embedding = encoder(batch["header_uint8"], batch["events_uint8"])
-        class_logits, predicted_bps = probe(embedding.float())
+        class_logits = probe(embedding.float())
         loss, metrics = probe_loss_and_metrics(
             class_logits=class_logits,
-            predicted_bps=predicted_bps,
+            target_one_hot=batch["target_one_hot"],
             target_classes=batch["target_classes"],
-            target_bps=batch["target_bps"],
+            target_return_bps=batch["target_return_bps"],
             valid_mask=batch["valid_mask"],
             config=config,
         )
@@ -489,7 +480,7 @@ def train_one_shard(
     out["seconds"] = shard_elapsed
     out["samples_per_sec"] = (max_steps * config.batch_size) / max(shard_elapsed, 1e-6)
     print(format_metric_line("SHARD DONE", global_step, {f"shard/{key}": value for key, value in out.items()}), flush=True)
-    del records, labels, order
+    del x_records, y_records, order
     return out, global_step
 
 
@@ -507,94 +498,75 @@ def evaluate_probe(
     sums: dict[str, float] = {}
     batches = 0
     for shard in shards:
-        records = np.memmap(shard.x_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, SAMPLE_BYTES))
-        labels = load_label_columns(shard, config.horizons)
+        x_records = np.memmap(shard.x_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, SAMPLE_BYTES))
+        y_records = np.memmap(shard.y_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, shard.y_sample_bytes))
         rng = np.random.default_rng(config.seed + 9_000_000 + shard.shard_index)
         order = rng.permutation(shard.num_samples)
         max_batches = min(config.validation_batches, shard.num_samples // config.batch_size)
         for step in range(max_batches):
             batch_index = order[step * config.batch_size : (step + 1) * config.batch_size]
-            batch = build_probe_batch(records, labels, batch_index, config, device)
+            batch = build_probe_batch(x_records, y_records, batch_index, config, device)
             with autocast_context(device, amp_dtype):
                 embedding = encoder(batch["header_uint8"], batch["events_uint8"])
-            class_logits, predicted_bps = probe(embedding.float())
+            class_logits = probe(embedding.float())
             _, metrics = probe_loss_and_metrics(
                 class_logits=class_logits,
-                predicted_bps=predicted_bps,
+                target_one_hot=batch["target_one_hot"],
                 target_classes=batch["target_classes"],
-                target_bps=batch["target_bps"],
+                target_return_bps=batch["target_return_bps"],
                 valid_mask=batch["valid_mask"],
                 config=config,
             )
             for key, value in metrics.items():
                 sums[key] = sums.get(key, 0.0) + float(value)
             batches += 1
-        del records, labels, order
+        del x_records, y_records, order
     return {key: value / max(1, batches) for key, value in sums.items()}
 
 
-def load_label_columns(shard: EventSampleLabeledShard, horizons: tuple[int, ...]) -> dict[str, np.ndarray]:
-    if shard.label_path is None or not shard.label_path.exists():
-        raise FileNotFoundError(f"Missing labels parquet for shard {shard.shard_index}: {shard.label_path}")
-    columns = ["asof_has_quote", "asof_ask_price_int", "asof_ask_price_scale", "asof_bid_price_int", "asof_bid_price_scale"]
-    for horizon in horizons:
-        columns.extend(
-            [
-                f"future_{horizon}_has_quote",
-                f"future_{horizon}_ask_price_int",
-                f"future_{horizon}_ask_price_scale",
-                f"future_{horizon}_bid_price_int",
-                f"future_{horizon}_bid_price_scale",
-            ]
-        )
-    frame = pl.read_parquet(shard.label_path, columns=columns)
-    return {name: frame[name].to_numpy() for name in frame.columns}
-
-
 def build_probe_batch(
-    records: np.memmap,
-    labels: dict[str, np.ndarray],
+    x_records: np.memmap,
+    y_records: np.memmap,
     indices: np.ndarray,
     config: ProbeConfig,
     device: torch.device,
 ) -> dict[str, torch.Tensor]:
-    selected = np.asarray(records[indices], dtype=np.uint8)
-    headers, events = decode_sample_records(selected)
-    target_bps, classes, valid = build_targets(labels, indices, config)
+    selected_x = np.asarray(x_records[indices], dtype=np.uint8)
+    selected_y = np.asarray(y_records[indices], dtype=np.uint8)
+    headers, events = decode_sample_records(selected_x)
+    label_headers, label_events = decode_label_records(selected_y, label_chunks=len(config.horizons))
+    target_bps, classes, valid = build_targets_from_bytes(headers, events, label_headers, label_events, config)
+    one_hot = np.eye(len(CLASS_NAMES), dtype=np.float32)[classes]
+    one_hot = np.where(valid[:, :, None], one_hot, 0.0).astype(np.float32)
     return {
         "header_uint8": torch.from_numpy(headers.copy()).to(device=device, dtype=torch.uint8, non_blocking=True),
         "events_uint8": torch.from_numpy(events.copy()).to(device=device, dtype=torch.uint8, non_blocking=True),
-        "target_bps": torch.from_numpy(target_bps).to(device=device, dtype=torch.float32, non_blocking=True),
+        "target_return_bps": torch.from_numpy(target_bps).to(device=device, dtype=torch.float32, non_blocking=True),
+        "target_one_hot": torch.from_numpy(one_hot).to(device=device, dtype=torch.float32, non_blocking=True),
         "target_classes": torch.from_numpy(classes).to(device=device, dtype=torch.long, non_blocking=True),
         "valid_mask": torch.from_numpy(valid).to(device=device, dtype=torch.bool, non_blocking=True),
     }
 
 
-def build_targets(labels: dict[str, np.ndarray], indices: np.ndarray, config: ProbeConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    asof_mid = mid_price(
-        labels["asof_ask_price_int"][indices],
-        labels["asof_ask_price_scale"][indices],
-        labels["asof_bid_price_int"][indices],
-        labels["asof_bid_price_scale"][indices],
-    )
-    asof_valid = (labels["asof_has_quote"][indices].astype(bool)) & np.isfinite(asof_mid) & (asof_mid > 0.0)
-    returns = np.zeros((indices.shape[0], len(config.horizons)), dtype=np.float32)
-    classes = np.full((indices.shape[0], len(config.horizons)), 2, dtype=np.int64)
-    valid = np.zeros((indices.shape[0], len(config.horizons)), dtype=bool)
-    for horizon_index, horizon in enumerate(config.horizons):
-        future_mid = mid_price(
-            labels[f"future_{horizon}_ask_price_int"][indices],
-            labels[f"future_{horizon}_ask_price_scale"][indices],
-            labels[f"future_{horizon}_bid_price_int"][indices],
-            labels[f"future_{horizon}_bid_price_scale"][indices],
-        )
-        horizon_valid = (
-            asof_valid
-            & labels[f"future_{horizon}_has_quote"][indices].astype(bool)
-            & np.isfinite(future_mid)
-            & (future_mid > 0.0)
-        )
-        bps = ((future_mid / np.maximum(asof_mid, 1e-12)) - 1.0) * 10_000.0
+def build_targets_from_bytes(
+    x_headers: np.ndarray,
+    x_events: np.ndarray,
+    y_headers: np.ndarray,
+    y_events: np.ndarray,
+    config: ProbeConfig,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    current_max_price = max_price_per_chunk(x_headers, x_events)
+    current_valid = np.isfinite(current_max_price) & (current_max_price > 0.0)
+    sample_count = int(x_headers.shape[0])
+    returns = np.zeros((sample_count, len(config.horizons)), dtype=np.float32)
+    classes = np.full((sample_count, len(config.horizons)), 2, dtype=np.int64)
+    valid = np.zeros((sample_count, len(config.horizons)), dtype=bool)
+    if y_headers.shape[1] != len(config.horizons):
+        raise ValueError(f"Expected {len(config.horizons)} y chunks, got {y_headers.shape[1]}")
+    for horizon_index, _horizon in enumerate(config.horizons):
+        future_max_price = max_price_per_chunk(y_headers[:, horizon_index, :], y_events[:, horizon_index, :, :])
+        horizon_valid = current_valid & np.isfinite(future_max_price) & (future_max_price > 0.0)
+        bps = ((future_max_price / np.maximum(current_max_price, 1e-12)) - 1.0) * 10_000.0
         bps = np.where(horizon_valid, bps, 0.0).astype(np.float32)
         returns[:, horizon_index] = bps
         classes[:, horizon_index] = classify_bps(bps, config.flat_threshold_bps, config.strong_threshold_bps)
@@ -602,15 +574,28 @@ def build_targets(labels: dict[str, np.ndarray], indices: np.ndarray, config: Pr
     return returns, classes, valid
 
 
-def mid_price(ask_int: np.ndarray, ask_scale: np.ndarray, bid_int: np.ndarray, bid_scale: np.ndarray) -> np.ndarray:
-    ask = decode_price(ask_int, ask_scale)
-    bid = decode_price(bid_int, bid_scale)
-    return (ask + bid) * 0.5
+def max_price_per_chunk(headers: np.ndarray, events: np.ndarray) -> np.ndarray:
+    """Decode compact chunk bytes and return the maximum quote/trade price.
 
+    The compact event representation stores prices as int16 deltas from the
+    header ask anchor. For quote events the primary price is ask; for trade
+    events it is trade price. Taking the maximum across those primary prices
+    gives one byte-derived future target per chunk without using scalar labels.
+    """
 
-def decode_price(price_int: np.ndarray, scale: np.ndarray) -> np.ndarray:
-    denom = np.where(scale.astype(np.uint8, copy=False) == 1, 10000.0, 100.0)
-    return price_int.astype(np.float64, copy=False) / denom
+    ask_anchor_ticks = (
+        headers[:, 0].astype(np.uint32)
+        | (headers[:, 1].astype(np.uint32) << 8)
+        | ((headers[:, 2].astype(np.uint32) & 0x0F) << 16)
+    ).astype(np.float64)
+    tick_size = np.where((headers[:, 13].astype(np.uint8) & 0x04) != 0, 0.01, 0.0001).astype(np.float64)
+    price_delta = np.ascontiguousarray(events[:, :, 3:5]).view("<i2").reshape(events.shape[0], events.shape[1]).astype(np.float64)
+    price = (ask_anchor_ticks[:, None] + price_delta) * tick_size[:, None]
+    present = (events[:, :, 0] & 0x02) != 0
+    price = np.where(present & np.isfinite(price) & (price > 0.0), price, -np.inf)
+    max_price = np.max(price, axis=1)
+    return np.where(np.isfinite(max_price), max_price, np.nan)
+
 
 
 def classify_bps(values: np.ndarray, flat_threshold: float, strong_threshold: float) -> np.ndarray:
@@ -625,40 +610,33 @@ def classify_bps(values: np.ndarray, flat_threshold: float, strong_threshold: fl
 def probe_loss_and_metrics(
     *,
     class_logits: torch.Tensor,
-    predicted_bps: torch.Tensor,
+    target_one_hot: torch.Tensor,
     target_classes: torch.Tensor,
-    target_bps: torch.Tensor,
+    target_return_bps: torch.Tensor,
     valid_mask: torch.Tensor,
     config: ProbeConfig,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     valid = valid_mask.reshape(-1)
     if not torch.any(valid):
         zero = class_logits.sum() * 0.0
-        return zero, {"loss": 0.0, "classification_loss": 0.0, "regression_loss": 0.0, "valid_pct": 0.0}
+        return zero, {"loss": 0.0, "bce_loss": 0.0, "valid_pct": 0.0}
     flat_logits = class_logits.reshape(-1, len(CLASS_NAMES))[valid]
+    flat_targets = target_one_hot.reshape(-1, len(CLASS_NAMES))[valid]
     flat_classes = target_classes.reshape(-1)[valid]
-    classification_loss = F.cross_entropy(flat_logits, flat_classes)
-    scaled_pred = (predicted_bps / float(config.regression_scale_bps)).reshape(-1)[valid]
-    scaled_target = (target_bps / float(config.regression_scale_bps)).reshape(-1)[valid]
-    regression_loss = F.mse_loss(scaled_pred, scaled_target)
-    loss = classification_loss + float(config.regression_loss_weight) * regression_loss
+    loss = F.binary_cross_entropy_with_logits(flat_logits, flat_targets)
     with torch.no_grad():
         predicted_classes = torch.argmax(flat_logits, dim=-1)
         acc = (predicted_classes == flat_classes).float().mean()
-        mae_bps = torch.mean(torch.abs(predicted_bps.reshape(-1)[valid] - target_bps.reshape(-1)[valid]))
-        rmse_bps = torch.sqrt(torch.mean(torch.square(predicted_bps.reshape(-1)[valid] - target_bps.reshape(-1)[valid])))
         confusion = torch.zeros((len(CLASS_NAMES), len(CLASS_NAMES)), device=class_logits.device, dtype=torch.float32)
         flat_index = flat_classes * len(CLASS_NAMES) + predicted_classes
         confusion.view(-1).scatter_add_(0, flat_index, torch.ones_like(flat_index, dtype=torch.float32))
         macro_f1 = macro_f1_from_confusion(confusion)
         metrics = {
             "loss": float(loss.detach().cpu()),
-            "classification_loss": float(classification_loss.detach().cpu()),
-            "regression_loss": float(regression_loss.detach().cpu()),
+            "bce_loss": float(loss.detach().cpu()),
             "accuracy_pct": float(acc.detach().cpu() * 100.0),
             "macro_f1_pct": float(macro_f1.detach().cpu() * 100.0),
-            "return_mae_bps": float(mae_bps.detach().cpu()),
-            "return_rmse_bps": float(rmse_bps.detach().cpu()),
+            "abs_return_bps_mean": float(torch.abs(target_return_bps.reshape(-1)[valid]).mean().detach().cpu()),
             "valid_pct": float(valid.float().mean().detach().cpu() * 100.0),
         }
         for horizon_index, horizon in enumerate(config.horizons):
@@ -667,8 +645,8 @@ def probe_loss_and_metrics(
                 pred_h = torch.argmax(class_logits[:, horizon_index, :][horizon_valid], dim=-1)
                 target_h = target_classes[:, horizon_index][horizon_valid]
                 metrics[f"accuracy_pct_future_{horizon}"] = float((pred_h == target_h).float().mean().detach().cpu() * 100.0)
-                metrics[f"mae_bps_future_{horizon}"] = float(
-                    torch.abs(predicted_bps[:, horizon_index][horizon_valid] - target_bps[:, horizon_index][horizon_valid]).mean().detach().cpu()
+                metrics[f"abs_return_bps_mean_future_{horizon}"] = float(
+                    torch.abs(target_return_bps[:, horizon_index][horizon_valid]).mean().detach().cpu()
                 )
     return loss, metrics
 
@@ -689,7 +667,7 @@ def autocast_context(device: torch.device, amp_dtype: torch.dtype | None):
 
 
 def format_metric_line(prefix: str, step: int, metrics: dict[str, float]) -> str:
-    keys = [key for key in ("training/loss", "validation/loss", "shard/loss", "training/accuracy_pct", "validation/accuracy_pct", "training/return_mae_bps", "validation/return_mae_bps", "training/samples_per_sec", "shard/samples_per_sec") if key in metrics]
+    keys = [key for key in ("training/loss", "validation/loss", "shard/loss", "training/accuracy_pct", "validation/accuracy_pct", "training/macro_f1_pct", "validation/macro_f1_pct", "training/samples_per_sec", "shard/samples_per_sec") if key in metrics]
     parts = [f"{key.split('/')[-1]}={metrics[key]:.4f}" for key in keys]
     if not parts:
         parts = [f"{key}={value:.4f}" for key, value in list(metrics.items())[:6]]
