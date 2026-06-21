@@ -33,6 +33,7 @@ from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import JsonlMetricLogger
 from research.mlops.paths import RunPaths, default_run_root
 from research.mlops.wandb_utils import init_wandb
+from research.temporal_event_model.v1.progress import ProbeProgressState, ProbeTrainingReporter
 
 
 MODEL_FAMILY = "temporal_event_model"
@@ -89,6 +90,8 @@ class ProbeConfig:
     wandb_mode: str = "auto"
     logging_steps: int = 10
     validation_frequency_shards: int = 1
+    progress_layout: str = "auto"
+    progress_refresh_per_second: float = 1.0
 
 
 class PriceDirectionProbe(nn.Module):
@@ -170,6 +173,22 @@ def main(argv: list[str] | None = None) -> int:
         T_max=max(1, config.epochs * sum(steps_in_shard(s, config.batch_size, config.max_batches_per_shard) for s in train_shards)),
         eta_min=config.learning_rate * 0.05,
     )
+    planned_steps_per_epoch = sum(steps_in_shard(s, config.batch_size, config.max_batches_per_shard) for s in train_shards)
+    planned_total_steps = config.epochs * planned_steps_per_epoch
+    reporter_state = ProbeProgressState(
+        run_name=run_name,
+        device=str(device),
+        data_source=str(config.cache_root),
+        encoder_checkpoint=str(config.encoder_checkpoint),
+        output_dir=str(run_root),
+        batch_size=config.batch_size,
+        epochs=config.epochs,
+        total_steps=planned_total_steps,
+        train_shard_count=len(train_shards),
+        validation_shard_count=len(validation_shards),
+        probe_parameters=sum(p.numel() for p in probe.parameters()),
+        frozen_encoder_parameters=sum(p.numel() for p in encoder.parameters()),
+    )
     amp_dtype = resolve_amp_dtype(config.amp_dtype)
     wandb_run = init_wandb(
         entity=config.wandb_entity,
@@ -200,46 +219,58 @@ def main(argv: list[str] | None = None) -> int:
     best_validation_loss = math.inf
     start_time = time.perf_counter()
     try:
-        for epoch in range(1, config.epochs + 1):
-            epoch_rng = np.random.default_rng(config.seed + epoch)
-            order = list(train_shards)
-            epoch_rng.shuffle(order)
-            print(f"EPOCH START {epoch}/{config.epochs} shard_order={[s.shard_index for s in order]}", flush=True)
-            for shard_position, shard in enumerate(order, start=1):
-                shard_metrics, global_step = train_one_shard(
-                    encoder=encoder,
-                    probe=probe,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    shard=shard,
-                    config=config,
-                    device=device,
-                    amp_dtype=amp_dtype,
-                    epoch=epoch,
-                    shard_position=shard_position,
-                    global_step=global_step,
-                    metric_logger=metric_logger,
-                    run_start_time=start_time,
-                )
-                if shard_position % max(1, config.validation_frequency_shards) == 0:
-                    validation_metrics = evaluate_probe(
+        with ProbeTrainingReporter(
+            layout=config.progress_layout,
+            state=reporter_state,
+            refresh_per_second=config.progress_refresh_per_second,
+        ) as reporter:
+            reporter.message(f"Training started. Output: {run_root}")
+            for epoch in range(1, config.epochs + 1):
+                epoch_rng = np.random.default_rng(config.seed + epoch)
+                order = list(train_shards)
+                epoch_rng.shuffle(order)
+                reporter.message(f"EPOCH START {epoch}/{config.epochs} shard_order={[s.shard_index for s in order]}")
+                for shard_position, shard in enumerate(order, start=1):
+                    shard_metrics, global_step = train_one_shard(
                         encoder=encoder,
                         probe=probe,
-                        shards=validation_shards,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        shard=shard,
                         config=config,
                         device=device,
                         amp_dtype=amp_dtype,
+                        epoch=epoch,
+                        shard_position=shard_position,
+                        global_step=global_step,
+                        metric_logger=metric_logger,
+                        run_start_time=start_time,
+                        reporter=reporter,
                     )
-                    validation_metrics = {f"validation/{key}": value for key, value in validation_metrics.items()}
-                    metric_logger.log(validation_metrics, global_step)
-                    val_loss = validation_metrics.get("validation/loss", math.inf)
-                    print(format_metric_line("VALIDATION", global_step, validation_metrics), flush=True)
-                    save_checkpoint(paths.checkpoints_dir / "checkpoint_latest.pt", probe, optimizer, scheduler, config, global_step, epoch)
-                    if val_loss < best_validation_loss:
-                        best_validation_loss = val_loss
-                        save_checkpoint(paths.checkpoints_dir / "checkpoint_best_val.pt", probe, optimizer, scheduler, config, global_step, epoch)
-                metric_logger.log({f"training/shard_{key}": value for key, value in shard_metrics.items()}, global_step)
-            save_checkpoint(paths.checkpoints_dir / f"checkpoint_epoch_{epoch:03d}.pt", probe, optimizer, scheduler, config, global_step, epoch)
+                    if shard_position % max(1, config.validation_frequency_shards) == 0:
+                        validation_metrics = evaluate_probe(
+                            encoder=encoder,
+                            probe=probe,
+                            shards=validation_shards,
+                            config=config,
+                            device=device,
+                            amp_dtype=amp_dtype,
+                        )
+                        validation_metrics = {f"validation/{key}": value for key, value in validation_metrics.items()}
+                        metric_logger.log(validation_metrics, global_step)
+                        reporter.update({}, step=global_step, validation_metrics=validation_metrics)
+                        val_loss = validation_metrics.get("validation/loss", math.inf)
+                        reporter.message(format_metric_line("VALIDATION", global_step, validation_metrics))
+                        save_checkpoint(paths.checkpoints_dir / "checkpoint_latest.pt", probe, optimizer, scheduler, config, global_step, epoch)
+                        reporter.message(f"Saved checkpoint latest: {paths.checkpoints_dir / 'checkpoint_latest.pt'}")
+                        if val_loss < best_validation_loss:
+                            best_validation_loss = val_loss
+                            save_checkpoint(paths.checkpoints_dir / "checkpoint_best_val.pt", probe, optimizer, scheduler, config, global_step, epoch)
+                            reporter.message(f"Saved checkpoint best_val: {paths.checkpoints_dir / 'checkpoint_best_val.pt'}")
+                    metric_logger.log({f"training/shard_{key}": value for key, value in shard_metrics.items()}, global_step)
+                epoch_checkpoint = paths.checkpoints_dir / f"checkpoint_epoch_{epoch:03d}.pt"
+                save_checkpoint(epoch_checkpoint, probe, optimizer, scheduler, config, global_step, epoch)
+                reporter.message(f"Saved checkpoint epoch {epoch}: {epoch_checkpoint}")
     finally:
         if wandb_run is not None:
             wandb_run.finish()
@@ -286,6 +317,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--wandb-mode", default="auto")
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--validation-frequency-shards", type=int, default=1)
+    parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "off"), default="auto")
+    parser.add_argument("--progress-refresh-per-second", type=float, default=1.0)
     parser.add_argument("--env-file", type=Path, default=None)
     return parser.parse_args(argv)
 
@@ -333,6 +366,8 @@ def build_config(args: argparse.Namespace) -> ProbeConfig:
         wandb_mode=args.wandb_mode,
         logging_steps=args.logging_steps,
         validation_frequency_shards=args.validation_frequency_shards,
+        progress_layout=args.progress_layout,
+        progress_refresh_per_second=args.progress_refresh_per_second,
     )
 
 
@@ -424,6 +459,7 @@ def train_one_shard(
     global_step: int,
     metric_logger: JsonlMetricLogger,
     run_start_time: float,
+    reporter: ProbeTrainingReporter,
 ) -> tuple[dict[str, float], int]:
     probe.train()
     x_records = np.memmap(shard.x_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, SAMPLE_BYTES))
@@ -433,17 +469,22 @@ def train_one_shard(
     max_steps = steps_in_shard(shard, config.batch_size, config.max_batches_per_shard)
     running: dict[str, float] = {}
     shard_start = time.perf_counter()
-    print(
+    reporter.message(
         f"SHARD START epoch={epoch}/{config.epochs} position={shard_position} shard={shard.shard_index} "
-        f"samples={shard.num_samples:,} steps={max_steps:,}",
-        flush=True,
+        f"samples={shard.num_samples:,} steps={max_steps:,}"
     )
     for shard_step in range(max_steps):
+        step_started = time.perf_counter()
+        data_started = time.perf_counter()
         batch_index = order[shard_step * config.batch_size : (shard_step + 1) * config.batch_size]
         batch = build_probe_batch(x_records, y_records, batch_index, config, device)
+        data_seconds = time.perf_counter() - data_started
         optimizer.zero_grad(set_to_none=True)
+        encode_started = time.perf_counter()
         with torch.no_grad(), autocast_context(device, amp_dtype):
             embedding = encoder(batch["header_uint8"], batch["events_uint8"])
+        encode_seconds = time.perf_counter() - encode_started
+        forward_started = time.perf_counter()
         class_logits = probe(embedding.float())
         loss, metrics = probe_loss_and_metrics(
             class_logits=class_logits,
@@ -453,11 +494,17 @@ def train_one_shard(
             valid_mask=batch["valid_mask"],
             config=config,
         )
+        forward_seconds = time.perf_counter() - forward_started
+        backward_started = time.perf_counter()
         loss.backward()
         if config.grad_clip_norm > 0:
             torch.nn.utils.clip_grad_norm_(probe.parameters(), config.grad_clip_norm)
+        backward_seconds = time.perf_counter() - backward_started
+        optimizer_started = time.perf_counter()
         optimizer.step()
         scheduler.step()
+        optimizer_seconds = time.perf_counter() - optimizer_started
+        step_seconds = time.perf_counter() - step_started
         global_step += 1
         for key, value in metrics.items():
             running[key] = running.get(key, 0.0) + float(value)
@@ -470,16 +517,27 @@ def train_one_shard(
                 "training/lr": float(optimizer.param_groups[0]["lr"]),
                 "training/samples_per_sec": float(rate),
                 "training/epoch": float(epoch),
+                "training/shard_position": float(shard_position),
                 "training/shard": float(shard.shard_index),
                 "training/shard_step": float(shard_step + 1),
+                "training/shard_steps": float(max_steps),
+                "training/samples_seen_total": float(samples_seen),
+                "profile/step_seconds": float(step_seconds),
+                "profile/data_seconds": float(data_seconds),
+                "profile/encode_seconds": float(encode_seconds),
+                "profile/forward_seconds": float(forward_seconds),
+                "profile/backward_seconds": float(backward_seconds),
+                "profile/optimizer_seconds": float(optimizer_seconds),
+                **memory_profile(device),
             }
             metric_logger.log(row, global_step)
-            print(format_metric_line("TRAIN", global_step, row), flush=True)
+            reporter.update(row, step=global_step)
+            reporter.message(format_metric_line("TRAIN", global_step, row))
     shard_elapsed = time.perf_counter() - shard_start
     out = {key: value / max(1, max_steps) for key, value in running.items()}
     out["seconds"] = shard_elapsed
     out["samples_per_sec"] = (max_steps * config.batch_size) / max(shard_elapsed, 1e-6)
-    print(format_metric_line("SHARD DONE", global_step, {f"shard/{key}": value for key, value in out.items()}), flush=True)
+    reporter.message(format_metric_line("SHARD DONE", global_step, {f"shard/{key}": value for key, value in out.items()}))
     del x_records, y_records, order
     return out, global_step
 
@@ -494,6 +552,7 @@ def evaluate_probe(
     device: torch.device,
     amp_dtype: torch.dtype | None,
 ) -> dict[str, float]:
+    started = time.perf_counter()
     probe.eval()
     sums: dict[str, float] = {}
     batches = 0
@@ -521,7 +580,9 @@ def evaluate_probe(
                 sums[key] = sums.get(key, 0.0) + float(value)
             batches += 1
         del x_records, y_records, order
-    return {key: value / max(1, batches) for key, value in sums.items()}
+    out = {key: value / max(1, batches) for key, value in sums.items()}
+    out["seconds"] = time.perf_counter() - started
+    return out
 
 
 def build_probe_batch(
@@ -672,6 +733,21 @@ def format_metric_line(prefix: str, step: int, metrics: dict[str, float]) -> str
     if not parts:
         parts = [f"{key}={value:.4f}" for key, value in list(metrics.items())[:6]]
     return f"{prefix} step={step:,} " + " ".join(parts)
+
+
+def memory_profile(device: torch.device) -> dict[str, float]:
+    profile: dict[str, float] = {}
+    if device.type == "cuda":
+        profile["profile/gpu_allocated_gib"] = float(torch.cuda.memory_allocated(device) / (1024**3))
+        profile["profile/gpu_reserved_gib"] = float(torch.cuda.memory_reserved(device) / (1024**3))
+        profile["profile/gpu_peak_allocated_gib"] = float(torch.cuda.max_memory_allocated(device) / (1024**3))
+    try:
+        import psutil
+
+        profile["profile/process_rss_gib"] = float(psutil.Process(os.getpid()).memory_info().rss / (1024**3))
+    except Exception:  # noqa: BLE001
+        profile["profile/process_rss_gib"] = 0.0
+    return profile
 
 
 def save_checkpoint(
