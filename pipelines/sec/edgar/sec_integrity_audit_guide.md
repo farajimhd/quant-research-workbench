@@ -11,6 +11,12 @@ Run this before building or loading archive-derived SEC filing text. The audit i
 - Required v2 columns such as `text_sha256`, `normalizer_version`, `quality_flags`, `source_archive_date`, and `source_archive_member`.
 - Structured SEC/XBRL table presence.
 - A bounded XBRL accession sample join against `sec_filing_v2`.
+- A date-scoped SEC/XBRL integrity report. The default actionable scope starts
+  at `2019-01-01`; older XBRL rows are summarized as legacy and are not treated
+  as blockers.
+- XBRL-looking archive documents that do not have SEC companyfacts rows,
+  grouped by form type. These are warnings because not all XML/XBRL-looking SEC
+  documents belong in `sec_xbrl_company_fact_v1`.
 - Local daily archive inventory without scanning archive contents.
 
 Warnings are expected before v2 schema creation because the v2 tables do not exist yet and `sec_filing_document_v1` is intentionally provisional.
@@ -26,6 +32,18 @@ python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_integrit
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_integrity_audit.py --archive-root-win D:/market-data/sec_core/daily_archives
 ```
+
+## Current Scoped Audit
+
+Use this for the 2019+ SEC database audit after XBRL catch-up:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_integrity_audit.py --archive-root-win D:/market-data/sec_core/daily_archives --scope-start-date 2019-01-01 --require-v2-tables
+```
+
+Rows before `2019-01-01` are reported under the legacy XBRL summary and should
+not block the current SEC/news/model pipeline unless a task explicitly expands
+the training horizon.
 
 ## After v2 Schema Creation
 
