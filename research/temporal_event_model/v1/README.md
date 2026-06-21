@@ -125,3 +125,65 @@ It forces both encoders to the matching masked-event checkpoint architecture:
 `d_byte=40`, `d_model=256`, `embedding_dim=32`, `heads=8`,
 `encoder_layers=10`, `decoder_layers=4`, `ffn_mult=4`, and `dropout=0.08`.
 Use `--print-only` to inspect both exact training commands before running.
+
+## v2 Cache Price Probe
+
+The original ClickHouse-window trainer above is kept intact for future temporal
+chunk-prediction work. The cache price probe is a separate downstream test that
+uses the v2 event sample cache:
+
+```text
+D:\market-data\prepared\event_sample_cache\cache_v2_cycle_20260619_134422
+```
+
+For each sample, it reads:
+
+```text
+x:      current compact chunk from shard_*.x.bin
+labels: as-of quote and future quote labels from shard_*.labels.parquet
+```
+
+The frozen masked-event encoder turns `x` into one chunk embedding. A small MLP
+probe then predicts, for each horizon in:
+
+```text
+future_128, future_256, future_512, future_1024, future_2048
+```
+
+both:
+
+- a 5-class direction label: `strong_down`, `down`, `flat`, `up`, `strong_up`
+- a regression target: future mid-price return in basis points
+
+The default class thresholds are:
+
+```text
+flat:   abs(return_bps) < 2
+strong: abs(return_bps) >= 20
+```
+
+Rows without a valid as-of quote or valid future quote for a horizon are masked
+out of both classification and regression losses for that horizon.
+
+Run one probe:
+
+```powershell
+python D:\TradingML\codes\temporal_event_model\v1\research\temporal_event_model\v1\run_cache_probe.py --print-only
+python D:\TradingML\codes\temporal_event_model\v1\research\temporal_event_model\v1\run_cache_probe.py
+```
+
+Run the first v20 checkpoint comparison, using the same 10 training shards and
+one validation shard:
+
+```powershell
+python D:\TradingML\codes\temporal_event_model\v1\research\temporal_event_model\v1\train_compare_v20_epoch_probes.py --print-only
+python D:\TradingML\codes\temporal_event_model\v1\research\temporal_event_model\v1\train_compare_v20_epoch_probes.py
+```
+
+The comparison defaults are:
+
+```text
+epoch 1 checkpoint: checkpoint_step_000130176.pt
+epoch 3/latest:     checkpoint_latest.pt
+W&B project:        June2026-temporal-v1-cache-price-probe
+```
