@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 from pipelines.sec.edgar.sec_pipeline.config import SecPipelineConfig, env_string  # noqa: E402
 from pipelines.sec.edgar.sec_pipeline.coverage import (  # noqa: E402
     KIND_BULK_COMPANYFACTS,
+    KIND_BULK_SUBMISSIONS,
     KIND_DAILY_ARCHIVE,
     KIND_INTEGRITY_AUDIT,
     KIND_LIVE_FEED,
@@ -71,6 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--write-database", default=env_string("SEC_CLICKHOUSE_WRITE_DATABASE", env_string("SEC_GATEWAY_WRITE_DATABASE", "q_sec_tmp")))
     parser.add_argument("--coverage-table", default=env_string("SEC_COVERAGE_TABLE", "sec_coverage_manifest_v1"))
     parser.add_argument("--artifact-root-win", default=env_string("SEC_CORE_ARTIFACT_ROOT_WIN", "D:/market-data/sec_core"))
+    parser.add_argument("--core-output-root-win", default=env_string("SEC_CORE_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_core"))
     parser.add_argument("--output-root-win", default=env_string("SEC_HISTORICAL_GAP_FILL_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
     parser.add_argument("--daily-archive-output-root-win", default=env_string("SEC_DAILY_FEED_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_daily_feed_archives"))
     parser.add_argument("--archive-validation-output-root-win", default=env_string("SEC_DOWNLOADED_ARCHIVE_VALIDATION_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_downloaded_archive_validation"))
@@ -80,6 +82,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--integrity-audit-output-root-win", default=env_string("SEC_INTEGRITY_AUDIT_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_integrity_audit"))
     parser.add_argument("--parts-root-win", default=env_string("SEC_TEXT_PARTS_ROOT_WIN", str(DEFAULT_PARTS_ROOT_WIN)))
     parser.add_argument("--parts-root-ch", default=env_string("SEC_TEXT_PARTS_ROOT_CH", DEFAULT_PARTS_ROOT_CH))
+    parser.add_argument("--bulk-sources", default="submissions,companyfacts")
+    parser.add_argument("--bulk-download-concurrency", type=int, default=2)
+    parser.add_argument("--bulk-ingest-batch-size", type=int, default=50000)
+    parser.add_argument("--bulk-limit-ciks", type=int, default=0)
     parser.add_argument("--archive-download-concurrency", type=int, default=2)
     parser.add_argument("--archive-validation-workers", type=int, default=4)
     parser.add_argument("--text-extract-workers", type=int, default=4)
@@ -98,6 +104,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit-archives", type=int, default=0)
     parser.add_argument("--max-filings-per-archive", type=int, default=0)
     parser.add_argument("--force-download", action="store_true")
+    parser.add_argument("--allow-g-drive", action="store_true")
     return parser.parse_args()
 
 
@@ -194,6 +201,61 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
     if args.execute:
         text_ingest_execute.extend(["--execute", "--skip-preflight"])
     return [
+        StageCommand(
+            "bulk-download",
+            add_execute_flag(
+                [
+                    args.python_executable,
+                    script("pipelines/sec/edgar/sec_initial_fill_download.py"),
+                    "--sources",
+                    args.bulk_sources,
+                    "--artifact-root-win",
+                    args.artifact_root_win,
+                    "--output-root-win",
+                    args.core_output_root_win,
+                    "--download-concurrency",
+                    str(max(1, args.bulk_download_concurrency)),
+                    "--sec-request-min-interval-seconds",
+                    str(max(0.0, args.sec_request_min_interval_seconds)),
+                    "--request-timeout-seconds",
+                    str(max(1.0, args.request_timeout_seconds)),
+                    "--max-retries",
+                    str(max(0, args.max_retries)),
+                    "--retry-base-seconds",
+                    str(max(0.0, args.retry_base_seconds)),
+                    "--continue-on-429",
+                    "--max-429-before-stop",
+                    "20",
+                    "--progress-layout",
+                    "rich",
+                ],
+                args,
+                dry_run_flag="--dry-run",
+            ),
+            logs_root / "bulk-download.log",
+            False,
+        ),
+        StageCommand(
+            "bulk-ingest",
+            add_execute_flag(
+                [
+                    args.python_executable,
+                    script("pipelines/sec/edgar/sec_bulk_clickhouse_ingest.py"),
+                    "--sources",
+                    args.bulk_sources,
+                    "--artifact-root-win",
+                    args.artifact_root_win,
+                    "--output-root-win",
+                    args.core_output_root_win,
+                    "--batch-size",
+                    str(max(1, args.bulk_ingest_batch_size)),
+                ],
+                args,
+                dry_run_flag="--dry-run",
+            ),
+            logs_root / "bulk-ingest.log",
+            True,
+        ),
         StageCommand(
             "daily-archive-download",
             add_execute_flag(
@@ -382,9 +444,21 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
 def add_execute_flag(command: list[str], args: argparse.Namespace, *, dry_run_flag: str = "") -> list[str]:
     out = list(command)
     command_text = " ".join(out)
+    if "sec_initial_fill_download.py" in command_text:
+        if args.force_download:
+            out.append("--force")
+        if args.allow_g_drive:
+            out.append("--allow-g-drive")
+    if "sec_bulk_clickhouse_ingest.py" in command_text:
+        if args.bulk_limit_ciks:
+            out.extend(["--limit-ciks", str(args.bulk_limit_ciks)])
+        if args.allow_g_drive:
+            out.append("--allow-g-drive")
     if "sec_daily_feed_archive_download.py" in command_text:
         if args.force_download:
             out.append("--force")
+        if args.allow_g_drive:
+            out.append("--allow-g-drive")
         if args.limit_days:
             out.extend(["--limit-days", str(args.limit_days)])
     if "sec_filing_text_extract_parts.py" in command_text:
@@ -461,7 +535,7 @@ def write_coverage(args: argparse.Namespace, run_id: str) -> None:
     )
     start = datetime.combine(parse_date(args.start_date), dt_time.min, tzinfo=UTC)
     end = datetime.combine(parse_date(args.end_date), dt_time.min, tzinfo=UTC)
-    for kind in [KIND_DAILY_ARCHIVE, KIND_LIVE_FEED, KIND_TEXT_EXTRACTION, KIND_BULK_COMPANYFACTS, KIND_INTEGRITY_AUDIT]:
+    for kind in [KIND_BULK_SUBMISSIONS, KIND_DAILY_ARCHIVE, KIND_LIVE_FEED, KIND_TEXT_EXTRACTION, KIND_BULK_COMPANYFACTS, KIND_INTEGRITY_AUDIT]:
         insert_coverage(
             client,
             coverage,

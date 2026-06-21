@@ -122,10 +122,12 @@ sec_historical_gap_fill.py
 sec_integrity_audit.py
 ```
 
-The unified fill command performs archive download, validation, text extraction,
-ClickHouse insert, XBRL companyfacts catchup, XBRL relationship repair, audit,
-and coverage writes. The final audit command gives the operator a short
-post-run verification surface before the result is trusted.
+The unified fill command first refreshes SEC bulk `submissions` and
+`companyfacts`, mirrors those bulk files into `sec_core`, then performs archive
+download, validation, text extraction, ClickHouse insert, XBRL companyfacts
+catchup, XBRL relationship repair, audit, and coverage writes. The final audit
+command gives the operator a short post-run verification surface before the
+result is trusted.
 
 ## Coverage
 
