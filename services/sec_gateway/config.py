@@ -12,6 +12,7 @@ WORKSTATION_COMPUTER_NAME = "DESKTOP-SAAI85T"
 WORKSTATION_DATA_ROOT_WIN = Path("D:/market-data")
 WORKSTATION_SHARE_DATA_ROOT_WIN = Path(r"\\DESKTOP-SAAI85T\Workstation-D\market-data")
 WORKSTATION_CODE_ROOT_WIN = Path("D:/TradingML/codes/quant_research_workbench_pipelines")
+WORKSTATION_SHARE_CODE_ROOT_WIN = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines")
 
 
 @dataclass(frozen=True, slots=True)

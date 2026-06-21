@@ -34,7 +34,7 @@ from pipelines.sec.edgar.sec_pipeline.rate_limit import SecRateLimiter
 from pipelines.news.benzinga.news_pipeline.provider import MarketStatusResult, MassiveMarketStatusClient
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.run_logger import AsyncRunLogger
-from services.sec_gateway.config import SecGatewayConfig
+from services.sec_gateway.config import SecGatewayConfig, WORKSTATION_SHARE_CODE_ROOT_WIN
 from services.sec_gateway.preflight import PreflightError, PreflightReport, run_preflight
 from services.gateway_policy import backfill_auto_run_allowed, maintenance_window_message
 
@@ -417,7 +417,8 @@ class SecGateway:
     def _write_historical_fill_script(self, gaps: list[SecGap]) -> None:
         start = min(gap.start_utc.date() for gap in gaps)
         end = (datetime.now(UTC).date() + timedelta(days=1))
-        root = self.config.pipeline.workstation_code_root_win / "generated" / "sec_gateway_manual_gap_fill" / self._run_id
+        script_root = workstation_script_write_root(self.config)
+        root = script_root / "generated" / "sec_gateway_manual_gap_fill" / self._run_id
         data_root = workstation_script_data_root(self.config)
         prepared_root = data_root / "prepared"
         artifact_root = data_root / "sec_core"
@@ -503,9 +504,15 @@ class SecGateway:
             )
         )
         script_path = write_multi_plan_script(plans, root / f"{self._run_id}_run_all.ps1")
-        self.metrics.manual_gap_fill_script_win = str(script_path)
+        run_script_path = workstation_script_run_path(script_path, self.config)
+        self.metrics.manual_gap_fill_script_win = str(run_script_path)
         self.metrics.manual_gap_fill_command = "\n".join(plan.command_text for plan in plans)
-        self._log("historical_gap_fill_script_written", script_path=str(script_path), commands=[plan.command for plan in plans])
+        self._log(
+            "historical_gap_fill_script_written",
+            script_path=str(run_script_path),
+            script_storage_path=str(script_path),
+            commands=[plan.command for plan in plans],
+        )
         if backfill_auto_run_allowed(
             is_workstation=self.config.is_workstation,
             execute=self.config.execute,
@@ -806,6 +813,25 @@ def workstation_script_data_root(config: SecGatewayConfig) -> Path:
     if config.is_workstation:
         return config.pipeline.data_root_win
     return Path("D:/market-data")
+
+
+def workstation_script_write_root(config: SecGatewayConfig) -> Path:
+    if config.is_workstation:
+        return config.pipeline.workstation_code_root_win
+    explicit = os.environ.get("SEC_GATEWAY_WORKSTATION_SHARE_CODE_ROOT_WIN", "").strip()
+    if explicit:
+        return Path(explicit)
+    return WORKSTATION_SHARE_CODE_ROOT_WIN
+
+
+def workstation_script_run_path(script_path: Path, config: SecGatewayConfig) -> Path:
+    if config.is_workstation:
+        return script_path
+    try:
+        relative = script_path.relative_to(workstation_script_write_root(config))
+    except ValueError:
+        return script_path
+    return config.pipeline.workstation_code_root_win / relative
 
 
 def market_status_is_active(status: MarketStatusResult) -> bool:

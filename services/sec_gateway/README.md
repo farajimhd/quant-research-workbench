@@ -105,6 +105,16 @@ it writes the exact historical-fill PowerShell script under:
 D:/TradingML/codes/quant_research_workbench_pipelines/generated/sec_gateway_manual_gap_fill/
 ```
 
+When the gateway is started from another machine, it writes the same script
+through the workstation share:
+
+```text
+\\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\quant_research_workbench_pipelines\generated\sec_gateway_manual_gap_fill\
+```
+
+The terminal still reports the workstation-local `D:/TradingML/...` path, so
+the command can be copied into a workstation PowerShell session without editing.
+
 With `SEC_GATEWAY_AUTO_RUN_HISTORICAL_ON_WORKSTATION=true`, the gateway starts
 that script automatically only when it is running on the workstation outside the
 active collection window, which defaults to `04:00-20:00 ET`. During the active
