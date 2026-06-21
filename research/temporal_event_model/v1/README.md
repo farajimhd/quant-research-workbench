@@ -197,8 +197,16 @@ python D:\TradingML\codes\temporal_event_model\v1\research\temporal_event_model\
 python D:\TradingML\codes\temporal_event_model\v1\research\temporal_event_model\v1\run_cache_probe.py
 ```
 
-From the laptop, use the UNC-configured launcher so the cache and checkpoint
-are read from the workstation shared drive:
+From the laptop, use the local-cache launcher after copying the first two v2
+cache shards to:
+
+```text
+D:\market-data\prepared\event_sample_cache\cache_v2_cycle_20260619_134422
+```
+
+The laptop launcher defaults to one shuffled training shard, ten validation
+batches from the second shard, five epochs, RAM preloading for the training
+shard, and step-frequency validation.
 
 ```powershell
 python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_cache_probe_laptop.py --checkpoint epoch1 --print-only

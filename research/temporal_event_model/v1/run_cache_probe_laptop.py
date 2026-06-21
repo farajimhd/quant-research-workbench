@@ -20,17 +20,18 @@ CHECKPOINTS = {
 }
 
 DEFAULTS = {
-    "cache_root": WORKSTATION_ROOT + r"\market-data\prepared\event_sample_cache\cache_v2_cycle_20260619_134422",
-    "output_root": WORKSTATION_ROOT + r"\TradingML\runtimes\temporal_event_model\v1\cache_price_probe_laptop",
+    "cache_root": r"D:\market-data\prepared\event_sample_cache\cache_v2_cycle_20260619_134422",
+    "output_root": r"D:\TradingML\runtimes\temporal_event_model\v1\cache_price_probe_laptop",
     "wandb_project": "June2026-event-encoder-linear-probes",
     "train_start_shard": 0,
-    "train_max_shards": 10,
-    "validation_start_shard": 10,
+    "train_max_shards": 1,
+    "validation_start_shard": 1,
     "validation_max_shards": 1,
-    "validation_batches": 32,
+    "validation_batches": 10,
     "batch_size": 512,
-    "epochs": 3,
+    "epochs": 5,
     "checkpoint": "epoch2",
+    "validation_frequency_steps": 500,
 }
 
 
@@ -56,13 +57,16 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
     parser.add_argument("--max-batches-per-shard", type=int, default=0)
+    parser.add_argument("--validation-frequency-steps", type=int, default=DEFAULTS["validation_frequency_steps"])
+    parser.add_argument("--validation-frequency-shards", type=int, default=0)
+    parser.add_argument("--preload-shards-to-ram", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--flat-threshold-bps", type=float, default=2.0)
     parser.add_argument("--strong-threshold-bps", type=float, default=20.0)
     args = parser.parse_args()
 
     checkpoint = args.encoder_checkpoint or CHECKPOINTS[args.checkpoint]
-    run_name = args.run_name or f"v1-cache-probe-v20-{args.checkpoint}-ychunk-bce-bs{args.batch_size}-laptop"
+    run_name = args.run_name or f"v1-cache-probe-v20-{args.checkpoint}-1train1val-5ep-bs{args.batch_size}-laptop"
     script = Path(__file__).with_name("cache_probe.py")
     command = [
         sys.executable,
@@ -83,6 +87,10 @@ def main() -> int:
         str(args.batch_size),
         "--epochs",
         str(args.epochs),
+        "--validation-frequency-steps",
+        str(args.validation_frequency_steps),
+        "--validation-frequency-shards",
+        str(args.validation_frequency_shards),
         "--encoder-version",
         "v20",
         "--encoder-checkpoint",
@@ -100,6 +108,7 @@ def main() -> int:
         "--strong-threshold-bps",
         str(args.strong_threshold_bps),
     ]
+    command.append("--preload-shards-to-ram" if args.preload_shards_to_ram else "--no-preload-shards-to-ram")
     if args.max_batches_per_shard:
         command.extend(["--max-batches-per-shard", str(args.max_batches_per_shard)])
     print("Equivalent command:", flush=True)

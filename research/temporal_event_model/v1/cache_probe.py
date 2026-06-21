@@ -91,6 +91,8 @@ class ProbeConfig:
     wandb_mode: str = "auto"
     logging_steps: int = 10
     validation_frequency_shards: int = 1
+    validation_frequency_steps: int = 0
+    preload_shards_to_ram: bool = False
     progress_layout: str = "auto"
     progress_refresh_per_second: float = 1.0
 
@@ -212,17 +214,21 @@ def main(argv: list[str] | None = None) -> int:
                         optimizer=optimizer,
                         scheduler=scheduler,
                         shard=shard,
+                        validation_shards=validation_shards,
                         config=config,
                         device=device,
                         amp_dtype=amp_dtype,
                         epoch=epoch,
                         shard_position=shard_position,
                         global_step=global_step,
+                        best_validation_loss=best_validation_loss,
+                        paths=paths,
                         metric_logger=metric_logger,
                         run_start_time=start_time,
                         reporter=reporter,
                     )
-                    if shard_position % max(1, config.validation_frequency_shards) == 0:
+                    best_validation_loss = shard_metrics.pop("_best_validation_loss", best_validation_loss)
+                    if config.validation_frequency_shards > 0 and shard_position % config.validation_frequency_shards == 0:
                         validation_metrics = evaluate_probe(
                             model=model,
                             shards=validation_shards,
@@ -291,6 +297,13 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--wandb-mode", default="auto")
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--validation-frequency-shards", type=int, default=1)
+    parser.add_argument("--validation-frequency-steps", type=int, default=0)
+    parser.add_argument(
+        "--preload-shards-to-ram",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Load each x/y shard into RAM before shuffled batching. This is much faster for local/laptop SSD runs.",
+    )
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "off"), default="auto")
     parser.add_argument("--progress-refresh-per-second", type=float, default=1.0)
     parser.add_argument("--env-file", type=Path, default=None)
@@ -340,6 +353,8 @@ def build_config(args: argparse.Namespace) -> ProbeConfig:
         wandb_mode=args.wandb_mode,
         logging_steps=args.logging_steps,
         validation_frequency_shards=args.validation_frequency_shards,
+        validation_frequency_steps=args.validation_frequency_steps,
+        preload_shards_to_ram=bool(args.preload_shards_to_ram),
         progress_layout=args.progress_layout,
         progress_refresh_per_second=args.progress_refresh_per_second,
     )
@@ -424,20 +439,22 @@ def train_one_shard(
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     shard: EventSampleLabeledShard,
+    validation_shards: list[EventSampleLabeledShard],
     config: ProbeConfig,
     device: torch.device,
     amp_dtype: torch.dtype | None,
     epoch: int,
     shard_position: int,
     global_step: int,
+    best_validation_loss: float,
+    paths: RunPaths,
     metric_logger: JsonlMetricLogger,
     run_start_time: float,
     reporter: ProbeTrainingReporter,
 ) -> tuple[dict[str, float], int]:
     model.train()
     model.event_encoder.eval()
-    x_records = np.memmap(shard.x_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, SAMPLE_BYTES))
-    y_records = np.memmap(shard.y_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, shard.y_sample_bytes))
+    x_records, y_records = load_shard_records(shard, preload=config.preload_shards_to_ram, reporter=reporter, purpose="train")
     rng = np.random.default_rng(config.seed + epoch * 100_000 + shard.shard_index)
     order = rng.permutation(shard.num_samples)
     max_steps = steps_in_shard(shard, config.batch_size, config.max_batches_per_shard)
@@ -507,10 +524,32 @@ def train_one_shard(
             metric_logger.log(row, global_step)
             reporter.update(row, step=global_step)
             reporter.message(format_metric_line("TRAIN", global_step, row))
+        if config.validation_frequency_steps > 0 and global_step % config.validation_frequency_steps == 0:
+            validation_metrics = evaluate_probe(
+                model=model,
+                shards=validation_shards,
+                config=config,
+                device=device,
+                amp_dtype=amp_dtype,
+            )
+            validation_metrics = {f"validation/{key}": value for key, value in validation_metrics.items()}
+            metric_logger.log(validation_metrics, global_step)
+            reporter.update({}, step=global_step, validation_metrics=validation_metrics)
+            val_loss = validation_metrics.get("validation/loss", math.inf)
+            reporter.message(format_metric_line("VALIDATION", global_step, validation_metrics))
+            save_checkpoint(paths.checkpoints_dir / "checkpoint_latest.pt", model, optimizer, scheduler, config, global_step, epoch)
+            reporter.message(f"Saved checkpoint latest: {paths.checkpoints_dir / 'checkpoint_latest.pt'}")
+            if val_loss < best_validation_loss:
+                best_validation_loss = val_loss
+                save_checkpoint(paths.checkpoints_dir / "checkpoint_best_val.pt", model, optimizer, scheduler, config, global_step, epoch)
+                reporter.message(f"Saved checkpoint best_val: {paths.checkpoints_dir / 'checkpoint_best_val.pt'}")
+            model.train()
+            model.event_encoder.eval()
     shard_elapsed = time.perf_counter() - shard_start
     out = {key: value / max(1, max_steps) for key, value in running.items()}
     out["seconds"] = shard_elapsed
     out["samples_per_sec"] = (max_steps * config.batch_size) / max(shard_elapsed, 1e-6)
+    out["_best_validation_loss"] = best_validation_loss
     reporter.message(format_metric_line("SHARD DONE", global_step, {f"shard/{key}": value for key, value in out.items()}))
     del x_records, y_records, order
     return out, global_step
@@ -530,8 +569,7 @@ def evaluate_probe(
     sums: dict[str, float] = {}
     batches = 0
     for shard in shards:
-        x_records = np.memmap(shard.x_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, SAMPLE_BYTES))
-        y_records = np.memmap(shard.y_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, shard.y_sample_bytes))
+        x_records, y_records = load_shard_records(shard, preload=False, reporter=None, purpose="validation")
         rng = np.random.default_rng(config.seed + 9_000_000 + shard.shard_index)
         order = rng.permutation(shard.num_samples)
         max_batches = min(config.validation_batches, shard.num_samples // config.batch_size)
@@ -558,9 +596,34 @@ def evaluate_probe(
     return out
 
 
+def load_shard_records(
+    shard: EventSampleLabeledShard,
+    *,
+    preload: bool,
+    reporter: ProbeTrainingReporter | None,
+    purpose: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    x_records = np.memmap(shard.x_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, SAMPLE_BYTES))
+    y_records = np.memmap(shard.y_path, dtype=np.uint8, mode="r", shape=(shard.num_samples, shard.y_sample_bytes))
+    if not preload:
+        return x_records, y_records
+    started = time.perf_counter()
+    if reporter is not None:
+        reporter.message(
+            f"LOAD {purpose} shard={shard.shard_index} samples={shard.num_samples:,} "
+            f"x={shard.x_byte_size / (1024**3):.2f}GiB y={shard.y_byte_size / (1024**3):.2f}GiB"
+        )
+    x_loaded = np.array(x_records, dtype=np.uint8, copy=True)
+    y_loaded = np.array(y_records, dtype=np.uint8, copy=True)
+    del x_records, y_records
+    if reporter is not None:
+        reporter.message(f"LOAD DONE {purpose} shard={shard.shard_index} seconds={time.perf_counter() - started:.1f}")
+    return x_loaded, y_loaded
+
+
 def build_probe_batch(
-    x_records: np.memmap,
-    y_records: np.memmap,
+    x_records: np.ndarray,
+    y_records: np.ndarray,
     indices: np.ndarray,
     config: ProbeConfig,
     device: torch.device,
