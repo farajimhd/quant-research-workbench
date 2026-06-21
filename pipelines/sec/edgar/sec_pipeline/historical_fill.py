@@ -148,20 +148,77 @@ def write_multi_plan_script(plans: list[HistoricalFillPlan], script_path: Path) 
         "$ErrorActionPreference = 'Stop'",
         "Set-StrictMode -Version Latest",
         f"$secGapFillLog = Join-Path $PSScriptRoot {powershell_single_quote(log_name)}",
+        "$secCondaEnv = if ($env:SEC_GATEWAY_WORKSTATION_CONDA_ENV) { $env:SEC_GATEWAY_WORKSTATION_CONDA_ENV } else { 'ml4t' }",
+        "",
+        "function Resolve-SecPython {",
+        "    param([string]$EnvName)",
+        "    if ($env:SEC_GATEWAY_WORKSTATION_PYTHON_EXE -and (Test-Path -LiteralPath $env:SEC_GATEWAY_WORKSTATION_PYTHON_EXE)) {",
+        "        return $env:SEC_GATEWAY_WORKSTATION_PYTHON_EXE",
+        "    }",
+        "    $candidates = New-Object System.Collections.Generic.List[string]",
+        "    if ($env:CONDA_PREFIX -and $env:CONDA_DEFAULT_ENV -eq $EnvName) {",
+        "        $candidates.Add((Join-Path $env:CONDA_PREFIX 'python.exe'))",
+        "    }",
+        "    $profileRoots = @($env:USERPROFILE, 'C:\\Users\\Mehdi', 'C:\\Users\\g835l') | Where-Object { $_ } | Select-Object -Unique",
+        "    foreach ($root in $profileRoots) {",
+        "        $candidates.Add((Join-Path $root \"miniconda3\\envs\\$EnvName\\python.exe\"))",
+        "        $candidates.Add((Join-Path $root \"anaconda3\\envs\\$EnvName\\python.exe\"))",
+        "    }",
+        "    foreach ($candidate in $candidates) {",
+        "        if ($candidate -and (Test-Path -LiteralPath $candidate)) {",
+        "            return $candidate",
+        "        }",
+        "    }",
+        "    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue",
+        "    if ($pythonCommand -and $pythonCommand.Source) {",
+        "        return $pythonCommand.Source",
+        "    }",
+        "    throw \"Unable to resolve Python. Set SEC_GATEWAY_WORKSTATION_PYTHON_EXE or SEC_GATEWAY_WORKSTATION_CONDA_ENV.\"",
+        "}",
+        "",
+        "function Format-SecCommand {",
+        "    param([string[]]$Command)",
+        "    $parts = foreach ($part in $Command) {",
+        "        if ($part -match '\\s') { '\"' + ($part -replace '\"', '\\\"') + '\"' } else { $part }",
+        "    }",
+        "    return ($parts -join ' ')",
+        "}",
+        "",
+        "function Invoke-SecHistoricalCommand {",
+        "    param([string]$TaskName, [string[]]$Command, [string]$PythonPath)",
+        "    if (-not $Command -or $Command.Count -lt 1) {",
+        "        throw \"$TaskName has an empty command.\"",
+        "    }",
+        "    if ($Command[0] -eq 'python' -or $Command[0] -match '(?i)(^|\\\\)python(\\.exe)?$') {",
+        "        $Command[0] = $PythonPath",
+        "    }",
+        "    Write-Host (\"$TaskName command: \" + (Format-SecCommand -Command $Command))",
+        "    if ($Command.Count -eq 1) {",
+        "        & $Command[0]",
+        "    } else {",
+        "        & $Command[0] @($Command[1..($Command.Count - 1)])",
+        "    }",
+        "    $exitCode = if ($null -eq $global:LASTEXITCODE) { 0 } else { $global:LASTEXITCODE }",
+        "    if ($exitCode -ne 0) {",
+        "        throw \"$TaskName failed with exit code $exitCode\"",
+        "    }",
+        "}",
+        "",
         "Write-Host \"SEC gap-fill wrapper started $(Get-Date -Format o)\"",
         "Write-Host \"Script: $PSCommandPath\"",
         "Write-Host \"Log: $secGapFillLog\"",
+        "$secPython = Resolve-SecPython -EnvName $secCondaEnv",
+        "Write-Host \"Python: $secPython\"",
         "Start-Transcript -Path $secGapFillLog -Append | Out-Null",
         "try {",
         "",
     ]
     for index, plan in enumerate(plans, start=1):
-        lines.append(f"    Write-Host {powershell_single_quote(f'SEC historical task {index}/{len(plans)} started')}")
-        lines.append(f"    & {format_command(plan.command)}")
-        lines.append("    if ($LASTEXITCODE -ne 0) {")
-        lines.append(f"        throw {powershell_single_quote(f'SEC historical task {index}/{len(plans)} failed with exit code ')} + $LASTEXITCODE")
-        lines.append("    }")
-        lines.append(f"    Write-Host {powershell_single_quote(f'SEC historical task {index}/{len(plans)} completed')}")
+        task_name = f"SEC historical task {index}/{len(plans)}"
+        lines.append(f"    Write-Host {powershell_single_quote(f'{task_name} started')}")
+        lines.append(f"    $secTaskCommand = {powershell_array(plan.command)}")
+        lines.append(f"    Invoke-SecHistoricalCommand -TaskName {powershell_single_quote(task_name)} -Command $secTaskCommand -PythonPath $secPython")
+        lines.append(f"    Write-Host {powershell_single_quote(f'{task_name} completed')}")
         lines.append("")
     lines.extend(
         [
@@ -205,3 +262,7 @@ def format_command(command: Iterable[str]) -> str:
 
 def powershell_single_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def powershell_array(values: Iterable[str]) -> str:
+    return "@(" + ", ".join(powershell_single_quote(str(value)) for value in values) + ")"
