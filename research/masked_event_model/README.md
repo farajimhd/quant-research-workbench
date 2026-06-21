@@ -188,10 +188,12 @@ during MAE training.
 
 ## Main Full-Pretraining Candidate
 
-The current full-pretraining candidate is v20.
+The v20 full-pretraining experiment started at `2026-06-19T16:13:21`
+according to the first logged training metric.
 
 ```text
 run name: v20-fullpretrain-sharddecay-fixedmask070-emb32-bs8192-3epochs
+experiment start: 2026-06-19T16:13:21
 W&B project: June2026-event-token-mae-full
 train cache: D:\market-data\prepared\event_sample_cache\cache_20260611_195259
 validation cache: D:\market-data\prepared\event_sample_cache\cache_20260617_112833
