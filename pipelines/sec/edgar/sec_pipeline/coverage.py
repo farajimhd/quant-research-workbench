@@ -16,6 +16,8 @@ KIND_BULK_SUBMISSIONS = "sec_bulk_submissions"
 KIND_BULK_COMPANYFACTS = "sec_bulk_companyfacts"
 KIND_TEXT_EXTRACTION = "sec_text_extraction"
 KIND_INTEGRITY_AUDIT = "sec_integrity_audit"
+KIND_HISTORICAL_BASELINE = "sec_historical_baseline"
+HISTORICAL_BASELINE_START_UTC = datetime(2019, 1, 1, tzinfo=UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,17 +160,19 @@ def bootstrap_from_existing_tables(
     if load_intervals(client, config):
         return []
     database = qi(source_database or config.database)
-    specs = [
-        (KIND_LIVE_FEED, f"SELECT min(accepted_at_utc), max(accepted_at_utc), count() FROM {database}.sec_filing_v2 FINAL"),
-        (
-            KIND_TEXT_EXTRACTION,
-            f"SELECT min(toDateTime64(source_archive_date, 3, 'UTC')), max(toDateTime64(source_archive_date, 3, 'UTC')), count() FROM {database}.sec_filing_text_v2 FINAL",
+    specs = {
+        KIND_LIVE_FEED: f"SELECT min(accepted_at_utc), max(accepted_at_utc), count() FROM {database}.sec_filing_v2 FINAL WHERE accepted_at_utc >= toDateTime64('2019-01-01 00:00:00', 3, 'UTC')",
+        KIND_TEXT_EXTRACTION: (
+            f"SELECT min(toDateTime64(source_archive_date, 3, 'UTC')), max(toDateTime64(source_archive_date, 3, 'UTC')), count() "
+            f"FROM {database}.sec_filing_text_v2 FINAL WHERE source_archive_date >= toDate('2019-01-01')"
         ),
-        (KIND_BULK_COMPANYFACTS, f"SELECT min(filed_at_utc), max(filed_at_utc), count() FROM {database}.sec_xbrl_company_fact_v1 FINAL"),
-        (KIND_BULK_SUBMISSIONS, "SELECT min(accepted_at_utc), max(accepted_at_utc), count() FROM sec_core.sec_bulk_mirror_filing_acceptance_v1 FINAL"),
-    ]
-    inserted: list[CoverageInterval] = []
-    for kind, sql in specs:
+        KIND_BULK_COMPANYFACTS: f"SELECT min(filed_at_utc), max(filed_at_utc), count() FROM {database}.sec_xbrl_company_fact_v1 FINAL WHERE filed_at_utc >= toDateTime64('2019-01-01 00:00:00', 3, 'UTC')",
+        KIND_BULK_SUBMISSIONS: "SELECT min(accepted_at_utc), max(accepted_at_utc), count() FROM sec_core.sec_bulk_mirror_filing_acceptance_v1 FINAL WHERE accepted_at_utc >= toDateTime64('2019-01-01 00:00:00', 3, 'UTC')",
+    }
+    stats: dict[str, dict[str, Any]] = {}
+    latest_required: list[datetime] = []
+    total_rows = 0
+    for kind, sql in specs.items():
         try:
             raw = client.execute(sql + " FORMAT TSV").strip().split("\t")
         except Exception:
@@ -178,23 +182,41 @@ def bootstrap_from_existing_tables(
         start = parse_dt(raw[0])
         end = parse_dt(raw[1])
         rows = int(raw[2] or "0")
-        coverage_id = new_coverage_id(f"{kind}_bootstrap")
-        insert_coverage(
-            client,
-            config,
-            coverage_id=coverage_id,
-            coverage_kind=kind,
-            start_utc=start,
-            end_utc=end,
-            status="coverage_bootstrap",
-            row_count=rows,
-            run_id=run_id,
-            host_role=host_role,
-            metadata={"bootstrap_source": "existing_tables"},
-            completed=True,
-        )
-        inserted.append(CoverageInterval(kind, start, end, "coverage_bootstrap", rows))
-    return inserted
+        stats[kind] = {
+            "min_utc": dt_text(start),
+            "max_utc": dt_text(end),
+            "rows": rows,
+        }
+        total_rows += rows
+        if kind in {KIND_LIVE_FEED, KIND_TEXT_EXTRACTION, KIND_BULK_COMPANYFACTS}:
+            latest_required.append(end)
+    if len(latest_required) < 3:
+        return []
+    baseline_end = min(latest_required)
+    if baseline_end <= HISTORICAL_BASELINE_START_UTC:
+        return []
+    coverage_id = new_coverage_id("sec_historical_baseline_bootstrap")
+    insert_coverage(
+        client,
+        config,
+        coverage_id=coverage_id,
+        coverage_kind=KIND_HISTORICAL_BASELINE,
+        start_utc=HISTORICAL_BASELINE_START_UTC,
+        end_utc=baseline_end,
+        status="coverage_bootstrap",
+        row_count=total_rows,
+        run_id=run_id,
+        host_role=host_role,
+        metadata={
+            "bootstrap_source": "existing_tables",
+            "baseline_policy": "compact_historical_baseline",
+            "applies_to": [KIND_LIVE_FEED, KIND_TEXT_EXTRACTION, KIND_BULK_COMPANYFACTS],
+            "source_database": source_database or config.database,
+            "source_stats": stats,
+        },
+        completed=True,
+    )
+    return [CoverageInterval(KIND_HISTORICAL_BASELINE, HISTORICAL_BASELINE_START_UTC, baseline_end, "coverage_bootstrap", total_rows)]
 
 
 def plan_freshness_gaps(client: ClickHouseHttpClient, *, database: str, now_utc: datetime) -> list[SecGap]:
@@ -236,6 +258,7 @@ def plan_coverage_gaps(
         latest = latest_by_kind.get(interval.coverage_kind)
         if latest is None or interval.end_utc > latest:
             latest_by_kind[interval.coverage_kind] = interval.end_utc
+    historical_baseline_end = latest_by_kind.get(KIND_HISTORICAL_BASELINE)
     checks = [
         (KIND_LIVE_FEED, max_live_staleness, "latest live-feed coverage is stale"),
         (KIND_TEXT_EXTRACTION, max_text_staleness, "latest filing text coverage is stale"),
@@ -243,7 +266,7 @@ def plan_coverage_gaps(
     ]
     gaps: list[SecGap] = []
     for kind, tolerance, reason in checks:
-        latest = latest_by_kind.get(kind)
+        latest = latest_by_kind.get(kind) or historical_baseline_end
         if latest is not None:
             if now_utc - latest > tolerance:
                 gaps.append(SecGap(kind, latest, now_utc, reason))

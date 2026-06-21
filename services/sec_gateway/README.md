@@ -114,16 +114,18 @@ collection is not competing with historical backfill. From a laptop or other
 remote host, it only writes the script and reports the command in the Rich
 terminal and HTTP metrics.
 
-The generated script runs the required historical backfill/catchup commands and
-then appends:
+The generated script runs the unified historical gap-fill command and then
+appends one final explicit audit command:
 
 ```text
-sec_xbrl_integrity_repair.py
+sec_historical_gap_fill.py
 sec_integrity_audit.py
 ```
 
-That makes gateway-created gap fills self-repairing and self-auditing before
-the result is trusted.
+The unified fill command performs archive download, validation, text extraction,
+ClickHouse insert, XBRL companyfacts catchup, XBRL relationship repair, audit,
+and coverage writes. The final audit command gives the operator a short
+post-run verification surface before the result is trusted.
 
 ## Coverage
 
@@ -152,6 +154,12 @@ Historical coverage is interval based. SEC filings are sparse, so the gateway
 does not infer a gap just because a short time bucket has zero filings. It uses
 coverage rows written by historical/live jobs first and only falls back to
 source-table recency when a coverage kind has no manifest rows yet.
+
+When the coverage manifest is empty, the gateway bootstraps one compact
+`sec_historical_baseline` row from the existing source-of-truth SEC tables. That
+baseline starts at `2019-01-01` and ends at the conservative latest timestamp
+supported by filing parents, filing text, and XBRL companyfacts. The gateway does
+not plan historical backfills before `2019-01-01`.
 
 ## Temp Database Audit
 

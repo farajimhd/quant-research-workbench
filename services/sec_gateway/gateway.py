@@ -12,7 +12,6 @@ from zoneinfo import ZoneInfo
 
 from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import SecClickHouseWriter, SecWriteResult, qi, sql_string
 from pipelines.sec.edgar.sec_pipeline.coverage import (
-    KIND_BULK_COMPANYFACTS,
     KIND_LIVE_FEED,
     SecCoverageConfig,
     SecGap,
@@ -26,8 +25,6 @@ from pipelines.sec.edgar.sec_pipeline.feed import SecCurrentFeedClient, SecFeedI
 from pipelines.sec.edgar.sec_pipeline.historical_fill import (
     build_integrity_audit_plan,
     build_historical_fill_plan,
-    build_xbrl_integrity_repair_plan,
-    build_xbrl_companyfacts_catchup_plan,
     run_plan_script,
     write_multi_plan_script,
 )
@@ -421,36 +418,20 @@ class SecGateway:
         start = min(gap.start_utc.date() for gap in gaps)
         end = (datetime.now(UTC).date() + timedelta(days=1))
         root = self.config.pipeline.workstation_code_root_win / "generated" / "sec_gateway_manual_gap_fill" / self._run_id
-        plans = []
-        non_xbrl_gaps = [gap for gap in gaps if gap.coverage_kind != KIND_BULK_COMPANYFACTS]
-        xbrl_gaps = [gap for gap in gaps if gap.coverage_kind == KIND_BULK_COMPANYFACTS]
-        if non_xbrl_gaps:
-            plans.append(
-                build_historical_fill_plan(
-                    start_date=min(gap.start_utc.date() for gap in non_xbrl_gaps),
-                    end_date=end,
-                    code_root_win=self.config.pipeline.workstation_code_root_win,
-                    execute=True,
-                )
-            )
-        if xbrl_gaps:
-            plans.append(
-                build_xbrl_companyfacts_catchup_plan(
-                    start_date=min(gap.start_utc.date() for gap in xbrl_gaps),
-                    end_date=end,
-                    code_root_win=self.config.pipeline.workstation_code_root_win,
-                    read_database=self.config.pipeline.clickhouse.read_database,
-                    write_database=self.config.pipeline.clickhouse.write_database,
-                    execute=True,
-                )
-            )
-        plans.append(
-            build_xbrl_integrity_repair_plan(
+        plans = [
+            build_historical_fill_plan(
+                start_date=start,
+                end_date=end,
                 code_root_win=self.config.pipeline.workstation_code_root_win,
-                database=self.config.pipeline.clickhouse.write_database,
+                read_database=self.config.pipeline.clickhouse.read_database,
+                write_database=self.config.pipeline.clickhouse.write_database,
                 execute=True,
             )
-        )
+        ]
+        # Keep a separate final audit command visible in the generated script.
+        # The unified fill already audits internally; this gives the operator a
+        # short, final post-run verification surface even if the fill script is
+        # later extended with more stages.
         plans.append(
             build_integrity_audit_plan(
                 code_root_win=self.config.pipeline.workstation_code_root_win,

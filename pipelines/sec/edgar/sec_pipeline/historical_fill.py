@@ -33,8 +33,10 @@ def build_historical_fill_plan(
     python_executable: str = "python",
     execute: bool = True,
     stages: str = "default",
+    read_database: str = "",
+    write_database: str = "",
 ) -> HistoricalFillPlan:
-    script = code_root_win / "pipelines" / "sec" / "edgar" / "sec_historical_backfill_orchestrator.py"
+    script = code_root_win / "pipelines" / "sec" / "edgar" / "sec_historical_gap_fill.py"
     command = [
         python_executable,
         str(script),
@@ -42,9 +44,11 @@ def build_historical_fill_plan(
         start_date.isoformat(),
         "--end-date",
         end_date.isoformat(),
-        "--stages",
-        stages,
     ]
+    if read_database:
+        command.extend(["--read-database", read_database])
+    if write_database:
+        command.extend(["--write-database", write_database])
     if execute:
         command.append("--execute")
     return HistoricalFillPlan(start_date=start_date, end_date=end_date, command=command)

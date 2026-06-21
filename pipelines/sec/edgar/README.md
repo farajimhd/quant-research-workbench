@@ -12,13 +12,18 @@ This package contains the SEC EDGAR historical workflow:
 - historical backfill orchestration over the stages that exist today;
 - legacy bulk mirror ingest helpers retained for traceability.
 
-Preferred current historical orchestration path:
+Preferred current historical gap-fill path used by SEC Gateway:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2019-01-01 --end-date 2026-06-17
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --start-date 2026-06-17 --end-date 2026-06-21 --execute
 ```
 
-Run a full historical fill on the workstation. This refreshes SEC bulk files first, including `submissions.zip`:
+This unified gap-fill entry point downloads missing daily archives, validates
+them, extracts normalized filing/document/text rows, inserts them, catches up
+XBRL companyfacts, repairs XBRL relationships, audits the result, and writes
+coverage rows.
+
+Legacy manual historical orchestration path:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_backfill_orchestrator.py --start-date 2026-06-17 --end-date 2026-06-21 --execute
