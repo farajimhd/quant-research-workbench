@@ -19,9 +19,10 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar
 ```
 
 This unified gap-fill entry point refreshes SEC bulk `submissions` and
-`companyfacts`, mirrors those bulk files into `sec_core`, downloads missing
-daily archives, validates them, extracts normalized filing/document/text rows,
-inserts them, catches up XBRL companyfacts, repairs XBRL relationships, audits
+`companyfacts`, mirrors those bulk files into `sec_core`, derives canonical
+filing parents and XBRL rows from that mirror, downloads missing daily archives,
+validates them, extracts normalized filing/document/text rows, inserts them,
+runs API fallback for missing recent XBRL, repairs XBRL relationships, audits
 the result, and writes coverage rows.
 
 Legacy manual historical orchestration path:

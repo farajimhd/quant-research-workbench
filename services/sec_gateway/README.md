@@ -123,9 +123,10 @@ sec_integrity_audit.py
 ```
 
 The unified fill command first refreshes SEC bulk `submissions` and
-`companyfacts`, mirrors those bulk files into `sec_core`, then performs archive
-download, validation, text extraction, ClickHouse insert, XBRL companyfacts
-catchup, XBRL relationship repair, audit, and coverage writes. The final audit
+`companyfacts`, mirrors those bulk files into `sec_core`, derives canonical
+filing parents and XBRL rows from that mirror, then performs archive download,
+validation, text extraction, ClickHouse insert, API fallback for missing recent
+XBRL, XBRL relationship repair, audit, and coverage writes. The final audit
 command gives the operator a short post-run verification surface before the
 result is trusted.
 

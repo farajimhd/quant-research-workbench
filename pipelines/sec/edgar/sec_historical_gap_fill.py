@@ -71,6 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--read-database", default=env_string("SEC_CLICKHOUSE_READ_DATABASE", "q_live"))
     parser.add_argument("--write-database", default=env_string("SEC_CLICKHOUSE_WRITE_DATABASE", env_string("SEC_GATEWAY_WRITE_DATABASE", "q_sec_tmp")))
     parser.add_argument("--coverage-table", default=env_string("SEC_COVERAGE_TABLE", "sec_coverage_manifest_v1"))
+    parser.add_argument("--bulk-mirror-database", default=env_string("SEC_BULK_MIRROR_DATABASE", "sec_core"))
     parser.add_argument("--artifact-root-win", default=env_string("SEC_CORE_ARTIFACT_ROOT_WIN", "D:/market-data/sec_core"))
     parser.add_argument("--core-output-root-win", default=env_string("SEC_CORE_OUTPUT_ROOT_WIN", "D:/market-data/prepared/sec_core"))
     parser.add_argument("--output-root-win", default=env_string("SEC_HISTORICAL_GAP_FILL_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
@@ -133,6 +134,7 @@ def main() -> None:
         "end_date": args.end_date,
         "read_database": args.read_database,
         "write_database": args.write_database,
+        "bulk_mirror_database": args.bulk_mirror_database,
         "run_root": str(run_root),
         "loaded_env_files": [str(path) for path in loaded_env],
         "secret_status": secret_status(
@@ -243,6 +245,8 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     script("pipelines/sec/edgar/sec_bulk_clickhouse_ingest.py"),
                     "--sources",
                     args.bulk_sources,
+                    "--database",
+                    args.bulk_mirror_database,
                     "--artifact-root-win",
                     args.artifact_root_win,
                     "--output-root-win",
@@ -254,6 +258,30 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                 dry_run_flag="--dry-run",
             ),
             logs_root / "bulk-ingest.log",
+            True,
+        ),
+        StageCommand(
+            "bulk-canonicalize",
+            add_execute_flag(
+                [
+                    args.python_executable,
+                    script("pipelines/sec/edgar/sec_bulk_to_canonical.py"),
+                    "--source-database",
+                    args.bulk_mirror_database,
+                    "--schema-source-database",
+                    args.read_database,
+                    "--target-database",
+                    args.write_database,
+                    "--start-date",
+                    args.start_date,
+                    "--end-date",
+                    args.end_date,
+                    "--stages",
+                    "parents,xbrl",
+                ],
+                args,
+            ),
+            logs_root / "bulk-canonicalize.log",
             True,
         ),
         StageCommand(
@@ -321,6 +349,8 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                 [
                     args.python_executable,
                     script("pipelines/sec/edgar/sec_filing_text_extract_parts.py"),
+                    "--database",
+                    args.write_database,
                     "--archive-root-win",
                     archive_root,
                     "--output-root-win",
@@ -469,7 +499,11 @@ def add_execute_flag(command: list[str], args: argparse.Namespace, *, dry_run_fl
     if "sec_filing_text_clickhouse_file_ingest.py" in command_text and args.text_limit_parts:
         out.extend(["--limit-parts", str(args.text_limit_parts)])
     if args.execute:
-        if "sec_xbrl_companyfacts_catchup.py" in command_text or "sec_xbrl_integrity_repair.py" in command_text:
+        if (
+            "sec_bulk_to_canonical.py" in command_text
+            or "sec_xbrl_companyfacts_catchup.py" in command_text
+            or "sec_xbrl_integrity_repair.py" in command_text
+        ):
             out.append("--execute")
     elif dry_run_flag:
         out.append(dry_run_flag)
