@@ -140,6 +140,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
     parser.add_argument("--progress-refresh-per-second", type=float, default=4.0)
     parser.add_argument("--progress-log-lines", type=int, default=14)
+    parser.add_argument("--progress-screen", dest="progress_screen", action="store_true", default=True)
+    parser.add_argument("--no-progress-screen", dest="progress_screen", action="store_false")
     parser.add_argument("--max-partitions-per-insert-block", type=int, default=1024)
     parser.add_argument("--max-memory-usage", default="400G")
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT_WIN / "flatfile_event_update"))
@@ -265,6 +267,7 @@ class UpdateProgressReporter:
     def __init__(self, args: argparse.Namespace, *, total_days: int, total_files: int, total_bytes: int) -> None:
         self.mode = str(args.progress_layout)
         self.refresh_per_second = max(1.0, float(args.progress_refresh_per_second))
+        self.screen = bool(args.progress_screen)
         self.total_days = max(0, int(total_days))
         self.total_files = max(0, int(total_files))
         self.total_bytes = max(0, int(total_bytes))
@@ -282,6 +285,7 @@ class UpdateProgressReporter:
         self._live: Any = None
         self._layout: Any = None
         self._last_text_download = 0.0
+        self._last_refresh_at = 0.0
 
     def __enter__(self) -> "UpdateProgressReporter":
         if self.mode in {"auto", "rich"}:
@@ -316,6 +320,7 @@ class UpdateProgressReporter:
                     refresh_per_second=self.refresh_per_second,
                     transient=False,
                     vertical_overflow="crop",
+                    screen=self.screen,
                     redirect_stdout=True,
                     redirect_stderr=True,
                 )
@@ -324,14 +329,14 @@ class UpdateProgressReporter:
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         if self._live is not None:
-            self._refresh()
+            self._refresh(force=True)
             self._live.stop()
 
     def log(self, message: str) -> None:
         line = f"{datetime.now().strftime('%H:%M:%S')} {message}"
         if self._rich:
             self.logs.append(line)
-            self._refresh()
+            self._refresh(force=True)
         else:
             print(line, flush=True)
 
@@ -360,7 +365,7 @@ class UpdateProgressReporter:
         self.day_status[day] = "running"
         self.completed_days = max(self.completed_days, index - 1)
         self.log(f"day start [{index:,}/{self.total_days:,}] {day}")
-        self._refresh()
+        self._refresh(force=True)
 
     def handle_day_done(self, day: str, status: str) -> None:
         prior = self.day_status.get(day)
@@ -372,11 +377,16 @@ class UpdateProgressReporter:
             elif status not in {"skipped", "dry_run"}:
                 self.failed_days += 1
         self.log(f"day {status} {day}")
-        self._refresh()
+        self._refresh(force=True)
 
-    def _refresh(self) -> None:
+    def _refresh(self, *, force: bool = False) -> None:
         if not self._rich or self._layout is None:
             return
+        now = time.time()
+        min_interval = 1.0 / self.refresh_per_second
+        if not force and now - self._last_refresh_at < min_interval:
+            return
+        self._last_refresh_at = now
         self._layout["summary"].update(self._summary_panel())
         self._layout["download"].update(self._download_panel())
         self._layout["days"].update(self._day_panel())
