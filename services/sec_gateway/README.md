@@ -73,6 +73,8 @@ SEC_GATEWAY_LIVE_WORKERS=4
 SEC_GATEWAY_LIVE_QUEUE_MAX_ITEMS=500
 SEC_GATEWAY_FULL_AUDIT_ON_STARTUP=true
 SEC_GATEWAY_FULL_AUDIT_AFTER_WRITE_BATCHES=0
+SEC_GATEWAY_COLLECTION_START_ET=04:00
+SEC_GATEWAY_COLLECTION_END_ET=20:00
 SEC_MARKET_STATUS_URL=https://api.massive.com/v1/marketstatus/now
 SEC_MARKET_STATUS_ENABLED=true
 SEC_MARKET_STATUS_REFRESH_SECONDS=10
@@ -105,8 +107,12 @@ D:/TradingML/codes/quant_research_workbench_pipelines/generated/sec_gateway_manu
 ```
 
 With `SEC_GATEWAY_AUTO_RUN_HISTORICAL_ON_WORKSTATION=true`, the gateway starts
-that script automatically. From a laptop or other remote host, it only writes
-the script and reports the command in the Rich terminal and HTTP metrics.
+that script automatically only when it is running on the workstation outside the
+active collection window, which defaults to `04:00-20:00 ET`. During the active
+collection window it still generates the script, but it defers auto-run so live
+collection is not competing with historical backfill. From a laptop or other
+remote host, it only writes the script and reports the command in the Rich
+terminal and HTTP metrics.
 
 The generated script runs the required historical backfill/catchup commands and
 then appends:

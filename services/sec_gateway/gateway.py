@@ -39,6 +39,7 @@ from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.run_logger import AsyncRunLogger
 from services.sec_gateway.config import SecGatewayConfig
 from services.sec_gateway.preflight import PreflightError, PreflightReport, run_preflight
+from services.gateway_policy import backfill_auto_run_allowed, maintenance_window_message
 
 
 EASTERN = ZoneInfo("America/New_York")
@@ -460,11 +461,23 @@ class SecGateway:
         self.metrics.manual_gap_fill_script_win = str(script_path)
         self.metrics.manual_gap_fill_command = "\n".join(plan.command_text for plan in plans)
         self._log("historical_gap_fill_script_written", script_path=str(script_path), commands=[plan.command for plan in plans])
-        if self.config.is_workstation and self.config.auto_run_historical_on_workstation and self.config.execute:
+        if backfill_auto_run_allowed(
+            is_workstation=self.config.is_workstation,
+            execute=self.config.execute,
+            auto_run_enabled=self.config.auto_run_historical_on_workstation,
+            service_prefix="SEC",
+        ):
             process = run_plan_script(script_path, cwd=self.config.pipeline.workstation_code_root_win)
             self.metrics.gap_status = "historical_fill_started"
             self.metrics.gap_message = f"Started workstation historical fill pid={process.pid}."
             self._log("historical_gap_fill_started", pid=process.pid, script_path=str(script_path))
+        elif self.config.is_workstation and self.config.auto_run_historical_on_workstation and self.config.execute:
+            self.metrics.gap_status = "historical_fill_deferred_market_window"
+            self.metrics.gap_message = (
+                f"Generated SEC historical fill script but deferred auto-run until {maintenance_window_message('SEC')}: "
+                f"{script_path}"
+            )
+            self._log("historical_gap_fill_deferred", script_path=str(script_path), reason="active_collection_window")
 
     async def _poll_loop(self) -> None:
         while not self._stop_event.is_set():

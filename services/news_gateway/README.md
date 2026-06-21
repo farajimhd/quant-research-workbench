@@ -214,7 +214,8 @@ Behavior:
 | --- | --- |
 | No coverage intervals | Live polling starts with normal lookback. |
 | One or more coverage gaps and total gap time is <= 30 days | Service starts concurrent background gap fill for all gaps during startup. |
-| One or more coverage gaps, total gap time is > 30 days, and running on the workstation | Service writes and runs the workstation PowerShell gap-fill package automatically. |
+| One or more coverage gaps, total gap time is > 30 days, running on the workstation, and outside 04:00-20:00 ET | Service writes and runs the workstation PowerShell gap-fill package automatically. |
+| One or more coverage gaps, total gap time is > 30 days, running on the workstation during 04:00-20:00 ET | Service writes the workstation PowerShell gap-fill package but defers auto-run so live collection is not competing with historical backfill. |
 | One or more coverage gaps, total gap time is > 30 days, and not running on the workstation | Service writes workstation-ready PowerShell gap-fill scripts and a manifest, prints their paths, and continues live polling. |
 
 During live operation the gateway opens a live coverage segment. It extends that
@@ -460,6 +461,8 @@ NEWS_MARKET_STATUS_URL=https://api.massive.com/v1/marketstatus/now
 NEWS_MARKET_STATUS_REFRESH_SECONDS=10
 NEWS_BENZINGA_POLL_OVERLAP_SECONDS=120
 NEWS_BENZINGA_STARTUP_AUTO_FILL_MAX_GAP_DAYS=30
+NEWS_GATEWAY_COLLECTION_START_ET=04:00
+NEWS_GATEWAY_COLLECTION_END_ET=20:00
 NEWS_BENZINGA_COVERAGE_DISCOVERY_CHUNK_SECONDS=300
 NEWS_BENZINGA_REBUILD_COVERAGE_MANIFEST=false
 NEWS_BENZINGA_BOOTSTRAP_TRUSTED_COVERAGE_START_UTC=2010-01-01T00:00:00Z

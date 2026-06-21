@@ -9,6 +9,7 @@ Start here before changing historical ingestion, live services, or trading UI co
 ## Architecture
 
 - [Repository Organization Plan](architecture/repository_organization.md): target folder layout and safe migration rules.
+- [Service Gateway Standard](architecture/service_gateway_standard.md): shared lifecycle, storage, queue, coverage, backfill, logging, terminal, API, and audit policy for QMD, News, SEC, and future gateways.
 - [Event-Based Market Engine](architecture/event_based_market_engine.md): quotes/trades based market engine design.
 - [Benzinga News Normalization Pipeline](architecture/benzinga_news_normalization_pipeline.md): future canonical split-table news design.
 - [Benzinga Per-Item News Pipeline](architecture/benzinga_news_item_pipeline.md): runtime item-level path for live news, efficient gap fills, and canonical ClickHouse writes.

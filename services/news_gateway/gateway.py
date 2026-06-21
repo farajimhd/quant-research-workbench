@@ -49,6 +49,7 @@ from services.news_gateway.config import (
 from services.news_gateway.preflight import PreflightError, PreflightReport, run_preflight
 from services.news_gateway.run_logger import AsyncRunLogger
 from services.news_gateway.state import NewsMemoryState
+from services.gateway_policy import backfill_auto_run_allowed, maintenance_window_message
 
 
 EASTERN = ZoneInfo("America/New_York")
@@ -399,7 +400,12 @@ class NewsGateway:
         self.metrics.manual_gap_fill_command = historical_gap_command(gaps[0].start_utc, gaps[0].end_utc, self.config)
         self.metrics.manual_gap_fill_script_win = str(plan.workstation_script_path)
         self.metrics.manual_gap_fill_manifest_win = str(plan.workstation_manifest_path)
-        if self.config.is_workstation:
+        if self.config.is_workstation and backfill_auto_run_allowed(
+            is_workstation=self.config.is_workstation,
+            execute=self.config.execute,
+            auto_run_enabled=True,
+            service_prefix="NEWS",
+        ):
             self.metrics.gap_status = "workstation_auto_started_large_gap"
             self.metrics.gap_message = (
                 f"{len(gaps)} coverage gap(s) found; {unique_gap_days} unique UTC day(s), "
@@ -419,6 +425,27 @@ class NewsGateway:
             self._print_status(self.metrics.gap_message)
             self._print_status(f"manifest: {plan.workstation_manifest_path}")
             self._gap_task = asyncio.create_task(self._run_workstation_gap_fill_plan(plan), name="benzinga-news-workstation-gap-fill")
+            return
+        if self.config.is_workstation:
+            self.metrics.gap_status = "workstation_deferred_large_gap_market_window"
+            self.metrics.gap_message = (
+                f"{len(gaps)} coverage gap(s) found; {unique_gap_days} unique UTC day(s), "
+                f"{total_gap_seconds / 3600:.1f} total empty hour(s), largest {largest_gap_seconds / 3600:.1f} hour(s). "
+                f"Generated the workstation script but deferred auto-run until {maintenance_window_message('NEWS')}: "
+                f"{plan.workstation_script_path}"
+            )
+            self._log_event(
+                "startup_gap_plan",
+                status=self.metrics.gap_status,
+                gaps=len(gaps),
+                unique_gap_days=unique_gap_days,
+                total_gap_seconds=total_gap_seconds,
+                script=str(plan.workstation_script_path),
+                manifest=str(plan.workstation_manifest_path),
+                deferred_reason="active_collection_window",
+            )
+            self._print_status(self.metrics.gap_message)
+            self._print_status(f"manifest: {plan.workstation_manifest_path}")
             return
         self.metrics.gap_status = "manual_required_large_gap"
         self.metrics.gap_message = (

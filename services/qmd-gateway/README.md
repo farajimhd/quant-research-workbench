@@ -36,6 +36,27 @@ ClickHouse writes must never block the live trading decision path.
 The historical `market_sip_compact.events` table remains flatfile-only. Live
 QMD events are written only to the app-owned `q_live` database.
 
+## Service Policy Alignment
+
+QMD follows the shared gateway rule that canonical data capture is lossless and
+UI delivery is best effort. Quote and trade events must either reach the live
+bar/indicator/scanner processors and durable compact-event writer, or be held in
+an overflow/spill path that can be replayed. Local websocket/UI streams may skip
+stale downstream updates when a client cannot keep up, but those skips must be
+counted and exposed in metrics.
+
+Queue capacities are intentionally large by default to reduce the chance of lag
+during full-market `T.*` and `Q.*` subscription bursts. If a required processor
+falls behind, the correct behavior is to backpressure into the gateway's
+overflow policy rather than silently losing canonical market data.
+
+QMD keeps its own market-session scheduler because live quote/trade collection
+is the most latency-sensitive service. Historical flatfile refresh, gap repair,
+and heavy maintenance work should run outside the active collection window by
+default. The standard active collection window is `04:00-20:00` Eastern Time,
+matching premarket, regular market, and after-hours handling used by the News
+and SEC gateways.
+
 ## Configuration
 
 Environment variables:
