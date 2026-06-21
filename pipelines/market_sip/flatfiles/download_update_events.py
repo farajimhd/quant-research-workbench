@@ -81,6 +81,7 @@ from research.mlops.clickhouse import (  # noqa: E402
     default_clickhouse_user,
     default_storage_policy,
     discover_clickhouse_env_files,
+    format_optional_int,
     parse_size_bytes,
     quote_ident,
     run_profiled,
@@ -1282,7 +1283,7 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
         )
         print(
             f"DAY OK {day.source_date} events_seconds={profile.wall_seconds:.1f} "
-            f"written_rows={profile.written_rows:,}",
+            f"written_rows={format_optional_int(profile.written_rows)}",
             flush=True,
         )
         return "ok"
