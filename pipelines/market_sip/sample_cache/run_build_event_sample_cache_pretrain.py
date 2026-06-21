@@ -17,15 +17,22 @@ DEFAULTS: dict[str, Any] = {
     "train_index_table": "train_2019_to_2025",
     "validation_index_table": "validation_2026",
     "cache_root": r"D:\market-data\prepared\event_sample_cache",
-    "train_cache_gib": 128,
-    "validation_cache_gib": 4,
+    "cache_version": 1,
+    "train_cache_gib": 4096,
+    "validation_cache_gib": 64,
     "shard_size_gib": 16,
+    # X-only reconstruction needs only the 128-event chunk ending at origin.
+    # Larger past/future spans are label-builder costs and are intentionally off.
+    "past_span_events": 128,
+    "future_span_events": 0,
+    # These are the high-throughput settings from the newer bundled sampler.
     "builder_micro_batch_samples": 65536,
     "origins_per_span": 512,
     "min_origin_stride": 1,
     "max_origin_stride": 16,
     "query_bundle_spans": 64,
     "workers": 8,
+    "pending_multiplier": 1,
     "eta_recent_window": 50,
     "heartbeat_seconds": 30,
     "clickhouse_max_threads": 8,
@@ -36,7 +43,12 @@ DEFAULTS: dict[str, Any] = {
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Launcher for compact event sample-cache build.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Build x-only compact event sample-cache shards for masked-event "
+            "reconstruction pretraining. Output is v1-compatible samples.bin."
+        )
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--print-only", action="store_true")
     known, extra = parser.parse_known_args()
@@ -75,7 +87,7 @@ def run_interruptible(command: list[str], *, cwd: Path) -> int:
     try:
         return process.wait()
     except KeyboardInterrupt:
-        print("\nINTERRUPT: stopping active sample-cache builder subprocess...", flush=True)
+        print("\nINTERRUPT: stopping active x-only pretraining cache builder subprocess...", flush=True)
         terminate_process(process)
         return 130
 

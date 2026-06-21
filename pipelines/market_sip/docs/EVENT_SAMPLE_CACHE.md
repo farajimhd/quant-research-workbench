@@ -292,7 +292,52 @@ against ClickHouse for sampled records.
 
 ## Build
 
-Use the Python launcher:
+For x-only reconstruction pretraining, use the dedicated pretraining launcher:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_build_event_sample_cache_pretrain.py
+```
+
+To build, validate, and raw-audit an x-only pretraining cache in one command,
+use:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_event_sample_cache_pretrain_cycle.py
+```
+
+Before a large x-only run, execute a small end-to-end smoke cycle:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_event_sample_cache_pretrain_cycle.py --smoke
+```
+
+The pretraining launcher writes v1-compatible shards only:
+
+```text
+train/shard_000000.samples.bin
+train/shard_000000.samples.json
+validation/shard_000000.samples.bin
+validation/shard_000000.samples.json
+```
+
+It does not write `y.bin` or `labels.parquet`. It reuses the current bundled
+ClickHouse sampler/writer path with lighter x-only defaults:
+
+```text
+cache_version=1
+past_span_events=128
+future_span_events=0
+train_cache_gib=4096
+validation_cache_gib=64
+shard_size_gib=16
+workers=8
+pending_multiplier=1
+builder_micro_batch_samples=65536
+origins_per_span=512
+query_bundle_spans=64
+```
+
+The direct generic v1 launcher remains available:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_build_event_sample_cache.py
@@ -358,7 +403,7 @@ arguments are in GiB:
 2720 GiB + 64 GiB = 2784 GiB ~= 2.99 TB
 ```
 
-The v1 launcher remains intentionally modest:
+The generic v1 launcher remains intentionally modest:
 
 ```text
 train_cache_gib=128
@@ -369,7 +414,7 @@ origins_per_span=512
 workers=8
 ```
 
-Scale v1 with overrides after the path is validated:
+Scale generic v1 with overrides after the path is validated:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_build_event_sample_cache.py --train-cache-gib 4096 --validation-cache-gib 32 --workers 16

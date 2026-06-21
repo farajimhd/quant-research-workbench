@@ -43,6 +43,16 @@ To build only validation sample-cache shards, pass `--splits validation` to
 approximately `ceil(validation_cache_gib / shard_size_gib)`, except the final
 shard may be partial.
 
+For reconstruction-only masked-event pretraining, prefer the x-only launcher:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_event_sample_cache_pretrain_cycle.py --smoke
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\sample_cache\run_event_sample_cache_pretrain_cycle.py
+```
+
+It uses the current ClickHouse bundled sampler but writes v1-compatible
+`samples.bin` shards only, with no future `y.bin` and no label sidecar.
+
 ## Compatibility
 
 The old market-SIP compatibility wrappers under `research/mlops` have been
