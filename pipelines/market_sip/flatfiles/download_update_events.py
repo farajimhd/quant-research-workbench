@@ -854,8 +854,17 @@ def first_tsv_row(client: ClickHouseHttpClient, sql: str) -> list[str]:
     return text.splitlines()[0].split("\t") if text else []
 
 
+def allowed_utc_event_dates(days: list[DayFiles]) -> list[str]:
+    values: set[str] = set()
+    for day in days:
+        source = date.fromisoformat(day.source_date)
+        values.add(source.isoformat())
+        values.add(date.fromordinal(source.toordinal() + 1).isoformat())
+    return sorted(values)
+
+
 def query_audit_counts(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles]) -> dict[str, int]:
-    dates = ", ".join(sql_string(day.source_date) for day in days)
+    allowed_dates = ", ".join(sql_string(value) for value in allowed_utc_event_dates(days))
     row = first_tsv_row(
         client,
         f"""
@@ -864,12 +873,11 @@ SELECT
     countIf(ticker = '') AS blank_ticker_rows,
     countIf(event_type NOT IN (0, 1)) AS bad_event_type_rows,
     countIf(sip_timestamp_us = 0) AS zero_timestamp_rows,
-    countIf(event_date NOT IN ({dates})) AS wrong_event_date_rows,
+    countIf(event_date NOT IN ({allowed_dates})) AS wrong_event_date_rows,
     countIf(event_type = 0 AND (price_primary_int = 0 OR price_secondary_int = 0 OR size_primary <= 0 OR size_secondary <= 0)) AS bad_quote_rows,
     countIf(event_type = 1 AND (price_primary_int = 0 OR price_secondary_int != 0 OR size_primary <= 0 OR size_secondary != 0 OR exchange_secondary != 0)) AS bad_trade_rows,
     count() - uniqExact(ticker, ordinal) AS duplicate_ticker_ordinal_rows
 FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
-WHERE event_date IN ({dates})
 """,
     )
     keys = [
@@ -887,6 +895,17 @@ WHERE event_date IN ({dates})
 
 def query_continuity_mismatches(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles]) -> int:
     dates = ", ".join(sql_string(day.source_date) for day in days)
+    raw_count_queries = "\nUNION ALL\n".join(
+        f"""
+        SELECT ticker, toDate({sql_string(day.source_date)}) AS source_date, count() AS raw_rows
+        FROM
+        (
+        {raw_event_union_sql(args, day)}
+        )
+        GROUP BY ticker
+        """
+        for day in days
+    )
     row = first_tsv_row(
         client,
         f"""
@@ -894,33 +913,29 @@ SELECT count()
 FROM
 (
     SELECT
-        coalesce(e.ticker, c.ticker) AS ticker,
-        coalesce(e.event_date, c.source_date) AS source_date,
-        coalesce(e.event_rows, toUInt64(0)) AS event_rows,
+        coalesce(r.ticker, c.ticker) AS ticker,
+        coalesce(r.source_date, c.source_date) AS source_date,
+        coalesce(r.raw_rows, toUInt64(0)) AS raw_rows,
         coalesce(c.continuity_rows, toUInt64(0)) AS continuity_rows
     FROM
     (
-        SELECT ticker, event_date, count() AS event_rows
-        FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
-        WHERE event_date IN ({dates})
-        GROUP BY ticker, event_date
-    ) AS e
+        {raw_count_queries}
+    ) AS r
     FULL OUTER JOIN
     (
         SELECT ticker, source_date, argMax(event_count, updated_at) AS continuity_rows
         FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
         WHERE source_date IN ({dates})
         GROUP BY ticker, source_date
-    ) AS c ON c.ticker = e.ticker AND c.source_date = e.event_date
+    ) AS c ON c.ticker = r.ticker AND c.source_date = r.source_date
 )
-WHERE event_rows != continuity_rows
+WHERE raw_rows != continuity_rows
 """,
     )
     return int(float(row[0] or 0)) if row else 0
 
 
 def query_sample_events(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles], event_type: int) -> list[dict[str, Any]]:
-    dates = ", ".join(sql_string(day.source_date) for day in days)
     sql = f"""
 SELECT
     ticker,
@@ -937,8 +952,7 @@ SELECT
     conditions_packed,
     event_date
 FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
-WHERE event_date IN ({dates})
-  AND event_type = toUInt8({int(event_type)})
+WHERE event_type = toUInt8({int(event_type)})
 ORDER BY cityHash64(ticker, ordinal, sip_timestamp_us, event_type)
 LIMIT {max(1, int(args.test_sample_size))}
 FORMAT JSONEachRow
@@ -1167,17 +1181,12 @@ def validate_events_against_raw_csv(
     days_by_date = {day.source_date: day for day in days}
     result: dict[str, dict[str, Any]] = {}
     for kind, sampled_events in sample_by_kind.items():
-        grouped_samples: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for event in sampled_events:
-            grouped_samples[str(event["event_date"])].append(event)
         expected_by_key: dict[tuple[str, int, int], list[dict[str, Any]]] = defaultdict(list)
-        for source_date, events_for_day in grouped_samples.items():
-            day = days_by_date.get(source_date)
-            if day is None:
-                continue
+        for source_date in sorted(days_by_date):
+            day = days_by_date[source_date]
             path = Path(day.quote_job.destination if kind == "quotes" else day.trade_job.destination)
             dense_map = quote_dense if kind == "quotes" else trade_dense
-            for event in read_raw_event_candidates(path, kind, events_for_day, dense_map):
+            for event in read_raw_event_candidates(path, kind, sampled_events, dense_map):
                 expected_by_key[(event["ticker"], event["sip_timestamp_us"], event["sequence_number"])].append(event)
         mismatches: list[dict[str, Any]] = []
         matched = 0
