@@ -143,11 +143,35 @@ def write_multi_plan_script(plans: list[HistoricalFillPlan], script_path: Path) 
     if not plans:
         raise ValueError("at least one historical fill plan is required")
     script_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["$ErrorActionPreference = 'Stop'", ""]
+    log_name = script_path.with_suffix(".log").name
+    lines = [
+        "$ErrorActionPreference = 'Stop'",
+        "Set-StrictMode -Version Latest",
+        f"$secGapFillLog = Join-Path $PSScriptRoot {powershell_single_quote(log_name)}",
+        "Write-Host \"SEC gap-fill wrapper started $(Get-Date -Format o)\"",
+        "Write-Host \"Script: $PSCommandPath\"",
+        "Write-Host \"Log: $secGapFillLog\"",
+        "Start-Transcript -Path $secGapFillLog -Append | Out-Null",
+        "try {",
+        "",
+    ]
     for index, plan in enumerate(plans, start=1):
-        lines.append(f"Write-Host 'SEC historical task {index}/{len(plans)}'")
-        lines.append(format_command(plan.command))
+        lines.append(f"    Write-Host {powershell_single_quote(f'SEC historical task {index}/{len(plans)} started')}")
+        lines.append(f"    & {format_command(plan.command)}")
+        lines.append("    if ($LASTEXITCODE -ne 0) {")
+        lines.append(f"        throw {powershell_single_quote(f'SEC historical task {index}/{len(plans)} failed with exit code ')} + $LASTEXITCODE")
+        lines.append("    }")
+        lines.append(f"    Write-Host {powershell_single_quote(f'SEC historical task {index}/{len(plans)} completed')}")
         lines.append("")
+    lines.extend(
+        [
+            "    Write-Host \"SEC gap-fill wrapper completed $(Get-Date -Format o)\"",
+            "}",
+            "finally {",
+            "    Stop-Transcript | Out-Null",
+            "}",
+        ]
+    )
     script_path.write_text("\n".join(lines), encoding="utf-8")
     manifest = script_path.with_suffix(".json")
     manifest.write_text(
@@ -177,3 +201,7 @@ def run_plan_script(script_path: Path, *, cwd: Path | None = None) -> subprocess
 
 def format_command(command: Iterable[str]) -> str:
     return " ".join(shlex.quote(str(part)) for part in command)
+
+
+def powershell_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
