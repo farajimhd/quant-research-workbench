@@ -40,7 +40,23 @@ Run the gateway:
 .\scripts\run_qmd_gateway.ps1
 ```
 
-Stop it with `Ctrl+C`. The API server has graceful shutdown on `Ctrl+C`.
+By default this builds the Rust service, starts it in the background, waits for
+`/health`, then opens the Rich terminal monitor in the same terminal. Gateway
+stdout/stderr are written under `.tmp/qmd-gateway/` so service logs do not
+corrupt the dashboard.
+
+Useful launcher options:
+
+```powershell
+.\scripts\run_qmd_gateway.ps1 -TerminalWatch AAPL,NVDA,TSLA,AMD
+.\scripts\run_qmd_gateway.ps1 -TerminalRefreshSeconds 0.5
+.\scripts\run_qmd_gateway.ps1 -TerminalNoScreen
+.\scripts\run_qmd_gateway.ps1 -NoTerminal
+```
+
+`-NoTerminal` preserves the old direct `cargo run` behavior. In that mode, stop
+the gateway with `Ctrl+C`; the API server handles graceful shutdown on `Ctrl+C`.
+In monitor mode, exiting the monitor stops the background gateway process.
 
 ## Health And Snapshot Endpoints
 
