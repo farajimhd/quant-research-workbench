@@ -15,7 +15,7 @@ This package contains the SEC EDGAR historical workflow:
 Preferred current historical gap-fill path used by SEC Gateway:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --start-date 2026-06-17 --end-date 2026-06-21 --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\sec\edgar\sec_historical_gap_fill.py --start-date 2026-06-17 --end-date 2026-06-21 --read-database q_live --write-database q_sec_tmp --coverage-table sec_coverage_manifest_v1 --bulk-mirror-database sec_core --artifact-root-win D:/market-data/sec_core --core-output-root-win D:/market-data/prepared/sec_core --output-root-win D:/market-data/prepared/sec_historical_gap_fill --daily-archive-output-root-win D:/market-data/prepared/sec_daily_feed_archives --archive-validation-output-root-win D:/market-data/prepared/sec_downloaded_archive_validation --text-parts-output-root-win D:/market-data/prepared/sec_filing_text_parts --xbrl-output-root-win D:/market-data/prepared/sec_xbrl_companyfacts_catchup --xbrl-repair-output-root-win D:/market-data/prepared/sec_xbrl_integrity_repair --integrity-audit-output-root-win D:/market-data/prepared/sec_integrity_audit --parts-root-win D:/market-data --parts-root-ch /mnt/d/market-data --bulk-sources submissions,companyfacts --bulk-download-concurrency 2 --bulk-ingest-batch-size 50000 --archive-download-concurrency 2 --archive-validation-workers 4 --text-extract-workers 4 --xbrl-workers 4 --sec-request-min-interval-seconds 0.12 --request-timeout-seconds 30 --max-retries 8 --retry-base-seconds 30 --pending-multiplier 2 --sample-limit 1000 --sample-text-chars 2000 --min-text-chars 40 --max-text-chars 250000 --resume-from-coverage --execute
 ```
 
 This unified gap-fill entry point refreshes SEC bulk `submissions` and
@@ -24,6 +24,13 @@ filing parents and XBRL rows from that mirror, downloads missing daily archives,
 validates them, extracts normalized filing/document/text rows, inserts them,
 runs API fallback for missing recent XBRL, repairs XBRL relationships, audits
 the result, and writes coverage rows.
+
+Use the full argument form above for manual runs. The SEC gateway generates the
+same explicit shape so the workstation script does not depend on ambient shell
+defaults. `--resume-from-coverage` is enabled by default and records
+`sec_stage_<stage_name>` rows after each successful stage. If a run fails, rerun
+the same command; completed stages for the same date range are skipped, and the
+final semantic coverage rows are written only after the whole run succeeds.
 
 Legacy manual historical orchestration path:
 

@@ -24,6 +24,7 @@ from pipelines.sec.edgar.sec_pipeline.coverage import (  # noqa: E402
     KIND_LIVE_FEED,
     KIND_TEXT_EXTRACTION,
     SecCoverageConfig,
+    ensure_coverage_table,
     insert_coverage,
     new_coverage_id,
 )
@@ -42,6 +43,9 @@ class StageCommand:
     command: list[str]
     log_path: Path
     mutates_database: bool
+    coverage_kinds: tuple[str, ...] = ()
+    start_date: str = ""
+    end_date: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +110,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-filings-per-archive", type=int, default=0)
     parser.add_argument("--force-download", action="store_true")
     parser.add_argument("--allow-g-drive", action="store_true")
+    parser.add_argument(
+        "--resume-from-coverage",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip stages whose stage-level coverage already covers the requested range.",
+    )
     return parser.parse_args()
 
 
@@ -167,13 +177,23 @@ def main() -> None:
 
     results: list[StageResult] = []
     results_path = run_root / "sec_historical_gap_fill_results.jsonl"
+    if args.execute:
+        ensure_historical_coverage_table(args)
     for command in commands:
+        if args.execute and args.resume_from_coverage and stage_already_completed(args, command):
+            result = skipped_stage_result(command)
+            results.append(result)
+            append_jsonl(results_path, asdict(result))
+            print(f"stage={command.stage} status=skipped_covered reason=coverage already covers requested range", flush=True)
+            continue
         result = run_stage(command)
         results.append(result)
         append_jsonl(results_path, asdict(result))
         if result.returncode != 0 and not args.continue_on_error:
             write_summary(run_root / "sec_historical_gap_fill_summary.md", args, results, coverage_written=False)
             raise SystemExit(result.returncode)
+        if args.execute and result.returncode == 0:
+            write_stage_coverage(args, run_id, command)
 
     failed = [result for result in results if result.returncode != 0]
     coverage_written = False
@@ -236,6 +256,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             ),
             logs_root / "bulk-download.log",
             False,
+            (stage_coverage_kind("bulk-download"),),
         ),
         StageCommand(
             "bulk-ingest",
@@ -259,6 +280,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             ),
             logs_root / "bulk-ingest.log",
             True,
+            (stage_coverage_kind("bulk-ingest"),),
         ),
         StageCommand(
             "bulk-canonicalize",
@@ -283,6 +305,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             ),
             logs_root / "bulk-canonicalize.log",
             True,
+            (stage_coverage_kind("bulk-canonicalize"),),
         ),
         StageCommand(
             "daily-archive-download",
@@ -319,6 +342,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             ),
             logs_root / "daily-archive-download.log",
             False,
+            (stage_coverage_kind("daily-archive-download"),),
         ),
         StageCommand(
             "validate-downloaded",
@@ -342,6 +366,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             ],
             logs_root / "validate-downloaded.log",
             False,
+            (stage_coverage_kind("validate-downloaded"),),
         ),
         StageCommand(
             "text-extract",
@@ -379,6 +404,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             ),
             logs_root / "text-extract.log",
             False,
+            (stage_coverage_kind("text-extract"),),
         ),
         StageCommand(
             "text-ingest-preflight",
@@ -397,12 +423,18 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             ],
             logs_root / "text-ingest-preflight.log",
             False,
+            (stage_coverage_kind("text-ingest-preflight"),),
+            start_date=args.start_date,
+            end_date=args.end_date,
         ),
         StageCommand(
             "text-ingest-execute",
             text_ingest_execute,
             logs_root / "text-ingest-execute.log",
             True,
+            (stage_coverage_kind("text-ingest-execute"),),
+            start_date=args.start_date,
+            end_date=args.end_date,
         ),
         StageCommand(
             "xbrl-companyfacts-catchup",
@@ -427,6 +459,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             ),
             logs_root / "xbrl-companyfacts-catchup.log",
             True,
+            (stage_coverage_kind("xbrl-companyfacts-catchup"),),
         ),
         StageCommand(
             "xbrl-integrity-repair",
@@ -447,6 +480,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             ),
             logs_root / "xbrl-integrity-repair.log",
             True,
+            (stage_coverage_kind("xbrl-integrity-repair"),),
         ),
         StageCommand(
             "integrity-audit",
@@ -467,6 +501,7 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
             ],
             logs_root / "integrity-audit.log",
             False,
+            (stage_coverage_kind("integrity-audit"),),
         ),
     ]
 
@@ -543,30 +578,115 @@ def run_stage(command: StageCommand) -> StageResult:
     return StageResult(command.stage, status, returncode, elapsed, str(command.log_path), actual_command)
 
 
+def skipped_stage_result(command: StageCommand) -> StageResult:
+    return StageResult(command.stage, "skipped_covered", 0, 0.0, str(command.log_path), resolve_runtime_command(command))
+
+
 def resolve_runtime_command(command: StageCommand) -> list[str]:
     placeholder = next((item for item in command.command if item.startswith("<latest-text-manifest:")), "")
     if not placeholder:
         return command.command
     root = placeholder.removeprefix("<latest-text-manifest:").removesuffix(">")
-    manifest = latest_text_manifest(Path(root))
+    manifest = latest_text_manifest(Path(root), start_date=command.start_date, end_date=command.end_date)
     return [str(manifest) if item == placeholder else item for item in command.command]
 
 
-def latest_text_manifest(root: Path) -> Path:
+def latest_text_manifest(root: Path, *, start_date: str = "", end_date: str = "") -> Path:
     candidates = sorted(root.glob("*/sec_filing_text_extract_manifest.json"), key=lambda path: path.stat().st_mtime, reverse=True)
     if not candidates:
         raise SystemExit(f"no sec_filing_text_extract_manifest.json found under {root}")
+    if start_date and end_date:
+        for candidate in candidates:
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            summary = payload.get("summary") if isinstance(payload, dict) else {}
+            if not isinstance(summary, dict):
+                continue
+            if summary.get("start_date") == start_date and summary.get("end_date") == end_date:
+                return candidate
     return candidates[0]
+
+
+def ensure_historical_coverage_table(args: argparse.Namespace) -> None:
+    config = SecPipelineConfig.from_env()
+    client = ClickHouseHttpClient(config.clickhouse.url, config.clickhouse.user, config.clickhouse.password)
+    ensure_coverage_table(client, coverage_config(args))
+
+
+def coverage_config(args: argparse.Namespace) -> SecCoverageConfig:
+    return SecCoverageConfig(
+        database=args.write_database,
+        coverage_table=args.coverage_table,
+        storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
+    )
+
+
+def stage_coverage_kind(stage: str) -> str:
+    return "sec_stage_" + stage.replace("-", "_")
+
+
+def stage_already_completed(args: argparse.Namespace, command: StageCommand) -> bool:
+    if not command.coverage_kinds:
+        return False
+    config = SecPipelineConfig.from_env()
+    client = ClickHouseHttpClient(config.clickhouse.url, config.clickhouse.user, config.clickhouse.password)
+    start = datetime.combine(parse_date(args.start_date), dt_time.min, tzinfo=UTC)
+    end = datetime.combine(parse_date(args.end_date), dt_time.min, tzinfo=UTC)
+    for kind in command.coverage_kinds:
+        out = client.execute(
+            f"""
+            SELECT count()
+            FROM {quote_ident(args.write_database)}.{quote_ident(args.coverage_table)} FINAL
+            WHERE source = 'sec'
+              AND coverage_kind = {sql_string(kind)}
+              AND status IN ('completed', 'covered_empty', 'coverage_bootstrap')
+              AND coverage_start_utc <= toDateTime64({sql_string(dt_text(start))}, 3, 'UTC')
+              AND coverage_end_utc >= toDateTime64({sql_string(dt_text(end))}, 3, 'UTC')
+            FORMAT TSV
+            """
+        )
+        if int(out.strip() or "0") == 0:
+            return False
+    return True
+
+
+def write_stage_coverage(args: argparse.Namespace, run_id: str, command: StageCommand) -> None:
+    if not command.coverage_kinds:
+        return
+    config = SecPipelineConfig.from_env()
+    client = ClickHouseHttpClient(config.clickhouse.url, config.clickhouse.user, config.clickhouse.password)
+    coverage = coverage_config(args)
+    start = datetime.combine(parse_date(args.start_date), dt_time.min, tzinfo=UTC)
+    end = datetime.combine(parse_date(args.end_date), dt_time.min, tzinfo=UTC)
+    for kind in command.coverage_kinds:
+        insert_coverage(
+            client,
+            coverage,
+            coverage_id=new_coverage_id(f"{kind}_completed"),
+            coverage_kind=kind,
+            start_utc=start,
+            end_utc=end,
+            status="completed",
+            run_id=run_id,
+            host_role="workstation",
+            metadata={
+                "source": "sec_historical_gap_fill",
+                "stage": command.stage,
+                "mutates_database": command.mutates_database,
+                "command": resolve_runtime_command(command),
+                "start_date": args.start_date,
+                "end_date": args.end_date,
+            },
+            completed=True,
+        )
 
 
 def write_coverage(args: argparse.Namespace, run_id: str) -> None:
     config = SecPipelineConfig.from_env()
     client = ClickHouseHttpClient(config.clickhouse.url, config.clickhouse.user, config.clickhouse.password)
-    coverage = SecCoverageConfig(
-        database=args.write_database,
-        coverage_table=args.coverage_table,
-        storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
-    )
+    coverage = coverage_config(args)
     start = datetime.combine(parse_date(args.start_date), dt_time.min, tzinfo=UTC)
     end = datetime.combine(parse_date(args.end_date), dt_time.min, tzinfo=UTC)
     for kind in [KIND_BULK_SUBMISSIONS, KIND_DAILY_ARCHIVE, KIND_LIVE_FEED, KIND_TEXT_EXTRACTION, KIND_BULK_COMPANYFACTS, KIND_INTEGRITY_AUDIT]:
@@ -634,6 +754,18 @@ def powershell_quote(value: object) -> str:
 
 def parse_date(value: str) -> date:
     return date.fromisoformat(value)
+
+
+def quote_ident(value: str) -> str:
+    return "`" + value.replace("`", "``") + "`"
+
+
+def sql_string(value: str) -> str:
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def dt_text(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "")
 
 
 if __name__ == "__main__":

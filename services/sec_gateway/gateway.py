@@ -418,6 +418,9 @@ class SecGateway:
         start = min(gap.start_utc.date() for gap in gaps)
         end = (datetime.now(UTC).date() + timedelta(days=1))
         root = self.config.pipeline.workstation_code_root_win / "generated" / "sec_gateway_manual_gap_fill" / self._run_id
+        data_root = workstation_script_data_root(self.config)
+        prepared_root = data_root / "prepared"
+        artifact_root = data_root / "sec_core"
         plans = [
             build_historical_fill_plan(
                 start_date=start,
@@ -425,6 +428,67 @@ class SecGateway:
                 code_root_win=self.config.pipeline.workstation_code_root_win,
                 read_database=self.config.pipeline.clickhouse.read_database,
                 write_database=self.config.pipeline.clickhouse.write_database,
+                extra_args=[
+                    "--coverage-table",
+                    self.config.pipeline.clickhouse.coverage_table,
+                    "--bulk-mirror-database",
+                    os.environ.get("SEC_BULK_MIRROR_DATABASE", "sec_core"),
+                    "--artifact-root-win",
+                    str(artifact_root),
+                    "--core-output-root-win",
+                    str(prepared_root / "sec_core"),
+                    "--output-root-win",
+                    str(prepared_root / "sec_historical_gap_fill"),
+                    "--daily-archive-output-root-win",
+                    str(prepared_root / "sec_daily_feed_archives"),
+                    "--archive-validation-output-root-win",
+                    str(prepared_root / "sec_downloaded_archive_validation"),
+                    "--text-parts-output-root-win",
+                    str(prepared_root / "sec_filing_text_parts"),
+                    "--xbrl-output-root-win",
+                    str(prepared_root / "sec_xbrl_companyfacts_catchup"),
+                    "--xbrl-repair-output-root-win",
+                    str(prepared_root / "sec_xbrl_integrity_repair"),
+                    "--integrity-audit-output-root-win",
+                    str(prepared_root / "sec_integrity_audit"),
+                    "--parts-root-win",
+                    str(data_root),
+                    "--parts-root-ch",
+                    os.environ.get("SEC_TEXT_PARTS_ROOT_CH", "/mnt/d/market-data"),
+                    "--bulk-sources",
+                    "submissions,companyfacts",
+                    "--bulk-download-concurrency",
+                    "2",
+                    "--bulk-ingest-batch-size",
+                    "50000",
+                    "--archive-download-concurrency",
+                    "2",
+                    "--archive-validation-workers",
+                    "4",
+                    "--text-extract-workers",
+                    str(max(1, self.config.live_workers)),
+                    "--xbrl-workers",
+                    str(max(1, self.config.live_workers)),
+                    "--sec-request-min-interval-seconds",
+                    str(max(0.0, self.config.pipeline.request_min_interval_seconds)),
+                    "--request-timeout-seconds",
+                    str(max(1.0, self.config.pipeline.request_timeout_seconds)),
+                    "--max-retries",
+                    "8",
+                    "--retry-base-seconds",
+                    "30",
+                    "--pending-multiplier",
+                    "2",
+                    "--sample-limit",
+                    "1000",
+                    "--sample-text-chars",
+                    "2000",
+                    "--min-text-chars",
+                    "40",
+                    "--max-text-chars",
+                    "250000",
+                    "--resume-from-coverage",
+                ],
                 execute=True,
             )
         ]
@@ -736,6 +800,12 @@ class SecGateway:
 
     def _log(self, event: str, **payload: Any) -> None:
         self.logger.event(event, **payload)
+
+
+def workstation_script_data_root(config: SecGatewayConfig) -> Path:
+    if config.is_workstation:
+        return config.pipeline.data_root_win
+    return Path("D:/market-data")
 
 
 def market_status_is_active(status: MarketStatusResult) -> bool:

@@ -35,6 +35,7 @@ def build_historical_fill_plan(
     stages: str = "default",
     read_database: str = "",
     write_database: str = "",
+    extra_args: list[str] | None = None,
 ) -> HistoricalFillPlan:
     script = code_root_win / "pipelines" / "sec" / "edgar" / "sec_historical_gap_fill.py"
     command = [
@@ -49,6 +50,8 @@ def build_historical_fill_plan(
         command.extend(["--read-database", read_database])
     if write_database:
         command.extend(["--write-database", write_database])
+    if extra_args:
+        command.extend(extra_args)
     if execute:
         command.append("--execute")
     return HistoricalFillPlan(start_date=start_date, end_date=end_date, command=command)

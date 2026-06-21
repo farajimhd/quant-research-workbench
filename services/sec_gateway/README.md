@@ -122,6 +122,13 @@ sec_historical_gap_fill.py
 sec_integrity_audit.py
 ```
 
+The script is intentionally self-contained. The gateway writes the resolved
+read database, write database, coverage table, workstation data roots, output
+roots, worker counts, SEC request pacing, retry policy, text limits, and
+`--resume-from-coverage` into the command. Operators should not add missing
+arguments by hand; changing the generated command can make the coverage
+manifest disagree with the files and tables produced by the run.
+
 The unified fill command first refreshes SEC bulk `submissions` and
 `companyfacts`, mirrors those bulk files into `sec_core`, derives canonical
 filing parents and XBRL rows from that mirror, then performs archive download,
@@ -146,6 +153,7 @@ Coverage kinds include:
 - `sec_bulk_companyfacts`
 - `sec_text_extraction`
 - `sec_integrity_audit`
+- `sec_stage_<stage_name>` for resumable historical gap-fill stages
 
 The gateway updates one live coverage row for the whole service run. The row is
 opened on the first successful poll and its end time is updated after every
@@ -157,6 +165,13 @@ Historical coverage is interval based. SEC filings are sparse, so the gateway
 does not infer a gap just because a short time bucket has zero filings. It uses
 coverage rows written by historical/live jobs first and only falls back to
 source-table recency when a coverage kind has no manifest rows yet.
+
+Historical gap-fill also writes stage-level coverage after each successful
+stage. If a later stage fails, the next run can skip the successful completed
+stages for the same date range and continue from the failed stage. Final
+semantic coverage rows such as `sec_text_extraction` and
+`sec_bulk_companyfacts` are written only after the full unified gap-fill command
+finishes without failed stages.
 
 When the coverage manifest is empty, the gateway bootstraps one compact
 `sec_historical_baseline` row from the existing source-of-truth SEC tables. That
