@@ -152,7 +152,39 @@ All integrated groups are defined in:
 services/reference_gateway/TABLE_GROUPS.md
 ```
 
-Market reference publications are intentionally excluded from this phase.
+Market reference publications are now integrated as group 7. The group includes
+existing migrated tables plus new compact publication tables:
+
+```text
+market_fails_to_deliver_v1
+market_reg_sho_threshold_v1
+market_security_borrow_v1
+market_security_country_v1
+market_reference_publication_coverage_v1
+```
+
+Initialize those tables after hours:
+
+```powershell
+python -m services.reference_gateway.main --ensure-market-publication-schema
+```
+
+Historical publication fill:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\market_publications_historical_gap_fill.py --start-date 2026-01-01 --end-date 2026-06-22 --database q_live --sources finra_short_volume,sec_fails_to_deliver --finra-venues CNMS --output-root-win D:/market-data/prepared/reference_market_publications --resume-from-coverage --execute
+```
+
+Workstation runtime command:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\market_publications_historical_gap_fill.py --start-date 2026-01-01 --end-date 2026-06-22 --database q_live --sources finra_short_volume,sec_fails_to_deliver --finra-venues CNMS --output-root-win D:/market-data/prepared/reference_market_publications --resume-from-coverage --execute
+```
+
+The first enabled historical sources are FINRA consolidated NMS daily short-sale
+volume and SEC fails-to-deliver. They write coverage rows so later runs resume
+from uncovered windows. IBKR borrow availability is point-in-time only; it is
+stored as broker-observed availability, not reconstructed historically.
 
 The second table group is issuer identity:
 
@@ -177,8 +209,8 @@ value conflicts with a populated field, the conflict goes to
 
 ## Next Implementation Stage
 
-After the audit output is reviewed, the writer stage should be added in this
-order:
+After the audit output is reviewed, the identity writer stage should be added in
+this order:
 
 1. Massive active ticker crawler with raw artifact hashes.
 2. Exchange alias audit and proposed mappings.

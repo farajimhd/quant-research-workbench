@@ -1,10 +1,11 @@
 # Shared After-Hours Maintenance
 
-This package coordinates after-hours checks for the three live data gateways:
+This package coordinates after-hours checks for the live/reference data gateways:
 
 - QMD market-data gateway
 - Benzinga news gateway
 - SEC gateway
+- reference market-publication gateway
 
 It does not stop or restart any live service. It only inspects durable coverage
 tables/source tables, records maintenance task rows, and generates or runs the
@@ -35,25 +36,34 @@ SEC:
   companyfacts
 - Repair command: `pipelines/sec/edgar/sec_historical_gap_fill.py`
 
+Reference market publications:
+
+- Coverage source: `q_live.market_reference_publication_coverage_v1`
+- Data source for gaps: FINRA daily short-sale volume files and SEC
+  fails-to-deliver files, with Massive/IBKR publication sources added as their
+  writers are enabled
+- Repair command:
+  `pipelines/reference_data/market_publications_historical_gap_fill.py`
+
 ## Run Commands
 
 Dry run from the laptop:
 
 ```powershell
-python -m services.maintenance.runner --services qmd,news,sec
+python -m services.maintenance.runner --services qmd,news,sec,reference
 ```
 
 Execute checks and write maintenance rows:
 
 ```powershell
-python -m services.maintenance.runner --services qmd,news,sec --execute
+python -m services.maintenance.runner --services qmd,news,sec,reference --execute
 ```
 
 Execute after-hours from the workstation and allow small eligible gap fills to
 run automatically:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\services\maintenance\runner.py --services qmd,news,sec --execute --auto-run
+python D:\TradingML\codes\quant_research_workbench_pipelines\services\maintenance\runner.py --services qmd,news,sec,reference --execute --auto-run
 ```
 
 PowerShell wrapper from this repo:

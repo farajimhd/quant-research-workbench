@@ -1,7 +1,8 @@
 param(
     [string]$PythonExe = "python",
     [switch]$PrintRules,
-    [switch]$ActiveTickerCheck
+    [switch]$ActiveTickerCheck,
+    [switch]$EnsureMarketPublicationSchema
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +16,9 @@ if ($PrintRules) {
 }
 if ($ActiveTickerCheck) {
     $argsList += "--active-ticker-check"
+}
+if ($EnsureMarketPublicationSchema) {
+    $argsList += "--ensure-market-publication-schema"
 }
 
 & $PythonExe @argsList

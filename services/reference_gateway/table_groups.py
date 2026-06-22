@@ -79,6 +79,33 @@ REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
             "truth; rows become tradable only after all identity, listing, conid, exchange, and issue checks pass."
         ),
     ),
+    ReferenceTableGroup(
+        group_id="market_reference_publications",
+        owner="reference_gateway",
+        purpose="Slow-changing market publications used by scanner setup, liquidity stress, and tradability checks.",
+        tables=(
+            "market_security_market_snapshot_v1",
+            "market_security_float_v1",
+            "market_short_interest_v1",
+            "market_short_volume_v1",
+            "market_stock_split_v1",
+            "market_cash_dividend_v1",
+            "market_ipo_v1",
+            "market_presentation_asset_v1",
+            "massive_flatfile_source_file_v1",
+            "market_fails_to_deliver_v1",
+            "market_reg_sho_threshold_v1",
+            "market_security_borrow_v1",
+            "market_security_country_v1",
+            "market_reference_publication_coverage_v1",
+        ),
+        update_policy=(
+            "Fill from authoritative or best-available publication sources. FINRA owns short volume and short "
+            "interest, SEC owns fails-to-deliver and XBRL-derived country/float evidence, Massive owns corporate "
+            "actions and overview snapshots, and IBKR owns broker-specific borrow availability. Coverage rows are "
+            "the source of truth for historical/gap-fill completeness."
+        ),
+    ),
 )
 
 
@@ -94,4 +121,3 @@ def table_group_markdown() -> str:
         tables = "<br>".join(f"`{table}`" for table in group.tables)
         lines.append(f"| `{group.group_id}` | `{group.owner}` | {tables} | {group.update_policy} |")
     return "\n".join(lines)
-

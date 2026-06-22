@@ -9,6 +9,7 @@ from typing import Any
 
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
 from services.reference_gateway.config import ReferenceGatewayConfig
+from services.reference_gateway.market_publications import market_publication_audit
 from services.reference_gateway.table_groups import OWNED_REFERENCE_TABLES, REFERENCE_TABLE_GROUPS
 
 
@@ -50,6 +51,7 @@ def run_reference_audit(config: ReferenceGatewayConfig) -> ReferenceAuditReport:
         check_unsupported_us_stock_shape(client, database),
         check_active_symbols_without_tradable_universe(client, database),
         check_tradable_universe_blocked_rows(client, database),
+        check_market_publication_recency(client, database),
     ]
     status = "ok" if all(check.status == "ok" for check in checks if check.severity == "error") else "failed"
     if any(check.status != "ok" for check in checks if check.severity == "warning") and status == "ok":
@@ -93,16 +95,21 @@ def check_required_tables(client: ClickHouseHttpClient, database: str) -> AuditC
 
 def check_table_group_counts(client: ClickHouseHttpClient, database: str) -> AuditCheck:
     rows: list[dict[str, Any]] = []
+    existing = existing_tables(client, database)
     for group in REFERENCE_TABLE_GROUPS:
         for table_name in group.tables:
+            if table_name not in existing:
+                rows.append({"group_id": group.group_id, "table": table_name, "rows": 0, "status": "missing"})
+                continue
             rows.append(
                 {
                     "group_id": group.group_id,
                     "table": table_name,
                     "rows": scalar_int(client, f"SELECT count() FROM {table(database, table_name)}"),
+                    "status": "ok",
                 }
             )
-    zero = [row for row in rows if int(row.get("rows") or 0) == 0]
+    zero = [row for row in rows if row.get("status") == "missing" or int(row.get("rows") or 0) == 0]
     return AuditCheck(
         name="reference_table_group_counts",
         severity="error",
@@ -415,6 +422,26 @@ def check_tradable_universe_blocked_rows(client: ClickHouseHttpClient, database:
     )
 
 
+def check_market_publication_recency(client: ClickHouseHttpClient, database: str) -> AuditCheck:
+    rows = market_publication_audit(client, database=database)
+    missing = [row for row in rows if row.get("status") == "missing"]
+    empty = [row for row in rows if row.get("status") == "ok" and int(row.get("rows") or 0) == 0]
+    status = "ok" if not missing else "failed"
+    message = "Market reference publication tables are present."
+    if missing:
+        message = "Market reference publication schema is incomplete; run the schema ensure step before backfill."
+    elif empty:
+        message = "Market reference publication schema exists; some sources have no rows yet and need historical fill."
+    return AuditCheck(
+        name="market_reference_publication_tables",
+        severity="warning",
+        status=status,
+        count=len(missing) + len(empty),
+        message=message,
+        sample_rows=rows[:50],
+    )
+
+
 def active_stock_base_query(database: str) -> str:
     return f"""
     SELECT
@@ -447,6 +474,11 @@ def active_stock_base_query(database: str) -> str:
 def scalar_int(client: ClickHouseHttpClient, sql: str) -> int:
     value = client.query_tsv(sql).strip()
     return int(value or "0")
+
+
+def existing_tables(client: ClickHouseHttpClient, database: str) -> set[str]:
+    rows = query_json_each_row(client, f"SELECT name FROM system.tables WHERE database = {sql_string(database)}")
+    return {str(row.get("name") or "") for row in rows}
 
 
 def query_json_each_row(client: ClickHouseHttpClient, sql: str) -> list[dict[str, Any]]:

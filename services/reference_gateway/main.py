@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from research.mlops.clickhouse import discover_clickhouse_env_files
@@ -10,6 +11,7 @@ from services.gateway_policy import active_collection_window
 from services.reference_gateway.active_tickers import run_active_ticker_plan, write_active_ticker_plan
 from services.reference_gateway.audit import run_reference_audit, write_report
 from services.reference_gateway.config import ReferenceGatewayConfig
+from services.reference_gateway.market_publications import ensure_market_publication_schema
 from services.reference_gateway.policy import evaluate_write_policy
 from services.reference_gateway.table_groups import table_group_markdown
 from services.reference_gateway.tradability import tradability_rule_markdown
@@ -25,6 +27,11 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Fetch Massive active tickers and compare them with q_live symbols.",
+    )
+    parser.add_argument(
+        "--ensure-market-publication-schema",
+        action="store_true",
+        help="Create/alter market reference publication and coverage tables before auditing.",
     )
     return parser.parse_args()
 
@@ -79,6 +86,18 @@ def main() -> None:
             flush=True,
         )
         sys.exit(2)
+    if args.ensure_market_publication_schema:
+        if not write_policy.writes_allowed:
+            print("market_publication_schema=blocked reason=" + write_policy.reason, flush=True)
+            sys.exit(2)
+        from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
+
+        ensure_market_publication_schema(
+            ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
+            database=config.clickhouse_database,
+            storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
+        )
+        print("market_publication_schema=ensured", flush=True)
     report = run_reference_audit(config)
     report_path = write_report(report, config.report_root_win) if args.write_report else None
     for check in report.checks:

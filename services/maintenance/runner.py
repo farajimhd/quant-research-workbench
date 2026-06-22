@@ -42,6 +42,11 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import discover_env_files, load_env_files, secret_status  # noqa: E402
 from services.gateway_policy import active_collection_window  # noqa: E402
+from services.reference_gateway.market_publications import (  # noqa: E402
+    ensure_market_publication_schema,
+    find_publication_gaps as find_reference_publication_gaps,
+    table_exists as reference_table_exists,
+)
 
 
 WORKSTATION_CODE_ROOT_WIN = Path(r"D:/TradingML/codes/quant_research_workbench_pipelines")
@@ -92,12 +97,12 @@ class MaintenanceContext:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "After-hours maintenance coordinator for QMD, Benzinga news, and SEC gateways. "
+            "After-hours maintenance coordinator for QMD, Benzinga news, SEC, and reference-publication gateways. "
             "It checks durable coverage/source tables, records action items, and generates "
             "the existing service-specific gap-fill commands without stopping live services."
         )
     )
-    parser.add_argument("--services", default="qmd,news,sec", help="Comma-separated subset: qmd,news,sec.")
+    parser.add_argument("--services", default="qmd,news,sec,reference", help="Comma-separated subset: qmd,news,sec,reference.")
     parser.add_argument("--execute", action="store_true", help="Write maintenance rows and run allowed auto tasks.")
     parser.add_argument("--auto-run", action="store_true", help="Run generated commands when this host is the workstation and collection is closed.")
     parser.add_argument("--force-active-window", action="store_true", help="Allow auto-run even during 04:00-20:00 ET collection window.")
@@ -113,6 +118,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--news-trailing-lookback-seconds", type=int, default=int(os.environ.get("NEWS_MAINTENANCE_TRAILING_LOOKBACK_SECONDS") or "600"))
     parser.add_argument("--news-merge-tolerance-seconds", type=int, default=int(os.environ.get("NEWS_MAINTENANCE_MERGE_TOLERANCE_SECONDS") or "0"))
     parser.add_argument("--sec-min-date", default=os.environ.get("SEC_MAINTENANCE_MIN_DATE") or "2019-01-01")
+    parser.add_argument("--reference-min-date", default=os.environ.get("REFERENCE_MAINTENANCE_MIN_DATE") or "2019-01-01")
     return parser.parse_args()
 
 
@@ -120,7 +126,7 @@ def main() -> None:
     loaded_env = load_env_files(discover_env_files(REPO_ROOT), verbose=True)
     args = parse_args()
     services = {item.strip().lower() for item in args.services.split(",") if item.strip()}
-    invalid = services - {"qmd", "news", "sec"}
+    invalid = services - {"qmd", "news", "sec", "reference"}
     if invalid:
         raise SystemExit(f"Invalid services: {sorted(invalid)}")
     now = datetime.now(UTC)
@@ -154,6 +160,8 @@ def main() -> None:
             tasks.extend(check_news(ctx, args))
         if "sec" in services:
             tasks.extend(check_sec(ctx, args))
+        if "reference" in services:
+            tasks.extend(check_reference_publications(ctx, args))
         if ctx.execute:
             insert_tasks(ctx, tasks)
             run_allowed_tasks(ctx, tasks)
@@ -370,6 +378,83 @@ def check_sec(ctx: MaintenanceContext, args: argparse.Namespace) -> list[TaskRec
     return tasks
 
 
+def check_reference_publications(ctx: MaintenanceContext, args: argparse.Namespace) -> list[TaskRecord]:
+    if ctx.execute:
+        ensure_market_publication_schema(ctx.client, database=ctx.database, storage_policy=ctx.storage_policy)
+    elif not reference_table_exists(ctx.client, ctx.database, "market_reference_publication_coverage_v1"):
+        return [
+            TaskRecord(
+                task_id=new_task_id("reference_publications_schema"),
+                run_id=ctx.run_id,
+                service="reference",
+                task_kind="market_publication_schema",
+                status="schema_missing",
+                source_truth=f"{ctx.database}.market_reference_publication_coverage_v1",
+                command="python -m services.reference_gateway.main --ensure-market-publication-schema",
+                details={
+                    "message": "Market-publication coverage table is missing. Run the schema ensure step before dry-run gap discovery.",
+                    "policy": "dry-run maintenance does not create tables",
+                },
+            )
+        ]
+    start = parse_date(args.reference_min_date)
+    end = ctx.now_utc.date() + timedelta(days=1)
+    source_specs = [
+        ("finra_short_volume:CNMS", "finra", "daily FINRA consolidated NMS short-volume publication"),
+        ("sec_fails_to_deliver", "sec", "SEC fails-to-deliver publication"),
+    ]
+    all_gaps = []
+    details: dict[str, Any] = {}
+    for coverage_kind, source_system, label in source_specs:
+        gaps = find_reference_publication_gaps(
+            ctx.client,
+            database=ctx.database,
+            coverage_kind=coverage_kind,
+            source_system=source_system,
+            start_date=start,
+            end_date=end,
+        )
+        all_gaps.extend(gaps)
+        details[coverage_kind] = {"source": label, "gaps": len(gaps), "days": sum(gap.missing_days for gap in gaps)}
+    tasks = [
+        TaskRecord(
+            task_id=new_task_id("reference_publications"),
+            run_id=ctx.run_id,
+            service="reference",
+            task_kind="market_publication_coverage_audit",
+            status="ok" if not all_gaps else "gap_detected",
+            source_truth=f"{ctx.database}.market_reference_publication_coverage_v1",
+            rows_checked=len(source_specs),
+            rows_missing=len(all_gaps),
+            details=details,
+        )
+    ]
+    if all_gaps:
+        window_start = min(gap.start_date for gap in all_gaps)
+        window_end = max(gap.end_date for gap in all_gaps)
+        command = reference_gap_fill_command(ctx, window_start, window_end)
+        tasks.append(
+            TaskRecord(
+                task_id=new_task_id("reference_publication_gap"),
+                run_id=ctx.run_id,
+                service="reference",
+                task_kind="market_publication_gap_fill",
+                status="auto_runnable" if should_auto_run(ctx, "REFERENCE", datetime.combine(window_start, time.min, tzinfo=UTC), datetime.combine(window_end, time.min, tzinfo=UTC)) else "manual_required",
+                source_truth="FINRA daily short volume and SEC fails-to-deliver publications",
+                window_start_utc=datetime.combine(window_start, time.min, tzinfo=UTC),
+                window_end_utc=datetime.combine(window_end, time.min, tzinfo=UTC),
+                rows_missing=len(all_gaps),
+                command=command,
+                details={
+                    "gap_days": sum(gap.missing_days for gap in all_gaps),
+                    "gap_kinds": sorted({gap.coverage_kind for gap in all_gaps}),
+                    "policy": "run after hours on workstation; publication coverage prevents repeat fills",
+                },
+            )
+        )
+    return tasks
+
+
 def ensure_tables(ctx: MaintenanceContext) -> None:
     settings = ["index_granularity = 8192"]
     if ctx.storage_policy.strip():
@@ -491,6 +576,8 @@ def run_allowed_tasks(ctx: MaintenanceContext, tasks: list[TaskRecord]) -> None:
             continue
         if task.service == "sec" and task.command.lower().endswith(".ps1"):
             subprocess.Popen(["powershell", "-ExecutionPolicy", "Bypass", "-File", task.command], cwd=str(ctx.code_root_win))
+        elif task.service in {"news", "reference"}:
+            subprocess.Popen(task.command, cwd=str(ctx.code_root_win), shell=True)
 
 
 def qmd_market_sip_source_window(ctx: MaintenanceContext) -> dict[str, Any]:
@@ -568,6 +655,29 @@ def news_gap_fill_command(ctx: MaintenanceContext, start: datetime, end: datetim
         config.normalized_table,
         "--coverage-table",
         config.coverage_table,
+        "--execute",
+    ]
+    return " ".join(ps_quote(part) for part in parts)
+
+
+def reference_gap_fill_command(ctx: MaintenanceContext, start: date, end: date) -> str:
+    script = ctx.code_root_win / "pipelines" / "reference_data" / "market_publications_historical_gap_fill.py"
+    parts = [
+        "python",
+        str(script),
+        "--start-date",
+        start.isoformat(),
+        "--end-date",
+        end.isoformat(),
+        "--database",
+        ctx.database,
+        "--sources",
+        os.environ.get("REFERENCE_MAINTENANCE_PUBLICATION_SOURCES") or "finra_short_volume,sec_fails_to_deliver",
+        "--finra-venues",
+        os.environ.get("REFERENCE_MAINTENANCE_FINRA_VENUES") or "CNMS",
+        "--output-root-win",
+        str(default_data_root() / "prepared" / "reference_market_publications"),
+        "--resume-from-coverage",
         "--execute",
     ]
     return " ".join(ps_quote(part) for part in parts)
