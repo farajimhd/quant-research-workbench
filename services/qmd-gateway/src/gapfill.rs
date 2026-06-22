@@ -3,9 +3,11 @@ use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::massive::{fanout_market_event, MarketEventFanout};
 use crate::metrics::TimingTarget;
 use crate::session::{is_streaming_phase, session_phase};
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, TimeZone, Utc};
+use chrono_tz::America::New_York;
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path as FsPath;
 use std::process::Command;
 use tokio::time::{interval, Duration};
@@ -61,6 +63,44 @@ struct LiveEventAudit {
     ticker_count: u64,
 }
 
+#[derive(Default)]
+struct RecentLiveRepair {
+    errors: u64,
+    intervals_checked: u64,
+    intervals_repaired: u64,
+    page_limited_symbols: u64,
+    rows_written: u64,
+    status: String,
+    symbols_checked: u64,
+    symbols_repaired: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LiveDayStats {
+    count: u64,
+    max_sip_timestamp_us: u64,
+    min_sip_timestamp_us: u64,
+}
+
+#[derive(Clone, Debug)]
+struct RepairInterval {
+    end: DateTime<Utc>,
+    reason: &'static str,
+    start: DateTime<Utc>,
+}
+
+#[derive(Default)]
+struct IntervalFillOutcome {
+    page_limit_hit: bool,
+    rows: u64,
+}
+
+#[derive(Default)]
+struct FetchEventsOutcome {
+    events: Vec<MarketEvent>,
+    page_limit_hit: bool,
+}
+
 #[derive(Clone)]
 struct GapFillService {
     client: Client,
@@ -101,16 +141,24 @@ impl GapFillService {
         };
         let mut rows_written = 0u64;
         let mut message = String::new();
+        let mut repair = RecentLiveRepair::default();
         if status == "ok" {
-            rows_written = self
-                .run_once("startup_recent_repair")
+            repair = self
+                .repair_recent_live_coverage(started_at, "startup_recent_repair")
                 .await
                 .unwrap_or_else(|error| {
                     message = error;
-                    0
+                    RecentLiveRepair {
+                        errors: 1,
+                        status: "repair_failed".to_string(),
+                        ..RecentLiveRepair::default()
+                    }
                 });
+            rows_written = repair.rows_written;
             if !message.is_empty() {
                 status = "repair_failed";
+            } else if !repair.status.is_empty() {
+                status = repair.status.as_str();
             }
         } else {
             message = "Recent q_live event table has structural ordinal/order issues. Not rewriting committed ordinals automatically.".to_string();
@@ -133,6 +181,12 @@ impl GapFillService {
                 "hole_ticker_count": audit.hole_ticker_count,
                 "out_of_order_ticker_count": audit.out_of_order_ticker_count,
                 "message": message,
+                "symbols_checked": repair.symbols_checked,
+                "symbols_repaired": repair.symbols_repaired,
+                "intervals_checked": repair.intervals_checked,
+                "intervals_repaired": repair.intervals_repaired,
+                "page_limited_symbols": repair.page_limited_symbols,
+                "repair_errors": repair.errors,
             }),
         )
         .await?;
@@ -149,6 +203,8 @@ impl GapFillService {
         self.initialize_tables().await?;
         let started_at = Utc::now();
         let phase = format!("{:?}", session_phase(started_at));
+        let host_role = self.host_role();
+        let (window_start, window_end, _) = self.recent_live_window();
         if self.config.massive_api_key.is_empty() {
             self.record_run(
                 started_at,
@@ -160,54 +216,64 @@ impl GapFillService {
                 "MASSIVE_API_KEY is not configured",
             )
             .await?;
-            return Ok(0);
-        }
-        let symbols = self.gap_fill_symbols().await?;
-        if symbols.is_empty() {
-            self.record_run(
+            self.record_coverage_run(
                 started_at,
-                mode,
-                &phase,
-                "",
+                "q_live_recent_events",
                 "skipped",
+                window_start,
+                window_end,
+                mode,
                 0,
-                "No gap-fill symbols were configured or discovered",
+                &host_role,
+                "",
+                &json!({
+                    "phase": phase,
+                    "message": "MASSIVE_API_KEY is not configured",
+                }),
             )
             .await?;
             return Ok(0);
         }
-        let mut total_rows = 0u64;
-        for symbol in symbols {
-            let rows = self.fill_symbol(&symbol).await.unwrap_or_else(|error| {
-                eprintln!("Gap fill failed for {symbol}: {error}");
-                0
-            });
-            total_rows += rows;
-            self.fanout.metrics.inc_gap_fill_rows(rows);
-            self.record_run(started_at, mode, &phase, &symbol, "completed", rows, "")
-                .await?;
-        }
+        let repair = self.repair_recent_live_coverage(started_at, mode).await?;
+        self.record_coverage_run(
+            started_at,
+            "q_live_recent_events",
+            &repair.status,
+            window_start,
+            window_end,
+            mode,
+            repair.rows_written,
+            &host_role,
+            "",
+            &json!({
+                "phase": phase,
+                "symbols_checked": repair.symbols_checked,
+                "symbols_repaired": repair.symbols_repaired,
+                "intervals_checked": repair.intervals_checked,
+                "intervals_repaired": repair.intervals_repaired,
+                "page_limited_symbols": repair.page_limited_symbols,
+                "repair_errors": repair.errors,
+            }),
+        )
+        .await?;
         if !is_streaming_phase(Utc::now()) && self.config.historical_flatfile_update_enabled {
             self.plan_historical_flatfile_update(started_at, mode, false)
                 .await?;
         }
-        Ok(total_rows)
+        Ok(repair.rows_written)
     }
 
-    async fn fill_symbol(&self, symbol: &str) -> Result<u64, String> {
-        let now = Utc::now();
-        let latest = self.latest_compact_ts(symbol).await?;
-        let requested_start =
-            latest.unwrap_or(now - ChronoDuration::minutes(self.config.gap_fill_lookback_minutes));
-        let max_start = now - ChronoDuration::days(self.config.gap_fill_max_lookback_days.max(1));
-        let start = requested_start.max(max_start);
-        if (now - start).num_seconds() < self.config.gap_fill_min_gap_seconds {
-            return Ok(0);
-        }
-
+    async fn fill_symbol_interval(
+        &self,
+        symbol: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<IntervalFillOutcome, String> {
+        let trades = self.fetch_events(symbol, "trades", start, end).await?;
+        let quotes = self.fetch_events(symbol, "quotes", start, end).await?;
         let mut events = Vec::new();
-        events.extend(self.fetch_events(symbol, "trades", start, now).await?);
-        events.extend(self.fetch_events(symbol, "quotes", start, now).await?);
+        events.extend(trades.events);
+        events.extend(quotes.events);
         events.sort_by_key(|event| {
             let tie_breaker = match event {
                 MarketEvent::Quote(_) => 0u8,
@@ -221,7 +287,10 @@ impl GapFillService {
             fanout_market_event(event, &self.fanout).await;
             count += 1;
         }
-        Ok(count)
+        Ok(IntervalFillOutcome {
+            page_limit_hit: trades.page_limit_hit || quotes.page_limit_hit,
+            rows: count,
+        })
     }
 
     async fn fetch_events(
@@ -230,12 +299,14 @@ impl GapFillService {
         kind: &str,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
-    ) -> Result<Vec<MarketEvent>, String> {
+    ) -> Result<FetchEventsOutcome, String> {
         let mut next_url = Some(self.rest_url(symbol, kind, start, end));
         let mut pages = 0usize;
         let mut out = Vec::new();
+        let mut page_limit_hit = false;
         while let Some(url) = next_url.take() {
             if pages >= self.config.gap_fill_max_pages_per_symbol {
+                page_limit_hit = true;
                 break;
             }
             pages += 1;
@@ -271,37 +342,272 @@ impl GapFillService {
                 .and_then(Value::as_str)
                 .map(|url| append_api_key(url, &self.config.massive_api_key));
         }
-        Ok(out)
+        Ok(FetchEventsOutcome {
+            events: out,
+            page_limit_hit,
+        })
     }
 
-    async fn gap_fill_symbols(&self) -> Result<Vec<String>, String> {
-        if !self.config.gap_fill_symbols.is_empty() {
-            return Ok(self.config.gap_fill_symbols.clone());
+    async fn repair_recent_live_coverage(
+        &self,
+        started_at: DateTime<Utc>,
+        mode: &str,
+    ) -> Result<RecentLiveRepair, String> {
+        let phase = format!("{:?}", session_phase(started_at));
+        let (window_start, _window_end, market_dates) = self.recent_live_window();
+        let stats = self.recent_live_day_stats(window_start).await?;
+        let symbols = self.recent_live_symbols(&stats);
+        let mut repair = RecentLiveRepair {
+            status: "up_to_date".to_string(),
+            symbols_checked: symbols.len() as u64,
+            ..RecentLiveRepair::default()
+        };
+        if symbols.is_empty() {
+            repair.status = "skipped".to_string();
+            self.record_run(
+                started_at,
+                mode,
+                &phase,
+                "",
+                "skipped",
+                0,
+                "No recent q_live symbols were discovered and QMD_GAP_FILL_SYMBOLS is empty",
+            )
+            .await?;
+            return Ok(repair);
         }
+        for symbol in symbols {
+            let intervals = self.repair_intervals_for_symbol(&symbol, &market_dates, &stats);
+            repair.intervals_checked += intervals.len() as u64;
+            if intervals.is_empty() {
+                continue;
+            }
+            let mut symbol_rows = 0u64;
+            let mut symbol_errors = 0u64;
+            let mut symbol_partial = false;
+            for interval in intervals {
+                eprintln!(
+                    "QMD recent q_live repair: symbol={} reason={} start={} end={}",
+                    symbol,
+                    interval.reason,
+                    interval.start.to_rfc3339(),
+                    interval.end.to_rfc3339()
+                );
+                match self
+                    .fill_symbol_interval(&symbol, interval.start, interval.end)
+                    .await
+                {
+                    Ok(outcome) => {
+                        symbol_rows += outcome.rows;
+                        repair.rows_written += outcome.rows;
+                        repair.intervals_repaired += 1;
+                        self.fanout.metrics.inc_gap_fill_rows(outcome.rows);
+                        if outcome.page_limit_hit {
+                            symbol_partial = true;
+                        }
+                    }
+                    Err(error) => {
+                        symbol_errors += 1;
+                        repair.errors += 1;
+                        eprintln!("QMD recent q_live repair failed for {symbol}: {error}");
+                    }
+                }
+            }
+            if symbol_rows > 0 {
+                repair.symbols_repaired += 1;
+            }
+            if symbol_partial {
+                repair.page_limited_symbols += 1;
+            }
+            let status = if symbol_errors > 0 {
+                "failed"
+            } else if symbol_partial {
+                "partial_page_limit"
+            } else {
+                "completed"
+            };
+            self.record_run(
+                started_at,
+                mode,
+                &phase,
+                &symbol,
+                status,
+                symbol_rows,
+                if symbol_partial {
+                    "Massive REST page limit was reached for at least one interval"
+                } else {
+                    ""
+                },
+            )
+            .await?;
+        }
+        repair.status = if repair.errors > 0 {
+            "partial_failed".to_string()
+        } else if repair.page_limited_symbols > 0 {
+            "partial_page_limit".to_string()
+        } else if repair.intervals_repaired > 0 {
+            "repair_submitted".to_string()
+        } else {
+            "up_to_date".to_string()
+        };
+        Ok(repair)
+    }
+
+    async fn recent_live_day_stats(
+        &self,
+        window_start: DateTime<Utc>,
+    ) -> Result<HashMap<(String, NaiveDate), LiveDayStats>, String> {
         if !self.config.compact_events_enabled {
-            return Ok(Vec::new());
+            return Ok(HashMap::new());
         }
-        let session_date = Utc::now().date_naive().to_string();
+        let start_date = window_start.date_naive();
+        let start_us = window_start.timestamp_micros();
         let sql = format!(
             r#"
-            SELECT DISTINCT ticker
+            SELECT
+                ticker,
+                toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) AS market_date,
+                count() AS rows,
+                min(sip_timestamp_us) AS min_sip_timestamp_us,
+                max(sip_timestamp_us) AS max_sip_timestamp_us
             FROM {table}
-            WHERE event_date >= toDate('{session_date}') - 1
+            WHERE event_date >= toDate('{start_date}')
+              AND sip_timestamp_us >= {start_us}
+              AND toHour(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) >= 4
+              AND toHour(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) < 20
               AND ticker != ''
-            ORDER BY ticker
+            GROUP BY ticker, market_date
             FORMAT JSONEachRow
             "#,
+            start_date = start_date,
+            start_us = start_us,
             table = self.config.compact_event_table,
         );
         let text = self.query(&sql, true).await?;
-        let mut symbols = Vec::new();
+        let mut stats = HashMap::new();
         for line in text.lines().filter(|line| !line.trim().is_empty()) {
             let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
-            if let Some(symbol) = value.get("ticker").and_then(Value::as_str) {
-                symbols.push(symbol.to_ascii_uppercase());
+            let Some(symbol) = value.get("ticker").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(event_date) = value
+                .get("market_date")
+                .and_then(Value::as_str)
+                .and_then(|raw| NaiveDate::parse_from_str(raw, "%Y-%m-%d").ok())
+            else {
+                continue;
+            };
+            stats.insert(
+                (symbol.to_ascii_uppercase(), event_date),
+                LiveDayStats {
+                    count: value.get("rows").and_then(json_u64).unwrap_or(0),
+                    max_sip_timestamp_us: value
+                        .get("max_sip_timestamp_us")
+                        .and_then(json_u64)
+                        .unwrap_or(0),
+                    min_sip_timestamp_us: value
+                        .get("min_sip_timestamp_us")
+                        .and_then(json_u64)
+                        .unwrap_or(0),
+                },
+            );
+        }
+        Ok(stats)
+    }
+
+    fn recent_live_symbols(
+        &self,
+        stats: &HashMap<(String, NaiveDate), LiveDayStats>,
+    ) -> Vec<String> {
+        let mut symbols = BTreeSet::new();
+        symbols.extend(
+            self.config
+                .gap_fill_symbols
+                .iter()
+                .map(|symbol| symbol.to_ascii_uppercase())
+                .filter(|symbol| !symbol.is_empty()),
+        );
+        symbols.extend(stats.keys().map(|(symbol, _)| symbol.clone()));
+        symbols.into_iter().collect()
+    }
+
+    fn repair_intervals_for_symbol(
+        &self,
+        symbol: &str,
+        market_dates: &[NaiveDate],
+        stats: &HashMap<(String, NaiveDate), LiveDayStats>,
+    ) -> Vec<RepairInterval> {
+        let now = Utc::now();
+        let min_gap = ChronoDuration::seconds(self.config.gap_fill_min_gap_seconds.max(1));
+        let mut intervals = Vec::new();
+        for date in market_dates {
+            let Some((day_start, day_end)) = market_session_window_utc(*date, now) else {
+                continue;
+            };
+            let key = (symbol.to_string(), *date);
+            let Some(day_stats) = stats.get(&key) else {
+                intervals.push(RepairInterval {
+                    start: day_start,
+                    end: day_end,
+                    reason: "missing_day",
+                });
+                continue;
+            };
+            if day_stats.count == 0 {
+                intervals.push(RepairInterval {
+                    start: day_start,
+                    end: day_end,
+                    reason: "empty_day",
+                });
+                continue;
+            }
+            let Some(min_dt) = us_to_datetime(day_stats.min_sip_timestamp_us) else {
+                continue;
+            };
+            let Some(max_dt) = us_to_datetime(day_stats.max_sip_timestamp_us) else {
+                continue;
+            };
+            if min_dt > day_start + min_gap {
+                intervals.push(RepairInterval {
+                    start: day_start,
+                    end: min_dt - ChronoDuration::microseconds(1),
+                    reason: "missing_day_head",
+                });
+            }
+            if max_dt + min_gap < day_end {
+                intervals.push(RepairInterval {
+                    start: max_dt + ChronoDuration::microseconds(1),
+                    end: day_end,
+                    reason: "missing_day_tail",
+                });
             }
         }
-        Ok(symbols)
+        intervals
+    }
+
+    fn recent_live_window(&self) -> (DateTime<Utc>, DateTime<Utc>, Vec<NaiveDate>) {
+        let now = Utc::now();
+        let today = now.with_timezone(&New_York).date_naive();
+        let target_count = self
+            .config
+            .recent_live_prior_market_days
+            .max(0)
+            .saturating_add(1) as usize;
+        let mut cursor = today;
+        let mut dates = Vec::new();
+        while dates.len() < target_count {
+            if cursor.weekday().number_from_monday() <= 5 {
+                dates.push(cursor);
+            }
+            cursor -= ChronoDuration::days(1);
+        }
+        dates.reverse();
+        let start = dates
+            .first()
+            .copied()
+            .and_then(|date| market_session_window_utc(date, now).map(|(start, _)| start))
+            .unwrap_or_else(Utc::now);
+        (start, now, dates)
     }
 
     async fn audit_recent_live_events(&self) -> Result<LiveEventAudit, String> {
@@ -494,29 +800,6 @@ impl GapFillService {
             end.timestamp_nanos_opt().unwrap_or_default(),
             urlencoding::encode(&self.config.massive_api_key),
         )
-    }
-
-    async fn latest_compact_ts(&self, symbol: &str) -> Result<Option<DateTime<Utc>>, String> {
-        if !self.config.compact_events_enabled {
-            return Ok(None);
-        }
-        let sql = format!(
-            "SELECT max(sip_timestamp_us) AS sip_timestamp_us FROM {table} WHERE ticker = '{}' FORMAT JSONEachRow",
-            symbol.replace('\'', "''"),
-            table = self.config.compact_event_table,
-        );
-        let text = self.query(&sql, true).await?;
-        let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
-            return Ok(None);
-        };
-        let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
-        let Some(us) = value.get("sip_timestamp_us").and_then(json_u64) else {
-            return Ok(None);
-        };
-        if us == 0 {
-            return Ok(None);
-        }
-        Ok(us_to_datetime(us))
     }
 
     async fn initialize_tables(&self) -> Result<(), String> {
@@ -742,6 +1025,47 @@ fn date_start_utc(date: NaiveDate) -> DateTime<Utc> {
     date.and_hms_opt(0, 0, 0)
         .expect("midnight is valid for every NaiveDate")
         .and_utc()
+}
+
+fn market_session_window_utc(
+    market_date: NaiveDate,
+    now: DateTime<Utc>,
+) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let start = New_York
+        .with_ymd_and_hms(
+            market_date.year(),
+            market_date.month(),
+            market_date.day(),
+            4,
+            0,
+            0,
+        )
+        .single()?
+        .with_timezone(&Utc);
+    let scheduled_end = New_York
+        .with_ymd_and_hms(
+            market_date.year(),
+            market_date.month(),
+            market_date.day(),
+            20,
+            0,
+            0,
+        )
+        .single()?
+        .with_timezone(&Utc);
+    if now <= start {
+        return None;
+    }
+    let end = if now < scheduled_end {
+        now
+    } else {
+        scheduled_end
+    };
+    if end <= start {
+        None
+    } else {
+        Some((start, end))
+    }
 }
 
 fn spawn_command(command: &str) -> Result<(), String> {

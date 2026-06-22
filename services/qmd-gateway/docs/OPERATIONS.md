@@ -152,9 +152,9 @@ websocket ingest, then records audit rows in `qmd_gap_fill_runs`.
 
 If `QMD_GAP_FILL_SYMBOLS` is set, only those tickers are checked. If it is
 empty, the worker discovers symbols already present in recent live compact
-events. REST gap fill is bounded by `QMD_GAP_FILL_MAX_LOOKBACK_DAYS`; older
-history should be read from the read-only historical `market_sip_compact.events`
-table.
+events. Recent REST repair covers the current market day plus
+`QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior weekdays. Older history should be read
+from the read-only historical `market_sip_compact.events` table.
 
 ## Startup Maintenance And Coverage
 
@@ -169,15 +169,20 @@ task starts. The gateway audits recent rows in the actual
 
 This audit intentionally does not rely on the coverage manifest. If the recent
 event table is structurally clean, the gateway performs a bounded Massive REST
-tail repair through the normal fan-out path, so repaired rows update memory,
+coverage repair through the normal fan-out path, so repaired rows update memory,
 streams, bars, indicators, compact persistence, and optional raw persistence in
-the same way as live websocket rows. If the audit finds committed ordinal
-structure problems, the gateway records `needs_manual_rebuild` and refuses to
-silently rewrite existing rows.
+the same way as live websocket rows. The repair summarizes
+`live_market_events_v1` by `(ticker, event_date)` for the current market day and
+configured prior weekdays, then fills missing full days and missing head/tail
+intervals inside the 04:00-20:00 ET extended-hours window. If Massive
+pagination reaches `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL`, the symbol is recorded
+as `partial_page_limit` instead of being marked clean. If the audit finds
+committed ordinal structure problems, the gateway records `needs_manual_rebuild`
+and refuses to silently rewrite existing rows.
 
 `qmd_market_coverage_manifest_v1` is a coarse per-run manifest. It records
-startup live repair checks and historical flatfile update plans. It should not
-have one row per symbol or per file.
+startup live repair checks, scheduled recent-live repair checks, and historical
+flatfile update plans. It should not have one row per symbol or per file.
 
 After-hours historical flatfile maintenance is only a planner from the gateway.
 It compares historical `events_ordinal_continuity` coverage with the configured

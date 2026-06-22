@@ -80,13 +80,14 @@ Required data-path queues use awaited sends. A full queue applies backpressure i
 | `QMD_GAP_FILL_ENABLED` | `true` | Enable Massive REST gap fill. | Disable for isolated websocket tests. |
 | `QMD_GAP_FILL_MODE` | `auto` | Gap-fill mode: `auto`, `session`, `session_catch_up`, `after_hours`, or `repair`. | `auto` does startup catch-up during streaming and repair after hours. |
 | `QMD_GAP_FILL_INTERVAL_MS` | `300000` | After-hours repair interval. | Default is 5 minutes. |
-| `QMD_GAP_FILL_LOOKBACK_MINUTES` | `120` | Lookback when no latest timestamp exists. | Session catch-up uses this to warm recent memory. |
-| `QMD_GAP_FILL_MAX_LOOKBACK_DAYS` | `3` | Maximum recent REST repair window. | Older history should come from read-only `market_sip_compact.events`. |
+| `QMD_GAP_FILL_LOOKBACK_MINUTES` | `120` | Legacy warmup lookback for focused tests. | Recent live repair now uses market-day coverage. |
+| `QMD_GAP_FILL_MAX_LOOKBACK_DAYS` | `3` | Recent structural audit lookback in calendar days. | The REST repair window is controlled by `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS`. |
 | `QMD_GAP_FILL_MIN_GAP_SECONDS` | `60` | Ignore gaps shorter than this. | Prevents excessive REST calls for tiny gaps. |
 | `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL` | `5` | Max Massive REST pages per symbol per cycle. | Rate-limit control. |
 | `QMD_GAP_FILL_SYMBOLS` | empty | Optional comma-separated symbol list. | If empty, symbols are discovered from recent live compact event rows. |
+| `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` | `3` | Number of prior weekdays, plus the current market day, that q_live REST repair must keep covered. | Default checks current day plus 3 prior market days. |
 | `QMD_STARTUP_MAINTENANCE_ENABLED` | `true` | Audit and repair recent `q_live` event coverage before live websocket ingest starts. | Disable only for isolated tests. |
-| `QMD_COVERAGE_TABLE` | `qmd_market_coverage_manifest_v1` | Coarse run-level coverage manifest table in `q_live`. | Records startup audits and historical flatfile update plans; not used as the source of truth for live holes. |
+| `QMD_COVERAGE_TABLE` | `qmd_market_coverage_manifest_v1` | Coarse run-level coverage manifest table in `q_live`. | Records startup audits, recent live repairs, and historical flatfile update plans; not used as the source of truth for live holes. |
 | `QMD_HOST_ROLE` | `auto` | Host role for historical update planning. | Override with `workstation` or `laptop` if auto-detection is wrong. |
 | `QMD_HISTORICAL_CLICKHOUSE_DATABASE` | `market_sip_compact` | Read-only historical event database name. | QMD never writes live rows into this database. |
 | `QMD_HISTORICAL_FLATFILE_UPDATE_ENABLED` | `true` | Plan after-hours flatfile event updates for historical gaps. | Keeps historical update work away from websocket peak time. |
@@ -95,9 +96,14 @@ Required data-path queues use awaited sends. A full queue applies backpressure i
 | `QMD_HISTORICAL_KNOWN_COVERAGE_END_DATE` | `2026-06-05` | Fallback historical coverage date if the continuity table query fails. | Coarse seed only; normal operation reads `events_ordinal_continuity`. |
 | `QMD_HISTORICAL_PIPELINE_CODE_ROOT` | `D:\TradingML\codes\quant_research_workbench_pipelines` | Workstation path used to build the flatfile update command. | Must point to the synced pipeline code on the workstation. |
 
-Gap fill converts Massive REST rows to the same normalized `MarketEvent` type
-used by the websocket path, then feeds the same state, stream, bar, indicator,
-compact-event, and optional raw-persistence queues.
+Recent live repair converts Massive REST rows to the same normalized
+`MarketEvent` type used by the websocket path, then feeds the same state,
+stream, bar, indicator, compact-event, and optional raw-persistence queues.
+It queries `q_live.live_market_events_v1` by `(ticker, event_date)` for the
+current New York market day plus the configured prior weekdays, then fills
+missing full days and missing head/tail intervals inside the 04:00-20:00 ET
+extended-hours window. Mid-session inactivity is not treated as a hole unless
+it appears as an edge gap in that market-day window.
 
 ## Scanner Primitives
 

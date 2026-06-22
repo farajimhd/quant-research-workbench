@@ -80,20 +80,20 @@ Continuity table: `live_event_ordinal_continuity`
 Coverage manifest: `qmd_market_coverage_manifest_v1`
 
 This table is coarse and run-scoped. It records startup live event audits,
-recent REST tail-repair attempts, and historical flatfile update plans. It is
-not used to decide whether the recent live event table has holes; that decision
-is made by querying `live_market_events_v1` directly.
+recent REST repair attempts, and historical flatfile update plans. It is not
+used to decide whether the recent live event table has holes; that decision is
+made by querying `live_market_events_v1` directly by ticker and event date.
 
 | Field | Meaning |
 |---|---|
 | `started_at` | Maintenance run start time. |
 | `finished_at` | Maintenance run finish or plan record time. |
 | `coverage_kind` | `q_live_recent_events` or `historical_flatfile_events`. |
-| `status` | `ok`, `repair_failed`, `needs_manual_rebuild`, `planned`, `launched`, or `launch_failed`. |
+| `status` | Recent-live statuses include `up_to_date`, `repair_submitted`, `partial_page_limit`, `partial_failed`, `skipped`, `repair_failed`, and `needs_manual_rebuild`. Historical statuses include `up_to_date`, `planned`, `launched`, and `launch_failed`. |
 | `start_ts_utc` | UTC start of the audited or planned coverage range. |
 | `end_ts_utc` | UTC end of the audited or planned coverage range. |
 | `action` | Startup or periodic action that wrote the row. |
-| `rows_written` | Rows routed through recent REST repair when applicable. |
+| `rows_written` | Rows routed through recent REST repair when applicable. The compact-event DB writer persists them asynchronously after fan-out. |
 | `host_role` | `workstation` or `laptop` after host-role resolution. |
 | `command` | Historical flatfile update command when one is planned. |
 | `summary_json` | JSON summary of audit counts, command planning, and messages. |

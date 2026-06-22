@@ -35,6 +35,7 @@ pub struct GatewayConfig {
     pub gap_fill_max_pages_per_symbol: usize,
     pub gap_fill_min_gap_seconds: i64,
     pub gap_fill_symbols: Vec<String>,
+    pub recent_live_prior_market_days: i64,
     pub historical_clickhouse_database: String,
     pub historical_flatfile_autorun: bool,
     pub historical_flatfile_safe_lag_days: i64,
@@ -158,6 +159,7 @@ impl GatewayConfig {
             gap_fill_max_pages_per_symbol: env_usize("QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL", 5),
             gap_fill_min_gap_seconds: env_i64("QMD_GAP_FILL_MIN_GAP_SECONDS", 60),
             gap_fill_symbols: env_list("QMD_GAP_FILL_SYMBOLS"),
+            recent_live_prior_market_days: env_i64("QMD_RECENT_LIVE_PRIOR_MARKET_DAYS", 3),
             historical_clickhouse_database: env_string(
                 "QMD_HISTORICAL_CLICKHOUSE_DATABASE",
                 "market_sip_compact",

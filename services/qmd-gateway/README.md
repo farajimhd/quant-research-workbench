@@ -335,18 +335,22 @@ Massive REST historical trades and quotes:
 
 If `QMD_GAP_FILL_SYMBOLS` is set, only those symbols are checked. Otherwise the
 worker discovers symbols already present in the live compact event table, then
-fills from each symbol's latest compact timestamp to now. REST gap fill is
-bounded by `QMD_GAP_FILL_MAX_LOOKBACK_DAYS`, default `3`, because the REST path
-is for recent crash/restart recovery. Deeper historical event history should be
-read from the read-only `market_sip_compact.events` table, which is maintained
-by the flatfile pipelines up to the prior day.
+summarizes q_live coverage by `(ticker, event_date)`. REST repair covers the
+current market day plus `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior weekdays,
+default `3`, because the REST path is for recent crash/restart recovery. It
+fills missing full days and missing head/tail intervals and marks the repair
+partial if Massive pagination hits `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL`. Deeper
+historical event history should be read from the read-only
+`market_sip_compact.events` table, which is maintained by the flatfile pipelines
+up to the prior day.
 
 At startup, when `QMD_STARTUP_MAINTENANCE_ENABLED=true`, the gateway audits the
 recent `q_live.live_market_events_v1` rows directly. This check is based on the
 actual event table, not the coverage manifest, so failed live inserts can be
 detected. The audit reports duplicate ticker ordinals, ordinal holes, and
 out-of-order ticker-local rows. If recent rows are structurally sound, the
-gateway runs a bounded Massive REST tail repair before opening the websocket.
+gateway runs a bounded Massive REST coverage repair before opening the
+websocket.
 If committed ordinals already have structural problems, the gateway records
 `needs_manual_rebuild` in the coverage manifest and does not silently rewrite
 existing rows.
