@@ -84,13 +84,17 @@ Required data-path queues use awaited sends. A full queue applies backpressure i
 | `QMD_GAP_FILL_MAX_LOOKBACK_DAYS` | `3` | Recent structural audit lookback in calendar days. | The REST repair window is controlled by `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS`. |
 | `QMD_GAP_FILL_MIN_GAP_SECONDS` | `60` | Ignore gaps shorter than this. | Prevents excessive REST calls for tiny gaps. |
 | `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL` | `5` | Legacy REST page cap for focused/manual repair paths. | Recent live coverage repair uses `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`. |
-| `QMD_GAP_FILL_SYMBOLS` | empty | Optional comma-separated symbol list. | If empty, symbols are discovered from recent live compact event rows. |
+| `QMD_GAP_FILL_SYMBOLS` | empty | Optional comma-separated priority symbols. | These are always checked; the repair also discovers symbols already present in recent live compact event rows. |
 | `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL` | `1000` | Max Massive REST pages per ticker/kind/repair interval for current-day plus 3-day q_live coverage repair. | Keep high enough that liquid tickers do not stop at `partial_page_limit`. |
-| `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` | `3` | Number of prior weekdays, plus the current market day, that q_live REST repair must keep covered. | Default checks current day plus 3 prior market days. |
+| `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` | `3` | Number of prior US market sessions, plus the current market day, that q_live REST repair must keep covered. | Skips weekends and common US equity market holidays. |
+| `QMD_RECENT_LIVE_REPAIR_CONCURRENCY` | `8` | Max concurrent ticker repair workers for recent q_live REST repair. | Keeps full-market session-head repair from crawling symbol by symbol. |
 | `QMD_STARTUP_MAINTENANCE_ENABLED` | `true` | Audit and repair recent `q_live` event coverage before live websocket ingest starts. | Disable only for isolated tests. |
 | `QMD_COVERAGE_TABLE` | `qmd_market_coverage_manifest_v1` | Coarse run-level coverage manifest table in `q_live`. | Records startup audits, recent live repairs, and historical flatfile update plans; not used as the source of truth for live holes. |
 | `QMD_HOST_ROLE` | `auto` | Host role for historical update planning. | Override with `workstation` or `laptop` if auto-detection is wrong. |
 | `QMD_HISTORICAL_CLICKHOUSE_DATABASE` | `market_sip_compact` | Read-only historical event database name. | QMD never writes live rows into this database. |
+| `QMD_HISTORICAL_CLICKHOUSE_URL` | falls back to q_live ClickHouse URL | Historical ClickHouse endpoint. | Use when historical data is on a different endpoint. |
+| `QMD_HISTORICAL_CLICKHOUSE_USER` | `CLICKHOUSE_WORKSTATION_USER`, then q_live user fallbacks | Historical ClickHouse read user. | Should have read access to `market_sip_compact.events_ordinal_continuity`. |
+| `QMD_HISTORICAL_CLICKHOUSE_PASSWORD` | `CLICKHOUSE_WORKSTATION_PASSWORD`, then q_live password fallbacks | Historical ClickHouse read password. | Secret presence only is exposed in `/config`. |
 | `QMD_HISTORICAL_FLATFILE_UPDATE_ENABLED` | `true` | Plan after-hours flatfile event updates for historical gaps. | Keeps historical update work away from websocket peak time. |
 | `QMD_HISTORICAL_FLATFILE_AUTORUN` | `false` | Launch the flatfile update command automatically on workstation hosts. | Keep false if you want the command printed but not started. |
 | `QMD_HISTORICAL_FLATFILE_SAFE_LAG_DAYS` | `1` | Latest historical day considered safe for flatfile update planning. | Massive flatfiles arrive after the trading day; keep at least one day lag. |

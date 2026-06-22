@@ -4,8 +4,9 @@ use crate::massive::{fanout_market_event, MarketEventFanout};
 use crate::metrics::TimingTarget;
 use crate::session::{is_streaming_phase, session_phase};
 use crate::timefmt::clickhouse_datetime64;
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, TimeZone, Utc, Weekday};
 use chrono_tz::America::New_York;
+use futures_util::stream::{self, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -31,7 +32,6 @@ pub async fn run_gap_fill_service(config: GatewayConfig, fanout: MarketEventFano
     }
     let filler = GapFillService::new(config, fanout);
     let mut timer = interval(Duration::from_millis(filler.config.gap_fill_interval_ms));
-    timer.tick().await;
     loop {
         timer.tick().await;
         let mode = if is_streaming_phase(Utc::now()) {
@@ -91,6 +91,15 @@ struct RepairInterval {
 }
 
 #[derive(Default)]
+struct SymbolRepairOutcome {
+    errors: u64,
+    intervals_filled: u64,
+    page_limit_hit: bool,
+    rows: u64,
+    symbol_repaired: bool,
+}
+
+#[derive(Default)]
 struct IntervalFillOutcome {
     page_limit_hit: bool,
     rows: u64,
@@ -123,6 +132,7 @@ impl GapFillService {
         let started_at = Utc::now();
         let phase = format!("{:?}", session_phase(started_at));
         let host_role = self.host_role();
+        let (window_start, window_end, _) = self.recent_live_window();
         let audit = self.audit_recent_live_events().await?;
         eprintln!(
             "QMD startup q_live audit: rows={} tickers={} duplicate_ordinals={} ordinal_hole_tickers={} out_of_order_tickers={}",
@@ -132,10 +142,7 @@ impl GapFillService {
             audit.hole_ticker_count,
             audit.out_of_order_ticker_count
         );
-        let mut status = if audit.duplicate_ticker_ordinal_rows == 0
-            && audit.hole_ticker_count == 0
-            && audit.out_of_order_ticker_count == 0
-        {
+        let mut status = if audit.duplicate_ticker_ordinal_rows == 0 {
             "ok"
         } else {
             "needs_manual_rebuild"
@@ -162,14 +169,14 @@ impl GapFillService {
                 status = repair.status.as_str();
             }
         } else {
-            message = "Recent q_live event table has structural ordinal/order issues. Not rewriting committed ordinals automatically.".to_string();
+            message = "Recent q_live event table has duplicate ticker ordinals. Not rewriting committed ordinals automatically.".to_string();
         }
         self.record_coverage_run(
             started_at,
             "q_live_recent_events",
             status,
-            Utc::now() - ChronoDuration::days(self.config.gap_fill_max_lookback_days.max(1)),
-            Utc::now(),
+            window_start,
+            window_end,
             "startup_maintenance",
             rows_written,
             &host_role,
@@ -355,7 +362,11 @@ impl GapFillService {
         mode: &str,
     ) -> Result<RecentLiveRepair, String> {
         let phase = format!("{:?}", session_phase(started_at));
-        let (window_start, _window_end, market_dates) = self.recent_live_window();
+        let (window_start, _window_end, mut market_dates) = self.recent_live_window();
+        if mode == "startup_recent_repair" {
+            let today = started_at.with_timezone(&New_York).date_naive();
+            market_dates.retain(|date| *date == today);
+        }
         let stats = self.recent_live_day_stats(window_start).await?;
         let symbols = self.recent_live_symbols(&stats);
         let mut repair = RecentLiveRepair {
@@ -377,70 +388,54 @@ impl GapFillService {
             .await?;
             return Ok(repair);
         }
-        for symbol in symbols {
-            let intervals = self.repair_intervals_for_symbol(&symbol, &market_dates, &stats);
-            repair.intervals_checked += intervals.len() as u64;
-            if intervals.is_empty() {
-                continue;
-            }
-            let mut symbol_rows = 0u64;
-            let mut symbol_errors = 0u64;
-            let mut symbol_partial = false;
-            for interval in intervals {
-                eprintln!(
-                    "QMD recent q_live repair: symbol={} reason={} start={} end={}",
-                    symbol,
-                    interval.reason,
-                    interval.start.to_rfc3339(),
-                    interval.end.to_rfc3339()
-                );
-                match self
-                    .fill_symbol_interval(&symbol, interval.start, interval.end)
-                    .await
-                {
-                    Ok(outcome) => {
-                        symbol_rows += outcome.rows;
-                        repair.rows_written += outcome.rows;
-                        repair.intervals_repaired += 1;
-                        self.fanout.metrics.inc_gap_fill_rows(outcome.rows);
-                        if outcome.page_limit_hit {
-                            symbol_partial = true;
-                        }
+        let repair_jobs = symbols
+            .into_iter()
+            .filter_map(|symbol| {
+                let intervals = self.repair_intervals_for_symbol(&symbol, &market_dates, &stats);
+                repair.intervals_checked += intervals.len() as u64;
+                if intervals.is_empty() {
+                    None
+                } else {
+                    Some((symbol, intervals))
+                }
+            })
+            .collect::<Vec<_>>();
+        let concurrency = self.config.recent_live_repair_concurrency.max(1);
+        let mut outcomes = stream::iter(repair_jobs)
+            .map(|(symbol, intervals)| {
+                let phase = phase.clone();
+                async move {
+                    let outcome = self
+                        .repair_symbol_intervals(
+                            started_at,
+                            mode,
+                            &phase,
+                            symbol.clone(),
+                            intervals,
+                        )
+                        .await;
+                    (symbol, outcome)
+                }
+            })
+            .buffer_unordered(concurrency);
+        while let Some((symbol, outcome)) = outcomes.next().await {
+            match outcome {
+                Ok(outcome) => {
+                    repair.rows_written += outcome.rows;
+                    repair.intervals_repaired += outcome.intervals_filled;
+                    repair.errors += outcome.errors;
+                    if outcome.symbol_repaired {
+                        repair.symbols_repaired += 1;
                     }
-                    Err(error) => {
-                        symbol_errors += 1;
-                        repair.errors += 1;
-                        eprintln!("QMD recent q_live repair failed for {symbol}: {error}");
+                    if outcome.page_limit_hit {
+                        repair.page_limited_symbols += 1;
                     }
                 }
+                Err(error) => {
+                    repair.errors += 1;
+                    eprintln!("QMD recent q_live repair failed for {symbol}: {error}");
+                }
             }
-            if symbol_rows > 0 {
-                repair.symbols_repaired += 1;
-            }
-            if symbol_partial {
-                repair.page_limited_symbols += 1;
-            }
-            let status = if symbol_errors > 0 {
-                "failed"
-            } else if symbol_partial {
-                "partial_page_limit"
-            } else {
-                "completed"
-            };
-            self.record_run(
-                started_at,
-                mode,
-                &phase,
-                &symbol,
-                status,
-                symbol_rows,
-                if symbol_partial {
-                    "Massive REST page limit was reached for at least one interval"
-                } else {
-                    ""
-                },
-            )
-            .await?;
         }
         repair.status = if repair.errors > 0 {
             "partial_failed".to_string()
@@ -452,6 +447,74 @@ impl GapFillService {
             "up_to_date".to_string()
         };
         Ok(repair)
+    }
+
+    async fn repair_symbol_intervals(
+        &self,
+        started_at: DateTime<Utc>,
+        mode: &str,
+        phase: &str,
+        symbol: String,
+        intervals: Vec<RepairInterval>,
+    ) -> Result<SymbolRepairOutcome, String> {
+        let mut symbol_rows = 0u64;
+        let mut symbol_errors = 0u64;
+        let mut symbol_partial = false;
+        let mut intervals_filled = 0u64;
+        for interval in intervals {
+            eprintln!(
+                "QMD recent q_live repair: symbol={} reason={} start={} end={}",
+                symbol,
+                interval.reason,
+                interval.start.to_rfc3339(),
+                interval.end.to_rfc3339()
+            );
+            match self
+                .fill_symbol_interval(&symbol, interval.start, interval.end)
+                .await
+            {
+                Ok(outcome) => {
+                    symbol_rows += outcome.rows;
+                    intervals_filled += 1;
+                    self.fanout.metrics.inc_gap_fill_rows(outcome.rows);
+                    if outcome.page_limit_hit {
+                        symbol_partial = true;
+                    }
+                }
+                Err(error) => {
+                    symbol_errors += 1;
+                    eprintln!("QMD recent q_live repair failed for {symbol}: {error}");
+                }
+            }
+        }
+        let status = if symbol_errors > 0 {
+            "failed"
+        } else if symbol_partial {
+            "partial_page_limit"
+        } else {
+            "completed"
+        };
+        self.record_run(
+            started_at,
+            mode,
+            phase,
+            &symbol,
+            status,
+            symbol_rows,
+            if symbol_partial {
+                "Massive REST page limit was reached for at least one interval"
+            } else {
+                ""
+            },
+        )
+        .await?;
+        Ok(SymbolRepairOutcome {
+            errors: symbol_errors,
+            intervals_filled,
+            page_limit_hit: symbol_partial,
+            rows: symbol_rows,
+            symbol_repaired: intervals_filled > 0,
+        })
     }
 
     async fn recent_live_day_stats(
@@ -597,7 +660,7 @@ impl GapFillService {
         let mut cursor = today;
         let mut dates = Vec::new();
         while dates.len() < target_count {
-            if cursor.weekday().number_from_monday() <= 5 {
+            if is_market_session_date(cursor) {
                 dates.push(cursor);
             }
             cursor -= ChronoDuration::days(1);
@@ -615,7 +678,9 @@ impl GapFillService {
         if !self.config.compact_events_enabled {
             return Ok(LiveEventAudit::default());
         }
-        let lookback_days = self.config.gap_fill_max_lookback_days.max(1);
+        let (window_start, _, _) = self.recent_live_window();
+        let start_date = window_start.date_naive();
+        let start_us = window_start.timestamp_micros();
         let table = &self.config.compact_event_table;
         let sql = format!(
             r#"
@@ -629,7 +694,8 @@ impl GapFillService {
                     event_type,
                     arrival_sequence
                 FROM {table}
-                WHERE event_date >= toDate(now('UTC')) - {lookback_days}
+                WHERE event_date >= toDate('{start_date}')
+                  AND sip_timestamp_us >= {start_us}
                   AND ticker != ''
             ),
             ticker_ranges AS
@@ -678,7 +744,8 @@ impl GapFillService {
             FORMAT JSONEachRow
             "#,
             table = table,
-            lookback_days = lookback_days,
+            start_date = start_date,
+            start_us = start_us,
         );
         let text = self.query(&sql, true).await?;
         let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
@@ -928,7 +995,7 @@ impl GapFillService {
             "SELECT max(source_date) FROM {}.events_ordinal_continuity FORMAT TSV",
             self.config.historical_clickhouse_database.replace('`', "")
         );
-        let value = self.query(&sql, false).await?.trim().to_string();
+        let value = self.query_historical(&sql).await?.trim().to_string();
         if value.is_empty() || value == "0000-00-00" {
             Ok(self.config.historical_known_coverage_end_date.clone())
         } else {
@@ -949,7 +1016,7 @@ impl GapFillService {
     fn historical_safe_target_date(&self) -> Option<NaiveDate> {
         let today = Utc::now().date_naive();
         let lag = self.config.historical_flatfile_safe_lag_days.max(1);
-        Some(previous_weekday(today - ChronoDuration::days(lag)))
+        Some(previous_market_session(today - ChronoDuration::days(lag)))
     }
 
     fn host_role(&self) -> String {
@@ -1003,14 +1070,34 @@ impl GapFillService {
         }
         Ok(text)
     }
+
+    async fn query_historical(&self, body: &str) -> Result<String, String> {
+        let mut request = self
+            .client
+            .post(format!("{}/", self.config.historical_clickhouse_url))
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .header("X-ClickHouse-User", &self.config.historical_clickhouse_user)
+            .body(body.to_string());
+        let password = self.config.historical_clickhouse_password();
+        if !password.is_empty() {
+            request = request.header("X-ClickHouse-Key", password);
+        }
+        let response = request.send().await.map_err(|error| error.to_string())?;
+        let status = response.status();
+        let text = response.text().await.map_err(|error| error.to_string())?;
+        if !status.is_success() {
+            return Err(format!("ClickHouse HTTP {status}: {text}"));
+        }
+        Ok(text)
+    }
 }
 
 fn should_run_session_catch_up(mode: &str) -> bool {
     matches!(mode, "auto" | "session" | "session_catch_up")
 }
 
-fn previous_weekday(mut date: NaiveDate) -> NaiveDate {
-    while date.weekday().number_from_monday() > 5 {
+fn previous_market_session(mut date: NaiveDate) -> NaiveDate {
+    while !is_market_session_date(date) {
         date -= ChronoDuration::days(1);
     }
     date
@@ -1032,6 +1119,9 @@ fn market_session_window_utc(
     market_date: NaiveDate,
     now: DateTime<Utc>,
 ) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    if !is_market_session_date(market_date) {
+        return None;
+    }
     let start = New_York
         .with_ymd_and_hms(
             market_date.year(),
@@ -1067,6 +1157,77 @@ fn market_session_window_utc(
     } else {
         Some((start, end))
     }
+}
+
+fn is_market_session_date(date: NaiveDate) -> bool {
+    date.weekday().number_from_monday() <= 5 && !is_us_market_holiday(date)
+}
+
+fn is_us_market_holiday(date: NaiveDate) -> bool {
+    let year = date.year();
+    fixed_holiday_observed(date, year, 1, 1)
+        || fixed_holiday_observed(date, year + 1, 1, 1)
+        || nth_weekday(year, 1, Weekday::Mon, 3) == Some(date)
+        || nth_weekday(year, 2, Weekday::Mon, 3) == Some(date)
+        || Some(date) == easter_sunday(year).map(|day| day - ChronoDuration::days(2))
+        || last_weekday(year, 5, Weekday::Mon) == Some(date)
+        || (year >= 2022 && fixed_holiday_observed(date, year, 6, 19))
+        || fixed_holiday_observed(date, year, 7, 4)
+        || nth_weekday(year, 9, Weekday::Mon, 1) == Some(date)
+        || nth_weekday(year, 11, Weekday::Thu, 4) == Some(date)
+        || fixed_holiday_observed(date, year, 12, 25)
+}
+
+fn fixed_holiday_observed(date: NaiveDate, year: i32, month: u32, day: u32) -> bool {
+    let Some(actual) = NaiveDate::from_ymd_opt(year, month, day) else {
+        return false;
+    };
+    let observed = match actual.weekday() {
+        Weekday::Sat => actual - ChronoDuration::days(1),
+        Weekday::Sun => actual + ChronoDuration::days(1),
+        _ => actual,
+    };
+    date == observed
+}
+
+fn nth_weekday(year: i32, month: u32, weekday: Weekday, nth: u32) -> Option<NaiveDate> {
+    let mut date = NaiveDate::from_ymd_opt(year, month, 1)?;
+    while date.weekday() != weekday {
+        date += ChronoDuration::days(1);
+    }
+    Some(date + ChronoDuration::days((nth.saturating_sub(1) * 7) as i64))
+        .filter(|value| value.month() == month)
+}
+
+fn last_weekday(year: i32, month: u32, weekday: Weekday) -> Option<NaiveDate> {
+    let next_month = if month == 12 {
+        NaiveDate::from_ymd_opt(year + 1, 1, 1)?
+    } else {
+        NaiveDate::from_ymd_opt(year, month + 1, 1)?
+    };
+    let mut date = next_month - ChronoDuration::days(1);
+    while date.weekday() != weekday {
+        date -= ChronoDuration::days(1);
+    }
+    Some(date)
+}
+
+fn easter_sunday(year: i32) -> Option<NaiveDate> {
+    let a = year % 19;
+    let b = year / 100;
+    let c = year % 100;
+    let d = b / 4;
+    let e = b % 4;
+    let f = (b + 8) / 25;
+    let g = (b - f + 1) / 3;
+    let h = (19 * a + b - d - g + 15) % 30;
+    let i = c / 4;
+    let k = c % 4;
+    let l = (32 + 2 * e + 2 * i - h - k) % 7;
+    let m = (a + 11 * h + 22 * l) / 451;
+    let month = (h + l - 7 * m + 114) / 31;
+    let day = ((h + l - 7 * m + 114) % 31) + 1;
+    NaiveDate::from_ymd_opt(year, month as u32, day as u32)
 }
 
 fn spawn_command(command: &str) -> Result<(), String> {

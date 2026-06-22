@@ -37,7 +37,11 @@ pub struct GatewayConfig {
     pub gap_fill_symbols: Vec<String>,
     pub recent_live_max_pages_per_interval: usize,
     pub recent_live_prior_market_days: i64,
+    pub recent_live_repair_concurrency: usize,
     pub historical_clickhouse_database: String,
+    pub historical_clickhouse_password_present: bool,
+    pub historical_clickhouse_url: String,
+    pub historical_clickhouse_user: String,
     pub historical_flatfile_autorun: bool,
     pub historical_flatfile_safe_lag_days: i64,
     pub historical_flatfile_update_enabled: bool,
@@ -81,6 +85,16 @@ impl GatewayConfig {
                 "QMD_CLICKHOUSE_PASSWORD",
                 "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
                 "CLICKHOUSE_WORKSTATION_PASSWORD",
+                "CLICKHOUSE_PASSWORD",
+            ],
+            "",
+        );
+        let historical_clickhouse_password = env_string_any(
+            &[
+                "QMD_HISTORICAL_CLICKHOUSE_PASSWORD",
+                "CLICKHOUSE_WORKSTATION_PASSWORD",
+                "QMD_CLICKHOUSE_PASSWORD",
+                "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
                 "CLICKHOUSE_PASSWORD",
             ],
             "",
@@ -165,9 +179,34 @@ impl GatewayConfig {
                 1_000,
             ),
             recent_live_prior_market_days: env_i64("QMD_RECENT_LIVE_PRIOR_MARKET_DAYS", 3),
+            recent_live_repair_concurrency: env_usize("QMD_RECENT_LIVE_REPAIR_CONCURRENCY", 8),
             historical_clickhouse_database: env_string(
                 "QMD_HISTORICAL_CLICKHOUSE_DATABASE",
                 "market_sip_compact",
+            ),
+            historical_clickhouse_password_present: !historical_clickhouse_password.is_empty(),
+            historical_clickhouse_url: env_string_any(
+                &[
+                    "QMD_HISTORICAL_CLICKHOUSE_URL",
+                    "HISTORICAL_CLICKHOUSE_URL",
+                    "QMD_CLICKHOUSE_URL",
+                    "REAL_LIVE_CLICKHOUSE_WRITE_URL",
+                    "CLICKHOUSE_URL",
+                    "CLICKHOUSE_ENDPOINT",
+                ],
+                "http://localhost:8123",
+            )
+            .trim_end_matches('/')
+            .to_string(),
+            historical_clickhouse_user: env_string_any(
+                &[
+                    "QMD_HISTORICAL_CLICKHOUSE_USER",
+                    "CLICKHOUSE_WORKSTATION_USER",
+                    "QMD_CLICKHOUSE_USER",
+                    "REAL_LIVE_CLICKHOUSE_WRITE_USER",
+                    "CLICKHOUSE_USER",
+                ],
+                "default",
             ),
             historical_flatfile_autorun: env_bool("QMD_HISTORICAL_FLATFILE_AUTORUN", false),
             historical_flatfile_safe_lag_days: env_i64("QMD_HISTORICAL_FLATFILE_SAFE_LAG_DAYS", 1),
@@ -252,6 +291,19 @@ impl GatewayConfig {
                 "QMD_CLICKHOUSE_PASSWORD",
                 "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
                 "CLICKHOUSE_WORKSTATION_PASSWORD",
+                "CLICKHOUSE_PASSWORD",
+            ],
+            "",
+        )
+    }
+
+    pub fn historical_clickhouse_password(&self) -> String {
+        env_string_any(
+            &[
+                "QMD_HISTORICAL_CLICKHOUSE_PASSWORD",
+                "CLICKHOUSE_WORKSTATION_PASSWORD",
+                "QMD_CLICKHOUSE_PASSWORD",
+                "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
                 "CLICKHOUSE_PASSWORD",
             ],
             "",

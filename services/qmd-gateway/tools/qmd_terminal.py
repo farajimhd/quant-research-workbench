@@ -328,7 +328,7 @@ def render_maintenance(state: PollState) -> Any:
     rows = coverage_rows(state)
     table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
     table.add_column("Kind", style="bold cyan", ratio=2)
-    table.add_column("Status", width=14)
+    table.add_column("Status", width=20, no_wrap=True)
     table.add_column("Window", ratio=3)
     table.add_column("Action", ratio=2)
     table.add_column("Details", ratio=4, overflow="fold")

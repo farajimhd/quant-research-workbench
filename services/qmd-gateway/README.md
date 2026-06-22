@@ -333,13 +333,14 @@ Massive REST historical trades and quotes:
 - `/v3/trades/{stockTicker}`
 - `/v3/quotes/{stockTicker}`
 
-If `QMD_GAP_FILL_SYMBOLS` is set, only those symbols are checked. Otherwise the
-worker discovers symbols already present in the live compact event table, then
-summarizes q_live coverage by `(ticker, event_date)`. REST repair covers the
-current market day plus `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior weekdays,
-default `3`, because the REST path is for recent crash/restart recovery. It
-fills missing full days and missing head/tail intervals and marks the repair
-partial if Massive pagination hits `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`.
+`QMD_GAP_FILL_SYMBOLS` is a priority seed list. Those symbols are always
+checked, and the worker also discovers symbols already present in the live
+compact event table, then summarizes q_live coverage by `(ticker, event_date)`.
+REST repair covers the current market day plus
+`QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior US market sessions, default `3`,
+because the REST path is for recent crash/restart recovery. It fills missing
+full days and missing head/tail intervals and marks the repair partial if
+Massive pagination hits `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`.
 Deeper historical event history should be read from the read-only
 `market_sip_compact.events` table, which is maintained by the flatfile pipelines
 up to the prior day.
@@ -350,16 +351,20 @@ actual event table, not the coverage manifest, so failed live inserts can be
 detected. The audit reports duplicate ticker ordinals, ordinal holes, and
 out-of-order ticker-local rows. If recent rows are structurally sound, the
 gateway runs a bounded Massive REST coverage repair before opening the
-websocket.
-If committed ordinals already have structural problems, the gateway records
+websocket. At startup this repair is limited to the current market session so
+the gateway can come online quickly; the recurring background repair continues
+with the full current-plus-prior-session window.
+If committed rows have duplicate `(ticker, ordinal)` keys, the gateway records
 `needs_manual_rebuild` in the coverage manifest and does not silently rewrite
-existing rows.
+existing rows. Ordinal holes and timestamp-order warnings are reported in the
+manifest summary but do not block temporal REST repair.
 
 The coverage manifest is coarse and run-scoped. It records startup live repair
 checks and historical flatfile update plans; it is not the source of truth for
 recent live gap detection. Historical `market_sip_compact.events` updates remain
 flatfile-only. After hours, the gateway can plan the `download_update_events.py`
-command for missing historical flatfile days. On a workstation host with
+command for missing historical flatfile days, using a US equity market-session
+calendar so weekends and market holidays are skipped. On a workstation host with
 `QMD_HISTORICAL_FLATFILE_AUTORUN=true`, it launches that command
 asynchronously; otherwise it prints the command for manual workstation
 execution.
