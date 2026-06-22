@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import math
 import sys
@@ -54,7 +55,7 @@ JOB_TYPE = "cache_price_probe_finetune"
 DEFAULT_FINETUNE_OUTPUT_ROOT = DEFAULT_OUTPUT_ROOT.parent / "cache_price_probe_finetune"
 DEFAULT_FINETUNE_PROJECT = DEFAULT_WANDB_PROJECT + "-finetune"
 DEFAULT_FINETUNE_CHECKPOINT_ROOT = DEFAULT_OUTPUT_ROOT.parent / "cache_price_probe_laptop"
-FINETUNE_MODES = ("bottleneck", "encoder")
+FINETUNE_MODES = ("bottleneck", "full", "encoder", "scratch_full")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -90,14 +91,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=(
             "Fine-tune trained temporal v1 cache-probe checkpoints. Modes: "
             "'bottleneck' unfreezes only v20 fixed_grid_to_chunk_embedding plus "
-            "the probe MLP head; 'encoder' unfreezes all event-encoder parameters "
-            "plus the probe MLP head."
+            "the probe MLP head; 'full' unfreezes all loaded event-encoder "
+            "parameters plus the probe MLP head; 'scratch_full' trains the same "
+            "model from random event-encoder/probe weights to measure the value "
+            "of pretraining. 'encoder' is kept as a backward-compatible alias "
+            "for 'full'."
         )
     )
     parser.add_argument("--print-only", action="store_true")
     parser.add_argument("--checkpoint", action="append", default=[], help="Trained temporal checkpoint; repeat for each run.")
     parser.add_argument("--checkpoint-root", type=Path, default=DEFAULT_FINETUNE_CHECKPOINT_ROOT)
-    parser.add_argument("--max-checkpoints", type=int, default=3)
+    parser.add_argument("--max-checkpoints", type=int, default=1)
     parser.add_argument("--cache-root", type=Path, default=DEFAULT_CACHE_ROOT)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_FINETUNE_OUTPUT_ROOT)
     parser.add_argument("--mode", choices=FINETUNE_MODES, default="bottleneck")
@@ -133,7 +137,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def finetune_one_checkpoint(*, checkpoint_path: Path, args: argparse.Namespace, device: torch.device) -> None:
     payload = load_checkpoint(checkpoint_path)
     config = build_finetune_config(payload, checkpoint_path, args)
-    run_name = default_finetune_run_name(checkpoint_path, args.mode, config, prefix=args.run_prefix)
+    mode = normalize_finetune_mode(args.mode)
+    run_name = default_finetune_run_name(checkpoint_path, mode, config, prefix=args.run_prefix)
     run_root = Path(config.output_root) / run_name
     paths = RunPaths.create(run_root)
     torch.manual_seed(config.seed)
@@ -145,8 +150,8 @@ def finetune_one_checkpoint(*, checkpoint_path: Path, args: argparse.Namespace, 
         start=config.validation_start_shard,
         max_shards=config.validation_max_shards,
     )
-    model = build_loaded_probe_model(payload, config, checkpoint_path, device)
-    trainable_names = configure_trainable_parameters(model, mode=args.mode)
+    model = build_finetune_model(payload, config, checkpoint_path, device, mode=mode)
+    trainable_names = configure_trainable_parameters(model, mode=mode)
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     if not trainable_parameters:
         raise RuntimeError("No trainable parameters selected for fine-tuning.")
@@ -174,8 +179,11 @@ def finetune_one_checkpoint(*, checkpoint_path: Path, args: argparse.Namespace, 
         run_name=run_name,
         config={
             **to_manifest_config(config),
-            "finetune_mode": args.mode,
+            "finetune_mode": mode,
+            "requested_finetune_mode": args.mode,
             "source_probe_checkpoint": str(checkpoint_path),
+            "loads_temporal_probe_weights": mode != "scratch_full",
+            "loads_pretrained_event_encoder": mode != "scratch_full",
             "trainable_parameter_count": sum(p.numel() for p in trainable_parameters),
             "trainable_names_preview": trainable_names[:100],
             "lr_decay": float(args.lr_decay),
@@ -196,8 +204,11 @@ def finetune_one_checkpoint(*, checkpoint_path: Path, args: argparse.Namespace, 
         args=vars(args),
         config={
             **to_manifest_config(config),
-            "finetune_mode": args.mode,
+            "finetune_mode": mode,
+            "requested_finetune_mode": args.mode,
             "source_probe_checkpoint": str(checkpoint_path),
+            "loads_temporal_probe_weights": mode != "scratch_full",
+            "loads_pretrained_event_encoder": mode != "scratch_full",
             "trainable_parameter_count": sum(p.numel() for p in trainable_parameters),
         },
         data_roots={"cache_root": str(config.cache_root)},
@@ -250,7 +261,7 @@ def finetune_one_checkpoint(*, checkpoint_path: Path, args: argparse.Namespace, 
                         eta_min=eta_min,
                         steps_per_epoch=max(1, planned_steps_per_epoch),
                         trainable_parameters=trainable_parameters,
-                        mode=args.mode,
+                        mode=mode,
                     )
                     best_validation_loss = shard_metrics.pop("_best_validation_loss", best_validation_loss)
                     if config.validation_frequency_shards > 0 and shard_position % config.validation_frequency_shards == 0:
@@ -320,13 +331,18 @@ def build_finetune_config(payload: dict[str, Any], checkpoint_path: Path, args: 
     return ProbeConfig(**saved)
 
 
-def build_loaded_probe_model(
+def build_finetune_model(
     payload: dict[str, Any],
     config: ProbeConfig,
     checkpoint_path: Path,
     device: torch.device,
+    *,
+    mode: str,
 ) -> SingleChunkFutureLabelPredictor:
-    encoder = build_frozen_encoder(config, device)
+    if mode == "scratch_full":
+        encoder = build_random_encoder(config, device)
+    else:
+        encoder = build_frozen_encoder(config, device)
     model = SingleChunkFutureLabelPredictor(
         event_encoder=encoder,
         embedding_dim=config.encoder_embedding_dim,
@@ -335,6 +351,8 @@ def build_loaded_probe_model(
         classes=len(CLASS_NAMES),
         dropout=config.dropout,
     ).to(device)
+    if mode == "scratch_full":
+        return model
     state = payload.get("model")
     if not isinstance(state, dict):
         raise RuntimeError(f"Checkpoint does not contain model state: {checkpoint_path}")
@@ -346,6 +364,30 @@ def build_loaded_probe_model(
     return model
 
 
+def build_random_encoder(config: ProbeConfig, device: torch.device) -> torch.nn.Module:
+    """Build the same standalone event encoder without loading pretraining weights."""
+
+    version = config.encoder_version.lower().strip()
+    model_module = importlib.import_module(f"research.masked_event_model.{version}.model")
+    config_module = importlib.import_module(f"research.masked_event_model.{version}.config")
+    model_config = config_module.ModelConfig(
+        d_byte=config.encoder_d_byte,
+        d_model=config.encoder_d_model,
+        embedding_dim=config.encoder_embedding_dim,
+        n_heads=config.encoder_heads,
+        encoder_layers=config.encoder_layers,
+        decoder_layers=config.encoder_decoder_layers,
+        ffn_mult=config.encoder_ffn_mult,
+        dropout=config.encoder_dropout,
+    )
+    autoencoder = model_module.EventTokenMaskedAutoencoder(events_per_chunk=128, config=model_config)
+    return autoencoder.build_encoder_model().to(device)
+
+
+def normalize_finetune_mode(mode: str) -> str:
+    return "full" if mode == "encoder" else mode
+
+
 def configure_trainable_parameters(model: SingleChunkFutureLabelPredictor, *, mode: str) -> list[str]:
     for parameter in model.parameters():
         parameter.requires_grad_(False)
@@ -355,7 +397,7 @@ def configure_trainable_parameters(model: SingleChunkFutureLabelPredictor, *, mo
         target = model.event_encoder.chunk_embedding_bottleneck.fixed_grid_to_chunk_embedding
         for parameter in target.parameters():
             parameter.requires_grad_(True)
-    elif mode == "encoder":
+    elif mode in {"full", "scratch_full"}:
         for parameter in model.event_encoder.parameters():
             parameter.requires_grad_(True)
     else:
@@ -387,7 +429,7 @@ def set_train_modes(model: SingleChunkFutureLabelPredictor, *, mode: str) -> Non
         model.event_encoder.eval()
         model.event_encoder.chunk_embedding_bottleneck.fixed_grid_to_chunk_embedding.train()
         model.decoder.train()
-    elif mode == "encoder":
+    elif mode in {"full", "scratch_full"}:
         model.event_encoder.train()
         model.decoder.train()
     else:

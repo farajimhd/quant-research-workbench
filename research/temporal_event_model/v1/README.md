@@ -283,16 +283,19 @@ notebook and plot:
 
 After comparing frozen-encoder probes, use
 `finetune_cache_probe_checkpoints.py` to fine-tune the trained temporal probe
-checkpoints on the same cache-v2 objective. It loads the newest three
-`checkpoint_latest.pt` files by default, or explicit `--checkpoint` paths.
+checkpoints on the same cache-v2 objective. It loads only the newest
+`checkpoint_latest.pt` file by default, or explicit `--checkpoint` paths.
 
 Fine-tuning modes:
 
 - `bottleneck`: train the probe MLP head plus only the v20
   `chunk_embedding_bottleneck.fixed_grid_to_chunk_embedding` sequential module.
   The upstream event transformer remains frozen and deterministic.
-- `encoder`: train the probe MLP head plus all learnable parameters in the
-  event encoder.
+- `full`: load the trained temporal probe checkpoint, then train the probe MLP
+  head plus all learnable parameters in the loaded event encoder.
+- `scratch_full`: use the checkpoint only as a config source, initialize the
+  event encoder and probe MLP head randomly, and train the full model. This is
+  the direct no-pretraining comparison.
 
 The default schedule is five epochs with manual cosine annealing inside each
 epoch. The epoch starts at `4e-4`, restarts each epoch, and the next epoch's
@@ -308,8 +311,15 @@ python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1
 Run full encoder fine-tuning:
 
 ```powershell
-python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_finetune_cache_probe_laptop.py --mode encoder --print-only
-python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_finetune_cache_probe_laptop.py --mode encoder
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_finetune_cache_probe_laptop.py --mode full --print-only
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_finetune_cache_probe_laptop.py --mode full
+```
+
+Run the randomly initialized full-model comparison:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_finetune_cache_probe_laptop.py --mode scratch_full --print-only
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_finetune_cache_probe_laptop.py --mode scratch_full
 ```
 
 The full encoder mode carries much more activation memory than the bottleneck

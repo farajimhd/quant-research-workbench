@@ -11,7 +11,7 @@ DEFAULTS = {
     "checkpoint_root": r"D:\TradingML\runtimes\temporal_event_model\v1\cache_price_probe_laptop",
     "output_root": r"D:\TradingML\runtimes\temporal_event_model\v1\cache_price_probe_finetune_laptop",
     "wandb_project": "June2026-event-encoder-linear-probes-finetune",
-    "mode": "bottleneck",
+    "mode": "full",
     "batch_size": 256,
     "epochs": 5,
     "learning_rate": 4e-4,
@@ -23,9 +23,10 @@ DEFAULTS = {
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Laptop launcher for fine-tuning the three newest temporal v1 cache-probe checkpoints. "
+            "Laptop launcher for fine-tuning the newest temporal v1 cache-probe checkpoint. "
             "Use --mode bottleneck for only v20 fixed-grid bottleneck plus probe head, or "
-            "--mode encoder for all event-encoder learnable parameters plus probe head."
+            "--mode full for all loaded event-encoder learnable parameters plus probe head, or "
+            "--mode scratch_full for the same full training with random event-encoder/probe weights."
         )
     )
     parser.add_argument("--print-only", action="store_true")
@@ -34,7 +35,7 @@ def main() -> int:
     parser.add_argument("--cache-root", default=DEFAULTS["cache_root"])
     parser.add_argument("--output-root", default=DEFAULTS["output_root"])
     parser.add_argument("--wandb-project", default=DEFAULTS["wandb_project"])
-    parser.add_argument("--mode", choices=("bottleneck", "encoder"), default=DEFAULTS["mode"])
+    parser.add_argument("--mode", choices=("bottleneck", "full", "encoder", "scratch_full"), default=DEFAULTS["mode"])
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
     parser.add_argument("--learning-rate", type=float, default=DEFAULTS["learning_rate"])
