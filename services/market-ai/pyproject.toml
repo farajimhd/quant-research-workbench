@@ -1,0 +1,12 @@
+[project]
+name = "market-ai"
+version = "0.1.0"
+description = "Market event batching and ML serving primitives."
+requires-python = ">=3.11"
+dependencies = [
+  "numpy",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
