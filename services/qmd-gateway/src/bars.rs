@@ -3,7 +3,8 @@ use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::metrics::SharedMetrics;
 use crate::scanner::ScannerPrimitiveRouter;
 use crate::timefmt::{clickhouse_datetime64, clickhouse_datetime64_opt};
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Timelike, Utc};
+use chrono_tz::America::New_York;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::json;
@@ -12,7 +13,9 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Duration};
 
-pub const BAR_SCHEMA_VERSION: u16 = 1;
+pub const BAR_SCHEMA_VERSION: u16 = 2;
+const ESTIMATED_LULD_WINDOW_SECONDS: i64 = 300;
+const ESTIMATED_LULD_NEAR_BAND_PCT: f64 = 1.0;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct BarSnapshot {
@@ -204,6 +207,22 @@ pub struct BarRow {
     pub direction_change_count: u64,
     /// Noise proxy, accumulated absolute trade return scaled by close and divided by high-low range.
     pub chop_score: f64,
+    /// True when the bar is inside the regular 9:30-16:00 ET session where LULD bands apply.
+    pub estimated_luld_active: bool,
+    /// Local proxy for the SIP LULD reference price. Uses the simple average of valid trade prices in the prior five minutes.
+    pub estimated_luld_reference_price: f64,
+    /// Estimated lower LULD band from the local reference price and Tier 2/default parameter rules.
+    pub estimated_luld_lower_price: f64,
+    /// Estimated upper LULD band from the local reference price and Tier 2/default parameter rules.
+    pub estimated_luld_upper_price: f64,
+    /// Effective percent parameter used for the local estimate. For sub-$0.75 names this reflects the absolute $0.15 cap when tighter than 75%.
+    pub estimated_luld_parameter_pct: f64,
+    /// Percent distance from current bar price to estimated upper band. Lower values mean closer to limit up.
+    pub estimated_luld_distance_to_upper_pct: f64,
+    /// Percent distance from current bar price to estimated lower band. Lower values mean closer to limit down.
+    pub estimated_luld_distance_to_lower_pct: f64,
+    /// Compact state for scanner/UI: `inactive`, `unknown`, `inside`, `near_upper`, `near_lower`, `above_upper`, or `below_lower`.
+    pub estimated_luld_state: String,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -236,8 +255,27 @@ pub struct BarShardStore {
 struct BarStore {
     frames: Vec<BarFrame>,
     history_limit: usize,
+    luld: HashMap<String, EstimatedLuldState>,
     open: HashMap<BarKey, MutableBar>,
     closed: HashMap<BarKey, VecDeque<BarRow>>,
+}
+
+#[derive(Clone, Debug)]
+struct EstimatedLuldSnapshot {
+    active: bool,
+    distance_to_lower_pct: f64,
+    distance_to_upper_pct: f64,
+    lower_price: f64,
+    parameter_pct: f64,
+    reference_price: f64,
+    state: String,
+    upper_price: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct EstimatedLuldState {
+    price_sum: f64,
+    prices: VecDeque<(DateTime<Utc>, f64)>,
 }
 
 struct MutableBar {
@@ -302,6 +340,7 @@ struct MutableBar {
     buy_dollar_volume: f64,
     sell_dollar_volume: f64,
     effective_spread_sum: f64,
+    estimated_luld: EstimatedLuldSnapshot,
 }
 
 impl SharedBarStore {
@@ -356,6 +395,7 @@ impl BarShardStore {
             inner: Arc::new(Mutex::new(BarStore {
                 frames,
                 history_limit,
+                luld: HashMap::new(),
                 open: HashMap::new(),
                 closed: HashMap::new(),
             })),
@@ -405,8 +445,14 @@ impl BarShardStore {
 impl BarStore {
     fn apply_event(&mut self, event: &MarketEvent) -> Vec<BarRow> {
         let mut finalized = Vec::new();
+        let sym = event.ticker().to_ascii_uppercase();
+        if let MarketEvent::Trade(trade) = event {
+            self.luld
+                .entry(sym.clone())
+                .or_default()
+                .observe_trade(trade.ts, trade.price);
+        }
         for frame in self.frames.clone() {
-            let sym = event.ticker().to_ascii_uppercase();
             let start = aligned_start(event.ts(), frame.seconds);
             let end = start + chrono::Duration::seconds(frame.seconds);
             let key = BarKey {
@@ -447,11 +493,20 @@ impl BarStore {
             }
 
             let bar = self.open.entry(key).or_insert_with(|| {
-                MutableBar::new(frame.label.clone(), sym, start, end, frame.seconds as f64)
+                MutableBar::new(
+                    frame.label.clone(),
+                    sym.clone(),
+                    start,
+                    end,
+                    frame.seconds as f64,
+                )
             });
             match event {
                 MarketEvent::Trade(trade) => bar.apply_trade(trade),
                 MarketEvent::Quote(quote) => bar.apply_quote(quote),
+            }
+            if let Some(luld) = self.luld.get_mut(&sym) {
+                bar.estimated_luld = luld.snapshot(event.ts(), bar.luld_price());
             }
         }
         finalized
@@ -647,6 +702,14 @@ impl BarStore {
             mean_abs_trade_return,
             direction_change_count: bar.direction_change_count,
             chop_score,
+            estimated_luld_active: bar.estimated_luld.active,
+            estimated_luld_reference_price: bar.estimated_luld.reference_price,
+            estimated_luld_lower_price: bar.estimated_luld.lower_price,
+            estimated_luld_upper_price: bar.estimated_luld.upper_price,
+            estimated_luld_parameter_pct: bar.estimated_luld.parameter_pct,
+            estimated_luld_distance_to_upper_pct: bar.estimated_luld.distance_to_upper_pct,
+            estimated_luld_distance_to_lower_pct: bar.estimated_luld.distance_to_lower_pct,
+            estimated_luld_state: bar.estimated_luld.state.clone(),
         }
     }
 
@@ -655,6 +718,91 @@ impl BarStore {
         history.push_back(row);
         while history.len() > self.history_limit {
             history.pop_front();
+        }
+    }
+}
+
+impl EstimatedLuldSnapshot {
+    fn unknown() -> Self {
+        Self {
+            active: false,
+            distance_to_lower_pct: 0.0,
+            distance_to_upper_pct: 0.0,
+            lower_price: 0.0,
+            parameter_pct: 0.0,
+            reference_price: 0.0,
+            state: "unknown".to_string(),
+            upper_price: 0.0,
+        }
+    }
+}
+
+impl EstimatedLuldState {
+    fn observe_trade(&mut self, ts: DateTime<Utc>, price: f64) {
+        if price <= 0.0 || !price.is_finite() {
+            return;
+        }
+        self.prune(ts);
+        self.prices.push_back((ts, price));
+        self.price_sum += price;
+    }
+
+    fn snapshot(&mut self, ts: DateTime<Utc>, current_price: f64) -> EstimatedLuldSnapshot {
+        self.prune(ts);
+        let active = is_luld_regular_session(ts);
+        if !active {
+            return EstimatedLuldSnapshot {
+                state: "inactive".to_string(),
+                ..EstimatedLuldSnapshot::unknown()
+            };
+        }
+        if self.prices.is_empty() || current_price <= 0.0 {
+            return EstimatedLuldSnapshot::unknown();
+        }
+        let reference_price = self.price_sum / self.prices.len() as f64;
+        if reference_price <= 0.0 || !reference_price.is_finite() {
+            return EstimatedLuldSnapshot::unknown();
+        }
+        let parameter_pct = estimated_luld_parameter_pct(reference_price, ts);
+        let band_width = reference_price * parameter_pct / 100.0;
+        let lower_price = (reference_price - band_width).max(0.0);
+        let upper_price = reference_price + band_width;
+        let distance_to_upper_pct = safe_div(upper_price - current_price, current_price) * 100.0;
+        let distance_to_lower_pct = safe_div(current_price - lower_price, current_price) * 100.0;
+        let state = if current_price >= upper_price {
+            "above_upper"
+        } else if lower_price > 0.0 && current_price <= lower_price {
+            "below_lower"
+        } else if distance_to_upper_pct <= ESTIMATED_LULD_NEAR_BAND_PCT {
+            "near_upper"
+        } else if distance_to_lower_pct <= ESTIMATED_LULD_NEAR_BAND_PCT {
+            "near_lower"
+        } else {
+            "inside"
+        };
+        EstimatedLuldSnapshot {
+            active,
+            distance_to_lower_pct,
+            distance_to_upper_pct,
+            lower_price,
+            parameter_pct,
+            reference_price,
+            state: state.to_string(),
+            upper_price,
+        }
+    }
+
+    fn prune(&mut self, now: DateTime<Utc>) {
+        let cutoff = now - chrono::Duration::seconds(ESTIMATED_LULD_WINDOW_SECONDS);
+        while let Some((ts, price)) = self.prices.front().copied() {
+            if ts >= cutoff {
+                break;
+            }
+            self.price_sum -= price;
+            self.prices.pop_front();
+        }
+        if self.prices.is_empty() {
+            self.price_sum = 0.0;
         }
     }
 }
@@ -729,6 +877,7 @@ impl MutableBar {
             buy_dollar_volume: 0.0,
             sell_dollar_volume: 0.0,
             effective_spread_sum: 0.0,
+            estimated_luld: EstimatedLuldSnapshot::unknown(),
         }
     }
 
@@ -895,6 +1044,14 @@ impl MutableBar {
             return 1;
         }
         -1
+    }
+
+    fn luld_price(&self) -> f64 {
+        if self.mid_close > 0.0 {
+            self.mid_close
+        } else {
+            self.close
+        }
     }
 }
 
@@ -1109,7 +1266,15 @@ impl BarClickHouseWriter {
                 mid_price_volatility Float64,
                 mean_abs_trade_return Float64,
                 direction_change_count UInt64,
-                chop_score Float64
+                chop_score Float64,
+                estimated_luld_active UInt8,
+                estimated_luld_reference_price Float64,
+                estimated_luld_lower_price Float64,
+                estimated_luld_upper_price Float64,
+                estimated_luld_parameter_pct Float64,
+                estimated_luld_distance_to_upper_pct Float64,
+                estimated_luld_distance_to_lower_pct Float64,
+                estimated_luld_state LowCardinality(String)
             )
             ENGINE = ReplacingMergeTree
             PARTITION BY session_date
@@ -1125,6 +1290,46 @@ impl BarClickHouseWriter {
         .await?;
         self.execute(
             "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS large_trade_notional Float64 AFTER large_trade_volume",
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_active UInt8 AFTER chop_score",
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_reference_price Float64 AFTER estimated_luld_active",
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_lower_price Float64 AFTER estimated_luld_reference_price",
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_upper_price Float64 AFTER estimated_luld_lower_price",
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_parameter_pct Float64 AFTER estimated_luld_upper_price",
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_distance_to_upper_pct Float64 AFTER estimated_luld_parameter_pct",
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_distance_to_lower_pct Float64 AFTER estimated_luld_distance_to_upper_pct",
+            true,
+        )
+        .await?;
+        self.execute(
+            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_state LowCardinality(String) AFTER estimated_luld_distance_to_lower_pct",
             true,
         )
         .await?;
@@ -1400,6 +1605,14 @@ fn bar_insert_row(row: &BarRow) -> serde_json::Value {
         "mean_abs_trade_return": row.mean_abs_trade_return,
         "direction_change_count": row.direction_change_count,
         "chop_score": row.chop_score,
+        "estimated_luld_active": row.estimated_luld_active as u8,
+        "estimated_luld_reference_price": row.estimated_luld_reference_price,
+        "estimated_luld_lower_price": row.estimated_luld_lower_price,
+        "estimated_luld_upper_price": row.estimated_luld_upper_price,
+        "estimated_luld_parameter_pct": row.estimated_luld_parameter_pct,
+        "estimated_luld_distance_to_upper_pct": row.estimated_luld_distance_to_upper_pct,
+        "estimated_luld_distance_to_lower_pct": row.estimated_luld_distance_to_lower_pct,
+        "estimated_luld_state": row.estimated_luld_state,
     })
 }
 
@@ -1498,6 +1711,32 @@ fn trailing_return(row: &BarRow, history: &VecDeque<BarRow>, bars_back: usize) -
         .unwrap_or_default()
 }
 
+fn estimated_luld_parameter_pct(reference_price: f64, ts: DateTime<Utc>) -> f64 {
+    let mut parameter_pct = if reference_price > 3.0 {
+        10.0
+    } else if reference_price >= 0.75 {
+        20.0
+    } else {
+        safe_div(0.15, reference_price).min(0.75) * 100.0
+    };
+    if reference_price <= 3.0 && is_luld_close_band_doubling_window(ts) {
+        parameter_pct *= 2.0;
+    }
+    parameter_pct
+}
+
+fn is_luld_regular_session(ts: DateTime<Utc>) -> bool {
+    let local = ts.with_timezone(&New_York);
+    let seconds = local.time().num_seconds_from_midnight();
+    seconds >= 9 * 3_600 + 30 * 60 && seconds < 16 * 3_600
+}
+
+fn is_luld_close_band_doubling_window(ts: DateTime<Utc>) -> bool {
+    let local = ts.with_timezone(&New_York);
+    let seconds = local.time().num_seconds_from_midnight();
+    seconds >= 15 * 3_600 + 35 * 60 && seconds < 16 * 3_600
+}
+
 fn pct_change(current: f64, previous: f64) -> f64 {
     safe_div(current - previous, previous) * 100.0
 }
@@ -1507,5 +1746,57 @@ fn safe_div(numerator: f64, denominator: f64) -> f64 {
         0.0
     } else {
         numerator / denominator
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn estimated_luld_uses_rolling_five_minute_reference() {
+        let mut state = EstimatedLuldState::default();
+        let old = Utc.with_ymd_and_hms(2026, 6, 22, 14, 29, 59).unwrap();
+        let first = Utc.with_ymd_and_hms(2026, 6, 22, 14, 30, 0).unwrap();
+        let second = Utc.with_ymd_and_hms(2026, 6, 22, 14, 31, 0).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 6, 22, 14, 35, 0).unwrap();
+
+        state.observe_trade(old, 8.0);
+        state.observe_trade(first, 10.0);
+        state.observe_trade(second, 12.0);
+
+        let snapshot = state.snapshot(now, 13.05);
+        assert!(snapshot.active);
+        assert_eq!(snapshot.reference_price, 11.0);
+        assert_eq!(snapshot.parameter_pct, 10.0);
+        assert_eq!(snapshot.lower_price, 9.9);
+        assert_eq!(snapshot.upper_price, 12.1);
+        assert_eq!(snapshot.state, "above_upper");
+    }
+
+    #[test]
+    fn estimated_luld_marks_near_upper_inside_regular_session() {
+        let mut state = EstimatedLuldState::default();
+        let now = Utc.with_ymd_and_hms(2026, 6, 22, 15, 0, 0).unwrap();
+        state.observe_trade(now, 10.0);
+
+        let snapshot = state.snapshot(now, 10.95);
+        assert!(snapshot.active);
+        assert_eq!(snapshot.reference_price, 10.0);
+        assert_eq!(snapshot.upper_price, 11.0);
+        assert_eq!(snapshot.state, "near_upper");
+    }
+
+    #[test]
+    fn estimated_luld_is_inactive_outside_regular_session() {
+        let mut state = EstimatedLuldState::default();
+        let premarket = Utc.with_ymd_and_hms(2026, 6, 22, 12, 0, 0).unwrap();
+        state.observe_trade(premarket, 10.0);
+
+        let snapshot = state.snapshot(premarket, 10.0);
+        assert!(!snapshot.active);
+        assert_eq!(snapshot.state, "inactive");
+        assert_eq!(snapshot.reference_price, 0.0);
     }
 }

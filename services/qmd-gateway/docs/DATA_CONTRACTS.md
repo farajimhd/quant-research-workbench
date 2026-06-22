@@ -9,7 +9,7 @@ This file documents the values produced by `qmd-gateway`. A **formula** is the e
 | Live compact unified events | `schema_version` | `1` | Increment when the live unified event table semantics change. |
 | Raw Massive trades | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Raw Massive quotes | `schema_version` | `1` | Increment when durable raw table semantics change. |
-| Bars | `schema_version` | `1` | Increment when bar fields or formulas change. |
+| Bars | `schema_version` | `2` | Increment when bar fields or formulas change. |
 | Bar indicators | `schema_version` | `1` | Increment when persisted indicator fields or formulas change. |
 | Scanner primitives | `schema_version` | `1` | Increment when primitive output contract changes. |
 
@@ -209,7 +209,7 @@ Bars are built from Massive trades and quotes for configured timeframes. All bar
 
 | Field | Source | Formula Or Rule |
 |---|---|---|
-| `schema_version` | constant | Current value is `1`. |
+| `schema_version` | constant | Current value is `2`. |
 | `session_date` | bar start | `bar_start.date`. |
 | `timeframe` | config | One of configured labels such as `1s`, `10s`, `1m`. |
 | `sym` | event ticker | Uppercase Massive ticker. |
@@ -323,6 +323,25 @@ These fields are set when a bar closes and previous bars exist for the same tick
 | `mean_abs_trade_return` | trades | `mean(abs(sequential_trade_return))`. |
 | `direction_change_count` | trades | Count of sign changes in sequential trade returns. |
 | `chop_score` | trades | `sum(abs(trade_return)) * close / high_low_range`. Higher means more back-and-forth movement. |
+
+### Estimated LULD Proximity
+
+These fields are local estimates for scanner and chart risk display. They are
+not official SIP LULD bands and do not replace an official LULD feed. The
+gateway uses valid Massive trade prices in a rolling five-minute window as a
+proxy for the LULD reference price. It currently applies default Tier 2
+parameters because Tier 1/ETP membership is not wired into QMD reference data.
+
+| Field | Source | Formula Or Rule |
+|---|---|---|
+| `estimated_luld_active` | session clock | True only during regular 9:30-16:00 ET trading hours. |
+| `estimated_luld_reference_price` | trades | Simple average of valid trade prices retained from the prior 300 seconds. |
+| `estimated_luld_parameter_pct` | reference price | Default Tier 2 rule: `10` when reference is above `$3`, `20` from `$0.75` to `$3`, otherwise `min(0.15 / reference_price, 0.75) * 100`. The below-$3 parameter is doubled from 15:35-16:00 ET. |
+| `estimated_luld_lower_price` | reference + parameter | `max(reference_price - reference_price * parameter_pct / 100, 0)`. |
+| `estimated_luld_upper_price` | reference + parameter | `reference_price + reference_price * parameter_pct / 100`. |
+| `estimated_luld_distance_to_upper_pct` | bar price + upper band | `(upper_price - current_price) / current_price * 100`, where current price is midpoint close when available, otherwise trade close. |
+| `estimated_luld_distance_to_lower_pct` | bar price + lower band | `(current_price - lower_price) / current_price * 100`, using the same current price rule. |
+| `estimated_luld_state` | derived | `inactive`, `unknown`, `inside`, `near_upper`, `near_lower`, `above_upper`, or `below_lower`. Near-band threshold is currently 1 percent. |
 
 ## Tick Indicator Contract
 

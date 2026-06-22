@@ -36,6 +36,10 @@ pub struct ScannerPrimitive {
     pub tape_imbalance: f64,
     pub spread_bps: f64,
     pub liquidity_score: f64,
+    pub estimated_luld_active: bool,
+    pub estimated_luld_state: String,
+    pub estimated_luld_distance_to_upper_pct: f64,
+    pub estimated_luld_distance_to_lower_pct: f64,
 }
 
 #[derive(Clone)]
@@ -240,6 +244,10 @@ fn maybe_push(
         tape_imbalance: row.tape_imbalance,
         spread_bps: row.spread_bps_close,
         liquidity_score: row.liquidity_score,
+        estimated_luld_active: row.estimated_luld_active,
+        estimated_luld_state: row.estimated_luld_state.clone(),
+        estimated_luld_distance_to_upper_pct: row.estimated_luld_distance_to_upper_pct,
+        estimated_luld_distance_to_lower_pct: row.estimated_luld_distance_to_lower_pct,
     });
 }
 
@@ -352,6 +360,14 @@ mod tests {
             mean_abs_trade_return: 0.01,
             direction_change_count: 1,
             chop_score: 0.2,
+            estimated_luld_active: true,
+            estimated_luld_reference_price: 10.0,
+            estimated_luld_lower_price: 9.0,
+            estimated_luld_upper_price: 11.0,
+            estimated_luld_parameter_pct: 10.0,
+            estimated_luld_distance_to_upper_pct: 5.26,
+            estimated_luld_distance_to_lower_pct: 13.88,
+            estimated_luld_state: "inside".to_string(),
         }
     }
 

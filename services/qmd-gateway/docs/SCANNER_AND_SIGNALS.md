@@ -35,6 +35,8 @@ Each emitted row has this contract:
 | `tape_imbalance` | Buy-vs-sell volume proxy from trade classification. |
 | `spread_bps` | Close spread in basis points. |
 | `liquidity_score` | Dollar volume per unit of spread. Higher is better. |
+| `estimated_luld_active`, `estimated_luld_state` | Local estimated LULD session flag and proximity state copied from the source bar. This is not official SIP LULD state. |
+| `estimated_luld_distance_to_upper_pct`, `estimated_luld_distance_to_lower_pct` | Estimated percent distance to the locally calculated upper/lower LULD bands. Lower values mean closer to a band. |
 
 ## Active Primitive Rules
 

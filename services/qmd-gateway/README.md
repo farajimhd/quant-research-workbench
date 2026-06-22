@@ -214,6 +214,17 @@ Bar-level indicators are updated when each timeframe bar closes and include:
 - `close_sma_20`, `volume_sma_20`
 - `return_1_bar`, `price_vs_ema20_pct`, `price_vs_vwap_pct`, `trend_score`
 
+`live_market_bars` also carries estimated LULD proximity fields. These are
+local scanner/chart risk fields, not official SIP LULD messages. The gateway
+uses a rolling five-minute simple average of valid trade prices as
+`estimated_luld_reference_price`, applies default Tier 2 LULD percentage
+parameters, and publishes estimated upper/lower bands, distance-to-band
+percentages, an active regular-session flag, and a compact state such as
+`inside`, `near_upper`, or `near_lower`. Because Tier 1/ETP membership and SIP
+eligible-trade handling are not yet wired into QMD, these fields are named
+`estimated_luld_*` and should not be used as authoritative halt/limit-state
+messages.
+
 Bar-level indicator history is retained per timeframe using
 `QMD_INDICATOR_HISTORY_BY_TIMEFRAME`. The default scanner/chart compromise is:
 
@@ -295,7 +306,8 @@ ws://127.0.0.1:8795/stream/scanner-primitives
 
 Each primitive row includes `schema_version`, ticker, timeframe, primitive key,
 side bias, score, trigger reason, reject reason, and Massive-derived evidence
-fields.
+fields, including the estimated LULD state and distance-to-band values from the
+source bar.
 
 ## Metrics And Backpressure
 

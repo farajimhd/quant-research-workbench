@@ -108,6 +108,15 @@ MarketEvent
 
 Bars are aligned to the top of their timeframe using event time. A `5m` bar starts at `:00`, `:05`, `:10`, and so on. A `1h` bar starts at the top of the hour.
 
+Bars also include local `estimated_luld_*` fields for scanner and chart risk.
+These are computed from quote/trade-derived state inside the bar shard, not from
+Massive's official LULD websocket. The estimate keeps a five-minute rolling
+simple average of valid trade prices per ticker as the reference price, applies
+default Tier 2 LULD parameters, and snapshots estimated bands/proximity into
+each bar. The fields are intentionally labeled as estimates because official
+Tier 1/ETP classification and SIP eligible-trade handling are not yet part of
+the QMD hot path.
+
 ## Indicator Flow
 
 Tick indicators are updated from quotes/trades. Bar indicators are updated only from closed bars. This avoids rescanning stored rows while live data is arriving.
