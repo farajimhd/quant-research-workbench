@@ -41,6 +41,7 @@ from research.temporal_event_model.v1.cache_probe import (
     probe_loss_and_metrics,
     resolve_amp_dtype,
     save_checkpoint,
+    scalar_metrics_without_confusion,
     to_manifest_config,
 )
 from research.temporal_event_model.v1.config import DataConfig
@@ -272,7 +273,10 @@ def main(argv: list[str] | None = None) -> int:
                         reporter=reporter,
                         run_start_time=started,
                     )
-                    metric_logger.log({f"training/block_{key}": value for key, value in shard_metrics.items()}, global_step)
+                    metric_logger.log(
+                        scalar_metrics_without_confusion({f"training/block_{key}": value for key, value in shard_metrics.items()}),
+                        global_step,
+                    )
                     if config.validation_frequency_blocks > 0 and block_index % config.validation_frequency_blocks == 0:
                         validation_metrics = evaluate_window_probe(
                             model=model,
@@ -285,10 +289,11 @@ def main(argv: list[str] | None = None) -> int:
                             reporter=reporter,
                         )
                         validation_metrics = {f"validation/{key}": value for key, value in validation_metrics.items()}
-                        metric_logger.log(validation_metrics, global_step)
                         log_confusion_tables_to_wandb(metric_logger.wandb_run, validation_metrics, global_step, prefix="validation")
-                        reporter.update({}, step=global_step, validation_metrics=validation_metrics)
-                        reporter.message(format_metric_line("VALIDATION", global_step, validation_metrics))
+                        validation_scalar_metrics = scalar_metrics_without_confusion(validation_metrics)
+                        metric_logger.log(validation_scalar_metrics, global_step)
+                        reporter.update({}, step=global_step, validation_metrics=validation_scalar_metrics)
+                        reporter.message(format_metric_line("VALIDATION", global_step, validation_scalar_metrics))
                         val_loss = validation_metrics.get("validation/loss", math.inf)
                         save_checkpoint(paths.checkpoints_dir / "checkpoint_latest.pt", model, optimizer, scheduler, proxy_probe_config(config), global_step, epoch)
                         if val_loss < best_validation_loss:
@@ -906,13 +911,14 @@ def train_embedding_block(
         optimizer_seconds = time.perf_counter() - optimizer_started
         step_seconds = time.perf_counter() - step_started
         global_step += 1
-        for key, value in metrics.items():
+        scalar_metrics = scalar_metrics_without_confusion(metrics)
+        for key, value in scalar_metrics.items():
             running[key] = running.get(key, 0.0) + float(value)
         if global_step % max(1, config.logging_steps) == 0 or step == 0:
             elapsed = time.perf_counter() - run_start_time
             samples_seen = global_step * config.batch_size
             row = {
-                **{f"training/{key}": value for key, value in metrics.items()},
+                **{f"training/{key}": value for key, value in scalar_metrics.items()},
                 "training/lr": float(optimizer.param_groups[0]["lr"]),
                 "training/epoch": float(epoch),
                 "training/block": float(block_index),

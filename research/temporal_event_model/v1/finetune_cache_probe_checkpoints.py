@@ -39,6 +39,7 @@ from research.temporal_event_model.v1.cache_probe import (
     probe_loss_and_metrics,
     resolve_amp_dtype,
     save_checkpoint,
+    scalar_metrics_without_confusion,
     steps_in_shard,
     to_manifest_config,
 )
@@ -277,10 +278,11 @@ def finetune_one_checkpoint(*, checkpoint_path: Path, args: argparse.Namespace, 
                             amp_dtype=amp_dtype,
                         )
                         validation_metrics = {f"validation/{key}": value for key, value in validation_metrics.items()}
-                        metric_logger.log(validation_metrics, global_step)
                         log_confusion_tables_to_wandb(metric_logger.wandb_run, validation_metrics, global_step, prefix="validation")
-                        reporter.update({}, step=global_step, validation_metrics=validation_metrics)
-                        reporter.message(format_metric_line("VALIDATION", global_step, validation_metrics))
+                        validation_scalar_metrics = scalar_metrics_without_confusion(validation_metrics)
+                        metric_logger.log(validation_scalar_metrics, global_step)
+                        reporter.update({}, step=global_step, validation_metrics=validation_scalar_metrics)
+                        reporter.message(format_metric_line("VALIDATION", global_step, validation_scalar_metrics))
                         val_loss = validation_metrics.get("validation/loss", math.inf)
                         save_checkpoint(paths.checkpoints_dir / "checkpoint_latest.pt", model, optimizer, NoOpScheduler(), config, global_step, epoch)
                         reporter.message(f"Saved checkpoint latest: {paths.checkpoints_dir / 'checkpoint_latest.pt'}")
@@ -288,7 +290,10 @@ def finetune_one_checkpoint(*, checkpoint_path: Path, args: argparse.Namespace, 
                             best_validation_loss = val_loss
                             save_checkpoint(paths.checkpoints_dir / "checkpoint_best_val.pt", model, optimizer, NoOpScheduler(), config, global_step, epoch)
                             reporter.message(f"Saved checkpoint best_val: {paths.checkpoints_dir / 'checkpoint_best_val.pt'}")
-                    metric_logger.log({f"training/shard_{key}": value for key, value in shard_metrics.items()}, global_step)
+                    metric_logger.log(
+                        scalar_metrics_without_confusion({f"training/shard_{key}": value for key, value in shard_metrics.items()}),
+                        global_step,
+                    )
                 epoch_checkpoint = paths.checkpoints_dir / f"checkpoint_epoch_{epoch:03d}.pt"
                 save_checkpoint(epoch_checkpoint, model, optimizer, NoOpScheduler(), config, global_step, epoch)
                 reporter.message(f"Saved checkpoint epoch {epoch}: {epoch_checkpoint}")
@@ -542,13 +547,14 @@ def finetune_one_shard(
         optimizer_seconds = time.perf_counter() - optimizer_started
         step_seconds = time.perf_counter() - step_started
         global_step += 1
-        for key, value in metrics.items():
+        scalar_metrics = scalar_metrics_without_confusion(metrics)
+        for key, value in scalar_metrics.items():
             running[key] = running.get(key, 0.0) + float(value)
         if global_step % max(1, config.logging_steps) == 0 or shard_step == 0:
             elapsed = time.perf_counter() - run_start_time
             samples_seen = global_step * config.batch_size
             row = {
-                **{f"training/{key}": value for key, value in metrics.items()},
+                **{f"training/{key}": value for key, value in scalar_metrics.items()},
                 "training/lr": float(lr),
                 "training/epoch": float(epoch),
                 "training/shard_position": float(shard_position),
