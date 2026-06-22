@@ -19,8 +19,12 @@ from research.mlops.event_sample_cache import EventSampleCacheDataConfig, discov
 
 DEFAULTS: dict[str, Any] = {
     "data_source": "sample_cache",
-    "sample_cache_root": r"D:\market-data\prepared\event_sample_cache\cache_20260611_195259",
-    "sample_cache_validation_root": r"D:\market-data\prepared\event_sample_cache\cache_20260617_112833",
+    # Full pretraining must use explicit cache ids. The shared sample-cache
+    # helper intentionally supports "latest child" discovery for ad hoc tools,
+    # but that is unsafe for long continuation runs when multiple cache folders
+    # exist under event_sample_cache.
+    "sample_cache_root": r"\\DESKTOP-SAAI85T\Workstation-D\market-data\prepared\event_sample_cache\cache_20260611_195259\train",
+    "sample_cache_validation_root": r"\\DESKTOP-SAAI85T\Workstation-D\market-data\prepared\event_sample_cache\cache_20260617_112833\validation",
     "sample_cache_prefetch_shards": 2,
     "sample_cache_shuffle_records": True,
     "sample_cache_drop_last": True,
@@ -35,7 +39,7 @@ DEFAULTS: dict[str, Any] = {
     "sample_cache_validation_batches_per_shard": 1,
     "sample_cache_interleave_shards": 1,
     "batch_size": 8192,
-    "epochs": 3,
+    "epochs": 5,
     "max_steps": 0,
     "input_representation": "bit",
     "d_byte": 40,
@@ -83,7 +87,7 @@ DEFAULTS: dict[str, Any] = {
     "wandb_project": "June2026-event-token-mae-full",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
-    "wandb_run_name": "v20-fullpretrain-sharddecay-fixedmask070-emb32-bs8192-3epochs",
+    "wandb_run_name": "v20-fullpretrain-sharddecay-fixedmask070-emb32-bs8192-continue5epochs",
     "amp_initial_scale": 1024.0,
     "amp_overflow_fatal_threshold": 8,
     "float32_matmul_precision": "high",
@@ -161,8 +165,14 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    train_cache_root = Path(args.cache_root)
-    validation_cache_root = Path(args.validation_cache_root)
+    train_cache_root_arg = Path(args.cache_root)
+    validation_cache_root_arg = Path(args.validation_cache_root)
+    if args.skip_shard_discovery:
+        train_cache_root = train_cache_root_arg
+        validation_cache_root = validation_cache_root_arg
+    else:
+        train_cache_root = resolve_explicit_cache_root(train_cache_root_arg, split="train")
+        validation_cache_root = resolve_explicit_cache_root(validation_cache_root_arg, split="validation")
     batch_size = max(1, int(args.batch_size))
     if args.skip_shard_discovery:
         if not args.print_only:
@@ -294,13 +304,49 @@ def resolve_shard_plan(
     return selected_train, validation_shards, len(validation_shards)
 
 
+def resolve_explicit_cache_root(path: Path, *, split: str) -> Path:
+    """Return the cache root for an explicit cache path, never by latest-child discovery.
+
+    Accepted forms are either the cache root containing the split directory:
+        .../cache_YYYY.../
+
+    or the exact split directory:
+        .../cache_YYYY.../train
+        .../cache_YYYY.../validation
+
+    A broad parent such as .../event_sample_cache is rejected because the shared
+    discovery helper would otherwise pick the newest matching child, which can
+    silently continue training on the wrong cache.
+    """
+    if path.name == split:
+        split_dir = path
+        root = path.parent
+    else:
+        root = path
+        split_dir = root / split
+    if not split_dir.exists():
+        raise SystemExit(
+            f"Explicit {split} cache split does not exist: {split_dir}. "
+            f"Pass either the cache root or the exact {split} directory."
+        )
+    has_meta = any(split_dir.glob("shard_*.samples.json")) or any(split_dir.glob("shard_*.json"))
+    if not has_meta:
+        raise SystemExit(
+            f"Explicit {split} cache split contains no shard metadata: {split_dir}. "
+            f"Refusing broad cache discovery for full pretraining."
+        )
+    return root
+
+
 def print_plan(values: dict[str, Any], train_shards, validation_shards, validation_batches: int, steps_per_epoch: int, argv: list[str]) -> None:
     epoch_lrs = compute_epoch_lr_table(values, len(train_shards))
     print("=" * 104, flush=True)
     print("v20 full pretraining over sample-cache shards", flush=True)
     print(f"profiled_training_path={PROFILED_TRAINING_PATH}", flush=True)
     print(f"train_cache_root={values['sample_cache_root']}", flush=True)
+    print(f"train_cache_split_dir={cache_split_dir_for_display(Path(values['sample_cache_root']), 'train')}", flush=True)
     print(f"validation_cache_root={values['sample_cache_validation_root']}", flush=True)
+    print(f"validation_cache_split_dir={cache_split_dir_for_display(Path(values['sample_cache_validation_root']), 'validation')}", flush=True)
     print(f"train_shards={train_shards[0].shard_index}..{train_shards[-1].shard_index} count={len(train_shards)}", flush=True)
     print(f"train_samples_per_epoch={sum(shard.num_samples for shard in train_shards):,}", flush=True)
     print(f"steps_per_epoch={steps_per_epoch:,} batch_size={values['batch_size']:,} epochs={values['epochs']:,}", flush=True)
@@ -331,6 +377,10 @@ def print_plan(values: dict[str, Any], train_shards, validation_shards, validati
     print("Equivalent trainer args:", flush=True)
     print(" ".join(argv), flush=True)
     print("=" * 104, flush=True)
+
+
+def cache_split_dir_for_display(cache_root: Path, split: str) -> Path:
+    return cache_root if cache_root.name == split else cache_root / split
 
 
 def compute_epoch_lr_table(values: dict[str, Any], shard_count: int) -> list[dict[str, float]]:
