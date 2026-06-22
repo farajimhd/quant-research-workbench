@@ -73,6 +73,7 @@ In monitor mode, exiting the monitor stops the background gateway process.
 | `GET /health` | Basic running state, subscriptions, session phase, and market-state metrics. |
 | `GET /config` | Effective configuration after env parsing. Do not expose publicly because it includes structure and presence flags. |
 | `GET /metrics` | Operational counters and lag values. |
+| `GET /snapshot/maintenance` | In-flight startup maintenance, gap-fill, and backfill progress state. |
 | `GET /indicator-catalog` | Indicator family contract. |
 | `GET /signal-catalog` | Signal method contract. |
 | `GET /snapshot/scanner?limit=250` | Simple latest market-state scanner snapshot. |
@@ -147,6 +148,11 @@ Gap fill uses Massive REST:
 It converts repaired rows to normalized market events, feeds the same state,
 stream, bar, indicator, compact-event, and optional raw-persistence queues as
 websocket ingest, then records audit rows in `qmd_gap_fill_runs`.
+
+Massive websocket supports wildcard `T.*` and `Q.*`, but these REST endpoints
+require one `stockTicker` path value. The gateway therefore repairs by ticker
+from the configured/discovered universe and cannot request all tickers for a
+time range in one REST call.
 
 | Mode | When It Runs | Purpose |
 |---|---|---|

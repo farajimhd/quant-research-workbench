@@ -50,6 +50,7 @@ class PollState:
     errors: list[str] = field(default_factory=list)
     health: dict[str, Any] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
+    maintenance: dict[str, Any] = field(default_factory=dict)
     coverage: dict[str, Any] = field(default_factory=dict)
     market_status: dict[str, Any] = field(default_factory=dict)
     market_status_error: str = ""
@@ -125,6 +126,7 @@ def run_plain(args: argparse.Namespace, state: PollState, watch: list[str]) -> i
             "updated_at": state.updated_at.isoformat() if state.updated_at else "",
             "health": state.health,
             "metrics": state.metrics,
+            "maintenance": state.maintenance,
             "coverage": state.coverage,
             "market_status": state.market_status,
             "rates": state.rates,
@@ -146,6 +148,7 @@ def poll_once(
     state.updated_at = datetime.now(UTC)
     state.health = get_json(state, "/health", timeout) or {}
     metrics = get_json(state, "/metrics", timeout) or {}
+    state.maintenance = get_json(state, "/snapshot/maintenance", timeout) or {}
     state.coverage = get_json(state, "/snapshot/coverage?limit=8", timeout) or {}
     update_rates(state, metrics, now)
     state.metrics = metrics
@@ -218,6 +221,7 @@ def render_dashboard(state: PollState, watch: list[str]) -> Any:
             equal=True,
             expand=True,
         ),
+        render_maintenance_progress(state),
         render_maintenance(state),
         Columns(
             [render_backpressure(state), render_compact_events(state)],
@@ -322,6 +326,37 @@ def render_runtime(state: PollState) -> Any:
         ("Gap fill runs", format_int(metrics.get("gap_fill_runs")), f"failures={format_int(metrics.get('gap_fill_failures'))}"),
     ]
     return Panel(metric_table(rows), title="Runtime", box=box.ROUNDED, border_style="yellow", padding=(0, 1))
+
+
+def render_maintenance_progress(state: PollState) -> Any:
+    maintenance = state.maintenance if isinstance(state.maintenance, dict) else {}
+    total_jobs = int(as_float(maintenance.get("total_jobs")))
+    completed_jobs = int(as_float(maintenance.get("completed_jobs")))
+    total_symbols = int(as_float(maintenance.get("total_symbols")))
+    completed_symbols = int(as_float(maintenance.get("completed_symbols")))
+    active = bool(maintenance.get("active"))
+    status = str(maintenance.get("status") or "idle")
+    color = "cyan" if active else ("green" if status in {"idle", "up_to_date", "repair_completed"} else status_color(status))
+    active_symbols = maintenance.get("active_symbols") if isinstance(maintenance.get("active_symbols"), list) else []
+    current_interval = "-".join(
+        item
+        for item in [
+            short_time(maintenance.get("current_interval_start_utc")),
+            short_time(maintenance.get("current_interval_end_utc")),
+        ]
+        if item and item != "-"
+    ) or "-"
+    rows = [
+        ("State", status_text(status), "active" if active else "idle"),
+        ("Mode", str(maintenance.get("mode") or "-"), str(maintenance.get("phase") or "-")),
+        ("Jobs", progress_bar(completed_jobs, total_jobs), f"{format_int(completed_jobs)}/{format_int(total_jobs)}"),
+        ("Symbols", progress_bar(completed_symbols, total_symbols), f"{format_int(completed_symbols)}/{format_int(total_symbols)}"),
+        ("Rows", format_int(maintenance.get("rows_written")), f"errors={format_int(maintenance.get('errors'))} page_limit={format_int(maintenance.get('page_limited_symbols'))}"),
+        ("Current", str(maintenance.get("current_symbol") or "-"), current_interval),
+        ("Active", ", ".join(str(item) for item in active_symbols[:8]) or "-", str(maintenance.get("current_interval_reason") or "-")),
+        ("Message", str(maintenance.get("message") or "-"), updated_label(maintenance.get("updated_at_utc"))),
+    ]
+    return Panel(metric_table(rows, value_heading="Value", last_heading="Detail"), title="Maintenance Progress", box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
 def render_maintenance(state: PollState) -> Any:
@@ -481,6 +516,9 @@ def parse_summary(raw: Any) -> dict[str, Any]:
 
 
 def operation_message(state: PollState) -> str:
+    maintenance = state.maintenance if isinstance(state.maintenance, dict) else {}
+    if maintenance.get("active"):
+        return str(maintenance.get("message") or "Maintenance is running.")
     health = state.health or {}
     metrics = state.metrics or {}
     if not health:
@@ -533,7 +571,7 @@ def status_color(value: str) -> str:
         return "green"
     if lowered in {"planned", "waiting", "skipped", "api_only_missing_massive_key"}:
         return "yellow"
-    if "fail" in lowered or "error" in lowered or "needs" in lowered:
+    if "fail" in lowered or "error" in lowered or "needs" in lowered or "blocked" in lowered:
         return "red"
     return "cyan"
 
@@ -559,6 +597,15 @@ def format_rate(value: Any) -> str:
     return f"{as_float(value):,.1f}/s"
 
 
+def progress_bar(completed: int, total: int, width: int = 24) -> str:
+    if total <= 0:
+        return "[dim]" + ("-" * width) + "[/dim] unknown"
+    completed = max(0, min(completed, total))
+    filled = int(round(width * completed / total))
+    pct = 100.0 * completed / total
+    return f"[green]{'#' * filled}[/green][dim]{'-' * (width - filled)}[/dim] {pct:5.1f}%"
+
+
 def format_ms(value: Any) -> str:
     number = as_float(value)
     if number <= 0:
@@ -582,6 +629,11 @@ def short_time(value: Any) -> str:
     if "T" in raw:
         return raw.replace("T", " ").replace("Z", "")[:19]
     return raw
+
+
+def updated_label(value: Any) -> str:
+    raw = short_time(value)
+    return f"updated {raw}" if raw and raw != "-" else "-"
 
 
 def us_to_dt(value: Any) -> datetime | None:

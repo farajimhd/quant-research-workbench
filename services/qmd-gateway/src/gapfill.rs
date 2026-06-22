@@ -1,5 +1,6 @@
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
+use crate::maintenance::SharedMaintenanceState;
 use crate::massive::{fanout_market_event, MarketEventFanout};
 use crate::metrics::TimingTarget;
 use crate::session::{is_streaming_phase, session_phase};
@@ -17,23 +18,35 @@ use std::path::Path as FsPath;
 use std::process::Command;
 use tokio::time::{interval, Duration};
 
-pub async fn run_startup_maintenance(config: GatewayConfig, fanout: MarketEventFanout) {
+pub async fn run_startup_maintenance(
+    config: GatewayConfig,
+    fanout: MarketEventFanout,
+    maintenance: SharedMaintenanceState,
+) {
     if !config.gap_fill_enabled || !config.qmd_startup_maintenance_enabled {
         return;
     }
-    let filler = GapFillService::new(config, fanout);
+    let filler = GapFillService::new(config, fanout, maintenance);
     eprintln!("QMD startup maintenance: checking recent q_live event coverage.");
     if let Err(error) = filler.run_startup_maintenance().await {
         filler.fanout.metrics.inc_gap_fill_failure();
+        filler
+            .maintenance
+            .finish("failed", &format!("Startup maintenance failed: {error}"))
+            .await;
         eprintln!("QMD startup maintenance failed: {error}");
     }
 }
 
-pub async fn run_gap_fill_service(config: GatewayConfig, fanout: MarketEventFanout) {
+pub async fn run_gap_fill_service(
+    config: GatewayConfig,
+    fanout: MarketEventFanout,
+    maintenance: SharedMaintenanceState,
+) {
     if !config.gap_fill_enabled {
         return;
     }
-    let filler = GapFillService::new(config, fanout);
+    let filler = GapFillService::new(config, fanout, maintenance);
     let mut timer = interval(Duration::from_millis(filler.config.gap_fill_interval_ms));
     loop {
         timer.tick().await;
@@ -53,6 +66,10 @@ pub async fn run_gap_fill_service(config: GatewayConfig, fanout: MarketEventFano
         };
         if let Err(error) = filler.run_once(mode).await {
             filler.fanout.metrics.inc_gap_fill_failure();
+            filler
+                .maintenance
+                .finish("failed", &format!("Gap fill cycle failed: {error}"))
+                .await;
             eprintln!("Gap fill cycle failed: {error}");
         }
     }
@@ -147,14 +164,20 @@ struct GapFillService {
     client: Client,
     config: GatewayConfig,
     fanout: MarketEventFanout,
+    maintenance: SharedMaintenanceState,
 }
 
 impl GapFillService {
-    fn new(config: GatewayConfig, fanout: MarketEventFanout) -> Self {
+    fn new(
+        config: GatewayConfig,
+        fanout: MarketEventFanout,
+        maintenance: SharedMaintenanceState,
+    ) -> Self {
         Self {
             client: Client::new(),
             config,
             fanout,
+            maintenance,
         }
     }
 
@@ -164,6 +187,15 @@ impl GapFillService {
         let phase = format!("{:?}", session_phase(started_at));
         let host_role = self.host_role();
         let (window_start, window_end, _) = self.recent_live_window();
+        self.maintenance
+            .start(
+                "startup_maintenance",
+                "startup_recent_repair",
+                "Auditing q_live event structure and coverage before websocket ingest.",
+                Some(window_start),
+                Some(window_end),
+            )
+            .await;
         let audit = self.audit_recent_live_events().await?;
         eprintln!(
             "QMD startup q_live audit: rows={} tickers={} duplicate_ordinals={} ordinal_hole_tickers={} out_of_order_tickers={}",
@@ -230,9 +262,29 @@ impl GapFillService {
         )
         .await?;
         if self.config.historical_flatfile_update_enabled {
+            self.maintenance
+                .set_message(
+                    "running",
+                    "Recent q_live maintenance finished; checking historical flatfile coverage.",
+                )
+                .await;
             self.plan_historical_flatfile_update(started_at, "startup_historical_check", true)
                 .await?;
         }
+        self.maintenance
+            .finish(
+                status,
+                &format!(
+                    "Startup maintenance completed: status={} rows={} symbols={}/{} intervals={}/{}",
+                    status,
+                    repair.rows_written,
+                    repair.symbols_repaired,
+                    repair.symbols_checked,
+                    repair.intervals_repaired,
+                    repair.intervals_checked,
+                ),
+            )
+            .await;
         Ok(())
     }
 
@@ -244,6 +296,15 @@ impl GapFillService {
         let phase = format!("{:?}", session_phase(started_at));
         let host_role = self.host_role();
         let (window_start, window_end, _) = self.recent_live_window();
+        self.maintenance
+            .start(
+                "scheduled_gap_fill",
+                mode,
+                "Checking q_live recent coverage gaps.",
+                Some(window_start),
+                Some(window_end),
+            )
+            .await;
         if self.config.massive_api_key.is_empty() {
             self.record_run(
                 started_at,
@@ -271,6 +332,9 @@ impl GapFillService {
                 }),
             )
             .await?;
+            self.maintenance
+                .finish("skipped", "MASSIVE_API_KEY is not configured")
+                .await;
             return Ok(0);
         }
         let repair = self.repair_recent_live_coverage(started_at, mode).await?;
@@ -296,9 +360,29 @@ impl GapFillService {
         )
         .await?;
         if !is_streaming_phase(Utc::now()) && self.config.historical_flatfile_update_enabled {
+            self.maintenance
+                .set_message(
+                    "running",
+                    "Recent q_live repair finished; checking historical flatfile coverage.",
+                )
+                .await;
             self.plan_historical_flatfile_update(started_at, mode, false)
                 .await?;
         }
+        self.maintenance
+            .finish(
+                &repair.status,
+                &format!(
+                    "Gap fill completed: status={} rows={} symbols={}/{} intervals={}/{}",
+                    repair.status,
+                    repair.rows_written,
+                    repair.symbols_repaired,
+                    repair.symbols_checked,
+                    repair.intervals_repaired,
+                    repair.intervals_checked,
+                ),
+            )
+            .await;
         Ok(repair.rows_written)
     }
 
@@ -406,10 +490,25 @@ impl GapFillService {
         };
         repair.intervals_checked = coverage_gaps.len() as u64;
         if coverage_gaps.is_empty() {
+            self.maintenance
+                .configure_totals(symbols.len() as u64, 0)
+                .await;
+            self.maintenance
+                .set_message("up_to_date", "No q_live recent coverage gaps were found.")
+                .await;
             return Ok(repair);
         }
         if symbols.is_empty() {
             repair.status = "blocked_missing_symbol_universe".to_string();
+            self.maintenance
+                .configure_totals(0, coverage_gaps.len() as u64)
+                .await;
+            self.maintenance
+                .set_message(
+                    "blocked_missing_symbol_universe",
+                    "Coverage gaps exist, but no repair symbol universe is configured or discoverable.",
+                )
+                .await;
             self.record_run(
                 started_at,
                 mode,
@@ -422,6 +521,19 @@ impl GapFillService {
             .await?;
             return Ok(repair);
         }
+        self.maintenance
+            .configure_totals(symbols.len() as u64, coverage_gaps.len() as u64)
+            .await;
+        self.maintenance
+            .set_message(
+                "running",
+                &format!(
+                    "Repairing {} q_live gap interval(s) across {} symbol(s).",
+                    coverage_gaps.len(),
+                    symbols.len()
+                ),
+            )
+            .await;
         let mut interval_stats = Vec::with_capacity(coverage_gaps.len());
         for interval in &coverage_gaps {
             interval_stats.push(IntervalRepairStats {
@@ -536,6 +648,9 @@ impl GapFillService {
         let mut intervals_attempted = 0u64;
         let mut interval_records = Vec::with_capacity(intervals.len());
         for (index, interval) in intervals.into_iter().enumerate() {
+            self.maintenance
+                .start_interval(&symbol, interval.reason, interval.start, interval.end)
+                .await;
             eprintln!(
                 "QMD recent q_live repair: symbol={} reason={} start={} end={}",
                 symbol,
@@ -551,6 +666,9 @@ impl GapFillService {
                     symbol_rows += outcome.rows;
                     intervals_attempted += 1;
                     self.fanout.metrics.inc_gap_fill_rows(outcome.rows);
+                    self.maintenance
+                        .complete_interval(outcome.rows, false, outcome.page_limit_hit)
+                        .await;
                     if outcome.page_limit_hit {
                         symbol_partial = true;
                     }
@@ -564,6 +682,7 @@ impl GapFillService {
                 }
                 Err(error) => {
                     symbol_errors += 1;
+                    self.maintenance.complete_interval(0, true, false).await;
                     eprintln!("QMD recent q_live repair failed for {symbol}: {error}");
                     interval_records.push(IntervalRepairRecord {
                         errors: 1,
@@ -598,6 +717,7 @@ impl GapFillService {
             },
         )
         .await?;
+        self.maintenance.complete_symbol(&symbol).await;
         Ok(SymbolRepairOutcome {
             errors: symbol_errors,
             interval_records,

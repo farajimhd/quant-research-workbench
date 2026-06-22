@@ -9,6 +9,7 @@ mod event;
 mod gapfill;
 mod indicator_catalog;
 mod indicators;
+mod maintenance;
 mod massive;
 mod metrics;
 mod replay;
@@ -30,6 +31,7 @@ use crate::gapfill::{run_gap_fill_service, run_startup_maintenance};
 use crate::indicators::{
     spawn_indicator_engines, IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore,
 };
+use crate::maintenance::SharedMaintenanceState;
 use crate::massive::{run_massive_ingest, MarketEventFanout};
 use crate::metrics::SharedMetrics;
 use crate::replay::run_replay_service;
@@ -69,6 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.indicator_shard_count,
     );
     let scanner = SharedScannerStore::new(config.scanner_primitive_history_limit);
+    let maintenance = SharedMaintenanceState::new();
     let compact_event_store =
         SharedCompactEventStore::new(config.compact_event_live_buffer_events_per_ticker);
     let (writer_sender, writer_receiver) =
@@ -188,6 +191,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         indicators,
         market: market.clone(),
         metrics: metrics.clone(),
+        maintenance: maintenance.clone(),
         scanner,
         scanner_events: scanner_sender,
     });
@@ -202,11 +206,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .await
     });
 
-    run_startup_maintenance(config.clone(), event_fanout.clone()).await;
+    run_startup_maintenance(config.clone(), event_fanout.clone(), maintenance.clone()).await;
 
     tokio::spawn(run_massive_ingest(config.clone(), event_fanout.clone()));
     if config.gap_fill_enabled {
-        tokio::spawn(run_gap_fill_service(config.clone(), event_fanout.clone()));
+        tokio::spawn(run_gap_fill_service(
+            config.clone(),
+            event_fanout.clone(),
+            maintenance.clone(),
+        ));
     }
     tokio::spawn(run_replay_service(
         config.clone(),

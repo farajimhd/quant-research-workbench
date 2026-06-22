@@ -313,6 +313,11 @@ The `/metrics` endpoint exposes operational counters for:
 - gap-fill runs, failures, and written rows
 - process uptime
 
+The `/snapshot/maintenance` endpoint exposes in-flight startup maintenance and
+gap-fill progress: active status, mode, total jobs, completed jobs, active
+symbols, current interval, repaired rows, page-limit count, and errors. The Rich
+terminal renders this as the `Maintenance Progress` panel.
+
 Required processing and persistence queues use awaited sends. If a required
 queue is full, live ingest backpressures instead of dropping canonical work. UI
 websocket broadcasts remain best effort, so the app can be offline while the
@@ -339,6 +344,11 @@ Massive REST historical trades and quotes:
 
 - `/v3/trades/{stockTicker}`
 - `/v3/quotes/{stockTicker}`
+
+Those REST endpoints require one ticker in the path. The websocket wildcard
+subscriptions `T.*` and `Q.*` do not translate to REST gap fill, so the repair
+uses the configured/discovered symbol universe and runs ticker jobs
+concurrently.
 
 `QMD_GAP_FILL_SYMBOLS` is a priority seed list. Those symbols are always
 checked. Full-market repair also needs either

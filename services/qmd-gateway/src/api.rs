@@ -4,6 +4,7 @@ use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
 use crate::indicator_catalog::{indicator_catalog, IndicatorCatalogEntry};
 use crate::indicators::{IndicatorSnapshot, SharedIndicatorStore};
+use crate::maintenance::{MaintenanceSnapshot, SharedMaintenanceState};
 use crate::metrics::{MetricsSnapshot, SharedMetrics};
 use crate::scanner::{ScannerPrimitive, ScannerPrimitiveSnapshot, SharedScannerStore};
 use crate::session::session_phase;
@@ -31,6 +32,7 @@ pub struct AppState {
     pub events: broadcast::Sender<MarketEvent>,
     pub indicators: SharedIndicatorStore,
     pub market: SharedMarketState,
+    pub maintenance: SharedMaintenanceState,
     pub metrics: SharedMetrics,
     pub scanner: SharedScannerStore,
     pub scanner_events: broadcast::Sender<ScannerPrimitive>,
@@ -62,6 +64,7 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/config", get(config))
         .route("/metrics", get(metrics_snapshot))
+        .route("/snapshot/maintenance", get(maintenance_snapshot))
         .route("/snapshot/coverage", get(coverage_snapshot))
         .route("/indicator-catalog", get(indicator_catalog_snapshot))
         .route("/signal-catalog", get(signal_catalog_snapshot))
@@ -109,6 +112,10 @@ async fn config(State(state): State<Arc<AppState>>) -> Json<GatewayConfig> {
 
 async fn metrics_snapshot(State(state): State<Arc<AppState>>) -> Json<MetricsSnapshot> {
     Json(state.metrics.snapshot())
+}
+
+async fn maintenance_snapshot(State(state): State<Arc<AppState>>) -> Json<MaintenanceSnapshot> {
+    Json(state.maintenance.snapshot().await)
 }
 
 async fn coverage_snapshot(
