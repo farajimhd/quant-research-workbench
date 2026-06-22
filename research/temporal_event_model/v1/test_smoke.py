@@ -8,9 +8,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
-from research.temporal_event_model.v1.cache_probe import PRICE_TARGET_BITS_PER_HORIZON
 from research.temporal_event_model.v1.model import SingleChunkFutureLabelPredictor
 
 
@@ -33,15 +33,22 @@ def main() -> None:
         embedding_dim=embedding_dim,
         hidden_dim=64,
         target_chunks=target_chunks,
-        target_bits=PRICE_TARGET_BITS_PER_HORIZON,
         dropout=0.0,
     )
     header = torch.randint(0, 256, (batch_size, 14), dtype=torch.uint8)
     events = torch.randint(0, 256, (batch_size, 128, 16), dtype=torch.uint8)
     output = model(header, events)
     assert output.chunk_embedding.shape == (batch_size, embedding_dim)
-    assert output.price_target_logits.shape == (batch_size, target_chunks, PRICE_TARGET_BITS_PER_HORIZON)
-    loss = torch.nn.functional.binary_cross_entropy_with_logits(output.price_target_logits, torch.zeros_like(output.price_target_logits))
+    assert output.low_high_tick_pred.shape == (batch_size, target_chunks, 2)
+    assert output.up_class_logits.shape == (batch_size, target_chunks, 3)
+    assert output.down_class_logits.shape == (batch_size, target_chunks, 3)
+    assert output.path_class_logits.shape == (batch_size, target_chunks, 4)
+    loss = (
+        F.mse_loss(output.low_high_tick_pred, torch.zeros_like(output.low_high_tick_pred))
+        + F.cross_entropy(output.up_class_logits.reshape(-1, 3), torch.zeros(batch_size * target_chunks, dtype=torch.long))
+        + F.cross_entropy(output.down_class_logits.reshape(-1, 3), torch.zeros(batch_size * target_chunks, dtype=torch.long))
+        + F.cross_entropy(output.path_class_logits.reshape(-1, 4), torch.zeros(batch_size * target_chunks, dtype=torch.long))
+    )
     assert torch.isfinite(loss)
     print("temporal_event_model/v1 smoke passed", flush=True)
 

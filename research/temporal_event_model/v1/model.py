@@ -25,21 +25,30 @@ class TemporalEventOutput:
 
 @dataclass(slots=True)
 class FutureChunkLabelOutput:
-    price_target_logits: torch.Tensor
+    low_high_tick_pred: torch.Tensor
+    up_class_logits: torch.Tensor
+    down_class_logits: torch.Tensor
+    path_class_logits: torch.Tensor
     chunk_embedding: torch.Tensor
 
 
 class FuturePriceExtremaMLPDecoder(nn.Module):
-    """Fast nonlinear head for cache-v2 future price-extrema bit prediction.
+    """Fast nonlinear head for cache-v2 future price-extrema prediction.
 
     The cache-v2 downstream experiment has only one current chunk as input.
     The frozen event encoder converts that chunk into `[B, embedding_dim]`.
-    This decoder maps the embedding directly to the target bits for the stored
-    future chunks. Each future chunk target contains the price-relevant header
-    bits plus the low/high price-delta int16 bits for that chunk.
+    This decoder maps the embedding to two complementary targets per stored
+    future chunk:
+
+    - normalized absolute low/high ticks for regression;
+    - categorical up/down/path labels for confusion-matrix diagnostics.
+
+    The future header is used only by the data pipeline to create labels. The
+    model no longer predicts future header bits, which avoids letting small
+    anchor-bit errors dominate semantic direction metrics.
     """
 
-    def __init__(self, *, embedding_dim: int, hidden_dim: int, target_chunks: int, target_bits: int, dropout: float) -> None:
+    def __init__(self, *, embedding_dim: int, hidden_dim: int, target_chunks: int, dropout: float) -> None:
         super().__init__()
         self.feature_mlp = nn.Sequential(
             nn.LayerNorm(embedding_dim),
@@ -50,13 +59,19 @@ class FuturePriceExtremaMLPDecoder(nn.Module):
             nn.GELU(),
             nn.LayerNorm(hidden_dim),
         )
-        self.label_head = nn.Linear(hidden_dim, int(target_chunks) * int(target_bits))
+        self.low_high_tick_head = nn.Linear(hidden_dim, int(target_chunks) * 2)
+        self.up_class_head = nn.Linear(hidden_dim, int(target_chunks) * 3)
+        self.down_class_head = nn.Linear(hidden_dim, int(target_chunks) * 3)
+        self.path_class_head = nn.Linear(hidden_dim, int(target_chunks) * 4)
         self.target_chunks = int(target_chunks)
-        self.target_bits = int(target_bits)
 
-    def forward(self, chunk_embedding: torch.Tensor) -> torch.Tensor:
+    def forward(self, chunk_embedding: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         features = self.feature_mlp(chunk_embedding)
-        return self.label_head(features).view(features.shape[0], self.target_chunks, self.target_bits)
+        low_high_tick_pred = self.low_high_tick_head(features).view(features.shape[0], self.target_chunks, 2)
+        up_class_logits = self.up_class_head(features).view(features.shape[0], self.target_chunks, 3)
+        down_class_logits = self.down_class_head(features).view(features.shape[0], self.target_chunks, 3)
+        path_class_logits = self.path_class_head(features).view(features.shape[0], self.target_chunks, 4)
+        return low_high_tick_pred, up_class_logits, down_class_logits, path_class_logits
 
 
 class SingleChunkFutureLabelPredictor(nn.Module):
@@ -67,9 +82,9 @@ class SingleChunkFutureLabelPredictor(nn.Module):
     - `header_uint8`: `[B, 14]`
     - `events_uint8`: `[B, 128, 16]`
 
-    Output is `price_target_logits`: `[B, target_chunks, target_bits]`. The
-    default cache-v2 probe uses two target chunks and predicts the price-header
-    plus low/high extrema bits for each future chunk.
+    Output contains normalized low/high tick regression values and categorical
+    logits for each target chunk. The default cache-v2 probe uses two target
+    chunks: future 128 events and future 256 events.
     """
 
     def __init__(
@@ -79,7 +94,6 @@ class SingleChunkFutureLabelPredictor(nn.Module):
         embedding_dim: int,
         hidden_dim: int,
         target_chunks: int,
-        target_bits: int,
         dropout: float,
     ) -> None:
         super().__init__()
@@ -88,20 +102,25 @@ class SingleChunkFutureLabelPredictor(nn.Module):
             embedding_dim=embedding_dim,
             hidden_dim=hidden_dim,
             target_chunks=target_chunks,
-            target_bits=target_bits,
             dropout=dropout,
         )
 
     def encode_chunk(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
         return self.event_encoder(header_uint8, events_uint8)
 
-    def decode_embedding(self, chunk_embedding: torch.Tensor) -> torch.Tensor:
+    def decode_embedding(self, chunk_embedding: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.decoder(chunk_embedding)
 
     def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> FutureChunkLabelOutput:
         chunk_embedding = self.encode_chunk(header_uint8, events_uint8)
-        price_target_logits = self.decode_embedding(chunk_embedding.float())
-        return FutureChunkLabelOutput(price_target_logits=price_target_logits, chunk_embedding=chunk_embedding)
+        low_high_tick_pred, up_class_logits, down_class_logits, path_class_logits = self.decode_embedding(chunk_embedding.float())
+        return FutureChunkLabelOutput(
+            low_high_tick_pred=low_high_tick_pred,
+            up_class_logits=up_class_logits,
+            down_class_logits=down_class_logits,
+            path_class_logits=path_class_logits,
+            chunk_embedding=chunk_embedding,
+        )
 
 
 def transformer_encoder(layer: nn.TransformerEncoderLayer, *, num_layers: int) -> nn.TransformerEncoder:

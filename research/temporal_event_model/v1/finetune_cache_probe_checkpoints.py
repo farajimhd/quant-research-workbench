@@ -26,7 +26,6 @@ from research.temporal_event_model.v1.cache_probe import (
     DEFAULT_CACHE_ROOT,
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_WANDB_PROJECT,
-    PRICE_TARGET_BITS_PER_HORIZON,
     ProbeConfig,
     autocast_context,
     build_frozen_encoder,
@@ -350,7 +349,6 @@ def build_finetune_model(
         embedding_dim=config.encoder_embedding_dim,
         hidden_dim=config.hidden_dim,
         target_chunks=len(config.horizons),
-        target_bits=PRICE_TARGET_BITS_PER_HORIZON,
         dropout=config.dropout,
     ).to(device)
     if mode == "scratch_full":
@@ -516,8 +514,14 @@ def finetune_one_shard(
         with autocast_context(device, amp_dtype):
             output = model(batch["header_uint8"], batch["events_uint8"])
             loss, metrics = probe_loss_and_metrics(
-                price_target_logits=output.price_target_logits,
-                target_bits=batch["target_bits"],
+                low_high_tick_pred=output.low_high_tick_pred,
+                up_class_logits=output.up_class_logits,
+                down_class_logits=output.down_class_logits,
+                path_class_logits=output.path_class_logits,
+                target_low_high_ticks_norm=batch["target_low_high_ticks_norm"],
+                target_up_class=batch["target_up_class"],
+                target_down_class=batch["target_down_class"],
+                target_path_class=batch["target_path_class"],
                 target_metrics=batch["target_metrics"],
                 valid_mask=batch["valid_mask"],
                 config=config,

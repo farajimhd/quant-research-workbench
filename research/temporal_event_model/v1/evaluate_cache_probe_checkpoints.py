@@ -22,7 +22,6 @@ from research.temporal_event_model.v1.cache_probe import (
     DEFAULT_CACHE_ROOT,
     DEFAULT_OUTPUT_ROOT,
     PATH_CLASS_NAMES,
-    PRICE_TARGET_BITS_PER_HORIZON,
     ProbeConfig,
     UP_CLASS_NAMES,
     autocast_context,
@@ -306,10 +305,16 @@ def evaluate_one_checkpoint(
             batch = build_probe_batch(x_records, y_records, batch_indices, config, device)
             with autocast_context(device, amp_dtype):
                 embedding = model.encode_chunk(batch["header_uint8"], batch["events_uint8"])
-                logits = model.decode_embedding(embedding.float())
+                low_high_tick_pred, up_class_logits, down_class_logits, path_class_logits = model.decode_embedding(embedding.float())
             _, metrics = probe_loss_and_metrics(
-                price_target_logits=logits,
-                target_bits=batch["target_bits"],
+                low_high_tick_pred=low_high_tick_pred,
+                up_class_logits=up_class_logits,
+                down_class_logits=down_class_logits,
+                path_class_logits=path_class_logits,
+                target_low_high_ticks_norm=batch["target_low_high_ticks_norm"],
+                target_up_class=batch["target_up_class"],
+                target_down_class=batch["target_down_class"],
+                target_path_class=batch["target_path_class"],
                 target_metrics=batch["target_metrics"],
                 valid_mask=batch["valid_mask"],
                 config=config,
@@ -325,8 +330,11 @@ def evaluate_one_checkpoint(
         "step": int(payload.get("step", -1)),
         "epoch": int(payload.get("epoch", -1)),
         "loss": metrics.get("loss", math.nan),
-        "bit_accuracy_pct": metrics.get("bit_accuracy_pct", math.nan),
+        "regression_mse": metrics.get("regression_mse", math.nan),
+        "classification_loss": metrics.get("classification_loss", math.nan),
         "path_accuracy_pct": metrics.get("path_accuracy_pct", math.nan),
+        "low_tick_mae": metrics.get("low_tick_mae", math.nan),
+        "high_tick_mae": metrics.get("high_tick_mae", math.nan),
         "low_price_mae_dollars": metrics.get("low_price_mae_dollars", math.nan),
         "high_price_mae_dollars": metrics.get("high_price_mae_dollars", math.nan),
         "seconds": time.perf_counter() - started,
@@ -350,7 +358,6 @@ def build_probe_model(
         embedding_dim=config.encoder_embedding_dim,
         hidden_dim=config.hidden_dim,
         target_chunks=len(config.horizons),
-        target_bits=PRICE_TARGET_BITS_PER_HORIZON,
         dropout=config.dropout,
     ).to(device)
     state = payload.get("model")

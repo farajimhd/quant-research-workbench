@@ -9,22 +9,24 @@ x.bin current chunk [B,14] + [B,128,16]
         -> frozen masked_event_model encoder
         -> chunk embedding [B,32]
         -> nonlinear MLP decoder
-        -> future price target logits [B,2,53]
+        -> low/high tick regression [B,2,2]
+        -> up/down/path class logits
 ```
 
 The two output chunks correspond to the two stored future chunks in cache v2.
-For each future chunk, the 53 target bits are the price-relevant future header
-bits plus the future low/high primary-price deltas:
+For each future chunk, labels are derived from the future chunk header plus the
+future event price deltas:
 
 ```text
-20 bits ask-anchor ticks
- 1 bit  price scale
-16 bits low primary-price delta
-16 bits high primary-price delta
+low_ticks  = future_ask_anchor_ticks + min(primary_price_delta_ticks)
+high_ticks = future_ask_anchor_ticks + max(primary_price_delta_ticks)
 ```
 
-The loss is BCE-with-logits on those bits. Direction/path classes are decoded
-only for metrics and confusion matrices; they are not the training target.
+The loss is normalized low/high absolute-tick MSE plus cross-entropy for
+upside, downside, and path classes. The future header is used only to build the
+labels; the model does not predict future header bits. This avoids the earlier
+failure mode where small predicted-anchor errors dominated semantic direction
+metrics.
 This is intentionally simple and fast; it does not use the older multi-context
 temporal transformer decoder.
 
@@ -175,8 +177,8 @@ y:      first two future compact chunks from shard_*.y.bin
 ```
 
 The frozen masked-event encoder turns `x` into one chunk embedding. A small MLP
-probe then predicts the future price-header and low/high delta bits for the two
-stored future chunks from `y.bin`:
+probe then predicts low/high absolute ticks plus classification labels for the
+two stored future chunks from `y.bin`:
 
 ```text
 future chunk 1: events t+1   ... t+128
@@ -187,20 +189,23 @@ Targets are built only from compact bytes:
 
 1. decode the current `x.bin` chunk and take the last valid primary price as
    the reference for metrics,
-2. decode each stored future `y.bin` chunk's price-relevant header fields,
+2. decode each stored future `y.bin` chunk's ask-anchor ticks and tick scale,
 3. take the low and high primary-price deltas inside each future chunk,
-4. train `BCEWithLogitsLoss` on the future header bits plus low/high delta
-   bits.
+4. convert those extrema to absolute ticks with the target future header,
+5. train MSE on normalized absolute low/high ticks and cross-entropy on
+   up/down/path classes.
 
 Per future chunk:
 
 ```text
-price header target: 21 bits
-low/high delta target: 32 bits
-total: 53 bits
+regression target: low_ticks / 2^20, high_ticks / 2^20
+up class:          no_up, up, strong_up
+down class:        no_down, down, strong_down
+path class:        flat, up_only, down_only, two_sided
 ```
 
-With two stored future chunks, the probe predicts 106 bits per sample.
+With two stored future chunks, the probe predicts four normalized tick values
+and six class-logit groups per sample.
 
 The default class thresholds are:
 
@@ -212,11 +217,11 @@ strong: abs(return_bps) >= 20
 Rows whose current or future chunk cannot decode a positive price are masked out
 for that future chunk.
 
-Validation metrics decode the predicted future header and low/high deltas back
-to dollar prices, then report:
+Validation metrics convert predicted ticks back to dollar prices using the
+target chunk tick scale, then report:
 
-- bit accuracy and price-header bit accuracy,
-- low/high delta bit accuracy and exact int16 accuracy,
+- regression MSE,
+- low/high tick MAE,
 - decoded low/high dollar MAE,
 - predicted-low <= predicted-high validity rate,
 - upside, downside, and path confusion matrices.
