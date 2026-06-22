@@ -11,6 +11,7 @@ from services.reference_gateway.active_tickers import run_active_ticker_plan, wr
 from services.reference_gateway.audit import run_reference_audit, write_report
 from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.policy import evaluate_write_policy
+from services.reference_gateway.table_groups import table_group_markdown
 from services.reference_gateway.tradability import tradability_rule_markdown
 
 
@@ -18,6 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reference gateway audit and sync planner.")
     parser.add_argument("--write-report", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--print-rules", action="store_true", help="Print the hard tradability blocking rules.")
+    parser.add_argument("--print-table-groups", action="store_true", help="Print reference gateway table ownership groups.")
     parser.add_argument(
         "--active-ticker-check",
         action=argparse.BooleanOptionalAction,
@@ -32,6 +34,9 @@ def main() -> None:
     load_env_files(discover_clickhouse_env_files())
     if args.print_rules:
         print(tradability_rule_markdown())
+        return
+    if args.print_table_groups:
+        print(table_group_markdown())
         return
     config = ReferenceGatewayConfig.from_env()
     write_policy = evaluate_write_policy(config)

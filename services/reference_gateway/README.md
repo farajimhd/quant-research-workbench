@@ -69,6 +69,12 @@ To print the blocking rules:
 python -m services.reference_gateway.main --print-rules
 ```
 
+To print the table ownership groups:
+
+```powershell
+python -m services.reference_gateway.main --print-table-groups
+```
+
 To run the market-open ticker reconciliation once:
 
 ```powershell
@@ -139,6 +145,14 @@ example blocking a clearly wrong conid or adding a newly listed security needed
 by the current session.
 
 ## Issuer Group
+
+All integrated groups are defined in:
+
+```text
+services/reference_gateway/TABLE_GROUPS.md
+```
+
+Market reference publications are intentionally excluded from this phase.
 
 The second table group is issuer identity:
 

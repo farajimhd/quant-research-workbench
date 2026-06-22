@@ -9,6 +9,7 @@ from typing import Any
 
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
 from services.reference_gateway.config import ReferenceGatewayConfig
+from services.reference_gateway.table_groups import OWNED_REFERENCE_TABLES, REFERENCE_TABLE_GROUPS
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +40,7 @@ def run_reference_audit(config: ReferenceGatewayConfig) -> ReferenceAuditReport:
     database = config.clickhouse_database
     checks = [
         check_required_tables(client, database),
-        check_identity_graph_counts(client, database),
+        check_table_group_counts(client, database),
         check_issuer_identifier_coverage(client, database),
         check_duplicate_issuer_identifiers(client, database),
         check_security_parent_integrity(client, database),
@@ -72,18 +73,7 @@ def write_report(report: ReferenceAuditReport, root: Path) -> Path:
 
 
 def check_required_tables(client: ClickHouseHttpClient, database: str) -> AuditCheck:
-    required = [
-        "ref_exchange_v1",
-        "id_issuer_v1",
-        "id_issuer_identifier_v1",
-        "id_security_v1",
-        "id_security_identifier_v1",
-        "id_listing_v1",
-        "id_symbol_v1",
-        "id_source_mapping_v1",
-        "id_mapping_issue_v1",
-        "feature_tradable_universe_v1",
-    ]
+    required = list(OWNED_REFERENCE_TABLES)
     rows = query_json_each_row(
         client,
         "SELECT name FROM system.tables "
@@ -101,26 +91,24 @@ def check_required_tables(client: ClickHouseHttpClient, database: str) -> AuditC
     )
 
 
-def check_identity_graph_counts(client: ClickHouseHttpClient, database: str) -> AuditCheck:
-    rows = query_json_each_row(
-        client,
-        f"""
-        SELECT 'issuers' AS entity, count() AS rows FROM {table(database, 'id_issuer_v1')}
-        UNION ALL SELECT 'issuer_identifiers', count() FROM {table(database, 'id_issuer_identifier_v1')}
-        UNION ALL SELECT 'securities', count() FROM {table(database, 'id_security_v1')}
-        UNION ALL SELECT 'security_identifiers', count() FROM {table(database, 'id_security_identifier_v1')}
-        UNION ALL SELECT 'listings', count() FROM {table(database, 'id_listing_v1')}
-        UNION ALL SELECT 'symbols', count() FROM {table(database, 'id_symbol_v1')}
-        UNION ALL SELECT 'tradable_universe', count() FROM {table(database, 'feature_tradable_universe_v1')}
-        """,
-    )
+def check_table_group_counts(client: ClickHouseHttpClient, database: str) -> AuditCheck:
+    rows: list[dict[str, Any]] = []
+    for group in REFERENCE_TABLE_GROUPS:
+        for table_name in group.tables:
+            rows.append(
+                {
+                    "group_id": group.group_id,
+                    "table": table_name,
+                    "rows": scalar_int(client, f"SELECT count() FROM {table(database, table_name)}"),
+                }
+            )
     zero = [row for row in rows if int(row.get("rows") or 0) == 0]
     return AuditCheck(
-        name="identity_graph_counts",
+        name="reference_table_group_counts",
         severity="error",
         status="ok" if not zero else "failed",
         count=len(zero),
-        message="Canonical identity graph has rows in every core table." if not zero else "Some core identity tables are empty.",
+        message="All owned reference table groups have rows." if not zero else "Some owned reference tables are empty.",
         sample_rows=rows,
     )
 
