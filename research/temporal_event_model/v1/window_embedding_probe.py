@@ -183,8 +183,17 @@ def main(argv: list[str] | None = None) -> int:
         max_context_chunks=config.context_chunks,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-    total_steps_estimate = max(1, config.epochs * config.blocks_per_epoch * max(1, config.min_samples_per_block // config.batch_size))
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps_estimate, eta_min=config.learning_rate * 0.05)
+    # The number of train batches in a random ticker window is not known until
+    # after the ClickHouse rows are fetched and converted to rolling chunks. Use
+    # a conservative scheduler horizon so a large block does not consume the
+    # entire cosine cycle, then update the Rich progress estimate dynamically as
+    # real block sizes are observed.
+    scheduler_steps_estimate = estimate_scheduler_steps(config)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=scheduler_steps_estimate,
+        eta_min=config.learning_rate * 0.05,
+    )
     amp_dtype = resolve_amp_dtype(config.amp_dtype)
     reporter_state = ProbeProgressState(
         run_name=run_name,
@@ -194,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=str(run_root),
         batch_size=config.batch_size,
         epochs=config.epochs,
-        total_steps=total_steps_estimate,
+        total_steps=scheduler_steps_estimate,
         train_shard_count=config.blocks_per_epoch,
         validation_shard_count=len(validation_blocks),
         probe_parameters=sum(p.numel() for p in model.parameters()),
@@ -632,7 +641,7 @@ def load_random_embedding_block(
             rng=rng,
             reporter=reporter,
         )
-        if block is not None and block.candidates.size >= config.min_samples_per_block:
+        if block is not None and block.candidates.size >= minimum_train_samples_per_block(config):
             return block
     return None
 
@@ -669,7 +678,7 @@ def load_embedding_block_for_window(
     headers, events, valid = build_rolling_chunks(rows)
     compact_seconds = time.perf_counter() - encode_started
     candidates = valid_context_origins(valid, config)
-    if candidates.size < config.min_samples_per_block:
+    if candidates.size < minimum_train_samples_per_block(config):
         return None
     embed_started = time.perf_counter()
     embeddings = encode_valid_chunks(event_encoder, headers, events, valid, config, device, amp_dtype)
@@ -706,9 +715,47 @@ def minimum_rows_required(config: WindowProbeConfig) -> int:
     return EVENTS_PER_CHUNK + int(np.max(context_lags(config))) + config.label_chunks * EVENTS_PER_CHUNK
 
 
+def minimum_train_samples_per_block(config: WindowProbeConfig) -> int:
+    return max(int(config.min_samples_per_block), int(config.batch_size))
+
+
+def max_valid_origins_per_block(config: WindowProbeConfig) -> int:
+    max_lag = int(np.max(context_lags(config)))
+    max_future_offset = int(config.label_chunks) * EVENTS_PER_CHUNK
+    max_chunks = max(0, int(config.block_max_events) - EVENTS_PER_CHUNK + 1)
+    return max(1, max_chunks - max_lag - max_future_offset)
+
+
+def estimate_scheduler_steps(config: WindowProbeConfig) -> int:
+    max_steps_per_block = max(1, max_valid_origins_per_block(config) // max(1, int(config.batch_size)))
+    return max(1, int(config.epochs) * int(config.blocks_per_epoch) * max_steps_per_block)
+
+
+def update_dynamic_progress_total(
+    reporter: ProbeTrainingReporter,
+    *,
+    config: WindowProbeConfig,
+    epoch: int,
+    block_index: int,
+    global_step: int,
+    current_block_steps: int,
+) -> None:
+    blocks_done_before = max(0, (int(epoch) - 1) * int(config.blocks_per_epoch) + (int(block_index) - 1))
+    total_blocks = max(1, int(config.epochs) * int(config.blocks_per_epoch))
+    if blocks_done_before > 0:
+        observed_steps_per_block = max(1.0, float(global_step) / float(blocks_done_before))
+    else:
+        observed_steps_per_block = max(1.0, float(current_block_steps))
+    remaining_blocks_after_current = max(0, total_blocks - blocks_done_before - 1)
+    estimated_total = int(
+        round(float(global_step) + float(current_block_steps) + remaining_blocks_after_current * observed_steps_per_block)
+    )
+    reporter.state.total_steps = max(int(global_step) + int(current_block_steps), estimated_total)
+
+
 def crop_random_embedding_subrange(rows: np.ndarray, config: WindowProbeConfig, rng: random.Random) -> np.ndarray:
     required = minimum_rows_required(config)
-    keep = max(required + config.min_samples_per_block, min(config.block_max_events, int(rows.shape[0])))
+    keep = max(required + minimum_train_samples_per_block(config), min(config.block_max_events, int(rows.shape[0])))
     if keep >= rows.shape[0]:
         return rows
     start = rng.randint(0, int(rows.shape[0]) - keep)
@@ -814,6 +861,14 @@ def train_embedding_block(
     order = block.candidates.copy()
     rng.shuffle(order)
     steps = int(order.size) // int(config.batch_size)
+    update_dynamic_progress_total(
+        reporter,
+        config=config,
+        epoch=epoch,
+        block_index=block_index,
+        global_step=global_step,
+        current_block_steps=steps,
+    )
     running: dict[str, float] = {}
     started = time.perf_counter()
     for step in range(steps):
@@ -861,6 +916,10 @@ def train_embedding_block(
                 "training/lr": float(optimizer.param_groups[0]["lr"]),
                 "training/epoch": float(epoch),
                 "training/block": float(block_index),
+                "training/shard_position": float(block_index),
+                "training/shard": float(block_index),
+                "training/shard_step": float(step + 1),
+                "training/shard_steps": float(steps),
                 "training/samples_seen_total": float(samples_seen),
                 "training/samples_per_sec": float(samples_seen / max(elapsed, 1e-6)),
                 "profile/step_seconds": float(step_seconds),
