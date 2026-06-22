@@ -136,6 +136,10 @@ impl GapFillService {
             }),
         )
         .await?;
+        if self.config.historical_flatfile_update_enabled {
+            self.plan_historical_flatfile_update(started_at, "startup_historical_check", true)
+                .await?;
+        }
         Ok(())
     }
 
@@ -184,7 +188,7 @@ impl GapFillService {
                 .await?;
         }
         if !is_streaming_phase(Utc::now()) && self.config.historical_flatfile_update_enabled {
-            self.plan_historical_flatfile_update(started_at, mode)
+            self.plan_historical_flatfile_update(started_at, mode, false)
                 .await?;
         }
         Ok(total_rows)
@@ -396,6 +400,7 @@ impl GapFillService {
         &self,
         started_at: DateTime<Utc>,
         mode: &str,
+        record_up_to_date: bool,
     ) -> Result<(), String> {
         let Some(target_end) = self.historical_safe_target_date() else {
             return Ok(());
@@ -408,6 +413,31 @@ impl GapFillService {
                 self.config.historical_known_coverage_end_date.clone()
             });
         if latest >= target_end.to_string() {
+            eprintln!(
+                "Historical flatfile coverage is up to date: latest={} target={}",
+                latest, target_end
+            );
+            if record_up_to_date {
+                let host_role = self.host_role();
+                self.record_coverage_run(
+                    started_at,
+                    "historical_flatfile_events",
+                    "up_to_date",
+                    date_start_utc(target_end),
+                    date_start_utc(target_end) + ChronoDuration::days(1),
+                    mode,
+                    0,
+                    &host_role,
+                    "",
+                    &json!({
+                        "latest_historical_event_date": latest,
+                        "target_end_date": target_end.to_string(),
+                        "autorun": self.config.historical_flatfile_autorun,
+                        "message": "historical flatfile coverage is current through the safe target date",
+                    }),
+                )
+                .await?;
+            }
             return Ok(());
         }
         let Some(start_date) = next_date(&latest) else {

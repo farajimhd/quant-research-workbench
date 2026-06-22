@@ -9,27 +9,39 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 try:
     from rich import box
+    from rich.columns import Columns
     from rich.console import Group
     from rich.live import Live
     from rich.panel import Panel
     from rich.table import Table
+    from rich.text import Text
 except Exception:  # pragma: no cover - fallback is for environments without rich.
     box = None
+    Columns = None
     Group = None
     Live = None
     Panel = None
     Table = None
+    Text = None
+
+
+EASTERN = ZoneInfo("America/New_York")
+VANCOUVER = ZoneInfo("America/Vancouver")
+MARKET_STATUS_URL = "https://api.massive.com/v1/marketstatus/now"
 
 
 @dataclass
@@ -38,31 +50,46 @@ class PollState:
     errors: list[str] = field(default_factory=list)
     health: dict[str, Any] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
+    coverage: dict[str, Any] = field(default_factory=dict)
+    market_status: dict[str, Any] = field(default_factory=dict)
+    market_status_error: str = ""
     samples: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     prior_metrics: dict[str, Any] = field(default_factory=dict)
     prior_poll_ts: float = 0.0
+    last_market_status_poll: float = 0.0
     rates: dict[str, float] = field(default_factory=dict)
+    refresh_seconds: float = 1.0
     updated_at: datetime | None = None
 
 
 def main() -> int:
     args = parse_args()
-    state = PollState(base_url=args.base_url.rstrip("/"))
+    state = PollState(
+        base_url=args.base_url.rstrip("/"),
+        refresh_seconds=max(0.25, float(args.refresh_seconds)),
+    )
     watch = [item.strip().upper() for item in args.watch.split(",") if item.strip()]
     if Live is None:
         return run_plain(args, state, watch)
-    refresh = max(0.25, float(args.refresh_seconds))
     with Live(
         render_dashboard(state, watch),
         auto_refresh=False,
         screen=not args.no_screen,
         transient=False,
-        vertical_overflow="crop",
+        vertical_overflow="visible",
+        refresh_per_second=4,
     ) as live:
         while True:
-            poll_once(state, watch, args.event_limit, args.timeout_seconds)
+            poll_once(
+                state,
+                watch,
+                args.event_limit,
+                args.timeout_seconds,
+                args.market_status_seconds,
+                args.disable_market_status,
+            )
             live.update(render_dashboard(state, watch), refresh=True)
-            time.sleep(refresh)
+            time.sleep(state.refresh_seconds)
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,6 +99,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-limit", type=int, default=6, help="Recent compact events per watched ticker.")
     parser.add_argument("--refresh-seconds", type=float, default=1.0, help="Dashboard refresh interval.")
     parser.add_argument("--timeout-seconds", type=float, default=2.0, help="HTTP request timeout.")
+    parser.add_argument(
+        "--market-status-seconds",
+        type=float,
+        default=10.0,
+        help="Massive market-status polling interval for the terminal.",
+    )
+    parser.add_argument("--disable-market-status", action="store_true", help="Do not call Massive market status.")
     parser.add_argument("--no-screen", action="store_true", help="Do not use Rich alternate-screen mode.")
     return parser.parse_args()
 
@@ -79,25 +113,45 @@ def parse_args() -> argparse.Namespace:
 def run_plain(args: argparse.Namespace, state: PollState, watch: list[str]) -> int:
     print("rich is not installed; falling back to plain qmd monitor output.", flush=True)
     while True:
-        poll_once(state, watch, args.event_limit, args.timeout_seconds)
+        poll_once(
+            state,
+            watch,
+            args.event_limit,
+            args.timeout_seconds,
+            args.market_status_seconds,
+            args.disable_market_status,
+        )
         payload = {
             "updated_at": state.updated_at.isoformat() if state.updated_at else "",
             "health": state.health,
             "metrics": state.metrics,
+            "coverage": state.coverage,
+            "market_status": state.market_status,
             "rates": state.rates,
             "errors": state.errors[-5:],
         }
         print(json.dumps(payload, sort_keys=True), flush=True)
-        time.sleep(max(0.25, float(args.refresh_seconds)))
+        time.sleep(state.refresh_seconds)
 
 
-def poll_once(state: PollState, watch: list[str], event_limit: int, timeout: float) -> None:
+def poll_once(
+    state: PollState,
+    watch: list[str],
+    event_limit: int,
+    timeout: float,
+    market_status_seconds: float,
+    disable_market_status: bool,
+) -> None:
     now = time.perf_counter()
     state.updated_at = datetime.now(UTC)
     state.health = get_json(state, "/health", timeout) or {}
     metrics = get_json(state, "/metrics", timeout) or {}
+    state.coverage = get_json(state, "/snapshot/coverage?limit=8", timeout) or {}
     update_rates(state, metrics, now)
     state.metrics = metrics
+    if not disable_market_status and now - state.last_market_status_poll >= max(1.0, market_status_seconds):
+        state.market_status = get_market_status(state, timeout) or {}
+        state.last_market_status_poll = now
     state.samples = {}
     for ticker in watch:
         rows = get_json(state, f"/snapshot/compact-events/{ticker}?limit={max(1, event_limit)}", timeout)
@@ -112,6 +166,23 @@ def get_json(state: PollState, path: str, timeout: float) -> Any:
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
         message = f"{datetime.now().strftime('%H:%M:%S')} {path}: {exc}"
         state.errors.append(message)
+        state.errors = state.errors[-20:]
+        return None
+
+
+def get_market_status(state: PollState, timeout: float) -> dict[str, Any] | None:
+    api_key = os.environ.get("MASSIVE_API_KEY", "").strip()
+    if not api_key:
+        state.market_status_error = "MASSIVE_API_KEY missing in terminal environment"
+        return None
+    url = MARKET_STATUS_URL + "?" + urllib.parse.urlencode({"apiKey": api_key})
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            state.market_status_error = ""
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        state.market_status_error = str(exc)
+        state.errors.append(f"{datetime.now().strftime('%H:%M:%S')} market-status: {exc}")
         state.errors = state.errors[-20:]
         return None
 
@@ -140,114 +211,216 @@ def update_rates(state: PollState, metrics: dict[str, Any], now: float) -> None:
 
 def render_dashboard(state: PollState, watch: list[str]) -> Any:
     return Group(
-        render_connection(state),
-        render_ingest(state),
-        render_queues(state),
-        render_compact_events(state),
+        render_header(state),
+        render_current_operation(state),
+        Columns(
+            [render_dependencies(state), render_runtime(state)],
+            equal=True,
+            expand=True,
+        ),
+        render_maintenance(state),
+        Columns(
+            [render_backpressure(state), render_compact_events(state)],
+            equal=True,
+            expand=True,
+        ),
         render_recent_events(state, watch),
         render_messages(state),
     )
 
 
-def render_connection(state: PollState) -> Any:
+def render_header(state: PollState) -> Any:
     health = state.health or {}
     metrics = state.metrics or {}
     config = health.get("config") if isinstance(health.get("config"), dict) else {}
     status = str(health.get("status") or "waiting")
-    color = "green" if status == "running" else "yellow"
-    table = kv_table()
-    table.add_row("status", status)
-    table.add_row("session", str(health.get("session_phase") or "-"))
-    table.add_row("subscriptions", ", ".join(health.get("subscriptions") or []))
-    table.add_row("bind", str(config.get("bind") or "-"))
-    table.add_row("database", str(config.get("clickhouse_database") or "-"))
-    table.add_row("uptime", format_ms(metrics.get("process_uptime_ms")))
-    table.add_row("updated", state.updated_at.strftime("%H:%M:%S") if state.updated_at else "-")
-    return Panel(table, title="QMD Gateway", box=box.ROUNDED, border_style=color, padding=(0, 1))
+    status_style = status_color(status)
+    now = state.updated_at or datetime.now(UTC)
+    left = Text.assemble(
+        ("Python QMD Gateway  ", "bold"),
+        (status.upper(), f"bold {status_style}"),
+        "\n",
+        ("bind ", "dim"),
+        str(config.get("bind") or "-"),
+        ("  db ", "dim"),
+        str(config.get("clickhouse_database") or "-"),
+        ("  session ", "dim"),
+        str(health.get("session_phase") or "-"),
+    )
+    right = Text.assemble(
+        ("UTC ", "dim"),
+        clock(now),
+        ("   ET ", "dim"),
+        clock(now.astimezone(EASTERN)),
+        ("   VAN ", "dim"),
+        clock(now.astimezone(VANCOUVER)),
+        "\n",
+        ("poll ", "dim"),
+        f"{state.refresh_seconds:.1f}s",
+        ("   uptime ", "dim"),
+        format_ms(metrics.get("process_uptime_ms")),
+        ("   market ", "dim"),
+        market_label(state),
+    )
+    grid = Table.grid(expand=True)
+    grid.add_column(ratio=1)
+    grid.add_column(justify="right", ratio=1)
+    grid.add_row(left, right)
+    return Panel(grid, box=box.ROUNDED, border_style=status_style, padding=(0, 1))
 
 
-def render_ingest(state: PollState) -> Any:
+def render_current_operation(state: PollState) -> Any:
+    health = state.health or {}
     metrics = state.metrics or {}
-    table = kv_table()
-    table.add_row("events/sec", format_rate(state.rates.get("ingest_events_per_sec")))
-    table.add_row("trades/sec", format_rate(state.rates.get("ingest_trades_per_sec")))
-    table.add_row("quotes/sec", format_rate(state.rates.get("ingest_quotes_per_sec")))
-    table.add_row("total events", format_int(metrics.get("ingest_events")))
-    table.add_row("lag", format_ms(metrics.get("last_event_lag_ms")))
-    table.add_row("last event", str(metrics.get("last_event_ts") or "-"))
-    table.add_row("connect failures", format_int(metrics.get("massive_connect_failures")))
-    table.add_row("disconnects", format_int(metrics.get("massive_disconnects")))
-    table.add_row("parse failures", format_int(metrics.get("parse_failures")))
-    return Panel(table, title="Ingest", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
-
-
-def render_queues(state: PollState) -> Any:
-    metrics = state.metrics or {}
-    table = kv_table()
-    drops = [
-        ("event broadcast", "events_broadcast_dropped"),
-        ("compact queue", "compact_event_queue_dropped"),
-        ("compact broadcast", "compact_event_broadcast_dropped"),
-        ("bar events", "bar_events_dropped"),
-        ("bar writer", "bar_rows_writer_dropped"),
-        ("bar indicator", "bar_rows_indicator_dropped"),
-        ("bar scanner", "bar_rows_scanner_dropped"),
-        ("indicator events", "indicator_events_dropped"),
-        ("raw clickhouse", "clickhouse_events_dropped"),
+    config = health.get("config") if isinstance(health.get("config"), dict) else {}
+    rows = [
+        ("Phase", str(health.get("session_phase") or "-")),
+        ("Market", market_detail(state)),
+        ("Subscriptions", ", ".join(health.get("subscriptions") or []) or "-"),
+        ("Message", operation_message(state)),
+        (
+            "Historical",
+            "enabled" if config.get("historical_flatfile_update_enabled") else "disabled",
+        ),
+        ("Last event lag", format_ms(metrics.get("last_event_lag_ms"))),
     ]
-    total = 0
-    for label, key in drops:
-        value = int(as_float(metrics.get(key)))
-        total += value
-        table.add_row(label, format_int(value))
+    return Panel(detail_table(rows), title="Current Operation", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
+
+
+def render_dependencies(state: PollState) -> Any:
+    health = state.health or {}
+    config = health.get("config") if isinstance(health.get("config"), dict) else {}
+    market_ok = bool(state.market_status) and not state.market_status_error
+    rows = [
+        ("Local API", ok_label(bool(health)), state.base_url),
+        ("Massive API key", ok_label(bool(config.get("api_key_present"))), "required for websocket and status"),
+        ("Massive market status", ok_label(market_ok), state.market_status_error or market_label(state)),
+        (
+            "ClickHouse",
+            ok_label(bool(config.get("clickhouse_url"))),
+            f"{config.get('clickhouse_url') or '-'} db={config.get('clickhouse_database') or '-'}",
+        ),
+        (
+            "Historical source",
+            ok_label(bool(config.get("historical_clickhouse_database"))),
+            str(config.get("historical_clickhouse_database") or "-"),
+        ),
+    ]
+    return Panel(status_table(rows), title="Dependencies", box=box.ROUNDED, border_style="green", padding=(0, 1))
+
+
+def render_runtime(state: PollState) -> Any:
+    metrics = state.metrics or {}
+    rows = [
+        ("Status", str((state.health or {}).get("status") or "waiting"), state.updated_at.strftime("%Y-%m-%d %H:%M:%S") if state.updated_at else "-"),
+        ("Events", format_int(metrics.get("ingest_events")), format_rate(state.rates.get("ingest_events_per_sec"))),
+        ("Trades", format_int(metrics.get("ingest_trades")), format_rate(state.rates.get("ingest_trades_per_sec"))),
+        ("Quotes", format_int(metrics.get("ingest_quotes")), format_rate(state.rates.get("ingest_quotes_per_sec"))),
+        ("Compact written", format_int(metrics.get("compact_events_persisted")), format_rate(state.rates.get("compact_events_persisted_per_sec"))),
+        ("Bars emitted", format_int(metrics.get("bar_rows_emitted")), format_rate(state.rates.get("bar_rows_emitted_per_sec"))),
+        ("Scanner rows", format_int(metrics.get("scanner_candidates_emitted")), format_rate(state.rates.get("scanner_candidates_emitted_per_sec"))),
+        ("Gap fill runs", format_int(metrics.get("gap_fill_runs")), f"failures={format_int(metrics.get('gap_fill_failures'))}"),
+    ]
+    return Panel(metric_table(rows), title="Runtime", box=box.ROUNDED, border_style="yellow", padding=(0, 1))
+
+
+def render_maintenance(state: PollState) -> Any:
+    rows = coverage_rows(state)
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
+    table.add_column("Kind", style="bold cyan", ratio=2)
+    table.add_column("Status", width=14)
+    table.add_column("Window", ratio=3)
+    table.add_column("Action", ratio=2)
+    table.add_column("Details", ratio=4, overflow="fold")
+    if not rows:
+        error = state.coverage.get("error") if isinstance(state.coverage, dict) else ""
+        table.add_row("-", "waiting", "-", "-", str(error or "No coverage rows returned yet."))
+    for row in rows:
+        summary = parse_summary(row.get("summary_json"))
+        details = summary.get("message") or summary.get("latest_historical_event_date") or ""
+        if summary.get("target_end_date"):
+            details = f"{details} -> target {summary.get('target_end_date')}".strip()
+        table.add_row(
+            str(row.get("coverage_kind") or "-"),
+            status_text(str(row.get("status") or "-")),
+            f"{short_time(row.get('start_ts_utc'))} to {short_time(row.get('end_ts_utc'))}",
+            str(row.get("action") or "-"),
+            details or f"rows={format_int(row.get('rows_written'))}",
+        )
+    return Panel(table, title="Maintenance Coverage", box=box.ROUNDED, border_style="green", padding=(0, 1))
+
+
+def render_backpressure(state: PollState) -> Any:
+    metrics = state.metrics or {}
+    rows = [
+        ("Event broadcast", "events_broadcast_dropped"),
+        ("Compact writer queue", "compact_event_queue_dropped"),
+        ("Compact broadcast", "compact_event_broadcast_dropped"),
+        ("Bar input queue", "bar_events_dropped"),
+        ("Bar writer queue", "bar_rows_writer_dropped"),
+        ("Bar indicator queue", "bar_rows_indicator_dropped"),
+        ("Bar scanner queue", "bar_rows_scanner_dropped"),
+        ("Indicator queue", "indicator_events_dropped"),
+        ("Raw CH queue", "clickhouse_events_dropped"),
+    ]
+    total = sum(int(as_float(metrics.get(key))) for _, key in rows)
+    table_rows = [(label, format_int(metrics.get(key)), "0 expected") for label, key in rows]
     color = "green" if total == 0 else "red"
-    return Panel(table, title="Queues And Drops", box=box.ROUNDED, border_style=color, padding=(0, 1))
+    return Panel(metric_table(table_rows, value_heading="Count", last_heading="Target"), title="Queue Health", box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
 def render_compact_events(state: PollState) -> Any:
     metrics = state.metrics or {}
-    table = kv_table()
-    table.add_row("emitted/sec", format_rate(state.rates.get("compact_events_emitted_per_sec")))
-    table.add_row("persisted/sec", format_rate(state.rates.get("compact_events_persisted_per_sec")))
-    table.add_row("emitted", format_int(metrics.get("compact_events_emitted")))
-    table.add_row("persisted", format_int(metrics.get("compact_events_persisted")))
-    table.add_row("reorder pending", format_int(metrics.get("compact_events_reorder_pending")))
-    table.add_row("reorder buffered", format_int(metrics.get("compact_events_reorder_buffered")))
-    table.add_row("reorder flushed", format_int(metrics.get("compact_events_reorder_flushed")))
-    table.add_row("forced flushes", format_int(metrics.get("compact_event_reorder_forced_flushes")))
-    table.add_row("late arrivals", format_int(metrics.get("compact_event_reorder_late_arrivals")))
-    table.add_row("rejected", format_int(metrics.get("compact_event_rejected")))
-    return Panel(table, title="Compact Events", box=box.ROUNDED, border_style="magenta", padding=(0, 1))
+    rows = [
+        ("Emitted", format_int(metrics.get("compact_events_emitted")), format_rate(state.rates.get("compact_events_emitted_per_sec"))),
+        ("Persisted", format_int(metrics.get("compact_events_persisted")), format_rate(state.rates.get("compact_events_persisted_per_sec"))),
+        ("Reorder pending", format_int(metrics.get("compact_events_reorder_pending")), "-"),
+        ("Reorder buffered", format_int(metrics.get("compact_events_reorder_buffered")), "-"),
+        ("Reorder flushed", format_int(metrics.get("compact_events_reorder_flushed")), "-"),
+        ("Forced flushes", format_int(metrics.get("compact_event_reorder_forced_flushes")), "-"),
+        ("Late arrivals", format_int(metrics.get("compact_event_reorder_late_arrivals")), "-"),
+        ("Rejected", format_int(metrics.get("compact_event_rejected")), "-"),
+    ]
+    return Panel(metric_table(rows), title="Compact Events", box=box.ROUNDED, border_style="magenta", padding=(0, 1))
 
 
 def render_recent_events(state: PollState, watch: list[str]) -> Any:
     table = Table(box=box.ROUNDED, expand=True, header_style="bold cyan")
-    table.add_column("Ticker", width=8)
-    table.add_column("Type", width=5)
-    table.add_column("Ordinal", justify="right", width=10)
-    table.add_column("SIP us", justify="right", width=18)
-    table.add_column("Seq", justify="right", width=12)
-    table.add_column("Primary", justify="right", width=12)
-    table.add_column("Size", justify="right", width=10)
+    table.add_column("ET", width=8, no_wrap=True)
+    table.add_column("VAN", width=8, no_wrap=True)
+    table.add_column("Ticker", width=8, no_wrap=True)
+    table.add_column("Type", width=5, no_wrap=True)
+    table.add_column("Ordinal", justify="right", width=10, no_wrap=True)
+    table.add_column("SIP", width=19, no_wrap=True)
+    table.add_column("Seq", justify="right", width=12, no_wrap=True)
+    table.add_column("Primary", justify="right", width=12, no_wrap=True)
+    table.add_column("Size", justify="right", width=10, no_wrap=True)
+    added = 0
     for ticker in watch:
         rows = state.samples.get(ticker, [])
         for row in rows[-3:]:
             event_type = "Q" if int(as_float(row.get("event_type"))) == 0 else "T"
+            event_dt = us_to_dt(row.get("sip_timestamp_us"))
             table.add_row(
+                clock(event_dt.astimezone(EASTERN)) if event_dt else "-",
+                clock(event_dt.astimezone(VANCOUVER)) if event_dt else "-",
                 ticker,
                 event_type,
                 format_int(row.get("ordinal")),
-                format_int(row.get("sip_timestamp_us")),
+                short_time(row.get("sip_timestamp_us")),
                 format_int(row.get("source_sequence")),
                 format_int(row.get("price_primary_int")),
                 format_int(row.get("size_primary")),
             )
-    return Panel(table, title="Recent Compact Events", box=box.ROUNDED, border_style="blue", padding=(0, 1))
+            added += 1
+    if added == 0:
+        table.add_row("-", "-", "-", "-", "-", "-", "-", "-", "-")
+    return Panel(table, title=f"Recent Compact Events ({added})", box=box.ROUNDED, border_style="blue", padding=(0, 1))
 
 
 def render_messages(state: PollState) -> Any:
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
-    table.add_column("Message")
+    table.add_column("Message", overflow="fold")
     if state.errors:
         for message in state.errors[-6:]:
             table.add_row(message)
@@ -258,11 +431,115 @@ def render_messages(state: PollState) -> Any:
     return Panel(table, title="Messages", box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
-def kv_table() -> Any:
-    table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
-    table.add_column("Metric", justify="right", style="bold")
-    table.add_column("Value", justify="left")
+def detail_table(rows: list[tuple[str, str]]) -> Any:
+    table = Table.grid(expand=True)
+    table.add_column("Label", width=16, style="bold cyan")
+    table.add_column("Value", ratio=1, overflow="fold")
+    for label, value in rows:
+        table.add_row(label, value)
     return table
+
+
+def status_table(rows: list[tuple[str, str, str]]) -> Any:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
+    table.add_column("Check", style="bold cyan", width=20)
+    table.add_column("Result", width=8, no_wrap=True)
+    table.add_column("Details", ratio=1, overflow="fold")
+    for check, result, details in rows:
+        table.add_row(check, result, details)
+    return table
+
+
+def metric_table(
+    rows: list[tuple[str, str, str]],
+    value_heading: str = "Total",
+    last_heading: str = "Last",
+) -> Any:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
+    table.add_column("Metric", style="bold cyan", width=22)
+    table.add_column(value_heading, justify="right", width=14, no_wrap=True)
+    table.add_column(last_heading, justify="right", width=16, no_wrap=True)
+    for metric, total, last in rows:
+        table.add_row(metric, total, last)
+    return table
+
+
+def coverage_rows(state: PollState) -> list[dict[str, Any]]:
+    coverage = state.coverage if isinstance(state.coverage, dict) else {}
+    rows = coverage.get("rows")
+    return rows if isinstance(rows, list) else []
+
+
+def parse_summary(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def operation_message(state: PollState) -> str:
+    health = state.health or {}
+    metrics = state.metrics or {}
+    if not health:
+        return "Waiting for qmd-gateway HTTP API."
+    status = str(health.get("status") or "")
+    if status != "running":
+        return status or "Gateway is not reporting running state."
+    event_rate = as_float(state.rates.get("ingest_events_per_sec"))
+    if event_rate > 0:
+        return f"Ingesting Massive quotes/trades at {event_rate:,.1f} events/sec."
+    lag = as_float(metrics.get("last_event_lag_ms"))
+    if lag > 0:
+        return f"Connected; last event lag is {format_ms(lag)}."
+    return "Connected; waiting for Massive events."
+
+
+def market_label(state: PollState) -> str:
+    payload = state.market_status or {}
+    if not payload:
+        return "unknown"
+    market = str(payload.get("market") or "-")
+    early = bool(payload.get("earlyHours"))
+    after = bool(payload.get("afterHours"))
+    flags = []
+    if early:
+        flags.append("early")
+    if after:
+        flags.append("after")
+    return market + (f" ({', '.join(flags)})" if flags else "")
+
+
+def market_detail(state: PollState) -> str:
+    payload = state.market_status or {}
+    if not payload:
+        return state.market_status_error or "not checked yet"
+    exchanges = payload.get("exchanges") if isinstance(payload.get("exchanges"), dict) else {}
+    exchange_status = ", ".join(f"{key}:{value}" for key, value in exchanges.items()) or "-"
+    server_time = str(payload.get("serverTime") or "-")
+    return f"{market_label(state)} server={server_time} exchanges={exchange_status}"
+
+
+def status_text(value: str) -> str:
+    style = status_color(value)
+    return f"[{style}]{value}[/{style}]"
+
+
+def status_color(value: str) -> str:
+    lowered = value.lower()
+    if lowered in {"running", "ok", "up_to_date", "completed", "launched"}:
+        return "green"
+    if lowered in {"planned", "waiting", "skipped", "api_only_missing_massive_key"}:
+        return "yellow"
+    if "fail" in lowered or "error" in lowered or "needs" in lowered:
+        return "red"
+    return "cyan"
+
+
+def ok_label(ok: bool) -> str:
+    return "[green]OK[/green]" if ok else "[red]FAIL[/red]"
 
 
 def as_float(value: Any) -> float:
@@ -291,6 +568,30 @@ def format_ms(value: Any) -> str:
     if number >= 1_000:
         return f"{number / 1_000:,.1f}s"
     return f"{number:,.0f}ms"
+
+
+def clock(value: datetime) -> str:
+    return value.strftime("%H:%M:%S")
+
+
+def short_time(value: Any) -> str:
+    event_dt = us_to_dt(value)
+    if event_dt:
+        return event_dt.strftime("%Y-%m-%d %H:%M:%S")
+    raw = str(value or "-")
+    if "T" in raw:
+        return raw.replace("T", " ").replace("Z", "")[:19]
+    return raw
+
+
+def us_to_dt(value: Any) -> datetime | None:
+    number = as_float(value)
+    if number <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(number / 1_000_000, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 if __name__ == "__main__":

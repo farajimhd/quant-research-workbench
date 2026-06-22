@@ -14,7 +14,9 @@ use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::time::{interval, Duration};
@@ -60,6 +62,7 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/config", get(config))
         .route("/metrics", get(metrics_snapshot))
+        .route("/snapshot/coverage", get(coverage_snapshot))
         .route("/indicator-catalog", get(indicator_catalog_snapshot))
         .route("/signal-catalog", get(signal_catalog_snapshot))
         .route("/snapshot/scanner", get(scanner_snapshot))
@@ -108,12 +111,84 @@ async fn metrics_snapshot(State(state): State<Arc<AppState>>) -> Json<MetricsSna
     Json(state.metrics.snapshot())
 }
 
+async fn coverage_snapshot(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<LimitQuery>,
+) -> Json<Value> {
+    let limit = query.limit.unwrap_or(12).clamp(1, 50);
+    let sql = format!(
+        r#"
+        SELECT
+            started_at,
+            finished_at,
+            coverage_kind,
+            status,
+            start_ts_utc,
+            end_ts_utc,
+            action,
+            rows_written,
+            host_role,
+            command,
+            summary_json
+        FROM {table}
+        ORDER BY started_at DESC
+        LIMIT {limit}
+        FORMAT JSONEachRow
+        "#,
+        table = state.config.qmd_coverage_table,
+        limit = limit,
+    );
+    match clickhouse_query(&state.config, &sql, true).await {
+        Ok(text) => {
+            let rows = text
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .collect::<Vec<_>>();
+            Json(json!({ "rows": rows }))
+        }
+        Err(error) => Json(json!({ "rows": [], "error": error })),
+    }
+}
+
 async fn indicator_catalog_snapshot() -> Json<&'static [IndicatorCatalogEntry]> {
     Json(indicator_catalog())
 }
 
 async fn signal_catalog_snapshot() -> Json<&'static [SignalMethodEntry]> {
     Json(signal_catalog())
+}
+
+async fn clickhouse_query(
+    config: &GatewayConfig,
+    body: &str,
+    use_database: bool,
+) -> Result<String, String> {
+    let url = if use_database {
+        format!(
+            "{}/?database={}",
+            config.clickhouse_url,
+            urlencoding::encode(&config.clickhouse_database)
+        )
+    } else {
+        format!("{}/", config.clickhouse_url)
+    };
+    let mut request = Client::new()
+        .post(url)
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .header("X-ClickHouse-User", &config.clickhouse_user)
+        .body(body.to_string());
+    let password = config.clickhouse_password();
+    if !password.is_empty() {
+        request = request.header("X-ClickHouse-Key", password);
+    }
+    let response = request.send().await.map_err(|error| error.to_string())?;
+    let status = response.status();
+    let text = response.text().await.map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!("ClickHouse HTTP {status}: {text}"));
+    }
+    Ok(text)
 }
 
 async fn scanner_snapshot(
