@@ -28,7 +28,15 @@ class ReferenceGatewayConfig:
     clickhouse_password_present: bool
     clickhouse_database: str
     source_massive_enabled: bool
+    massive_base_url: str
+    massive_api_key_present: bool
     ibkr_resolution_enabled: bool
+    ibkr_base_url: str
+    active_ticker_check_enabled: bool
+    active_ticker_check_market_hours_only: bool
+    active_ticker_max_pages: int
+    active_ticker_page_limit: int
+    active_ticker_new_candidate_limit: int
     after_hours_writes_only: bool
     market_hours_write_override: bool
     market_hours_write_reason: str
@@ -56,7 +64,15 @@ class ReferenceGatewayConfig:
             clickhouse_password_present=bool(password),
             clickhouse_database=env_string("REFERENCE_GATEWAY_CLICKHOUSE_DATABASE", "q_live"),
             source_massive_enabled=env_bool("REFERENCE_GATEWAY_MASSIVE_ENABLED", True),
+            massive_base_url=env_string("MASSIVE_BASE_URL", "https://api.massive.com").rstrip("/"),
+            massive_api_key_present=bool(env_string("MASSIVE_API_KEY", "")),
             ibkr_resolution_enabled=env_bool("REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED", False),
+            ibkr_base_url=env_string("IBKR_CPAPI_BASE_URL", "https://localhost:5000/v1/api").rstrip("/"),
+            active_ticker_check_enabled=env_bool("REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_ENABLED", False),
+            active_ticker_check_market_hours_only=env_bool("REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_MARKET_HOURS_ONLY", True),
+            active_ticker_max_pages=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES", 1_000),
+            active_ticker_page_limit=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_PAGE_LIMIT", 1_000),
+            active_ticker_new_candidate_limit=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_NEW_CANDIDATE_LIMIT", 250),
             after_hours_writes_only=env_bool("REFERENCE_GATEWAY_AFTER_HOURS_WRITES_ONLY", True),
             market_hours_write_override=env_bool("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_OVERRIDE", False),
             market_hours_write_reason=env_string("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON", ""),

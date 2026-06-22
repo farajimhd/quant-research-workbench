@@ -40,6 +40,10 @@ def run_reference_audit(config: ReferenceGatewayConfig) -> ReferenceAuditReport:
     checks = [
         check_required_tables(client, database),
         check_identity_graph_counts(client, database),
+        check_issuer_identifier_coverage(client, database),
+        check_duplicate_issuer_identifiers(client, database),
+        check_security_parent_integrity(client, database),
+        check_active_candidates_without_durable_issuer_id(client, database),
         check_missing_or_invalid_conid(client, database),
         check_open_mapping_issues(client, database),
         check_unsupported_us_stock_shape(client, database),
@@ -71,7 +75,9 @@ def check_required_tables(client: ClickHouseHttpClient, database: str) -> AuditC
     required = [
         "ref_exchange_v1",
         "id_issuer_v1",
+        "id_issuer_identifier_v1",
         "id_security_v1",
+        "id_security_identifier_v1",
         "id_listing_v1",
         "id_symbol_v1",
         "id_source_mapping_v1",
@@ -100,7 +106,9 @@ def check_identity_graph_counts(client: ClickHouseHttpClient, database: str) -> 
         client,
         f"""
         SELECT 'issuers' AS entity, count() AS rows FROM {table(database, 'id_issuer_v1')}
+        UNION ALL SELECT 'issuer_identifiers', count() FROM {table(database, 'id_issuer_identifier_v1')}
         UNION ALL SELECT 'securities', count() FROM {table(database, 'id_security_v1')}
+        UNION ALL SELECT 'security_identifiers', count() FROM {table(database, 'id_security_identifier_v1')}
         UNION ALL SELECT 'listings', count() FROM {table(database, 'id_listing_v1')}
         UNION ALL SELECT 'symbols', count() FROM {table(database, 'id_symbol_v1')}
         UNION ALL SELECT 'tradable_universe', count() FROM {table(database, 'feature_tradable_universe_v1')}
@@ -113,6 +121,172 @@ def check_identity_graph_counts(client: ClickHouseHttpClient, database: str) -> 
         status="ok" if not zero else "failed",
         count=len(zero),
         message="Canonical identity graph has rows in every core table." if not zero else "Some core identity tables are empty.",
+        sample_rows=rows,
+    )
+
+
+def check_issuer_identifier_coverage(client: ClickHouseHttpClient, database: str) -> AuditCheck:
+    count = scalar_int(
+        client,
+        f"""
+        SELECT count()
+        FROM {table(database, 'id_issuer_v1')} issuer FINAL
+        WHERE issuer.status = 'active'
+          AND issuer.issuer_id NOT IN (
+              SELECT issuer_id
+              FROM {table(database, 'id_issuer_identifier_v1')} FINAL
+              WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+                AND identifier_value_normalized != ''
+          )
+        """,
+    )
+    rows = query_json_each_row(
+        client,
+        f"""
+        SELECT issuer_id, issuer_name, status
+        FROM {table(database, 'id_issuer_v1')} issuer FINAL
+        WHERE issuer.status = 'active'
+          AND issuer.issuer_id NOT IN (
+              SELECT issuer_id
+              FROM {table(database, 'id_issuer_identifier_v1')} FINAL
+              WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+                AND identifier_value_normalized != ''
+          )
+        ORDER BY issuer_name
+        LIMIT 25
+        """,
+    )
+    return AuditCheck(
+        name="active_issuers_missing_durable_identifier",
+        severity="warning",
+        status="ok" if count == 0 else "failed",
+        count=count,
+        message=(
+            "Every active issuer has at least one durable identifier."
+            if count == 0
+            else "Active issuers without CIK/LEI/EIN must be treated as weak identity rows."
+        ),
+        sample_rows=rows,
+    )
+
+
+def check_duplicate_issuer_identifiers(client: ClickHouseHttpClient, database: str) -> AuditCheck:
+    rows = query_json_each_row(
+        client,
+        f"""
+        SELECT identifier_kind, identifier_value_normalized, uniqExact(issuer_id) AS issuer_count, groupArray(issuer_id) AS issuer_ids
+        FROM {table(database, 'id_issuer_identifier_v1')} FINAL
+        WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+          AND identifier_value_normalized != ''
+        GROUP BY identifier_kind, identifier_value_normalized
+        HAVING issuer_count > 1
+        ORDER BY issuer_count DESC, identifier_kind, identifier_value_normalized
+        LIMIT 25
+        """,
+    )
+    count = scalar_int(
+        client,
+        f"""
+        SELECT count()
+        FROM
+        (
+            SELECT identifier_kind, identifier_value_normalized, uniqExact(issuer_id) AS issuer_count
+            FROM {table(database, 'id_issuer_identifier_v1')} FINAL
+            WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+              AND identifier_value_normalized != ''
+            GROUP BY identifier_kind, identifier_value_normalized
+            HAVING issuer_count > 1
+        )
+        """,
+    )
+    return AuditCheck(
+        name="duplicate_durable_issuer_identifiers",
+        severity="error",
+        status="ok" if count == 0 else "failed",
+        count=count,
+        message=(
+            "Durable issuer identifiers map to one issuer each."
+            if count == 0
+            else "A durable issuer identifier maps to multiple issuers; affected securities must not be tradable."
+        ),
+        sample_rows=rows,
+    )
+
+
+def check_security_parent_integrity(client: ClickHouseHttpClient, database: str) -> AuditCheck:
+    rows = query_json_each_row(
+        client,
+        f"""
+        SELECT sec.security_id, sec.issuer_id, sec.security_name, sec.status
+        FROM {table(database, 'id_security_v1')} sec FINAL
+        LEFT JOIN {table(database, 'id_issuer_v1')} issuer FINAL ON issuer.issuer_id = sec.issuer_id
+        WHERE issuer.issuer_id = ''
+        ORDER BY sec.security_id
+        LIMIT 25
+        """,
+    )
+    count = scalar_int(
+        client,
+        f"""
+        SELECT count()
+        FROM {table(database, 'id_security_v1')} sec FINAL
+        LEFT JOIN {table(database, 'id_issuer_v1')} issuer FINAL ON issuer.issuer_id = sec.issuer_id
+        WHERE issuer.issuer_id = ''
+        """,
+    )
+    return AuditCheck(
+        name="securities_missing_issuer_parent",
+        severity="error",
+        status="ok" if count == 0 else "failed",
+        count=count,
+        message=(
+            "Every security points to an issuer parent."
+            if count == 0
+            else "Some securities point to a missing issuer parent."
+        ),
+        sample_rows=rows,
+    )
+
+
+def check_active_candidates_without_durable_issuer_id(client: ClickHouseHttpClient, database: str) -> AuditCheck:
+    count = scalar_int(
+        client,
+        f"""
+        SELECT count()
+        FROM ({active_stock_base_query(database)}) candidate
+        WHERE issuer_id NOT IN (
+            SELECT issuer_id
+            FROM {table(database, 'id_issuer_identifier_v1')} FINAL
+            WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+              AND identifier_value_normalized != ''
+        )
+        """,
+    )
+    rows = query_json_each_row(
+        client,
+        f"""
+        SELECT ticker, issuer_id, security_id, listing_id, exchange_code, ibkr_conid
+        FROM ({active_stock_base_query(database)}) candidate
+        WHERE issuer_id NOT IN (
+            SELECT issuer_id
+            FROM {table(database, 'id_issuer_identifier_v1')} FINAL
+            WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+              AND identifier_value_normalized != ''
+        )
+        ORDER BY ticker
+        LIMIT 25
+        """,
+    )
+    return AuditCheck(
+        name="active_candidates_without_durable_issuer_id",
+        severity="warning",
+        status="ok" if count == 0 else "failed",
+        count=count,
+        message=(
+            "Every active tradable candidate has a durable issuer identifier."
+            if count == 0
+            else "Active candidates with weak issuer identity must remain non-tradable until resolved."
+        ),
         sample_rows=rows,
     )
 
@@ -265,6 +439,7 @@ def active_stock_base_query(database: str) -> str:
         l.currency_code AS currency_code,
         l.ibkr_conid AS ibkr_conid,
         sec.security_id AS security_id,
+        sec.issuer_id AS issuer_id,
         sec.product_type AS product_type,
         sec.security_name AS security_name,
         ex.iso_country_code AS exchange_country

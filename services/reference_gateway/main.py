@@ -6,6 +6,8 @@ import sys
 
 from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.mlops.env import load_env_files, secret_status
+from services.gateway_policy import active_collection_window
+from services.reference_gateway.active_tickers import run_active_ticker_plan, write_active_ticker_plan
 from services.reference_gateway.audit import run_reference_audit, write_report
 from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.policy import evaluate_write_policy
@@ -16,6 +18,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reference gateway audit and sync planner.")
     parser.add_argument("--write-report", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--print-rules", action="store_true", help="Print the hard tradability blocking rules.")
+    parser.add_argument(
+        "--active-ticker-check",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Fetch Massive active tickers and compare them with q_live symbols.",
+    )
     return parser.parse_args()
 
 
@@ -50,6 +58,7 @@ def main() -> None:
                     "CLICKHOUSE_WORKSTATION_USER",
                     "CLICKHOUSE_WORKSTATION_PASSWORD",
                     "MASSIVE_API_KEY",
+                    "IBKR_CPAPI_BASE_URL",
                 ]
             ),
             sort_keys=True,
@@ -74,6 +83,24 @@ def main() -> None:
         )
     if report_path:
         print(f"report={report_path}", flush=True)
+    should_check_tickers = args.active_ticker_check if args.active_ticker_check is not None else config.active_ticker_check_enabled
+    if should_check_tickers:
+        if config.active_ticker_check_market_hours_only and not active_collection_window(service_prefix="REFERENCE"):
+            print("active_ticker_check=skipped reason=outside_reference_collection_window", flush=True)
+        elif not config.source_massive_enabled:
+            print("active_ticker_check=skipped reason=massive_disabled", flush=True)
+        else:
+            plan = run_active_ticker_plan(config)
+            plan_path = write_active_ticker_plan(plan, config.report_root_win) if args.write_report else None
+            print(
+                "active_ticker_check=done "
+                f"provider_rows={plan.provider_rows:,} known_symbols={plan.known_active_symbols:,} "
+                f"missing={plan.missing_tickers:,} overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
+                f"saturated={plan.provider_saturated} wall_seconds={plan.wall_seconds:.2f}",
+                flush=True,
+            )
+            if plan_path:
+                print(f"active_ticker_report={plan_path}", flush=True)
     print(f"status={report.status} wall_seconds={report.wall_seconds:.2f}", flush=True)
     if report.status == "failed":
         sys.exit(2)

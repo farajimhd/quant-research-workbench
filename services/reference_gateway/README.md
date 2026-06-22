@@ -69,6 +69,35 @@ To print the blocking rules:
 python -m services.reference_gateway.main --print-rules
 ```
 
+To run the market-open ticker reconciliation once:
+
+```powershell
+python -m services.reference_gateway.main --active-ticker-check
+```
+
+That pass fetches Massive active US stock tickers, compares them against
+`id_symbol_v1`/`id_listing_v1`, fetches compact Massive overview evidence for
+new tickers, and optionally queries IBKR Client Portal when
+`REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED=true`.
+
+It still does not mutate canonical tables. The output is a resolver report for
+review. New rows are not added until the writer stage is explicitly enabled.
+
+Useful controls:
+
+```text
+REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_ENABLED=false
+REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_MARKET_HOURS_ONLY=true
+REFERENCE_GATEWAY_ACTIVE_TICKER_PAGE_LIMIT=1000
+REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES=1000
+REFERENCE_GATEWAY_ACTIVE_TICKER_NEW_CANDIDATE_LIMIT=250
+REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED=false
+```
+
+Enable IBKR resolution only when Client Portal Gateway is authenticated. IBKR
+results are compacted to candidate contract fields; the gateway does not persist
+raw IBKR payloads.
+
 Reports are written under:
 
 ```text
@@ -108,6 +137,29 @@ REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON=<specific reason>
 The override is intentionally noisy. It is for urgent corrections only, for
 example blocking a clearly wrong conid or adding a newly listed security needed
 by the current session.
+
+## Issuer Group
+
+The second table group is issuer identity:
+
+```text
+id_issuer_v1
+id_issuer_identifier_v1
+```
+
+The audit checks this group before any writer is enabled:
+
+- active issuers without CIK, LEI, or EIN
+- duplicate durable issuer identifiers across multiple issuers
+- securities whose issuer parent is missing
+- active trading candidates whose issuer identity is weak
+
+SEC, Massive overview, and IBKR are evidence sources only. They must not write
+redundant source blobs into canonical tables. If an existing issuer row is
+missing a field and the new value is unambiguous, the future writer can insert a
+replacement row with the same issuer id and the missing field filled. If the new
+value conflicts with a populated field, the conflict goes to
+`id_mapping_issue_v1`; the affected security remains non-tradable.
 
 ## Next Implementation Stage
 
