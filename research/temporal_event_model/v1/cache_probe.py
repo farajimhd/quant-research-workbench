@@ -40,7 +40,9 @@ from research.temporal_event_model.v1.progress import ProbeProgressState, ProbeT
 MODEL_FAMILY = "temporal_event_model"
 MODEL_VERSION = "v1"
 JOB_TYPE = "cache_price_probe"
-CLASS_NAMES = ("strong_down", "down", "flat", "up", "strong_up")
+UP_CLASS_NAMES = ("no_up", "up", "strong_up")
+DOWN_CLASS_NAMES = ("no_down", "down", "strong_down")
+PATH_CLASS_NAMES = ("flat", "up_only", "down_only", "two_sided")
 DEFAULT_HORIZONS = (128, 256)
 DEFAULT_CACHE_ROOT = Path("D:/market-data/prepared/event_sample_cache/cache_v2_cycle_20260619_134422")
 DEFAULT_OUTPUT_ROOT = Path("D:/TradingML/runtimes/temporal_event_model/v1/cache_price_probe")
@@ -51,6 +53,14 @@ DEFAULT_V20_RUN_ROOT = Path(
     "v20-fullpretrain-sharddecay-fixedmask070-emb32-bs8192-3epochs"
 )
 DEFAULT_ENCODER_CHECKPOINT = DEFAULT_V20_RUN_ROOT / "checkpoints" / "checkpoint_latest.pt"
+PRICE_HEADER_ANCHOR_BITS = 20
+PRICE_HEADER_SCALE_BITS = 1
+PRICE_HEADER_TARGET_BITS = PRICE_HEADER_ANCHOR_BITS + PRICE_HEADER_SCALE_BITS
+PRICE_DELTA_BITS = 16
+PRICE_EXTREMA_TARGET_BITS = PRICE_DELTA_BITS * 2
+PRICE_TARGET_BITS_PER_HORIZON = PRICE_HEADER_TARGET_BITS + PRICE_EXTREMA_TARGET_BITS
+LOW_DELTA_OFFSET = PRICE_HEADER_TARGET_BITS
+HIGH_DELTA_OFFSET = PRICE_HEADER_TARGET_BITS + PRICE_DELTA_BITS
 
 
 @dataclass(slots=True)
@@ -117,7 +127,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"device={device}", flush=True)
     print(f"cache_root={config.cache_root}", flush=True)
     print(f"encoder={config.encoder_version} checkpoint={config.encoder_checkpoint}", flush=True)
-    print(f"future_chunks={config.horizons} classes={CLASS_NAMES}", flush=True)
+    print(
+        f"future_chunks={config.horizons} target_bits_per_chunk={PRICE_TARGET_BITS_PER_HORIZON} "
+        f"header_price_bits={PRICE_HEADER_TARGET_BITS} extrema_bits={PRICE_EXTREMA_TARGET_BITS}",
+        flush=True,
+    )
     print(f"thresholds flat={config.flat_threshold_bps}bps strong={config.strong_threshold_bps}bps", flush=True)
     print(f"secrets={secret_status(('WANDB_API_KEY',))}", flush=True)
     print("=" * 100, flush=True)
@@ -138,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         embedding_dim=config.encoder_embedding_dim,
         hidden_dim=config.hidden_dim,
         target_chunks=len(config.horizons),
-        classes=len(CLASS_NAMES),
+        target_bits=PRICE_TARGET_BITS_PER_HORIZON,
         dropout=config.dropout,
     ).to(device)
     optimizer = torch.optim.AdamW(
@@ -238,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         validation_metrics = {f"validation/{key}": value for key, value in validation_metrics.items()}
                         metric_logger.log(validation_metrics, global_step)
+                        log_confusion_tables_to_wandb(metric_logger.wandb_run, validation_metrics, global_step, prefix="validation")
                         reporter.update({}, step=global_step, validation_metrics=validation_metrics)
                         val_loss = validation_metrics.get("validation/loss", math.inf)
                         reporter.message(format_metric_line("VALIDATION", global_step, validation_metrics))
@@ -372,7 +387,15 @@ def to_manifest_config(config: ProbeConfig) -> dict[str, Any]:
             payload[key] = str(value)
         elif isinstance(value, tuple):
             payload[key] = list(value)
-    payload["class_names"] = list(CLASS_NAMES)
+    payload["target_design"] = {
+        "kind": "future_price_header_low_high_bits",
+        "up_class_names": list(UP_CLASS_NAMES),
+        "down_class_names": list(DOWN_CLASS_NAMES),
+        "path_class_names": list(PATH_CLASS_NAMES),
+        "price_header_bits": PRICE_HEADER_TARGET_BITS,
+        "price_delta_bits": PRICE_DELTA_BITS,
+        "target_bits_per_future_chunk": PRICE_TARGET_BITS_PER_HORIZON,
+    }
     return payload
 
 
@@ -476,12 +499,11 @@ def train_one_shard(
             embedding = model.encode_chunk(batch["header_uint8"], batch["events_uint8"])
         encode_seconds = time.perf_counter() - encode_started
         forward_started = time.perf_counter()
-        class_logits = model.decode_embedding(embedding.float())
+        price_target_logits = model.decode_embedding(embedding.float())
         loss, metrics = probe_loss_and_metrics(
-            class_logits=class_logits,
-            target_one_hot=batch["target_one_hot"],
-            target_classes=batch["target_classes"],
-            target_return_bps=batch["target_return_bps"],
+            price_target_logits=price_target_logits,
+            target_bits=batch["target_bits"],
+            target_metrics=batch["target_metrics"],
             valid_mask=batch["valid_mask"],
             config=config,
         )
@@ -534,6 +556,7 @@ def train_one_shard(
             )
             validation_metrics = {f"validation/{key}": value for key, value in validation_metrics.items()}
             metric_logger.log(validation_metrics, global_step)
+            log_confusion_tables_to_wandb(metric_logger.wandb_run, validation_metrics, global_step, prefix="validation")
             reporter.update({}, step=global_step, validation_metrics=validation_metrics)
             val_loss = validation_metrics.get("validation/loss", math.inf)
             reporter.message(format_metric_line("VALIDATION", global_step, validation_metrics))
@@ -578,12 +601,11 @@ def evaluate_probe(
             batch = build_probe_batch(x_records, y_records, batch_index, config, device)
             with autocast_context(device, amp_dtype):
                 embedding = model.encode_chunk(batch["header_uint8"], batch["events_uint8"])
-                class_logits = model.decode_embedding(embedding.float())
+                price_target_logits = model.decode_embedding(embedding.float())
             _, metrics = probe_loss_and_metrics(
-                class_logits=class_logits,
-                target_one_hot=batch["target_one_hot"],
-                target_classes=batch["target_classes"],
-                target_return_bps=batch["target_return_bps"],
+                price_target_logits=price_target_logits,
+                target_bits=batch["target_bits"],
+                target_metrics=batch["target_metrics"],
                 valid_mask=batch["valid_mask"],
                 config=config,
             )
@@ -591,8 +613,15 @@ def evaluate_probe(
                 sums[key] = sums.get(key, 0.0) + float(value)
             batches += 1
         del x_records, y_records, order
-    out = {key: value / max(1, batches) for key, value in sums.items()}
+    out = average_metric_sums(sums, batches)
     out["seconds"] = time.perf_counter() - started
+    return out
+
+
+def average_metric_sums(sums: dict[str, float], batches: int) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for key, value in sums.items():
+        out[key] = float(value) if "_confusion/" in key else float(value) / max(1, batches)
     return out
 
 
@@ -632,15 +661,15 @@ def build_probe_batch(
     selected_y = np.asarray(y_records[indices], dtype=np.uint8)
     headers, events = decode_sample_records(selected_x)
     label_headers, label_events = decode_label_records(selected_y, label_chunks=len(config.horizons))
-    target_bps, classes, valid = build_targets_from_bytes(headers, events, label_headers, label_events, config)
-    one_hot = np.eye(len(CLASS_NAMES), dtype=np.float32)[classes]
-    one_hot = np.where(valid[:, :, None], one_hot, 0.0).astype(np.float32)
+    target_bits, target_metrics, valid = build_targets_from_bytes(headers, events, label_headers, label_events, config)
     return {
         "header_uint8": torch.from_numpy(headers.copy()).to(device=device, dtype=torch.uint8, non_blocking=True),
         "events_uint8": torch.from_numpy(events.copy()).to(device=device, dtype=torch.uint8, non_blocking=True),
-        "target_return_bps": torch.from_numpy(target_bps).to(device=device, dtype=torch.float32, non_blocking=True),
-        "target_one_hot": torch.from_numpy(one_hot).to(device=device, dtype=torch.float32, non_blocking=True),
-        "target_classes": torch.from_numpy(classes).to(device=device, dtype=torch.long, non_blocking=True),
+        "target_bits": torch.from_numpy(target_bits).to(device=device, dtype=torch.float32, non_blocking=True),
+        "target_metrics": {
+            key: torch.from_numpy(value).to(device=device, non_blocking=True)
+            for key, value in target_metrics.items()
+        },
         "valid_mask": torch.from_numpy(valid).to(device=device, dtype=torch.bool, non_blocking=True),
     }
 
@@ -651,101 +680,298 @@ def build_targets_from_bytes(
     y_headers: np.ndarray,
     y_events: np.ndarray,
     config: ProbeConfig,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    current_max_price = max_price_per_chunk(x_headers, x_events)
-    current_valid = np.isfinite(current_max_price) & (current_max_price > 0.0)
+) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
+    current_price = last_price_per_chunk(x_headers, x_events)
+    current_valid = np.isfinite(current_price) & (current_price > 0.0)
     sample_count = int(x_headers.shape[0])
-    returns = np.zeros((sample_count, len(config.horizons)), dtype=np.float32)
-    classes = np.full((sample_count, len(config.horizons)), 2, dtype=np.int64)
+    target_bits = np.zeros((sample_count, len(config.horizons), PRICE_TARGET_BITS_PER_HORIZON), dtype=np.float32)
+    target_low_price = np.zeros((sample_count, len(config.horizons)), dtype=np.float32)
+    target_high_price = np.zeros((sample_count, len(config.horizons)), dtype=np.float32)
+    target_low_delta = np.zeros((sample_count, len(config.horizons)), dtype=np.int16)
+    target_high_delta = np.zeros((sample_count, len(config.horizons)), dtype=np.int16)
     valid = np.zeros((sample_count, len(config.horizons)), dtype=bool)
     if y_headers.shape[1] != len(config.horizons):
         raise ValueError(f"Expected {len(config.horizons)} y chunks, got {y_headers.shape[1]}")
     for horizon_index, _horizon in enumerate(config.horizons):
-        future_max_price = max_price_per_chunk(y_headers[:, horizon_index, :], y_events[:, horizon_index, :, :])
-        horizon_valid = current_valid & np.isfinite(future_max_price) & (future_max_price > 0.0)
-        bps = ((future_max_price / np.maximum(current_max_price, 1e-12)) - 1.0) * 10_000.0
-        bps = np.where(horizon_valid, bps, 0.0).astype(np.float32)
-        returns[:, horizon_index] = bps
-        classes[:, horizon_index] = classify_bps(bps, config.flat_threshold_bps, config.strong_threshold_bps)
+        header = y_headers[:, horizon_index, :]
+        event_chunk = y_events[:, horizon_index, :, :]
+        header_bits = price_header_bits(header)
+        low_delta, high_delta, future_valid = low_high_delta_per_chunk(event_chunk)
+        low_delta_bits = int16_bits(low_delta)
+        high_delta_bits = int16_bits(high_delta)
+        target_bits[:, horizon_index, :PRICE_HEADER_TARGET_BITS] = header_bits
+        target_bits[:, horizon_index, LOW_DELTA_OFFSET:HIGH_DELTA_OFFSET] = low_delta_bits
+        target_bits[:, horizon_index, HIGH_DELTA_OFFSET:] = high_delta_bits
+        low_price, high_price = extrema_prices_from_header_and_delta(header, low_delta, high_delta)
+        target_low_price[:, horizon_index] = np.where(future_valid, low_price, 0.0).astype(np.float32)
+        target_high_price[:, horizon_index] = np.where(future_valid, high_price, 0.0).astype(np.float32)
+        target_low_delta[:, horizon_index] = low_delta
+        target_high_delta[:, horizon_index] = high_delta
+        horizon_valid = current_valid & future_valid & np.isfinite(low_price) & np.isfinite(high_price) & (low_price > 0.0) & (high_price > 0.0)
         valid[:, horizon_index] = horizon_valid
-    return returns, classes, valid
+    metrics = {
+        "current_price": current_price.astype(np.float32),
+        "target_low_price": target_low_price,
+        "target_high_price": target_high_price,
+        "target_low_delta": target_low_delta,
+        "target_high_delta": target_high_delta,
+    }
+    return target_bits, metrics, valid
 
 
-def max_price_per_chunk(headers: np.ndarray, events: np.ndarray) -> np.ndarray:
-    """Decode compact chunk bytes and return the maximum quote/trade price.
-
-    The compact event representation stores prices as int16 deltas from the
-    header ask anchor. For quote events the primary price is ask; for trade
-    events it is trade price. Taking the maximum across those primary prices
-    gives one byte-derived future target per chunk without using scalar labels.
-    """
-
+def anchor_ticks_and_tick_size(headers: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     ask_anchor_ticks = (
         headers[:, 0].astype(np.uint32)
         | (headers[:, 1].astype(np.uint32) << 8)
         | ((headers[:, 2].astype(np.uint32) & 0x0F) << 16)
     ).astype(np.float64)
     tick_size = np.where((headers[:, 13].astype(np.uint8) & 0x04) != 0, 0.01, 0.0001).astype(np.float64)
+    return ask_anchor_ticks, tick_size
+
+
+def primary_price_delta_array(events: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     price_delta = np.ascontiguousarray(events[:, :, 3:5]).view("<i2").reshape(events.shape[0], events.shape[1]).astype(np.float64)
-    price = (ask_anchor_ticks[:, None] + price_delta) * tick_size[:, None]
     present = (events[:, :, 0] & 0x02) != 0
-    price = np.where(present & np.isfinite(price) & (price > 0.0), price, -np.inf)
-    max_price = np.max(price, axis=1)
-    return np.where(np.isfinite(max_price), max_price, np.nan)
+    return price_delta, present
 
 
+def last_price_per_chunk(headers: np.ndarray, events: np.ndarray) -> np.ndarray:
+    anchor_ticks, tick_size = anchor_ticks_and_tick_size(headers)
+    price_delta, present = primary_price_delta_array(events)
+    absolute_price = (anchor_ticks[:, None] + price_delta) * tick_size[:, None]
+    valid = present & np.isfinite(absolute_price) & (absolute_price > 0.0)
+    reversed_valid = valid[:, ::-1]
+    has_valid = np.any(valid, axis=1)
+    last_from_end = np.argmax(reversed_valid, axis=1)
+    last_index = events.shape[1] - 1 - last_from_end
+    out = absolute_price[np.arange(events.shape[0]), last_index]
+    return np.where(has_valid, out, np.nan)
 
-def classify_bps(values: np.ndarray, flat_threshold: float, strong_threshold: float) -> np.ndarray:
-    out = np.full(values.shape, 2, dtype=np.int64)
-    out[values <= -strong_threshold] = 0
-    out[(values > -strong_threshold) & (values <= -flat_threshold)] = 1
-    out[(values >= flat_threshold) & (values < strong_threshold)] = 3
-    out[values >= strong_threshold] = 4
-    return out
+
+def low_high_delta_per_chunk(events: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    price_delta, present = primary_price_delta_array(events)
+    low_values = np.where(present, price_delta, np.inf)
+    high_values = np.where(present, price_delta, -np.inf)
+    has_present = np.any(present, axis=1)
+    low_delta = np.where(has_present, np.min(low_values, axis=1), 0.0).astype(np.int16)
+    high_delta = np.where(has_present, np.max(high_values, axis=1), 0.0).astype(np.int16)
+    return low_delta, high_delta, has_present
+
+
+def price_header_bits(headers: np.ndarray) -> np.ndarray:
+    anchor_ticks = (
+        headers[:, 0].astype(np.uint32)
+        | (headers[:, 1].astype(np.uint32) << 8)
+        | ((headers[:, 2].astype(np.uint32) & 0x0F) << 16)
+    )
+    anchor_bits = ((anchor_ticks[:, None] >> np.arange(PRICE_HEADER_ANCHOR_BITS, dtype=np.uint32)[None, :]) & 1).astype(np.float32)
+    scale_bits = (((headers[:, 13].astype(np.uint8) & 0x04) != 0).astype(np.float32))[:, None]
+    return np.concatenate([anchor_bits, scale_bits], axis=1).astype(np.float32)
+
+
+def int16_bits(values: np.ndarray) -> np.ndarray:
+    unsigned = values.astype(np.int16, copy=False).view(np.uint16).astype(np.uint32)
+    return ((unsigned[:, None] >> np.arange(PRICE_DELTA_BITS, dtype=np.uint32)[None, :]) & 1).astype(np.float32)
+
+
+def bits_to_uint(bits: torch.Tensor) -> torch.Tensor:
+    weights = (2 ** torch.arange(bits.shape[-1], device=bits.device, dtype=torch.float32)).view(*([1] * (bits.ndim - 1)), -1)
+    return torch.sum(bits.float() * weights, dim=-1)
+
+
+def bits_to_int16(bits: torch.Tensor) -> torch.Tensor:
+    unsigned = bits_to_uint(bits)
+    return torch.where(unsigned >= 32768.0, unsigned - 65536.0, unsigned)
+
+
+def extrema_prices_from_header_and_delta(headers: np.ndarray, low_delta: np.ndarray, high_delta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    anchor_ticks, tick_size = anchor_ticks_and_tick_size(headers)
+    low_price = (anchor_ticks + low_delta.astype(np.float64)) * tick_size
+    high_price = (anchor_ticks + high_delta.astype(np.float64)) * tick_size
+    return low_price, high_price
 
 
 def probe_loss_and_metrics(
     *,
-    class_logits: torch.Tensor,
-    target_one_hot: torch.Tensor,
-    target_classes: torch.Tensor,
-    target_return_bps: torch.Tensor,
+    price_target_logits: torch.Tensor,
+    target_bits: torch.Tensor,
+    target_metrics: dict[str, torch.Tensor],
     valid_mask: torch.Tensor,
     config: ProbeConfig,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     valid = valid_mask.reshape(-1)
     if not torch.any(valid):
-        zero = class_logits.sum() * 0.0
+        zero = price_target_logits.sum() * 0.0
         return zero, {"loss": 0.0, "bce_loss": 0.0, "valid_pct": 0.0}
-    flat_logits = class_logits.reshape(-1, len(CLASS_NAMES))[valid]
-    flat_targets = target_one_hot.reshape(-1, len(CLASS_NAMES))[valid]
-    flat_classes = target_classes.reshape(-1)[valid]
+    flat_logits = price_target_logits.reshape(-1, PRICE_TARGET_BITS_PER_HORIZON)[valid]
+    flat_targets = target_bits.reshape(-1, PRICE_TARGET_BITS_PER_HORIZON)[valid]
     loss = F.binary_cross_entropy_with_logits(flat_logits, flat_targets)
     with torch.no_grad():
-        predicted_classes = torch.argmax(flat_logits, dim=-1)
-        acc = (predicted_classes == flat_classes).float().mean()
-        confusion = torch.zeros((len(CLASS_NAMES), len(CLASS_NAMES)), device=class_logits.device, dtype=torch.float32)
-        flat_index = flat_classes * len(CLASS_NAMES) + predicted_classes
-        confusion.view(-1).scatter_add_(0, flat_index, torch.ones_like(flat_index, dtype=torch.float32))
-        macro_f1 = macro_f1_from_confusion(confusion)
+        pred_bits = (price_target_logits > 0).float()
+        bit_acc = (pred_bits.reshape(-1, PRICE_TARGET_BITS_PER_HORIZON)[valid] == flat_targets).float().mean()
+        header_acc = (
+            pred_bits[:, :, :PRICE_HEADER_TARGET_BITS].reshape(-1, PRICE_HEADER_TARGET_BITS)[valid]
+            == target_bits[:, :, :PRICE_HEADER_TARGET_BITS].reshape(-1, PRICE_HEADER_TARGET_BITS)[valid]
+        ).float().mean()
+        low_acc = (
+            pred_bits[:, :, LOW_DELTA_OFFSET:HIGH_DELTA_OFFSET].reshape(-1, PRICE_DELTA_BITS)[valid]
+            == target_bits[:, :, LOW_DELTA_OFFSET:HIGH_DELTA_OFFSET].reshape(-1, PRICE_DELTA_BITS)[valid]
+        ).float().mean()
+        high_acc = (
+            pred_bits[:, :, HIGH_DELTA_OFFSET:].reshape(-1, PRICE_DELTA_BITS)[valid]
+            == target_bits[:, :, HIGH_DELTA_OFFSET:].reshape(-1, PRICE_DELTA_BITS)[valid]
+        ).float().mean()
+        decoded = decode_predicted_and_target_prices(pred_bits, target_bits, target_metrics)
+        semantic = semantic_metrics_from_decoded(decoded, valid_mask, config)
         metrics = {
             "loss": float(loss.detach().cpu()),
             "bce_loss": float(loss.detach().cpu()),
-            "accuracy_pct": float(acc.detach().cpu() * 100.0),
-            "macro_f1_pct": float(macro_f1.detach().cpu() * 100.0),
-            "abs_return_bps_mean": float(torch.abs(target_return_bps.reshape(-1)[valid]).mean().detach().cpu()),
+            "bit_accuracy_pct": float(bit_acc.detach().cpu() * 100.0),
+            "header_bit_accuracy_pct": float(header_acc.detach().cpu() * 100.0),
+            "low_delta_bit_accuracy_pct": float(low_acc.detach().cpu() * 100.0),
+            "high_delta_bit_accuracy_pct": float(high_acc.detach().cpu() * 100.0),
             "valid_pct": float(valid.float().mean().detach().cpu() * 100.0),
+            **semantic,
         }
         for horizon_index, horizon in enumerate(config.horizons):
             horizon_valid = valid_mask[:, horizon_index]
             if torch.any(horizon_valid):
-                pred_h = torch.argmax(class_logits[:, horizon_index, :][horizon_valid], dim=-1)
-                target_h = target_classes[:, horizon_index][horizon_valid]
-                metrics[f"accuracy_pct_future_{horizon}"] = float((pred_h == target_h).float().mean().detach().cpu() * 100.0)
-                metrics[f"abs_return_bps_mean_future_{horizon}"] = float(
-                    torch.abs(target_return_bps[:, horizon_index][horizon_valid]).mean().detach().cpu()
+                metrics[f"bit_accuracy_pct_future_{horizon}"] = float(
+                    (
+                        pred_bits[:, horizon_index, :][horizon_valid]
+                        == target_bits[:, horizon_index, :][horizon_valid]
+                    ).float().mean().detach().cpu()
+                    * 100.0
                 )
     return loss, metrics
+
+
+def decode_predicted_and_target_prices(
+    pred_bits: torch.Tensor,
+    target_bits: torch.Tensor,
+    target_metrics: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    pred_anchor = bits_to_uint(pred_bits[:, :, :PRICE_HEADER_ANCHOR_BITS])
+    pred_scale = pred_bits[:, :, PRICE_HEADER_ANCHOR_BITS] > 0.5
+    pred_tick_size = torch.where(pred_scale, torch.full_like(pred_anchor, 0.01), torch.full_like(pred_anchor, 0.0001))
+    pred_low_delta = bits_to_int16(pred_bits[:, :, LOW_DELTA_OFFSET:HIGH_DELTA_OFFSET])
+    pred_high_delta = bits_to_int16(pred_bits[:, :, HIGH_DELTA_OFFSET:])
+    pred_low_price = (pred_anchor + pred_low_delta) * pred_tick_size
+    pred_high_price = (pred_anchor + pred_high_delta) * pred_tick_size
+    return {
+        "pred_low_price": pred_low_price.float(),
+        "pred_high_price": pred_high_price.float(),
+        "pred_low_delta": pred_low_delta.float(),
+        "pred_high_delta": pred_high_delta.float(),
+        "target_low_price": target_metrics["target_low_price"].float(),
+        "target_high_price": target_metrics["target_high_price"].float(),
+        "target_low_delta": target_metrics["target_low_delta"].float(),
+        "target_high_delta": target_metrics["target_high_delta"].float(),
+        "current_price": target_metrics["current_price"].float(),
+    }
+
+
+def semantic_metrics_from_decoded(decoded: dict[str, torch.Tensor], valid_mask: torch.Tensor, config: ProbeConfig) -> dict[str, float]:
+    valid = valid_mask.reshape(-1)
+    pred_low = decoded["pred_low_price"].reshape(-1)[valid]
+    pred_high = decoded["pred_high_price"].reshape(-1)[valid]
+    target_low = decoded["target_low_price"].reshape(-1)[valid]
+    target_high = decoded["target_high_price"].reshape(-1)[valid]
+    current = decoded["current_price"][:, None].expand_as(decoded["target_low_price"]).reshape(-1)[valid]
+    pred_low_delta = decoded["pred_low_delta"].reshape(-1)[valid]
+    pred_high_delta = decoded["pred_high_delta"].reshape(-1)[valid]
+    target_low_delta = decoded["target_low_delta"].reshape(-1)[valid]
+    target_high_delta = decoded["target_high_delta"].reshape(-1)[valid]
+    low_exact = pred_low_delta == target_low_delta
+    high_exact = pred_high_delta == target_high_delta
+    target_up_bps = ((target_high / torch.clamp(current, min=1e-12)) - 1.0) * 10_000.0
+    target_down_bps = (1.0 - (target_low / torch.clamp(current, min=1e-12))) * 10_000.0
+    pred_up_bps = ((pred_high / torch.clamp(current, min=1e-12)) - 1.0) * 10_000.0
+    pred_down_bps = (1.0 - (pred_low / torch.clamp(current, min=1e-12))) * 10_000.0
+    target_up = classify_magnitude_torch(target_up_bps, config.flat_threshold_bps, config.strong_threshold_bps)
+    target_down = classify_magnitude_torch(target_down_bps, config.flat_threshold_bps, config.strong_threshold_bps)
+    pred_up = classify_magnitude_torch(pred_up_bps, config.flat_threshold_bps, config.strong_threshold_bps)
+    pred_down = classify_magnitude_torch(pred_down_bps, config.flat_threshold_bps, config.strong_threshold_bps)
+    target_path = path_class_torch(target_up, target_down)
+    pred_path = path_class_torch(pred_up, pred_down)
+    up_confusion = confusion_from_classes(target_up, pred_up, len(UP_CLASS_NAMES))
+    down_confusion = confusion_from_classes(target_down, pred_down, len(DOWN_CLASS_NAMES))
+    path_confusion = confusion_from_classes(target_path, pred_path, len(PATH_CLASS_NAMES))
+    out = {
+        "low_delta_exact_pct": float(low_exact.float().mean().detach().cpu() * 100.0),
+        "high_delta_exact_pct": float(high_exact.float().mean().detach().cpu() * 100.0),
+        "low_price_mae_dollars": float(torch.abs(pred_low - target_low).mean().detach().cpu()),
+        "high_price_mae_dollars": float(torch.abs(pred_high - target_high).mean().detach().cpu()),
+        "valid_low_high_order_pct": float((pred_low <= pred_high).float().mean().detach().cpu() * 100.0),
+        "upside_accuracy_pct": float(accuracy_from_confusion_torch(up_confusion).detach().cpu() * 100.0),
+        "downside_accuracy_pct": float(accuracy_from_confusion_torch(down_confusion).detach().cpu() * 100.0),
+        "path_accuracy_pct": float(accuracy_from_confusion_torch(path_confusion).detach().cpu() * 100.0),
+        "path_macro_f1_pct": float(macro_f1_from_confusion(path_confusion).detach().cpu() * 100.0),
+    }
+    out.update(confusion_metrics("upside_confusion", up_confusion, UP_CLASS_NAMES))
+    out.update(confusion_metrics("downside_confusion", down_confusion, DOWN_CLASS_NAMES))
+    out.update(confusion_metrics("path_confusion", path_confusion, PATH_CLASS_NAMES))
+    return out
+
+
+def classify_magnitude_torch(values: torch.Tensor, flat_threshold: float, strong_threshold: float) -> torch.Tensor:
+    out = torch.zeros_like(values, dtype=torch.long)
+    out[(values >= float(flat_threshold)) & (values < float(strong_threshold))] = 1
+    out[values >= float(strong_threshold)] = 2
+    return out
+
+
+def path_class_torch(up_class: torch.Tensor, down_class: torch.Tensor) -> torch.Tensor:
+    has_up = up_class > 0
+    has_down = down_class > 0
+    out = torch.zeros_like(up_class, dtype=torch.long)
+    out[has_up & ~has_down] = 1
+    out[~has_up & has_down] = 2
+    out[has_up & has_down] = 3
+    return out
+
+
+def confusion_from_classes(target: torch.Tensor, predicted: torch.Tensor, classes: int) -> torch.Tensor:
+    confusion = torch.zeros((classes, classes), device=target.device, dtype=torch.float32)
+    flat_index = target * classes + predicted
+    confusion.view(-1).scatter_add_(0, flat_index, torch.ones_like(flat_index, dtype=torch.float32))
+    return confusion
+
+
+def accuracy_from_confusion_torch(confusion: torch.Tensor) -> torch.Tensor:
+    total = torch.clamp(confusion.sum(), min=1.0)
+    return torch.diag(confusion).sum() / total
+
+
+def confusion_metrics(prefix: str, confusion: torch.Tensor, names: tuple[str, ...]) -> dict[str, float]:
+    cpu = confusion.detach().cpu()
+    out: dict[str, float] = {}
+    for row, target_name in enumerate(names):
+        for col, pred_name in enumerate(names):
+            out[f"{prefix}/{target_name}_pred_{pred_name}"] = float(cpu[row, col])
+    return out
+
+
+def log_confusion_tables_to_wandb(wandb_run: Any | None, metrics: dict[str, float], step: int, *, prefix: str) -> None:
+    if wandb_run is None:
+        return
+    try:
+        import wandb
+    except Exception:  # noqa: BLE001
+        return
+    payload: dict[str, Any] = {}
+    for matrix_name, class_names in (
+        ("upside_confusion", UP_CLASS_NAMES),
+        ("downside_confusion", DOWN_CLASS_NAMES),
+        ("path_confusion", PATH_CLASS_NAMES),
+    ):
+        rows: list[list[Any]] = []
+        for target_name in class_names:
+            for pred_name in class_names:
+                value = metrics.get(f"{prefix}/{matrix_name}/{target_name}_pred_{pred_name}", 0.0)
+                rows.append([target_name, pred_name, float(value)])
+        payload[f"{prefix}_matrices/{matrix_name}"] = wandb.Table(columns=["target", "prediction", "count"], data=rows)
+    wandb_run.log(payload, step=int(step))
 
 
 def macro_f1_from_confusion(confusion: torch.Tensor) -> torch.Tensor:
@@ -764,7 +990,25 @@ def autocast_context(device: torch.device, amp_dtype: torch.dtype | None):
 
 
 def format_metric_line(prefix: str, step: int, metrics: dict[str, float]) -> str:
-    keys = [key for key in ("training/loss", "validation/loss", "shard/loss", "training/accuracy_pct", "validation/accuracy_pct", "training/macro_f1_pct", "validation/macro_f1_pct", "training/samples_per_sec", "shard/samples_per_sec") if key in metrics]
+    keys = [
+        key
+        for key in (
+            "training/loss",
+            "validation/loss",
+            "shard/loss",
+            "training/bit_accuracy_pct",
+            "validation/bit_accuracy_pct",
+            "training/path_accuracy_pct",
+            "validation/path_accuracy_pct",
+            "training/low_price_mae_dollars",
+            "validation/low_price_mae_dollars",
+            "training/high_price_mae_dollars",
+            "validation/high_price_mae_dollars",
+            "training/samples_per_sec",
+            "shard/samples_per_sec",
+        )
+        if key in metrics
+    ]
     parts = [f"{key.split('/')[-1]}={metrics[key]:.4f}" for key in keys]
     if not parts:
         parts = [f"{key}={value:.4f}" for key, value in list(metrics.items())[:6]]
@@ -805,7 +1049,15 @@ def save_checkpoint(
             "config": to_manifest_config(config),
             "step": int(step),
             "epoch": int(epoch),
-            "class_names": CLASS_NAMES,
+            "target_design": {
+                "kind": "future_price_header_low_high_bits",
+                "up_class_names": UP_CLASS_NAMES,
+                "down_class_names": DOWN_CLASS_NAMES,
+                "path_class_names": PATH_CLASS_NAMES,
+                "price_header_bits": PRICE_HEADER_TARGET_BITS,
+                "price_delta_bits": PRICE_DELTA_BITS,
+                "target_bits_per_future_chunk": PRICE_TARGET_BITS_PER_HORIZON,
+            },
         },
         path,
     )

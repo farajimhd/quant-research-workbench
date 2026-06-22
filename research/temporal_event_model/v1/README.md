@@ -9,11 +9,22 @@ x.bin current chunk [B,14] + [B,128,16]
         -> frozen masked_event_model encoder
         -> chunk embedding [B,32]
         -> nonlinear MLP decoder
-        -> class_logits [B,2,5]
+        -> future price target logits [B,2,53]
 ```
 
 The two output chunks correspond to the two stored future chunks in cache v2.
-The five classes are `strong_down`, `down`, `flat`, `up`, and `strong_up`.
+For each future chunk, the 53 target bits are the price-relevant future header
+bits plus the future low/high primary-price deltas:
+
+```text
+20 bits ask-anchor ticks
+ 1 bit  price scale
+16 bits low primary-price delta
+16 bits high primary-price delta
+```
+
+The loss is BCE-with-logits on those bits. Direction/path classes are decoded
+only for metrics and confusion matrices; they are not the training target.
 This is intentionally simple and fast; it does not use the older multi-context
 temporal transformer decoder.
 
@@ -164,8 +175,8 @@ y:      first two future compact chunks from shard_*.y.bin
 ```
 
 The frozen masked-event encoder turns `x` into one chunk embedding. A small MLP
-probe then predicts the class of the max future price in the two stored future
-chunks from `y.bin`:
+probe then predicts the future price-header and low/high delta bits for the two
+stored future chunks from `y.bin`:
 
 ```text
 future chunk 1: events t+1   ... t+128
@@ -174,11 +185,22 @@ future chunk 2: events t+129 ... t+256
 
 Targets are built only from compact bytes:
 
-1. decode current `x.bin` chunk and take max quote/trade price,
-2. decode each stored future `y.bin` chunk and take max quote/trade price,
-3. convert each future max-price return into one of:
-   `strong_down`, `down`, `flat`, `up`, `strong_up`,
-4. train `BCEWithLogitsLoss` on the two one-hot 5-class targets.
+1. decode the current `x.bin` chunk and take the last valid primary price as
+   the reference for metrics,
+2. decode each stored future `y.bin` chunk's price-relevant header fields,
+3. take the low and high primary-price deltas inside each future chunk,
+4. train `BCEWithLogitsLoss` on the future header bits plus low/high delta
+   bits.
+
+Per future chunk:
+
+```text
+price header target: 21 bits
+low/high delta target: 32 bits
+total: 53 bits
+```
+
+With two stored future chunks, the probe predicts 106 bits per sample.
 
 The default class thresholds are:
 
@@ -189,6 +211,15 @@ strong: abs(return_bps) >= 20
 
 Rows whose current or future chunk cannot decode a positive price are masked out
 for that future chunk.
+
+Validation metrics decode the predicted future header and low/high deltas back
+to dollar prices, then report:
+
+- bit accuracy and price-header bit accuracy,
+- low/high delta bit accuracy and exact int16 accuracy,
+- decoded low/high dollar MAE,
+- predicted-low <= predicted-high validity rate,
+- upside, downside, and path confusion matrices.
 
 Run one probe:
 

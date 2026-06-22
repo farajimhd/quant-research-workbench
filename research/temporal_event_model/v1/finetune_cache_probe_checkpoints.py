@@ -23,10 +23,10 @@ from research.mlops.metrics import JsonlMetricLogger
 from research.mlops.paths import RunPaths
 from research.mlops.wandb_utils import init_wandb
 from research.temporal_event_model.v1.cache_probe import (
-    CLASS_NAMES,
     DEFAULT_CACHE_ROOT,
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_WANDB_PROJECT,
+    PRICE_TARGET_BITS_PER_HORIZON,
     ProbeConfig,
     autocast_context,
     build_frozen_encoder,
@@ -35,6 +35,7 @@ from research.temporal_event_model.v1.cache_probe import (
     evaluate_probe,
     format_metric_line,
     load_shard_records,
+    log_confusion_tables_to_wandb,
     memory_profile,
     probe_loss_and_metrics,
     resolve_amp_dtype,
@@ -274,6 +275,7 @@ def finetune_one_checkpoint(*, checkpoint_path: Path, args: argparse.Namespace, 
                         )
                         validation_metrics = {f"validation/{key}": value for key, value in validation_metrics.items()}
                         metric_logger.log(validation_metrics, global_step)
+                        log_confusion_tables_to_wandb(metric_logger.wandb_run, validation_metrics, global_step, prefix="validation")
                         reporter.update({}, step=global_step, validation_metrics=validation_metrics)
                         reporter.message(format_metric_line("VALIDATION", global_step, validation_metrics))
                         val_loss = validation_metrics.get("validation/loss", math.inf)
@@ -348,7 +350,7 @@ def build_finetune_model(
         embedding_dim=config.encoder_embedding_dim,
         hidden_dim=config.hidden_dim,
         target_chunks=len(config.horizons),
-        classes=len(CLASS_NAMES),
+        target_bits=PRICE_TARGET_BITS_PER_HORIZON,
         dropout=config.dropout,
     ).to(device)
     if mode == "scratch_full":
@@ -356,12 +358,30 @@ def build_finetune_model(
     state = payload.get("model")
     if not isinstance(state, dict):
         raise RuntimeError(f"Checkpoint does not contain model state: {checkpoint_path}")
+    state = compatible_state_dict(model, state)
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing:
         print(f"WARN {checkpoint_path.name}: missing keys={len(missing)}", flush=True)
     if unexpected:
         print(f"WARN {checkpoint_path.name}: unexpected keys={len(unexpected)}", flush=True)
     return model
+
+
+def compatible_state_dict(model: torch.nn.Module, state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    current = model.state_dict()
+    filtered: dict[str, torch.Tensor] = {}
+    skipped: list[str] = []
+    for key, value in state.items():
+        if key not in current:
+            skipped.append(key)
+            continue
+        if tuple(current[key].shape) != tuple(value.shape):
+            skipped.append(key)
+            continue
+        filtered[key] = value
+    if skipped:
+        print(f"WARN skipped incompatible checkpoint tensors={len(skipped)} preview={skipped[:8]}", flush=True)
+    return filtered
 
 
 def build_random_encoder(config: ProbeConfig, device: torch.device) -> torch.nn.Module:
@@ -496,10 +516,9 @@ def finetune_one_shard(
         with autocast_context(device, amp_dtype):
             output = model(batch["header_uint8"], batch["events_uint8"])
             loss, metrics = probe_loss_and_metrics(
-                class_logits=output.class_logits,
-                target_one_hot=batch["target_one_hot"],
-                target_classes=batch["target_classes"],
-                target_return_bps=batch["target_return_bps"],
+                price_target_logits=output.price_target_logits,
+                target_bits=batch["target_bits"],
+                target_metrics=batch["target_metrics"],
                 valid_mask=batch["valid_mask"],
                 config=config,
             )

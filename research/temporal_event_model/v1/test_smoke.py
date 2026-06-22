@@ -10,6 +10,7 @@ if str(REPO_ROOT) not in sys.path:
 import torch
 from torch import nn
 
+from research.temporal_event_model.v1.cache_probe import PRICE_TARGET_BITS_PER_HORIZON
 from research.temporal_event_model.v1.model import SingleChunkFutureLabelPredictor
 
 
@@ -26,22 +27,21 @@ class DummyEventEncoder(nn.Module):
 def main() -> None:
     batch_size = 2
     target_chunks = 2
-    classes = 5
     embedding_dim = 32
     model = SingleChunkFutureLabelPredictor(
         event_encoder=DummyEventEncoder(embedding_dim),
         embedding_dim=embedding_dim,
         hidden_dim=64,
         target_chunks=target_chunks,
-        classes=classes,
+        target_bits=PRICE_TARGET_BITS_PER_HORIZON,
         dropout=0.0,
     )
     header = torch.randint(0, 256, (batch_size, 14), dtype=torch.uint8)
     events = torch.randint(0, 256, (batch_size, 128, 16), dtype=torch.uint8)
     output = model(header, events)
     assert output.chunk_embedding.shape == (batch_size, embedding_dim)
-    assert output.class_logits.shape == (batch_size, target_chunks, classes)
-    loss = torch.nn.functional.binary_cross_entropy_with_logits(output.class_logits, torch.zeros_like(output.class_logits))
+    assert output.price_target_logits.shape == (batch_size, target_chunks, PRICE_TARGET_BITS_PER_HORIZON)
+    loss = torch.nn.functional.binary_cross_entropy_with_logits(output.price_target_logits, torch.zeros_like(output.price_target_logits))
     assert torch.isfinite(loss)
     print("temporal_event_model/v1 smoke passed", flush=True)
 

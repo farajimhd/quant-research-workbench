@@ -18,15 +18,20 @@ if str(REPO_ROOT) not in sys.path:
 
 from research.mlops.env import discover_env_files, load_env_files
 from research.temporal_event_model.v1.cache_probe import (
-    CLASS_NAMES,
+    DOWN_CLASS_NAMES,
     DEFAULT_CACHE_ROOT,
     DEFAULT_OUTPUT_ROOT,
+    PATH_CLASS_NAMES,
+    PRICE_TARGET_BITS_PER_HORIZON,
     ProbeConfig,
+    UP_CLASS_NAMES,
     autocast_context,
     build_frozen_encoder,
     build_probe_batch,
     discover_labeled_shards,
     load_shard_records,
+    average_metric_sums,
+    probe_loss_and_metrics,
     resolve_amp_dtype,
 )
 from research.temporal_event_model.v1.model import SingleChunkFutureLabelPredictor
@@ -199,8 +204,9 @@ def evaluate_checkpoints(
     result = {
         "summary": [run["summary"] for run in run_results],
         "runs": run_results,
-        "class_names": list(CLASS_NAMES),
-        "direction_class_names": ["down", "up"],
+        "up_class_names": list(UP_CLASS_NAMES),
+        "down_class_names": list(DOWN_CLASS_NAMES),
+        "path_class_names": list(PATH_CLASS_NAMES),
         "validation": {
             "cache_root": str(cache_root),
             "split": validation_split,
@@ -292,13 +298,8 @@ def evaluate_one_checkpoint(
     amp_dtype: torch.dtype | None,
 ) -> dict[str, Any]:
     model = build_probe_model(payload, config, checkpoint_path, device)
-    class_confusion = np.zeros((len(config.horizons), len(CLASS_NAMES), len(CLASS_NAMES)), dtype=np.int64)
-    direction_confusion = np.zeros((len(config.horizons), 2, 2), dtype=np.int64)
-    target_direction_counts = np.zeros((len(config.horizons), 2), dtype=np.int64)
-    predicted_flat_for_direction_targets = np.zeros((len(config.horizons),), dtype=np.int64)
-    valid_counts = np.zeros((len(config.horizons),), dtype=np.int64)
-    loss_sum = 0.0
-    valid_total = 0
+    metric_sums: dict[str, float] = {}
+    batches = 0
     started = time.perf_counter()
     with torch.no_grad():
         for batch_indices in validation_indices:
@@ -306,57 +307,34 @@ def evaluate_one_checkpoint(
             with autocast_context(device, amp_dtype):
                 embedding = model.encode_chunk(batch["header_uint8"], batch["events_uint8"])
                 logits = model.decode_embedding(embedding.float())
-            target_one_hot = batch["target_one_hot"]
-            target_classes = batch["target_classes"]
-            valid_mask = batch["valid_mask"]
-            valid_flat = valid_mask.reshape(-1)
-            if torch.any(valid_flat):
-                flat_logits = logits.reshape(-1, len(CLASS_NAMES))[valid_flat]
-                flat_targets = target_one_hot.reshape(-1, len(CLASS_NAMES))[valid_flat]
-                loss = torch.nn.functional.binary_cross_entropy_with_logits(flat_logits, flat_targets, reduction="sum")
-                loss_sum += float(loss.detach().cpu())
-                valid_total += int(valid_flat.sum().detach().cpu())
-            predicted = torch.argmax(logits, dim=-1).detach().cpu().numpy()
-            target_np = target_classes.detach().cpu().numpy()
-            valid_np = valid_mask.detach().cpu().numpy()
-            update_confusions(
-                class_confusion=class_confusion,
-                direction_confusion=direction_confusion,
-                target_direction_counts=target_direction_counts,
-                predicted_flat_for_direction_targets=predicted_flat_for_direction_targets,
-                valid_counts=valid_counts,
-                predicted=predicted,
-                target=target_np,
-                valid=valid_np,
+            _, metrics = probe_loss_and_metrics(
+                price_target_logits=logits,
+                target_bits=batch["target_bits"],
+                target_metrics=batch["target_metrics"],
+                valid_mask=batch["valid_mask"],
+                config=config,
             )
-    metrics = summarize_confusions(
-        class_confusion=class_confusion,
-        direction_confusion=direction_confusion,
-        target_direction_counts=target_direction_counts,
-        predicted_flat_for_direction_targets=predicted_flat_for_direction_targets,
-        valid_counts=valid_counts,
-        loss_sum=loss_sum,
-        valid_total=valid_total,
-        horizons=config.horizons,
-    )
+            for key, value in metrics.items():
+                metric_sums[key] = metric_sums.get(key, 0.0) + float(value)
+            batches += 1
+    metrics = average_metric_sums(metric_sums, batches)
     run_name = checkpoint_path.parent.parent.name
     summary = {
         "run_name": run_name,
         "checkpoint": str(checkpoint_path),
         "step": int(payload.get("step", -1)),
         "epoch": int(payload.get("epoch", -1)),
-        "loss": metrics["overall"]["loss"],
-        "accuracy_pct": metrics["overall"]["accuracy_pct"],
-        "macro_f1_pct": metrics["overall"]["macro_f1_pct"],
-        "direction_accuracy_pct": metrics["overall"]["direction_accuracy_pct"],
-        "direction_coverage_pct": metrics["overall"]["direction_coverage_pct"],
+        "loss": metrics.get("loss", math.nan),
+        "bit_accuracy_pct": metrics.get("bit_accuracy_pct", math.nan),
+        "path_accuracy_pct": metrics.get("path_accuracy_pct", math.nan),
+        "low_price_mae_dollars": metrics.get("low_price_mae_dollars", math.nan),
+        "high_price_mae_dollars": metrics.get("high_price_mae_dollars", math.nan),
         "seconds": time.perf_counter() - started,
     }
     return {
         "summary": summary,
         "metrics": metrics,
-        "class_confusion": class_confusion.tolist(),
-        "direction_confusion": direction_confusion.tolist(),
+        "confusion_matrices": extract_confusion_matrices(metrics),
     }
 
 
@@ -372,12 +350,13 @@ def build_probe_model(
         embedding_dim=config.encoder_embedding_dim,
         hidden_dim=config.hidden_dim,
         target_chunks=len(config.horizons),
-        classes=len(CLASS_NAMES),
+        target_bits=PRICE_TARGET_BITS_PER_HORIZON,
         dropout=config.dropout,
     ).to(device)
     state = payload.get("model")
     if not isinstance(state, dict):
         raise RuntimeError(f"Checkpoint does not contain model state: {checkpoint_path}")
+    state = compatible_state_dict(model, state)
     missing, unexpected = model.load_state_dict(state, strict=False)
     if missing:
         print(f"WARN {checkpoint_path.name}: missing keys={len(missing)}", flush=True)
@@ -388,110 +367,28 @@ def build_probe_model(
     return model
 
 
-def update_confusions(
-    *,
-    class_confusion: np.ndarray,
-    direction_confusion: np.ndarray,
-    target_direction_counts: np.ndarray,
-    predicted_flat_for_direction_targets: np.ndarray,
-    valid_counts: np.ndarray,
-    predicted: np.ndarray,
-    target: np.ndarray,
-    valid: np.ndarray,
-) -> None:
-    for horizon_index in range(target.shape[1]):
-        mask = valid[:, horizon_index]
-        if not np.any(mask):
-            continue
-        pred_h = predicted[:, horizon_index][mask].astype(np.int64)
-        target_h = target[:, horizon_index][mask].astype(np.int64)
-        valid_counts[horizon_index] += int(mask.sum())
-        np.add.at(class_confusion[horizon_index], (target_h, pred_h), 1)
-        target_dir = five_class_to_direction(target_h)
-        pred_dir = five_class_to_direction(pred_h)
-        directional_target = target_dir >= 0
-        directional_pred = pred_dir >= 0
-        for direction in (0, 1):
-            target_direction_counts[horizon_index, direction] += int(np.sum(target_dir == direction))
-        predicted_flat_for_direction_targets[horizon_index] += int(np.sum(directional_target & ~directional_pred))
-        usable = directional_target & directional_pred
-        if np.any(usable):
-            np.add.at(direction_confusion[horizon_index], (target_dir[usable], pred_dir[usable]), 1)
-
-
-def five_class_to_direction(values: np.ndarray) -> np.ndarray:
-    out = np.full(values.shape, -1, dtype=np.int64)
-    out[(values == 0) | (values == 1)] = 0
-    out[(values == 3) | (values == 4)] = 1
-    return out
-
-
-def summarize_confusions(
-    *,
-    class_confusion: np.ndarray,
-    direction_confusion: np.ndarray,
-    target_direction_counts: np.ndarray,
-    predicted_flat_for_direction_targets: np.ndarray,
-    valid_counts: np.ndarray,
-    loss_sum: float,
-    valid_total: int,
-    horizons: tuple[int, ...],
-) -> dict[str, Any]:
-    per_horizon: dict[str, Any] = {}
-    total_class = np.zeros_like(class_confusion[0])
-    total_direction = np.zeros_like(direction_confusion[0])
-    for index, horizon in enumerate(horizons):
-        total_class += class_confusion[index]
-        total_direction += direction_confusion[index]
-        per_horizon[f"future_{horizon}"] = {
-            "valid_count": int(valid_counts[index]),
-            "accuracy_pct": accuracy_from_confusion(class_confusion[index]),
-            "macro_f1_pct": macro_f1_from_numpy_confusion(class_confusion[index]),
-            "direction_accuracy_pct": accuracy_from_confusion(direction_confusion[index]),
-            "direction_coverage_pct": direction_coverage_pct(direction_confusion[index], predicted_flat_for_direction_targets[index]),
-            "target_direction_counts": {
-                "down": int(target_direction_counts[index, 0]),
-                "up": int(target_direction_counts[index, 1]),
-            },
-            "predicted_flat_for_direction_targets": int(predicted_flat_for_direction_targets[index]),
-        }
+def compatible_state_dict(model: torch.nn.Module, state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    current = model.state_dict()
     return {
-        "overall": {
-            "valid_count": int(valid_total),
-            "loss": float(loss_sum / max(1, valid_total * len(CLASS_NAMES))),
-            "accuracy_pct": accuracy_from_confusion(total_class),
-            "macro_f1_pct": macro_f1_from_numpy_confusion(total_class),
-            "direction_accuracy_pct": accuracy_from_confusion(total_direction),
-            "direction_coverage_pct": direction_coverage_pct(total_direction, int(np.sum(predicted_flat_for_direction_targets))),
-        },
-        "per_horizon": per_horizon,
+        key: value
+        for key, value in state.items()
+        if key in current and tuple(current[key].shape) == tuple(value.shape)
     }
 
 
-def accuracy_from_confusion(confusion: np.ndarray) -> float:
-    total = float(confusion.sum())
-    if total <= 0:
-        return math.nan
-    return float(np.trace(confusion) / total * 100.0)
+def extract_confusion_matrices(metrics: dict[str, float]) -> dict[str, Any]:
+    return {
+        "upside": confusion_matrix_from_metrics(metrics, "upside_confusion", UP_CLASS_NAMES),
+        "downside": confusion_matrix_from_metrics(metrics, "downside_confusion", DOWN_CLASS_NAMES),
+        "path": confusion_matrix_from_metrics(metrics, "path_confusion", PATH_CLASS_NAMES),
+    }
 
 
-def macro_f1_from_numpy_confusion(confusion: np.ndarray) -> float:
-    confusion_f = confusion.astype(np.float64)
-    tp = np.diag(confusion_f)
-    fp = confusion_f.sum(axis=0) - tp
-    fn = confusion_f.sum(axis=1) - tp
-    precision = tp / np.maximum(tp + fp, 1.0)
-    recall = tp / np.maximum(tp + fn, 1.0)
-    f1 = (2.0 * precision * recall) / np.maximum(precision + recall, 1e-12)
-    return float(np.mean(f1) * 100.0)
-
-
-def direction_coverage_pct(direction_confusion: np.ndarray, flat_predictions: int) -> float:
-    directional_predictions = int(direction_confusion.sum())
-    denom = directional_predictions + int(flat_predictions)
-    if denom <= 0:
-        return math.nan
-    return float(directional_predictions / denom * 100.0)
+def confusion_matrix_from_metrics(metrics: dict[str, float], prefix: str, names: tuple[str, ...]) -> list[list[float]]:
+    return [
+        [float(metrics.get(f"{prefix}/{target}_pred_{pred}", 0.0)) for pred in names]
+        for target in names
+    ]
 
 
 if __name__ == "__main__":
