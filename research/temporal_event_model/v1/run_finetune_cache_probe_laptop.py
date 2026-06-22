@@ -12,7 +12,7 @@ DEFAULTS = {
     "output_root": r"D:\TradingML\runtimes\temporal_event_model\v1\cache_price_probe_finetune_laptop",
     "wandb_project": "June2026-event-encoder-linear-probes-finetune",
     "mode": "full",
-    "batch_size": 256,
+    "batch_size": 1024,
     "epochs": 5,
     "learning_rate": 4e-4,
     "lr_decay": 0.9,
@@ -23,7 +23,7 @@ DEFAULTS = {
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Laptop launcher for fine-tuning the newest temporal v1 cache-probe checkpoint. "
+            "Laptop launcher for fine-tuning the newest temporal v1 tick-extrema cache-probe checkpoint. "
             "Use --mode bottleneck for only v20 fixed-grid bottleneck plus probe head, or "
             "--mode full for all loaded event-encoder learnable parameters plus probe head, or "
             "--mode scratch_full for the same full training with random event-encoder/probe weights."

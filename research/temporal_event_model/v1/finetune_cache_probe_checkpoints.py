@@ -70,10 +70,14 @@ def main(argv: list[str] | None = None) -> int:
     if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
     print("=" * 100, flush=True)
-    print("Temporal v1 cache probe fine-tuning", flush=True)
+    print("Temporal v1 tick-extrema cache probe fine-tuning", flush=True)
     print(f"mode={args.mode}", flush=True)
     print(f"device={device}", flush=True)
     print(f"checkpoints={len(checkpoint_paths)}", flush=True)
+    print(
+        "objective=future low/high absolute tick regression + upside/downside/path classes",
+        flush=True,
+    )
     for path in checkpoint_paths:
         print(f"  {path}", flush=True)
     print(f"secrets={secret_status(('WANDB_API_KEY',))}", flush=True)
@@ -89,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Fine-tune trained temporal v1 cache-probe checkpoints. Modes: "
+            "Fine-tune trained temporal v1 tick-extrema cache-probe checkpoints. Modes: "
             "'bottleneck' unfreezes only v20 fixed_grid_to_chunk_embedding plus "
             "the probe MLP head; 'full' unfreezes all loaded event-encoder "
             "parameters plus the probe MLP head; 'scratch_full' trains the same "

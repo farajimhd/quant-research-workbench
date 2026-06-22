@@ -311,15 +311,19 @@ D:\TradingML\runtimes\temporal_event_model\v1\cache_price_probe_laptop_eval\fixe
 Open `evaluate_cache_probe_checkpoints.ipynb` to run the same evaluation from a
 notebook and plot:
 
-- overall 5-class accuracy, macro F1, and up/down direction accuracy,
-- normalized 5-class confusion matrices per future chunk,
-- normalized two-class direction confusion matrices for non-flat target rows.
+- tick-extrema loss, normalized tick regression MSE, and dollar/tick MAE,
+- upside, downside, and path accuracies,
+- row-normalized confusion matrices with raw counts,
+- target-vs-predicted class distributions for the three classification heads.
 
 ## Cache-Probe Fine-Tuning
 
 After comparing frozen-encoder probes, use
 `finetune_cache_probe_checkpoints.py` to fine-tune the trained temporal probe
-checkpoints on the same cache-v2 objective. It loads only the newest
+checkpoints on the same cache-v2 tick-extrema objective. The objective is the
+same one used by `cache_probe.py`: normalized low/high absolute tick regression
+plus upside, downside, and path classification targets derived from decoded
+future chunk extrema. It loads only the newest
 `checkpoint_latest.pt` file by default, or explicit `--checkpoint` paths.
 
 Fine-tuning modes:
@@ -358,6 +362,13 @@ python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1
 python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_finetune_cache_probe_laptop.py --mode scratch_full
 ```
 
+Run all three modes sequentially in the same terminal:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_finetune_three_modes_laptop.py --print-only
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_finetune_three_modes_laptop.py
+```
+
 The full encoder mode carries much more activation memory than the bottleneck
-mode. The launcher defaults to `batch_size=256`; reduce it if the laptop GPU
+mode. The launcher defaults to `batch_size=1024`; reduce it if the laptop GPU
 runs out of memory.
