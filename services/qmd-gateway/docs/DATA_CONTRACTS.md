@@ -323,7 +323,7 @@ The retained sample window defaults to 300 seconds. Fixed-horizon fields still u
 
 ## Bar Indicator Contract
 
-Table: `live_market_indicators`.
+Table: `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`.
 
 | Field | Formula | Streaming Method |
 |---|---|---|
@@ -349,7 +349,7 @@ Table: `live_market_indicators`.
 
 ## Indicator Persistence Policy
 
-Tick indicators are memory-first and are not persisted continuously. Closed bar-level indicators are persisted by default because this indicator set is the accepted durable contract. Set `QMD_PERSIST_INDICATORS=false` only for isolated tests that should avoid indicator writes.
+Tick indicators are memory-first and are not persisted continuously. Closed bar-level indicators are also memory-first by default because the current set can be recomputed from `live_market_bars`. Set `QMD_PERSIST_INDICATORS=true` only when a run needs a materialized indicator table for chart-load speed or audit.
 
 ## Indicator Catalog Summary
 

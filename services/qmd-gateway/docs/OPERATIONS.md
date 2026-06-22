@@ -207,7 +207,7 @@ Use replay in a separate run from live trading unless you are deliberately testi
 | `live_massive_trades` | optional | Raw trade source for replay/debug when `QMD_PERSIST_RAW_EVENTS=true`. |
 | `live_massive_quotes` | optional | Raw quote source for replay/debug when `QMD_PERSIST_RAW_EVENTS=true`. |
 | `live_market_bars` | yes | Published bars built from quotes/trades. |
-| `live_market_indicators` | yes | Published closed bar-level indicators. |
+| `live_market_indicators` | optional | Materialized closed bar-level indicators when `QMD_PERSIST_INDICATORS=true`. |
 | `qmd_gap_fill_runs` | yes if gap fill enabled | Audit trail for gap-fill attempts. |
 | `qmd_market_coverage_manifest_v1` | yes if startup maintenance or historical planning is enabled | Coarse run-level live repair and historical flatfile planning manifest. |
 

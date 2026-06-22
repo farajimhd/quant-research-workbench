@@ -64,7 +64,7 @@ Required data-path queues use awaited sends. A full queue applies backpressure i
 | `QMD_INDICATOR_HISTORY_BY_TIMEFRAME` | `1s:900,10s:360,30s:480,1m:960,5m:192,1h:32` | Closed indicator rows retained per ticker/timeframe. | If a timeframe is missing, fallback is `QMD_INDICATOR_HISTORY_LIMIT`. |
 | `QMD_INDICATOR_HISTORY_LIMIT` | `1000` | Fallback indicator history limit. | Used only for unlisted timeframes. |
 | `QMD_INDICATOR_SHARD_COUNT` | `8` | Number of indicator worker shards. | Increase if indicator latency rises. |
-| `QMD_PERSIST_INDICATORS` | `true` | Persist closed bar-level indicator rows to ClickHouse. | Set false only for isolated tests that should avoid indicator writes. |
+| `QMD_PERSIST_INDICATORS` | `false` | Persist closed bar-level indicator rows to ClickHouse. | Keep false by default because these indicators can be recomputed from `live_market_bars`. |
 
 ## ClickHouse Batch Writes
 

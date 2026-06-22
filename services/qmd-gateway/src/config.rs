@@ -193,7 +193,7 @@ impl GatewayConfig {
                 ],
             ),
             indicator_history_limit: env_usize("QMD_INDICATOR_HISTORY_LIMIT", 1_000),
-            persist_indicators: env_bool("QMD_PERSIST_INDICATORS", true),
+            persist_indicators: env_bool("QMD_PERSIST_INDICATORS", false),
             persist_compact_events: env_bool("QMD_PERSIST_COMPACT_EVENTS", true),
             persist_raw_events: env_bool("QMD_PERSIST_RAW_EVENTS", false),
             indicator_shard_count: env_usize("QMD_INDICATOR_SHARD_COUNT", 8),

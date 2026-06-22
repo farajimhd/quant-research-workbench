@@ -115,7 +115,7 @@ Environment variables:
 - `QMD_INDICATOR_HISTORY_BY_TIMEFRAME`, default `1s:900,10s:360,30s:480,1m:960,5m:192,1h:32`
 - `QMD_INDICATOR_SHARD_COUNT`, default `8`
 - `QMD_TICK_INDICATOR_WINDOW_SECONDS`, default `300`
-- `QMD_PERSIST_INDICATORS`, default `true`
+- `QMD_PERSIST_INDICATORS`, default `false`
 - `QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY`, default `250000`
 - `QMD_SCANNER_PRIMITIVE_HISTORY_LIMIT`, default `10000`
 - `QMD_REPLAY_ENABLED`, default `false`
@@ -130,7 +130,7 @@ The service writes to:
 - `live_massive_trades`, only when `QMD_PERSIST_RAW_EVENTS=true`
 - `live_massive_quotes`, only when `QMD_PERSIST_RAW_EVENTS=true`
 - `live_market_bars`
-- `live_market_indicators`
+- `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`
 - `qmd_gap_fill_runs`
 - `qmd_market_coverage_manifest_v1`
 
@@ -225,10 +225,10 @@ If a timeframe is not listed, `QMD_INDICATOR_HISTORY_LIMIT` is used as the
 fallback. Deeper chart history should be loaded from ClickHouse, then joined
 with the live in-memory tail.
 
-Closed bar-level indicator rows are kept in memory and persisted to
-`live_market_indicators` in background batches by default. Set
-`QMD_PERSIST_INDICATORS=false` only for isolated tests where indicator durability
-is intentionally disabled.
+Closed bar-level indicator rows are kept in memory by default. They are not
+persisted because the current indicator set can be recomputed from
+`live_market_bars`. Set `QMD_PERSIST_INDICATORS=true` only for a specific run
+that needs a materialized indicator table for chart-load speed or audit.
 
 The indicator catalog is exposed at `/indicator-catalog`. It documents each
 indicator family with:
