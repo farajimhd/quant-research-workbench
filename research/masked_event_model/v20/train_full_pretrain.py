@@ -58,13 +58,13 @@ DEFAULTS: dict[str, Any] = {
     "header_bit_corruption_ratio": 0.05,
     "event_bit_corruption_prob": 0.30,
     "event_bit_corruption_ratio": 0.20,
-    "learning_rate": 1e-3,
+    "learning_rate": 1e-4,
     "weight_decay": 1e-4,
     "scheduler": "shard_decay_cosine",
     "scheduler_t_mult": 1,
     "scheduler_eta_min": 1e-6,
-    "scheduler_epoch_decay_ratio": 0.80,
-    "scheduler_shard_decay_fraction": 0.60,
+    "scheduler_epoch_decay_ratio": 0.90,
+    "scheduler_shard_decay_fraction": 0.95,
     "grad_clip_norm": 1.0,
     "logging_steps": 10,
     "detailed_metrics_steps": 0,
@@ -87,11 +87,14 @@ DEFAULTS: dict[str, Any] = {
     "wandb_project": "June2026-event-token-mae-full",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
-    "wandb_run_name": "v20-fullpretrain-sharddecay-fixedmask070-emb32-bs8192-continue5epochs",
+    "wandb_run_name": "v20-fullpretrain-sharddecay-fixedmask070-emb32-bs8192-lr1e4-epoch09-shard095-continue5epochs",
     "amp_initial_scale": 1024.0,
     "amp_overflow_fatal_threshold": 8,
     "float32_matmul_precision": "high",
-    "warm_start_checkpoint": "",
+    "warm_start_checkpoint": (
+        r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\masked_event_model\v20\pretrain"
+        r"\v20-fullpretrain-sharddecay-fixedmask070-emb32-bs8192-3epochs\checkpoints\checkpoint_latest.pt"
+    ),
 }
 
 VALIDATION_BATCHES = DEFAULTS["sample_cache_validation_max_shards"]
@@ -265,6 +268,7 @@ def main() -> None:
         argv.append("--fresh-start")
     argv.extend(args.extra)
     print_plan(values, train_shards, validation_shards, validation_batches, steps_per_epoch, argv)
+    validate_required_warm_start(values)
     if args.print_only:
         return
     train_main(argv)
@@ -373,6 +377,8 @@ def print_plan(values: dict[str, Any], train_shards, validation_shards, validati
         flush=True,
     )
     print(f"wandb_project={values['wandb_project']} run={values['wandb_run_name']} mode={values['wandb_mode']}", flush=True)
+    print(f"warm_start_checkpoint={values.get('warm_start_checkpoint') or '<none>'}", flush=True)
+    print(f"warm_start_load_optimizer={values.get('warm_start_load_optimizer', False)}", flush=True)
     print(f"compile_model={values['compile_model']} interleave_shards={values['sample_cache_interleave_shards']}", flush=True)
     print("Equivalent trainer args:", flush=True)
     print(" ".join(argv), flush=True)
@@ -381,6 +387,18 @@ def print_plan(values: dict[str, Any], train_shards, validation_shards, validati
 
 def cache_split_dir_for_display(cache_root: Path, split: str) -> Path:
     return cache_root if cache_root.name == split else cache_root / split
+
+
+def validate_required_warm_start(values: dict[str, Any]) -> None:
+    checkpoint = str(values.get("warm_start_checkpoint") or "")
+    if not checkpoint:
+        return
+    checkpoint_path = Path(checkpoint)
+    if not checkpoint_path.exists():
+        raise SystemExit(
+            "Configured warm-start checkpoint is required but was not found: "
+            f"{checkpoint_path}"
+        )
 
 
 def compute_epoch_lr_table(values: dict[str, Any], shard_count: int) -> list[dict[str, float]]:
