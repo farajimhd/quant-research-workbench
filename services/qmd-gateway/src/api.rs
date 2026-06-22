@@ -116,7 +116,10 @@ async fn coverage_snapshot(
     Query(query): Query<LimitQuery>,
 ) -> Json<Value> {
     let limit = query.limit.unwrap_or(12).clamp(1, 50);
-    let sql = format!(
+    let mut rows = Vec::new();
+    let mut errors = Vec::new();
+
+    let legacy_sql = format!(
         r#"
         SELECT
             started_at,
@@ -138,17 +141,87 @@ async fn coverage_snapshot(
         table = state.config.qmd_coverage_table,
         limit = limit,
     );
-    match clickhouse_query(&state.config, &sql, true).await {
-        Ok(text) => {
-            let rows = text
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                .collect::<Vec<_>>();
-            Json(json!({ "rows": rows }))
-        }
-        Err(error) => Json(json!({ "rows": [], "error": error })),
+    match coverage_query_rows(&state.config, &legacy_sql).await {
+        Ok(mut values) => rows.append(&mut values),
+        Err(error) => errors.push(format!("legacy: {error}")),
     }
+
+    let live_sql = event_coverage_snapshot_sql(
+        &state.config.qmd_live_event_coverage_table,
+        "live_coverage",
+        limit,
+    );
+    match coverage_query_rows(&state.config, &live_sql).await {
+        Ok(mut values) => rows.append(&mut values),
+        Err(error) => errors.push(format!("live: {error}")),
+    }
+
+    let flatfile_sql = event_coverage_snapshot_sql(
+        &state.config.qmd_flatfile_event_coverage_table,
+        "flatfile_coverage",
+        limit,
+    );
+    match coverage_query_rows(&state.config, &flatfile_sql).await {
+        Ok(mut values) => rows.append(&mut values),
+        Err(error) => errors.push(format!("flatfile: {error}")),
+    }
+
+    rows.sort_by(|left, right| {
+        let left_key = left
+            .get("finished_at")
+            .and_then(Value::as_str)
+            .or_else(|| left.get("started_at").and_then(Value::as_str))
+            .unwrap_or_default();
+        let right_key = right
+            .get("finished_at")
+            .and_then(Value::as_str)
+            .or_else(|| right.get("started_at").and_then(Value::as_str))
+            .unwrap_or_default();
+        right_key.cmp(left_key)
+    });
+    rows.truncate(limit);
+
+    if errors.is_empty() {
+        Json(json!({ "rows": rows }))
+    } else {
+        Json(json!({ "rows": rows, "error": errors.join("; ") }))
+    }
+}
+
+fn event_coverage_snapshot_sql(table: &str, action: &str, limit: usize) -> String {
+    format!(
+        r#"
+        SELECT
+            started_at_utc AS started_at,
+            updated_at_utc AS finished_at,
+            coverage_kind,
+            status,
+            coverage_start_utc AS start_ts_utc,
+            coverage_end_utc AS end_ts_utc,
+            source AS action,
+            rows_written,
+            '' AS host_role,
+            '' AS command,
+            metadata_json AS summary_json,
+            '{action}' AS table_group
+        FROM {table} FINAL
+        ORDER BY updated_at_utc DESC
+        LIMIT {limit}
+        FORMAT JSONEachRow
+        "#,
+        table = table,
+        action = action,
+        limit = limit,
+    )
+}
+
+async fn coverage_query_rows(config: &GatewayConfig, sql: &str) -> Result<Vec<Value>, String> {
+    let text = clickhouse_query(config, sql, true).await?;
+    Ok(text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>())
 }
 
 async fn indicator_catalog_snapshot() -> Json<&'static [IndicatorCatalogEntry]> {
