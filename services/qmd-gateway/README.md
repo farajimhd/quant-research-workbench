@@ -97,11 +97,13 @@ Environment variables:
 - `QMD_GAP_FILL_INTERVAL_MS`, default `300000`
 - `QMD_GAP_FILL_LOOKBACK_MINUTES`, default `120`
 - `QMD_GAP_FILL_MAX_LOOKBACK_DAYS`, default `3`
-- `QMD_GAP_FILL_MIN_GAP_SECONDS`, default `60`
+- `QMD_GAP_FILL_MIN_GAP_SECONDS`, default `1`
 - `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL`, default `5`
 - `QMD_GAP_FILL_SYMBOLS`, optional comma-separated priority symbols
 - `QMD_STARTUP_MAINTENANCE_ENABLED`, default `true`
 - `QMD_COVERAGE_TABLE`, default `qmd_market_coverage_manifest_v1`
+- `QMD_LIVE_EVENT_COVERAGE_TABLE`, default `qmd_live_event_coverage_v1`
+- `QMD_FLATFILE_EVENT_COVERAGE_TABLE`, default `qmd_flatfile_event_coverage_v1`
 - `QMD_HOST_ROLE`, default `auto`; use `workstation` or `laptop` to override
 - `QMD_HISTORICAL_CLICKHOUSE_DATABASE`, default `market_sip_compact`
 - `QMD_HISTORICAL_FLATFILE_UPDATE_ENABLED`, default `true`
@@ -133,13 +135,15 @@ The service writes to:
 - `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`
 - `qmd_gap_fill_runs`
 - `qmd_market_coverage_manifest_v1`
+- `qmd_live_event_coverage_v1`
+- `qmd_flatfile_event_coverage_v1`
 
 The lowest-latency live ML path should consume the in-memory compact event
 buffer through `/snapshot/compact-events/{ticker}?limit=128` or the websocket
 stream `/stream/compact-events`. ClickHouse is the durability/audit path. Raw
-quote/trade persistence is intentionally optional because the compact event row
-is the durable live equivalent of the historical `market_sip_compact.events`
-training table.
+quote/trade persistence is intentionally optional and is not part of the default
+coverage repair contract. The compact event row is the durable live equivalent
+of the historical `market_sip_compact.events` training table.
 
 ## Live Bars
 
@@ -335,12 +339,20 @@ Massive REST historical trades and quotes:
 
 `QMD_GAP_FILL_SYMBOLS` is a priority seed list. Those symbols are always
 checked, and the worker also discovers symbols already present in the live
-compact event table, then summarizes q_live coverage by `(ticker, event_date)`.
-REST repair covers the current market day plus
-`QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior US market sessions, default `3`,
-because the REST path is for recent crash/restart recovery. It fills missing
-full days and missing head/tail intervals and marks the repair partial if
-Massive pagination hits `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`.
+compact event table. q_live gap detection does not infer missing data from
+`min/max/count` in `live_market_events_v1`; it subtracts completed coverage
+intervals in `qmd_live_event_coverage_v1` from required 04:00-20:00 ET market
+session windows. REST repair covers the current market day plus
+`QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior US market sessions, default `3`.
+Any uncovered interval inside those session windows is treated as a gap, except
+for intervals shorter than `QMD_GAP_FILL_MIN_GAP_SECONDS`. Repair rows are
+converted to the normal fanout path so compact events, continuity, bars,
+in-memory state, streams, indicators, and scanner primitives see the same data.
+The repair coverage row is marked complete only after the configured ClickHouse
+flush delay and a bar-table check; if bars are missing for a non-empty repair,
+the coverage row is marked `partial_failed`. Raw `live_massive_trades` and
+`live_massive_quotes` are excluded from this contract unless raw persistence is
+explicitly enabled for a separate debug workflow.
 Deeper historical event history should be read from the read-only
 `market_sip_compact.events` table, which is maintained by the flatfile pipelines
 up to the prior day.
@@ -359,15 +371,21 @@ If committed rows have duplicate `(ticker, ordinal)` keys, the gateway records
 existing rows. Ordinal holes and timestamp-order warnings are reported in the
 manifest summary but do not block temporal REST repair.
 
-The coverage manifest is coarse and run-scoped. It records startup live repair
-checks and historical flatfile update plans; it is not the source of truth for
-recent live gap detection. Historical `market_sip_compact.events` updates remain
-flatfile-only. After hours, the gateway can plan the `download_update_events.py`
-command for missing historical flatfile days, using a US equity market-session
-calendar so weekends and market holidays are skipped. On a workstation host with
-`QMD_HISTORICAL_FLATFILE_AUTORUN=true`, it launches that command
-asynchronously; otherwise it prints the command for manual workstation
-execution.
+The legacy `qmd_market_coverage_manifest_v1` table is coarse and run-scoped. It
+records startup audits, repair summaries, and historical flatfile update plans.
+It is not the source of truth for recent live holes. The live source of truth is
+`qmd_live_event_coverage_v1`: every QMD run opens a run coverage row, and the
+compact-event writer advances that row only after `live_market_events_v1`
+accepts a durable batch. The flatfile source of truth is
+`qmd_flatfile_event_coverage_v1`: on first startup, QMD bootstraps one
+2019-forward coverage row from the latest `market_sip_compact`
+`events_ordinal_continuity.source_date`. Historical `market_sip_compact.events`
+updates remain flatfile-only. After hours, the gateway can plan the
+`download_update_events.py` command for missing historical flatfile days, using
+a US equity market-session calendar so weekends and market holidays are
+skipped. On a workstation host with `QMD_HISTORICAL_FLATFILE_AUTORUN=true`, it
+launches that command asynchronously; otherwise it prints the command for manual
+workstation execution.
 
 ## Replay Mode
 

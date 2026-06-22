@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
@@ -60,7 +61,11 @@ pub struct GatewayConfig {
     pub massive_api_key: String,
     pub massive_ws_url: String,
     pub qmd_coverage_table: String,
+    pub qmd_flatfile_event_coverage_table: String,
     pub qmd_host_role: String,
+    pub qmd_live_event_coverage_table: String,
+    pub qmd_run_id: String,
+    pub qmd_run_started_at_utc: String,
     pub qmd_startup_maintenance_enabled: bool,
     pub replay_enabled: bool,
     pub replay_date: String,
@@ -172,7 +177,7 @@ impl GatewayConfig {
             gap_fill_lookback_minutes: env_i64("QMD_GAP_FILL_LOOKBACK_MINUTES", 120),
             gap_fill_max_lookback_days: env_i64("QMD_GAP_FILL_MAX_LOOKBACK_DAYS", 3),
             gap_fill_max_pages_per_symbol: env_usize("QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL", 5),
-            gap_fill_min_gap_seconds: env_i64("QMD_GAP_FILL_MIN_GAP_SECONDS", 60),
+            gap_fill_min_gap_seconds: env_i64("QMD_GAP_FILL_MIN_GAP_SECONDS", 1),
             gap_fill_symbols: env_list("QMD_GAP_FILL_SYMBOLS"),
             recent_live_max_pages_per_interval: env_usize(
                 "QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL",
@@ -247,7 +252,20 @@ impl GatewayConfig {
             massive_api_key,
             massive_ws_url: env_string("QMD_MASSIVE_WS_URL", "wss://socket.massive.com/stocks"),
             qmd_coverage_table: env_string("QMD_COVERAGE_TABLE", "qmd_market_coverage_manifest_v1"),
+            qmd_flatfile_event_coverage_table: env_string(
+                "QMD_FLATFILE_EVENT_COVERAGE_TABLE",
+                "qmd_flatfile_event_coverage_v1",
+            ),
             qmd_host_role: env_string("QMD_HOST_ROLE", "auto").to_ascii_lowercase(),
+            qmd_live_event_coverage_table: env_string(
+                "QMD_LIVE_EVENT_COVERAGE_TABLE",
+                "qmd_live_event_coverage_v1",
+            ),
+            qmd_run_id: env_string("QMD_RUN_ID", &default_qmd_run_id()),
+            qmd_run_started_at_utc: env_string(
+                "QMD_RUN_STARTED_AT_UTC",
+                &Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
             qmd_startup_maintenance_enabled: env_bool("QMD_STARTUP_MAINTENANCE_ENABLED", true),
             replay_enabled: env_bool("QMD_REPLAY_ENABLED", false),
             replay_date: env_string("QMD_REPLAY_DATE", ""),
@@ -308,6 +326,12 @@ impl GatewayConfig {
             ],
             "",
         )
+    }
+
+    pub fn qmd_run_started_at(&self) -> Option<DateTime<Utc>> {
+        DateTime::parse_from_rfc3339(&self.qmd_run_started_at_utc)
+            .ok()
+            .map(|value| value.with_timezone(&Utc))
     }
 }
 
@@ -370,6 +394,14 @@ fn env_string(name: &str, default: &str) -> String {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| default.to_string())
+}
+
+fn default_qmd_run_id() -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    format!("qmd_{}_{}", millis, std::process::id())
 }
 
 fn env_string_any(names: &[&str], default: &str) -> String {

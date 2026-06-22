@@ -4,12 +4,15 @@ use crate::massive::{fanout_market_event, MarketEventFanout};
 use crate::metrics::TimingTarget;
 use crate::session::{is_streaming_phase, session_phase};
 use crate::timefmt::clickhouse_datetime64;
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, TimeZone, Utc, Weekday};
+use chrono::{
+    DateTime, Datelike, Duration as ChronoDuration, NaiveDate, NaiveDateTime, TimeZone, Utc,
+    Weekday,
+};
 use chrono_tz::America::New_York;
 use futures_util::stream::{self, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::Path as FsPath;
 use std::process::Command;
 use tokio::time::{interval, Duration};
@@ -76,11 +79,10 @@ struct RecentLiveRepair {
     symbols_repaired: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct LiveDayStats {
-    count: u64,
-    max_sip_timestamp_us: u64,
-    min_sip_timestamp_us: u64,
+#[derive(Clone, Debug)]
+struct CoverageInterval {
+    end: DateTime<Utc>,
+    start: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug)]
@@ -362,18 +364,25 @@ impl GapFillService {
         mode: &str,
     ) -> Result<RecentLiveRepair, String> {
         let phase = format!("{:?}", session_phase(started_at));
-        let (window_start, _window_end, mut market_dates) = self.recent_live_window();
+        let (window_start, window_end, mut market_dates) = self.recent_live_window();
         if mode == "startup_recent_repair" {
             let today = started_at.with_timezone(&New_York).date_naive();
             market_dates.retain(|date| *date == today);
         }
-        let stats = self.recent_live_day_stats(window_start).await?;
-        let symbols = self.recent_live_symbols(&stats);
+        let coverage_intervals = self
+            .live_event_coverage_intervals(window_start, window_end)
+            .await?;
+        let coverage_gaps = self.coverage_gaps_for_sessions(&market_dates, &coverage_intervals);
+        let symbols = self.recent_live_symbols_from_db(window_start).await?;
         let mut repair = RecentLiveRepair {
             status: "up_to_date".to_string(),
             symbols_checked: symbols.len() as u64,
             ..RecentLiveRepair::default()
         };
+        repair.intervals_checked = coverage_gaps.len() as u64;
+        if coverage_gaps.is_empty() {
+            return Ok(repair);
+        }
         if symbols.is_empty() {
             repair.status = "skipped".to_string();
             self.record_run(
@@ -390,15 +399,7 @@ impl GapFillService {
         }
         let repair_jobs = symbols
             .into_iter()
-            .filter_map(|symbol| {
-                let intervals = self.repair_intervals_for_symbol(&symbol, &market_dates, &stats);
-                repair.intervals_checked += intervals.len() as u64;
-                if intervals.is_empty() {
-                    None
-                } else {
-                    Some((symbol, intervals))
-                }
-            })
+            .map(|symbol| (symbol, coverage_gaps.clone()))
             .collect::<Vec<_>>();
         let concurrency = self.config.recent_live_repair_concurrency.max(1);
         let mut outcomes = stream::iter(repair_jobs)
@@ -442,7 +443,16 @@ impl GapFillService {
         } else if repair.page_limited_symbols > 0 {
             "partial_page_limit".to_string()
         } else if repair.intervals_repaired > 0 {
-            "repair_submitted".to_string()
+            let wait_ms = self.config.flush_interval_ms.saturating_mul(2).max(1_000);
+            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+            self.record_completed_live_repair_coverage(
+                started_at,
+                mode,
+                &coverage_gaps,
+                repair.rows_written,
+            )
+            .await?;
+            "repair_completed".to_string()
         } else {
             "up_to_date".to_string()
         };
@@ -517,72 +527,116 @@ impl GapFillService {
         })
     }
 
-    async fn recent_live_day_stats(
+    async fn live_event_coverage_intervals(
         &self,
         window_start: DateTime<Utc>,
-    ) -> Result<HashMap<(String, NaiveDate), LiveDayStats>, String> {
-        if !self.config.compact_events_enabled {
-            return Ok(HashMap::new());
-        }
-        let start_date = window_start.date_naive();
-        let start_us = window_start.timestamp_micros();
+        window_end: DateTime<Utc>,
+    ) -> Result<Vec<CoverageInterval>, String> {
         let sql = format!(
             r#"
             SELECT
-                ticker,
-                toDate(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) AS market_date,
-                count() AS rows,
-                min(sip_timestamp_us) AS min_sip_timestamp_us,
-                max(sip_timestamp_us) AS max_sip_timestamp_us
-            FROM {table}
-            WHERE event_date >= toDate('{start_date}')
-              AND sip_timestamp_us >= {start_us}
-              AND toHour(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) >= 4
-              AND toHour(toTimeZone(fromUnixTimestamp64Micro(toInt64(sip_timestamp_us)), 'America/New_York')) < 20
-              AND ticker != ''
-            GROUP BY ticker, market_date
+                coverage_start_utc,
+                coverage_end_utc
+            FROM {table} FINAL
+            WHERE coverage_kind = 'q_live_events'
+              AND status IN ('running', 'completed', 'repair_completed', 'coverage_bootstrap')
+              AND coverage_end_utc > toDateTime64('{start}', 3, 'UTC')
+              AND coverage_start_utc < toDateTime64('{end}', 3, 'UTC')
+            ORDER BY coverage_start_utc, coverage_end_utc
             FORMAT JSONEachRow
             "#,
-            start_date = start_date,
-            start_us = start_us,
-            table = self.config.compact_event_table,
+            table = self.config.qmd_live_event_coverage_table,
+            start = clickhouse_datetime64(&window_start),
+            end = clickhouse_datetime64(&window_end),
         );
         let text = self.query(&sql, true).await?;
-        let mut stats = HashMap::new();
+        let mut out = Vec::new();
         for line in text.lines().filter(|line| !line.trim().is_empty()) {
             let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
-            let Some(symbol) = value.get("ticker").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(event_date) = value
-                .get("market_date")
+            let Some(start) = value
+                .get("coverage_start_utc")
                 .and_then(Value::as_str)
-                .and_then(|raw| NaiveDate::parse_from_str(raw, "%Y-%m-%d").ok())
+                .and_then(parse_clickhouse_datetime64)
             else {
                 continue;
             };
-            stats.insert(
-                (symbol.to_ascii_uppercase(), event_date),
-                LiveDayStats {
-                    count: value.get("rows").and_then(json_u64).unwrap_or(0),
-                    max_sip_timestamp_us: value
-                        .get("max_sip_timestamp_us")
-                        .and_then(json_u64)
-                        .unwrap_or(0),
-                    min_sip_timestamp_us: value
-                        .get("min_sip_timestamp_us")
-                        .and_then(json_u64)
-                        .unwrap_or(0),
-                },
-            );
+            let Some(end) = value
+                .get("coverage_end_utc")
+                .and_then(Value::as_str)
+                .and_then(parse_clickhouse_datetime64)
+            else {
+                continue;
+            };
+            if end <= start {
+                continue;
+            }
+            out.push(CoverageInterval { end, start });
         }
-        Ok(stats)
+        Ok(out)
     }
 
-    fn recent_live_symbols(
+    fn coverage_gaps_for_sessions(
         &self,
-        stats: &HashMap<(String, NaiveDate), LiveDayStats>,
-    ) -> Vec<String> {
+        market_dates: &[NaiveDate],
+        intervals: &[CoverageInterval],
+    ) -> Vec<RepairInterval> {
+        let now = Utc::now();
+        let min_gap = ChronoDuration::seconds(self.config.gap_fill_min_gap_seconds.max(1));
+        let mut gaps = Vec::new();
+        for date in market_dates {
+            let Some((session_start, session_end)) = market_session_window_utc(*date, now) else {
+                continue;
+            };
+            if session_end <= session_start {
+                continue;
+            }
+            let mut clipped = intervals
+                .iter()
+                .filter_map(|interval| {
+                    let start = interval.start.max(session_start);
+                    let end = interval.end.min(session_end);
+                    if end > start {
+                        Some((start, end))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            clipped.sort_by_key(|(start, end)| (*start, *end));
+            let mut cursor = session_start;
+            for (start, end) in clipped {
+                if start > cursor {
+                    let gap = start - cursor;
+                    if gap >= min_gap {
+                        gaps.push(RepairInterval {
+                            start: cursor,
+                            end: start,
+                            reason: "coverage_gap",
+                        });
+                    }
+                }
+                if end > cursor {
+                    cursor = end;
+                }
+            }
+            if session_end > cursor {
+                let gap = session_end - cursor;
+                if gap >= min_gap {
+                    gaps.push(RepairInterval {
+                        start: cursor,
+                        end: session_end,
+                        reason: "coverage_gap",
+                    });
+                }
+            }
+        }
+        gaps
+    }
+
+    async fn recent_live_symbols_from_db(
+        &self,
+        window_start: DateTime<Utc>,
+    ) -> Result<Vec<String>, String> {
         let mut symbols = BTreeSet::new();
         symbols.extend(
             self.config
@@ -591,62 +645,109 @@ impl GapFillService {
                 .map(|symbol| symbol.to_ascii_uppercase())
                 .filter(|symbol| !symbol.is_empty()),
         );
-        symbols.extend(stats.keys().map(|(symbol, _)| symbol.clone()));
-        symbols.into_iter().collect()
+        if self.config.compact_events_enabled {
+            let sql = format!(
+                r#"
+                SELECT DISTINCT ticker
+                FROM {table}
+                WHERE event_date >= toDate('{start_date}')
+                  AND sip_timestamp_us >= {start_us}
+                  AND ticker != ''
+                ORDER BY ticker
+                FORMAT TSV
+                "#,
+                table = self.config.compact_event_table,
+                start_date = window_start.date_naive(),
+                start_us = window_start.timestamp_micros(),
+            );
+            let text = self.query(&sql, true).await.unwrap_or_default();
+            symbols.extend(
+                text.lines()
+                    .map(|line| line.trim().to_ascii_uppercase())
+                    .filter(|line| !line.is_empty()),
+            );
+        }
+        Ok(symbols.into_iter().collect())
     }
 
-    fn repair_intervals_for_symbol(
+    async fn record_completed_live_repair_coverage(
         &self,
-        symbol: &str,
-        market_dates: &[NaiveDate],
-        stats: &HashMap<(String, NaiveDate), LiveDayStats>,
-    ) -> Vec<RepairInterval> {
-        let now = Utc::now();
-        let min_gap = ChronoDuration::seconds(self.config.gap_fill_min_gap_seconds.max(1));
-        let mut intervals = Vec::new();
-        for date in market_dates {
-            let Some((day_start, day_end)) = market_session_window_utc(*date, now) else {
-                continue;
+        started_at: DateTime<Utc>,
+        mode: &str,
+        intervals: &[RepairInterval],
+        event_rows: u64,
+    ) -> Result<(), String> {
+        for (index, interval) in intervals.iter().enumerate() {
+            let bar_rows = self
+                .count_bar_rows(interval.start, interval.end)
+                .await
+                .unwrap_or(0);
+            let status = if event_rows > 0 && bar_rows == 0 {
+                "partial_failed"
+            } else {
+                "repair_completed"
             };
-            let key = (symbol.to_string(), *date);
-            let Some(day_stats) = stats.get(&key) else {
-                intervals.push(RepairInterval {
-                    start: day_start,
-                    end: day_end,
-                    reason: "missing_day",
-                });
-                continue;
-            };
-            if day_stats.count == 0 {
-                intervals.push(RepairInterval {
-                    start: day_start,
-                    end: day_end,
-                    reason: "empty_day",
-                });
-                continue;
-            }
-            let Some(min_dt) = us_to_datetime(day_stats.min_sip_timestamp_us) else {
-                continue;
-            };
-            let Some(max_dt) = us_to_datetime(day_stats.max_sip_timestamp_us) else {
-                continue;
-            };
-            if min_dt > day_start + min_gap {
-                intervals.push(RepairInterval {
-                    start: day_start,
-                    end: min_dt - ChronoDuration::microseconds(1),
-                    reason: "missing_day_head",
-                });
-            }
-            if max_dt + min_gap < day_end {
-                intervals.push(RepairInterval {
-                    start: max_dt + ChronoDuration::microseconds(1),
-                    end: day_end,
-                    reason: "missing_day_tail",
-                });
-            }
+            self.record_event_coverage_snapshot(
+                &self.config.qmd_live_event_coverage_table,
+                "q_live_events",
+                &format!(
+                    "repair_{}_{}_{}",
+                    self.config.qmd_run_id,
+                    started_at.timestamp_millis(),
+                    index
+                ),
+                "massive_rest_gap_repair",
+                status,
+                interval.start,
+                interval.end,
+                event_rows,
+                event_rows,
+                bar_rows,
+                if status == "partial_failed" { 1 } else { 0 },
+                started_at,
+                Some(Utc::now()),
+                &json!({
+                    "mode": mode,
+                    "reason": interval.reason,
+                    "persistence_contract": [
+                        "q_live.live_market_events_v1",
+                        "q_live.live_event_ordinal_continuity",
+                        "q_live.live_market_bars"
+                    ],
+                    "excluded_tables": [
+                        "q_live.live_massive_trades",
+                        "q_live.live_massive_quotes",
+                        "q_live.live_market_indicators"
+                    ],
+                }),
+            )
+            .await?;
         }
-        intervals
+        Ok(())
+    }
+
+    async fn count_bar_rows(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<u64, String> {
+        let sql = format!(
+            r#"
+            SELECT count()
+            FROM live_market_bars
+            WHERE bar_end > toDateTime64('{start}', 3, 'UTC')
+              AND bar_start < toDateTime64('{end}', 3, 'UTC')
+            FORMAT TSV
+            "#,
+            start = clickhouse_datetime64(&start),
+            end = clickhouse_datetime64(&end),
+        );
+        Ok(self
+            .query(&sql, true)
+            .await?
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(0))
     }
 
     fn recent_live_window(&self) -> (DateTime<Utc>, DateTime<Utc>, Vec<NaiveDate>) {
@@ -923,7 +1024,51 @@ impl GapFillService {
             true,
         )
         .await
-        .map(|_| ())
+        .map(|_| ())?;
+        self.query(
+            &self.create_event_coverage_table_sql(&self.config.qmd_live_event_coverage_table),
+            true,
+        )
+        .await
+        .map(|_| ())?;
+        self.query(
+            &self.create_event_coverage_table_sql(&self.config.qmd_flatfile_event_coverage_table),
+            true,
+        )
+        .await
+        .map(|_| ())?;
+        self.ensure_current_live_coverage_open(Utc::now()).await?;
+        self.bootstrap_flatfile_event_coverage().await
+    }
+
+    fn create_event_coverage_table_sql(&self, table: &str) -> String {
+        format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                coverage_kind LowCardinality(String),
+                coverage_id String,
+                source LowCardinality(String),
+                status LowCardinality(String),
+                coverage_start_utc DateTime64(3, 'UTC'),
+                coverage_end_utc DateTime64(3, 'UTC'),
+                rows_written UInt64,
+                event_rows UInt64,
+                bar_rows UInt64,
+                error_count UInt64,
+                started_at_utc DateTime64(3, 'UTC'),
+                updated_at_utc DateTime64(3, 'UTC'),
+                completed_at_utc Nullable(DateTime64(3, 'UTC')),
+                metadata_json String
+            )
+            ENGINE = ReplacingMergeTree(updated_at_utc)
+            PARTITION BY toYYYYMM(coverage_start_utc)
+            ORDER BY (coverage_kind, coverage_id)
+            {settings}
+            "#,
+            table = table,
+            settings = merge_tree_settings(&self.config.clickhouse_storage_policy),
+        )
     }
 
     async fn record_run(
@@ -984,6 +1129,142 @@ impl GapFillService {
                 "INSERT INTO {} FORMAT JSONEachRow\n{}",
                 self.config.qmd_coverage_table, row
             ),
+            true,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn ensure_current_live_coverage_open(
+        &self,
+        fallback_start: DateTime<Utc>,
+    ) -> Result<(), String> {
+        let coverage_id = format!("live_{}", self.config.qmd_run_id);
+        let sql = format!(
+            "SELECT count() FROM {} FINAL WHERE coverage_kind = 'q_live_events' AND coverage_id = '{}' FORMAT TSV",
+            self.config.qmd_live_event_coverage_table,
+            escape_sql_string(&coverage_id),
+        );
+        let count = self
+            .query(&sql, true)
+            .await
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        if count > 0 {
+            return Ok(());
+        }
+        let started_at = self.config.qmd_run_started_at().unwrap_or(fallback_start);
+        self.record_event_coverage_snapshot(
+            &self.config.qmd_live_event_coverage_table,
+            "q_live_events",
+            &coverage_id,
+            "qmd_gateway_run",
+            "running",
+            started_at,
+            started_at,
+            0,
+            0,
+            0,
+            0,
+            started_at,
+            None,
+            &json!({
+                "message": "current qmd run coverage opened before live ingest",
+                "raw_trade_quote_tables": "not_in_persistence_contract",
+            }),
+        )
+        .await
+    }
+
+    async fn bootstrap_flatfile_event_coverage(&self) -> Result<(), String> {
+        let sql = format!(
+            "SELECT count() FROM {} FINAL WHERE coverage_kind = 'flatfile_events' FORMAT TSV",
+            self.config.qmd_flatfile_event_coverage_table
+        );
+        let existing = self
+            .query(&sql, true)
+            .await
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        if existing > 0 {
+            return Ok(());
+        }
+        let latest = self.latest_historical_event_date().await?;
+        let Some(latest_date) = NaiveDate::parse_from_str(&latest, "%Y-%m-%d").ok() else {
+            return Err(format!(
+                "could not parse latest historical event source_date '{latest}'"
+            ));
+        };
+        let Some(start_date) = NaiveDate::from_ymd_opt(2019, 1, 1) else {
+            return Err("could not construct 2019-01-01 flatfile coverage start".to_string());
+        };
+        if latest_date < start_date {
+            return Ok(());
+        }
+        let coverage_start = date_start_utc(start_date);
+        let coverage_end = date_start_utc(latest_date) + ChronoDuration::days(1);
+        let now = Utc::now();
+        self.record_event_coverage_snapshot(
+            &self.config.qmd_flatfile_event_coverage_table,
+            "flatfile_events",
+            "flatfile_bootstrap_2019_forward",
+            "market_sip_compact",
+            "coverage_bootstrap",
+            coverage_start,
+            coverage_end,
+            0,
+            0,
+            0,
+            0,
+            now,
+            Some(now),
+            &json!({
+                "historical_database": self.config.historical_clickhouse_database,
+                "latest_historical_event_date": latest,
+                "coverage_rule": "source-of-truth bootstrap from market_sip_compact, no lookback before 2019",
+            }),
+        )
+        .await
+    }
+
+    async fn record_event_coverage_snapshot(
+        &self,
+        table: &str,
+        coverage_kind: &str,
+        coverage_id: &str,
+        source: &str,
+        status: &str,
+        coverage_start: DateTime<Utc>,
+        coverage_end: DateTime<Utc>,
+        rows_written: u64,
+        event_rows: u64,
+        bar_rows: u64,
+        error_count: u64,
+        started_at: DateTime<Utc>,
+        completed_at: Option<DateTime<Utc>>,
+        metadata: &Value,
+    ) -> Result<(), String> {
+        let now = Utc::now();
+        let row = json!({
+            "coverage_kind": coverage_kind,
+            "coverage_id": coverage_id,
+            "source": source,
+            "status": status,
+            "coverage_start_utc": clickhouse_datetime64(&coverage_start),
+            "coverage_end_utc": clickhouse_datetime64(&coverage_end),
+            "rows_written": rows_written,
+            "event_rows": event_rows,
+            "bar_rows": bar_rows,
+            "error_count": error_count,
+            "started_at_utc": clickhouse_datetime64(&started_at),
+            "updated_at_utc": clickhouse_datetime64(&now),
+            "completed_at_utc": completed_at.map(|value| clickhouse_datetime64(&value)),
+            "metadata_json": metadata.to_string(),
+        });
+        self.query(
+            &format!("INSERT INTO {table} FORMAT JSONEachRow\n{row}"),
             true,
         )
         .await
@@ -1113,6 +1394,32 @@ fn date_start_utc(date: NaiveDate) -> DateTime<Utc> {
     date.and_hms_opt(0, 0, 0)
         .expect("midnight is valid for every NaiveDate")
         .and_utc()
+}
+
+fn parse_clickhouse_datetime64(value: &str) -> Option<DateTime<Utc>> {
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+        .ok()
+        .map(|value| Utc.from_utc_datetime(&value))
+        .or_else(|| {
+            DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|value| value.with_timezone(&Utc))
+        })
+}
+
+fn escape_sql_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+fn merge_tree_settings(storage_policy: &str) -> String {
+    if storage_policy.trim().is_empty() {
+        "SETTINGS index_granularity = 8192".to_string()
+    } else {
+        format!(
+            "SETTINGS index_granularity = 8192, storage_policy = '{}'",
+            storage_policy.trim().replace('\'', "\\'")
+        )
+    }
 }
 
 fn market_session_window_utc(
@@ -1301,12 +1608,6 @@ fn ns_to_datetime(ns: i64) -> Option<DateTime<Utc>> {
     let seconds = ns.div_euclid(1_000_000_000);
     let nanos = ns.rem_euclid(1_000_000_000) as u32;
     DateTime::<Utc>::from_timestamp(seconds, nanos)
-}
-
-fn us_to_datetime(us: u64) -> Option<DateTime<Utc>> {
-    let seconds = (us / 1_000_000) as i64;
-    let micros = (us % 1_000_000) as u32;
-    DateTime::<Utc>::from_timestamp(seconds, micros * 1_000)
 }
 
 fn string_or_number_field(item: &Value, key: &str) -> String {

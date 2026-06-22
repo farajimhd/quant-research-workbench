@@ -1128,6 +1128,8 @@ impl BarClickHouseWriter {
             true,
         )
         .await?;
+        self.execute(&self.create_live_coverage_table_sql(), true)
+            .await?;
         Ok(())
     }
 
@@ -1162,6 +1164,7 @@ impl BarClickHouseWriter {
         if let Err(error) = self.insert_bars(batch).await {
             eprintln!("ClickHouse bar insert failed: {error}");
         } else {
+            self.record_live_event_coverage(batch).await;
             batch.clear();
         }
     }
@@ -1176,6 +1179,93 @@ impl BarClickHouseWriter {
             .join("\n");
         self.query_with_body("INSERT INTO live_market_bars FORMAT JSONEachRow", body)
             .await
+    }
+
+    fn create_live_coverage_table_sql(&self) -> String {
+        format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                coverage_kind LowCardinality(String),
+                coverage_id String,
+                source LowCardinality(String),
+                status LowCardinality(String),
+                coverage_start_utc DateTime64(3, 'UTC'),
+                coverage_end_utc DateTime64(3, 'UTC'),
+                rows_written UInt64,
+                event_rows UInt64,
+                bar_rows UInt64,
+                error_count UInt64,
+                started_at_utc DateTime64(3, 'UTC'),
+                updated_at_utc DateTime64(3, 'UTC'),
+                completed_at_utc Nullable(DateTime64(3, 'UTC')),
+                metadata_json String
+            )
+            ENGINE = ReplacingMergeTree(updated_at_utc)
+            PARTITION BY toYYYYMM(coverage_start_utc)
+            ORDER BY (coverage_kind, coverage_id)
+            {settings}
+            "#,
+            table = self.config.qmd_live_event_coverage_table,
+            settings = merge_tree_settings(&self.config.clickhouse_storage_policy),
+        )
+    }
+
+    async fn record_live_event_coverage(&self, rows: &[BarRow]) {
+        if rows.is_empty() {
+            return;
+        }
+        let now = Utc::now();
+        let min_ts = rows
+            .iter()
+            .filter_map(|row| row.first_event_ts.or(Some(row.bar_start)))
+            .min()
+            .unwrap_or(now);
+        let max_ts = rows
+            .iter()
+            .filter_map(|row| row.last_event_ts.or(Some(row.bar_end)))
+            .max()
+            .unwrap_or(now);
+        if max_ts <= min_ts {
+            return;
+        }
+        let started_at = self
+            .config
+            .qmd_run_started_at()
+            .unwrap_or_else(|| min_ts.min(now));
+        let row = json!({
+            "coverage_kind": "q_live_events",
+            "coverage_id": format!("live_{}", self.config.qmd_run_id),
+            "source": "qmd_bar_writer",
+            "status": "running",
+            "coverage_start_utc": clickhouse_datetime64(&started_at.min(min_ts)),
+            "coverage_end_utc": clickhouse_datetime64(&max_ts),
+            "rows_written": rows.len() as u64,
+            "event_rows": 0u64,
+            "bar_rows": rows.len() as u64,
+            "error_count": 0u64,
+            "started_at_utc": clickhouse_datetime64(&started_at),
+            "updated_at_utc": clickhouse_datetime64(&now),
+            "completed_at_utc": Option::<String>::None,
+            "metadata_json": json!({
+                "run_id": self.config.qmd_run_id,
+                "coverage_rule": "live coverage advances after live_market_bars insert succeeds",
+                "raw_trade_quote_tables": "not_in_persistence_contract",
+                "indicators": "not_persisted_by_default",
+            }).to_string(),
+        });
+        let result = self
+            .query(
+                &format!(
+                    "INSERT INTO {} FORMAT JSONEachRow\n{}",
+                    self.config.qmd_live_event_coverage_table, row
+                ),
+                true,
+            )
+            .await;
+        if let Err(error) = result {
+            eprintln!("ClickHouse qmd bar coverage update failed: {error}");
+        }
     }
 
     async fn execute(&self, sql: &str, use_database: bool) -> Result<(), String> {
@@ -1311,6 +1401,17 @@ fn bar_insert_row(row: &BarRow) -> serde_json::Value {
         "direction_change_count": row.direction_change_count,
         "chop_score": row.chop_score,
     })
+}
+
+fn merge_tree_settings(storage_policy: &str) -> String {
+    if storage_policy.trim().is_empty() {
+        "SETTINGS index_granularity = 8192".to_string()
+    } else {
+        format!(
+            "SETTINGS index_granularity = 8192, storage_policy = '{}'",
+            storage_policy.trim().replace('\'', "\\'")
+        )
+    }
 }
 
 fn parse_timeframe(label: &str) -> Option<BarFrame> {

@@ -2,7 +2,7 @@ use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::metrics::SharedMetrics;
 use crate::timefmt::clickhouse_datetime64;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -266,6 +266,8 @@ impl CompactEventClickHouseWriter {
         self.execute(&self.create_table_sql(), true).await?;
         self.execute(&self.create_continuity_table_sql(), true)
             .await?;
+        self.execute(&self.create_live_coverage_table_sql(), true)
+            .await?;
         self.execute(
             &format!(
                 "ALTER TABLE {} ADD COLUMN IF NOT EXISTS arrival_sequence UInt64 CODEC(T64, ZSTD(1)) AFTER ingest_ts",
@@ -462,6 +464,8 @@ impl CompactEventClickHouseWriter {
         }
         match self.insert_events(rows).await {
             Ok(()) => {
+                self.record_live_event_coverage("compact_persisted", rows, "", 0)
+                    .await;
                 self.metrics.inc_compact_events_persisted(rows.len() as u64);
                 rows.clear();
                 if last_continuity_flush.elapsed()
@@ -472,7 +476,11 @@ impl CompactEventClickHouseWriter {
                     *last_continuity_flush = Instant::now();
                 }
             }
-            Err(error) => eprintln!("ClickHouse compact event insert failed: {error}"),
+            Err(error) => {
+                eprintln!("ClickHouse compact event insert failed: {error}");
+                self.record_live_event_coverage("failed", rows, &error, rows.len() as u64)
+                    .await;
+            }
         }
     }
 
@@ -682,6 +690,102 @@ impl CompactEventClickHouseWriter {
             table = self.config.compact_event_continuity_table,
             settings = merge_tree_settings(&self.config.clickhouse_storage_policy),
         )
+    }
+
+    fn create_live_coverage_table_sql(&self) -> String {
+        format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                coverage_kind LowCardinality(String),
+                coverage_id String,
+                source LowCardinality(String),
+                status LowCardinality(String),
+                coverage_start_utc DateTime64(3, 'UTC'),
+                coverage_end_utc DateTime64(3, 'UTC'),
+                rows_written UInt64,
+                event_rows UInt64,
+                bar_rows UInt64,
+                error_count UInt64,
+                started_at_utc DateTime64(3, 'UTC'),
+                updated_at_utc DateTime64(3, 'UTC'),
+                completed_at_utc Nullable(DateTime64(3, 'UTC')),
+                metadata_json String
+            )
+            ENGINE = ReplacingMergeTree(updated_at_utc)
+            PARTITION BY toYYYYMM(coverage_start_utc)
+            ORDER BY (coverage_kind, coverage_id)
+            {settings}
+            "#,
+            table = self.config.qmd_live_event_coverage_table,
+            settings = merge_tree_settings(&self.config.clickhouse_storage_policy),
+        )
+    }
+
+    async fn record_live_event_coverage(
+        &self,
+        status: &str,
+        rows: &[LiveCompactEvent],
+        error: &str,
+        error_count: u64,
+    ) {
+        if rows.is_empty() {
+            return;
+        }
+        let now = Utc::now();
+        let min_ts = rows
+            .iter()
+            .filter_map(|row| sip_us_to_datetime(row.sip_timestamp_us))
+            .min()
+            .unwrap_or(now);
+        let max_ts = rows
+            .iter()
+            .filter_map(|row| sip_us_to_datetime(row.sip_timestamp_us))
+            .max()
+            .unwrap_or(now);
+        let started_at = self
+            .config
+            .qmd_run_started_at()
+            .unwrap_or_else(|| min_ts.min(now));
+        let coverage_start = started_at.min(min_ts);
+        let completed_at = if status == "failed" {
+            Some(clickhouse_datetime64(&now))
+        } else {
+            None
+        };
+        let row = json!({
+            "coverage_kind": "q_live_events",
+            "coverage_id": format!("compact_{}", self.config.qmd_run_id),
+            "source": "qmd_compact_event_writer",
+            "status": status,
+            "coverage_start_utc": clickhouse_datetime64(&coverage_start),
+            "coverage_end_utc": clickhouse_datetime64(&max_ts),
+            "rows_written": rows.len() as u64,
+            "event_rows": rows.len() as u64,
+            "bar_rows": 0u64,
+            "error_count": error_count,
+            "started_at_utc": clickhouse_datetime64(&started_at),
+            "updated_at_utc": clickhouse_datetime64(&now),
+            "completed_at_utc": completed_at,
+            "metadata_json": json!({
+                "run_id": self.config.qmd_run_id,
+                "error": error,
+                "raw_trade_quote_tables": "not_in_persistence_contract",
+                "bars": "coverage_not_complete_until_bar_writer_confirms",
+            }).to_string(),
+        });
+        let result = self
+            .query(
+                &format!(
+                    "INSERT INTO {} FORMAT JSONEachRow\n{}",
+                    self.config.qmd_live_event_coverage_table, row
+                ),
+                true,
+            )
+            .await;
+        if let Err(error) = result {
+            eprintln!("ClickHouse qmd live coverage update failed: {error}");
+        }
     }
 
     async fn flush_continuity(
@@ -910,6 +1014,12 @@ fn scaled_price(price: f64) -> Option<(u32, u8)> {
 
 fn timestamp_us(ts: DateTime<Utc>) -> u64 {
     ts.timestamp_micros().max(0) as u64
+}
+
+fn sip_us_to_datetime(us: u64) -> Option<DateTime<Utc>> {
+    let seconds = (us / 1_000_000) as i64;
+    let nanos = ((us % 1_000_000) * 1_000) as u32;
+    Utc.timestamp_opt(seconds, nanos).single()
 }
 
 fn merge_tree_settings(storage_policy: &str) -> String {
