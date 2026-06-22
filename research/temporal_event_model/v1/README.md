@@ -226,6 +226,69 @@ target chunk tick scale, then report:
 - predicted-low <= predicted-high validity rate,
 - upside, downside, and path confusion matrices.
 
+## Streaming-Window Embedding Probe
+
+`window_embedding_probe.py` is the elevated linear-probe style test for the
+production embedding path. It does not use saved cache-v2 samples. Instead, it
+queries one ticker/time window from ClickHouse, creates a rolling embedding
+stream, and trains a small temporal head from selected embeddings.
+
+For each sampled ticker window:
+
+1. query ordered events from `market_sip_compact.events`,
+2. build every valid rolling 128-event compact chunk,
+3. run the frozen event encoder once per valid rolling chunk,
+4. keep those embeddings in RAM for the block,
+5. select two context groups from the embedding stream:
+   - dense recent embeddings,
+   - sparse older embeddings by geometric lag,
+6. train the temporal head to predict the same tick-extrema targets used by the
+   cache-v2 probe.
+
+The default context is production-aligned:
+
+```text
+recent_count = 16
+recent_stride = 1
+older_count = 16
+older_lags = geometric lags from 32 to 1024
+context shape = [B, 32, 32]
+```
+
+The context is ordered oldest to newest before entering the temporal head. The
+target chunks are:
+
+```text
+future chunk 1: events t+1   ... t+128
+future chunk 2: events t+129 ... t+256
+```
+
+Run a dry command preview:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_window_embedding_probe_laptop.py --print-only
+```
+
+Run a small smoke against one ticker:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_window_embedding_probe_laptop.py --checkpoint epoch1 --tickers AAPL --blocks-per-epoch 2 --validation-blocks 1 --validation-batches-per-block 1 --batch-size 128 --block-max-events 50000 --run-name v1-window-probe-smoke-aapl
+```
+
+Run the default elevated probe:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_window_embedding_probe_laptop.py
+```
+
+Use named checkpoints to compare pretraining stages:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_window_embedding_probe_laptop.py --checkpoint epoch1 --run-name v1-window-probe-v20-epoch1
+
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_window_embedding_probe_laptop.py --checkpoint latest --run-name v1-window-probe-v20-latest
+```
+
 Run one probe:
 
 ```powershell

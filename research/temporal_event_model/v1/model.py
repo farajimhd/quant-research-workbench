@@ -123,6 +123,87 @@ class SingleChunkFutureLabelPredictor(nn.Module):
         )
 
 
+class EmbeddingContextFutureLabelPredictor(nn.Module):
+    """Temporal probe over a production-like stream of event-chunk embeddings.
+
+    The event encoder is intentionally outside this module. The training script
+    builds a rolling per-ticker embedding stream first, then selects recent and
+    older embeddings from that stream exactly like the production ring-buffer
+    path is expected to do. This model only learns the temporal head on top of
+    frozen chunk embeddings.
+
+    Input:
+    - `context_embeddings`: `[B, K, embedding_dim]`, ordered oldest to newest.
+
+    Output:
+    - low/high normalized tick predictions and up/down/path logits for each
+      future target chunk.
+    """
+
+    def __init__(
+        self,
+        *,
+        embedding_dim: int,
+        temporal_d_model: int,
+        temporal_layers: int,
+        temporal_heads: int,
+        temporal_ffn_mult: int,
+        target_chunks: int,
+        hidden_dim: int,
+        dropout: float,
+        max_context_chunks: int,
+    ) -> None:
+        super().__init__()
+        self.max_context_chunks = int(max_context_chunks)
+        self.embedding_to_temporal_width = nn.Sequential(
+            nn.LayerNorm(embedding_dim),
+            nn.Linear(embedding_dim, temporal_d_model),
+            nn.GELU(),
+        )
+        self.context_position_embedding = TemporalPositionEmbedding(self.max_context_chunks, temporal_d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=temporal_d_model,
+            nhead=temporal_heads,
+            dim_feedforward=int(temporal_d_model * temporal_ffn_mult),
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.temporal_context_encoder = transformer_encoder(encoder_layer, num_layers=temporal_layers)
+        self.newest_context_summary = nn.Sequential(
+            nn.LayerNorm(temporal_d_model),
+            nn.Linear(temporal_d_model, temporal_d_model),
+            nn.GELU(),
+        )
+        self.decoder = FuturePriceExtremaMLPDecoder(
+            embedding_dim=temporal_d_model,
+            hidden_dim=hidden_dim,
+            target_chunks=target_chunks,
+            dropout=dropout,
+        )
+
+    def forward(self, context_embeddings: torch.Tensor) -> FutureChunkLabelOutput:
+        if context_embeddings.ndim != 3:
+            raise ValueError(f"Expected context_embeddings [B,K,E], got {tuple(context_embeddings.shape)}")
+        context_chunks = int(context_embeddings.shape[1])
+        if context_chunks > self.max_context_chunks:
+            raise ValueError(f"context_chunks={context_chunks} exceeds max_context_chunks={self.max_context_chunks}")
+        temporal_tokens = self.embedding_to_temporal_width(context_embeddings.float())
+        positions = torch.arange(context_chunks, device=temporal_tokens.device).view(1, -1)
+        temporal_tokens = temporal_tokens + self.context_position_embedding(positions)
+        encoded_context = self.temporal_context_encoder(temporal_tokens)
+        summary = self.newest_context_summary(encoded_context[:, -1, :])
+        low_high_tick_pred, up_class_logits, down_class_logits, path_class_logits = self.decoder(summary)
+        return FutureChunkLabelOutput(
+            low_high_tick_pred=low_high_tick_pred,
+            up_class_logits=up_class_logits,
+            down_class_logits=down_class_logits,
+            path_class_logits=path_class_logits,
+            chunk_embedding=summary,
+        )
+
+
 def transformer_encoder(layer: nn.TransformerEncoderLayer, *, num_layers: int) -> nn.TransformerEncoder:
     try:
         return nn.TransformerEncoder(layer, num_layers=num_layers, enable_nested_tensor=False)
