@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import math
 import os
@@ -67,6 +68,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-index-table", default=DEFAULT_VALIDATION_INDEX_TABLE)
     parser.add_argument("--cache-root", default=str(DEFAULT_SAMPLE_CACHE_ROOT))
     parser.add_argument("--cache-id", default="", help="Folder name under --cache-root. Defaults to timestamp.")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume an existing --cache-id by validating completed shards, removing orphan .tmp files, and appending new shards.",
+    )
     parser.add_argument("--cache-version", type=int, choices=(1, 2), default=1)
     parser.add_argument(
         "--label-chunks",
@@ -108,6 +114,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--eta-recent-window", type=int, default=50, help="Completed microbatches used for rolling-rate ETA.")
     parser.add_argument("--heartbeat-seconds", type=float, default=30.0, help="Print pending-worker status if no microbatch completes within this interval.")
+    parser.add_argument("--query-retries", type=int, default=3, help="Retries per microbatch for transient ClickHouse connection failures.")
+    parser.add_argument("--query-retry-sleep-seconds", type=float, default=10.0)
     parser.add_argument("--clickhouse-max-threads", type=int, default=8)
     parser.add_argument("--clickhouse-max-memory-usage", default="80G")
     parser.add_argument("--seed", type=int, default=17)
@@ -125,7 +133,7 @@ def main() -> None:
     loaded_env = load_env_files(discover_env_files(REPO_ROOT))
     cache_id = args.cache_id or f"cache_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     cache_root = Path(args.cache_root) / cache_id
-    cache_root.mkdir(parents=True, exist_ok=False)
+    cache_root.mkdir(parents=True, exist_ok=bool(args.resume))
     clickhouse_url = args.clickhouse_url or default_clickhouse_url()
     user = args.user or default_clickhouse_user()
     password = args.password or default_clickhouse_password()
@@ -148,6 +156,7 @@ def main() -> None:
         f"micro_batch_samples={args.builder_micro_batch_samples}",
         flush=True,
     )
+    print(f"resume={bool(args.resume)} query_retries={args.query_retries} retry_sleep={args.query_retry_sleep_seconds}s", flush=True)
     print(
         "secret_status="
         + str(
@@ -168,6 +177,8 @@ def main() -> None:
     )
     print(f"loaded_env_files={[str(path) for path in loaded_env]}", flush=True)
     print("=" * 96, flush=True)
+    if args.resume:
+        validate_resume_manifest_config(cache_root, args)
 
     manifest: dict[str, Any] = {
         "format": SAMPLE_CACHE_FORMAT_V2 if args.cache_version == 2 else SAMPLE_CACHE_FORMAT,
@@ -237,6 +248,41 @@ def parse_requested_splits(raw: str) -> tuple[str, ...]:
     return splits
 
 
+def validate_resume_manifest_config(cache_root: Path, args: argparse.Namespace) -> None:
+    manifest_path = cache_root / "manifest.json"
+    if not manifest_path.exists():
+        print(f"RESUME: no existing manifest found at {manifest_path}; validating shard metadata only.", flush=True)
+        return
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    old_config = manifest.get("config", {})
+    critical_keys = (
+        "cache_version",
+        "label_chunks",
+        "train_cache_gib",
+        "validation_cache_gib",
+        "shard_size_gib",
+        "builder_micro_batch_samples",
+        "origins_per_span",
+        "past_span_events",
+        "future_span_events",
+        "min_origin_stride",
+        "max_origin_stride",
+        "database",
+        "events_table",
+        "train_index_table",
+        "validation_index_table",
+        "tickers",
+    )
+    mismatches: list[str] = []
+    current = vars(args)
+    for key in critical_keys:
+        if key in old_config and str(old_config.get(key)) != str(current.get(key)):
+            mismatches.append(f"{key}: previous={old_config.get(key)!r} current={current.get(key)!r}")
+    if mismatches:
+        joined = "; ".join(mismatches)
+        raise RuntimeError(f"Refusing resume with incompatible cache config: {joined}")
+
+
 def build_split(
     *,
     args: argparse.Namespace,
@@ -304,6 +350,15 @@ def build_split(
             flush=True,
         )
     if int(args.cache_version) == 2:
+        existing_shards, existing_samples, next_shard_index, resume_micro_batches_completed = prepare_resume_state(
+            cache_root=cache_root,
+            split=split,
+            cache_version=int(args.cache_version),
+            sample_bytes_on_disk=sample_bytes_on_disk,
+            label_chunks=int(args.label_chunks),
+            micro_batch_samples=micro_batch_samples,
+            resume=bool(args.resume),
+        )
         writer = EventSampleLabeledShardWriter(
             cache_root=cache_root,
             split=split,
@@ -311,31 +366,76 @@ def build_split(
             label_chunks=int(args.label_chunks),
             audit_sample_limit=args.audit_samples_per_split,
             audit_rng=random.Random(args.seed + (0 if split == "train" else 1_000_000)),
+            start_shard_index=next_shard_index,
+            existing_shards=existing_shards,
+            global_sample_index=existing_samples,
         )
     else:
+        existing_shards, existing_samples, next_shard_index, resume_micro_batches_completed = prepare_resume_state(
+            cache_root=cache_root,
+            split=split,
+            cache_version=int(args.cache_version),
+            sample_bytes_on_disk=sample_bytes_on_disk,
+            label_chunks=0,
+            micro_batch_samples=micro_batch_samples,
+            resume=bool(args.resume),
+        )
         writer = EventSampleShardWriter(
             cache_root=cache_root,
             split=split,
             shard_sample_target=shard_samples,
             audit_sample_limit=args.audit_samples_per_split,
             audit_rng=random.Random(args.seed + (0 if split == "train" else 1_000_000)),
+            start_shard_index=next_shard_index,
+            existing_shards=existing_shards,
+            global_sample_index=existing_samples,
         )
-    samples_written = 0
-    micro_batches_completed = 0
+    samples_written = existing_samples
+    micro_batches_completed = resume_micro_batches_completed
     profiles: list[dict[str, Any]] = []
     split_errors: dict[str, int] = {}
-    recent_points: deque[tuple[float, int]] = deque([(split_started, 0)], maxlen=max(2, int(args.eta_recent_window) + 1))
+    recent_points: deque[tuple[float, int]] = deque([(split_started, samples_written)], maxlen=max(2, int(args.eta_recent_window) + 1))
     max_pending_jobs = max(1, int(args.workers)) * max(1, int(args.pending_multiplier))
     executor = ThreadPoolExecutor(max_workers=max(1, int(args.workers)))
     futures: dict[Future[dict[str, Any]], dict[str, Any]] = {}
-    next_job = 0
+    next_job = micro_batches_completed
+
+    if samples_written >= target_samples:
+        writer.close()
+        summary = {
+            "target_samples": target_samples,
+            "samples_written": samples_written,
+            "target_gib": target_gib,
+            "actual_gib": samples_written * sample_bytes_on_disk / 1024**3,
+            "cache_version": int(args.cache_version),
+            "label_chunks": int(args.label_chunks) if int(args.cache_version) == 2 else 0,
+            "stored_future_y_events": int(args.label_chunks) * int(data_config.events_per_chunk) if int(args.cache_version) == 2 else 0,
+            "future_span_events": int(data_config.future_span_events),
+            "past_span_events": int(data_config.past_span_events),
+            "sample_bytes_on_disk": sample_bytes_on_disk,
+            "shard_count": len(writer.shards),
+            "micro_batches_completed": micro_batches_completed,
+            "elapsed_seconds": time.perf_counter() - split_started,
+            "reject_counts": {},
+            "resumed": bool(args.resume),
+        }
+        print(f"SPLIT {split} ALREADY COMPLETE {json.dumps(summary, separators=(',', ':'))}", flush=True)
+        return {"summary": summary, "shards": writer.shards, "profiles": []}
 
     def submit_until_full() -> None:
         nonlocal next_job
         while samples_written + len(futures) * micro_batch_samples < target_samples and len(futures) < max_pending_jobs:
             job_seed = args.seed + next_job * 1_009 + (10_000_000 if split == "validation" else 0)
             job_id = next_job + 1
-            future = executor.submit(build_micro_batch, data_config, index_rows, job_seed, job_id)
+            future = executor.submit(
+                build_micro_batch,
+                data_config,
+                index_rows,
+                job_seed,
+                job_id,
+                max(0, int(args.query_retries)),
+                max(0.0, float(args.query_retry_sleep_seconds)),
+            )
             futures[future] = {
                 "job_id": job_id,
                 "seed": job_seed,
@@ -460,6 +560,118 @@ def build_split(
     return {"summary": summary, "shards": writer.shards, "profiles": profiles}
 
 
+def prepare_resume_state(
+    *,
+    cache_root: Path,
+    split: str,
+    cache_version: int,
+    sample_bytes_on_disk: int,
+    label_chunks: int,
+    micro_batch_samples: int,
+    resume: bool,
+) -> tuple[list[dict[str, Any]], int, int, int]:
+    if not resume:
+        return [], 0, 0, 0
+    split_dir = cache_root / split
+    split_dir.mkdir(parents=True, exist_ok=True)
+    removed_tmp = cleanup_orphan_tmp_files(split_dir)
+    existing_shards = load_existing_split_shards(
+        cache_root=cache_root,
+        split=split,
+        cache_version=cache_version,
+        sample_bytes_on_disk=sample_bytes_on_disk,
+        label_chunks=label_chunks,
+    )
+    existing_samples = sum(int(row["num_samples"]) for row in existing_shards)
+    next_shard_index = (max((int(row["shard_index"]) for row in existing_shards), default=-1) + 1)
+    progress_path = cache_root / f"{split}_progress.json"
+    progress_micro_batches = 0
+    if progress_path.exists():
+        try:
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            progress_micro_batches = int(progress.get("micro_batches_completed", 0) or 0)
+        except (OSError, json.JSONDecodeError, ValueError):
+            progress_micro_batches = 0
+    estimated_micro_batches = existing_samples // max(1, int(micro_batch_samples))
+    resume_micro_batches = max(progress_micro_batches, estimated_micro_batches)
+    print(
+        f"RESUME {split}: existing_shards={len(existing_shards):,} "
+        f"existing_samples={existing_samples:,} next_shard={next_shard_index:,} "
+        f"job_offset={resume_micro_batches:,} removed_tmp={removed_tmp:,}",
+        flush=True,
+    )
+    return existing_shards, existing_samples, next_shard_index, resume_micro_batches
+
+
+def cleanup_orphan_tmp_files(split_dir: Path) -> int:
+    removed = 0
+    for tmp_path in sorted(split_dir.glob("shard_*.tmp")):
+        tmp_path.unlink(missing_ok=True)
+        removed += 1
+    return removed
+
+
+def load_existing_split_shards(
+    *,
+    cache_root: Path,
+    split: str,
+    cache_version: int,
+    sample_bytes_on_disk: int,
+    label_chunks: int,
+) -> list[dict[str, Any]]:
+    split_dir = cache_root / split
+    rows: list[dict[str, Any]] = []
+    for meta_path in sorted(split_dir.glob("shard_*.json")):
+        row = json.loads(meta_path.read_text(encoding="utf-8"))
+        if str(row.get("split", "")) != split:
+            raise RuntimeError(f"Shard metadata split mismatch in {meta_path}: {row.get('split')!r}")
+        shard_index = int(row.get("shard_index", -1))
+        if shard_index < 0:
+            raise RuntimeError(f"Invalid shard_index in {meta_path}")
+        num_samples = int(row.get("num_samples", 0) or 0)
+        if num_samples <= 0:
+            raise RuntimeError(f"Invalid num_samples in {meta_path}: {num_samples}")
+        if cache_version == 2:
+            if int(row.get("label_chunks", label_chunks)) != int(label_chunks):
+                raise RuntimeError(f"Label chunk mismatch in {meta_path}")
+            x_path = cache_root / str(row.get("x_path", "")).replace("\\", "/")
+            y_path = cache_root / str(row.get("y_path", "")).replace("\\", "/")
+            expected_x = int(row.get("x_byte_size", num_samples * SAMPLE_BYTES))
+            expected_y = int(row.get("y_byte_size", num_samples * label_chunks * SAMPLE_BYTES))
+            validate_existing_file_size(x_path, expected_x, meta_path)
+            validate_existing_file_size(y_path, expected_y, meta_path)
+            label_path_value = str(row.get("label_path", "") or "")
+            if label_path_value:
+                label_path = cache_root / label_path_value.replace("\\", "/")
+                if not label_path.exists():
+                    raise RuntimeError(f"Missing label sidecar referenced by {meta_path}: {label_path}")
+        else:
+            shard_path = cache_root / str(row.get("path", "")).replace("\\", "/")
+            expected_bytes = int(row.get("byte_size", num_samples * sample_bytes_on_disk))
+            validate_existing_file_size(shard_path, expected_bytes, meta_path)
+        rows.append(row)
+    rows.sort(key=lambda row: int(row["shard_index"]))
+    expected_indices = list(range(len(rows)))
+    actual_indices = [int(row["shard_index"]) for row in rows]
+    if actual_indices != expected_indices:
+        raise RuntimeError(
+            f"Cannot resume {split}: shard indices must be contiguous from zero. "
+            f"expected_prefix={expected_indices[:5]}... count={len(expected_indices)} actual_prefix={actual_indices[:5]}..."
+        )
+    return rows
+
+
+def validate_existing_file_size(path: Path, expected_bytes: int, meta_path: Path) -> None:
+    if not path.exists():
+        raise RuntimeError(f"Missing shard file referenced by {meta_path}: {path}")
+    actual_bytes = path.stat().st_size
+    if actual_bytes != int(expected_bytes):
+        raise RuntimeError(
+            f"Shard file size mismatch for {path}: expected {int(expected_bytes):,}, "
+            f"got {actual_bytes:,}; metadata={meta_path}"
+        )
+
+
 def write_split_progress(
     cache_root: Path,
     *,
@@ -502,11 +714,34 @@ def write_split_progress(
     tmp_path.replace(final_path)
 
 
-def build_micro_batch(config: ClickHouseEventsDataConfig, index_rows: list[Any], seed: int, job_id: int = 0) -> dict[str, Any]:
-    rng = random.Random(seed)
-    client = thread_local_client(config)
+def build_micro_batch(
+    config: ClickHouseEventsDataConfig,
+    index_rows: list[Any],
+    seed: int,
+    job_id: int = 0,
+    query_retries: int = 3,
+    query_retry_sleep_seconds: float = 10.0,
+) -> dict[str, Any]:
     started = time.perf_counter()
-    batch = build_clickhouse_events_batch(index_rows, config, client, rng)
+    attempts = max(1, int(query_retries) + 1)
+    for attempt in range(1, attempts + 1):
+        try:
+            rng = random.Random(seed)
+            client = thread_local_client(config)
+            batch = build_clickhouse_events_batch(index_rows, config, client, rng)
+            break
+        except TRANSIENT_CLICKHOUSE_ERRORS as exc:
+            reset_thread_local_client()
+            if attempt >= attempts:
+                raise
+            sleep_seconds = max(0.0, float(query_retry_sleep_seconds)) * attempt
+            print(
+                f"WARN microbatch job={job_id} ClickHouse transient failure "
+                f"attempt={attempt}/{attempts}: {type(exc).__name__}: {exc}; "
+                f"retry_sleep={sleep_seconds:.1f}s",
+                flush=True,
+            )
+            time.sleep(sleep_seconds)
     return {
         "job_id": job_id,
         "job_seconds": time.perf_counter() - started,
@@ -514,6 +749,9 @@ def build_micro_batch(config: ClickHouseEventsDataConfig, index_rows: list[Any],
         "profile": batch.get("profile", {}),
         "reject_counts": batch.get("reject_counts", {}),
     }
+
+
+TRANSIENT_CLICKHOUSE_ERRORS = (TimeoutError, OSError, ConnectionError, http.client.HTTPException)
 
 
 def thread_local_client(config: ClickHouseEventsDataConfig) -> PersistentClickHouseBytesClient:
@@ -527,6 +765,14 @@ def thread_local_client(config: ClickHouseEventsDataConfig) -> PersistentClickHo
         _THREAD_LOCAL.clickhouse_client = client
         _THREAD_LOCAL.clickhouse_client_key = key
     return client
+
+
+def reset_thread_local_client() -> None:
+    client = getattr(_THREAD_LOCAL, "clickhouse_client", None)
+    if client is not None:
+        client.close()
+    _THREAD_LOCAL.clickhouse_client = None
+    _THREAD_LOCAL.clickhouse_client_key = None
 
 
 def trim_batch(batch: dict[str, Any], keep: int) -> dict[str, Any]:

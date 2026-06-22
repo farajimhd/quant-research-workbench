@@ -93,6 +93,9 @@ class EventSampleShardWriter:
         shard_sample_target: int,
         audit_sample_limit: int,
         audit_rng: random.Random,
+        start_shard_index: int = 0,
+        existing_shards: list[dict[str, Any]] | None = None,
+        global_sample_index: int = 0,
     ) -> None:
         self.cache_root = cache_root
         self.split = split
@@ -101,16 +104,16 @@ class EventSampleShardWriter:
         self.shard_sample_target = max(1, int(shard_sample_target))
         self.audit_sample_limit = max(0, int(audit_sample_limit))
         self.audit_rng = audit_rng
-        self.shards: list[dict[str, Any]] = []
+        self.shards: list[dict[str, Any]] = list(existing_shards or [])
         self.audit_rows: list[dict[str, Any]] = []
         self._file = None
         self._sha = hashlib.sha256()
-        self._shard_index = 0
+        self._shard_index = int(start_shard_index)
         self._shard_samples = 0
         self._shard_bytes = 0
         self._shard_tmp_path: Path | None = None
         self._shard_path: Path | None = None
-        self._global_sample_index = 0
+        self._global_sample_index = int(global_sample_index)
         self._open_next_shard()
 
     def close(self) -> None:
@@ -154,6 +157,9 @@ class EventSampleShardWriter:
     def _open_next_shard(self) -> None:
         self._shard_path = self.split_dir / f"shard_{self._shard_index:06d}.samples.bin"
         self._shard_tmp_path = self.split_dir / f"shard_{self._shard_index:06d}.samples.bin.tmp"
+        if self._shard_path.exists():
+            raise FileExistsError(f"Refusing to overwrite existing shard: {self._shard_path}")
+        self._shard_tmp_path.unlink(missing_ok=True)
         self._sha = hashlib.sha256()
         self._shard_samples = 0
         self._shard_bytes = 0
@@ -255,6 +261,9 @@ class EventSampleLabeledShardWriter:
         label_chunks: int,
         audit_sample_limit: int,
         audit_rng: random.Random,
+        start_shard_index: int = 0,
+        existing_shards: list[dict[str, Any]] | None = None,
+        global_sample_index: int = 0,
     ) -> None:
         self.cache_root = cache_root
         self.split = split
@@ -265,14 +274,14 @@ class EventSampleLabeledShardWriter:
         self.y_sample_bytes = self.label_chunks * SAMPLE_BYTES
         self.audit_sample_limit = max(0, int(audit_sample_limit))
         self.audit_rng = audit_rng
-        self.shards: list[dict[str, Any]] = []
+        self.shards: list[dict[str, Any]] = list(existing_shards or [])
         self.audit_rows: list[dict[str, Any]] = []
         self._x_file = None
         self._y_file = None
         self._x_sha = hashlib.sha256()
         self._y_sha = hashlib.sha256()
         self._label_columns: dict[str, list[np.ndarray | list[str]]] = {}
-        self._shard_index = 0
+        self._shard_index = int(start_shard_index)
         self._shard_samples = 0
         self._x_shard_bytes = 0
         self._y_shard_bytes = 0
@@ -280,7 +289,7 @@ class EventSampleLabeledShardWriter:
         self._y_tmp_path: Path | None = None
         self._x_path: Path | None = None
         self._y_path: Path | None = None
-        self._global_sample_index = 0
+        self._global_sample_index = int(global_sample_index)
         self._open_next_shard()
 
     def close(self) -> None:
@@ -341,6 +350,10 @@ class EventSampleLabeledShardWriter:
         self._y_path = self.split_dir / f"{stem}.y.bin"
         self._x_tmp_path = self.split_dir / f"{stem}.x.bin.tmp"
         self._y_tmp_path = self.split_dir / f"{stem}.y.bin.tmp"
+        if self._x_path.exists() or self._y_path.exists():
+            raise FileExistsError(f"Refusing to overwrite existing labeled shard: {stem}")
+        self._x_tmp_path.unlink(missing_ok=True)
+        self._y_tmp_path.unlink(missing_ok=True)
         self._x_sha = hashlib.sha256()
         self._y_sha = hashlib.sha256()
         self._label_columns = {}
