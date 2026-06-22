@@ -14,6 +14,14 @@ class SecHttpResponse:
     body: bytes
 
 
+class SecHttpError(RuntimeError):
+    def __init__(self, *, status: int, url: str, body: bytes) -> None:
+        self.status = status
+        self.url = url
+        self.body = body
+        super().__init__(f"SEC HTTP {status} for {url}: {body[:500]!r}")
+
+
 class SecHttpClient:
     def __init__(self, *, user_agent: str, rate_limiter: SecRateLimiter, timeout_seconds: float = 30.0) -> None:
         self.user_agent = user_agent
@@ -35,4 +43,4 @@ class SecHttpClient:
                 )
         except error.HTTPError as exc:
             body = exc.read()
-            raise RuntimeError(f"SEC HTTP {exc.code} for {url}: {body[:500]!r}") from exc
+            raise SecHttpError(status=int(exc.code), url=url, body=body) from exc

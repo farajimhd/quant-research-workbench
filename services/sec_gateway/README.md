@@ -289,3 +289,8 @@ It filters facts to the exact accession and writes:
 Ownership XML filings such as Forms 3/4/5 are still recorded as structured
 documents and skip rows, but they do not create companyfacts XBRL rows unless SEC
 companyfacts exposes matching financial facts for that accession.
+
+SEC does not expose `companyfacts` JSON for every CIK. A companyfacts `404` is
+treated as `missing_404`, cached for that CIK during the gateway run, and does
+not fail live filing ingestion. The filing, document, text and skip rows are
+still written when the accession itself can be downloaded and parsed.

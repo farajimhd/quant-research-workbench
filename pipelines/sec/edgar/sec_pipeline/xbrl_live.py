@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
-from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
+from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient, SecHttpError
 
 
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
@@ -21,22 +21,37 @@ class LiveXbrlRows:
     source_content_sha256: str = ""
     fetched: bool = False
     matched_facts: int = 0
+    companyfacts_status: str = "not_requested"
+    companyfacts_error: str = ""
 
 
 class SecLiveXbrlExtractor:
     def __init__(self, *, http: SecHttpClient) -> None:
         self.http = http
         self._payload_cache: dict[str, tuple[dict[str, Any], str]] = {}
+        self._missing_ciks: set[str] = set()
 
     def extract_for_accession(self, *, cik: str, accession_number: str, source_run_id: str, inserted_at: str) -> LiveXbrlRows:
         return self.extract_for_accessions(cik=cik, accession_numbers={accession_number}, source_run_id=source_run_id, inserted_at=inserted_at)
 
     def extract_for_accessions(self, *, cik: str, accession_numbers: set[str], source_run_id: str, inserted_at: str) -> LiveXbrlRows:
         cik_text = str(cik).zfill(10)
+        if cik_text in self._missing_ciks:
+            return LiveXbrlRows(fetched=True, companyfacts_status="missing_404")
         cached = self._payload_cache.get(cik_text)
         if cached is None:
             url = COMPANYFACTS_URL.format(cik=cik_text)
-            response = self.http.get(url)
+            try:
+                response = self.http.get(url)
+            except SecHttpError as exc:
+                if exc.status == 404:
+                    self._missing_ciks.add(cik_text)
+                    return LiveXbrlRows(
+                        fetched=True,
+                        companyfacts_status="missing_404",
+                        companyfacts_error=f"SEC companyfacts endpoint returned 404 for CIK{cik_text}",
+                    )
+                raise
             source_sha = hashlib.sha256(response.body).hexdigest()
             payload = json.loads(response.body.decode("utf-8", errors="replace"))
             self._payload_cache[cik_text] = (payload, source_sha)
@@ -64,6 +79,7 @@ def extract_companyfacts_payload(
     entity_name = clean_string(payload.get("entityName"))
     accessions = {clean_string(item) for item in accession_numbers if clean_string(item)}
     rows = LiveXbrlRows(source_content_sha256=source_content_sha256, fetched=True)
+    rows.companyfacts_status = "available"
     seen_concepts: set[tuple[str, str]] = set()
     seen_frames: set[tuple[str, str, str, str]] = set()
     facts_root = payload.get("facts")
