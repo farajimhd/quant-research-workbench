@@ -76,6 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-audit-checks", type=int, default=None)
     parser.add_argument("--tickers", default="ALL")
     parser.add_argument("--smoke", action="store_true", help="Run a small end-to-end build/validate/audit cycle before the large task.")
+    parser.add_argument("--resume", action="store_true", help="Resume the build step for an existing --cache-id without overwriting finalized shards.")
     parser.add_argument("--skip-raw-audit", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Run builder dry-run only; validation/audit are skipped.")
     parser.add_argument("--print-only", action="store_true")
@@ -180,7 +181,7 @@ def build_command(args: argparse.Namespace, values: dict[str, Any], cache_id: st
         str(values["audit_samples_per_split"]),
         "--tickers",
         args.tickers,
-    ] + (["--dry-run"] if args.dry_run else [])
+    ] + (["--resume"] if args.resume else []) + (["--dry-run"] if args.dry_run else [])
 
 
 def validate_command(args: argparse.Namespace, values: dict[str, Any], cache_path: Path) -> list[str]:

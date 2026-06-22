@@ -51,8 +51,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Launcher for labeled compact event sample-cache v2 build.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--print-only", action="store_true")
+    parser.add_argument("--resume", action="store_true", help="Resume an existing --cache-id without overwriting finalized shards.")
     known, extra = parser.parse_known_args()
     argv = build_argv(DEFAULTS)
+    if known.resume:
+        argv.append("--resume")
     if known.dry_run:
         argv.append("--dry-run")
     argv.extend(extra)
