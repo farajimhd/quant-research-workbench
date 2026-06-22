@@ -6,9 +6,11 @@ import json
 import os
 import sys
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any
+from urllib import error, request
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -25,10 +27,24 @@ from pipelines.sec.edgar.sec_archive_content_discovery import (  # noqa: E402
     terminate_process_pool,
     write_jsonl,
 )
+from pipelines.sec.edgar.sec_historical_feed_download import (  # noqa: E402
+    RETRY_HTTP_CODES,
+    RateLimiter,
+    parse_retry_after,
+    sec_user_agent,
+)
 
 
 DEFAULT_DOWNLOADER_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_daily_feed_archives")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_downloaded_archive_validation")
+CHUNK_SIZE_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveValidationJob:
+    path: Path
+    source_date: str
+    source_url: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,6 +89,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-text-chars", type=int, default=600)
     parser.add_argument("--progress-every", type=int, default=5)
     parser.add_argument("--hash-archives", action="store_true", help="Compute archive SHA-256 prefixes during validation. Disabled by default.")
+    parser.add_argument(
+        "--repair-failed-archives",
+        action="store_true",
+        help="Redownload and rescan selected archives that fail validation before returning a failed status.",
+    )
+    parser.add_argument(
+        "--sec-request-min-interval-seconds",
+        type=float,
+        default=float(os.environ.get("SEC_DOWNLOADED_ARCHIVE_REPAIR_REQUEST_MIN_INTERVAL_SECONDS", os.environ.get("SEC_REQUEST_MIN_INTERVAL_SECONDS", "0.2"))),
+    )
+    parser.add_argument(
+        "--request-timeout-seconds",
+        type=float,
+        default=float(os.environ.get("SEC_DOWNLOADED_ARCHIVE_REPAIR_TIMEOUT_SECONDS", os.environ.get("SEC_REQUEST_TIMEOUT_SECONDS", "60"))),
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=int(os.environ.get("SEC_DOWNLOADED_ARCHIVE_REPAIR_MAX_RETRIES", os.environ.get("SEC_MAX_RETRIES", "8"))),
+    )
+    parser.add_argument(
+        "--retry-base-seconds",
+        type=float,
+        default=float(os.environ.get("SEC_DOWNLOADED_ARCHIVE_REPAIR_RETRY_BASE_SECONDS", os.environ.get("SEC_RETRY_BASE_SECONDS", "30"))),
+    )
     return parser.parse_args()
 
 
@@ -95,10 +136,17 @@ def main() -> None:
     if not manifest_rows:
         raise SystemExit(f"no manifest rows found with status={args.status!r}")
 
-    archives = [resolve_archive_path(str(row["artifact_path"]), args) for row in manifest_rows]
-    for archive in archives:
-        if not archive.exists():
-            raise SystemExit(f"selected archive does not exist: {archive}")
+    archive_jobs = [
+        ArchiveValidationJob(
+            path=resolve_archive_path(str(row["artifact_path"]), args),
+            source_date=str(row.get("source_date") or ""),
+            source_url=str(row.get("source_url") or ""),
+        )
+        for row in manifest_rows
+    ]
+    for job in archive_jobs:
+        if not job.path.exists():
+            raise SystemExit(f"selected archive does not exist: {job.path}")
 
     validation_manifest = {
         "run_id": run_id,
@@ -110,13 +158,14 @@ def main() -> None:
         "output_root": str(output_root),
         "run_root": str(run_root),
         "status_filter": args.status,
-        "selected_archive_count": len(archives),
+        "selected_archive_count": len(archive_jobs),
         "archive_workers": max(1, args.archive_workers),
         "pending_multiplier": max(1, args.pending_multiplier),
         "max_filings_per_archive": max(0, args.max_filings_per_archive),
         "sample_limit": max(0, args.sample_limit),
         "sample_text_chars": max(0, args.sample_text_chars),
         "hash_archives": bool(args.hash_archives),
+        "repair_failed_archives": bool(args.repair_failed_archives),
         "loaded_env_files": [str(path) for path in loaded_env_files],
     }
     (run_root / "validation_manifest.json").write_text(json.dumps(validation_manifest, indent=2, sort_keys=True), encoding="utf-8")
@@ -124,7 +173,7 @@ def main() -> None:
     print("=" * 96, flush=True)
     print("SEC downloaded archive validation", flush=True)
     print(f"downloader_manifest={manifest_path}", flush=True)
-    print(f"status_filter={args.status} selected_archives={len(archives):,}", flush=True)
+    print(f"status_filter={args.status} selected_archives={len(archive_jobs):,}", flush=True)
     print(f"workers={max(1, args.archive_workers)} run_root={run_root}", flush=True)
     print("=" * 96, flush=True)
 
@@ -136,7 +185,7 @@ def main() -> None:
     manifest_selection_path = run_root / "selected_downloader_rows.jsonl"
     write_jsonl(manifest_selection_path, manifest_rows)
 
-    completed = validate_archives(args, archives, archive_summary_path, aggregate, sample_reservoir, started)
+    completed = validate_archives(args, archive_jobs, archive_summary_path, aggregate, sample_reservoir, started)
     sample_reservoir = rank_samples(sample_reservoir)[: max(0, args.sample_limit)]
     write_jsonl(samples_path, sample_reservoir)
     final_summary = finalize_aggregate(aggregate, validation_manifest, time.perf_counter() - started)
@@ -144,7 +193,7 @@ def main() -> None:
     aggregate_path.write_text(json.dumps(final_summary, indent=2, sort_keys=True), encoding="utf-8")
 
     print("=" * 96, flush=True)
-    print(f"completed_archives={completed:,}/{len(archives):,}", flush=True)
+    print(f"completed_archives={completed:,}/{len(archive_jobs):,}", flush=True)
     print(f"failed_archives={aggregate['failed_archives']:,}", flush=True)
     print(f"archive_summary={archive_summary_path}", flush=True)
     print(f"aggregate_summary={aggregate_path}", flush=True)
@@ -155,7 +204,7 @@ def main() -> None:
 
 def validate_archives(
     args: argparse.Namespace,
-    archives: list[Path],
+    archive_jobs: list[ArchiveValidationJob],
     archive_summary_path: Path,
     aggregate: dict[str, Any],
     sample_reservoir: list[dict[str, Any]],
@@ -163,27 +212,29 @@ def validate_archives(
 ) -> int:
     workers = max(1, args.archive_workers)
     max_pending = max(workers, workers * max(1, args.pending_multiplier))
-    archive_iter = iter(archives)
+    archive_iter = iter(archive_jobs)
     completed = 0
     submitted = 0
-    futures: dict[concurrent.futures.Future[dict[str, Any]], Path] = {}
+    futures: dict[concurrent.futures.Future[dict[str, Any]], ArchiveValidationJob] = {}
     pool: concurrent.futures.ProcessPoolExecutor | None = None
+    repair_limiter = RateLimiter(max(0.0, args.sec_request_min_interval_seconds))
+    user_agent = sec_user_agent()
 
     def submit_one() -> bool:
         nonlocal submitted
         try:
-            path = next(archive_iter)
+            job = next(archive_iter)
         except StopIteration:
             return False
         future = pool.submit(  # type: ignore[union-attr]
             scan_archive,
-            str(path),
+            str(job.path),
             max(0, args.max_filings_per_archive),
             max(0, args.sample_text_chars),
             max(0, args.sample_limit),
             bool(args.hash_archives),
         )
-        futures[future] = path
+        futures[future] = job
         submitted += 1
         return True
 
@@ -199,7 +250,7 @@ def validate_archives(
                 if not done:
                     elapsed = time.perf_counter() - started
                     print(
-                        f"active={len(futures):,} submitted={submitted:,}/{len(archives):,} "
+                        f"active={len(futures):,} submitted={submitted:,}/{len(archive_jobs):,} "
                         f"completed={completed:,} failed={aggregate['failed_archives']:,} "
                         f"filings={aggregate['filings']:,} documents={aggregate['documents']:,} "
                         f"elapsed={elapsed:.1f}s",
@@ -208,15 +259,33 @@ def validate_archives(
                     continue
 
                 for future in done:
-                    path = futures.pop(future)
+                    job = futures.pop(future)
                     completed += 1
                     try:
                         result = future.result()
                     except Exception as exc:  # pragma: no cover - worker exception report path
-                        summary = failed_archive_summary(path, repr(exc))
+                        summary = failed_archive_summary(job.path, repr(exc))
                     else:
                         summary = result["summary"]
                         sample_reservoir.extend(result["samples"])
+                        if len(sample_reservoir) > args.sample_limit * 3 and args.sample_limit:
+                            sample_reservoir[:] = rank_samples(sample_reservoir)[: max(0, args.sample_limit)]
+
+                    if summary.get("status") != "ok" and args.repair_failed_archives:
+                        print(
+                            f"repairing_failed_archive date={job.source_date or summary.get('archive_date') or '-'} "
+                            f"path={job.path} error={summary.get('error') or '-'}",
+                            flush=True,
+                        )
+                        repaired = repair_and_rescan_archive(
+                            args,
+                            job,
+                            summary,
+                            user_agent,
+                            repair_limiter,
+                        )
+                        summary = repaired["summary"]
+                        sample_reservoir.extend(repaired["samples"])
                         if len(sample_reservoir) > args.sample_limit * 3 and args.sample_limit:
                             sample_reservoir[:] = rank_samples(sample_reservoir)[: max(0, args.sample_limit)]
 
@@ -226,10 +295,10 @@ def validate_archives(
 
                     while len(futures) < max_pending and submit_one():
                         pass
-                    if completed == 1 or completed % max(1, args.progress_every) == 0 or completed == len(archives):
+                    if completed == 1 or completed % max(1, args.progress_every) == 0 or completed == len(archive_jobs):
                         elapsed = time.perf_counter() - started
                         print(
-                            f"completed={completed:,}/{len(archives):,} submitted={submitted:,} "
+                            f"completed={completed:,}/{len(archive_jobs):,} submitted={submitted:,} "
                             f"active={len(futures):,} failed={aggregate['failed_archives']:,} "
                             f"filings={aggregate['filings']:,} documents={aggregate['documents']:,} "
                             f"elapsed={elapsed:.1f}s",
@@ -244,6 +313,125 @@ def validate_archives(
             if pool is not None:
                 pool.shutdown(wait=False, cancel_futures=True)
     return completed
+
+
+def repair_and_rescan_archive(
+    args: argparse.Namespace,
+    job: ArchiveValidationJob,
+    original_summary: dict[str, Any],
+    user_agent: str,
+    limiter: RateLimiter,
+) -> dict[str, Any]:
+    if not job.source_url:
+        summary = failed_archive_summary(
+            job.path,
+            f"{original_summary.get('error') or 'validation failed'}; repair skipped because manifest row has no source_url",
+        )
+        summary["repair_status"] = "missing_source_url"
+        return {"summary": summary, "samples": []}
+    try:
+        redownload_archive(
+            job.source_url,
+            job.path,
+            user_agent,
+            limiter,
+            timeout_seconds=max(1.0, args.request_timeout_seconds),
+            max_retries=max(0, args.max_retries),
+            retry_base_seconds=max(0.1, args.retry_base_seconds),
+        )
+        repaired = scan_archive(
+            str(job.path),
+            max(0, args.max_filings_per_archive),
+            max(0, args.sample_text_chars),
+            max(0, args.sample_limit),
+            bool(args.hash_archives),
+        )
+        repaired["summary"]["repair_status"] = (
+            "redownloaded_ok" if repaired["summary"].get("status") == "ok" else "redownloaded_failed"
+        )
+        repaired["summary"]["original_error"] = str(original_summary.get("error") or "")
+        return repaired
+    except Exception as exc:  # noqa: BLE001
+        summary = failed_archive_summary(
+            job.path,
+            f"{original_summary.get('error') or 'validation failed'}; repair failed: {exc!r}",
+        )
+        summary["repair_status"] = "redownload_failed"
+        return {"summary": summary, "samples": []}
+
+
+def redownload_archive(
+    url: str,
+    target: Path,
+    user_agent: str,
+    limiter: RateLimiter,
+    timeout_seconds: float,
+    max_retries: int,
+    retry_base_seconds: float,
+) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    headers = {
+        "User-Agent": user_agent,
+        "Accept-Encoding": "identity",
+        "Host": "www.sec.gov",
+    }
+    last_error = ""
+    for attempt in range(max_retries + 1):
+        part_path = target.with_name(f"{target.name}.repair.{os.getpid()}.{attempt + 1}.part")
+        if part_path.exists():
+            part_path.unlink()
+        limiter.wait()
+        try:
+            req = request.Request(url, headers=headers)
+            with request.urlopen(req, timeout=timeout_seconds) as response:
+                expected_length = parse_int(response.headers.get("Content-Length"))
+                written = 0
+                with part_path.open("wb") as handle:
+                    while True:
+                        chunk = response.read(CHUNK_SIZE_BYTES)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        written += len(chunk)
+                if expected_length and written != expected_length:
+                    raise RuntimeError(f"incomplete download: expected {expected_length:,} bytes, got {written:,}")
+            part_path.replace(target)
+            return
+        except error.HTTPError as exc:
+            last_error = f"HTTP {exc.code}: {exc.reason}"
+            remove_file_quietly(part_path)
+            if exc.code not in RETRY_HTTP_CODES or attempt >= max_retries:
+                raise RuntimeError(last_error) from exc
+            retry_after = parse_retry_after(exc.headers.get("Retry-After"))
+            sleep_seconds = retry_after if retry_after is not None else retry_base_seconds * (2**attempt)
+            print(f"archive_repair_retry attempt={attempt + 1}/{max_retries} path={target} error={last_error} sleep={sleep_seconds:.1f}s", flush=True)
+            time.sleep(max(0.0, sleep_seconds))
+        except Exception as exc:  # noqa: BLE001
+            last_error = repr(exc)
+            remove_file_quietly(part_path)
+            if attempt >= max_retries:
+                raise RuntimeError(last_error) from exc
+            sleep_seconds = retry_base_seconds * (2**attempt)
+            print(f"archive_repair_retry attempt={attempt + 1}/{max_retries} path={target} error={last_error} sleep={sleep_seconds:.1f}s", flush=True)
+            time.sleep(max(0.0, sleep_seconds))
+    raise RuntimeError(last_error or "archive repair download failed")
+
+
+def remove_file_quietly(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception:
+        pass
+
+
+def parse_int(raw: str | None) -> int:
+    if raw is None:
+        return 0
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
 
 
 def resolve_manifest_path(args: argparse.Namespace) -> Path:

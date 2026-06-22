@@ -31,6 +31,11 @@ defaults. `--resume-from-coverage` is enabled by default and records
 `sec_stage_<stage_name>` rows after each successful stage. If a run fails, rerun
 the same command; completed stages for the same date range are skipped, and the
 final semantic coverage rows are written only after the whole run succeeds.
+The validation stage is self-healing for corrupt daily archives selected from
+the downloader manifest: if an archive scan fails, it redownloads that archive
+from the SEC source URL and rescans it before returning a failed status. This is
+important on reruns where `daily-archive-download` is skipped by coverage but a
+previously reused `.nc.tar.gz` later proves truncated.
 
 Legacy manual historical orchestration path:
 

@@ -8,6 +8,7 @@ The validator:
 - Selects rows where `status == "downloaded"` by default.
 - Opens only those selected `.nc.tar.gz` archives.
 - Uses the same archive scanner as content discovery.
+- Optionally redownloads and rescans selected archives that fail validation.
 - Writes `archive_summary.jsonl`, `aggregate_summary.json`, `document_samples.jsonl`, and `selected_downloader_rows.jsonl`.
 - Exits with code `2` if any selected archive fails.
 
@@ -24,7 +25,7 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pip
 Validate the latest run that redownloaded 68 archives:
 
 ```powershell
-python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_validate_downloaded_archives.py --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_20260615_163812.jsonl --expected-count 68 --archive-workers 4 --pending-multiplier 1 --sample-limit 1000
+python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pipelines\sec\edgar\sec_validate_downloaded_archives.py --manifest-jsonl D:/market-data/prepared/sec_daily_feed_archives/sec_daily_feed_archives_20260615_163812.jsonl --expected-count 68 --archive-workers 4 --pending-multiplier 1 --sample-limit 1000 --repair-failed-archives
 ```
 
 When running from a different machine against a shared archive folder, remap manifest paths:
@@ -48,3 +49,6 @@ If this finishes with `failed_archives=0`, we do not need to rerun the 41-hour f
 - `--max-filings-per-archive`: optional per-archive cap; `0` scans all filings.
 - `--sample-limit`: representative document samples retained in the output.
 - `--hash-archives`: optional SHA-256 prefix calculation. Leave off for normal validation.
+- `--repair-failed-archives`: redownload and rescan a selected archive when the first scan fails. Use this for production gap-fill validation because a previous run may have left a truncated `.nc.tar.gz` on disk.
+- `--sec-request-min-interval-seconds`: minimum SEC request spacing used only by repair downloads.
+- `--request-timeout-seconds`, `--max-retries`, `--retry-base-seconds`: retry controls for repair downloads.
