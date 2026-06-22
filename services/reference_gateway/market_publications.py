@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -36,9 +37,12 @@ def ensure_market_publication_schema(
     client: ClickHouseHttpClient,
     *,
     database: str,
+    read_database: str | None = None,
     storage_policy: str = "",
 ) -> None:
     client.execute(f"CREATE DATABASE IF NOT EXISTS {qn(database)}")
+    if read_database and read_database != database:
+        clone_market_publication_source_tables(client, read_database=read_database, write_database=database)
     settings = mergetree_settings(storage_policy)
     client.execute(
         f"""
@@ -182,6 +186,37 @@ SETTINGS {settings}
         if not table_exists(client, database, table_name):
             continue
         client.execute(statement)
+
+
+def clone_market_publication_source_tables(
+    client: ClickHouseHttpClient,
+    *,
+    read_database: str,
+    write_database: str,
+) -> list[str]:
+    cloned_or_present: list[str] = []
+    for name in MARKET_PUBLICATION_SOURCE_TABLES:
+        if table_exists(client, write_database, name):
+            cloned_or_present.append(f"{write_database}.{name}")
+            continue
+        if not table_exists(client, read_database, name):
+            continue
+        clone_table_schema(client, source_database=read_database, target_database=write_database, table_name=name)
+        cloned_or_present.append(f"{write_database}.{name}")
+    return cloned_or_present
+
+
+MARKET_PUBLICATION_SOURCE_TABLES: tuple[str, ...] = (
+    "market_security_market_snapshot_v1",
+    "market_security_float_v1",
+    "market_short_interest_v1",
+    "market_short_volume_v1",
+    "market_stock_split_v1",
+    "market_cash_dividend_v1",
+    "market_ipo_v1",
+    "market_presentation_asset_v1",
+    "massive_flatfile_source_file_v1",
+)
 
 
 def publication_alters(database: str) -> list[tuple[str, str]]:
@@ -333,6 +368,31 @@ def table_exists(client: ClickHouseHttpClient, database: str, name: str) -> bool
         f"WHERE database = {sql_string(database)} AND name = {sql_string(name)} FORMAT TSV"
     ).strip()
     return int(value or "0") > 0
+
+
+def clone_table_schema(
+    client: ClickHouseHttpClient,
+    *,
+    source_database: str,
+    target_database: str,
+    table_name: str,
+) -> None:
+    ddl = client.execute(f"SHOW CREATE TABLE {table(source_database, table_name)} FORMAT TSVRaw").strip()
+    pattern = re.compile(
+        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+        + r"(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)\."
+        + r"(?:`"
+        + re.escape(table_name)
+        + r"`|"
+        + re.escape(table_name)
+        + r")",
+        flags=re.IGNORECASE,
+    )
+    replacement = f"CREATE TABLE IF NOT EXISTS {table(target_database, table_name)}"
+    rewritten, count = pattern.subn(replacement, ddl, count=1)
+    if count != 1:
+        raise RuntimeError(f"Unable to rewrite CREATE TABLE for {source_database}.{table_name}")
+    client.execute(rewritten)
 
 
 def query_one(client: ClickHouseHttpClient, sql: str) -> dict[str, Any]:

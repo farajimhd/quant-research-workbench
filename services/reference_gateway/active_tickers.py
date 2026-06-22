@@ -135,8 +135,8 @@ def load_current_active_symbols(config: ReferenceGatewayConfig) -> list[dict[str
             l.exchange_code AS exchange_code,
             l.currency_code AS currency_code,
             l.ibkr_conid AS ibkr_conid
-        FROM {table(config.clickhouse_database, 'id_symbol_v1')} s FINAL
-        INNER JOIN {table(config.clickhouse_database, 'id_listing_v1')} l FINAL ON l.listing_id = s.listing_id
+        FROM {table(config.clickhouse_read_database, 'id_symbol_v1')} s FINAL
+        INNER JOIN {table(config.clickhouse_read_database, 'id_listing_v1')} l FINAL ON l.listing_id = s.listing_id
         WHERE s.status = 'active'
           AND s.primary_symbol_flag = 1
           AND l.listing_status = 'active'
@@ -247,4 +247,3 @@ def _clickhouse_password() -> str:
     from research.mlops.clickhouse import default_clickhouse_password
 
     return default_clickhouse_password()
-

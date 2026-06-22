@@ -63,6 +63,29 @@ tables. It checks the current `q_live` reference graph and writes a JSON report.
 python -m services.reference_gateway.main
 ```
 
+Reference writes can be tested against a temporary database while reads still
+come from `q_live`, matching the SEC gateway test pattern:
+
+```powershell
+python -m services.reference_gateway.main --read-database q_live --test-write-database q_reference_tmp --execute --ensure-market-publication-schema
+```
+
+The same mode through the wrapper:
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -ReadDatabase q_live -TestWriteDatabase q_reference_tmp -Execute -EnsureMarketPublicationSchema
+```
+
+Equivalent environment variables:
+
+```text
+REFERENCE_CLICKHOUSE_READ_DATABASE=q_live
+REFERENCE_CLICKHOUSE_WRITE_DATABASE=q_reference_tmp
+```
+
+Disable the test by removing the write override or setting
+`REFERENCE_CLICKHOUSE_WRITE_DATABASE=q_live`.
+
 To print the blocking rules:
 
 ```powershell
@@ -172,13 +195,19 @@ python -m services.reference_gateway.main --ensure-market-publication-schema
 Historical publication fill:
 
 ```powershell
-python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\market_publications_historical_gap_fill.py --start-date 2026-01-01 --end-date 2026-06-22 --database q_live --sources finra_short_volume,sec_fails_to_deliver --finra-venues CNMS --output-root-win D:/market-data/prepared/reference_market_publications --resume-from-coverage --execute
+python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\market_publications_historical_gap_fill.py --start-date 2026-01-01 --end-date 2026-06-22 --read-database q_live --write-database q_live --sources finra_short_volume,sec_fails_to_deliver --finra-venues CNMS --output-root-win D:/market-data/prepared/reference_market_publications --resume-from-coverage --execute
 ```
 
 Workstation runtime command:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\market_publications_historical_gap_fill.py --start-date 2026-01-01 --end-date 2026-06-22 --database q_live --sources finra_short_volume,sec_fails_to_deliver --finra-venues CNMS --output-root-win D:/market-data/prepared/reference_market_publications --resume-from-coverage --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\market_publications_historical_gap_fill.py --start-date 2026-01-01 --end-date 2026-06-22 --read-database q_live --write-database q_live --sources finra_short_volume,sec_fails_to_deliver --finra-venues CNMS --output-root-win D:/market-data/prepared/reference_market_publications --resume-from-coverage --execute
+```
+
+Temporary write-database fill test:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\market_publications_historical_gap_fill.py --start-date 2026-01-01 --end-date 2026-06-22 --read-database q_live --write-database q_reference_tmp --sources finra_short_volume,sec_fails_to_deliver --finra-venues CNMS --output-root-win D:/market-data/prepared/reference_market_publications --resume-from-coverage --execute
 ```
 
 The first enabled historical sources are FINRA consolidated NMS daily short-sale

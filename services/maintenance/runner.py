@@ -119,6 +119,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--news-merge-tolerance-seconds", type=int, default=int(os.environ.get("NEWS_MAINTENANCE_MERGE_TOLERANCE_SECONDS") or "0"))
     parser.add_argument("--sec-min-date", default=os.environ.get("SEC_MAINTENANCE_MIN_DATE") or "2019-01-01")
     parser.add_argument("--reference-min-date", default=os.environ.get("REFERENCE_MAINTENANCE_MIN_DATE") or "2019-01-01")
+    parser.add_argument("--reference-read-database", default=os.environ.get("REFERENCE_CLICKHOUSE_READ_DATABASE") or os.environ.get("REFERENCE_GATEWAY_READ_DATABASE") or "")
+    parser.add_argument("--reference-write-database", default=os.environ.get("REFERENCE_CLICKHOUSE_WRITE_DATABASE") or os.environ.get("REFERENCE_GATEWAY_WRITE_DATABASE") or "")
     return parser.parse_args()
 
 
@@ -379,9 +381,16 @@ def check_sec(ctx: MaintenanceContext, args: argparse.Namespace) -> list[TaskRec
 
 
 def check_reference_publications(ctx: MaintenanceContext, args: argparse.Namespace) -> list[TaskRecord]:
+    read_database = args.reference_read_database or ctx.database
+    write_database = args.reference_write_database or ctx.database
     if ctx.execute:
-        ensure_market_publication_schema(ctx.client, database=ctx.database, storage_policy=ctx.storage_policy)
-    elif not reference_table_exists(ctx.client, ctx.database, "market_reference_publication_coverage_v1"):
+        ensure_market_publication_schema(
+            ctx.client,
+            database=write_database,
+            read_database=read_database,
+            storage_policy=ctx.storage_policy,
+        )
+    elif not reference_table_exists(ctx.client, write_database, "market_reference_publication_coverage_v1"):
         return [
             TaskRecord(
                 task_id=new_task_id("reference_publications_schema"),
@@ -389,11 +398,13 @@ def check_reference_publications(ctx: MaintenanceContext, args: argparse.Namespa
                 service="reference",
                 task_kind="market_publication_schema",
                 status="schema_missing",
-                source_truth=f"{ctx.database}.market_reference_publication_coverage_v1",
+                source_truth=f"{write_database}.market_reference_publication_coverage_v1",
                 command="python -m services.reference_gateway.main --ensure-market-publication-schema",
                 details={
                     "message": "Market-publication coverage table is missing. Run the schema ensure step before dry-run gap discovery.",
                     "policy": "dry-run maintenance does not create tables",
+                    "read_database": read_database,
+                    "write_database": write_database,
                 },
             )
         ]
@@ -408,7 +419,7 @@ def check_reference_publications(ctx: MaintenanceContext, args: argparse.Namespa
     for coverage_kind, source_system, label in source_specs:
         gaps = find_reference_publication_gaps(
             ctx.client,
-            database=ctx.database,
+            database=write_database,
             coverage_kind=coverage_kind,
             source_system=source_system,
             start_date=start,
@@ -423,16 +434,16 @@ def check_reference_publications(ctx: MaintenanceContext, args: argparse.Namespa
             service="reference",
             task_kind="market_publication_coverage_audit",
             status="ok" if not all_gaps else "gap_detected",
-            source_truth=f"{ctx.database}.market_reference_publication_coverage_v1",
+            source_truth=f"{write_database}.market_reference_publication_coverage_v1",
             rows_checked=len(source_specs),
             rows_missing=len(all_gaps),
-            details=details,
+            details={**details, "read_database": read_database, "write_database": write_database},
         )
     ]
     if all_gaps:
         window_start = min(gap.start_date for gap in all_gaps)
         window_end = max(gap.end_date for gap in all_gaps)
-        command = reference_gap_fill_command(ctx, window_start, window_end)
+        command = reference_gap_fill_command(ctx, window_start, window_end, read_database=read_database, write_database=write_database)
         tasks.append(
             TaskRecord(
                 task_id=new_task_id("reference_publication_gap"),
@@ -448,6 +459,8 @@ def check_reference_publications(ctx: MaintenanceContext, args: argparse.Namespa
                 details={
                     "gap_days": sum(gap.missing_days for gap in all_gaps),
                     "gap_kinds": sorted({gap.coverage_kind for gap in all_gaps}),
+                    "read_database": read_database,
+                    "write_database": write_database,
                     "policy": "run after hours on workstation; publication coverage prevents repeat fills",
                 },
             )
@@ -660,7 +673,7 @@ def news_gap_fill_command(ctx: MaintenanceContext, start: datetime, end: datetim
     return " ".join(ps_quote(part) for part in parts)
 
 
-def reference_gap_fill_command(ctx: MaintenanceContext, start: date, end: date) -> str:
+def reference_gap_fill_command(ctx: MaintenanceContext, start: date, end: date, *, read_database: str, write_database: str) -> str:
     script = ctx.code_root_win / "pipelines" / "reference_data" / "market_publications_historical_gap_fill.py"
     parts = [
         "python",
@@ -669,8 +682,10 @@ def reference_gap_fill_command(ctx: MaintenanceContext, start: date, end: date) 
         start.isoformat(),
         "--end-date",
         end.isoformat(),
-        "--database",
-        ctx.database,
+        "--read-database",
+        read_database,
+        "--write-database",
+        write_database,
         "--sources",
         os.environ.get("REFERENCE_MAINTENANCE_PUBLICATION_SOURCES") or "finra_short_volume,sec_fails_to_deliver",
         "--finra-venues",

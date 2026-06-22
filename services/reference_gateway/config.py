@@ -26,7 +26,8 @@ class ReferenceGatewayConfig:
     clickhouse_url: str
     clickhouse_user: str
     clickhouse_password_present: bool
-    clickhouse_database: str
+    clickhouse_read_database: str
+    clickhouse_write_database: str
     source_massive_enabled: bool
     massive_base_url: str
     massive_api_key_present: bool
@@ -50,6 +51,12 @@ class ReferenceGatewayConfig:
         data_root = resolve_data_root()
         prepared_root = Path(env_string("REFERENCE_GATEWAY_PREPARED_ROOT_WIN", str(data_root / "prepared")))
         password = default_clickhouse_password()
+        legacy_database = env_string("REFERENCE_GATEWAY_CLICKHOUSE_DATABASE", "q_live")
+        read_database = env_string("REFERENCE_CLICKHOUSE_READ_DATABASE", env_string("REFERENCE_GATEWAY_READ_DATABASE", legacy_database))
+        write_database = env_string(
+            "REFERENCE_CLICKHOUSE_WRITE_DATABASE",
+            env_string("REFERENCE_GATEWAY_WRITE_DATABASE", legacy_database),
+        )
         return cls(
             bind=bind,
             host=host,
@@ -62,7 +69,8 @@ class ReferenceGatewayConfig:
             clickhouse_url=default_clickhouse_url(),
             clickhouse_user=default_clickhouse_user(),
             clickhouse_password_present=bool(password),
-            clickhouse_database=env_string("REFERENCE_GATEWAY_CLICKHOUSE_DATABASE", "q_live"),
+            clickhouse_read_database=read_database,
+            clickhouse_write_database=write_database,
             source_massive_enabled=env_bool("REFERENCE_GATEWAY_MASSIVE_ENABLED", True),
             massive_base_url=env_string("MASSIVE_BASE_URL", "https://api.massive.com").rstrip("/"),
             massive_api_key_present=bool(env_string("MASSIVE_API_KEY", "")),
@@ -86,6 +94,14 @@ class ReferenceGatewayConfig:
         payload["prepared_root_win"] = str(self.prepared_root_win)
         payload["report_root_win"] = str(self.report_root_win)
         return payload
+
+    @property
+    def clickhouse_database(self) -> str:
+        return self.clickhouse_read_database
+
+    @property
+    def test_write_mode(self) -> bool:
+        return self.clickhouse_read_database != self.clickhouse_write_database
 
 
 def resolve_data_root() -> Path:

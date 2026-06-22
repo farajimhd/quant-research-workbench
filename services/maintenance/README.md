@@ -78,6 +78,13 @@ PowerShell wrapper from workstation runtime:
 D:\TradingML\codes\quant_research_workbench_pipelines\scripts\run_after_hours_maintenance.ps1 -Execute -AutoRun
 ```
 
+Reference publication maintenance can use the same temporary write database as
+the reference gateway:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\services\maintenance\runner.py --services reference --reference-read-database q_live --reference-write-database q_reference_tmp --execute
+```
+
 ## Output
 
 Each run writes:

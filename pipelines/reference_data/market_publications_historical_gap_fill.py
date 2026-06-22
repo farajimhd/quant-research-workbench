@@ -79,7 +79,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--start-date", required=True, help="Inclusive YYYY-MM-DD.")
     parser.add_argument("--end-date", required=True, help="Exclusive YYYY-MM-DD.")
-    parser.add_argument("--database", default=os.environ.get("REFERENCE_GATEWAY_CLICKHOUSE_DATABASE") or "q_live")
+    parser.add_argument("--database", default="", help="Backward-compatible alias that sets both read and write databases when the split flags are omitted.")
+    parser.add_argument("--read-database", default="", help="Canonical source database for symbols/listings. Defaults to q_live.")
+    parser.add_argument("--write-database", default="", help="Target database for rows and coverage. Set this to a temp DB for full tests.")
     parser.add_argument("--clickhouse-url", default=default_clickhouse_url())
     parser.add_argument("--user", default=default_clickhouse_user())
     parser.add_argument("--password", default=default_clickhouse_password())
@@ -98,6 +100,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     loaded_env = load_env_files(discover_env_files(REPO_ROOT), verbose=True)
     args = parse_args()
+    legacy_database = os.environ.get("REFERENCE_GATEWAY_CLICKHOUSE_DATABASE") or "q_live"
+    if not args.read_database:
+        args.read_database = args.database or os.environ.get("REFERENCE_CLICKHOUSE_READ_DATABASE") or os.environ.get("REFERENCE_GATEWAY_READ_DATABASE") or legacy_database
+    if not args.write_database:
+        args.write_database = args.database or os.environ.get("REFERENCE_CLICKHOUSE_WRITE_DATABASE") or os.environ.get("REFERENCE_GATEWAY_WRITE_DATABASE") or legacy_database
     start_date = date.fromisoformat(args.start_date)
     end_date = date.fromisoformat(args.end_date)
     if end_date <= start_date:
@@ -106,8 +113,13 @@ def main() -> None:
     run_root = Path(args.output_root_win) / run_id
     run_root.mkdir(parents=True, exist_ok=True)
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
-    ensure_market_publication_schema(client, database=args.database, storage_policy=args.storage_policy)
-    symbols = load_symbol_refs(client, args.database)
+    ensure_market_publication_schema(
+        client,
+        database=args.write_database,
+        read_database=args.read_database,
+        storage_policy=args.storage_policy,
+    )
+    symbols = load_symbol_refs(client, args.read_database)
     print_header(args, run_id, run_root, loaded_env, len(symbols))
     results: list[SourceResult] = []
     sources = parse_csv(args.sources)
@@ -119,7 +131,7 @@ def main() -> None:
                 run_date_source(
                     client=client,
                     args=args,
-                    database=args.database,
+                    database=args.write_database,
                     run_id=run_id,
                     source_system="finra",
                     source_object=f"daily_short_volume:{venue}",
@@ -296,7 +308,7 @@ def run_sec_ftd(
 ) -> list[SourceResult]:
     gaps = find_publication_gaps(
         client,
-        database=args.database,
+        database=args.write_database,
         coverage_kind="sec_fails_to_deliver",
         source_system="sec",
         start_date=start_date,
@@ -318,7 +330,7 @@ def run_sec_ftd(
             try:
                 rows, details = fetch_sec_ftd_file(args, item, gap_start, gap_end, symbols)
                 stamp_rows(rows, run_id)
-                written = insert_rows(client, args.database, "market_fails_to_deliver_v1", rows, args.batch_size) if args.execute else 0
+                written = insert_rows(client, args.write_database, "market_fails_to_deliver_v1", rows, args.batch_size) if args.execute else 0
                 status = "completed" if rows else "covered_empty"
                 failed = 0
             except Exception as exc:  # noqa: BLE001
@@ -336,7 +348,7 @@ def run_sec_ftd(
             if args.execute:
                 insert_publication_coverage(
                     client,
-                    database=args.database,
+                    database=args.write_database,
                     coverage_id=f"{run_id}:sec_fails_to_deliver:{cov_start.isoformat()}:{cov_end.isoformat()}",
                     coverage_kind="sec_fails_to_deliver",
                     source_system="sec",
@@ -526,7 +538,11 @@ def clickhouse_now64() -> str:
 def print_header(args: argparse.Namespace, run_id: str, run_root: Path, loaded_env: list[Path], symbols: int) -> None:
     print("=" * 96, flush=True)
     print("Reference market publications historical gap fill", flush=True)
-    print(f"run_id={run_id} execute={args.execute} database={args.database}", flush=True)
+    print(
+        f"run_id={run_id} execute={args.execute} "
+        f"read_database={args.read_database} write_database={args.write_database}",
+        flush=True,
+    )
     print(f"start_date={args.start_date} end_date={args.end_date} sources={args.sources}", flush=True)
     print(f"run_root={run_root} symbols={symbols:,}", flush=True)
     print("loaded_env_files=" + json.dumps([str(path) for path in loaded_env]), flush=True)
@@ -539,7 +555,9 @@ def write_summary(run_root: Path, args: argparse.Namespace, run_id: str, results
         "run_id": run_id,
         "created_at_utc": datetime.now(UTC).isoformat(),
         "execute": args.execute,
-        "database": args.database,
+        "database_alias": args.database,
+        "read_database": args.read_database,
+        "write_database": args.write_database,
         "results": [asdict(result) for result in results],
     }
     (run_root / "reference_market_publications_summary.json").write_text(json.dumps(payload, indent=2, sort_keys=True, default=str), encoding="utf-8")

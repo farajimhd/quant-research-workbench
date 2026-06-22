@@ -10,7 +10,7 @@ from typing import Any
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
 from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.market_publications import market_publication_audit
-from services.reference_gateway.table_groups import OWNED_REFERENCE_TABLES, REFERENCE_TABLE_GROUPS
+from services.reference_gateway.table_groups import REFERENCE_TABLE_GROUPS
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +28,8 @@ class ReferenceAuditReport:
     status: str
     checked_at_utc: str
     database: str
+    read_database: str
+    write_database: str
     wall_seconds: float
     checks: list[AuditCheck]
 
@@ -38,20 +40,21 @@ class ReferenceAuditReport:
 def run_reference_audit(config: ReferenceGatewayConfig) -> ReferenceAuditReport:
     started = time.perf_counter()
     client = ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, _clickhouse_password())
-    database = config.clickhouse_database
+    read_database = config.clickhouse_read_database
+    write_database = config.clickhouse_write_database
     checks = [
-        check_required_tables(client, database),
-        check_table_group_counts(client, database),
-        check_issuer_identifier_coverage(client, database),
-        check_duplicate_issuer_identifiers(client, database),
-        check_security_parent_integrity(client, database),
-        check_active_candidates_without_durable_issuer_id(client, database),
-        check_missing_or_invalid_conid(client, database),
-        check_open_mapping_issues(client, database),
-        check_unsupported_us_stock_shape(client, database),
-        check_active_symbols_without_tradable_universe(client, database),
-        check_tradable_universe_blocked_rows(client, database),
-        check_market_publication_recency(client, database),
+        check_required_tables(client, read_database, write_database),
+        check_table_group_counts(client, read_database, write_database),
+        check_issuer_identifier_coverage(client, read_database),
+        check_duplicate_issuer_identifiers(client, read_database),
+        check_security_parent_integrity(client, read_database),
+        check_active_candidates_without_durable_issuer_id(client, read_database),
+        check_missing_or_invalid_conid(client, read_database),
+        check_open_mapping_issues(client, read_database),
+        check_unsupported_us_stock_shape(client, read_database),
+        check_active_symbols_without_tradable_universe(client, read_database),
+        check_tradable_universe_blocked_rows(client, read_database),
+        check_market_publication_recency(client, write_database),
     ]
     status = "ok" if all(check.status == "ok" for check in checks if check.severity == "error") else "failed"
     if any(check.status != "ok" for check in checks if check.severity == "warning") and status == "ok":
@@ -59,7 +62,9 @@ def run_reference_audit(config: ReferenceGatewayConfig) -> ReferenceAuditReport:
     return ReferenceAuditReport(
         status=status,
         checked_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        database=database,
+        database=read_database,
+        read_database=read_database,
+        write_database=write_database,
         wall_seconds=time.perf_counter() - started,
         checks=checks,
     )
@@ -74,36 +79,43 @@ def write_report(report: ReferenceAuditReport, root: Path) -> Path:
     return path
 
 
-def check_required_tables(client: ClickHouseHttpClient, database: str) -> AuditCheck:
-    required = list(OWNED_REFERENCE_TABLES)
-    rows = query_json_each_row(
-        client,
-        "SELECT name FROM system.tables "
-        f"WHERE database = {sql_string(database)} AND name IN ({','.join(sql_string(item) for item in required)})",
-    )
-    found = {str(row["name"]) for row in rows}
-    missing = sorted(set(required) - found)
+def check_required_tables(client: ClickHouseHttpClient, read_database: str, write_database: str) -> AuditCheck:
+    existing = {
+        read_database: existing_tables(client, read_database),
+        write_database: existing_tables(client, write_database),
+    }
+    missing: list[dict[str, str]] = []
+    for group in REFERENCE_TABLE_GROUPS:
+        database = group_database(group.group_id, read_database, write_database)
+        for table_name in group.tables:
+            if table_name not in existing[database]:
+                missing.append({"database": database, "table": table_name, "group_id": group.group_id})
     return AuditCheck(
         name="required_tables",
         severity="error",
         status="ok" if not missing else "failed",
         count=len(missing),
-        message="All required reference tables exist." if not missing else "Missing required tables: " + ", ".join(missing),
-        sample_rows=[{"missing_table": item} for item in missing],
+        message="All required reference tables exist." if not missing else "Missing required reference tables.",
+        sample_rows=[{"missing_table": f"{row['database']}.{row['table']}", "group_id": row["group_id"]} for row in missing],
     )
 
 
-def check_table_group_counts(client: ClickHouseHttpClient, database: str) -> AuditCheck:
+def check_table_group_counts(client: ClickHouseHttpClient, read_database: str, write_database: str) -> AuditCheck:
     rows: list[dict[str, Any]] = []
-    existing = existing_tables(client, database)
+    existing = {
+        read_database: existing_tables(client, read_database),
+        write_database: existing_tables(client, write_database),
+    }
     for group in REFERENCE_TABLE_GROUPS:
+        database = group_database(group.group_id, read_database, write_database)
         for table_name in group.tables:
-            if table_name not in existing:
-                rows.append({"group_id": group.group_id, "table": table_name, "rows": 0, "status": "missing"})
+            if table_name not in existing[database]:
+                rows.append({"group_id": group.group_id, "database": database, "table": table_name, "rows": 0, "status": "missing"})
                 continue
             rows.append(
                 {
                     "group_id": group.group_id,
+                    "database": database,
                     "table": table_name,
                     "rows": scalar_int(client, f"SELECT count() FROM {table(database, table_name)}"),
                     "status": "ok",
@@ -479,6 +491,12 @@ def scalar_int(client: ClickHouseHttpClient, sql: str) -> int:
 def existing_tables(client: ClickHouseHttpClient, database: str) -> set[str]:
     rows = query_json_each_row(client, f"SELECT name FROM system.tables WHERE database = {sql_string(database)}")
     return {str(row.get("name") or "") for row in rows}
+
+
+def group_database(group_id: str, read_database: str, write_database: str) -> str:
+    if group_id == "market_reference_publications":
+        return write_database
+    return read_database
 
 
 def query_json_each_row(client: ClickHouseHttpClient, sql: str) -> list[dict[str, Any]]:
