@@ -186,7 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let app = app(AppState {
         bars,
-        compact_event_store,
+        compact_event_store: compact_event_store.clone(),
         compact_events: compact_event_sender,
         config: config.clone(),
         events: event_sender,
@@ -214,9 +214,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config.clone(),
             event_fanout.clone(),
             maintenance.clone(),
+            compact_event_store.clone(),
         ));
     } else {
-        run_startup_maintenance(config.clone(), event_fanout.clone(), maintenance.clone()).await;
+        run_startup_maintenance(
+            config.clone(),
+            event_fanout.clone(),
+            maintenance.clone(),
+            compact_event_store.clone(),
+        )
+        .await;
         tokio::spawn(run_massive_ingest(config.clone(), event_fanout.clone()));
     }
     if config.gap_fill_enabled {
@@ -224,6 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config.clone(),
             event_fanout.clone(),
             maintenance.clone(),
+            compact_event_store.clone(),
         ));
     }
     tokio::spawn(run_replay_service(

@@ -95,6 +95,7 @@ Environment variables:
 - `QMD_GAP_FILL_ENABLED`, default `true`
 - `QMD_GAP_FILL_MODE`, default `auto`; allowed values are `auto`, `session_catch_up`, `after_hours`, `repair`, or `session`
 - `QMD_GAP_FILL_INTERVAL_MS`, default `300000`
+- `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS`, default `10000`
 - `QMD_GAP_FILL_LOOKBACK_MINUTES`, default `120`
 - `QMD_GAP_FILL_MAX_LOOKBACK_DAYS`, default `3`
 - `QMD_GAP_FILL_MIN_GAP_SECONDS`, default `1`
@@ -143,6 +144,14 @@ stream `/stream/compact-events`. ClickHouse is the durability/audit path. Raw
 quote/trade persistence is intentionally optional and is not part of the default
 coverage repair contract. The compact event row is the durable live equivalent
 of the historical `market_sip_compact.events` training table.
+
+During active streaming hours, recent q_live REST repair starts from symbols
+observed by the live websocket compact-event buffer. This means a clean-slate
+run can begin repairing a ticker as soon as the websocket has seen that ticker,
+without waiting for q_live rows to be persisted first. If repair records
+`awaiting_live_symbols`, the scheduled repair loop retries every
+`QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS` while streaming is active instead of
+waiting for the normal after-hours interval.
 
 ## Live Bars
 

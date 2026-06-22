@@ -161,11 +161,14 @@ and cannot request all tickers for a time range in one REST call.
 
 QMD does not use configured seed tickers or a configured universe table for REST
 repair. During streaming hours, it starts Massive websocket ingest immediately
-and repairs only tickers discovered from newly persisted live compact events. If
-required coverage gaps exist before any live ticker has arrived, QMD records
-`awaiting_live_symbols` and leaves the gap open. Outside streaming hours, it
-uses latest symbols from q_live compact events, then the latest symbol set from
-the read-only historical `market_sip_compact.events` table if q_live is empty.
+and repairs tickers discovered from the in-memory live compact-event buffer,
+plus recent q_live compact events if they already exist. If required coverage
+gaps exist before any live ticker has arrived, QMD records
+`awaiting_live_symbols`; the scheduled repair loop retries every
+`QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS` until websocket symbols are available.
+Outside streaming hours, it uses latest symbols from q_live compact events,
+then the latest symbol set from the read-only historical
+`market_sip_compact.events` table if q_live is empty.
 Recent REST repair covers the current market day plus
 `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior US market sessions, skipping weekends
 and common US equity market holidays. Older history should be read from
@@ -265,7 +268,7 @@ Before live use:
 | Scanner primitives are missing | Confirm bars close, then check whether current market activity meets primitive thresholds. |
 | API is slow | Lower broadcast frequency, inspect websocket clients, and watch drop counters. |
 | Gap fill does not run | Check `QMD_GAP_FILL_ENABLED`, `MASSIVE_API_KEY`, `QMD_GAP_FILL_MODE`, and whether the current phase allows repair. |
-| Gap fill records `awaiting_live_symbols` | Streaming is active and q_live has no discovered tickers yet. Let websocket ingest persist compact events, then the next repair pass can use those tickers. |
+| Gap fill records `awaiting_live_symbols` | Streaming is active and no in-memory websocket compact symbols or recent q_live tickers are available yet. Once websocket symbols arrive, repair should retry on `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS` instead of waiting for the normal interval. |
 | Gap fill records `no_symbols_available` | Outside streaming hours, no q_live or latest historical compact-event symbols were available for REST repair. |
 | Gap fill keeps writing many rows | Live ingest may be dropping compact events, or the gateway was offline for longer than expected. |
 | Startup maintenance records `needs_manual_rebuild` | Recent `q_live` committed ordinals are structurally inconsistent. Do not rely on automatic tail repair; inspect/rebuild the affected live event range. |

@@ -80,6 +80,7 @@ Required data-path queues use awaited sends. A full queue applies backpressure i
 | `QMD_GAP_FILL_ENABLED` | `true` | Enable Massive REST gap fill. | Disable for isolated websocket tests. |
 | `QMD_GAP_FILL_MODE` | `auto` | Gap-fill mode: `auto`, `session`, `session_catch_up`, `after_hours`, or `repair`. | `auto` does startup catch-up during streaming and repair after hours. |
 | `QMD_GAP_FILL_INTERVAL_MS` | `300000` | After-hours repair interval. | Default is 5 minutes. |
+| `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS` | `10000` | Short retry interval while streaming is active and repair is waiting for live websocket symbols. | Lets a clean-slate run start REST repair quickly as soon as websocket symbols arrive. |
 | `QMD_GAP_FILL_LOOKBACK_MINUTES` | `120` | Legacy warmup lookback for focused tests. | Recent live repair now uses market-day coverage. |
 | `QMD_GAP_FILL_MAX_LOOKBACK_DAYS` | `3` | Recent structural audit lookback in calendar days. | The REST repair window is controlled by `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS`. |
 | `QMD_GAP_FILL_MIN_GAP_SECONDS` | `1` | Ignore gaps shorter than this. | Keep at `1` for no intentional market-session holes. |
@@ -112,10 +113,10 @@ loads `qmd_live_event_coverage_v1`, materializes covered intervals from the
 intersection of `compact_persisted` and `bars_persisted` rows plus explicit
 `repair_completed` rows, subtracts those intervals from the current New York
 market day plus the configured prior sessions, and fills every remaining
-04:00-20:00 ET session gap. During streaming hours, symbols come from live
-websocket compact rows as they arrive. Outside streaming hours, symbols come
-from latest q_live compact events, then latest historical `market_sip_compact`
-events if q_live is empty.
+04:00-20:00 ET session gap. During streaming hours, symbols come from the
+in-memory live websocket compact-event buffer first, then recent q_live compact
+events. Outside streaming hours, symbols come from latest q_live compact
+events, then latest historical `market_sip_compact` events if q_live is empty.
 
 ## Scanner Primitives
 

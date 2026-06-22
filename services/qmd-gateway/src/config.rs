@@ -30,6 +30,7 @@ pub struct GatewayConfig {
     pub flush_interval_ms: u64,
     pub gap_fill_enabled: bool,
     pub gap_fill_interval_ms: u64,
+    pub gap_fill_awaiting_symbols_retry_ms: u64,
     pub gap_fill_mode: String,
     pub gap_fill_lookback_minutes: i64,
     pub gap_fill_max_lookback_days: i64,
@@ -172,6 +173,10 @@ impl GatewayConfig {
             flush_interval_ms: env_u64("QMD_CLICKHOUSE_FLUSH_INTERVAL_MS", 5_000),
             gap_fill_enabled: env_bool("QMD_GAP_FILL_ENABLED", true),
             gap_fill_interval_ms: env_u64("QMD_GAP_FILL_INTERVAL_MS", 300_000),
+            gap_fill_awaiting_symbols_retry_ms: env_u64(
+                "QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS",
+                10_000,
+            ),
             gap_fill_mode: env_string("QMD_GAP_FILL_MODE", "auto").to_ascii_lowercase(),
             gap_fill_lookback_minutes: env_i64("QMD_GAP_FILL_LOOKBACK_MINUTES", 120),
             gap_fill_max_lookback_days: env_i64("QMD_GAP_FILL_MAX_LOOKBACK_DAYS", 3),

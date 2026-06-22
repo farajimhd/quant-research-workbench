@@ -1,3 +1,4 @@
+use crate::compact_event::SharedCompactEventStore;
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::maintenance::SharedMaintenanceState;
@@ -16,17 +17,18 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path as FsPath;
 use std::process::Command;
-use tokio::time::{interval, Duration};
+use tokio::time::{sleep, Duration};
 
 pub async fn run_startup_maintenance(
     config: GatewayConfig,
     fanout: MarketEventFanout,
     maintenance: SharedMaintenanceState,
+    live_compact_store: SharedCompactEventStore,
 ) {
     if !config.gap_fill_enabled || !config.qmd_startup_maintenance_enabled {
         return;
     }
-    let filler = GapFillService::new(config, fanout, maintenance);
+    let filler = GapFillService::new(config, fanout, maintenance, live_compact_store);
     eprintln!("QMD startup maintenance: checking recent q_live event coverage.");
     if let Err(error) = filler.run_startup_maintenance().await {
         filler.fanout.metrics.inc_gap_fill_failure();
@@ -42,17 +44,18 @@ pub async fn run_gap_fill_service(
     config: GatewayConfig,
     fanout: MarketEventFanout,
     maintenance: SharedMaintenanceState,
+    live_compact_store: SharedCompactEventStore,
 ) {
     if !config.gap_fill_enabled {
         return;
     }
-    let filler = GapFillService::new(config, fanout, maintenance);
-    let mut timer = interval(Duration::from_millis(filler.config.gap_fill_interval_ms));
-    timer.tick().await;
+    let filler = GapFillService::new(config, fanout, maintenance, live_compact_store);
+    let mut delay_ms = filler.next_gap_fill_delay_ms("startup");
     loop {
-        timer.tick().await;
+        sleep(Duration::from_millis(delay_ms)).await;
         let mode = if is_streaming_phase(Utc::now()) {
             if !should_run_session_catch_up(filler.config.gap_fill_mode.as_str()) {
+                delay_ms = filler.next_gap_fill_delay_ms("skipped");
                 continue;
             }
             "session_catch_up"
@@ -61,10 +64,15 @@ pub async fn run_gap_fill_service(
                 filler.config.gap_fill_mode.as_str(),
                 "auto" | "after_hours" | "repair"
             ) {
+                delay_ms = filler.next_gap_fill_delay_ms("skipped");
                 continue;
             }
             "after_hours_repair"
         };
+        if filler.maintenance.snapshot().await.active {
+            delay_ms = filler.next_gap_fill_delay_ms("maintenance_active");
+            continue;
+        }
         if let Err(error) = filler.run_once(mode).await {
             filler.fanout.metrics.inc_gap_fill_failure();
             filler
@@ -72,7 +80,11 @@ pub async fn run_gap_fill_service(
                 .finish("failed", &format!("Gap fill cycle failed: {error}"))
                 .await;
             eprintln!("Gap fill cycle failed: {error}");
+            delay_ms = filler.next_gap_fill_delay_ms("failed");
+            continue;
         }
+        let status = filler.maintenance.snapshot().await.status;
+        delay_ms = filler.next_gap_fill_delay_ms(&status);
     }
 }
 
@@ -165,6 +177,7 @@ struct GapFillService {
     client: Client,
     config: GatewayConfig,
     fanout: MarketEventFanout,
+    live_compact_store: SharedCompactEventStore,
     maintenance: SharedMaintenanceState,
 }
 
@@ -173,11 +186,13 @@ impl GapFillService {
         config: GatewayConfig,
         fanout: MarketEventFanout,
         maintenance: SharedMaintenanceState,
+        live_compact_store: SharedCompactEventStore,
     ) -> Self {
         Self {
             client: Client::new(),
             config,
             fanout,
+            live_compact_store,
             maintenance,
         }
     }
@@ -287,6 +302,18 @@ impl GapFillService {
             )
             .await;
         Ok(())
+    }
+
+    fn next_gap_fill_delay_ms(&self, status: &str) -> u64 {
+        if is_streaming_phase(Utc::now())
+            && matches!(
+                status,
+                "startup" | "awaiting_live_symbols" | "maintenance_active" | "failed"
+            )
+        {
+            return self.config.gap_fill_awaiting_symbols_retry_ms.max(1_000);
+        }
+        self.config.gap_fill_interval_ms.max(1_000)
     }
 
     async fn run_once(&self, mode: &str) -> Result<u64, String> {
@@ -870,10 +897,17 @@ impl GapFillService {
         window_start: DateTime<Utc>,
     ) -> Result<Vec<String>, String> {
         let mut symbols = BTreeSet::new();
+        if is_streaming_phase(Utc::now()) {
+            symbols.extend(self.live_compact_symbols().await);
+            if self.config.compact_events_enabled {
+                symbols.extend(self.recent_q_live_symbols(window_start).await?);
+            }
+            return Ok(symbols.into_iter().collect());
+        }
         if self.config.compact_events_enabled {
             symbols.extend(self.recent_q_live_symbols(window_start).await?);
         }
-        if !symbols.is_empty() || is_streaming_phase(Utc::now()) {
+        if !symbols.is_empty() {
             return Ok(symbols.into_iter().collect());
         }
         symbols.extend(self.latest_q_live_symbols().await?);
@@ -882,6 +916,16 @@ impl GapFillService {
         }
         symbols.extend(self.latest_historical_symbols().await?);
         Ok(symbols.into_iter().collect())
+    }
+
+    async fn live_compact_symbols(&self) -> Vec<String> {
+        self.live_compact_store
+            .tickers()
+            .await
+            .into_iter()
+            .map(|symbol| symbol.to_ascii_uppercase())
+            .filter(|symbol| !symbol.is_empty())
+            .collect()
     }
 
     async fn recent_q_live_symbols(

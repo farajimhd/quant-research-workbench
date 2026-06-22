@@ -78,6 +78,13 @@ impl SharedCompactEventStore {
             out
         }
     }
+
+    pub async fn tickers(&self) -> Vec<String> {
+        let guard = self.inner.read().await;
+        let mut out = guard.keys().cloned().collect::<Vec<_>>();
+        out.sort();
+        out
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
