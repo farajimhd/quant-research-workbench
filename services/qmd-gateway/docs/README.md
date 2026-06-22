@@ -27,4 +27,4 @@ Use it to comment on the market-data gateway without mixing in app-backend topic
 - **Scanner primitive**: an early market-data candidate emitted by the gateway. It is not a final trade signal.
 - **Signal method**: a cataloged trading setup contract. Most are not implemented as gateway primitives yet.
 - **Hot path**: code that runs while live Massive data is arriving. It must avoid blocking.
-- **Backpressure**: queues filling faster than consumers can process them. The gateway counts drops instead of blocking live ingest.
+- **Backpressure**: queues filling faster than consumers can process them. Required data paths wait for capacity; UI broadcasts remain best effort.

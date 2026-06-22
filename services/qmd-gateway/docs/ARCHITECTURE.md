@@ -137,7 +137,7 @@ Default durable writes:
 | `live_massive_trades` | `clickhouse.rs` | no | Optional raw trade replay/debug source |
 | `live_massive_quotes` | `clickhouse.rs` | no | Optional raw quote replay/debug source |
 | `live_market_bars` | `bars.rs` | yes | Published bar history |
-| `live_market_indicators` | `indicators.rs` | no | Optional promoted indicator rows |
+| `live_market_indicators` | `indicators.rs` | yes | Published closed bar-level indicator rows |
 | `qmd_gap_fill_runs` | `gapfill.rs` | yes | Gap-fill audit log |
 | `qmd_market_coverage_manifest_v1` | `gapfill.rs` | yes | Coarse startup repair and historical flatfile planning manifest |
 
@@ -155,7 +155,7 @@ command. Deeper historical history belongs to the read-only
 `market_sip_compact.events` table maintained by the flatfile pipelines. QMD live
 events are never merged into that historical table.
 
-Set `QMD_PERSIST_INDICATORS=true` only after choosing the indicator set that should become durable.
+`QMD_PERSIST_INDICATORS` defaults to `true` for the current accepted bar-level indicator set. Disable it only for isolated gateway tests.
 
 ## Replay Flow
 

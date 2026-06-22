@@ -41,12 +41,12 @@ Settings are read from environment variables at process start. The gateway also 
 | `QMD_PERSIST_COMPACT_EVENTS` | `true` | Persist compact live events to ClickHouse. | Disable only for stream-only tests. |
 | `QMD_PERSIST_RAW_EVENTS` | `false` | Persist raw quote/trade rows. | Enable only for debug/replay/gap-fill workflows. |
 | `QMD_REFERENCE_DIR` | repo `research/market_references/massive` | Massive reference files used for condition packing. | Must contain `conditions_indicators_glossary.json`. |
-| `QMD_BAR_CHANNEL_CAPACITY` | `250000` | Queue size for bar aggregation shards. | If drops occur, raise this or increase bar shards. |
-| `QMD_INDICATOR_CHANNEL_CAPACITY` | `250000` | Queue size for tick-indicator event shards. | If drops occur, raise this or increase indicator shards. |
+| `QMD_BAR_CHANNEL_CAPACITY` | `250000` | Queue size for bar aggregation shards. | If latency rises, raise this or increase bar shards. |
+| `QMD_INDICATOR_CHANNEL_CAPACITY` | `250000` | Queue size for tick-indicator event shards. | If latency rises, raise this or increase indicator shards. |
 | `QMD_INDICATOR_BAR_CHANNEL_CAPACITY` | `250000` | Queue size for closed bars sent to indicator engine. | Relevant when many timeframes close at once. |
 | `QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY` | `250000` | Queue size for closed bars sent to scanner primitive engine. | Relevant when scanner primitive evaluation lags. |
 
-The gateway uses non-blocking queue sends. A full queue means the downstream item is dropped and a metric counter is incremented. Massive ingest is not blocked. Compact live inference does not wait for DB ordinals: the ML/app path reads the in-memory per-ticker buffer, while final ticker-local ordinals are assigned only when sorted rows are flushed to `q_live`.
+Required data-path queues use awaited sends. A full queue applies backpressure instead of dropping canonical quote/trade work. Compact live inference does not wait for DB ordinals: the ML/app path reads the in-memory per-ticker buffer, while final ticker-local ordinals are assigned only when sorted rows are flushed to `q_live`.
 
 ## Bars
 
@@ -54,7 +54,7 @@ The gateway uses non-blocking queue sends. A full queue means the downstream ite
 |---|---:|---|---|
 | `QMD_BAR_TIMEFRAMES` | `1s,10s,30s,1m,5m,1h` | Timeframes built from quotes/trades. | Timeframes are aligned to the top of their interval. |
 | `QMD_BAR_HISTORY_LIMIT` | `1000` | In-memory closed bars retained per ticker/timeframe. | Deeper history should come from ClickHouse. |
-| `QMD_BAR_SHARD_COUNT` | `8` | Number of bar worker shards. | Increase if bar queue drops or latency rises. |
+| `QMD_BAR_SHARD_COUNT` | `8` | Number of bar worker shards. | Increase if bar latency rises. |
 
 ## Indicators
 
@@ -63,15 +63,15 @@ The gateway uses non-blocking queue sends. A full queue means the downstream ite
 | `QMD_TICK_INDICATOR_WINDOW_SECONDS` | `300` | Rolling quote/trade sample window for tick indicators. | Minimum is 60 because 60-second fields require it. |
 | `QMD_INDICATOR_HISTORY_BY_TIMEFRAME` | `1s:900,10s:360,30s:480,1m:960,5m:192,1h:32` | Closed indicator rows retained per ticker/timeframe. | If a timeframe is missing, fallback is `QMD_INDICATOR_HISTORY_LIMIT`. |
 | `QMD_INDICATOR_HISTORY_LIMIT` | `1000` | Fallback indicator history limit. | Used only for unlisted timeframes. |
-| `QMD_INDICATOR_SHARD_COUNT` | `8` | Number of indicator worker shards. | Increase if indicator queue drops. |
-| `QMD_PERSIST_INDICATORS` | `false` | Persist closed indicator rows to ClickHouse. | Keep false until the durable indicator set is finalized. |
+| `QMD_INDICATOR_SHARD_COUNT` | `8` | Number of indicator worker shards. | Increase if indicator latency rises. |
+| `QMD_PERSIST_INDICATORS` | `true` | Persist closed bar-level indicator rows to ClickHouse. | Set false only for isolated tests that should avoid indicator writes. |
 
 ## ClickHouse Batch Writes
 
 | Env Var | Default | Meaning | Tuning Note |
 |---|---:|---|---|
 | `QMD_CLICKHOUSE_MAX_BATCH` | `10000` | Max rows per ClickHouse insert batch. | Larger batches reduce HTTP overhead but increase memory per batch. |
-| `QMD_CLICKHOUSE_FLUSH_INTERVAL_MS` | `1000` | Max time before flushing partial ClickHouse batches. | Lower values reduce persistence delay but increase insert frequency. |
+| `QMD_CLICKHOUSE_FLUSH_INTERVAL_MS` | `5000` | Max time before flushing partial ClickHouse batches. | Writes are background-batched; lower values reduce persistence delay but increase insert frequency. |
 
 ## Gap Fill
 
@@ -104,7 +104,7 @@ compact-event, and optional raw-persistence queues.
 | Env Var | Default | Meaning | Tuning Note |
 |---|---:|---|---|
 | `QMD_SCANNER_PRIMITIVE_HISTORY_LIMIT` | `10000` | Number of primitive events retained in memory. | Snapshot uses latest primitive by ticker/timeframe/key. |
-| `QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY` | `250000` | Queue size for closed bars entering scanner primitive engine. | Raise if `bar_rows_scanner_dropped` increases. |
+| `QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY` | `250000` | Queue size for closed bars entering scanner primitive engine. | Raise if scanner primitive latency rises. |
 
 ## Replay
 
