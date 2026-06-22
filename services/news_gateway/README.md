@@ -257,6 +257,28 @@ NEWS_BENZINGA_COVERAGE_COMPACT_ON_STARTUP=true
 NEWS_BENZINGA_COVERAGE_COMPACT_TOLERANCE_SECONDS=300
 ```
 
+## After-Hours Maintenance
+
+News participates in the shared after-hours maintenance runner:
+
+```powershell
+python -m services.maintenance.runner --services news --execute
+```
+
+The runner does not replace the live gateway. It audits
+`q_live.benzinga_news_coverage_manifest_v1`, detects internal coverage gaps,
+records the action in `q_live.service_maintenance_task_v1`, and generates the
+same provider gap-fill command used by the gateway:
+
+```text
+pipelines/news/benzinga/news_benzinga_provider_gap_fill.py
+```
+
+When the runner is executed on the workstation outside the active collection
+window with `--auto-run`, eligible small gaps can be filled automatically.
+Otherwise it writes the exact command to the maintenance summary so the
+workstation can run it manually.
+
 Large non-workstation gaps are not auto-filled because the workstation has the
 correct storage root and compute. The generated manifest is written under
 `market-data`:

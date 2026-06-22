@@ -148,6 +148,23 @@ quote/trade persistence is intentionally optional and is not part of the default
 coverage repair contract. The compact event row is the durable live equivalent
 of the historical `market_sip_compact.events` training table.
 
+## After-Hours Maintenance
+
+QMD participates in the shared after-hours maintenance runner:
+
+```powershell
+python -m services.maintenance.runner --services qmd --execute
+```
+
+The QMD maintenance source of truth for historical event availability is
+`market_sip_compact.events` plus `market_sip_compact.events_ordinal_continuity`.
+The runner intentionally does not copy historical rows directly into `q_live`.
+Recent `q_live` event gaps must be repaired through the QMD replay/fanout path
+so `live_market_events_v1`, `live_event_ordinal_continuity`, and
+`live_market_bars` remain consistent. The runner records QMD source coverage,
+live coverage, row counts, and the `/snapshot/maintenance` API state in
+`q_live.service_maintenance_task_v1`.
+
 During active streaming hours, recent q_live REST repair starts from symbols
 kept in the durable gap-fill symbol universe. If the universe is empty, QMD
 seeds it from the latest `QMD_GAP_FILL_UNIVERSE_MARKET_DAYS` market sessions in
