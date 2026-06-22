@@ -29,6 +29,9 @@ class ReferenceGatewayConfig:
     clickhouse_database: str
     source_massive_enabled: bool
     ibkr_resolution_enabled: bool
+    after_hours_writes_only: bool
+    market_hours_write_override: bool
+    market_hours_write_reason: str
     terminal_rich_enabled: bool
     terminal_refresh_seconds: float
 
@@ -54,6 +57,9 @@ class ReferenceGatewayConfig:
             clickhouse_database=env_string("REFERENCE_GATEWAY_CLICKHOUSE_DATABASE", "q_live"),
             source_massive_enabled=env_bool("REFERENCE_GATEWAY_MASSIVE_ENABLED", True),
             ibkr_resolution_enabled=env_bool("REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED", False),
+            after_hours_writes_only=env_bool("REFERENCE_GATEWAY_AFTER_HOURS_WRITES_ONLY", True),
+            market_hours_write_override=env_bool("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_OVERRIDE", False),
+            market_hours_write_reason=env_string("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON", ""),
             terminal_rich_enabled=env_bool_auto("REFERENCE_GATEWAY_TERMINAL_RICH_ENABLED", sys.stdout.isatty()),
             terminal_refresh_seconds=env_float("REFERENCE_GATEWAY_TERMINAL_REFRESH_SECONDS", 1.0),
         )

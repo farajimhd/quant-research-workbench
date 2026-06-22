@@ -81,6 +81,34 @@ or by default:
 <market-data>/prepared/reference_gateway/reports
 ```
 
+## Scheduling Policy
+
+Read-only audits can run at any time.
+
+Reference-data writes are different. They should normally run after the active
+market collection window because they can change the tradable universe,
+exchange aliases, issuer mappings, or IBKR conid availability while QMD and the
+live trading app are using those rows.
+
+Defaults:
+
+```text
+REFERENCE_GATEWAY_AFTER_HOURS_WRITES_ONLY=true
+REFERENCE_GATEWAY_COLLECTION_START_ET=04:00
+REFERENCE_GATEWAY_COLLECTION_END_ET=20:00
+```
+
+If a market-hours operation is truly required, it must be explicit:
+
+```text
+REFERENCE_GATEWAY_MARKET_HOURS_WRITE_OVERRIDE=true
+REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON=<specific reason>
+```
+
+The override is intentionally noisy. It is for urgent corrections only, for
+example blocking a clearly wrong conid or adding a newly listed security needed
+by the current session.
+
 ## Next Implementation Stage
 
 After the audit output is reviewed, the writer stage should be added in this
@@ -93,4 +121,3 @@ order:
 5. `feature_tradable_universe_v1` publisher that applies the hard tradability
    rule.
 6. Only then enable writes for new source mappings and accepted canonical rows.
-
