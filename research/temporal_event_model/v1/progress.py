@@ -30,6 +30,15 @@ class ProbeProgressState:
     loss: float = 0.0
     accuracy_pct: float = 0.0
     macro_f1_pct: float = 0.0
+    regression_mse: float = 0.0
+    classification_loss: float = 0.0
+    upside_accuracy_pct: float = 0.0
+    downside_accuracy_pct: float = 0.0
+    low_tick_mae: float = 0.0
+    high_tick_mae: float = 0.0
+    low_price_mae_dollars: float = 0.0
+    high_price_mae_dollars: float = 0.0
+    valid_low_high_order_pct: float = 0.0
     valid_pct: float = 0.0
     abs_return_bps_mean: float = 0.0
     lr: float = 0.0
@@ -43,6 +52,15 @@ class ProbeProgressState:
     validation_loss: float | None = None
     validation_accuracy_pct: float | None = None
     validation_macro_f1_pct: float | None = None
+    validation_regression_mse: float | None = None
+    validation_classification_loss: float | None = None
+    validation_upside_accuracy_pct: float | None = None
+    validation_downside_accuracy_pct: float | None = None
+    validation_low_tick_mae: float | None = None
+    validation_high_tick_mae: float | None = None
+    validation_low_price_mae_dollars: float | None = None
+    validation_high_price_mae_dollars: float | None = None
+    validation_valid_low_high_order_pct: float | None = None
     validation_valid_pct: float | None = None
     validation_seconds: float | None = None
     gpu_allocated_gib: float = 0.0
@@ -108,8 +126,23 @@ class ProbeTrainingReporter:
         state.shard_steps = int(metrics.get("training/shard_steps", state.shard_steps))
         state.samples_seen_total = int(metrics.get("training/samples_seen_total", state.samples_seen_total))
         state.loss = float(metrics.get("training/loss", state.loss))
-        state.accuracy_pct = float(metrics.get("training/accuracy_pct", state.accuracy_pct))
-        state.macro_f1_pct = float(metrics.get("training/macro_f1_pct", state.macro_f1_pct))
+        state.accuracy_pct = float(
+            self._first_metric(metrics, ("training/path_accuracy_pct", "training/accuracy_pct"), state.accuracy_pct)
+        )
+        state.macro_f1_pct = float(
+            self._first_metric(metrics, ("training/path_macro_f1_pct", "training/macro_f1_pct"), state.macro_f1_pct)
+        )
+        state.regression_mse = float(metrics.get("training/regression_mse", state.regression_mse))
+        state.classification_loss = float(metrics.get("training/classification_loss", state.classification_loss))
+        state.upside_accuracy_pct = float(metrics.get("training/upside_accuracy_pct", state.upside_accuracy_pct))
+        state.downside_accuracy_pct = float(metrics.get("training/downside_accuracy_pct", state.downside_accuracy_pct))
+        state.low_tick_mae = float(metrics.get("training/low_tick_mae", state.low_tick_mae))
+        state.high_tick_mae = float(metrics.get("training/high_tick_mae", state.high_tick_mae))
+        state.low_price_mae_dollars = float(metrics.get("training/low_price_mae_dollars", state.low_price_mae_dollars))
+        state.high_price_mae_dollars = float(metrics.get("training/high_price_mae_dollars", state.high_price_mae_dollars))
+        state.valid_low_high_order_pct = float(
+            metrics.get("training/valid_low_high_order_pct", state.valid_low_high_order_pct)
+        )
         state.valid_pct = float(metrics.get("training/valid_pct", state.valid_pct))
         state.abs_return_bps_mean = float(metrics.get("training/abs_return_bps_mean", state.abs_return_bps_mean))
         state.lr = float(metrics.get("training/lr", state.lr))
@@ -128,8 +161,43 @@ class ProbeTrainingReporter:
             self.step_history.append(state.step_seconds)
         if validation_metrics:
             state.validation_loss = self._metric(validation_metrics, "validation/loss", state.validation_loss)
-            state.validation_accuracy_pct = self._metric(validation_metrics, "validation/accuracy_pct", state.validation_accuracy_pct)
-            state.validation_macro_f1_pct = self._metric(validation_metrics, "validation/macro_f1_pct", state.validation_macro_f1_pct)
+            state.validation_accuracy_pct = self._first_metric(
+                validation_metrics,
+                ("validation/path_accuracy_pct", "validation/accuracy_pct"),
+                state.validation_accuracy_pct,
+            )
+            state.validation_macro_f1_pct = self._first_metric(
+                validation_metrics,
+                ("validation/path_macro_f1_pct", "validation/macro_f1_pct"),
+                state.validation_macro_f1_pct,
+            )
+            state.validation_regression_mse = self._metric(
+                validation_metrics, "validation/regression_mse", state.validation_regression_mse
+            )
+            state.validation_classification_loss = self._metric(
+                validation_metrics, "validation/classification_loss", state.validation_classification_loss
+            )
+            state.validation_upside_accuracy_pct = self._metric(
+                validation_metrics, "validation/upside_accuracy_pct", state.validation_upside_accuracy_pct
+            )
+            state.validation_downside_accuracy_pct = self._metric(
+                validation_metrics, "validation/downside_accuracy_pct", state.validation_downside_accuracy_pct
+            )
+            state.validation_low_tick_mae = self._metric(
+                validation_metrics, "validation/low_tick_mae", state.validation_low_tick_mae
+            )
+            state.validation_high_tick_mae = self._metric(
+                validation_metrics, "validation/high_tick_mae", state.validation_high_tick_mae
+            )
+            state.validation_low_price_mae_dollars = self._metric(
+                validation_metrics, "validation/low_price_mae_dollars", state.validation_low_price_mae_dollars
+            )
+            state.validation_high_price_mae_dollars = self._metric(
+                validation_metrics, "validation/high_price_mae_dollars", state.validation_high_price_mae_dollars
+            )
+            state.validation_valid_low_high_order_pct = self._metric(
+                validation_metrics, "validation/valid_low_high_order_pct", state.validation_valid_low_high_order_pct
+            )
             state.validation_valid_pct = self._metric(validation_metrics, "validation/valid_pct", state.validation_valid_pct)
             state.validation_seconds = self._metric(validation_metrics, "validation/seconds", state.validation_seconds)
         self.refresh()
@@ -138,6 +206,14 @@ class ProbeTrainingReporter:
     def _metric(metrics: dict[str, float], key: str, fallback: float | None) -> float | None:
         value = metrics.get(key)
         return fallback if value is None else float(value)
+
+    @staticmethod
+    def _first_metric(metrics: dict[str, float], keys: tuple[str, ...], fallback: float | None) -> float | None:
+        for key in keys:
+            value = metrics.get(key)
+            if value is not None:
+                return float(value)
+        return fallback
 
     def message(self, text: str) -> None:
         self.state.last_message = text
@@ -201,8 +277,38 @@ class ProbeTrainingReporter:
         learning.add_column("Train", justify="left", no_wrap=True)
         learning.add_column("Validation", justify="left", no_wrap=True)
         learning.add_row("loss", f"{state.loss:.6f}", self._optional(state.validation_loss, ".6f"))
-        learning.add_row("accuracy", f"{state.accuracy_pct:.3f}%", self._optional(state.validation_accuracy_pct, ".3f", suffix="%"))
-        learning.add_row("macro F1", f"{state.macro_f1_pct:.3f}%", self._optional(state.validation_macro_f1_pct, ".3f", suffix="%"))
+        learning.add_row("path acc", f"{state.accuracy_pct:.3f}%", self._optional(state.validation_accuracy_pct, ".3f", suffix="%"))
+        learning.add_row("path macro F1", f"{state.macro_f1_pct:.3f}%", self._optional(state.validation_macro_f1_pct, ".3f", suffix="%"))
+        learning.add_row(
+            "up/down acc",
+            f"{state.upside_accuracy_pct:.2f}% / {state.downside_accuracy_pct:.2f}%",
+            self._optional_pair(state.validation_upside_accuracy_pct, state.validation_downside_accuracy_pct, ".2f", suffix="%"),
+        )
+        learning.add_row(
+            "loss parts",
+            f"reg {state.regression_mse:.4f} / cls {state.classification_loss:.4f}",
+            self._optional_pair(state.validation_regression_mse, state.validation_classification_loss, ".4f", labels=("reg", "cls")),
+        )
+        learning.add_row(
+            "price MAE",
+            f"low ${state.low_price_mae_dollars:.4f} / high ${state.high_price_mae_dollars:.4f}",
+            self._optional_pair(
+                state.validation_low_price_mae_dollars,
+                state.validation_high_price_mae_dollars,
+                ".4f",
+                labels=("low $", "high $"),
+            ),
+        )
+        learning.add_row(
+            "tick MAE",
+            f"low {state.low_tick_mae:.2f} / high {state.high_tick_mae:.2f}",
+            self._optional_pair(state.validation_low_tick_mae, state.validation_high_tick_mae, ".2f", labels=("low", "high")),
+        )
+        learning.add_row(
+            "low <= high",
+            f"{state.valid_low_high_order_pct:.2f}%",
+            self._optional(state.validation_valid_low_high_order_pct, ".2f", suffix="%"),
+        )
         learning.add_row("valid labels", f"{state.valid_pct:.2f}%", self._optional(state.validation_valid_pct, ".2f", suffix="%"))
         learning.add_row("abs return", f"{state.abs_return_bps_mean:.2f} bps", "--")
         learning.add_row("lr", f"{state.lr:.3e}", "--")
@@ -274,11 +380,29 @@ class ProbeTrainingReporter:
             return "--"
         return f"{value:{fmt}}{suffix}"
 
+    @staticmethod
+    def _optional_pair(
+        left: float | None,
+        right: float | None,
+        fmt: str,
+        *,
+        suffix: str = "",
+        labels: tuple[str, str] | None = None,
+    ) -> str:
+        if left is None or right is None:
+            return "--"
+        left_value = f"{left:{fmt}}{suffix}"
+        right_value = f"{right:{fmt}}{suffix}"
+        if labels is None:
+            return f"{left_value} / {right_value}"
+        return f"{labels[0]} {left_value} / {labels[1]} {right_value}"
+
     def _text_line(self) -> str:
         state = self.state
         return (
             f"step={state.step}/{state.total_steps} epoch={state.epoch}/{state.epochs} "
             f"shard={state.shard_position}/{state.train_shard_count}:{state.shard_step}/{state.shard_steps} "
-            f"loss={state.loss:.6f} acc={state.accuracy_pct:.3f}% f1={state.macro_f1_pct:.3f}% "
+            f"loss={state.loss:.6f} path_acc={state.accuracy_pct:.3f}% path_f1={state.macro_f1_pct:.3f}% "
+            f"reg_mse={state.regression_mse:.4f} cls_loss={state.classification_loss:.4f} "
             f"speed={state.samples_per_second:,.1f}/s step_s={state.step_seconds:.3f}"
         )
