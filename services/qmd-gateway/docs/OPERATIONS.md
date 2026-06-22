@@ -159,16 +159,17 @@ and cannot request all tickers for a time range in one REST call.
 | `after_hours` or `repair` | On timer outside active streaming hours. | Repair database gaps without competing with live ingest. |
 | `auto` | Session catch-up during active hours, after-hours repair outside active hours. | Default mode. |
 
-QMD does not use configured seed tickers or a configured universe table for REST
-repair. During streaming hours, it starts Massive websocket ingest immediately
-and repairs tickers discovered from the in-memory live compact-event buffer,
-plus recent q_live compact events if they already exist. If required coverage
-gaps exist before any live ticker has arrived, QMD records
-`awaiting_live_symbols`; the scheduled repair loop retries every
-`QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS` until websocket symbols are available.
-Outside streaming hours, it uses latest symbols from q_live compact events,
-then the latest symbol set from the read-only historical
-`market_sip_compact.events` table if q_live is empty.
+QMD does not depend on broker/reference tables for REST repair. It keeps a
+durable market-data symbol universe in `qmd_gap_fill_symbol_universe_v1`. If
+the queue is empty, QMD seeds it from the latest
+`QMD_GAP_FILL_UNIVERSE_MARKET_DAYS` sessions in the read-only
+`market_sip_compact.events` table. During streaming hours, it starts Massive
+websocket ingest immediately and adds newly observed live compact-event tickers
+to the queue as `not_gap_filled`. Repair uses the queue as its symbol source,
+updates each symbol to `in_progress`, then `completed`, `partial_page_limit`, or
+`failed`, and later runs reuse the same queue. If required coverage gaps exist
+before any ticker is available, QMD records `awaiting_live_symbols`; the
+scheduled repair loop retries every `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS`.
 Recent REST repair covers the current market day plus
 `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior US market sessions, skipping weekends
 and common US equity market holidays. Older history should be read from
@@ -241,6 +242,7 @@ Use replay in a separate run from live trading unless you are deliberately testi
 | `qmd_market_coverage_manifest_v1` | yes if startup maintenance or historical planning is enabled | Coarse run-level live repair and historical flatfile planning manifest. |
 | `qmd_live_event_coverage_v1` | yes | Fine-grained recent q_live event coverage confirmations and repair intervals. |
 | `qmd_flatfile_event_coverage_v1` | yes | Historical flatfile event coverage bootstrap. |
+| `qmd_gap_fill_symbol_universe_v1` | yes | Durable ticker queue and per-symbol status source for recent q_live REST repair. |
 
 ## Common Checks
 
@@ -268,7 +270,7 @@ Before live use:
 | Scanner primitives are missing | Confirm bars close, then check whether current market activity meets primitive thresholds. |
 | API is slow | Lower broadcast frequency, inspect websocket clients, and watch drop counters. |
 | Gap fill does not run | Check `QMD_GAP_FILL_ENABLED`, `MASSIVE_API_KEY`, `QMD_GAP_FILL_MODE`, and whether the current phase allows repair. |
-| Gap fill records `awaiting_live_symbols` | Streaming is active and no in-memory websocket compact symbols or recent q_live tickers are available yet. Once websocket symbols arrive, repair should retry on `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS` instead of waiting for the normal interval. |
+| Gap fill records `awaiting_live_symbols` | The durable symbol universe is empty and no websocket compact symbols have arrived yet. Once websocket symbols arrive, repair should add them to `qmd_gap_fill_symbol_universe_v1` and retry on `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS`. |
 | Gap fill records `no_symbols_available` | Outside streaming hours, no q_live or latest historical compact-event symbols were available for REST repair. |
 | Gap fill keeps writing many rows | Live ingest may be dropping compact events, or the gateway was offline for longer than expected. |
 | Startup maintenance records `needs_manual_rebuild` | Recent `q_live` committed ordinals are structurally inconsistent. Do not rely on automatic tail repair; inspect/rebuild the affected live event range. |

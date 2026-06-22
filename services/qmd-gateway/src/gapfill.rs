@@ -682,6 +682,25 @@ impl GapFillService {
         symbol: String,
         intervals: Vec<RepairInterval>,
     ) -> Result<SymbolRepairOutcome, String> {
+        let window_start = intervals.iter().map(|interval| interval.start).min();
+        let window_end = intervals.iter().map(|interval| interval.end).max();
+        self.update_gap_fill_symbol_status(
+            &symbol,
+            "in_progress",
+            mode,
+            Some(started_at),
+            None,
+            window_start,
+            window_end,
+            0,
+            0,
+            json!({
+                "phase": phase,
+                "interval_count": intervals.len(),
+                "message": "qmd REST gap fill started for symbol",
+            }),
+        )
+        .await?;
         let mut symbol_rows = 0u64;
         let mut symbol_errors = 0u64;
         let mut symbol_partial = false;
@@ -755,6 +774,30 @@ impl GapFillService {
             } else {
                 ""
             },
+        )
+        .await?;
+        self.update_gap_fill_symbol_status(
+            &symbol,
+            status,
+            mode,
+            Some(started_at),
+            Some(Utc::now()),
+            window_start,
+            window_end,
+            symbol_rows,
+            symbol_errors,
+            json!({
+                "phase": phase,
+                "intervals_attempted": intervals_attempted,
+                "page_limit_hit": symbol_partial,
+                "message": if symbol_partial {
+                    "Massive REST page limit was reached for at least one interval"
+                } else if symbol_errors > 0 {
+                    "At least one interval failed for this symbol"
+                } else {
+                    "qmd REST gap fill completed for symbol"
+                },
+            }),
         )
         .await?;
         self.maintenance.complete_symbol(&symbol).await;
@@ -896,12 +939,23 @@ impl GapFillService {
         &self,
         window_start: DateTime<Utc>,
     ) -> Result<Vec<String>, String> {
-        let mut symbols = BTreeSet::new();
+        self.bootstrap_gap_fill_symbol_universe_if_empty().await?;
         if is_streaming_phase(Utc::now()) {
-            symbols.extend(self.live_compact_symbols().await);
+            let live_symbols = self.live_compact_symbols().await;
+            if !live_symbols.is_empty() {
+                self.insert_missing_gap_fill_symbols(&live_symbols, "websocket")
+                    .await?;
+            }
+            let mut symbols = BTreeSet::new();
+            symbols.extend(self.gap_fill_universe_symbols().await?);
             if self.config.compact_events_enabled {
                 symbols.extend(self.recent_q_live_symbols(window_start).await?);
             }
+            return Ok(symbols.into_iter().collect());
+        }
+        let mut symbols = BTreeSet::new();
+        symbols.extend(self.gap_fill_universe_symbols().await?);
+        if !symbols.is_empty() {
             return Ok(symbols.into_iter().collect());
         }
         if self.config.compact_events_enabled {
@@ -916,6 +970,145 @@ impl GapFillService {
         }
         symbols.extend(self.latest_historical_symbols().await?);
         Ok(symbols.into_iter().collect())
+    }
+
+    async fn bootstrap_gap_fill_symbol_universe_if_empty(&self) -> Result<(), String> {
+        let sql = format!(
+            "SELECT count() FROM {} FINAL FORMAT TSV",
+            self.config.qmd_gap_fill_symbol_universe_table
+        );
+        let count = self
+            .query(&sql, true)
+            .await?
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(0);
+        if count > 0 {
+            return Ok(());
+        }
+        let symbols = self
+            .latest_historical_symbols_for_market_days(
+                self.config.qmd_gap_fill_universe_market_days,
+            )
+            .await?;
+        if symbols.is_empty() {
+            return Ok(());
+        }
+        self.insert_missing_gap_fill_symbols(&symbols, "historical_flatfile_recent")
+            .await
+    }
+
+    async fn gap_fill_universe_symbols(&self) -> Result<Vec<String>, String> {
+        let sql = format!(
+            r#"
+            SELECT symbol
+            FROM {table} FINAL
+            WHERE symbol != ''
+            ORDER BY symbol
+            FORMAT TSV
+            "#,
+            table = self.config.qmd_gap_fill_symbol_universe_table
+        );
+        self.symbols_from_sql(&sql).await
+    }
+
+    async fn insert_missing_gap_fill_symbols(
+        &self,
+        symbols: &[String],
+        source: &str,
+    ) -> Result<(), String> {
+        let existing = self
+            .gap_fill_universe_symbols()
+            .await?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let mut missing = symbols
+            .iter()
+            .map(|symbol| symbol.to_ascii_uppercase())
+            .filter(|symbol| !symbol.is_empty() && !existing.contains(symbol))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        missing.sort();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        for chunk in missing.chunks(1_000) {
+            let now = Utc::now();
+            let rows = chunk
+                .iter()
+                .map(|symbol| {
+                    json!({
+                        "symbol": symbol,
+                        "status": "not_gap_filled",
+                        "source": source,
+                        "observed_at_utc": clickhouse_datetime64(&now),
+                        "updated_at_utc": clickhouse_datetime64(&now),
+                        "last_gap_fill_started_at_utc": null,
+                        "last_gap_fill_completed_at_utc": null,
+                        "last_window_start_utc": null,
+                        "last_window_end_utc": null,
+                        "rows_written": 0,
+                        "error_count": 0,
+                        "metadata_json": json!({
+                            "universe_market_days": self.config.qmd_gap_fill_universe_market_days,
+                            "message": "symbol discovered for qmd REST gap fill universe",
+                        }).to_string(),
+                    })
+                    .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.query(
+                &format!(
+                    "INSERT INTO {} FORMAT JSONEachRow\n{}",
+                    self.config.qmd_gap_fill_symbol_universe_table, rows
+                ),
+                true,
+            )
+            .await
+            .map(|_| ())?;
+        }
+        Ok(())
+    }
+
+    async fn update_gap_fill_symbol_status(
+        &self,
+        symbol: &str,
+        status: &str,
+        source: &str,
+        started_at: Option<DateTime<Utc>>,
+        completed_at: Option<DateTime<Utc>>,
+        window_start: Option<DateTime<Utc>>,
+        window_end: Option<DateTime<Utc>>,
+        rows_written: u64,
+        error_count: u64,
+        metadata: Value,
+    ) -> Result<(), String> {
+        let now = Utc::now();
+        let row = json!({
+            "symbol": symbol.to_ascii_uppercase(),
+            "status": status,
+            "source": source,
+            "observed_at_utc": clickhouse_datetime64(&now),
+            "updated_at_utc": clickhouse_datetime64(&now),
+            "last_gap_fill_started_at_utc": started_at.map(|value| clickhouse_datetime64(&value)),
+            "last_gap_fill_completed_at_utc": completed_at.map(|value| clickhouse_datetime64(&value)),
+            "last_window_start_utc": window_start.map(|value| clickhouse_datetime64(&value)),
+            "last_window_end_utc": window_end.map(|value| clickhouse_datetime64(&value)),
+            "rows_written": rows_written,
+            "error_count": error_count,
+            "metadata_json": metadata.to_string(),
+        });
+        self.query(
+            &format!(
+                "INSERT INTO {} FORMAT JSONEachRow\n{}",
+                self.config.qmd_gap_fill_symbol_universe_table, row
+            ),
+            true,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn live_compact_symbols(&self) -> Vec<String> {
@@ -995,6 +1188,61 @@ impl GapFillService {
             "#,
             db = db,
             latest = escape_sql_string(&latest),
+        );
+        self.symbols_from_historical_sql(&sql).await
+    }
+
+    async fn latest_historical_symbols_for_market_days(
+        &self,
+        market_days: usize,
+    ) -> Result<Vec<String>, String> {
+        let db = self.config.historical_clickhouse_database.replace('`', "");
+        let days = market_days.max(1);
+        let sql = format!(
+            r#"
+            WITH recent_dates AS
+            (
+                SELECT source_date
+                FROM {db}.events_ordinal_continuity
+                WHERE source_date >= toDate('2019-01-01')
+                GROUP BY source_date
+                ORDER BY source_date DESC
+                LIMIT {days}
+            )
+            SELECT DISTINCT ticker
+            FROM {db}.events
+            WHERE source_date IN (SELECT source_date FROM recent_dates)
+              AND ticker != ''
+            ORDER BY ticker
+            FORMAT TSV
+            "#,
+            db = db,
+            days = days,
+        );
+        let symbols = self.symbols_from_historical_sql(&sql).await?;
+        if !symbols.is_empty() {
+            return Ok(symbols);
+        }
+        let sql = format!(
+            r#"
+            WITH recent_dates AS
+            (
+                SELECT source_date
+                FROM {db}.events_ordinal_continuity
+                WHERE source_date >= toDate('2019-01-01')
+                GROUP BY source_date
+                ORDER BY source_date DESC
+                LIMIT {days}
+            )
+            SELECT DISTINCT sym
+            FROM {db}.events
+            WHERE source_date IN (SELECT source_date FROM recent_dates)
+              AND sym != ''
+            ORDER BY sym
+            FORMAT TSV
+            "#,
+            db = db,
+            days = days,
         );
         self.symbols_from_historical_sql(&sql).await
     }
@@ -1380,8 +1628,38 @@ impl GapFillService {
         )
         .await
         .map(|_| ())?;
+        self.query(&self.create_gap_fill_symbol_universe_table_sql(), true)
+            .await
+            .map(|_| ())?;
         self.ensure_current_live_coverage_open(Utc::now()).await?;
         self.bootstrap_flatfile_event_coverage().await
+    }
+
+    fn create_gap_fill_symbol_universe_table_sql(&self) -> String {
+        format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {table}
+            (
+                symbol LowCardinality(String),
+                status LowCardinality(String),
+                source LowCardinality(String),
+                observed_at_utc DateTime64(3, 'UTC'),
+                updated_at_utc DateTime64(3, 'UTC'),
+                last_gap_fill_started_at_utc Nullable(DateTime64(3, 'UTC')),
+                last_gap_fill_completed_at_utc Nullable(DateTime64(3, 'UTC')),
+                last_window_start_utc Nullable(DateTime64(3, 'UTC')),
+                last_window_end_utc Nullable(DateTime64(3, 'UTC')),
+                rows_written UInt64,
+                error_count UInt64,
+                metadata_json String
+            )
+            ENGINE = ReplacingMergeTree(updated_at_utc)
+            ORDER BY symbol
+            {settings}
+            "#,
+            table = self.config.qmd_gap_fill_symbol_universe_table,
+            settings = merge_tree_settings(&self.config.clickhouse_storage_policy),
+        )
     }
 
     fn create_event_coverage_table_sql(&self, table: &str) -> String {

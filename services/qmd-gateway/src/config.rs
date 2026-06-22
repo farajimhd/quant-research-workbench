@@ -62,6 +62,8 @@ pub struct GatewayConfig {
     pub massive_ws_url: String,
     pub qmd_coverage_table: String,
     pub qmd_flatfile_event_coverage_table: String,
+    pub qmd_gap_fill_symbol_universe_table: String,
+    pub qmd_gap_fill_universe_market_days: usize,
     pub qmd_host_role: String,
     pub qmd_live_event_coverage_table: String,
     pub qmd_run_id: String,
@@ -259,6 +261,11 @@ impl GatewayConfig {
                 "QMD_FLATFILE_EVENT_COVERAGE_TABLE",
                 "qmd_flatfile_event_coverage_v1",
             ),
+            qmd_gap_fill_symbol_universe_table: env_string(
+                "QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE",
+                "qmd_gap_fill_symbol_universe_v1",
+            ),
+            qmd_gap_fill_universe_market_days: env_usize("QMD_GAP_FILL_UNIVERSE_MARKET_DAYS", 5),
             qmd_host_role: env_string("QMD_HOST_ROLE", "auto").to_ascii_lowercase(),
             qmd_live_event_coverage_table: env_string(
                 "QMD_LIVE_EVENT_COVERAGE_TABLE",

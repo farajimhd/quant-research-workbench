@@ -104,6 +104,8 @@ Environment variables:
 - `QMD_COVERAGE_TABLE`, default `qmd_market_coverage_manifest_v1`
 - `QMD_LIVE_EVENT_COVERAGE_TABLE`, default `qmd_live_event_coverage_v1`
 - `QMD_FLATFILE_EVENT_COVERAGE_TABLE`, default `qmd_flatfile_event_coverage_v1`
+- `QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE`, default `qmd_gap_fill_symbol_universe_v1`
+- `QMD_GAP_FILL_UNIVERSE_MARKET_DAYS`, default `5`
 - `QMD_HOST_ROLE`, default `auto`; use `workstation` or `laptop` to override
 - `QMD_HISTORICAL_CLICKHOUSE_DATABASE`, default `market_sip_compact`
 - `QMD_HISTORICAL_FLATFILE_UPDATE_ENABLED`, default `true`
@@ -137,6 +139,7 @@ The service writes to:
 - `qmd_market_coverage_manifest_v1`
 - `qmd_live_event_coverage_v1`
 - `qmd_flatfile_event_coverage_v1`
+- `qmd_gap_fill_symbol_universe_v1`
 
 The lowest-latency live ML path should consume the in-memory compact event
 buffer through `/snapshot/compact-events/{ticker}?limit=128` or the websocket
@@ -146,12 +149,15 @@ coverage repair contract. The compact event row is the durable live equivalent
 of the historical `market_sip_compact.events` training table.
 
 During active streaming hours, recent q_live REST repair starts from symbols
-observed by the live websocket compact-event buffer. This means a clean-slate
-run can begin repairing a ticker as soon as the websocket has seen that ticker,
-without waiting for q_live rows to be persisted first. If repair records
-`awaiting_live_symbols`, the scheduled repair loop retries every
-`QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS` while streaming is active instead of
-waiting for the normal after-hours interval.
+kept in the durable gap-fill symbol universe. If the universe is empty, QMD
+seeds it from the latest `QMD_GAP_FILL_UNIVERSE_MARKET_DAYS` market sessions in
+`market_sip_compact`. New tickers observed by the live websocket compact-event
+buffer are added as `not_gap_filled`. Each repair attempt updates the symbol
+status to `in_progress`, `completed`, `partial_page_limit`, or `failed`. Later
+runs reuse the same universe table instead of rediscovering symbols from
+scratch. If repair records `awaiting_live_symbols`, the scheduled repair loop
+retries every `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS` while streaming is
+active instead of waiting for the normal after-hours interval.
 
 ## Live Bars
 

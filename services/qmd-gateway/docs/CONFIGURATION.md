@@ -92,6 +92,8 @@ Required data-path queues use awaited sends. A full queue applies backpressure i
 | `QMD_COVERAGE_TABLE` | `qmd_market_coverage_manifest_v1` | Coarse run-level coverage manifest table in `q_live`. | Records startup audits, recent live repairs, and historical flatfile update plans; not used as the fine-grained source of truth for live holes. |
 | `QMD_LIVE_EVENT_COVERAGE_TABLE` | `qmd_live_event_coverage_v1` | Durable q_live compact-event coverage intervals. | Recent gap detection subtracts these intervals from required market sessions. |
 | `QMD_FLATFILE_EVENT_COVERAGE_TABLE` | `qmd_flatfile_event_coverage_v1` | Historical flatfile coverage intervals. | First startup bootstraps one 2019-forward row from `market_sip_compact.events_ordinal_continuity`. |
+| `QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE` | `qmd_gap_fill_symbol_universe_v1` | Durable ticker queue used by recent q_live REST repair. | Seeded from recent flatfile symbols and extended by websocket-discovered tickers. |
+| `QMD_GAP_FILL_UNIVERSE_MARKET_DAYS` | `5` | Number of latest historical market sessions used to seed the symbol universe when the queue is empty. | Keeps startup repair broad without depending on broker/reference tables. |
 | `QMD_RUN_ID` | generated | Optional stable id for one gateway run. | Normally leave generated; used as the live coverage row id suffix. |
 | `QMD_RUN_STARTED_AT_UTC` | generated | Optional run start timestamp. | Normally leave generated; used to open the live coverage row. |
 | `QMD_HOST_ROLE` | `auto` | Host role for historical update planning. | Override with `workstation` or `laptop` if auto-detection is wrong. |
@@ -113,10 +115,13 @@ loads `qmd_live_event_coverage_v1`, materializes covered intervals from the
 intersection of `compact_persisted` and `bars_persisted` rows plus explicit
 `repair_completed` rows, subtracts those intervals from the current New York
 market day plus the configured prior sessions, and fills every remaining
-04:00-20:00 ET session gap. During streaming hours, symbols come from the
-in-memory live websocket compact-event buffer first, then recent q_live compact
-events. Outside streaming hours, symbols come from latest q_live compact
-events, then latest historical `market_sip_compact` events if q_live is empty.
+04:00-20:00 ET session gap. Symbols come from the durable
+`qmd_gap_fill_symbol_universe_v1` queue. When that queue is empty, QMD seeds it
+from the latest configured historical flatfile market sessions. During
+streaming hours, new tickers observed in the in-memory live websocket compact
+buffer are added to the queue as `not_gap_filled`. Each repair attempt updates
+the symbol row status, and later runs reuse the queue instead of rediscovering
+symbols from scratch.
 
 ## Scanner Primitives
 
