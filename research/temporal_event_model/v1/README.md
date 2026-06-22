@@ -234,3 +234,47 @@ epoch 2 checkpoint: checkpoint_step_000260352.pt
 batch size:         512
 W&B project:        June2026-event-encoder-linear-probes
 ```
+
+## Fixed Checkpoint Evaluation
+
+Training-time validation in `run_cache_probe_laptop.py` samples a validation
+order per run. For fair checkpoint comparison, use the standalone fixed
+evaluator after training. It loads the three newest temporal probe
+`checkpoint_latest.pt` files by default and evaluates all of them on the same
+fixed validation set:
+
+```text
+cache split:       train
+validation shard:  second shard, shard index 1
+validation rows:   10 batches x 1024 rows
+shuffle seed:      20260621
+```
+
+Run from the laptop:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_evaluate_cache_probe_laptop.py --print-only
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_evaluate_cache_probe_laptop.py
+```
+
+To force exact checkpoints instead of the three newest runs:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\temporal_event_model\v1\run_evaluate_cache_probe_laptop.py `
+  --checkpoint "D:\TradingML\runtimes\temporal_event_model\v1\cache_price_probe_laptop\<run_a>\checkpoints\checkpoint_latest.pt" `
+  --checkpoint "D:\TradingML\runtimes\temporal_event_model\v1\cache_price_probe_laptop\<run_b>\checkpoints\checkpoint_latest.pt" `
+  --checkpoint "D:\TradingML\runtimes\temporal_event_model\v1\cache_price_probe_laptop\<run_c>\checkpoints\checkpoint_latest.pt"
+```
+
+The evaluator writes:
+
+```text
+D:\TradingML\runtimes\temporal_event_model\v1\cache_price_probe_laptop_eval\fixed-shard1-10x1024\fixed_eval_results.json
+```
+
+Open `evaluate_cache_probe_checkpoints.ipynb` to run the same evaluation from a
+notebook and plot:
+
+- overall 5-class accuracy, macro F1, and up/down direction accuracy,
+- normalized 5-class confusion matrices per future chunk,
+- normalized two-class direction confusion matrices for non-flat target rows.
