@@ -90,6 +90,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bulk-sources", default="submissions,companyfacts")
     parser.add_argument("--bulk-download-concurrency", type=int, default=2)
     parser.add_argument("--bulk-ingest-batch-size", type=int, default=50000)
+    parser.add_argument("--bulk-insert-max-retries", type=int, default=int(os.environ.get("SEC_BULK_INSERT_MAX_RETRIES", "12")))
+    parser.add_argument("--bulk-insert-retry-base-seconds", type=float, default=float(os.environ.get("SEC_BULK_INSERT_RETRY_BASE_SECONDS", "5.0")))
+    parser.add_argument("--bulk-insert-retry-max-seconds", type=float, default=float(os.environ.get("SEC_BULK_INSERT_RETRY_MAX_SECONDS", "120.0")))
     parser.add_argument("--bulk-limit-ciks", type=int, default=0)
     parser.add_argument("--archive-download-concurrency", type=int, default=2)
     parser.add_argument("--archive-validation-workers", type=int, default=4)
@@ -274,6 +277,12 @@ def build_commands(args: argparse.Namespace, logs_root: Path) -> list[StageComma
                     args.core_output_root_win,
                     "--batch-size",
                     str(max(1, args.bulk_ingest_batch_size)),
+                    "--insert-max-retries",
+                    str(max(0, args.bulk_insert_max_retries)),
+                    "--insert-retry-base-seconds",
+                    str(max(0.0, args.bulk_insert_retry_base_seconds)),
+                    "--insert-retry-max-seconds",
+                    str(max(0.0, args.bulk_insert_retry_max_seconds)),
                 ],
                 args,
                 dry_run_flag="--dry-run",

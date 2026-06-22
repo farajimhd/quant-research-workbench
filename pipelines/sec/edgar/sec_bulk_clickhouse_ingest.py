@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -39,6 +40,9 @@ DEFAULT_DATABASE = "sec_core"
 DEFAULT_ARTIFACT_ROOT_WIN = Path("D:/market-data/sec_core")
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_core")
 DEFAULT_BATCH_SIZE = 50_000
+DEFAULT_INSERT_MAX_RETRIES = 12
+DEFAULT_INSERT_RETRY_BASE_SECONDS = 5.0
+DEFAULT_INSERT_RETRY_MAX_SECONDS = 120.0
 SOURCE_URLS = {
     "submissions": f"{SEC_BULK_BASE_URL}/bulkdata/submissions.zip",
     "companyfacts": f"{SEC_BULK_BASE_URL}/xbrl/companyfacts.zip",
@@ -59,6 +63,13 @@ class SourceArtifact:
     sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class InsertRetryConfig:
+    max_retries: int
+    base_seconds: float
+    max_seconds: float
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Create sec_core ClickHouse SEC bulk mirror tables and insert SEC bulk metadata. Daily EDGAR feed archives are not used."
@@ -76,6 +87,17 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated subset of company_tickers,company_tickers_exchange,company_tickers_mf,submissions,companyfacts.",
     )
     parser.add_argument("--batch-size", type=int, default=int(os.environ.get("SEC_BULK_INGEST_BATCH_SIZE", str(DEFAULT_BATCH_SIZE))))
+    parser.add_argument("--insert-max-retries", type=int, default=int(os.environ.get("SEC_BULK_INSERT_MAX_RETRIES", str(DEFAULT_INSERT_MAX_RETRIES))))
+    parser.add_argument(
+        "--insert-retry-base-seconds",
+        type=float,
+        default=float(os.environ.get("SEC_BULK_INSERT_RETRY_BASE_SECONDS", str(DEFAULT_INSERT_RETRY_BASE_SECONDS))),
+    )
+    parser.add_argument(
+        "--insert-retry-max-seconds",
+        type=float,
+        default=float(os.environ.get("SEC_BULK_INSERT_RETRY_MAX_SECONDS", str(DEFAULT_INSERT_RETRY_MAX_SECONDS))),
+    )
     parser.add_argument("--limit-ciks", type=int, default=0, help="Debug cap for submissions/companyfacts CIK JSON files.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-g-drive", action="store_true")
@@ -100,19 +122,24 @@ def main() -> None:
         return
 
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
+    retry = InsertRetryConfig(
+        max_retries=max(0, args.insert_max_retries),
+        base_seconds=max(0.0, args.insert_retry_base_seconds),
+        max_seconds=max(0.0, args.insert_retry_max_seconds),
+    )
     create_database_and_tables(client, args.database, args.storage_policy)
-    insert_raw_source_rows(client, args.database, artifacts)
+    insert_raw_source_rows(client, args.database, artifacts, retry)
 
     totals: dict[str, int] = {}
     for artifact in artifacts:
         started = time.perf_counter()
         if artifact.source_name in {"company_tickers", "company_tickers_exchange", "company_tickers_mf"}:
             rows = parse_ticker_mapping(artifact)
-            inserted = insert_rows(client, args.database, "sec_bulk_mirror_company_ticker_v1", rows)
+            inserted = insert_rows(client, args.database, "sec_bulk_mirror_company_ticker_v1", rows, retry)
         elif artifact.source_name == "submissions":
-            inserted = ingest_submissions_zip(client, args.database, artifact, args.batch_size, args.limit_ciks)
+            inserted = ingest_submissions_zip(client, args.database, artifact, args.batch_size, args.limit_ciks, retry)
         elif artifact.source_name == "companyfacts":
-            inserted = ingest_companyfacts_zip(client, args.database, artifact, args.batch_size, args.limit_ciks)
+            inserted = ingest_companyfacts_zip(client, args.database, artifact, args.batch_size, args.limit_ciks, retry)
         else:
             inserted = 0
         totals[artifact.source_name] = inserted
@@ -151,6 +178,12 @@ def default_sec_storage_policy() -> str:
 def validate_args(args: argparse.Namespace) -> None:
     if args.batch_size < 1:
         raise SystemExit("--batch-size must be >= 1")
+    if args.insert_max_retries < 0:
+        raise SystemExit("--insert-max-retries must be >= 0")
+    if args.insert_retry_base_seconds < 0:
+        raise SystemExit("--insert-retry-base-seconds must be >= 0")
+    if args.insert_retry_max_seconds < 0:
+        raise SystemExit("--insert-retry-max-seconds must be >= 0")
     if not args.allow_g_drive:
         for label, raw_path in [("artifact root", args.artifact_root_win), ("output root", args.output_root_win)]:
             if is_g_drive_path(Path(raw_path)):
@@ -219,7 +252,7 @@ def create_database_and_tables(client: ClickHouseHttpClient, database: str, stor
         client.execute(sql)
 
 
-def insert_raw_source_rows(client: ClickHouseHttpClient, database: str, artifacts: list[SourceArtifact]) -> None:
+def insert_raw_source_rows(client: ClickHouseHttpClient, database: str, artifacts: list[SourceArtifact], retry: InsertRetryConfig) -> None:
     now = clickhouse_datetime64_now()
     rows = [
         {
@@ -236,7 +269,7 @@ def insert_raw_source_rows(client: ClickHouseHttpClient, database: str, artifact
         }
         for item in artifacts
     ]
-    insert_rows(client, database, "sec_bulk_mirror_raw_source_file_v1", rows)
+    insert_rows(client, database, "sec_bulk_mirror_raw_source_file_v1", rows, retry)
 
 
 def parse_ticker_mapping(artifact: SourceArtifact) -> list[dict[str, Any]]:
@@ -295,6 +328,7 @@ def ingest_submissions_zip(
     artifact: SourceArtifact,
     batch_size: int,
     limit_ciks: int,
+    retry: InsertRetryConfig,
 ) -> int:
     company_batch: list[dict[str, Any]] = []
     filing_batch: list[dict[str, Any]] = []
@@ -313,16 +347,16 @@ def ingest_submissions_zip(
             filing_batch.extend(submission_filing_rows(data, cik, artifact, now))
             processed += 1
             if len(company_batch) >= batch_size:
-                inserted += flush(client, database, "sec_bulk_mirror_company_v1", company_batch)
+                inserted += flush(client, database, "sec_bulk_mirror_company_v1", company_batch, retry)
             if len(file_ref_batch) >= batch_size:
-                inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v1", file_ref_batch)
+                inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v1", file_ref_batch, retry)
             if len(filing_batch) >= batch_size:
-                inserted += flush(client, database, "sec_bulk_mirror_filing_v1", filing_batch)
+                inserted += flush(client, database, "sec_bulk_mirror_filing_v1", filing_batch, retry)
             if processed % 5_000 == 0:
                 print(f"submissions processed_ciks={processed:,} pending_filings={len(filing_batch):,}", flush=True)
-    inserted += flush(client, database, "sec_bulk_mirror_company_v1", company_batch)
-    inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v1", file_ref_batch)
-    inserted += flush(client, database, "sec_bulk_mirror_filing_v1", filing_batch)
+    inserted += flush(client, database, "sec_bulk_mirror_company_v1", company_batch, retry)
+    inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v1", file_ref_batch, retry)
+    inserted += flush(client, database, "sec_bulk_mirror_filing_v1", filing_batch, retry)
     return inserted
 
 
@@ -413,6 +447,7 @@ def ingest_companyfacts_zip(
     artifact: SourceArtifact,
     batch_size: int,
     limit_ciks: int,
+    retry: InsertRetryConfig,
 ) -> int:
     batch: list[dict[str, Any]] = []
     inserted = 0
@@ -437,11 +472,11 @@ def ingest_companyfacts_zip(
                         for fact in facts:
                             batch.append(xbrl_fact_row(cik, entity_name, taxonomy, tag, label, description, unit, fact, artifact.source_file_id, now))
                             if len(batch) >= batch_size:
-                                inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v1", batch)
+                                inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v1", batch, retry)
             processed += 1
             if processed % 1_000 == 0:
                 print(f"companyfacts processed_ciks={processed:,} pending_facts={len(batch):,}", flush=True)
-    inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v1", batch)
+    inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v1", batch, retry)
     return inserted
 
 
@@ -484,27 +519,85 @@ def xbrl_fact_row(
     }
 
 
-def flush(client: ClickHouseHttpClient, database: str, table: str, rows: list[dict[str, Any]]) -> int:
-    count = insert_rows(client, database, table, rows)
+def flush(client: ClickHouseHttpClient, database: str, table: str, rows: list[dict[str, Any]], retry: InsertRetryConfig) -> int:
+    count = insert_rows(client, database, table, rows, retry)
     rows.clear()
     return count
 
 
-def insert_rows(client: ClickHouseHttpClient, database: str, table: str, rows: list[dict[str, Any]]) -> int:
+def insert_rows(client: ClickHouseHttpClient, database: str, table: str, rows: list[dict[str, Any]], retry: InsertRetryConfig) -> int:
     if not rows:
         return 0
     partitioned = partition_rows_for_insert(table, rows)
     if len(partitioned) > 1:
-        for bucket_rows in partitioned.values():
-            insert_rows_json(client, database, table, bucket_rows)
+        for bucket, bucket_rows in partitioned.items():
+            insert_rows_json_with_retry(client, database, table, bucket_rows, retry, partition_bucket=bucket)
         return len(rows)
-    insert_rows_json(client, database, table, rows)
+    insert_rows_json_with_retry(client, database, table, rows, retry, partition_bucket=next(iter(partitioned)))
     return len(rows)
 
 
 def insert_rows_json(client: ClickHouseHttpClient, database: str, table: str, rows: list[dict[str, Any]]) -> None:
     body = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) for row in rows)
     client.execute(f"INSERT INTO {quote_ident(database)}.{quote_ident(table)} FORMAT JSONEachRow\n{body}")
+
+
+def insert_rows_json_with_retry(
+    client: ClickHouseHttpClient,
+    database: str,
+    table: str,
+    rows: list[dict[str, Any]],
+    retry: InsertRetryConfig,
+    *,
+    partition_bucket: str,
+) -> None:
+    for attempt in range(retry.max_retries + 1):
+        try:
+            insert_rows_json(client, database, table, rows)
+            return
+        except Exception as exc:  # noqa: BLE001
+            if attempt >= retry.max_retries or not is_retryable_insert_error(exc):
+                raise
+            delay = retry_delay_seconds(retry, attempt)
+            print(
+                "clickhouse_insert_retry "
+                f"table={table} partition={partition_bucket} rows={len(rows):,} "
+                f"attempt={attempt + 1}/{retry.max_retries} delay_seconds={delay:.1f} "
+                f"error={summarize_error(exc)}",
+                flush=True,
+            )
+            time.sleep(delay)
+
+
+def retry_delay_seconds(retry: InsertRetryConfig, attempt: int) -> float:
+    delay = retry.base_seconds * (2**attempt)
+    if retry.max_seconds:
+        delay = min(delay, retry.max_seconds)
+    return max(0.0, delay)
+
+
+def is_retryable_insert_error(exc: BaseException) -> bool:
+    if isinstance(exc, (TimeoutError, ConnectionError, URLError)):
+        return True
+    text = repr(exc)
+    if "TOO_MANY_PARTS" in text or "Too many partitions" in text:
+        return False
+    if "ClickHouse HTTP 5" in text:
+        return True
+    transient_markers = [
+        "timed out",
+        "Connection reset",
+        "Connection aborted",
+        "Connection refused",
+        "failed to respond",
+        "Remote end closed connection",
+    ]
+    return any(marker in text for marker in transient_markers)
+
+
+def summarize_error(exc: BaseException) -> str:
+    text = repr(exc).replace("\n", " ")
+    return text[:500]
 
 
 def partition_rows_for_insert(table: str, rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
