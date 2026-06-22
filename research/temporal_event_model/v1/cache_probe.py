@@ -959,6 +959,10 @@ def log_confusion_tables_to_wandb(wandb_run: Any | None, metrics: dict[str, floa
         import wandb
     except Exception:  # noqa: BLE001
         return
+    table_cls = getattr(wandb, "Table", None)
+    if table_cls is None:
+        print(f"WARN W&B Table unavailable; skipping confusion table upload at step={step}", flush=True)
+        return
     payload: dict[str, Any] = {}
     for matrix_name, class_names in (
         ("upside_confusion", UP_CLASS_NAMES),
@@ -970,8 +974,14 @@ def log_confusion_tables_to_wandb(wandb_run: Any | None, metrics: dict[str, floa
             for pred_name in class_names:
                 value = metrics.get(f"{prefix}/{matrix_name}/{target_name}_pred_{pred_name}", 0.0)
                 rows.append([target_name, pred_name, float(value)])
-        payload[f"{prefix}_matrices/{matrix_name}"] = wandb.Table(columns=["target", "prediction", "count"], data=rows)
-    wandb_run.log(payload, step=int(step))
+        # W&B media keys with slashes can map to nested table paths. On Windows
+        # that path creation can fail inside W&B's temp-file move, so keep table
+        # keys flat while scalar metrics retain their grouped slash names.
+        payload[f"{prefix}_matrix_{matrix_name}"] = table_cls(columns=["target", "prediction", "count"], data=rows)
+    try:
+        wandb_run.log(payload, step=int(step))
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN W&B confusion table upload failed at step={step}: {exc}", flush=True)
 
 
 def macro_f1_from_confusion(confusion: torch.Tensor) -> torch.Tensor:
