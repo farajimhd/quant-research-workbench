@@ -179,6 +179,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         metrics: metrics.clone(),
     };
 
+    let app = app(AppState {
+        bars,
+        compact_event_store,
+        compact_events: compact_event_sender,
+        config: config.clone(),
+        events: event_sender,
+        indicators,
+        market: market.clone(),
+        metrics: metrics.clone(),
+        scanner,
+        scanner_events: scanner_sender,
+    });
+
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    eprintln!("qmd-gateway API listening on {bind}; startup maintenance may still be running.");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = tokio::signal::ctrl_c().await;
+            })
+            .await
+    });
+
     run_startup_maintenance(config.clone(), event_fanout.clone()).await;
 
     tokio::spawn(run_massive_ingest(config.clone(), event_fanout.clone()));
@@ -193,25 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         indicator_router.clone(),
     ));
 
-    let app = app(AppState {
-        bars,
-        compact_event_store,
-        compact_events: compact_event_sender,
-        config,
-        events: event_sender,
-        indicators,
-        market,
-        metrics,
-        scanner,
-        scanner_events: scanner_sender,
-    });
-
-    let listener = tokio::net::TcpListener::bind(bind).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
+    server.await??;
     Ok(())
 }
 

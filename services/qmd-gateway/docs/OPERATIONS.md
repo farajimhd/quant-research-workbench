@@ -45,6 +45,10 @@ By default this builds the Rust service, starts it in the background, waits for
 stdout/stderr are written under `.tmp/qmd-gateway/` so service logs do not
 corrupt the dashboard.
 
+The API binds before startup maintenance completes. This lets `/health` and the
+terminal come up during long REST repair after a coverage reset. Massive
+websocket ingest still starts only after startup maintenance returns.
+
 The launcher imports the repo `.env` before starting the child process. The Rust
 service also performs the same `.env` discovery when run directly, and it does
 not overwrite values already set in the current shell.
