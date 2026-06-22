@@ -52,14 +52,17 @@ The gateway outputs market-data primitives. The app backend combines those primi
 Massive websocket text
   -> event parser
   -> market state
-  -> event broadcast stream
+  -> best-effort event broadcast stream
   -> bar queue
   -> indicator tick queue
   -> compact event queue
   -> optional raw ClickHouse queue
 ```
 
-Every hot-path send uses `try_send`. If a downstream queue is full, the gateway drops that downstream item, increments a counter, and keeps reading Massive data.
+Required data-path sends are awaited. If a required queue is full, the gateway
+backpressures live ingest instead of dropping canonical work. Local websocket
+broadcasts are the exception: they are best effort and may skip updates when no
+client is connected or a client cannot keep up.
 
 ## Compact Event Flow
 

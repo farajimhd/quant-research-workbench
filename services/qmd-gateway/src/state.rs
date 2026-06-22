@@ -76,12 +76,18 @@ impl SharedMarketState {
         match event {
             MarketEvent::Trade(trade) => {
                 state.trades_received += 1;
-                let symbol = state.symbols.entry(trade.ticker.clone()).or_insert_with(SymbolState::new);
+                let symbol = state
+                    .symbols
+                    .entry(trade.ticker.clone())
+                    .or_insert_with(SymbolState::new);
                 symbol.apply_trade(trade.clone());
             }
             MarketEvent::Quote(quote) => {
                 state.quotes_received += 1;
-                let symbol = state.symbols.entry(quote.ticker.clone()).or_insert_with(SymbolState::new);
+                let symbol = state
+                    .symbols
+                    .entry(quote.ticker.clone())
+                    .or_insert_with(SymbolState::new);
                 symbol.apply_quote(quote.clone());
             }
         }
@@ -166,7 +172,14 @@ impl SymbolState {
         let (bid, bid_size, ask, ask_size) = self
             .last_quote
             .as_ref()
-            .map(|quote| (quote.bid_price, quote.bid_size, quote.ask_price, quote.ask_size))
+            .map(|quote| {
+                (
+                    quote.bid_price,
+                    quote.bid_size,
+                    quote.ask_price,
+                    quote.ask_size,
+                )
+            })
             .unwrap_or((0.0, 0, 0.0, 0));
         SymbolSnapshot {
             ask,
@@ -178,7 +191,11 @@ impl SymbolState {
             day_volume: self.day_volume,
             last_event_ts: self.last_event_ts,
             last_price: self.last_price,
-            spread: if bid > 0.0 && ask > 0.0 { (ask - bid).max(0.0) } else { 0.0 },
+            spread: if bid > 0.0 && ask > 0.0 {
+                (ask - bid).max(0.0)
+            } else {
+                0.0
+            },
             ticker: ticker.to_string(),
             trade_rate_10s: self.trade_rate(10),
             trade_rate_60s: self.trade_rate(60),
@@ -190,7 +207,11 @@ impl SymbolState {
             return 0.0;
         };
         let cutoff = latest - chrono::Duration::seconds(seconds);
-        let count = self.recent_trades.iter().filter(|trade| trade.ts >= cutoff).count();
+        let count = self
+            .recent_trades
+            .iter()
+            .filter(|trade| trade.ts >= cutoff)
+            .count();
         count as f64 / seconds.max(1) as f64
     }
 }

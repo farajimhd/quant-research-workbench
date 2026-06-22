@@ -22,8 +22,14 @@ impl ClickHouseWriter {
     }
 
     pub async fn initialize(&self) -> Result<(), String> {
-        self.execute(&format!("CREATE DATABASE IF NOT EXISTS `{}`", self.config.clickhouse_database), false)
-            .await?;
+        self.execute(
+            &format!(
+                "CREATE DATABASE IF NOT EXISTS `{}`",
+                self.config.clickhouse_database
+            ),
+            false,
+        )
+        .await?;
         self.execute(
             r#"
             CREATE TABLE IF NOT EXISTS live_massive_trades
@@ -121,24 +127,26 @@ impl ClickHouseWriter {
 
     async fn flush(&self, trades: &mut Vec<TradeEvent>, quotes: &mut Vec<QuoteEvent>) {
         if !trades.is_empty() {
-            let rows = std::mem::take(trades);
-            if let Err(error) = self.insert_trades(&rows).await {
+            if let Err(error) = self.insert_trades(trades).await {
                 eprintln!("ClickHouse trade insert failed: {error}");
+            } else {
+                trades.clear();
             }
         }
         if !quotes.is_empty() {
-            let rows = std::mem::take(quotes);
-            if let Err(error) = self.insert_quotes(&rows).await {
+            if let Err(error) = self.insert_quotes(quotes).await {
                 eprintln!("ClickHouse quote insert failed: {error}");
+            } else {
+                quotes.clear();
             }
         }
     }
 
     async fn insert_trades(&self, rows: &[TradeEvent]) -> Result<(), String> {
-        let body = rows
-            .iter()
-            .map(|event| {
-                json!({
+        let body =
+            rows.iter()
+                .map(|event| {
+                    json!({
                     "session_date": event.ts.date_naive().to_string(),
                     "schema_version": RAW_EVENT_SCHEMA_VERSION,
                     "ts": event.ts.to_rfc3339(),
@@ -156,9 +164,9 @@ impl ClickHouseWriter {
                     "trf_id": event.trf_id,
                     "raw": event.raw.to_string(),
                 }).to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
         self.query_with_body("INSERT INTO live_massive_trades FORMAT JSONEachRow", body)
             .await
     }
@@ -184,7 +192,8 @@ impl ClickHouseWriter {
                     "indicators": &event.indicators,
                     "tape": event.tape,
                     "raw": event.raw.to_string(),
-                }).to_string()
+                })
+                .to_string()
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -197,7 +206,9 @@ impl ClickHouseWriter {
     }
 
     async fn query_with_body(&self, sql: &str, body: String) -> Result<(), String> {
-        self.query(&format!("{sql}\n{body}"), true).await.map(|_| ())
+        self.query(&format!("{sql}\n{body}"), true)
+            .await
+            .map(|_| ())
     }
 
     async fn query(&self, body: &str, use_database: bool) -> Result<String, String> {

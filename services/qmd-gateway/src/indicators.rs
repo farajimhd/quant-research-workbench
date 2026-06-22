@@ -182,7 +182,9 @@ impl SharedIndicatorStore {
     ) -> Self {
         let shard_count = shard_count.max(1);
         let shards = (0..shard_count)
-            .map(|_| IndicatorShardStore::new(history_limit, history_limits.clone(), tick_window_seconds))
+            .map(|_| {
+                IndicatorShardStore::new(history_limit, history_limits.clone(), tick_window_seconds)
+            })
             .collect::<Vec<_>>();
         Self {
             shards: Arc::new(shards),
@@ -215,14 +217,21 @@ impl IndicatorEventRouter {
         self.bar_sender.clone()
     }
 
-    pub fn try_send_event(&self, event: MarketEvent) -> Result<(), mpsc::error::TrySendError<MarketEvent>> {
+    pub async fn send_event(
+        &self,
+        event: MarketEvent,
+    ) -> Result<(), mpsc::error::SendError<MarketEvent>> {
         let index = shard_index(event.ticker(), self.event_senders.len());
-        self.event_senders[index].try_send(event)
+        self.event_senders[index].send(event).await
     }
 }
 
 impl IndicatorShardStore {
-    fn new(history_limit: usize, history_limits: HashMap<String, usize>, tick_window_seconds: i64) -> Self {
+    fn new(
+        history_limit: usize,
+        history_limits: HashMap<String, usize>,
+        tick_window_seconds: i64,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(IndicatorStore {
                 bars: HashMap::new(),
@@ -252,7 +261,11 @@ impl IndicatorShardStore {
         };
         let store = self.inner.lock().await;
         let tick = store.ticks.get(ticker).map(|state| state.snapshot(ticker));
-        let current = store.history.get(&key).and_then(|rows| rows.back()).cloned();
+        let current = store
+            .history
+            .get(&key)
+            .and_then(|rows| rows.back())
+            .cloned();
         let history_limit = store.history_limit_for(&timeframe);
         let history = store
             .history
@@ -723,10 +736,7 @@ pub fn spawn_indicator_engines(
         ));
     }
     let (bar_sender, bar_receiver) = mpsc::channel::<BarRow>(bar_channel_capacity.max(1));
-    tokio::spawn(route_indicator_bars(
-        bar_receiver,
-        Arc::new(bar_senders),
-    ));
+    tokio::spawn(route_indicator_bars(bar_receiver, Arc::new(bar_senders)));
     IndicatorEventRouter {
         bar_sender,
         event_senders: Arc::new(event_senders),
@@ -739,8 +749,8 @@ async fn route_indicator_bars(
 ) {
     while let Some(row) = receiver.recv().await {
         let index = shard_index(&row.sym, shard_senders.len());
-        if shard_senders[index].try_send(row).is_err() {
-            eprintln!("Indicator bar shard queue is full; dropped one finalized bar.");
+        if shard_senders[index].send(row).await.is_err() {
+            eprintln!("Indicator bar shard receiver closed; could not route one finalized bar.");
         }
     }
 }
@@ -764,8 +774,8 @@ async fn run_indicator_engine(
                 match bar {
                     Some(bar) => {
                         let row = shard.apply_bar(bar).await;
-                        if writer_sender.try_send(row).is_err() {
-                            eprintln!("Indicator writer queue is full; shard {shard_id} dropped one indicator row.");
+                        if writer_sender.send(row).await.is_err() {
+                            eprintln!("Indicator writer receiver closed; shard {shard_id} could not persist one indicator row.");
                         }
                     }
                     None => return,
@@ -790,8 +800,14 @@ impl IndicatorClickHouseWriter {
     }
 
     pub async fn initialize(&self) -> Result<(), String> {
-        self.execute(&format!("CREATE DATABASE IF NOT EXISTS `{}`", self.config.clickhouse_database), false)
-            .await?;
+        self.execute(
+            &format!(
+                "CREATE DATABASE IF NOT EXISTS `{}`",
+                self.config.clickhouse_database
+            ),
+            false,
+        )
+        .await?;
         self.execute(
             r#"
             CREATE TABLE IF NOT EXISTS live_market_indicators
@@ -871,20 +887,27 @@ impl IndicatorClickHouseWriter {
         if batch.is_empty() {
             return;
         }
-        let rows = std::mem::take(batch);
-        if let Err(error) = self.insert_indicators(&rows).await {
+        if let Err(error) = self.insert_indicators(batch).await {
             eprintln!("ClickHouse indicator insert failed: {error}");
+        } else {
+            batch.clear();
         }
     }
 
     async fn insert_indicators(&self, rows: &[IndicatorRow]) -> Result<(), String> {
         let body = rows
             .iter()
-            .map(|row| serde_json::to_string(&indicator_insert_row(row)).unwrap_or_else(|_| "{}".to_string()))
+            .map(|row| {
+                serde_json::to_string(&indicator_insert_row(row))
+                    .unwrap_or_else(|_| "{}".to_string())
+            })
             .collect::<Vec<_>>()
             .join("\n");
-        self.query_with_body("INSERT INTO live_market_indicators FORMAT JSONEachRow", body)
-            .await
+        self.query_with_body(
+            "INSERT INTO live_market_indicators FORMAT JSONEachRow",
+            body,
+        )
+        .await
     }
 
     async fn execute(&self, sql: &str, use_database: bool) -> Result<(), String> {
@@ -892,7 +915,9 @@ impl IndicatorClickHouseWriter {
     }
 
     async fn query_with_body(&self, sql: &str, body: String) -> Result<(), String> {
-        self.query(&format!("{sql}\n{body}"), true).await.map(|_| ())
+        self.query(&format!("{sql}\n{body}"), true)
+            .await
+            .map(|_| ())
     }
 
     async fn query(&self, body: &str, use_database: bool) -> Result<String, String> {
@@ -972,7 +997,14 @@ fn rsi_value(avg_gain: f64, avg_loss: f64) -> f64 {
     100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
 }
 
-fn trend_score(close: f64, ema_9: f64, ema_20: f64, ema_50: f64, rsi_14: f64, macd_histogram: f64) -> f64 {
+fn trend_score(
+    close: f64,
+    ema_9: f64,
+    ema_20: f64,
+    ema_50: f64,
+    rsi_14: f64,
+    macd_histogram: f64,
+) -> f64 {
     let mut score = 0.0;
     if close > ema_20 {
         score += 1.0;

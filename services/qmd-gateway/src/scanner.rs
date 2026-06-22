@@ -55,8 +55,8 @@ pub struct ScannerPrimitiveRouter {
 }
 
 impl ScannerPrimitiveRouter {
-    pub fn try_send_bar(&self, row: BarRow) -> Result<(), mpsc::error::TrySendError<BarRow>> {
-        self.sender.try_send(row)
+    pub async fn send_bar(&self, row: BarRow) -> Result<(), mpsc::error::SendError<BarRow>> {
+        self.sender.send(row).await
     }
 }
 
@@ -73,7 +73,10 @@ impl SharedScannerStore {
 
     pub async fn apply(&self, primitive: ScannerPrimitive) {
         let mut store = self.inner.write().await;
-        let key = format!("{}:{}:{}", primitive.ticker, primitive.timeframe, primitive.primitive_key);
+        let key = format!(
+            "{}:{}:{}",
+            primitive.ticker, primitive.timeframe, primitive.primitive_key
+        );
         store.latest_by_key.insert(key, primitive.clone());
         store.history.push_back(primitive);
         while store.history.len() > store.history_limit {
@@ -196,7 +199,11 @@ fn evaluate_bar(row: &BarRow) -> Vec<ScannerPrimitive> {
         row,
         "high_momentum_bar",
         row.price_change_pct > 1.0 && row.close >= row.high * 0.995 && row.trade_rate > 0.5,
-        weighted_score(&[row.price_change_pct / 5.0, row.trade_rate / 20.0, row.tape_imbalance.max(0.0)]),
+        weighted_score(&[
+            row.price_change_pct / 5.0,
+            row.trade_rate / 20.0,
+            row.tape_imbalance.max(0.0),
+        ]),
         "strong close near bar high with trade activity",
     );
     primitives
@@ -240,7 +247,12 @@ fn weighted_score(values: &[f64]) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
-    values.iter().copied().map(|value| value.clamp(0.0, 1.0)).sum::<f64>() / values.len() as f64
+    values
+        .iter()
+        .copied()
+        .map(|value| value.clamp(0.0, 1.0))
+        .sum::<f64>()
+        / values.len() as f64
 }
 
 #[cfg(test)]
@@ -346,7 +358,11 @@ mod tests {
     #[test]
     fn emits_massive_only_primitives_from_bar() {
         let primitives = evaluate_bar(&base_bar());
-        assert!(primitives.iter().any(|row| row.primitive_key == "tape_acceleration"));
-        assert!(primitives.iter().all(|row| row.schema_version == SCANNER_PRIMITIVE_SCHEMA_VERSION));
+        assert!(primitives
+            .iter()
+            .any(|row| row.primitive_key == "tape_acceleration"));
+        assert!(primitives
+            .iter()
+            .all(|row| row.schema_version == SCANNER_PRIMITIVE_SCHEMA_VERSION));
     }
 }

@@ -45,6 +45,10 @@ By default this builds the Rust service, starts it in the background, waits for
 stdout/stderr are written under `.tmp/qmd-gateway/` so service logs do not
 corrupt the dashboard.
 
+The launcher imports the repo `.env` before starting the child process. The Rust
+service also performs the same `.env` discovery when run directly, and it does
+not overwrite values already set in the current shell.
+
 Useful launcher options:
 
 ```powershell
@@ -94,15 +98,15 @@ In monitor mode, exiting the monitor stops the background gateway process.
 | `massive_connect_failures` | Failed websocket connection attempts. | Check API key, network, and Massive service status. |
 | `massive_disconnects` | Websocket disconnect count. | Watch for recurring disconnects or local network instability. |
 | `parse_failures` | Massive payloads that could not be parsed. | Inspect recent raw payload shape; provider schema may differ. |
-| `compact_event_queue_dropped` | Events not queued for compact conversion/persistence. | Increase compact queue size or improve compact writer throughput. |
+| `compact_event_queue_dropped` | Compact writer receiver closed before accepting an event. Queue-full no longer increments this because required paths backpressure. | Treat any increase as a service fault and inspect logs. |
 | `compact_event_rejected` | Structurally invalid events dropped before compact emit/insert. | Inspect provider data quality; raw persistence can be enabled for debugging. |
 | `compact_events_persisted` | Compact rows inserted into ClickHouse. | Should rise during active feed when `QMD_PERSIST_COMPACT_EVENTS=true`. |
-| `clickhouse_events_dropped` | Raw events not queued for optional raw persistence. | Relevant only when `QMD_PERSIST_RAW_EVENTS=true`. |
-| `bar_events_dropped` | Events not queued to bar workers. | Increase bar shards/capacity or profile bar aggregation. |
-| `indicator_events_dropped` | Events not queued to tick indicators. | Increase indicator shards/capacity or reduce indicator work. |
-| `bar_rows_writer_dropped` | Closed bars not queued for persistence. | Increase bar writer queue or ClickHouse throughput. |
-| `bar_rows_indicator_dropped` | Closed bars not queued to bar indicators. | Increase indicator bar queue or indicator shards. |
-| `bar_rows_scanner_dropped` | Closed bars not queued to scanner primitives. | Increase scanner primitive queue or simplify primitive evaluation. |
+| `clickhouse_events_dropped` | Optional raw writer receiver closed before accepting an event. | Relevant only when `QMD_PERSIST_RAW_EVENTS=true`; inspect logs if nonzero. |
+| `bar_events_dropped` | Bar worker receiver closed before accepting an event. | Treat as a service fault. |
+| `indicator_events_dropped` | Tick-indicator receiver closed before accepting an event. | Treat as a service fault. |
+| `bar_rows_writer_dropped` | Bar writer receiver closed before accepting a closed bar. | Treat as a service fault. |
+| `bar_rows_indicator_dropped` | Indicator bar receiver closed before accepting a closed bar. | Treat as a service fault. |
+| `bar_rows_scanner_dropped` | Scanner primitive receiver closed before accepting a closed bar. | Treat as a service fault. |
 | `bar_rows_emitted` | Closed bars produced. | Should rise by timeframe during active feed. |
 | `scanner_candidates_emitted` | Scanner primitives emitted. | Useful for scanner activity rate. |
 | `gap_fill_runs`, `gap_fill_failures` | Gap-fill attempts and failures. | Failures need REST/ClickHouse error review. |
@@ -113,9 +117,19 @@ In monitor mode, exiting the monitor stops the background gateway process.
 
 Backpressure means a queue is filling faster than its consumer drains it.
 
-The gateway does not block Massive ingest when a downstream queue is full. It drops that downstream item and increments a metric. This protects live ingestion from slow ClickHouse writes, slow API clients, or heavy indicator work.
+Required data paths now wait for downstream capacity instead of dropping rows:
+bar aggregation, tick indicators, compact-event conversion/persistence, closed
+bar persistence, scanner primitive input, and optional raw persistence. This can
+slow websocket processing if ClickHouse or a worker cannot keep up, but it
+preserves the event path used to build durable rows.
 
-The tradeoff is explicit: it is better to lose a derived downstream item and see the counter rise than to freeze the websocket ingest loop.
+Local UI/websocket clients remain best effort. If no app is connected, broadcast
+send failures are counted, but ClickHouse insertion and in-memory processing
+continue independently.
+
+ClickHouse writers retry their current in-memory batch after insert failures.
+Compact events, bars, indicators, and optional raw rows are not cleared from the
+writer batch until ClickHouse confirms the insert.
 
 ## Gap Fill Modes
 

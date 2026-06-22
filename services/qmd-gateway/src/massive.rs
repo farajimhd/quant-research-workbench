@@ -104,28 +104,31 @@ pub async fn fanout_market_event(event: MarketEvent, fanout: &MarketEventFanout)
     if fanout.event_sender.send(event.clone()).is_err() {
         fanout.metrics.inc_event_broadcast_dropped();
     }
-    if fanout.bar_router.try_send(event.clone()).is_err() {
+    if fanout.bar_router.send(event.clone()).await.is_err() {
         fanout.metrics.inc_bar_event_dropped();
-        eprintln!("Bar engine shard queue is full; dropped one aggregation event.");
+        eprintln!("Bar engine receiver closed; could not route one aggregation event.");
     }
     if fanout
         .indicator_router
-        .try_send_event(event.clone())
+        .send_event(event.clone())
+        .await
         .is_err()
     {
         fanout.metrics.inc_indicator_event_dropped();
-        eprintln!("Indicator shard queue is full; dropped one indicator event.");
+        eprintln!("Indicator shard receiver closed; could not route one indicator event.");
     }
     if let Some(sender) = &fanout.compact_writer_sender {
-        if sender.try_send(event.clone()).is_err() {
+        if sender.send(event.clone()).await.is_err() {
             fanout.metrics.inc_compact_event_queue_dropped();
-            eprintln!("Compact event writer queue is full; dropped one compact event.");
+            eprintln!("Compact event writer receiver closed; could not route one compact event.");
         }
     }
     if let Some(sender) = &fanout.writer_sender {
-        if sender.try_send(event).is_err() {
+        if sender.send(event).await.is_err() {
             fanout.metrics.inc_clickhouse_event_dropped();
-            eprintln!("Raw ClickHouse writer queue is full; dropped one raw persistence event.");
+            eprintln!(
+                "Raw ClickHouse writer receiver closed; could not route one raw persistence event."
+            );
         }
     }
 }

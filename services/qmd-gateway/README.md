@@ -67,10 +67,10 @@ Environment variables:
 - `QMD_SUBSCRIBE_ALL_SYMBOLS`, default `true`
 - `QMD_SUBSCRIBE_TRADES`, default `true`
 - `QMD_SUBSCRIBE_QUOTES`, default `true`
-- `QMD_CLICKHOUSE_URL`
-- `QMD_CLICKHOUSE_DATABASE`, default `q_live`
-- `QMD_CLICKHOUSE_USER`, default `default`
-- `QMD_CLICKHOUSE_PASSWORD`
+- `QMD_CLICKHOUSE_URL`, falls back to `REAL_LIVE_CLICKHOUSE_WRITE_URL`, then `http://localhost:8123`
+- `QMD_CLICKHOUSE_DATABASE`, falls back to `REAL_LIVE_CLICKHOUSE_WRITE_DATABASE`, then `q_live`
+- `QMD_CLICKHOUSE_USER`, falls back to `REAL_LIVE_CLICKHOUSE_WRITE_USER` and shared ClickHouse user variables, then `default`
+- `QMD_CLICKHOUSE_PASSWORD`, falls back to `REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD` and shared ClickHouse password variables
 - `QMD_CLICKHOUSE_STORAGE_POLICY`, optional; falls back to `CLICKHOUSE_LIVE_STORAGE_POLICY`
 - `QMD_CLICKHOUSE_MAX_BATCH`, default `10000`
 - `QMD_CLICKHOUSE_FLUSH_INTERVAL_MS`, default `1000`
@@ -145,8 +145,9 @@ training table.
 
 Bars are built asynchronously from normalized Massive quotes and trades. The
 websocket ingest task hashes each ticker into one of the configured bar shards
-and pushes events into that shard queue with `try_send`, so bar math and
-ClickHouse writes do not block the live ingest loop.
+and waits for required shard capacity instead of dropping events when a queue is
+full. This lets a slow worker apply backpressure to preserve the durable event
+path.
 
 Supported default timeframes:
 
@@ -299,15 +300,16 @@ The `/metrics` endpoint exposes operational counters for:
 
 - Massive ingest event counts and last event lag
 - parse/connect/disconnect failures
-- dropped event counters for broadcast, ClickHouse, bar, indicator, and scanner queues
+- broadcast skip counters and required-path receiver-closed counters
 - emitted bar rows
 - scanner primitive counts
 - gap-fill runs, failures, and written rows
 - process uptime
 
-All hot-path queue sends use non-blocking `try_send`. If a queue is full, the
-gateway drops that downstream item, increments the relevant counter, and keeps
-the Massive ingest loop moving.
+Required processing and persistence queues use awaited sends. If a required
+queue is full, live ingest backpressures instead of dropping canonical work. UI
+websocket broadcasts remain best effort, so the app can be offline while the
+gateway continues updating memory and ClickHouse.
 
 ## Session Lifecycle
 

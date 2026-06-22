@@ -1,14 +1,14 @@
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
-use crate::massive::{MarketEventFanout, fanout_market_event};
+use crate::massive::{fanout_market_event, MarketEventFanout};
 use crate::metrics::TimingTarget;
 use crate::session::{is_streaming_phase, session_phase};
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, Utc};
 use reqwest::Client;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::Path as FsPath;
 use std::process::Command;
-use tokio::time::{Duration, interval};
+use tokio::time::{interval, Duration};
 
 pub async fn run_startup_maintenance(config: GatewayConfig, fanout: MarketEventFanout) {
     if !config.gap_fill_enabled || !config.qmd_startup_maintenance_enabled {

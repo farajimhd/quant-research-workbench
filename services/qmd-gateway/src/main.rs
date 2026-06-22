@@ -17,22 +17,22 @@ mod session;
 mod signal_catalog;
 mod state;
 
-use crate::api::{AppState, app};
-use crate::bars::{BarClickHouseWriter, BarRow, SharedBarStore, spawn_bar_engines};
+use crate::api::{app, AppState};
+use crate::bars::{spawn_bar_engines, BarClickHouseWriter, BarRow, SharedBarStore};
 use crate::clickhouse::ClickHouseWriter;
 use crate::compact_event::{
     CompactEventClickHouseWriter, CompactEventReferences, LiveCompactEvent, SharedCompactEventStore,
 };
-use crate::config::GatewayConfig;
+use crate::config::{load_env_files, GatewayConfig};
 use crate::event::MarketEvent;
 use crate::gapfill::{run_gap_fill_service, run_startup_maintenance};
 use crate::indicators::{
-    IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore, spawn_indicator_engines,
+    spawn_indicator_engines, IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore,
 };
-use crate::massive::{MarketEventFanout, run_massive_ingest};
+use crate::massive::{run_massive_ingest, MarketEventFanout};
 use crate::metrics::SharedMetrics;
 use crate::replay::run_replay_service;
-use crate::scanner::{ScannerPrimitive, SharedScannerStore, spawn_scanner_primitive_engine};
+use crate::scanner::{spawn_scanner_primitive_engine, ScannerPrimitive, SharedScannerStore};
 use crate::state::SharedMarketState;
 use std::net::SocketAddr;
 use std::{error::Error, io};
@@ -40,6 +40,17 @@ use tokio::sync::{broadcast, mpsc};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let loaded_env_files = load_env_files();
+    if !loaded_env_files.is_empty() {
+        eprintln!(
+            "Loaded .env files: {}",
+            loaded_env_files
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+    }
     let config = GatewayConfig::from_env();
     preflight_config(&config).map_err(startup_error)?;
     let bind: SocketAddr = config.bind.parse()?;

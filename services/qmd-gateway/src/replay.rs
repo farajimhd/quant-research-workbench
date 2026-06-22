@@ -137,10 +137,10 @@ impl ReplayService {
                     event.ts(),
                 );
                 self.market.apply_event(&event).await;
-                if self.bar_router.try_send(event.clone()).is_err() {
+                if self.bar_router.send(event.clone()).await.is_err() {
                     self.metrics.inc_bar_event_dropped();
                 }
-                if self.indicator_router.try_send_event(event).is_err() {
+                if self.indicator_router.send_event(event).await.is_err() {
                     self.metrics.inc_indicator_event_dropped();
                 }
             }
@@ -177,8 +177,17 @@ impl ReplayService {
 fn row_to_event(row: &Value) -> Result<Option<MarketEvent>, String> {
     let kind = row.get("kind").and_then(Value::as_str).unwrap_or_default();
     let ts = parse_ts(row.get("ts").and_then(Value::as_str).unwrap_or_default())?;
-    let ingest_ts = parse_ts(row.get("ingest_ts").and_then(Value::as_str).unwrap_or_default()).unwrap_or_else(|_| Utc::now());
-    let ticker = row.get("sym").and_then(Value::as_str).unwrap_or_default().to_ascii_uppercase();
+    let ingest_ts = parse_ts(
+        row.get("ingest_ts")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )
+    .unwrap_or_else(|_| Utc::now());
+    let ticker = row
+        .get("sym")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_uppercase();
     if ticker.is_empty() {
         return Ok(None);
     }
@@ -194,7 +203,11 @@ fn row_to_event(row: &Value) -> Result<Option<MarketEvent>, String> {
             size: f64_field(row, "size"),
             tape: u8_field(row, "tape"),
             ticker,
-            trade_id: row.get("trade_id").and_then(Value::as_str).unwrap_or_default().to_string(),
+            trade_id: row
+                .get("trade_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
             trf_id: u16_field(row, "trf_id"),
             trf_ts: None,
             ts,
@@ -222,7 +235,9 @@ fn row_to_event(row: &Value) -> Result<Option<MarketEvent>, String> {
 fn parse_ts(text: &str) -> Result<DateTime<Utc>, String> {
     DateTime::parse_from_rfc3339(text)
         .map(|value| value.with_timezone(&Utc))
-        .or_else(|_| NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f").map(|value| value.and_utc()))
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f").map(|value| value.and_utc())
+        })
         .map_err(|error| error.to_string())
 }
 

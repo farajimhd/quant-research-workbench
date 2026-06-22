@@ -17,6 +17,37 @@ $serviceDir = Split-Path -Parent $manifest
 $gatewayExe = Join-Path $serviceDir "target\debug\qmd-gateway.exe"
 $terminalScript = Join-Path $serviceDir "tools\qmd_terminal.py"
 
+function Import-DotEnvFile {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith("#") -or -not $trimmed.Contains("=")) {
+            continue
+        }
+        $parts = $trimmed.Split("=", 2)
+        $key = $parts[0].Trim()
+        if (-not $key -or [Environment]::GetEnvironmentVariable($key, "Process")) {
+            continue
+        }
+        $value = $parts[1].Trim().Trim('"').Trim("'")
+        [Environment]::SetEnvironmentVariable($key, $value, "Process")
+    }
+    return $true
+}
+
+$loadedEnvFiles = @()
+$repoEnv = Join-Path $repoRoot ".env"
+if (Import-DotEnvFile -Path $repoEnv) {
+    $loadedEnvFiles += $repoEnv
+}
+if ($loadedEnvFiles.Count -gt 0) {
+    Write-Host ("Loaded .env files: " + ($loadedEnvFiles -join "; "))
+}
+
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     throw "cargo was not found. Run scripts\install_rust_windows.ps1, then open a new PowerShell window."
 }

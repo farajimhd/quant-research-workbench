@@ -1,16 +1,16 @@
 # QMD Gateway Configuration
 
-All settings are read from environment variables at process start. Changing a value requires restarting the gateway.
+Settings are read from environment variables at process start. The gateway also loads discovered `.env` files without overwriting variables already set in the shell. Changing a value requires restarting the gateway.
 
 ## Required For Live Use
 
 | Env Var | Default | Meaning | Tuning Note |
 |---|---:|---|---|
 | `MASSIVE_API_KEY` | empty | Massive websocket and REST API key. | Without it the API can run, but live ingest and REST gap fill cannot work. |
-| `QMD_CLICKHOUSE_URL` | `http://localhost:8123` | ClickHouse HTTP endpoint. | Use a reachable LAN URL if ClickHouse runs on another machine or WSL host. |
-| `QMD_CLICKHOUSE_DATABASE` | `q_live` | App-owned database for gateway writes. | Keep separate from read-only external databases. |
-| `QMD_CLICKHOUSE_USER` | `default` | ClickHouse user. | Use a user with write access only to the app-owned database. |
-| `QMD_CLICKHOUSE_PASSWORD` | empty | ClickHouse password. | Never commit this value. |
+| `QMD_CLICKHOUSE_URL` | `REAL_LIVE_CLICKHOUSE_WRITE_URL`, then `http://localhost:8123` | ClickHouse HTTP endpoint. | Use a reachable LAN URL if ClickHouse runs on another machine or WSL host. |
+| `QMD_CLICKHOUSE_DATABASE` | `REAL_LIVE_CLICKHOUSE_WRITE_DATABASE`, then `q_live` | App-owned database for gateway writes. | Keep separate from read-only external databases. |
+| `QMD_CLICKHOUSE_USER` | `REAL_LIVE_CLICKHOUSE_WRITE_USER`, then shared ClickHouse user fallbacks, then `default` | ClickHouse user. | Use a user with write access only to the app-owned database. |
+| `QMD_CLICKHOUSE_PASSWORD` | `REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD`, then shared ClickHouse password fallbacks, then empty | ClickHouse password. | Never commit this value. |
 | `QMD_CLICKHOUSE_STORAGE_POLICY` | `CLICKHOUSE_LIVE_STORAGE_POLICY` or empty | Optional storage policy for gateway-created compact tables. | Use the live SSD policy when available. |
 
 ## API And Massive Connection
@@ -31,7 +31,7 @@ All settings are read from environment variables at process start. Changing a va
 |---|---:|---|---|
 | `QMD_EVENT_CHANNEL_CAPACITY` | `250000` | Queue size for optional raw ClickHouse persistence. | Relevant only when `QMD_PERSIST_RAW_EVENTS=true`. |
 | `QMD_COMPACT_EVENTS_ENABLED` | `true` | Enable compact unified event conversion and websocket streaming. | Keep enabled for live ML consumers. |
-| `QMD_COMPACT_EVENT_CHANNEL_CAPACITY` | `250000` | Queue size for compact event conversion/persistence. | If `compact_event_queue_dropped` rises, increase this or improve writer throughput. |
+| `QMD_COMPACT_EVENT_CHANNEL_CAPACITY` | `250000` | Queue size for compact event conversion/persistence. | If downstream work cannot keep up, live ingest backpressures rather than discarding compact events. |
 | `QMD_COMPACT_EVENT_TABLE` | `live_market_events_v1` | ClickHouse table for compact live events. | Version the table name when the durable live event contract changes. |
 | `QMD_COMPACT_EVENT_CONTINUITY_TABLE` | `live_event_ordinal_continuity` | Append-only live ordinal continuity snapshots. | Used to audit and bootstrap ticker-local live ordinals. |
 | `QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER` | `512` | Recent compact events retained in memory per ticker for ML/app snapshots. | Must be at least the largest live inference context, e.g. 128. |

@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct GatewayConfig {
@@ -72,7 +74,15 @@ pub struct GatewayConfig {
 impl GatewayConfig {
     pub fn from_env() -> Self {
         let massive_api_key = env_string("MASSIVE_API_KEY", "");
-        let clickhouse_password = env_string("QMD_CLICKHOUSE_PASSWORD", "");
+        let clickhouse_password = env_string_any(
+            &[
+                "QMD_CLICKHOUSE_PASSWORD",
+                "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
+                "CLICKHOUSE_WORKSTATION_PASSWORD",
+                "CLICKHOUSE_PASSWORD",
+            ],
+            "",
+        );
         Self {
             api_key_present: !massive_api_key.is_empty(),
             bar_channel_capacity: env_usize("QMD_BAR_CHANNEL_CAPACITY", 250_000),
@@ -83,16 +93,38 @@ impl GatewayConfig {
                 &["1s", "10s", "30s", "1m", "5m", "1h"],
             ),
             bind: env_string("QMD_GATEWAY_BIND", "127.0.0.1:8795"),
-            clickhouse_database: env_string("QMD_CLICKHOUSE_DATABASE", "q_live"),
+            clickhouse_database: env_string_any(
+                &[
+                    "QMD_CLICKHOUSE_DATABASE",
+                    "REAL_LIVE_CLICKHOUSE_WRITE_DATABASE",
+                ],
+                "q_live",
+            ),
             clickhouse_password_present: !clickhouse_password.is_empty(),
             clickhouse_storage_policy: env_string(
                 "QMD_CLICKHOUSE_STORAGE_POLICY",
                 &env_string("CLICKHOUSE_LIVE_STORAGE_POLICY", ""),
             ),
-            clickhouse_url: env_string("QMD_CLICKHOUSE_URL", "http://localhost:8123")
-                .trim_end_matches('/')
-                .to_string(),
-            clickhouse_user: env_string("QMD_CLICKHOUSE_USER", "default"),
+            clickhouse_url: env_string_any(
+                &[
+                    "QMD_CLICKHOUSE_URL",
+                    "REAL_LIVE_CLICKHOUSE_WRITE_URL",
+                    "CLICKHOUSE_URL",
+                    "CLICKHOUSE_ENDPOINT",
+                ],
+                "http://localhost:8123",
+            )
+            .trim_end_matches('/')
+            .to_string(),
+            clickhouse_user: env_string_any(
+                &[
+                    "QMD_CLICKHOUSE_USER",
+                    "REAL_LIVE_CLICKHOUSE_WRITE_USER",
+                    "CLICKHOUSE_WORKSTATION_USER",
+                    "CLICKHOUSE_USER",
+                ],
+                "default",
+            ),
             compact_event_channel_capacity: env_usize(
                 "QMD_COMPACT_EVENT_CHANNEL_CAPACITY",
                 250_000,
@@ -208,8 +240,69 @@ impl GatewayConfig {
     }
 
     pub fn clickhouse_password(&self) -> String {
-        env_string("QMD_CLICKHOUSE_PASSWORD", "")
+        env_string_any(
+            &[
+                "QMD_CLICKHOUSE_PASSWORD",
+                "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
+                "CLICKHOUSE_WORKSTATION_PASSWORD",
+                "CLICKHOUSE_PASSWORD",
+            ],
+            "",
+        )
     }
+}
+
+pub fn load_env_files() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(raw) = env::var("DOTENV_PATHS") {
+        paths.extend(env::split_paths(&raw));
+    }
+    if let Ok(cwd) = env::current_dir() {
+        push_ancestor_env_files(&mut paths, &cwd);
+    }
+    push_ancestor_env_files(&mut paths, Path::new(env!("CARGO_MANIFEST_DIR")));
+
+    let mut loaded = Vec::new();
+    let mut seen = Vec::<PathBuf>::new();
+    for path in paths {
+        let key = path.canonicalize().unwrap_or(path.clone());
+        if seen.iter().any(|existing| existing == &key) {
+            continue;
+        }
+        seen.push(key);
+        if path.exists() && load_env_file(&path).is_ok() {
+            loaded.push(path);
+        }
+    }
+    loaded
+}
+
+fn push_ancestor_env_files(paths: &mut Vec<PathBuf>, start: &Path) {
+    let mut current = Some(start);
+    while let Some(path) = current {
+        paths.push(path.join(".env"));
+        current = path.parent();
+    }
+}
+
+fn load_env_file(path: &Path) -> Result<(), std::io::Error> {
+    let text = fs::read_to_string(path)?;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() || env::var_os(key).is_some() {
+            continue;
+        }
+        let value = value.trim().trim_matches('"').trim_matches('\'');
+        env::set_var(key, value);
+    }
+    Ok(())
 }
 
 fn env_string(name: &str, default: &str) -> String {
@@ -217,6 +310,18 @@ fn env_string(name: &str, default: &str) -> String {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+fn env_string_any(names: &[&str], default: &str) -> String {
+    names
+        .iter()
+        .find_map(|name| {
+            env::var(name)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
         .unwrap_or_else(|| default.to_string())
 }
 

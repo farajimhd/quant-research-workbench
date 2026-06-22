@@ -340,9 +340,12 @@ impl SharedBarStore {
 }
 
 impl BarEventRouter {
-    pub fn try_send(&self, event: MarketEvent) -> Result<(), mpsc::error::TrySendError<MarketEvent>> {
+    pub async fn send(
+        &self,
+        event: MarketEvent,
+    ) -> Result<(), mpsc::error::SendError<MarketEvent>> {
         let index = shard_index(event.ticker(), self.senders.len());
-        self.senders[index].try_send(event)
+        self.senders[index].send(event).await
     }
 }
 
@@ -374,10 +377,7 @@ impl BarShardStore {
             timeframe: timeframe.to_string(),
         };
         let store = self.inner.lock().await;
-        let current = store
-            .open
-            .get(&key)
-            .map(|bar| store.freeze_bar(bar, false));
+        let current = store.open.get(&key).map(|bar| store.freeze_bar(bar, false));
         let history = store
             .closed
             .get(&key)
@@ -445,13 +445,9 @@ impl BarStore {
                 }
             }
 
-            let bar = self.open.entry(key).or_insert_with(|| MutableBar::new(
-                frame.label.clone(),
-                sym,
-                start,
-                end,
-                frame.seconds as f64,
-            ));
+            let bar = self.open.entry(key).or_insert_with(|| {
+                MutableBar::new(frame.label.clone(), sym, start, end, frame.seconds as f64)
+            });
             match event {
                 MarketEvent::Trade(trade) => bar.apply_trade(trade),
                 MarketEvent::Quote(quote) => bar.apply_quote(quote),
@@ -491,10 +487,14 @@ impl BarStore {
         };
         if let Some(history) = self.closed.get(&key) {
             let previous = history.back();
-            row.return_1_bar = previous.map(|item| pct_change(row.close, item.close)).unwrap_or_default();
+            row.return_1_bar = previous
+                .map(|item| pct_change(row.close, item.close))
+                .unwrap_or_default();
             row.return_3_bar = trailing_return(&row, history, 3);
             row.return_5_bar = trailing_return(&row, history, 5);
-            row.volume_accel = previous.map(|item| row.volume - item.volume).unwrap_or_default();
+            row.volume_accel = previous
+                .map(|item| row.volume - item.volume)
+                .unwrap_or_default();
             row.trade_count_accel = previous
                 .map(|item| row.trade_count as f64 - item.trade_count as f64)
                 .unwrap_or_default();
@@ -520,16 +520,23 @@ impl BarStore {
         let median_trade_size = sample_median(&bar.trade_size_sample);
         let tape_imbalance = safe_div(bar.buy_volume - bar.sell_volume, bar.volume);
         let buy_sell_volume_delta = bar.buy_volume - bar.sell_volume;
-        let realized_volatility = safe_div(bar.trade_return_sum_sq, bar.trade_return_count as f64).sqrt();
-        let mid_price_volatility = safe_div(bar.mid_return_sum_sq, bar.mid_return_count as f64).sqrt();
+        let realized_volatility =
+            safe_div(bar.trade_return_sum_sq, bar.trade_return_count as f64).sqrt();
+        let mid_price_volatility =
+            safe_div(bar.mid_return_sum_sq, bar.mid_return_count as f64).sqrt();
         let micro_price_volatility = mid_price_volatility;
-        let mean_abs_trade_return = safe_div(bar.trade_abs_return_sum, bar.trade_return_count as f64);
+        let mean_abs_trade_return =
+            safe_div(bar.trade_abs_return_sum, bar.trade_return_count as f64);
         let high_low_range = if bar.high > 0.0 && bar.low > 0.0 {
             bar.high - bar.low
         } else {
             0.0
         };
-        let price_change = if bar.open > 0.0 { bar.close - bar.open } else { 0.0 };
+        let price_change = if bar.open > 0.0 {
+            bar.close - bar.open
+        } else {
+            0.0
+        };
         let vwap = safe_div(bar.dollar_volume, bar.volume);
         let vwap_distance_pct = pct_change(bar.close, vwap);
         let mid_vwap_distance_pct = pct_change(bar.mid_close, vwap);
@@ -540,7 +547,10 @@ impl BarStore {
         let liquidity_score = safe_div(bar.dollar_volume, spread_bps_mean.max(1.0));
         let spread_volume_ratio = safe_div(spread_bps_mean, bar.dollar_volume);
         let chop_score = if high_low_range > 0.0 {
-            safe_div(bar.trade_abs_return_sum * bar.close.max(1.0), high_low_range)
+            safe_div(
+                bar.trade_abs_return_sum * bar.close.max(1.0),
+                high_low_range,
+            )
         } else {
             0.0
         };
@@ -758,7 +768,8 @@ impl MutableBar {
             self.sell_dollar_volume += trade.price * trade.size;
         }
         if self.last_mid > 0.0 {
-            self.effective_spread_sum += safe_div((trade.price - self.last_mid).abs() * 2.0, self.last_mid) * 10_000.0;
+            self.effective_spread_sum +=
+                safe_div((trade.price - self.last_mid).abs() * 2.0, self.last_mid) * 10_000.0;
         }
     }
 
@@ -803,9 +814,27 @@ impl MutableBar {
 
     fn apply_price_ohlc(&mut self, price: f64, target: &str) {
         match target {
-            "bid" => update_ohlc(price, &mut self.bid_open, &mut self.bid_high, &mut self.bid_low, &mut self.bid_close),
-            "ask" => update_ohlc(price, &mut self.ask_open, &mut self.ask_high, &mut self.ask_low, &mut self.ask_close),
-            "mid" => update_ohlc(price, &mut self.mid_open, &mut self.mid_high, &mut self.mid_low, &mut self.mid_close),
+            "bid" => update_ohlc(
+                price,
+                &mut self.bid_open,
+                &mut self.bid_high,
+                &mut self.bid_low,
+                &mut self.bid_close,
+            ),
+            "ask" => update_ohlc(
+                price,
+                &mut self.ask_open,
+                &mut self.ask_high,
+                &mut self.ask_low,
+                &mut self.ask_close,
+            ),
+            "mid" => update_ohlc(
+                price,
+                &mut self.mid_open,
+                &mut self.mid_high,
+                &mut self.mid_low,
+                &mut self.mid_close,
+            ),
             _ => {}
         }
     }
@@ -843,7 +872,8 @@ impl MutableBar {
             } else {
                 0
             };
-            if sign != 0 && self.prev_trade_return_sign != 0 && sign != self.prev_trade_return_sign {
+            if sign != 0 && self.prev_trade_return_sign != 0 && sign != self.prev_trade_return_sign
+            {
                 self.direction_change_count += 1;
             }
             if sign != 0 {
@@ -912,24 +942,24 @@ async fn run_bar_engine(
                 match event {
                     Some(event) => {
                         let finalized = shard.apply_event(&event).await;
-                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), &metrics, finalized);
+                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), &metrics, finalized).await;
                     }
                     None => {
                         let finalized = shard.finalize_due(Utc::now()).await;
-                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), &metrics, finalized);
+                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), &metrics, finalized).await;
                         return;
                     }
                 }
             }
             _ = heartbeat.tick() => {
                 let finalized = shard.finalize_due(Utc::now()).await;
-                send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), &metrics, finalized);
+                send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), &metrics, finalized).await;
             }
         }
     }
 }
 
-fn send_finalized_bars(
+async fn send_finalized_bars(
     shard_id: usize,
     writer_sender: &mpsc::Sender<BarRow>,
     indicator_sender: Option<&mpsc::Sender<BarRow>>,
@@ -940,20 +970,22 @@ fn send_finalized_bars(
     metrics.inc_bar_emitted(rows.len() as u64);
     for row in rows {
         if let Some(sender) = indicator_sender {
-            if sender.try_send(row.clone()).is_err() {
+            if sender.send(row.clone()).await.is_err() {
                 metrics.inc_bar_indicator_dropped();
-                eprintln!("Indicator bar queue is full; shard {shard_id} dropped one finalized bar.");
+                eprintln!("Indicator bar receiver closed; shard {shard_id} could not route one finalized bar.");
             }
         }
         if let Some(sender) = scanner_sender {
-            if sender.try_send_bar(row.clone()).is_err() {
+            if sender.send_bar(row.clone()).await.is_err() {
                 metrics.inc_bar_scanner_dropped();
-                eprintln!("Scanner primitive queue is full; shard {shard_id} dropped one finalized bar.");
+                eprintln!("Scanner primitive receiver closed; shard {shard_id} could not route one finalized bar.");
             }
         }
-        if writer_sender.try_send(row).is_err() {
+        if writer_sender.send(row).await.is_err() {
             metrics.inc_bar_writer_dropped();
-            eprintln!("Bar writer queue is full; shard {shard_id} dropped one finalized bar.");
+            eprintln!(
+                "Bar writer receiver closed; shard {shard_id} could not persist one finalized bar."
+            );
         } else {
             metrics.inc_bar_persist_queued();
         }
@@ -975,8 +1007,14 @@ impl BarClickHouseWriter {
     }
 
     pub async fn initialize(&self) -> Result<(), String> {
-        self.execute(&format!("CREATE DATABASE IF NOT EXISTS `{}`", self.config.clickhouse_database), false)
-            .await?;
+        self.execute(
+            &format!(
+                "CREATE DATABASE IF NOT EXISTS `{}`",
+                self.config.clickhouse_database
+            ),
+            false,
+        )
+        .await?;
         self.execute(
             r#"
             CREATE TABLE IF NOT EXISTS live_market_bars
@@ -1120,16 +1158,19 @@ impl BarClickHouseWriter {
         if batch.is_empty() {
             return;
         }
-        let rows = std::mem::take(batch);
-        if let Err(error) = self.insert_bars(&rows).await {
+        if let Err(error) = self.insert_bars(batch).await {
             eprintln!("ClickHouse bar insert failed: {error}");
+        } else {
+            batch.clear();
         }
     }
 
     async fn insert_bars(&self, rows: &[BarRow]) -> Result<(), String> {
         let body = rows
             .iter()
-            .map(|row| serde_json::to_string(&bar_insert_row(row)).unwrap_or_else(|_| "{}".to_string()))
+            .map(|row| {
+                serde_json::to_string(&bar_insert_row(row)).unwrap_or_else(|_| "{}".to_string())
+            })
             .collect::<Vec<_>>()
             .join("\n");
         self.query_with_body("INSERT INTO live_market_bars FORMAT JSONEachRow", body)
@@ -1141,7 +1182,9 @@ impl BarClickHouseWriter {
     }
 
     async fn query_with_body(&self, sql: &str, body: String) -> Result<(), String> {
-        self.query(&format!("{sql}\n{body}"), true).await.map(|_| ())
+        self.query(&format!("{sql}\n{body}"), true)
+            .await
+            .map(|_| ())
     }
 
     async fn query(&self, body: &str, use_database: bool) -> Result<String, String> {
@@ -1291,7 +1334,9 @@ fn aligned_start(ts: DateTime<Utc>, seconds: i64) -> DateTime<Utc> {
     let millis = ts.timestamp_millis();
     let bucket_millis = seconds * 1_000;
     let start_millis = millis.div_euclid(bucket_millis) * bucket_millis;
-    Utc.timestamp_millis_opt(start_millis).single().unwrap_or(ts)
+    Utc.timestamp_millis_opt(start_millis)
+        .single()
+        .unwrap_or(ts)
 }
 
 fn shard_index(ticker: &str, shard_count: usize) -> usize {
