@@ -88,7 +88,7 @@ fine-grained source of truth for live time gaps.
 | `started_at` | Maintenance run start time. |
 | `finished_at` | Maintenance run finish or plan record time. |
 | `coverage_kind` | `q_live_recent_events` or `historical_flatfile_events`. |
-| `status` | Recent-live statuses include `up_to_date`, `repair_completed`, `partial_page_limit`, `partial_failed`, `blocked_missing_symbol_universe`, `repair_failed`, and `needs_manual_rebuild`. Historical statuses include `up_to_date`, `planned`, `launched`, and `launch_failed`. |
+| `status` | Recent-live statuses include `up_to_date`, `awaiting_live_symbols`, `no_symbols_available`, `repair_completed`, `partial_page_limit`, `partial_failed`, `repair_failed`, and `needs_manual_rebuild`. Historical statuses include `up_to_date`, `planned`, `launched`, and `launch_failed`. |
 | `start_ts_utc` | UTC start of the audited or planned coverage range. |
 | `end_ts_utc` | UTC end of the audited or planned coverage range. |
 | `action` | Startup or periodic action that wrote the row. |

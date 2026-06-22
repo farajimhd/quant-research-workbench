@@ -36,7 +36,9 @@ use crate::massive::{run_massive_ingest, MarketEventFanout};
 use crate::metrics::SharedMetrics;
 use crate::replay::run_replay_service;
 use crate::scanner::{spawn_scanner_primitive_engine, ScannerPrimitive, SharedScannerStore};
+use crate::session::is_streaming_phase;
 use crate::state::SharedMarketState;
+use chrono::Utc;
 use std::net::SocketAddr;
 use std::{error::Error, io};
 use tokio::sync::{broadcast, mpsc};
@@ -206,9 +208,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .await
     });
 
-    run_startup_maintenance(config.clone(), event_fanout.clone(), maintenance.clone()).await;
-
-    tokio::spawn(run_massive_ingest(config.clone(), event_fanout.clone()));
+    if is_streaming_phase(Utc::now()) {
+        tokio::spawn(run_massive_ingest(config.clone(), event_fanout.clone()));
+        tokio::spawn(run_startup_maintenance(
+            config.clone(),
+            event_fanout.clone(),
+            maintenance.clone(),
+        ));
+    } else {
+        run_startup_maintenance(config.clone(), event_fanout.clone(), maintenance.clone()).await;
+        tokio::spawn(run_massive_ingest(config.clone(), event_fanout.clone()));
+    }
     if config.gap_fill_enabled {
         tokio::spawn(run_gap_fill_service(
             config.clone(),

@@ -569,8 +569,10 @@ def status_color(value: str) -> str:
     lowered = value.lower()
     if lowered in {"running", "ok", "up_to_date", "completed", "launched"}:
         return "green"
-    if lowered in {"planned", "waiting", "skipped", "api_only_missing_massive_key"}:
+    if lowered in {"planned", "waiting", "skipped", "api_only_missing_massive_key", "awaiting_live_symbols"}:
         return "yellow"
+    if lowered in {"no_symbols_available"}:
+        return "red"
     if "fail" in lowered or "error" in lowered or "needs" in lowered or "blocked" in lowered:
         return "red"
     return "cyan"

@@ -99,10 +99,6 @@ Environment variables:
 - `QMD_GAP_FILL_MAX_LOOKBACK_DAYS`, default `3`
 - `QMD_GAP_FILL_MIN_GAP_SECONDS`, default `1`
 - `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL`, default `5`
-- `QMD_GAP_FILL_SYMBOLS`, optional comma-separated priority symbols
-- `QMD_GAP_FILL_SYMBOL_UNIVERSE_SQL`, optional SQL returning one ticker column
-- `QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE`, optional table containing repair tickers
-- `QMD_GAP_FILL_SYMBOL_UNIVERSE_COLUMN`, default `ticker`
 - `QMD_STARTUP_MAINTENANCE_ENABLED`, default `true`
 - `QMD_COVERAGE_TABLE`, default `qmd_market_coverage_manifest_v1`
 - `QMD_LIVE_EVENT_COVERAGE_TABLE`, default `qmd_live_event_coverage_v1`
@@ -347,15 +343,17 @@ Massive REST historical trades and quotes:
 
 Those REST endpoints require one ticker in the path. The websocket wildcard
 subscriptions `T.*` and `Q.*` do not translate to REST gap fill, so the repair
-uses the configured/discovered symbol universe and runs ticker jobs
-concurrently.
+runs concurrent per-ticker REST jobs.
 
-`QMD_GAP_FILL_SYMBOLS` is a priority seed list. Those symbols are always
-checked. Full-market repair also needs either
-`QMD_GAP_FILL_SYMBOL_UNIVERSE_SQL`, `QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE`, or
-symbols already present in recent compact events. If coverage gaps exist and no
-universe is available, QMD records `blocked_missing_symbol_universe` and does
-not mark the gap clean. q_live gap detection does not infer missing data from
+QMD does not use configured seed tickers or a configured universe table for REST
+repair. During streaming hours, it starts the websocket immediately and repairs
+only tickers discovered from newly persisted live compact events. If a clean
+slate has gaps but no live ticker has arrived yet, QMD reports
+`awaiting_live_symbols` and leaves the gap open. Outside streaming hours, it
+uses the latest symbols from `q_live.live_market_events_v1`; if q_live has no
+symbols, it falls back to the latest symbol set in the read-only
+`market_sip_compact.events` table. q_live gap detection does not infer missing
+data from
 `min/max/count` in `live_market_events_v1`; it subtracts confirmed intervals in
 `qmd_live_event_coverage_v1` from required 04:00-20:00 ET market-session
 windows. Streaming intervals are confirmed only where `compact_persisted` and

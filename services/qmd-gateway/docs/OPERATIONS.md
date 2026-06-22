@@ -151,8 +151,7 @@ websocket ingest, then records audit rows in `qmd_gap_fill_runs`.
 
 Massive websocket supports wildcard `T.*` and `Q.*`, but these REST endpoints
 require one `stockTicker` path value. The gateway therefore repairs by ticker
-from the configured/discovered universe and cannot request all tickers for a
-time range in one REST call.
+and cannot request all tickers for a time range in one REST call.
 
 | Mode | When It Runs | Purpose |
 |---|---|---|
@@ -160,16 +159,17 @@ time range in one REST call.
 | `after_hours` or `repair` | On timer outside active streaming hours. | Repair database gaps without competing with live ingest. |
 | `auto` | Session catch-up during active hours, after-hours repair outside active hours. | Default mode. |
 
-`QMD_GAP_FILL_SYMBOLS` is a priority seed list, not a production limit. Those
-tickers are always checked. Full-market repair needs either
-`QMD_GAP_FILL_SYMBOL_UNIVERSE_SQL`, `QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE`, or
-recent symbols already present in live compact events. If required coverage
-gaps exist and the universe is empty, QMD records
-`blocked_missing_symbol_universe` and leaves the gap open. Recent REST repair
-covers the current market day plus `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior
-US market sessions, skipping weekends and common US equity market holidays.
-Older history should be read from the read-only historical
-`market_sip_compact.events` table.
+QMD does not use configured seed tickers or a configured universe table for REST
+repair. During streaming hours, it starts Massive websocket ingest immediately
+and repairs only tickers discovered from newly persisted live compact events. If
+required coverage gaps exist before any live ticker has arrived, QMD records
+`awaiting_live_symbols` and leaves the gap open. Outside streaming hours, it
+uses latest symbols from q_live compact events, then the latest symbol set from
+the read-only historical `market_sip_compact.events` table if q_live is empty.
+Recent REST repair covers the current market day plus
+`QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior US market sessions, skipping weekends
+and common US equity market holidays. Older history should be read from
+`market_sip_compact.events`.
 
 ## Startup Maintenance And Coverage
 
@@ -264,8 +264,9 @@ Before live use:
 | Indicators are missing but bars arrive | Check `indicator_events_dropped`, `bar_rows_indicator_dropped`, and indicator history limits. |
 | Scanner primitives are missing | Confirm bars close, then check whether current market activity meets primitive thresholds. |
 | API is slow | Lower broadcast frequency, inspect websocket clients, and watch drop counters. |
-| Gap fill does not run | Check `QMD_GAP_FILL_ENABLED`, `MASSIVE_API_KEY`, `QMD_GAP_FILL_MODE`, and whether symbols are configured, discoverable from compact events, or provided by `QMD_GAP_FILL_SYMBOL_UNIVERSE_SQL`/`QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE`. |
-| Gap fill records `blocked_missing_symbol_universe` | Configure a full-market repair universe or seed symbols before dropping/rebuilding q_live event coverage. |
+| Gap fill does not run | Check `QMD_GAP_FILL_ENABLED`, `MASSIVE_API_KEY`, `QMD_GAP_FILL_MODE`, and whether the current phase allows repair. |
+| Gap fill records `awaiting_live_symbols` | Streaming is active and q_live has no discovered tickers yet. Let websocket ingest persist compact events, then the next repair pass can use those tickers. |
+| Gap fill records `no_symbols_available` | Outside streaming hours, no q_live or latest historical compact-event symbols were available for REST repair. |
 | Gap fill keeps writing many rows | Live ingest may be dropping compact events, or the gateway was offline for longer than expected. |
 | Startup maintenance records `needs_manual_rebuild` | Recent `q_live` committed ordinals are structurally inconsistent. Do not rely on automatic tail repair; inspect/rebuild the affected live event range. |
 

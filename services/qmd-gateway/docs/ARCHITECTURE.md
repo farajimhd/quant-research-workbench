@@ -155,10 +155,11 @@ continuity, and bars coherent.
 Clean recent gaps are repaired with Massive REST rows through the same fan-out
 as websocket ingest. The repair covers the current market day plus
 `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior US market sessions, inside the
-04:00-20:00 ET extended-hours window. If a gap exists but no repair universe is
-available from `QMD_GAP_FILL_SYMBOLS`, `QMD_GAP_FILL_SYMBOL_UNIVERSE_SQL`,
-`QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE`, or recent compact events, QMD records
-`blocked_missing_symbol_universe` and does not mark the interval covered.
+04:00-20:00 ET extended-hours window. During streaming hours, QMD starts the
+websocket first and repairs tickers only after they are discovered from live
+compact events. Outside streaming hours, it uses latest q_live symbols, then the
+latest historical `market_sip_compact.events` symbols if q_live is empty.
+Intervals without a discovered ticker set remain open and are not marked clean.
 Structural ordinal corruption is recorded in the manifest and left for explicit
 rebuild; QMD does not rewrite committed historical rows silently.
 

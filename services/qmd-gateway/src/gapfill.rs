@@ -48,6 +48,7 @@ pub async fn run_gap_fill_service(
     }
     let filler = GapFillService::new(config, fanout, maintenance);
     let mut timer = interval(Duration::from_millis(filler.config.gap_fill_interval_ms));
+    timer.tick().await;
     loop {
         timer.tick().await;
         let mode = if is_streaming_phase(Utc::now()) {
@@ -499,14 +500,22 @@ impl GapFillService {
             return Ok(repair);
         }
         if symbols.is_empty() {
-            repair.status = "blocked_missing_symbol_universe".to_string();
+            repair.status = if is_streaming_phase(Utc::now()) {
+                "awaiting_live_symbols".to_string()
+            } else {
+                "no_symbols_available".to_string()
+            };
             self.maintenance
                 .configure_totals(0, coverage_gaps.len() as u64)
                 .await;
             self.maintenance
                 .set_message(
-                    "blocked_missing_symbol_universe",
-                    "Coverage gaps exist, but no repair symbol universe is configured or discoverable.",
+                    &repair.status,
+                    if is_streaming_phase(Utc::now()) {
+                        "Coverage gaps exist. QMD is waiting for websocket compact events to discover tickers for REST repair."
+                    } else {
+                        "Coverage gaps exist, but no symbols were found in q_live or the latest historical compact event day."
+                    },
                 )
                 .await;
             self.record_run(
@@ -514,9 +523,13 @@ impl GapFillService {
                 mode,
                 &phase,
                 "",
-                "blocked_missing_symbol_universe",
+                &repair.status,
                 0,
-                "Recent q_live gaps exist, but no repair universe was found. Configure QMD_GAP_FILL_SYMBOLS, QMD_GAP_FILL_SYMBOL_UNIVERSE_SQL, or QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE.",
+                if is_streaming_phase(Utc::now()) {
+                    "Recent q_live gaps exist; waiting for websocket-discovered tickers before REST repair."
+                } else {
+                    "Recent q_live gaps exist, but no symbols were found in q_live or latest historical compact events."
+                },
             )
             .await?;
             return Ok(repair);
@@ -857,78 +870,99 @@ impl GapFillService {
         window_start: DateTime<Utc>,
     ) -> Result<Vec<String>, String> {
         let mut symbols = BTreeSet::new();
-        symbols.extend(
-            self.config
-                .gap_fill_symbols
-                .iter()
-                .map(|symbol| symbol.to_ascii_uppercase())
-                .filter(|symbol| !symbol.is_empty()),
-        );
-        symbols.extend(self.symbols_from_configured_universe().await?);
         if self.config.compact_events_enabled {
-            let sql = format!(
-                r#"
-                SELECT DISTINCT ticker
-                FROM {table}
-                WHERE event_date >= toDate('{start_date}')
-                  AND sip_timestamp_us >= {start_us}
-                  AND ticker != ''
-                ORDER BY ticker
-                FORMAT TSV
-                "#,
-                table = self.config.compact_event_table,
-                start_date = window_start.date_naive(),
-                start_us = window_start.timestamp_micros(),
-            );
-            let text = self.query(&sql, true).await.unwrap_or_default();
-            symbols.extend(
-                text.lines()
-                    .map(|line| line.trim().to_ascii_uppercase())
-                    .filter(|line| !line.is_empty()),
-            );
+            symbols.extend(self.recent_q_live_symbols(window_start).await?);
         }
+        if !symbols.is_empty() || is_streaming_phase(Utc::now()) {
+            return Ok(symbols.into_iter().collect());
+        }
+        symbols.extend(self.latest_q_live_symbols().await?);
+        if !symbols.is_empty() {
+            return Ok(symbols.into_iter().collect());
+        }
+        symbols.extend(self.latest_historical_symbols().await?);
         Ok(symbols.into_iter().collect())
     }
 
-    async fn symbols_from_configured_universe(&self) -> Result<Vec<String>, String> {
-        if !self.config.gap_fill_symbol_universe_sql.trim().is_empty() {
-            return self
-                .symbols_from_sql(&self.config.gap_fill_symbol_universe_sql)
-                .await;
-        }
-        if self.config.gap_fill_symbol_universe_table.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        let table = self.config.gap_fill_symbol_universe_table.trim();
-        let column = self
-            .config
-            .gap_fill_symbol_universe_column
-            .trim()
-            .trim_matches('`');
-        if column.is_empty() {
-            return Err("QMD_GAP_FILL_SYMBOL_UNIVERSE_COLUMN is empty".to_string());
-        }
+    async fn recent_q_live_symbols(
+        &self,
+        window_start: DateTime<Utc>,
+    ) -> Result<Vec<String>, String> {
         let sql = format!(
-            "SELECT DISTINCT `{column}` FROM {table} WHERE `{column}` != '' ORDER BY `{column}` FORMAT TSV",
-            column = column.replace('`', ""),
-            table = table,
+            r#"
+            SELECT DISTINCT ticker
+            FROM {table}
+            WHERE event_date >= toDate('{start_date}')
+              AND sip_timestamp_us >= {start_us}
+              AND ticker != ''
+            ORDER BY ticker
+            FORMAT TSV
+            "#,
+            table = self.config.compact_event_table,
+            start_date = window_start.date_naive(),
+            start_us = window_start.timestamp_micros(),
         );
         self.symbols_from_sql(&sql).await
     }
 
+    async fn latest_q_live_symbols(&self) -> Result<Vec<String>, String> {
+        let sql = format!(
+            r#"
+            WITH latest AS (SELECT max(event_date) AS event_date FROM {table})
+            SELECT DISTINCT ticker
+            FROM {table}
+            WHERE event_date = (SELECT event_date FROM latest)
+              AND ticker != ''
+            ORDER BY ticker
+            FORMAT TSV
+            "#,
+            table = self.config.compact_event_table,
+        );
+        self.symbols_from_sql(&sql).await
+    }
+
+    async fn latest_historical_symbols(&self) -> Result<Vec<String>, String> {
+        let latest = self.latest_historical_event_date().await?;
+        let db = self.config.historical_clickhouse_database.replace('`', "");
+        let sql = format!(
+            r#"
+            SELECT DISTINCT ticker
+            FROM {db}.events
+            WHERE source_date = toDate('{latest}')
+              AND ticker != ''
+            ORDER BY ticker
+            FORMAT TSV
+            "#,
+            db = db,
+            latest = escape_sql_string(&latest),
+        );
+        let symbols = self.symbols_from_historical_sql(&sql).await?;
+        if !symbols.is_empty() {
+            return Ok(symbols);
+        }
+        let sql = format!(
+            r#"
+            SELECT DISTINCT sym
+            FROM {db}.events
+            WHERE source_date = toDate('{latest}')
+              AND sym != ''
+            ORDER BY sym
+            FORMAT TSV
+            "#,
+            db = db,
+            latest = escape_sql_string(&latest),
+        );
+        self.symbols_from_historical_sql(&sql).await
+    }
+
     async fn symbols_from_sql(&self, sql: &str) -> Result<Vec<String>, String> {
         let text = self.query(sql, true).await?;
-        Ok(text
-            .lines()
-            .map(|line| {
-                line.split('\t')
-                    .next()
-                    .unwrap_or_default()
-                    .trim()
-                    .to_ascii_uppercase()
-            })
-            .filter(|symbol| !symbol.is_empty())
-            .collect())
+        Ok(parse_symbol_lines(&text))
+    }
+
+    async fn symbols_from_historical_sql(&self, sql: &str) -> Result<Vec<String>, String> {
+        let text = self.query_historical(sql).await.unwrap_or_default();
+        Ok(parse_symbol_lines(&text))
     }
 
     async fn record_completed_live_repair_coverage(
@@ -1780,6 +1814,19 @@ fn run_suffix(coverage_id: &str, prefix: &str) -> String {
         .strip_prefix(prefix)
         .unwrap_or(coverage_id)
         .to_string()
+}
+
+fn parse_symbol_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|line| {
+            line.split('\t')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_uppercase()
+        })
+        .filter(|symbol| !symbol.is_empty())
+        .collect()
 }
 
 fn is_market_session_date(date: NaiveDate) -> bool {
