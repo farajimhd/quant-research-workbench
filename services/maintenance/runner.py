@@ -58,6 +58,23 @@ WORKSTATION_NAME = "DESKTOP-SAAI85T"
 MAINTENANCE_TABLE = "service_maintenance_task_v1"
 MAINTENANCE_RUN_TABLE = "service_maintenance_run_v1"
 
+REFERENCE_IMPLEMENTED_PUBLICATION_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("finra_short_volume:CNMS", "finra", "daily FINRA consolidated NMS short-volume publication"),
+    ("sec_fails_to_deliver", "sec", "SEC fails-to-deliver publication"),
+)
+
+REFERENCE_PLANNED_PUBLICATION_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("finra_short_interest", "finra", "FINRA exchange-published short-interest source"),
+    ("reg_sho_threshold", "exchange_or_sec", "Reg SHO threshold-list source"),
+    ("ibkr_borrow_availability", "ibkr", "IBKR point-in-time borrow availability"),
+    ("massive_market_snapshot", "massive", "Massive daily market snapshot publication"),
+    ("massive_splits", "massive", "Massive stock split publication"),
+    ("massive_dividends", "massive", "Massive cash dividend publication"),
+    ("massive_ipos", "massive", "Massive IPO publication"),
+    ("massive_presentation_assets", "massive", "Massive presentation assets"),
+    ("sec_country_assertions", "sec", "SEC/XBRL-derived country assertions"),
+)
+
 
 @dataclass(frozen=True, slots=True)
 class TaskRecord:
@@ -410,10 +427,7 @@ def check_reference_publications(ctx: MaintenanceContext, args: argparse.Namespa
         ]
     start = parse_date(args.reference_min_date)
     end = ctx.now_utc.date() + timedelta(days=1)
-    source_specs = [
-        ("finra_short_volume:CNMS", "finra", "daily FINRA consolidated NMS short-volume publication"),
-        ("sec_fails_to_deliver", "sec", "SEC fails-to-deliver publication"),
-    ]
+    source_specs = list(REFERENCE_IMPLEMENTED_PUBLICATION_SPECS)
     all_gaps = []
     details: dict[str, Any] = {}
     for coverage_kind, source_system, label in source_specs:
@@ -465,6 +479,24 @@ def check_reference_publications(ctx: MaintenanceContext, args: argparse.Namespa
                 },
             )
         )
+    tasks.append(
+        TaskRecord(
+            task_id=new_task_id("reference_publication_planned"),
+            run_id=ctx.run_id,
+            service="reference",
+            task_kind="market_publication_planned_sources",
+            status="planned_not_implemented",
+            source_truth="reference publication source catalog",
+            rows_checked=len(REFERENCE_PLANNED_PUBLICATION_SPECS),
+            details={
+                "message": "These source kinds are modeled in schema/table groups but do not have enabled historical writers yet.",
+                "sources": [
+                    {"coverage_kind": kind, "source_system": source, "label": label}
+                    for kind, source, label in REFERENCE_PLANNED_PUBLICATION_SPECS
+                ],
+            },
+        )
+    )
     return tasks
 
 

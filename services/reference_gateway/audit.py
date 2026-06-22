@@ -9,7 +9,11 @@ from typing import Any
 
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
 from services.reference_gateway.config import ReferenceGatewayConfig
-from services.reference_gateway.market_publications import market_publication_audit
+from services.reference_gateway.market_publications import (
+    IMPLEMENTED_PUBLICATION_TABLES,
+    PLANNED_PUBLICATION_TABLES,
+    market_publication_audit,
+)
 from services.reference_gateway.table_groups import REFERENCE_TABLE_GROUPS
 
 
@@ -118,16 +122,17 @@ def check_table_group_counts(client: ClickHouseHttpClient, read_database: str, w
                     "database": database,
                     "table": table_name,
                     "rows": scalar_int(client, f"SELECT count() FROM {table(database, table_name)}"),
+                    "readiness": publication_table_readiness(table_name) if group.group_id == "market_reference_publications" else "required",
                     "status": "ok",
                 }
             )
-    zero = [row for row in rows if row.get("status") == "missing" or int(row.get("rows") or 0) == 0]
+    missing = [row for row in rows if row.get("status") == "missing"]
     return AuditCheck(
         name="reference_table_group_counts",
         severity="error",
-        status="ok" if not zero else "failed",
-        count=len(zero),
-        message="All owned reference table groups have rows." if not zero else "Some owned reference tables are empty.",
+        status="ok" if not missing else "failed",
+        count=len(missing),
+        message="All owned reference tables are present." if not missing else "Some owned reference tables are missing.",
         sample_rows=rows,
     )
 
@@ -437,18 +442,34 @@ def check_tradable_universe_blocked_rows(client: ClickHouseHttpClient, database:
 def check_market_publication_recency(client: ClickHouseHttpClient, database: str) -> AuditCheck:
     rows = market_publication_audit(client, database=database)
     missing = [row for row in rows if row.get("status") == "missing"]
-    empty = [row for row in rows if row.get("status") == "ok" and int(row.get("rows") or 0) == 0]
+    empty_implemented = [
+        row
+        for row in rows
+        if row.get("status") == "ok"
+        and int(row.get("rows") or 0) == 0
+        and str(row.get("table") or "") in IMPLEMENTED_PUBLICATION_TABLES
+    ]
+    planned_empty = [
+        row
+        for row in rows
+        if row.get("status") == "ok"
+        and int(row.get("rows") or 0) == 0
+        and str(row.get("table") or "") in PLANNED_PUBLICATION_TABLES
+    ]
     status = "ok" if not missing else "failed"
     message = "Market reference publication tables are present."
     if missing:
         message = "Market reference publication schema is incomplete; run the schema ensure step before backfill."
-    elif empty:
-        message = "Market reference publication schema exists; some sources have no rows yet and need historical fill."
+    elif empty_implemented:
+        status = "failed"
+        message = "Implemented market publication sources have no rows yet and need historical fill."
+    elif planned_empty:
+        message = "Implemented market publication sources are present; planned source tables are empty until their writers are enabled."
     return AuditCheck(
         name="market_reference_publication_tables",
         severity="warning",
         status=status,
-        count=len(missing) + len(empty),
+        count=len(missing) + len(empty_implemented),
         message=message,
         sample_rows=rows[:50],
     )
@@ -497,6 +518,14 @@ def group_database(group_id: str, read_database: str, write_database: str) -> st
     if group_id == "market_reference_publications":
         return write_database
     return read_database
+
+
+def publication_table_readiness(table_name: str) -> str:
+    if table_name in IMPLEMENTED_PUBLICATION_TABLES:
+        return "implemented"
+    if table_name in PLANNED_PUBLICATION_TABLES:
+        return "planned"
+    return "required"
 
 
 def query_json_each_row(client: ClickHouseHttpClient, sql: str) -> list[dict[str, Any]]:

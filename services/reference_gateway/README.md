@@ -215,6 +215,23 @@ volume and SEC fails-to-deliver. They write coverage rows so later runs resume
 from uncovered windows. IBKR borrow availability is point-in-time only; it is
 stored as broker-observed availability, not reconstructed historically.
 
+Historical fill dry-runs are read-only. If the write database does not already
+have `market_reference_publication_coverage_v1`, the dry-run reports
+`schema_missing` instead of creating tables. Run the schema initializer or use
+`--execute` when you intend to create/alter the temp database.
+
+Implemented source writers:
+
+```text
+finra_short_volume:CNMS
+sec_fails_to_deliver
+```
+
+The remaining publication source kinds are schema/planning entries until their
+specific writers are enabled. Maintenance reports them as
+`planned_not_implemented` so they remain visible without failing temp smoke
+tests.
+
 The second table group is issuer identity:
 
 ```text

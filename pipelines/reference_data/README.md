@@ -77,3 +77,9 @@ daily short-sale volume and SEC fails-to-deliver historical fills. IBKR borrow
 availability is point-in-time only and should be polled into
 `market_security_borrow_v1`; it should not be backfilled as if historical borrow
 availability were known.
+
+Dry-run mode does not create or alter tables. If the target write database has
+not been initialized, the script reports `schema_missing` and exits after
+writing the run summary. Weekend FINRA windows and SEC windows with no published
+file are persisted as `covered_empty` only during `--execute`, so maintenance
+does not repeatedly rediscover non-publication days.

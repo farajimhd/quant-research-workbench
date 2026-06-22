@@ -33,6 +33,7 @@ from services.reference_gateway.market_publications import (  # noqa: E402
     ensure_market_publication_schema,
     find_publication_gaps,
     insert_publication_coverage,
+    table_exists,
 )
 
 
@@ -46,6 +47,10 @@ FINRA_SHORT_VOLUME_SOURCES = {
 }
 SEC_FTD_PAGE = "https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data"
 USER_AGENT = "quant-reference-gateway/1.0 contact: local-research"
+IMPLEMENTED_SOURCES = {"finra_short_volume", "sec_fails_to_deliver"}
+WORKSTATION_COMPUTER_NAME = "DESKTOP-SAAI85T"
+WORKSTATION_DATA_ROOT_WIN = Path("D:/market-data")
+WORKSTATION_SHARE_DATA_ROOT_WIN = Path(r"\\DESKTOP-SAAI85T\Workstation-D\market-data")
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +91,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user", default=default_clickhouse_user())
     parser.add_argument("--password", default=default_clickhouse_password())
     parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "")
-    parser.add_argument("--output-root-win", default=os.environ.get("REFERENCE_PUBLICATION_OUTPUT_ROOT_WIN") or "D:/market-data/prepared/reference_market_publications")
+    parser.add_argument("--output-root-win", default=os.environ.get("REFERENCE_PUBLICATION_OUTPUT_ROOT_WIN") or str(default_output_root()))
     parser.add_argument("--sources", default="finra_short_volume,sec_fails_to_deliver", help="Comma separated: finra_short_volume,sec_fails_to_deliver.")
     parser.add_argument("--finra-venues", default="CNMS", help="Comma separated FINRA short-volume source files. Default CNMS consolidated NMS.")
     parser.add_argument("--resume-from-coverage", action=argparse.BooleanOptionalAction, default=True)
@@ -109,20 +114,35 @@ def main() -> None:
     end_date = date.fromisoformat(args.end_date)
     if end_date <= start_date:
         raise SystemExit("--end-date must be after --start-date")
+    sources = parse_csv(args.sources)
+    unsupported_sources = sorted(set(sources) - IMPLEMENTED_SOURCES)
+    if unsupported_sources:
+        raise SystemExit(
+            "Unsupported reference publication source(s): "
+            + ", ".join(unsupported_sources)
+            + ". Implemented sources are: "
+            + ", ".join(sorted(IMPLEMENTED_SOURCES))
+        )
     run_id = f"reference_publications_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
     run_root = Path(args.output_root_win) / run_id
     run_root.mkdir(parents=True, exist_ok=True)
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
-    ensure_market_publication_schema(
-        client,
-        database=args.write_database,
-        read_database=args.read_database,
-        storage_policy=args.storage_policy,
-    )
+    if args.execute:
+        ensure_market_publication_schema(
+            client,
+            database=args.write_database,
+            read_database=args.read_database,
+            storage_policy=args.storage_policy,
+        )
+    elif not table_exists(client, args.write_database, "market_reference_publication_coverage_v1"):
+        print_header(args, run_id, run_root, loaded_env, symbols=0)
+        results = schema_missing_results(args, sources, start_date, end_date)
+        write_summary(run_root, args, run_id, results)
+        print_summary(results, run_root)
+        return
     symbols = load_symbol_refs(client, args.read_database)
     print_header(args, run_id, run_root, loaded_env, len(symbols))
     results: list[SourceResult] = []
-    sources = parse_csv(args.sources)
     if "finra_short_volume" in sources:
         for venue in parse_csv(args.finra_venues):
             if venue not in FINRA_SHORT_VOLUME_SOURCES:
@@ -178,6 +198,32 @@ def run_date_source(
         day = gap.start_date
         while day < gap.end_date:
             if day.weekday() >= 5:
+                started = datetime.now(UTC)
+                finished = datetime.now(UTC)
+                status = "covered_empty"
+                details = {"reason": "non_publication_day_weekend", "target_table": "market_short_volume_v1"}
+                result = SourceResult(source_object, coverage_kind, day, day + timedelta(days=1), 0, 0, 0, status, details)
+                results.append(result)
+                print(f"{coverage_kind} {day.isoformat()} status={status} rows=0 written=0 reason=weekend", flush=True)
+                if args.execute:
+                    insert_publication_coverage(
+                        client,
+                        database=database,
+                        coverage_id=f"{run_id}:{coverage_kind}:{day.isoformat()}",
+                        coverage_kind=coverage_kind,
+                        source_system=source_system,
+                        source_object=source_object,
+                        start_date=day,
+                        end_date=day + timedelta(days=1),
+                        status=status,
+                        rows_read=0,
+                        rows_written=0,
+                        rows_failed=0,
+                        started_at_utc=started,
+                        finished_at_utc=finished,
+                        details=details,
+                        source_run_id=run_id,
+                    )
                 day += timedelta(days=1)
                 continue
             started = datetime.now(UTC)
@@ -317,13 +363,42 @@ def run_sec_ftd(
     if not args.resume_from_coverage:
         gaps = [PublicationDateGap(start_date, end_date)]  # type: ignore[list-item]
     links = fetch_sec_ftd_links(args)
+    latest_published_end = max((item["end_date"] for item in links), default=None)
     results: list[SourceResult] = []
     for gap in gaps:
         gap_start = gap.start_date
         gap_end = gap.end_date
         selected = [item for item in links if not (item["end_date"] <= gap_start or item["start_date"] >= gap_end)]
         if not selected:
-            results.append(SourceResult("sec_fails_to_deliver", "sec_fails_to_deliver", gap_start, gap_end, 0, 0, 0, "covered_empty", {"reason": "no_sec_file_for_window"}))
+            started = datetime.now(UTC)
+            finished = datetime.now(UTC)
+            published_window = latest_published_end is not None and gap_end <= latest_published_end
+            status = "covered_empty" if published_window else "source_not_yet_available"
+            details = {
+                "reason": "no_sec_file_for_window" if published_window else "sec_file_not_published_yet",
+                "latest_published_end": latest_published_end.isoformat() if latest_published_end else "",
+            }
+            results.append(SourceResult("sec_fails_to_deliver", "sec_fails_to_deliver", gap_start, gap_end, 0, 0, 0, status, details))
+            print(f"sec_fails_to_deliver {gap_start.isoformat()}->{gap_end.isoformat()} status={status} rows=0 written=0", flush=True)
+            if args.execute and status == "covered_empty":
+                insert_publication_coverage(
+                    client,
+                    database=args.write_database,
+                    coverage_id=f"{run_id}:sec_fails_to_deliver:{gap_start.isoformat()}:{gap_end.isoformat()}",
+                    coverage_kind="sec_fails_to_deliver",
+                    source_system="sec",
+                    source_object="fails_to_deliver",
+                    start_date=gap_start,
+                    end_date=gap_end,
+                    status=status,
+                    rows_read=0,
+                    rows_written=0,
+                    rows_failed=0,
+                    started_at_utc=started,
+                    finished_at_utc=finished,
+                    details=details,
+                    source_run_id=run_id,
+                )
             continue
         for item in selected:
             started = datetime.now(UTC)
@@ -525,6 +600,66 @@ def sha256_bytes(content: bytes) -> str:
 
 def parse_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def default_output_root() -> Path:
+    if is_workstation_host() and path_exists(WORKSTATION_DATA_ROOT_WIN):
+        return WORKSTATION_DATA_ROOT_WIN / "prepared" / "reference_market_publications"
+    if path_exists(WORKSTATION_SHARE_DATA_ROOT_WIN):
+        return WORKSTATION_SHARE_DATA_ROOT_WIN / "prepared" / "reference_market_publications"
+    return WORKSTATION_DATA_ROOT_WIN / "prepared" / "reference_market_publications"
+
+
+def is_workstation_host() -> bool:
+    return os.environ.get("COMPUTERNAME", "").strip().upper() == WORKSTATION_COMPUTER_NAME
+
+
+def path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def schema_missing_results(args: argparse.Namespace, sources: list[str], start_date: date, end_date: date) -> list[SourceResult]:
+    results: list[SourceResult] = []
+    for source in sources:
+        if source == "finra_short_volume":
+            for venue in parse_csv(args.finra_venues):
+                results.append(
+                    SourceResult(
+                        source=f"daily_short_volume:{venue}",
+                        coverage_kind=f"finra_short_volume:{venue}",
+                        start_date=start_date,
+                        end_date=end_date,
+                        rows_read=0,
+                        rows_written=0,
+                        rows_failed=0,
+                        status="schema_missing",
+                        details={
+                            "message": "Dry-run did not create tables. Run with --execute or initialize schema first.",
+                            "write_database": args.write_database,
+                        },
+                    )
+                )
+        elif source == "sec_fails_to_deliver":
+            results.append(
+                SourceResult(
+                    source="sec_fails_to_deliver",
+                    coverage_kind="sec_fails_to_deliver",
+                    start_date=start_date,
+                    end_date=end_date,
+                    rows_read=0,
+                    rows_written=0,
+                    rows_failed=0,
+                    status="schema_missing",
+                    details={
+                        "message": "Dry-run did not create tables. Run with --execute or initialize schema first.",
+                        "write_database": args.write_database,
+                    },
+                )
+            )
+    return results
 
 
 def qtable(database: str, table_name: str) -> str:
