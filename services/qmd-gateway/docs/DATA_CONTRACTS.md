@@ -80,16 +80,15 @@ Continuity table: `live_event_ordinal_continuity`
 Coverage manifest: `qmd_market_coverage_manifest_v1`
 
 This table is coarse and run-scoped. It records startup live event audits,
-recent REST repair attempts, and historical flatfile update plans. It is not
-used to decide whether the recent live event table has holes; that decision is
-made by querying `live_market_events_v1` directly by ticker and event date.
+recent REST repair attempts, and historical flatfile update plans. It is not the
+fine-grained source of truth for live time gaps.
 
 | Field | Meaning |
 |---|---|
 | `started_at` | Maintenance run start time. |
 | `finished_at` | Maintenance run finish or plan record time. |
 | `coverage_kind` | `q_live_recent_events` or `historical_flatfile_events`. |
-| `status` | Recent-live statuses include `up_to_date`, `repair_submitted`, `partial_page_limit`, `partial_failed`, `skipped`, `repair_failed`, and `needs_manual_rebuild`. Historical statuses include `up_to_date`, `planned`, `launched`, and `launch_failed`. |
+| `status` | Recent-live statuses include `up_to_date`, `repair_completed`, `partial_page_limit`, `partial_failed`, `blocked_missing_symbol_universe`, `repair_failed`, and `needs_manual_rebuild`. Historical statuses include `up_to_date`, `planned`, `launched`, and `launch_failed`. |
 | `start_ts_utc` | UTC start of the audited or planned coverage range. |
 | `end_ts_utc` | UTC end of the audited or planned coverage range. |
 | `action` | Startup or periodic action that wrote the row. |
@@ -97,6 +96,35 @@ made by querying `live_market_events_v1` directly by ticker and event date.
 | `host_role` | `workstation` or `laptop` after host-role resolution. |
 | `command` | Historical flatfile update command when one is planned. |
 | `summary_json` | JSON summary of audit counts, command planning, and messages. |
+
+Live event coverage manifest: `qmd_live_event_coverage_v1`
+
+This table is the fine-grained recent q_live coverage source. It is maintained
+by the compact-event writer, the bar writer, and REST repair. Live streaming
+does not become covered from a single `running` row. Coverage is materialized
+as:
+
+- `compact_persisted` intervals from `live_market_events_v1` inserts.
+- `bars_persisted` intervals from `live_market_bars` inserts.
+- the intersection of compact and bar intervals for the same run id.
+- explicit `repair_completed` intervals after REST repair routes events through
+  the same fan-out and verifies bar persistence for that interval.
+- the `coverage_bootstrap` rows used only for bootstrapped historical contracts.
+
+Rows with `failed`, `partial_failed`, `partial_page_limit`, or `running` are
+diagnostic. They are not counted as covered intervals. This prevents a compact
+insert failure or bar insert failure from hiding a q_live time gap.
+
+| Field | Meaning |
+|---|---|
+| `coverage_kind` | `q_live_events` for live compact/bar coverage or `flatfile_events` in the flatfile table. |
+| `coverage_id` | Stable id for the row. Live confirmations use `compact_<run_id>` and `bars_<run_id>`. REST repair rows use `repair_<run_id>_<started_ms>_<interval_index>`. |
+| `source` | Writer or repair source, such as `qmd_compact_event_writer`, `qmd_bar_writer`, or `massive_rest_gap_repair`. |
+| `status` | `compact_persisted`, `bars_persisted`, `repair_completed`, or diagnostic statuses. |
+| `coverage_start_utc`, `coverage_end_utc` | UTC interval covered or diagnosed. |
+| `rows_written`, `event_rows`, `bar_rows` | Writer-specific row counts. Repair rows store per-interval counts, not one repeated global count. |
+| `error_count` | Nonzero when a diagnostic row records a failed or partial interval. |
+| `metadata_json` | Per-run metadata including excluded raw tables and repair interval details. |
 
 Price integer scale:
 

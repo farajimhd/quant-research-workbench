@@ -1163,10 +1163,13 @@ impl BarClickHouseWriter {
         }
         if let Err(error) = self.insert_bars(batch).await {
             eprintln!("ClickHouse bar insert failed: {error}");
-        } else {
-            self.record_live_event_coverage(batch).await;
-            batch.clear();
+            return;
         }
+        if let Err(error) = self.record_live_event_coverage(batch).await {
+            eprintln!("ClickHouse qmd bar coverage update failed: {error}");
+            return;
+        }
+        batch.clear();
     }
 
     async fn insert_bars(&self, rows: &[BarRow]) -> Result<(), String> {
@@ -1211,9 +1214,9 @@ impl BarClickHouseWriter {
         )
     }
 
-    async fn record_live_event_coverage(&self, rows: &[BarRow]) {
+    async fn record_live_event_coverage(&self, rows: &[BarRow]) -> Result<(), String> {
         if rows.is_empty() {
-            return;
+            return Ok(());
         }
         let now = Utc::now();
         let min_ts = rows
@@ -1227,7 +1230,7 @@ impl BarClickHouseWriter {
             .max()
             .unwrap_or(now);
         if max_ts <= min_ts {
-            return;
+            return Ok(());
         }
         let started_at = self
             .config
@@ -1235,9 +1238,9 @@ impl BarClickHouseWriter {
             .unwrap_or_else(|| min_ts.min(now));
         let row = json!({
             "coverage_kind": "q_live_events",
-            "coverage_id": format!("live_{}", self.config.qmd_run_id),
+            "coverage_id": format!("bars_{}", self.config.qmd_run_id),
             "source": "qmd_bar_writer",
-            "status": "running",
+            "status": "bars_persisted",
             "coverage_start_utc": clickhouse_datetime64(&started_at.min(min_ts)),
             "coverage_end_utc": clickhouse_datetime64(&max_ts),
             "rows_written": rows.len() as u64,
@@ -1249,23 +1252,20 @@ impl BarClickHouseWriter {
             "completed_at_utc": Option::<String>::None,
             "metadata_json": json!({
                 "run_id": self.config.qmd_run_id,
-                "coverage_rule": "live coverage advances after live_market_bars insert succeeds",
+                "coverage_rule": "bar-side coverage confirmation; q_live coverage is confirmed only where compact events and bars overlap",
                 "raw_trade_quote_tables": "not_in_persistence_contract",
                 "indicators": "not_persisted_by_default",
             }).to_string(),
         });
-        let result = self
-            .query(
-                &format!(
-                    "INSERT INTO {} FORMAT JSONEachRow\n{}",
-                    self.config.qmd_live_event_coverage_table, row
-                ),
-                true,
-            )
-            .await;
-        if let Err(error) = result {
-            eprintln!("ClickHouse qmd bar coverage update failed: {error}");
-        }
+        self.query(
+            &format!(
+                "INSERT INTO {} FORMAT JSONEachRow\n{}",
+                self.config.qmd_live_event_coverage_table, row
+            ),
+            true,
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn execute(&self, sql: &str, use_database: bool) -> Result<(), String> {

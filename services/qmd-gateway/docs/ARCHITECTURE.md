@@ -140,12 +140,26 @@ Default durable writes:
 | `live_market_indicators` | `indicators.rs` | no | Optional materialized bar-level indicator rows |
 | `qmd_gap_fill_runs` | `gapfill.rs` | yes | Gap-fill audit log |
 | `qmd_market_coverage_manifest_v1` | `gapfill.rs` | yes | Coarse startup repair and historical flatfile planning manifest |
+| `qmd_live_event_coverage_v1` | `compact_event.rs`, `bars.rs`, `gapfill.rs` | yes | Recent q_live coverage manifest for compact events and bars |
+| `qmd_flatfile_event_coverage_v1` | `gapfill.rs` | yes | Historical flatfile coverage manifest |
 
-Startup maintenance audits recent `q_live.live_market_events_v1` rows directly
-before websocket ingest begins. It detects committed ordinal duplicates, holes,
-and order errors from the event table itself. Clean recent tails can be repaired
-with Massive REST rows through the same fan-out as websocket ingest. Structural
-ordinal corruption is recorded in the coverage manifest and left for explicit
+Startup maintenance audits recent `q_live.live_market_events_v1` rows for
+structural ordinal issues before websocket ingest begins. It does not infer
+missing time coverage from min/max timestamps. Recent time gaps are detected
+from `qmd_live_event_coverage_v1`. Live streaming writes one compact-event
+confirmation row and one bar confirmation row per run. A time range is treated
+as covered only where those two confirmations overlap, or where a completed
+REST repair row explicitly covers that interval. This keeps compact events,
+continuity, and bars coherent.
+
+Clean recent gaps are repaired with Massive REST rows through the same fan-out
+as websocket ingest. The repair covers the current market day plus
+`QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior US market sessions, inside the
+04:00-20:00 ET extended-hours window. If a gap exists but no repair universe is
+available from `QMD_GAP_FILL_SYMBOLS`, `QMD_GAP_FILL_SYMBOL_UNIVERSE_SQL`,
+`QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE`, or recent compact events, QMD records
+`blocked_missing_symbol_universe` and does not mark the interval covered.
+Structural ordinal corruption is recorded in the manifest and left for explicit
 rebuild; QMD does not rewrite committed historical rows silently.
 
 After-hours historical planning compares the read-only

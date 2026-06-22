@@ -151,11 +151,15 @@ websocket ingest, then records audit rows in `qmd_gap_fill_runs`.
 | `auto` | Session catch-up during active hours, after-hours repair outside active hours. | Default mode. |
 
 `QMD_GAP_FILL_SYMBOLS` is a priority seed list, not a production limit. Those
-tickers are always checked, and the worker also discovers symbols already
-present in recent live compact events. Recent REST repair covers the current
-market day plus `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior US market sessions,
-skipping weekends and common US equity market holidays. Older history should be
-read from the read-only historical `market_sip_compact.events` table.
+tickers are always checked. Full-market repair needs either
+`QMD_GAP_FILL_SYMBOL_UNIVERSE_SQL`, `QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE`, or
+recent symbols already present in live compact events. If required coverage
+gaps exist and the universe is empty, QMD records
+`blocked_missing_symbol_universe` and leaves the gap open. Recent REST repair
+covers the current market day plus `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior
+US market sessions, skipping weekends and common US equity market holidays.
+Older history should be read from the read-only historical
+`market_sip_compact.events` table.
 
 ## Startup Maintenance And Coverage
 
@@ -168,19 +172,20 @@ task starts. The gateway audits recent rows in the actual
 - ticker-local ordinal holes
 - ticker-local rows whose ordinal order disagrees with timestamp/sequence order
 
-This audit intentionally does not rely on the coverage manifest. If the recent
-event table is structurally clean, the gateway performs a bounded Massive REST
-current-session head repair through the normal fan-out path before live ingest
-starts, so repaired rows update memory, streams, bars, indicators, compact
-persistence, and optional raw persistence in the same way as live websocket
-rows. The recurring background repair then continues with the full recent
-window. The repair summarizes
-`live_market_events_v1` by `(ticker, event_date)` for the current market day and
-configured prior market sessions, then fills missing full days and missing head/tail
-intervals inside the 04:00-20:00 ET extended-hours window. If Massive
-pagination reaches `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`, the symbol is
-recorded as `partial_page_limit` instead of being marked clean. If the audit
-finds duplicate committed `(ticker, ordinal)` rows, the gateway records
+The structural audit is separate from time coverage. Recent time coverage is
+read from `qmd_live_event_coverage_v1`. Streaming writes are counted as covered
+only where `compact_persisted` and `bars_persisted` intervals for the same run
+overlap. REST repair rows are counted only when they are explicitly recorded as
+`repair_completed` per gap interval. If the recent event table is structurally
+clean, the gateway performs bounded Massive REST repair through the normal
+fan-out path before live ingest starts, so repaired rows update memory, streams,
+bars, indicators, compact persistence, and optional raw persistence in the same
+way as live websocket rows. The startup repair and recurring repair both use
+the current market day plus configured prior market sessions, then fill missing
+04:00-20:00 ET intervals. If Massive pagination reaches
+`QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`, the symbol is recorded as
+`partial_page_limit` instead of being marked clean. If the audit finds duplicate
+committed `(ticker, ordinal)` rows, the gateway records
 `needs_manual_rebuild` and refuses to silently rewrite existing rows. Ordinal
 holes and timestamp-order warnings remain visible in the manifest summary, but
 they do not block temporal REST repair.
@@ -221,6 +226,8 @@ Use replay in a separate run from live trading unless you are deliberately testi
 | `live_market_indicators` | optional | Materialized closed bar-level indicators when `QMD_PERSIST_INDICATORS=true`. |
 | `qmd_gap_fill_runs` | yes if gap fill enabled | Audit trail for gap-fill attempts. |
 | `qmd_market_coverage_manifest_v1` | yes if startup maintenance or historical planning is enabled | Coarse run-level live repair and historical flatfile planning manifest. |
+| `qmd_live_event_coverage_v1` | yes | Fine-grained recent q_live event coverage confirmations and repair intervals. |
+| `qmd_flatfile_event_coverage_v1` | yes | Historical flatfile event coverage bootstrap. |
 
 ## Common Checks
 
@@ -247,7 +254,8 @@ Before live use:
 | Indicators are missing but bars arrive | Check `indicator_events_dropped`, `bar_rows_indicator_dropped`, and indicator history limits. |
 | Scanner primitives are missing | Confirm bars close, then check whether current market activity meets primitive thresholds. |
 | API is slow | Lower broadcast frequency, inspect websocket clients, and watch drop counters. |
-| Gap fill does not run | Check `QMD_GAP_FILL_ENABLED`, `MASSIVE_API_KEY`, `QMD_GAP_FILL_MODE`, and whether symbols are configured or discoverable from compact events. |
+| Gap fill does not run | Check `QMD_GAP_FILL_ENABLED`, `MASSIVE_API_KEY`, `QMD_GAP_FILL_MODE`, and whether symbols are configured, discoverable from compact events, or provided by `QMD_GAP_FILL_SYMBOL_UNIVERSE_SQL`/`QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE`. |
+| Gap fill records `blocked_missing_symbol_universe` | Configure a full-market repair universe or seed symbols before dropping/rebuilding q_live event coverage. |
 | Gap fill keeps writing many rows | Live ingest may be dropping compact events, or the gateway was offline for longer than expected. |
 | Startup maintenance records `needs_manual_rebuild` | Recent `q_live` committed ordinals are structurally inconsistent. Do not rely on automatic tail repair; inspect/rebuild the affected live event range. |
 

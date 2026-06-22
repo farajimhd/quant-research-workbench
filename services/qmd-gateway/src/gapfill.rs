@@ -12,7 +12,7 @@ use chrono_tz::America::New_York;
 use futures_util::stream::{self, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path as FsPath;
 use std::process::Command;
 use tokio::time::{interval, Duration};
@@ -86,6 +86,14 @@ struct CoverageInterval {
 }
 
 #[derive(Clone, Debug)]
+struct CoverageRow {
+    coverage_id: String,
+    end: DateTime<Utc>,
+    start: DateTime<Utc>,
+    status: String,
+}
+
+#[derive(Clone, Debug)]
 struct RepairInterval {
     end: DateTime<Utc>,
     reason: &'static str,
@@ -95,10 +103,31 @@ struct RepairInterval {
 #[derive(Default)]
 struct SymbolRepairOutcome {
     errors: u64,
-    intervals_filled: u64,
+    interval_records: Vec<IntervalRepairRecord>,
+    intervals_attempted: u64,
     page_limit_hit: bool,
     rows: u64,
     symbol_repaired: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct IntervalRepairRecord {
+    errors: u64,
+    index: usize,
+    page_limit_hit: bool,
+    rows: u64,
+    symbol_had_rows: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct IntervalRepairStats {
+    bar_rows_after: u64,
+    bar_rows_before: u64,
+    errors: u64,
+    page_limit_symbols: u64,
+    rows: u64,
+    symbols_attempted: u64,
+    symbols_with_rows: u64,
 }
 
 #[derive(Default)]
@@ -364,16 +393,12 @@ impl GapFillService {
         mode: &str,
     ) -> Result<RecentLiveRepair, String> {
         let phase = format!("{:?}", session_phase(started_at));
-        let (window_start, window_end, mut market_dates) = self.recent_live_window();
-        if mode == "startup_recent_repair" {
-            let today = started_at.with_timezone(&New_York).date_naive();
-            market_dates.retain(|date| *date == today);
-        }
+        let (window_start, window_end, market_dates) = self.recent_live_window();
         let coverage_intervals = self
             .live_event_coverage_intervals(window_start, window_end)
             .await?;
         let coverage_gaps = self.coverage_gaps_for_sessions(&market_dates, &coverage_intervals);
-        let symbols = self.recent_live_symbols_from_db(window_start).await?;
+        let symbols = self.recent_live_symbols(window_start).await?;
         let mut repair = RecentLiveRepair {
             status: "up_to_date".to_string(),
             symbols_checked: symbols.len() as u64,
@@ -384,18 +409,28 @@ impl GapFillService {
             return Ok(repair);
         }
         if symbols.is_empty() {
-            repair.status = "skipped".to_string();
+            repair.status = "blocked_missing_symbol_universe".to_string();
             self.record_run(
                 started_at,
                 mode,
                 &phase,
                 "",
-                "skipped",
+                "blocked_missing_symbol_universe",
                 0,
-                "No recent q_live symbols were discovered and QMD_GAP_FILL_SYMBOLS is empty",
+                "Recent q_live gaps exist, but no repair universe was found. Configure QMD_GAP_FILL_SYMBOLS, QMD_GAP_FILL_SYMBOL_UNIVERSE_SQL, or QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE.",
             )
             .await?;
             return Ok(repair);
+        }
+        let mut interval_stats = Vec::with_capacity(coverage_gaps.len());
+        for interval in &coverage_gaps {
+            interval_stats.push(IntervalRepairStats {
+                bar_rows_before: self
+                    .count_bar_rows(interval.start, interval.end)
+                    .await
+                    .unwrap_or(0),
+                ..IntervalRepairStats::default()
+            });
         }
         let repair_jobs = symbols
             .into_iter()
@@ -423,13 +458,26 @@ impl GapFillService {
             match outcome {
                 Ok(outcome) => {
                     repair.rows_written += outcome.rows;
-                    repair.intervals_repaired += outcome.intervals_filled;
+                    repair.intervals_repaired += outcome.intervals_attempted;
                     repair.errors += outcome.errors;
                     if outcome.symbol_repaired {
                         repair.symbols_repaired += 1;
                     }
                     if outcome.page_limit_hit {
                         repair.page_limited_symbols += 1;
+                    }
+                    for record in outcome.interval_records {
+                        if let Some(stats) = interval_stats.get_mut(record.index) {
+                            stats.rows += record.rows;
+                            stats.errors += record.errors;
+                            stats.symbols_attempted += 1;
+                            if record.symbol_had_rows {
+                                stats.symbols_with_rows += 1;
+                            }
+                            if record.page_limit_hit {
+                                stats.page_limit_symbols += 1;
+                            }
+                        }
                     }
                 }
                 Err(error) => {
@@ -445,14 +493,29 @@ impl GapFillService {
         } else if repair.intervals_repaired > 0 {
             let wait_ms = self.config.flush_interval_ms.saturating_mul(2).max(1_000);
             tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+            for (index, interval) in coverage_gaps.iter().enumerate() {
+                if let Some(stats) = interval_stats.get_mut(index) {
+                    stats.bar_rows_after = self
+                        .count_bar_rows(interval.start, interval.end)
+                        .await
+                        .unwrap_or(stats.bar_rows_before);
+                }
+            }
             self.record_completed_live_repair_coverage(
                 started_at,
                 mode,
                 &coverage_gaps,
-                repair.rows_written,
+                &interval_stats,
             )
             .await?;
-            "repair_completed".to_string()
+            if interval_stats.iter().any(|stats| {
+                stats.errors > 0
+                    || (stats.rows > 0 && stats.bar_rows_after <= stats.bar_rows_before)
+            }) {
+                "partial_failed".to_string()
+            } else {
+                "repair_completed".to_string()
+            }
         } else {
             "up_to_date".to_string()
         };
@@ -470,8 +533,9 @@ impl GapFillService {
         let mut symbol_rows = 0u64;
         let mut symbol_errors = 0u64;
         let mut symbol_partial = false;
-        let mut intervals_filled = 0u64;
-        for interval in intervals {
+        let mut intervals_attempted = 0u64;
+        let mut interval_records = Vec::with_capacity(intervals.len());
+        for (index, interval) in intervals.into_iter().enumerate() {
             eprintln!(
                 "QMD recent q_live repair: symbol={} reason={} start={} end={}",
                 symbol,
@@ -485,15 +549,29 @@ impl GapFillService {
             {
                 Ok(outcome) => {
                     symbol_rows += outcome.rows;
-                    intervals_filled += 1;
+                    intervals_attempted += 1;
                     self.fanout.metrics.inc_gap_fill_rows(outcome.rows);
                     if outcome.page_limit_hit {
                         symbol_partial = true;
                     }
+                    interval_records.push(IntervalRepairRecord {
+                        errors: 0,
+                        index,
+                        page_limit_hit: outcome.page_limit_hit,
+                        rows: outcome.rows,
+                        symbol_had_rows: outcome.rows > 0,
+                    });
                 }
                 Err(error) => {
                     symbol_errors += 1;
                     eprintln!("QMD recent q_live repair failed for {symbol}: {error}");
+                    interval_records.push(IntervalRepairRecord {
+                        errors: 1,
+                        index,
+                        page_limit_hit: false,
+                        rows: 0,
+                        symbol_had_rows: false,
+                    });
                 }
             }
         }
@@ -513,6 +591,8 @@ impl GapFillService {
             symbol_rows,
             if symbol_partial {
                 "Massive REST page limit was reached for at least one interval"
+            } else if symbol_errors > 0 {
+                "At least one interval failed for this symbol"
             } else {
                 ""
             },
@@ -520,10 +600,11 @@ impl GapFillService {
         .await?;
         Ok(SymbolRepairOutcome {
             errors: symbol_errors,
-            intervals_filled,
+            interval_records,
+            intervals_attempted,
             page_limit_hit: symbol_partial,
             rows: symbol_rows,
-            symbol_repaired: intervals_filled > 0,
+            symbol_repaired: intervals_attempted > 0,
         })
     }
 
@@ -535,11 +616,13 @@ impl GapFillService {
         let sql = format!(
             r#"
             SELECT
+                coverage_id,
+                status,
                 coverage_start_utc,
                 coverage_end_utc
             FROM {table} FINAL
             WHERE coverage_kind = 'q_live_events'
-              AND status IN ('running', 'completed', 'repair_completed', 'coverage_bootstrap')
+              AND status IN ('repair_completed', 'coverage_bootstrap', 'compact_persisted', 'bars_persisted')
               AND coverage_end_utc > toDateTime64('{start}', 3, 'UTC')
               AND coverage_start_utc < toDateTime64('{end}', 3, 'UTC')
             ORDER BY coverage_start_utc, coverage_end_utc
@@ -550,9 +633,19 @@ impl GapFillService {
             end = clickhouse_datetime64(&window_end),
         );
         let text = self.query(&sql, true).await?;
-        let mut out = Vec::new();
+        let mut rows = Vec::new();
         for line in text.lines().filter(|line| !line.trim().is_empty()) {
             let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
+            let coverage_id = value
+                .get("coverage_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let status = value
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
             let Some(start) = value
                 .get("coverage_start_utc")
                 .and_then(Value::as_str)
@@ -570,8 +663,14 @@ impl GapFillService {
             if end <= start {
                 continue;
             }
-            out.push(CoverageInterval { end, start });
+            rows.push(CoverageRow {
+                coverage_id,
+                end,
+                start,
+                status,
+            });
         }
+        let out = materialize_confirmed_live_coverage(&rows);
         Ok(out)
     }
 
@@ -633,7 +732,7 @@ impl GapFillService {
         gaps
     }
 
-    async fn recent_live_symbols_from_db(
+    async fn recent_live_symbols(
         &self,
         window_start: DateTime<Utc>,
     ) -> Result<Vec<String>, String> {
@@ -645,6 +744,7 @@ impl GapFillService {
                 .map(|symbol| symbol.to_ascii_uppercase())
                 .filter(|symbol| !symbol.is_empty()),
         );
+        symbols.extend(self.symbols_from_configured_universe().await?);
         if self.config.compact_events_enabled {
             let sql = format!(
                 r#"
@@ -670,19 +770,58 @@ impl GapFillService {
         Ok(symbols.into_iter().collect())
     }
 
+    async fn symbols_from_configured_universe(&self) -> Result<Vec<String>, String> {
+        if !self.config.gap_fill_symbol_universe_sql.trim().is_empty() {
+            return self
+                .symbols_from_sql(&self.config.gap_fill_symbol_universe_sql)
+                .await;
+        }
+        if self.config.gap_fill_symbol_universe_table.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let table = self.config.gap_fill_symbol_universe_table.trim();
+        let column = self
+            .config
+            .gap_fill_symbol_universe_column
+            .trim()
+            .trim_matches('`');
+        if column.is_empty() {
+            return Err("QMD_GAP_FILL_SYMBOL_UNIVERSE_COLUMN is empty".to_string());
+        }
+        let sql = format!(
+            "SELECT DISTINCT `{column}` FROM {table} WHERE `{column}` != '' ORDER BY `{column}` FORMAT TSV",
+            column = column.replace('`', ""),
+            table = table,
+        );
+        self.symbols_from_sql(&sql).await
+    }
+
+    async fn symbols_from_sql(&self, sql: &str) -> Result<Vec<String>, String> {
+        let text = self.query(sql, true).await?;
+        Ok(text
+            .lines()
+            .map(|line| {
+                line.split('\t')
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_uppercase()
+            })
+            .filter(|symbol| !symbol.is_empty())
+            .collect())
+    }
+
     async fn record_completed_live_repair_coverage(
         &self,
         started_at: DateTime<Utc>,
         mode: &str,
         intervals: &[RepairInterval],
-        event_rows: u64,
+        interval_stats: &[IntervalRepairStats],
     ) -> Result<(), String> {
         for (index, interval) in intervals.iter().enumerate() {
-            let bar_rows = self
-                .count_bar_rows(interval.start, interval.end)
-                .await
-                .unwrap_or(0);
-            let status = if event_rows > 0 && bar_rows == 0 {
+            let stats = interval_stats.get(index).cloned().unwrap_or_default();
+            let bar_rows_added = stats.bar_rows_after.saturating_sub(stats.bar_rows_before);
+            let status = if stats.errors > 0 || (stats.rows > 0 && bar_rows_added == 0) {
                 "partial_failed"
             } else {
                 "repair_completed"
@@ -700,9 +839,9 @@ impl GapFillService {
                 status,
                 interval.start,
                 interval.end,
-                event_rows,
-                event_rows,
-                bar_rows,
+                stats.rows,
+                stats.rows,
+                bar_rows_added,
                 if status == "partial_failed" { 1 } else { 0 },
                 started_at,
                 Some(Utc::now()),
@@ -714,6 +853,12 @@ impl GapFillService {
                         "q_live.live_event_ordinal_continuity",
                         "q_live.live_market_bars"
                     ],
+                    "symbols_attempted": stats.symbols_attempted,
+                    "symbols_with_rows": stats.symbols_with_rows,
+                    "page_limit_symbols": stats.page_limit_symbols,
+                    "repair_errors": stats.errors,
+                    "bar_rows_before": stats.bar_rows_before,
+                    "bar_rows_after": stats.bar_rows_after,
                     "excluded_tables": [
                         "q_live.live_massive_trades",
                         "q_live.live_massive_quotes",
@@ -1464,6 +1609,57 @@ fn market_session_window_utc(
     } else {
         Some((start, end))
     }
+}
+
+fn materialize_confirmed_live_coverage(rows: &[CoverageRow]) -> Vec<CoverageInterval> {
+    let mut direct = Vec::new();
+    let mut compact_by_run: BTreeMap<String, Vec<&CoverageRow>> = BTreeMap::new();
+    let mut bars_by_run: BTreeMap<String, Vec<&CoverageRow>> = BTreeMap::new();
+    for row in rows {
+        match row.status.as_str() {
+            "repair_completed" | "coverage_bootstrap" => direct.push(CoverageInterval {
+                end: row.end,
+                start: row.start,
+            }),
+            "compact_persisted" => {
+                compact_by_run
+                    .entry(run_suffix(&row.coverage_id, "compact_"))
+                    .or_default()
+                    .push(row);
+            }
+            "bars_persisted" => {
+                bars_by_run
+                    .entry(run_suffix(&row.coverage_id, "bars_"))
+                    .or_default()
+                    .push(row);
+            }
+            _ => {}
+        }
+    }
+    let mut out = direct;
+    for (run_id, compact_rows) in compact_by_run {
+        let Some(bar_rows) = bars_by_run.get(&run_id) else {
+            continue;
+        };
+        for compact in compact_rows {
+            for bars in bar_rows {
+                let start = compact.start.max(bars.start);
+                let end = compact.end.min(bars.end);
+                if end > start {
+                    out.push(CoverageInterval { end, start });
+                }
+            }
+        }
+    }
+    out.sort_by_key(|interval| (interval.start, interval.end));
+    out
+}
+
+fn run_suffix(coverage_id: &str, prefix: &str) -> String {
+    coverage_id
+        .strip_prefix(prefix)
+        .unwrap_or(coverage_id)
+        .to_string()
 }
 
 fn is_market_session_date(date: NaiveDate) -> bool {

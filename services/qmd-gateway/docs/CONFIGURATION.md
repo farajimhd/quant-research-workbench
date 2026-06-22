@@ -84,12 +84,15 @@ Required data-path queues use awaited sends. A full queue applies backpressure i
 | `QMD_GAP_FILL_MAX_LOOKBACK_DAYS` | `3` | Recent structural audit lookback in calendar days. | The REST repair window is controlled by `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS`. |
 | `QMD_GAP_FILL_MIN_GAP_SECONDS` | `1` | Ignore gaps shorter than this. | Keep at `1` for no intentional market-session holes. |
 | `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL` | `5` | Legacy REST page cap for focused/manual repair paths. | Recent live coverage repair uses `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`. |
-| `QMD_GAP_FILL_SYMBOLS` | empty | Optional comma-separated priority symbols. | These are always checked; the repair also discovers symbols already present in recent live compact event rows. |
+| `QMD_GAP_FILL_SYMBOLS` | empty | Optional comma-separated priority symbols. | These are always checked; use only for focused repair unless paired with a universe source. |
+| `QMD_GAP_FILL_SYMBOL_UNIVERSE_SQL` | empty | Optional ClickHouse SQL that returns one ticker column for full-market recent q_live repair. | Takes precedence over `QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE`. Use a fully qualified table if needed. |
+| `QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE` | empty | Optional ClickHouse table containing tradable Massive tickers for repair. | Used when SQL is empty. If unset, QMD can only repair configured or already-seen symbols. |
+| `QMD_GAP_FILL_SYMBOL_UNIVERSE_COLUMN` | `ticker` | Column read from `QMD_GAP_FILL_SYMBOL_UNIVERSE_TABLE`. | The value is uppercased by the gateway. |
 | `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL` | `1000` | Max Massive REST pages per ticker/kind/repair interval for current-day plus 3-day q_live coverage repair. | Keep high enough that liquid tickers do not stop at `partial_page_limit`. |
 | `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` | `3` | Number of prior US market sessions, plus the current market day, that q_live REST repair must keep covered. | Skips weekends and common US equity market holidays. |
 | `QMD_RECENT_LIVE_REPAIR_CONCURRENCY` | `8` | Max concurrent ticker repair workers for recent q_live REST repair. | Keeps full-market session-head repair from crawling symbol by symbol. |
 | `QMD_STARTUP_MAINTENANCE_ENABLED` | `true` | Audit and repair recent `q_live` event coverage before live websocket ingest starts. | Disable only for isolated tests. |
-| `QMD_COVERAGE_TABLE` | `qmd_market_coverage_manifest_v1` | Coarse run-level coverage manifest table in `q_live`. | Records startup audits, recent live repairs, and historical flatfile update plans; not used as the source of truth for live holes. |
+| `QMD_COVERAGE_TABLE` | `qmd_market_coverage_manifest_v1` | Coarse run-level coverage manifest table in `q_live`. | Records startup audits, recent live repairs, and historical flatfile update plans; not used as the fine-grained source of truth for live holes. |
 | `QMD_LIVE_EVENT_COVERAGE_TABLE` | `qmd_live_event_coverage_v1` | Durable q_live compact-event coverage intervals. | Recent gap detection subtracts these intervals from required market sessions. |
 | `QMD_FLATFILE_EVENT_COVERAGE_TABLE` | `qmd_flatfile_event_coverage_v1` | Historical flatfile coverage intervals. | First startup bootstraps one 2019-forward row from `market_sip_compact.events_ordinal_continuity`. |
 | `QMD_RUN_ID` | generated | Optional stable id for one gateway run. | Normally leave generated; used as the live coverage row id suffix. |
@@ -109,11 +112,13 @@ Recent live repair converts Massive REST rows to the same normalized
 `MarketEvent` type used by the websocket path, then feeds the same state,
 stream, bar, indicator, and compact-event queues. Raw `live_massive_trades` and
 `live_massive_quotes` are not part of the default repair contract. The repair
-loads `qmd_live_event_coverage_v1`, subtracts covered intervals from the
-current New York market day plus the configured prior sessions, and fills every
-remaining 04:00-20:00 ET session gap. Repair completion is recorded after the
-compact event path has been flushed and `live_market_bars` has rows for a
-non-empty repaired interval.
+loads `qmd_live_event_coverage_v1`, materializes covered intervals from the
+intersection of `compact_persisted` and `bars_persisted` rows plus explicit
+`repair_completed` rows, subtracts those intervals from the current New York
+market day plus the configured prior sessions, and fills every remaining
+04:00-20:00 ET session gap. If gaps exist and the symbol universe is empty, the
+repair is blocked with `blocked_missing_symbol_universe` instead of being
+marked clean.
 
 ## Scanner Primitives
 
