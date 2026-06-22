@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import time
 from typing import Iterable
 
 import numpy as np
@@ -14,6 +15,8 @@ from market_ai.types import EncoderBatch, EventChunk, TemporalBatch, TemporalSam
 class EncoderBatcher:
     config: MarketAIConfig
     _pending: deque[EventChunk] = field(default_factory=deque)
+    last_flush_seconds: float = 0.0
+    total_flush_seconds: float = 0.0
 
     def add(self, chunk: EventChunk) -> EncoderBatch | None:
         self._pending.append(chunk)
@@ -32,10 +35,13 @@ class EncoderBatcher:
     def flush(self) -> EncoderBatch | None:
         if not self._pending:
             return None
+        start = time.perf_counter()
         chunks = tuple(self._pending)
         self._pending.clear()
         headers = np.stack([chunk.header_uint8 for chunk in chunks]).astype(np.uint8, copy=False)
         events = np.stack([chunk.events_uint8 for chunk in chunks]).astype(np.uint8, copy=False)
+        self.last_flush_seconds = time.perf_counter() - start
+        self.total_flush_seconds += self.last_flush_seconds
         return EncoderBatch(headers_uint8=headers, events_uint8=events, chunks=chunks)
 
 
@@ -43,6 +49,8 @@ class EncoderBatcher:
 class TemporalBatcher:
     config: MarketAIConfig
     _pending: deque[TemporalSample] = field(default_factory=deque)
+    last_flush_seconds: float = 0.0
+    total_flush_seconds: float = 0.0
 
     def add(self, sample: TemporalSample) -> TemporalBatch | None:
         self._pending.append(sample)
@@ -61,7 +69,10 @@ class TemporalBatcher:
     def flush(self) -> TemporalBatch | None:
         if not self._pending:
             return None
+        start = time.perf_counter()
         samples = tuple(self._pending)
         self._pending.clear()
         contexts = np.stack([sample.context_embeddings for sample in samples]).astype(np.float32, copy=False)
+        self.last_flush_seconds = time.perf_counter() - start
+        self.total_flush_seconds += self.last_flush_seconds
         return TemporalBatch(contexts=contexts, samples=samples)

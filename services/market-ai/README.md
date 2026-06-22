@@ -47,15 +47,42 @@ From the repo root:
 
 ```powershell
 python services\market-ai\run_smoke.py
+python services\market-ai\run_service.py --source synthetic --max-events 1000
 python -m unittest discover -s services\market-ai\tests
 ```
 
 The smoke test uses synthetic compact rows and a deterministic dummy encoder. It
 does not start a server or connect to ClickHouse.
 
+## Live Service
+
+Start against qmd-gateway's live compact-event websocket:
+
+```powershell
+python services\market-ai\run_service.py --source qmd --qmd-url ws://127.0.0.1:8795/stream/compact-events
+```
+
+Useful local validation command:
+
+```powershell
+python services\market-ai\run_service.py --source synthetic --max-events 10000 --encoder-batch-size 512 --temporal-batch-size 256
+```
+
+The service displays a Rich terminal with:
+
+- event ingest, chunk, encoder-batch, temporal-batch, and prediction counts
+- recent event/chunk/sample rates
+- event processing and batch-prep timing
+- encoder and temporal model timing
+- queue depths, active source, and recent messages/errors
+
+`--source qmd` requires the `websockets` package. The service handles Ctrl+C by
+setting a stop event, draining pending encoder/temporal batches once, and then
+exiting.
+
 ## Current Scope
 
-This initial service adds the event serving and batching core. Model loading,
-HTTP/websocket APIs, and qmd-gateway stream subscription should be added on top
-of these primitives once the model checkpoints and live deployment contract are
-finalized.
+This initial service adds the event serving and batching core plus a runnable
+terminal service. Production checkpoint loading and a prediction publishing API
+should be added on top of these primitives once the model checkpoints and live
+deployment contract are finalized.
