@@ -356,7 +356,23 @@ def render_maintenance_progress(state: PollState) -> Any:
         ("Active", ", ".join(str(item) for item in active_symbols[:8]) or "-", str(maintenance.get("current_interval_reason") or "-")),
         ("Message", str(maintenance.get("message") or "-"), updated_label(maintenance.get("updated_at_utc"))),
     ]
-    return Panel(metric_table(rows, value_heading="Value", last_heading="Detail"), title="Maintenance Progress", box=box.ROUNDED, border_style=color, padding=(0, 1))
+    table = metric_table(
+        rows,
+        value_heading="Value",
+        last_heading="Detail",
+        metric_width=12,
+        value_width=None,
+        last_width=None,
+        value_ratio=3,
+        last_ratio=2,
+        value_no_wrap=False,
+        last_no_wrap=False,
+        value_overflow="fold",
+        last_overflow="fold",
+        value_justify="left",
+        last_justify="left",
+    )
+    return Panel(table, title="Maintenance Progress", box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
 def render_maintenance(state: PollState) -> Any:
@@ -489,11 +505,36 @@ def metric_table(
     rows: list[tuple[str, str, str]],
     value_heading: str = "Total",
     last_heading: str = "Last",
+    metric_width: int = 22,
+    value_width: int | None = 14,
+    last_width: int | None = 16,
+    value_ratio: int | None = None,
+    last_ratio: int | None = None,
+    value_no_wrap: bool = True,
+    last_no_wrap: bool = True,
+    value_overflow: str = "ellipsis",
+    last_overflow: str = "ellipsis",
+    value_justify: str = "right",
+    last_justify: str = "right",
 ) -> Any:
     table = Table(box=box.SIMPLE, expand=True, show_edge=False, padding=(0, 1))
-    table.add_column("Metric", style="bold cyan", width=22)
-    table.add_column(value_heading, justify="right", width=14, no_wrap=True)
-    table.add_column(last_heading, justify="right", width=16, no_wrap=True)
+    table.add_column("Metric", style="bold cyan", width=metric_width, no_wrap=True)
+    table.add_column(
+        value_heading,
+        justify=value_justify,
+        width=value_width,
+        ratio=value_ratio,
+        no_wrap=value_no_wrap,
+        overflow=value_overflow,
+    )
+    table.add_column(
+        last_heading,
+        justify=last_justify,
+        width=last_width,
+        ratio=last_ratio,
+        no_wrap=last_no_wrap,
+        overflow=last_overflow,
+    )
     for metric, total, last in rows:
         table.add_row(metric, total, last)
     return table
