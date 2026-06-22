@@ -1,6 +1,7 @@
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::metrics::SharedMetrics;
+use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::Serialize;
@@ -482,7 +483,7 @@ impl CompactEventClickHouseWriter {
                 json!({
                     "event_date": event.event_date,
                     "schema_version": event.schema_version,
-                    "ingest_ts": event.ingest_ts.to_rfc3339(),
+                    "ingest_ts": clickhouse_datetime64(&event.ingest_ts),
                     "arrival_sequence": event.arrival_sequence,
                     "ticker": event.ticker,
                     "ordinal": event.ordinal,
@@ -691,7 +692,7 @@ impl CompactEventClickHouseWriter {
         if dirty_continuity_tickers.is_empty() || !self.config.persist_compact_events {
             return;
         }
-        let updated_at = Utc::now().to_rfc3339();
+        let updated_at = clickhouse_datetime64(&Utc::now());
         let body = dirty_continuity_tickers
             .iter()
             .filter_map(|ticker| ordinal_state.get(ticker).map(|state| (ticker, state)))

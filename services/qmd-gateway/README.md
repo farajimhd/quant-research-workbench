@@ -339,8 +339,8 @@ summarizes q_live coverage by `(ticker, event_date)`. REST repair covers the
 current market day plus `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior weekdays,
 default `3`, because the REST path is for recent crash/restart recovery. It
 fills missing full days and missing head/tail intervals and marks the repair
-partial if Massive pagination hits `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL`. Deeper
-historical event history should be read from the read-only
+partial if Massive pagination hits `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`.
+Deeper historical event history should be read from the read-only
 `market_sip_compact.events` table, which is maintained by the flatfile pipelines
 up to the prior day.
 

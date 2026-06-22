@@ -1,5 +1,6 @@
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
+use crate::timefmt::{clickhouse_datetime64, clickhouse_datetime64_opt};
 use reqwest::Client;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -143,16 +144,16 @@ impl ClickHouseWriter {
     }
 
     async fn insert_trades(&self, rows: &[TradeEvent]) -> Result<(), String> {
-        let body =
-            rows.iter()
-                .map(|event| {
-                    json!({
+        let body = rows
+            .iter()
+            .map(|event| {
+                json!({
                     "session_date": event.ts.date_naive().to_string(),
                     "schema_version": RAW_EVENT_SCHEMA_VERSION,
-                    "ts": event.ts.to_rfc3339(),
-                    "participant_ts": event.participant_ts.as_ref().map(|value| value.to_rfc3339()),
-                    "trf_ts": event.trf_ts.as_ref().map(|value| value.to_rfc3339()),
-                    "ingest_ts": event.ingest_ts.to_rfc3339(),
+                    "ts": clickhouse_datetime64(&event.ts),
+                    "participant_ts": clickhouse_datetime64_opt(event.participant_ts.as_ref()),
+                    "trf_ts": clickhouse_datetime64_opt(event.trf_ts.as_ref()),
+                    "ingest_ts": clickhouse_datetime64(&event.ingest_ts),
                     "sym": &event.ticker,
                     "trade_id": &event.trade_id,
                     "seq": event.sequence,
@@ -163,10 +164,11 @@ impl ClickHouseWriter {
                     "conditions": &event.conditions,
                     "trf_id": event.trf_id,
                     "raw": event.raw.to_string(),
-                }).to_string()
                 })
-                .collect::<Vec<_>>()
-                .join("\n");
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         self.query_with_body("INSERT INTO live_massive_trades FORMAT JSONEachRow", body)
             .await
     }
@@ -178,8 +180,8 @@ impl ClickHouseWriter {
                 json!({
                     "session_date": event.ts.date_naive().to_string(),
                     "schema_version": RAW_EVENT_SCHEMA_VERSION,
-                    "ts": event.ts.to_rfc3339(),
-                    "ingest_ts": event.ingest_ts.to_rfc3339(),
+                    "ts": clickhouse_datetime64(&event.ts),
+                    "ingest_ts": clickhouse_datetime64(&event.ingest_ts),
                     "sym": &event.ticker,
                     "seq": event.sequence,
                     "bid_exchange": event.bid_exchange,

@@ -2,6 +2,7 @@ use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::metrics::SharedMetrics;
 use crate::scanner::ScannerPrimitiveRouter;
+use crate::timefmt::{clickhouse_datetime64, clickhouse_datetime64_opt};
 use chrono::{DateTime, TimeZone, Utc};
 use reqwest::Client;
 use serde::Serialize;
@@ -1223,11 +1224,11 @@ fn bar_insert_row(row: &BarRow) -> serde_json::Value {
         "schema_version": row.schema_version,
         "timeframe": &row.timeframe,
         "sym": &row.sym,
-        "bar_start": row.bar_start.to_rfc3339(),
-        "bar_end": row.bar_end.to_rfc3339(),
+        "bar_start": clickhouse_datetime64(&row.bar_start),
+        "bar_end": clickhouse_datetime64(&row.bar_end),
         "is_closed": row.is_closed as u8,
-        "first_event_ts": row.first_event_ts.as_ref().map(|value| value.to_rfc3339()),
-        "last_event_ts": row.last_event_ts.as_ref().map(|value| value.to_rfc3339()),
+        "first_event_ts": clickhouse_datetime64_opt(row.first_event_ts.as_ref()),
+        "last_event_ts": clickhouse_datetime64_opt(row.last_event_ts.as_ref()),
         "open": row.open,
         "high": row.high,
         "low": row.low,

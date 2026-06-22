@@ -1,6 +1,7 @@
 use crate::bars::BarRow;
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
+use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::Serialize;
@@ -956,8 +957,8 @@ fn indicator_insert_row(row: &IndicatorRow) -> serde_json::Value {
         "schema_version": row.schema_version,
         "timeframe": &row.timeframe,
         "sym": &row.sym,
-        "bar_start": row.bar_start.to_rfc3339(),
-        "bar_end": row.bar_end.to_rfc3339(),
+        "bar_start": clickhouse_datetime64(&row.bar_start),
+        "bar_end": clickhouse_datetime64(&row.bar_end),
         "close": row.close,
         "volume": row.volume,
         "vwap": row.vwap,

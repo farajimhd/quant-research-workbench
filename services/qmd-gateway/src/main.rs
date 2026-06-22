@@ -16,6 +16,7 @@ mod scanner;
 mod session;
 mod signal_catalog;
 mod state;
+mod timefmt;
 
 use crate::api::{app, AppState};
 use crate::bars::{spawn_bar_engines, BarClickHouseWriter, BarRow, SharedBarStore};

@@ -175,10 +175,10 @@ the same way as live websocket rows. The repair summarizes
 `live_market_events_v1` by `(ticker, event_date)` for the current market day and
 configured prior weekdays, then fills missing full days and missing head/tail
 intervals inside the 04:00-20:00 ET extended-hours window. If Massive
-pagination reaches `QMD_GAP_FILL_MAX_PAGES_PER_SYMBOL`, the symbol is recorded
-as `partial_page_limit` instead of being marked clean. If the audit finds
-committed ordinal structure problems, the gateway records `needs_manual_rebuild`
-and refuses to silently rewrite existing rows.
+pagination reaches `QMD_RECENT_LIVE_MAX_PAGES_PER_INTERVAL`, the symbol is
+recorded as `partial_page_limit` instead of being marked clean. If the audit
+finds committed ordinal structure problems, the gateway records
+`needs_manual_rebuild` and refuses to silently rewrite existing rows.
 
 `qmd_market_coverage_manifest_v1` is a coarse per-run manifest. It records
 startup live repair checks, scheduled recent-live repair checks, and historical

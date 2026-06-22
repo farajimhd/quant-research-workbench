@@ -3,6 +3,7 @@ use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::massive::{fanout_market_event, MarketEventFanout};
 use crate::metrics::TimingTarget;
 use crate::session::{is_streaming_phase, session_phase};
+use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, TimeZone, Utc};
 use chrono_tz::America::New_York;
 use reqwest::Client;
@@ -305,7 +306,7 @@ impl GapFillService {
         let mut out = Vec::new();
         let mut page_limit_hit = false;
         while let Some(url) = next_url.take() {
-            if pages >= self.config.gap_fill_max_pages_per_symbol {
+            if pages >= self.config.recent_live_max_pages_per_interval {
                 page_limit_hit = true;
                 break;
             }
@@ -628,7 +629,7 @@ impl GapFillService {
                     event_type,
                     arrival_sequence
                 FROM {table}
-                WHERE event_date >= today('UTC') - {lookback_days}
+                WHERE event_date >= toDate(now('UTC')) - {lookback_days}
                   AND ticker != ''
             ),
             ticker_ranges AS
@@ -869,7 +870,7 @@ impl GapFillService {
         message: &str,
     ) -> Result<(), String> {
         let row = json!({
-            "started_at": started_at.to_rfc3339(),
+            "started_at": clickhouse_datetime64(&started_at),
             "mode": mode,
             "phase": phase,
             "symbol": symbol,
@@ -899,12 +900,12 @@ impl GapFillService {
         summary: &Value,
     ) -> Result<(), String> {
         let row = json!({
-            "started_at": started_at.to_rfc3339(),
-            "finished_at": Utc::now().to_rfc3339(),
+            "started_at": clickhouse_datetime64(&started_at),
+            "finished_at": clickhouse_datetime64(&Utc::now()),
             "coverage_kind": coverage_kind,
             "status": status,
-            "start_ts_utc": start_ts_utc.to_rfc3339(),
-            "end_ts_utc": end_ts_utc.to_rfc3339(),
+            "start_ts_utc": clickhouse_datetime64(&start_ts_utc),
+            "end_ts_utc": clickhouse_datetime64(&end_ts_utc),
             "action": action,
             "rows_written": rows_written,
             "host_role": host_role,
