@@ -148,6 +148,10 @@ class TrainConfig:
     num_workers: int = 0
     prefetch_factor: int = 1
     seed: int = 17
+    # Defaults to non-repeatable random behavior for long research runs. Pass
+    # --repeatable-randomness when an experiment must replay the exact same
+    # shard order, record shuffle, masking, and corruption streams.
+    repeatable_randomness: bool = False
     amp: bool = True
     amp_dtype: str = "bf16"
     amp_initial_scale: float = 1024.0

@@ -91,6 +91,7 @@ DEFAULTS: dict[str, Any] = {
     "amp_initial_scale": 1024.0,
     "amp_overflow_fatal_threshold": 8,
     "float32_matmul_precision": "high",
+    "repeatable_randomness": False,
     "warm_start_checkpoint": (
         r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\masked_event_model\v20\pretrain"
         r"\v20-fullpretrain-sharddecay-fixedmask070-emb32-bs8192-3epochs\checkpoints\checkpoint_latest.pt"
@@ -150,6 +151,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--amp-growth-interval", type=int, default=DEFAULTS["amp_growth_interval"])
     parser.add_argument("--amp-max-scale", type=float, default=DEFAULTS["amp_max_scale"])
     parser.add_argument("--float32-matmul-precision", choices=("highest", "high", "medium"), default=DEFAULTS["float32_matmul_precision"])
+    parser.add_argument("--repeatable-randomness", action=argparse.BooleanOptionalAction, default=DEFAULTS["repeatable_randomness"])
     parser.add_argument("--warm-start-checkpoint", nargs="?", const="", default=DEFAULTS["warm_start_checkpoint"])
     parser.add_argument("--warm-start-load-optimizer", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--initial-validation", action=argparse.BooleanOptionalAction, default=False)
@@ -256,6 +258,7 @@ def main() -> None:
             "amp_growth_interval": int(args.amp_growth_interval),
             "amp_max_scale": float(args.amp_max_scale),
             "float32_matmul_precision": args.float32_matmul_precision,
+            "repeatable_randomness": bool(args.repeatable_randomness),
             "warm_start_checkpoint": args.warm_start_checkpoint,
             "warm_start_load_optimizer": bool(args.warm_start_load_optimizer),
             "initial_validation": bool(args.initial_validation),
@@ -380,6 +383,7 @@ def print_plan(values: dict[str, Any], train_shards, validation_shards, validati
     print(f"warm_start_checkpoint={values.get('warm_start_checkpoint') or '<none>'}", flush=True)
     print(f"warm_start_load_optimizer={values.get('warm_start_load_optimizer', False)}", flush=True)
     print(f"compile_model={values['compile_model']} interleave_shards={values['sample_cache_interleave_shards']}", flush=True)
+    print(f"repeatable_randomness={values['repeatable_randomness']} seed_mode={'fixed' if values['repeatable_randomness'] else 'fresh_per_run'}", flush=True)
     print("Equivalent trainer args:", flush=True)
     print(" ".join(argv), flush=True)
     print("=" * 104, flush=True)

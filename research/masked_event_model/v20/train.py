@@ -6,12 +6,13 @@ import math
 import os
 import platform
 import random
+import secrets
 import shutil
 import sys
 import time
 import traceback
 import importlib.util
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, is_dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import torch
+import numpy as np
 from torch.utils.data import DataLoader
 
 from research.masked_event_model.v20.config import DataConfig, ExperimentConfig, LossConfig, MaskConfig, ModelConfig, TrainConfig
@@ -111,6 +113,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--prefetch-factor", type=int, default=train_defaults.prefetch_factor)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=train_defaults.seed)
+    parser.add_argument("--repeatable-randomness", action=argparse.BooleanOptionalAction, default=train_defaults.repeatable_randomness)
     parser.add_argument("--learning-rate", type=float, default=train_defaults.learning_rate)
     parser.add_argument("--weight-decay", type=float, default=train_defaults.weight_decay)
     parser.add_argument("--scheduler", choices=("none", "cosine_warm_restarts", "shard_decay_cosine"), default=train_defaults.scheduler)
@@ -193,11 +196,63 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def resolve_effective_seed(requested_seed: int, *, repeatable_randomness: bool) -> int:
+    if repeatable_randomness:
+        return int(requested_seed)
+    # Keep the seed within signed 63-bit range so it is accepted by Python,
+    # NumPy, Torch CPU, and Torch CUDA RNGs. It is stored in checkpoints and
+    # config for auditability, but a fresh value is generated for each run.
+    return int(secrets.randbits(63))
+
+
+@contextmanager
+def isolated_rng_state(device: torch.device):
+    """Run code that samples masks without advancing the caller's RNG streams."""
+
+    py_state = random.getstate()
+    np_state = np.random.get_state()
+    torch_state = torch.get_rng_state()
+    cuda_states = torch.cuda.get_rng_state_all() if device.type == "cuda" and torch.cuda.is_available() else None
+    try:
+        yield
+    finally:
+        random.setstate(py_state)
+        np.random.set_state(np_state)
+        torch.set_rng_state(torch_state)
+        if cuda_states is not None:
+            torch.cuda.set_rng_state_all(cuda_states)
+
+
+def checkpoint_rng_state() -> dict[str, Any]:
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+
+
+def restore_checkpoint_rng_state(state: dict[str, Any] | None) -> None:
+    if not state:
+        return
+    if state.get("python") is not None:
+        random.setstate(state["python"])
+    if state.get("numpy") is not None:
+        np.random.set_state(state["numpy"])
+    if state.get("torch") is not None:
+        torch.set_rng_state(state["torch"])
+    if state.get("cuda") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda"])
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     load_env_files(discover_env_files(REPO_ROOT))
-    set_seed(args.seed)
+    requested_seed = int(args.seed)
+    args.requested_seed = requested_seed
+    args.seed = resolve_effective_seed(requested_seed, repeatable_randomness=bool(args.repeatable_randomness))
     config = build_config(args)
+    set_seed(config.train.seed)
     run_name = config.train.wandb_run_name or default_run_name(args)
     config.train.wandb_run_name = run_name
     output_dir = resolve_output_dir(config, args)
@@ -208,6 +263,11 @@ def main(argv: list[str] | None = None) -> None:
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
     print(f"Output directory: {output_dir}", flush=True)
     print(f"Device: {device}", flush=True)
+    print(
+        f"Randomness: repeatable={config.train.repeatable_randomness} "
+        f"requested_seed={requested_seed} effective_seed={config.train.seed}",
+        flush=True,
+    )
     configure_float32_matmul_precision(config.train, device)
     print(f"Input shape: header=[B,14] events=[B,{config.data.events_per_chunk},16]", flush=True)
     print(f"Input representation: {config.model.input_representation}", flush=True)
@@ -1290,7 +1350,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
         ),
         model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout, decoder_force_fp32=args.decoder_force_fp32),
         losses=LossConfig(objective=args.loss_objective),
-        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, scheduler_epoch_decay_ratio=args.scheduler_epoch_decay_ratio, scheduler_shard_decay_fraction=args.scheduler_shard_decay_fraction, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, amp=args.amp, amp_dtype=args.amp_dtype, amp_initial_scale=args.amp_initial_scale, amp_growth_interval=args.amp_growth_interval, amp_max_scale=args.amp_max_scale, amp_overflow_fatal_threshold=args.amp_overflow_fatal_threshold, float32_matmul_precision=args.float32_matmul_precision, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
+        train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, scheduler_epoch_decay_ratio=args.scheduler_epoch_decay_ratio, scheduler_shard_decay_fraction=args.scheduler_shard_decay_fraction, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, repeatable_randomness=args.repeatable_randomness, amp=args.amp, amp_dtype=args.amp_dtype, amp_initial_scale=args.amp_initial_scale, amp_growth_interval=args.amp_growth_interval, amp_max_scale=args.amp_max_scale, amp_overflow_fatal_threshold=args.amp_overflow_fatal_threshold, float32_matmul_precision=args.float32_matmul_precision, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )
 
 
@@ -1487,9 +1547,10 @@ def evaluate_validation(model: EventTokenMaskedAutoencoder, batches: list[dict[s
     totals: dict[str, float] = {}
     started = time.perf_counter()
     amp_dtype = resolve_amp_dtype(config.train, device)
-    with torch.no_grad():
+    with torch.no_grad(), isolated_rng_state(device):
         for index, cpu_batch in enumerate(batches):
-            torch.manual_seed(seed + index)
+            if config.train.repeatable_randomness:
+                set_seed(seed + index)
             batch = move_batch(cpu_batch, device)
             masks = build_event_masks(batch["events_uint8"], config.masks)
             with torch.amp.autocast("cuda", enabled=amp_dtype is not None, dtype=amp_dtype):
@@ -1644,6 +1705,10 @@ def maybe_resume_or_warm_start(
             scaler.load_state_dict(checkpoint["scaler"])
         else:
             print("WARN resumed checkpoint has no AMP scaler state; starting with a fresh GradScaler.", flush=True)
+        if checkpoint.get("rng_state") is not None:
+            restore_checkpoint_rng_state(checkpoint.get("rng_state"))
+        else:
+            print("WARN resumed checkpoint has no RNG state; continuing from the current run RNG stream.", flush=True)
         print(f"Resumed checkpoint: {path} step={checkpoint.get('step', 0)}", flush=True)
         return int(checkpoint.get("step", 0))
     if warm_start_checkpoint is not None and str(warm_start_checkpoint) and warm_start_checkpoint.exists():
@@ -1705,6 +1770,7 @@ def checkpoint_payload(
         "step": step,
         "config": dataclass_tree(config),
         "args": vars(args),
+        "rng_state": checkpoint_rng_state(),
     }
 
 

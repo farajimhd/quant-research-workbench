@@ -90,10 +90,18 @@ event mask ratio: 0.70
 event mask schedule: fixed 70%
 header bit corruption: 20% of samples, 5% of header bits
 visible event bit corruption: 30% of samples, 20% of visible event bits
+randomness: non-repeatable by default; pass --repeatable-randomness to replay the same seed stream
 AMP dtype: bf16
 FP16 GradScaler cap: 2048 with growth interval 10000
 W&B project: June2026-event-token-mae-v20-mlp-decoder
 ```
+
+By default v20 generates a fresh effective seed at process start, then records
+that effective seed in the run config/checkpoints. This prevents continuation
+runs from replaying the same shard order, record shuffle, event mask indices,
+and bit-corruption stream. Validation masks are sampled inside an isolated RNG
+context, so validation cannot reset or advance the training RNG stream. Use
+`--repeatable-randomness` only for a controlled replay/debug run.
 
 ## Profiling
 
