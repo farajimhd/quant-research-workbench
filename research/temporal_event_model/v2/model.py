@@ -89,6 +89,29 @@ class MarketTemporalReturnPredictor(nn.Module):
         global_context: torch.Tensor | None = None,
         ticker_context: torch.Tensor | None = None,
     ) -> TemporalReturnOutput:
+        return TemporalReturnOutput(
+            return_prediction_norm=self.predict_return_tensor(
+                context_embeddings,
+                global_context=global_context,
+                ticker_context=ticker_context,
+            )
+        )
+
+    def predict_return_tensor(
+        self,
+        context_embeddings: torch.Tensor,
+        *,
+        global_context: torch.Tensor | None = None,
+        ticker_context: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Tensor-only path for inference, summaries, and graph tools.
+
+        `forward()` returns `TemporalReturnOutput` for training readability, but
+        `torchinfo` and `torchview` expect called modules to return tensors or
+        tensor containers. This method uses the same layers and weights while
+        returning only the `[B, H]` return prediction tensor.
+        """
+
         # Input shape: [B, K, E]. Output shape: [B, K, D].
         tokens = self.context_embedding_projection(context_embeddings)
         # Input shape: [K]. Output shape after unsqueeze: [1, K, D].
@@ -108,5 +131,4 @@ class MarketTemporalReturnPredictor(nn.Module):
         # Shape: [B, 2D (+ optional context projections)] -> [B, D].
         latent = self.temporal_summary_mlp(torch.cat(summaries, dim=-1))
         # Shape: [B, H].
-        return TemporalReturnOutput(return_prediction_norm=self.return_horizon_head(latent))
-
+        return self.return_horizon_head(latent)
