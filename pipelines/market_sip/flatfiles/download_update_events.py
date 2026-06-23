@@ -145,6 +145,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bars-by-symbol-time-table", default=DEFAULT_BARS_BY_SYMBOL_TIME_TABLE)
     parser.add_argument("--bars-by-time-symbol-table", default=DEFAULT_BARS_BY_TIME_SYMBOL_TABLE)
     parser.add_argument("--bar-timeframes", default=",".join(DEFAULT_BAR_TIMEFRAMES))
+    parser.add_argument("--bar-chunk-days", type=int, default=7)
+    parser.add_argument("--bar-copy-layouts-from-primary", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--start-date", default=DEFAULT_START_DATE)
     parser.add_argument("--end-date", default=DEFAULT_END_DATE)
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
@@ -1504,6 +1506,8 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
         max_memory_usage=args.max_memory_usage,
         output_root_win=args.output_root_win,
         replace_range=args.bar_replace_range,
+        chunk_days=args.bar_chunk_days,
+        copy_layouts_from_primary=args.bar_copy_layouts_from_primary,
         expand_boundaries=True,
         drop_table=False,
         dry_run=args.dry_run,

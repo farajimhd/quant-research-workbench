@@ -97,6 +97,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--replace-range", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
+        "--chunk-days",
+        type=int,
+        default=7,
+        help=(
+            "Build event-derived bars in bounded date chunks. Weekly/monthly bars are chunked on "
+            "their natural boundaries; other timeframes use this many UTC dates per query."
+        ),
+    )
+    parser.add_argument(
+        "--copy-layouts-from-primary",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Compute bars from events only for the primary chart layout, then populate the "
+            "symbol_time and time_symbol layouts with INSERT SELECT copies."
+        ),
+    )
+    parser.add_argument(
         "--expand-boundaries",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -192,7 +210,8 @@ class BarBuildReporter:
         self._active_query_id = ""
         self._timeframe_ranges = timeframe_ranges(args, specs)
         self._bar_tables = bar_table_specs(args)
-        self._total_steps = len(self._bar_tables) * len(specs) * (1 + (1 if args.replace_range else 0)) + (len(self._bar_tables) if args.drop_table else 0)
+        self._total_jobs = planned_job_count(args, specs, self._bar_tables)
+        self._total_steps = self._total_jobs * (1 + (1 if args.replace_range else 0)) + (len(self._bar_tables) if args.drop_table else 0)
         self._completed_steps = 0
         self._stage = "starting"
 
@@ -277,6 +296,8 @@ class BarBuildReporter:
         summary.add_row("requested", f"{self.requested_start_date} -> {self.requested_end_date}")
         summary.add_row("build ranges", format_timeframe_ranges(self._timeframe_ranges))
         summary.add_row("timeframes", ",".join(spec.name for spec in self.specs))
+        summary.add_row("chunks", f"{self._total_jobs:,} jobs, chunk_days={self.args.chunk_days}")
+        summary.add_row("layout mode", "copy alternates" if self.args.copy_layouts_from_primary else "compute each layout")
         summary.add_row("stage", self._stage)
         if self._active_query_id:
             summary.add_row("active query", self._active_query_id)
@@ -314,15 +335,28 @@ def build_live_market_bars(
             )
             if args.drop_table:
                 print_sql_preview(f"drop {table_spec.layout}", drop_table_sql(args.database, table_spec.table))
-            for spec in specs:
-                start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
-                scoped_args = args_with_bar_table(args_with_date_range(args, start_date, end_date), table_spec.table)
+        primary_table = bar_tables[0]
+        for spec in specs:
+            start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
+            for chunk_start, chunk_end in date_chunks_for_timeframe(start_date, end_date, spec, max(1, int(args.chunk_days))):
+                scoped_args = args_with_bar_table(args_with_date_range(args, chunk_start, chunk_end), primary_table.table)
                 if args.replace_range:
                     print_sql_preview(
-                        f"delete {table_spec.layout} {spec.name}",
-                        delete_range_sql(args.database, table_spec.table, start_date, end_date, args, timeframe=spec.name),
+                        f"delete {primary_table.layout} {spec.name} {chunk_start}->{chunk_end}",
+                        delete_range_sql(args.database, primary_table.table, chunk_start, chunk_end, args, timeframe=spec.name),
                     )
-                print_sql_preview(f"insert {table_spec.layout} {spec.name}", insert_live_market_bars_sql(scoped_args, spec))
+                print_sql_preview(f"insert {primary_table.layout} {spec.name} {chunk_start}->{chunk_end}", insert_live_market_bars_sql(scoped_args, spec))
+                if bool(getattr(args, "copy_layouts_from_primary", True)):
+                    for table_spec in bar_tables[1:]:
+                        if args.replace_range:
+                            print_sql_preview(
+                                f"delete {table_spec.layout} {spec.name} {chunk_start}->{chunk_end}",
+                                delete_range_sql(args.database, table_spec.table, chunk_start, chunk_end, args, timeframe=spec.name),
+                            )
+                        print_sql_preview(
+                            f"copy {table_spec.layout} {spec.name} {chunk_start}->{chunk_end}",
+                            copy_bar_rows_sql(args.database, primary_table.table, table_spec.table, spec.name, chunk_start, chunk_end),
+                        )
         return results
 
     if args.drop_table:
@@ -337,72 +371,75 @@ def build_live_market_bars(
     for table_spec in bar_tables:
         client.execute(create_bar_table_sql(args.database, table_spec.table, args.storage_policy, layout=table_spec))
 
-    total_jobs = len(bar_tables) * len(specs)
+    primary_table = bar_tables[0]
+    copy_alternate_layouts = bool(getattr(args, "copy_layouts_from_primary", True)) and len(bar_tables) > 1
+    total_jobs = planned_job_count(args, specs, bar_tables)
     job_index = 0
-    for table_spec in bar_tables:
-        for index, spec in enumerate(specs, start=1):
+    for spec in specs:
+        start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
+        chunks = date_chunks_for_timeframe(start_date, end_date, spec, max(1, int(args.chunk_days)))
+        for chunk_start, chunk_end in chunks:
             job_index += 1
-            start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
-            scoped_args = args_with_bar_table(args_with_date_range(args, start_date, end_date), table_spec.table)
+            scoped_args = args_with_bar_table(args_with_date_range(args, chunk_start, chunk_end), primary_table.table)
             if args.replace_range:
                 if reporter is not None:
-                    reporter.set_stage(f"delete {table_spec.layout} {spec.name} overlap [{job_index}/{total_jobs}]")
+                    reporter.set_stage(f"delete {primary_table.layout} {spec.name} {chunk_start}->{chunk_end} [{job_index}/{total_jobs}]")
                 delete_profile = run_bar_query_profiled(
                     client,
-                    f"delete_{table_spec.table}_{spec.name}_{start_date}_{end_date}",
-                    delete_range_sql(args.database, table_spec.table, start_date, end_date, args, timeframe=spec.name),
+                    f"delete_{primary_table.table}_{spec.name}_{chunk_start}_{chunk_end}",
+                    delete_range_sql(args.database, primary_table.table, chunk_start, chunk_end, args, timeframe=spec.name),
                     reporter=reporter,
                 )
                 append_jsonl(
                     report_path,
                     {
                         "operation": "delete_range",
-                        "bar_layout": table_spec.layout,
-                        "bars_table": table_spec.table,
+                        "bar_layout": primary_table.layout,
+                        "bars_table": primary_table.table,
                         "timeframe": spec.name,
-                        "start_date": start_date,
-                        "end_date": end_date,
+                        "start_date": chunk_start,
+                        "end_date": chunk_end,
                         "profile": asdict(delete_profile),
                     },
                 )
                 if reporter is not None:
                     reporter.finish_stage(
-                        f"deleted {table_spec.layout} {spec.name} wall={delete_profile.wall_seconds:.1f}s read_rows={format_optional_int(delete_profile.read_rows)}"
+                        f"deleted {primary_table.layout} {spec.name} {chunk_start}->{chunk_end} wall={delete_profile.wall_seconds:.1f}s read_rows={format_optional_int(delete_profile.read_rows)}"
                     )
                 else:
                     print_profile("DELETE", delete_profile)
 
             if reporter is not None:
-                reporter.set_stage(f"insert {table_spec.layout} {spec.name} [{job_index}/{total_jobs}]")
+                reporter.set_stage(f"insert {primary_table.layout} {spec.name} {chunk_start}->{chunk_end} [{job_index}/{total_jobs}]")
             else:
                 print("=" * 96, flush=True)
                 print(
-                    f"BAR START [{job_index:,}/{total_jobs:,}] layout={table_spec.layout} timeframe={spec.name} "
-                    f"range={start_date}->{end_date} table={table_spec.table}",
+                    f"BAR START [{job_index:,}/{total_jobs:,}] layout={primary_table.layout} timeframe={spec.name} "
+                    f"range={chunk_start}->{chunk_end} table={primary_table.table}",
                     flush=True,
                 )
             insert_profile = run_bar_query_profiled(
                 client,
-                f"insert_{table_spec.table}_{spec.name}_{start_date}_{end_date}",
+                f"insert_{primary_table.table}_{spec.name}_{chunk_start}_{chunk_end}",
                 insert_live_market_bars_sql(scoped_args, spec),
                 query_settings(scoped_args),
                 reporter=reporter,
             )
-            summary = summarize_table(client, args.database, table_spec.table, spec.name, start_date, end_date)
+            summary = summarize_table(client, args.database, primary_table.table, spec.name, chunk_start, chunk_end)
             result = {
                 "operation": "insert",
-                "bar_layout": table_spec.layout,
-                "bars_table": table_spec.table,
+                "bar_layout": primary_table.layout,
+                "bars_table": primary_table.table,
                 "timeframe": spec.name,
-                "start_date": start_date,
-                "end_date": end_date,
+                "start_date": chunk_start,
+                "end_date": chunk_end,
                 "profile": asdict(insert_profile),
                 "summary": summary,
             }
             append_jsonl(report_path, result)
             results.append(result)
             message = (
-                f"{table_spec.layout} {spec.name} rows={summary['rows']:,} tickers={summary['tickers']:,} "
+                f"{primary_table.layout} {spec.name} {chunk_start}->{chunk_end} rows={summary['rows']:,} tickers={summary['tickers']:,} "
                 f"volume={summary['volume']:.0f} wall={insert_profile.wall_seconds:.1f}s"
             )
             if reporter is not None:
@@ -410,10 +447,125 @@ def build_live_market_bars(
             else:
                 print_profile("INSERT", insert_profile)
                 print(
-                    f"BAR DONE layout={table_spec.layout} timeframe={spec.name} rows={summary['rows']:,} tickers={summary['tickers']:,} "
+                    f"BAR DONE layout={primary_table.layout} timeframe={spec.name} rows={summary['rows']:,} tickers={summary['tickers']:,} "
                     f"volume={summary['volume']:.0f} min_bar={summary['min_bar_start']} max_bar={summary['max_bar_start']}",
                     flush=True,
                 )
+            copy_targets = bar_tables[1:] if copy_alternate_layouts else []
+            for table_spec in copy_targets:
+                job_index += 1
+                if args.replace_range:
+                    if reporter is not None:
+                        reporter.set_stage(f"delete {table_spec.layout} {spec.name} {chunk_start}->{chunk_end} [{job_index}/{total_jobs}]")
+                    delete_profile = run_bar_query_profiled(
+                        client,
+                        f"delete_{table_spec.table}_{spec.name}_{chunk_start}_{chunk_end}",
+                        delete_range_sql(args.database, table_spec.table, chunk_start, chunk_end, args, timeframe=spec.name),
+                        reporter=reporter,
+                    )
+                    append_jsonl(
+                        report_path,
+                        {
+                            "operation": "delete_range",
+                            "bar_layout": table_spec.layout,
+                            "bars_table": table_spec.table,
+                            "timeframe": spec.name,
+                            "start_date": chunk_start,
+                            "end_date": chunk_end,
+                            "profile": asdict(delete_profile),
+                        },
+                    )
+                    if reporter is not None:
+                        reporter.finish_stage(
+                            f"deleted {table_spec.layout} {spec.name} {chunk_start}->{chunk_end} wall={delete_profile.wall_seconds:.1f}s read_rows={format_optional_int(delete_profile.read_rows)}"
+                        )
+                    else:
+                        print_profile("DELETE", delete_profile)
+                if reporter is not None:
+                    reporter.set_stage(f"copy {table_spec.layout} {spec.name} {chunk_start}->{chunk_end} [{job_index}/{total_jobs}]")
+                copy_profile = run_bar_query_profiled(
+                    client,
+                    f"copy_{table_spec.table}_{spec.name}_{chunk_start}_{chunk_end}",
+                    copy_bar_rows_sql(args.database, primary_table.table, table_spec.table, spec.name, chunk_start, chunk_end),
+                    query_settings(args),
+                    reporter=reporter,
+                )
+                summary = summarize_table(client, args.database, table_spec.table, spec.name, chunk_start, chunk_end)
+                result = {
+                    "operation": "copy_from_primary",
+                    "bar_layout": table_spec.layout,
+                    "source_table": primary_table.table,
+                    "bars_table": table_spec.table,
+                    "timeframe": spec.name,
+                    "start_date": chunk_start,
+                    "end_date": chunk_end,
+                    "profile": asdict(copy_profile),
+                    "summary": summary,
+                }
+                append_jsonl(report_path, result)
+                results.append(result)
+                if reporter is not None:
+                    reporter.finish_stage(
+                        f"copied {table_spec.layout} {spec.name} {chunk_start}->{chunk_end} rows={summary['rows']:,} wall={copy_profile.wall_seconds:.1f}s"
+                    )
+                else:
+                    print_profile("COPY", copy_profile)
+    if not copy_alternate_layouts:
+        # Legacy/debug path: compute every requested layout directly from events. This is intentionally
+        # kept off by default because it rescans the full events table for each layout.
+        for table_spec in bar_tables[1:]:
+            for spec in specs:
+                start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
+                for chunk_start, chunk_end in date_chunks_for_timeframe(start_date, end_date, spec, max(1, int(args.chunk_days))):
+                    job_index += 1
+                    scoped_args = args_with_bar_table(args_with_date_range(args, chunk_start, chunk_end), table_spec.table)
+                    if args.replace_range:
+                        if reporter is not None:
+                            reporter.set_stage(f"delete {table_spec.layout} {spec.name} {chunk_start}->{chunk_end} [{job_index}/{total_jobs}]")
+                        delete_profile = run_bar_query_profiled(
+                            client,
+                            f"delete_{table_spec.table}_{spec.name}_{chunk_start}_{chunk_end}",
+                            delete_range_sql(args.database, table_spec.table, chunk_start, chunk_end, args, timeframe=spec.name),
+                            reporter=reporter,
+                        )
+                        append_jsonl(
+                            report_path,
+                            {
+                                "operation": "delete_range",
+                                "bar_layout": table_spec.layout,
+                                "bars_table": table_spec.table,
+                                "timeframe": spec.name,
+                                "start_date": chunk_start,
+                                "end_date": chunk_end,
+                                "profile": asdict(delete_profile),
+                            },
+                        )
+                        if reporter is not None:
+                            reporter.finish_stage(f"deleted {table_spec.layout} {spec.name} {chunk_start}->{chunk_end} wall={delete_profile.wall_seconds:.1f}s")
+                    if reporter is not None:
+                        reporter.set_stage(f"insert {table_spec.layout} {spec.name} {chunk_start}->{chunk_end} [{job_index}/{total_jobs}]")
+                    insert_profile = run_bar_query_profiled(
+                        client,
+                        f"insert_{table_spec.table}_{spec.name}_{chunk_start}_{chunk_end}",
+                        insert_live_market_bars_sql(scoped_args, spec),
+                        query_settings(scoped_args),
+                        reporter=reporter,
+                    )
+                    summary = summarize_table(client, args.database, table_spec.table, spec.name, chunk_start, chunk_end)
+                    result = {
+                        "operation": "insert",
+                        "bar_layout": table_spec.layout,
+                        "bars_table": table_spec.table,
+                        "timeframe": spec.name,
+                        "start_date": chunk_start,
+                        "end_date": chunk_end,
+                        "profile": asdict(insert_profile),
+                        "summary": summary,
+                    }
+                    append_jsonl(report_path, result)
+                    results.append(result)
+                    if reporter is not None:
+                        reporter.finish_stage(f"{table_spec.layout} {spec.name} {chunk_start}->{chunk_end} rows={summary['rows']:,} wall={insert_profile.wall_seconds:.1f}s")
     return results
 
 
@@ -453,6 +605,14 @@ def timeframe_ranges(args: argparse.Namespace, specs: list[TimeframeSpec]) -> di
     }
 
 
+def planned_job_count(args: argparse.Namespace, specs: list[TimeframeSpec], bar_tables: list[BarTableSpec]) -> int:
+    total_chunks = 0
+    for spec in specs:
+        start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, getattr(args, "expand_boundaries", True))
+        total_chunks += len(date_chunks_for_timeframe(start_date, end_date, spec, max(1, int(args.chunk_days))))
+    return total_chunks * max(1, len(bar_tables))
+
+
 def date_range_for_timeframe(start_date: str, end_date: str, spec: TimeframeSpec, expand_boundaries: bool) -> tuple[str, str]:
     if not expand_boundaries:
         return start_date, end_date
@@ -469,6 +629,30 @@ def date_range_for_timeframe(start_date: str, end_date: str, spec: TimeframeSpec
         end = next_month.replace(day=1) - timedelta(days=1)
         return start.isoformat(), end.isoformat()
     return start_date, end_date
+
+
+def date_chunks_for_timeframe(start_date: str, end_date: str, spec: TimeframeSpec, chunk_days: int) -> list[tuple[str, str]]:
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    if end < start:
+        return []
+    chunks: list[tuple[str, str]] = []
+    if spec.name == "1mo":
+        current = start.replace(day=1)
+        while current <= end:
+            next_month = current.replace(day=28) + timedelta(days=4)
+            month_end = next_month.replace(day=1) - timedelta(days=1)
+            chunks.append((max(current, start).isoformat(), min(month_end, end).isoformat()))
+            current = month_end + timedelta(days=1)
+        return chunks
+
+    step_days = 7 if spec.name == "1w" else max(1, chunk_days)
+    current = start
+    while current <= end:
+        chunk_end = min(current + timedelta(days=step_days - 1), end)
+        chunks.append((current.isoformat(), chunk_end.isoformat()))
+        current = chunk_end + timedelta(days=1)
+    return chunks
 
 
 def format_timeframe_ranges(ranges: dict[str, tuple[str, str]]) -> str:
@@ -551,7 +735,7 @@ def run_bar_query_profiled(
 
 def kill_clickhouse_query(client: ClickHouseHttpClient, query_id: str, *, reporter: BarBuildReporter | None = None) -> None:
     try:
-        client.execute(f"KILL QUERY WHERE query_id = {sql_string(query_id)} SYNC")
+        client.execute(f"KILL QUERY WHERE query_id = {sql_string(query_id)} ASYNC")
     except Exception as exc:  # noqa: BLE001
         message = f"WARN failed to kill ClickHouse query_id={query_id}: {exc!r}"
         if reporter is not None:
@@ -559,7 +743,7 @@ def kill_clickhouse_query(client: ClickHouseHttpClient, query_id: str, *, report
         else:
             print(message, flush=True)
     else:
-        message = f"ClickHouse kill requested for query_id={query_id}"
+        message = f"ClickHouse async kill requested for query_id={query_id}"
         if reporter is not None:
             reporter.log(message)
         else:
@@ -689,6 +873,17 @@ ENGINE = ReplacingMergeTree
 
 def drop_table_sql(database: str, table: str) -> str:
     return f"DROP TABLE IF EXISTS {quote_ident(database)}.{quote_ident(table)}"
+
+
+def copy_bar_rows_sql(database: str, source_table: str, destination_table: str, timeframe: str, start_date: str, end_date: str) -> str:
+    return f"""
+INSERT INTO {quote_ident(database)}.{quote_ident(destination_table)}
+SELECT *
+FROM {quote_ident(database)}.{quote_ident(source_table)}
+WHERE timeframe = {sql_string(timeframe)}
+  AND bar_start < (toDateTime64(toDate({sql_string(end_date)}) + INTERVAL 1 DAY, 3, 'UTC'))
+  AND bar_end > toDateTime64(toDate({sql_string(start_date)}), 3, 'UTC')
+"""
 
 
 def delete_range_sql(database: str, table: str, start_date: str, end_date: str, args: argparse.Namespace, *, timeframe: str | None = None) -> str:
