@@ -31,7 +31,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
 
 The default launcher uses a Rich terminal layout with:
 
-- run summary and expanded build range
+- run summary and per-timeframe build ranges
 - overall build progress across delete/insert stages
 - current operation
 - recent messages
@@ -73,13 +73,14 @@ All bar boundaries are computed in UTC from `events.sip_timestamp_us`.
 - Weekly bars start on Monday UTC.
 - Monthly bars start on the first day of the UTC month.
 
-`--expand-boundaries` is enabled by default. If the requested range intersects a
-weekly or monthly bar, the standalone builder expands the build range to the full
-affected week/month before deleting and inserting rows. For example, requesting
-`2026-06-03` with `1w,1mo` builds `2026-06-01` through `2026-06-30`; this avoids
-silently writing a partial weekly/monthly bar for a range that only covers the
-middle of a period. Use `--no-expand-boundaries` only when intentionally
-building partial-period bars.
+`--expand-boundaries` is enabled by default. Boundary expansion is applied per
+timeframe before that timeframe is deleted and inserted. Intraday and daily
+timeframes use the requested date range. Weekly timeframes expand to the full
+affected Monday-Sunday week, and monthly timeframes expand to the full affected
+month. For example, requesting `2026-06-03` with `1s,1w,1mo` builds `1s` only
+for `2026-06-03`, `1w` for `2026-06-01 -> 2026-06-07`, and `1mo` for
+`2026-06-01 -> 2026-06-30`. Use `--no-expand-boundaries` only when
+intentionally building partial-period bars.
 
 The first bar in a build window has no earlier bar inside that same window, so
 history-derived fields such as `return_1_bar`, `return_3_bar`, `return_5_bar`,

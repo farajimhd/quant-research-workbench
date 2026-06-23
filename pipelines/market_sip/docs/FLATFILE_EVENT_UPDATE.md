@@ -41,8 +41,9 @@ It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
 8. Write `events_build_manifest` and `events_ordinal_continuity` rows for the
    processed day.
 9. Rebuild qmd-compatible `live_market_bars` rows for the successfully updated
-   date range. Weekly and monthly timeframes expand to full affected
-   week/month boundaries so partial period bars are not silently written.
+   date range. Each timeframe is rebuilt independently: intraday and daily bars
+   use the updated day range, while weekly and monthly bars expand only their
+   own delete/insert ranges to full affected week/month boundaries.
 
 The standalone bar builder, `pipelines/market_sip/events/run_build_trade_bars.py`,
 uses the same qmd-compatible `live_market_bars` schema and has a Rich progress
@@ -59,8 +60,8 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
 Bar boundaries are UTC-based. Intraday bars use exact interval starts, daily
 bars start at UTC midnight, weekly bars start Monday UTC, and monthly bars start
 on the first UTC day of the month. The builder expands weekly/monthly requests
-to full affected periods by default; pass `--no-expand-boundaries` only when a
-partial boundary bar is intentional.
+per timeframe by default; pass `--no-expand-boundaries` only when a partial
+boundary bar is intentional.
 
 Downloads can run concurrently. Event insertion is intentionally chronological:
 each day depends on the previous continuity state, so concurrent day inserts

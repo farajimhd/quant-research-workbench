@@ -49,8 +49,9 @@ from pipelines.market_sip.events.clickhouse_build_trade_bars import (  # noqa: E
     DEFAULT_BARS_TABLE,
     DEFAULT_TIMEFRAMES as DEFAULT_BAR_TIMEFRAMES,
     build_live_market_bars,
-    expand_date_range_for_timeframes,
+    format_timeframe_ranges,
     parse_timeframes,
+    timeframe_ranges,
 )
 from pipelines.market_sip.flatfiles.download_massive_sip_flatfiles import (  # noqa: E402
     DEFAULT_AWS_REGION,
@@ -1464,7 +1465,6 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
     parse_timeframes(args.bar_timeframes)
     min_day = min(day.source_date for day in days)
     max_day = max(day.source_date for day in days)
-    bar_start_date, bar_end_date = expand_date_range_for_timeframes(min_day, max_day, args.bar_timeframes)
     bar_args = argparse.Namespace(
         clickhouse_url=args.clickhouse_url,
         user=args.user,
@@ -1472,21 +1472,24 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
         database=args.database,
         events_table=args.events_table,
         bars_table=args.bars_table,
-        start_date=bar_start_date,
-        end_date=bar_end_date,
+        start_date=min_day,
+        end_date=max_day,
         timeframes=args.bar_timeframes,
         storage_policy=args.storage_policy,
         max_threads=args.max_threads,
         max_memory_usage=args.max_memory_usage,
         output_root_win=args.output_root_win,
         replace_range=args.bar_replace_range,
+        expand_boundaries=True,
         drop_table=False,
         dry_run=args.dry_run,
     )
+    bar_specs = parse_timeframes(args.bar_timeframes)
+    ranges = timeframe_ranges(bar_args, bar_specs)
     print("=" * 100, flush=True)
     print(
         f"BAR UPDATE table={bar_args.bars_table} timeframes={bar_args.timeframes} "
-        f"requested_days={min_day}->{max_day} build_range={bar_start_date}->{bar_end_date}",
+        f"requested_days={min_day}->{max_day} build_ranges={format_timeframe_ranges(ranges)}",
         flush=True,
     )
     print("=" * 100, flush=True)
@@ -1499,8 +1502,7 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
             "timeframes": bar_args.timeframes,
             "requested_start_date": min_day,
             "requested_end_date": max_day,
-            "build_start_date": bar_start_date,
-            "build_end_date": bar_end_date,
+            "build_ranges": {timeframe: {"start_date": start, "end_date": end} for timeframe, (start, end) in ranges.items()},
             "result_count": len(results),
         },
     )

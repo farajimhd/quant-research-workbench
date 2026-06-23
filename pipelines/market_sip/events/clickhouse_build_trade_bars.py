@@ -108,15 +108,14 @@ def main() -> int:
     specs = parse_timeframes(args.timeframes)
     requested_start_date = args.start_date
     requested_end_date = args.end_date
-    if args.expand_boundaries:
-        args.start_date, args.end_date = expand_date_range_for_timeframes(args.start_date, args.end_date, args.timeframes)
+    ranges = timeframe_ranges(args, specs)
 
     print("=" * 96, flush=True)
     print("Build qmd-compatible ClickHouse SIP bars", flush=True)
     print(f"database={args.database} events_table={args.events_table} bars_table={args.bars_table}", flush=True)
     print(f"timeframes={','.join(spec.name for spec in specs)}", flush=True)
     print(f"requested_date_range={requested_start_date}->{requested_end_date}", flush=True)
-    print(f"build_date_range={args.start_date}->{args.end_date} expand_boundaries={args.expand_boundaries}", flush=True)
+    print(f"build_ranges={format_timeframe_ranges(ranges)} expand_boundaries={args.expand_boundaries}", flush=True)
     print(f"storage_policy={args.storage_policy or '<default>'}", flush=True)
     print(f"settings={query_settings(args).strip() or '<none>'}", flush=True)
     print(f"replace_range={args.replace_range} drop_table={args.drop_table} dry_run={args.dry_run}", flush=True)
@@ -177,7 +176,8 @@ class BarBuildReporter:
         self._overall_task = None
         self._current_task = None
         self._active_query_id = ""
-        self._total_steps = len(specs) + (1 if args.drop_table else 0) + (1 if args.replace_range else 0)
+        self._timeframe_ranges = timeframe_ranges(args, specs)
+        self._total_steps = len(specs) * (1 + (1 if args.replace_range else 0)) + (1 if args.drop_table else 0)
         self._completed_steps = 0
         self._stage = "starting"
 
@@ -260,7 +260,7 @@ class BarBuildReporter:
         summary.add_column()
         summary.add_row("table", f"{self.args.database}.{self.args.bars_table}")
         summary.add_row("requested", f"{self.requested_start_date} -> {self.requested_end_date}")
-        summary.add_row("build range", f"{self.args.start_date} -> {self.args.end_date}")
+        summary.add_row("build ranges", format_timeframe_ranges(self._timeframe_ranges))
         summary.add_row("timeframes", ",".join(spec.name for spec in self.specs))
         summary.add_row("stage", self._stage)
         if self._active_query_id:
@@ -293,10 +293,15 @@ def build_live_market_bars(
         print_sql_preview("create", create_bar_table_sql(args.database, args.bars_table, args.storage_policy))
         if args.drop_table:
             print_sql_preview("drop", drop_table_sql(args.database, args.bars_table))
-        if args.replace_range:
-            print_sql_preview("delete range", delete_range_sql(args.database, args.bars_table, args.start_date, args.end_date, args))
         for spec in specs:
-            print_sql_preview(f"insert {spec.name}", insert_live_market_bars_sql(args, spec))
+            start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, args.expand_boundaries)
+            scoped_args = args_with_date_range(args, start_date, end_date)
+            if args.replace_range:
+                print_sql_preview(
+                    f"delete {spec.name}",
+                    delete_range_sql(args.database, args.bars_table, start_date, end_date, args, timeframe=spec.name),
+                )
+            print_sql_preview(f"insert {spec.name}", insert_live_market_bars_sql(scoped_args, spec))
         return results
 
     if args.drop_table:
@@ -309,36 +314,58 @@ def build_live_market_bars(
             print(f"DROPPED {args.database}.{args.bars_table}", flush=True)
     client.execute(create_bar_table_sql(args.database, args.bars_table, args.storage_policy))
 
-    if args.replace_range:
-        if reporter is not None:
-            reporter.set_stage("delete overlapping bars")
-        delete_profile = run_bar_query_profiled(
-            client,
-            f"delete_{args.bars_table}_{args.start_date}_{args.end_date}",
-            delete_range_sql(args.database, args.bars_table, args.start_date, args.end_date, args),
-            reporter=reporter,
-        )
-        append_jsonl(report_path, {"operation": "delete_range", "profile": asdict(delete_profile)})
-        if reporter is not None:
-            reporter.finish_stage(f"deleted overlap wall={delete_profile.wall_seconds:.1f}s read_rows={delete_profile.read_rows:,}")
-        else:
-            print_profile("DELETE", delete_profile)
-
     for index, spec in enumerate(specs, start=1):
+        start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, args.expand_boundaries)
+        scoped_args = args_with_date_range(args, start_date, end_date)
+        if args.replace_range:
+            if reporter is not None:
+                reporter.set_stage(f"delete {spec.name} overlap [{index}/{len(specs)}]")
+            delete_profile = run_bar_query_profiled(
+                client,
+                f"delete_{args.bars_table}_{spec.name}_{start_date}_{end_date}",
+                delete_range_sql(args.database, args.bars_table, start_date, end_date, args, timeframe=spec.name),
+                reporter=reporter,
+            )
+            append_jsonl(
+                report_path,
+                {
+                    "operation": "delete_range",
+                    "timeframe": spec.name,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "profile": asdict(delete_profile),
+                },
+            )
+            if reporter is not None:
+                reporter.finish_stage(f"deleted {spec.name} overlap wall={delete_profile.wall_seconds:.1f}s read_rows={delete_profile.read_rows:,}")
+            else:
+                print_profile("DELETE", delete_profile)
+
         if reporter is not None:
             reporter.set_stage(f"insert {spec.name} [{index}/{len(specs)}]")
         else:
             print("=" * 96, flush=True)
-            print(f"BAR START [{index:,}/{len(specs):,}] timeframe={spec.name} table={args.bars_table}", flush=True)
+            print(
+                f"BAR START [{index:,}/{len(specs):,}] timeframe={spec.name} "
+                f"range={start_date}->{end_date} table={args.bars_table}",
+                flush=True,
+            )
         insert_profile = run_bar_query_profiled(
             client,
-            f"insert_{args.bars_table}_{spec.name}_{args.start_date}_{args.end_date}",
-            insert_live_market_bars_sql(args, spec),
-            query_settings(args),
+            f"insert_{args.bars_table}_{spec.name}_{start_date}_{end_date}",
+            insert_live_market_bars_sql(scoped_args, spec),
+            query_settings(scoped_args),
             reporter=reporter,
         )
-        summary = summarize_table(client, args.database, args.bars_table, spec.name, args.start_date, args.end_date)
-        result = {"operation": "insert", "timeframe": spec.name, "profile": asdict(insert_profile), "summary": summary}
+        summary = summarize_table(client, args.database, args.bars_table, spec.name, start_date, end_date)
+        result = {
+            "operation": "insert",
+            "timeframe": spec.name,
+            "start_date": start_date,
+            "end_date": end_date,
+            "profile": asdict(insert_profile),
+            "summary": summary,
+        }
         append_jsonl(report_path, result)
         results.append(result)
         message = (
@@ -371,6 +398,48 @@ def parse_timeframes(text: str) -> list[TimeframeSpec]:
             specs.append(TIMEFRAME_SPECS[item])
             seen.add(item)
     return specs
+
+
+def args_with_date_range(args: argparse.Namespace, start_date: str, end_date: str) -> argparse.Namespace:
+    values = vars(args).copy()
+    values["start_date"] = start_date
+    values["end_date"] = end_date
+    return argparse.Namespace(**values)
+
+
+def timeframe_ranges(args: argparse.Namespace, specs: list[TimeframeSpec]) -> dict[str, tuple[str, str]]:
+    return {
+        spec.name: date_range_for_timeframe(args.start_date, args.end_date, spec, getattr(args, "expand_boundaries", True))
+        for spec in specs
+    }
+
+
+def date_range_for_timeframe(start_date: str, end_date: str, spec: TimeframeSpec, expand_boundaries: bool) -> tuple[str, str]:
+    if not expand_boundaries:
+        return start_date, end_date
+    if spec.name == "1w":
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+        start = start - timedelta(days=start.weekday())
+        end = end + timedelta(days=6 - end.weekday())
+        return start.isoformat(), end.isoformat()
+    if spec.name == "1mo":
+        start = date.fromisoformat(start_date).replace(day=1)
+        end = date.fromisoformat(end_date)
+        next_month = end.replace(day=28) + timedelta(days=4)
+        end = next_month.replace(day=1) - timedelta(days=1)
+        return start.isoformat(), end.isoformat()
+    return start_date, end_date
+
+
+def format_timeframe_ranges(ranges: dict[str, tuple[str, str]]) -> str:
+    if not ranges:
+        return "<none>"
+    unique = set(ranges.values())
+    if len(unique) == 1:
+        start_date, end_date = next(iter(unique))
+        return f"all:{start_date}->{end_date}"
+    return "; ".join(f"{timeframe}:{start}->{end}" for timeframe, (start, end) in ranges.items())
 
 
 def run_bar_query_profiled(
@@ -546,11 +615,13 @@ def drop_table_sql(database: str, table: str) -> str:
     return f"DROP TABLE IF EXISTS {quote_ident(database)}.{quote_ident(table)}"
 
 
-def delete_range_sql(database: str, table: str, start_date: str, end_date: str, args: argparse.Namespace) -> str:
+def delete_range_sql(database: str, table: str, start_date: str, end_date: str, args: argparse.Namespace, *, timeframe: str | None = None) -> str:
+    timeframe_filter = "" if timeframe is None else f"\n  AND timeframe = {sql_string(timeframe)}"
     return f"""
 ALTER TABLE {quote_ident(database)}.{quote_ident(table)}
 DELETE WHERE bar_start < (toDateTime64(toDate({sql_string(end_date)}) + INTERVAL 1 DAY, 3, 'UTC'))
   AND bar_end > toDateTime64(toDate({sql_string(start_date)}), 3, 'UTC')
+{timeframe_filter}
 {mutation_settings(args)}
 """
 
