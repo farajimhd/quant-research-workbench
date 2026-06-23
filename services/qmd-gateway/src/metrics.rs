@@ -20,6 +20,14 @@ struct MetricsInner {
     compact_event_broadcast_dropped: AtomicU64,
     compact_event_queue_dropped: AtomicU64,
     compact_event_rejected: AtomicU64,
+    compact_event_rejected_empty_ticker: AtomicU64,
+    compact_event_rejected_zero_sequence: AtomicU64,
+    compact_event_rejected_bad_quote_price: AtomicU64,
+    compact_event_rejected_crossed_quote: AtomicU64,
+    compact_event_rejected_zero_quote_size: AtomicU64,
+    compact_event_rejected_bad_trade_price: AtomicU64,
+    compact_event_rejected_bad_trade_size: AtomicU64,
+    compact_event_rejected_bad_price_scale: AtomicU64,
     compact_event_reorder_forced_flushes: AtomicU64,
     compact_event_reorder_late_arrivals: AtomicU64,
     compact_events_emitted: AtomicU64,
@@ -57,6 +65,14 @@ pub struct MetricsSnapshot {
     pub compact_event_broadcast_dropped: u64,
     pub compact_event_queue_dropped: u64,
     pub compact_event_rejected: u64,
+    pub compact_event_rejected_empty_ticker: u64,
+    pub compact_event_rejected_zero_sequence: u64,
+    pub compact_event_rejected_bad_quote_price: u64,
+    pub compact_event_rejected_crossed_quote: u64,
+    pub compact_event_rejected_zero_quote_size: u64,
+    pub compact_event_rejected_bad_trade_price: u64,
+    pub compact_event_rejected_bad_trade_size: u64,
+    pub compact_event_rejected_bad_price_scale: u64,
     pub compact_event_reorder_forced_flushes: u64,
     pub compact_event_reorder_late_arrivals: u64,
     pub compact_events_emitted: u64,
@@ -109,6 +125,14 @@ impl SharedMetrics {
                 compact_event_broadcast_dropped: AtomicU64::new(0),
                 compact_event_queue_dropped: AtomicU64::new(0),
                 compact_event_rejected: AtomicU64::new(0),
+                compact_event_rejected_empty_ticker: AtomicU64::new(0),
+                compact_event_rejected_zero_sequence: AtomicU64::new(0),
+                compact_event_rejected_bad_quote_price: AtomicU64::new(0),
+                compact_event_rejected_crossed_quote: AtomicU64::new(0),
+                compact_event_rejected_zero_quote_size: AtomicU64::new(0),
+                compact_event_rejected_bad_trade_price: AtomicU64::new(0),
+                compact_event_rejected_bad_trade_size: AtomicU64::new(0),
+                compact_event_rejected_bad_price_scale: AtomicU64::new(0),
                 compact_event_reorder_forced_flushes: AtomicU64::new(0),
                 compact_event_reorder_late_arrivals: AtomicU64::new(0),
                 compact_events_emitted: AtomicU64::new(0),
@@ -151,6 +175,22 @@ impl SharedMetrics {
             compact_event_broadcast_dropped: self.get(&self.inner.compact_event_broadcast_dropped),
             compact_event_queue_dropped: self.get(&self.inner.compact_event_queue_dropped),
             compact_event_rejected: self.get(&self.inner.compact_event_rejected),
+            compact_event_rejected_empty_ticker: self
+                .get(&self.inner.compact_event_rejected_empty_ticker),
+            compact_event_rejected_zero_sequence: self
+                .get(&self.inner.compact_event_rejected_zero_sequence),
+            compact_event_rejected_bad_quote_price: self
+                .get(&self.inner.compact_event_rejected_bad_quote_price),
+            compact_event_rejected_crossed_quote: self
+                .get(&self.inner.compact_event_rejected_crossed_quote),
+            compact_event_rejected_zero_quote_size: self
+                .get(&self.inner.compact_event_rejected_zero_quote_size),
+            compact_event_rejected_bad_trade_price: self
+                .get(&self.inner.compact_event_rejected_bad_trade_price),
+            compact_event_rejected_bad_trade_size: self
+                .get(&self.inner.compact_event_rejected_bad_trade_size),
+            compact_event_rejected_bad_price_scale: self
+                .get(&self.inner.compact_event_rejected_bad_price_scale),
             compact_event_reorder_forced_flushes: self
                 .get(&self.inner.compact_event_reorder_forced_flushes),
             compact_event_reorder_late_arrivals: self
@@ -238,6 +278,46 @@ impl SharedMetrics {
 
     pub fn inc_compact_event_rejected(&self) {
         self.inc(&self.inner.compact_event_rejected, 1);
+    }
+
+    pub fn inc_compact_event_rejected_empty_ticker(&self) {
+        self.inc(&self.inner.compact_event_rejected_empty_ticker, 1);
+        self.inc_compact_event_rejected();
+    }
+
+    pub fn inc_compact_event_rejected_zero_sequence(&self) {
+        self.inc(&self.inner.compact_event_rejected_zero_sequence, 1);
+        self.inc_compact_event_rejected();
+    }
+
+    pub fn inc_compact_event_rejected_bad_quote_price(&self) {
+        self.inc(&self.inner.compact_event_rejected_bad_quote_price, 1);
+        self.inc_compact_event_rejected();
+    }
+
+    pub fn inc_compact_event_rejected_crossed_quote(&self) {
+        self.inc(&self.inner.compact_event_rejected_crossed_quote, 1);
+        self.inc_compact_event_rejected();
+    }
+
+    pub fn inc_compact_event_rejected_zero_quote_size(&self) {
+        self.inc(&self.inner.compact_event_rejected_zero_quote_size, 1);
+        self.inc_compact_event_rejected();
+    }
+
+    pub fn inc_compact_event_rejected_bad_trade_price(&self) {
+        self.inc(&self.inner.compact_event_rejected_bad_trade_price, 1);
+        self.inc_compact_event_rejected();
+    }
+
+    pub fn inc_compact_event_rejected_bad_trade_size(&self) {
+        self.inc(&self.inner.compact_event_rejected_bad_trade_size, 1);
+        self.inc_compact_event_rejected();
+    }
+
+    pub fn inc_compact_event_rejected_bad_price_scale(&self) {
+        self.inc(&self.inner.compact_event_rejected_bad_price_scale, 1);
+        self.inc_compact_event_rejected();
     }
 
     pub fn inc_compact_event_reorder_forced_flush(&self) {

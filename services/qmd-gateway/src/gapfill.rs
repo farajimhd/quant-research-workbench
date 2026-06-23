@@ -466,10 +466,10 @@ impl GapFillService {
                 .get(url)
                 .send()
                 .await
-                .map_err(|error| error.to_string())?
+                .map_err(|error| redact_sensitive(&error.to_string()))?
                 .json()
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| redact_sensitive(&error.to_string()))?;
             let rows = payload
                 .get("results")
                 .and_then(Value::as_array)
@@ -634,7 +634,13 @@ impl GapFillService {
                 }
                 Err(error) => {
                     repair.errors += 1;
+                    let error = redact_sensitive(&error);
                     eprintln!("QMD recent q_live repair failed for {symbol}: {error}");
+                    if is_clickhouse_memory_limit(&error) {
+                        return Err(format!(
+                            "recent q_live repair stopped after ClickHouse memory exhaustion: {error}"
+                        ));
+                    }
                 }
             }
         }
@@ -740,6 +746,7 @@ impl GapFillService {
                     });
                 }
                 Err(error) => {
+                    let error = redact_sensitive(&error);
                     symbol_errors += 1;
                     self.maintenance.complete_interval(0, true, false).await;
                     eprintln!("QMD recent q_live repair failed for {symbol}: {error}");
@@ -750,6 +757,11 @@ impl GapFillService {
                         rows: 0,
                         symbol_had_rows: false,
                     });
+                    if is_clickhouse_memory_limit(&error) {
+                        return Err(format!(
+                            "symbol repair stopped after ClickHouse memory exhaustion: {error}"
+                        ));
+                    }
                 }
             }
         }
@@ -2255,6 +2267,31 @@ fn append_api_key(url: &str, api_key: &str) -> String {
     } else {
         format!("{url}?apiKey={}", urlencoding::encode(api_key))
     }
+}
+
+fn is_clickhouse_memory_limit(error: &str) -> bool {
+    error.contains("MEMORY_LIMIT_EXCEEDED") || error.contains("memory limit exceeded")
+}
+
+fn redact_sensitive(text: &str) -> String {
+    redact_query_param(text, "apiKey")
+}
+
+fn redact_query_param(text: &str, key: &str) -> String {
+    let needle = format!("{key}=");
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find(&needle) {
+        let (prefix, after_prefix) = rest.split_at(index + needle.len());
+        output.push_str(prefix);
+        output.push_str("<redacted>");
+        let value_end = after_prefix
+            .find(|ch: char| matches!(ch, '&' | ')' | ' ' | '\n' | '\r' | '\t'))
+            .unwrap_or(after_prefix.len());
+        rest = &after_prefix[value_end..];
+    }
+    output.push_str(rest);
+    output
 }
 
 fn rest_trade_event(symbol: &str, row: Value) -> Option<MarketEvent> {

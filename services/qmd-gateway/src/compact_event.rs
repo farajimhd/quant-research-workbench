@@ -321,7 +321,7 @@ impl CompactEventClickHouseWriter {
                     match event {
                         Some(event) => {
                             match compact_event_from_market_event(&event, &self.references) {
-                                Some(mut compact) => {
+                                Ok(mut compact) => {
                                     arrival_sequence = arrival_sequence.saturating_add(1);
                                     compact.arrival_sequence = arrival_sequence;
                                     if self.event_sender.send(compact.clone()).is_err() {
@@ -352,7 +352,7 @@ impl CompactEventClickHouseWriter {
                                         }
                                     }
                                 }
-                                None => self.metrics.inc_compact_event_rejected(),
+                                Err(reason) => record_compact_event_rejection(&self.metrics, reason),
                             }
                         }
                         None => {
@@ -886,30 +886,76 @@ impl CompactEventClickHouseWriter {
 pub fn compact_event_from_market_event(
     event: &MarketEvent,
     references: &CompactEventReferences,
-) -> Option<LiveCompactEvent> {
+) -> Result<LiveCompactEvent, CompactEventRejectReason> {
     match event {
         MarketEvent::Quote(quote) => compact_quote_event(quote, references),
         MarketEvent::Trade(trade) => compact_trade_event(trade, references),
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum CompactEventRejectReason {
+    EmptyTicker,
+    ZeroSequence,
+    BadQuotePrice,
+    CrossedQuote,
+    ZeroQuoteSize,
+    BadTradePrice,
+    BadTradeSize,
+    BadPriceScale,
+}
+
+fn record_compact_event_rejection(metrics: &SharedMetrics, reason: CompactEventRejectReason) {
+    match reason {
+        CompactEventRejectReason::EmptyTicker => metrics.inc_compact_event_rejected_empty_ticker(),
+        CompactEventRejectReason::ZeroSequence => {
+            metrics.inc_compact_event_rejected_zero_sequence()
+        }
+        CompactEventRejectReason::BadQuotePrice => {
+            metrics.inc_compact_event_rejected_bad_quote_price()
+        }
+        CompactEventRejectReason::CrossedQuote => {
+            metrics.inc_compact_event_rejected_crossed_quote()
+        }
+        CompactEventRejectReason::ZeroQuoteSize => {
+            metrics.inc_compact_event_rejected_zero_quote_size()
+        }
+        CompactEventRejectReason::BadTradePrice => {
+            metrics.inc_compact_event_rejected_bad_trade_price()
+        }
+        CompactEventRejectReason::BadTradeSize => {
+            metrics.inc_compact_event_rejected_bad_trade_size()
+        }
+        CompactEventRejectReason::BadPriceScale => {
+            metrics.inc_compact_event_rejected_bad_price_scale()
+        }
+    }
+}
+
 fn compact_quote_event(
     quote: &QuoteEvent,
     references: &CompactEventReferences,
-) -> Option<LiveCompactEvent> {
-    if quote.ticker.is_empty()
-        || quote.sequence == 0
-        || quote.bid_price <= 0.0
-        || quote.ask_price <= 0.0
-        || quote.ask_price < quote.bid_price
-        || quote.bid_size == 0
-        || quote.ask_size == 0
-    {
-        return None;
+) -> Result<LiveCompactEvent, CompactEventRejectReason> {
+    if quote.ticker.is_empty() {
+        return Err(CompactEventRejectReason::EmptyTicker);
     }
-    let (ask_int, ask_scale) = scaled_price(quote.ask_price)?;
-    let (bid_int, bid_scale) = scaled_price(quote.bid_price)?;
-    Some(LiveCompactEvent {
+    if quote.sequence == 0 {
+        return Err(CompactEventRejectReason::ZeroSequence);
+    }
+    if quote.bid_price <= 0.0 || quote.ask_price <= 0.0 {
+        return Err(CompactEventRejectReason::BadQuotePrice);
+    }
+    if quote.ask_price < quote.bid_price {
+        return Err(CompactEventRejectReason::CrossedQuote);
+    }
+    if quote.bid_size == 0 || quote.ask_size == 0 {
+        return Err(CompactEventRejectReason::ZeroQuoteSize);
+    }
+    let (ask_int, ask_scale) =
+        scaled_price(quote.ask_price).ok_or(CompactEventRejectReason::BadPriceScale)?;
+    let (bid_int, bid_scale) =
+        scaled_price(quote.bid_price).ok_or(CompactEventRejectReason::BadPriceScale)?;
+    Ok(LiveCompactEvent {
         arrival_sequence: 0,
         conditions_packed: pack_quote_conditions(&quote.conditions, references),
         event_date: quote.ts.date_naive().to_string(),
@@ -934,12 +980,22 @@ fn compact_quote_event(
 fn compact_trade_event(
     trade: &TradeEvent,
     references: &CompactEventReferences,
-) -> Option<LiveCompactEvent> {
-    if trade.ticker.is_empty() || trade.sequence == 0 || trade.price <= 0.0 || trade.size <= 0.0 {
-        return None;
+) -> Result<LiveCompactEvent, CompactEventRejectReason> {
+    if trade.ticker.is_empty() {
+        return Err(CompactEventRejectReason::EmptyTicker);
     }
-    let (price_int, price_scale) = scaled_price(trade.price)?;
-    Some(LiveCompactEvent {
+    if trade.sequence == 0 {
+        return Err(CompactEventRejectReason::ZeroSequence);
+    }
+    if trade.price <= 0.0 {
+        return Err(CompactEventRejectReason::BadTradePrice);
+    }
+    if trade.size <= 0.0 {
+        return Err(CompactEventRejectReason::BadTradeSize);
+    }
+    let (price_int, price_scale) =
+        scaled_price(trade.price).ok_or(CompactEventRejectReason::BadPriceScale)?;
+    Ok(LiveCompactEvent {
         arrival_sequence: 0,
         conditions_packed: pack_trade_conditions(&trade.conditions, references),
         event_date: trade.ts.date_naive().to_string(),
