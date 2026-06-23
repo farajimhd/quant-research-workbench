@@ -209,6 +209,13 @@ def resolve_effective_seed(requested_seed: int, *, repeatable_randomness: bool) 
     return int(secrets.randbelow(MAX_NUMPY_SAFE_BASE_SEED))
 
 
+def validation_mask_seed(run_seed: int, global_step: int) -> int:
+    """Return a NumPy-safe validation seed that changes every validation call."""
+
+    safe_span = MAX_NUMPY_SAFE_BASE_SEED - 100_000
+    return int((int(run_seed) + 90_000 + int(global_step) * 1_009) % safe_span)
+
+
 @contextmanager
 def isolated_rng_state(device: torch.device):
     """Run code that samples masks without advancing the caller's RNG streams."""
@@ -394,7 +401,13 @@ def main(argv: list[str] | None = None) -> None:
             reporter.message(f"Training started. Output: {output_dir}")
         validation_batches = build_validation_cache(config, args.seed + 50_000, reporter=reporter)
         if validation_batches and args.initial_validation:
-            val_metrics = evaluate_validation(model, validation_batches, config, device, seed=args.seed + 90_000)
+            val_metrics = evaluate_validation(
+                model,
+                validation_batches,
+                config,
+                device,
+                seed=validation_mask_seed(args.seed, global_step),
+            )
             metric_logger.log(val_metrics, global_step)
             emit_progress_message(reporter, "Initial validation " + format_metrics(global_step, val_metrics))
             if reporter is not None:
@@ -1342,7 +1355,13 @@ def maybe_log_train_and_validation(
         and global_step % config.train.pretrain_validation_frequency == 0
     )
     if validation_batches and run_validation:
-        val_metrics = evaluate_validation(model, validation_batches, config, device, seed=args.seed + 90_000)
+        val_metrics = evaluate_validation(
+            model,
+            validation_batches,
+            config,
+            device,
+            seed=validation_mask_seed(args.seed, global_step),
+        )
         metric_logger.log(val_metrics, global_step)
         if reporter is None:
             print("VALIDATION " + format_metrics(global_step, val_metrics), flush=True)
