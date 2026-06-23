@@ -247,6 +247,14 @@ interrupted days are not rebuilt unless retry flags are provided. Use
 `--force-day-delete` with retry flags when reprocessing an incomplete day so
 old event and continuity rows are removed before new rows are inserted.
 
+The bar stage is intentionally derived from `events`, not tracked as a separate
+per-day event manifest. If a run successfully inserts flatfile rows into
+`events` but fails before or during `live_market_bars`, rerun the same date
+range. The event stage will skip manifest-`ok` days, those skipped days are
+still passed to the bar stage, and overlapping bars are rebuilt from the
+already-inserted events. Keep the default `--bar-replace-range` enabled for
+this recovery path.
+
 If the process is stopped during a day insert, rerun with:
 
 ```powershell
@@ -259,6 +267,11 @@ with:
 ```powershell
 --retry-failed --force-day-delete
 ```
+
+If Ctrl+C is pressed during the download phase, the parent process terminates
+download workers, leaves completed files in place, and leaves incomplete
+downloads as `.part` files. The next run checks remote sizes again and retries
+incomplete files.
 
 ## Why Event Inserts Are Chronological
 

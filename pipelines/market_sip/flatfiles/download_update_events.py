@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import json
+import multiprocessing as mp
 import os
 import queue as queue_module
 import re
@@ -62,6 +62,7 @@ from pipelines.market_sip.flatfiles.download_massive_sip_flatfiles import (  # n
     build_remote_jobs,
     download_one,
     env_value,
+    ignore_sigint_in_worker,
     parse_kinds,
 )
 from pipelines.market_sip.ingest.clickhouse_ingest_sip_compact_codec import (  # noqa: E402
@@ -257,17 +258,136 @@ def normalize_download_job_destination(job: DownloadJob, flatfiles_root: Path) -
     )
 
 
-def ensure_day_files(day: DayFiles, config: DownloadConfig, progress_queue: queue_module.Queue | None = None, worker_base: int = 0) -> dict[str, Any]:
-    t0 = time.time()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [
-            executor.submit(download_one, config, day.quote_job, worker_base, progress_queue),
-            executor.submit(download_one, config, day.trade_job, worker_base + 1, progress_queue),
-        ]
-        results = [future.result() for future in concurrent.futures.as_completed(futures)]
-    statuses = {f"{result.kind}:{result.session_date}": result.status for result in results}
-    ok = all(result.status in {"downloaded", "skipped_complete"} for result in results)
-    return {"source_date": day.source_date, "ok": ok, "statuses": statuses, "seconds": time.time() - t0}
+def split_download_file_jobs(days: list[DayFiles], workers: int) -> list[list[tuple[str, DownloadJob]]]:
+    jobs: list[tuple[str, DownloadJob]] = []
+    for day in days:
+        jobs.append((day.source_date, day.quote_job))
+        jobs.append((day.source_date, day.trade_job))
+    worker_count = max(1, min(int(workers), len(jobs) or 1))
+    chunks: list[list[tuple[str, DownloadJob]]] = [[] for _ in range(worker_count)]
+    for index, job in enumerate(jobs):
+        chunks[index % worker_count].append(job)
+    return chunks
+
+
+def download_file_worker(
+    worker_id: int,
+    jobs: list[tuple[str, DownloadJob]],
+    config: DownloadConfig,
+    result_queue: mp.Queue,
+    progress_queue: mp.Queue,
+) -> None:
+    ignore_sigint_in_worker()
+    try:
+        for source_date, job in jobs:
+            result = download_one(config, job, worker_id, progress_queue)
+            result_queue.put({"type": "file", "source_date": source_date, "result": asdict(result)})
+    finally:
+        result_queue.put({"type": "worker_done", "worker_id": worker_id})
+
+
+def drain_download_result_queue(
+    result_queue: mp.Queue,
+    day_file_results: dict[str, dict[str, dict[str, Any]]],
+    completed_workers: set[int],
+    report_path: Path,
+) -> None:
+    while True:
+        try:
+            item = result_queue.get_nowait()
+        except queue_module.Empty:
+            break
+        if item.get("type") == "worker_done":
+            completed_workers.add(int(item.get("worker_id", -1)))
+            continue
+        if item.get("type") == "file":
+            result = dict(item["result"])
+            source_date = str(item["source_date"])
+            kind = str(result.get("kind", ""))
+            day_file_results[source_date][kind] = result
+            append_jsonl(report_path, {"type": "download_file", **result})
+
+
+def run_download_phase(
+    *,
+    days: list[DayFiles],
+    config: DownloadConfig,
+    args: argparse.Namespace,
+    reporter: "UpdateProgressReporter",
+    report_path: Path,
+    progress_queue: mp.Queue,
+) -> dict[str, dict[str, Any]]:
+    chunks = split_download_file_jobs(days, max(1, int(args.download_workers)))
+    result_queue: mp.Queue = mp.Queue()
+    workers = [
+        mp.Process(target=download_file_worker, args=(worker_id, chunk, config, result_queue, progress_queue), daemon=False)
+        for worker_id, chunk in enumerate(chunks)
+        if chunk
+    ]
+    day_file_results: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    completed_workers: set[int] = set()
+    interrupted = False
+    started_at = time.time()
+    try:
+        for process in workers:
+            process.start()
+        while len(completed_workers) < len(workers):
+            drain_download_progress(progress_queue, {}, reporter=reporter)
+            drain_download_result_queue(result_queue, day_file_results, completed_workers, report_path)
+            for worker_id, process in enumerate(workers):
+                if worker_id in completed_workers:
+                    continue
+                if not process.is_alive() and process.exitcode is not None:
+                    process.join(timeout=0.1)
+                    completed_workers.add(worker_id)
+                    if process.exitcode != 0:
+                        reporter.log(f"download worker {worker_id:02d} exited with code {process.exitcode}")
+            time.sleep(0.2)
+        drain_download_result_queue(result_queue, day_file_results, completed_workers, report_path)
+        drain_download_progress(progress_queue, {}, reporter=reporter, force=True)
+    except KeyboardInterrupt:
+        interrupted = True
+        reporter.log("CTRL+C received. Terminating download workers; completed files remain valid and .part files will be retried.")
+        append_jsonl(report_path, {"type": "interrupted", "stage": "download", "elapsed_seconds": time.time() - started_at})
+        for process in workers:
+            if process.is_alive():
+                reporter.log(f"TERM download worker pid={process.pid}")
+                process.terminate()
+        deadline = time.time() + 5.0
+        for process in workers:
+            process.join(timeout=max(0.0, deadline - time.time()))
+        for process in workers:
+            if process.is_alive():
+                reporter.log(f"KILL download worker pid={process.pid}")
+                process.kill()
+                process.join(timeout=2.0)
+        drain_download_progress(progress_queue, {}, reporter=reporter, force=True)
+        raise SystemExit(130)
+    finally:
+        if not interrupted:
+            for process in workers:
+                if process.is_alive():
+                    process.terminate()
+                process.join(timeout=2.0)
+            drain_download_result_queue(result_queue, day_file_results, completed_workers, report_path)
+
+    download_results: dict[str, dict[str, Any]] = {}
+    for index, day in enumerate(days, start=1):
+        by_kind = day_file_results.get(day.source_date, {})
+        statuses = {
+            f"{kind}:{day.source_date}": str(row.get("status", "missing_result"))
+            for kind, row in sorted(by_kind.items())
+        }
+        seconds = max((float(row.get("wall_seconds") or 0.0) for row in by_kind.values()), default=0.0)
+        ok = all(
+            str(by_kind.get(kind, {}).get("status", "")) in {"downloaded", "skipped_complete"}
+            for kind in ("quotes", "trades")
+        )
+        result = {"source_date": day.source_date, "ok": ok, "statuses": statuses, "seconds": seconds}
+        download_results[day.source_date] = result
+        append_jsonl(report_path, {"type": "download", **result})
+        reporter.log(f"download day [{index:,}/{len(days):,}] {day.source_date} ok={ok} seconds={seconds:.1f} statuses={statuses}")
+    return download_results
 
 
 def format_bytes(value: int) -> str:
@@ -1433,33 +1553,16 @@ def main() -> None:
         reporter.set_stage("ensure tables")
         ensure_tables(client, args)
 
-        download_results: dict[str, dict[str, Any]] = {}
-        progress_queue: queue_module.Queue = queue_module.Queue()
-        file_states: dict[str, dict[str, Any]] = {}
+        progress_queue: mp.Queue = mp.Queue()
         reporter.set_stage("download flatfiles")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, int(args.download_workers))) as executor:
-            futures = {
-                executor.submit(ensure_day_files, day, config, progress_queue, day_index * 2): day
-                for day_index, day in enumerate(days)
-            }
-            pending = set(futures)
-            finished_count = 0
-            while pending:
-                done, pending = concurrent.futures.wait(pending, timeout=1.0, return_when=concurrent.futures.FIRST_COMPLETED)
-                drain_download_progress(progress_queue, file_states, reporter=reporter)
-                if not done:
-                    continue
-                for future in done:
-                    day = futures[future]
-                    result = future.result()
-                    finished_count += 1
-                    download_results[day.source_date] = result
-                    append_jsonl(report_path, {"type": "download", **result})
-                    reporter.log(
-                        f"download day [{finished_count:,}/{len(days):,}] {day.source_date} "
-                        f"ok={result['ok']} seconds={result['seconds']:.1f} statuses={result['statuses']}"
-                    )
-            drain_download_progress(progress_queue, file_states, reporter=reporter, force=True)
+        download_results = run_download_phase(
+            days=days,
+            config=config,
+            args=args,
+            reporter=reporter,
+            report_path=report_path,
+            progress_queue=progress_queue,
+        )
 
         reporter.set_stage("insert events")
         completed = 0
