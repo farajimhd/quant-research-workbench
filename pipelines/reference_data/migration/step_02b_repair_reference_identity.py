@@ -149,6 +149,7 @@ def build_repair_statements(target_db: str, sec_core_db: str, run_id: str, inser
     alias_ctes = canonical_alias_ctes(db)
     sec_exact_name_ctes = sec_exact_name_new_cik_ctes(db, sec_db)
     sec_existing_cik_alias_ctes = sec_exact_name_existing_cik_alias_ctes(db, sec_db)
+    qlive_exact_name_alias_ctes = qlive_exact_name_alias_ctes_sql(db)
     current_ts = f"toDateTime64({literal_inserted_at}, 3, 'UTC')"
 
     statements = [
@@ -381,6 +382,95 @@ DELETE WHERE source_system = 'q_live_migration'
   AND source_entity_key IN
   (
       {sec_exact_name_existing_cik_alias_old_issuer_query(db, sec_db)}
+  )
+SETTINGS mutations_sync = {mutations_sync}
+""",
+        ),
+        RepairStatement(
+            name="mark_qlive_exact_name_alias_issuers_merged",
+            target_table="id_issuer_v1",
+            sql=f"""
+INSERT INTO {db}.id_issuer_v1
+(issuer_id, issuer_name, issuer_name_normalized, legal_name, branding_name, entity_type, domicile_country_code, state_of_incorporation, sic_code, sic_description, sector, industry, industry_group, website_url, investor_website_url, logo_asset_id, status, first_seen_at_utc, last_seen_at_utc, last_verified_at_utc, source_run_id, source_content_sha256, inserted_at)
+{qlive_exact_name_alias_ctes}
+SELECT
+    issuer.issuer_id,
+    issuer.issuer_name,
+    issuer.issuer_name_normalized,
+    issuer.legal_name,
+    issuer.branding_name,
+    issuer.entity_type,
+    issuer.domicile_country_code,
+    issuer.state_of_incorporation,
+    issuer.sic_code,
+    issuer.sic_description,
+    issuer.sector,
+    issuer.industry,
+    issuer.industry_group,
+    issuer.website_url,
+    issuer.investor_website_url,
+    issuer.logo_asset_id,
+    'merged_qlive_exact_name_alias' AS status,
+    issuer.first_seen_at_utc,
+    {current_ts} AS last_seen_at_utc,
+    {current_ts} AS last_verified_at_utc,
+    {literal_run_id} AS source_run_id,
+    issuer.source_content_sha256,
+    {current_ts} AS inserted_at
+FROM {db}.id_issuer_v1 AS issuer FINAL
+INNER JOIN qlive_exact_name_aliases AS alias ON alias.old_issuer_id = issuer.issuer_id
+""",
+        ),
+        RepairStatement(
+            name="insert_qlive_exact_name_canonical_security_parent_rows",
+            target_table="id_security_v1",
+            sql=f"""
+INSERT INTO {db}.id_security_v1
+(security_id, issuer_id, product_type, asset_class, instrument_type, security_type, security_name, has_options, status, first_seen_at_utc, last_seen_at_utc, source_run_id, source_content_sha256, inserted_at)
+{qlive_exact_name_alias_ctes}
+SELECT
+    security.security_id,
+    alias.canonical_issuer_id AS issuer_id,
+    security.product_type,
+    security.asset_class,
+    security.instrument_type,
+    security.security_type,
+    security.security_name,
+    security.has_options,
+    security.status,
+    security.first_seen_at_utc,
+    {current_ts} AS last_seen_at_utc,
+    {literal_run_id} AS source_run_id,
+    security.source_content_sha256,
+    {current_ts} AS inserted_at
+FROM {db}.id_security_v1 AS security FINAL
+INNER JOIN qlive_exact_name_aliases AS alias ON alias.old_issuer_id = security.issuer_id
+""",
+        ),
+        RepairStatement(
+            name="delete_qlive_exact_name_noncanonical_security_parent_rows",
+            target_table="id_security_v1",
+            destructive=True,
+            sql=f"""
+ALTER TABLE {db}.id_security_v1
+DELETE WHERE issuer_id IN
+(
+    {qlive_exact_name_alias_old_issuer_query(db)}
+)
+SETTINGS mutations_sync = {mutations_sync}
+""",
+        ),
+        RepairStatement(
+            name="delete_qlive_exact_name_resolved_weak_issuer_issues",
+            target_table="id_mapping_issue_v1",
+            destructive=True,
+            sql=f"""
+ALTER TABLE {db}.id_mapping_issue_v1
+DELETE WHERE source_system = 'q_live_migration'
+  AND issue_type = 'weak_issuer_identity'
+  AND source_entity_key IN
+  (
+      {qlive_exact_name_alias_old_issuer_query(db)}
   )
 SETTINGS mutations_sync = {mutations_sync}
 """,
@@ -951,6 +1041,141 @@ FROM
 """
 
 
+def qlive_exact_name_alias_ctes_sql(db: str) -> str:
+    return f"""
+WITH durable_issuers AS
+(
+    SELECT DISTINCT issuer_id
+    FROM {db}.id_issuer_identifier_v1 FINAL
+    WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+      AND identifier_value_normalized != ''
+),
+weak_names AS
+(
+    SELECT sec.issuer_id AS old_issuer_id, any(issuer.issuer_name) AS issuer_name
+    FROM {db}.id_symbol_v1 AS sym FINAL
+    INNER JOIN {db}.id_listing_v1 AS listing FINAL ON listing.listing_id = sym.listing_id
+    INNER JOIN {db}.id_security_v1 AS sec FINAL ON sec.security_id = listing.security_id
+    LEFT JOIN {db}.id_issuer_v1 AS issuer FINAL ON issuer.issuer_id = sec.issuer_id
+    LEFT JOIN {db}.ref_exchange_v1 AS ex FINAL ON ex.exchange_code = listing.exchange_code
+    WHERE sym.status = 'active'
+      AND sym.primary_symbol_flag = 1
+      AND listing.listing_status = 'active'
+      AND upper(listing.currency_code) = 'USD'
+      AND upper(ifNull(ex.iso_country_code, '')) = 'US'
+      AND upper(sec.product_type) IN ('STK', 'STOCK', 'STOCKS')
+      AND startsWith(sec.issuer_id, 'issuer:ibkr_public:')
+      AND sec.issuer_id NOT IN (SELECT issuer_id FROM durable_issuers)
+    GROUP BY sec.issuer_id
+),
+weak AS
+(
+    SELECT old_issuer_id, issuer_name, upper(replaceRegexpAll(issuer_name, '[^A-Za-z0-9]', '')) AS normalized_name
+    FROM weak_names
+),
+canonical_names AS
+(
+    SELECT
+        issuer.issuer_id AS canonical_issuer_id,
+        issuer.issuer_name AS canonical_issuer_name,
+        upper(replaceRegexpAll(issuer.issuer_name, '[^A-Za-z0-9]', '')) AS normalized_name
+    FROM {db}.id_issuer_v1 AS issuer FINAL
+    WHERE issuer.issuer_id IN (SELECT issuer_id FROM durable_issuers)
+      AND NOT startsWith(issuer.issuer_id, 'issuer:ibkr_public:')
+),
+raw_matches AS
+(
+    SELECT
+        weak.old_issuer_id AS old_issuer_id,
+        weak.issuer_name AS weak_issuer_name,
+        canonical_names.canonical_issuer_id AS canonical_issuer_id,
+        canonical_names.canonical_issuer_name AS canonical_issuer_name
+    FROM weak
+    INNER JOIN canonical_names ON canonical_names.normalized_name = weak.normalized_name
+    WHERE weak.old_issuer_id != canonical_names.canonical_issuer_id
+),
+qlive_exact_name_alias_groups AS
+(
+    SELECT
+        old_issuer_id,
+        groupUniqArray(canonical_issuer_id) AS canonical_issuer_ids,
+        count() AS match_rows,
+        any(weak_issuer_name) AS weak_issuer_name,
+        any(canonical_issuer_name) AS canonical_issuer_name
+    FROM raw_matches
+    GROUP BY old_issuer_id
+),
+qlive_exact_name_aliases AS
+(
+    SELECT
+        old_issuer_id,
+        arrayElement(canonical_issuer_ids, 1) AS canonical_issuer_id,
+        weak_issuer_name,
+        canonical_issuer_name
+    FROM qlive_exact_name_alias_groups
+    WHERE length(canonical_issuer_ids) = 1
+)
+"""
+
+
+def qlive_exact_name_alias_old_issuer_query(db: str) -> str:
+    return f"""
+SELECT old_issuer_id
+FROM
+(
+    SELECT
+        weak.old_issuer_id AS old_issuer_id
+    FROM
+    (
+        SELECT
+            weak_names.old_issuer_id AS old_issuer_id,
+            upper(replaceRegexpAll(weak_names.issuer_name, '[^A-Za-z0-9]', '')) AS normalized_name
+        FROM
+        (
+            SELECT sec.issuer_id AS old_issuer_id, any(issuer.issuer_name) AS issuer_name
+            FROM {db}.id_symbol_v1 AS sym FINAL
+            INNER JOIN {db}.id_listing_v1 AS listing FINAL ON listing.listing_id = sym.listing_id
+            INNER JOIN {db}.id_security_v1 AS sec FINAL ON sec.security_id = listing.security_id
+            LEFT JOIN {db}.id_issuer_v1 AS issuer FINAL ON issuer.issuer_id = sec.issuer_id
+            LEFT JOIN {db}.ref_exchange_v1 AS ex FINAL ON ex.exchange_code = listing.exchange_code
+            WHERE sym.status = 'active'
+              AND sym.primary_symbol_flag = 1
+              AND listing.listing_status = 'active'
+              AND upper(listing.currency_code) = 'USD'
+              AND upper(ifNull(ex.iso_country_code, '')) = 'US'
+              AND upper(sec.product_type) IN ('STK', 'STOCK', 'STOCKS')
+              AND startsWith(sec.issuer_id, 'issuer:ibkr_public:')
+              AND sec.issuer_id NOT IN
+              (
+                  SELECT DISTINCT issuer_id
+                  FROM {db}.id_issuer_identifier_v1 FINAL
+                  WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+                    AND identifier_value_normalized != ''
+              )
+            GROUP BY sec.issuer_id
+        ) AS weak_names
+    ) AS weak
+    INNER JOIN
+    (
+        SELECT issuer_id AS canonical_issuer_id, upper(replaceRegexpAll(issuer_name, '[^A-Za-z0-9]', '')) AS normalized_name
+        FROM {db}.id_issuer_v1 FINAL
+        WHERE issuer_id IN
+        (
+            SELECT DISTINCT issuer_id
+            FROM {db}.id_issuer_identifier_v1 FINAL
+            WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+              AND identifier_value_normalized != ''
+        )
+          AND NOT startsWith(issuer_id, 'issuer:ibkr_public:')
+    ) AS canonical_names
+        ON canonical_names.normalized_name = weak.normalized_name
+    WHERE weak.old_issuer_id != canonical_names.canonical_issuer_id
+    GROUP BY weak.old_issuer_id
+    HAVING uniqExact(canonical_names.canonical_issuer_id) = 1
+)
+"""
+
+
 def collect_diagnostics(client: ClickHouseHttpClient, database: str, sec_core_database: str) -> dict[str, Any]:
     db = quote_ident(database)
     sec_db = quote_ident(sec_core_database)
@@ -1068,6 +1293,25 @@ def collect_diagnostics(client: ClickHouseHttpClient, database: str, sec_core_da
             WHERE issuer_id IN
             (
                 {sec_exact_name_existing_cik_alias_old_issuer_query(db, sec_db)}
+            )
+            """,
+        ),
+        "qlive_exact_name_aliases": scalar_int(
+            client,
+            f"""
+            {qlive_exact_name_alias_ctes_sql(db)}
+            SELECT count()
+            FROM qlive_exact_name_aliases
+            """,
+        ),
+        "qlive_exact_name_alias_security_rows": scalar_int(
+            client,
+            f"""
+            SELECT count()
+            FROM {db}.id_security_v1 FINAL
+            WHERE issuer_id IN
+            (
+                {qlive_exact_name_alias_old_issuer_query(db)}
             )
             """,
         ),
