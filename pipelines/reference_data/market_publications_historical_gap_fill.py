@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 import hashlib
 import io
 import json
@@ -197,14 +198,15 @@ def run_date_source(
     for gap in gaps:
         day = gap.start_date
         while day < gap.end_date:
-            if day.weekday() >= 5:
+            if day.weekday() >= 5 or is_us_equity_market_holiday(day):
                 started = datetime.now(UTC)
                 finished = datetime.now(UTC)
                 status = "covered_empty"
-                details = {"reason": "non_publication_day_weekend", "target_table": "market_short_volume_v1"}
+                reason = "non_publication_day_weekend" if day.weekday() >= 5 else "non_publication_day_market_holiday"
+                details = {"reason": reason, "target_table": "market_short_volume_v1"}
                 result = SourceResult(source_object, coverage_kind, day, day + timedelta(days=1), 0, 0, 0, status, details)
                 results.append(result)
-                print(f"{coverage_kind} {day.isoformat()} status={status} rows=0 written=0 reason=weekend", flush=True)
+                print(f"{coverage_kind} {day.isoformat()} status={status} rows=0 written=0 reason={reason}", flush=True)
                 if args.execute:
                     insert_publication_coverage(
                         client,
@@ -512,7 +514,11 @@ def fetch_sec_ftd_file(
 
 def load_symbol_refs(client: ClickHouseHttpClient, database: str) -> dict[str, SymbolRef]:
     sql = f"""
-    SELECT upper(s.ticker) AS ticker, s.symbol_id, l.listing_id, l.security_id
+    SELECT
+        upper(s.ticker) AS ticker,
+        s.symbol_id AS symbol_id,
+        l.listing_id AS listing_id,
+        l.security_id AS security_id
     FROM {qtable(database, 'id_symbol_v1')} s FINAL
     INNER JOIN {qtable(database, 'id_listing_v1')} l FINAL ON l.listing_id = s.listing_id
     WHERE s.status = 'active'
@@ -600,6 +606,76 @@ def sha256_bytes(content: bytes) -> str:
 
 def parse_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def is_us_equity_market_holiday(day: date) -> bool:
+    """Return true for regular full-day US equity market holidays.
+
+    This is used only to avoid marking known non-publication days as failed
+    when FINRA has no daily short-volume file.
+    """
+    return day in us_equity_market_holidays(day.year)
+
+
+def us_equity_market_holidays(year: int) -> set[date]:
+    holidays = {
+        observed_fixed_holiday(year, 1, 1),
+        nth_weekday(year, 1, calendar.MONDAY, 3),
+        nth_weekday(year, 2, calendar.MONDAY, 3),
+        good_friday(year),
+        last_weekday(year, 5, calendar.MONDAY),
+        observed_fixed_holiday(year, 7, 4),
+        nth_weekday(year, 9, calendar.MONDAY, 1),
+        nth_weekday(year, 11, calendar.THURSDAY, 4),
+        observed_fixed_holiday(year, 12, 25),
+    }
+    if year >= 2022:
+        holidays.add(observed_fixed_holiday(year, 6, 19))
+    return holidays
+
+
+def observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    holiday = date(year, month, day)
+    if holiday.weekday() == calendar.SATURDAY:
+        return holiday - timedelta(days=1)
+    if holiday.weekday() == calendar.SUNDAY:
+        return holiday + timedelta(days=1)
+    return holiday
+
+
+def nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (n - 1))
+
+
+def last_weekday(year: int, month: int, weekday: int) -> date:
+    last_day = calendar.monthrange(year, month)[1]
+    cursor = date(year, month, last_day)
+    return cursor - timedelta(days=(cursor.weekday() - weekday) % 7)
+
+
+def good_friday(year: int) -> date:
+    return easter_sunday(year) - timedelta(days=2)
+
+
+def easter_sunday(year: int) -> date:
+    # Anonymous Gregorian algorithm.
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
 
 
 def default_output_root() -> Path:

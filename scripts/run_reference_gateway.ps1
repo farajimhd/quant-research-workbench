@@ -6,7 +6,9 @@ param(
     [switch]$Execute,
     [switch]$PrintRules,
     [switch]$ActiveTickerCheck,
-    [switch]$EnsureMarketPublicationSchema
+    [switch]$EnsureMarketPublicationSchema,
+    [switch]$MarketHoursWriteOverride,
+    [string]$MarketHoursWriteReason = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,6 +29,15 @@ if ($TestWriteDatabase) {
 if ($Execute) {
     $argsList += "--execute"
 }
+if ($MarketHoursWriteOverride) {
+    $argsList += "--market-hours-write-override"
+    if (-not $MarketHoursWriteReason.Trim()) {
+        throw "-MarketHoursWriteReason is required when -MarketHoursWriteOverride is set."
+    }
+}
+if ($MarketHoursWriteReason.Trim()) {
+    $argsList += @("--market-hours-write-reason", $MarketHoursWriteReason)
+}
 if ($PrintRules) {
     $argsList += "--print-rules"
 }
@@ -38,3 +49,4 @@ if ($EnsureMarketPublicationSchema) {
 }
 
 & $PythonExe @argsList
+exit $LASTEXITCODE

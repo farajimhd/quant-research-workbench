@@ -76,6 +76,13 @@ The same mode through the wrapper:
 .\scripts\run_reference_gateway.ps1 -ReadDatabase q_live -TestWriteDatabase q_reference_tmp -Execute -EnsureMarketPublicationSchema
 ```
 
+During the active collection window, writes are blocked unless the operation is
+explicitly marked with an auditable override reason. For a temp-mode smoke test:
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -ReadDatabase q_live -TestWriteDatabase q_reference_tmp -Execute -EnsureMarketPublicationSchema -MarketHoursWriteOverride -MarketHoursWriteReason "temp reference gateway test"
+```
+
 Equivalent environment variables:
 
 ```text

@@ -24,6 +24,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--read-database", default="", help="Canonical source database. Defaults to REFERENCE_* read DB or q_live.")
     parser.add_argument("--write-database", default="", help="Target database for writes. Defaults to REFERENCE_* write DB or q_live.")
     parser.add_argument("--test-write-database", default="", help="Shortcut for temp testing: read from q_live/read DB and write to this temp DB.")
+    parser.add_argument(
+        "--market-hours-write-override",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Allow execute-mode writes during the active collection window. Requires --market-hours-write-reason.",
+    )
+    parser.add_argument(
+        "--market-hours-write-reason",
+        default="",
+        help="Auditable reason for market-hours write override.",
+    )
     parser.add_argument("--print-rules", action="store_true", help="Print the hard tradability blocking rules.")
     parser.add_argument("--print-table-groups", action="store_true", help="Print reference gateway table ownership groups.")
     parser.add_argument(
@@ -45,12 +56,19 @@ def main() -> None:
     load_env_files(discover_clickhouse_env_files())
     if args.execute is not None:
         os.environ["REFERENCE_GATEWAY_EXECUTE"] = "true" if args.execute else "false"
+    if args.market_hours_write_override and not args.market_hours_write_reason.strip():
+        print("--market-hours-write-reason is required with --market-hours-write-override.", flush=True)
+        sys.exit(2)
     if args.read_database:
         os.environ["REFERENCE_CLICKHOUSE_READ_DATABASE"] = args.read_database
     if args.test_write_database:
         os.environ["REFERENCE_CLICKHOUSE_WRITE_DATABASE"] = args.test_write_database
     elif args.write_database:
         os.environ["REFERENCE_CLICKHOUSE_WRITE_DATABASE"] = args.write_database
+    if args.market_hours_write_override is not None:
+        os.environ["REFERENCE_GATEWAY_MARKET_HOURS_WRITE_OVERRIDE"] = "true" if args.market_hours_write_override else "false"
+    if args.market_hours_write_reason:
+        os.environ["REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON"] = args.market_hours_write_reason
     if args.print_rules:
         print(tradability_rule_markdown())
         return
