@@ -205,6 +205,10 @@ def validate_tables(client: ClickHouseHttpClient, args: argparse.Namespace, spec
         storage_policy = str(table_meta[spec.target_table].get("storage_policy") or "")
         duplicate_replacing_rows = max(0, target_rows - target_logical_rows)
         row_count_mismatch = abs(target_logical_rows - expected_rows)
+        row_count_note = ""
+        if spec.target_table == "id_mapping_issue_v1" and target_logical_rows >= expected_rows:
+            row_count_mismatch = 0
+            row_count_note = "migration-generated issue rows are allowed; step_02b identity checks validate stale issue cleanup"
         storage_status = "pass" if not expected_storage_policy or storage_policy == expected_storage_policy else "warn"
 
         status = "pass"
@@ -212,6 +216,8 @@ def validate_tables(client: ClickHouseHttpClient, args: argparse.Namespace, spec
         if row_count_mismatch:
             status = "fail"
             messages.append(f"logical row mismatch={row_count_mismatch}")
+        elif row_count_note:
+            messages.append(row_count_note)
         if critical_empty:
             status = "fail"
             messages.append(f"critical empty={critical_empty}")
@@ -256,6 +262,7 @@ def validate_operational_state(client: ClickHouseHttpClient, args: argparse.Name
     db = quote_ident(args.target_database)
     rows.extend(storage_policy_checks(client, args.target_database, expected_storage_policy))
     rows.extend(run_status_checks(client, args.target_database))
+    rows.extend(identity_repair_checks(client, args.target_database))
     rows.extend(
         [
             count_check(client, "sec_missing_accepted_at", "sec_filing_v2", f"SELECT countIf(isNull(accepted_at_utc)) FROM {db}.sec_filing_v2 FINAL", expected_zero=True, severity="warning", message="SEC accepted timestamp backfill should populate every migrated filing row."),
@@ -266,6 +273,116 @@ def validate_operational_state(client: ClickHouseHttpClient, args: argparse.Name
         ]
     )
     return rows
+
+
+def identity_repair_checks(client: ClickHouseHttpClient, database: str) -> list[dict[str, Any]]:
+    db = quote_ident(database)
+    duplicate_identifier_groups = scalar_int(
+        client,
+        f"""
+        SELECT count()
+        FROM
+        (
+            SELECT lower(identifier_kind), identifier_value_normalized, uniqExact(issuer_id) AS issuer_count
+            FROM {db}.id_issuer_identifier_v1 FINAL
+            WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+              AND identifier_value_normalized != ''
+            GROUP BY lower(identifier_kind), identifier_value_normalized
+            HAVING issuer_count > 1
+        )
+        """,
+    )
+    nonlinkable_open_issues = scalar_int(
+        client,
+        f"""
+        SELECT count()
+        FROM {db}.id_mapping_issue_v1 FINAL
+        WHERE lower(issue_status) NOT IN ('resolved', 'closed', 'ignored')
+          AND source_system != 'q_live_migration'
+          AND upper(source_entity_key) NOT IN
+          (
+              SELECT upper(issuer_id) FROM {db}.id_issuer_v1 FINAL WHERE issuer_id != ''
+              UNION DISTINCT
+              SELECT upper(security_id) FROM {db}.id_security_v1 FINAL WHERE security_id != ''
+              UNION DISTINCT
+              SELECT upper(listing_id) FROM {db}.id_listing_v1 FINAL WHERE listing_id != ''
+              UNION DISTINCT
+              SELECT upper(symbol_id) FROM {db}.id_symbol_v1 FINAL WHERE symbol_id != ''
+              UNION DISTINCT
+              SELECT upper(ticker) FROM {db}.id_symbol_v1 FINAL WHERE ticker != ''
+          )
+        """,
+    )
+    weak_candidates = scalar_int(
+        client,
+        f"""
+        WITH durable_issuers AS
+        (
+            SELECT DISTINCT issuer_id
+            FROM {db}.id_issuer_identifier_v1 FINAL
+            WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+              AND identifier_value_normalized != ''
+        )
+        SELECT count()
+        FROM
+        (
+            SELECT sec.issuer_id
+            FROM {db}.id_symbol_v1 AS sym FINAL
+            INNER JOIN {db}.id_listing_v1 AS listing FINAL ON listing.listing_id = sym.listing_id
+            INNER JOIN {db}.id_security_v1 AS sec FINAL ON sec.security_id = listing.security_id
+            LEFT JOIN {db}.ref_exchange_v1 AS ex FINAL ON ex.exchange_code = listing.exchange_code
+            WHERE sym.status = 'active'
+              AND sym.primary_symbol_flag = 1
+              AND listing.listing_status = 'active'
+              AND upper(listing.currency_code) = 'USD'
+              AND upper(ifNull(ex.iso_country_code, '')) = 'US'
+              AND upper(sec.product_type) IN ('STK', 'STOCK', 'STOCKS')
+              AND sec.issuer_id NOT IN (SELECT issuer_id FROM durable_issuers)
+        )
+        """,
+    )
+    weak_issue_rows = scalar_int(
+        client,
+        f"""
+        SELECT count()
+        FROM {db}.id_mapping_issue_v1 FINAL
+        WHERE source_system = 'q_live_migration'
+          AND issue_type = 'weak_issuer_identity'
+          AND lower(issue_status) NOT IN ('resolved', 'closed', 'ignored')
+        """,
+    )
+    return [
+        {
+            "check_name": "step_02b_duplicate_durable_issuer_identifiers",
+            "target_table": "id_issuer_identifier_v1",
+            "status": "pass" if duplicate_identifier_groups == 0 else "fail",
+            "severity": "error",
+            "observed_value": str(duplicate_identifier_groups),
+            "expected_value": "0",
+            "mismatch_count": duplicate_identifier_groups,
+            "message": "Run step_02b_repair_reference_identity before building tradable universe features.",
+        },
+        {
+            "check_name": "step_02b_nonlinkable_legacy_open_mapping_issues",
+            "target_table": "id_mapping_issue_v1",
+            "status": "pass" if nonlinkable_open_issues == 0 else "fail",
+            "severity": "error",
+            "observed_value": str(nonlinkable_open_issues),
+            "expected_value": "0",
+            "mismatch_count": nonlinkable_open_issues,
+            "message": "Non-linkable legacy source issues should not remain as open q_live graph issues.",
+        },
+        {
+            "check_name": "step_02b_weak_issuer_identity_issue_coverage",
+            "target_table": "id_mapping_issue_v1",
+            "status": "pass" if weak_issue_rows >= weak_candidates else "warn",
+            "severity": "warning",
+            "observed_value": str(weak_issue_rows),
+            "expected_value": f">={weak_candidates}",
+            "mismatch_count": max(0, weak_candidates - weak_issue_rows),
+            "message": "Weak issuer identities are allowed only when explicitly tracked as migration issues.",
+        },
+    ]
 
 
 def storage_policy_checks(client: ClickHouseHttpClient, database: str, expected_storage_policy: str) -> list[dict[str, Any]]:

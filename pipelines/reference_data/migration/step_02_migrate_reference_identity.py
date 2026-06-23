@@ -157,6 +157,19 @@ def build_specs(source_db: str, target_db: str, run_id: str, inserted_at: str) -
     literal_inserted_at = sql_string(inserted_at)
     source_suffix = ", ".join([literal_run_id, "source_content_sha256", f"toDateTime64({literal_inserted_at}, 3, 'UTC')"])
     source_suffix_no_hash = ", ".join([literal_run_id, "''", f"toDateTime64({literal_inserted_at}, 3, 'UTC')"])
+    linkable_source_issue_keys = f"""
+(
+    SELECT upper(issuer_id) AS source_entity_key FROM {s}.market_issuer_v1 FINAL WHERE issuer_id != ''
+    UNION DISTINCT
+    SELECT upper(security_id) FROM {s}.market_security_v1 FINAL WHERE security_id != ''
+    UNION DISTINCT
+    SELECT upper(listing_id) FROM {s}.market_listing_v1 FINAL WHERE listing_id != ''
+    UNION DISTINCT
+    SELECT upper(symbol_id) FROM {s}.market_symbol_v1 FINAL WHERE symbol_id != ''
+    UNION DISTINCT
+    SELECT upper(ticker) FROM {s}.market_symbol_v1 FINAL WHERE ticker != ''
+)
+"""
     return [
         MigrationSpec(
             name="ref_country",
@@ -390,9 +403,18 @@ FROM {s}.market_source_identity_mapping_v1
             select_sql=f"""
 SELECT reference_issue_id AS mapping_issue_id, source_mapping_id, source_system, source_entity_kind, source_entity_key, mapped_entity_kind, issue_type, issue_status, issue_message, evidence_json, opened_at_utc, resolved_at_utc, {source_suffix}
 FROM {s}.market_canonical_reference_issue_v1
+WHERE upper(source_entity_key) IN {linkable_source_issue_keys}
 """,
-            source_count_sql=f"SELECT count() FROM {s}.market_canonical_reference_issue_v1",
-            expected_count_sql=f"SELECT uniqExact(reference_issue_id) FROM {s}.market_canonical_reference_issue_v1",
+            source_count_sql=f"""
+SELECT count()
+FROM {s}.market_canonical_reference_issue_v1
+WHERE upper(source_entity_key) IN {linkable_source_issue_keys}
+""",
+            expected_count_sql=f"""
+SELECT uniqExact(reference_issue_id)
+FROM {s}.market_canonical_reference_issue_v1
+WHERE upper(source_entity_key) IN {linkable_source_issue_keys}
+""",
             critical_columns=("mapping_issue_id", "source_mapping_id", "source_system", "source_entity_key"),
         ),
     ]

@@ -144,7 +144,56 @@ Step 2 migrates:
 - Reference tables: country, asset class, exchange, exchange currency, ticker type.
 - Identity tables: issuer, issuer identifiers, security, security identifiers, listing, symbol, source mappings, mapping issues.
 
+Legacy source mapping issues are migrated only when their `source_entity_key`
+can be linked to the migrated issuer/security/listing/symbol graph or an active
+symbol ticker. Historical unresolved source-only issues are not copied into
+`q_live.id_mapping_issue_v1`; they are migration artifacts, not current canonical
+graph blockers.
+
 Default mode is dry-run. The script refuses to append into non-empty target tables unless `--allow-non-empty-targets` is passed. Validation compares target logical `FINAL` row counts to source distinct-key counts, because the source tables are `ReplacingMergeTree` and can contain duplicate physical rows.
+
+## Step 2b: Repair Reference Identity
+
+Run this after Step 2 and before Step 3, Step 5, or Step 6. It handles the
+identity problems that should be resolved during migration rather than by the
+reference gateway:
+
+- duplicate durable issuer identifiers: pick a deterministic canonical issuer,
+  mark duplicate aliases as merged, remove non-canonical CIK/LEI/EIN rows, and
+  remap securities from duplicate issuer aliases to the canonical issuer
+- weak issuer identity: create explicit `weak_issuer_identity` mapping issues
+  for active US stock candidates that still lack CIK/LEI/EIN
+- stale open mapping issues: delete migrated legacy open issues whose
+  `source_entity_key` does not link to the current canonical graph
+
+Dry-run locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migration\step_02b_repair_reference_identity.py --target-database q_live --output-root-win D:/market-data/prepared/q_live_migration/step_02b_reference_identity_repair
+```
+
+Dry-run on workstation:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_02b_repair_reference_identity.py --target-database q_live --output-root-win D:/market-data/prepared/q_live_migration/step_02b_reference_identity_repair
+```
+
+Execute locally:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\migration\step_02b_repair_reference_identity.py --target-database q_live --execute --output-root-win D:/market-data/prepared/q_live_migration/step_02b_reference_identity_repair
+```
+
+Execute on workstation:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\migration\step_02b_repair_reference_identity.py --target-database q_live --execute --output-root-win D:/market-data/prepared/q_live_migration/step_02b_reference_identity_repair
+```
+
+The step writes a manifest, rendered SQL, execution JSONL, and Markdown summary.
+It uses ClickHouse mutations for cleanup because several current migration
+tables have mutable fields in their sorting keys, so an inserted replacement row
+alone cannot remove old non-canonical identity rows or old open issue rows.
 
 ## Step 3: Migrate Market Publication Tables
 
@@ -268,6 +317,7 @@ python \\DESKTOP-SAAI85T\Workstation-D\TradingML\codes\masked_event_model\v4\pip
 Step 5 validates:
 
 - source-to-target logical row reconciliation for Steps 2-4
+- identity repairs from Step 2b through dedicated operational checks
 - critical-key null/empty counts
 - target `FINAL` counts and ReplacingMergeTree duplicate physical rows
 - `source_run_id`, `source_content_sha256`, and latest insert timestamps where applicable
