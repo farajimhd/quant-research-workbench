@@ -103,7 +103,11 @@ def main() -> int:
     print(" ".join(argv), flush=True)
     if args.print_only:
         return 0
-    return subprocess.call(argv)
+    try:
+        return subprocess.call(argv)
+    except KeyboardInterrupt:
+        print("Interrupted by user.", flush=True)
+        return 130
 
 
 if __name__ == "__main__":

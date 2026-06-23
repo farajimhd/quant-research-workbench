@@ -36,6 +36,11 @@ The default launcher uses a Rich terminal layout with:
 - current operation
 - recent messages
 
+Ctrl+C exits with status code `130`, closes the Rich layout cleanly, appends an
+`interrupted` row to the JSONL report, and best-effort sends `KILL QUERY ... SYNC`
+for the active ClickHouse delete/insert query. If the interruption lands during
+a ClickHouse mutation, check `system.mutations` before restarting.
+
 Use plain line-based output when redirecting logs or when Rich rendering is not
 useful:
 

@@ -5,6 +5,7 @@ from collections import deque
 import json
 import sys
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -22,10 +23,10 @@ from research.mlops.clickhouse import (  # noqa: E402
     default_clickhouse_user,
     default_storage_policy,
     discover_clickhouse_env_files,
+    enrich_profile_from_query_log,
     mergetree_settings_sql,
     parse_size_bytes,
     quote_ident,
-    run_profiled,
     sql_string,
 )
 from research.mlops.env import load_env_files, secret_status  # noqa: E402
@@ -97,7 +98,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+def main() -> int:
     started = time.perf_counter()
     loaded_env_files = load_env_files(discover_clickhouse_env_files(), verbose=True)
     args = parse_args()
@@ -128,11 +129,28 @@ def main() -> None:
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
     print("=" * 96, flush=True)
 
-    with BarBuildReporter(args, specs=specs, report_path=report_path, requested_start_date=requested_start_date, requested_end_date=requested_end_date) as reporter:
-        build_live_market_bars(client, args, specs=specs, report_path=report_path, reporter=reporter)
+    try:
+        with BarBuildReporter(args, specs=specs, report_path=report_path, requested_start_date=requested_start_date, requested_end_date=requested_end_date) as reporter:
+            build_live_market_bars(client, args, specs=specs, report_path=report_path, reporter=reporter)
+    except KeyboardInterrupt:
+        append_jsonl(
+            report_path,
+            {
+                "operation": "build",
+                "status": "interrupted",
+                "elapsed_seconds": time.perf_counter() - started,
+                "interrupted_at": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+        print("=" * 96, flush=True)
+        print(f"INTERRUPTED elapsed_minutes={(time.perf_counter() - started) / 60.0:.1f} report={report_path}", flush=True)
+        print("If interruption happened during a ClickHouse mutation, check system.mutations before restarting.", flush=True)
+        print("=" * 96, flush=True)
+        return 130
     print("=" * 96, flush=True)
     print(f"DONE elapsed_minutes={(time.perf_counter() - started) / 60.0:.1f} report={report_path}", flush=True)
     print("=" * 96, flush=True)
+    return 0
 
 
 class BarBuildReporter:
@@ -158,6 +176,7 @@ class BarBuildReporter:
         self._current = None
         self._overall_task = None
         self._current_task = None
+        self._active_query_id = ""
         self._total_steps = len(specs) + (1 if args.drop_table else 0) + (1 if args.replace_range else 0)
         self._completed_steps = 0
         self._stage = "starting"
@@ -215,11 +234,16 @@ class BarBuildReporter:
             print(f"STAGE {stage}", flush=True)
 
     def finish_stage(self, message: str) -> None:
+        self._active_query_id = ""
         self._completed_steps += 1
         self.log(message)
         if self._rich and self._overall is not None and self._overall_task is not None:
             self._overall.update(self._overall_task, completed=min(self._completed_steps, self._total_steps))
             self._live.update(self._render())
+
+    def set_active_query(self, query_id: str) -> None:
+        self._active_query_id = query_id
+        self.log(f"active query_id={query_id}")
 
     def log(self, message: str) -> None:
         line = f"{datetime.now().strftime('%H:%M:%S')} {message}"
@@ -239,6 +263,8 @@ class BarBuildReporter:
         summary.add_row("build range", f"{self.args.start_date} -> {self.args.end_date}")
         summary.add_row("timeframes", ",".join(spec.name for spec in self.specs))
         summary.add_row("stage", self._stage)
+        if self._active_query_id:
+            summary.add_row("active query", self._active_query_id)
         summary.add_row("elapsed", f"{elapsed / 60.0:.1f} min")
         logs = "\n".join(self._logs) if self._logs else "no messages"
         return self._group_cls(
@@ -286,10 +312,11 @@ def build_live_market_bars(
     if args.replace_range:
         if reporter is not None:
             reporter.set_stage("delete overlapping bars")
-        delete_profile = run_profiled(
+        delete_profile = run_bar_query_profiled(
             client,
             f"delete_{args.bars_table}_{args.start_date}_{args.end_date}",
             delete_range_sql(args.database, args.bars_table, args.start_date, args.end_date, args),
+            reporter=reporter,
         )
         append_jsonl(report_path, {"operation": "delete_range", "profile": asdict(delete_profile)})
         if reporter is not None:
@@ -303,11 +330,12 @@ def build_live_market_bars(
         else:
             print("=" * 96, flush=True)
             print(f"BAR START [{index:,}/{len(specs):,}] timeframe={spec.name} table={args.bars_table}", flush=True)
-        insert_profile = run_profiled(
+        insert_profile = run_bar_query_profiled(
             client,
             f"insert_{args.bars_table}_{spec.name}_{args.start_date}_{args.end_date}",
             insert_live_market_bars_sql(args, spec),
             query_settings(args),
+            reporter=reporter,
         )
         summary = summarize_table(client, args.database, args.bars_table, spec.name, args.start_date, args.end_date)
         result = {"operation": "insert", "timeframe": spec.name, "profile": asdict(insert_profile), "summary": summary}
@@ -343,6 +371,56 @@ def parse_timeframes(text: str) -> list[TimeframeSpec]:
             specs.append(TIMEFRAME_SPECS[item])
             seen.add(item)
     return specs
+
+
+def run_bar_query_profiled(
+    client: ClickHouseHttpClient,
+    label: str,
+    sql: str,
+    settings: str = "",
+    *,
+    reporter: BarBuildReporter | None = None,
+) -> QueryProfile:
+    query_id = f"sip_{label}_{uuid.uuid4().hex}"
+    full_sql = sql.rstrip(";") + settings
+    if reporter is not None:
+        reporter.set_active_query(query_id)
+    print(f"QUERY START {label} query_id={query_id}", flush=True)
+    started = time.perf_counter()
+    exception = ""
+    try:
+        client.execute(full_sql, query_id=query_id)
+    except KeyboardInterrupt:
+        if reporter is not None:
+            reporter.log(f"interrupt received; requesting ClickHouse kill for query_id={query_id}")
+        kill_clickhouse_query(client, query_id, reporter=reporter)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        exception = repr(exc)
+        print(f"QUERY FAILED {label}: {exception}", flush=True)
+    wall_seconds = time.perf_counter() - started
+    profile = QueryProfile(label=label, query_id=query_id, wall_seconds=wall_seconds, exception=exception)
+    enrich_profile_from_query_log(client, profile)
+    if exception:
+        raise RuntimeError(f"{label} failed: {exception}")
+    return profile
+
+
+def kill_clickhouse_query(client: ClickHouseHttpClient, query_id: str, *, reporter: BarBuildReporter | None = None) -> None:
+    try:
+        client.execute(f"KILL QUERY WHERE query_id = {sql_string(query_id)} SYNC")
+    except Exception as exc:  # noqa: BLE001
+        message = f"WARN failed to kill ClickHouse query_id={query_id}: {exc!r}"
+        if reporter is not None:
+            reporter.log(message)
+        else:
+            print(message, flush=True)
+    else:
+        message = f"ClickHouse kill requested for query_id={query_id}"
+        if reporter is not None:
+            reporter.log(message)
+        else:
+            print(message, flush=True)
 
 
 def query_settings(args: argparse.Namespace) -> str:
@@ -793,4 +871,4 @@ def expand_date_range_for_timeframes(start_date: str, end_date: str, timeframes:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
