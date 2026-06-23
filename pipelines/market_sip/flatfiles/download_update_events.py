@@ -45,6 +45,13 @@ from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noq
     quote_condition_pack_expr,
     trade_condition_pack_expr,
 )
+from pipelines.market_sip.events.clickhouse_build_trade_bars import (  # noqa: E402
+    DEFAULT_BARS_TABLE,
+    DEFAULT_TIMEFRAMES as DEFAULT_BAR_TIMEFRAMES,
+    build_live_market_bars,
+    expand_date_range_for_timeframes,
+    parse_timeframes,
+)
 from pipelines.market_sip.flatfiles.download_massive_sip_flatfiles import (  # noqa: E402
     DEFAULT_AWS_REGION,
     DEFAULT_AWS_SERVICE,
@@ -128,6 +135,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--events-table", default=DEFAULT_EVENTS_TABLE)
     parser.add_argument("--manifest-table", default=DEFAULT_MANIFEST_TABLE)
     parser.add_argument("--continuity-table", default=DEFAULT_CONTINUITY_TABLE)
+    parser.add_argument("--bars-table", default=DEFAULT_BARS_TABLE)
+    parser.add_argument("--bar-timeframes", default=",".join(DEFAULT_BAR_TIMEFRAMES))
     parser.add_argument("--start-date", default=DEFAULT_START_DATE)
     parser.add_argument("--end-date", default=DEFAULT_END_DATE)
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
@@ -161,6 +170,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--retry-started", action="store_true")
     parser.add_argument("--force-day-delete", action="store_true")
+    parser.add_argument("--skip-bars", action="store_true", help="Only update compact events; do not rebuild qmd-compatible bar rows.")
+    parser.add_argument(
+        "--bar-replace-range",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Delete and rebuild overlapping bar rows for the updated date range before inserting bars.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--test-mode",
@@ -820,7 +836,7 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
     prefix = str(args.test_table_prefix).strip()
     if not SAFE_TEST_TABLE_RE.match(prefix):
         raise ValueError(f"--test-table-prefix must be a safe ClickHouse identifier prefix, got {prefix!r}")
-    if prefix in {DEFAULT_EVENTS_TABLE, DEFAULT_MANIFEST_TABLE, DEFAULT_CONTINUITY_TABLE}:
+    if prefix in {DEFAULT_EVENTS_TABLE, DEFAULT_MANIFEST_TABLE, DEFAULT_CONTINUITY_TABLE, DEFAULT_BARS_TABLE}:
         raise ValueError("--test-table-prefix cannot be a production table name")
     if args.dry_run:
         raise ValueError("--test-mode needs to insert and audit temp tables; do not combine it with --dry-run")
@@ -829,8 +845,9 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
     args.events_table = f"{prefix}_{run_id}_events"
     args.manifest_table = f"{prefix}_{run_id}_manifest"
     args.continuity_table = f"{prefix}_{run_id}_continuity"
-    for table in (args.events_table, args.manifest_table, args.continuity_table):
-        if table in {DEFAULT_EVENTS_TABLE, DEFAULT_MANIFEST_TABLE, DEFAULT_CONTINUITY_TABLE} or not SAFE_TEST_TABLE_RE.match(table):
+    args.bars_table = f"{prefix}_{run_id}_bars"
+    for table in (args.events_table, args.manifest_table, args.continuity_table, args.bars_table):
+        if table in {DEFAULT_EVENTS_TABLE, DEFAULT_MANIFEST_TABLE, DEFAULT_CONTINUITY_TABLE, DEFAULT_BARS_TABLE} or not SAFE_TEST_TABLE_RE.match(table):
             raise ValueError(f"Unsafe test table name generated: {table!r}")
     args.retry_failed = True
     args.retry_started = True
@@ -841,7 +858,7 @@ def drop_test_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> 
     if not args.test_mode:
         return
     prefix = f"{str(args.test_table_prefix).strip()}_"
-    tables = [args.events_table, args.manifest_table, args.continuity_table]
+    tables = [args.events_table, args.manifest_table, args.continuity_table, args.bars_table]
     unsafe = [table for table in tables if not table.startswith(prefix) or not SAFE_TEST_TABLE_RE.match(table)]
     if unsafe:
         raise RuntimeError(f"Refusing to drop unsafe test table names: {unsafe}")
@@ -1317,6 +1334,58 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
         raise
 
 
+def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles], report_path: Path) -> None:
+    if args.skip_bars:
+        print("BAR SKIP --skip-bars was set", flush=True)
+        return
+    if not days:
+        print("BAR SKIP no successfully updated days", flush=True)
+        return
+    parse_timeframes(args.bar_timeframes)
+    min_day = min(day.source_date for day in days)
+    max_day = max(day.source_date for day in days)
+    bar_start_date, bar_end_date = expand_date_range_for_timeframes(min_day, max_day, args.bar_timeframes)
+    bar_args = argparse.Namespace(
+        clickhouse_url=args.clickhouse_url,
+        user=args.user,
+        password=args.password,
+        database=args.database,
+        events_table=args.events_table,
+        bars_table=args.bars_table,
+        start_date=bar_start_date,
+        end_date=bar_end_date,
+        timeframes=args.bar_timeframes,
+        storage_policy=args.storage_policy,
+        max_threads=args.max_threads,
+        max_memory_usage=args.max_memory_usage,
+        output_root_win=args.output_root_win,
+        replace_range=args.bar_replace_range,
+        drop_table=False,
+        dry_run=args.dry_run,
+    )
+    print("=" * 100, flush=True)
+    print(
+        f"BAR UPDATE table={bar_args.bars_table} timeframes={bar_args.timeframes} "
+        f"requested_days={min_day}->{max_day} build_range={bar_start_date}->{bar_end_date}",
+        flush=True,
+    )
+    print("=" * 100, flush=True)
+    results = build_live_market_bars(client, bar_args, report_path=report_path)
+    append_jsonl(
+        report_path,
+        {
+            "type": "bar_update",
+            "bars_table": bar_args.bars_table,
+            "timeframes": bar_args.timeframes,
+            "requested_start_date": min_day,
+            "requested_end_date": max_day,
+            "build_start_date": bar_start_date,
+            "build_end_date": bar_end_date,
+            "result_count": len(results),
+        },
+    )
+
+
 def main() -> None:
     loaded_env_files = load_env_files(discover_clickhouse_env_files(), verbose=True)
     args = parse_args()
@@ -1326,12 +1395,12 @@ def main() -> None:
     report_path = Path(args.output_root_win) / f"flatfile_event_update_{run_id}.jsonl"
     print("=" * 100, flush=True)
     print("Massive SIP flatfile download + direct event update", flush=True)
-    print(f"database={args.database} events_table={args.events_table}", flush=True)
+    print(f"database={args.database} events_table={args.events_table} bars_table={args.bars_table}", flush=True)
     print(f"test_mode={args.test_mode}", flush=True)
     if args.test_mode:
         print(
             f"test_tables manifest={args.manifest_table} continuity={args.continuity_table} "
-            f"raw_csv_sample_size={args.test_sample_size}",
+            f"bars={args.bars_table} raw_csv_sample_size={args.test_sample_size}",
             flush=True,
         )
     print(f"date_range={args.start_date} -> {args.end_date}", flush=True)
@@ -1339,6 +1408,7 @@ def main() -> None:
     print(f"flatfiles_root_ch={args.flatfiles_root_ch}", flush=True)
     print(f"download_workers={args.download_workers} max_threads={args.max_threads}", flush=True)
     print(f"storage_policy={args.storage_policy}", flush=True)
+    print(f"bar_timeframes={args.bar_timeframes} skip_bars={args.skip_bars} bar_replace_range={args.bar_replace_range}", flush=True)
     print(f"report={report_path}", flush=True)
     print(f"secret_status={secret_status(env_status_keys() + ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'S3_ENDPOINT_URL', 'BUCKET'])}", flush=True)
     print(f"loaded_env_files={loaded_env_files}", flush=True)
@@ -1355,7 +1425,7 @@ def main() -> None:
     total_download_bytes = sum(int(day.quote_job.remote_size or 0) + int(day.trade_job.remote_size or 0) for day in days)
     with UpdateProgressReporter(args, total_days=len(days), total_files=len(days) * 2, total_bytes=total_download_bytes) as reporter:
         reporter.log(f"report={report_path}")
-        reporter.log(f"database={args.database} events_table={args.events_table} test_mode={args.test_mode}")
+        reporter.log(f"database={args.database} events_table={args.events_table} bars_table={args.bars_table} test_mode={args.test_mode}")
         if args.test_mode:
             reporter.set_stage("prepare test tables")
             reporter.log("dropping same-run temp tables before isolated build")
@@ -1393,6 +1463,7 @@ def main() -> None:
 
         reporter.set_stage("insert events")
         completed = 0
+        bar_days: list[DayFiles] = []
         for day in sorted(days, key=lambda item: item.source_date):
             if not download_results.get(day.source_date, {}).get("ok"):
                 reporter.handle_day_done(day.source_date, "download_failed")
@@ -1404,11 +1475,16 @@ def main() -> None:
                 continue
             result_status = run_day(client, args, day, run_id, report_path)
             reporter.handle_day_done(day.source_date, result_status)
+            if result_status in {"ok", "skipped"}:
+                bar_days.append(day)
 
         if args.test_mode and not args.dry_run:
             reporter.set_stage("test audit")
             audited_days = [day for day in sorted(days, key=lambda item: item.source_date) if download_results.get(day.source_date, {}).get("ok")]
             audit_test_events(client, args, audited_days, report_path)
+        reporter.set_stage("build bars")
+        build_updated_bars(client, args, bar_days, report_path)
+        if args.test_mode and not args.dry_run:
             if not args.test_keep_tables:
                 reporter.set_stage("drop test tables")
                 drop_test_tables(client, args)

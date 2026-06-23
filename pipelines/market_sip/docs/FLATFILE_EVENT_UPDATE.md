@@ -1,12 +1,14 @@
 # Flatfile Event Update Pipeline
 
 `pipelines/market_sip/flatfiles/download_update_events.py` keeps Massive quote
-and trade flatfiles on disk, then inserts only unified compact events into
-ClickHouse. It does not persist raw or compact quote/trade tables.
+and trade flatfiles on disk, then inserts unified compact events and
+qmd-compatible bars into ClickHouse. It does not persist raw or compact
+quote/trade tables.
 
 Use this pipeline when the goal is to extend `market_sip_compact.events` from
 new Massive flatfiles without spending ClickHouse disk on intermediate quote and
-trade tables.
+trade tables. Bars are rebuilt from the compact `events` rows after event
+insertion succeeds.
 
 ## What It Builds
 
@@ -17,6 +19,7 @@ The pipeline writes:
 - day build status rows in `market_sip_compact.events_build_manifest`
 - per-ticker ordinal carry-forward rows in
   `market_sip_compact.events_ordinal_continuity`
+- qmd-gateway-compatible bar rows in `market_sip_compact.live_market_bars`
 
 It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
 
@@ -37,6 +40,9 @@ It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
 7. Assign ticker-local ordinals using `events_ordinal_continuity`.
 8. Write `events_build_manifest` and `events_ordinal_continuity` rows for the
    processed day.
+9. Rebuild qmd-compatible `live_market_bars` rows for the successfully updated
+   date range. Weekly and monthly timeframes expand to full affected
+   week/month boundaries so partial period bars are not silently written.
 
 Downloads can run concurrently. Event insertion is intentionally chronological:
 each day depends on the previous continuity state, so concurrent day inserts
@@ -94,10 +100,12 @@ Temp table names use this pattern:
 - `{test_prefix}_{run_id}_events`
 - `{test_prefix}_{run_id}_manifest`
 - `{test_prefix}_{run_id}_continuity`
+- `{test_prefix}_{run_id}_bars`
 
 The production `events`, `events_build_manifest`, and
-`events_ordinal_continuity` tables are not touched. Test mode also refuses
-`--dry-run`, because it must insert temp rows and then audit them.
+`events_ordinal_continuity` tables are not touched. The production
+`live_market_bars` table is also not touched. Test mode also refuses `--dry-run`,
+because it must insert temp rows and then audit them.
 
 After the temp insert, the script audits:
 
@@ -156,6 +164,7 @@ The script prints:
 - discovered complete quote/trade day pairs
 - per-day download completion
 - day insert start and ETA
+- qmd-compatible bar rebuild range and per-timeframe insert profiles
 - ClickHouse query profile lines from the shared `run_profiled` helper
 - final JSONL report path
 
@@ -183,6 +192,10 @@ ClickHouse:
 - `--password`: ClickHouse password.
 - `--database`: target database, default `market_sip_compact`.
 - `--events-table`: target events table, default `events`.
+- `--bars-table`: target qmd-compatible bar table, default
+  `live_market_bars`.
+- `--bar-timeframes`: comma-separated bar timeframes to rebuild after event
+  insertion. Default: `1s,5s,1m,5m,1d,1w,1mo`.
 - `--manifest-table`: build manifest table, default `events_build_manifest`.
 - `--continuity-table`: ordinal continuity table, default
   `events_ordinal_continuity`.
@@ -216,6 +229,10 @@ Retry and safety:
   `interrupted`.
 - `--force-day-delete`: delete existing `events` and continuity rows for a day
   before retrying it. Use this with retry flags to avoid duplicate rows.
+- `--skip-bars`: update only events/continuity and skip the bar rebuild stage.
+- `--bar-replace-range` / `--no-bar-replace-range`: controls whether
+  overlapping bars are deleted before reinserting the updated range. Keep the
+  default enabled for normal updates.
 - `--dry-run`: discover/download-plan only; no event inserts.
 - `--test-mode`: build isolated temp events/manifest/continuity tables and
   audit them against the raw quote/trade CSVs used for that run. Production

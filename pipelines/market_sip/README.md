@@ -24,6 +24,7 @@ The active masked-event pretraining path is:
 Massive flatfiles
   -> ingest/clickhouse_ingest_sip_compact_codec.py
   -> events/clickhouse_build_unified_events.py
+  -> events/clickhouse_build_trade_bars.py
   -> sample_cache/build_event_sample_cache.py
   -> research/masked_event_model/vN
 ```
@@ -33,19 +34,19 @@ The sample-cache record contract is documented in
 `docs/UNIFIED_EVENTS_TABLE.md`.
 
 For incremental flatfile updates that should keep quotes/trades only on disk
-and write only unified events to ClickHouse, use
+and write unified events plus qmd-compatible bars to ClickHouse, use
 `flatfiles/download_update_events.py`. Its runbook is documented in
 `docs/FLATFILE_EVENT_UPDATE.md`.
 
-To materialize reusable trade OHLCV bars from `market_sip_compact.events`, use
-the events bar builder:
+To materialize reusable qmd-compatible bars from `market_sip_compact.events`,
+use the events bar builder:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_trade_bars.py
 ```
 
-It creates `bars_1s`, `bars_5s`, `bars_1m`, `bars_5m`, `bars_1d`,
-`bars_1w`, and `bars_1mo`.
+It writes a single `live_market_bars` table with qmd-gateway
+`BAR_SCHEMA_VERSION = 2` columns and the configured `timeframe` values.
 
 To build only validation sample-cache shards, pass `--splits validation` to
 `sample_cache/run_build_event_sample_cache.py` or directly to
