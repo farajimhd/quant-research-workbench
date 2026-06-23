@@ -37,6 +37,16 @@ and write only unified events to ClickHouse, use
 `flatfiles/download_update_events.py`. Its runbook is documented in
 `docs/FLATFILE_EVENT_UPDATE.md`.
 
+To materialize reusable trade OHLCV bars from `market_sip_compact.events`, use
+the events bar builder:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_trade_bars.py
+```
+
+It creates `bars_1s`, `bars_5s`, `bars_1m`, `bars_5m`, `bars_1d`,
+`bars_1w`, and `bars_1mo`.
+
 To build only validation sample-cache shards, pass `--splits validation` to
 `sample_cache/run_build_event_sample_cache.py` or directly to
 `sample_cache/build_event_sample_cache.py`. The number of validation shards is
