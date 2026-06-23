@@ -347,7 +347,10 @@ SELECT
         currency_code != 'USD', 'non_usd_currency',
         upper(exchange_country) != 'US', 'non_us_exchange',
         upper(product_type) NOT IN ('STK', 'STOCK', 'STOCKS'), 'unsupported_product_type',
-        NOT has_durable_issuer_id, 'weak_issuer_identity',
+        NOT has_durable_issuer_id AND (upper(exchange_code) = 'OTCLNKECN' OR positionCaseInsensitive(exchange_code, 'OTC') > 0), 'weak_identity_otc',
+        NOT has_durable_issuer_id AND upper(exchange_code) NOT IN ('NYSE', 'NASDAQ', 'AMEX', 'BATS'), 'weak_identity_secondary_venue',
+        NOT has_durable_issuer_id AND startsWith(issuer_id, 'issuer:ibkr_public:'), 'weak_identity_ibkr_only',
+        NOT has_durable_issuer_id, 'weak_identity_needs_manual_review',
         has_duplicate_durable_issuer_identifier, 'duplicate_durable_issuer_identifier',
         has_open_mapping_issue, 'open_mapping_issue',
         CAST(NULL, 'Nullable(String)')
