@@ -72,3 +72,8 @@ The Rich terminal and JSONL/W&B logs include:
 - step, data, encoder, train, and throughput timings
 - GPU allocated/reserved memory
 
+## Notebooks
+
+- `plot_model_diagram.ipynb` builds the actual v2 temporal predictor without a
+  checkpoint, runs a dummy shape check, prints a `torchinfo` summary when
+  available, and renders a `torchview` diagram when available.
