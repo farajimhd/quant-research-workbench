@@ -242,9 +242,9 @@ FROM bridge_source
             critical_columns=("universe_date", "symbol_id", "listing_id", "security_id", "issuer_id", "ticker"),
             expected_sql=f"""
 SELECT count()
-FROM {db}.id_symbol_v1 AS sym
-INNER JOIN {db}.id_listing_v1 AS l ON l.listing_id = sym.listing_id
-INNER JOIN {db}.id_security_v1 AS sec ON sec.security_id = l.security_id
+FROM {db}.id_symbol_v1 AS sym FINAL
+INNER JOIN {db}.id_listing_v1 AS l FINAL ON l.listing_id = sym.listing_id
+INNER JOIN {db}.id_security_v1 AS sec FINAL ON sec.security_id = l.security_id
 WHERE sym.primary_symbol_flag = 1
 """,
             target_count_sql=f"SELECT count() FROM {db}.feature_tradable_universe_v1 FINAL WHERE universe_date = toDate({literal_feature_date})",
