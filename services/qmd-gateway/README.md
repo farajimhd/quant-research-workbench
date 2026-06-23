@@ -436,13 +436,17 @@ confirmation rows, and QMD counts only their overlap or explicit completed
 repair rows. The flatfile source of truth is
 `qmd_flatfile_event_coverage_v1`: on first startup, QMD bootstraps one
 2019-forward coverage row from the latest `market_sip_compact`
-`events_ordinal_continuity.source_date`. Historical `market_sip_compact.events`
-updates remain flatfile-only. After hours, the gateway can plan the
+`events_ordinal_continuity.source_date`. Historical quote/trade flatfiles remain
+disk-only; the planned updater writes unified `events` plus qmd-compatible
+`live_market_bars`. After hours, the gateway can plan the
 `download_update_events.py` command for missing historical flatfile days, using
 a US equity market-session calendar so weekends and market holidays are
-skipped. On a workstation host with `QMD_HISTORICAL_FLATFILE_AUTORUN=true`, it
-launches that command asynchronously; otherwise it prints the command for manual
-workstation execution.
+skipped. The generated command explicitly targets `events`,
+`live_market_bars`, and the default historical bar timeframes
+`1s,5s,1m,5m,1d,1w,1mo`. On a workstation host with
+`QMD_HISTORICAL_FLATFILE_AUTORUN=true`, it launches that command
+asynchronously; otherwise it prints the command for manual workstation
+execution.
 
 ## Replay Mode
 

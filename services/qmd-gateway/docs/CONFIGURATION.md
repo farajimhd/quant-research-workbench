@@ -105,7 +105,7 @@ Required data-path queues use awaited sends. A full queue applies backpressure i
 | `QMD_HISTORICAL_FLATFILE_AUTORUN` | `false` | Launch the flatfile update command automatically on workstation hosts. | Keep false if you want the command printed but not started. |
 | `QMD_HISTORICAL_FLATFILE_SAFE_LAG_DAYS` | `1` | Latest historical day considered safe for flatfile update planning. | Massive flatfiles arrive after the trading day; keep at least one day lag. |
 | `QMD_HISTORICAL_KNOWN_COVERAGE_END_DATE` | `2026-06-05` | Fallback historical coverage date if the continuity table query fails. | Coarse seed only; normal operation reads `events_ordinal_continuity`. |
-| `QMD_HISTORICAL_PIPELINE_CODE_ROOT` | `D:\TradingML\codes\quant_research_workbench_pipelines` | Workstation path used to build the flatfile update command. | Must point to the synced pipeline code on the workstation. |
+| `QMD_HISTORICAL_PIPELINE_CODE_ROOT` | `D:\TradingML\codes\quant_research_workbench_pipelines` | Workstation path used to build the flatfile update command. | Must point to the synced pipeline code that updates historical `events` and qmd-compatible `live_market_bars`. |
 
 Recent live repair converts Massive REST rows to the same normalized
 `MarketEvent` type used by the websocket path, then feeds the same state,

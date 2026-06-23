@@ -1906,10 +1906,14 @@ impl GapFillService {
     }
 
     fn historical_update_command(&self, start_date: &str, end_date: &str) -> String {
+        let script = format!(
+            "{}\\pipelines\\market_sip\\flatfiles\\download_update_events.py",
+            self.config.historical_pipeline_code_root
+        );
         format!(
-            "python {}\\pipelines\\market_sip\\flatfiles\\download_update_events.py --database {} --start-date {} --end-date {}",
-            self.config.historical_pipeline_code_root,
-            self.config.historical_clickhouse_database,
+            "python {} --database {} --events-table events --bars-table live_market_bars --bar-timeframes 1s,5s,1m,5m,1d,1w,1mo --start-date {} --end-date {}",
+            shell_arg(&script),
+            shell_arg(&self.config.historical_clickhouse_database),
             start_date,
             end_date,
         )
@@ -2231,6 +2235,16 @@ fn spawn_command(command: &str) -> Result<(), String> {
         Command::new("sh").arg("-lc").arg(command).spawn()
     };
     status.map(|_| ()).map_err(|error| error.to_string())
+}
+
+fn shell_arg(value: &str) -> String {
+    if value.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '\\' | '/' | ',')
+    }) {
+        value.to_string()
+    } else {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    }
 }
 
 fn append_api_key(url: &str, api_key: &str) -> String {

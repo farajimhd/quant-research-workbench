@@ -212,8 +212,10 @@ After-hours historical flatfile maintenance is only a planner from the gateway.
 It compares historical `events_ordinal_continuity` coverage with the configured
 safe lag, using a US equity market-session calendar so market holidays such as
 Juneteenth are not planned as missing flatfile days. The command it prints or launches uses
-`download_update_events.py` against the read-only historical event pipeline. QMD
-does not insert live websocket rows into `market_sip_compact.events`.
+`download_update_events.py` against the historical flatfile pipeline and
+explicitly targets `events` plus qmd-compatible `live_market_bars` for
+`1s,5s,1m,5m,1d,1w,1mo`. QMD does not insert live websocket rows into
+`market_sip_compact.events`.
 
 ## Replay Mode
 
