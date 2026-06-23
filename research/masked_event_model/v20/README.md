@@ -151,7 +151,8 @@ The mixed-cache restart launcher trains from the step-260352 checkpoint using
 all shards from `cache_20260611_195259` plus the first 54 shards from
 `cache_pretrain_xonly_20260621_140813`. It keeps validation on
 `cache_20260617_112833`, uses non-repeatable randomness by default, and shuffles
-the combined train shard file list at the beginning of each epoch:
+the combined train shard file list at the beginning of each epoch. The default
+schedule runs 3 epochs with base LR `4e-4`:
 
 ```powershell
 python research\masked_event_model\v20\train_full_pretrain_mixed_cache.py

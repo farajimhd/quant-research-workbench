@@ -47,9 +47,11 @@ DEFAULTS.update(
         "sample_cache_validation_root": VALIDATION_CACHE,
         "warm_start_checkpoint": SOURCE_CHECKPOINT,
         "warm_start_load_optimizer": False,
+        "epochs": 3,
+        "learning_rate": 4e-4,
         "repeatable_randomness": False,
         "wandb_project": "June2026-event-token-mae-full",
-        "wandb_run_name": "v20-fullpretrain-mixedcache-fixedmask070-emb32-bs8192-lr1e4-freshrng-from-step260352",
+        "wandb_run_name": "v20-fullpretrain-mixedcache-fixedmask070-emb32-bs8192-lr4e4-3epochs-freshrng-from-step260352",
     }
 )
 
