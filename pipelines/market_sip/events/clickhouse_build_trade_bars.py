@@ -286,6 +286,7 @@ def build_live_market_bars(
     specs = specs or parse_timeframes(args.timeframes)
     report_path = report_path or (Path(args.output_root_win) / f"trade_bars_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
     report_path.parent.mkdir(parents=True, exist_ok=True)
+    expand_boundaries = getattr(args, "expand_boundaries", True)
     results: list[dict[str, object]] = []
     if args.dry_run:
         if reporter is not None:
@@ -294,7 +295,7 @@ def build_live_market_bars(
         if args.drop_table:
             print_sql_preview("drop", drop_table_sql(args.database, args.bars_table))
         for spec in specs:
-            start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, args.expand_boundaries)
+            start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
             scoped_args = args_with_date_range(args, start_date, end_date)
             if args.replace_range:
                 print_sql_preview(
@@ -315,7 +316,7 @@ def build_live_market_bars(
     client.execute(create_bar_table_sql(args.database, args.bars_table, args.storage_policy))
 
     for index, spec in enumerate(specs, start=1):
-        start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, args.expand_boundaries)
+        start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
         scoped_args = args_with_date_range(args, start_date, end_date)
         if args.replace_range:
             if reporter is not None:
@@ -337,7 +338,7 @@ def build_live_market_bars(
                 },
             )
             if reporter is not None:
-                reporter.finish_stage(f"deleted {spec.name} overlap wall={delete_profile.wall_seconds:.1f}s read_rows={delete_profile.read_rows:,}")
+                reporter.finish_stage(f"deleted {spec.name} overlap wall={delete_profile.wall_seconds:.1f}s read_rows={format_optional_int(delete_profile.read_rows)}")
             else:
                 print_profile("DELETE", delete_profile)
 
@@ -906,10 +907,15 @@ def print_sql_preview(label: str, sql: str, *, limit: int = 2400) -> None:
 def print_profile(prefix: str, profile: QueryProfile) -> None:
     print(
         f"{prefix} profile wall={profile.wall_seconds:.1f}s "
-        f"read_rows={profile.read_rows:,} written_rows={profile.written_rows:,} "
-        f"memory={profile.memory_usage_bytes:,}",
+        f"read_rows={format_optional_int(profile.read_rows)} "
+        f"written_rows={format_optional_int(profile.written_rows)} "
+        f"memory={format_optional_int(profile.memory_usage_bytes)}",
         flush=True,
     )
+
+
+def format_optional_int(value: int | None) -> str:
+    return "unknown" if value is None else f"{value:,}"
 
 
 def append_jsonl(path: Path, item: dict[str, object]) -> None:
@@ -925,20 +931,6 @@ def mutation_settings(args: argparse.Namespace) -> str:
     if str(args.max_memory_usage) != "0":
         settings.append(f"max_memory_usage = {parse_size_bytes(str(args.max_memory_usage))}")
     return "\nSETTINGS " + ", ".join(settings)
-
-
-def expand_date_range_for_timeframes(start_date: str, end_date: str, timeframes: str) -> tuple[str, str]:
-    start = date.fromisoformat(start_date)
-    end = date.fromisoformat(end_date)
-    frames = {item.strip().lower() for item in timeframes.split(",") if item.strip()}
-    if "1w" in frames:
-        start = start - timedelta(days=start.weekday())
-        end = end + timedelta(days=6 - end.weekday())
-    if "1mo" in frames:
-        start = start.replace(day=1)
-        next_month = end.replace(day=28) + timedelta(days=4)
-        end = next_month.replace(day=1) - timedelta(days=1)
-    return start.isoformat(), end.isoformat()
 
 
 if __name__ == "__main__":
