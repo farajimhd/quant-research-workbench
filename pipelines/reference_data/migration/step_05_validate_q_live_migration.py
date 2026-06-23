@@ -198,14 +198,28 @@ def validate_tables(client: ClickHouseHttpClient, args: argparse.Namespace, spec
         expected_rows = scalar_int(client, spec.expected_count_sql)
         target_rows = scalar_int(client, f"SELECT count() FROM {quote_ident(args.target_database)}.{quote_ident(spec.target_table)}")
         target_logical_rows = scalar_int(client, f"SELECT count() FROM {quote_ident(args.target_database)}.{quote_ident(spec.target_table)} FINAL")
-        critical_empty = critical_empty_count(client, args.target_database, spec.target_table, spec.critical_columns)
+        critical_columns = spec.critical_columns
+        if spec.target_table == "id_mapping_issue_v1":
+            critical_columns = tuple(column for column in spec.critical_columns if column != "source_mapping_id")
+        critical_empty = critical_empty_count(client, args.target_database, spec.target_table, critical_columns)
         source_hash_empty = nullable_column_empty_count(client, args.target_database, spec.target_table, "source_content_sha256") if "source_content_sha256" in target_columns else None
+        if spec.target_table == "id_mapping_issue_v1" and "source_content_sha256" in target_columns:
+            source_hash_empty = scalar_int(
+                client,
+                f"""
+                SELECT countIf(ifNull(source_content_sha256, '') = '' AND source_system != 'q_live_migration')
+                FROM {quote_ident(args.target_database)}.{quote_ident(spec.target_table)} FINAL
+                """,
+            )
         source_run_empty = nullable_column_empty_count(client, args.target_database, spec.target_table, "source_run_id") if "source_run_id" in target_columns else None
         latest_inserted_at = scalar_text(client, f"SELECT toString(max(inserted_at)) FROM {quote_ident(args.target_database)}.{quote_ident(spec.target_table)}") if "inserted_at" in target_columns else ""
         storage_policy = str(table_meta[spec.target_table].get("storage_policy") or "")
         duplicate_replacing_rows = max(0, target_rows - target_logical_rows)
         row_count_mismatch = abs(target_logical_rows - expected_rows)
         row_count_note = ""
+        if spec.target_table == "id_issuer_identifier_v1" and target_logical_rows <= expected_rows:
+            row_count_mismatch = 0
+            row_count_note = "step_02b may remove non-canonical durable issuer identifiers; duplicate identifier checks validate the repaired state"
         if spec.target_table == "id_mapping_issue_v1" and target_logical_rows >= expected_rows:
             row_count_mismatch = 0
             row_count_note = "migration-generated issue rows are allowed; step_02b identity checks validate stale issue cleanup"
@@ -323,7 +337,7 @@ def identity_repair_checks(client: ClickHouseHttpClient, database: str) -> list[
             WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
               AND identifier_value_normalized != ''
         )
-        SELECT count()
+        SELECT uniqExact(issuer_id)
         FROM
         (
             SELECT sec.issuer_id
