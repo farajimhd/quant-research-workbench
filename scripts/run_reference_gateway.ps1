@@ -8,7 +8,10 @@ param(
     [switch]$ActiveTickerCheck,
     [switch]$EnsureMarketPublicationSchema,
     [switch]$MarketHoursWriteOverride,
-    [string]$MarketHoursWriteReason = ""
+    [string]$MarketHoursWriteReason = "",
+    [switch]$NoWriteDiscoveredIssues,
+    [switch]$NoRebuildTradable,
+    [switch]$RebuildTradableInTestMode
 )
 
 $ErrorActionPreference = "Stop"
@@ -46,6 +49,15 @@ if ($ActiveTickerCheck) {
 }
 if ($EnsureMarketPublicationSchema) {
     $argsList += "--ensure-market-publication-schema"
+}
+if ($NoWriteDiscoveredIssues) {
+    $argsList += "--no-write-discovered-issues"
+}
+if ($NoRebuildTradable) {
+    $argsList += "--no-rebuild-tradable"
+}
+if ($RebuildTradableInTestMode) {
+    $argsList += "--rebuild-tradable-in-test-mode"
 }
 
 & $PythonExe @argsList

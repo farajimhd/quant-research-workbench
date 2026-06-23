@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from dataclasses import asdict, dataclass
+from datetime import UTC, date, datetime
+from pathlib import Path
+
+from services.reference_gateway.config import ReferenceGatewayConfig
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+STEP_06_SCRIPT = REPO_ROOT / "pipelines" / "reference_data" / "migration" / "step_06_build_q_live_bridge_features.py"
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationRebuildResult:
+    status: str
+    reason: str
+    command: list[str]
+    returncode: int
+    stdout_tail: str
+    stderr_tail: str
+
+
+def rebuild_tradable_publications(config: ReferenceGatewayConfig, *, reason: str, feature_date: date | None = None) -> PublicationRebuildResult:
+    if not config.execute:
+        return PublicationRebuildResult("skipped", "execute_false", [], 0, "", "")
+    if config.test_write_mode and not config.rebuild_tradable_in_test_mode:
+        return PublicationRebuildResult(
+            "skipped",
+            "test_write_mode_requires_REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE",
+            [],
+            0,
+            "",
+            "",
+        )
+    feature_date = feature_date or datetime.now(UTC).date()
+    output_root = config.prepared_root_win / "reference_gateway" / "tradable_rebuilds"
+    command = [
+        sys.executable,
+        str(STEP_06_SCRIPT),
+        "--execute",
+        "--allow-non-empty-targets",
+        "--target-database",
+        config.clickhouse_write_database,
+        "--feature-date",
+        feature_date.isoformat(),
+        "--output-root-win",
+        str(output_root),
+    ]
+    completed = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+    result = PublicationRebuildResult(
+        status="completed" if completed.returncode == 0 else "failed",
+        reason=reason,
+        command=command,
+        returncode=completed.returncode,
+        stdout_tail=tail(completed.stdout),
+        stderr_tail=tail(completed.stderr),
+    )
+    if completed.returncode != 0:
+        raise RuntimeError("Tradable publication rebuild failed: " + json.dumps(asdict(result), sort_keys=True))
+    return result
+
+
+def tail(value: str, *, max_chars: int = 4000) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[-max_chars:]

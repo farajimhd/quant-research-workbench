@@ -32,7 +32,7 @@ Slow-changing identity/reference sync is owned by:
 services/reference_gateway/
 ```
 
-The first executable step is a read-only audit/planner:
+The default executable step is a read-only audit/planner:
 
 ```powershell
 python -m services.reference_gateway.main
@@ -40,6 +40,13 @@ python -m services.reference_gateway.main
 
 It enforces the rule that any unresolved identity, exchange, conid, or mapping
 issue keeps the affected security out of the tradable universe.
+
+In `--execute` mode, the reference gateway first rebuilds
+`feature_tradable_universe_v1` and `feature_scanner_static_v1` from the
+canonical q_live graph. When active-ticker reconciliation discovers open mapping
+issues, it writes those issues to `id_mapping_issue_v1` and rebuilds the
+tradable/scanner publications again. The audit remains read-only validation; it
+does not directly patch `is_tradable`.
 
 Initialize the market-publication schema after hours:
 

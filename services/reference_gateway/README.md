@@ -62,8 +62,9 @@ unmapped exchange opens an issue and blocks tradability.
 
 ## Current Executable Step
 
-The first executable step is an audit/planner. It does not mutate identity
-tables. It checks the current `q_live` reference graph and writes a JSON report.
+The default step is an audit/planner. Without `--execute`, it does not mutate
+identity tables. It checks the current `q_live` reference graph and writes a
+JSON report.
 
 ```powershell
 python -m services.reference_gateway.main
@@ -122,8 +123,23 @@ That pass fetches Massive active US stock tickers, compares them against
 new tickers, and optionally queries IBKR Client Portal when
 `REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED=true`.
 
-It still does not mutate canonical tables. The output is a resolver report for
-review. New rows are not added until the writer stage is explicitly enabled.
+Without `--execute`, this is still report-only. With `--execute`, discovered
+open mapping issues are inserted into `id_mapping_issue_v1` by default. Those
+issue rows are the source-of-truth blocker; the audit is not allowed to patch
+`is_tradable` directly.
+
+In execute mode the gateway also rebuilds `feature_tradable_universe_v1` and
+`feature_scanner_static_v1` before audit, using the existing step 6 publisher.
+If active-ticker reconciliation writes new open issues, it rebuilds the feature
+publications again so the latest tradable universe reflects those new blockers.
+
+The safety flow is:
+
+1. discover provider/reference issue
+2. write canonical open row in `id_mapping_issue_v1`
+3. rebuild `feature_tradable_universe_v1`
+4. publish affected rows as `is_tradable = 0`
+5. audit validates that no tradable row violates hard rules
 
 Useful controls:
 
@@ -134,6 +150,30 @@ REFERENCE_GATEWAY_ACTIVE_TICKER_PAGE_LIMIT=1000
 REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES=1000
 REFERENCE_GATEWAY_ACTIVE_TICKER_NEW_CANDIDATE_LIMIT=250
 REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED=false
+REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES=true
+REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE=true
+REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE=false
+```
+
+`REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE=false` is intentional. A temp
+write database usually does not contain the full identity graph required by the
+step 6 publisher. Set it to `true` only after cloning the required q_live
+identity/source tables into the temp database.
+
+Equivalent one-off CLI switches:
+
+```powershell
+python -m services.reference_gateway.main --execute --no-write-discovered-issues
+python -m services.reference_gateway.main --execute --no-rebuild-tradable
+python -m services.reference_gateway.main --execute --rebuild-tradable-in-test-mode
+```
+
+Wrapper equivalents:
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Execute -NoWriteDiscoveredIssues
+.\scripts\run_reference_gateway.ps1 -Execute -NoRebuildTradable
+.\scripts\run_reference_gateway.ps1 -Execute -RebuildTradableInTestMode
 ```
 
 Enable IBKR resolution only when Client Portal Gateway is authenticated. IBKR

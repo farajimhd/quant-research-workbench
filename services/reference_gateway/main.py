@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import asdict
 
 from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.mlops.env import load_env_files, secret_status
@@ -11,8 +12,10 @@ from services.gateway_policy import active_collection_window
 from services.reference_gateway.active_tickers import run_active_ticker_plan, write_active_ticker_plan
 from services.reference_gateway.audit import run_reference_audit, write_report
 from services.reference_gateway.config import ReferenceGatewayConfig
+from services.reference_gateway.issue_writer import write_active_ticker_mapping_issues
 from services.reference_gateway.market_publications import ensure_market_publication_schema
 from services.reference_gateway.policy import evaluate_write_policy
+from services.reference_gateway.publication_rebuild import rebuild_tradable_publications
 from services.reference_gateway.table_groups import table_group_markdown
 from services.reference_gateway.tradability import tradability_rule_markdown
 
@@ -48,6 +51,24 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Create/alter market reference publication and coverage tables before auditing.",
     )
+    parser.add_argument(
+        "--write-discovered-issues",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="In execute mode, write discovered provider/reference issues to id_mapping_issue_v1.",
+    )
+    parser.add_argument(
+        "--rebuild-tradable",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="In execute mode, rebuild tradable/scanner feature publications before audit and after issue writes.",
+    )
+    parser.add_argument(
+        "--rebuild-tradable-in-test-mode",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Allow step 6 tradable rebuild when read and write databases differ. Only use after cloning required source tables.",
+    )
     return parser.parse_args()
 
 
@@ -69,6 +90,12 @@ def main() -> None:
         os.environ["REFERENCE_GATEWAY_MARKET_HOURS_WRITE_OVERRIDE"] = "true" if args.market_hours_write_override else "false"
     if args.market_hours_write_reason:
         os.environ["REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON"] = args.market_hours_write_reason
+    if args.write_discovered_issues is not None:
+        os.environ["REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES"] = "true" if args.write_discovered_issues else "false"
+    if args.rebuild_tradable is not None:
+        os.environ["REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE"] = "true" if args.rebuild_tradable else "false"
+    if args.rebuild_tradable_in_test_mode is not None:
+        os.environ["REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE"] = "true" if args.rebuild_tradable_in_test_mode else "false"
     if args.print_rules:
         print(tradability_rule_markdown())
         return
@@ -111,6 +138,9 @@ def main() -> None:
                     "CLICKHOUSE_WORKSTATION_PASSWORD",
                     "MASSIVE_API_KEY",
                     "IBKR_CPAPI_BASE_URL",
+                    "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES",
+                    "REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE",
+                    "REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE",
                 ]
             ),
             sort_keys=True,
@@ -144,6 +174,9 @@ def main() -> None:
             f"write_database={config.clickhouse_write_database}",
             flush=True,
         )
+    if config.execute and config.rebuild_tradable_on_execute:
+        rebuild = rebuild_tradable_publications(config, reason="pre_audit_source_truth_refresh")
+        print("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True), flush=True)
     report = run_reference_audit(config)
     report_path = write_report(report, config.report_root_win) if args.write_report else None
     for check in report.checks:
@@ -171,6 +204,18 @@ def main() -> None:
             )
             if plan_path:
                 print(f"active_ticker_report={plan_path}", flush=True)
+            if config.execute and config.write_discovered_issues:
+                issue_write = write_active_ticker_mapping_issues(config, plan)
+                print("active_ticker_issue_write=" + json.dumps(asdict(issue_write), sort_keys=True), flush=True)
+                if issue_write.written > 0 and config.rebuild_tradable_on_execute:
+                    rebuild = rebuild_tradable_publications(config, reason="post_active_ticker_issue_write")
+                    print("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True), flush=True)
+                    report = run_reference_audit(config)
+                    report_path = write_report(report, config.report_root_win) if args.write_report else None
+                    if report_path:
+                        print(f"post_issue_report={report_path}", flush=True)
+            elif config.execute:
+                print("active_ticker_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE", flush=True)
     print(f"status={report.status} wall_seconds={report.wall_seconds:.2f}", flush=True)
     if report.status == "failed":
         sys.exit(2)
