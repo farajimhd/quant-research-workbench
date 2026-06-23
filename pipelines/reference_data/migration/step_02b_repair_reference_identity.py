@@ -76,6 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user", default=default_migration_clickhouse_user())
     parser.add_argument("--password", default=default_migration_clickhouse_password())
     parser.add_argument("--target-database", default=os.environ.get("QLIVE_MIGRATION_TARGET_DATABASE", DEFAULT_TARGET_DATABASE))
+    parser.add_argument("--sec-core-database", default=os.environ.get("SEC_CORE_DATABASE", "sec_core"))
     parser.add_argument("--output-root-win", default=os.environ.get("QLIVE_MIGRATION_STEP_02B_OUTPUT_ROOT_WIN", str(DEFAULT_OUTPUT_ROOT_WIN)))
     parser.add_argument("--execute", action="store_true", help="Execute repair statements. Without this flag, the script only writes diagnostics and SQL.")
     parser.add_argument(
@@ -97,6 +98,7 @@ def main() -> None:
     loaded_env = load_env_files(discover_env_files(REPO_ROOT), verbose=True)
     args = parse_args()
     validate_database_name(args.target_database, "--target-database")
+    validate_database_name(args.sec_core_database, "--sec-core-database")
 
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     migration_run_id = f"step_02b_reference_identity_repair_{run_id}"
@@ -105,11 +107,11 @@ def main() -> None:
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
 
     print_header(args, paths, loaded_env, migration_run_id)
-    diagnostics_before = collect_diagnostics(client, args.target_database)
+    diagnostics_before = collect_diagnostics(client, args.target_database, args.sec_core_database)
     write_jsonl(paths.execution_jsonl, [{"phase": "diagnostics_before", "payload": diagnostics_before}])
     print_diagnostics("before", diagnostics_before)
 
-    statements = build_repair_statements(args.target_database, migration_run_id, inserted_at, args.mutations_sync, not args.skip_stale_issue_cleanup)
+    statements = build_repair_statements(args.target_database, args.sec_core_database, migration_run_id, inserted_at, args.mutations_sync, not args.skip_stale_issue_cleanup)
     write_rendered_sql(paths.rendered_sql, statements)
     write_manifest(paths.manifest_json, args, paths, loaded_env, migration_run_id, diagnostics_before, statements)
 
@@ -122,7 +124,7 @@ def main() -> None:
 
     insert_run_row(client, args.target_database, migration_run_id, "running", inserted_at, rows_read=sum_diagnostic_rows(diagnostics_before), rows_written=0, rows_failed=0)
     executed_rows = execute_statements(client, statements, paths.execution_jsonl)
-    diagnostics_after = collect_diagnostics(client, args.target_database)
+    diagnostics_after = collect_diagnostics(client, args.target_database, args.sec_core_database)
     write_jsonl(paths.execution_jsonl, [{"phase": "diagnostics_after", "payload": diagnostics_after}])
     print_diagnostics("after", diagnostics_after)
     insert_run_row(
@@ -139,11 +141,13 @@ def main() -> None:
     print(f"summary_md={paths.summary_md}", flush=True)
 
 
-def build_repair_statements(target_db: str, run_id: str, inserted_at: str, mutations_sync: int, cleanup_stale_issues: bool) -> list[RepairStatement]:
+def build_repair_statements(target_db: str, sec_core_db: str, run_id: str, inserted_at: str, mutations_sync: int, cleanup_stale_issues: bool) -> list[RepairStatement]:
     db = quote_ident(target_db)
+    sec_db = quote_ident(sec_core_db)
     literal_run_id = sql_string(run_id)
     literal_inserted_at = sql_string(inserted_at)
     alias_ctes = canonical_alias_ctes(db)
+    sec_exact_name_ctes = sec_exact_name_new_cik_ctes(db, sec_db)
     current_ts = f"toDateTime64({literal_inserted_at}, 3, 'UTC')"
 
     statements = [
@@ -232,6 +236,80 @@ DELETE WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
 (
     {safe_alias_old_issuer_query(db)}
 )
+SETTINGS mutations_sync = {mutations_sync}
+""",
+        ),
+        RepairStatement(
+            name="insert_sec_exact_name_cik_identifiers",
+            target_table="id_issuer_identifier_v1",
+            sql=f"""
+INSERT INTO {db}.id_issuer_identifier_v1
+(issuer_identifier_id, issuer_id, identifier_kind, identifier_value, identifier_value_normalized, source_system, confidence_score, is_primary, valid_from_date, valid_to_date_exclusive, first_seen_at_utc, last_seen_at_utc, evidence_json, source_run_id, source_content_sha256, inserted_at)
+{sec_exact_name_ctes}
+SELECT
+    concat('issuer_identifier:', lower(hex(SHA256(concat(old_issuer_id, '|cik|', cik))))) AS issuer_identifier_id,
+    old_issuer_id AS issuer_id,
+    'cik' AS identifier_kind,
+    cik AS identifier_value,
+    cik AS identifier_value_normalized,
+    'sec_core_exact_name' AS source_system,
+    0.82 AS confidence_score,
+    1 AS is_primary,
+    CAST(NULL, 'Nullable(Date)') AS valid_from_date,
+    CAST(NULL, 'Nullable(Date)') AS valid_to_date_exclusive,
+    {current_ts} AS first_seen_at_utc,
+    {current_ts} AS last_seen_at_utc,
+    concat('{{"source":"sec_core.sec_bulk_mirror_company_v1","match_rule":"normalized_exact_issuer_name_unique_new_cik","issuer_name":"', replaceAll(issuer_name, '"', '\\"'), '","sec_entity_name":"', replaceAll(entity_name, '"', '\\"'), '"}}') AS evidence_json,
+    {literal_run_id} AS source_run_id,
+    '' AS source_content_sha256,
+    {current_ts} AS inserted_at
+FROM new_cik_matches
+""",
+        ),
+        RepairStatement(
+            name="insert_sec_exact_name_ein_identifiers",
+            target_table="id_issuer_identifier_v1",
+            sql=f"""
+INSERT INTO {db}.id_issuer_identifier_v1
+(issuer_identifier_id, issuer_id, identifier_kind, identifier_value, identifier_value_normalized, source_system, confidence_score, is_primary, valid_from_date, valid_to_date_exclusive, first_seen_at_utc, last_seen_at_utc, evidence_json, source_run_id, source_content_sha256, inserted_at)
+{sec_exact_name_ctes}
+SELECT
+    concat('issuer_identifier:', lower(hex(SHA256(concat(old_issuer_id, '|ein|', replaceRegexpAll(ein, '[^0-9]', '')))))) AS issuer_identifier_id,
+    old_issuer_id AS issuer_id,
+    'ein' AS identifier_kind,
+    ein AS identifier_value,
+    replaceRegexpAll(ein, '[^0-9]', '') AS identifier_value_normalized,
+    'sec_core_exact_name' AS source_system,
+    0.75 AS confidence_score,
+    0 AS is_primary,
+    CAST(NULL, 'Nullable(Date)') AS valid_from_date,
+    CAST(NULL, 'Nullable(Date)') AS valid_to_date_exclusive,
+    {current_ts} AS first_seen_at_utc,
+    {current_ts} AS last_seen_at_utc,
+    concat('{{"source":"sec_core.sec_bulk_mirror_company_v1","match_rule":"normalized_exact_issuer_name_unique_new_cik","issuer_name":"', replaceAll(issuer_name, '"', '\\"'), '","sec_entity_name":"', replaceAll(entity_name, '"', '\\"'), '"}}') AS evidence_json,
+    {literal_run_id} AS source_run_id,
+    '' AS source_content_sha256,
+    {current_ts} AS inserted_at
+FROM new_cik_matches
+WHERE ifNull(ein, '') != ''
+  AND replaceRegexpAll(ein, '[^0-9]', '') NOT IN ('', '000000000')
+""",
+        ),
+        RepairStatement(
+            name="delete_resolved_weak_issuer_identity_issues",
+            target_table="id_mapping_issue_v1",
+            destructive=True,
+            sql=f"""
+ALTER TABLE {db}.id_mapping_issue_v1
+DELETE WHERE source_system = 'q_live_migration'
+  AND issue_type = 'weak_issuer_identity'
+  AND source_entity_key IN
+  (
+      SELECT DISTINCT issuer_id
+      FROM {db}.id_issuer_identifier_v1 FINAL
+      WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+        AND identifier_value_normalized != ''
+  )
 SETTINGS mutations_sync = {mutations_sync}
 """,
         ),
@@ -454,8 +532,114 @@ WHERE length(canonical_issuer_ids) = 1
 """
 
 
-def collect_diagnostics(client: ClickHouseHttpClient, database: str) -> dict[str, Any]:
+def sec_exact_name_new_cik_ctes(db: str, sec_db: str) -> str:
+    return f"""
+WITH durable_issuers AS
+(
+    SELECT DISTINCT issuer_id
+    FROM {db}.id_issuer_identifier_v1 FINAL
+    WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+      AND identifier_value_normalized != ''
+),
+weak_names AS
+(
+    SELECT sec.issuer_id AS old_issuer_id, any(issuer.issuer_name) AS issuer_name
+    FROM {db}.id_symbol_v1 AS sym FINAL
+    INNER JOIN {db}.id_listing_v1 AS listing FINAL ON listing.listing_id = sym.listing_id
+    INNER JOIN {db}.id_security_v1 AS sec FINAL ON sec.security_id = listing.security_id
+    LEFT JOIN {db}.id_issuer_v1 AS issuer FINAL ON issuer.issuer_id = sec.issuer_id
+    LEFT JOIN {db}.ref_exchange_v1 AS ex FINAL ON ex.exchange_code = listing.exchange_code
+    WHERE sym.status = 'active'
+      AND sym.primary_symbol_flag = 1
+      AND listing.listing_status = 'active'
+      AND upper(listing.currency_code) = 'USD'
+      AND upper(ifNull(ex.iso_country_code, '')) = 'US'
+      AND upper(sec.product_type) IN ('STK', 'STOCK', 'STOCKS')
+      AND sec.issuer_id NOT IN (SELECT issuer_id FROM durable_issuers)
+    GROUP BY sec.issuer_id
+),
+weak AS
+(
+    SELECT old_issuer_id, issuer_name, upper(replaceRegexpAll(issuer_name, '[^A-Za-z0-9]', '')) AS normalized_name
+    FROM weak_names
+),
+sec_names AS
+(
+    SELECT
+        cik,
+        entity_name,
+        upper(replaceRegexpAll(entity_name, '[^A-Za-z0-9]', '')) AS normalized_name,
+        ein,
+        sic,
+        sic_description,
+        state_of_incorporation
+    FROM {sec_db}.sec_bulk_mirror_company_v1 FINAL
+    WHERE ifNull(entity_name, '') != ''
+      AND ifNull(cik, '') != ''
+),
+raw_matches AS
+(
+    SELECT
+        weak.old_issuer_id AS old_issuer_id,
+        weak.issuer_name AS issuer_name,
+        sec_names.cik AS cik,
+        sec_names.entity_name AS entity_name,
+        sec_names.ein AS ein,
+        sec_names.sic AS sic,
+        sec_names.sic_description AS sic_description,
+        sec_names.state_of_incorporation AS state_of_incorporation
+    FROM weak
+    INNER JOIN sec_names ON sec_names.normalized_name = weak.normalized_name
+),
+unique_match_groups AS
+(
+    SELECT
+        old_issuer_id,
+        groupUniqArray(cik) AS ciks,
+        count() AS match_rows,
+        any(issuer_name) AS issuer_name,
+        any(entity_name) AS entity_name,
+        any(ein) AS ein,
+        any(sic) AS sic,
+        any(sic_description) AS sic_description,
+        any(state_of_incorporation) AS state_of_incorporation
+    FROM raw_matches
+    GROUP BY old_issuer_id
+),
+unique_matches AS
+(
+    SELECT
+        old_issuer_id,
+        arrayElement(ciks, 1) AS cik,
+        issuer_name,
+        entity_name,
+        ein,
+        sic,
+        sic_description,
+        state_of_incorporation
+    FROM unique_match_groups
+    WHERE length(ciks) = 1
+      AND match_rows = 1
+),
+existing_ciks AS
+(
+    SELECT DISTINCT identifier_value_normalized AS cik
+    FROM {db}.id_issuer_identifier_v1 FINAL
+    WHERE lower(identifier_kind) = 'cik'
+      AND identifier_value_normalized != ''
+),
+new_cik_matches AS
+(
+    SELECT *
+    FROM unique_matches
+    WHERE cik NOT IN (SELECT cik FROM existing_ciks)
+)
+"""
+
+
+def collect_diagnostics(client: ClickHouseHttpClient, database: str, sec_core_database: str) -> dict[str, Any]:
     db = quote_ident(database)
+    sec_db = quote_ident(sec_core_database)
     diagnostics = {
         "duplicate_durable_identifier_groups": scalar_int(
             client,
@@ -536,6 +720,22 @@ def collect_diagnostics(client: ClickHouseHttpClient, database: str) -> dict[str
                   UNION DISTINCT
                   SELECT upper(ticker) FROM {db}.id_symbol_v1 FINAL WHERE ticker != ''
               )
+            """,
+        ),
+        "sec_exact_name_unique_matches": scalar_int(
+            client,
+            f"""
+            {sec_exact_name_new_cik_ctes(db, sec_db)}
+            SELECT count()
+            FROM unique_matches
+            """,
+        ),
+        "sec_exact_name_new_cik_matches": scalar_int(
+            client,
+            f"""
+            {sec_exact_name_new_cik_ctes(db, sec_db)}
+            SELECT count()
+            FROM new_cik_matches
             """,
         ),
         "duplicate_identifier_sample": query_json_each_row(
@@ -680,6 +880,7 @@ def write_manifest(
         "migration_run_id": run_id,
         "dry_run": not args.execute,
         "target_database": args.target_database,
+        "sec_core_database": args.sec_core_database,
         "run_root": str(paths.run_root),
         "rendered_sql": str(paths.rendered_sql),
         "execution_jsonl": str(paths.execution_jsonl),
@@ -800,6 +1001,7 @@ def print_header(args: argparse.Namespace, paths: StepPaths, loaded_env: list[Pa
     print("q_live migration step 2b: reference identity repair", flush=True)
     print(f"execute={args.execute}", flush=True)
     print(f"target_database={args.target_database}", flush=True)
+    print(f"sec_core_database={args.sec_core_database}", flush=True)
     print(f"migration_run_id={run_id}", flush=True)
     print(f"run_root={paths.run_root}", flush=True)
     print(f"skip_stale_issue_cleanup={args.skip_stale_issue_cleanup}", flush=True)
