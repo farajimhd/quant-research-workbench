@@ -201,7 +201,12 @@ Table: `live_massive_quotes`
 
 ## Bar Contract
 
-Table: `live_market_bars`
+Tables: `live_market_bars`, `bars_by_symbol_time`, `bars_by_time_symbol`
+
+The three tables have identical rows and columns. They differ only by
+ClickHouse physical layout: `live_market_bars` is optimized for chart/date
+slices, `bars_by_symbol_time` for per-symbol temporal windows, and
+`bars_by_time_symbol` for market-wide time snapshots.
 
 Bars are built from Massive trades and quotes for configured timeframes. All bar state is updated incrementally as events arrive. A closed bar is emitted after its timeframe end passes.
 

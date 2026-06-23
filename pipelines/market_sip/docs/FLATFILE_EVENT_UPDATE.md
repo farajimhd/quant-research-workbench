@@ -19,7 +19,9 @@ The pipeline writes:
 - day build status rows in `market_sip_compact.events_build_manifest`
 - per-ticker ordinal carry-forward rows in
   `market_sip_compact.events_ordinal_continuity`
-- qmd-gateway-compatible bar rows in `market_sip_compact.live_market_bars`
+- qmd-gateway-compatible bar rows in `market_sip_compact.live_market_bars`,
+  `market_sip_compact.bars_by_symbol_time`, and
+  `market_sip_compact.bars_by_time_symbol`
 
 It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
 
@@ -40,15 +42,17 @@ It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
 7. Assign ticker-local ordinals using `events_ordinal_continuity`.
 8. Write `events_build_manifest` and `events_ordinal_continuity` rows for the
    processed day.
-9. Rebuild qmd-compatible `live_market_bars` rows for the successfully updated
-   date range. Each timeframe is rebuilt independently: intraday and daily bars
-   use the updated day range, while weekly and monthly bars expand only their
-   own delete/insert ranges to full affected week/month boundaries.
+9. Rebuild qmd-compatible bar rows for the successfully updated date range in
+   all three physical layouts. Each timeframe is rebuilt independently:
+   intraday and daily bars use the updated day range, while weekly and monthly
+   bars expand only their own delete/insert ranges to full affected week/month
+   boundaries.
 
 The standalone bar builder, `pipelines/market_sip/events/run_build_trade_bars.py`,
-uses the same qmd-compatible `live_market_bars` schema and has a Rich progress
-layout for long backfills. Use it directly when rebuilding bars from already
-inserted `events` rows:
+uses the same qmd-compatible schema as qmd-gateway and writes identical rows to
+`live_market_bars`, `bars_by_symbol_time`, and `bars_by_time_symbol`. It has a
+Rich progress layout for long backfills. Use it directly when rebuilding bars
+from already inserted `events` rows:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_trade_bars.py `
@@ -211,8 +215,12 @@ ClickHouse:
 - `--password`: ClickHouse password.
 - `--database`: target database, default `market_sip_compact`.
 - `--events-table`: target events table, default `events`.
-- `--bars-table`: target qmd-compatible bar table, default
+- `--bars-table`: target qmd/chart-compatible bar table, default
   `live_market_bars`.
+- `--bars-by-symbol-time-table`: per-symbol temporal training layout, default
+  `bars_by_symbol_time`.
+- `--bars-by-time-symbol-table`: market-wide time-snapshot training layout,
+  default `bars_by_time_symbol`.
 - `--bar-timeframes`: comma-separated bar timeframes to rebuild after event
   insertion. Default: `1s,5s,1m,5m,1d,1w,1mo`.
 - `--manifest-table`: build manifest table, default `events_build_manifest`.
@@ -268,9 +276,9 @@ old event and continuity rows are removed before new rows are inserted.
 
 The bar stage is intentionally derived from `events`, not tracked as a separate
 per-day event manifest. If a run successfully inserts flatfile rows into
-`events` but fails before or during `live_market_bars`, rerun the same date
-range. The event stage will skip manifest-`ok` days, those skipped days are
-still passed to the bar stage, and overlapping bars are rebuilt from the
+`events` but fails before or during bar creation, rerun the same date range. The
+event stage will skip manifest-`ok` days, those skipped days are still passed to
+the bar stage, and overlapping bars are rebuilt in all three layouts from the
 already-inserted events. Keep the default `--bar-replace-range` enabled for
 this recovery path.
 

@@ -134,6 +134,8 @@ The service writes to:
 - `live_massive_trades`, only when `QMD_PERSIST_RAW_EVENTS=true`
 - `live_massive_quotes`, only when `QMD_PERSIST_RAW_EVENTS=true`
 - `live_market_bars`
+- `bars_by_symbol_time`
+- `bars_by_time_symbol`
 - `live_market_indicators`, only when `QMD_PERSIST_INDICATORS=true`
 - `qmd_gap_fill_runs`
 - `qmd_market_coverage_manifest_v1`
@@ -160,9 +162,9 @@ The QMD maintenance source of truth for historical event availability is
 `market_sip_compact.events` plus `market_sip_compact.events_ordinal_continuity`.
 The runner intentionally does not copy historical rows directly into `q_live`.
 Recent `q_live` event gaps must be repaired through the QMD replay/fanout path
-so `live_market_events_v1`, `live_event_ordinal_continuity`, and
-`live_market_bars` remain consistent. The runner records QMD source coverage,
-live coverage, row counts, and the `/snapshot/maintenance` API state in
+so `live_market_events_v1`, `live_event_ordinal_continuity`, and the three bar
+layouts remain consistent. The runner records QMD source coverage, live
+coverage, row counts, and the `/snapshot/maintenance` API state in
 `q_live.service_maintenance_task_v1`.
 
 During active streaming hours, recent q_live REST repair starts from symbols
@@ -197,7 +199,10 @@ Each bar is aligned to the top of its timeframe using UTC event time. For
 example, `1h` bars start exactly at the top of the hour, and `5m` bars start at
 `:00`, `:05`, `:10`, and so on. The current open bar is kept in memory and
 updated until it closes. Closed bars are emitted to the bar writer and persisted
-to `live_market_bars` in batches.
+in batches to three identical-schema layouts: `live_market_bars`,
+`bars_by_symbol_time`, and `bars_by_time_symbol`. These names and layouts match
+the historical `market_sip_compact` tables so recent `q_live` history and older
+historical bars can be queried with the same contract.
 
 The in-memory bar store is also sharded by ticker. Each shard has its own async
 worker and mutex-protected store, so full-market `T.*` and `Q.*` processing does

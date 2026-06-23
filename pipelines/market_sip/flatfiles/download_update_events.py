@@ -46,10 +46,14 @@ from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noq
     trade_condition_pack_expr,
 )
 from pipelines.market_sip.events.clickhouse_build_trade_bars import (  # noqa: E402
+    DEFAULT_BARS_BY_SYMBOL_TIME_TABLE,
+    DEFAULT_BARS_BY_TIME_SYMBOL_TABLE,
     DEFAULT_BARS_TABLE,
     DEFAULT_TIMEFRAMES as DEFAULT_BAR_TIMEFRAMES,
+    bar_table_specs,
     build_live_market_bars,
     format_timeframe_ranges,
+    format_bar_tables,
     parse_timeframes,
     timeframe_ranges,
 )
@@ -138,6 +142,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest-table", default=DEFAULT_MANIFEST_TABLE)
     parser.add_argument("--continuity-table", default=DEFAULT_CONTINUITY_TABLE)
     parser.add_argument("--bars-table", default=DEFAULT_BARS_TABLE)
+    parser.add_argument("--bars-by-symbol-time-table", default=DEFAULT_BARS_BY_SYMBOL_TIME_TABLE)
+    parser.add_argument("--bars-by-time-symbol-table", default=DEFAULT_BARS_BY_TIME_SYMBOL_TABLE)
     parser.add_argument("--bar-timeframes", default=",".join(DEFAULT_BAR_TIMEFRAMES))
     parser.add_argument("--start-date", default=DEFAULT_START_DATE)
     parser.add_argument("--end-date", default=DEFAULT_END_DATE)
@@ -957,7 +963,7 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
     prefix = str(args.test_table_prefix).strip()
     if not SAFE_TEST_TABLE_RE.match(prefix):
         raise ValueError(f"--test-table-prefix must be a safe ClickHouse identifier prefix, got {prefix!r}")
-    if prefix in {DEFAULT_EVENTS_TABLE, DEFAULT_MANIFEST_TABLE, DEFAULT_CONTINUITY_TABLE, DEFAULT_BARS_TABLE}:
+    if prefix in {DEFAULT_EVENTS_TABLE, DEFAULT_MANIFEST_TABLE, DEFAULT_CONTINUITY_TABLE, DEFAULT_BARS_TABLE, DEFAULT_BARS_BY_SYMBOL_TIME_TABLE, DEFAULT_BARS_BY_TIME_SYMBOL_TABLE}:
         raise ValueError("--test-table-prefix cannot be a production table name")
     if args.dry_run:
         raise ValueError("--test-mode needs to insert and audit temp tables; do not combine it with --dry-run")
@@ -967,8 +973,17 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
     args.manifest_table = f"{prefix}_{run_id}_manifest"
     args.continuity_table = f"{prefix}_{run_id}_continuity"
     args.bars_table = f"{prefix}_{run_id}_bars"
-    for table in (args.events_table, args.manifest_table, args.continuity_table, args.bars_table):
-        if table in {DEFAULT_EVENTS_TABLE, DEFAULT_MANIFEST_TABLE, DEFAULT_CONTINUITY_TABLE, DEFAULT_BARS_TABLE} or not SAFE_TEST_TABLE_RE.match(table):
+    args.bars_by_symbol_time_table = f"{prefix}_{run_id}_bars_by_symbol_time"
+    args.bars_by_time_symbol_table = f"{prefix}_{run_id}_bars_by_time_symbol"
+    for table in (
+        args.events_table,
+        args.manifest_table,
+        args.continuity_table,
+        args.bars_table,
+        args.bars_by_symbol_time_table,
+        args.bars_by_time_symbol_table,
+    ):
+        if table in {DEFAULT_EVENTS_TABLE, DEFAULT_MANIFEST_TABLE, DEFAULT_CONTINUITY_TABLE, DEFAULT_BARS_TABLE, DEFAULT_BARS_BY_SYMBOL_TIME_TABLE, DEFAULT_BARS_BY_TIME_SYMBOL_TABLE} or not SAFE_TEST_TABLE_RE.match(table):
             raise ValueError(f"Unsafe test table name generated: {table!r}")
     args.retry_failed = True
     args.retry_started = True
@@ -979,7 +994,14 @@ def drop_test_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> 
     if not args.test_mode:
         return
     prefix = f"{str(args.test_table_prefix).strip()}_"
-    tables = [args.events_table, args.manifest_table, args.continuity_table, args.bars_table]
+    tables = [
+        args.events_table,
+        args.manifest_table,
+        args.continuity_table,
+        args.bars_table,
+        args.bars_by_symbol_time_table,
+        args.bars_by_time_symbol_table,
+    ]
     unsafe = [table for table in tables if not table.startswith(prefix) or not SAFE_TEST_TABLE_RE.match(table)]
     if unsafe:
         raise RuntimeError(f"Refusing to drop unsafe test table names: {unsafe}")
@@ -1472,6 +1494,8 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
         database=args.database,
         events_table=args.events_table,
         bars_table=args.bars_table,
+        bars_by_symbol_time_table=args.bars_by_symbol_time_table,
+        bars_by_time_symbol_table=args.bars_by_time_symbol_table,
         start_date=min_day,
         end_date=max_day,
         timeframes=args.bar_timeframes,
@@ -1486,9 +1510,10 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
     )
     bar_specs = parse_timeframes(args.bar_timeframes)
     ranges = timeframe_ranges(bar_args, bar_specs)
+    bar_tables = bar_table_specs(bar_args)
     print("=" * 100, flush=True)
     print(
-        f"BAR UPDATE table={bar_args.bars_table} timeframes={bar_args.timeframes} "
+        f"BAR UPDATE tables={format_bar_tables(bar_tables)} timeframes={bar_args.timeframes} "
         f"requested_days={min_day}->{max_day} build_ranges={format_timeframe_ranges(ranges)}",
         flush=True,
     )
@@ -1498,7 +1523,7 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
         report_path,
         {
             "type": "bar_update",
-            "bars_table": bar_args.bars_table,
+            "bar_tables": [asdict(spec) for spec in bar_tables],
             "timeframes": bar_args.timeframes,
             "requested_start_date": min_day,
             "requested_end_date": max_day,
@@ -1515,14 +1540,16 @@ def main() -> None:
     if args.test_mode:
         configure_test_tables(args, run_id)
     report_path = Path(args.output_root_win) / f"flatfile_event_update_{run_id}.jsonl"
+    bar_tables = bar_table_specs(args)
     print("=" * 100, flush=True)
     print("Massive SIP flatfile download + direct event update", flush=True)
-    print(f"database={args.database} events_table={args.events_table} bars_table={args.bars_table}", flush=True)
+    print(f"database={args.database} events_table={args.events_table}", flush=True)
+    print(f"bar_tables={format_bar_tables(bar_tables)}", flush=True)
     print(f"test_mode={args.test_mode}", flush=True)
     if args.test_mode:
         print(
             f"test_tables manifest={args.manifest_table} continuity={args.continuity_table} "
-            f"bars={args.bars_table} raw_csv_sample_size={args.test_sample_size}",
+            f"bars={format_bar_tables(bar_tables)} raw_csv_sample_size={args.test_sample_size}",
             flush=True,
         )
     print(f"date_range={args.start_date} -> {args.end_date}", flush=True)
@@ -1547,7 +1574,7 @@ def main() -> None:
     total_download_bytes = sum(int(day.quote_job.remote_size or 0) + int(day.trade_job.remote_size or 0) for day in days)
     with UpdateProgressReporter(args, total_days=len(days), total_files=len(days) * 2, total_bytes=total_download_bytes) as reporter:
         reporter.log(f"report={report_path}")
-        reporter.log(f"database={args.database} events_table={args.events_table} bars_table={args.bars_table} test_mode={args.test_mode}")
+        reporter.log(f"database={args.database} events_table={args.events_table} bars={format_bar_tables(bar_tables)} test_mode={args.test_mode}")
         if args.test_mode:
             reporter.set_stage("prepare test tables")
             reporter.log("dropping same-run temp tables before isolated build")

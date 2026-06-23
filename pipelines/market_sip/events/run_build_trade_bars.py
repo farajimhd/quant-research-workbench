@@ -14,6 +14,8 @@ DEFAULTS = {
     "database": "market_sip_compact",
     "events_table": "events",
     "bars_table": "live_market_bars",
+    "bars_by_symbol_time_table": "bars_by_symbol_time",
+    "bars_by_time_symbol_table": "bars_by_time_symbol",
     "start_date": "2019-01-01",
     "end_date": "2026-12-31",
     "timeframes": "1s,5s,1m,5m,1d,1w,1mo",
@@ -31,6 +33,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--database", default=DEFAULTS["database"])
     parser.add_argument("--events-table", default=DEFAULTS["events_table"])
     parser.add_argument("--bars-table", default=DEFAULTS["bars_table"])
+    parser.add_argument("--bars-by-symbol-time-table", default=DEFAULTS["bars_by_symbol_time_table"])
+    parser.add_argument("--bars-by-time-symbol-table", default=DEFAULTS["bars_by_time_symbol_table"])
     parser.add_argument("--start-date", default=DEFAULTS["start_date"])
     parser.add_argument("--end-date", default=DEFAULTS["end_date"])
     parser.add_argument("--timeframes", default=DEFAULTS["timeframes"])
@@ -63,6 +67,10 @@ def main() -> int:
         args.events_table,
         "--bars-table",
         args.bars_table,
+        "--bars-by-symbol-time-table",
+        args.bars_by_symbol_time_table,
+        "--bars-by-time-symbol-table",
+        args.bars_by_time_symbol_table,
         "--start-date",
         args.start_date,
         "--end-date",

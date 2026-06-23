@@ -45,8 +45,10 @@ use the events bar builder:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_trade_bars.py
 ```
 
-It writes a single `live_market_bars` table with qmd-gateway
-`BAR_SCHEMA_VERSION = 2` columns and the configured `timeframe` values.
+It writes qmd-gateway `BAR_SCHEMA_VERSION = 2` columns into three identical-row
+layouts: `live_market_bars` for chart/date slices, `bars_by_symbol_time` for
+per-ticker temporal training windows, and `bars_by_time_symbol` for
+market-wide time-snapshot training.
 
 To build only validation sample-cache shards, pass `--splits validation` to
 `sample_cache/run_build_event_sample_cache.py` or directly to

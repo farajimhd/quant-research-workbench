@@ -17,6 +17,30 @@ pub const BAR_SCHEMA_VERSION: u16 = 2;
 const ESTIMATED_LULD_WINDOW_SECONDS: i64 = 300;
 const ESTIMATED_LULD_NEAR_BAND_PCT: f64 = 1.0;
 
+struct BarTableLayout {
+    name: &'static str,
+    partition_sql: &'static str,
+    order_by_sql: &'static str,
+}
+
+const BAR_TABLE_LAYOUTS: &[BarTableLayout] = &[
+    BarTableLayout {
+        name: "live_market_bars",
+        partition_sql: "PARTITION BY session_date",
+        order_by_sql: "ORDER BY (session_date, timeframe, sym, bar_start)",
+    },
+    BarTableLayout {
+        name: "bars_by_symbol_time",
+        partition_sql: "PARTITION BY toYYYYMM(bar_start)",
+        order_by_sql: "ORDER BY (sym, timeframe, bar_start)",
+    },
+    BarTableLayout {
+        name: "bars_by_time_symbol",
+        partition_sql: "PARTITION BY toYYYYMM(bar_start)",
+        order_by_sql: "ORDER BY (timeframe, bar_start, sym)",
+    },
+];
+
 #[derive(Clone, Debug, Serialize)]
 pub struct BarSnapshot {
     pub current: Option<BarRow>,
@@ -1173,9 +1197,22 @@ impl BarClickHouseWriter {
             false,
         )
         .await?;
-        self.execute(
+        for layout in BAR_TABLE_LAYOUTS {
+            self.execute(&self.create_bar_table_sql(layout), true)
+                .await?;
+            for alter_sql in self.bar_table_alter_sqls(layout.name) {
+                self.execute(&alter_sql, true).await?;
+            }
+        }
+        self.execute(&self.create_live_coverage_table_sql(), true)
+            .await?;
+        Ok(())
+    }
+
+    fn create_bar_table_sql(&self, layout: &BarTableLayout) -> String {
+        format!(
             r#"
-            CREATE TABLE IF NOT EXISTS live_market_bars
+            CREATE TABLE IF NOT EXISTS {table}
             (
                 session_date Date,
                 schema_version UInt16,
@@ -1277,65 +1314,33 @@ impl BarClickHouseWriter {
                 estimated_luld_state LowCardinality(String)
             )
             ENGINE = ReplacingMergeTree
-            PARTITION BY session_date
-            ORDER BY (session_date, timeframe, sym, bar_start)
+            {partition_sql}
+            {order_by_sql}
+            {settings}
             "#,
-            true,
+            table = layout.name,
+            partition_sql = layout.partition_sql,
+            order_by_sql = layout.order_by_sql,
+            settings = merge_tree_settings(&self.config.clickhouse_storage_policy),
         )
-        .await?;
-        self.execute(
-            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
-            true,
-        )
-        .await?;
-        self.execute(
-            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS large_trade_notional Float64 AFTER large_trade_volume",
-            true,
-        )
-        .await?;
-        self.execute(
-            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_active UInt8 AFTER chop_score",
-            true,
-        )
-        .await?;
-        self.execute(
-            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_reference_price Float64 AFTER estimated_luld_active",
-            true,
-        )
-        .await?;
-        self.execute(
-            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_lower_price Float64 AFTER estimated_luld_reference_price",
-            true,
-        )
-        .await?;
-        self.execute(
-            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_upper_price Float64 AFTER estimated_luld_lower_price",
-            true,
-        )
-        .await?;
-        self.execute(
-            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_parameter_pct Float64 AFTER estimated_luld_upper_price",
-            true,
-        )
-        .await?;
-        self.execute(
-            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_distance_to_upper_pct Float64 AFTER estimated_luld_parameter_pct",
-            true,
-        )
-        .await?;
-        self.execute(
-            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_distance_to_lower_pct Float64 AFTER estimated_luld_distance_to_upper_pct",
-            true,
-        )
-        .await?;
-        self.execute(
-            "ALTER TABLE live_market_bars ADD COLUMN IF NOT EXISTS estimated_luld_state LowCardinality(String) AFTER estimated_luld_distance_to_lower_pct",
-            true,
-        )
-        .await?;
-        self.execute(&self.create_live_coverage_table_sql(), true)
-            .await?;
-        Ok(())
+    }
+
+    fn bar_table_alter_sqls(&self, table: &str) -> Vec<String> {
+        [
+            "ADD COLUMN IF NOT EXISTS schema_version UInt16 AFTER session_date",
+            "ADD COLUMN IF NOT EXISTS large_trade_notional Float64 AFTER large_trade_volume",
+            "ADD COLUMN IF NOT EXISTS estimated_luld_active UInt8 AFTER chop_score",
+            "ADD COLUMN IF NOT EXISTS estimated_luld_reference_price Float64 AFTER estimated_luld_active",
+            "ADD COLUMN IF NOT EXISTS estimated_luld_lower_price Float64 AFTER estimated_luld_reference_price",
+            "ADD COLUMN IF NOT EXISTS estimated_luld_upper_price Float64 AFTER estimated_luld_lower_price",
+            "ADD COLUMN IF NOT EXISTS estimated_luld_parameter_pct Float64 AFTER estimated_luld_upper_price",
+            "ADD COLUMN IF NOT EXISTS estimated_luld_distance_to_upper_pct Float64 AFTER estimated_luld_parameter_pct",
+            "ADD COLUMN IF NOT EXISTS estimated_luld_distance_to_lower_pct Float64 AFTER estimated_luld_distance_to_upper_pct",
+            "ADD COLUMN IF NOT EXISTS estimated_luld_state LowCardinality(String) AFTER estimated_luld_distance_to_lower_pct",
+        ]
+        .iter()
+        .map(|clause| format!("ALTER TABLE {table} {clause}"))
+        .collect()
     }
 
     pub async fn run(self, mut receiver: mpsc::Receiver<BarRow>) {
@@ -1385,8 +1390,14 @@ impl BarClickHouseWriter {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        self.query_with_body("INSERT INTO live_market_bars FORMAT JSONEachRow", body)
-            .await
+        for layout in BAR_TABLE_LAYOUTS {
+            self.query_with_body(
+                &format!("INSERT INTO {} FORMAT JSONEachRow", layout.name),
+                body.clone(),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     fn create_live_coverage_table_sql(&self) -> String {

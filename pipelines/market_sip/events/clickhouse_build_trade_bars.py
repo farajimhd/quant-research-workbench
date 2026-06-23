@@ -37,6 +37,8 @@ BAR_SCHEMA_VERSION = 2
 DEFAULT_DATABASE = "market_sip_compact"
 DEFAULT_EVENTS_TABLE = "events"
 DEFAULT_BARS_TABLE = "live_market_bars"
+DEFAULT_BARS_BY_SYMBOL_TIME_TABLE = "bars_by_symbol_time"
+DEFAULT_BARS_BY_TIME_SYMBOL_TABLE = "bars_by_time_symbol"
 DEFAULT_TIMEFRAMES = ("1s", "5s", "1m", "5m", "1d", "1w", "1mo")
 DEFAULT_OUTPUT_ROOT = DEFAULT_OUTPUT_ROOT_WIN / "trade_bars"
 
@@ -47,6 +49,14 @@ class TimeframeSpec:
     seconds: int
     bucket_sql: str
     end_sql: str
+
+
+@dataclass(frozen=True, slots=True)
+class BarTableSpec:
+    layout: str
+    table: str
+    partition_sql: str
+    order_by_sql: str
 
 
 TIMEFRAME_SPECS: dict[str, TimeframeSpec] = {
@@ -76,6 +86,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--database", default=DEFAULT_DATABASE)
     parser.add_argument("--events-table", default=DEFAULT_EVENTS_TABLE)
     parser.add_argument("--bars-table", default=DEFAULT_BARS_TABLE)
+    parser.add_argument("--bars-by-symbol-time-table", default=DEFAULT_BARS_BY_SYMBOL_TIME_TABLE)
+    parser.add_argument("--bars-by-time-symbol-table", default=DEFAULT_BARS_BY_TIME_SYMBOL_TABLE)
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default="2026-12-31")
     parser.add_argument("--timeframes", default=",".join(DEFAULT_TIMEFRAMES))
@@ -109,10 +121,12 @@ def main() -> int:
     requested_start_date = args.start_date
     requested_end_date = args.end_date
     ranges = timeframe_ranges(args, specs)
+    bar_tables = bar_table_specs(args)
 
     print("=" * 96, flush=True)
     print("Build qmd-compatible ClickHouse SIP bars", flush=True)
-    print(f"database={args.database} events_table={args.events_table} bars_table={args.bars_table}", flush=True)
+    print(f"database={args.database} events_table={args.events_table}", flush=True)
+    print(f"bar_tables={format_bar_tables(bar_tables)}", flush=True)
     print(f"timeframes={','.join(spec.name for spec in specs)}", flush=True)
     print(f"requested_date_range={requested_start_date}->{requested_end_date}", flush=True)
     print(f"build_ranges={format_timeframe_ranges(ranges)} expand_boundaries={args.expand_boundaries}", flush=True)
@@ -177,7 +191,8 @@ class BarBuildReporter:
         self._current_task = None
         self._active_query_id = ""
         self._timeframe_ranges = timeframe_ranges(args, specs)
-        self._total_steps = len(specs) * (1 + (1 if args.replace_range else 0)) + (1 if args.drop_table else 0)
+        self._bar_tables = bar_table_specs(args)
+        self._total_steps = len(self._bar_tables) * len(specs) * (1 + (1 if args.replace_range else 0)) + (len(self._bar_tables) if args.drop_table else 0)
         self._completed_steps = 0
         self._stage = "starting"
 
@@ -258,7 +273,7 @@ class BarBuildReporter:
         summary = self._table_cls.grid(expand=True)
         summary.add_column(justify="right", style="bold")
         summary.add_column()
-        summary.add_row("table", f"{self.args.database}.{self.args.bars_table}")
+        summary.add_row("tables", format_bar_tables(self._bar_tables))
         summary.add_row("requested", f"{self.requested_start_date} -> {self.requested_end_date}")
         summary.add_row("build ranges", format_timeframe_ranges(self._timeframe_ranges))
         summary.add_row("timeframes", ",".join(spec.name for spec in self.specs))
@@ -284,6 +299,7 @@ def build_live_market_bars(
     reporter: BarBuildReporter | None = None,
 ) -> list[dict[str, object]]:
     specs = specs or parse_timeframes(args.timeframes)
+    bar_tables = bar_table_specs(args)
     report_path = report_path or (Path(args.output_root_win) / f"trade_bars_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     expand_boundaries = getattr(args, "expand_boundaries", True)
@@ -291,97 +307,113 @@ def build_live_market_bars(
     if args.dry_run:
         if reporter is not None:
             reporter.set_stage("dry-run SQL preview")
-        print_sql_preview("create", create_bar_table_sql(args.database, args.bars_table, args.storage_policy))
-        if args.drop_table:
-            print_sql_preview("drop", drop_table_sql(args.database, args.bars_table))
-        for spec in specs:
-            start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
-            scoped_args = args_with_date_range(args, start_date, end_date)
-            if args.replace_range:
-                print_sql_preview(
-                    f"delete {spec.name}",
-                    delete_range_sql(args.database, args.bars_table, start_date, end_date, args, timeframe=spec.name),
-                )
-            print_sql_preview(f"insert {spec.name}", insert_live_market_bars_sql(scoped_args, spec))
+        for table_spec in bar_tables:
+            print_sql_preview(
+                f"create {table_spec.layout}",
+                create_bar_table_sql(args.database, table_spec.table, args.storage_policy, layout=table_spec),
+            )
+            if args.drop_table:
+                print_sql_preview(f"drop {table_spec.layout}", drop_table_sql(args.database, table_spec.table))
+            for spec in specs:
+                start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
+                scoped_args = args_with_bar_table(args_with_date_range(args, start_date, end_date), table_spec.table)
+                if args.replace_range:
+                    print_sql_preview(
+                        f"delete {table_spec.layout} {spec.name}",
+                        delete_range_sql(args.database, table_spec.table, start_date, end_date, args, timeframe=spec.name),
+                    )
+                print_sql_preview(f"insert {table_spec.layout} {spec.name}", insert_live_market_bars_sql(scoped_args, spec))
         return results
 
     if args.drop_table:
-        if reporter is not None:
-            reporter.set_stage("drop bar table")
-        client.execute(drop_table_sql(args.database, args.bars_table))
-        if reporter is not None:
-            reporter.finish_stage(f"dropped {args.database}.{args.bars_table}")
-        else:
-            print(f"DROPPED {args.database}.{args.bars_table}", flush=True)
-    client.execute(create_bar_table_sql(args.database, args.bars_table, args.storage_policy))
-
-    for index, spec in enumerate(specs, start=1):
-        start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
-        scoped_args = args_with_date_range(args, start_date, end_date)
-        if args.replace_range:
+        for table_spec in bar_tables:
             if reporter is not None:
-                reporter.set_stage(f"delete {spec.name} overlap [{index}/{len(specs)}]")
-            delete_profile = run_bar_query_profiled(
+                reporter.set_stage(f"drop {table_spec.layout} bar table")
+            client.execute(drop_table_sql(args.database, table_spec.table))
+            if reporter is not None:
+                reporter.finish_stage(f"dropped {args.database}.{table_spec.table}")
+            else:
+                print(f"DROPPED {args.database}.{table_spec.table}", flush=True)
+    for table_spec in bar_tables:
+        client.execute(create_bar_table_sql(args.database, table_spec.table, args.storage_policy, layout=table_spec))
+
+    total_jobs = len(bar_tables) * len(specs)
+    job_index = 0
+    for table_spec in bar_tables:
+        for index, spec in enumerate(specs, start=1):
+            job_index += 1
+            start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
+            scoped_args = args_with_bar_table(args_with_date_range(args, start_date, end_date), table_spec.table)
+            if args.replace_range:
+                if reporter is not None:
+                    reporter.set_stage(f"delete {table_spec.layout} {spec.name} overlap [{job_index}/{total_jobs}]")
+                delete_profile = run_bar_query_profiled(
+                    client,
+                    f"delete_{table_spec.table}_{spec.name}_{start_date}_{end_date}",
+                    delete_range_sql(args.database, table_spec.table, start_date, end_date, args, timeframe=spec.name),
+                    reporter=reporter,
+                )
+                append_jsonl(
+                    report_path,
+                    {
+                        "operation": "delete_range",
+                        "bar_layout": table_spec.layout,
+                        "bars_table": table_spec.table,
+                        "timeframe": spec.name,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                        "profile": asdict(delete_profile),
+                    },
+                )
+                if reporter is not None:
+                    reporter.finish_stage(
+                        f"deleted {table_spec.layout} {spec.name} wall={delete_profile.wall_seconds:.1f}s read_rows={format_optional_int(delete_profile.read_rows)}"
+                    )
+                else:
+                    print_profile("DELETE", delete_profile)
+
+            if reporter is not None:
+                reporter.set_stage(f"insert {table_spec.layout} {spec.name} [{job_index}/{total_jobs}]")
+            else:
+                print("=" * 96, flush=True)
+                print(
+                    f"BAR START [{job_index:,}/{total_jobs:,}] layout={table_spec.layout} timeframe={spec.name} "
+                    f"range={start_date}->{end_date} table={table_spec.table}",
+                    flush=True,
+                )
+            insert_profile = run_bar_query_profiled(
                 client,
-                f"delete_{args.bars_table}_{spec.name}_{start_date}_{end_date}",
-                delete_range_sql(args.database, args.bars_table, start_date, end_date, args, timeframe=spec.name),
+                f"insert_{table_spec.table}_{spec.name}_{start_date}_{end_date}",
+                insert_live_market_bars_sql(scoped_args, spec),
+                query_settings(scoped_args),
                 reporter=reporter,
             )
-            append_jsonl(
-                report_path,
-                {
-                    "operation": "delete_range",
-                    "timeframe": spec.name,
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "profile": asdict(delete_profile),
-                },
+            summary = summarize_table(client, args.database, table_spec.table, spec.name, start_date, end_date)
+            result = {
+                "operation": "insert",
+                "bar_layout": table_spec.layout,
+                "bars_table": table_spec.table,
+                "timeframe": spec.name,
+                "start_date": start_date,
+                "end_date": end_date,
+                "profile": asdict(insert_profile),
+                "summary": summary,
+            }
+            append_jsonl(report_path, result)
+            results.append(result)
+            message = (
+                f"{table_spec.layout} {spec.name} rows={summary['rows']:,} tickers={summary['tickers']:,} "
+                f"volume={summary['volume']:.0f} wall={insert_profile.wall_seconds:.1f}s"
             )
             if reporter is not None:
-                reporter.finish_stage(f"deleted {spec.name} overlap wall={delete_profile.wall_seconds:.1f}s read_rows={format_optional_int(delete_profile.read_rows)}")
+                reporter.finish_stage(message)
             else:
-                print_profile("DELETE", delete_profile)
-
-        if reporter is not None:
-            reporter.set_stage(f"insert {spec.name} [{index}/{len(specs)}]")
-        else:
-            print("=" * 96, flush=True)
-            print(
-                f"BAR START [{index:,}/{len(specs):,}] timeframe={spec.name} "
-                f"range={start_date}->{end_date} table={args.bars_table}",
-                flush=True,
-            )
-        insert_profile = run_bar_query_profiled(
-            client,
-            f"insert_{args.bars_table}_{spec.name}_{start_date}_{end_date}",
-            insert_live_market_bars_sql(scoped_args, spec),
-            query_settings(scoped_args),
-            reporter=reporter,
-        )
-        summary = summarize_table(client, args.database, args.bars_table, spec.name, start_date, end_date)
-        result = {
-            "operation": "insert",
-            "timeframe": spec.name,
-            "start_date": start_date,
-            "end_date": end_date,
-            "profile": asdict(insert_profile),
-            "summary": summary,
-        }
-        append_jsonl(report_path, result)
-        results.append(result)
-        message = (
-            f"{spec.name} rows={summary['rows']:,} tickers={summary['tickers']:,} "
-            f"volume={summary['volume']:.0f} wall={insert_profile.wall_seconds:.1f}s"
-        )
-        if reporter is not None:
-            reporter.finish_stage(message)
-        else:
-            print_profile("INSERT", insert_profile)
-            print(
-                f"BAR DONE timeframe={spec.name} rows={summary['rows']:,} tickers={summary['tickers']:,} "
-                f"volume={summary['volume']:.0f} min_bar={summary['min_bar_start']} max_bar={summary['max_bar_start']}",
-                flush=True,
-            )
+                print_profile("INSERT", insert_profile)
+                print(
+                    f"BAR DONE layout={table_spec.layout} timeframe={spec.name} rows={summary['rows']:,} tickers={summary['tickers']:,} "
+                    f"volume={summary['volume']:.0f} min_bar={summary['min_bar_start']} max_bar={summary['max_bar_start']}",
+                    flush=True,
+                )
     return results
 
 
@@ -405,6 +437,12 @@ def args_with_date_range(args: argparse.Namespace, start_date: str, end_date: st
     values = vars(args).copy()
     values["start_date"] = start_date
     values["end_date"] = end_date
+    return argparse.Namespace(**values)
+
+
+def args_with_bar_table(args: argparse.Namespace, table: str) -> argparse.Namespace:
+    values = vars(args).copy()
+    values["bars_table"] = table
     return argparse.Namespace(**values)
 
 
@@ -441,6 +479,41 @@ def format_timeframe_ranges(ranges: dict[str, tuple[str, str]]) -> str:
         start_date, end_date = next(iter(unique))
         return f"all:{start_date}->{end_date}"
     return "; ".join(f"{timeframe}:{start}->{end}" for timeframe, (start, end) in ranges.items())
+
+
+def bar_table_specs(args: argparse.Namespace) -> list[BarTableSpec]:
+    specs = [
+        BarTableSpec(
+            layout="chart",
+            table=args.bars_table,
+            partition_sql="PARTITION BY session_date",
+            order_by_sql="ORDER BY (session_date, timeframe, sym, bar_start)",
+        ),
+        BarTableSpec(
+            layout="symbol_time",
+            table=args.bars_by_symbol_time_table,
+            partition_sql="PARTITION BY toYYYYMM(bar_start)",
+            order_by_sql="ORDER BY (sym, timeframe, bar_start)",
+        ),
+        BarTableSpec(
+            layout="time_symbol",
+            table=args.bars_by_time_symbol_table,
+            partition_sql="PARTITION BY toYYYYMM(bar_start)",
+            order_by_sql="ORDER BY (timeframe, bar_start, sym)",
+        ),
+    ]
+    seen: set[str] = set()
+    deduped: list[BarTableSpec] = []
+    for spec in specs:
+        if spec.table in seen:
+            continue
+        seen.add(spec.table)
+        deduped.append(spec)
+    return deduped
+
+
+def format_bar_tables(specs: list[BarTableSpec]) -> str:
+    return ", ".join(f"{spec.layout}:{spec.table}" for spec in specs)
 
 
 def run_bar_query_profiled(
@@ -502,7 +575,9 @@ def query_settings(args: argparse.Namespace) -> str:
     return "\nSETTINGS " + ", ".join(settings) if settings else ""
 
 
-def create_bar_table_sql(database: str, table: str, storage_policy: str) -> str:
+def create_bar_table_sql(database: str, table: str, storage_policy: str, *, layout: BarTableSpec | None = None) -> str:
+    partition_sql = layout.partition_sql if layout is not None else "PARTITION BY session_date"
+    order_by_sql = layout.order_by_sql if layout is not None else "ORDER BY (session_date, timeframe, sym, bar_start)"
     return f"""
 CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
 (
@@ -606,8 +681,8 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     estimated_luld_state LowCardinality(String)
 )
 ENGINE = ReplacingMergeTree
-PARTITION BY session_date
-ORDER BY (session_date, timeframe, sym, bar_start)
+{partition_sql}
+{order_by_sql}
 {mergetree_settings_sql(storage_policy)}
 """
 

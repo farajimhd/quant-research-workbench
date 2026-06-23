@@ -36,7 +36,7 @@ The gateway outputs market-data primitives. The app backend combines those primi
 | `event.rs` | Massive payload parsing | Massive websocket JSON | `MarketEvent::Trade`, `MarketEvent::Quote` | Business logic |
 | `massive.rs` | Websocket connection and fan-out | Massive websocket | Queues for state, bars, indicators, compact writer, optional raw writer | Blocking writes |
 | `state.rs` | Simple latest market snapshot | Market events | `/snapshot/scanner`, `/snapshot/ticker` | Final scanner scoring |
-| `bars.rs` | Live bar aggregation | Market events | `BarRow`, `live_market_bars` | Historical chart storage |
+| `bars.rs` | Live bar aggregation | Market events | `BarRow`, `live_market_bars`, `bars_by_symbol_time`, `bars_by_time_symbol` | Historical chart storage |
 | `indicators.rs` | Streaming tick and bar indicators | Market events, closed bars | Tick snapshots, `IndicatorRow` | Wide research feature generation |
 | `scanner.rs` | Massive-only scanner primitives | Closed bars | Primitive snapshot/stream | Broker/reference-aware signals |
 | `compact_event.rs` | Live compact event contract, live ring buffers, sorted persistence ordinals | Market events | `/stream/compact-events`, `/snapshot/compact-events/{ticker}`, `live_market_events_v1` | Encoder chunk construction |

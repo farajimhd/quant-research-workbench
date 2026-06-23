@@ -5,11 +5,20 @@ training tables from `market_sip_compact.events`.
 
 ## QMD-Compatible Market Bars
 
-`clickhouse_build_trade_bars.py` builds one qmd-gateway-compatible
-`live_market_bars` table from `market_sip_compact.events`. The schema mirrors
+`clickhouse_build_trade_bars.py` builds three qmd-gateway-compatible bar tables
+from `market_sip_compact.events`. The schema mirrors
 `services/qmd-gateway/src/bars.rs` `BAR_SCHEMA_VERSION = 2`, so historical
 flatfile-derived bars and live qmd bars can be queried with the same column
 contract.
+
+The three tables contain identical rows and columns but use different physical
+layouts for the main access patterns:
+
+| Table | Partition | Order key | Primary use |
+| --- | --- | --- | --- |
+| `live_market_bars` | `session_date` | `(session_date, timeframe, sym, bar_start)` | QMD/chart-compatible date slices |
+| `bars_by_symbol_time` | `toYYYYMM(bar_start)` | `(sym, timeframe, bar_start)` | per-ticker temporal training windows |
+| `bars_by_time_symbol` | `toYYYYMM(bar_start)` | `(timeframe, bar_start, sym)` | market-wide time-snapshot training |
 
 The default timeframes are:
 
@@ -61,8 +70,8 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
 ```
 
 By default, the builder replaces rows in the requested date range before
-inserting. Use `--drop-table` only when intentionally rebuilding the whole
-selected bar table from scratch.
+inserting in all three layouts. Use `--drop-table` only when intentionally
+rebuilding the selected bar tables from scratch.
 
 ## Bar Boundaries
 
