@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 from src.backend.qmd_gateway_client import qmd_scanner_snapshot
+from src.backend.real_live_market_data.clickhouse import ClickHouseHttpClient, quote_identifier
+from src.backend.real_live_market_data.config import market_gateway_config
 from src.market_engine.broker import AccountSnapshot, ExecutionFill, OrderSnapshot, PortfolioPosition
 
 
@@ -174,7 +176,7 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
     try:
         payload = qmd_scanner_snapshot(row_limit=row_limit)
         if payload.get("row_count", 0) > 0:
-            return payload
+            return apply_tradable_filter_to_scanner_payload(payload)
     except Exception as exc:
         qmd_error = str(exc)
     else:
@@ -185,6 +187,7 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
     rows = [row for row in rows if row["symbol"] and row["last_price"] > 0]
     rows.sort(key=lambda row: (row["live_priority"], row["day_volume"]), reverse=True)
     rows = rows[: max(1, min(int(row_limit or 250), 1000))]
+    rows, tradable_filter = filter_tradable_rows(rows)
     now = datetime.now(NEW_YORK)
     return {
         "provider": "massive",
@@ -193,6 +196,7 @@ def real_live_scanner_snapshot(row_limit: int = 250) -> dict[str, Any]:
         "rows": rows,
         "row_count": len(rows),
         "qmd_gateway_error": qmd_error,
+        "tradable_filter": tradable_filter,
     }
 
 
@@ -291,6 +295,13 @@ def real_live_portfolio_for_account(account: RealLiveAccount, *, now: str | None
 def submit_real_live_order(account_type: str, order: dict[str, Any], *, preview: bool = False, account_keys: str | list[str] | None = None) -> dict[str, Any]:
     selected_accounts = resolve_real_live_accounts(account_keys, account_type)
     normalized_order = normalize_live_order_intent(order)
+    tradability = require_tradable_symbol(normalized_order["symbol"])
+    conid = int(tradability["ibkr_conid"])
+    requested_conid = int(float(normalized_order.get("conid") or 0))
+    if requested_conid and requested_conid != conid:
+        raise ValueError(f"Order conid {requested_conid} does not match q_live tradable universe conid {conid} for {normalized_order['symbol']}.")
+    normalized_order["conid"] = conid
+    normalized_order["tradable_universe"] = tradability
     results = [submit_real_live_order_for_account(account, normalized_order, preview=preview) for account in selected_accounts]
     return {
         "account_type": selected_accounts[0].account_key,
@@ -300,6 +311,7 @@ def submit_real_live_order(account_type: str, order: dict[str, Any], *, preview:
         "results": results,
         "submitted_orders": [result["submitted_order"] for result in results],
         "client_order_id": normalized_order["client_order_id"],
+        "tradable_universe": tradability,
     }
 
 
@@ -897,6 +909,112 @@ def lookup_ibkr_stock_conid(symbol: str) -> int:
             except (TypeError, ValueError):
                 continue
     raise RuntimeError(f"Could not resolve IBKR stock conid for {symbol}.")
+
+
+def apply_tradable_filter_to_scanner_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    rows = payload.get("rows", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list) or not rows:
+        return payload
+    filtered_rows, metadata = filter_tradable_rows([row for row in rows if isinstance(row, dict)])
+    filtered = dict(payload)
+    filtered["rows"] = filtered_rows
+    filtered["row_count"] = len(filtered_rows)
+    filtered["market_rows"] = filtered_rows
+    filtered["market_row_count"] = len(filtered_rows)
+    filtered["tradable_filter"] = metadata
+    status = dict(filtered.get("status") or {})
+    status["tradable_filter"] = metadata
+    filtered["status"] = status
+    return filtered
+
+
+def filter_tradable_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    symbols = sorted({scanner_row_symbol(row) for row in rows if scanner_row_symbol(row)})
+    if not symbols:
+        return [], {"enabled": True, "checked": 0, "allowed": 0, "blocked": len(rows), "message": "No symbols to validate."}
+    tradable = tradable_symbol_map(symbols)
+    filtered: list[dict[str, Any]] = []
+    blocked = 0
+    for row in rows:
+        symbol = scanner_row_symbol(row)
+        match = tradable.get(symbol)
+        if not match or not match.get("is_tradable"):
+            blocked += 1
+            continue
+        enriched = dict(row)
+        enriched["is_tradable"] = True
+        enriched["ibkr_conid"] = int(match["ibkr_conid"])
+        enriched["conid"] = int(match["ibkr_conid"])
+        enriched["tradable_universe_date"] = match["universe_date"]
+        enriched["exclusion_reason"] = match.get("exclusion_reason") or ""
+        filtered.append(enriched)
+    return filtered, {
+        "enabled": True,
+        "checked": len(symbols),
+        "allowed": len(filtered),
+        "blocked": blocked,
+        "source": "q_live.feature_tradable_universe_v1",
+    }
+
+
+def require_tradable_symbol(symbol: str) -> dict[str, Any]:
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        raise ValueError("Order symbol is required.")
+    row = tradable_symbol_map([normalized]).get(normalized)
+    if row and row.get("is_tradable"):
+        return row
+    reason = row.get("exclusion_reason") if row else "missing_from_latest_tradable_universe"
+    raise RuntimeError(f"{normalized} is not tradable in the latest q_live tradable universe: {reason}.")
+
+
+def tradable_symbol_map(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    normalized = sorted({str(symbol or "").strip().upper() for symbol in symbols if str(symbol or "").strip()})
+    if not normalized:
+        return {}
+    config = market_gateway_config()
+    client = ClickHouseHttpClient(config.read_clickhouse)
+    feature_database = os.environ.get("REAL_LIVE_TRADABLE_UNIVERSE_DATABASE", "").strip() or config.write_clickhouse.database or config.read_clickhouse.database or "q_live"
+    database = quote_identifier(feature_database)
+    symbol_list = ", ".join(sql_literal(symbol) for symbol in normalized)
+    rows = client.query_json(
+        f"""
+        WITH latest AS
+        (
+            SELECT max(universe_date) AS universe_date
+            FROM {database}.feature_tradable_universe_v1 FINAL
+        )
+        SELECT
+            toString(universe_date) AS universe_date_text,
+            upper(ticker) AS ticker,
+            toUInt8(is_tradable) AS is_tradable,
+            ifNull(exclusion_reason, '') AS exclusion_reason,
+            toUInt64OrZero(ifNull(ibkr_conid, '')) AS ibkr_conid
+        FROM {database}.feature_tradable_universe_v1 FINAL
+        WHERE universe_date = (SELECT universe_date FROM latest)
+          AND upper(ticker) IN ({symbol_list})
+        """,
+        timeout=10,
+    )
+    return {
+        str(row.get("ticker") or "").upper(): {
+            "universe_date": str(row.get("universe_date_text") or ""),
+            "ticker": str(row.get("ticker") or "").upper(),
+            "is_tradable": bool(int(row.get("is_tradable") or 0)),
+            "exclusion_reason": str(row.get("exclusion_reason") or ""),
+            "ibkr_conid": int(row.get("ibkr_conid") or 0),
+        }
+        for row in rows
+        if str(row.get("ticker") or "").strip()
+    }
+
+
+def scanner_row_symbol(row: dict[str, Any]) -> str:
+    return str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+
+
+def sql_literal(value: str) -> str:
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def response_requires_reply(response: Any) -> bool:

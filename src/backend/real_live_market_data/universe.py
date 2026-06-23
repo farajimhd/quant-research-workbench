@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import polars as pl
@@ -30,72 +31,63 @@ def load_universe_frame(client: ClickHouseHttpClient, config: MarketGatewayConfi
 
 
 def default_universe_sql(config: MarketGatewayConfig) -> str:
-    database = quote_identifier(config.read_clickhouse.database or "default")
+    feature_database = os.environ.get("REAL_LIVE_TRADABLE_UNIVERSE_DATABASE", "").strip() or config.write_clickhouse.database or config.read_clickhouse.database or "q_live"
+    database = quote_identifier(feature_database)
     return f"""
+    WITH
+        latest_universe AS
+        (
+            SELECT max(universe_date) AS universe_date
+            FROM {database}.feature_tradable_universe_v1 FINAL
+        ),
+        latest_scanner AS
+        (
+            SELECT max(feature_date) AS feature_date
+            FROM {database}.feature_scanner_static_v1 FINAL
+        )
     SELECT
-        s.ticker AS candidate_massive_ticker,
-        s.symbol_id AS symbol_id,
-        s.status AS symbol_status,
-        s.primary_symbol_flag AS primary_symbol_flag,
-        s.ticker_type_id AS ticker_type_id,
-        tt.provider_code AS ticker_type_provider_code,
-        tt.name AS ticker_type_name,
-        tt.description AS ticker_type_description,
-        sec.product_type AS security_product_type,
-        sec.asset_class AS security_asset_class,
-        sec.instrument_type AS security_instrument_type,
-        sec.security_type AS security_type,
-        l.listing_id AS listing_id,
-        l.listing_status AS listing_status,
-        l.ibkr_conid AS ibkr_conid,
-        l.exchange_code AS exchange_code,
-        l.currency_code AS currency_code,
-        issuer.issuer_id AS issuer_id,
+        u.ticker AS candidate_massive_ticker,
+        u.symbol_id AS symbol_id,
+        u.symbol_status AS symbol_status,
+        1 AS primary_symbol_flag,
+        '' AS ticker_type_id,
+        'CS' AS ticker_type_provider_code,
+        'Common Stock' AS ticker_type_name,
+        '' AS ticker_type_description,
+        u.product_type AS security_product_type,
+        u.asset_class AS security_asset_class,
+        u.product_type AS security_instrument_type,
+        u.product_type AS security_type,
+        u.listing_id AS listing_id,
+        u.listing_status AS listing_status,
+        u.ibkr_conid AS ibkr_conid,
+        u.exchange_code AS exchange_code,
+        u.currency_code AS currency_code,
+        u.issuer_id AS issuer_id,
         issuer.issuer_name AS issuer_name,
-        logo.logo_asset_id AS logo_asset_id,
-        logo.logo_relative_path AS logo_relative_path,
-        logo.logo_mime_type AS logo_mime_type,
-        logo.logo_source_reference AS logo_source_reference
-    FROM (SELECT * FROM {database}.market_symbol_v1 FINAL) AS s
-    INNER JOIN (SELECT * FROM {database}.market_listing_v1 FINAL) AS l
-        ON l.listing_id = s.listing_id
-    INNER JOIN (SELECT * FROM {database}.market_security_v1 FINAL) AS sec
-        ON sec.security_id = l.security_id
-    INNER JOIN (SELECT * FROM {database}.market_exchange_v1 FINAL) AS ex
-        ON ex.exchange_code = l.exchange_code
-    LEFT JOIN (SELECT * FROM {database}.market_issuer_v1 FINAL) AS issuer
-        ON issuer.issuer_id = sec.issuer_id
-    LEFT JOIN (SELECT * FROM {database}.market_ticker_type_v1 FINAL) AS tt
-        ON tt.ticker_type_id = s.ticker_type_id
-    LEFT JOIN (
-        SELECT
-            logo_ticker,
-            argMax(asset_id, logo_seen_at) AS logo_asset_id,
-            argMax(relative_path, logo_seen_at) AS logo_relative_path,
-            argMax(mime_type, logo_seen_at) AS logo_mime_type,
-            argMax(source_reference, logo_seen_at) AS logo_source_reference
-        FROM (
-            SELECT
-                upper(extract(relative_path, 'ticker-overview-([^/]+)-logo-')) AS logo_ticker,
-                asset_id,
-                relative_path,
-                mime_type,
-                source_reference,
-                coalesce(last_verified_at_utc, last_seen_at_utc, first_seen_at_utc, toDateTime64('1970-01-01 00:00:00', 3)) AS logo_seen_at
-            FROM {database}.market_presentation_asset_v1 FINAL
-            WHERE source_system = 'massive'
-              AND asset_kind = 'logo'
-        ) AS extracted_logo
-        WHERE logo_ticker != ''
-        GROUP BY logo_ticker
-    ) AS logo
-        ON logo.logo_ticker = upper(s.ticker)
-    WHERE s.status = 'active'
-      AND s.primary_symbol_flag = 1
-      AND l.listing_status = 'active'
-      AND match(ifNull(l.ibkr_conid, ''), '^[1-9][0-9]*$')
-      AND upper(ifNull(ex.iso_country_code, '')) = 'US'
-      AND upper(sec.product_type) IN ('STK', 'STOCK', 'STOCKS')
+        asset.asset_id AS logo_asset_id,
+        asset.relative_path AS logo_relative_path,
+        asset.mime_type AS logo_mime_type,
+        asset.source_reference AS logo_source_reference,
+        scanner.free_float AS massive_float,
+        scanner.short_interest AS massive_short_interest,
+        scanner.days_to_cover AS massive_days_to_cover,
+        scanner.short_volume_ratio AS massive_short_volume_ratio,
+        scanner.float_bucket AS float_profile,
+        scanner.short_pressure_label AS short_setup,
+        u.is_tradable AS is_tradable,
+        u.exclusion_reason AS exclusion_reason
+    FROM (SELECT * FROM {database}.feature_tradable_universe_v1 FINAL) AS u
+    LEFT JOIN (SELECT * FROM {database}.id_issuer_v1 FINAL) AS issuer
+        ON issuer.issuer_id = u.issuer_id
+    LEFT JOIN (SELECT * FROM {database}.feature_scanner_static_v1 FINAL) AS scanner
+        ON scanner.feature_date = (SELECT feature_date FROM latest_scanner)
+       AND scanner.symbol_id = u.symbol_id
+       AND scanner.listing_id = u.listing_id
+    LEFT JOIN (SELECT * FROM {database}.market_presentation_asset_v1 FINAL) AS asset
+        ON asset.asset_id = coalesce(scanner.logo_asset_id, issuer.logo_asset_id)
+    WHERE u.universe_date = (SELECT universe_date FROM latest_universe)
+      AND u.is_tradable = 1
     ORDER BY upper(candidate_massive_ticker)
     """
 

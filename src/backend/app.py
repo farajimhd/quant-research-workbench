@@ -59,8 +59,9 @@ from src.backend.market_data_service import (
 )
 from src.backend.news_service import ensure_benzinga_news_cache, news_at_payload
 from src.backend.progress_model import build_progress_model
-from src.backend.qmd_gateway_client import qmd_bars, qmd_catalogs, qmd_indicators, qmd_scanner_snapshot, qmd_status
+from src.backend.qmd_gateway_client import qmd_bars, qmd_catalogs, qmd_indicators, qmd_status
 from src.backend.real_live_trading_service import (
+    apply_tradable_filter_to_scanner_payload,
     configured_real_live_accounts,
     public_account,
     real_live_portfolio,
@@ -1820,19 +1821,13 @@ def real_live_trading_accounts() -> dict[str, Any]:
 @app.get("/api/real-live-trading/scanner")
 def real_live_trading_scanner(row_limit: int = Query(default=250, ge=1, le=1000)) -> dict[str, Any]:
     try:
-        return qmd_scanner_snapshot(row_limit=row_limit)
-    except Exception as qmd_exc:
-        qmd_error = str(qmd_exc)
+        return real_live_scanner_snapshot(row_limit=row_limit)
+    except Exception as scanner_exc:
+        scanner_error = str(scanner_exc)
     try:
-        return market_gateway_snapshot(row_limit=row_limit)
+        return apply_tradable_filter_to_scanner_payload(market_gateway_snapshot(row_limit=row_limit))
     except Exception as exc:
-        try:
-            payload = real_live_scanner_snapshot(row_limit=row_limit)
-            payload["gateway_error"] = f"QMD gateway failed: {qmd_error}; Python gateway failed: {exc}"
-            payload["market_rows"] = payload.get("rows", [])
-            return payload
-        except Exception as fallback_exc:
-            raise HTTPException(status_code=502, detail=f"QMD gateway failed: {qmd_error}; Python gateway failed: {exc}; fallback failed: {fallback_exc}") from fallback_exc
+        raise HTTPException(status_code=502, detail=f"Filtered live scanner failed: {scanner_error}; Python gateway failed: {exc}") from exc
 
 
 @app.get("/api/real-live-trading/market-gateway/status")
