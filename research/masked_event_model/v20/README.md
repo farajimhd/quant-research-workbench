@@ -147,6 +147,19 @@ The final long-run launcher for the fixed-grid MLP decoder path is:
 python research\masked_event_model\v20\train_10shard_long.py --fresh-start
 ```
 
+The mixed-cache restart launcher trains from the step-260352 checkpoint using
+all shards from `cache_20260611_195259` plus the first 54 shards from
+`cache_pretrain_xonly_20260621_140813`. It keeps validation on
+`cache_20260617_112833`, uses non-repeatable randomness by default, and shuffles
+the combined train shard file list at the beginning of each epoch:
+
+```powershell
+python research\masked_event_model\v20\train_full_pretrain_mixed_cache.py
+```
+
+Use `--print-only` to inspect the fully expanded trainer command before
+starting the run. Use `--repeatable-randomness` only for deterministic replay.
+
 By default this v20 launcher uses BF16 AMP and keeps the cheaper MLP decoder inside the active AMP
 dtype. To run the explicit FP16 decoder experiment:
 

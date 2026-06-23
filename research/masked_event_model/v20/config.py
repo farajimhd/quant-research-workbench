@@ -31,6 +31,8 @@ class DataConfig:
     precomputed_chunk_root: Path | None = None
     sample_cache_root: Path | None = DEFAULT_SAMPLE_CACHE_ROOT
     sample_cache_validation_root: Path | None = None
+    sample_cache_train_roots: tuple[Path, ...] = ()
+    sample_cache_train_root_max_shards: tuple[int, ...] = ()
     reference_dir: Path = DEFAULT_REFERENCE_DIR
     clickhouse_url: str = ""
     clickhouse_database: str = DEFAULT_DATABASE

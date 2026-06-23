@@ -43,6 +43,7 @@ from research.mlops.compact_events import (
 from research.mlops.clickhouse_events import ClickHouseEventsChunkIterableDataset, ClickHouseEventsDataConfig
 from research.mlops.event_sample_cache import (
     EventSampleCacheDataConfig,
+    EventSampleShard,
     discover_event_sample_shards,
     iter_event_sample_cache_epoch_batches,
 )
@@ -57,6 +58,7 @@ from research.mlops.wandb_utils import init_wandb as mlops_init_wandb
 MODEL_FAMILY = "masked_event_model"
 MODEL_VERSION = "v20"
 JOB_TYPE = "pretrain"
+MAX_NUMPY_SAFE_BASE_SEED = (2**32) - 1_000_000
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -71,6 +73,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--precomputed-chunk-root", default=str(data_defaults.precomputed_chunk_root or ""))
     parser.add_argument("--sample-cache-root", default=str(data_defaults.sample_cache_root or ""))
     parser.add_argument("--sample-cache-validation-root", default=str(data_defaults.sample_cache_validation_root or ""))
+    parser.add_argument("--sample-cache-train-roots", default="")
+    parser.add_argument("--sample-cache-train-root-max-shards", default="")
     parser.add_argument("--reference-dir", default=str(data_defaults.reference_dir))
     parser.add_argument("--clickhouse-url", default=data_defaults.clickhouse_url)
     parser.add_argument("--clickhouse-database", default=data_defaults.clickhouse_database)
@@ -199,10 +203,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def resolve_effective_seed(requested_seed: int, *, repeatable_randomness: bool) -> int:
     if repeatable_randomness:
         return int(requested_seed)
-    # Keep the seed within signed 63-bit range so it is accepted by Python,
-    # NumPy, Torch CPU, and Torch CUDA RNGs. It is stored in checkpoints and
-    # config for auditability, but a fresh value is generated for each run.
-    return int(secrets.randbits(63))
+    # NumPy's legacy global RNG rejects seeds outside uint32. Validation adds
+    # deterministic offsets to the run seed, so keep enough headroom while still
+    # drawing a fresh value for every non-repeatable run.
+    return int(secrets.randbelow(MAX_NUMPY_SAFE_BASE_SEED))
 
 
 @contextmanager
@@ -243,6 +247,16 @@ def restore_checkpoint_rng_state(state: dict[str, Any] | None) -> None:
         torch.set_rng_state(state["torch"])
     if state.get("cuda") is not None and torch.cuda.is_available():
         torch.cuda.set_rng_state_all(state["cuda"])
+
+
+def parse_path_tuple(value: str) -> tuple[Path, ...]:
+    parts = [part.strip().strip('"') for part in str(value or "").replace("\n", ";").split(";")]
+    return tuple(Path(part) for part in parts if part)
+
+
+def parse_int_tuple(value: str) -> tuple[int, ...]:
+    parts = [part.strip() for part in str(value or "").replace(";", ",").split(",")]
+    return tuple(int(part) for part in parts if part)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -345,7 +359,11 @@ def main(argv: list[str] | None = None) -> None:
     if args.dry_run:
         if config.data.data_source == "sample_cache":
             sample_config = sample_cache_data_config(config, "train", args.seed)
-            batch = next(iter_event_sample_cache_epoch_batches(sample_config, epoch=1, shards=discover_event_sample_shards(sample_config)))
+            batch = next(iter_event_sample_cache_epoch_batches(
+                sample_config,
+                epoch=1,
+                shards=discover_train_sample_cache_shards(config, sample_config),
+            ))
         else:
             batch = next(iter(make_loader(config, "train", args.seed)))
         batch = move_batch(batch, device)
@@ -604,6 +622,47 @@ def sample_cache_shard_step_count(shard: Any, config: EventSampleCacheDataConfig
     return int(math.ceil(usable_samples / max(1, int(config.batch_size))))
 
 
+def discover_train_sample_cache_shards(config: ExperimentConfig, data_config: EventSampleCacheDataConfig) -> list[EventSampleShard]:
+    roots = tuple(config.data.sample_cache_train_roots)
+    if not roots:
+        return discover_event_sample_shards(data_config)
+
+    max_shards_by_root = tuple(config.data.sample_cache_train_root_max_shards)
+    mixed: list[EventSampleShard] = []
+    for root_index, root in enumerate(roots):
+        root_max_shards = max_shards_by_root[root_index] if root_index < len(max_shards_by_root) else 0
+        root_config = replace(
+            data_config,
+            cache_root=Path(root),
+            start_shard_index=0,
+            max_shards=max(0, int(root_max_shards)),
+        )
+        root_shards = discover_event_sample_shards(root_config)
+        for shard in root_shards:
+            # Mixed roots often reuse local shard_index values. Assign a unique
+            # logical index so per-shard record shuffles and progress reporting
+            # do not collide, while keeping the actual shard path untouched.
+            mixed.append(
+                EventSampleShard(
+                    split=shard.split,
+                    shard_index=len(mixed),
+                    path=shard.path,
+                    meta_path=shard.meta_path,
+                    num_samples=shard.num_samples,
+                    sample_bytes=shard.sample_bytes,
+                    sha256=shard.sha256,
+                    byte_size=shard.byte_size,
+                )
+            )
+    if data_config.start_shard_index > 0:
+        mixed = mixed[int(data_config.start_shard_index) :]
+    if data_config.max_shards > 0:
+        mixed = mixed[: int(data_config.max_shards)]
+    if not mixed:
+        raise RuntimeError(f"No mixed sample-cache train shards found from roots={roots}")
+    return mixed
+
+
 def train_sample_cache_epochs(
     *,
     model: EventTokenMaskedAutoencoder,
@@ -622,7 +681,7 @@ def train_sample_cache_epochs(
     failure_debug_dir: Path,
 ) -> int:
     data_config = sample_cache_data_config(config, "train", args.seed)
-    train_shards = discover_event_sample_shards(data_config)
+    train_shards = discover_train_sample_cache_shards(config, data_config)
     shard_count = len(train_shards)
     total_samples = sum(shard.num_samples for shard in train_shards)
     planned_shard_steps = [sample_cache_shard_step_count(shard, data_config) for shard in train_shards]
@@ -634,6 +693,10 @@ def train_sample_cache_epochs(
         f"epochs={config.train.epochs:,} batch_size={config.train.batch_size:,} "
         f"steps_per_epoch={planned_epoch_steps:,} max_steps={config.train.max_steps:,}",
     )
+    if config.data.sample_cache_train_roots:
+        root_text = ", ".join(str(root) for root in config.data.sample_cache_train_roots)
+        limit_text = ",".join(str(value) for value in config.data.sample_cache_train_root_max_shards) or "all"
+        emit_progress_message(reporter, f"Mixed sample-cache train roots={root_text} root_max_shards={limit_text}")
     samples_seen_total = 0
     stop_training = False
     for epoch in range(1, max(1, int(config.train.epochs)) + 1):
@@ -1298,6 +1361,8 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             precomputed_chunk_root=Path(args.precomputed_chunk_root) if args.precomputed_chunk_root else None,
             sample_cache_root=Path(args.sample_cache_root) if args.sample_cache_root else None,
             sample_cache_validation_root=Path(args.sample_cache_validation_root) if args.sample_cache_validation_root else None,
+            sample_cache_train_roots=parse_path_tuple(args.sample_cache_train_roots),
+            sample_cache_train_root_max_shards=parse_int_tuple(args.sample_cache_train_root_max_shards),
             reference_dir=Path(args.reference_dir),
             clickhouse_url=args.clickhouse_url,
             clickhouse_database=args.clickhouse_database,
