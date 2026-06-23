@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import sys
 import time
@@ -82,6 +83,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-memory-usage", default="400G")
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--replace-range", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--expand-boundaries",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Expand weekly/monthly builds to full affected bar periods before deleting/inserting bars.",
+    )
+    parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
+    parser.add_argument("--progress-refresh-per-second", type=float, default=2.0)
+    parser.add_argument("--progress-log-lines", type=int, default=12)
     parser.add_argument("--drop-table", action="store_true", help="Drop the bar table before rebuilding.")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -95,12 +105,17 @@ def main() -> None:
     report_path = Path(args.output_root_win) / f"trade_bars_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     specs = parse_timeframes(args.timeframes)
+    requested_start_date = args.start_date
+    requested_end_date = args.end_date
+    if args.expand_boundaries:
+        args.start_date, args.end_date = expand_date_range_for_timeframes(args.start_date, args.end_date, args.timeframes)
 
     print("=" * 96, flush=True)
     print("Build qmd-compatible ClickHouse SIP bars", flush=True)
     print(f"database={args.database} events_table={args.events_table} bars_table={args.bars_table}", flush=True)
     print(f"timeframes={','.join(spec.name for spec in specs)}", flush=True)
-    print(f"date_range={args.start_date}->{args.end_date}", flush=True)
+    print(f"requested_date_range={requested_start_date}->{requested_end_date}", flush=True)
+    print(f"build_date_range={args.start_date}->{args.end_date} expand_boundaries={args.expand_boundaries}", flush=True)
     print(f"storage_policy={args.storage_policy or '<default>'}", flush=True)
     print(f"settings={query_settings(args).strip() or '<none>'}", flush=True)
     print(f"replace_range={args.replace_range} drop_table={args.drop_table} dry_run={args.dry_run}", flush=True)
@@ -113,10 +128,125 @@ def main() -> None:
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
     print("=" * 96, flush=True)
 
-    build_live_market_bars(client, args, specs=specs, report_path=report_path)
+    with BarBuildReporter(args, specs=specs, report_path=report_path, requested_start_date=requested_start_date, requested_end_date=requested_end_date) as reporter:
+        build_live_market_bars(client, args, specs=specs, report_path=report_path, reporter=reporter)
     print("=" * 96, flush=True)
     print(f"DONE elapsed_minutes={(time.perf_counter() - started) / 60.0:.1f} report={report_path}", flush=True)
     print("=" * 96, flush=True)
+
+
+class BarBuildReporter:
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        *,
+        specs: list[TimeframeSpec],
+        report_path: Path,
+        requested_start_date: str,
+        requested_end_date: str,
+    ) -> None:
+        self.args = args
+        self.specs = specs
+        self.report_path = report_path
+        self.requested_start_date = requested_start_date
+        self.requested_end_date = requested_end_date
+        self._logs: deque[str] = deque(maxlen=max(5, int(args.progress_log_lines)))
+        self._started_at = time.time()
+        self._rich = False
+        self._live = None
+        self._overall = None
+        self._current = None
+        self._overall_task = None
+        self._current_task = None
+        self._total_steps = len(specs) + (1 if args.drop_table else 0) + (1 if args.replace_range else 0)
+        self._completed_steps = 0
+        self._stage = "starting"
+
+    def __enter__(self) -> "BarBuildReporter":
+        if self.args.progress_layout in {"auto", "rich"}:
+            try:
+                from rich.console import Group
+                from rich.live import Live
+                from rich.panel import Panel
+                from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
+                from rich.table import Table
+            except ImportError:
+                if self.args.progress_layout == "rich":
+                    raise
+            else:
+                self._rich = True
+                self._group_cls = Group
+                self._panel_cls = Panel
+                self._table_cls = Table
+                self._overall = Progress(
+                    TextColumn("[bold cyan]{task.description}"),
+                    BarColumn(),
+                    TaskProgressColumn(),
+                    TimeElapsedColumn(),
+                    TimeRemainingColumn(),
+                )
+                self._current = Progress(
+                    SpinnerColumn(),
+                    TextColumn("[bold yellow]{task.description}"),
+                    TimeElapsedColumn(),
+                )
+                self._overall_task = self._overall.add_task("bar build", total=max(1, self._total_steps))
+                self._current_task = self._current.add_task("starting", total=None)
+                self._live = Live(self._render(), refresh_per_second=max(1.0, float(self.args.progress_refresh_per_second)), transient=False)
+                self._live.start()
+        self.log("bar builder started")
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if exc_type is None:
+            self.log("bar builder finished")
+        else:
+            self.log(f"bar builder failed: {exc}")
+        if self._live is not None:
+            self._live.update(self._render())
+            self._live.stop()
+
+    def set_stage(self, stage: str) -> None:
+        self._stage = stage
+        if self._rich and self._current is not None and self._current_task is not None:
+            self._current.update(self._current_task, description=stage)
+            self._live.update(self._render())
+        else:
+            print(f"STAGE {stage}", flush=True)
+
+    def finish_stage(self, message: str) -> None:
+        self._completed_steps += 1
+        self.log(message)
+        if self._rich and self._overall is not None and self._overall_task is not None:
+            self._overall.update(self._overall_task, completed=min(self._completed_steps, self._total_steps))
+            self._live.update(self._render())
+
+    def log(self, message: str) -> None:
+        line = f"{datetime.now().strftime('%H:%M:%S')} {message}"
+        if self._rich:
+            self._logs.append(line)
+            self._live.update(self._render())
+        else:
+            print(line, flush=True)
+
+    def _render(self) -> object:
+        elapsed = time.time() - self._started_at
+        summary = self._table_cls.grid(expand=True)
+        summary.add_column(justify="right", style="bold")
+        summary.add_column()
+        summary.add_row("table", f"{self.args.database}.{self.args.bars_table}")
+        summary.add_row("requested", f"{self.requested_start_date} -> {self.requested_end_date}")
+        summary.add_row("build range", f"{self.args.start_date} -> {self.args.end_date}")
+        summary.add_row("timeframes", ",".join(spec.name for spec in self.specs))
+        summary.add_row("stage", self._stage)
+        summary.add_row("elapsed", f"{elapsed / 60.0:.1f} min")
+        logs = "\n".join(self._logs) if self._logs else "no messages"
+        return self._group_cls(
+            self._panel_cls(summary, title="QMD Bar Build", border_style="cyan"),
+            self._overall,
+            self._current,
+            self._panel_cls(logs, title="Messages", border_style="green"),
+        )
 
 
 def build_live_market_bars(
@@ -125,12 +255,15 @@ def build_live_market_bars(
     *,
     specs: list[TimeframeSpec] | None = None,
     report_path: Path | None = None,
+    reporter: BarBuildReporter | None = None,
 ) -> list[dict[str, object]]:
     specs = specs or parse_timeframes(args.timeframes)
     report_path = report_path or (Path(args.output_root_win) / f"trade_bars_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, object]] = []
     if args.dry_run:
+        if reporter is not None:
+            reporter.set_stage("dry-run SQL preview")
         print_sql_preview("create", create_bar_table_sql(args.database, args.bars_table, args.storage_policy))
         if args.drop_table:
             print_sql_preview("drop", drop_table_sql(args.database, args.bars_table))
@@ -141,22 +274,35 @@ def build_live_market_bars(
         return results
 
     if args.drop_table:
+        if reporter is not None:
+            reporter.set_stage("drop bar table")
         client.execute(drop_table_sql(args.database, args.bars_table))
-        print(f"DROPPED {args.database}.{args.bars_table}", flush=True)
+        if reporter is not None:
+            reporter.finish_stage(f"dropped {args.database}.{args.bars_table}")
+        else:
+            print(f"DROPPED {args.database}.{args.bars_table}", flush=True)
     client.execute(create_bar_table_sql(args.database, args.bars_table, args.storage_policy))
 
     if args.replace_range:
+        if reporter is not None:
+            reporter.set_stage("delete overlapping bars")
         delete_profile = run_profiled(
             client,
             f"delete_{args.bars_table}_{args.start_date}_{args.end_date}",
             delete_range_sql(args.database, args.bars_table, args.start_date, args.end_date, args),
         )
         append_jsonl(report_path, {"operation": "delete_range", "profile": asdict(delete_profile)})
-        print_profile("DELETE", delete_profile)
+        if reporter is not None:
+            reporter.finish_stage(f"deleted overlap wall={delete_profile.wall_seconds:.1f}s read_rows={delete_profile.read_rows:,}")
+        else:
+            print_profile("DELETE", delete_profile)
 
     for index, spec in enumerate(specs, start=1):
-        print("=" * 96, flush=True)
-        print(f"BAR START [{index:,}/{len(specs):,}] timeframe={spec.name} table={args.bars_table}", flush=True)
+        if reporter is not None:
+            reporter.set_stage(f"insert {spec.name} [{index}/{len(specs)}]")
+        else:
+            print("=" * 96, flush=True)
+            print(f"BAR START [{index:,}/{len(specs):,}] timeframe={spec.name} table={args.bars_table}", flush=True)
         insert_profile = run_profiled(
             client,
             f"insert_{args.bars_table}_{spec.name}_{args.start_date}_{args.end_date}",
@@ -167,12 +313,19 @@ def build_live_market_bars(
         result = {"operation": "insert", "timeframe": spec.name, "profile": asdict(insert_profile), "summary": summary}
         append_jsonl(report_path, result)
         results.append(result)
-        print_profile("INSERT", insert_profile)
-        print(
-            f"BAR DONE timeframe={spec.name} rows={summary['rows']:,} tickers={summary['tickers']:,} "
-            f"volume={summary['volume']:.0f} min_bar={summary['min_bar_start']} max_bar={summary['max_bar_start']}",
-            flush=True,
+        message = (
+            f"{spec.name} rows={summary['rows']:,} tickers={summary['tickers']:,} "
+            f"volume={summary['volume']:.0f} wall={insert_profile.wall_seconds:.1f}s"
         )
+        if reporter is not None:
+            reporter.finish_stage(message)
+        else:
+            print_profile("INSERT", insert_profile)
+            print(
+                f"BAR DONE timeframe={spec.name} rows={summary['rows']:,} tickers={summary['tickers']:,} "
+                f"volume={summary['volume']:.0f} min_bar={summary['min_bar_start']} max_bar={summary['max_bar_start']}",
+                flush=True,
+            )
     return results
 
 

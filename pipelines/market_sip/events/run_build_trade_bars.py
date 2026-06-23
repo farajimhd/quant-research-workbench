@@ -20,6 +20,9 @@ DEFAULTS = {
     "max_threads": 32,
     "max_memory_usage": "400G",
     "output_root_win": r"D:\market-data\prepared\clickhouse_sip_ingest\trade_bars",
+    "progress_layout": "auto",
+    "progress_refresh_per_second": 2.0,
+    "progress_log_lines": 12,
 }
 
 
@@ -34,12 +37,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
     parser.add_argument("--output-root-win", default=DEFAULTS["output_root_win"])
+    parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default=DEFAULTS["progress_layout"])
+    parser.add_argument("--progress-refresh-per-second", type=float, default=DEFAULTS["progress_refresh_per_second"])
+    parser.add_argument("--progress-log-lines", type=int, default=DEFAULTS["progress_log_lines"])
     parser.add_argument("--storage-policy", default="")
     parser.add_argument("--clickhouse-url", default="")
     parser.add_argument("--user", default="")
     parser.add_argument("--password", default="")
     parser.add_argument("--drop-table", action="store_true")
     parser.add_argument("--no-replace-range", action="store_true")
+    parser.add_argument("--no-expand-boundaries", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--print-only", action="store_true")
     return parser.parse_args()
@@ -68,6 +75,12 @@ def main() -> int:
         args.max_memory_usage,
         "--output-root-win",
         args.output_root_win,
+        "--progress-layout",
+        args.progress_layout,
+        "--progress-refresh-per-second",
+        str(args.progress_refresh_per_second),
+        "--progress-log-lines",
+        str(args.progress_log_lines),
     ]
     if args.storage_policy:
         argv.extend(["--storage-policy", args.storage_policy])
@@ -81,6 +94,8 @@ def main() -> int:
         argv.append("--drop-table")
     if args.no_replace_range:
         argv.append("--no-replace-range")
+    if args.no_expand_boundaries:
+        argv.append("--no-expand-boundaries")
     if args.dry_run:
         argv.append("--dry-run")
 
