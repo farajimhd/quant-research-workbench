@@ -10,8 +10,12 @@ param(
     [switch]$MarketHoursWriteOverride,
     [string]$MarketHoursWriteReason = "",
     [switch]$NoWriteDiscoveredIssues,
+    [switch]$NoWriteCanonicalGraph,
+    [switch]$NoResolveStaleIssues,
     [switch]$NoRebuildTradable,
-    [switch]$RebuildTradableInTestMode
+    [switch]$RebuildTradableInTestMode,
+    [switch]$NoMarketPublicationGapFill,
+    [switch]$Daemon
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,11 +57,23 @@ if ($EnsureMarketPublicationSchema) {
 if ($NoWriteDiscoveredIssues) {
     $argsList += "--no-write-discovered-issues"
 }
+if ($NoWriteCanonicalGraph) {
+    $argsList += "--no-write-canonical-graph"
+}
+if ($NoResolveStaleIssues) {
+    $argsList += "--no-resolve-stale-issues"
+}
 if ($NoRebuildTradable) {
     $argsList += "--no-rebuild-tradable"
 }
 if ($RebuildTradableInTestMode) {
     $argsList += "--rebuild-tradable-in-test-mode"
+}
+if ($NoMarketPublicationGapFill) {
+    $argsList += "--no-market-publication-gap-fill"
+}
+if ($Daemon) {
+    $argsList += "--daemon"
 }
 
 & $PythonExe @argsList

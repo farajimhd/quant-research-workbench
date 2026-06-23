@@ -42,8 +42,15 @@ class ReferenceGatewayConfig:
     market_hours_write_override: bool
     market_hours_write_reason: str
     write_discovered_issues: bool
+    write_canonical_graph: bool
+    resolve_stale_issues: bool
     rebuild_tradable_on_execute: bool
     rebuild_tradable_in_test_mode: bool
+    daemon_loop_enabled: bool
+    daemon_active_interval_seconds: float
+    daemon_after_hours_interval_seconds: float
+    market_publication_gap_fill_enabled: bool
+    market_publication_gap_fill_days: int
     terminal_rich_enabled: bool
     terminal_refresh_seconds: float
 
@@ -88,8 +95,15 @@ class ReferenceGatewayConfig:
             market_hours_write_override=env_bool("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_OVERRIDE", False),
             market_hours_write_reason=env_string("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON", ""),
             write_discovered_issues=env_bool("REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES", True),
+            write_canonical_graph=env_bool("REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH", True),
+            resolve_stale_issues=env_bool("REFERENCE_GATEWAY_RESOLVE_STALE_ISSUES", True),
             rebuild_tradable_on_execute=env_bool("REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE", True),
             rebuild_tradable_in_test_mode=env_bool("REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE", False),
+            daemon_loop_enabled=env_bool("REFERENCE_GATEWAY_DAEMON", False),
+            daemon_active_interval_seconds=env_float("REFERENCE_GATEWAY_DAEMON_ACTIVE_INTERVAL_SECONDS", 900.0),
+            daemon_after_hours_interval_seconds=env_float("REFERENCE_GATEWAY_DAEMON_AFTER_HOURS_INTERVAL_SECONDS", 3600.0),
+            market_publication_gap_fill_enabled=env_bool("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_ENABLED", True),
+            market_publication_gap_fill_days=env_int("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_DAYS", 14),
             terminal_rich_enabled=env_bool_auto("REFERENCE_GATEWAY_TERMINAL_RICH_ENABLED", sys.stdout.isatty()),
             terminal_refresh_seconds=env_float("REFERENCE_GATEWAY_TERMINAL_REFRESH_SECONDS", 1.0),
         )

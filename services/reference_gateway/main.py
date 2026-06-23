@@ -11,10 +11,14 @@ from research.mlops.env import load_env_files, secret_status
 from services.gateway_policy import active_collection_window
 from services.reference_gateway.active_tickers import run_active_ticker_plan, write_active_ticker_plan
 from services.reference_gateway.audit import run_reference_audit, write_report
+from services.reference_gateway.canonical_graph_writer import write_canonical_graph_candidates
 from services.reference_gateway.config import ReferenceGatewayConfig
-from services.reference_gateway.issue_writer import write_active_ticker_mapping_issues
+from services.reference_gateway.daemon import run_reference_daemon
+from services.reference_gateway.issue_resolution import resolve_stale_active_ticker_issues
+from services.reference_gateway.issue_writer import write_active_ticker_mapping_issues, write_graph_mapping_issues
 from services.reference_gateway.market_publications import ensure_market_publication_schema
 from services.reference_gateway.policy import evaluate_write_policy
+from services.reference_gateway.publication_maintenance import run_recent_publication_gap_fill
 from services.reference_gateway.publication_rebuild import rebuild_tradable_publications
 from services.reference_gateway.table_groups import table_group_markdown
 from services.reference_gateway.tradability import tradability_rule_markdown
@@ -58,6 +62,18 @@ def parse_args() -> argparse.Namespace:
         help="In execute mode, write discovered provider/reference issues to id_mapping_issue_v1.",
     )
     parser.add_argument(
+        "--write-canonical-graph",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="In execute mode, insert clean new Massive ticker candidates into the canonical issuer/security/listing/symbol graph.",
+    )
+    parser.add_argument(
+        "--resolve-stale-issues",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="In execute mode, close reference-gateway active ticker issues once the canonical symbol exists.",
+    )
+    parser.add_argument(
         "--rebuild-tradable",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -69,6 +85,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Allow step 6 tradable rebuild when read and write databases differ. Only use after cloning required source tables.",
     )
+    parser.add_argument("--market-publication-gap-fill", action=argparse.BooleanOptionalAction, default=None, help="Run recent coverage-aware reference publication gap fill after audit in execute mode.")
+    parser.add_argument("--daemon", action=argparse.BooleanOptionalAction, default=None, help="Run repeated audit/sync cycles. Active-window cycles are read-only unless an override is supplied.")
     return parser.parse_args()
 
 
@@ -92,10 +110,18 @@ def main() -> None:
         os.environ["REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON"] = args.market_hours_write_reason
     if args.write_discovered_issues is not None:
         os.environ["REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES"] = "true" if args.write_discovered_issues else "false"
+    if args.write_canonical_graph is not None:
+        os.environ["REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH"] = "true" if args.write_canonical_graph else "false"
+    if args.resolve_stale_issues is not None:
+        os.environ["REFERENCE_GATEWAY_RESOLVE_STALE_ISSUES"] = "true" if args.resolve_stale_issues else "false"
     if args.rebuild_tradable is not None:
         os.environ["REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE"] = "true" if args.rebuild_tradable else "false"
     if args.rebuild_tradable_in_test_mode is not None:
         os.environ["REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE"] = "true" if args.rebuild_tradable_in_test_mode else "false"
+    if args.market_publication_gap_fill is not None:
+        os.environ["REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_ENABLED"] = "true" if args.market_publication_gap_fill else "false"
+    if args.daemon is not None:
+        os.environ["REFERENCE_GATEWAY_DAEMON"] = "true" if args.daemon else "false"
     if args.print_rules:
         print(tradability_rule_markdown())
         return
@@ -103,6 +129,9 @@ def main() -> None:
         print(table_group_markdown())
         return
     config = ReferenceGatewayConfig.from_env()
+    if config.daemon_loop_enabled:
+        run_reference_daemon(config, sys.argv[1:])
+        return
     write_policy = evaluate_write_policy(config)
     print("=" * 96, flush=True)
     print("Reference Gateway audit", flush=True)
@@ -139,6 +168,8 @@ def main() -> None:
                     "MASSIVE_API_KEY",
                     "IBKR_CPAPI_BASE_URL",
                     "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES",
+                    "REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH",
+                    "REFERENCE_GATEWAY_RESOLVE_STALE_ISSUES",
                     "REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE",
                     "REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE",
                 ]
@@ -174,6 +205,9 @@ def main() -> None:
             f"write_database={config.clickhouse_write_database}",
             flush=True,
         )
+    if config.execute and config.resolve_stale_issues:
+        resolution = resolve_stale_active_ticker_issues(config)
+        print("stale_issue_resolution=" + json.dumps(asdict(resolution), sort_keys=True), flush=True)
     if config.execute and config.rebuild_tradable_on_execute:
         rebuild = rebuild_tradable_publications(config, reason="pre_audit_source_truth_refresh")
         print("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True), flush=True)
@@ -204,18 +238,50 @@ def main() -> None:
             )
             if plan_path:
                 print(f"active_ticker_report={plan_path}", flush=True)
-            if config.execute and config.write_discovered_issues:
-                issue_write = write_active_ticker_mapping_issues(config, plan)
-                print("active_ticker_issue_write=" + json.dumps(asdict(issue_write), sort_keys=True), flush=True)
-                if issue_write.written > 0 and config.rebuild_tradable_on_execute:
+            if config.execute:
+                issue_write = None
+                graph_write = None
+                graph_issue_write = None
+                if config.write_discovered_issues:
+                    issue_write = write_active_ticker_mapping_issues(config, plan)
+                    print("active_ticker_issue_write=" + json.dumps(asdict(issue_write), sort_keys=True), flush=True)
+                else:
+                    print("active_ticker_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE", flush=True)
+                if config.write_canonical_graph:
+                    graph_write = write_canonical_graph_candidates(config, plan)
+                    print("canonical_graph_write=" + json.dumps(asdict(graph_write), sort_keys=True, default=str), flush=True)
+                    if graph_write.issues and config.write_discovered_issues:
+                        graph_issue_write = write_graph_mapping_issues(config, graph_write.issues)
+                        print("canonical_graph_issue_write=" + json.dumps(asdict(graph_issue_write), sort_keys=True), flush=True)
+                    elif graph_write.issues:
+                        print("canonical_graph_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE", flush=True)
+                else:
+                    print("canonical_graph_write=skipped reason=REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH_FALSE", flush=True)
+                if config.resolve_stale_issues:
+                    resolution = resolve_stale_active_ticker_issues(config)
+                    print("stale_issue_resolution=" + json.dumps(asdict(resolution), sort_keys=True), flush=True)
+                changed_rows = issue_write.written if issue_write is not None else 0
+                if graph_write is not None:
+                    changed_rows += graph_write.inserted_rows
+                if graph_issue_write is not None:
+                    changed_rows += graph_issue_write.written
+                if changed_rows > 0 and config.rebuild_tradable_on_execute:
                     rebuild = rebuild_tradable_publications(config, reason="post_active_ticker_issue_write")
                     print("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True), flush=True)
                     report = run_reference_audit(config)
                     report_path = write_report(report, config.report_root_win) if args.write_report else None
                     if report_path:
                         print(f"post_issue_report={report_path}", flush=True)
-            elif config.execute:
-                print("active_ticker_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE", flush=True)
+    if (
+        config.execute
+        and write_policy.writes_allowed
+        and config.market_publication_gap_fill_enabled
+        and (not config.test_write_mode or args.market_publication_gap_fill is True)
+    ):
+        maintenance = run_recent_publication_gap_fill(config)
+        print("market_publication_gap_fill=" + json.dumps(asdict(maintenance), sort_keys=True), flush=True)
+    elif config.execute and config.test_write_mode and config.market_publication_gap_fill_enabled:
+        print("market_publication_gap_fill=skipped reason=test_write_mode_requires_explicit_flag", flush=True)
     print(f"status={report.status} wall_seconds={report.wall_seconds:.2f}", flush=True)
     if report.status == "failed":
         sys.exit(2)

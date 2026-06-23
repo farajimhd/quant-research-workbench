@@ -137,9 +137,19 @@ The safety flow is:
 
 1. discover provider/reference issue
 2. write canonical open row in `id_mapping_issue_v1`
-3. rebuild `feature_tradable_universe_v1`
-4. publish affected rows as `is_tradable = 0`
-5. audit validates that no tradable row violates hard rules
+3. insert clean new candidates into the canonical graph only when CIK, FIGI,
+   exchange, currency, ticker, and one compatible IBKR conid are unambiguous
+4. close stale reference-gateway issues when the canonical symbol is now valid
+5. rebuild `feature_tradable_universe_v1`
+6. publish affected rows as `is_tradable = 0` unless every hard rule passes
+7. audit validates that no tradable row violates hard rules
+
+The canonical graph writer is intentionally conservative. It writes new rows to
+`id_issuer_v1`, `id_issuer_identifier_v1`, `id_security_v1`,
+`id_security_identifier_v1`, `id_listing_v1`, `id_symbol_v1`, and
+`id_source_mapping_v1` only for candidates that are already clean. If any
+required evidence is missing or conflicting, the candidate becomes an open issue
+instead of a guessed tradable listing.
 
 Useful controls:
 
@@ -151,8 +161,12 @@ REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES=1000
 REFERENCE_GATEWAY_ACTIVE_TICKER_NEW_CANDIDATE_LIMIT=250
 REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED=false
 REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES=true
+REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH=true
+REFERENCE_GATEWAY_RESOLVE_STALE_ISSUES=true
 REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE=true
 REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE=false
+REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_ENABLED=true
+REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_DAYS=14
 ```
 
 `REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE=false` is intentional. A temp
@@ -164,16 +178,22 @@ Equivalent one-off CLI switches:
 
 ```powershell
 python -m services.reference_gateway.main --execute --no-write-discovered-issues
+python -m services.reference_gateway.main --execute --no-write-canonical-graph
+python -m services.reference_gateway.main --execute --no-resolve-stale-issues
 python -m services.reference_gateway.main --execute --no-rebuild-tradable
 python -m services.reference_gateway.main --execute --rebuild-tradable-in-test-mode
+python -m services.reference_gateway.main --execute --no-market-publication-gap-fill
 ```
 
 Wrapper equivalents:
 
 ```powershell
 .\scripts\run_reference_gateway.ps1 -Execute -NoWriteDiscoveredIssues
+.\scripts\run_reference_gateway.ps1 -Execute -NoWriteCanonicalGraph
+.\scripts\run_reference_gateway.ps1 -Execute -NoResolveStaleIssues
 .\scripts\run_reference_gateway.ps1 -Execute -NoRebuildTradable
 .\scripts\run_reference_gateway.ps1 -Execute -RebuildTradableInTestMode
+.\scripts\run_reference_gateway.ps1 -Execute -NoMarketPublicationGapFill
 ```
 
 Enable IBKR resolution only when Client Portal Gateway is authenticated. IBKR
@@ -219,6 +239,26 @@ REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON=<specific reason>
 The override is intentionally noisy. It is for urgent corrections only, for
 example blocking a clearly wrong conid or adding a newly listed security needed
 by the current session.
+
+The gateway can also run as a simple daemon:
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Execute -ActiveTickerCheck -Daemon
+```
+
+In daemon mode, the process reruns the same one-shot gateway command. During the
+active collection window it drops `--execute` unless an explicit market-hours
+override is supplied, so active-window cycles are read-only by default. Outside
+the active window, execute-mode cycles may write issues, clean graph rows,
+stale-issue closures, publication rebuilds, and recent market-publication
+coverage fills.
+
+Daemon intervals:
+
+```text
+REFERENCE_GATEWAY_DAEMON_ACTIVE_INTERVAL_SECONDS=900
+REFERENCE_GATEWAY_DAEMON_AFTER_HOURS_INTERVAL_SECONDS=3600
+```
 
 ## Issuer Group
 
@@ -285,6 +325,13 @@ specific writers are enabled. Maintenance reports them as
 `planned_not_implemented` so they remain visible without failing temp smoke
 tests.
 
+The one-shot gateway can launch the recent market-publication coverage fill
+after the audit in execute mode. It uses the same
+`market_publications_historical_gap_fill.py` script above, defaults to the last
+14 days, and respects `market_reference_publication_coverage_v1`.
+Temp write-database runs skip this fill unless `--market-publication-gap-fill`
+is passed explicitly.
+
 The second table group is issuer identity:
 
 ```text
@@ -306,15 +353,14 @@ replacement row with the same issuer id and the missing field filled. If the new
 value conflicts with a populated field, the conflict goes to
 `id_mapping_issue_v1`; the affected security remains non-tradable.
 
-## Next Implementation Stage
+## Validation
 
-After the audit output is reviewed, the identity writer stage should be added in
-this order:
+Fast local smoke test:
 
-1. Massive active ticker crawler with raw artifact hashes.
-2. Exchange alias audit and proposed mappings.
-3. Canonical graph resolver in dry-run mode.
-4. IBKR missing-conid resolver in dry-run mode.
-5. `feature_tradable_universe_v1` publisher that applies the hard tradability
-   rule.
-6. Only then enable writes for new source mappings and accepted canonical rows.
+```powershell
+python -m services.reference_gateway.smoke_test
+```
+
+This validates the conservative graph-row builder without touching ClickHouse.
+For full temp-database validation, run the gateway with a temp write database,
+then inspect the generated audit report before enabling writes to `q_live`.

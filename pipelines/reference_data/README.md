@@ -41,12 +41,14 @@ python -m services.reference_gateway.main
 It enforces the rule that any unresolved identity, exchange, conid, or mapping
 issue keeps the affected security out of the tradable universe.
 
-In `--execute` mode, the reference gateway first rebuilds
-`feature_tradable_universe_v1` and `feature_scanner_static_v1` from the
-canonical q_live graph. When active-ticker reconciliation discovers open mapping
-issues, it writes those issues to `id_mapping_issue_v1` and rebuilds the
-tradable/scanner publications again. The audit remains read-only validation; it
-does not directly patch `is_tradable`.
+In `--execute` mode, the reference gateway first closes stale gateway-owned
+issues whose symbols are now valid, then rebuilds `feature_tradable_universe_v1`
+and `feature_scanner_static_v1` from the canonical q_live graph. When
+active-ticker reconciliation discovers open mapping issues, it writes those
+issues to `id_mapping_issue_v1`. When a Massive active ticker is clean, the
+gateway can also insert the new issuer/security/listing/symbol graph rows. It
+then rebuilds the tradable/scanner publications again. The audit remains
+read-only validation; it does not directly patch `is_tradable`.
 
 Initialize the market-publication schema after hours:
 
@@ -84,6 +86,10 @@ daily short-sale volume and SEC fails-to-deliver historical fills. IBKR borrow
 availability is point-in-time only and should be polled into
 `market_security_borrow_v1`; it should not be backfilled as if historical borrow
 availability were known.
+
+The reference gateway can run a recent coverage-aware publication fill after its
+execute-mode audit. Large/manual historical fills should still use the script
+directly with explicit date ranges.
 
 Dry-run mode does not create or alter tables. If the target write database has
 not been initialized, the script reports `schema_missing` and exits after
