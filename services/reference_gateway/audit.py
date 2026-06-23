@@ -57,6 +57,7 @@ def run_reference_audit(config: ReferenceGatewayConfig) -> ReferenceAuditReport:
         check_open_mapping_issues(client, read_database),
         check_unsupported_us_stock_shape(client, read_database),
         check_active_symbols_without_tradable_universe(client, read_database),
+        check_tradable_universe_hard_rule_violations(client, read_database),
         check_tradable_universe_blocked_rows(client, read_database),
         check_market_publication_recency(client, write_database),
     ]
@@ -412,6 +413,91 @@ def check_active_symbols_without_tradable_universe(client: ClickHouseHttpClient,
             if count == 0
             else "Some active candidates are missing from the latest tradable-universe snapshot."
         ),
+    )
+
+
+def check_tradable_universe_hard_rule_violations(client: ClickHouseHttpClient, database: str) -> AuditCheck:
+    rows = query_json_each_row(
+        client,
+        f"""
+        WITH durable_issuers AS
+        (
+            SELECT DISTINCT issuer_id
+            FROM {table(database, 'id_issuer_identifier_v1')} FINAL
+            WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+              AND identifier_value_normalized != ''
+        ),
+        duplicate_issuer_ids AS
+        (
+            SELECT arrayJoin(issuer_ids) AS issuer_id
+            FROM
+            (
+                SELECT groupArray(issuer_id) AS issuer_ids, uniqExact(issuer_id) AS issuer_count
+                FROM {table(database, 'id_issuer_identifier_v1')} FINAL
+                WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+                  AND identifier_value_normalized != ''
+                GROUP BY lower(identifier_kind), identifier_value_normalized
+                HAVING issuer_count > 1
+            )
+        ),
+        open_issue_keys AS
+        (
+            SELECT DISTINCT source_entity_key
+            FROM {table(database, 'id_mapping_issue_v1')} FINAL
+            WHERE lower(issue_status) NOT IN ('resolved', 'closed', 'ignored')
+              AND source_entity_key != ''
+        ),
+        latest_universe AS
+        (
+            SELECT *
+            FROM {table(database, 'feature_tradable_universe_v1')} FINAL
+            WHERE universe_date = (SELECT max(universe_date) FROM {table(database, 'feature_tradable_universe_v1')})
+              AND is_tradable = 1
+        )
+        SELECT violation_reason, count() AS rows
+        FROM
+        (
+            SELECT
+                multiIf(
+                    u.listing_status != 'active', 'inactive_listing',
+                    u.symbol_status != 'active', 'inactive_symbol',
+                    NOT match(ifNull(u.ibkr_conid, ''), '^[1-9][0-9]*$'), 'missing_or_invalid_ibkr_conid',
+                    upper(u.currency_code) != 'USD', 'non_usd_currency',
+                    upper(ifNull(ex.iso_country_code, '')) != 'US', 'non_us_exchange',
+                    upper(u.product_type) NOT IN ('STK', 'STOCK', 'STOCKS'), 'unsupported_product_type',
+                    durable.issuer_id = '', 'weak_issuer_identity',
+                    dup.issuer_id != '', 'duplicate_durable_issuer_identifier',
+                    (
+                        u.symbol_id IN (SELECT source_entity_key FROM open_issue_keys)
+                        OR u.listing_id IN (SELECT source_entity_key FROM open_issue_keys)
+                        OR u.security_id IN (SELECT source_entity_key FROM open_issue_keys)
+                        OR u.issuer_id IN (SELECT source_entity_key FROM open_issue_keys)
+                        OR u.ticker IN (SELECT source_entity_key FROM open_issue_keys)
+                    ), 'open_mapping_issue',
+                    ''
+                ) AS violation_reason
+            FROM latest_universe AS u
+            LEFT JOIN {table(database, 'ref_exchange_v1')} ex FINAL ON ex.exchange_code = u.exchange_code
+            LEFT JOIN durable_issuers AS durable ON durable.issuer_id = u.issuer_id
+            LEFT JOIN duplicate_issuer_ids AS dup ON dup.issuer_id = u.issuer_id
+        )
+        WHERE violation_reason != ''
+        GROUP BY violation_reason
+        ORDER BY rows DESC
+        """,
+    )
+    count = sum(int(row.get("rows") or 0) for row in rows)
+    return AuditCheck(
+        name="tradable_universe_hard_rule_violations",
+        severity="error",
+        status="ok" if count == 0 else "failed",
+        count=count,
+        message=(
+            "Published tradable universe obeys hard tradability rules."
+            if count == 0
+            else "Published tradable universe contains rows that must be non-tradable."
+        ),
+        sample_rows=rows,
     )
 
 

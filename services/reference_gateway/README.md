@@ -32,6 +32,12 @@ relationships are resolved and unambiguous:
 If any of those checks fails, the row remains present for review but must be
 published as `is_tradable = 0` with an `exclusion_reason`.
 
+The current publisher enforces this rule directly in
+`feature_tradable_universe_v1`. Rows with weak issuer identity, duplicate CIK/
+LEI/EIN ownership, non-US exchange country, unsupported product type, invalid
+IBKR conid, or a directly linkable open mapping issue are blocked before they
+can enter scanner/live-trading setup.
+
 ## Ticker And Conid Sync Design
 
 Massive active tickers are source observations, not tradable instructions. A

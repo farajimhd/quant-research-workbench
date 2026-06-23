@@ -251,36 +251,110 @@ WHERE sym.primary_symbol_flag = 1
             insert_sql=f"""
 INSERT INTO {db}.feature_tradable_universe_v1
 (universe_date, symbol_id, listing_id, security_id, issuer_id, ticker, exchange_code, currency_code, ibkr_conid, massive_ticker, product_type, asset_class, listing_status, symbol_status, is_tradable, exclusion_reason, source_run_id, inserted_at)
+WITH durable_issuers AS
+(
+    SELECT DISTINCT issuer_id
+    FROM {db}.id_issuer_identifier_v1 FINAL
+    WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+      AND identifier_value_normalized != ''
+),
+duplicate_issuer_ids AS
+(
+    SELECT arrayJoin(issuer_ids) AS issuer_id
+    FROM
+    (
+        SELECT groupArray(issuer_id) AS issuer_ids, uniqExact(issuer_id) AS issuer_count
+        FROM {db}.id_issuer_identifier_v1 FINAL
+        WHERE lower(identifier_kind) IN ('cik', 'lei', 'ein')
+          AND identifier_value_normalized != ''
+        GROUP BY lower(identifier_kind), identifier_value_normalized
+        HAVING issuer_count > 1
+    )
+),
+open_issue_keys AS
+(
+    SELECT DISTINCT source_entity_key
+    FROM {db}.id_mapping_issue_v1 FINAL
+    WHERE lower(issue_status) NOT IN ('resolved', 'closed', 'ignored')
+      AND source_entity_key != ''
+),
+candidates AS
+(
+    SELECT
+        sym.symbol_id AS symbol_id,
+        l.listing_id AS listing_id,
+        sec.security_id AS security_id,
+        sec.issuer_id AS issuer_id,
+        sym.ticker AS ticker,
+        l.exchange_code AS exchange_code,
+        l.currency_code AS currency_code,
+        l.ibkr_conid AS ibkr_conid,
+        if(sym.source_system = 'market_reference', sym.ticker, CAST(NULL, 'Nullable(String)')) AS massive_ticker,
+        sec.product_type AS product_type,
+        sec.asset_class AS asset_class,
+        l.listing_status AS listing_status,
+        sym.status AS symbol_status,
+        ifNull(ex.iso_country_code, '') AS exchange_country,
+        durable.issuer_id != '' AS has_durable_issuer_id,
+        dup.issuer_id != '' AS has_duplicate_durable_issuer_identifier,
+        (
+            sym.symbol_id IN (SELECT source_entity_key FROM open_issue_keys)
+            OR l.listing_id IN (SELECT source_entity_key FROM open_issue_keys)
+            OR sec.security_id IN (SELECT source_entity_key FROM open_issue_keys)
+            OR sec.issuer_id IN (SELECT source_entity_key FROM open_issue_keys)
+            OR sym.ticker IN (SELECT source_entity_key FROM open_issue_keys)
+        ) AS has_open_mapping_issue
+    FROM {db}.id_symbol_v1 AS sym FINAL
+    INNER JOIN {db}.id_listing_v1 AS l FINAL ON l.listing_id = sym.listing_id
+    INNER JOIN {db}.id_security_v1 AS sec FINAL ON sec.security_id = l.security_id
+    LEFT JOIN {db}.ref_exchange_v1 AS ex FINAL ON ex.exchange_code = l.exchange_code
+    LEFT JOIN durable_issuers AS durable ON durable.issuer_id = sec.issuer_id
+    LEFT JOIN duplicate_issuer_ids AS dup ON dup.issuer_id = sec.issuer_id
+    WHERE sym.primary_symbol_flag = 1
+)
 SELECT
     toDate({literal_feature_date}) AS universe_date,
-    sym.symbol_id,
-    l.listing_id,
-    sec.security_id,
-    sec.issuer_id,
-    sym.ticker,
-    l.exchange_code,
-    l.currency_code,
-    l.ibkr_conid,
-    if(sym.source_system = 'market_reference', sym.ticker, CAST(NULL, 'Nullable(String)')) AS massive_ticker,
-    sec.product_type,
-    sec.asset_class,
-    l.listing_status,
-    sym.status AS symbol_status,
-    if(l.listing_status = 'active' AND sym.status = 'active' AND ifNull(l.ibkr_conid, '') != '' AND l.currency_code = 'USD' AND sec.product_type IN ('STK', 'ETF'), 1, 0) AS is_tradable,
+    symbol_id,
+    listing_id,
+    security_id,
+    issuer_id,
+    ticker,
+    exchange_code,
+    currency_code,
+    ibkr_conid,
+    massive_ticker,
+    product_type,
+    asset_class,
+    listing_status,
+    symbol_status,
+    if(
+        listing_status = 'active'
+        AND symbol_status = 'active'
+        AND match(ifNull(ibkr_conid, ''), '^[1-9][0-9]*$')
+        AND currency_code = 'USD'
+        AND upper(exchange_country) = 'US'
+        AND upper(product_type) IN ('STK', 'STOCK', 'STOCKS')
+        AND has_durable_issuer_id
+        AND NOT has_duplicate_durable_issuer_identifier
+        AND NOT has_open_mapping_issue,
+        1,
+        0
+    ) AS is_tradable,
     multiIf(
-        l.listing_status != 'active', 'inactive_listing',
-        sym.status != 'active', 'inactive_symbol',
-        ifNull(l.ibkr_conid, '') = '', 'missing_ibkr_conid',
-        l.currency_code != 'USD', 'non_usd_currency',
-        sec.product_type NOT IN ('STK', 'ETF'), 'unsupported_product_type',
+        listing_status != 'active', 'inactive_listing',
+        symbol_status != 'active', 'inactive_symbol',
+        NOT match(ifNull(ibkr_conid, ''), '^[1-9][0-9]*$'), 'missing_or_invalid_ibkr_conid',
+        currency_code != 'USD', 'non_usd_currency',
+        upper(exchange_country) != 'US', 'non_us_exchange',
+        upper(product_type) NOT IN ('STK', 'STOCK', 'STOCKS'), 'unsupported_product_type',
+        NOT has_durable_issuer_id, 'weak_issuer_identity',
+        has_duplicate_durable_issuer_identifier, 'duplicate_durable_issuer_identifier',
+        has_open_mapping_issue, 'open_mapping_issue',
         CAST(NULL, 'Nullable(String)')
     ) AS exclusion_reason,
     {literal_run_id} AS source_run_id,
     {inserted_expr} AS inserted_at
-FROM {db}.id_symbol_v1 AS sym
-INNER JOIN {db}.id_listing_v1 AS l ON l.listing_id = sym.listing_id
-INNER JOIN {db}.id_security_v1 AS sec ON sec.security_id = l.security_id
-WHERE sym.primary_symbol_flag = 1
+FROM candidates
 """,
         ),
         BuildSpec(
