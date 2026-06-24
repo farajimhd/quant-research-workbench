@@ -148,3 +148,69 @@ By default, the migration deletes the target accepted-time range from the compac
 tables and waits for ClickHouse mutations before reinserting. This keeps reruns
 idempotent and avoids requiring `FINAL` in the hot training path. Ctrl+C exits
 with status code `130` and writes an interrupted row to the JSONL report.
+
+## Text Token Tables
+
+`clickhouse_build_text_tokens.py` pre-tokenizes news and SEC filing text for
+training. This avoids repeatedly tokenizing the same Benzinga article or SEC
+filing document while materializing rolling batches.
+
+The builder creates two separate tables:
+
+| Table | Partition | Order key | Source |
+| --- | --- | --- | --- |
+| `news_text_tokens` | `toYYYYMM(published_at_utc)` | `(ticker, timestamp_us, source_id)` | `q_live.benzinga_news_ticker_v1` joined to `q_live.benzinga_news_normalized_v1` |
+| `sec_filing_text_tokens` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id, source_id)` | `market_sip_compact.sec_filing_text_context` |
+
+Each row stores source metadata plus fixed-length tokenizer output:
+
+- `input_ids Array(UInt32)`
+- `attention_mask Array(UInt8)`
+- `token_count`
+- `tokenizer_model`
+- `max_tokens`
+- source identifiers and timestamps
+
+The tokenized text starts with explicit metadata lines such as `NEWS` or
+`SEC FILING`, provider/form/ticker/timestamp fields, and then the bounded source
+body. This keeps the modality and provenance visible to the text encoder while
+still using a single tokenizer model.
+
+Run on the workstation:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py --start-date 2019-01-01 --end-date 2026-12-31
+```
+
+Smoke a small range before a full build:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py --start-date 2026-01-02 --end-date 2026-01-02 --limit-rows-per-chunk 1000
+```
+
+Inspect the exact command without running:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py --print-only
+```
+
+Preview DDL/DML without mutating ClickHouse:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py --dry-run --start-date 2026-01-02 --end-date 2026-01-02
+```
+
+Production runs are strict by default: the script fails if the configured
+HuggingFace tokenizer is unavailable. For a local smoke test only, add
+`--allow-fallback-tokenizer` to generate deterministic hash tokens without
+downloading or loading the real model:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py --dry-run --start-date 2026-01-02 --end-date 2026-01-02 --limit-rows-per-chunk 100 --allow-fallback-tokenizer
+```
+
+The script uses `CLICKHOUSE_HISTORICAL_STORAGE_POLICY` by default and writes a
+JSONL report under
+`D:\market-data\prepared\clickhouse_sip_ingest\text_tokens`.
+When `--replace-range` is enabled, it waits for ClickHouse delete mutations
+before inserting replacement token rows.
