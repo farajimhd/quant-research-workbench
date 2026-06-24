@@ -629,6 +629,10 @@ class RollingMarketSampleEngine:
         tag_id = np.zeros((batch, max_items), dtype=np.uint32)
         unit_id = np.zeros((batch, max_items), dtype=np.uint32)
         form_id = np.zeros((batch, max_items), dtype=np.uint32)
+        row_kind_id = np.zeros((batch, max_items), dtype=np.uint8)
+        calendar_period_id = np.zeros((batch, max_items), dtype=np.uint32)
+        location_id = np.zeros((batch, max_items), dtype=np.uint32)
+        mapping_confidence = np.zeros((batch, max_items), dtype=np.float32)
         for sample_index, rows in enumerate(rows_by_sample):
             selected = list(rows)[-max_items:]
             origin_us = int(samples[sample_index].origin_timestamp_us) if sample_index < len(samples) else 0
@@ -644,6 +648,10 @@ class RollingMarketSampleEngine:
                 tag_id[sample_index, item_index] = _stable_uint32(row.get("tag", ""))
                 unit_id[sample_index, item_index] = _stable_uint32(row.get("unit_code", ""))
                 form_id[sample_index, item_index] = _stable_uint32(row.get("form_type", ""))
+                row_kind_id[sample_index, item_index] = 2 if str(row.get("xbrl_row_kind", "")) == "frame_observation" else 1
+                calendar_period_id[sample_index, item_index] = _stable_uint32(row.get("calendar_period_code", ""))
+                location_id[sample_index, item_index] = _stable_uint32(row.get("location_code", ""))
+                mapping_confidence[sample_index, item_index] = _safe_float32(row.get("mapping_confidence_score", 0.0))
         return {
             "mask": mask,
             "timestamp_us": timestamp_us,
@@ -655,6 +663,10 @@ class RollingMarketSampleEngine:
             "tag_id": tag_id,
             "unit_id": unit_id,
             "form_id": form_id,
+            "row_kind_id": row_kind_id,
+            "calendar_period_id": calendar_period_id,
+            "location_id": location_id,
+            "mapping_confidence": mapping_confidence,
         }
 
 
@@ -844,36 +856,74 @@ FORMAT JSONEachRow
         start_expr = _date_time64_from_us(max(0, int(start_timestamp_us) - int(self.config.sec_lookback_days) * 86_400_000_000))
         end_expr = _date_time64_from_us(int(end_timestamp_us))
         query = f"""
-WITH bridges AS
+WITH has_event_bridge AS
 (
-    SELECT DISTINCT
-        cik,
-        ifNull(ticker, '') AS ticker
-    FROM {database}.id_sec_market_bridge_v1
-    WHERE ifNull(ticker, '') IN ({ticker_sql})
-      AND mapping_status = 'active'
+    SELECT count() > 0 AS has_rows
+    FROM {database}.feature_sec_event_market_bridge_v1
 )
-SELECT
-    b.ticker AS ticker,
-    toUnixTimestamp64Micro(f.accepted_at_utc) AS timestamp_us,
-    f.accession_number AS source_id,
-    f.accession_number AS accession_number,
-    f.cik AS cik,
-    f.form_type AS form_type,
-    1.0 AS mapping_confidence_score,
-    f.filing_id AS filing_id,
-    ifNull(f.company_name, '') AS company_name,
-    ifNull(f.primary_document, '') AS primary_document,
-    ifNull(f.primary_document_url, '') AS primary_document_url,
-    ifNull(f.filing_detail_url, '') AS filing_detail_url,
-    ifNull(f.items, '') AS items
-FROM {database}.sec_filing_v2 AS f
-INNER JOIN bridges AS b ON b.cik = f.cik
-WHERE f.accepted_at_utc IS NOT NULL
-  AND f.accepted_at_utc >= {start_expr}
-  AND f.accepted_at_utc <= {end_expr}
-ORDER BY b.ticker, f.accepted_at_utc DESC, f.accession_number
-LIMIT {int(self.config.sec_max_items)} BY b.ticker
+SELECT *
+FROM
+(
+    SELECT
+        ifNull(b.ticker, '') AS ticker,
+        toUnixTimestamp64Micro(b.accepted_at_utc) AS timestamp_us,
+        f.accession_number AS source_id,
+        f.accession_number AS accession_number,
+        f.cik AS cik,
+        f.form_type AS form_type,
+        b.mapping_confidence_score AS mapping_confidence_score,
+        b.bridge_id AS bridge_id,
+        b.security_id AS security_id,
+        b.listing_id AS listing_id,
+        b.symbol_id AS symbol_id,
+        f.filing_id AS filing_id,
+        ifNull(f.company_name, '') AS company_name,
+        ifNull(f.primary_document, '') AS primary_document,
+        ifNull(f.primary_document_url, '') AS primary_document_url,
+        ifNull(f.filing_detail_url, '') AS filing_detail_url,
+        ifNull(f.items, '') AS items
+    FROM {database}.sec_filing_v2 AS f
+    INNER JOIN {database}.feature_sec_event_market_bridge_v1 AS b
+        ON b.cik = f.cik
+       AND b.accession_number = f.accession_number
+    WHERE (SELECT has_rows FROM has_event_bridge)
+      AND ifNull(b.ticker, '') IN ({ticker_sql})
+      AND b.accepted_at_utc >= {start_expr}
+      AND b.accepted_at_utc <= {end_expr}
+    UNION ALL
+    SELECT
+        ifNull(b.ticker, '') AS ticker,
+        toUnixTimestamp64Micro(f.accepted_at_utc) AS timestamp_us,
+        f.accession_number AS source_id,
+        f.accession_number AS accession_number,
+        f.cik AS cik,
+        f.form_type AS form_type,
+        b.confidence_score AS mapping_confidence_score,
+        b.bridge_id AS bridge_id,
+        b.security_id AS security_id,
+        b.listing_id AS listing_id,
+        b.symbol_id AS symbol_id,
+        f.filing_id AS filing_id,
+        ifNull(f.company_name, '') AS company_name,
+        ifNull(f.primary_document, '') AS primary_document,
+        ifNull(f.primary_document_url, '') AS primary_document_url,
+        ifNull(f.filing_detail_url, '') AS filing_detail_url,
+        ifNull(f.items, '') AS items
+    FROM {database}.sec_filing_v2 AS f
+    INNER JOIN {database}.id_sec_market_bridge_v1 AS b
+        ON b.cik = f.cik
+    WHERE NOT (SELECT has_rows FROM has_event_bridge)
+      AND f.accepted_at_utc IS NOT NULL
+      AND ifNull(b.ticker, '') IN ({ticker_sql})
+      AND (b.accession_number IS NULL OR b.accession_number = '' OR b.accession_number = f.accession_number)
+      AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
+      AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
+      AND b.mapping_status IN ('active', 'mapped', 'accepted', '')
+      AND f.accepted_at_utc >= {start_expr}
+      AND f.accepted_at_utc <= {end_expr}
+)
+ORDER BY ticker, timestamp_us DESC, accession_number
+LIMIT {int(self.config.sec_max_items)} BY ticker
 FORMAT JSONEachRow
 """
         filings = [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
@@ -914,36 +964,150 @@ FORMAT JSONEachRow
         start_expr = _date_time64_from_us(max(0, int(start_timestamp_us) - int(self.config.xbrl_lookback_days) * 86_400_000_000), scale=3)
         end_expr = _date_time64_from_us(int(end_timestamp_us), scale=3)
         query = f"""
-WITH bridges AS
+WITH has_event_bridge AS
 (
-    SELECT DISTINCT
-        cik,
-        ifNull(ticker, '') AS ticker
-    FROM {database}.id_sec_market_bridge_v1
-    WHERE ifNull(ticker, '') IN ({ticker_sql})
-      AND mapping_status IN ('active', 'mapped', 'accepted', '')
+    SELECT count() > 0 AS has_rows
+    FROM {database}.feature_sec_event_market_bridge_v1
 )
-SELECT
-    b.ticker AS ticker,
-    toUnixTimestamp64Micro(coalesce(f.filed_at_utc, f.recorded_at_utc)) AS timestamp_us,
-    f.company_fact_id AS source_id,
-    f.cik AS cik,
-    f.issuer_id AS issuer_id,
-    f.taxonomy AS taxonomy,
-    f.tag AS tag,
-    f.unit_code AS unit_code,
-    ifNull(f.fiscal_year, 0) AS fiscal_year,
-    ifNull(f.fiscal_period, '') AS fiscal_period,
-    ifNull(f.form_type, '') AS form_type,
-    ifNull(f.accession_number, '') AS accession_number,
-    f.period_end_date AS period_end_date,
-    f.value AS value
-FROM {database}.sec_xbrl_company_fact_v1 AS f
-INNER JOIN bridges AS b ON b.cik = f.cik
-WHERE coalesce(f.filed_at_utc, f.recorded_at_utc) >= {start_expr}
-  AND coalesce(f.filed_at_utc, f.recorded_at_utc) <= {end_expr}
-ORDER BY b.ticker, timestamp_us DESC, f.taxonomy, f.tag, f.unit_code
-LIMIT {int(self.config.xbrl_max_items)} BY b.ticker
+SELECT *
+FROM
+(
+    SELECT
+        ifNull(b.ticker, '') AS ticker,
+        toUnixTimestamp64Micro(b.accepted_at_utc) AS timestamp_us,
+        x.company_fact_id AS source_id,
+        x.cik AS cik,
+        x.issuer_id AS issuer_id,
+        x.taxonomy AS taxonomy,
+        x.tag AS tag,
+        x.unit_code AS unit_code,
+        ifNull(x.fiscal_year, 0) AS fiscal_year,
+        ifNull(x.fiscal_period, '') AS fiscal_period,
+        ifNull(x.form_type, '') AS form_type,
+        ifNull(x.accession_number, '') AS accession_number,
+        x.period_end_date AS period_end_date,
+        x.value AS value,
+        '' AS calendar_period_code,
+        '' AS location_code,
+        'company_fact' AS xbrl_row_kind,
+        b.bridge_id AS bridge_id,
+        b.mapping_confidence_score AS mapping_confidence_score
+    FROM {database}.sec_xbrl_company_fact_v1 AS x
+    INNER JOIN {database}.feature_sec_event_market_bridge_v1 AS b
+        ON b.cik = x.cik
+       AND b.accession_number = x.accession_number
+    WHERE (SELECT has_rows FROM has_event_bridge)
+      AND ifNull(b.ticker, '') IN ({ticker_sql})
+      AND x.accession_number IS NOT NULL
+      AND x.accession_number != ''
+      AND b.accepted_at_utc >= {start_expr}
+      AND b.accepted_at_utc <= {end_expr}
+    UNION ALL
+    SELECT
+        ifNull(b.ticker, '') AS ticker,
+        toUnixTimestamp64Micro(f.accepted_at_utc) AS timestamp_us,
+        x.company_fact_id AS source_id,
+        x.cik AS cik,
+        x.issuer_id AS issuer_id,
+        x.taxonomy AS taxonomy,
+        x.tag AS tag,
+        x.unit_code AS unit_code,
+        ifNull(x.fiscal_year, 0) AS fiscal_year,
+        ifNull(x.fiscal_period, '') AS fiscal_period,
+        ifNull(x.form_type, '') AS form_type,
+        ifNull(x.accession_number, '') AS accession_number,
+        x.period_end_date AS period_end_date,
+        x.value AS value,
+        '' AS calendar_period_code,
+        '' AS location_code,
+        'company_fact' AS xbrl_row_kind,
+        b.bridge_id AS bridge_id,
+        b.confidence_score AS mapping_confidence_score
+    FROM {database}.sec_xbrl_company_fact_v1 AS x
+    INNER JOIN {database}.sec_filing_v2 AS f
+        ON f.cik = x.cik
+       AND f.accession_number = x.accession_number
+    INNER JOIN {database}.id_sec_market_bridge_v1 AS b
+        ON b.cik = x.cik
+    WHERE NOT (SELECT has_rows FROM has_event_bridge)
+      AND x.accession_number IS NOT NULL
+      AND x.accession_number != ''
+      AND f.accepted_at_utc IS NOT NULL
+      AND ifNull(b.ticker, '') IN ({ticker_sql})
+      AND (b.accession_number IS NULL OR b.accession_number = '' OR b.accession_number = x.accession_number)
+      AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
+      AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
+      AND b.mapping_status IN ('active', 'mapped', 'accepted', '')
+      AND f.accepted_at_utc >= {start_expr}
+      AND f.accepted_at_utc <= {end_expr}
+    UNION ALL
+    SELECT
+        ifNull(b.ticker, '') AS ticker,
+        toUnixTimestamp64Micro(b.accepted_at_utc) AS timestamp_us,
+        o.frame_observation_id AS source_id,
+        o.cik AS cik,
+        o.issuer_id AS issuer_id,
+        o.taxonomy AS taxonomy,
+        o.tag AS tag,
+        o.unit_code AS unit_code,
+        toUInt32(0) AS fiscal_year,
+        '' AS fiscal_period,
+        '' AS form_type,
+        o.accession_number AS accession_number,
+        o.period_end_date AS period_end_date,
+        o.value AS value,
+        o.calendar_period_code AS calendar_period_code,
+        ifNull(o.location_code, '') AS location_code,
+        'frame_observation' AS xbrl_row_kind,
+        b.bridge_id AS bridge_id,
+        b.mapping_confidence_score AS mapping_confidence_score
+    FROM {database}.sec_xbrl_frame_observation_v1 AS o
+    INNER JOIN {database}.feature_sec_event_market_bridge_v1 AS b
+        ON b.cik = o.cik
+       AND b.accession_number = o.accession_number
+    WHERE (SELECT has_rows FROM has_event_bridge)
+      AND ifNull(b.ticker, '') IN ({ticker_sql})
+      AND b.accepted_at_utc >= {start_expr}
+      AND b.accepted_at_utc <= {end_expr}
+    UNION ALL
+    SELECT
+        ifNull(b.ticker, '') AS ticker,
+        toUnixTimestamp64Micro(f.accepted_at_utc) AS timestamp_us,
+        o.frame_observation_id AS source_id,
+        o.cik AS cik,
+        o.issuer_id AS issuer_id,
+        o.taxonomy AS taxonomy,
+        o.tag AS tag,
+        o.unit_code AS unit_code,
+        toUInt32(0) AS fiscal_year,
+        '' AS fiscal_period,
+        '' AS form_type,
+        o.accession_number AS accession_number,
+        o.period_end_date AS period_end_date,
+        o.value AS value,
+        o.calendar_period_code AS calendar_period_code,
+        ifNull(o.location_code, '') AS location_code,
+        'frame_observation' AS xbrl_row_kind,
+        b.bridge_id AS bridge_id,
+        b.confidence_score AS mapping_confidence_score
+    FROM {database}.sec_xbrl_frame_observation_v1 AS o
+    INNER JOIN {database}.sec_filing_v2 AS f
+        ON f.cik = o.cik
+       AND f.accession_number = o.accession_number
+    INNER JOIN {database}.id_sec_market_bridge_v1 AS b
+        ON b.cik = o.cik
+    WHERE NOT (SELECT has_rows FROM has_event_bridge)
+      AND f.accepted_at_utc IS NOT NULL
+      AND ifNull(b.ticker, '') IN ({ticker_sql})
+      AND (b.accession_number IS NULL OR b.accession_number = '' OR b.accession_number = o.accession_number)
+      AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
+      AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
+      AND b.mapping_status IN ('active', 'mapped', 'accepted', '')
+      AND f.accepted_at_utc >= {start_expr}
+      AND f.accepted_at_utc <= {end_expr}
+)
+ORDER BY ticker, timestamp_us DESC, xbrl_row_kind, taxonomy, tag, unit_code, period_end_date
+LIMIT {int(self.config.xbrl_max_items)} BY ticker
 FORMAT JSONEachRow
 """
         return [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]

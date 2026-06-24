@@ -174,6 +174,10 @@ def smoke_rolling_provider() -> None:
                 "unit_code": "USD",
                 "fiscal_year": 2026,
                 "form_type": "10-Q",
+                "xbrl_row_kind": "company_fact",
+                "calendar_period_code": "CY2026Q1",
+                "location_code": "",
+                "mapping_confidence_score": 0.95,
                 "period_end_date": "2026-03-31",
                 "value": "1234567.89",
             }
@@ -197,6 +201,8 @@ def smoke_rolling_provider() -> None:
     assert batch.text_inputs["sec_filings"]["attention_mask"].shape == (8, config.sec_max_items, config.text_max_tokens)
     assert batch.xbrl_inputs["value"].shape == (8, config.xbrl_max_items)
     assert batch.xbrl_inputs["mask"].shape == (8, config.xbrl_max_items)
+    assert batch.xbrl_inputs["row_kind_id"].shape == (8, config.xbrl_max_items)
+    assert batch.xbrl_inputs["mapping_confidence"].shape == (8, config.xbrl_max_items)
     lookup = {}
     for sample_index, ticker in enumerate(batch.ticker.tolist()):
         for origin in batch.chunk_origin_ordinal[sample_index].tolist():
