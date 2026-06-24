@@ -149,6 +149,7 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
             f"chunks={int(batch.context_mask.sum()):,} seconds={metrics.get('rolling_training/total_seconds', 0.0):.3f} "
             f"samples_per_sec={metrics.get('rolling_training/samples_per_second', 0.0):.1f} "
             f"labels={len(batch.labels)} macro={len(batch.macro_features)} global={len(batch.global_features)} "
+            f"text={_shape_summary(batch.text_inputs)} xbrl={_shape_summary(batch.xbrl_inputs)} "
             f"external={len(batch.external_context)} shape_headers={tuple(batch.headers_uint8.shape)} "
             f"shape_events={tuple(batch.events_uint8.shape)}",
             flush=True,
@@ -179,6 +180,8 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
         "macro_feature_count": int(len(materialized[0].macro_features)) if materialized else 0,
         "global_feature_count": int(len(materialized[0].global_features)) if materialized else 0,
         "external_context_count": int(len(materialized[0].external_context)) if materialized else 0,
+        "text_inputs": _json_shape_summary(materialized[0].text_inputs) if materialized else {},
+        "xbrl_inputs": _json_shape_summary(materialized[0].xbrl_inputs) if materialized else {},
     }
     if args.report_path is not None:
         write_profile_jsonl(args.report_path, payload)
@@ -195,6 +198,29 @@ def _fake_embedding_lookup(batch) -> dict[tuple[str, int], np.ndarray]:
                 continue
             lookup[(str(ticker).upper(), int(origin))] = rng.normal(0.0, 0.01, size=(32,)).astype(np.float32)
     return lookup
+
+
+def _shape_summary(value) -> str:
+    summary = _json_shape_summary(value)
+    if not summary:
+        return "{}"
+    parts = []
+    for key, shape in summary.items():
+        parts.append(f"{key}:{shape}")
+    return "{" + ", ".join(parts[:6]) + ("..." if len(parts) > 6 else "") + "}"
+
+
+def _json_shape_summary(value) -> dict[str, tuple[int, ...]]:
+    out: dict[str, tuple[int, ...]] = {}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(item, dict):
+                for sub_key, sub_item in item.items():
+                    if hasattr(sub_item, "shape"):
+                        out[f"{key}.{sub_key}"] = tuple(int(dim) for dim in sub_item.shape)
+            elif hasattr(item, "shape"):
+                out[str(key)] = tuple(int(dim) for dim in item.shape)
+    return out
 
 
 def event_time_bounds(rows_by_ticker) -> tuple[int, int]:

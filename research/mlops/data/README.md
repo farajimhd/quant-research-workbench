@@ -65,8 +65,10 @@ production:
    - metadata arrays for ticker, origin ordinal, origin timestamp, and chunk origins
    - `macro_features`: as-of ticker bars plus current session prefix features
    - `global_features`: as-of bars for configured market symbols
-   - `external_context`: as-of news/SEC/XBRL/fundamental payloads when configured
-   - `labels`: strict-future bars from configured label timeframes
+   - `text_inputs`: Qwen-ready token tensors for news and SEC filing text
+   - `xbrl_inputs`: tensorized SEC XBRL fact rows
+   - `external_context`: raw as-of payloads retained for audit/debugging
+   - `labels`: strict-future macro bars plus same-queue intraday future bars
 5. Production materialization uses the same sample indices but gathers cached
    encoder embeddings instead of re-encoding windows.
 
@@ -83,6 +85,27 @@ new day from losing long-context chunks.
 Macro/global context is loaded through `macro_bars_by_time_symbol` by default.
 It is always as-of the sample origin timestamp.
 
+Macro ticker features describe the sample ticker itself. For every configured
+macro timeframe (`1d`, `1w`, `1mo`, `1y` by default), the provider returns the
+latest bar at or before the origin:
+
+- `open`, `high`, `low`, `close`
+- `volume`, `dollar_volume`, `trade_count`, `quote_count`
+- `vwap`
+
+The same `macro_features` dictionary also includes current-session prefix
+features computed from the in-memory event queue up to the origin with no
+lookahead:
+
+- latest quote state: bid, ask, spread, mid, bid/ask sizes, quote count so far
+- latest trade state: last trade price/size
+- session trade state so far: high, low, volume, trade count, vwap
+
+Global features use the same as-of bar fields for configured market symbols
+(`SPY`, `QQQ`, `IWM`, `DIA` by default). Keys are prefixed by symbol, for
+example `SPY_1d_close` or `QQQ_1w_volume`. These are intended to give the
+temporal model broad market state without leaking future bars.
+
 The default multimodal context comes from concrete `q_live` tables:
 
 - news: `benzinga_news_ticker_v1` joined to `benzinga_news_normalized_v1` by
@@ -98,11 +121,42 @@ fundamental rows cannot leak into features. Extra sources can still be added
 with `ExternalAsOfContextConfig`; its `timestamp_unit` supports microseconds,
 nanoseconds, milliseconds, and seconds.
 
-Future labels are separate from features. They use the first bar whose
-`bar_start` is after the sample origin for each configured `label_timeframes`
-entry. The default bar query uses a 40-day macro lookback and a 400-day label
-lookahead so daily, weekly, monthly, and yearly labels can be populated from the
-same bar table.
+Text context is materialized into model-ready Qwen inputs:
+
+- `text_inputs["news"]["input_ids"]`: `[batch, news_max_items, text_max_tokens]`
+- `text_inputs["news"]["attention_mask"]`: same shape, `uint8`
+- `text_inputs["news"]["item_mask"]`: `[batch, news_max_items]`
+- `text_inputs["sec_filings"]["input_ids"]`: `[batch, sec_max_items, text_max_tokens]`
+- `text_inputs["sec_filings"]["attention_mask"]`: same shape, `uint8`
+- `text_inputs["sec_filings"]["item_mask"]`: `[batch, sec_max_items]`
+
+The default tokenizer model is `Qwen/Qwen3-0.6B`. By default the loader uses
+local tokenizer files if present and falls back to a deterministic hash
+tokenizer for smoke tests. Set `strict_text_tokenizer=True` when a training run
+must fail unless the real Qwen tokenizer is available.
+
+XBRL context is materialized into fixed tensors:
+
+- `xbrl_inputs["mask"]`: `[batch, xbrl_max_items]`
+- `xbrl_inputs["timestamp_us"]`: `[batch, xbrl_max_items]`
+- `xbrl_inputs["value"]`: `[batch, xbrl_max_items]`
+- `xbrl_inputs["fiscal_year"]`, `age_days`, `period_end_days`
+- stable categorical ids for `taxonomy`, `tag`, `unit_code`, and `form_type`
+
+Future labels are separate from features. They include:
+
+- macro future bars from the first bar whose `bar_start` is after the sample
+  origin for each configured `label_timeframes` entry
+- intraday future bars computed from the current in-memory event queue for
+  `100ms`, `250ms`, `500ms`, `750ms`, `1s`, `5s`, `10s`, `30s`, `60s`, `120s`,
+  `180s`, `300s`, `600s`, `1200s`, `1800s`, `3600s`, `7200s`, `3h`, `4h`, and
+  `5h`
+
+Intraday label keys use the prefix `future_intraday_bar_` and include
+`has_trade`, `open`, `high`, `low`, `close`, `volume`, and `trade_count`.
+Macro label keys use the prefix `future_`. The default bar query uses a 40-day
+macro lookback and a 400-day label lookahead so daily, weekly, monthly, and
+yearly labels can be populated from the same bar table.
 
 ## Profiling
 

@@ -148,6 +148,37 @@ def smoke_rolling_provider() -> None:
         )
     )
     engine.load_external_context("news", [{"ticker": "T0000", "timestamp_ns": 1_700_000_000_001_000_000, "id": "n1", "headline": "test"}])
+    engine.load_external_context(
+        "sec_filings",
+        [
+            {
+                "ticker": "T0000",
+                "timestamp_us": 1_700_000_000_001_000,
+                "source_id": "sec1",
+                "form_type": "10-Q",
+                "company_name": "Test Company",
+                "items": "Item 2",
+                "texts": [{"text_kind": "body", "text": "Management discussion text"}],
+            }
+        ],
+    )
+    engine.load_external_context(
+        "xbrl",
+        [
+            {
+                "ticker": "T0000",
+                "timestamp_us": 1_700_000_000_001_000,
+                "source_id": "x1",
+                "taxonomy": "us-gaap",
+                "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+                "unit_code": "USD",
+                "fiscal_year": 2026,
+                "form_type": "10-Q",
+                "period_end_date": "2026-03-31",
+                "value": "1234567.89",
+            }
+        ],
+    )
     samples = engine.build_ready_indices()
     assert len(samples) == 16
     assert len(samples[0].chunk_windows) == len(config.context_lags)
@@ -160,7 +191,12 @@ def smoke_rolling_provider() -> None:
     assert "session_trade_count_so_far" in batch.macro_features
     assert "SPY_1d_close" in batch.global_features
     assert "future_1d_close" in batch.labels
+    assert "future_intraday_bar_100ms_high" in batch.labels
     assert "news" in batch.external_context
+    assert batch.text_inputs["news"]["input_ids"].shape == (8, config.news_max_items, config.text_max_tokens)
+    assert batch.text_inputs["sec_filings"]["attention_mask"].shape == (8, config.sec_max_items, config.text_max_tokens)
+    assert batch.xbrl_inputs["value"].shape == (8, config.xbrl_max_items)
+    assert batch.xbrl_inputs["mask"].shape == (8, config.xbrl_max_items)
     lookup = {}
     for sample_index, ticker in enumerate(batch.ticker.tolist()):
         for origin in batch.chunk_origin_ordinal[sample_index].tolist():

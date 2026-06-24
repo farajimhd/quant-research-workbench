@@ -92,6 +92,30 @@ DEFAULT_SHORT_TIME_BAR_HORIZONS: tuple[TimeBarHorizon, ...] = (
 )
 
 
+DEFAULT_INTRADAY_LABEL_HORIZONS: tuple[TimeBarHorizon, ...] = (
+    TimeBarHorizon("100ms", 100_000),
+    TimeBarHorizon("250ms", 250_000),
+    TimeBarHorizon("500ms", 500_000),
+    TimeBarHorizon("750ms", 750_000),
+    TimeBarHorizon("1s", 1_000_000),
+    TimeBarHorizon("5s", 5_000_000),
+    TimeBarHorizon("10s", 10_000_000),
+    TimeBarHorizon("30s", 30_000_000),
+    TimeBarHorizon("60s", 60_000_000),
+    TimeBarHorizon("120s", 120_000_000),
+    TimeBarHorizon("180s", 180_000_000),
+    TimeBarHorizon("300s", 300_000_000),
+    TimeBarHorizon("600s", 600_000_000),
+    TimeBarHorizon("1200s", 1_200_000_000),
+    TimeBarHorizon("1800s", 1_800_000_000),
+    TimeBarHorizon("3600s", 3_600_000_000),
+    TimeBarHorizon("7200s", 7_200_000_000),
+    TimeBarHorizon("3h", 10_800_000_000),
+    TimeBarHorizon("4h", 14_400_000_000),
+    TimeBarHorizon("5h", 18_000_000_000),
+)
+
+
 @dataclass(frozen=True, slots=True)
 class TickerBlockDataConfig:
     """Configuration for chronological multi-ticker block training data.
@@ -178,6 +202,11 @@ class RollingMarketDataConfig:
     sec_max_items: int = 16
     xbrl_lookback_days: int = 730
     xbrl_max_items: int = 64
+    intraday_label_horizons: tuple[TimeBarHorizon, ...] = field(default_factory=lambda: DEFAULT_INTRADAY_LABEL_HORIZONS)
+    text_tokenizer_model: str = "Qwen/Qwen3-0.6B"
+    text_max_tokens: int = 512
+    text_tokenizer_local_files_only: bool = True
+    strict_text_tokenizer: bool = False
     seed: int = 17
     external_contexts: tuple[ExternalAsOfContextConfig, ...] = ()
 

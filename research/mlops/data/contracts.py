@@ -187,6 +187,8 @@ class RollingTrainingBatch:
     - `headers_uint8`: `[batch, context_chunks, 14]`
     - `events_uint8`: `[batch, context_chunks, 128, 16]`
     - `context_mask`: `[batch, context_chunks]`
+    - `text_inputs[*]["input_ids"]`: `[batch, max_items, text_tokens]`
+    - `xbrl_inputs[*]`: `[batch, xbrl_max_items]`
     """
 
     headers_uint8: np.ndarray
@@ -199,6 +201,8 @@ class RollingTrainingBatch:
     chunk_origin_timestamp_us: np.ndarray
     macro_features: dict[str, np.ndarray] = field(default_factory=dict)
     global_features: dict[str, np.ndarray] = field(default_factory=dict)
+    text_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
+    xbrl_inputs: dict[str, np.ndarray] = field(default_factory=dict)
     external_context: dict[str, Any] = field(default_factory=dict)
     labels: dict[str, np.ndarray] = field(default_factory=dict)
     profile: Any | None = None
@@ -211,6 +215,8 @@ class RollingProductionBatch:
     Shapes:
     - `market_embeddings`: `[batch, context_chunks, embedding_dim]`
     - `market_mask`: `[batch, context_chunks]`
+    - `text_inputs[*]["input_ids"]`: `[batch, max_items, text_tokens]`
+    - `xbrl_inputs[*]`: `[batch, xbrl_max_items]`
     """
 
     market_embeddings: np.ndarray
@@ -218,6 +224,8 @@ class RollingProductionBatch:
     samples: tuple[RollingSampleIndex, ...]
     macro_features: dict[str, np.ndarray] = field(default_factory=dict)
     global_features: dict[str, np.ndarray] = field(default_factory=dict)
+    text_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
+    xbrl_inputs: dict[str, np.ndarray] = field(default_factory=dict)
     external_context: dict[str, Any] = field(default_factory=dict)
     profile: Any | None = None
 

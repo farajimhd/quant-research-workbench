@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import datetime as dt
+import hashlib
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +24,7 @@ from research.mlops.data.contracts import (
 )
 from research.mlops.data.market_events import events_to_rows
 from research.mlops.data.profiling import DataPrepProfile, DataPrepProfiler
+from research.mlops.data.ticker_blocks import build_future_time_bar_labels
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +157,54 @@ class RollingEmbeddingCache:
         return self._values
 
 
+class _TextTokenizerAdapter:
+    """Qwen tokenizer wrapper with a deterministic offline fallback.
+
+    Training should use the configured Qwen tokenizer so text tensors are ready
+    for the selected text encoder. The fallback keeps smoke tests and profiling
+    runnable on machines where the model files are not cached yet; it is stable
+    but is not a substitute for production tokenization.
+    """
+
+    def __init__(self, config: RollingMarketDataConfig) -> None:
+        self.max_tokens = max(1, int(config.text_max_tokens))
+        self.model_name = str(config.text_tokenizer_model)
+        self.tokenizer: Any | None = None
+        try:
+            from transformers import AutoTokenizer  # type: ignore
+
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name,
+                trust_remote_code=True,
+                local_files_only=bool(config.text_tokenizer_local_files_only),
+            )
+        except Exception as exc:
+            if bool(config.strict_text_tokenizer):
+                raise RuntimeError(f"Could not load tokenizer {self.model_name!r}") from exc
+            self.tokenizer = None
+
+    def encode(self, texts: list[str]) -> dict[str, np.ndarray]:
+        if not texts:
+            return {
+                "input_ids": np.zeros((0, self.max_tokens), dtype=np.int32),
+                "attention_mask": np.zeros((0, self.max_tokens), dtype=np.uint8),
+            }
+        if self.tokenizer is not None:
+            encoded = self.tokenizer(
+                texts,
+                max_length=self.max_tokens,
+                truncation=True,
+                padding="max_length",
+                return_attention_mask=True,
+                return_tensors=None,
+            )
+            return {
+                "input_ids": np.asarray(encoded["input_ids"], dtype=np.int32),
+                "attention_mask": np.asarray(encoded["attention_mask"], dtype=np.uint8),
+            }
+        return _fallback_tokenize(texts, max_tokens=self.max_tokens)
+
+
 class RollingMarketSampleEngine:
     """Shared rolling event engine for training replay and production serving.
 
@@ -185,6 +237,7 @@ class RollingMarketSampleEngine:
                 for source in config.external_contexts
             },
         }
+        self._text_tokenizer = _TextTokenizerAdapter(config)
 
     @property
     def context_lags(self) -> tuple[int, ...]:
@@ -347,11 +400,14 @@ class RollingMarketSampleEngine:
         macro_features, global_features = self._materialize_bar_features(sample_tuple)
         session_features = self._materialize_session_features(sample_tuple)
         labels = self._materialize_future_labels(sample_tuple)
+        labels.update(self._materialize_intraday_future_labels(sample_tuple))
         macro_features.update(session_features)
         external = {
             name: [store.asof(ticker=sample.ticker, timestamp_us=sample.origin_timestamp_us) for sample in sample_tuple]
             for name, store in self.external_contexts.items()
         }
+        text_inputs = self._materialize_text_inputs(external)
+        xbrl_inputs = self._materialize_xbrl_inputs(sample_tuple, external)
         profile = profiler.finish()
         profile.rows_read = int(sum(len(sample.chunk_windows) * self.config.events_per_chunk for sample in sample_tuple))
         profile.chunks_created = int(mask.sum())
@@ -369,6 +425,8 @@ class RollingMarketSampleEngine:
             chunk_origin_timestamp_us=chunk_origin_ts,
             macro_features=macro_features,
             global_features=global_features,
+            text_inputs=text_inputs,
+            xbrl_inputs=xbrl_inputs,
             external_context=external,
             labels=labels,
             profile=profile,
@@ -399,6 +457,8 @@ class RollingMarketSampleEngine:
             name: [store.asof(ticker=sample.ticker, timestamp_us=sample.origin_timestamp_us) for sample in sample_tuple]
             for name, store in self.external_contexts.items()
         }
+        text_inputs = self._materialize_text_inputs(external)
+        xbrl_inputs = self._materialize_xbrl_inputs(sample_tuple, external)
         profile = profiler.finish()
         profile.samples_created = len(sample_tuple)
         profile.embeddings_created = int(mask.sum())
@@ -409,6 +469,8 @@ class RollingMarketSampleEngine:
             samples=sample_tuple,
             macro_features=macro_features,
             global_features=global_features,
+            text_inputs=text_inputs,
+            xbrl_inputs=xbrl_inputs,
             external_context=external,
             profile=profile,
         )
@@ -455,6 +517,55 @@ class RollingMarketSampleEngine:
         ]
         return {f"future_{key}": value for key, value in _rows_to_feature_arrays(rows).items()}
 
+    def _materialize_intraday_future_labels(self, samples: tuple[RollingSampleIndex, ...]) -> dict[str, np.ndarray]:
+        """Future same-queue trade bars for short horizons.
+
+        These labels are derived from the current in-memory event queue, so they
+        line up with production stream semantics. They intentionally complement
+        the macro future labels above, which come from offline daily/weekly/monthly
+        bars.
+        """
+
+        batch = len(samples)
+        labels: dict[str, np.ndarray] = {}
+        if batch == 0:
+            return labels
+        for horizon in self.config.intraday_label_horizons:
+            prefix = f"future_intraday_bar_{horizon.name}"
+            labels[f"{prefix}_has_trade"] = np.zeros((batch,), dtype=np.uint8)
+            labels[f"{prefix}_open"] = np.zeros((batch,), dtype=np.float32)
+            labels[f"{prefix}_high"] = np.zeros((batch,), dtype=np.float32)
+            labels[f"{prefix}_low"] = np.zeros((batch,), dtype=np.float32)
+            labels[f"{prefix}_close"] = np.zeros((batch,), dtype=np.float32)
+            labels[f"{prefix}_volume"] = np.zeros((batch,), dtype=np.float32)
+            labels[f"{prefix}_trade_count"] = np.zeros((batch,), dtype=np.uint32)
+
+        by_ticker: dict[str, list[tuple[int, int]]] = {}
+        for batch_index, sample in enumerate(samples):
+            ticker_rows = self.rows_by_ticker.get(sample.ticker)
+            if ticker_rows is None or ticker_rows.size == 0:
+                continue
+            origin_offset = int(sample.origin_ordinal) - int(ticker_rows["ordinal"][0])
+            if 0 <= origin_offset < ticker_rows.shape[0]:
+                by_ticker.setdefault(sample.ticker, []).append((batch_index, origin_offset))
+
+        for ticker, indexed_offsets in by_ticker.items():
+            ticker_rows = self.rows_by_ticker.get(ticker)
+            if ticker_rows is None or ticker_rows.size == 0:
+                continue
+            batch_indices = np.asarray([item[0] for item in indexed_offsets], dtype=np.int64)
+            origin_offsets = np.asarray([item[1] for item in indexed_offsets], dtype=np.int64)
+            ticker_labels = build_future_time_bar_labels(
+                rows=ticker_rows,
+                origin_offsets=origin_offsets,
+                horizons=tuple(self.config.intraday_label_horizons),
+            )
+            for source_key, values in ticker_labels.items():
+                target_key = source_key.replace("future_bar_", "future_intraday_bar_", 1)
+                if target_key in labels:
+                    labels[target_key][batch_indices] = values
+        return labels
+
     def _materialize_session_features(self, samples: tuple[RollingSampleIndex, ...]) -> dict[str, np.ndarray]:
         rows: list[dict[str, float]] = []
         for sample in samples:
@@ -469,6 +580,82 @@ class RollingMarketSampleEngine:
                 continue
             rows.append(_session_features_from_prefix(ticker_rows[: origin_offset + 1]))
         return _rows_to_feature_arrays(rows)
+
+    def _materialize_text_inputs(self, external: Mapping[str, list[list[dict[str, Any]]]]) -> dict[str, dict[str, np.ndarray]]:
+        out: dict[str, dict[str, np.ndarray]] = {}
+        for name, max_items in (("news", self.config.news_max_items), ("sec_filings", self.config.sec_max_items)):
+            rows_by_sample = external.get(name)
+            if rows_by_sample is None:
+                continue
+            batch = len(rows_by_sample)
+            max_items = int(max_items)
+            texts: list[str] = []
+            source_ts = np.zeros((batch, max_items), dtype=np.int64)
+            item_mask = np.zeros((batch, max_items), dtype=np.bool_)
+            for sample_index, rows in enumerate(rows_by_sample):
+                selected = list(rows)[-max_items:]
+                for item_index, row in enumerate(selected):
+                    texts.append(_row_to_model_text(name, row))
+                    source_ts[sample_index, item_index] = int(row.get("timestamp_us", 0) or 0)
+                    item_mask[sample_index, item_index] = True
+                for _ in range(max_items - len(selected)):
+                    texts.append("")
+            encoded = self._text_tokenizer.encode(texts)
+            out[name] = {
+                "input_ids": encoded["input_ids"].reshape(batch, max_items, -1),
+                "attention_mask": encoded["attention_mask"].reshape(batch, max_items, -1),
+                "item_mask": item_mask,
+                "timestamp_us": source_ts,
+            }
+        return out
+
+    def _materialize_xbrl_inputs(
+        self,
+        samples: tuple[RollingSampleIndex, ...],
+        external: Mapping[str, list[list[dict[str, Any]]]],
+    ) -> dict[str, np.ndarray]:
+        rows_by_sample = external.get("xbrl")
+        if rows_by_sample is None:
+            return {}
+        batch = len(rows_by_sample)
+        max_items = int(self.config.xbrl_max_items)
+        mask = np.zeros((batch, max_items), dtype=np.bool_)
+        timestamp_us = np.zeros((batch, max_items), dtype=np.int64)
+        value = np.zeros((batch, max_items), dtype=np.float32)
+        fiscal_year = np.zeros((batch, max_items), dtype=np.int16)
+        age_days = np.zeros((batch, max_items), dtype=np.float32)
+        period_end_days = np.zeros((batch, max_items), dtype=np.int32)
+        taxonomy_id = np.zeros((batch, max_items), dtype=np.uint32)
+        tag_id = np.zeros((batch, max_items), dtype=np.uint32)
+        unit_id = np.zeros((batch, max_items), dtype=np.uint32)
+        form_id = np.zeros((batch, max_items), dtype=np.uint32)
+        for sample_index, rows in enumerate(rows_by_sample):
+            selected = list(rows)[-max_items:]
+            origin_us = int(samples[sample_index].origin_timestamp_us) if sample_index < len(samples) else 0
+            for item_index, row in enumerate(selected):
+                row_ts = int(row.get("timestamp_us", 0) or 0)
+                mask[sample_index, item_index] = True
+                timestamp_us[sample_index, item_index] = row_ts
+                value[sample_index, item_index] = _safe_float32(row.get("value", 0.0))
+                fiscal_year[sample_index, item_index] = int(row.get("fiscal_year", 0) or 0)
+                age_days[sample_index, item_index] = max(0.0, float(origin_us - row_ts) / 86_400_000_000.0) if origin_us and row_ts else 0.0
+                period_end_days[sample_index, item_index] = _date_to_epoch_day(row.get("period_end_date"))
+                taxonomy_id[sample_index, item_index] = _stable_uint32(row.get("taxonomy", ""))
+                tag_id[sample_index, item_index] = _stable_uint32(row.get("tag", ""))
+                unit_id[sample_index, item_index] = _stable_uint32(row.get("unit_code", ""))
+                form_id[sample_index, item_index] = _stable_uint32(row.get("form_type", ""))
+        return {
+            "mask": mask,
+            "timestamp_us": timestamp_us,
+            "value": value,
+            "fiscal_year": fiscal_year,
+            "age_days": age_days,
+            "period_end_days": period_end_days,
+            "taxonomy_id": taxonomy_id,
+            "tag_id": tag_id,
+            "unit_id": unit_id,
+            "form_id": form_id,
+        }
 
 
 class HistoricalClickHouseRollingSource:
@@ -837,6 +1024,74 @@ def _rows_to_feature_arrays(rows: list[dict[str, float]]) -> dict[str, np.ndarra
         return {}
     keys = sorted({key for row in rows for key in row})
     return {key: np.asarray([float(row.get(key, 0.0) or 0.0) for row in rows], dtype=np.float32) for key in keys}
+
+
+def _fallback_tokenize(texts: list[str], *, max_tokens: int) -> dict[str, np.ndarray]:
+    input_ids = np.zeros((len(texts), int(max_tokens)), dtype=np.int32)
+    attention_mask = np.zeros((len(texts), int(max_tokens)), dtype=np.uint8)
+    for row_index, text in enumerate(texts):
+        tokens = re.findall(r"\w+|[^\w\s]", str(text).lower(), flags=re.UNICODE)[: int(max_tokens)]
+        for token_index, token in enumerate(tokens):
+            input_ids[row_index, token_index] = int(_stable_uint32(token) % 151_936) + 1
+            attention_mask[row_index, token_index] = 1
+    return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+
+def _row_to_model_text(name: str, row: Mapping[str, Any]) -> str:
+    if name == "news":
+        parts = [
+            str(row.get("title", "") or ""),
+            str(row.get("teaser", "") or ""),
+            str(row.get("text", "") or ""),
+        ]
+        return "\n".join(part for part in parts if part).strip()
+    if name == "sec_filings":
+        heading = " ".join(
+            str(row.get(key, "") or "")
+            for key in ("form_type", "company_name", "items", "primary_document")
+            if row.get(key)
+        )
+        texts = row.get("texts") or []
+        body_parts: list[str] = []
+        if isinstance(texts, list):
+            for text_row in texts:
+                if isinstance(text_row, Mapping):
+                    kind = str(text_row.get("text_kind", "") or "")
+                    body = str(text_row.get("text", "") or "")
+                    body_parts.append(f"{kind}\n{body}" if kind else body)
+        return "\n".join(part for part in [heading, *body_parts] if part).strip()
+    payload = row.get("text") or row.get("headline") or row.get("title") or ""
+    return str(payload)
+
+
+def _stable_uint32(value: Any) -> int:
+    text = str(value or "")
+    if not text:
+        return 0
+    digest = hashlib.blake2b(text.encode("utf-8", errors="ignore"), digest_size=4).digest()
+    return int.from_bytes(digest, "little", signed=False)
+
+
+def _safe_float32(value: Any) -> np.float32:
+    try:
+        parsed = float(value)
+    except Exception:
+        parsed = 0.0
+    if not np.isfinite(parsed):
+        parsed = 0.0
+    return np.float32(parsed)
+
+
+def _date_to_epoch_day(value: Any) -> int:
+    if value is None:
+        return 0
+    text = str(value)
+    if not text or text.startswith("0000-"):
+        return 0
+    try:
+        return (dt.date.fromisoformat(text[:10]) - dt.date(1970, 1, 1)).days
+    except Exception:
+        return 0
 
 
 def _fill_empty_bar_values(out: dict[str, float], prefix: str) -> None:
