@@ -177,6 +177,7 @@ def smoke_rolling_provider() -> None:
                 "xbrl_row_kind": "company_fact",
                 "calendar_period_code": "CY2026Q1",
                 "location_code": "",
+                "accepted_at_source": "submissions_bulk_recent",
                 "mapping_confidence_score": 0.95,
                 "period_end_date": "2026-03-31",
                 "value": "1234567.89",
@@ -202,6 +203,7 @@ def smoke_rolling_provider() -> None:
     assert batch.xbrl_inputs["value"].shape == (8, config.xbrl_max_items)
     assert batch.xbrl_inputs["mask"].shape == (8, config.xbrl_max_items)
     assert batch.xbrl_inputs["row_kind_id"].shape == (8, config.xbrl_max_items)
+    assert batch.xbrl_inputs["accepted_at_source_id"].shape == (8, config.xbrl_max_items)
     assert batch.xbrl_inputs["mapping_confidence"].shape == (8, config.xbrl_max_items)
     lookup = {}
     for sample_index, ticker in enumerate(batch.ticker.tolist()):

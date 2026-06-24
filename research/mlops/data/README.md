@@ -114,11 +114,12 @@ The default multimodal context comes from concrete `q_live` tables:
   when populated, otherwise a validity-window fallback through
   `id_sec_market_bridge_v1`; filings come from `sec_filing_v2`, bounded text
   snippets from `sec_filing_text_v2`, and the as-of timestamp is the filing
-  `accepted_at_utc`
+  `accepted_at_utc`. Rows whose `accepted_at_utc` is null or whose
+  `accepted_at_source` is only date-derived are excluded from model features.
 - XBRL fundamentals: the same ticker-event mapping rule; numeric company facts
   come from `sec_xbrl_company_fact_v1` and frame observations from
   `sec_xbrl_frame_observation_v1`; the as-of timestamp is the related filing
-  `accepted_at_utc`
+  `accepted_at_utc`, with the same exact-source filter.
 
 Every row is normalized to `timestamp_us` and the materializer only returns
 items with `timestamp_us <= sample_origin_timestamp_us`, so future text or
@@ -149,6 +150,8 @@ XBRL context is materialized into fixed tensors:
 - stable categorical ids for `taxonomy`, `tag`, `unit_code`, and `form_type`
 - `row_kind_id`, where `1` is a company fact and `2` is a frame observation
 - stable categorical ids for `calendar_period_code` and `location_code`
+- `accepted_at_source_id` so downstream audits can distinguish submissions,
+  header, and archive acceptance-time sources
 - `mapping_confidence` from the SEC-event-to-market bridge
 
 Future labels are separate from features. They include:

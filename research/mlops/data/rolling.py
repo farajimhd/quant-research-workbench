@@ -632,6 +632,7 @@ class RollingMarketSampleEngine:
         row_kind_id = np.zeros((batch, max_items), dtype=np.uint8)
         calendar_period_id = np.zeros((batch, max_items), dtype=np.uint32)
         location_id = np.zeros((batch, max_items), dtype=np.uint32)
+        accepted_at_source_id = np.zeros((batch, max_items), dtype=np.uint32)
         mapping_confidence = np.zeros((batch, max_items), dtype=np.float32)
         for sample_index, rows in enumerate(rows_by_sample):
             selected = list(rows)[-max_items:]
@@ -651,6 +652,7 @@ class RollingMarketSampleEngine:
                 row_kind_id[sample_index, item_index] = 2 if str(row.get("xbrl_row_kind", "")) == "frame_observation" else 1
                 calendar_period_id[sample_index, item_index] = _stable_uint32(row.get("calendar_period_code", ""))
                 location_id[sample_index, item_index] = _stable_uint32(row.get("location_code", ""))
+                accepted_at_source_id[sample_index, item_index] = _stable_uint32(row.get("accepted_at_source", ""))
                 mapping_confidence[sample_index, item_index] = _safe_float32(row.get("mapping_confidence_score", 0.0))
         return {
             "mask": mask,
@@ -666,6 +668,7 @@ class RollingMarketSampleEngine:
             "row_kind_id": row_kind_id,
             "calendar_period_id": calendar_period_id,
             "location_id": location_id,
+            "accepted_at_source_id": accepted_at_source_id,
             "mapping_confidence": mapping_confidence,
         }
 
@@ -855,6 +858,7 @@ FORMAT JSONEachRow
         ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
         start_expr = _date_time64_from_us(max(0, int(start_timestamp_us) - int(self.config.sec_lookback_days) * 86_400_000_000))
         end_expr = _date_time64_from_us(int(end_timestamp_us))
+        exact_source_filter = _exact_sec_accepted_at_source_filter("f")
         query = f"""
 WITH has_event_bridge AS
 (
@@ -871,6 +875,7 @@ FROM
         f.accession_number AS accession_number,
         f.cik AS cik,
         f.form_type AS form_type,
+        f.accepted_at_source AS accepted_at_source,
         b.mapping_confidence_score AS mapping_confidence_score,
         b.bridge_id AS bridge_id,
         b.security_id AS security_id,
@@ -888,6 +893,7 @@ FROM
        AND b.accession_number = f.accession_number
     WHERE (SELECT has_rows FROM has_event_bridge)
       AND ifNull(b.ticker, '') IN ({ticker_sql})
+      AND {exact_source_filter}
       AND b.accepted_at_utc >= {start_expr}
       AND b.accepted_at_utc <= {end_expr}
     UNION ALL
@@ -898,6 +904,7 @@ FROM
         f.accession_number AS accession_number,
         f.cik AS cik,
         f.form_type AS form_type,
+        f.accepted_at_source AS accepted_at_source,
         b.confidence_score AS mapping_confidence_score,
         b.bridge_id AS bridge_id,
         b.security_id AS security_id,
@@ -914,6 +921,7 @@ FROM
         ON b.cik = f.cik
     WHERE NOT (SELECT has_rows FROM has_event_bridge)
       AND f.accepted_at_utc IS NOT NULL
+      AND {exact_source_filter}
       AND ifNull(b.ticker, '') IN ({ticker_sql})
       AND (b.accession_number IS NULL OR b.accession_number = '' OR b.accession_number = f.accession_number)
       AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
@@ -963,6 +971,7 @@ FORMAT JSONEachRow
         ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
         start_expr = _date_time64_from_us(max(0, int(start_timestamp_us) - int(self.config.xbrl_lookback_days) * 86_400_000_000), scale=3)
         end_expr = _date_time64_from_us(int(end_timestamp_us), scale=3)
+        exact_source_filter = _exact_sec_accepted_at_source_filter("f")
         query = f"""
 WITH has_event_bridge AS
 (
@@ -984,6 +993,7 @@ FROM
         ifNull(x.fiscal_year, 0) AS fiscal_year,
         ifNull(x.fiscal_period, '') AS fiscal_period,
         ifNull(x.form_type, '') AS form_type,
+        f.accepted_at_source AS accepted_at_source,
         ifNull(x.accession_number, '') AS accession_number,
         x.period_end_date AS period_end_date,
         x.value AS value,
@@ -993,6 +1003,9 @@ FROM
         b.bridge_id AS bridge_id,
         b.mapping_confidence_score AS mapping_confidence_score
     FROM {database}.sec_xbrl_company_fact_v1 AS x
+    INNER JOIN {database}.sec_filing_v2 AS f
+        ON f.cik = x.cik
+       AND f.accession_number = x.accession_number
     INNER JOIN {database}.feature_sec_event_market_bridge_v1 AS b
         ON b.cik = x.cik
        AND b.accession_number = x.accession_number
@@ -1000,6 +1013,7 @@ FROM
       AND ifNull(b.ticker, '') IN ({ticker_sql})
       AND x.accession_number IS NOT NULL
       AND x.accession_number != ''
+      AND {exact_source_filter}
       AND b.accepted_at_utc >= {start_expr}
       AND b.accepted_at_utc <= {end_expr}
     UNION ALL
@@ -1015,6 +1029,7 @@ FROM
         ifNull(x.fiscal_year, 0) AS fiscal_year,
         ifNull(x.fiscal_period, '') AS fiscal_period,
         ifNull(x.form_type, '') AS form_type,
+        f.accepted_at_source AS accepted_at_source,
         ifNull(x.accession_number, '') AS accession_number,
         x.period_end_date AS period_end_date,
         x.value AS value,
@@ -1033,6 +1048,7 @@ FROM
       AND x.accession_number IS NOT NULL
       AND x.accession_number != ''
       AND f.accepted_at_utc IS NOT NULL
+      AND {exact_source_filter}
       AND ifNull(b.ticker, '') IN ({ticker_sql})
       AND (b.accession_number IS NULL OR b.accession_number = '' OR b.accession_number = x.accession_number)
       AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
@@ -1053,6 +1069,7 @@ FROM
         toUInt32(0) AS fiscal_year,
         '' AS fiscal_period,
         '' AS form_type,
+        f.accepted_at_source AS accepted_at_source,
         o.accession_number AS accession_number,
         o.period_end_date AS period_end_date,
         o.value AS value,
@@ -1062,11 +1079,15 @@ FROM
         b.bridge_id AS bridge_id,
         b.mapping_confidence_score AS mapping_confidence_score
     FROM {database}.sec_xbrl_frame_observation_v1 AS o
+    INNER JOIN {database}.sec_filing_v2 AS f
+        ON f.cik = o.cik
+       AND f.accession_number = o.accession_number
     INNER JOIN {database}.feature_sec_event_market_bridge_v1 AS b
         ON b.cik = o.cik
        AND b.accession_number = o.accession_number
     WHERE (SELECT has_rows FROM has_event_bridge)
       AND ifNull(b.ticker, '') IN ({ticker_sql})
+      AND {exact_source_filter}
       AND b.accepted_at_utc >= {start_expr}
       AND b.accepted_at_utc <= {end_expr}
     UNION ALL
@@ -1082,6 +1103,7 @@ FROM
         toUInt32(0) AS fiscal_year,
         '' AS fiscal_period,
         '' AS form_type,
+        f.accepted_at_source AS accepted_at_source,
         o.accession_number AS accession_number,
         o.period_end_date AS period_end_date,
         o.value AS value,
@@ -1098,6 +1120,7 @@ FROM
         ON b.cik = o.cik
     WHERE NOT (SELECT has_rows FROM has_event_bridge)
       AND f.accepted_at_utc IS NOT NULL
+      AND {exact_source_filter}
       AND ifNull(b.ticker, '') IN ({ticker_sql})
       AND (b.accession_number IS NULL OR b.accession_number = '' OR b.accession_number = o.accession_number)
       AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
@@ -1359,6 +1382,24 @@ def _timestamp_us_to_source_unit(timestamp_us: int, config: ExternalAsOfContextC
     if unit in {"s", "sec", "second", "seconds"}:
         return int(timestamp_us) // 1_000_000
     return int(timestamp_us)
+
+
+def _exact_sec_accepted_at_source_filter(alias: str) -> str:
+    column = f"{alias}.accepted_at_source"
+    exact_sources = (
+        "submissions_bulk",
+        "submissions_bulk_recent",
+        "submissions_bulk_fragment",
+        "submissions_recent",
+        "accession_header_hdr_sgml",
+        "archive_acceptance_datetime",
+    )
+    sources_sql = ", ".join(sql_string(source) for source in exact_sources)
+    return (
+        f"({column} IN ({sources_sql}) "
+        f"OR (startsWith(toString({column}), 'submissions_bulk_') "
+        f"AND endsWith(toString({column}), '_fallback_repair')))"
+    )
 
 
 def _date_time64_from_us(timestamp_us: int, *, scale: int = 9) -> str:
