@@ -28,6 +28,11 @@ instead of implementing one-off loaders.
 
 - `StreamingReplayBatchProvider`: production-compatible replay. It processes
   events in order through rolling state and should be the correctness baseline.
+- `RollingMarketSampleEngine`: production-aligned event-queue strategy. It keeps
+  one continuous queue per ticker, appends historical ClickHouse day blocks or
+  live qmd events, creates short plus sparse-long 128-event chunk indices, and
+  then materializes either raw compact chunks for training or cached embeddings
+  for production.
 - `PolarsTickerBlockBatchProvider`: bounded in-memory ticker block strategy. It
   uses Polars for sorting when available and emits the same batch contract.
 - `ClickHouseTickerBlockBatchProvider`: chronological multi-ticker block
@@ -38,10 +43,44 @@ instead of implementing one-off loaders.
 
 Additional providers can be added without changing model code:
 
-- ClickHouse block provider
 - embedding-cache provider
 - live qmd/market-ai provider
 - news/SEC/fundamental replay providers
+
+## Rolling Training/Production Loader
+
+The rolling loader is the main path for temporal-model data because it mirrors
+production:
+
+1. Each ticker has one ordered event queue.
+2. A new historical day or live stream append extends the queue.
+3. The sample-index builder creates chunk windows from the same rule used in
+   serving:
+   - base chunk: 128 consecutive events ending at an origin event
+   - recent context: dense chunk origins such as `0,1,2,...`
+   - older context: sparse lags such as `32,48,72,...,1850`
+4. Training materialization returns:
+   - `headers_uint8`: `[batch, context_chunks, 14]`
+   - `events_uint8`: `[batch, context_chunks, 128, 16]`
+   - metadata arrays for ticker, origin ordinal, origin timestamp, and chunk origins
+5. Production materialization uses the same sample indices but gathers cached
+   encoder embeddings instead of re-encoding windows.
+
+The carryover rule is explicit:
+
+```text
+carryover_events = max_context_lag + events_per_chunk - 1
+```
+
+With the default farthest lag of `1850`, every ticker queue keeps at least
+`1977` prior events across day boundaries. This prevents the first samples of a
+new day from losing long-context chunks.
+
+Macro/global context is loaded through `macro_bars_by_time_symbol` by default.
+It is always as-of the sample origin timestamp. Generic news/SEC/XBRL context
+sources can be configured with `ExternalAsOfContextConfig`; the loader only
+returns rows with timestamps at or before the origin, so future text or
+fundamental rows cannot leak into features.
 
 ## Profiling
 
@@ -72,6 +111,24 @@ Workstation runtime equivalent:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\data\run_profile_ticker_block_provider.py --synthetic --synthetic-tickers 16 --ticker-group-size 4 --events-per-ticker-block 20000 --sample-stride-events 16 --batches 4
+```
+
+Profile the production-aligned rolling provider locally without ClickHouse:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\data\run_profile_rolling_provider.py --synthetic --synthetic-tickers 16 --synthetic-events 8000 --batch-size 1024 --materialize-batches 2 --profile-production-gather
+```
+
+Workstation runtime equivalent:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\data\run_profile_rolling_provider.py --synthetic --synthetic-tickers 16 --synthetic-events 8000 --batch-size 1024 --materialize-batches 2 --profile-production-gather
+```
+
+Profile against ClickHouse for a real trading day:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\data\run_profile_rolling_provider.py --database market_sip_compact --events-table events --macro-bars-table macro_bars_by_time_symbol --index-table train_2019_to_2025 --event-date 2025-01-02 --ticker-limit 64 --batch-size 4096 --materialize-batches 2 --sample-stride-events 1 --max-threads 8 --max-memory-usage 80G --profile-production-gather --report-path D:\market-data\prepared\data_provider_profiles\rolling_provider_profile.jsonl
 ```
 
 Profile against ClickHouse:

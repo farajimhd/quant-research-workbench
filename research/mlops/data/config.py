@@ -117,3 +117,71 @@ class TickerBlockDataConfig:
     seed: int = 17
     state_path: Path | None = None
     horizons: tuple[TimeBarHorizon, ...] = field(default_factory=lambda: DEFAULT_SHORT_TIME_BAR_HORIZONS)
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalAsOfContextConfig:
+    """Generic as-of context source for news, SEC filings, XBRL, or globals.
+
+    These tables are not all finalized yet, so the loader keeps the schema
+    configurable. A source is valid for a training sample only when
+    `timestamp_column <= sample_origin_timestamp`; this keeps future text or
+    fundamental rows out of model features.
+    """
+
+    name: str
+    table: str = ""
+    ticker_column: str = "ticker"
+    timestamp_column: str = "timestamp_us"
+    id_column: str = "id"
+    payload_columns: tuple[str, ...] = ()
+    max_items: int = 32
+    max_age_microseconds: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RollingMarketDataConfig:
+    """Production-aligned rolling sample provider configuration.
+
+    The same chunk-index logic is used for live serving and historical
+    training. Training materializes raw compact event chunks so the encoder can
+    be fine-tuned. Production usually materializes cached embeddings for those
+    same chunk origins.
+    """
+
+    database: str = "market_sip_compact"
+    events_table: str = "events"
+    macro_bars_table: str = "macro_bars_by_time_symbol"
+    index_table: str = "train_2019_to_2025"
+    events_per_chunk: int = 128
+    header_bytes: int = 14
+    event_bytes: int = 16
+    short_context_chunks: int = 16
+    short_context_stride_chunks: int = 1
+    long_context_lags: tuple[int, ...] = (32, 48, 72, 108, 162, 243, 365, 548, 822, 1233, 1850)
+    sample_stride_events: int = 1
+    batch_size: int = 4096
+    max_ready_samples: int = 0
+    max_threads: int = 8
+    max_memory_usage: str = "80G"
+    global_symbols: tuple[str, ...] = ("SPY", "QQQ", "IWM", "DIA")
+    macro_timeframes: tuple[str, ...] = ("1d", "1w", "1mo", "1y")
+    seed: int = 17
+    external_contexts: tuple[ExternalAsOfContextConfig, ...] = ()
+
+    @property
+    def context_lags(self) -> tuple[int, ...]:
+        dense = range(
+            0,
+            max(0, int(self.short_context_chunks)) * max(1, int(self.short_context_stride_chunks)),
+            max(1, int(self.short_context_stride_chunks)),
+        )
+        return tuple(sorted(set(int(value) for value in dense).union(int(value) for value in self.long_context_lags)))
+
+    @property
+    def max_context_lag(self) -> int:
+        return max(self.context_lags, default=0)
+
+    @property
+    def carryover_events(self) -> int:
+        return int(self.max_context_lag) + int(self.events_per_chunk) - 1

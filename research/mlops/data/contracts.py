@@ -144,6 +144,84 @@ class MultiModalTemporalBatch:
     profile: Any | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ChunkWindowIndex:
+    """One 128-event chunk reference inside a temporal sample.
+
+    `lag_chunks` is measured in already-available chunk origins. A lag of zero
+    is the current chunk ending at the sample origin. Higher lags point to
+    older chunk origins and are used for longer market context.
+    """
+
+    ticker: str
+    lag_chunks: int
+    start_ordinal: int
+    end_ordinal: int
+    origin_ordinal: int
+    origin_timestamp_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class RollingSampleIndex:
+    """A production-compatible temporal sample pointer.
+
+    Training uses this to materialize raw compact chunks and run the encoder
+    inside the training graph. Production uses the same indices to gather
+    already-cached embeddings and avoid repeated encoder inference.
+    """
+
+    ticker: str
+    origin_ordinal: int
+    origin_timestamp_us: int
+    chunk_windows: tuple[ChunkWindowIndex, ...]
+    macro_asof_timestamp_us: int
+    global_asof_timestamp_us: int
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class RollingTrainingBatch:
+    """Materialized compact chunks for encoder-in-the-loop training.
+
+    Shapes:
+    - `headers_uint8`: `[batch, context_chunks, 14]`
+    - `events_uint8`: `[batch, context_chunks, 128, 16]`
+    - `context_mask`: `[batch, context_chunks]`
+    """
+
+    headers_uint8: np.ndarray
+    events_uint8: np.ndarray
+    context_mask: np.ndarray
+    ticker: np.ndarray
+    origin_ordinal: np.ndarray
+    origin_timestamp_us: np.ndarray
+    chunk_origin_ordinal: np.ndarray
+    chunk_origin_timestamp_us: np.ndarray
+    macro_features: dict[str, np.ndarray] = field(default_factory=dict)
+    global_features: dict[str, np.ndarray] = field(default_factory=dict)
+    external_context: dict[str, Any] = field(default_factory=dict)
+    labels: dict[str, np.ndarray] = field(default_factory=dict)
+    profile: Any | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RollingProductionBatch:
+    """Materialized embedding contexts for live inference.
+
+    Shapes:
+    - `market_embeddings`: `[batch, context_chunks, embedding_dim]`
+    - `market_mask`: `[batch, context_chunks]`
+    """
+
+    market_embeddings: np.ndarray
+    market_mask: np.ndarray
+    samples: tuple[RollingSampleIndex, ...]
+    macro_features: dict[str, np.ndarray] = field(default_factory=dict)
+    global_features: dict[str, np.ndarray] = field(default_factory=dict)
+    external_context: dict[str, Any] = field(default_factory=dict)
+    profile: Any | None = None
+
+
 class WindowEncoder(Protocol):
     def encode_window(self, events: Sequence[CompactEvent], *, previous_sip_us: int | None = None) -> tuple[np.ndarray, np.ndarray]:
         """Encode exactly one fixed-size market event window into bytes."""
@@ -152,4 +230,3 @@ class WindowEncoder(Protocol):
 class EncoderModel(Protocol):
     def encode(self, headers_uint8: np.ndarray, events_uint8: np.ndarray) -> np.ndarray:
         """Return embeddings for a market encoder batch."""
-

@@ -10,9 +10,10 @@ if str(REPO_ROOT) not in sys.path:
 import numpy as np
 
 from research.mlops.data.audit import audit_temporal_batch
-from research.mlops.data.config import DataProviderConfig, MarketStreamConfig, TickerBlockDataConfig
+from research.mlops.data.config import DataProviderConfig, MarketStreamConfig, RollingMarketDataConfig, TickerBlockDataConfig
 from research.mlops.data.providers import StreamingReplayBatchProvider
 from research.mlops.data.replay import iter_replay_batches
+from research.mlops.data.rolling import RollingMarketSampleEngine, synthetic_rows_by_ticker
 from research.mlops.data.sources import InMemoryEventSource
 from research.mlops.data.ticker_blocks import TickerCursor, TickerEpochScheduler, build_event_time_bar_batch, build_requests, make_synthetic_event_rows
 from research.mlops.data.contracts import CompactEvent
@@ -57,6 +58,7 @@ def make_synthetic_events(count: int = 1024, *, ticker: str = "TEST") -> tuple[C
 def main() -> int:
     smoke_streaming_replay()
     smoke_ticker_blocks()
+    smoke_rolling_provider()
     return 0
 
 
@@ -123,6 +125,56 @@ def smoke_ticker_blocks() -> None:
         f"samples={batch.header_uint8.shape[0]} labels={len(batch.labels)} "
         f"samples_per_sec={batch.profile.samples_per_second():.1f}"
     )
+
+
+def smoke_rolling_provider() -> None:
+    config = RollingMarketDataConfig(
+        short_context_chunks=4,
+        long_context_lags=(8, 16),
+        sample_stride_events=32,
+        batch_size=8,
+        max_ready_samples=16,
+    )
+    engine = RollingMarketSampleEngine(config)
+    engine.append_rows_by_ticker(synthetic_rows_by_ticker(tickers=2, rows_per_ticker=1024))
+    samples = engine.build_ready_indices()
+    assert len(samples) == 16
+    assert len(samples[0].chunk_windows) == len(config.context_lags)
+    assert samples[0].chunk_windows[0].end_ordinal - samples[0].chunk_windows[0].start_ordinal == 127
+    batch = engine.materialize_training_batch(samples[:8])
+    assert batch.headers_uint8.shape == (8, len(config.context_lags), 14)
+    assert batch.events_uint8.shape == (8, len(config.context_lags), 128, 16)
+    assert bool(batch.context_mask.all())
+    lookup = {}
+    for sample_index, ticker in enumerate(batch.ticker.tolist()):
+        for origin in batch.chunk_origin_ordinal[sample_index].tolist():
+            lookup[(ticker, int(origin))] = np.ones((32,), dtype=np.float32)
+    prod = engine.materialize_production_batch(samples[:8], lookup)
+    assert prod.market_embeddings.shape == (8, len(config.context_lags), 32)
+    assert bool(prod.market_mask.all())
+    engine.mark_processed(samples[:8])
+    engine.trim_processed_tails()
+    assert all(rows.shape[0] >= config.carryover_events for rows in engine.rows_by_ticker.values())
+    print(
+        "rolling_provider_smoke_ok "
+        f"samples={len(samples)} context_chunks={len(config.context_lags)} "
+        f"carryover={config.carryover_events}"
+    )
+    live_config = RollingMarketDataConfig(
+        short_context_chunks=2,
+        long_context_lags=(),
+        sample_stride_events=64,
+        batch_size=4,
+        max_ready_samples=4,
+    )
+    live_engine = RollingMarketSampleEngine(live_config)
+    live_engine.append_compact_events(make_synthetic_events(384, ticker="LIVE"))
+    live_samples = live_engine.build_ready_indices()
+    assert len(live_samples) == 4
+    live_batch = live_engine.materialize_training_batch(live_samples)
+    assert live_batch.headers_uint8.shape == (4, 2, 14)
+    assert live_batch.events_uint8.shape == (4, 2, 128, 16)
+    print(f"rolling_live_append_smoke_ok samples={len(live_samples)}")
 
 
 if __name__ == "__main__":
