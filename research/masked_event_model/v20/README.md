@@ -161,6 +161,24 @@ python research\masked_event_model\v20\train_full_pretrain_mixed_cache.py
 Use `--print-only` to inspect the fully expanded trainer command before
 starting the run. Use `--repeatable-randomness` only for deterministic replay.
 
+After `cache_pretrain_xonly_20260621_140813` has enough x-only shards, continue
+from the latest mixed-cache checkpoint using only that cache:
+
+```powershell
+python research\masked_event_model\v20\train_full_pretrain_xonly_continue.py
+```
+
+This defaults to the first 100 x-only train shards, the same validation cache,
+3 epochs, base LR `4e-4`, non-repeatable randomness, BF16 AMP, compile enabled,
+and warm-starts from:
+
+```text
+\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\masked_event_model\v20\pretrain\v20-fullpretrain-mixedcache-fixedmask070-emb32-bs8192-lr4e4-3epochs-freshrng-from-step260352\checkpoints\checkpoint_latest.pt
+```
+
+Use `--print-only` before starting a long run if you want to inspect the exact
+expanded trainer arguments and discovered shard counts.
+
 By default this v20 launcher uses BF16 AMP and keeps the cheaper MLP decoder inside the active AMP
 dtype. To run the explicit FP16 decoder experiment:
 
