@@ -858,78 +858,53 @@ FORMAT JSONEachRow
         ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
         start_expr = _date_time64_from_us(max(0, int(start_timestamp_us) - int(self.config.sec_lookback_days) * 86_400_000_000))
         end_expr = _date_time64_from_us(int(end_timestamp_us))
-        exact_source_filter = _exact_sec_accepted_at_source_filter("f")
         query = f"""
-WITH has_event_bridge AS
-(
-    SELECT count() > 0 AS has_rows
-    FROM {database}.feature_sec_event_market_bridge_v1
-)
-SELECT *
-FROM
+WITH bridge AS
 (
     SELECT
-        ifNull(b.ticker, '') AS ticker,
-        toUnixTimestamp64Micro(b.accepted_at_utc) AS timestamp_us,
-        f.accession_number AS source_id,
-        f.accession_number AS accession_number,
-        f.cik AS cik,
-        f.form_type AS form_type,
-        f.accepted_at_source AS accepted_at_source,
-        b.mapping_confidence_score AS mapping_confidence_score,
-        b.bridge_id AS bridge_id,
-        b.security_id AS security_id,
-        b.listing_id AS listing_id,
-        b.symbol_id AS symbol_id,
-        f.filing_id AS filing_id,
-        ifNull(f.company_name, '') AS company_name,
-        ifNull(f.primary_document, '') AS primary_document,
-        ifNull(f.primary_document_url, '') AS primary_document_url,
-        ifNull(f.filing_detail_url, '') AS filing_detail_url,
-        ifNull(f.items, '') AS items
-    FROM {database}.sec_filing_v2 AS f
-    INNER JOIN {database}.feature_sec_event_market_bridge_v1 AS b
-        ON b.cik = f.cik
-       AND b.accession_number = f.accession_number
-    WHERE (SELECT has_rows FROM has_event_bridge)
-      AND ifNull(b.ticker, '') IN ({ticker_sql})
-      AND {exact_source_filter}
-      AND b.accepted_at_utc >= {start_expr}
-      AND b.accepted_at_utc <= {end_expr}
-    UNION ALL
-    SELECT
-        ifNull(b.ticker, '') AS ticker,
-        toUnixTimestamp64Micro(f.accepted_at_utc) AS timestamp_us,
-        f.accession_number AS source_id,
-        f.accession_number AS accession_number,
-        f.cik AS cik,
-        f.form_type AS form_type,
-        f.accepted_at_source AS accepted_at_source,
-        b.confidence_score AS mapping_confidence_score,
-        b.bridge_id AS bridge_id,
-        b.security_id AS security_id,
-        b.listing_id AS listing_id,
-        b.symbol_id AS symbol_id,
-        f.filing_id AS filing_id,
-        ifNull(f.company_name, '') AS company_name,
-        ifNull(f.primary_document, '') AS primary_document,
-        ifNull(f.primary_document_url, '') AS primary_document_url,
-        ifNull(f.filing_detail_url, '') AS filing_detail_url,
-        ifNull(f.items, '') AS items
-    FROM {database}.sec_filing_v2 AS f
-    INNER JOIN {database}.id_sec_market_bridge_v1 AS b
-        ON b.cik = f.cik
-    WHERE NOT (SELECT has_rows FROM has_event_bridge)
-      AND f.accepted_at_utc IS NOT NULL
-      AND {exact_source_filter}
-      AND ifNull(b.ticker, '') IN ({ticker_sql})
-      AND (b.accession_number IS NULL OR b.accession_number = '' OR b.accession_number = f.accession_number)
-      AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
-      AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
-      AND b.mapping_status IN ('active', 'mapped', 'accepted', '')
-      AND f.accepted_at_utc >= {start_expr}
-      AND f.accepted_at_utc <= {end_expr}
+        ifNull(ticker, '') AS ticker,
+        cik,
+        ifNull(accession_number, '') AS accession_number,
+        valid_from_date,
+        valid_to_date_exclusive,
+        any(bridge_id) AS bridge_id,
+        any(security_id) AS security_id,
+        any(listing_id) AS listing_id,
+        any(symbol_id) AS symbol_id,
+        max(confidence_score) AS confidence_score
+    FROM {database}.id_sec_market_bridge_v1
+    WHERE ifNull(ticker, '') IN ({ticker_sql})
+      AND mapping_status IN ('active', 'mapped', 'accepted', '')
+    GROUP BY ticker, cik, accession_number, valid_from_date, valid_to_date_exclusive
 )
+SELECT
+    b.ticker AS ticker,
+    toUnixTimestamp64Micro(f.accepted_at_utc) AS timestamp_us,
+    f.accession_number AS source_id,
+    f.accession_number AS accession_number,
+    f.cik AS cik,
+    f.form_type AS form_type,
+    f.accepted_at_source AS accepted_at_source,
+    b.confidence_score AS mapping_confidence_score,
+    b.bridge_id AS bridge_id,
+    b.security_id AS security_id,
+    b.listing_id AS listing_id,
+    b.symbol_id AS symbol_id,
+    f.filing_id AS filing_id,
+    ifNull(f.company_name, '') AS company_name,
+    ifNull(f.primary_document, '') AS primary_document,
+    ifNull(f.primary_document_url, '') AS primary_document_url,
+    ifNull(f.filing_detail_url, '') AS filing_detail_url,
+    ifNull(f.items, '') AS items
+FROM {database}.sec_filing_v2 AS f FINAL
+INNER JOIN bridge AS b
+    ON b.cik = f.cik
+WHERE f.accepted_at_utc IS NOT NULL
+  AND (b.accession_number = '' OR b.accession_number = f.accession_number)
+  AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
+  AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
+  AND f.accepted_at_utc >= {start_expr}
+  AND f.accepted_at_utc <= {end_expr}
 ORDER BY ticker, timestamp_us DESC, accession_number
 LIMIT {int(self.config.sec_max_items)} BY ticker
 FORMAT JSONEachRow
@@ -953,7 +928,7 @@ SELECT
     substring(text, 1, 16000) AS text,
     text_char_count,
     quality_flags
-FROM {database}.sec_filing_text_v2
+FROM {database}.sec_filing_text_v2 FINAL
 PREWHERE (cik, accession_number) IN ({pair_sql})
 ORDER BY cik, accession_number, text_kind, document_id
 LIMIT 2 BY cik, accession_number
@@ -971,54 +946,27 @@ FORMAT JSONEachRow
         ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
         start_expr = _date_time64_from_us(max(0, int(start_timestamp_us) - int(self.config.xbrl_lookback_days) * 86_400_000_000), scale=3)
         end_expr = _date_time64_from_us(int(end_timestamp_us), scale=3)
-        exact_source_filter = _exact_sec_accepted_at_source_filter("f")
         query = f"""
-WITH has_event_bridge AS
+WITH bridge AS
 (
-    SELECT count() > 0 AS has_rows
-    FROM {database}.feature_sec_event_market_bridge_v1
+    SELECT
+        ifNull(ticker, '') AS ticker,
+        cik,
+        ifNull(accession_number, '') AS accession_number,
+        valid_from_date,
+        valid_to_date_exclusive,
+        any(bridge_id) AS bridge_id,
+        max(confidence_score) AS confidence_score
+    FROM {database}.id_sec_market_bridge_v1
+    WHERE ifNull(ticker, '') IN ({ticker_sql})
+      AND mapping_status IN ('active', 'mapped', 'accepted', '')
+    GROUP BY ticker, cik, accession_number, valid_from_date, valid_to_date_exclusive
 )
 SELECT *
 FROM
 (
     SELECT
-        ifNull(b.ticker, '') AS ticker,
-        toUnixTimestamp64Micro(b.accepted_at_utc) AS timestamp_us,
-        x.company_fact_id AS source_id,
-        x.cik AS cik,
-        x.issuer_id AS issuer_id,
-        x.taxonomy AS taxonomy,
-        x.tag AS tag,
-        x.unit_code AS unit_code,
-        ifNull(x.fiscal_year, 0) AS fiscal_year,
-        ifNull(x.fiscal_period, '') AS fiscal_period,
-        ifNull(x.form_type, '') AS form_type,
-        f.accepted_at_source AS accepted_at_source,
-        ifNull(x.accession_number, '') AS accession_number,
-        x.period_end_date AS period_end_date,
-        x.value AS value,
-        '' AS calendar_period_code,
-        '' AS location_code,
-        'company_fact' AS xbrl_row_kind,
-        b.bridge_id AS bridge_id,
-        b.mapping_confidence_score AS mapping_confidence_score
-    FROM {database}.sec_xbrl_company_fact_v1 AS x
-    INNER JOIN {database}.sec_filing_v2 AS f
-        ON f.cik = x.cik
-       AND f.accession_number = x.accession_number
-    INNER JOIN {database}.feature_sec_event_market_bridge_v1 AS b
-        ON b.cik = x.cik
-       AND b.accession_number = x.accession_number
-    WHERE (SELECT has_rows FROM has_event_bridge)
-      AND ifNull(b.ticker, '') IN ({ticker_sql})
-      AND x.accession_number IS NOT NULL
-      AND x.accession_number != ''
-      AND {exact_source_filter}
-      AND b.accepted_at_utc >= {start_expr}
-      AND b.accepted_at_utc <= {end_expr}
-    UNION ALL
-    SELECT
-        ifNull(b.ticker, '') AS ticker,
+        b.ticker AS ticker,
         toUnixTimestamp64Micro(f.accepted_at_utc) AS timestamp_us,
         x.company_fact_id AS source_id,
         x.cik AS cik,
@@ -1039,60 +987,22 @@ FROM
         b.bridge_id AS bridge_id,
         b.confidence_score AS mapping_confidence_score
     FROM {database}.sec_xbrl_company_fact_v1 AS x
-    INNER JOIN {database}.sec_filing_v2 AS f
+    INNER JOIN {database}.sec_filing_v2 AS f FINAL
         ON f.cik = x.cik
        AND f.accession_number = x.accession_number
-    INNER JOIN {database}.id_sec_market_bridge_v1 AS b
+    INNER JOIN bridge AS b
         ON b.cik = x.cik
-    WHERE NOT (SELECT has_rows FROM has_event_bridge)
-      AND x.accession_number IS NOT NULL
+    WHERE x.accession_number IS NOT NULL
       AND x.accession_number != ''
       AND f.accepted_at_utc IS NOT NULL
-      AND {exact_source_filter}
-      AND ifNull(b.ticker, '') IN ({ticker_sql})
-      AND (b.accession_number IS NULL OR b.accession_number = '' OR b.accession_number = x.accession_number)
+      AND (b.accession_number = '' OR b.accession_number = x.accession_number)
       AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
       AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
-      AND b.mapping_status IN ('active', 'mapped', 'accepted', '')
       AND f.accepted_at_utc >= {start_expr}
       AND f.accepted_at_utc <= {end_expr}
     UNION ALL
     SELECT
-        ifNull(b.ticker, '') AS ticker,
-        toUnixTimestamp64Micro(b.accepted_at_utc) AS timestamp_us,
-        o.frame_observation_id AS source_id,
-        o.cik AS cik,
-        o.issuer_id AS issuer_id,
-        o.taxonomy AS taxonomy,
-        o.tag AS tag,
-        o.unit_code AS unit_code,
-        toUInt32(0) AS fiscal_year,
-        '' AS fiscal_period,
-        '' AS form_type,
-        f.accepted_at_source AS accepted_at_source,
-        o.accession_number AS accession_number,
-        o.period_end_date AS period_end_date,
-        o.value AS value,
-        o.calendar_period_code AS calendar_period_code,
-        ifNull(o.location_code, '') AS location_code,
-        'frame_observation' AS xbrl_row_kind,
-        b.bridge_id AS bridge_id,
-        b.mapping_confidence_score AS mapping_confidence_score
-    FROM {database}.sec_xbrl_frame_observation_v1 AS o
-    INNER JOIN {database}.sec_filing_v2 AS f
-        ON f.cik = o.cik
-       AND f.accession_number = o.accession_number
-    INNER JOIN {database}.feature_sec_event_market_bridge_v1 AS b
-        ON b.cik = o.cik
-       AND b.accession_number = o.accession_number
-    WHERE (SELECT has_rows FROM has_event_bridge)
-      AND ifNull(b.ticker, '') IN ({ticker_sql})
-      AND {exact_source_filter}
-      AND b.accepted_at_utc >= {start_expr}
-      AND b.accepted_at_utc <= {end_expr}
-    UNION ALL
-    SELECT
-        ifNull(b.ticker, '') AS ticker,
+        b.ticker AS ticker,
         toUnixTimestamp64Micro(f.accepted_at_utc) AS timestamp_us,
         o.frame_observation_id AS source_id,
         o.cik AS cik,
@@ -1113,19 +1023,15 @@ FROM
         b.bridge_id AS bridge_id,
         b.confidence_score AS mapping_confidence_score
     FROM {database}.sec_xbrl_frame_observation_v1 AS o
-    INNER JOIN {database}.sec_filing_v2 AS f
+    INNER JOIN {database}.sec_filing_v2 AS f FINAL
         ON f.cik = o.cik
        AND f.accession_number = o.accession_number
-    INNER JOIN {database}.id_sec_market_bridge_v1 AS b
+    INNER JOIN bridge AS b
         ON b.cik = o.cik
-    WHERE NOT (SELECT has_rows FROM has_event_bridge)
-      AND f.accepted_at_utc IS NOT NULL
-      AND {exact_source_filter}
-      AND ifNull(b.ticker, '') IN ({ticker_sql})
-      AND (b.accession_number IS NULL OR b.accession_number = '' OR b.accession_number = o.accession_number)
+    WHERE f.accepted_at_utc IS NOT NULL
+      AND (b.accession_number = '' OR b.accession_number = o.accession_number)
       AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
       AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
-      AND b.mapping_status IN ('active', 'mapped', 'accepted', '')
       AND f.accepted_at_utc >= {start_expr}
       AND f.accepted_at_utc <= {end_expr}
 )
@@ -1382,24 +1288,6 @@ def _timestamp_us_to_source_unit(timestamp_us: int, config: ExternalAsOfContextC
     if unit in {"s", "sec", "second", "seconds"}:
         return int(timestamp_us) // 1_000_000
     return int(timestamp_us)
-
-
-def _exact_sec_accepted_at_source_filter(alias: str) -> str:
-    column = f"{alias}.accepted_at_source"
-    exact_sources = (
-        "submissions_bulk",
-        "submissions_bulk_recent",
-        "submissions_bulk_fragment",
-        "submissions_recent",
-        "accession_header_hdr_sgml",
-        "archive_acceptance_datetime",
-    )
-    sources_sql = ", ".join(sql_string(source) for source in exact_sources)
-    return (
-        f"({column} IN ({sources_sql}) "
-        f"OR (startsWith(toString({column}), 'submissions_bulk_') "
-        f"AND endsWith(toString({column}), '_fallback_repair')))"
-    )
 
 
 def _date_time64_from_us(timestamp_us: int, *, scale: int = 9) -> str:
