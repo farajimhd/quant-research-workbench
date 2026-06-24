@@ -168,8 +168,22 @@ class RollingMarketSampleEngine:
         self.rows_by_ticker: dict[str, np.ndarray] = {}
         self._processed_offsets: dict[str, int] = {}
         self.macro_bars = MacroBarFrame(rows=[])
+        q_live_context_configs = {
+            "news": ExternalAsOfContextConfig(name="news", timestamp_column="timestamp_us", max_items=config.news_max_items),
+            "sec_filings": ExternalAsOfContextConfig(name="sec_filings", timestamp_column="timestamp_us", max_items=config.sec_max_items),
+            "xbrl": ExternalAsOfContextConfig(name="xbrl", timestamp_column="timestamp_us", max_items=config.xbrl_max_items),
+        }
+        enabled_q_live = {
+            name: q_live_context_configs[name]
+            for name in config.q_live_contexts
+            if name in q_live_context_configs
+        }
         self.external_contexts: dict[str, ExternalAsOfStore] = {
-            source.name: ExternalAsOfStore(source) for source in config.external_contexts
+            **{name: ExternalAsOfStore(source) for name, source in enabled_q_live.items()},
+            **{
+                source.name: ExternalAsOfStore(source)
+                for source in config.external_contexts
+            },
         }
 
     @property
@@ -241,6 +255,10 @@ class RollingMarketSampleEngine:
         if store is None:
             raise KeyError(f"Unknown external context source: {name}")
         store.add_rows(rows)
+
+    def load_external_contexts(self, rows_by_context: Mapping[str, Iterable[Mapping[str, Any]]]) -> None:
+        for name, rows in rows_by_context.items():
+            self.load_external_context(name, rows)
 
     def build_ready_indices(self, *, max_samples: int = 0) -> tuple[RollingSampleIndex, ...]:
         samples: list[RollingSampleIndex] = []
@@ -568,6 +586,181 @@ FORMAT JSONEachRow
             out[source.name] = [json.loads(line) for line in text.splitlines() if line.strip()]
         return out
 
+    def fetch_q_live_contexts(
+        self,
+        *,
+        start_timestamp_us: int,
+        end_timestamp_us: int,
+        tickers: Iterable[str],
+    ) -> dict[str, list[dict[str, Any]]]:
+        ticker_tuple = tuple(sorted({str(ticker).upper() for ticker in tickers if str(ticker).strip()}))
+        if not ticker_tuple:
+            return {}
+        enabled = set(self.config.q_live_contexts)
+        out: dict[str, list[dict[str, Any]]] = {}
+        if "news" in enabled:
+            out["news"] = self._fetch_q_live_news(
+                start_timestamp_us=start_timestamp_us,
+                end_timestamp_us=end_timestamp_us,
+                tickers=ticker_tuple,
+            )
+        if "sec_filings" in enabled:
+            out["sec_filings"] = self._fetch_q_live_sec_filings(
+                start_timestamp_us=start_timestamp_us,
+                end_timestamp_us=end_timestamp_us,
+                tickers=ticker_tuple,
+            )
+        if "xbrl" in enabled:
+            out["xbrl"] = self._fetch_q_live_xbrl(
+                start_timestamp_us=start_timestamp_us,
+                end_timestamp_us=end_timestamp_us,
+                tickers=ticker_tuple,
+            )
+        out.update(self.fetch_external_contexts(start_timestamp_us=start_timestamp_us, end_timestamp_us=end_timestamp_us, tickers=ticker_tuple))
+        return out
+
+    def _fetch_q_live_news(self, *, start_timestamp_us: int, end_timestamp_us: int, tickers: tuple[str, ...]) -> list[dict[str, Any]]:
+        database = quote_ident(self.config.q_live_database)
+        ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
+        start_expr = _date_time64_from_us(max(0, int(start_timestamp_us) - int(self.config.news_lookback_days) * 86_400_000_000))
+        end_expr = _date_time64_from_us(int(end_timestamp_us))
+        query = f"""
+SELECT
+    nt.ticker AS ticker,
+    toUnixTimestamp64Micro(nt.published_at_utc) AS timestamp_us,
+    nt.canonical_news_id AS source_id,
+    nt.provider AS provider,
+    nt.provider_article_id AS provider_article_id,
+    n.title AS title,
+    n.teaser AS teaser,
+    substring(n.normalized_full_text, 1, 12000) AS text,
+    n.article_url AS article_url,
+    n.url_domain AS url_domain,
+    n.channels AS channels,
+    n.provider_tags AS provider_tags,
+    n.content_quality_flags AS quality_flags
+FROM {database}.benzinga_news_ticker_v1 AS nt
+ANY INNER JOIN {database}.benzinga_news_normalized_v1 AS n
+    ON nt.canonical_news_id = n.canonical_news_id
+WHERE nt.ticker IN ({ticker_sql})
+  AND nt.published_at_utc >= {start_expr}
+  AND nt.published_at_utc <= {end_expr}
+ORDER BY nt.ticker, nt.published_at_utc DESC, nt.canonical_news_id
+LIMIT {int(self.config.news_max_items)} BY nt.ticker
+FORMAT JSONEachRow
+"""
+        return [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
+
+    def _fetch_q_live_sec_filings(self, *, start_timestamp_us: int, end_timestamp_us: int, tickers: tuple[str, ...]) -> list[dict[str, Any]]:
+        database = quote_ident(self.config.q_live_database)
+        ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
+        start_expr = _date_time64_from_us(max(0, int(start_timestamp_us) - int(self.config.sec_lookback_days) * 86_400_000_000))
+        end_expr = _date_time64_from_us(int(end_timestamp_us))
+        query = f"""
+WITH bridges AS
+(
+    SELECT DISTINCT
+        cik,
+        ifNull(ticker, '') AS ticker
+    FROM {database}.id_sec_market_bridge_v1
+    WHERE ifNull(ticker, '') IN ({ticker_sql})
+      AND mapping_status = 'active'
+)
+SELECT
+    b.ticker AS ticker,
+    toUnixTimestamp64Micro(f.accepted_at_utc) AS timestamp_us,
+    f.accession_number AS source_id,
+    f.accession_number AS accession_number,
+    f.cik AS cik,
+    f.form_type AS form_type,
+    1.0 AS mapping_confidence_score,
+    f.filing_id AS filing_id,
+    ifNull(f.company_name, '') AS company_name,
+    ifNull(f.primary_document, '') AS primary_document,
+    ifNull(f.primary_document_url, '') AS primary_document_url,
+    ifNull(f.filing_detail_url, '') AS filing_detail_url,
+    ifNull(f.items, '') AS items
+FROM {database}.sec_filing_v2 AS f
+INNER JOIN bridges AS b ON b.cik = f.cik
+WHERE f.accepted_at_utc IS NOT NULL
+  AND f.accepted_at_utc >= {start_expr}
+  AND f.accepted_at_utc <= {end_expr}
+ORDER BY b.ticker, f.accepted_at_utc DESC, f.accession_number
+LIMIT {int(self.config.sec_max_items)} BY b.ticker
+FORMAT JSONEachRow
+"""
+        filings = [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
+        self._attach_q_live_sec_text(database=database, filings=filings)
+        filings.sort(key=lambda row: (str(row.get("ticker", "")), int(row.get("timestamp_us", 0)), str(row.get("accession_number", ""))))
+        return filings
+
+    def _attach_q_live_sec_text(self, *, database: str, filings: list[dict[str, Any]]) -> None:
+        pairs = sorted({(str(row.get("cik", "")), str(row.get("accession_number", ""))) for row in filings if row.get("cik") and row.get("accession_number")})
+        if not pairs:
+            return
+        pair_sql = ", ".join(f"({sql_string(cik)}, {sql_string(accession)})" for cik, accession in pairs)
+        query = f"""
+SELECT
+    cik,
+    accession_number,
+    document_id,
+    text_kind,
+    substring(text, 1, 16000) AS text,
+    text_char_count,
+    quality_flags
+FROM {database}.sec_filing_text_v2
+PREWHERE (cik, accession_number) IN ({pair_sql})
+ORDER BY cik, accession_number, text_kind, document_id
+LIMIT 2 BY cik, accession_number
+FORMAT JSONEachRow
+"""
+        text_rows = [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
+        by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in text_rows:
+            by_pair.setdefault((str(row.get("cik", "")), str(row.get("accession_number", ""))), []).append(row)
+        for row in filings:
+            row["texts"] = by_pair.get((str(row.get("cik", "")), str(row.get("accession_number", ""))), [])
+
+    def _fetch_q_live_xbrl(self, *, start_timestamp_us: int, end_timestamp_us: int, tickers: tuple[str, ...]) -> list[dict[str, Any]]:
+        database = quote_ident(self.config.q_live_database)
+        ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
+        start_expr = _date_time64_from_us(max(0, int(start_timestamp_us) - int(self.config.xbrl_lookback_days) * 86_400_000_000), scale=3)
+        end_expr = _date_time64_from_us(int(end_timestamp_us), scale=3)
+        query = f"""
+WITH bridges AS
+(
+    SELECT DISTINCT
+        cik,
+        ifNull(ticker, '') AS ticker
+    FROM {database}.id_sec_market_bridge_v1
+    WHERE ifNull(ticker, '') IN ({ticker_sql})
+      AND mapping_status IN ('active', 'mapped', 'accepted', '')
+)
+SELECT
+    b.ticker AS ticker,
+    toUnixTimestamp64Micro(coalesce(f.filed_at_utc, f.recorded_at_utc)) AS timestamp_us,
+    f.company_fact_id AS source_id,
+    f.cik AS cik,
+    f.issuer_id AS issuer_id,
+    f.taxonomy AS taxonomy,
+    f.tag AS tag,
+    f.unit_code AS unit_code,
+    ifNull(f.fiscal_year, 0) AS fiscal_year,
+    ifNull(f.fiscal_period, '') AS fiscal_period,
+    ifNull(f.form_type, '') AS form_type,
+    ifNull(f.accession_number, '') AS accession_number,
+    f.period_end_date AS period_end_date,
+    f.value AS value
+FROM {database}.sec_xbrl_company_fact_v1 AS f
+INNER JOIN bridges AS b ON b.cik = f.cik
+WHERE coalesce(f.filed_at_utc, f.recorded_at_utc) >= {start_expr}
+  AND coalesce(f.filed_at_utc, f.recorded_at_utc) <= {end_expr}
+ORDER BY b.ticker, timestamp_us DESC, f.taxonomy, f.tag, f.unit_code
+LIMIT {int(self.config.xbrl_max_items)} BY b.ticker
+FORMAT JSONEachRow
+"""
+        return [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
+
 
 def _day_events_query(config: RollingMarketDataConfig, tickers: tuple[str, ...], *, event_date: str) -> str:
     table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
@@ -747,6 +940,11 @@ def _timestamp_us_to_source_unit(timestamp_us: int, config: ExternalAsOfContextC
     if unit in {"s", "sec", "second", "seconds"}:
         return int(timestamp_us) // 1_000_000
     return int(timestamp_us)
+
+
+def _date_time64_from_us(timestamp_us: int, *, scale: int = 9) -> str:
+    _ = scale
+    return f"fromUnixTimestamp64Micro(toInt64({int(timestamp_us)}), 'UTC')"
 
 
 def _infer_embedding_dim(embedding_lookup: Mapping[tuple[str, int], np.ndarray]) -> int:

@@ -151,6 +151,7 @@ class RollingMarketDataConfig:
     """
 
     database: str = "market_sip_compact"
+    q_live_database: str = "q_live"
     events_table: str = "events"
     macro_bars_table: str = "macro_bars_by_time_symbol"
     index_table: str = "train_2019_to_2025"
@@ -170,6 +171,13 @@ class RollingMarketDataConfig:
     label_timeframes: tuple[str, ...] = ("1d", "1w", "1mo", "1y")
     macro_lookback_days: int = 40
     label_lookahead_days: int = 400
+    q_live_contexts: tuple[str, ...] = ("news", "sec_filings", "xbrl")
+    news_lookback_days: int = 30
+    news_max_items: int = 32
+    sec_lookback_days: int = 365
+    sec_max_items: int = 16
+    xbrl_lookback_days: int = 730
+    xbrl_max_items: int = 64
     seed: int = 17
     external_contexts: tuple[ExternalAsOfContextConfig, ...] = ()
 

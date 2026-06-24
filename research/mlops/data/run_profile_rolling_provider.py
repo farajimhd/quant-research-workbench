@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--synthetic-tickers", type=int, default=16)
     parser.add_argument("--synthetic-events", type=int, default=8000)
     parser.add_argument("--profile-production-gather", action="store_true")
+    parser.add_argument("--skip-q-live-contexts", action="store_true")
     return parser.parse_args()
 
 
@@ -107,6 +108,15 @@ def run_clickhouse(args: argparse.Namespace, config: RollingMarketDataConfig) ->
         macro = source.fetch_macro_bars(start_date=str(args.event_date), end_date=str(args.event_date), tickers=tickers)
         print(f"FETCH macro bars done rows={len(macro.rows):,} seconds={macro.fetch_seconds:.3f}", flush=True)
         engine.load_macro_bars(macro)
+        if not args.skip_q_live_contexts and day.rows_by_ticker:
+            start_us, end_us = event_time_bounds(day.rows_by_ticker)
+            print(f"FETCH q_live contexts start_us={start_us} end_us={end_us}", flush=True)
+            started = time.perf_counter()
+            contexts = source.fetch_q_live_contexts(start_timestamp_us=start_us, end_timestamp_us=end_us, tickers=tickers)
+            seconds = time.perf_counter() - started
+            counts = {name: len(rows) for name, rows in contexts.items()}
+            engine.load_external_contexts(contexts)
+            print(f"FETCH q_live contexts done seconds={seconds:.3f} counts={counts}", flush=True)
         return profile_engine(args, config, engine, rows_returned=day.rows_returned, fetch_seconds=day.fetch_seconds)
     finally:
         bytes_client.close()
@@ -185,6 +195,18 @@ def _fake_embedding_lookup(batch) -> dict[tuple[str, int], np.ndarray]:
                 continue
             lookup[(str(ticker).upper(), int(origin))] = rng.normal(0.0, 0.01, size=(32,)).astype(np.float32)
     return lookup
+
+
+def event_time_bounds(rows_by_ticker) -> tuple[int, int]:
+    mins = []
+    maxs = []
+    for rows in rows_by_ticker.values():
+        if rows.size:
+            mins.append(int(rows["sip_timestamp_us"][0]))
+            maxs.append(int(rows["sip_timestamp_us"][-1]))
+    if not mins:
+        return 0, 0
+    return min(mins), max(maxs)
 
 
 if __name__ == "__main__":

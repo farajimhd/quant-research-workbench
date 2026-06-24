@@ -81,12 +81,22 @@ With the default farthest lag of `1850`, every ticker queue keeps at least
 new day from losing long-context chunks.
 
 Macro/global context is loaded through `macro_bars_by_time_symbol` by default.
-It is always as-of the sample origin timestamp. Generic news/SEC/XBRL context
-sources can be configured with `ExternalAsOfContextConfig`; the loader only
-returns rows with timestamps at or before the origin, so future text or
-fundamental rows cannot leak into features. External source timestamps support
-`timestamp_unit="us"` and `timestamp_unit="ns"` so nanosecond UTC source tables
-can be compared correctly to event-origin microsecond timestamps.
+It is always as-of the sample origin timestamp.
+
+The default multimodal context comes from concrete `q_live` tables:
+
+- news: `benzinga_news_ticker_v1` joined to `benzinga_news_normalized_v1` by
+  `canonical_news_id`, timestamped by `published_at_utc`
+- SEC filing text: ticker-to-CIK from `id_sec_market_bridge_v1`, filings from
+  `sec_filing_v2`, and bounded text snippets from `sec_filing_text_v2`
+- XBRL fundamentals: ticker-to-CIK from `id_sec_market_bridge_v1`, facts from
+  `sec_xbrl_company_fact_v1`
+
+Every row is normalized to `timestamp_us` and the materializer only returns
+items with `timestamp_us <= sample_origin_timestamp_us`, so future text or
+fundamental rows cannot leak into features. Extra sources can still be added
+with `ExternalAsOfContextConfig`; its `timestamp_unit` supports microseconds,
+nanoseconds, milliseconds, and seconds.
 
 Future labels are separate from features. They use the first bar whose
 `bar_start` is after the sample origin for each configured `label_timeframes`
@@ -142,6 +152,9 @@ Profile against ClickHouse for a real trading day:
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\data\run_profile_rolling_provider.py --database market_sip_compact --events-table events --macro-bars-table macro_bars_by_time_symbol --index-table train_2019_to_2025 --event-date 2025-01-02 --ticker-limit 64 --batch-size 4096 --materialize-batches 2 --sample-stride-events 1 --max-threads 8 --max-memory-usage 80G --profile-production-gather --report-path D:\market-data\prepared\data_provider_profiles\rolling_provider_profile.jsonl
 ```
+
+Pass `--skip-q-live-contexts` when you want to profile only market events and
+macro bars without reading q_live news/SEC/XBRL tables.
 
 Profile against ClickHouse:
 
