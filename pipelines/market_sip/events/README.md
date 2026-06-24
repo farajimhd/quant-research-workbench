@@ -101,3 +101,50 @@ The last bar is built from all events currently present through the requested
 end date. If the source event table does not yet contain the complete current
 day/week/month, the last higher-timeframe bar is necessarily partial and should
 be rebuilt after the remaining events arrive.
+
+## SEC Context Migration
+
+`clickhouse_build_sec_context.py` materializes SEC and XBRL context from
+`q_live` into `market_sip_compact` so training does not repeatedly query raw SEC
+tables with `FINAL`, text joins, and CIK-to-market bridge joins.
+
+The migration creates three compact context tables:
+
+| Table | Partition | Order key | Contents |
+| --- | --- | --- | --- |
+| `sec_filing_context` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, cik)` | one SEC filing metadata row per valid ticker/accession mapping |
+| `sec_filing_text_context` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id)` | bounded SEC filing text rows for model tokenization |
+| `sec_xbrl_context` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, xbrl_row_kind, taxonomy, tag, unit_code, period_end_date, source_id)` | company facts and frame observations joined to their filing event time |
+
+The accepted timestamp source is always `q_live.sec_filing_v2.accepted_at_utc`.
+Rows with null `accepted_at_utc` are skipped because they do not have a safe
+no-lookahead event time. `id_sec_market_bridge_v1` is used only to map CIK or
+accession to a market ticker; it is deduplicated inside the migration and is not
+used as the event-time source.
+
+The script uses `CLICKHOUSE_HISTORICAL_STORAGE_POLICY` by default through the
+shared `default_storage_policy()` helper. Override it with `--storage-policy`
+only when intentionally targeting a different ClickHouse disk policy.
+
+Run on the workstation:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_sec_context.py --start-date 2019-01-01 --end-date 2026-12-31
+```
+
+Inspect the exact command without running:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_sec_context.py --print-only
+```
+
+Preview DDL/DML without mutating ClickHouse:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_sec_context.py --dry-run --start-date 2026-01-01 --end-date 2026-01-02
+```
+
+By default, the migration deletes the target accepted-time range from the compact
+tables and waits for ClickHouse mutations before reinserting. This keeps reruns
+idempotent and avoids requiring `FINAL` in the hot training path. Ctrl+C exits
+with status code `130` and writes an interrupted row to the JSONL report.
