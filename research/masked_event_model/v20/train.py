@@ -1780,7 +1780,7 @@ def maybe_resume_or_warm_start(
 ) -> int:
     path = output_dir / "checkpoints" / "checkpoint_latest.pt"
     if not fresh_start and path.exists():
-        checkpoint = torch.load(path, map_location="cpu")
+        checkpoint = load_trusted_training_checkpoint(path, map_location="cpu")
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         if scheduler is not None and checkpoint.get("scheduler") is not None:
@@ -1796,7 +1796,7 @@ def maybe_resume_or_warm_start(
         print(f"Resumed checkpoint: {path} step={checkpoint.get('step', 0)}", flush=True)
         return int(checkpoint.get("step", 0))
     if warm_start_checkpoint is not None and str(warm_start_checkpoint) and warm_start_checkpoint.exists():
-        checkpoint = torch.load(warm_start_checkpoint, map_location="cpu")
+        checkpoint = load_trusted_training_checkpoint(warm_start_checkpoint, map_location="cpu")
         model.load_state_dict(checkpoint["model"])
         if warm_start_load_optimizer and checkpoint.get("optimizer") is not None:
             optimizer.load_state_dict(checkpoint["optimizer"])
@@ -1814,6 +1814,25 @@ def maybe_resume_or_warm_start(
     elif warm_start_checkpoint is not None and str(warm_start_checkpoint):
         print(f"WARN warm-start checkpoint not found: {warm_start_checkpoint}", flush=True)
     return 0
+
+
+def load_trusted_training_checkpoint(path: Path, *, map_location: str | torch.device) -> dict[str, Any]:
+    """Load one of our full local training checkpoints under PyTorch 2.6+.
+
+    PyTorch 2.6 defaults `torch.load` to `weights_only=True`, which rejects
+    optimizer, scheduler, RNG, and NumPy-backed metadata stored in our own
+    checkpoint payloads. These checkpoint paths are explicit local/workstation
+    files from our training pipeline, so warm-start and resume need the full
+    trusted payload.
+    """
+
+    try:
+        checkpoint = torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(path, map_location=map_location)
+    if not isinstance(checkpoint, dict):
+        raise RuntimeError(f"Checkpoint payload is not a dict: {path}")
+    return checkpoint
 
 
 def clean_run_output_dir(output_dir: Path, *, keep_paths: list[Path] | None = None) -> None:
