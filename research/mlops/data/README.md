@@ -30,6 +30,11 @@ instead of implementing one-off loaders.
   events in order through rolling state and should be the correctness baseline.
 - `PolarsTickerBlockBatchProvider`: bounded in-memory ticker block strategy. It
   uses Polars for sorting when available and emits the same batch contract.
+- `ClickHouseTickerBlockBatchProvider`: chronological multi-ticker block
+  strategy for training-data experiments. It selects tickers without replacement
+  inside each ticker epoch, queries contiguous `(ticker, ordinal)` ranges, builds
+  128-event compact chunks, and derives future time-bar labels from the fetched
+  block.
 
 Additional providers can be added without changing model code:
 
@@ -57,9 +62,49 @@ Run a synthetic benchmark:
 python D:\TradingCodes\quant-research-workbench\research\mlops\data\run_benchmark_provider.py --batches 4
 ```
 
+Profile the chronological ticker-block strategy without a database:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\data\run_profile_ticker_block_provider.py --synthetic --synthetic-tickers 16 --ticker-group-size 4 --events-per-ticker-block 20000 --sample-stride-events 16 --batches 4
+```
+
+Workstation runtime equivalent:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\data\run_profile_ticker_block_provider.py --synthetic --synthetic-tickers 16 --ticker-group-size 4 --events-per-ticker-block 20000 --sample-stride-events 16 --batches 4
+```
+
+Profile against ClickHouse:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\data\run_profile_ticker_block_provider.py --database market_sip_compact --events-table events --index-table train_2019_to_2025 --ticker-group-size 64 --events-per-ticker-block 250000 --future-tail-events 4096 --sample-stride-events 16 --max-samples-per-ticker 2048 --batches 4 --max-threads 8 --max-memory-usage 80G
+```
+
+Workstation runtime equivalent:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\data\run_profile_ticker_block_provider.py --database market_sip_compact --events-table events --index-table train_2019_to_2025 --ticker-group-size 64 --events-per-ticker-block 250000 --future-tail-events 4096 --sample-stride-events 16 --max-samples-per-ticker 2048 --batches 4 --max-threads 8 --max-memory-usage 80G
+```
+
+The main tuning knobs are:
+
+- `ticker_group_size`: how many tickers are fetched in one prep cycle.
+- `events_per_ticker_block`: how many chronological origin events are advanced
+  per selected ticker.
+- `future_tail_events`: extra future events fetched for labels.
+- `sample_stride_events`: spacing between generated origins inside each block.
+- `max_samples_per_ticker`: cap to keep one liquid ticker from dominating one
+  prepared pool.
+- `--polars-assembly`: optional profiler path that materializes a single sorted
+  Polars table for the fetched block. The default avoids this copy because the
+  per-ticker array path is usually faster for training.
+
+Ticker scheduling is epoch-style without replacement: every active ticker is
+selected once before the ticker list is reshuffled. Cursors are advanced only
+after a batch is built successfully and can be persisted with `--state-path`.
+
 Run the smoke test:
 
 ```powershell
 python D:\TradingCodes\quant-research-workbench\research\mlops\data\test_smoke.py
 ```
-

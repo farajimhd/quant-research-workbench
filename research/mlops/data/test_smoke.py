@@ -10,10 +10,11 @@ if str(REPO_ROOT) not in sys.path:
 import numpy as np
 
 from research.mlops.data.audit import audit_temporal_batch
-from research.mlops.data.config import DataProviderConfig, MarketStreamConfig
+from research.mlops.data.config import DataProviderConfig, MarketStreamConfig, TickerBlockDataConfig
 from research.mlops.data.providers import StreamingReplayBatchProvider
 from research.mlops.data.replay import iter_replay_batches
 from research.mlops.data.sources import InMemoryEventSource
+from research.mlops.data.ticker_blocks import TickerCursor, TickerEpochScheduler, build_event_time_bar_batch, build_requests, make_synthetic_event_rows
 from research.mlops.data.contracts import CompactEvent
 
 
@@ -54,6 +55,12 @@ def make_synthetic_events(count: int = 1024, *, ticker: str = "TEST") -> tuple[C
 
 
 def main() -> int:
+    smoke_streaming_replay()
+    smoke_ticker_blocks()
+    return 0
+
+
+def smoke_streaming_replay() -> None:
     config = DataProviderConfig(
         provider_name="smoke_streaming_replay",
         market=MarketStreamConfig(
@@ -83,7 +90,39 @@ def main() -> int:
         f"market={batch.market_embeddings.shape} labels={batch.labels['future_market_chunks_uint8'].shape} "
         f"samples_per_sec={metrics['data/samples_per_second']:.1f}"
     )
-    return 0
+
+
+def smoke_ticker_blocks() -> None:
+    config = TickerBlockDataConfig(
+        ticker_group_size=2,
+        events_per_ticker_block=256,
+        future_tail_events=512,
+        sample_stride_events=32,
+        max_samples_per_ticker=4,
+    )
+    cursors = [
+        TickerCursor(ticker="AAA", first_ordinal=0, next_origin_ordinal=127, last_ordinal=4096, event_count=4096),
+        TickerCursor(ticker="BBB", first_ordinal=0, next_origin_ordinal=127, last_ordinal=4096, event_count=4096),
+    ]
+    scheduler = TickerEpochScheduler.from_cursors(cursors, seed=123)
+    selected = scheduler.select_next(2)
+    assert {cursor.ticker for cursor in selected} == {"AAA", "BBB"}
+    requests = build_requests(selected, config)
+    rows_by_ticker = {request.ticker: make_synthetic_event_rows(request.expected_rows, request.low_ordinal) for request in requests}
+    batch = build_event_time_bar_batch(rows_by_ticker, requests, config, provider_name="smoke_ticker_block")
+    assert batch.header_uint8.shape[0] == 8
+    assert batch.events_uint8.shape == (8, 128, 16)
+    assert "future_bar_1s_high" in batch.labels
+    assert batch.labels["future_bar_1s_high"].shape == (8,)
+    assert batch.profile.samples_created == 8
+    scheduler.update_after_success(requests)
+    assert scheduler.cursors["AAA"].next_origin_ordinal > 127
+    assert scheduler.cursors["BBB"].next_origin_ordinal > 127
+    print(
+        "ticker_block_smoke_ok "
+        f"samples={batch.header_uint8.shape[0]} labels={len(batch.labels)} "
+        f"samples_per_sec={batch.profile.samples_per_second():.1f}"
+    )
 
 
 if __name__ == "__main__":
