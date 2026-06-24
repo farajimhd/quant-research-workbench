@@ -337,22 +337,31 @@ def processing_status(row: dict[str, Any]) -> str:
 def operational_status(metrics: dict[str, Any]) -> str:
     phase = str(metrics.get("current_phase") or "").strip().lower()
     last_status = str(metrics.get("last_cycle_status") or "").strip().lower()
-    if phase == "failed" or int(metrics.get("publish_failed_jobs") or 0) or int(metrics.get("background_failed_batches") or 0):
+    publish_status = str(metrics.get("publish_status") or "").strip().lower()
+    active_publish_jobs = int(metrics.get("publish_active_jobs") or 0)
+    active_background_batches = int(metrics.get("background_active_batches") or 0)
+    queued_background_batches = int(metrics.get("background_queue_size") or 0)
+    pending_background_articles = int(metrics.get("background_pending_articles") or 0)
+    unresolved_publish_failure = publish_status == "failed" and (active_publish_jobs > 0 or int(metrics.get("publish_pending_rows") or 0) > 0)
+    unresolved_background_failure = (
+        phase == "live_background_process"
+        and int(metrics.get("background_failed_batches") or 0) > int(metrics.get("background_completed_batches") or 0)
+        and (active_background_batches > 0 or queued_background_batches > 0 or pending_background_articles > 0)
+    )
+    if phase == "failed" or unresolved_publish_failure or unresolved_background_failure:
         return "failed"
     if phase.startswith("shutdown"):
         return "stopping"
-    if int(metrics.get("publish_active_jobs") or 0) or str(metrics.get("publish_status") or "").lower() in {"running", "draining"}:
+    if active_publish_jobs or publish_status in {"running", "draining"}:
         return "publishing"
-    if (
-        int(metrics.get("background_queue_size") or 0)
-        or int(metrics.get("background_active_batches") or 0)
-        or int(metrics.get("background_pending_articles") or 0)
-    ):
+    if queued_background_batches or active_background_batches or pending_background_articles:
         return "processing"
     if int(metrics.get("gap_fill_in_flight_chunks") or 0) or phase.startswith("gap_fill"):
         return "gap fill"
     if phase in {"preflight", "coverage_bootstrap", "gap_planning", "live_fetch", "live_process"}:
         return phase
+    if int(metrics.get("poll_failures") or 0) or int(metrics.get("publish_failed_jobs") or 0) or int(metrics.get("background_failed_batches") or 0):
+        return "warning"
     if phase == "polling":
         return "idle" if last_status in {"queued", "no_rows", "ok"} else (last_status or "polling")
     return last_status or phase or "starting"
@@ -403,6 +412,7 @@ def status_color(status: str) -> str:
         "stopping",
         "not_started",
         "completed_with_errors",
+        "warning",
         "auto_started",
         "workstation_auto_started_large_gap",
         "manual_required_large_gap",

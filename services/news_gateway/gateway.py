@@ -1132,7 +1132,7 @@ class NewsGateway:
                 self.metrics.publish_active_jobs = len(self._publish_tasks)
                 if self._publish_tasks:
                     self.metrics.publish_status = "running"
-                elif self.metrics.publish_status != "failed":
+                else:
                     self.metrics.publish_status = "idle"
         self.metrics.publish_completed_jobs += 1
         self.metrics.publish_last_message = (
