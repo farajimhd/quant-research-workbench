@@ -463,6 +463,9 @@ class RollingMarketSampleEngine:
         origin_ord = np.asarray([sample.origin_ordinal for sample in sample_tuple], dtype=np.int64)
         origin_ts = np.asarray([sample.origin_timestamp_us for sample in sample_tuple], dtype=np.int64)
 
+        encoded_window_cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray] | None] = {}
+        cache_hits = 0
+        cache_misses = 0
         with profiler.stage("encode_compact_windows", count=batch * context_chunks):
             for sample_index, sample in enumerate(sample_tuple):
                 rows = self.rows_by_ticker.get(sample.ticker)
@@ -470,30 +473,50 @@ class RollingMarketSampleEngine:
                     continue
                 low_ordinal = int(rows["ordinal"][0])
                 for context_index, window in enumerate(sample.chunk_windows):
-                    start = int(window.start_ordinal) - low_ordinal
-                    end = int(window.end_ordinal) - low_ordinal + 1
-                    if start < 0 or end > rows.shape[0] or end - start != int(self.config.events_per_chunk):
-                        continue
-                    previous_sip_us = int(rows["sip_timestamp_us"][start - 1]) if start > 0 else None
-                    encoded = encode_unified_event_window(rows[start:end], previous_sip_us=previous_sip_us)
-                    if isinstance(encoded, str):
+                    cache_key = (sample.ticker, int(window.origin_ordinal))
+                    encoded = encoded_window_cache.get(cache_key)
+                    if cache_key in encoded_window_cache:
+                        cache_hits += 1
+                    else:
+                        cache_misses += 1
+                        start = int(window.start_ordinal) - low_ordinal
+                        end = int(window.end_ordinal) - low_ordinal + 1
+                        if start < 0 or end > rows.shape[0] or end - start != int(self.config.events_per_chunk):
+                            encoded_window_cache[cache_key] = None
+                            continue
+                        previous_sip_us = int(rows["sip_timestamp_us"][start - 1]) if start > 0 else None
+                        result = encode_unified_event_window(rows[start:end], previous_sip_us=previous_sip_us)
+                        encoded = None if isinstance(result, str) else result
+                        encoded_window_cache[cache_key] = encoded
+                    if encoded is None:
                         continue
                     headers[sample_index, context_index], events[sample_index, context_index] = encoded
                     mask[sample_index, context_index] = True
                     chunk_origin_ordinal[sample_index, context_index] = int(window.origin_ordinal)
                     chunk_origin_ts[sample_index, context_index] = int(window.origin_timestamp_us)
 
-        macro_features, global_features = self._materialize_bar_features(sample_tuple)
-        session_features = self._materialize_session_features(sample_tuple)
-        labels = self._materialize_future_labels(sample_tuple)
-        labels.update(self._materialize_intraday_future_labels(sample_tuple))
+        profiler.add_stage("encoded_window_cache_hits", 0.0, count=cache_hits)
+        profiler.add_stage("encoded_window_cache_misses", 0.0, count=cache_misses)
+        profiler.add_stage("encoded_window_cache_entries", 0.0, count=len(encoded_window_cache))
+
+        with profiler.stage("bar_features", count=batch):
+            macro_features, global_features = self._materialize_bar_features(sample_tuple)
+        with profiler.stage("session_features", count=batch):
+            session_features = self._materialize_session_features(sample_tuple)
+        with profiler.stage("macro_future_labels", count=batch):
+            labels = self._materialize_future_labels(sample_tuple)
+        with profiler.stage("intraday_future_labels", count=batch):
+            labels.update(self._materialize_intraday_future_labels(sample_tuple))
         macro_features.update(session_features)
-        external = {
-            name: [store.asof(ticker=sample.ticker, timestamp_us=sample.origin_timestamp_us) for sample in sample_tuple]
-            for name, store in self.external_contexts.items()
-        }
-        text_inputs = self._materialize_text_inputs(external)
-        xbrl_inputs = self._materialize_xbrl_inputs(sample_tuple, external)
+        with profiler.stage("external_context_asof", count=batch * len(self.external_contexts)):
+            external = {
+                name: [store.asof(ticker=sample.ticker, timestamp_us=sample.origin_timestamp_us) for sample in sample_tuple]
+                for name, store in self.external_contexts.items()
+            }
+        with profiler.stage("text_inputs", count=batch):
+            text_inputs = self._materialize_text_inputs(external)
+        with profiler.stage("xbrl_inputs", count=batch):
+            xbrl_inputs = self._materialize_xbrl_inputs(sample_tuple, external)
         profile = profiler.finish()
         profile.rows_read = int(sum(len(sample.chunk_windows) * self.config.events_per_chunk for sample in sample_tuple))
         profile.chunks_created = int(mask.sum())

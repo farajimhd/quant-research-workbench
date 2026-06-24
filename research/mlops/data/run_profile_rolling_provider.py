@@ -183,6 +183,8 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
 
     materialized_total_seconds = float(sum(item.get("rolling_training/total_seconds", 0.0) for item in materialized_metrics))
     materialized_samples = int(sum(batch.headers_uint8.shape[0] for batch in materialized))
+    materialized_stage_seconds = _sum_metric_suffix(materialized_metrics, "_seconds")
+    materialized_stage_counts = _sum_metric_suffix(materialized_metrics, "_count")
     payload = {
         "event_date": str(args.event_date),
         "rows_returned": int(rows_returned),
@@ -201,6 +203,8 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
             if materialized_total_seconds > 0
             else 0.0
         ),
+        "materialized_stage_seconds": materialized_stage_seconds,
+        "materialized_stage_counts": materialized_stage_counts,
         "label_count": int(len(materialized[0].labels)) if materialized else 0,
         "macro_feature_count": int(len(materialized[0].macro_features)) if materialized else 0,
         "global_feature_count": int(len(materialized[0].global_features)) if materialized else 0,
@@ -212,6 +216,18 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
         write_profile_jsonl(args.report_path, payload)
         print(f"REPORT {args.report_path}", flush=True)
     return 0
+
+
+def _sum_metric_suffix(metrics_by_batch: list[dict[str, float]], suffix: str) -> dict[str, float]:
+    prefix = "rolling_training/"
+    out: dict[str, float] = {}
+    for metrics in metrics_by_batch:
+        for key, value in metrics.items():
+            if not key.startswith(prefix) or not key.endswith(suffix):
+                continue
+            name = key[len(prefix) : -len(suffix)]
+            out[name] = out.get(name, 0.0) + float(value)
+    return dict(sorted(out.items()))
 
 
 def _fake_embedding_lookup(batch) -> dict[tuple[str, int], np.ndarray]:
