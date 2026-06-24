@@ -176,8 +176,11 @@ class RollingMarketDataConfig:
 
     database: str = "market_sip_compact"
     q_live_database: str = "q_live"
+    sec_context_database: str = "market_sip_compact"
     events_table: str = "events"
     macro_bars_table: str = "macro_bars_by_time_symbol"
+    sec_filing_text_context_table: str = "sec_filing_text_context"
+    sec_xbrl_context_table: str = "sec_xbrl_context"
     index_table: str = "train_2019_to_2025"
     events_per_chunk: int = 128
     header_bytes: int = 14

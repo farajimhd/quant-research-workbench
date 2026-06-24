@@ -807,13 +807,13 @@ FORMAT JSONEachRow
                 tickers=ticker_tuple,
             )
         if "sec_filings" in enabled:
-            out["sec_filings"] = self._fetch_q_live_sec_filings(
+            out["sec_filings"] = self._fetch_sec_filing_context(
                 start_timestamp_us=start_timestamp_us,
                 end_timestamp_us=end_timestamp_us,
                 tickers=ticker_tuple,
             )
         if "xbrl" in enabled:
-            out["xbrl"] = self._fetch_q_live_xbrl(
+            out["xbrl"] = self._fetch_sec_xbrl_context(
                 start_timestamp_us=start_timestamp_us,
                 end_timestamp_us=end_timestamp_us,
                 tickers=ticker_tuple,
@@ -853,66 +853,36 @@ FORMAT JSONEachRow
 """
         return [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
 
-    def _fetch_q_live_sec_filings(self, *, start_timestamp_us: int, end_timestamp_us: int, tickers: tuple[str, ...]) -> list[dict[str, Any]]:
-        database = quote_ident(self.config.q_live_database)
+    def _fetch_sec_filing_context(self, *, start_timestamp_us: int, end_timestamp_us: int, tickers: tuple[str, ...]) -> list[dict[str, Any]]:
+        database = quote_ident(self.config.sec_context_database)
+        table = f"{database}.{quote_ident(self.config.sec_filing_text_context_table)}"
         ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
-        start_expr = _date_time64_from_us(max(0, int(start_timestamp_us) - int(self.config.sec_lookback_days) * 86_400_000_000))
-        end_expr = _date_time64_from_us(int(end_timestamp_us))
+        start_us = max(0, int(start_timestamp_us) - int(self.config.sec_lookback_days) * 86_400_000_000)
+        end_us = int(end_timestamp_us)
         query = f"""
-WITH bridge AS
-(
-    SELECT
-        ifNull(ticker, '') AS ticker,
-        cik,
-        ifNull(accession_number, '') AS accession_number,
-        valid_from_date,
-        valid_to_date_exclusive,
-        any(bridge_id) AS bridge_id,
-        any(security_id) AS security_id,
-        any(listing_id) AS listing_id,
-        any(symbol_id) AS symbol_id,
-        max(confidence_score) AS confidence_score
-    FROM {database}.id_sec_market_bridge_v1
-    WHERE ifNull(ticker, '') IN ({ticker_sql})
-      AND mapping_status IN ('active', 'mapped', 'accepted', '')
-    GROUP BY ticker, cik, accession_number, valid_from_date, valid_to_date_exclusive
-)
 SELECT
-    b.ticker AS ticker,
-    toUnixTimestamp64Micro(f.accepted_at_utc) AS timestamp_us,
-    f.accession_number AS source_id,
-    f.accession_number AS accession_number,
-    f.cik AS cik,
-    f.form_type AS form_type,
-    f.accepted_at_source AS accepted_at_source,
-    b.confidence_score AS mapping_confidence_score,
-    b.bridge_id AS bridge_id,
-    b.security_id AS security_id,
-    b.listing_id AS listing_id,
-    b.symbol_id AS symbol_id,
-    f.filing_id AS filing_id,
-    ifNull(f.company_name, '') AS company_name,
-    ifNull(f.primary_document, '') AS primary_document,
-    ifNull(f.primary_document_url, '') AS primary_document_url,
-    ifNull(f.filing_detail_url, '') AS filing_detail_url,
-    ifNull(f.items, '') AS items
-FROM {database}.sec_filing_v2 AS f FINAL
-INNER JOIN bridge AS b
-    ON b.cik = f.cik
-WHERE f.accepted_at_utc IS NOT NULL
-  AND (b.accession_number = '' OR b.accession_number = f.accession_number)
-  AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
-  AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
-  AND f.accepted_at_utc >= {start_expr}
-  AND f.accepted_at_utc <= {end_expr}
-ORDER BY ticker, timestamp_us DESC, accession_number
+    ticker,
+    timestamp_us,
+    accession_number AS source_id,
+    accession_number,
+    cik,
+    form_type,
+    document_id,
+    text_kind,
+    text,
+    text_char_count,
+    quality_flags
+FROM {table}
+PREWHERE ticker IN ({ticker_sql})
+WHERE timestamp_us >= {start_us}
+  AND timestamp_us <= {end_us}
+ORDER BY ticker, timestamp_us DESC, accession_number, text_rank, document_id
 LIMIT {int(self.config.sec_max_items)} BY ticker
 FORMAT JSONEachRow
 """
-        filings = [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
-        self._attach_q_live_sec_text(database=database, filings=filings)
-        filings.sort(key=lambda row: (str(row.get("ticker", "")), int(row.get("timestamp_us", 0)), str(row.get("accession_number", ""))))
-        return filings
+        rows = [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
+        rows.sort(key=lambda row: (str(row.get("ticker", "")), int(row.get("timestamp_us", 0)), str(row.get("accession_number", "")), int(row.get("text_rank", 0) or 0)))
+        return rows
 
     def _attach_q_live_sec_text(self, *, database: str, filings: list[dict[str, Any]]) -> None:
         pairs = sorted({(str(row.get("cik", "")), str(row.get("accession_number", ""))) for row in filings if row.get("cik") and row.get("accession_number")})
@@ -941,100 +911,38 @@ FORMAT JSONEachRow
         for row in filings:
             row["texts"] = by_pair.get((str(row.get("cik", "")), str(row.get("accession_number", ""))), [])
 
-    def _fetch_q_live_xbrl(self, *, start_timestamp_us: int, end_timestamp_us: int, tickers: tuple[str, ...]) -> list[dict[str, Any]]:
-        database = quote_ident(self.config.q_live_database)
+    def _fetch_sec_xbrl_context(self, *, start_timestamp_us: int, end_timestamp_us: int, tickers: tuple[str, ...]) -> list[dict[str, Any]]:
+        database = quote_ident(self.config.sec_context_database)
+        table = f"{database}.{quote_ident(self.config.sec_xbrl_context_table)}"
         ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
-        start_expr = _date_time64_from_us(max(0, int(start_timestamp_us) - int(self.config.xbrl_lookback_days) * 86_400_000_000), scale=3)
-        end_expr = _date_time64_from_us(int(end_timestamp_us), scale=3)
+        start_us = max(0, int(start_timestamp_us) - int(self.config.xbrl_lookback_days) * 86_400_000_000)
+        end_us = int(end_timestamp_us)
         query = f"""
-WITH bridge AS
-(
-    SELECT
-        ifNull(ticker, '') AS ticker,
-        cik,
-        ifNull(accession_number, '') AS accession_number,
-        valid_from_date,
-        valid_to_date_exclusive,
-        any(bridge_id) AS bridge_id,
-        max(confidence_score) AS confidence_score
-    FROM {database}.id_sec_market_bridge_v1
-    WHERE ifNull(ticker, '') IN ({ticker_sql})
-      AND mapping_status IN ('active', 'mapped', 'accepted', '')
-    GROUP BY ticker, cik, accession_number, valid_from_date, valid_to_date_exclusive
-)
-SELECT *
-FROM
-(
-    SELECT
-        b.ticker AS ticker,
-        toUnixTimestamp64Micro(f.accepted_at_utc) AS timestamp_us,
-        x.company_fact_id AS source_id,
-        x.cik AS cik,
-        x.issuer_id AS issuer_id,
-        x.taxonomy AS taxonomy,
-        x.tag AS tag,
-        x.unit_code AS unit_code,
-        ifNull(x.fiscal_year, 0) AS fiscal_year,
-        ifNull(x.fiscal_period, '') AS fiscal_period,
-        ifNull(x.form_type, '') AS form_type,
-        f.accepted_at_source AS accepted_at_source,
-        ifNull(x.accession_number, '') AS accession_number,
-        x.period_end_date AS period_end_date,
-        x.value AS value,
-        '' AS calendar_period_code,
-        '' AS location_code,
-        'company_fact' AS xbrl_row_kind,
-        b.bridge_id AS bridge_id,
-        b.confidence_score AS mapping_confidence_score
-    FROM {database}.sec_xbrl_company_fact_v1 AS x
-    INNER JOIN {database}.sec_filing_v2 AS f FINAL
-        ON f.cik = x.cik
-       AND f.accession_number = x.accession_number
-    INNER JOIN bridge AS b
-        ON b.cik = x.cik
-    WHERE x.accession_number IS NOT NULL
-      AND x.accession_number != ''
-      AND f.accepted_at_utc IS NOT NULL
-      AND (b.accession_number = '' OR b.accession_number = x.accession_number)
-      AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
-      AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
-      AND f.accepted_at_utc >= {start_expr}
-      AND f.accepted_at_utc <= {end_expr}
-    UNION ALL
-    SELECT
-        b.ticker AS ticker,
-        toUnixTimestamp64Micro(f.accepted_at_utc) AS timestamp_us,
-        o.frame_observation_id AS source_id,
-        o.cik AS cik,
-        o.issuer_id AS issuer_id,
-        o.taxonomy AS taxonomy,
-        o.tag AS tag,
-        o.unit_code AS unit_code,
-        toUInt32(0) AS fiscal_year,
-        '' AS fiscal_period,
-        '' AS form_type,
-        f.accepted_at_source AS accepted_at_source,
-        o.accession_number AS accession_number,
-        o.period_end_date AS period_end_date,
-        o.value AS value,
-        o.calendar_period_code AS calendar_period_code,
-        ifNull(o.location_code, '') AS location_code,
-        'frame_observation' AS xbrl_row_kind,
-        b.bridge_id AS bridge_id,
-        b.confidence_score AS mapping_confidence_score
-    FROM {database}.sec_xbrl_frame_observation_v1 AS o
-    INNER JOIN {database}.sec_filing_v2 AS f FINAL
-        ON f.cik = o.cik
-       AND f.accession_number = o.accession_number
-    INNER JOIN bridge AS b
-        ON b.cik = o.cik
-    WHERE f.accepted_at_utc IS NOT NULL
-      AND (b.accession_number = '' OR b.accession_number = o.accession_number)
-      AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
-      AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
-      AND f.accepted_at_utc >= {start_expr}
-      AND f.accepted_at_utc <= {end_expr}
-)
+SELECT
+    ticker,
+    timestamp_us,
+    source_id,
+    cik,
+    issuer_id,
+    taxonomy,
+    tag,
+    unit_code,
+    fiscal_year,
+    fiscal_period,
+    form_type,
+    accepted_at_source,
+    accession_number,
+    period_end_date,
+    value,
+    calendar_period_code,
+    location_code,
+    xbrl_row_kind,
+    bridge_id,
+    mapping_confidence AS mapping_confidence_score
+FROM {table}
+PREWHERE ticker IN ({ticker_sql})
+WHERE timestamp_us >= {start_us}
+  AND timestamp_us <= {end_us}
 ORDER BY ticker, timestamp_us DESC, xbrl_row_kind, taxonomy, tag, unit_code, period_end_date
 LIMIT {int(self.config.xbrl_max_items)} BY ticker
 FORMAT JSONEachRow
@@ -1144,8 +1052,12 @@ def _row_to_model_text(name: str, row: Mapping[str, Any]) -> str:
             for key in ("form_type", "company_name", "items", "primary_document")
             if row.get(key)
         )
+        direct_text = str(row.get("text", "") or "")
+        direct_kind = str(row.get("text_kind", "") or "")
         texts = row.get("texts") or []
         body_parts: list[str] = []
+        if direct_text:
+            body_parts.append(f"{direct_kind}\n{direct_text}" if direct_kind else direct_text)
         if isinstance(texts, list):
             for text_row in texts:
                 if isinstance(text_row, Mapping):

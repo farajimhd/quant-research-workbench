@@ -106,24 +106,21 @@ Global features use the same as-of bar fields for configured market symbols
 example `SPY_1d_close` or `QQQ_1w_volume`. These are intended to give the
 temporal model broad market state without leaking future bars.
 
-The default multimodal context comes from concrete `q_live` tables:
+The default multimodal context comes from concrete ClickHouse tables:
 
 - news: `benzinga_news_ticker_v1` joined to `benzinga_news_normalized_v1` by
-  `canonical_news_id`, timestamped by `published_at_utc`
-- SEC filing text: filings come from `sec_filing_v2`, bounded text snippets
-  from `sec_filing_text_v2`, and the as-of timestamp is always
-  `sec_filing_v2.accepted_at_utc`. The SEC gateway enriches this timestamp
-  while processing each accession. Rows whose `accepted_at_utc` is null are
-  excluded because they do not have a safe event time for no-lookahead
-  training. The loader uses `id_sec_market_bridge_v1` only to attach a CIK or
-  accession to a market ticker when the mapping is valid on the accepted date;
-  the bridge is not the event-time source.
-- XBRL fundamentals: numeric company facts come from
-  `sec_xbrl_company_fact_v1` and frame observations from
-  `sec_xbrl_frame_observation_v1`. Each XBRL row is joined back to
-  `sec_filing_v2` by `(cik, accession_number)` and uses the related filing
-  `accepted_at_utc` as its timestamp. The same `id_sec_market_bridge_v1`
-  mapping rule attaches the row to a ticker.
+  `canonical_news_id`, timestamped by `published_at_utc` in `q_live`.
+- SEC filing text: training reads the migrated context table
+  `market_sip_compact.sec_filing_text_context` by default. This table is built
+  from SEC filings using `sec_filing_v2.accepted_at_utc` as the no-lookahead
+  event time and stores bounded text snippets already mapped to market tickers.
+  The rolling data loader does not repeatedly join raw SEC filings, text rows,
+  or bridge mappings during training.
+- XBRL fundamentals: training reads the migrated context table
+  `market_sip_compact.sec_xbrl_context` by default. The table contains company
+  facts and frame observations joined to their filing accepted timestamp and
+  mapped ticker ahead of time, so the loader can fetch as-of XBRL rows with a
+  simple `(ticker, timestamp_us)` range query.
 
 Every row is normalized to `timestamp_us` and the materializer only returns
 items with `timestamp_us <= sample_origin_timestamp_us`, so future text or

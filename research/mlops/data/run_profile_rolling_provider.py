@@ -28,8 +28,12 @@ from research.mlops.env import discover_env_files, load_env_files
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Profile the production-aligned rolling market data provider.")
     parser.add_argument("--database", default="market_sip_compact")
+    parser.add_argument("--q-live-database", default="q_live")
+    parser.add_argument("--sec-context-database", default="market_sip_compact")
     parser.add_argument("--events-table", default="events")
     parser.add_argument("--macro-bars-table", default="macro_bars_by_time_symbol")
+    parser.add_argument("--sec-filing-text-context-table", default="sec_filing_text_context")
+    parser.add_argument("--sec-xbrl-context-table", default="sec_xbrl_context")
     parser.add_argument("--index-table", default="train_2019_to_2025")
     parser.add_argument("--event-date", default="2025-01-02")
     parser.add_argument("--ticker-limit", type=int, default=64)
@@ -45,7 +49,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--synthetic-tickers", type=int, default=16)
     parser.add_argument("--synthetic-events", type=int, default=8000)
     parser.add_argument("--profile-production-gather", action="store_true")
-    parser.add_argument("--skip-q-live-contexts", action="store_true")
+    parser.add_argument("--skip-q-live-contexts", action="store_true", help="Backward-compatible alias for --skip-external-contexts.")
+    parser.add_argument("--skip-external-contexts", action="store_true")
     return parser.parse_args()
 
 
@@ -54,8 +59,12 @@ def main() -> int:
     env_files = load_env_files(discover_env_files(REPO_ROOT), verbose=False)
     config = RollingMarketDataConfig(
         database=args.database,
+        q_live_database=args.q_live_database,
+        sec_context_database=args.sec_context_database,
         events_table=args.events_table,
         macro_bars_table=args.macro_bars_table,
+        sec_filing_text_context_table=args.sec_filing_text_context_table,
+        sec_xbrl_context_table=args.sec_xbrl_context_table,
         index_table=args.index_table,
         batch_size=int(args.batch_size),
         sample_stride_events=int(args.sample_stride_events),
@@ -66,6 +75,11 @@ def main() -> int:
     print("=" * 100, flush=True)
     print("Rolling market data-provider profiler", flush=True)
     print(f"database={config.database} events_table={config.events_table} macro_bars_table={config.macro_bars_table}", flush=True)
+    print(
+        f"contexts=news:{config.q_live_database} sec:{config.sec_context_database}.{config.sec_filing_text_context_table} "
+        f"xbrl:{config.sec_context_database}.{config.sec_xbrl_context_table}",
+        flush=True,
+    )
     print(
         f"event_date={args.event_date} ticker_limit={args.ticker_limit} batch_size={config.batch_size} "
         f"context_chunks={len(config.context_lags)} carryover_events={config.carryover_events}",
@@ -108,15 +122,15 @@ def run_clickhouse(args: argparse.Namespace, config: RollingMarketDataConfig) ->
         macro = source.fetch_macro_bars(start_date=str(args.event_date), end_date=str(args.event_date), tickers=tickers)
         print(f"FETCH macro bars done rows={len(macro.rows):,} seconds={macro.fetch_seconds:.3f}", flush=True)
         engine.load_macro_bars(macro)
-        if not args.skip_q_live_contexts and day.rows_by_ticker:
+        if not (args.skip_q_live_contexts or args.skip_external_contexts) and day.rows_by_ticker:
             start_us, end_us = event_time_bounds(day.rows_by_ticker)
-            print(f"FETCH q_live contexts start_us={start_us} end_us={end_us}", flush=True)
+            print(f"FETCH external contexts start_us={start_us} end_us={end_us}", flush=True)
             started = time.perf_counter()
             contexts = source.fetch_q_live_contexts(start_timestamp_us=start_us, end_timestamp_us=end_us, tickers=tickers)
             seconds = time.perf_counter() - started
             counts = {name: len(rows) for name, rows in contexts.items()}
             engine.load_external_contexts(contexts)
-            print(f"FETCH q_live contexts done seconds={seconds:.3f} counts={counts}", flush=True)
+            print(f"FETCH external contexts done seconds={seconds:.3f} counts={counts}", flush=True)
         return profile_engine(args, config, engine, rows_returned=day.rows_returned, fetch_seconds=day.fetch_seconds)
     finally:
         bytes_client.close()
