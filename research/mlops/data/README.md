@@ -80,10 +80,29 @@ Profile against ClickHouse:
 python D:\TradingCodes\quant-research-workbench\research\mlops\data\run_profile_ticker_block_provider.py --database market_sip_compact --events-table events --index-table train_2019_to_2025 --ticker-group-size 64 --events-per-ticker-block 250000 --future-tail-events 4096 --sample-stride-events 16 --max-samples-per-ticker 2048 --batches 4 --max-threads 8 --max-memory-usage 80G
 ```
 
+Compare ordinal-range fetches with date-block fetches for the same ticker
+groups:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\data\run_profile_ticker_block_provider.py --mode compare --date-block-date 2025-01-02 --database market_sip_compact --events-table events --index-table train_2019_to_2025 --ticker-group-size 64 --events-per-ticker-block 250000 --future-tail-events 4096 --sample-stride-events 16 --max-samples-per-ticker 2048 --batches 4 --max-threads 8 --max-memory-usage 80G --report-path D:\market-data\prepared\data_provider_profiles\ticker_block_compare.jsonl
+```
+
+For a controlled liquid-ticker comparison:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\research\mlops\data\run_profile_ticker_block_provider.py --mode compare --date-block-date 2025-01-02 --tickers AAPL,MSFT,NVDA,TSLA --database market_sip_compact --events-table events --index-table train_2019_to_2025 --ticker-group-size 4 --events-per-ticker-block 4096 --future-tail-events 512 --sample-stride-events 64 --max-samples-per-ticker 64 --batches 1 --max-threads 4 --max-memory-usage 20G --report-path D:\market-data\prepared\data_provider_profiles\ticker_block_compare_liquid.jsonl
+```
+
 Workstation runtime equivalent:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\data\run_profile_ticker_block_provider.py --database market_sip_compact --events-table events --index-table train_2019_to_2025 --ticker-group-size 64 --events-per-ticker-block 250000 --future-tail-events 4096 --sample-stride-events 16 --max-samples-per-ticker 2048 --batches 4 --max-threads 8 --max-memory-usage 80G
+```
+
+Workstation compare command:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\data\run_profile_ticker_block_provider.py --mode compare --date-block-date 2025-01-02 --database market_sip_compact --events-table events --index-table train_2019_to_2025 --ticker-group-size 64 --events-per-ticker-block 250000 --future-tail-events 4096 --sample-stride-events 16 --max-samples-per-ticker 2048 --batches 4 --max-threads 8 --max-memory-usage 80G --report-path D:\market-data\prepared\data_provider_profiles\ticker_block_compare.jsonl
 ```
 
 The main tuning knobs are:
@@ -98,6 +117,19 @@ The main tuning knobs are:
 - `--polars-assembly`: optional profiler path that materializes a single sorted
   Polars table for the fetched block. The default avoids this copy because the
   per-ticker array path is usually faster for training.
+- `--mode ordinal|date|compare`: `ordinal` fetches cursor-controlled ordinal
+  ranges, `date` fetches all rows for the selected tickers inside one
+  `event_date`, and `compare` profiles both modes side by side.
+- `--tickers`: optional comma-separated ticker override for controlled profiling
+  or ticker-specific training experiments.
+- `--report-path`: optional JSONL output for profiler results.
+
+The modes answer different questions:
+
+- `ordinal` is best for precise chronological cursor advancement and targeted
+  ticker/range training.
+- `date` is best when a fetched day is fully consumed. It is wasteful when
+  `max_samples_per_ticker` is low because it still reads the whole date block.
 
 Ticker scheduling is epoch-style without replacement: every active ticker is
 selected once before the ticker list is reshuffled. Cursors are advanced only

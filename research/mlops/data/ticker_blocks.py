@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import random
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 
-from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident
+from research.mlops.clickhouse import ClickHouseHttpClient, parse_size_bytes, quote_ident, sql_string
 from research.mlops.clickhouse_events import (
     EVENT_ROW_DTYPE,
     EventSpan,
@@ -57,6 +58,15 @@ class EventTimeBarBatch:
     reject_counts: dict[str, int] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class FetchResult:
+    rows_by_ticker: dict[str, np.ndarray]
+    requests: list[TickerBlockRequest]
+    fetch_seconds: float
+    rows_returned: int
+    query_mode: str
+
+
 @dataclass(slots=True)
 class ClickHouseTickerBlockBatchProvider:
     """Read chronological ticker blocks and create chunk+bar-label batches.
@@ -95,9 +105,9 @@ class ClickHouseTickerBlockBatchProvider:
         if not selected:
             raise StopIteration("No active ticker cursors remain.")
         requests = build_requests(selected, self.config)
-        rows_by_ticker = fetch_ticker_blocks(self.bytes_client, self.config, requests)
+        fetch_result = fetch_ticker_blocks_profiled(self.bytes_client, self.config, requests)
         batch = build_event_time_bar_batch(
-            rows_by_ticker=rows_by_ticker,
+            rows_by_ticker=fetch_result.rows_by_ticker,
             requests=requests,
             config=self.config,
             provider_name="clickhouse_ticker_block",
@@ -105,7 +115,8 @@ class ClickHouseTickerBlockBatchProvider:
         )
         if batch.header_uint8.shape[0] == 0:
             raise RuntimeError(f"Ticker block produced no usable samples; rejects={batch.reject_counts}")
-        self.scheduler.update_after_success(requests)
+        completed = [request for request in requests if request.ticker in fetch_result.rows_by_ticker]
+        self.scheduler.update_after_success(completed)
         if self.config.state_path is not None:
             self.scheduler.save(self.config.state_path)
         self.batch_id += 1
@@ -305,6 +316,14 @@ def fetch_ticker_blocks(
     config: TickerBlockDataConfig,
     requests: list[TickerBlockRequest],
 ) -> dict[str, np.ndarray]:
+    return fetch_ticker_blocks_profiled(client, config, requests).rows_by_ticker
+
+
+def fetch_ticker_blocks_profiled(
+    client: PersistentClickHouseBytesClient,
+    config: TickerBlockDataConfig,
+    requests: list[TickerBlockRequest],
+) -> FetchResult:
     spans = [
         EventSpan(
             span_id=index,
@@ -319,10 +338,12 @@ def fetch_ticker_blocks(
         for index, request in enumerate(requests)
     ]
     span_config = _span_config_from_ticker_block_config(config)
+    started = time.perf_counter()
     rows = fetch_spans(client, span_config, spans)
+    fetch_seconds = time.perf_counter() - started
     out: dict[str, np.ndarray] = {}
     if rows.size == 0:
-        return out
+        return FetchResult(rows_by_ticker=out, requests=requests, fetch_seconds=fetch_seconds, rows_returned=0, query_mode="ordinal")
     span_ids = rows["span_id"]
     boundaries = np.flatnonzero(span_ids[1:] != span_ids[:-1]) + 1
     starts = np.concatenate(([0], boundaries))
@@ -330,7 +351,119 @@ def fetch_ticker_blocks(
     for start, end in zip(starts, ends):
         request = requests[int(span_ids[start])]
         out[request.ticker] = rows[start:end].copy()
-    return out
+    return FetchResult(rows_by_ticker=out, requests=requests, fetch_seconds=fetch_seconds, rows_returned=int(rows.shape[0]), query_mode="ordinal")
+
+
+def fetch_ticker_date_blocks_profiled(
+    client: PersistentClickHouseBytesClient,
+    config: TickerBlockDataConfig,
+    tickers: Iterable[str],
+    *,
+    event_date: str,
+) -> FetchResult:
+    ticker_tuple = tuple(str(ticker).upper() for ticker in tickers if str(ticker).strip())
+    if not ticker_tuple:
+        return FetchResult(rows_by_ticker={}, requests=[], fetch_seconds=0.0, rows_returned=0, query_mode="date")
+    started = time.perf_counter()
+    payload = client.execute_bytes(date_block_query(config, ticker_tuple, event_date=event_date))
+    fetch_seconds = time.perf_counter() - started
+    if len(payload) % EVENT_ROW_DTYPE.itemsize != 0:
+        raise RuntimeError(f"RowBinary payload size {len(payload):,} is not divisible by row size {EVENT_ROW_DTYPE.itemsize}")
+    rows = np.frombuffer(payload, dtype=EVENT_ROW_DTYPE)
+    rows_by_ticker: dict[str, np.ndarray] = {}
+    requests: list[TickerBlockRequest] = []
+    if rows.size == 0:
+        return FetchResult(rows_by_ticker=rows_by_ticker, requests=requests, fetch_seconds=fetch_seconds, rows_returned=0, query_mode="date")
+    span_ids = rows["span_id"]
+    boundaries = np.flatnonzero(span_ids[1:] != span_ids[:-1]) + 1
+    starts = np.concatenate(([0], boundaries))
+    ends = np.concatenate((boundaries, [rows.shape[0]]))
+    context = int(config.events_per_chunk)
+    future_tail = max(0, int(config.future_tail_events))
+    for start, end in zip(starts, ends):
+        span_id = int(span_ids[start])
+        ticker = ticker_tuple[span_id]
+        ticker_rows = rows[start:end].copy()
+        low = int(ticker_rows["ordinal"][0])
+        high = int(ticker_rows["ordinal"][-1])
+        origin_start = low + context - 1
+        origin_end = high - future_tail
+        if origin_end < origin_start:
+            continue
+        rows_by_ticker[ticker] = ticker_rows
+        requests.append(
+            TickerBlockRequest(
+                ticker=ticker,
+                low_ordinal=low,
+                high_ordinal=high,
+                origin_start_ordinal=origin_start,
+                origin_end_ordinal=origin_end,
+                expected_rows=high - low + 1,
+            )
+        )
+    return FetchResult(
+        rows_by_ticker=rows_by_ticker,
+        requests=requests,
+        fetch_seconds=fetch_seconds,
+        rows_returned=int(rows.shape[0]),
+        query_mode="date",
+    )
+
+
+def date_block_query(config: TickerBlockDataConfig, tickers: tuple[str, ...], *, event_date: str) -> str:
+    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    parts = [
+        f"""
+SELECT
+    toUInt32({index}) AS span_id,
+    ordinal,
+    event_type,
+    sip_timestamp_us,
+    price_primary_int,
+    price_secondary_int,
+    size_primary,
+    size_secondary,
+    exchange_primary,
+    exchange_secondary,
+    event_flags,
+    conditions_packed
+FROM {table}
+PREWHERE event_date = toDate({sql_string(event_date)})
+  AND ticker = {sql_string(ticker)}
+""".strip()
+        for index, ticker in enumerate(tickers)
+    ]
+    return f"""
+SELECT
+    span_id,
+    ordinal,
+    event_type,
+    sip_timestamp_us,
+    price_primary_int,
+    price_secondary_int,
+    size_primary,
+    size_secondary,
+    exchange_primary,
+    exchange_secondary,
+    event_flags,
+    conditions_packed
+FROM
+(
+{" UNION ALL ".join(parts)}
+)
+ORDER BY span_id, ordinal
+{ticker_block_query_settings(config)}
+FORMAT RowBinary
+"""
+
+
+def ticker_block_query_settings(config: TickerBlockDataConfig) -> str:
+    settings: list[str] = []
+    if int(config.max_threads) > 0:
+        settings.append(f"max_threads = {int(config.max_threads)}")
+    if str(config.max_memory_usage) != "0":
+        settings.append(f"max_memory_usage = {parse_size_bytes(str(config.max_memory_usage))}")
+    return " SETTINGS " + ", ".join(settings) if settings else ""
 
 
 def build_event_time_bar_batch(
