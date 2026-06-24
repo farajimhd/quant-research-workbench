@@ -138,26 +138,28 @@ def run_clickhouse(args: argparse.Namespace, config: RollingMarketDataConfig) ->
 
 def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, engine: RollingMarketSampleEngine, *, rows_returned: int, fetch_seconds: float) -> int:
     started = time.perf_counter()
-    samples = engine.build_ready_indices(max_samples=int(args.max_ready_samples))
+    ready_blocks = engine.build_ready_index_blocks(max_samples=int(args.max_ready_samples))
+    ready_samples = engine.ready_index_count(ready_blocks)
     index_seconds = time.perf_counter() - started
     print(
-        f"INDEX samples={len(samples):,} seconds={index_seconds:.3f} "
-        f"samples_per_sec={(len(samples) / index_seconds) if index_seconds > 0 else 0.0:.1f}",
+        f"INDEX samples={ready_samples:,} blocks={len(ready_blocks):,} seconds={index_seconds:.3f} "
+        f"samples_per_sec={(ready_samples / index_seconds) if index_seconds > 0 else 0.0:.1f}",
         flush=True,
     )
-    if not samples:
+    if ready_samples <= 0:
         raise RuntimeError("No ready rolling samples were built. Increase synthetic-events/date coverage or lower context lags.")
 
     materialized = []
-    for batch_id in range(int(args.materialize_batches)):
-        lo = batch_id * int(config.batch_size)
-        hi = min(lo + int(config.batch_size), len(samples))
-        if hi <= lo:
+    materialized_metrics = []
+    for batch_id, batch_samples in enumerate(
+        engine.iter_ready_sample_batches(batch_size=int(config.batch_size), blocks=ready_blocks)
+    ):
+        if batch_id >= int(args.materialize_batches):
             break
-        batch_samples = samples[lo:hi]
         batch = engine.materialize_training_batch(batch_samples, batch_id=batch_id)
         materialized.append(batch)
         metrics = batch.profile.to_metrics(prefix="rolling_training") if batch.profile is not None else {}
+        materialized_metrics.append(metrics)
         print(
             f"TRAIN_BATCH [{batch_id + 1}/{args.materialize_batches}] samples={batch.headers_uint8.shape[0]:,} "
             f"chunks={int(batch.context_mask.sum()):,} seconds={metrics.get('rolling_training/total_seconds', 0.0):.3f} "
@@ -179,17 +181,26 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
                 flush=True,
             )
 
+    materialized_total_seconds = float(sum(item.get("rolling_training/total_seconds", 0.0) for item in materialized_metrics))
+    materialized_samples = int(sum(batch.headers_uint8.shape[0] for batch in materialized))
     payload = {
         "event_date": str(args.event_date),
         "rows_returned": int(rows_returned),
         "fetch_seconds": float(fetch_seconds),
         "index_seconds": float(index_seconds),
-        "ready_samples": int(len(samples)),
+        "ready_index_blocks": int(len(ready_blocks)),
+        "ready_samples": int(ready_samples),
         "batch_size": int(config.batch_size),
         "context_chunks": int(len(config.context_lags)),
         "carryover_events": int(config.carryover_events),
         "materialized_batches": int(len(materialized)),
-        "materialized_samples": int(sum(batch.headers_uint8.shape[0] for batch in materialized)),
+        "materialized_samples": materialized_samples,
+        "materialized_total_seconds": materialized_total_seconds,
+        "materialized_samples_per_second": float(
+            (materialized_samples / materialized_total_seconds)
+            if materialized_total_seconds > 0
+            else 0.0
+        ),
         "label_count": int(len(materialized[0].labels)) if materialized else 0,
         "macro_feature_count": int(len(materialized[0].macro_features)) if materialized else 0,
         "global_feature_count": int(len(materialized[0].global_features)) if materialized else 0,

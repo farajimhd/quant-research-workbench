@@ -10,7 +10,7 @@ from research.mlops.data.config import DataProviderConfig, ExternalAsOfContextCo
 from research.mlops.data.profiling import DataPrepProfile, DataPrepProfiler
 from research.mlops.data.providers import StreamingReplayBatchProvider, TemporalBatchProvider
 from research.mlops.data.ticker_blocks import ClickHouseTickerBlockBatchProvider, EventTimeBarBatch, TickerEpochScheduler
-from research.mlops.data.rolling import RollingEmbeddingCache, RollingMarketSampleEngine
+from research.mlops.data.rolling import RollingEmbeddingCache, RollingMarketSampleEngine, RollingReadyIndexBlock
 from research.mlops.data.contracts import (
     ChunkWindowIndex,
     CompactEvent,
@@ -46,6 +46,7 @@ __all__ = [
     "RollingMarketDataConfig",
     "RollingEmbeddingCache",
     "RollingMarketSampleEngine",
+    "RollingReadyIndexBlock",
     "RollingProductionBatch",
     "RollingSampleIndex",
     "RollingTrainingBatch",

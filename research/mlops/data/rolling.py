@@ -36,6 +36,25 @@ class HistoricalDayFetchResult:
 
 
 @dataclass(frozen=True, slots=True)
+class RollingReadyIndexBlock:
+    """Array-backed ready sample origins for one ticker.
+
+    The heavy path is intentionally delayed. A large historical day can have
+    millions of sample origins, and each origin has many context windows. The
+    provider therefore stores only origin offsets here and creates
+    `RollingSampleIndex` objects only for the current training/serving batch.
+    """
+
+    ticker: str
+    rows: np.ndarray
+    origin_offsets: np.ndarray
+
+    @property
+    def sample_count(self) -> int:
+        return int(self.origin_offsets.shape[0])
+
+
+@dataclass(frozen=True, slots=True)
 class MacroBarFrame:
     """A small as-of lookup store for macro/global bar features.
 
@@ -313,8 +332,15 @@ class RollingMarketSampleEngine:
         for name, rows in rows_by_context.items():
             self.load_external_context(name, rows)
 
-    def build_ready_indices(self, *, max_samples: int = 0) -> tuple[RollingSampleIndex, ...]:
-        samples: list[RollingSampleIndex] = []
+    def build_ready_index_blocks(self, *, max_samples: int = 0) -> tuple[RollingReadyIndexBlock, ...]:
+        """Return lightweight ready-origin arrays without allocating windows.
+
+        This is the fast path for training/profiling. It keeps one NumPy array
+        of origin offsets per ticker and postpones `ChunkWindowIndex` creation
+        until a concrete batch is materialized.
+        """
+
+        blocks: list[RollingReadyIndexBlock] = []
         context = int(self.config.events_per_chunk)
         lags = self.context_lags
         if not lags:
@@ -322,6 +348,7 @@ class RollingMarketSampleEngine:
         min_origin_offset = int(self.config.max_context_lag) + context - 1
         stride = max(1, int(self.config.sample_stride_events))
         cap = int(max_samples or self.config.max_ready_samples)
+        remaining = cap if cap > 0 else 0
 
         for ticker in sorted(self.rows_by_ticker):
             rows = self.rows_by_ticker[ticker]
@@ -333,35 +360,94 @@ class RollingMarketSampleEngine:
                 continue
             if rows.shape[0] > 1 and np.any(rows["ordinal"][1:] != rows["ordinal"][:-1] + 1):
                 origin_offsets = _filter_contiguous_origins(rows, origin_offsets, lags, context)
-            for origin_offset in origin_offsets.tolist():
-                chunk_windows = []
-                for lag in lags:
-                    chunk_origin_offset = int(origin_offset) - int(lag)
-                    start = chunk_origin_offset - context + 1
-                    end = chunk_origin_offset
-                    chunk_windows.append(
-                        ChunkWindowIndex(
-                            ticker=ticker,
-                            lag_chunks=int(lag),
-                            start_ordinal=int(rows["ordinal"][start]),
-                            end_ordinal=int(rows["ordinal"][end]),
-                            origin_ordinal=int(rows["ordinal"][chunk_origin_offset]),
-                            origin_timestamp_us=int(rows["sip_timestamp_us"][chunk_origin_offset]),
-                        )
-                    )
-                samples.append(
-                    RollingSampleIndex(
+                if origin_offsets.size == 0:
+                    continue
+            if remaining > 0:
+                if origin_offsets.shape[0] > remaining:
+                    origin_offsets = origin_offsets[:remaining]
+                remaining -= int(origin_offsets.shape[0])
+            blocks.append(RollingReadyIndexBlock(ticker=ticker, rows=rows, origin_offsets=origin_offsets))
+            if cap > 0 and remaining <= 0:
+                break
+        return tuple(blocks)
+
+    def iter_ready_sample_batches(
+        self,
+        *,
+        batch_size: int | None = None,
+        max_samples: int = 0,
+        blocks: tuple[RollingReadyIndexBlock, ...] | None = None,
+    ) -> Iterable[tuple[RollingSampleIndex, ...]]:
+        """Yield ready samples while expanding only the current batch."""
+
+        size = int(batch_size or self.config.batch_size)
+        if size <= 0:
+            raise ValueError("batch_size must be positive")
+        ready_blocks = blocks if blocks is not None else self.build_ready_index_blocks(max_samples=max_samples)
+        buffer: list[RollingSampleIndex] = []
+        for block in ready_blocks:
+            offsets = block.origin_offsets
+            offset_index = 0
+            while offset_index < offsets.shape[0]:
+                needed = size - len(buffer)
+                take = min(needed, int(offsets.shape[0] - offset_index))
+                current = offsets[offset_index : offset_index + take]
+                offset_index += take
+                buffer.extend(self._sample_indices_from_offsets(block.ticker, block.rows, current))
+                if len(buffer) == size:
+                    yield tuple(buffer)
+                    buffer.clear()
+        if buffer:
+            yield tuple(buffer)
+
+    def ready_index_count(self, blocks: Iterable[RollingReadyIndexBlock]) -> int:
+        return int(sum(block.sample_count for block in blocks))
+
+    def build_ready_indices(self, *, max_samples: int = 0) -> tuple[RollingSampleIndex, ...]:
+        blocks = self.build_ready_index_blocks(max_samples=max_samples)
+        samples: list[RollingSampleIndex] = []
+        for block in blocks:
+            samples.extend(self._sample_indices_from_offsets(block.ticker, block.rows, block.origin_offsets))
+        return tuple(samples)
+
+    def _sample_indices_from_offsets(
+        self,
+        ticker: str,
+        rows: np.ndarray,
+        origin_offsets: np.ndarray,
+    ) -> tuple[RollingSampleIndex, ...]:
+        context = int(self.config.events_per_chunk)
+        lags = self.context_lags
+        out: list[RollingSampleIndex] = []
+        ordinals = rows["ordinal"]
+        timestamps = rows["sip_timestamp_us"]
+        for origin_offset in origin_offsets.tolist():
+            chunk_windows = []
+            for lag in lags:
+                chunk_origin_offset = int(origin_offset) - int(lag)
+                start = chunk_origin_offset - context + 1
+                end = chunk_origin_offset
+                chunk_windows.append(
+                    ChunkWindowIndex(
                         ticker=ticker,
-                        origin_ordinal=int(rows["ordinal"][origin_offset]),
-                        origin_timestamp_us=int(rows["sip_timestamp_us"][origin_offset]),
-                        chunk_windows=tuple(chunk_windows),
-                        macro_asof_timestamp_us=int(rows["sip_timestamp_us"][origin_offset]),
-                        global_asof_timestamp_us=int(rows["sip_timestamp_us"][origin_offset]),
+                        lag_chunks=int(lag),
+                        start_ordinal=int(ordinals[start]),
+                        end_ordinal=int(ordinals[end]),
+                        origin_ordinal=int(ordinals[chunk_origin_offset]),
+                        origin_timestamp_us=int(timestamps[chunk_origin_offset]),
                     )
                 )
-                if cap > 0 and len(samples) >= cap:
-                    return tuple(samples)
-        return tuple(samples)
+            out.append(
+                RollingSampleIndex(
+                    ticker=ticker,
+                    origin_ordinal=int(ordinals[origin_offset]),
+                    origin_timestamp_us=int(timestamps[origin_offset]),
+                    chunk_windows=tuple(chunk_windows),
+                    macro_asof_timestamp_us=int(timestamps[origin_offset]),
+                    global_asof_timestamp_us=int(timestamps[origin_offset]),
+                )
+            )
+        return tuple(out)
 
     def materialize_training_batch(self, samples: Iterable[RollingSampleIndex], *, batch_id: int = 0) -> RollingTrainingBatch:
         sample_tuple = tuple(samples)
