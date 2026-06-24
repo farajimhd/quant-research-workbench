@@ -224,6 +224,12 @@ class _TextTokenizerAdapter:
         return _fallback_tokenize(texts, max_tokens=self.max_tokens)
 
 
+@dataclass(frozen=True, slots=True)
+class _TokenizedText:
+    input_ids: np.ndarray
+    attention_mask: np.ndarray
+
+
 class RollingMarketSampleEngine:
     """Shared rolling event engine for training replay and production serving.
 
@@ -257,6 +263,7 @@ class RollingMarketSampleEngine:
             },
         }
         self._text_tokenizer = _TextTokenizerAdapter(config)
+        self._text_token_cache: dict[tuple[str, str], _TokenizedText] = {}
 
     @property
     def context_lags(self) -> tuple[int, ...]:
@@ -513,8 +520,15 @@ class RollingMarketSampleEngine:
                 name: [store.asof(ticker=sample.ticker, timestamp_us=sample.origin_timestamp_us) for sample in sample_tuple]
                 for name, store in self.external_contexts.items()
             }
+        text_cache_before = len(self._text_token_cache)
+        text_items = _count_external_text_items(external, names=("news", "sec_filings"))
         with profiler.stage("text_inputs", count=batch):
             text_inputs = self._materialize_text_inputs(external)
+        text_cache_after = len(self._text_token_cache)
+        text_misses = max(0, text_cache_after - text_cache_before)
+        profiler.add_stage("text_token_cache_entries", 0.0, count=text_cache_after)
+        profiler.add_stage("text_token_cache_hits", 0.0, count=max(0, text_items - text_misses))
+        profiler.add_stage("text_token_cache_misses", 0.0, count=text_misses)
         with profiler.stage("xbrl_inputs", count=batch):
             xbrl_inputs = self._materialize_xbrl_inputs(sample_tuple, external)
         profile = profiler.finish()
@@ -698,21 +712,44 @@ class RollingMarketSampleEngine:
                 continue
             batch = len(rows_by_sample)
             max_items = int(max_items)
-            texts: list[str] = []
+            input_ids = np.zeros((batch, max_items, self._text_tokenizer.max_tokens), dtype=np.int32)
+            attention_mask = np.zeros((batch, max_items, self._text_tokenizer.max_tokens), dtype=np.uint8)
             source_ts = np.zeros((batch, max_items), dtype=np.int64)
             item_mask = np.zeros((batch, max_items), dtype=np.bool_)
+            misses: list[tuple[tuple[str, str], str]] = []
+            placements: list[tuple[int, int, tuple[str, str]]] = []
             for sample_index, rows in enumerate(rows_by_sample):
                 selected = list(rows)[-max_items:]
                 for item_index, row in enumerate(selected):
-                    texts.append(_row_to_model_text(name, row))
+                    text = _row_to_model_text(name, row)
+                    if not text:
+                        continue
+                    cache_key = _text_cache_key(name, row, text)
                     source_ts[sample_index, item_index] = int(row.get("timestamp_us", 0) or 0)
                     item_mask[sample_index, item_index] = True
-                for _ in range(max_items - len(selected)):
-                    texts.append("")
-            encoded = self._text_tokenizer.encode(texts)
+                    placements.append((sample_index, item_index, cache_key))
+                    if cache_key not in self._text_token_cache:
+                        misses.append((cache_key, text))
+            if misses:
+                unique_misses: dict[tuple[str, str], str] = {}
+                for cache_key, text in misses:
+                    unique_misses.setdefault(cache_key, text)
+                miss_keys = list(unique_misses)
+                encoded = self._text_tokenizer.encode([unique_misses[key] for key in miss_keys])
+                for row_index, cache_key in enumerate(miss_keys):
+                    self._text_token_cache[cache_key] = _TokenizedText(
+                        input_ids=np.asarray(encoded["input_ids"][row_index], dtype=np.int32),
+                        attention_mask=np.asarray(encoded["attention_mask"][row_index], dtype=np.uint8),
+                    )
+            for sample_index, item_index, cache_key in placements:
+                tokenized = self._text_token_cache.get(cache_key)
+                if tokenized is None:
+                    continue
+                input_ids[sample_index, item_index] = tokenized.input_ids
+                attention_mask[sample_index, item_index] = tokenized.attention_mask
             out[name] = {
-                "input_ids": encoded["input_ids"].reshape(batch, max_items, -1),
-                "attention_mask": encoded["attention_mask"].reshape(batch, max_items, -1),
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
                 "item_mask": item_mask,
                 "timestamp_us": source_ts,
             }
@@ -1176,6 +1213,24 @@ def _row_to_model_text(name: str, row: Mapping[str, Any]) -> str:
         return "\n".join(part for part in [heading, *body_parts] if part).strip()
     payload = row.get("text") or row.get("headline") or row.get("title") or ""
     return str(payload)
+
+
+def _text_cache_key(name: str, row: Mapping[str, Any], text: str) -> tuple[str, str]:
+    source_id = str(row.get("source_id", "") or row.get("id", "") or row.get("accession_number", "") or "")
+    timestamp = str(row.get("timestamp_us", "") or row.get("timestamp_ns", "") or "")
+    if source_id:
+        return (name, f"{source_id}:{timestamp}")
+    return (name, f"text:{_stable_uint32(text)}:{len(text)}")
+
+
+def _count_external_text_items(external: Mapping[str, list[list[dict[str, Any]]]], *, names: tuple[str, ...]) -> int:
+    count = 0
+    for name in names:
+        for rows in external.get(name, []):
+            for row in rows:
+                if _row_to_model_text(name, row):
+                    count += 1
+    return count
 
 
 def _stable_uint32(value: Any) -> int:
