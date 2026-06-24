@@ -42,7 +42,7 @@ from research.temporal_event_model.v1.data import (
     iter_fixed_validation_batches,
 )
 from research.temporal_event_model.v1.losses import temporal_next_chunk_loss
-from research.temporal_event_model.v1.model import TemporalEventPredictor, build_event_encoder
+from research.temporal_event_model.v1.model import TemporalEventPredictor, build_event_encoder, load_trusted_torch_checkpoint
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -413,7 +413,7 @@ def checkpoint_payload(
 
 
 def load_training_checkpoint(model: TemporalEventPredictor, path: Path, device: torch.device) -> None:
-    payload = torch.load(path, map_location=device)
+    payload = load_trusted_torch_checkpoint(path, map_location=device)
     state = payload.get("model_state_dict") if isinstance(payload, dict) else payload
     if not isinstance(state, dict):
         raise RuntimeError(f"Checkpoint {path} does not contain model_state_dict.")

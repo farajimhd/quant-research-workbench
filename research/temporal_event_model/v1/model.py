@@ -320,8 +320,24 @@ def build_event_encoder(config: EncoderConfig, *, events_per_chunk: int, device:
 
 
 def load_pretrained_autoencoder(model: nn.Module, checkpoint: Path) -> None:
-    payload: Any = torch.load(checkpoint, map_location="cpu")
+    payload: Any = load_trusted_torch_checkpoint(checkpoint, map_location="cpu")
     state = payload.get("model_state_dict") or payload.get("model") or payload.get("state_dict") if isinstance(payload, dict) else payload
     if not isinstance(state, dict):
         raise RuntimeError(f"Checkpoint {checkpoint} does not contain a model state dict.")
     model.load_state_dict(state, strict=False)
+
+
+def load_trusted_torch_checkpoint(checkpoint: Path, *, map_location: str | torch.device) -> Any:
+    """Load one of our local training checkpoints under PyTorch 2.6+.
+
+    PyTorch 2.6 changed `torch.load` to default to `weights_only=True`, which
+    rejects the metadata objects in our trusted local checkpoints. These files
+    are produced by our own training jobs and include config dictionaries,
+    optimizer state, scheduler state, and NumPy-backed metadata, so full
+    checkpoint loading is required for probe and fine-tuning workflows.
+    """
+
+    try:
+        return torch.load(checkpoint, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(checkpoint, map_location=map_location)

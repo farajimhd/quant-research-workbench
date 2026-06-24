@@ -33,7 +33,7 @@ from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import JsonlMetricLogger
 from research.mlops.paths import RunPaths, default_run_root
 from research.mlops.wandb_utils import init_wandb
-from research.temporal_event_model.v1.model import SingleChunkFutureLabelPredictor
+from research.temporal_event_model.v1.model import SingleChunkFutureLabelPredictor, load_trusted_torch_checkpoint
 from research.temporal_event_model.v1.progress import ProbeProgressState, ProbeTrainingReporter
 
 
@@ -423,7 +423,7 @@ def build_frozen_encoder(config: ProbeConfig, device: torch.device) -> nn.Module
         dropout=config.encoder_dropout,
     )
     autoencoder = model_module.EventTokenMaskedAutoencoder(events_per_chunk=128, config=model_config)
-    payload = torch.load(config.encoder_checkpoint, map_location="cpu")
+    payload = load_trusted_torch_checkpoint(config.encoder_checkpoint, map_location="cpu")
     state = payload.get("model_state_dict") or payload.get("model") or payload.get("state_dict") if isinstance(payload, dict) else payload
     if not isinstance(state, dict):
         raise RuntimeError(f"Checkpoint does not contain a model state dict: {config.encoder_checkpoint}")
