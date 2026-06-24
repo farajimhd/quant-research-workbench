@@ -133,6 +133,7 @@ class ExternalAsOfContextConfig:
     table: str = ""
     ticker_column: str = "ticker"
     timestamp_column: str = "timestamp_us"
+    timestamp_unit: str = "us"
     id_column: str = "id"
     payload_columns: tuple[str, ...] = ()
     max_items: int = 32
@@ -166,6 +167,9 @@ class RollingMarketDataConfig:
     max_memory_usage: str = "80G"
     global_symbols: tuple[str, ...] = ("SPY", "QQQ", "IWM", "DIA")
     macro_timeframes: tuple[str, ...] = ("1d", "1w", "1mo", "1y")
+    label_timeframes: tuple[str, ...] = ("1d", "1w", "1mo", "1y")
+    macro_lookback_days: int = 40
+    label_lookahead_days: int = 400
     seed: int = 17
     external_contexts: tuple[ExternalAsOfContextConfig, ...] = ()
 

@@ -10,10 +10,10 @@ if str(REPO_ROOT) not in sys.path:
 import numpy as np
 
 from research.mlops.data.audit import audit_temporal_batch
-from research.mlops.data.config import DataProviderConfig, MarketStreamConfig, RollingMarketDataConfig, TickerBlockDataConfig
+from research.mlops.data.config import DataProviderConfig, ExternalAsOfContextConfig, MarketStreamConfig, RollingMarketDataConfig, TickerBlockDataConfig
 from research.mlops.data.providers import StreamingReplayBatchProvider
 from research.mlops.data.replay import iter_replay_batches
-from research.mlops.data.rolling import RollingMarketSampleEngine, synthetic_rows_by_ticker
+from research.mlops.data.rolling import MacroBarFrame, RollingMarketSampleEngine, synthetic_rows_by_ticker
 from research.mlops.data.sources import InMemoryEventSource
 from research.mlops.data.ticker_blocks import TickerCursor, TickerEpochScheduler, build_event_time_bar_batch, build_requests, make_synthetic_event_rows
 from research.mlops.data.contracts import CompactEvent
@@ -134,9 +134,20 @@ def smoke_rolling_provider() -> None:
         sample_stride_events=32,
         batch_size=8,
         max_ready_samples=16,
+        external_contexts=(ExternalAsOfContextConfig(name="news", timestamp_column="timestamp_ns", timestamp_unit="ns", payload_columns=("headline",)),),
     )
     engine = RollingMarketSampleEngine(config)
     engine.append_rows_by_ticker(synthetic_rows_by_ticker(tickers=2, rows_per_ticker=1024))
+    engine.load_macro_bars(
+        MacroBarFrame(
+            rows=[
+                {"sym": "T0000", "timeframe": "1d", "bar_start_ms": 1_699_999_000_000, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 100, "dollar_volume": 150, "trade_count": 10, "quote_count": 50, "vwap": 1.4},
+                {"sym": "T0000", "timeframe": "1d", "bar_start_ms": 1_700_000_100_000, "open": 2, "high": 3, "low": 1.5, "close": 2.5, "volume": 200, "dollar_volume": 500, "trade_count": 20, "quote_count": 60, "vwap": 2.2},
+                {"sym": "SPY", "timeframe": "1d", "bar_start_ms": 1_699_999_000_000, "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 1000, "dollar_volume": 10_500, "trade_count": 100, "quote_count": 500, "vwap": 10.3},
+            ]
+        )
+    )
+    engine.load_external_context("news", [{"ticker": "T0000", "timestamp_ns": 1_700_000_000_001_000_000, "id": "n1", "headline": "test"}])
     samples = engine.build_ready_indices()
     assert len(samples) == 16
     assert len(samples[0].chunk_windows) == len(config.context_lags)
@@ -145,6 +156,11 @@ def smoke_rolling_provider() -> None:
     assert batch.headers_uint8.shape == (8, len(config.context_lags), 14)
     assert batch.events_uint8.shape == (8, len(config.context_lags), 128, 16)
     assert bool(batch.context_mask.all())
+    assert "1d_close" in batch.macro_features
+    assert "session_trade_count_so_far" in batch.macro_features
+    assert "SPY_1d_close" in batch.global_features
+    assert "future_1d_close" in batch.labels
+    assert "news" in batch.external_context
     lookup = {}
     for sample_index, ticker in enumerate(batch.ticker.tolist()):
         for origin in batch.chunk_origin_ordinal[sample_index].tolist():

@@ -63,6 +63,10 @@ production:
    - `headers_uint8`: `[batch, context_chunks, 14]`
    - `events_uint8`: `[batch, context_chunks, 128, 16]`
    - metadata arrays for ticker, origin ordinal, origin timestamp, and chunk origins
+   - `macro_features`: as-of ticker bars plus current session prefix features
+   - `global_features`: as-of bars for configured market symbols
+   - `external_context`: as-of news/SEC/XBRL/fundamental payloads when configured
+   - `labels`: strict-future bars from configured label timeframes
 5. Production materialization uses the same sample indices but gathers cached
    encoder embeddings instead of re-encoding windows.
 
@@ -80,7 +84,15 @@ Macro/global context is loaded through `macro_bars_by_time_symbol` by default.
 It is always as-of the sample origin timestamp. Generic news/SEC/XBRL context
 sources can be configured with `ExternalAsOfContextConfig`; the loader only
 returns rows with timestamps at or before the origin, so future text or
-fundamental rows cannot leak into features.
+fundamental rows cannot leak into features. External source timestamps support
+`timestamp_unit="us"` and `timestamp_unit="ns"` so nanosecond UTC source tables
+can be compared correctly to event-origin microsecond timestamps.
+
+Future labels are separate from features. They use the first bar whose
+`bar_start` is after the sample origin for each configured `label_timeframes`
+entry. The default bar query uses a 40-day macro lookback and a 400-day label
+lookahead so daily, weekly, monthly, and yearly labels can be populated from the
+same bar table.
 
 ## Profiling
 

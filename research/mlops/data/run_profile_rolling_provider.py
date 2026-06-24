@@ -138,7 +138,9 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
             f"TRAIN_BATCH [{batch_id + 1}/{args.materialize_batches}] samples={batch.headers_uint8.shape[0]:,} "
             f"chunks={int(batch.context_mask.sum()):,} seconds={metrics.get('rolling_training/total_seconds', 0.0):.3f} "
             f"samples_per_sec={metrics.get('rolling_training/samples_per_second', 0.0):.1f} "
-            f"shape_headers={tuple(batch.headers_uint8.shape)} shape_events={tuple(batch.events_uint8.shape)}",
+            f"labels={len(batch.labels)} macro={len(batch.macro_features)} global={len(batch.global_features)} "
+            f"external={len(batch.external_context)} shape_headers={tuple(batch.headers_uint8.shape)} "
+            f"shape_events={tuple(batch.events_uint8.shape)}",
             flush=True,
         )
         if args.profile_production_gather:
@@ -163,6 +165,10 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
         "carryover_events": int(config.carryover_events),
         "materialized_batches": int(len(materialized)),
         "materialized_samples": int(sum(batch.headers_uint8.shape[0] for batch in materialized)),
+        "label_count": int(len(materialized[0].labels)) if materialized else 0,
+        "macro_feature_count": int(len(materialized[0].macro_features)) if materialized else 0,
+        "global_feature_count": int(len(materialized[0].global_features)) if materialized else 0,
+        "external_context_count": int(len(materialized[0].external_context)) if materialized else 0,
     }
     if args.report_path is not None:
         write_profile_jsonl(args.report_path, payload)

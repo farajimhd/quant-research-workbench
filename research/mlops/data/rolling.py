@@ -10,7 +10,7 @@ import numpy as np
 
 from research.mlops.clickhouse import ClickHouseHttpClient, parse_size_bytes, quote_ident, sql_string
 from research.mlops.clickhouse_events import EVENT_ROW_DTYPE, PersistentClickHouseBytesClient, encode_unified_event_window
-from research.mlops.compact_events import EVENT_BYTES, HEADER_BYTES
+from research.mlops.compact_events import EVENT_BYTES, HEADER_BYTES, QUOTE_EVENT_TYPE, TRADE_EVENT_TYPE
 from research.mlops.data.config import ExternalAsOfContextConfig, RollingMarketDataConfig
 from research.mlops.data.contracts import (
     ChunkWindowIndex,
@@ -79,6 +79,25 @@ class MacroBarFrame:
                 out[f"{prefix}_{name}"] = float(arrays[name][row_index])
         return out
 
+    def future(self, *, symbol: str, timestamp_us: int, timeframes: Iterable[str]) -> dict[str, float]:
+        symbol = symbol.upper()
+        timestamp_ms = int(timestamp_us) // 1000
+        out: dict[str, float] = {}
+        wanted = set(str(value) for value in timeframes)
+        for timeframe in wanted:
+            prefix = f"{timeframe}"
+            arrays = self._index.get((symbol, timeframe))
+            if arrays is None or arrays["bar_start_ms"].size == 0:
+                _fill_empty_bar_values(out, prefix)
+                continue
+            row_index = int(np.searchsorted(arrays["bar_start_ms"], timestamp_ms, side="right"))
+            if row_index >= arrays["bar_start_ms"].shape[0]:
+                _fill_empty_bar_values(out, prefix)
+                continue
+            for name in ("open", "high", "low", "close", "volume", "dollar_volume", "trade_count", "quote_count", "vwap"):
+                out[f"{prefix}_{name}"] = float(arrays[name][row_index])
+        return out
+
 
 @dataclass(slots=True)
 class ExternalAsOfStore:
@@ -94,7 +113,7 @@ class ExternalAsOfStore:
                 continue
             self.rows_by_ticker.setdefault(ticker, []).append(dict(row))
         for rows_for_ticker in self.rows_by_ticker.values():
-            rows_for_ticker.sort(key=lambda item: int(item.get(self.config.timestamp_column, 0)))
+            rows_for_ticker.sort(key=lambda item: _external_timestamp_us(item, self.config))
 
     def asof(self, *, ticker: str, timestamp_us: int) -> list[dict[str, Any]]:
         rows = self.rows_by_ticker.get(ticker.upper(), [])
@@ -105,7 +124,7 @@ class ExternalAsOfStore:
             lower_bound = int(timestamp_us) - int(self.config.max_age_microseconds)
         selected: list[dict[str, Any]] = []
         for row in reversed(rows):
-            row_ts = int(row.get(self.config.timestamp_column, 0))
+            row_ts = _external_timestamp_us(row, self.config)
             if row_ts > int(timestamp_us):
                 continue
             if lower_bound is not None and row_ts < lower_bound:
@@ -308,6 +327,9 @@ class RollingMarketSampleEngine:
                     chunk_origin_ts[sample_index, context_index] = int(window.origin_timestamp_us)
 
         macro_features, global_features = self._materialize_bar_features(sample_tuple)
+        session_features = self._materialize_session_features(sample_tuple)
+        labels = self._materialize_future_labels(sample_tuple)
+        macro_features.update(session_features)
         external = {
             name: [store.asof(ticker=sample.ticker, timestamp_us=sample.origin_timestamp_us) for sample in sample_tuple]
             for name, store in self.external_contexts.items()
@@ -316,6 +338,7 @@ class RollingMarketSampleEngine:
         profile.rows_read = int(sum(len(sample.chunk_windows) * self.config.events_per_chunk for sample in sample_tuple))
         profile.chunks_created = int(mask.sum())
         profile.samples_created = int(batch)
+        profile.labels_created = int(sum(value.shape[1] if value.ndim > 1 else 1 for value in labels.values()))
         profile.output_batches_created = 1
         return RollingTrainingBatch(
             headers_uint8=headers,
@@ -329,6 +352,7 @@ class RollingMarketSampleEngine:
             macro_features=macro_features,
             global_features=global_features,
             external_context=external,
+            labels=labels,
             profile=profile,
         )
 
@@ -406,6 +430,28 @@ class RollingMarketSampleEngine:
         global_features = {f"{symbol}_{key}": value for symbol, rows in global_rows.items() for key, value in _rows_to_feature_arrays(rows).items()}
         return macro, global_features
 
+    def _materialize_future_labels(self, samples: tuple[RollingSampleIndex, ...]) -> dict[str, np.ndarray]:
+        rows = [
+            self.macro_bars.future(symbol=sample.ticker, timestamp_us=sample.origin_timestamp_us, timeframes=self.config.label_timeframes)
+            for sample in samples
+        ]
+        return {f"future_{key}": value for key, value in _rows_to_feature_arrays(rows).items()}
+
+    def _materialize_session_features(self, samples: tuple[RollingSampleIndex, ...]) -> dict[str, np.ndarray]:
+        rows: list[dict[str, float]] = []
+        for sample in samples:
+            ticker_rows = self.rows_by_ticker.get(sample.ticker)
+            if ticker_rows is None or ticker_rows.size == 0:
+                rows.append(_empty_session_features())
+                continue
+            low = int(ticker_rows["ordinal"][0])
+            origin_offset = int(sample.origin_ordinal) - low
+            if origin_offset < 0:
+                rows.append(_empty_session_features())
+                continue
+            rows.append(_session_features_from_prefix(ticker_rows[: origin_offset + 1]))
+        return _rows_to_feature_arrays(rows)
+
 
 class HistoricalClickHouseRollingSource:
     """ClickHouse-backed day source for the rolling engine."""
@@ -463,6 +509,7 @@ FORMAT TSV
         table = f"{quote_ident(self.config.database)}.{quote_ident(self.config.macro_bars_table)}"
         symbol_sql = ", ".join(sql_string(symbol) for symbol in sorted(symbols))
         timeframe_sql = ", ".join(sql_string(tf) for tf in self.config.macro_timeframes)
+        label_timeframe_sql = ", ".join(sql_string(tf) for tf in sorted(set(self.config.macro_timeframes).union(self.config.label_timeframes)))
         query = f"""
 SELECT
     sym,
@@ -479,9 +526,9 @@ SELECT
     vwap
 FROM {table}
 WHERE sym IN ({symbol_sql})
-  AND timeframe IN ({timeframe_sql})
-  AND bar_start >= toDateTime64({sql_string(start_date + " 00:00:00")}, 3, 'UTC') - INTERVAL 40 DAY
-  AND bar_start < toDateTime64({sql_string(end_date + " 00:00:00")}, 3, 'UTC') + INTERVAL 40 DAY
+  AND timeframe IN ({label_timeframe_sql or timeframe_sql})
+  AND bar_start >= toDateTime64({sql_string(start_date + " 00:00:00")}, 3, 'UTC') - INTERVAL {int(self.config.macro_lookback_days)} DAY
+  AND bar_start < toDateTime64({sql_string(end_date + " 00:00:00")}, 3, 'UTC') + INTERVAL {int(self.config.label_lookahead_days)} DAY
 ORDER BY sym, timeframe, bar_start
 FORMAT JSONEachRow
 """
@@ -489,6 +536,37 @@ FORMAT JSONEachRow
         text = self.text_client.execute(query)
         rows = [json.loads(line) for line in text.splitlines() if line.strip()]
         return MacroBarFrame(rows=rows, fetch_seconds=time.perf_counter() - started)
+
+    def fetch_external_contexts(
+        self,
+        *,
+        start_timestamp_us: int,
+        end_timestamp_us: int,
+        tickers: Iterable[str],
+    ) -> dict[str, list[dict[str, Any]]]:
+        ticker_tuple = tuple(sorted({str(ticker).upper() for ticker in tickers if str(ticker).strip()}))
+        if not ticker_tuple:
+            return {}
+        ticker_sql = ", ".join(sql_string(ticker) for ticker in ticker_tuple)
+        out: dict[str, list[dict[str, Any]]] = {}
+        for source in self.config.external_contexts:
+            if not source.table:
+                continue
+            table = source.table if "." in source.table else f"{quote_ident(self.config.database)}.{quote_ident(source.table)}"
+            columns = [source.ticker_column, source.timestamp_column, source.id_column, *source.payload_columns]
+            column_sql = ", ".join(quote_ident(column) for column in dict.fromkeys(columns))
+            query = f"""
+SELECT {column_sql}
+FROM {table}
+WHERE {quote_ident(source.ticker_column)} IN ({ticker_sql})
+  AND {quote_ident(source.timestamp_column)} >= {_timestamp_us_to_source_unit(start_timestamp_us, source)}
+  AND {quote_ident(source.timestamp_column)} <= {_timestamp_us_to_source_unit(end_timestamp_us, source)}
+ORDER BY {quote_ident(source.ticker_column)}, {quote_ident(source.timestamp_column)}
+FORMAT JSONEachRow
+"""
+            text = self.text_client.execute(query)
+            out[source.name] = [json.loads(line) for line in text.splitlines() if line.strip()]
+        return out
 
 
 def _day_events_query(config: RollingMarketDataConfig, tickers: tuple[str, ...], *, event_date: str) -> str:
@@ -566,6 +644,109 @@ def _rows_to_feature_arrays(rows: list[dict[str, float]]) -> dict[str, np.ndarra
         return {}
     keys = sorted({key for row in rows for key in row})
     return {key: np.asarray([float(row.get(key, 0.0) or 0.0) for row in rows], dtype=np.float32) for key in keys}
+
+
+def _fill_empty_bar_values(out: dict[str, float], prefix: str) -> None:
+    for name in ("open", "high", "low", "close", "volume", "dollar_volume", "trade_count", "quote_count", "vwap"):
+        out[f"{prefix}_{name}"] = 0.0
+
+
+def _session_features_from_prefix(rows: np.ndarray) -> dict[str, float]:
+    if rows.size == 0:
+        return _empty_session_features()
+    out = _empty_session_features()
+    quotes = rows[rows["event_type"] == QUOTE_EVENT_TYPE]
+    trades = rows[rows["event_type"] == TRADE_EVENT_TYPE]
+    if quotes.size:
+        last = quotes[-1:]
+        ask = _decode_primary_price(last)[0]
+        bid = _decode_secondary_price(last)[0]
+        ask_size = float(last["size_primary"][0])
+        bid_size = float(last["size_secondary"][0])
+        out.update(
+            {
+                "session_has_quote": 1.0,
+                "session_last_ask": float(ask),
+                "session_last_bid": float(bid),
+                "session_last_ask_size": ask_size,
+                "session_last_bid_size": bid_size,
+                "session_last_spread": float(max(0.0, ask - bid)),
+                "session_last_mid": float((ask + bid) * 0.5) if ask > 0 and bid > 0 else 0.0,
+                "session_quote_count_so_far": float(quotes.size),
+            }
+        )
+    if trades.size:
+        trade_price = _decode_primary_price(trades)
+        trade_size = np.maximum(0.0, trades["size_primary"].astype(np.float64, copy=False))
+        out.update(
+            {
+                "session_has_trade": 1.0,
+                "session_last_trade_price": float(trade_price[-1]),
+                "session_last_trade_size": float(trade_size[-1]),
+                "session_trade_high_so_far": float(np.max(trade_price)),
+                "session_trade_low_so_far": float(np.min(trade_price)),
+                "session_trade_volume_so_far": float(np.sum(trade_size)),
+                "session_trade_count_so_far": float(trades.size),
+                "session_trade_vwap_so_far": float(np.sum(trade_price * trade_size) / np.sum(trade_size)) if np.sum(trade_size) > 0 else 0.0,
+            }
+        )
+    return out
+
+
+def _empty_session_features() -> dict[str, float]:
+    return {
+        "session_has_quote": 0.0,
+        "session_last_ask": 0.0,
+        "session_last_bid": 0.0,
+        "session_last_ask_size": 0.0,
+        "session_last_bid_size": 0.0,
+        "session_last_spread": 0.0,
+        "session_last_mid": 0.0,
+        "session_quote_count_so_far": 0.0,
+        "session_has_trade": 0.0,
+        "session_last_trade_price": 0.0,
+        "session_last_trade_size": 0.0,
+        "session_trade_high_so_far": 0.0,
+        "session_trade_low_so_far": 0.0,
+        "session_trade_volume_so_far": 0.0,
+        "session_trade_count_so_far": 0.0,
+        "session_trade_vwap_so_far": 0.0,
+    }
+
+
+def _decode_primary_price(rows: np.ndarray) -> np.ndarray:
+    scale = rows["event_flags"].astype(np.uint8, copy=False) & 1
+    denominator = np.where(scale == 1, 10000.0, 100.0)
+    return rows["price_primary_int"].astype(np.float64, copy=False) / denominator
+
+
+def _decode_secondary_price(rows: np.ndarray) -> np.ndarray:
+    scale = (rows["event_flags"].astype(np.uint8, copy=False) >> 1) & 1
+    denominator = np.where(scale == 1, 10000.0, 100.0)
+    return rows["price_secondary_int"].astype(np.float64, copy=False) / denominator
+
+
+def _external_timestamp_us(row: Mapping[str, Any], config: ExternalAsOfContextConfig) -> int:
+    value = int(row.get(config.timestamp_column, 0))
+    unit = str(config.timestamp_unit).lower()
+    if unit in {"ns", "nanosecond", "nanoseconds"}:
+        return value // 1000
+    if unit in {"ms", "millisecond", "milliseconds"}:
+        return value * 1000
+    if unit in {"s", "sec", "second", "seconds"}:
+        return value * 1_000_000
+    return value
+
+
+def _timestamp_us_to_source_unit(timestamp_us: int, config: ExternalAsOfContextConfig) -> int:
+    unit = str(config.timestamp_unit).lower()
+    if unit in {"ns", "nanosecond", "nanoseconds"}:
+        return int(timestamp_us) * 1000
+    if unit in {"ms", "millisecond", "milliseconds"}:
+        return int(timestamp_us) // 1000
+    if unit in {"s", "sec", "second", "seconds"}:
+        return int(timestamp_us) // 1_000_000
+    return int(timestamp_us)
 
 
 def _infer_embedding_dim(embedding_lookup: Mapping[tuple[str, int], np.ndarray]) -> int:
