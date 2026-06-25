@@ -240,6 +240,54 @@ Preview DDL/DML without mutating ClickHouse:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py --dry-run --start-date 2026-01-02 --end-date 2026-01-02
 ```
 
+## Training Category References
+
+`clickhouse_build_training_category_reference.py` scans categorical fields that
+are part of the rolling multimodal training data and writes dense ids to
+`market_sip_compact.training_category_reference`.
+
+Id `0` is intentionally reserved for missing or unknown. Table rows start at
+`category_id = 1` and also store `one_hot_index = category_id - 1`, so training
+code can either use embedding ids or sparse one-hot indices.
+
+The current model-facing XBRL tensor consumes reference ids for:
+
+- `xbrl.taxonomy`
+- `xbrl.tag`
+- `xbrl.unit_code`
+- `xbrl.form_type`
+- `xbrl.xbrl_row_kind`
+- `xbrl.location_code`
+
+The builder also records text metadata categories for future text-metadata
+encoders:
+
+- `news.provider`
+- `news.url_domain`
+- `news.channels`
+- `news.provider_tags`
+- `news.quality_flags`
+- `sec_filings.form_type`
+- `sec_filings.text_kind`
+- `sec_filings.quality_flags`
+
+It deliberately does not create category ids for `fiscal_period`,
+`calendar_period_code`, or `accepted_at_source`; those should be represented by
+time/period features or kept in audit context rather than learned as arbitrary
+category labels.
+
+Run on the workstation after SEC context and text token tables are current:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_training_category_reference.py
+```
+
+Preview the exact command:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_training_category_reference.py --print-only
+```
+
 Summarize existing token tables without deleting, inserting, or loading the
 tokenizer:
 

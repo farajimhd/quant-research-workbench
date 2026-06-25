@@ -198,6 +198,15 @@ def smoke_rolling_provider() -> None:
             }
         ],
     )
+    engine.load_category_references(
+        [
+            {"domain": "xbrl", "field_name": "taxonomy", "category_value": "us-gaap", "category_id": 1},
+            {"domain": "xbrl", "field_name": "tag", "category_value": "RevenueFromContractWithCustomerExcludingAssessedTax", "category_id": 2},
+            {"domain": "xbrl", "field_name": "unit_code", "category_value": "USD", "category_id": 3},
+            {"domain": "xbrl", "field_name": "form_type", "category_value": "10-Q", "category_id": 4},
+            {"domain": "xbrl", "field_name": "xbrl_row_kind", "category_value": "company_fact", "category_id": 5},
+        ]
+    )
     samples = engine.build_ready_indices()
     assert len(samples) == 16
     assert len(samples[0].chunk_windows) == len(config.context_lags)
@@ -239,7 +248,13 @@ def smoke_rolling_provider() -> None:
     assert batch.xbrl_inputs["time_age_seconds_log1p"].shape == (8, config.xbrl_max_items)
     assert "timestamp_us" not in batch.xbrl_inputs
     assert batch.xbrl_inputs["row_kind_id"].shape == (8, config.xbrl_max_items)
-    assert batch.xbrl_inputs["accepted_at_source_id"].shape == (8, config.xbrl_max_items)
+    assert batch.xbrl_inputs["taxonomy_id"][0, 0] == 1
+    assert batch.xbrl_inputs["tag_id"][0, 0] == 2
+    assert batch.xbrl_inputs["unit_id"][0, 0] == 3
+    assert batch.xbrl_inputs["form_id"][0, 0] == 4
+    assert batch.xbrl_inputs["row_kind_id"][0, 0] == 5
+    assert "accepted_at_source_id" not in batch.xbrl_inputs
+    assert "calendar_period_id" not in batch.xbrl_inputs
     assert batch.xbrl_inputs["mapping_confidence"].shape == (8, config.xbrl_max_items)
     assert batch.chunk_time_features["time_delta_seconds"].shape == (8, len(config.context_lags))
     assert batch.chunk_time_features["time_age_seconds_log1p"].shape == (8, len(config.context_lags))

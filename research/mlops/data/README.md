@@ -463,15 +463,25 @@ available rows.
 | `fiscal_year` | `[B, 512]` | `int16` | Filing/fact fiscal year when available. |
 | `age_days` | `[B, 512]` | `float32` | Age in days from accepted timestamp to origin. |
 | `period_end_days` | `[B, 512]` | `int32` | Period-end date encoded as epoch day. |
-| `taxonomy_id` | `[B, 512]` | `uint32` | Stable hash id for taxonomy, for example `us-gaap`. |
-| `tag_id` | `[B, 512]` | `uint32` | Stable hash id for concept tag. |
-| `unit_id` | `[B, 512]` | `uint32` | Stable hash id for unit, for example `USD` or `shares`. |
-| `form_id` | `[B, 512]` | `uint32` | Stable hash id for form type, for example `10-Q`. |
-| `row_kind_id` | `[B, 512]` | `uint8` | `1` for company fact, `2` for frame observation. |
-| `calendar_period_id` | `[B, 512]` | `uint32` | Stable hash id for SEC frame period code. |
-| `location_id` | `[B, 512]` | `uint32` | Stable hash id for location code when available. |
-| `accepted_at_source_id` | `[B, 512]` | `uint32` | Stable hash id for accepted-timestamp source. |
+| `taxonomy_id` | `[B, 512]` | `uint32` | Dense reference id for taxonomy, for example `us-gaap`. |
+| `tag_id` | `[B, 512]` | `uint32` | Dense reference id for concept tag. |
+| `unit_id` | `[B, 512]` | `uint32` | Dense reference id for unit, for example `USD` or `shares`. |
+| `form_id` | `[B, 512]` | `uint32` | Dense reference id for form type, for example `10-Q`. |
+| `row_kind_id` | `[B, 512]` | `uint32` | Dense reference id for `company_fact` or `frame_observation`. |
+| `location_id` | `[B, 512]` | `uint32` | Dense reference id for location code when available. |
 | `mapping_confidence` | `[B, 512]` | `float32` | Confidence of the CIK/accession-to-market mapping. |
+
+`taxonomy_id`, `tag_id`, `unit_id`, `form_id`, `row_kind_id`, and
+`location_id` are looked up from
+`market_sip_compact.training_category_reference`. Id `0` means missing or
+unknown. The reference table also stores `one_hot_index = category_id - 1`, so
+model code can materialize sparse one-hot features or use the ids directly in
+embedding tables.
+
+`fiscal_period`, `calendar_period_code`, and `accepted_at_source` are not used
+as model categorical ids. Calendar/period timing should come from timestamp and
+period-end features, while accepted timestamp provenance remains available only
+in `external_context` for audit.
 
 Example XBRL row before tensorization:
 
@@ -499,8 +509,50 @@ xbrl_inputs["time_delta_seconds"][0, 0] = (timestamp_us - origin_timestamp_us) /
 ```
 
 The raw tag names and accessions are intentionally not dense strings in the
-model-facing tensor. They are converted to stable ids for training speed and
-kept in `external_context` for audit/debugging.
+model-facing tensor. Agreed categorical fields are converted through the
+reference table for training speed and kept in `external_context` for
+audit/debugging.
+
+### Categorical Reference Tables
+
+Build or refresh the category references before profiling/training with XBRL
+context:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_training_category_reference.py
+```
+
+The generic table is `market_sip_compact.training_category_reference`:
+
+| Column | Meaning |
+| --- | --- |
+| `domain` | Feature group, for example `xbrl`, `news`, or `sec_filings`. |
+| `field_name` | Source field name within that domain. |
+| `category_value` | Normalized category string. Empty values are omitted. |
+| `category_id` | Dense id starting at `1`; model id `0` is reserved for missing/unknown. |
+| `one_hot_index` | `category_id - 1`, suitable for sparse one-hot materialization. |
+| `source_rows` | Source-row count observed for this value during the build. |
+
+The current rolling tensor path consumes the XBRL reference ids for:
+
+- `xbrl.taxonomy`
+- `xbrl.tag`
+- `xbrl.unit_code`
+- `xbrl.form_type`
+- `xbrl.xbrl_row_kind`
+- `xbrl.location_code`
+
+The builder also records text metadata categories for future text-metadata
+encoders:
+
+- `news.provider`
+- `news.url_domain`
+- `news.channels`
+- `news.provider_tags`
+- `news.quality_flags`
+- `sec_filings.form_type`
+- `sec_filings.text_kind`
+- `sec_filings.quality_flags`
 
 ### Raw External Context
 

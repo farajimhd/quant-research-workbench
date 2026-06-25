@@ -238,6 +238,45 @@ class _TokenizedText:
     attention_mask: np.ndarray
 
 
+@dataclass(slots=True)
+class CategoryReferenceStore:
+    """Dense categorical ids loaded from ClickHouse reference rows.
+
+    The model-facing convention reserves id 0 for missing or unknown values.
+    Reference-table rows therefore start at id 1 and can be interpreted as
+    sparse one-hot positions through their `one_hot_index`.
+    """
+
+    values: dict[tuple[str, str], dict[str, int]] = field(default_factory=dict)
+
+    @classmethod
+    def from_rows(cls, rows: Iterable[Mapping[str, Any]]) -> "CategoryReferenceStore":
+        out: dict[tuple[str, str], dict[str, int]] = {}
+        for row in rows:
+            domain = _normalize_category_value(row.get("domain", ""))
+            field_name = _normalize_category_value(row.get("field_name", ""))
+            value = _normalize_category_value(row.get("category_value", ""))
+            if not domain or not field_name or not value:
+                continue
+            try:
+                category_id = int(row.get("category_id", 0) or 0)
+            except Exception:
+                category_id = 0
+            if category_id <= 0:
+                continue
+            out.setdefault((domain, field_name), {})[value] = category_id
+        return cls(values=out)
+
+    def id(self, domain: str, field_name: str, value: Any) -> int:
+        normalized = _normalize_category_value(value)
+        if not normalized:
+            return 0
+        return int(self.values.get((_normalize_category_value(domain), _normalize_category_value(field_name)), {}).get(normalized, 0))
+
+    def count(self) -> int:
+        return int(sum(len(values) for values in self.values.values()))
+
+
 class RollingMarketSampleEngine:
     """Shared rolling event engine for training replay and production serving.
 
@@ -273,6 +312,7 @@ class RollingMarketSampleEngine:
         }
         self._text_tokenizer = _TextTokenizerAdapter(config)
         self._text_token_cache: dict[tuple[str, str], _TokenizedText] = {}
+        self.category_references = CategoryReferenceStore()
 
     @property
     def context_lags(self) -> tuple[int, ...]:
@@ -347,6 +387,12 @@ class RollingMarketSampleEngine:
     def load_external_contexts(self, rows_by_context: Mapping[str, Iterable[Mapping[str, Any]]]) -> None:
         for name, rows in rows_by_context.items():
             self.load_external_context(name, rows)
+
+    def load_category_references(self, rows: Iterable[Mapping[str, Any]] | CategoryReferenceStore) -> None:
+        if isinstance(rows, CategoryReferenceStore):
+            self.category_references = rows
+        else:
+            self.category_references = CategoryReferenceStore.from_rows(rows)
 
     def build_ready_index_blocks(self, *, max_samples: int = 0) -> tuple[RollingReadyIndexBlock, ...]:
         """Return lightweight ready-origin arrays without allocating windows.
@@ -896,10 +942,8 @@ class RollingMarketSampleEngine:
         tag_id = np.zeros((batch, max_items), dtype=np.uint32)
         unit_id = np.zeros((batch, max_items), dtype=np.uint32)
         form_id = np.zeros((batch, max_items), dtype=np.uint32)
-        row_kind_id = np.zeros((batch, max_items), dtype=np.uint8)
-        calendar_period_id = np.zeros((batch, max_items), dtype=np.uint32)
+        row_kind_id = np.zeros((batch, max_items), dtype=np.uint32)
         location_id = np.zeros((batch, max_items), dtype=np.uint32)
-        accepted_at_source_id = np.zeros((batch, max_items), dtype=np.uint32)
         mapping_confidence = np.zeros((batch, max_items), dtype=np.float32)
         for sample_index, rows in enumerate(rows_by_sample):
             selected = list(rows)[-max_items:]
@@ -913,14 +957,12 @@ class RollingMarketSampleEngine:
                 fiscal_year[sample_index, item_index] = int(row.get("fiscal_year", 0) or 0)
                 age_days[sample_index, item_index] = max(0.0, float(origin_us - row_ts) / 86_400_000_000.0) if origin_us and row_ts else 0.0
                 period_end_days[sample_index, item_index] = _date_to_epoch_day(row.get("period_end_date"))
-                taxonomy_id[sample_index, item_index] = _stable_uint32(row.get("taxonomy", ""))
-                tag_id[sample_index, item_index] = _stable_uint32(row.get("tag", ""))
-                unit_id[sample_index, item_index] = _stable_uint32(row.get("unit_code", ""))
-                form_id[sample_index, item_index] = _stable_uint32(row.get("form_type", ""))
-                row_kind_id[sample_index, item_index] = 2 if str(row.get("xbrl_row_kind", "")) == "frame_observation" else 1
-                calendar_period_id[sample_index, item_index] = _stable_uint32(row.get("calendar_period_code", ""))
-                location_id[sample_index, item_index] = _stable_uint32(row.get("location_code", ""))
-                accepted_at_source_id[sample_index, item_index] = _stable_uint32(row.get("accepted_at_source", ""))
+                taxonomy_id[sample_index, item_index] = self.category_references.id("xbrl", "taxonomy", row.get("taxonomy", ""))
+                tag_id[sample_index, item_index] = self.category_references.id("xbrl", "tag", row.get("tag", ""))
+                unit_id[sample_index, item_index] = self.category_references.id("xbrl", "unit_code", row.get("unit_code", ""))
+                form_id[sample_index, item_index] = self.category_references.id("xbrl", "form_type", row.get("form_type", ""))
+                row_kind_id[sample_index, item_index] = self.category_references.id("xbrl", "xbrl_row_kind", row.get("xbrl_row_kind", ""))
+                location_id[sample_index, item_index] = self.category_references.id("xbrl", "location_code", row.get("location_code", ""))
                 mapping_confidence[sample_index, item_index] = _safe_float32(row.get("mapping_confidence_score", 0.0))
         return {
             "mask": mask,
@@ -934,9 +976,7 @@ class RollingMarketSampleEngine:
             "unit_id": unit_id,
             "form_id": form_id,
             "row_kind_id": row_kind_id,
-            "calendar_period_id": calendar_period_id,
             "location_id": location_id,
-            "accepted_at_source_id": accepted_at_source_id,
             "mapping_confidence": mapping_confidence,
         }
 
@@ -960,6 +1000,28 @@ ORDER BY ticker
 FORMAT TSV
 """
         return tuple(line.strip().upper() for line in self.text_client.execute(query).splitlines() if line.strip())
+
+    def fetch_category_references(self) -> list[dict[str, Any]]:
+        table = f"{quote_ident(self.config.sec_context_database)}.{quote_ident(self.config.category_reference_table)}"
+        query = f"""
+SELECT
+    domain,
+    field_name,
+    category_value,
+    argMax(category_id, updated_at) AS category_id,
+    argMax(one_hot_index, updated_at) AS one_hot_index
+FROM {table}
+GROUP BY
+    domain,
+    field_name,
+    category_value
+ORDER BY
+    domain,
+    field_name,
+    category_id
+FORMAT JSONEachRow
+"""
+        return [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
 
     def fetch_day(self, *, event_date: str, tickers: Iterable[str]) -> HistoricalDayFetchResult:
         ticker_tuple = tuple(str(ticker).upper() for ticker in tickers if str(ticker).strip())
@@ -1564,6 +1626,10 @@ def _stable_uint32(value: Any) -> int:
         return 0
     digest = hashlib.blake2b(text.encode("utf-8", errors="ignore"), digest_size=4).digest()
     return int.from_bytes(digest, "little", signed=False)
+
+
+def _normalize_category_value(value: Any) -> str:
+    return str(value or "").strip()
 
 
 def _safe_float32(value: Any) -> np.float32:

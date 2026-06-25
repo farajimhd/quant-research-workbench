@@ -36,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--news-token-table", default="news_text_tokens")
     parser.add_argument("--sec-filing-text-token-table", default="sec_filing_text_tokens")
     parser.add_argument("--sec-xbrl-context-table", default="sec_xbrl_context")
+    parser.add_argument("--category-reference-table", default="training_category_reference")
     parser.add_argument("--index-table", default="train_2019_to_2025")
     parser.add_argument("--event-date", default="2025-01-02")
     parser.add_argument("--ticker-limit", type=int, default=64)
@@ -85,6 +86,7 @@ def main() -> int:
         news_token_table=args.news_token_table,
         sec_filing_text_token_table=args.sec_filing_text_token_table,
         sec_xbrl_context_table=args.sec_xbrl_context_table,
+        category_reference_table=args.category_reference_table,
         index_table=args.index_table,
         batch_size=int(args.batch_size),
         news_max_items=int(args.news_max_items),
@@ -105,7 +107,8 @@ def main() -> int:
     print(
         f"contexts=news_tokens:{config.database}.{config.news_token_table} "
         f"sec_tokens:{config.sec_context_database}.{config.sec_filing_text_token_table} "
-        f"xbrl:{config.sec_context_database}.{config.sec_xbrl_context_table}",
+        f"xbrl:{config.sec_context_database}.{config.sec_xbrl_context_table} "
+        f"category_refs:{config.sec_context_database}.{config.category_reference_table}",
         flush=True,
     )
     print(
@@ -157,6 +160,16 @@ def run_clickhouse(args: argparse.Namespace, config: RollingMarketDataConfig) ->
         macro = source.fetch_macro_bars(start_date=str(args.event_date), end_date=str(args.event_date), tickers=tickers)
         print(f"FETCH macro bars done rows={len(macro.rows):,} seconds={macro.fetch_seconds:.3f}", flush=True)
         engine.load_macro_bars(macro)
+        if not (args.skip_q_live_contexts or args.skip_external_contexts):
+            print("FETCH category references", flush=True)
+            started = time.perf_counter()
+            references = source.fetch_category_references()
+            engine.load_category_references(references)
+            print(
+                f"FETCH category references done rows={len(references):,} "
+                f"loaded={engine.category_references.count():,} seconds={time.perf_counter() - started:.3f}",
+                flush=True,
+            )
         if not (args.skip_q_live_contexts or args.skip_external_contexts) and day.rows_by_ticker:
             start_us, end_us = event_time_bounds(day.rows_by_ticker)
             if str(args.max_tokenized_context_date).strip():
@@ -265,6 +278,7 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
         "future_macro_bars_shape": list(materialized[0].future_macro_bars.shape) if materialized else [],
         "future_intraday_bars_shape": list(materialized[0].future_intraday_bars.shape) if materialized else [],
         "external_context_count": int(len(materialized[0].external_context)) if materialized else 0,
+        "category_reference_count": int(engine.category_references.count()),
         "text_inputs": _json_shape_summary(materialized[0].text_inputs) if materialized else {},
         "text_item_counts": _json_text_item_counts(materialized[0].text_inputs) if materialized else {},
         "xbrl_inputs": _json_shape_summary(materialized[0].xbrl_inputs) if materialized else {},

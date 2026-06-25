@@ -183,6 +183,7 @@ class RollingMarketDataConfig:
     news_token_table: str = "news_text_tokens"
     sec_filing_text_token_table: str = "sec_filing_text_tokens"
     sec_xbrl_context_table: str = "sec_xbrl_context"
+    category_reference_table: str = "training_category_reference"
     index_table: str = "train_2019_to_2025"
     events_per_chunk: int = 128
     header_bytes: int = 14
