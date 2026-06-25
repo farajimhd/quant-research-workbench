@@ -9,6 +9,17 @@ import numpy as np
 
 QUOTE_EVENT_TYPE = 0
 TRADE_EVENT_TYPE = 1
+BAR_FEATURE_KEYS: tuple[str, ...] = (
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "dollar_volume",
+    "trade_count",
+    "quote_count",
+    "vwap",
+)
 
 
 class Modality(str, Enum):
@@ -188,6 +199,10 @@ class RollingTrainingBatch:
     - `events_uint8`: `[batch, context_chunks, 128, 16]`
     - `text_inputs[*]["input_ids"]`: `[batch, max_items, token_chunks, text_tokens]`
     - `xbrl_inputs[*]`: `[batch, xbrl_max_items]`
+    - `ticker_macro_bars`: `[batch, macro_timeframes, 9]`
+    - `global_market_bars`: `[batch, global_symbols, macro_timeframes, 9]`
+    - `future_macro_bars`: `[batch, label_timeframes, 9]`
+    - `future_intraday_bars`: `[batch, intraday_label_horizons, 9]`
     - `time_features[*]`: `[batch]`
     - `chunk_time_features[*]`: `[batch, context_chunks]`
     """
@@ -199,6 +214,20 @@ class RollingTrainingBatch:
     origin_timestamp_us: np.ndarray
     time_features: dict[str, np.ndarray] = field(default_factory=dict)
     chunk_time_features: dict[str, np.ndarray] = field(default_factory=dict)
+    bar_feature_keys: tuple[str, ...] = BAR_FEATURE_KEYS
+    macro_bar_timeframes: tuple[str, ...] = ()
+    global_bar_symbols: tuple[str, ...] = ()
+    global_bar_timeframes: tuple[str, ...] = ()
+    future_macro_bar_timeframes: tuple[str, ...] = ()
+    future_intraday_bar_horizons: tuple[str, ...] = ()
+    ticker_macro_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, len(BAR_FEATURE_KEYS)), dtype=np.float32))
+    ticker_macro_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
+    global_market_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 0, len(BAR_FEATURE_KEYS)), dtype=np.float32))
+    global_market_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 0), dtype=np.bool_))
+    future_macro_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, len(BAR_FEATURE_KEYS)), dtype=np.float32))
+    future_macro_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
+    future_intraday_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, len(BAR_FEATURE_KEYS)), dtype=np.float32))
+    future_intraday_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
     macro_features: dict[str, np.ndarray] = field(default_factory=dict)
     global_features: dict[str, np.ndarray] = field(default_factory=dict)
     text_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
@@ -217,6 +246,8 @@ class RollingProductionBatch:
     - `market_mask`: `[batch, context_chunks]`
     - `text_inputs[*]["input_ids"]`: `[batch, max_items, token_chunks, text_tokens]`
     - `xbrl_inputs[*]`: `[batch, xbrl_max_items]`
+    - `ticker_macro_bars`: `[batch, macro_timeframes, 9]`
+    - `global_market_bars`: `[batch, global_symbols, macro_timeframes, 9]`
     - `time_features[*]`: `[batch]`
     """
 
@@ -224,6 +255,14 @@ class RollingProductionBatch:
     market_mask: np.ndarray
     samples: tuple[RollingSampleIndex, ...]
     time_features: dict[str, np.ndarray] = field(default_factory=dict)
+    bar_feature_keys: tuple[str, ...] = BAR_FEATURE_KEYS
+    macro_bar_timeframes: tuple[str, ...] = ()
+    global_bar_symbols: tuple[str, ...] = ()
+    global_bar_timeframes: tuple[str, ...] = ()
+    ticker_macro_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, len(BAR_FEATURE_KEYS)), dtype=np.float32))
+    ticker_macro_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
+    global_market_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 0, len(BAR_FEATURE_KEYS)), dtype=np.float32))
+    global_market_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 0), dtype=np.bool_))
     macro_features: dict[str, np.ndarray] = field(default_factory=dict)
     global_features: dict[str, np.ndarray] = field(default_factory=dict)
     text_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)

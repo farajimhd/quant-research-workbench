@@ -16,6 +16,7 @@ from research.mlops.clickhouse_events import EVENT_ROW_DTYPE, PersistentClickHou
 from research.mlops.compact_events import EVENT_BYTES, HEADER_BYTES, QUOTE_EVENT_TYPE, TRADE_EVENT_TYPE
 from research.mlops.data.config import ExternalAsOfContextConfig, RollingMarketDataConfig
 from research.mlops.data.contracts import (
+    BAR_FEATURE_KEYS,
     ChunkWindowIndex,
     CompactEvent,
     RollingProductionBatch,
@@ -73,53 +74,59 @@ class MacroBarFrame:
             if key[0] and key[1]:
                 grouped.setdefault(key, []).append(row)
         index: dict[tuple[str, str], dict[str, np.ndarray]] = {}
-        value_names = ("open", "high", "low", "close", "volume", "dollar_volume", "trade_count", "quote_count", "vwap")
         for key, rows in grouped.items():
             rows.sort(key=lambda item: int(item.get("bar_start_ms", 0)))
             index[key] = {"bar_start_ms": np.asarray([int(row.get("bar_start_ms", 0)) for row in rows], dtype=np.int64)}
-            for name in value_names:
+            for name in BAR_FEATURE_KEYS:
                 index[key][name] = np.asarray([float(row.get(name, 0.0) or 0.0) for row in rows], dtype=np.float32)
         object.__setattr__(self, "_index", index)
 
     def asof(self, *, symbol: str, timestamp_us: int, timeframes: Iterable[str]) -> dict[str, float]:
-        symbol = symbol.upper()
-        timestamp_ms = int(timestamp_us) // 1000
+        bars, _mask = self.asof_tensor(symbol=symbol, timestamp_us=timestamp_us, timeframes=tuple(timeframes))
         out: dict[str, float] = {}
-        wanted = set(str(value) for value in timeframes)
-        for timeframe in wanted:
+        for row_index, timeframe in enumerate(tuple(str(value) for value in timeframes)):
             prefix = f"{timeframe}"
-            arrays = self._index.get((symbol, timeframe))
-            if arrays is None or arrays["bar_start_ms"].size == 0:
-                for name in ("open", "high", "low", "close", "volume", "dollar_volume", "trade_count", "quote_count", "vwap"):
-                    out[f"{prefix}_{name}"] = 0.0
-                continue
-            row_index = int(np.searchsorted(arrays["bar_start_ms"], timestamp_ms, side="right") - 1)
-            if row_index < 0:
-                for name in ("open", "high", "low", "close", "volume", "dollar_volume", "trade_count", "quote_count", "vwap"):
-                    out[f"{prefix}_{name}"] = 0.0
-                continue
-            for name in ("open", "high", "low", "close", "volume", "dollar_volume", "trade_count", "quote_count", "vwap"):
-                out[f"{prefix}_{name}"] = float(arrays[name][row_index])
+            for field_index, name in enumerate(BAR_FEATURE_KEYS):
+                out[f"{prefix}_{name}"] = float(bars[row_index, field_index])
         return out
 
     def future(self, *, symbol: str, timestamp_us: int, timeframes: Iterable[str]) -> dict[str, float]:
+        bars, _mask = self.future_tensor(symbol=symbol, timestamp_us=timestamp_us, timeframes=tuple(timeframes))
+        out: dict[str, float] = {}
+        for row_index, timeframe in enumerate(tuple(str(value) for value in timeframes)):
+            prefix = f"{timeframe}"
+            for field_index, name in enumerate(BAR_FEATURE_KEYS):
+                out[f"{prefix}_{name}"] = float(bars[row_index, field_index])
+        return out
+
+    def asof_tensor(self, *, symbol: str, timestamp_us: int, timeframes: Iterable[str]) -> tuple[np.ndarray, np.ndarray]:
+        return self._lookup_tensor(symbol=symbol, timestamp_us=timestamp_us, timeframes=tuple(timeframes), side="asof")
+
+    def future_tensor(self, *, symbol: str, timestamp_us: int, timeframes: Iterable[str]) -> tuple[np.ndarray, np.ndarray]:
+        return self._lookup_tensor(symbol=symbol, timestamp_us=timestamp_us, timeframes=tuple(timeframes), side="future")
+
+    def _lookup_tensor(self, *, symbol: str, timestamp_us: int, timeframes: tuple[str, ...], side: str) -> tuple[np.ndarray, np.ndarray]:
         symbol = symbol.upper()
         timestamp_ms = int(timestamp_us) // 1000
-        out: dict[str, float] = {}
-        wanted = set(str(value) for value in timeframes)
-        for timeframe in wanted:
-            prefix = f"{timeframe}"
+        bars = np.zeros((len(timeframes), len(BAR_FEATURE_KEYS)), dtype=np.float32)
+        mask = np.zeros((len(timeframes),), dtype=np.bool_)
+        for timeframe_index, timeframe_value in enumerate(timeframes):
+            timeframe = str(timeframe_value)
             arrays = self._index.get((symbol, timeframe))
             if arrays is None or arrays["bar_start_ms"].size == 0:
-                _fill_empty_bar_values(out, prefix)
                 continue
-            row_index = int(np.searchsorted(arrays["bar_start_ms"], timestamp_ms, side="right"))
-            if row_index >= arrays["bar_start_ms"].shape[0]:
-                _fill_empty_bar_values(out, prefix)
-                continue
-            for name in ("open", "high", "low", "close", "volume", "dollar_volume", "trade_count", "quote_count", "vwap"):
-                out[f"{prefix}_{name}"] = float(arrays[name][row_index])
-        return out
+            if side == "future":
+                row_index = int(np.searchsorted(arrays["bar_start_ms"], timestamp_ms, side="right"))
+                if row_index >= arrays["bar_start_ms"].shape[0]:
+                    continue
+            else:
+                row_index = int(np.searchsorted(arrays["bar_start_ms"], timestamp_ms, side="right") - 1)
+                if row_index < 0:
+                    continue
+            for field_index, name in enumerate(BAR_FEATURE_KEYS):
+                bars[timeframe_index, field_index] = arrays[name][row_index]
+            mask[timeframe_index] = True
+        return bars, mask
 
 
 @dataclass(slots=True)
@@ -509,16 +516,28 @@ class RollingMarketSampleEngine:
             raise RuntimeError(f"Training materialization produced {invalid:,} invalid context chunks; filter bad event windows before batching.")
 
         with profiler.stage("bar_features", count=batch):
-            macro_features, global_features = self._materialize_bar_features(sample_tuple)
+            (
+                macro_features,
+                global_features,
+                ticker_macro_bars,
+                ticker_macro_bar_mask,
+                global_market_bars,
+                global_market_bar_mask,
+            ) = self._materialize_bar_features(sample_tuple)
         with profiler.stage("origin_time_features", count=batch):
             time_features = _origin_time_features(sample_tuple)
             chunk_time_features = _timestamp_feature_arrays(chunk_origin_ts, origin_ts[:, None])
         with profiler.stage("session_features", count=batch):
             session_features = self._materialize_session_features(sample_tuple)
         with profiler.stage("macro_future_labels", count=batch):
-            labels = self._materialize_future_labels(sample_tuple)
+            labels, future_macro_bars, future_macro_bar_mask = self._materialize_future_labels(sample_tuple)
         with profiler.stage("intraday_future_labels", count=batch):
-            labels.update(self._materialize_intraday_future_labels(sample_tuple))
+            intraday_labels = self._materialize_intraday_future_labels(sample_tuple)
+            labels.update(intraday_labels)
+            future_intraday_bars, future_intraday_bar_mask = _intraday_label_bar_tensor(
+                intraday_labels,
+                horizons=tuple(horizon.name for horizon in self.config.intraday_label_horizons),
+            )
         macro_features.update(session_features)
         with profiler.stage("external_context_asof", count=batch * len(self.external_contexts)):
             external = {
@@ -553,6 +572,20 @@ class RollingMarketSampleEngine:
             origin_timestamp_us=origin_ts,
             time_features=time_features,
             chunk_time_features=chunk_time_features,
+            bar_feature_keys=BAR_FEATURE_KEYS,
+            macro_bar_timeframes=tuple(self.config.macro_timeframes),
+            global_bar_symbols=tuple(self.config.global_symbols),
+            global_bar_timeframes=tuple(self.config.macro_timeframes),
+            future_macro_bar_timeframes=tuple(self.config.label_timeframes),
+            future_intraday_bar_horizons=tuple(horizon.name for horizon in self.config.intraday_label_horizons),
+            ticker_macro_bars=ticker_macro_bars,
+            ticker_macro_bar_mask=ticker_macro_bar_mask,
+            global_market_bars=global_market_bars,
+            global_market_bar_mask=global_market_bar_mask,
+            future_macro_bars=future_macro_bars,
+            future_macro_bar_mask=future_macro_bar_mask,
+            future_intraday_bars=future_intraday_bars,
+            future_intraday_bar_mask=future_intraday_bar_mask,
             macro_features=macro_features,
             global_features=global_features,
             text_inputs=text_inputs,
@@ -582,7 +615,14 @@ class RollingMarketSampleEngine:
                         continue
                     market[sample_index, context_index] = np.asarray(value, dtype=np.float32)
                     mask[sample_index, context_index] = True
-        macro_features, global_features = self._materialize_bar_features(sample_tuple)
+        (
+            macro_features,
+            global_features,
+            ticker_macro_bars,
+            ticker_macro_bar_mask,
+            global_market_bars,
+            global_market_bar_mask,
+        ) = self._materialize_bar_features(sample_tuple)
         time_features = _origin_time_features(sample_tuple)
         external = {
             name: [
@@ -602,6 +642,14 @@ class RollingMarketSampleEngine:
             market_mask=mask,
             samples=sample_tuple,
             time_features=time_features,
+            bar_feature_keys=BAR_FEATURE_KEYS,
+            macro_bar_timeframes=tuple(self.config.macro_timeframes),
+            global_bar_symbols=tuple(self.config.global_symbols),
+            global_bar_timeframes=tuple(self.config.macro_timeframes),
+            ticker_macro_bars=ticker_macro_bars,
+            ticker_macro_bar_mask=ticker_macro_bar_mask,
+            global_market_bars=global_market_bars,
+            global_market_bar_mask=global_market_bar_mask,
             macro_features=macro_features,
             global_features=global_features,
             text_inputs=text_inputs,
@@ -630,27 +678,56 @@ class RollingMarketSampleEngine:
 
     def _materialize_bar_features(
         self, samples: tuple[RollingSampleIndex, ...]
-    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        batch = len(samples)
+        macro_timeframes = tuple(self.config.macro_timeframes)
+        global_symbols = tuple(self.config.global_symbols)
+        fields = len(BAR_FEATURE_KEYS)
+        ticker_macro_bars = np.zeros((batch, len(macro_timeframes), fields), dtype=np.float32)
+        ticker_macro_bar_mask = np.zeros((batch, len(macro_timeframes)), dtype=np.bool_)
+        global_market_bars = np.zeros((batch, len(global_symbols), len(macro_timeframes), fields), dtype=np.float32)
+        global_market_bar_mask = np.zeros((batch, len(global_symbols), len(macro_timeframes)), dtype=np.bool_)
         macro_rows: list[dict[str, float]] = []
         global_rows: dict[str, list[dict[str, float]]] = {symbol: [] for symbol in self.config.global_symbols}
-        for sample in samples:
-            macro_rows.append(
-                self.macro_bars.asof(symbol=sample.ticker, timestamp_us=sample.origin_timestamp_us, timeframes=self.config.macro_timeframes)
+        for sample_index, sample in enumerate(samples):
+            bars, mask = self.macro_bars.asof_tensor(
+                symbol=sample.ticker,
+                timestamp_us=sample.origin_timestamp_us,
+                timeframes=macro_timeframes,
             )
-            for symbol in self.config.global_symbols:
-                global_rows[symbol].append(
-                    self.macro_bars.asof(symbol=symbol, timestamp_us=sample.global_asof_timestamp_us, timeframes=self.config.macro_timeframes)
+            ticker_macro_bars[sample_index] = bars
+            ticker_macro_bar_mask[sample_index] = mask
+            macro_rows.append(_bar_tensor_row(macro_timeframes, bars))
+            for symbol_index, symbol in enumerate(global_symbols):
+                bars, mask = self.macro_bars.asof_tensor(
+                    symbol=symbol,
+                    timestamp_us=sample.global_asof_timestamp_us,
+                    timeframes=macro_timeframes,
                 )
+                global_market_bars[sample_index, symbol_index] = bars
+                global_market_bar_mask[sample_index, symbol_index] = mask
+                global_rows[symbol].append(_bar_tensor_row(macro_timeframes, bars))
         macro = _rows_to_feature_arrays(macro_rows)
         global_features = {f"{symbol}_{key}": value for symbol, rows in global_rows.items() for key, value in _rows_to_feature_arrays(rows).items()}
-        return macro, global_features
+        return macro, global_features, ticker_macro_bars, ticker_macro_bar_mask, global_market_bars, global_market_bar_mask
 
-    def _materialize_future_labels(self, samples: tuple[RollingSampleIndex, ...]) -> dict[str, np.ndarray]:
-        rows = [
-            self.macro_bars.future(symbol=sample.ticker, timestamp_us=sample.origin_timestamp_us, timeframes=self.config.label_timeframes)
-            for sample in samples
-        ]
-        return {f"future_{key}": value for key, value in _rows_to_feature_arrays(rows).items()}
+    def _materialize_future_labels(self, samples: tuple[RollingSampleIndex, ...]) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
+        batch = len(samples)
+        label_timeframes = tuple(self.config.label_timeframes)
+        bars_out = np.zeros((batch, len(label_timeframes), len(BAR_FEATURE_KEYS)), dtype=np.float32)
+        mask_out = np.zeros((batch, len(label_timeframes)), dtype=np.bool_)
+        rows: list[dict[str, float]] = []
+        for sample_index, sample in enumerate(samples):
+            bars, mask = self.macro_bars.future_tensor(
+                symbol=sample.ticker,
+                timestamp_us=sample.origin_timestamp_us,
+                timeframes=label_timeframes,
+            )
+            bars_out[sample_index] = bars
+            mask_out[sample_index] = mask
+            rows.append(_bar_tensor_row(label_timeframes, bars))
+        labels = {f"future_{key}": value for key, value in _rows_to_feature_arrays(rows).items()}
+        return labels, bars_out, mask_out
 
     def _materialize_intraday_future_labels(self, samples: tuple[RollingSampleIndex, ...]) -> dict[str, np.ndarray]:
         """Future same-queue trade bars for short horizons.
@@ -673,7 +750,10 @@ class RollingMarketSampleEngine:
             labels[f"{prefix}_low"] = np.zeros((batch,), dtype=np.float32)
             labels[f"{prefix}_close"] = np.zeros((batch,), dtype=np.float32)
             labels[f"{prefix}_volume"] = np.zeros((batch,), dtype=np.float32)
+            labels[f"{prefix}_dollar_volume"] = np.zeros((batch,), dtype=np.float32)
             labels[f"{prefix}_trade_count"] = np.zeros((batch,), dtype=np.uint32)
+            labels[f"{prefix}_quote_count"] = np.zeros((batch,), dtype=np.uint32)
+            labels[f"{prefix}_vwap"] = np.zeros((batch,), dtype=np.float32)
 
         by_ticker: dict[str, list[tuple[int, int]]] = {}
         for batch_index, sample in enumerate(samples):
@@ -1511,8 +1591,38 @@ def _date_to_epoch_day(value: Any) -> int:
 
 
 def _fill_empty_bar_values(out: dict[str, float], prefix: str) -> None:
-    for name in ("open", "high", "low", "close", "volume", "dollar_volume", "trade_count", "quote_count", "vwap"):
+    for name in BAR_FEATURE_KEYS:
         out[f"{prefix}_{name}"] = 0.0
+
+
+def _bar_tensor_row(timeframes: tuple[str, ...], bars: np.ndarray) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for row_index, timeframe in enumerate(timeframes):
+        for field_index, name in enumerate(BAR_FEATURE_KEYS):
+            out[f"{timeframe}_{name}"] = float(bars[row_index, field_index])
+    return out
+
+
+def _intraday_label_bar_tensor(labels: Mapping[str, np.ndarray], *, horizons: tuple[str, ...]) -> tuple[np.ndarray, np.ndarray]:
+    if not labels or not horizons:
+        return (
+            np.zeros((0, 0, len(BAR_FEATURE_KEYS)), dtype=np.float32),
+            np.zeros((0, 0), dtype=np.bool_),
+        )
+    first = next(iter(labels.values()))
+    batch = int(first.shape[0]) if hasattr(first, "shape") and first.ndim >= 1 else 0
+    bars = np.zeros((batch, len(horizons), len(BAR_FEATURE_KEYS)), dtype=np.float32)
+    mask = np.zeros((batch, len(horizons)), dtype=np.bool_)
+    for horizon_index, horizon in enumerate(horizons):
+        prefix = f"future_intraday_bar_{horizon}"
+        has_trade = labels.get(f"{prefix}_has_trade")
+        if has_trade is not None:
+            mask[:, horizon_index] = np.asarray(has_trade, dtype=np.bool_)
+        for field_index, field_name in enumerate(BAR_FEATURE_KEYS):
+            value = labels.get(f"{prefix}_{field_name}")
+            if value is not None:
+                bars[:, horizon_index, field_index] = np.asarray(value, dtype=np.float32)
+    return bars, mask
 
 
 def _session_features_from_prefix(rows: np.ndarray) -> dict[str, float]:

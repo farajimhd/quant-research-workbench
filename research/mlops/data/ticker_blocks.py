@@ -646,6 +646,7 @@ def build_future_time_bar_labels(
 
     price_rmq = _RangeMinMax(trade_price)
     volume_prefix = np.concatenate(([0.0], np.cumsum(np.maximum(0.0, trade_size), dtype=np.float64)))
+    dollar_volume_prefix = np.concatenate(([0.0], np.cumsum(np.maximum(0.0, trade_size) * trade_price, dtype=np.float64)))
     for horizon in horizons:
         start_idx = np.searchsorted(trade_ts, origin_ts, side="right")
         end_idx = np.searchsorted(trade_ts, origin_ts + int(horizon.microseconds), side="right")
@@ -656,6 +657,8 @@ def build_future_time_bar_labels(
         high_price = np.zeros((origin_ts.shape[0],), dtype=np.float32)
         low_price = np.zeros((origin_ts.shape[0],), dtype=np.float32)
         volume = (volume_prefix[end_idx] - volume_prefix[start_idx]).astype(np.float32)
+        dollar_volume = (dollar_volume_prefix[end_idx] - dollar_volume_prefix[start_idx]).astype(np.float32)
+        vwap = np.zeros((origin_ts.shape[0],), dtype=np.float32)
         if np.any(has_trade):
             valid_start = start_idx[has_trade]
             valid_end = end_idx[has_trade]
@@ -664,6 +667,11 @@ def build_future_time_bar_labels(
             low, high = price_rmq.query(valid_start, valid_end)
             high_price[has_trade] = high.astype(np.float32, copy=False)
             low_price[has_trade] = low.astype(np.float32, copy=False)
+            positive_volume = volume[has_trade] > 0
+            if np.any(positive_volume):
+                valid_indices = np.flatnonzero(has_trade)
+                priced_indices = valid_indices[positive_volume]
+                vwap[priced_indices] = (dollar_volume[priced_indices] / volume[priced_indices]).astype(np.float32, copy=False)
         prefix = f"future_bar_{horizon.name}"
         labels[f"{prefix}_has_trade"] = has_trade.astype(np.uint8)
         labels[f"{prefix}_open"] = open_price
@@ -671,7 +679,10 @@ def build_future_time_bar_labels(
         labels[f"{prefix}_low"] = low_price
         labels[f"{prefix}_close"] = close_price
         labels[f"{prefix}_volume"] = volume
+        labels[f"{prefix}_dollar_volume"] = dollar_volume
         labels[f"{prefix}_trade_count"] = count
+        labels[f"{prefix}_quote_count"] = np.zeros((origin_ts.shape[0],), dtype=np.uint32)
+        labels[f"{prefix}_vwap"] = vwap
     return labels
 
 
@@ -720,7 +731,10 @@ def _add_empty_bar_labels(labels: dict[str, np.ndarray], name: str, count: int) 
     labels[f"{prefix}_low"] = np.zeros((count,), dtype=np.float32)
     labels[f"{prefix}_close"] = np.zeros((count,), dtype=np.float32)
     labels[f"{prefix}_volume"] = np.zeros((count,), dtype=np.float32)
+    labels[f"{prefix}_dollar_volume"] = np.zeros((count,), dtype=np.float32)
     labels[f"{prefix}_trade_count"] = np.zeros((count,), dtype=np.uint32)
+    labels[f"{prefix}_quote_count"] = np.zeros((count,), dtype=np.uint32)
+    labels[f"{prefix}_vwap"] = np.zeros((count,), dtype=np.float32)
 
 
 def merge_label_chunks(chunks: list[dict[str, np.ndarray]]) -> dict[str, np.ndarray]:

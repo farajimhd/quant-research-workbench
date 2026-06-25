@@ -192,6 +192,9 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
             f"chunks={chunk_count:,} seconds={metrics.get('rolling_training/total_seconds', 0.0):.3f} "
             f"samples_per_sec={metrics.get('rolling_training/samples_per_second', 0.0):.1f} "
             f"labels={len(batch.labels)} macro={len(batch.macro_features)} global={len(batch.global_features)} "
+            f"bar_shapes=ticker_macro={tuple(batch.ticker_macro_bars.shape)} "
+            f"global={tuple(batch.global_market_bars.shape)} future_macro={tuple(batch.future_macro_bars.shape)} "
+            f"future_intraday={tuple(batch.future_intraday_bars.shape)} "
             f"text={_shape_summary(batch.text_inputs)} xbrl={_shape_summary(batch.xbrl_inputs)} "
             f"text_items={_text_item_summary(batch.text_inputs)} "
             f"external={len(batch.external_context)} shape_headers={tuple(batch.headers_uint8.shape)} "
@@ -205,7 +208,8 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
             print(
                 f"PROD_BATCH [{batch_id + 1}/{args.materialize_batches}] samples={prod.market_embeddings.shape[0]:,} "
                 f"context={prod.market_embeddings.shape[1]:,} seconds={prod_metrics.get('rolling_prod/total_seconds', 0.0):.3f} "
-                f"samples_per_sec={prod_metrics.get('rolling_prod/samples_per_second', 0.0):.1f}",
+                f"samples_per_sec={prod_metrics.get('rolling_prod/samples_per_second', 0.0):.1f} "
+                f"bar_shapes=ticker_macro={tuple(prod.ticker_macro_bars.shape)} global={tuple(prod.global_market_bars.shape)}",
                 flush=True,
             )
 
@@ -236,6 +240,11 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
         "label_count": int(len(materialized[0].labels)) if materialized else 0,
         "macro_feature_count": int(len(materialized[0].macro_features)) if materialized else 0,
         "global_feature_count": int(len(materialized[0].global_features)) if materialized else 0,
+        "bar_feature_keys": list(materialized[0].bar_feature_keys) if materialized else [],
+        "ticker_macro_bars_shape": list(materialized[0].ticker_macro_bars.shape) if materialized else [],
+        "global_market_bars_shape": list(materialized[0].global_market_bars.shape) if materialized else [],
+        "future_macro_bars_shape": list(materialized[0].future_macro_bars.shape) if materialized else [],
+        "future_intraday_bars_shape": list(materialized[0].future_intraday_bars.shape) if materialized else [],
         "external_context_count": int(len(materialized[0].external_context)) if materialized else 0,
         "text_inputs": _json_shape_summary(materialized[0].text_inputs) if materialized else {},
         "text_item_counts": _json_text_item_counts(materialized[0].text_inputs) if materialized else {},

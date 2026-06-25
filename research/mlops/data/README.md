@@ -95,13 +95,20 @@ Complete default training-batch shape summary:
 | market chunks | `headers_uint8` | `[B, 27, 14]` |
 | market chunks | `events_uint8` | `[B, 27, 128, 16]` |
 | market chunk time | `chunk_time_features[*]` | `[B, 27]` |
-| ticker macro bars/session state | `macro_features[*]` | `[B]` |
-| global market bars | `global_features[*]` | `[B]` |
+| canonical bar fields | `bar_feature_keys` | 9 field names |
+| ticker macro bars | `ticker_macro_bars` | `[B, macro_timeframes, 9]` |
+| ticker macro bar mask | `ticker_macro_bar_mask` | `[B, macro_timeframes]` |
+| global market bars | `global_market_bars` | `[B, global_symbols, macro_timeframes, 9]` |
+| global market bar mask | `global_market_bar_mask` | `[B, global_symbols, macro_timeframes]` |
+| legacy ticker macro/session dict | `macro_features[*]` | `[B]` |
+| legacy global dict | `global_features[*]` | `[B]` |
 | ticker news tokens | `text_inputs["ticker_news"]["input_ids"]` | `[B, 32, 2, 1024]` |
 | market news tokens | `text_inputs["market_news"]["input_ids"]` | `[B, 64, 2, 1024]` |
 | SEC text tokens | `text_inputs["sec_filings"]["input_ids"]` | `[B, 16, 8, 1024]` |
 | XBRL fundamentals | `xbrl_inputs[*]` | `[B, 512]` |
-| future labels | `labels[*]` | usually `[B]` |
+| future macro bars | `future_macro_bars` | `[B, label_timeframes, 9]` |
+| future intraday bars | `future_intraday_bars` | `[B, intraday_label_horizons, 9]` |
+| legacy future labels dict | `labels[*]` | usually `[B]` |
 
 ### Sample Identity
 
@@ -211,9 +218,29 @@ bars whose event time is after `origin_timestamp_us`.
 
 ### Macro Features
 
-`macro_features` describes the sample ticker itself. It includes current-day
-as-of session state plus completed daily-bar aggregates. Session fields belong
-to `macro_features`; they are not a separate modality.
+Ticker macro bars describe the sample ticker itself. They are exposed primarily
+through `ticker_macro_bars`, not through ad-hoc flattened feature names.
+
+```text
+ticker_macro_bars[B, macro_timeframe_index, bar_field_index]
+ticker_macro_bar_mask[B, macro_timeframe_index]
+macro_bar_timeframes = config.macro_timeframes
+bar_feature_keys = (
+    open, high, low, close, volume,
+    dollar_volume, trade_count, quote_count, vwap
+)
+```
+
+Every bar-like model input must use this same 9-field order so a single bar
+encoder can consume ticker macro bars, global market bars, and future bar
+targets. The mask is true when a bar exists as-of the sample origin. Missing
+bars are zeros and should be ignored by the bar encoder or downstream mask
+logic.
+
+`macro_features` remains as a legacy compatibility dictionary. It also includes
+current-day as-of session state. New model code should prefer
+`ticker_macro_bars` for bar inputs and use session fields only as a separate
+non-bar feature group if needed.
 
 Current implementation note: the loader still reads from `macro_bars_by_time_symbol`.
 The intended feature policy is to rely on `1d` aggregate bars and construct
@@ -229,7 +256,7 @@ The intended completed-bar windows are:
 The current day should be computed from intraday events as-of the origin. The
 historical windows should be aggregated from completed `1d` bars only.
 
-Bar fields include:
+Canonical bar fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -243,7 +270,7 @@ Bar fields include:
 | `quote_count` | Number of quote events in the bar. |
 | `vwap` | Volume-weighted average price. |
 
-Intended macro keys:
+Legacy flattened macro keys:
 
 ```text
 today_asof_open
@@ -283,9 +310,21 @@ rule is that every value is prefix-only and therefore no-lookahead.
 
 ### Global Features
 
-`global_features` provides broad market context for configured market symbols.
-It should use the same daily-bar aggregation idea as macro features, but with a
-smaller window set:
+`global_market_bars` provides broad market context for configured market
+symbols. It uses the exact same 9-field bar layout as ticker macro bars:
+
+```text
+global_market_bars[B, global_symbol_index, macro_timeframe_index, bar_field_index]
+global_market_bar_mask[B, global_symbol_index, macro_timeframe_index]
+global_bar_symbols = config.global_symbols
+global_bar_timeframes = config.macro_timeframes
+bar_feature_keys = same 9 keys used by ticker_macro_bars
+```
+
+`global_features` remains as a legacy flattened compatibility dictionary.
+
+Global bars should use the same daily-bar aggregation idea as macro features,
+but with a smaller window set:
 
 ```text
 today_asof, -1d, -2d, -7d
@@ -297,7 +336,7 @@ Default symbols are:
 SPY, QQQ, IWM, DIA
 ```
 
-Keys are prefixed by symbol:
+Legacy flattened keys are prefixed by symbol:
 
 ```text
 SPY_1d_close
@@ -489,16 +528,16 @@ market close. Future daily windows should be:
 current_day_full, +1d, +2d, +3d, +7d, +28d
 ```
 
-The current code still uses the configured `label_timeframes` path; this section
-defines the intended target schema for the next feature-policy update.
+The structured target is:
 
-Important current-state note: the existing qmd-compatible bar builders floor
-timestamps into timeframe buckets. I did not verify an implemented daily-session
-cutoff at 8PM ET in the current pushed bars. Before relying on `1d` bars for
-final training labels, rebuild or verify daily bars whose close is the final
-after-hours close for the US trading date.
+```text
+future_macro_bars[B, label_timeframe_index, bar_field_index]
+future_macro_bar_mask[B, label_timeframe_index]
+future_macro_bar_timeframes = config.label_timeframes
+bar_feature_keys = same 9 keys used by ticker_macro_bars
+```
 
-Keys use the prefix `future_`:
+Legacy flattened keys use the prefix `future_`:
 
 ```text
 future_current_day_full_open
@@ -522,11 +561,18 @@ origin. Default horizons are:
 180s, 300s, 600s, 1200s, 1800s, 3600s, 7200s, 3h, 4h, 5h
 ```
 
-Keys use the prefix `future_intraday_bar_` and include:
+The structured target is:
 
 ```text
-has_trade, open, high, low, close, volume, trade_count
+future_intraday_bars[B, intraday_horizon_index, bar_field_index]
+future_intraday_bar_mask[B, intraday_horizon_index]
+future_intraday_bar_horizons = config.intraday_label_horizons
+bar_feature_keys = same 9 keys used by ticker_macro_bars
 ```
+
+For intraday bars, `future_intraday_bar_mask` replaces the old `has_trade` field
+as the model-facing validity signal. The legacy `labels` dictionary still keeps
+`future_intraday_bar_*_has_trade` for compatibility and audit output.
 
 Example:
 
