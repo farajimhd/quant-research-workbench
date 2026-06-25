@@ -241,6 +241,7 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
         "macro_feature_count": int(len(materialized[0].macro_features)) if materialized else 0,
         "global_feature_count": int(len(materialized[0].global_features)) if materialized else 0,
         "bar_feature_keys": list(materialized[0].bar_feature_keys) if materialized else [],
+        "future_bar_feature_keys": list(materialized[0].future_bar_feature_keys) if materialized else [],
         "ticker_macro_bars_shape": list(materialized[0].ticker_macro_bars.shape) if materialized else [],
         "global_market_bars_shape": list(materialized[0].global_market_bars.shape) if materialized else [],
         "future_macro_bars_shape": list(materialized[0].future_macro_bars.shape) if materialized else [],

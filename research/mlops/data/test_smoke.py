@@ -16,7 +16,7 @@ from research.mlops.data.replay import iter_replay_batches
 from research.mlops.data.rolling import MacroBarFrame, RollingMarketSampleEngine, synthetic_rows_by_ticker
 from research.mlops.data.sources import InMemoryEventSource
 from research.mlops.data.ticker_blocks import TickerCursor, TickerEpochScheduler, build_event_time_bar_batch, build_requests, make_synthetic_event_rows
-from research.mlops.data.contracts import BAR_FEATURE_KEYS, CompactEvent
+from research.mlops.data.contracts import BAR_FEATURE_KEYS, CompactEvent, FUTURE_BAR_FEATURE_KEYS
 
 
 class FakeEncoderModel:
@@ -206,13 +206,14 @@ def smoke_rolling_provider() -> None:
     assert batch.headers_uint8.shape == (8, len(config.context_lags), 14)
     assert batch.events_uint8.shape == (8, len(config.context_lags), 128, 16)
     assert batch.bar_feature_keys == BAR_FEATURE_KEYS
+    assert batch.future_bar_feature_keys == FUTURE_BAR_FEATURE_KEYS
     assert batch.ticker_macro_bars.shape == (8, len(config.macro_timeframes), len(BAR_FEATURE_KEYS))
     assert batch.ticker_macro_bar_mask.shape == (8, len(config.macro_timeframes))
     assert batch.global_market_bars.shape == (8, len(config.global_symbols), len(config.macro_timeframes), len(BAR_FEATURE_KEYS))
     assert batch.global_market_bar_mask.shape == (8, len(config.global_symbols), len(config.macro_timeframes))
-    assert batch.future_macro_bars.shape == (8, len(config.label_timeframes), len(BAR_FEATURE_KEYS))
+    assert batch.future_macro_bars.shape == (8, len(config.label_timeframes), len(FUTURE_BAR_FEATURE_KEYS))
     assert batch.future_macro_bar_mask.shape == (8, len(config.label_timeframes))
-    assert batch.future_intraday_bars.shape == (8, len(config.intraday_label_horizons), len(BAR_FEATURE_KEYS))
+    assert batch.future_intraday_bars.shape == (8, len(config.intraday_label_horizons), len(FUTURE_BAR_FEATURE_KEYS))
     assert batch.future_intraday_bar_mask.shape == (8, len(config.intraday_label_horizons))
     assert float(batch.ticker_macro_bars[0, 0, BAR_FEATURE_KEYS.index("close")]) > 0.0
     assert "1d_close" in batch.macro_features
@@ -220,7 +221,7 @@ def smoke_rolling_provider() -> None:
     assert "SPY_1d_close" in batch.global_features
     assert "future_1d_close" in batch.labels
     assert "future_intraday_bar_100ms_high" in batch.labels
-    assert "future_intraday_bar_100ms_vwap" in batch.labels
+    assert "future_intraday_bar_100ms_vwap" not in batch.labels
     assert "ticker_news" in batch.external_context
     assert batch.text_inputs["ticker_news"]["input_ids"].shape == (8, config.news_max_items, config.news_token_chunks, config.text_max_tokens)
     assert batch.text_inputs["ticker_news"]["chunk_mask"].shape == (8, config.news_max_items, config.news_token_chunks)

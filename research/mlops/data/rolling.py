@@ -19,6 +19,7 @@ from research.mlops.data.contracts import (
     BAR_FEATURE_KEYS,
     ChunkWindowIndex,
     CompactEvent,
+    FUTURE_BAR_FEATURE_KEYS,
     RollingProductionBatch,
     RollingSampleIndex,
     RollingTrainingBatch,
@@ -573,6 +574,7 @@ class RollingMarketSampleEngine:
             time_features=time_features,
             chunk_time_features=chunk_time_features,
             bar_feature_keys=BAR_FEATURE_KEYS,
+            future_bar_feature_keys=FUTURE_BAR_FEATURE_KEYS,
             macro_bar_timeframes=tuple(self.config.macro_timeframes),
             global_bar_symbols=tuple(self.config.global_symbols),
             global_bar_timeframes=tuple(self.config.macro_timeframes),
@@ -714,7 +716,7 @@ class RollingMarketSampleEngine:
     def _materialize_future_labels(self, samples: tuple[RollingSampleIndex, ...]) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
         batch = len(samples)
         label_timeframes = tuple(self.config.label_timeframes)
-        bars_out = np.zeros((batch, len(label_timeframes), len(BAR_FEATURE_KEYS)), dtype=np.float32)
+        bars_out = np.zeros((batch, len(label_timeframes), len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32)
         mask_out = np.zeros((batch, len(label_timeframes)), dtype=np.bool_)
         rows: list[dict[str, float]] = []
         for sample_index, sample in enumerate(samples):
@@ -723,9 +725,9 @@ class RollingMarketSampleEngine:
                 timestamp_us=sample.origin_timestamp_us,
                 timeframes=label_timeframes,
             )
-            bars_out[sample_index] = bars
+            bars_out[sample_index] = _select_future_bar_fields(bars)
             mask_out[sample_index] = mask
-            rows.append(_bar_tensor_row(label_timeframes, bars))
+            rows.append(_future_bar_tensor_row(label_timeframes, bars_out[sample_index]))
         labels = {f"future_{key}": value for key, value in _rows_to_feature_arrays(rows).items()}
         return labels, bars_out, mask_out
 
@@ -750,10 +752,6 @@ class RollingMarketSampleEngine:
             labels[f"{prefix}_low"] = np.zeros((batch,), dtype=np.float32)
             labels[f"{prefix}_close"] = np.zeros((batch,), dtype=np.float32)
             labels[f"{prefix}_volume"] = np.zeros((batch,), dtype=np.float32)
-            labels[f"{prefix}_dollar_volume"] = np.zeros((batch,), dtype=np.float32)
-            labels[f"{prefix}_trade_count"] = np.zeros((batch,), dtype=np.uint32)
-            labels[f"{prefix}_quote_count"] = np.zeros((batch,), dtype=np.uint32)
-            labels[f"{prefix}_vwap"] = np.zeros((batch,), dtype=np.float32)
 
         by_ticker: dict[str, list[tuple[int, int]]] = {}
         for batch_index, sample in enumerate(samples):
@@ -1603,22 +1601,38 @@ def _bar_tensor_row(timeframes: tuple[str, ...], bars: np.ndarray) -> dict[str, 
     return out
 
 
+def _future_bar_tensor_row(timeframes: tuple[str, ...], bars: np.ndarray) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for row_index, timeframe in enumerate(timeframes):
+        for field_index, name in enumerate(FUTURE_BAR_FEATURE_KEYS):
+            out[f"{timeframe}_{name}"] = float(bars[row_index, field_index])
+    return out
+
+
+def _select_future_bar_fields(bars: np.ndarray) -> np.ndarray:
+    out = np.zeros((bars.shape[0], len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32)
+    for target_index, name in enumerate(FUTURE_BAR_FEATURE_KEYS):
+        source_index = BAR_FEATURE_KEYS.index(name)
+        out[:, target_index] = bars[:, source_index]
+    return out
+
+
 def _intraday_label_bar_tensor(labels: Mapping[str, np.ndarray], *, horizons: tuple[str, ...]) -> tuple[np.ndarray, np.ndarray]:
     if not labels or not horizons:
         return (
-            np.zeros((0, 0, len(BAR_FEATURE_KEYS)), dtype=np.float32),
+            np.zeros((0, 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32),
             np.zeros((0, 0), dtype=np.bool_),
         )
     first = next(iter(labels.values()))
     batch = int(first.shape[0]) if hasattr(first, "shape") and first.ndim >= 1 else 0
-    bars = np.zeros((batch, len(horizons), len(BAR_FEATURE_KEYS)), dtype=np.float32)
+    bars = np.zeros((batch, len(horizons), len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32)
     mask = np.zeros((batch, len(horizons)), dtype=np.bool_)
     for horizon_index, horizon in enumerate(horizons):
         prefix = f"future_intraday_bar_{horizon}"
         has_trade = labels.get(f"{prefix}_has_trade")
         if has_trade is not None:
             mask[:, horizon_index] = np.asarray(has_trade, dtype=np.bool_)
-        for field_index, field_name in enumerate(BAR_FEATURE_KEYS):
+        for field_index, field_name in enumerate(FUTURE_BAR_FEATURE_KEYS):
             value = labels.get(f"{prefix}_{field_name}")
             if value is not None:
                 bars[:, horizon_index, field_index] = np.asarray(value, dtype=np.float32)

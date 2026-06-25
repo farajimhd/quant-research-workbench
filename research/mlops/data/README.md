@@ -106,8 +106,8 @@ Complete default training-batch shape summary:
 | market news tokens | `text_inputs["market_news"]["input_ids"]` | `[B, 64, 2, 1024]` |
 | SEC text tokens | `text_inputs["sec_filings"]["input_ids"]` | `[B, 16, 8, 1024]` |
 | XBRL fundamentals | `xbrl_inputs[*]` | `[B, 512]` |
-| future macro bars | `future_macro_bars` | `[B, label_timeframes, 9]` |
-| future intraday bars | `future_intraday_bars` | `[B, intraday_label_horizons, 9]` |
+| future macro bars | `future_macro_bars` | `[B, label_timeframes, 5]` |
+| future intraday bars | `future_intraday_bars` | `[B, intraday_label_horizons, 5]` |
 | legacy future labels dict | `labels[*]` | usually `[B]` |
 
 ### Sample Identity
@@ -232,10 +232,11 @@ bar_feature_keys = (
 ```
 
 Every bar-like model input must use this same 9-field order so a single bar
-encoder can consume ticker macro bars, global market bars, and future bar
-targets. The mask is true when a bar exists as-of the sample origin. Missing
-bars are zeros and should be ignored by the bar encoder or downstream mask
-logic.
+encoder can consume ticker macro bars and global market bars. Future bars are
+targets, not context inputs, and use the smaller 5-field OHLCV abstraction
+described in the labels section. The mask is true when a context bar exists
+as-of the sample origin. Missing bars are zeros and should be ignored by the bar
+encoder or downstream mask logic.
 
 `macro_features` remains as a legacy compatibility dictionary. It also includes
 current-day as-of session state. New model code should prefer
@@ -531,10 +532,10 @@ current_day_full, +1d, +2d, +3d, +7d, +28d
 The structured target is:
 
 ```text
-future_macro_bars[B, label_timeframe_index, bar_field_index]
+future_macro_bars[B, label_timeframe_index, future_bar_field_index]
 future_macro_bar_mask[B, label_timeframe_index]
 future_macro_bar_timeframes = config.label_timeframes
-bar_feature_keys = same 9 keys used by ticker_macro_bars
+future_bar_feature_keys = (open, close, high, low, volume)
 ```
 
 Legacy flattened keys use the prefix `future_`:
@@ -564,10 +565,10 @@ origin. Default horizons are:
 The structured target is:
 
 ```text
-future_intraday_bars[B, intraday_horizon_index, bar_field_index]
+future_intraday_bars[B, intraday_horizon_index, future_bar_field_index]
 future_intraday_bar_mask[B, intraday_horizon_index]
 future_intraday_bar_horizons = config.intraday_label_horizons
-bar_feature_keys = same 9 keys used by ticker_macro_bars
+future_bar_feature_keys = (open, close, high, low, volume)
 ```
 
 For intraday bars, `future_intraday_bar_mask` replaces the old `has_trade` field

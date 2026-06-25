@@ -20,6 +20,13 @@ BAR_FEATURE_KEYS: tuple[str, ...] = (
     "quote_count",
     "vwap",
 )
+FUTURE_BAR_FEATURE_KEYS: tuple[str, ...] = (
+    "open",
+    "close",
+    "high",
+    "low",
+    "volume",
+)
 
 
 class Modality(str, Enum):
@@ -201,8 +208,8 @@ class RollingTrainingBatch:
     - `xbrl_inputs[*]`: `[batch, xbrl_max_items]`
     - `ticker_macro_bars`: `[batch, macro_timeframes, 9]`
     - `global_market_bars`: `[batch, global_symbols, macro_timeframes, 9]`
-    - `future_macro_bars`: `[batch, label_timeframes, 9]`
-    - `future_intraday_bars`: `[batch, intraday_label_horizons, 9]`
+    - `future_macro_bars`: `[batch, label_timeframes, 5]`
+    - `future_intraday_bars`: `[batch, intraday_label_horizons, 5]`
     - `time_features[*]`: `[batch]`
     - `chunk_time_features[*]`: `[batch, context_chunks]`
     """
@@ -215,6 +222,7 @@ class RollingTrainingBatch:
     time_features: dict[str, np.ndarray] = field(default_factory=dict)
     chunk_time_features: dict[str, np.ndarray] = field(default_factory=dict)
     bar_feature_keys: tuple[str, ...] = BAR_FEATURE_KEYS
+    future_bar_feature_keys: tuple[str, ...] = FUTURE_BAR_FEATURE_KEYS
     macro_bar_timeframes: tuple[str, ...] = ()
     global_bar_symbols: tuple[str, ...] = ()
     global_bar_timeframes: tuple[str, ...] = ()
@@ -224,9 +232,9 @@ class RollingTrainingBatch:
     ticker_macro_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
     global_market_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 0, len(BAR_FEATURE_KEYS)), dtype=np.float32))
     global_market_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 0), dtype=np.bool_))
-    future_macro_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, len(BAR_FEATURE_KEYS)), dtype=np.float32))
+    future_macro_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32))
     future_macro_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
-    future_intraday_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, len(BAR_FEATURE_KEYS)), dtype=np.float32))
+    future_intraday_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32))
     future_intraday_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
     macro_features: dict[str, np.ndarray] = field(default_factory=dict)
     global_features: dict[str, np.ndarray] = field(default_factory=dict)
