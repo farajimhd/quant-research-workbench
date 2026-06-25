@@ -94,13 +94,13 @@ Complete default training-batch shape summary:
 | origin time | `time_features[*]` | `[B]` |
 | market chunks | `headers_uint8` | `[B, 27, 14]` |
 | market chunks | `events_uint8` | `[B, 27, 128, 16]` |
-| market chunk metadata | `context_mask`, `chunk_origin_*` | `[B, 27]` |
+| market chunk time | `chunk_time_features[*]` | `[B, 27]` |
 | ticker macro bars/session state | `macro_features[*]` | `[B]` |
 | global market bars | `global_features[*]` | `[B]` |
-| ticker news tokens | `text_inputs["news"]["input_ids"]` | `[B, 32, 2, 1024]` |
+| ticker news tokens | `text_inputs["ticker_news"]["input_ids"]` | `[B, 32, 2, 1024]` |
 | market news tokens | `text_inputs["market_news"]["input_ids"]` | `[B, 64, 2, 1024]` |
 | SEC text tokens | `text_inputs["sec_filings"]["input_ids"]` | `[B, 16, 8, 1024]` |
-| XBRL fundamentals | `xbrl_inputs[*]` | `[B, 64]` |
+| XBRL fundamentals | `xbrl_inputs[*]` | `[B, 512]` |
 | future labels | `labels[*]` | usually `[B]` |
 
 ### Sample Identity
@@ -113,9 +113,9 @@ Each row in the batch is one ticker at one selected origin event.
 | `origin_ordinal` | `[B]` | `int64` | Event-table ordinal of the chosen origin event. |
 | `origin_timestamp_us` | `[B]` | `int64` | The only absolute timestamp exposed by the batch contract. It is the SIP timestamp of the chosen origin event in UTC microseconds. |
 
-All other timestamps in model-facing tensors are relative to
-`origin_timestamp_us`. Raw absolute source timestamps are kept only in
-`external_context` for audits and debugging.
+All other timestamps in model-facing tensors must be represented through the
+shared time-feature convention below. Raw absolute source timestamps are kept
+only in `external_context` for audits and debugging.
 
 Example:
 
@@ -125,28 +125,42 @@ origin_ordinal = 123456789
 origin_timestamp_us = 1767216600123456
 ```
 
-If an SEC filing has `timestamp_us = 1767130200000000`, the model receives:
+If an SEC filing has `timestamp_us = 1767130200000000`, it is first compared to
+the sample origin and then converted through the shared time-feature convention.
+The raw `1767130200000000` value is not a direct model feature.
 
 ```text
-timestamp_delta_us = -86400123456
-age_us = 86400123456
-age_seconds_log1p = log1p(86400.123456)
+time_delta_seconds = -86400.123456
+time_delta_seconds_log1p_signed = -log1p(86400.123456)
+time_age_seconds_log1p = log1p(86400.123456)
 ```
 
-### Origin Time Features
+### Timestamp Feature Convention
 
-`time_features` converts the one absolute origin timestamp into cyclic numeric
-features. These are safe because they are derived only from the origin event.
+All model-facing timestamps, except the identity field
+`origin_timestamp_us`, use the same feature extractor. This applies to origin
+time, chunk origin time, ticker news, market news, SEC filing text, and XBRL.
+
+The convention returns relative age plus calendar-cycle features. This gives the
+model both elapsed-time information and time-of-day/calendar context without
+feeding absolute source timestamps.
 
 | Key | Shape | Type | Meaning |
 | --- | --- | --- | --- |
-| `utc_second_of_day_sin` | `[B]` | `float32` | Sine encoding of UTC time within the day. |
-| `utc_second_of_day_cos` | `[B]` | `float32` | Cosine encoding of UTC time within the day. |
-| `utc_day_of_week_sin` | `[B]` | `float32` | Sine encoding of UTC weekday. |
-| `utc_day_of_week_cos` | `[B]` | `float32` | Cosine encoding of UTC weekday. |
-| `utc_day_of_year_sin` | `[B]` | `float32` | Sine encoding of calendar day-of-year. |
-| `utc_day_of_year_cos` | `[B]` | `float32` | Cosine encoding of calendar day-of-year. |
-| `years_since_2000` | `[B]` | `float32` | Slow trend feature for calendar regime. |
+| `time_delta_seconds` | source shape | `float32` | `source_timestamp - origin_timestamp`, in seconds. |
+| `time_delta_seconds_log1p_signed` | source shape | `float32` | Signed `log1p(abs(delta_seconds))`. |
+| `time_age_seconds_log1p` | source shape | `float32` | `log1p(max(0, origin_timestamp - source_timestamp) / 1e6)`. |
+| `time_utc_second_of_day_sin` | source shape | `float32` | Sine encoding of source UTC time within day. |
+| `time_utc_second_of_day_cos` | source shape | `float32` | Cosine encoding of source UTC time within day. |
+| `time_utc_day_of_week_sin` | source shape | `float32` | Sine encoding of source UTC weekday. |
+| `time_utc_day_of_week_cos` | source shape | `float32` | Cosine encoding of source UTC weekday. |
+| `time_utc_day_of_year_sin` | source shape | `float32` | Sine encoding of source calendar day-of-year. |
+| `time_utc_day_of_year_cos` | source shape | `float32` | Cosine encoding of source calendar day-of-year. |
+| `time_years_since_2000` | source shape | `float32` | Slow trend feature for calendar regime. |
+
+For `time_features`, source shape is `[B]` and the source timestamp is the
+origin timestamp, so relative deltas are zero. For `chunk_time_features`, source
+shape is `[B, C]`. For text and XBRL groups, source shape is `[B, max_items]`.
 
 ### Market Event Context
 
@@ -156,11 +170,7 @@ The market context is a grid of compact quote/trade chunks.
 | --- | --- | --- | --- |
 | `headers_uint8` | `[B, C, 14]` | `uint8` | One compact chunk header per context chunk. |
 | `events_uint8` | `[B, C, 128, 16]` | `uint8` | 128 compact events per chunk. |
-| `context_mask` | `[B, C]` | `bool` | True when the chunk is valid. |
-| `chunk_origin_ordinal` | `[B, C]` | `int64` | Origin ordinal of each 128-event chunk. |
-| `chunk_origin_timestamp_us` | `[B, C]` | `int64` | Absolute timestamp retained as metadata. Do not feed directly to models unless explicitly intended. |
-| `chunk_origin_delta_us` | `[B, C]` | `int64` | `chunk_origin_timestamp_us - origin_timestamp_us`; usually `<= 0`. |
-| `chunk_age_seconds_log1p` | `[B, C]` | `float32` | `log1p(max(0, origin - chunk_origin) / 1e6)`. |
+| `chunk_time_features[*]` | `[B, C]` | `float32` | Unified time features for each chunk origin timestamp. |
 
 `C = len(context_lags)`. With defaults, `C = 27`:
 
@@ -173,9 +183,13 @@ Example for one sample:
 context_lags = (0, 1, 2, 3, ..., 15, 32, 48, ..., 1850)
 headers_uint8[0, 0] = header for the most recent 128 events ending at origin
 events_uint8[0, 0] = those 128 compact quote/trade rows
-chunk_origin_delta_us[0, 0] = 0
-chunk_origin_delta_us[0, 1] < 0
+chunk_time_features["time_delta_seconds"][0, 0] = 0
+chunk_time_features["time_delta_seconds"][0, 1] < 0
 ```
+
+There is no `context_mask` in the v20 encoder path. Invalid event windows should
+be filtered before materialization rather than passed to the model as masked
+context.
 
 ### Production Market Embeddings
 
@@ -197,19 +211,25 @@ bars whose event time is after `origin_timestamp_us`.
 
 ### Macro Features
 
-`macro_features` describes the sample ticker itself. It has two sources:
+`macro_features` describes the sample ticker itself. It includes current-day
+as-of session state plus completed daily-bar aggregates. Session fields belong
+to `macro_features`; they are not a separate modality.
 
-1. Completed historical bars from `macro_bars_by_time_symbol`.
-2. Current-session prefix features computed from the in-memory event queue up
-   to the origin.
+Current implementation note: the loader still reads from `macro_bars_by_time_symbol`.
+The intended feature policy is to rely on `1d` aggregate bars and construct
+fixed windows from them, rather than using independent weekly/monthly/yearly bar
+rows that can represent partial-period boundaries differently.
 
-Completed-bar keys follow this pattern:
+The intended completed-bar windows are:
 
 ```text
-{timeframe}_{field}
+-1d, -2d, -3d, -7d, -14d, -28d, -40d, -200d
 ```
 
-Default timeframes are `1d`, `1w`, `1mo`, and `1y`. Bar fields include:
+The current day should be computed from intraday events as-of the origin. The
+historical windows should be aggregated from completed `1d` bars only.
+
+Bar fields include:
 
 | Field | Meaning |
 | --- | --- |
@@ -223,17 +243,19 @@ Default timeframes are `1d`, `1w`, `1mo`, and `1y`. Bar fields include:
 | `quote_count` | Number of quote events in the bar. |
 | `vwap` | Volume-weighted average price. |
 
-Example macro keys for `AAPL`:
+Intended macro keys:
 
 ```text
-1d_open
-1d_high
-1d_low
-1d_close
-1d_volume
-1w_close
-1mo_vwap
-1y_trade_count
+today_asof_open
+today_asof_high
+today_asof_low
+today_asof_close
+today_asof_volume
+past_1d_close
+past_2d_high
+past_7d_low
+past_28d_vwap
+past_200d_volume
 ```
 
 Current-session prefix keys are calculated directly from events before or at the
@@ -261,8 +283,15 @@ rule is that every value is prefix-only and therefore no-lookahead.
 
 ### Global Features
 
-`global_features` provides broad market context using the same as-of bar fields
-as macro features, but for configured market symbols. Defaults are:
+`global_features` provides broad market context for configured market symbols.
+It should use the same daily-bar aggregation idea as macro features, but with a
+smaller window set:
+
+```text
+today_asof, -1d, -2d, -7d
+```
+
+Default symbols are:
 
 ```text
 SPY, QQQ, IWM, DIA
@@ -273,16 +302,17 @@ Keys are prefixed by symbol:
 ```text
 SPY_1d_close
 SPY_1d_volume
-QQQ_1w_high
-IWM_1mo_vwap
-DIA_1y_trade_count
+SPY_past_7d_vwap
+QQQ_today_asof_close
+IWM_past_2d_volume
+DIA_past_1d_high
 ```
 
 Example interpretation:
 
 ```text
-SPY_1d_close = latest SPY daily close at or before the sample origin
-QQQ_1w_volume = latest QQQ weekly volume at or before the sample origin
+SPY_today_asof_close = SPY close so far in the current session
+SPY_past_7d_vwap = SPY VWAP aggregated from the prior 7 completed daily bars
 ```
 
 These features let the downstream model see market regime without relying on
@@ -295,7 +325,7 @@ Ticker news is read from `market_sip_compact.news_text_tokens`. It is built from
 `q_live.benzinga_news_normalized_v1`. The source timestamp is
 `published_at_utc`.
 
-The tensor group is `text_inputs["news"]`.
+The tensor group is `text_inputs["ticker_news"]`.
 
 | Field | Shape | Type | Meaning |
 | --- | --- | --- | --- |
@@ -303,15 +333,13 @@ The tensor group is `text_inputs["news"]`.
 | `attention_mask` | `[B, 32, 2, 1024]` | `uint8` | 1 for real tokens, 0 for padding. |
 | `item_mask` | `[B, 32]` | `bool` | True when the article slot is present. |
 | `chunk_mask` | `[B, 32, 2]` | `bool` | True when the article chunk exists. |
-| `timestamp_delta_us` | `[B, 32]` | `int64` | Article timestamp minus origin timestamp. |
-| `age_us` | `[B, 32]` | `int64` | `max(0, origin - article_timestamp)`. |
-| `age_seconds_log1p` | `[B, 32]` | `float32` | Log-scaled news age. |
+| `time_*` | `[B, 32]` | `float32` | Unified time features for the article timestamp. |
 
 Example:
 
 ```text
-text_inputs["news"]["item_mask"][7, 0] = True
-text_inputs["news"]["timestamp_delta_us"][7, 0] = -4_200_000
+text_inputs["ticker_news"]["item_mask"][7, 0] = True
+text_inputs["ticker_news"]["time_delta_seconds"][7, 0] = -4.2
 ```
 
 This means sample 7 has a ticker-related article 4.2 seconds before the origin.
@@ -337,9 +365,7 @@ The tensor group is `text_inputs["market_news"]`.
 | `attention_mask` | `[B, 64, 2, 1024]` | `uint8` | 1 for real tokens, 0 for padding. |
 | `item_mask` | `[B, 64]` | `bool` | True when the market-news slot is present. |
 | `chunk_mask` | `[B, 64, 2]` | `bool` | True when the article chunk exists. |
-| `timestamp_delta_us` | `[B, 64]` | `int64` | Article timestamp minus origin timestamp. |
-| `age_us` | `[B, 64]` | `int64` | `max(0, origin - article_timestamp)`. |
-| `age_seconds_log1p` | `[B, 64]` | `float32` | Log-scaled market-news age. |
+| `time_*` | `[B, 64]` | `float32` | Unified time features for the market-news timestamp. |
 
 ### SEC Filing Text Inputs
 
@@ -356,9 +382,7 @@ The tensor group is `text_inputs["sec_filings"]`.
 | `attention_mask` | `[B, 16, 8, 1024]` | `uint8` | 1 for real tokens, 0 for padding. |
 | `item_mask` | `[B, 16]` | `bool` | True when the filing-text slot is present. |
 | `chunk_mask` | `[B, 16, 8]` | `bool` | True when the text chunk exists. |
-| `timestamp_delta_us` | `[B, 16]` | `int64` | Filing accepted timestamp minus origin timestamp. |
-| `age_us` | `[B, 16]` | `int64` | `max(0, origin - accepted_timestamp)`. |
-| `age_seconds_log1p` | `[B, 16]` | `float32` | Log-scaled filing age. |
+| `time_*` | `[B, 16]` | `float32` | Unified time features for the accepted filing timestamp. |
 
 Example filing text item:
 
@@ -366,7 +390,7 @@ Example filing text item:
 form_type = "10-Q"
 accession_number = "0000320193-26-000050"
 text_rank = 0
-timestamp_delta_us = -12_345_600_000_000
+time_delta_seconds = -12_345_600.0
 ```
 
 The model-facing tensor receives token ids and relative age. The accession,
@@ -381,29 +405,33 @@ observations mapped to a market ticker and an accepted timestamp.
 
 The tensor group is `xbrl_inputs`.
 
-`xbrl_max_items = 64` means up to 64 as-of XBRL rows per sample. It does not
-mean XBRL is squeezed into 64 feature columns. Each XBRL attribute is its own
-array with shape `[B, 64]`.
+`xbrl_max_items = 512` means up to 512 as-of XBRL rows per sample. It does not
+mean XBRL is squeezed into 512 feature columns. Each XBRL attribute is its own
+array with shape `[B, 512]`.
+
+This is still a cap. A quick context-size check on `sec_xbrl_context` showed
+thousands of rows per ticker in the migrated table, so 64 was too small. The
+default 512 is a pragmatic first training size; a final fundamentals encoder may
+need a smarter selection/ranking step instead of simply increasing this to all
+available rows.
 
 | Field | Shape | Type | Meaning |
 | --- | --- | --- | --- |
-| `mask` | `[B, 64]` | `bool` | True when this XBRL slot is present. |
-| `timestamp_delta_us` | `[B, 64]` | `int64` | XBRL accepted timestamp minus origin timestamp. |
-| `age_us` | `[B, 64]` | `int64` | `max(0, origin - accepted_timestamp)`. |
-| `age_seconds_log1p` | `[B, 64]` | `float32` | Log-scaled filing/fact age. |
-| `value` | `[B, 64]` | `float32` | Numeric XBRL value. |
-| `fiscal_year` | `[B, 64]` | `int16` | Filing/fact fiscal year when available. |
-| `age_days` | `[B, 64]` | `float32` | Age in days from accepted timestamp to origin. |
-| `period_end_days` | `[B, 64]` | `int32` | Period-end date encoded as epoch day. |
-| `taxonomy_id` | `[B, 64]` | `uint32` | Stable hash id for taxonomy, for example `us-gaap`. |
-| `tag_id` | `[B, 64]` | `uint32` | Stable hash id for concept tag. |
-| `unit_id` | `[B, 64]` | `uint32` | Stable hash id for unit, for example `USD` or `shares`. |
-| `form_id` | `[B, 64]` | `uint32` | Stable hash id for form type, for example `10-Q`. |
-| `row_kind_id` | `[B, 64]` | `uint8` | `1` for company fact, `2` for frame observation. |
-| `calendar_period_id` | `[B, 64]` | `uint32` | Stable hash id for SEC frame period code. |
-| `location_id` | `[B, 64]` | `uint32` | Stable hash id for location code when available. |
-| `accepted_at_source_id` | `[B, 64]` | `uint32` | Stable hash id for accepted-timestamp source. |
-| `mapping_confidence` | `[B, 64]` | `float32` | Confidence of the CIK/accession-to-market mapping. |
+| `mask` | `[B, 512]` | `bool` | True when this XBRL slot is present. |
+| `time_*` | `[B, 512]` | `float32` | Unified time features for the XBRL accepted timestamp. |
+| `value` | `[B, 512]` | `float32` | Numeric XBRL value. |
+| `fiscal_year` | `[B, 512]` | `int16` | Filing/fact fiscal year when available. |
+| `age_days` | `[B, 512]` | `float32` | Age in days from accepted timestamp to origin. |
+| `period_end_days` | `[B, 512]` | `int32` | Period-end date encoded as epoch day. |
+| `taxonomy_id` | `[B, 512]` | `uint32` | Stable hash id for taxonomy, for example `us-gaap`. |
+| `tag_id` | `[B, 512]` | `uint32` | Stable hash id for concept tag. |
+| `unit_id` | `[B, 512]` | `uint32` | Stable hash id for unit, for example `USD` or `shares`. |
+| `form_id` | `[B, 512]` | `uint32` | Stable hash id for form type, for example `10-Q`. |
+| `row_kind_id` | `[B, 512]` | `uint8` | `1` for company fact, `2` for frame observation. |
+| `calendar_period_id` | `[B, 512]` | `uint32` | Stable hash id for SEC frame period code. |
+| `location_id` | `[B, 512]` | `uint32` | Stable hash id for location code when available. |
+| `accepted_at_source_id` | `[B, 512]` | `uint32` | Stable hash id for accepted-timestamp source. |
+| `mapping_confidence` | `[B, 512]` | `float32` | Confidence of the CIK/accession-to-market mapping. |
 
 Example XBRL row before tensorization:
 
@@ -427,7 +455,7 @@ Example model-facing slot:
 xbrl_inputs["mask"][0, 0] = True
 xbrl_inputs["value"][0, 0] = 123456789000.0
 xbrl_inputs["row_kind_id"][0, 0] = 1
-xbrl_inputs["timestamp_delta_us"][0, 0] = timestamp_us - origin_timestamp_us
+xbrl_inputs["time_delta_seconds"][0, 0] = (timestamp_us - origin_timestamp_us) / 1e6
 ```
 
 The raw tag names and accessions are intentionally not dense strings in the
@@ -453,21 +481,35 @@ group.
 
 ### Macro Future Labels
 
-Macro future labels come from the first future bar whose `bar_start` is after
-the sample origin for each configured `label_timeframes` entry. Default
-timeframes are `1d`, `1w`, `1mo`, and `1y`.
+Macro future labels should be derived from `1d` bars only. The current-day
+future bar means the full session through after-hours close, not the 4PM regular
+market close. Future daily windows should be:
+
+```text
+current_day_full, +1d, +2d, +3d, +7d, +28d
+```
+
+The current code still uses the configured `label_timeframes` path; this section
+defines the intended target schema for the next feature-policy update.
+
+Important current-state note: the existing qmd-compatible bar builders floor
+timestamps into timeframe buckets. I did not verify an implemented daily-session
+cutoff at 8PM ET in the current pushed bars. Before relying on `1d` bars for
+final training labels, rebuild or verify daily bars whose close is the final
+after-hours close for the US trading date.
 
 Keys use the prefix `future_`:
 
 ```text
-future_1d_open
-future_1d_high
-future_1d_low
-future_1d_close
-future_1d_volume
-future_1w_close
-future_1mo_vwap
-future_1y_trade_count
+future_current_day_full_open
+future_current_day_full_high
+future_current_day_full_low
+future_current_day_full_close
+future_current_day_full_volume
+future_plus_1d_close
+future_plus_2d_high
+future_plus_7d_low
+future_plus_28d_vwap
 ```
 
 ### Intraday Future Labels

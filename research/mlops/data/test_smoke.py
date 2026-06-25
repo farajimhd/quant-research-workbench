@@ -134,7 +134,7 @@ def smoke_rolling_provider() -> None:
         sample_stride_events=32,
         batch_size=8,
         max_ready_samples=16,
-        external_contexts=(ExternalAsOfContextConfig(name="news", timestamp_column="timestamp_ns", timestamp_unit="ns", payload_columns=("headline",)),),
+        external_contexts=(ExternalAsOfContextConfig(name="ticker_news", timestamp_column="timestamp_ns", timestamp_unit="ns", payload_columns=("headline",)),),
     )
     engine = RollingMarketSampleEngine(config)
     engine.append_rows_by_ticker(synthetic_rows_by_ticker(tickers=2, rows_per_ticker=1024))
@@ -147,7 +147,7 @@ def smoke_rolling_provider() -> None:
             ]
         )
     )
-    engine.load_external_context("news", [{"ticker": "T0000", "timestamp_ns": 1_700_000_000_001_000_000, "id": "n1", "headline": "test"}])
+    engine.load_external_context("ticker_news", [{"ticker": "T0000", "timestamp_ns": 1_700_000_000_001_000_000, "id": "n1", "headline": "test"}])
     engine.load_external_context(
         "market_news",
         [
@@ -205,38 +205,37 @@ def smoke_rolling_provider() -> None:
     batch = engine.materialize_training_batch(samples[:8])
     assert batch.headers_uint8.shape == (8, len(config.context_lags), 14)
     assert batch.events_uint8.shape == (8, len(config.context_lags), 128, 16)
-    assert bool(batch.context_mask.all())
     assert "1d_close" in batch.macro_features
     assert "session_trade_count_so_far" in batch.macro_features
     assert "SPY_1d_close" in batch.global_features
     assert "future_1d_close" in batch.labels
     assert "future_intraday_bar_100ms_high" in batch.labels
-    assert "news" in batch.external_context
-    assert batch.text_inputs["news"]["input_ids"].shape == (8, config.news_max_items, config.news_token_chunks, config.text_max_tokens)
-    assert batch.text_inputs["news"]["chunk_mask"].shape == (8, config.news_max_items, config.news_token_chunks)
-    assert batch.text_inputs["news"]["timestamp_delta_us"].shape == (8, config.news_max_items)
-    assert batch.text_inputs["news"]["age_seconds_log1p"].shape == (8, config.news_max_items)
-    assert "timestamp_us" not in batch.text_inputs["news"]
+    assert "ticker_news" in batch.external_context
+    assert batch.text_inputs["ticker_news"]["input_ids"].shape == (8, config.news_max_items, config.news_token_chunks, config.text_max_tokens)
+    assert batch.text_inputs["ticker_news"]["chunk_mask"].shape == (8, config.news_max_items, config.news_token_chunks)
+    assert batch.text_inputs["ticker_news"]["time_delta_seconds"].shape == (8, config.news_max_items)
+    assert batch.text_inputs["ticker_news"]["time_age_seconds_log1p"].shape == (8, config.news_max_items)
+    assert "timestamp_us" not in batch.text_inputs["ticker_news"]
     assert batch.text_inputs["market_news"]["input_ids"].shape == (8, config.market_news_max_items, config.market_news_token_chunks, config.text_max_tokens)
     assert batch.text_inputs["market_news"]["chunk_mask"].shape == (8, config.market_news_max_items, config.market_news_token_chunks)
     assert batch.text_inputs["sec_filings"]["attention_mask"].shape == (8, config.sec_max_items, config.sec_token_chunks, config.text_max_tokens)
     assert batch.text_inputs["sec_filings"]["chunk_mask"].shape == (8, config.sec_max_items, config.sec_token_chunks)
-    assert batch.text_inputs["sec_filings"]["timestamp_delta_us"].shape == (8, config.sec_max_items)
+    assert batch.text_inputs["sec_filings"]["time_delta_seconds"].shape == (8, config.sec_max_items)
     assert batch.xbrl_inputs["value"].shape == (8, config.xbrl_max_items)
     assert batch.xbrl_inputs["mask"].shape == (8, config.xbrl_max_items)
-    assert batch.xbrl_inputs["timestamp_delta_us"].shape == (8, config.xbrl_max_items)
-    assert batch.xbrl_inputs["age_seconds_log1p"].shape == (8, config.xbrl_max_items)
+    assert batch.xbrl_inputs["time_delta_seconds"].shape == (8, config.xbrl_max_items)
+    assert batch.xbrl_inputs["time_age_seconds_log1p"].shape == (8, config.xbrl_max_items)
     assert "timestamp_us" not in batch.xbrl_inputs
     assert batch.xbrl_inputs["row_kind_id"].shape == (8, config.xbrl_max_items)
     assert batch.xbrl_inputs["accepted_at_source_id"].shape == (8, config.xbrl_max_items)
     assert batch.xbrl_inputs["mapping_confidence"].shape == (8, config.xbrl_max_items)
-    assert batch.chunk_origin_delta_us.shape == (8, len(config.context_lags))
-    assert batch.chunk_age_seconds_log1p.shape == (8, len(config.context_lags))
-    assert batch.time_features["utc_second_of_day_sin"].shape == (8,)
+    assert batch.chunk_time_features["time_delta_seconds"].shape == (8, len(config.context_lags))
+    assert batch.chunk_time_features["time_age_seconds_log1p"].shape == (8, len(config.context_lags))
+    assert batch.time_features["time_utc_second_of_day_sin"].shape == (8,)
     lookup = {}
-    for sample_index, ticker in enumerate(batch.ticker.tolist()):
-        for origin in batch.chunk_origin_ordinal[sample_index].tolist():
-            lookup[(ticker, int(origin))] = np.ones((32,), dtype=np.float32)
+    for sample in samples[:8]:
+        for window in sample.chunk_windows:
+            lookup[(sample.ticker, int(window.origin_ordinal))] = np.ones((32,), dtype=np.float32)
     prod = engine.materialize_production_batch(samples[:8], lookup)
     assert prod.market_embeddings.shape == (8, len(config.context_lags), 32)
     assert bool(prod.market_mask.all())

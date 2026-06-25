@@ -101,7 +101,7 @@ def main() -> int:
     )
     print(
         "text_shapes="
-        f"news=[batch,{config.news_max_items},{config.news_token_chunks},{config.text_max_tokens}] "
+        f"ticker_news=[batch,{config.news_max_items},{config.news_token_chunks},{config.text_max_tokens}] "
         f"market_news=[batch,{config.market_news_max_items},{config.market_news_token_chunks},{config.text_max_tokens}] "
         f"sec=[batch,{config.sec_max_items},{config.sec_token_chunks},{config.text_max_tokens}]",
         flush=True,
@@ -186,9 +186,10 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
         materialized.append(batch)
         metrics = batch.profile.to_metrics(prefix="rolling_training") if batch.profile is not None else {}
         materialized_metrics.append(metrics)
+        chunk_count = int(batch.headers_uint8.shape[0] * batch.headers_uint8.shape[1])
         print(
             f"TRAIN_BATCH [{batch_id + 1}/{args.materialize_batches}] samples={batch.headers_uint8.shape[0]:,} "
-            f"chunks={int(batch.context_mask.sum()):,} seconds={metrics.get('rolling_training/total_seconds', 0.0):.3f} "
+            f"chunks={chunk_count:,} seconds={metrics.get('rolling_training/total_seconds', 0.0):.3f} "
             f"samples_per_sec={metrics.get('rolling_training/samples_per_second', 0.0):.1f} "
             f"labels={len(batch.labels)} macro={len(batch.macro_features)} global={len(batch.global_features)} "
             f"text={_shape_summary(batch.text_inputs)} xbrl={_shape_summary(batch.xbrl_inputs)} "
@@ -198,7 +199,7 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
             flush=True,
         )
         if args.profile_production_gather:
-            lookup = _fake_embedding_lookup(batch)
+            lookup = _fake_embedding_lookup(batch_samples)
             prod = engine.materialize_production_batch(batch_samples, lookup, batch_id=batch_id)
             prod_metrics = prod.profile.to_metrics(prefix="rolling_prod") if prod.profile is not None else {}
             print(
@@ -258,14 +259,12 @@ def _sum_metric_suffix(metrics_by_batch: list[dict[str, float]], suffix: str) ->
     return dict(sorted(out.items()))
 
 
-def _fake_embedding_lookup(batch) -> dict[tuple[str, int], np.ndarray]:
+def _fake_embedding_lookup(samples) -> dict[tuple[str, int], np.ndarray]:
     lookup: dict[tuple[str, int], np.ndarray] = {}
     rng = np.random.default_rng(17)
-    for sample_idx, ticker in enumerate(batch.ticker.tolist()):
-        for chunk_idx, origin in enumerate(batch.chunk_origin_ordinal[sample_idx].tolist()):
-            if int(origin) == 0:
-                continue
-            lookup[(str(ticker).upper(), int(origin))] = rng.normal(0.0, 0.01, size=(32,)).astype(np.float32)
+    for sample in samples:
+        for window in sample.chunk_windows:
+            lookup[(str(sample.ticker).upper(), int(window.origin_ordinal))] = rng.normal(0.0, 0.01, size=(32,)).astype(np.float32)
     return lookup
 
 

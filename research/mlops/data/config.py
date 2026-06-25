@@ -200,7 +200,7 @@ class RollingMarketDataConfig:
     label_timeframes: tuple[str, ...] = ("1d", "1w", "1mo", "1y")
     macro_lookback_days: int = 40
     label_lookahead_days: int = 400
-    q_live_contexts: tuple[str, ...] = ("news", "market_news", "sec_filings", "xbrl")
+    q_live_contexts: tuple[str, ...] = ("ticker_news", "market_news", "sec_filings", "xbrl")
     news_lookback_days: int = 30
     news_max_items: int = 32
     news_token_chunks: int = 2
@@ -210,7 +210,7 @@ class RollingMarketDataConfig:
     sec_max_items: int = 16
     sec_token_chunks: int = 8
     xbrl_lookback_days: int = 730
-    xbrl_max_items: int = 64
+    xbrl_max_items: int = 512
     intraday_label_horizons: tuple[TimeBarHorizon, ...] = field(default_factory=lambda: DEFAULT_INTRADAY_LABEL_HORIZONS)
     text_tokenizer_model: str = "Qwen/Qwen3-0.6B"
     text_max_tokens: int = 1024
