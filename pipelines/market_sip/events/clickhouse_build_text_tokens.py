@@ -40,6 +40,7 @@ DEFAULT_SEC_TEXT_CONTEXT_TABLE = "sec_filing_text_context"
 DEFAULT_OUTPUT_ROOT = DEFAULT_OUTPUT_ROOT_WIN / "text_tokens"
 DEFAULT_TOKENIZER_MODEL = "Qwen/Qwen3-0.6B"
 DEFAULT_NEWS_MAX_TOKENS = 1024
+DEFAULT_NEWS_MAX_CHUNKS = 2
 DEFAULT_SEC_CHUNK_TOKENS = 1024
 DEFAULT_SEC_MAX_CHUNKS = 4
 
@@ -119,6 +120,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tokenizer-model", default=DEFAULT_TOKENIZER_MODEL)
     parser.add_argument("--max-tokens", type=int, default=0, help="Deprecated alias. Use --news-max-tokens and --sec-chunk-tokens.")
     parser.add_argument("--news-max-tokens", type=int, default=DEFAULT_NEWS_MAX_TOKENS)
+    parser.add_argument("--news-max-chunks", type=int, default=DEFAULT_NEWS_MAX_CHUNKS)
     parser.add_argument("--sec-chunk-tokens", type=int, default=DEFAULT_SEC_CHUNK_TOKENS)
     parser.add_argument("--sec-max-chunks", type=int, default=DEFAULT_SEC_MAX_CHUNKS)
     parser.add_argument("--local-files-only", action=argparse.BooleanOptionalAction, default=True)
@@ -126,7 +128,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-fallback-tokenizer", action="store_true", help="Allow deterministic fallback tokens when the real tokenizer is unavailable. Use only for smoke tests.")
     parser.add_argument("--chunk-days", type=int, default=1)
     parser.add_argument("--insert-batch-size", type=int, default=2048)
-    parser.add_argument("--news-text-prefix-chars", type=int, default=12000)
+    parser.add_argument("--news-text-prefix-chars", type=int, default=12000, help="Backward-compatible default for each news component prefix.")
+    parser.add_argument("--news-body-prefix-chars", type=int, default=0)
+    parser.add_argument("--news-external-prefix-chars", type=int, default=0)
+    parser.add_argument("--news-pdf-prefix-chars", type=int, default=0)
     parser.add_argument("--sec-text-prefix-chars", type=int, default=16000)
     parser.add_argument("--storage-policy", default=default_storage_policy())
     parser.add_argument("--max-threads", type=int, default=16)
@@ -160,10 +165,21 @@ def main() -> int:
     if int(args.max_tokens) > 0:
         args.news_max_tokens = int(args.max_tokens)
         args.sec_chunk_tokens = int(args.max_tokens)
+    if int(args.news_body_prefix_chars) <= 0:
+        args.news_body_prefix_chars = int(args.news_text_prefix_chars)
+    if int(args.news_external_prefix_chars) <= 0:
+        args.news_external_prefix_chars = int(args.news_text_prefix_chars)
+    if int(args.news_pdf_prefix_chars) <= 0:
+        args.news_pdf_prefix_chars = int(args.news_text_prefix_chars)
 
     print(
-        f"tokenizer={args.tokenizer_model} news_max_tokens={args.news_max_tokens} "
+        f"tokenizer={args.tokenizer_model} news_chunks={args.news_max_chunks}x{args.news_max_tokens} "
         f"sec_chunks={args.sec_max_chunks}x{args.sec_chunk_tokens} local_files_only={args.local_files_only}",
+        flush=True,
+    )
+    print(
+        f"news_component_prefix_chars=body:{args.news_body_prefix_chars},external:{args.news_external_prefix_chars},pdf:{args.news_pdf_prefix_chars} "
+        f"sec_text_prefix_chars={args.sec_text_prefix_chars}",
         flush=True,
     )
     print(f"insert_batch_size={args.insert_batch_size} storage_policy={args.storage_policy or '<default>'}", flush=True)
@@ -431,7 +447,9 @@ def fetch_source_batch(client: ClickHouseHttpClient, args: argparse.Namespace, *
 def news_source_sql(args: argparse.Namespace, *, chunk_start: date, chunk_end: date) -> str:
     db = quote_ident(args.source_database)
     limit_sql = f"\nLIMIT {int(args.limit_rows_per_chunk)}" if int(args.limit_rows_per_chunk) > 0 else ""
-    text_chars = max(1, int(args.news_text_prefix_chars))
+    body_chars = max(1, int(args.news_body_prefix_chars))
+    external_chars = max(1, int(args.news_external_prefix_chars))
+    pdf_chars = max(1, int(args.news_pdf_prefix_chars))
     return f"""
 SELECT
     nt.ticker AS ticker,
@@ -442,8 +460,16 @@ SELECT
     nt.provider_article_id AS provider_article_id,
     n.title AS title,
     n.teaser AS teaser,
-    substring(n.normalized_full_text, 1, {text_chars}) AS text,
-    length(n.normalized_full_text) AS source_text_char_count,
+    substring(n.body_text, 1, {body_chars}) AS body_text,
+    substring(n.external_text, 1, {external_chars}) AS external_text,
+    substring(n.pdf_text, 1, {pdf_chars}) AS pdf_text,
+    length(n.body_text) AS body_text_char_count,
+    length(n.external_text) AS external_text_char_count,
+    length(n.pdf_text) AS pdf_text_char_count,
+    length(n.body_text) + length(n.external_text) + length(n.pdf_text) AS source_text_char_count,
+    n.has_body AS has_body,
+    n.has_external_text AS has_external_text,
+    n.has_pdf AS has_pdf,
     n.article_url AS article_url,
     n.url_domain AS url_domain,
     arrayStringConcat(n.channels, ',') AS channels,
@@ -514,7 +540,11 @@ def tokenize_and_insert_source_batch(
             text = texts[index]
             update_source_text_stats(stats, row)
             if source_batch.source == "news":
-                chunks = make_news_chunks(token_ids_by_text[index], max_tokens=int(args.news_max_tokens))
+                chunks = make_news_chunks(
+                    token_ids_by_text[index],
+                    chunk_tokens=int(args.news_max_tokens),
+                    max_chunks=int(args.news_max_chunks),
+                )
                 for chunk in chunks:
                     update_token_stats(stats, chunk)
                     insert_rows.append(news_token_row(args, row, text, chunk))
@@ -556,11 +586,15 @@ def tokenize_and_insert_source_batch(
     return inserted
 
 
-def make_news_chunks(token_ids: list[int], *, max_tokens: int) -> list[TokenChunk]:
-    return [make_token_chunk(token_ids, chunk_index=0, token_start=0, chunk_tokens=max(1, int(max_tokens)), original_token_count=len(token_ids), max_total_tokens=max(1, int(max_tokens)))]
+def make_news_chunks(token_ids: list[int], *, chunk_tokens: int, max_chunks: int) -> list[TokenChunk]:
+    return make_text_chunks(token_ids, chunk_tokens=chunk_tokens, max_chunks=max_chunks)
 
 
 def make_sec_chunks(token_ids: list[int], *, chunk_tokens: int, max_chunks: int) -> list[TokenChunk]:
+    return make_text_chunks(token_ids, chunk_tokens=chunk_tokens, max_chunks=max_chunks)
+
+
+def make_text_chunks(token_ids: list[int], *, chunk_tokens: int, max_chunks: int) -> list[TokenChunk]:
     chunk_tokens = max(1, int(chunk_tokens))
     max_chunks = max(1, int(max_chunks))
     original_count = len(token_ids)
@@ -620,8 +654,16 @@ def news_model_text(row: dict[str, Any]) -> str:
         f"teaser: {row.get('teaser', '') or ''}",
         f"channels: {row.get('channels', '') or ''}",
         f"tags: {row.get('provider_tags', '') or ''}",
-        str(row.get("text", "") or ""),
     ]
+    body_text = str(row.get("body_text", "") or "")
+    external_text = str(row.get("external_text", "") or "")
+    pdf_text = str(row.get("pdf_text", "") or "")
+    if body_text:
+        parts.extend(["BODY", body_text])
+    if external_text:
+        parts.extend(["EXTERNAL_TEXT", external_text])
+    if pdf_text:
+        parts.extend(["PDF_TEXT", pdf_text])
     return "\n".join(part for part in parts if str(part).strip())
 
 
@@ -666,8 +708,8 @@ def news_token_row(args: argparse.Namespace, row: dict[str, Any], text: str, chu
         "attention_mask": [int(value) for value in chunk.attention_mask],
         "text_hash": stable_uint64(text),
         "text_char_count": len(text),
-        "source_text_char_count": int(row.get("source_text_char_count", 0) or len(str(row.get("text", "") or ""))),
-        "text_prefix_truncated": int(int(row.get("source_text_char_count", 0) or 0) > len(str(row.get("text", "") or ""))),
+        "source_text_char_count": int(row.get("source_text_char_count", 0) or tokenized_source_body_chars(row)),
+        "text_prefix_truncated": int(int(row.get("source_text_char_count", 0) or 0) > tokenized_source_body_chars(row)),
     }
 
 
@@ -697,8 +739,8 @@ def sec_token_row(args: argparse.Namespace, row: dict[str, Any], text: str, chun
         "attention_mask": [int(value) for value in chunk.attention_mask],
         "text_hash": stable_uint64(text),
         "text_char_count": len(text),
-        "source_text_char_count": int(row.get("source_text_char_count", 0) or len(str(row.get("text", "") or ""))),
-        "text_prefix_truncated": int(int(row.get("source_text_char_count", 0) or 0) > len(str(row.get("text", "") or ""))),
+        "source_text_char_count": int(row.get("source_text_char_count", 0) or tokenized_source_body_chars(row)),
+        "text_prefix_truncated": int(int(row.get("source_text_char_count", 0) or 0) > tokenized_source_body_chars(row)),
     }
 
 
@@ -725,10 +767,16 @@ def empty_token_stats() -> dict[str, int]:
 
 def update_source_text_stats(stats: dict[str, int], row: dict[str, Any]) -> None:
     source_chars = int(row.get("source_text_char_count", 0) or 0)
-    tokenized_chars = len(str(row.get("text", "") or ""))
+    tokenized_chars = tokenized_source_body_chars(row)
     stats["source_text_chars"] += source_chars
     stats["tokenized_body_chars"] += tokenized_chars
     stats["text_prefix_truncated_sources"] += int(source_chars > tokenized_chars)
+
+
+def tokenized_source_body_chars(row: dict[str, Any]) -> int:
+    if any(key in row for key in ("body_text", "external_text", "pdf_text")):
+        return sum(len(str(row.get(key, "") or "")) for key in ("body_text", "external_text", "pdf_text"))
+    return len(str(row.get("text", "") or ""))
 
 
 def update_token_stats(stats: dict[str, int], chunk: TokenChunk) -> None:
@@ -773,17 +821,18 @@ def summarize_table(client: ClickHouseHttpClient, database: str, table: str, *, 
     sql = f"""
 SELECT
     count() AS rows,
+    uniqExact(tuple(ticker, source_id)) AS source_rows,
     uniqExact(ticker) AS tickers,
     min({quote_ident(timestamp_column)}) AS min_timestamp,
     max({quote_ident(timestamp_column)}) AS max_timestamp,
     avg(token_count) AS avg_token_count,
     max(token_count) AS max_token_count,
-    avg(original_token_count) AS avg_original_token_count,
+    avgIf(original_token_count, token_chunk_index = 0) AS avg_original_token_count,
     max(original_token_count) AS max_original_token_count,
-    sum(was_truncated) AS truncated_rows,
-    avg(was_truncated) AS truncated_row_fraction,
-    sum(text_prefix_truncated) AS text_prefix_truncated_rows,
-    avg(text_prefix_truncated) AS text_prefix_truncated_row_fraction,
+    sumIf(was_truncated, token_chunk_index = 0) AS truncated_rows,
+    avgIf(was_truncated, token_chunk_index = 0) AS truncated_row_fraction,
+    sumIf(text_prefix_truncated, token_chunk_index = 0) AS text_prefix_truncated_rows,
+    avgIf(text_prefix_truncated, token_chunk_index = 0) AS text_prefix_truncated_row_fraction,
     sum(padding_tokens) AS total_padding_tokens,
     avg(padding_tokens) AS avg_padding_tokens
 FROM {quote_ident(database)}.{quote_ident(table)}
@@ -797,7 +846,8 @@ FORMAT JSONEachRow
     summary = json.loads(raw) if raw else {}
     append_jsonl(report_path, {"operation": "summary", "source": source, "table": table, "seconds": round(seconds, 3), **summary})
     print(
-        f"SUMMARY {source} table={table} rows={int(summary.get('rows', 0)):,} tickers={int(summary.get('tickers', 0)):,} "
+        f"SUMMARY {source} table={table} rows={int(summary.get('rows', 0)):,} sources={int(summary.get('source_rows', 0)):,} "
+        f"tickers={int(summary.get('tickers', 0)):,} "
         f"avg_tokens={float(summary.get('avg_token_count', 0) or 0):.1f} "
         f"truncated_rows={int(summary.get('truncated_rows', 0) or 0):,} "
         f"text_prefix_truncated_rows={int(summary.get('text_prefix_truncated_rows', 0) or 0):,} "

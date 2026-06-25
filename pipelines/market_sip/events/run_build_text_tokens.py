@@ -22,6 +22,7 @@ DEFAULTS = {
     "sources": "news,sec",
     "tokenizer_model": "Qwen/Qwen3-0.6B",
     "news_max_tokens": 1024,
+    "news_max_chunks": 2,
     "sec_chunk_tokens": 1024,
     "sec_max_chunks": 4,
     "chunk_days": 1,
@@ -46,11 +47,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tokenizer-model", default=DEFAULTS["tokenizer_model"])
     parser.add_argument("--max-tokens", type=int, default=0)
     parser.add_argument("--news-max-tokens", type=int, default=DEFAULTS["news_max_tokens"])
+    parser.add_argument("--news-max-chunks", type=int, default=DEFAULTS["news_max_chunks"])
     parser.add_argument("--sec-chunk-tokens", type=int, default=DEFAULTS["sec_chunk_tokens"])
     parser.add_argument("--sec-max-chunks", type=int, default=DEFAULTS["sec_max_chunks"])
     parser.add_argument("--chunk-days", type=int, default=DEFAULTS["chunk_days"])
     parser.add_argument("--insert-batch-size", type=int, default=DEFAULTS["insert_batch_size"])
     parser.add_argument("--news-text-prefix-chars", type=int, default=12000)
+    parser.add_argument("--news-body-prefix-chars", type=int, default=0)
+    parser.add_argument("--news-external-prefix-chars", type=int, default=0)
+    parser.add_argument("--news-pdf-prefix-chars", type=int, default=0)
     parser.add_argument("--sec-text-prefix-chars", type=int, default=16000)
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
@@ -100,6 +105,8 @@ def main() -> int:
         args.tokenizer_model,
         "--news-max-tokens",
         str(args.news_max_tokens),
+        "--news-max-chunks",
+        str(args.news_max_chunks),
         "--sec-chunk-tokens",
         str(args.sec_chunk_tokens),
         "--sec-max-chunks",
@@ -110,6 +117,12 @@ def main() -> int:
         str(args.insert_batch_size),
         "--news-text-prefix-chars",
         str(args.news_text_prefix_chars),
+        "--news-body-prefix-chars",
+        str(args.news_body_prefix_chars),
+        "--news-external-prefix-chars",
+        str(args.news_external_prefix_chars),
+        "--news-pdf-prefix-chars",
+        str(args.news_pdf_prefix_chars),
         "--sec-text-prefix-chars",
         str(args.sec_text_prefix_chars),
         "--max-threads",

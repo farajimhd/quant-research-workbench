@@ -159,7 +159,7 @@ The builder creates two separate tables:
 
 | Table | Partition | Order key | Source |
 | --- | --- | --- | --- |
-| `news_text_tokens` | `toYYYYMM(published_at_utc)` | `(ticker, timestamp_us, source_id)` | `q_live.benzinga_news_ticker_v1` joined to `q_live.benzinga_news_normalized_v1` |
+| `news_text_tokens` | `toYYYYMM(published_at_utc)` | `(ticker, timestamp_us, source_id, token_chunk_index)` | `q_live.benzinga_news_ticker_v1` joined to `q_live.benzinga_news_normalized_v1` |
 | `sec_filing_text_tokens` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id, source_id)` | `market_sip_compact.sec_filing_text_context` |
 
 Each row stores source metadata plus fixed-length tokenizer output:
@@ -175,10 +175,15 @@ Each row stores source metadata plus fixed-length tokenizer output:
 - `max_tokens`
 - source identifiers and timestamps
 
-News uses one 1024-token row per ticker/article row by default. SEC filing text
-uses up to four 1024-token rows per source text row. The SEC table includes
-`token_chunk_index`, `token_start`, and `token_end`, so the four chunks do not
-collapse under the same replacing key.
+News uses up to two 1024-token rows per ticker/article row by default. It is
+assembled explicitly from `title`, `teaser`, `body_text`, `external_text`, and
+`pdf_text` in `benzinga_news_normalized_v1`, with section labels in the tokenized
+text. This avoids relying on a prefix of `normalized_full_text`, which can miss
+enriched external/PDF text when it appears later in the merged article.
+
+SEC filing text uses up to four 1024-token rows per source text row. Both token
+tables include `token_chunk_index`, `token_start`, and `token_end`, so multiple
+chunks do not collapse under the same replacing key.
 
 The tokenized text starts with explicit metadata lines such as `NEWS` or
 `SEC FILING`, provider/form/ticker/timestamp fields, and then the bounded source
