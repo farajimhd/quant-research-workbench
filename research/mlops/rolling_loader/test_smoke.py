@@ -19,7 +19,7 @@ from research.mlops.rolling_loader.synthetic import iter_synthetic_events, synth
 def main() -> int:
     loader_config = RollingLoaderConfig(
         batch_size=16,
-        chunk_stride_events=4,
+        context_chunk_stride_events=4,
         short_context_chunks=4,
         long_context_lags=(8, 16),
         sample_stride_events=1,

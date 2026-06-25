@@ -298,7 +298,7 @@ class RollingContextLoader:
         with self.profiler.stage("sample_index_create", items=1):
             chunk_ids: list[int] = []
             for lag in self.config.context_lags:
-                lag_origin = int(origin) - int(lag) * int(self.config.chunk_stride_events)
+                lag_origin = int(origin) - int(lag)
                 chunk_id = cache.chunk_id(lag_origin)
                 if chunk_id is None:
                     return None

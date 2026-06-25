@@ -9,9 +9,9 @@ stateful caches and stable sample pointers.
 1. A source replays chronological market events and low-frequency context
    updates.
 2. `RollingContextLoader` appends each item to the correct bounded cache.
-3. Every stride-aligned event origin creates or reuses 128-event chunk ids.
-4. A `RollingSamplePointer` is emitted once all configured context chunk lags
-   are available.
+3. Every eligible event origin creates or reuses 128-event chunk ids.
+4. A `RollingSamplePointer` is emitted once the 32 configured context chunks
+   spaced by the context stride are available.
 5. Training materializes raw chunks/tokens from stable ids at the collator step.
    Production can resolve the same ids to cached embeddings.
 
@@ -40,13 +40,15 @@ coverage. The default market context is:
 ```text
 chunk_size = 128 events
 context_chunks = 32
-chunk_stride_events = 64
+context_chunk_stride_events = 64
 coverage = 128 + (32 - 1) * 64 = 2112 events
 adjacent_chunk_overlap = 64 events
 ```
 
-This emits far fewer market chunks than one-origin-per-event chunking while
-still keeping dense recent microstructure context.
+Sample origins are independent from context spacing. The default
+`sample_stride_events=1` means every event can become a training/serving origin,
+while each sample uses context chunks ending at `origin`, `origin-64`,
+`origin-128`, and so on.
 
 ## Sample Pointers
 
@@ -83,7 +85,7 @@ Run a local synthetic profile:
 python -m research.mlops.rolling_loader.run_profile --tickers 64 --rows-per-ticker 8000 --batch-size 4096 --batches 4
 ```
 
-The default profile uses `--context-chunks 32 --chunk-stride-events 64`.
+The default profile uses `--context-chunks 32 --context-chunk-stride-events 64`.
 
 The default profile is ID-only for low-frequency context. This matches the
 intended training/production flow where sample pointers carry stable cache ids

@@ -9,16 +9,17 @@ class RollingLoaderConfig:
     """Configuration for the stateful rolling loader.
 
     The defaults mirror the current production-aligned market-structure plan:
-    32 chunks, 128 events per chunk, and a 64-event stride between chunk
-    origins. Lags are measured in chunk-origin steps; with
-    ``chunk_stride_events=64`` a lag of 1 means the 128-event chunk ending 64
-    events before the current origin.
+    every event can be a sample origin, and that origin gathers 32 context
+    chunks spaced by 64 events. Lags are measured in event offsets; with
+    ``context_chunk_stride_events=64`` the second context chunk ends 64 events
+    before the origin.
     """
 
     events_per_chunk: int = 128
     header_bytes: int = 14
     event_bytes: int = 16
-    chunk_stride_events: int = 64
+    chunk_stride_events: int = 1
+    context_chunk_stride_events: int = 64
     sample_stride_events: int = 1
     short_context_chunks: int = 32
     short_context_stride_chunks: int = 1
@@ -42,10 +43,11 @@ class RollingLoaderConfig:
 
     @property
     def context_lags(self) -> tuple[int, ...]:
+        context_stride = max(1, int(self.context_chunk_stride_events)) * max(1, int(self.short_context_stride_chunks))
         dense = range(
             0,
-            max(0, int(self.short_context_chunks)) * max(1, int(self.short_context_stride_chunks)),
-            max(1, int(self.short_context_stride_chunks)),
+            max(0, int(self.short_context_chunks)) * context_stride,
+            context_stride,
         )
         return tuple(sorted(set(int(value) for value in dense).union(int(value) for value in self.long_context_lags)))
 
@@ -59,17 +61,17 @@ class RollingLoaderConfig:
 
     @property
     def warmup_events_per_ticker(self) -> int:
-        return int(self.max_context_lag) * int(self.chunk_stride_events) + int(self.events_per_chunk)
+        return int(self.max_context_lag) + int(self.events_per_chunk)
 
     @property
     def context_coverage_events(self) -> int:
         if self.context_chunks <= 0:
             return 0
-        return int(self.events_per_chunk) + int(self.max_context_lag) * int(self.chunk_stride_events)
+        return int(self.events_per_chunk) + int(self.max_context_lag)
 
     @property
     def adjacent_chunk_overlap_events(self) -> int:
-        return max(0, int(self.events_per_chunk) - int(self.chunk_stride_events))
+        return max(0, int(self.events_per_chunk) - int(self.context_chunk_stride_events))
 
     @property
     def event_cache_events_per_ticker(self) -> int:

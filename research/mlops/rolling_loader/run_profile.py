@@ -26,7 +26,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--batches", type=int, default=4)
     parser.add_argument("--context-chunks", type=int, default=32)
-    parser.add_argument("--chunk-stride-events", type=int, default=64)
+    parser.add_argument(
+        "--context-chunk-stride-events",
+        "--chunk-stride-events",
+        dest="context_chunk_stride_events",
+        type=int,
+        default=64,
+        help="Event spacing between context chunks. Sample origins still use --sample-stride-events.",
+    )
     parser.add_argument("--sample-stride-events", type=int, default=1)
     parser.add_argument("--external-every-events", type=int, default=512)
     parser.add_argument("--materialize-external-payloads", action=argparse.BooleanOptionalAction, default=False)
@@ -43,7 +50,8 @@ def main() -> int:
     loader_config = RollingLoaderConfig(
         batch_size=int(args.batch_size),
         short_context_chunks=int(args.context_chunks),
-        chunk_stride_events=int(args.chunk_stride_events),
+        chunk_stride_events=1,
+        context_chunk_stride_events=int(args.context_chunk_stride_events),
         long_context_lags=(),
         sample_stride_events=int(args.sample_stride_events),
         profile_report_path=args.report_path,
@@ -64,7 +72,8 @@ def main() -> int:
     print(
         f"tickers={synthetic_config.tickers} rows_per_ticker={synthetic_config.rows_per_ticker} "
         f"batch_size={loader_config.batch_size} context_chunks={loader_config.context_chunks} "
-        f"chunk_size={loader_config.events_per_chunk} chunk_stride={loader_config.chunk_stride_events} "
+        f"chunk_size={loader_config.events_per_chunk} origin_chunk_stride={loader_config.chunk_stride_events} "
+        f"context_chunk_stride={loader_config.context_chunk_stride_events} "
         f"coverage_events={loader_config.context_coverage_events} overlap_events={loader_config.adjacent_chunk_overlap_events} "
         f"materialize_external={synthetic_config.materialize_external_payloads}"
     )
@@ -114,7 +123,8 @@ def main() -> int:
                     "rows_per_ticker": synthetic_config.rows_per_ticker,
                     "batch_size": loader_config.batch_size,
                     "context_chunks": loader_config.context_chunks,
-                    "chunk_stride_events": loader_config.chunk_stride_events,
+                    "origin_chunk_stride_events": loader_config.chunk_stride_events,
+                    "context_chunk_stride_events": loader_config.context_chunk_stride_events,
                     "context_coverage_events": loader_config.context_coverage_events,
                     "materialize_external_payloads": synthetic_config.materialize_external_payloads,
                 },
