@@ -155,6 +155,41 @@ Reports are appended as JSONL under:
 
 `D:/market-data/prepared/data_provider_profiles/rolling_loader_profile.jsonl`
 
+## Training-Accurate Profiler
+
+`run_training_profile.py` is the workstation-oriented profiler for measuring
+the loader as a training data path. It is separate from `run_profile.py` and
+does not use the loader's internal cumulative profiler for timing. Instead, it
+records phase start/end events, per-batch metrics, per-block throughput, RSS
+memory samples, cache sizes, and a final summary under one run directory.
+
+Laptop form:
+
+```powershell
+python -m research.mlops.rolling_loader.run_training_profile --database market_sip_compact --events-table events --index-table train_2019_to_2025 --tickers 64 --batch-size 4096 --batches 4 --events-per-ticker-block 64 --context-chunks 32 --context-chunk-stride-events 64 --sample-stride-events 1 --start-utc 2025-01-02T15:00:00Z --max-threads 8 --max-memory-usage 80G --materialize-external-payloads --run-name train64_b4096_20250102_1500
+```
+
+Direct workstation form:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_training_profile.py --database market_sip_compact --events-table events --index-table train_2019_to_2025 --tickers 64 --batch-size 4096 --batches 4 --events-per-ticker-block 64 --context-chunks 32 --context-chunk-stride-events 64 --sample-stride-events 1 --start-utc 2025-01-02T15:00:00Z --max-threads 8 --max-memory-usage 80G --materialize-external-payloads --run-name train64_b4096_20250102_1500
+```
+
+Outputs are written under:
+
+`D:/market-data/prepared/data_provider_profiles/rolling_loader_training/<run_name>/`
+
+The key files are:
+
+- `profile_events.jsonl`: phase timing, block, batch, and final events
+- `memory_samples.jsonl`: periodic RSS samples
+- `summary.json`: final elapsed time, throughput, peak RSS, cache state, and
+  initialization/replay summaries
+
+Use `--no-materialize-external-payloads` to measure the ID-only path and
+`--materialize-external-payloads` to measure the raw external payload gather
+path that trainable encoders need.
+
 ## Smoke Test
 
 ```powershell
@@ -169,5 +204,5 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\roll
 
 The smoke test is intentionally isolated from the profiler and uses generated
 events only to verify cache mechanics, ready sample pointers, and materialized
-event tensor shapes. Profiling must use the ClickHouse-backed `run_profile.py`
-path described above.
+event tensor shapes. Profiling should use the ClickHouse-backed
+`run_training_profile.py` path when measuring real training speed and memory.
