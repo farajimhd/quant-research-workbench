@@ -190,47 +190,44 @@ def main() -> None:
     )
     emit("=" * 96)
     if config.execute and not write_policy.writes_allowed:
-        print(
-            "Reference writes are blocked during active market collection hours. "
-            "Run after hours or set REFERENCE_GATEWAY_MARKET_HOURS_WRITE_OVERRIDE=true "
-            "with REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON for a required market-hours operation.",
-            flush=True,
-        )
-        sys.exit(2)
+        add_operation("Promotion write policy", "skipped", write_policy.reason)
     if args.ensure_market_publication_schema:
         if not write_policy.writes_allowed:
-            print("market_publication_schema=blocked reason=" + write_policy.reason, flush=True)
-            sys.exit(2)
-        from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
+            add_operation("Market publication schema", "skipped", write_policy.reason)
+            emit("market_publication_schema=blocked reason=" + write_policy.reason)
+        else:
+            from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
 
-        started = time.perf_counter()
-        ensure_market_publication_schema(
-            ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
-            database=config.clickhouse_write_database,
-            read_database=config.clickhouse_read_database,
-            storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
-        )
-        add_operation(
-            "Market publication schema",
-            "completed",
-            f"read={config.clickhouse_read_database} write={config.clickhouse_write_database}",
-            seconds=time.perf_counter() - started,
-        )
-        emit(
-            "market_publication_schema=ensured "
-            f"read_database={config.clickhouse_read_database} "
-            f"write_database={config.clickhouse_write_database}"
-        )
+            started = time.perf_counter()
+            ensure_market_publication_schema(
+                ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
+                database=config.clickhouse_write_database,
+                read_database=config.clickhouse_read_database,
+                storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
+            )
+            add_operation(
+                "Market publication schema",
+                "completed",
+                f"read={config.clickhouse_read_database} write={config.clickhouse_write_database}",
+                seconds=time.perf_counter() - started,
+            )
+            emit(
+                "market_publication_schema=ensured "
+                f"read_database={config.clickhouse_read_database} "
+                f"write_database={config.clickhouse_write_database}"
+            )
     if config.execute and config.resolve_stale_issues:
         started = time.perf_counter()
         resolution = resolve_stale_active_ticker_issues(config)
-        add_operation("Resolve stale issues", "completed", resolution.reason, rows=resolution.resolved, seconds=time.perf_counter() - started)
+        add_operation("Resolve issues", "completed", resolution_detail(resolution), rows=resolution.resolved, seconds=time.perf_counter() - started)
         emit("stale_issue_resolution=" + json.dumps(asdict(resolution), sort_keys=True))
-    if config.execute and config.rebuild_tradable_on_execute:
+    if config.execute and config.rebuild_tradable_on_execute and write_policy.writes_allowed:
         started = time.perf_counter()
         rebuild = rebuild_tradable_publications(config, reason="pre_audit_source_truth_refresh")
         add_operation("Rebuild tradable publications", rebuild.status, rebuild.reason, seconds=time.perf_counter() - started)
         emit("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True))
+    elif config.execute and config.rebuild_tradable_on_execute:
+        add_operation("Rebuild tradable publications", "skipped", write_policy.reason)
     audit_started = time.perf_counter()
     report = run_reference_audit(config)
     record.audit = report
@@ -282,7 +279,7 @@ def main() -> None:
                 else:
                     add_operation("Write active ticker issues", "skipped", "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
                     emit("active_ticker_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
-                if config.write_canonical_graph:
+                if config.write_canonical_graph and write_policy.writes_allowed:
                     started = time.perf_counter()
                     graph_write = write_canonical_graph_candidates(config, plan)
                     add_operation("Write canonical graph", "completed", graph_write.reason, rows=graph_write.inserted_rows, seconds=time.perf_counter() - started)
@@ -296,19 +293,20 @@ def main() -> None:
                         add_operation("Write graph issues", "skipped", "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
                         emit("canonical_graph_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
                 else:
-                    add_operation("Write canonical graph", "skipped", "REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH_FALSE")
-                    emit("canonical_graph_write=skipped reason=REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH_FALSE")
+                    reason = "REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH_FALSE" if not config.write_canonical_graph else write_policy.reason
+                    add_operation("Write canonical graph", "skipped", reason)
+                    emit("canonical_graph_write=skipped reason=" + reason)
                 if config.resolve_stale_issues:
                     started = time.perf_counter()
                     resolution = resolve_stale_active_ticker_issues(config)
-                    add_operation("Resolve stale issues", "completed", resolution.reason, rows=resolution.resolved, seconds=time.perf_counter() - started)
+                    add_operation("Resolve issues", "completed", resolution_detail(resolution), rows=resolution.resolved, seconds=time.perf_counter() - started)
                     emit("stale_issue_resolution=" + json.dumps(asdict(resolution), sort_keys=True))
                 changed_rows = issue_write.written if issue_write is not None else 0
                 if graph_write is not None:
                     changed_rows += graph_write.inserted_rows
                 if graph_issue_write is not None:
                     changed_rows += graph_issue_write.written
-                if changed_rows > 0 and config.rebuild_tradable_on_execute:
+                if changed_rows > 0 and config.rebuild_tradable_on_execute and write_policy.writes_allowed:
                     started = time.perf_counter()
                     rebuild = rebuild_tradable_publications(config, reason="post_active_ticker_issue_write")
                     add_operation("Rebuild tradable publications", rebuild.status, rebuild.reason, seconds=time.perf_counter() - started)
@@ -321,6 +319,8 @@ def main() -> None:
                     record.report_path = str(report_path or record.report_path)
                     if report_path:
                         emit(f"post_issue_report={report_path}")
+                elif changed_rows > 0 and config.rebuild_tradable_on_execute:
+                    add_operation("Post-issue tradable rebuild", "skipped", write_policy.reason)
     if (
         config.execute
         and write_policy.writes_allowed
@@ -346,6 +346,15 @@ def main() -> None:
     emit(f"status={report.status} wall_seconds={report.wall_seconds:.2f}")
     if report.status == "failed":
         sys.exit(2)
+
+
+def resolution_detail(resolution: object) -> str:
+    return (
+        f"{getattr(resolution, 'reason', '-')}; "
+        f"auto_block={getattr(resolution, 'auto_block_until_resolved', 0):,} "
+        f"review={getattr(resolution, 'human_review_required', 0):,} "
+        f"historical={getattr(resolution, 'historical_repair', 0):,}"
+    )
 
 
 if __name__ == "__main__":

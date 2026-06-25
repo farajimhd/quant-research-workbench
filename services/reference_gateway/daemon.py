@@ -44,11 +44,18 @@ def run_daemon_cycle(config: ReferenceGatewayConfig, base_args: list[str]) -> Da
     command = [sys.executable, "-m", "services.reference_gateway.main", "--no-daemon"]
     command.extend(arg for arg in base_args if arg != "--daemon")
     if active and config.after_hours_writes_only and not config.market_hours_write_override:
-        command = [arg for arg in command if arg != "--execute"]
+        if "--execute" not in command and "--no-execute" not in command:
+            command.append("--execute")
         if "--active-ticker-check" not in command:
             command.append("--active-ticker-check")
+        if "--no-write-discovered-issues" not in command:
+            command.append("--write-discovered-issues")
+        if "--no-write-canonical-graph" not in command:
+            command.append("--no-write-canonical-graph")
         if "--no-rebuild-tradable" not in command:
             command.append("--no-rebuild-tradable")
+        if "--no-market-publication-gap-fill" not in command:
+            command.append("--no-market-publication-gap-fill")
     returncode = subprocess.run(command, check=False).returncode
     interval = config.daemon_active_interval_seconds if active else config.daemon_after_hours_interval_seconds
     return DaemonCycle(

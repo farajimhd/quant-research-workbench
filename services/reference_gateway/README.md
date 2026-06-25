@@ -10,6 +10,13 @@ It is separate from QMD, news, and SEC. QMD streams quotes/trades/bars, news
 streams Benzinga articles, and SEC streams filings/XBRL. This service maintains
 the source mappings that make those streams tradable and joinable.
 
+For the full operating model, responsibility lanes, and issue-resolution
+examples, read:
+
+```text
+services/reference_gateway/REFERENCE_GATEWAY_GUIDE.md
+```
+
 ## Hard Tradability Rule
 
 Any issue means the security is not tradable.
@@ -216,10 +223,10 @@ or by default:
 
 Read-only audits can run at any time.
 
-Reference-data writes are different. They should normally run after the active
-market collection window because they can change the tradable universe,
-exchange aliases, issuer mappings, or IBKR conid availability while QMD and the
-live trading app are using those rows.
+The service can run continuously. Market hours are not a blocker for the
+gateway itself. They only restrict promotion-style writes that can change the
+canonical graph or rebuild the tradable universe while QMD, scanners, and live
+trading may be consuming the current publication.
 
 Defaults:
 
@@ -229,16 +236,22 @@ REFERENCE_GATEWAY_COLLECTION_START_ET=04:00
 REFERENCE_GATEWAY_COLLECTION_END_ET=20:00
 ```
 
-If a market-hours operation is truly required, it must be explicit:
+During market hours, daemon cycles keep `--execute` but disable canonical graph
+promotion, tradable/scanner rebuilds, and heavy market-publication fills unless
+an explicit override is supplied. The gateway may still write safe staged
+evidence and issue rows. This lets it keep observing providers and blocking
+unsafe instruments without changing the active tradable publication mid-session.
+
+If a market-hours promotion operation is truly required, it must be explicit:
 
 ```text
 REFERENCE_GATEWAY_MARKET_HOURS_WRITE_OVERRIDE=true
 REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON=<specific reason>
 ```
 
-The override is intentionally noisy. It is for urgent corrections only, for
-example blocking a clearly wrong conid or adding a newly listed security needed
-by the current session.
+The override is intentionally noisy. It is for urgent promotion only, for
+example adding a newly listed security needed by the current session after the
+mapping evidence has been reviewed.
 
 The gateway can also run as a simple daemon:
 
@@ -247,11 +260,44 @@ The gateway can also run as a simple daemon:
 ```
 
 In daemon mode, the process reruns the same one-shot gateway command. During the
-active collection window it drops `--execute` unless an explicit market-hours
-override is supplied, so active-window cycles are read-only by default. Outside
-the active window, execute-mode cycles may write issues, clean graph rows,
-stale-issue closures, publication rebuilds, and recent market-publication
+active collection window it keeps safe execute-mode operations such as issue
+observation/resolution, but explicitly disables canonical graph writes,
+tradable/scanner publication rebuilds, and recent market-publication fills.
+Outside the active window, execute-mode cycles may write issues, clean graph
+rows, stale-issue closures, publication rebuilds, and recent market-publication
 coverage fills.
+
+## Issue Resolution
+
+Issues are control-plane rows. They are not merely logs. Any unresolved blocking
+issue touching a symbol, listing, security, issuer, or ticker must keep the
+affected row non-tradable.
+
+The resolver uses four classes:
+
+- `automatically_resolvable`: deterministic proof now exists, so the gateway can
+  close the issue.
+- `auto_block_until_resolved`: the gateway cannot fix the issue yet, but it can
+  safely keep the instrument blocked.
+- `human_review_required`: evidence conflicts or multiple plausible mappings
+  exist, so no automatic promotion is allowed.
+- `historical_repair`: the issue no longer affects current trading but should
+  be tracked for historical quality.
+
+Implemented automatic resolutions:
+
+- Massive active ticker issue closes when the ticker now exists as an active
+  primary symbol joined to an active USD US-stock listing with a valid positive
+  IBKR conid.
+- Weak issuer identity closes when the issuer now has a CIK, LEI, or EIN in
+  `id_issuer_identifier_v1`.
+- Stale weak issuer identity closes when the issuer no longer has a current
+  active US-stock candidate.
+
+`id_mapping_issue_v1` is ordered by `issue_status`, so a resolved issue cannot
+be represented by only inserting a second row with the same id. The resolver
+first inserts compact resolved evidence, then deletes the matching open row with
+a synchronous mutation. That makes open-issue audits correct under `FINAL`.
 
 Daemon intervals:
 
