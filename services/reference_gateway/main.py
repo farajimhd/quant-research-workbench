@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from dataclasses import asdict
 
 from research.mlops.clickhouse import discover_clickhouse_env_files
@@ -21,6 +22,7 @@ from services.reference_gateway.policy import evaluate_write_policy
 from services.reference_gateway.publication_maintenance import run_recent_publication_gap_fill
 from services.reference_gateway.publication_rebuild import rebuild_tradable_publications
 from services.reference_gateway.table_groups import table_group_markdown
+from services.reference_gateway.terminal import OperationRecord, ReferenceRunRecord, render_reference_run
 from services.reference_gateway.tradability import tradability_rule_markdown
 
 
@@ -133,24 +135,33 @@ def main() -> None:
         run_reference_daemon(config, sys.argv[1:])
         return
     write_policy = evaluate_write_policy(config)
-    print("=" * 96, flush=True)
-    print("Reference Gateway audit", flush=True)
-    print(
+    rich_output = config.terminal_rich_enabled
+    run_started = time.perf_counter()
+    record = ReferenceRunRecord(config=config, write_policy=write_policy)
+
+    def emit(message: str) -> None:
+        if not rich_output:
+            print(message, flush=True)
+
+    def add_operation(name: str, status: str, detail: str = "", rows: int | None = None, seconds: float | None = None) -> None:
+        record.operations.append(OperationRecord(name=name, status=status, detail=detail, rows=rows, seconds=seconds))
+
+    emit("=" * 96)
+    emit("Reference Gateway audit")
+    emit(
         f"read_database={config.clickhouse_read_database} "
         f"write_database={config.clickhouse_write_database} "
         f"test_write_mode={config.test_write_mode} "
-        f"execute={config.execute} report_root={config.report_root_win}",
-        flush=True,
+        f"execute={config.execute} report_root={config.report_root_win}"
     )
-    print(
+    emit(
         "write_policy="
         f"allowed={write_policy.writes_allowed} "
         f"active_window={write_policy.active_collection_window} "
         f"window={write_policy.window_label} "
-        f"reason={write_policy.reason}",
-        flush=True,
+        f"reason={write_policy.reason}"
     )
-    print(
+    emit(
         "secret_status="
         + json.dumps(
             secret_status(
@@ -175,10 +186,9 @@ def main() -> None:
                 ]
             ),
             sort_keys=True,
-        ),
-        flush=True,
+        )
     )
-    print("=" * 96, flush=True)
+    emit("=" * 96)
     if config.execute and not write_policy.writes_allowed:
         print(
             "Reference writes are blocked during active market collection hours. "
@@ -193,96 +203,147 @@ def main() -> None:
             sys.exit(2)
         from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
 
+        started = time.perf_counter()
         ensure_market_publication_schema(
             ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
             database=config.clickhouse_write_database,
             read_database=config.clickhouse_read_database,
             storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
         )
-        print(
+        add_operation(
+            "Market publication schema",
+            "completed",
+            f"read={config.clickhouse_read_database} write={config.clickhouse_write_database}",
+            seconds=time.perf_counter() - started,
+        )
+        emit(
             "market_publication_schema=ensured "
             f"read_database={config.clickhouse_read_database} "
-            f"write_database={config.clickhouse_write_database}",
-            flush=True,
+            f"write_database={config.clickhouse_write_database}"
         )
     if config.execute and config.resolve_stale_issues:
+        started = time.perf_counter()
         resolution = resolve_stale_active_ticker_issues(config)
-        print("stale_issue_resolution=" + json.dumps(asdict(resolution), sort_keys=True), flush=True)
+        add_operation("Resolve stale issues", "completed", resolution.reason, rows=resolution.resolved, seconds=time.perf_counter() - started)
+        emit("stale_issue_resolution=" + json.dumps(asdict(resolution), sort_keys=True))
     if config.execute and config.rebuild_tradable_on_execute:
+        started = time.perf_counter()
         rebuild = rebuild_tradable_publications(config, reason="pre_audit_source_truth_refresh")
-        print("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True), flush=True)
+        add_operation("Rebuild tradable publications", rebuild.status, rebuild.reason, seconds=time.perf_counter() - started)
+        emit("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True))
+    audit_started = time.perf_counter()
     report = run_reference_audit(config)
+    record.audit = report
+    add_operation("Reference audit", report.status, f"{len(report.checks)} checks", seconds=time.perf_counter() - audit_started)
     report_path = write_report(report, config.report_root_win) if args.write_report else None
+    record.report_path = str(report_path or "")
     for check in report.checks:
-        print(
+        emit(
             f"{check.status.upper():7} {check.severity:7} {check.name:45} count={check.count:,} {check.message}",
-            flush=True,
         )
     if report_path:
-        print(f"report={report_path}", flush=True)
+        emit(f"report={report_path}")
     should_check_tickers = args.active_ticker_check if args.active_ticker_check is not None else config.active_ticker_check_enabled
     if should_check_tickers:
         if config.active_ticker_check_market_hours_only and not active_collection_window(service_prefix="REFERENCE"):
-            print("active_ticker_check=skipped reason=outside_reference_collection_window", flush=True)
+            add_operation("Active ticker check", "skipped", "outside_reference_collection_window")
+            emit("active_ticker_check=skipped reason=outside_reference_collection_window")
         elif not config.source_massive_enabled:
-            print("active_ticker_check=skipped reason=massive_disabled", flush=True)
+            add_operation("Active ticker check", "skipped", "massive_disabled")
+            emit("active_ticker_check=skipped reason=massive_disabled")
         else:
+            started = time.perf_counter()
             plan = run_active_ticker_plan(config)
             plan_path = write_active_ticker_plan(plan, config.report_root_win) if args.write_report else None
-            print(
+            add_operation(
+                "Active ticker check",
+                "completed",
+                f"provider={plan.provider_rows:,} missing={plan.missing_tickers:,} overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,}",
+                rows=plan.missing_tickers,
+                seconds=time.perf_counter() - started,
+            )
+            emit(
                 "active_ticker_check=done "
                 f"provider_rows={plan.provider_rows:,} known_symbols={plan.known_active_symbols:,} "
                 f"missing={plan.missing_tickers:,} overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
-                f"saturated={plan.provider_saturated} wall_seconds={plan.wall_seconds:.2f}",
-                flush=True,
+                f"saturated={plan.provider_saturated} wall_seconds={plan.wall_seconds:.2f}"
             )
             if plan_path:
-                print(f"active_ticker_report={plan_path}", flush=True)
+                emit(f"active_ticker_report={plan_path}")
             if config.execute:
                 issue_write = None
                 graph_write = None
                 graph_issue_write = None
                 if config.write_discovered_issues:
+                    started = time.perf_counter()
                     issue_write = write_active_ticker_mapping_issues(config, plan)
-                    print("active_ticker_issue_write=" + json.dumps(asdict(issue_write), sort_keys=True), flush=True)
+                    add_operation("Write active ticker issues", "completed", issue_write.reason, rows=issue_write.written, seconds=time.perf_counter() - started)
+                    emit("active_ticker_issue_write=" + json.dumps(asdict(issue_write), sort_keys=True))
                 else:
-                    print("active_ticker_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE", flush=True)
+                    add_operation("Write active ticker issues", "skipped", "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
+                    emit("active_ticker_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
                 if config.write_canonical_graph:
+                    started = time.perf_counter()
                     graph_write = write_canonical_graph_candidates(config, plan)
-                    print("canonical_graph_write=" + json.dumps(asdict(graph_write), sort_keys=True, default=str), flush=True)
+                    add_operation("Write canonical graph", "completed", graph_write.reason, rows=graph_write.inserted_rows, seconds=time.perf_counter() - started)
+                    emit("canonical_graph_write=" + json.dumps(asdict(graph_write), sort_keys=True, default=str))
                     if graph_write.issues and config.write_discovered_issues:
+                        started = time.perf_counter()
                         graph_issue_write = write_graph_mapping_issues(config, graph_write.issues)
-                        print("canonical_graph_issue_write=" + json.dumps(asdict(graph_issue_write), sort_keys=True), flush=True)
+                        add_operation("Write graph issues", "completed", graph_issue_write.reason, rows=graph_issue_write.written, seconds=time.perf_counter() - started)
+                        emit("canonical_graph_issue_write=" + json.dumps(asdict(graph_issue_write), sort_keys=True))
                     elif graph_write.issues:
-                        print("canonical_graph_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE", flush=True)
+                        add_operation("Write graph issues", "skipped", "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
+                        emit("canonical_graph_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
                 else:
-                    print("canonical_graph_write=skipped reason=REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH_FALSE", flush=True)
+                    add_operation("Write canonical graph", "skipped", "REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH_FALSE")
+                    emit("canonical_graph_write=skipped reason=REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH_FALSE")
                 if config.resolve_stale_issues:
+                    started = time.perf_counter()
                     resolution = resolve_stale_active_ticker_issues(config)
-                    print("stale_issue_resolution=" + json.dumps(asdict(resolution), sort_keys=True), flush=True)
+                    add_operation("Resolve stale issues", "completed", resolution.reason, rows=resolution.resolved, seconds=time.perf_counter() - started)
+                    emit("stale_issue_resolution=" + json.dumps(asdict(resolution), sort_keys=True))
                 changed_rows = issue_write.written if issue_write is not None else 0
                 if graph_write is not None:
                     changed_rows += graph_write.inserted_rows
                 if graph_issue_write is not None:
                     changed_rows += graph_issue_write.written
                 if changed_rows > 0 and config.rebuild_tradable_on_execute:
+                    started = time.perf_counter()
                     rebuild = rebuild_tradable_publications(config, reason="post_active_ticker_issue_write")
-                    print("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True), flush=True)
+                    add_operation("Rebuild tradable publications", rebuild.status, rebuild.reason, seconds=time.perf_counter() - started)
+                    emit("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True))
+                    audit_started = time.perf_counter()
                     report = run_reference_audit(config)
+                    record.audit = report
+                    add_operation("Post-write reference audit", report.status, f"{len(report.checks)} checks", seconds=time.perf_counter() - audit_started)
                     report_path = write_report(report, config.report_root_win) if args.write_report else None
+                    record.report_path = str(report_path or record.report_path)
                     if report_path:
-                        print(f"post_issue_report={report_path}", flush=True)
+                        emit(f"post_issue_report={report_path}")
     if (
         config.execute
         and write_policy.writes_allowed
         and config.market_publication_gap_fill_enabled
         and (not config.test_write_mode or args.market_publication_gap_fill is True)
     ):
+        started = time.perf_counter()
         maintenance = run_recent_publication_gap_fill(config)
-        print("market_publication_gap_fill=" + json.dumps(asdict(maintenance), sort_keys=True), flush=True)
+        add_operation(
+            "Market publication gap fill",
+            "completed" if maintenance.returncode == 0 else "failed",
+            f"{maintenance.start_date}->{maintenance.end_date}; {maintenance.reason}",
+            seconds=time.perf_counter() - started,
+        )
+        emit("market_publication_gap_fill=" + json.dumps(asdict(maintenance), sort_keys=True))
     elif config.execute and config.test_write_mode and config.market_publication_gap_fill_enabled:
-        print("market_publication_gap_fill=skipped reason=test_write_mode_requires_explicit_flag", flush=True)
-    print(f"status={report.status} wall_seconds={report.wall_seconds:.2f}", flush=True)
+        add_operation("Market publication gap fill", "skipped", "test_write_mode_requires_explicit_flag")
+        emit("market_publication_gap_fill=skipped reason=test_write_mode_requires_explicit_flag")
+    record.final_status = report.status
+    record.wall_seconds = time.perf_counter() - run_started
+    if rich_output:
+        render_reference_run(record)
+    emit(f"status={report.status} wall_seconds={report.wall_seconds:.2f}")
     if report.status == "failed":
         sys.exit(2)
 

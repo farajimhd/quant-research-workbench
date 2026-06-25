@@ -15,11 +15,14 @@ class PublicationMaintenanceResult:
     start_date: str
     end_date: str
     reason: str
+    command: list[str]
+    stdout_tail: str
+    stderr_tail: str
 
 
 def run_recent_publication_gap_fill(config: ReferenceGatewayConfig) -> PublicationMaintenanceResult:
     if not config.market_publication_gap_fill_enabled:
-        return PublicationMaintenanceResult(False, None, "", "", "disabled")
+        return PublicationMaintenanceResult(False, None, "", "", "disabled", [], "", "")
     end_date = date.today() + timedelta(days=1)
     start_date = end_date - timedelta(days=max(1, config.market_publication_gap_fill_days))
     command = [
@@ -42,11 +45,20 @@ def run_recent_publication_gap_fill(config: ReferenceGatewayConfig) -> Publicati
         "--resume-from-coverage",
         "--execute",
     ]
-    completed = subprocess.run(command, check=False)
+    completed = subprocess.run(command, check=False, capture_output=True, text=True)
     return PublicationMaintenanceResult(
         attempted=True,
         returncode=completed.returncode,
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
         reason="recent_reference_publication_gap_fill",
+        command=command,
+        stdout_tail=tail(completed.stdout),
+        stderr_tail=tail(completed.stderr),
     )
+
+
+def tail(value: str, *, max_chars: int = 4000) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[-max_chars:]
