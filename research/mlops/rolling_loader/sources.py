@@ -11,6 +11,7 @@ from research.mlops.clickhouse import (
     sql_string,
 )
 from research.mlops.clickhouse_events import EVENT_ROW_DTYPE, PersistentClickHouseBytesClient
+from research.mlops.rolling_loader.cache import ExternalContextPayload
 from research.mlops.rolling_loader.synthetic import SyntheticEvent
 
 
@@ -22,6 +23,56 @@ class ClickHouseReplayConfig:
     date: str = ""
     max_threads: int = 8
     max_memory_usage: str = "80G"
+
+
+@dataclass(frozen=True, slots=True)
+class RollingEventBlock:
+    """Rows fetched from a vectorized per-ticker ordinal cursor request."""
+
+    tickers: tuple[str, ...]
+    rows: np.ndarray
+    ticker_index: np.ndarray
+
+    @property
+    def row_count(self) -> int:
+        return int(self.rows.shape[0])
+
+    @property
+    def min_timestamp_us(self) -> int | None:
+        if self.rows.size == 0:
+            return None
+        return int(np.min(self.rows["sip_timestamp_us"]))
+
+    @property
+    def max_timestamp_us(self) -> int | None:
+        if self.rows.size == 0:
+            return None
+        return int(np.max(self.rows["sip_timestamp_us"]))
+
+    def iter_chronological(self) -> Iterable[SyntheticEvent]:
+        if self.rows.size == 0:
+            return
+        order = np.lexsort((self.ticker_index, self.rows["ordinal"], self.rows["sip_timestamp_us"]))
+        for row_index in order:
+            ticker = self.tickers[int(self.ticker_index[int(row_index)])]
+            yield SyntheticEvent(ticker=ticker, row=self.rows[int(row_index)])
+
+    def latest_ordinals(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for ticker_index, ticker in enumerate(self.tickers):
+            mask = self.ticker_index == int(ticker_index)
+            if np.any(mask):
+                out[ticker] = int(np.max(self.rows["ordinal"][mask]))
+        return out
+
+
+@dataclass(frozen=True, slots=True)
+class LowFrequencyContextUpdate:
+    kind: str
+    ticker: str
+    timestamp_us: int
+    payload: ExternalContextPayload
+    global_item: bool = False
 
 
 class ClickHouseRollingSource:
@@ -96,6 +147,44 @@ FORMAT RowBinary
             out[ticker_tuple[int(span_ids[start])]] = rows[start:end].copy()
         return out
 
+    def fetch_next_by_ordinal(self, *, cursors: dict[str, int], rows_per_ticker: int) -> RollingEventBlock:
+        ticker_tuple = tuple(str(ticker).upper() for ticker in cursors if str(ticker).strip())
+        if not ticker_tuple:
+            return RollingEventBlock(tickers=(), rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+        ticker_sql = "[" + ", ".join(sql_string(ticker) for ticker in ticker_tuple) + "]"
+        cursor_sql = "[" + ", ".join(str(int(cursors[ticker])) for ticker in ticker_tuple) + "]"
+        query = f"""
+WITH
+    {ticker_sql} AS request_tickers,
+    {cursor_sql} AS request_cursors
+SELECT
+    indexOf(request_tickers, ticker) - 1 AS span_id,
+    ordinal,
+    event_type,
+    sip_timestamp_us,
+    price_primary_int,
+    price_secondary_int,
+    size_primary,
+    size_secondary,
+    exchange_primary,
+    exchange_secondary,
+    event_flags,
+    conditions_packed
+FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
+WHERE ticker IN request_tickers
+  AND ordinal > arrayElement(request_cursors, indexOf(request_tickers, ticker))
+  AND ordinal <= arrayElement(request_cursors, indexOf(request_tickers, ticker)) + {int(rows_per_ticker)}
+ORDER BY sip_timestamp_us, ticker, ordinal
+SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
+FORMAT RowBinary
+"""
+        payload = self.bytes_client.execute_bytes(query)
+        if len(payload) % EVENT_ROW_DTYPE.itemsize != 0:
+            raise RuntimeError(f"RowBinary payload size {len(payload):,} is not divisible by event row size {EVENT_ROW_DTYPE.itemsize}")
+        rows = np.frombuffer(payload, dtype=EVENT_ROW_DTYPE).copy()
+        ticker_index = rows["span_id"].astype(np.uint32, copy=True) if rows.size else np.zeros((0,), dtype=np.uint32)
+        return RollingEventBlock(tickers=ticker_tuple, rows=rows, ticker_index=ticker_index)
+
     @staticmethod
     def _memory_bytes(value: str) -> int:
         text = str(value).strip().upper()
@@ -130,3 +219,44 @@ def iter_rows_by_ticker_chronological(rows_by_ticker: dict[str, np.ndarray]) -> 
         pos = positions[best_ticker]
         positions[best_ticker] = pos + 1
         yield SyntheticEvent(ticker=best_ticker, row=rows_by_ticker[best_ticker][pos])
+
+
+class SyntheticOrdinalBlockSource:
+    """Vectorized per-ticker ordinal cursor source for profiler runs."""
+
+    def __init__(self, rows_by_ticker: dict[str, np.ndarray]) -> None:
+        self.rows_by_ticker = {str(ticker).upper(): rows for ticker, rows in rows_by_ticker.items()}
+
+    def warm_rows(self, *, count: int) -> dict[str, np.ndarray]:
+        return {ticker: rows[: int(count)].copy() for ticker, rows in self.rows_by_ticker.items()}
+
+    def initial_cursors(self, *, warm_count: int) -> dict[str, int]:
+        cursors: dict[str, int] = {}
+        for ticker, rows in self.rows_by_ticker.items():
+            take = min(int(warm_count), int(rows.shape[0]))
+            cursors[ticker] = int(rows[take - 1]["ordinal"]) if take > 0 else -1
+        return cursors
+
+    def fetch_next_by_ordinal(self, *, cursors: dict[str, int], rows_per_ticker: int) -> RollingEventBlock:
+        block_rows: list[np.ndarray] = []
+        block_ticker_index: list[np.ndarray] = []
+        tickers = tuple(cursors.keys())
+        for ticker_index, ticker in enumerate(tickers):
+            rows = self.rows_by_ticker.get(ticker)
+            if rows is None or rows.size == 0:
+                continue
+            cursor = int(cursors[ticker])
+            first = cursor + 1
+            if first >= rows.shape[0]:
+                continue
+            end = min(first + int(rows_per_ticker), rows.shape[0])
+            part = rows[first:end].copy()
+            part["span_id"] = int(ticker_index)
+            block_rows.append(part)
+            block_ticker_index.append(np.full((part.shape[0],), int(ticker_index), dtype=np.uint32))
+        if not block_rows:
+            return RollingEventBlock(tickers=tickers, rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+        rows = np.concatenate(block_rows)
+        ticker_index = np.concatenate(block_ticker_index)
+        order = np.lexsort((ticker_index, rows["ordinal"], rows["sip_timestamp_us"]))
+        return RollingEventBlock(tickers=tickers, rows=rows[order], ticker_index=ticker_index[order])

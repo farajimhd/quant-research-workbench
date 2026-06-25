@@ -106,6 +106,9 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\roll
 
 The profiler uses the real `RollingContextLoader` class and reports:
 
+- vectorized next-K per-ticker event-block fetch time
+- timestamp-ordered block replay time
+- low-frequency update fetch/apply time for each block
 - warm-load time
 - event cache push time
 - event chunk creation time

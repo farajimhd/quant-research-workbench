@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Any, Iterator
 
 import numpy as np
 
@@ -121,6 +121,33 @@ def synthetic_external_updates(
             global_item=False,
         )
     )
+    return updates
+
+
+def synthetic_external_updates_for_block(*, block: Any, synthetic_config: SyntheticRollingLoaderConfig) -> list[SyntheticContextUpdate]:
+    """Build synthetic low-frequency updates from a fetched event block.
+
+    This mirrors the production/training flow: low-frequency updates are
+    selected for the full timestamp/ordinal block, then pushed into caches
+    before sample indices are materialized from event origins in that block.
+    """
+
+    every = max(1, int(synthetic_config.external_every_events))
+    rows = block.rows
+    if rows.size == 0:
+        return []
+    update_positions = np.flatnonzero((rows["ordinal"].astype(np.int64, copy=False) % every) == 0)
+    updates: list[SyntheticContextUpdate] = []
+    for position in update_positions:
+        ticker = block.tickers[int(block.ticker_index[int(position)])]
+        updates.extend(
+            synthetic_external_updates(
+                ticker=ticker,
+                row=rows[int(position)],
+                event_index=int(rows[int(position)]["ordinal"]),
+                synthetic_config=synthetic_config,
+            )
+        )
     return updates
 
 

@@ -16,7 +16,8 @@ if __package__ in {None, ""}:
 from research.mlops.rolling_loader.config import RollingLoaderConfig, SyntheticRollingLoaderConfig
 from research.mlops.rolling_loader.loader import RollingContextLoader
 from research.mlops.rolling_loader.profiler import RollingLoaderProfiler, format_profile_table, write_profile_jsonl
-from research.mlops.rolling_loader.synthetic import iter_synthetic_events, synthetic_external_updates, synthetic_rows_by_ticker
+from research.mlops.rolling_loader.sources import SyntheticOrdinalBlockSource
+from research.mlops.rolling_loader.synthetic import synthetic_external_updates_for_block, synthetic_rows_by_ticker
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rows-per-ticker", type=int, default=8000)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--batches", type=int, default=4)
+    parser.add_argument("--events-per-ticker-block", type=int, default=64)
     parser.add_argument("--context-chunks", type=int, default=32)
     parser.add_argument(
         "--context-chunk-stride-events",
@@ -81,67 +83,74 @@ def main() -> int:
     print("=" * 100)
     rows_by_ticker = synthetic_rows_by_ticker(synthetic_config)
     warm_count = min(loader_config.warmup_events_per_ticker, synthetic_config.rows_per_ticker // 2)
-    warm_rows = {ticker: rows[:warm_count] for ticker, rows in rows_by_ticker.items()}
-    loader.warm_load_events(warm_rows)
-    replay_rows = {ticker: rows[warm_count:] for ticker, rows in rows_by_ticker.items()}
+    source = SyntheticOrdinalBlockSource(rows_by_ticker)
+    loader.warm_load_events(source.warm_rows(count=warm_count))
+    cursors = source.initial_cursors(warm_count=warm_count)
     completed_batches = 0
     event_count = 0
     last_batch_bytes = 0
-    for event in iter_synthetic_events(replay_rows):
-        event_count += 1
-        for update in synthetic_external_updates(
-            ticker=event.ticker,
-            row=event.row,
-            event_index=event_count,
-            synthetic_config=synthetic_config,
-        ):
-            loader.push_external(
-                kind=update.kind,
-                ticker=update.ticker,
-                timestamp_us=update.timestamp_us,
-                payload=update.payload,
-                global_item=update.global_item,
-            )
-        loader.push_event(event.ticker, event.row)
-        if len(loader.ready_samples) >= loader_config.batch_size:
-            samples = loader.drain_ready_samples(loader_config.batch_size)
-            batch = loader.materialize_training_batch(
-                samples,
-                materialize_external_payloads=synthetic_config.materialize_external_payloads,
-            )
-            completed_batches += 1
-            last_batch_bytes = batch.nbytes
-            payload = {
-                "kind": "rolling_loader_profile_batch",
-                "batch_index": completed_batches,
-                "samples": len(samples),
-                "events_replayed": event_count,
-                "last_batch_mib": last_batch_bytes / (1024 * 1024),
-                "cache": loader.cache_summary(),
-                "config": {
-                    "tickers": synthetic_config.tickers,
-                    "rows_per_ticker": synthetic_config.rows_per_ticker,
-                    "batch_size": loader_config.batch_size,
-                    "context_chunks": loader_config.context_chunks,
-                    "origin_chunk_stride_events": loader_config.chunk_stride_events,
-                    "context_chunk_stride_events": loader_config.context_chunk_stride_events,
-                    "context_coverage_events": loader_config.context_coverage_events,
-                    "materialize_external_payloads": synthetic_config.materialize_external_payloads,
-                },
-                "profile": profiler.snapshot(),
-            }
-            write_profile_jsonl(args.report_path, payload)
-            print(
-                f"BATCH [{completed_batches}/{synthetic_config.batches}] "
-                f"events={event_count:,} batch_mib={payload['last_batch_mib']:.2f} "
-                f"elapsed={time.perf_counter() - started:.1f}s"
-            )
-            if completed_batches >= synthetic_config.batches:
-                break
+    exhausted = False
+    while completed_batches < synthetic_config.batches and not exhausted:
+        with profiler.stage("source_fetch_event_block", items=len(cursors)):
+            block = source.fetch_next_by_ordinal(cursors=cursors, rows_per_ticker=int(args.events_per_ticker_block))
+        if block.row_count == 0:
+            exhausted = True
+            break
+        cursors.update(block.latest_ordinals())
+        with profiler.stage("low_frequency_update_fetch", items=block.row_count):
+            updates = synthetic_external_updates_for_block(block=block, synthetic_config=synthetic_config)
+        with profiler.stage("low_frequency_update_apply", items=len(updates), bytes_count=sum(update.payload.nbytes for update in updates)):
+            for update in updates:
+                loader.push_external(
+                    kind=update.kind,
+                    ticker=update.ticker,
+                    timestamp_us=update.timestamp_us,
+                    payload=update.payload,
+                    global_item=update.global_item,
+                )
+        with profiler.stage("block_replay_events", items=block.row_count, bytes_count=int(block.rows.nbytes)):
+            for event in block.iter_chronological():
+                event_count += 1
+                loader.push_event(event.ticker, event.row)
+                while len(loader.ready_samples) >= loader_config.batch_size and completed_batches < synthetic_config.batches:
+                    samples = loader.drain_ready_samples(loader_config.batch_size)
+                    batch = loader.materialize_training_batch(
+                        samples,
+                        materialize_external_payloads=synthetic_config.materialize_external_payloads,
+                    )
+                    completed_batches += 1
+                    last_batch_bytes = batch.nbytes
+                    payload = {
+                        "kind": "rolling_loader_profile_batch",
+                        "batch_index": completed_batches,
+                        "samples": len(samples),
+                        "events_replayed": event_count,
+                        "last_batch_mib": last_batch_bytes / (1024 * 1024),
+                        "cache": loader.cache_summary(),
+                        "config": {
+                            "tickers": synthetic_config.tickers,
+                            "rows_per_ticker": synthetic_config.rows_per_ticker,
+                            "events_per_ticker_block": int(args.events_per_ticker_block),
+                            "batch_size": loader_config.batch_size,
+                            "context_chunks": loader_config.context_chunks,
+                            "origin_chunk_stride_events": loader_config.chunk_stride_events,
+                            "context_chunk_stride_events": loader_config.context_chunk_stride_events,
+                            "context_coverage_events": loader_config.context_coverage_events,
+                            "materialize_external_payloads": synthetic_config.materialize_external_payloads,
+                        },
+                        "profile": profiler.snapshot(),
+                    }
+                    write_profile_jsonl(args.report_path, payload)
+                    print(
+                        f"BATCH [{completed_batches}/{synthetic_config.batches}] "
+                        f"events={event_count:,} block_rows={block.row_count:,} batch_mib={payload['last_batch_mib']:.2f} "
+                        f"elapsed={time.perf_counter() - started:.1f}s"
+                    )
     final_payload = {
         "kind": "rolling_loader_profile_final",
         "completed_batches": completed_batches,
         "events_replayed": event_count,
+        "exhausted": exhausted,
         "last_batch_mib": last_batch_bytes / (1024 * 1024),
         "cache": loader.cache_summary(),
         "profile": profiler.snapshot(),
