@@ -641,11 +641,12 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\data
 ```
 
 If text tokenization is still backfilling and token tables only exist through a
-known date, keep profiling any event date but anchor the text/SEC/XBRL context
-lookup to the latest tokenized UTC date:
+known date, profile an event date within that coverage. You can pass the latest
+tokenized UTC date as a guard so the profiler fails instead of silently using
+missing or stale text context:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\data\run_profile_rolling_provider.py --database market_sip_compact --events-table events --macro-bars-table macro_bars_by_time_symbol --index-table train_2019_to_2025 --event-date 2025-01-02 --external-context-asof-date 2021-11-01 --ticker-limit 64 --batch-size 4096 --materialize-batches 2 --sample-stride-events 1 --max-threads 8 --max-memory-usage 80G --profile-production-gather --report-path D:\market-data\prepared\data_provider_profiles\rolling_provider_profile.jsonl
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\data\run_profile_rolling_provider.py --database market_sip_compact --events-table events --macro-bars-table macro_bars_by_time_symbol --index-table train_2019_to_2025 --event-date 2021-11-01 --max-tokenized-context-date 2021-11-01 --ticker-limit 64 --batch-size 4096 --materialize-batches 2 --sample-stride-events 1 --max-threads 8 --max-memory-usage 80G --profile-production-gather --report-path D:\market-data\prepared\data_provider_profiles\rolling_provider_profile.jsonl
 ```
 
 Pass `--skip-q-live-contexts` when you want to profile only market events and
