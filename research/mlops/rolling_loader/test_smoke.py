@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+if __package__ in {None, ""}:
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "research").is_dir():
+            sys.path.insert(0, str(parent))
+            break
+
 from research.mlops.rolling_loader.config import RollingLoaderConfig, SyntheticRollingLoaderConfig
 from research.mlops.rolling_loader.loader import RollingContextLoader
 from research.mlops.rolling_loader.profiler import RollingLoaderProfiler

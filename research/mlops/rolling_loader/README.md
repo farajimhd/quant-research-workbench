@@ -73,6 +73,12 @@ Run a local synthetic profile:
 python -m research.mlops.rolling_loader.run_profile --tickers 64 --rows-per-ticker 8000 --batch-size 4096 --batches 4
 ```
 
+The profiler can also be run directly from a synced workstation copy:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_profile.py --tickers 64 --rows-per-ticker 8000 --batch-size 4096 --batches 4
+```
+
 The profiler uses the real `RollingContextLoader` class and reports:
 
 - warm-load time
@@ -92,6 +98,12 @@ Reports are appended as JSONL under:
 
 ```powershell
 python -m research.mlops.rolling_loader.test_smoke
+```
+
+Direct workstation form:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\test_smoke.py
 ```
 
 The smoke test checks that synthetic replay creates ready sample pointers and
