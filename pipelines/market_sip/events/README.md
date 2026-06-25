@@ -167,9 +167,18 @@ Each row stores source metadata plus fixed-length tokenizer output:
 - `input_ids Array(UInt32)`
 - `attention_mask Array(UInt8)`
 - `token_count`
+- `original_token_count`
+- `padding_tokens`
+- `was_truncated`
+- `text_prefix_truncated`
 - `tokenizer_model`
 - `max_tokens`
 - source identifiers and timestamps
+
+News uses one 1024-token row per ticker/article row by default. SEC filing text
+uses up to four 1024-token rows per source text row. The SEC table includes
+`token_chunk_index`, `token_start`, and `token_end`, so the four chunks do not
+collapse under the same replacing key.
 
 The tokenized text starts with explicit metadata lines such as `NEWS` or
 `SEC FILING`, provider/form/ticker/timestamp fields, and then the bounded source
@@ -181,6 +190,18 @@ Run on the workstation:
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py --start-date 2019-01-01 --end-date 2026-12-31
 ```
+
+If the workstation environment does not already have HuggingFace installed:
+
+```powershell
+python -m pip install "transformers>=4.50" "tokenizers>=0.20" "huggingface_hub>=0.25"
+```
+
+The tokenizer files are loaded at script startup. By default the script uses the
+local HuggingFace cache; add `--no-local-files-only` on the first real run if the
+Qwen tokenizer files need to be downloaded. Tokenization is CPU/Rust-tokenizer
+work, not GPU model inference, so you do not need to stop GPU training just for
+this token table build.
 
 Smoke a small range before a full build:
 
@@ -214,3 +235,6 @@ JSONL report under
 `D:\market-data\prepared\clickhouse_sip_ingest\text_tokens`.
 When `--replace-range` is enabled, it waits for ClickHouse delete mutations
 before inserting replacement token rows.
+
+If an earlier schema was already created before SEC chunking/stat columns were
+added, rerun once with `--drop-target-tables` before the production build.

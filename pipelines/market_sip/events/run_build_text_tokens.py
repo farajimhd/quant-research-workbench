@@ -21,7 +21,9 @@ DEFAULTS = {
     "end_date": "2026-12-31",
     "sources": "news,sec",
     "tokenizer_model": "Qwen/Qwen3-0.6B",
-    "max_tokens": 512,
+    "news_max_tokens": 1024,
+    "sec_chunk_tokens": 1024,
+    "sec_max_chunks": 4,
     "chunk_days": 1,
     "insert_batch_size": 2048,
     "max_threads": 16,
@@ -42,7 +44,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-date", default=DEFAULTS["end_date"])
     parser.add_argument("--sources", default=DEFAULTS["sources"])
     parser.add_argument("--tokenizer-model", default=DEFAULTS["tokenizer_model"])
-    parser.add_argument("--max-tokens", type=int, default=DEFAULTS["max_tokens"])
+    parser.add_argument("--max-tokens", type=int, default=0)
+    parser.add_argument("--news-max-tokens", type=int, default=DEFAULTS["news_max_tokens"])
+    parser.add_argument("--sec-chunk-tokens", type=int, default=DEFAULTS["sec_chunk_tokens"])
+    parser.add_argument("--sec-max-chunks", type=int, default=DEFAULTS["sec_max_chunks"])
     parser.add_argument("--chunk-days", type=int, default=DEFAULTS["chunk_days"])
     parser.add_argument("--insert-batch-size", type=int, default=DEFAULTS["insert_batch_size"])
     parser.add_argument("--news-text-prefix-chars", type=int, default=12000)
@@ -92,8 +97,12 @@ def main() -> int:
         args.sources,
         "--tokenizer-model",
         args.tokenizer_model,
-        "--max-tokens",
-        str(args.max_tokens),
+        "--news-max-tokens",
+        str(args.news_max_tokens),
+        "--sec-chunk-tokens",
+        str(args.sec_chunk_tokens),
+        "--sec-max-chunks",
+        str(args.sec_max_chunks),
         "--chunk-days",
         str(args.chunk_days),
         "--insert-batch-size",
@@ -119,6 +128,8 @@ def main() -> int:
         argv.extend(["--user", args.user])
     if args.password:
         argv.extend(["--password", args.password])
+    if args.max_tokens:
+        argv.extend(["--max-tokens", str(args.max_tokens)])
     if args.no_local_files_only:
         argv.append("--no-local-files-only")
     if args.strict_tokenizer:
