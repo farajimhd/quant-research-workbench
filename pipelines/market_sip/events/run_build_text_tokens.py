@@ -24,7 +24,7 @@ DEFAULTS = {
     "news_max_tokens": 1024,
     "news_max_chunks": 2,
     "sec_chunk_tokens": 1024,
-    "sec_max_chunks": 4,
+    "sec_max_chunks": 8,
     "chunk_days": 1,
     "insert_batch_size": 2048,
     "max_threads": 16,

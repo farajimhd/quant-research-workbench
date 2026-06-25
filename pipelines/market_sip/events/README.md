@@ -181,7 +181,7 @@ assembled explicitly from `title`, `teaser`, `body_text`, `external_text`, and
 text. This avoids relying on a prefix of `normalized_full_text`, which can miss
 enriched external/PDF text when it appears later in the merged article.
 
-SEC filing text uses up to four 1024-token rows per source text row. Both token
+SEC filing text uses up to eight 1024-token rows per source text row. Both token
 tables include `token_chunk_index`, `token_start`, and `token_end`, so multiple
 chunks do not collapse under the same replacing key.
 
