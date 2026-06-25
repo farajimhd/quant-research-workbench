@@ -221,6 +221,13 @@ Preview DDL/DML without mutating ClickHouse:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py --dry-run --start-date 2026-01-02 --end-date 2026-01-02
 ```
 
+Summarize existing token tables without deleting, inserting, or loading the
+tokenizer:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py --summary-only --start-date 2019-01-01 --end-date 2026-12-31
+```
+
 Production runs are strict by default: the script fails if the configured
 HuggingFace tokenizer is unavailable. For a local smoke test only, add
 `--allow-fallback-tokenizer` to generate deterministic hash tokens without

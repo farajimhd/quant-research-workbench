@@ -67,6 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-wait-mutations", action="store_true")
     parser.add_argument("--drop-target-tables", action="store_true")
     parser.add_argument("--limit-rows-per-chunk", type=int, default=0)
+    parser.add_argument("--summary-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--print-only", action="store_true")
     return parser.parse_args()
@@ -144,6 +145,8 @@ def main() -> int:
         argv.append("--drop-target-tables")
     if args.limit_rows_per_chunk:
         argv.extend(["--limit-rows-per-chunk", str(args.limit_rows_per_chunk)])
+    if args.summary_only:
+        argv.append("--summary-only")
     if args.dry_run:
         argv.append("--dry-run")
 

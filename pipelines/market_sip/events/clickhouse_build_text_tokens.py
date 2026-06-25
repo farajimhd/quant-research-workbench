@@ -137,6 +137,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mutation-timeout-seconds", type=int, default=7200)
     parser.add_argument("--drop-target-tables", action="store_true")
     parser.add_argument("--limit-rows-per-chunk", type=int, default=0)
+    parser.add_argument("--summary-only", action="store_true", help="Only summarize existing token tables for the date range; do not mutate or tokenize.")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -168,7 +169,7 @@ def main() -> int:
     print(f"insert_batch_size={args.insert_batch_size} storage_policy={args.storage_policy or '<default>'}", flush=True)
     print(
         f"replace_range={args.replace_range} wait_mutations={args.wait_mutations} "
-        f"drop_target_tables={args.drop_target_tables} dry_run={args.dry_run}",
+        f"drop_target_tables={args.drop_target_tables} summary_only={args.summary_only} dry_run={args.dry_run}",
         flush=True,
     )
     print(f"report={report_path}", flush=True)
@@ -181,6 +182,20 @@ def main() -> int:
     print("=" * 100, flush=True)
 
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
+    if args.summary_only:
+        summarize_sources(
+            client,
+            args,
+            sources=sources,
+            start_date=start_date,
+            end_date_exclusive=end_date_exclusive,
+            report_path=report_path,
+        )
+        print("=" * 100, flush=True)
+        print(f"DONE summary_only elapsed_minutes={(time.perf_counter() - started) / 60.0:.1f} report={report_path}", flush=True)
+        print("=" * 100, flush=True)
+        return 0
+
     tokenizer = TextTokenizer(
         model=str(args.tokenizer_model),
         local_files_only=bool(args.local_files_only),
@@ -294,10 +309,37 @@ def build_tokens(
             print(f"INSERTED {source} rows={inserted:,} total_inserted={total_inserted[source]:,}", flush=True)
 
     if not args.dry_run:
-        for source in sources:
-            table = args.news_token_table if source == "news" else args.sec_token_table
-            summarize_table(client, args.target_database, table, source=source, start_date=start_date, end_date_exclusive=end_date_exclusive, report_path=report_path)
+        summarize_sources(
+            client,
+            args,
+            sources=sources,
+            start_date=start_date,
+            end_date_exclusive=end_date_exclusive,
+            report_path=report_path,
+        )
     append_jsonl(report_path, {"operation": "complete", "source_rows": total_rows, "inserted_rows": total_inserted})
+
+
+def summarize_sources(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    *,
+    sources: tuple[str, ...],
+    start_date: date,
+    end_date_exclusive: date,
+    report_path: Path,
+) -> None:
+    for source in sources:
+        table = args.news_token_table if source == "news" else args.sec_token_table
+        summarize_table(
+            client,
+            args.target_database,
+            table,
+            source=source,
+            start_date=start_date,
+            end_date_exclusive=end_date_exclusive,
+            report_path=report_path,
+        )
 
 
 def create_news_token_table_sql(database: str, table: str, storage_policy: str) -> str:
@@ -742,7 +784,7 @@ SELECT
     avg(was_truncated) AS truncated_row_fraction,
     sum(text_prefix_truncated) AS text_prefix_truncated_rows,
     avg(text_prefix_truncated) AS text_prefix_truncated_row_fraction,
-    sum(padding_tokens) AS padding_tokens,
+    sum(padding_tokens) AS total_padding_tokens,
     avg(padding_tokens) AS avg_padding_tokens
 FROM {quote_ident(database)}.{quote_ident(table)}
 WHERE {quote_ident(timestamp_column)} >= {date_time64_sql(start_date)}
