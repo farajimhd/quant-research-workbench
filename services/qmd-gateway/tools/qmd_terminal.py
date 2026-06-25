@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 import urllib.error
@@ -77,7 +78,7 @@ def main() -> int:
         auto_refresh=False,
         screen=not args.no_screen,
         transient=False,
-        vertical_overflow="visible",
+        vertical_overflow="crop",
         refresh_per_second=4,
     ) as live:
         while True:
@@ -213,9 +214,25 @@ def update_rates(state: PollState, metrics: dict[str, Any], now: float) -> None:
 
 
 def render_dashboard(state: PollState, watch: list[str]) -> Any:
+    _, terminal_height = shutil.get_terminal_size((120, 40))
+    compact = terminal_height < 38
+    messages = render_messages(state, limit=4 if compact else 6)
+    if compact:
+        return Group(
+            render_header(state),
+            render_current_operation(state),
+            messages,
+            Columns(
+                [render_dependencies(state), render_runtime(state)],
+                equal=True,
+                expand=True,
+            ),
+            render_maintenance_progress(state),
+        )
     return Group(
         render_header(state),
         render_current_operation(state),
+        messages,
         Columns(
             [render_dependencies(state), render_runtime(state)],
             equal=True,
@@ -229,7 +246,6 @@ def render_dashboard(state: PollState, watch: list[str]) -> Any:
             expand=True,
         ),
         render_recent_events(state, watch),
-        render_messages(state),
     )
 
 
@@ -469,11 +485,11 @@ def render_recent_events(state: PollState, watch: list[str]) -> Any:
     return Panel(table, title=f"Recent Compact Events ({added})", box=box.ROUNDED, border_style="blue", padding=(0, 1))
 
 
-def render_messages(state: PollState) -> Any:
+def render_messages(state: PollState, *, limit: int = 6) -> Any:
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
     table.add_column("Message", overflow="fold")
     if state.errors:
-        for message in state.errors[-6:]:
+        for message in state.errors[-max(1, limit):]:
             table.add_row(message)
         color = "red"
     else:
