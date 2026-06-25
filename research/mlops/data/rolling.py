@@ -247,6 +247,7 @@ class RollingMarketSampleEngine:
         self.macro_bars = MacroBarFrame(rows=[])
         q_live_context_configs = {
             "news": ExternalAsOfContextConfig(name="news", timestamp_column="timestamp_us", max_items=config.news_max_items * config.news_token_chunks),
+            "market_news": ExternalAsOfContextConfig(name="market_news", timestamp_column="timestamp_us", max_items=config.market_news_max_items * config.market_news_token_chunks),
             "sec_filings": ExternalAsOfContextConfig(name="sec_filings", timestamp_column="timestamp_us", max_items=config.sec_max_items * config.sec_token_chunks),
             "xbrl": ExternalAsOfContextConfig(name="xbrl", timestamp_column="timestamp_us", max_items=config.xbrl_max_items),
         }
@@ -466,6 +467,8 @@ class RollingMarketSampleEngine:
         mask = np.zeros((batch, context_chunks), dtype=np.bool_)
         chunk_origin_ordinal = np.zeros((batch, context_chunks), dtype=np.int64)
         chunk_origin_ts = np.zeros((batch, context_chunks), dtype=np.int64)
+        chunk_origin_delta_us = np.zeros((batch, context_chunks), dtype=np.int64)
+        chunk_age_seconds_log1p = np.zeros((batch, context_chunks), dtype=np.float32)
         tickers = np.asarray([sample.ticker for sample in sample_tuple], dtype=object)
         origin_ord = np.asarray([sample.origin_ordinal for sample in sample_tuple], dtype=np.int64)
         origin_ts = np.asarray([sample.origin_timestamp_us for sample in sample_tuple], dtype=np.int64)
@@ -501,6 +504,12 @@ class RollingMarketSampleEngine:
                     mask[sample_index, context_index] = True
                     chunk_origin_ordinal[sample_index, context_index] = int(window.origin_ordinal)
                     chunk_origin_ts[sample_index, context_index] = int(window.origin_timestamp_us)
+                    delta_us = int(window.origin_timestamp_us) - int(sample.origin_timestamp_us)
+                    chunk_origin_delta_us[sample_index, context_index] = delta_us
+                    chunk_age_seconds_log1p[sample_index, context_index] = _relative_age_seconds_log1p(
+                        origin_us=int(sample.origin_timestamp_us),
+                        item_us=int(window.origin_timestamp_us),
+                    )
 
         profiler.add_stage("encoded_window_cache_hits", 0.0, count=cache_hits)
         profiler.add_stage("encoded_window_cache_misses", 0.0, count=cache_misses)
@@ -508,6 +517,8 @@ class RollingMarketSampleEngine:
 
         with profiler.stage("bar_features", count=batch):
             macro_features, global_features = self._materialize_bar_features(sample_tuple)
+        with profiler.stage("origin_time_features", count=batch):
+            time_features = _origin_time_features(sample_tuple)
         with profiler.stage("session_features", count=batch):
             session_features = self._materialize_session_features(sample_tuple)
         with profiler.stage("macro_future_labels", count=batch):
@@ -517,11 +528,14 @@ class RollingMarketSampleEngine:
         macro_features.update(session_features)
         with profiler.stage("external_context_asof", count=batch * len(self.external_contexts)):
             external = {
-                name: [store.asof(ticker=sample.ticker, timestamp_us=sample.origin_timestamp_us) for sample in sample_tuple]
+                name: [
+                    _external_asof_for_sample(name=name, store=store, sample=sample)
+                    for sample in sample_tuple
+                ]
                 for name, store in self.external_contexts.items()
             }
         text_cache_before = len(self._text_token_cache)
-        text_items = _count_external_text_items(external, names=("news", "sec_filings"))
+        text_items = _count_external_text_items(external, names=("news", "market_news", "sec_filings"))
         with profiler.stage("text_inputs", count=batch):
             text_inputs = self._materialize_text_inputs(external)
         text_cache_after = len(self._text_token_cache)
@@ -546,6 +560,9 @@ class RollingMarketSampleEngine:
             origin_timestamp_us=origin_ts,
             chunk_origin_ordinal=chunk_origin_ordinal,
             chunk_origin_timestamp_us=chunk_origin_ts,
+            chunk_origin_delta_us=chunk_origin_delta_us,
+            chunk_age_seconds_log1p=chunk_age_seconds_log1p,
+            time_features=time_features,
             macro_features=macro_features,
             global_features=global_features,
             text_inputs=text_inputs,
@@ -576,8 +593,12 @@ class RollingMarketSampleEngine:
                     market[sample_index, context_index] = np.asarray(value, dtype=np.float32)
                     mask[sample_index, context_index] = True
         macro_features, global_features = self._materialize_bar_features(sample_tuple)
+        time_features = _origin_time_features(sample_tuple)
         external = {
-            name: [store.asof(ticker=sample.ticker, timestamp_us=sample.origin_timestamp_us) for sample in sample_tuple]
+            name: [
+                _external_asof_for_sample(name=name, store=store, sample=sample)
+                for sample in sample_tuple
+            ]
             for name, store in self.external_contexts.items()
         }
         text_inputs = self._materialize_text_inputs(external)
@@ -590,6 +611,7 @@ class RollingMarketSampleEngine:
             market_embeddings=market,
             market_mask=mask,
             samples=sample_tuple,
+            time_features=time_features,
             macro_features=macro_features,
             global_features=global_features,
             text_inputs=text_inputs,
@@ -708,6 +730,7 @@ class RollingMarketSampleEngine:
         out: dict[str, dict[str, np.ndarray]] = {}
         specs = {
             "news": (int(self.config.news_max_items), int(self.config.news_token_chunks)),
+            "market_news": (int(self.config.market_news_max_items), int(self.config.market_news_token_chunks)),
             "sec_filings": (int(self.config.sec_max_items), int(self.config.sec_token_chunks)),
         }
         for name, (max_items, max_chunks) in specs.items():
@@ -718,7 +741,9 @@ class RollingMarketSampleEngine:
             token_width = int(self.config.text_max_tokens)
             input_ids = np.zeros((batch, max_items, max_chunks, token_width), dtype=np.int32)
             attention_mask = np.zeros((batch, max_items, max_chunks, token_width), dtype=np.uint8)
-            source_ts = np.zeros((batch, max_items), dtype=np.int64)
+            timestamp_delta_us = np.zeros((batch, max_items), dtype=np.int64)
+            age_us = np.zeros((batch, max_items), dtype=np.int64)
+            age_seconds_log1p = np.zeros((batch, max_items), dtype=np.float32)
             item_mask = np.zeros((batch, max_items), dtype=np.bool_)
             chunk_mask = np.zeros((batch, max_items, max_chunks), dtype=np.bool_)
             misses: list[tuple[tuple[str, str], str]] = []
@@ -727,7 +752,11 @@ class RollingMarketSampleEngine:
                 grouped = _group_text_token_rows(name, rows)
                 selected = grouped[-max_items:]
                 for item_index, item in enumerate(selected):
-                    source_ts[sample_index, item_index] = int(item["timestamp_us"])
+                    origin_us = _origin_us_from_external_rows(rows)
+                    item_age_us = max(0, int(origin_us) - int(item["timestamp_us"])) if origin_us else 0
+                    timestamp_delta_us[sample_index, item_index] = int(item["timestamp_us"]) - int(origin_us) if origin_us else 0
+                    age_us[sample_index, item_index] = item_age_us
+                    age_seconds_log1p[sample_index, item_index] = _age_us_to_log_seconds(item_age_us)
                     item_mask[sample_index, item_index] = True
                     token_rows = item["rows"]
                     used_precomputed = False
@@ -777,7 +806,9 @@ class RollingMarketSampleEngine:
                 "attention_mask": attention_mask,
                 "item_mask": item_mask,
                 "chunk_mask": chunk_mask,
-                "timestamp_us": source_ts,
+                "timestamp_delta_us": timestamp_delta_us,
+                "age_us": age_us,
+                "age_seconds_log1p": age_seconds_log1p,
             }
         return out
 
@@ -792,7 +823,9 @@ class RollingMarketSampleEngine:
         batch = len(rows_by_sample)
         max_items = int(self.config.xbrl_max_items)
         mask = np.zeros((batch, max_items), dtype=np.bool_)
-        timestamp_us = np.zeros((batch, max_items), dtype=np.int64)
+        timestamp_delta_us = np.zeros((batch, max_items), dtype=np.int64)
+        age_us = np.zeros((batch, max_items), dtype=np.int64)
+        age_seconds_log1p = np.zeros((batch, max_items), dtype=np.float32)
         value = np.zeros((batch, max_items), dtype=np.float32)
         fiscal_year = np.zeros((batch, max_items), dtype=np.int16)
         age_days = np.zeros((batch, max_items), dtype=np.float32)
@@ -812,7 +845,10 @@ class RollingMarketSampleEngine:
             for item_index, row in enumerate(selected):
                 row_ts = int(row.get("timestamp_us", 0) or 0)
                 mask[sample_index, item_index] = True
-                timestamp_us[sample_index, item_index] = row_ts
+                item_age_us = max(0, int(origin_us) - int(row_ts)) if origin_us and row_ts else 0
+                timestamp_delta_us[sample_index, item_index] = int(row_ts) - int(origin_us) if origin_us and row_ts else 0
+                age_us[sample_index, item_index] = item_age_us
+                age_seconds_log1p[sample_index, item_index] = _age_us_to_log_seconds(item_age_us)
                 value[sample_index, item_index] = _safe_float32(row.get("value", 0.0))
                 fiscal_year[sample_index, item_index] = int(row.get("fiscal_year", 0) or 0)
                 age_days[sample_index, item_index] = max(0.0, float(origin_us - row_ts) / 86_400_000_000.0) if origin_us and row_ts else 0.0
@@ -828,7 +864,9 @@ class RollingMarketSampleEngine:
                 mapping_confidence[sample_index, item_index] = _safe_float32(row.get("mapping_confidence_score", 0.0))
         return {
             "mask": mask,
-            "timestamp_us": timestamp_us,
+            "timestamp_delta_us": timestamp_delta_us,
+            "age_us": age_us,
+            "age_seconds_log1p": age_seconds_log1p,
             "value": value,
             "fiscal_year": fiscal_year,
             "age_days": age_days,
@@ -978,6 +1016,11 @@ FORMAT JSONEachRow
                 end_timestamp_us=end_timestamp_us,
                 tickers=ticker_tuple,
             )
+        if "market_news" in enabled:
+            out["market_news"] = self._fetch_market_news(
+                start_timestamp_us=start_timestamp_us,
+                end_timestamp_us=end_timestamp_us,
+            )
         if "sec_filings" in enabled:
             out["sec_filings"] = self._fetch_sec_filing_context(
                 start_timestamp_us=start_timestamp_us,
@@ -1034,6 +1077,67 @@ WHERE published_at_utc >= {start_expr}
   AND published_at_utc <= {end_expr}
 ORDER BY ticker, published_at_utc DESC, source_id, token_chunk_index
 LIMIT {row_limit} BY ticker
+FORMAT JSONEachRow
+"""
+        return [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
+
+    def _fetch_market_news(self, *, start_timestamp_us: int, end_timestamp_us: int) -> list[dict[str, Any]]:
+        database = quote_ident(self.config.database)
+        table = f"{database}.{quote_ident(self.config.news_token_table)}"
+        start_expr = _date_time64_from_us(max(0, int(start_timestamp_us) - int(self.config.news_lookback_days) * 86_400_000_000))
+        end_expr = _date_time64_from_us(int(end_timestamp_us))
+        max_items = int(self.config.market_news_max_items)
+        max_chunks = int(self.config.market_news_token_chunks)
+        query = f"""
+WITH latest_sources AS
+(
+    SELECT
+        source_id,
+        max(timestamp_us) AS latest_timestamp_us
+    FROM {table}
+    WHERE published_at_utc >= {start_expr}
+      AND published_at_utc <= {end_expr}
+    GROUP BY source_id
+    ORDER BY latest_timestamp_us DESC
+    LIMIT {max_items}
+)
+SELECT
+    '__MARKET__' AS ticker,
+    timestamp_us,
+    source_id,
+    provider,
+    provider_article_id,
+    title,
+    article_url,
+    url_domain,
+    channels,
+    provider_tags,
+    quality_flags,
+    tokenizer_model,
+    max_tokens,
+    token_chunk_index,
+    token_start,
+    token_end,
+    original_token_count,
+    token_count,
+    padding_tokens,
+    was_truncated,
+    input_ids,
+    attention_mask,
+    text_hash,
+    text_char_count,
+    source_text_char_count,
+    text_prefix_truncated
+FROM
+(
+    SELECT t.*
+    FROM {table} AS t
+    INNER JOIN latest_sources AS s ON t.source_id = s.source_id
+    WHERE t.token_chunk_index < {max_chunks}
+    ORDER BY t.source_id, t.token_chunk_index, t.ticker
+    LIMIT 1 BY source_id, token_chunk_index
+)
+ORDER BY timestamp_us, source_id, token_chunk_index
 FORMAT JSONEachRow
 """
         return [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
@@ -1265,8 +1369,66 @@ def _group_text_token_rows(name: str, rows: Iterable[Mapping[str, Any]]) -> list
     return out
 
 
+def _external_lookup_ticker(name: str, ticker: str) -> str:
+    return "__MARKET__" if name == "market_news" else str(ticker).upper()
+
+
+def _external_asof_for_sample(*, name: str, store: ExternalAsOfStore, sample: RollingSampleIndex) -> list[dict[str, Any]]:
+    rows = store.asof(ticker=_external_lookup_ticker(name, sample.ticker), timestamp_us=sample.origin_timestamp_us)
+    origin_us = int(sample.origin_timestamp_us)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        copied = dict(row)
+        copied["_sample_origin_timestamp_us"] = origin_us
+        out.append(copied)
+    return out
+
+
+def _origin_us_from_external_rows(rows: Iterable[Mapping[str, Any]]) -> int:
+    for row in rows:
+        value = row.get("_sample_origin_timestamp_us")
+        if value is not None:
+            return int(value)
+    return 0
+
+
+def _origin_time_features(samples: tuple[RollingSampleIndex, ...]) -> dict[str, np.ndarray]:
+    """Convert the single absolute sample origin timestamp into model features."""
+
+    batch = len(samples)
+    second_of_day = np.zeros((batch,), dtype=np.float32)
+    day_of_week = np.zeros((batch,), dtype=np.float32)
+    day_of_year = np.zeros((batch,), dtype=np.float32)
+    years_since_2000 = np.zeros((batch,), dtype=np.float32)
+    for index, sample in enumerate(samples):
+        timestamp = dt.datetime.fromtimestamp(int(sample.origin_timestamp_us) / 1_000_000.0, tz=dt.timezone.utc)
+        second_of_day[index] = np.float32(
+            timestamp.hour * 3600 + timestamp.minute * 60 + timestamp.second + timestamp.microsecond / 1_000_000.0
+        )
+        day_of_week[index] = np.float32(timestamp.weekday())
+        day_of_year[index] = np.float32(timestamp.timetuple().tm_yday - 1)
+        years_since_2000[index] = np.float32((timestamp - dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc)).total_seconds() / (365.2425 * 86_400.0))
+    return {
+        "utc_second_of_day_sin": np.sin(2.0 * np.pi * second_of_day / 86_400.0).astype(np.float32),
+        "utc_second_of_day_cos": np.cos(2.0 * np.pi * second_of_day / 86_400.0).astype(np.float32),
+        "utc_day_of_week_sin": np.sin(2.0 * np.pi * day_of_week / 7.0).astype(np.float32),
+        "utc_day_of_week_cos": np.cos(2.0 * np.pi * day_of_week / 7.0).astype(np.float32),
+        "utc_day_of_year_sin": np.sin(2.0 * np.pi * day_of_year / 366.0).astype(np.float32),
+        "utc_day_of_year_cos": np.cos(2.0 * np.pi * day_of_year / 366.0).astype(np.float32),
+        "years_since_2000": years_since_2000,
+    }
+
+
+def _age_us_to_log_seconds(age_us: int) -> np.float32:
+    return np.float32(np.log1p(max(0.0, float(age_us) / 1_000_000.0)))
+
+
+def _relative_age_seconds_log1p(*, origin_us: int, item_us: int) -> np.float32:
+    return _age_us_to_log_seconds(max(0, int(origin_us) - int(item_us)))
+
+
 def _row_to_model_text(name: str, row: Mapping[str, Any]) -> str:
-    if name == "news":
+    if name in {"news", "market_news"}:
         parts = [
             str(row.get("title", "") or ""),
             str(row.get("teaser", "") or ""),

@@ -62,7 +62,10 @@ production:
 4. Training materialization returns:
    - `headers_uint8`: `[batch, context_chunks, 14]`
    - `events_uint8`: `[batch, context_chunks, 128, 16]`
-   - metadata arrays for ticker, origin ordinal, origin timestamp, and chunk origins
+   - metadata arrays for ticker, origin ordinal, the single absolute origin
+     timestamp, and chunk origins
+   - origin-time features and relative chunk-age features derived from the
+     origin timestamp
    - `macro_features`: as-of ticker bars plus current session prefix features
    - `global_features`: as-of bars for configured market symbols
    - `text_inputs`: Qwen-ready pre-tokenized tensors for news and SEC filing text
@@ -108,12 +111,15 @@ temporal model broad market state without leaking future bars.
 
 The default multimodal context comes from concrete ClickHouse tables:
 
-- news: `market_sip_compact.news_text_tokens` by default. That table is built
+- ticker news: `market_sip_compact.news_text_tokens` by default. That table is built
   from `q_live.benzinga_news_ticker_v1` joined to
   `q_live.benzinga_news_normalized_v1`, timestamped by `published_at_utc`, and
   tokenized into up to two 1024-token chunks per ticker/article row. The
   tokenized text is assembled explicitly from title, teaser, `body_text`,
   `external_text`, and `pdf_text`.
+- market news: the same token table is also read as `market_news`, but without a
+  ticker filter. It takes the latest distinct article sources as-of the sample
+  origin and materializes them under the synthetic ticker `__MARKET__`.
 - SEC filing text: `market_sip_compact.sec_filing_text_tokens` by default. That
   table is built from `market_sip_compact.sec_filing_text_context`, which in
   turn uses `sec_filing_v2.accepted_at_utc` as the no-lookahead event time and
@@ -125,10 +131,12 @@ The default multimodal context comes from concrete ClickHouse tables:
   mapped ticker ahead of time, so the loader can fetch as-of XBRL rows with a
   simple `(ticker, timestamp_us)` range query.
 
-Every row is normalized to `timestamp_us` and the materializer only returns
-items with `timestamp_us <= sample_origin_timestamp_us`, so future text or
-fundamental rows cannot leak into features. Extra sources can still be added
-with `ExternalAsOfContextConfig`; its `timestamp_unit` supports microseconds,
+Every source row is normalized to `timestamp_us` internally for as-of filtering,
+but the model-facing tensors use the sample origin as the only absolute time.
+Context timestamps are exported as `timestamp_delta_us`, `age_us`, and
+`age_seconds_log1p`, and the raw absolute source timestamps remain only in
+`external_context` for audit/debugging. Extra sources can still be added with
+`ExternalAsOfContextConfig`; its `timestamp_unit` supports microseconds,
 nanoseconds, milliseconds, and seconds.
 
 Text context is materialized from pre-tokenized ClickHouse rows into model-ready
@@ -138,12 +146,30 @@ Qwen inputs:
 - `text_inputs["news"]["attention_mask"]`: same shape, `uint8`
 - `text_inputs["news"]["item_mask"]`: `[batch, news_max_items]`, `bool`
 - `text_inputs["news"]["chunk_mask"]`: `[batch, news_max_items, news_token_chunks]`, `bool`
-- `text_inputs["news"]["timestamp_us"]`: `[batch, news_max_items]`, `int64`
+- `text_inputs["news"]["timestamp_delta_us"]`, `age_us`, and
+  `age_seconds_log1p`: `[batch, news_max_items]`
+- `text_inputs["market_news"]["input_ids"]`: `[batch, market_news_max_items, market_news_token_chunks, text_max_tokens]`, default `[batch, 64, 2, 1024]`, `int32`
+- `text_inputs["market_news"]["attention_mask"]`: same shape, `uint8`
+- `text_inputs["market_news"]["item_mask"]`: `[batch, market_news_max_items]`, `bool`
+- `text_inputs["market_news"]["chunk_mask"]`: `[batch, market_news_max_items, market_news_token_chunks]`, `bool`
+- `text_inputs["market_news"]["timestamp_delta_us"]`, `age_us`, and
+  `age_seconds_log1p`: `[batch, market_news_max_items]`
 - `text_inputs["sec_filings"]["input_ids"]`: `[batch, sec_max_items, sec_token_chunks, text_max_tokens]`, default `[batch, 16, 8, 1024]`, `int32`
 - `text_inputs["sec_filings"]["attention_mask"]`: same shape, `uint8`
 - `text_inputs["sec_filings"]["item_mask"]`: `[batch, sec_max_items]`, `bool`
 - `text_inputs["sec_filings"]["chunk_mask"]`: `[batch, sec_max_items, sec_token_chunks]`, `bool`
-- `text_inputs["sec_filings"]["timestamp_us"]`: `[batch, sec_max_items]`, `int64`
+- `text_inputs["sec_filings"]["timestamp_delta_us"]`, `age_us`, and
+  `age_seconds_log1p`: `[batch, sec_max_items]`
+
+Origin and chunk timing are materialized separately:
+
+- `origin_timestamp_us`: `[batch]`, the single absolute timestamp for the
+  chosen origin event
+- `time_features[*]`: `[batch]`, including UTC second-of-day, day-of-week, and
+  day-of-year cyclic features plus `years_since_2000`
+- `chunk_origin_delta_us`: `[batch, context_chunks]`, each chunk origin minus
+  the sample origin
+- `chunk_age_seconds_log1p`: `[batch, context_chunks]`
 
 The rolling loader no longer tokenizes real ClickHouse news/SEC text in Python.
 It reads `input_ids`, `attention_mask`, `token_chunk_index`, `token_start`, and
@@ -151,10 +177,12 @@ It reads `input_ids`, `attention_mask`, `token_chunk_index`, `token_start`, and
 for synthetic smoke tests or custom external text rows that do not already carry
 token arrays.
 
-XBRL context is materialized into fixed tensors:
+XBRL context is materialized into fixed row slots. The default `xbrl_max_items`
+of 64 means up to 64 as-of XBRL rows per sample, not 64 feature columns:
 
 - `xbrl_inputs["mask"]`: `[batch, xbrl_max_items]`
-- `xbrl_inputs["timestamp_us"]`: `[batch, xbrl_max_items]`
+- `xbrl_inputs["timestamp_delta_us"]`, `age_us`, and `age_seconds_log1p`:
+  `[batch, xbrl_max_items]`
 - `xbrl_inputs["value"]`: `[batch, xbrl_max_items]`
 - `xbrl_inputs["fiscal_year"]`, `age_days`, `period_end_days`
 - stable categorical ids for `taxonomy`, `tag`, `unit_code`, and `form_type`

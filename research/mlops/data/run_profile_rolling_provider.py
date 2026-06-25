@@ -43,6 +43,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--news-max-items", type=int, default=32)
     parser.add_argument("--news-token-chunks", type=int, default=2)
+    parser.add_argument("--market-news-max-items", type=int, default=64)
+    parser.add_argument("--market-news-token-chunks", type=int, default=2)
     parser.add_argument("--sec-max-items", type=int, default=16)
     parser.add_argument("--sec-token-chunks", type=int, default=8)
     parser.add_argument("--text-max-tokens", type=int, default=1024)
@@ -78,6 +80,8 @@ def main() -> int:
         batch_size=int(args.batch_size),
         news_max_items=int(args.news_max_items),
         news_token_chunks=int(args.news_token_chunks),
+        market_news_max_items=int(args.market_news_max_items),
+        market_news_token_chunks=int(args.market_news_token_chunks),
         sec_max_items=int(args.sec_max_items),
         sec_token_chunks=int(args.sec_token_chunks),
         text_max_tokens=int(args.text_max_tokens),
@@ -98,6 +102,7 @@ def main() -> int:
     print(
         "text_shapes="
         f"news=[batch,{config.news_max_items},{config.news_token_chunks},{config.text_max_tokens}] "
+        f"market_news=[batch,{config.market_news_max_items},{config.market_news_token_chunks},{config.text_max_tokens}] "
         f"sec=[batch,{config.sec_max_items},{config.sec_token_chunks},{config.text_max_tokens}]",
         flush=True,
     )

@@ -200,10 +200,12 @@ class RollingMarketDataConfig:
     label_timeframes: tuple[str, ...] = ("1d", "1w", "1mo", "1y")
     macro_lookback_days: int = 40
     label_lookahead_days: int = 400
-    q_live_contexts: tuple[str, ...] = ("news", "sec_filings", "xbrl")
+    q_live_contexts: tuple[str, ...] = ("news", "market_news", "sec_filings", "xbrl")
     news_lookback_days: int = 30
     news_max_items: int = 32
     news_token_chunks: int = 2
+    market_news_max_items: int = 64
+    market_news_token_chunks: int = 2
     sec_lookback_days: int = 365
     sec_max_items: int = 16
     sec_token_chunks: int = 8
