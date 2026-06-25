@@ -12,6 +12,7 @@ import time
 import zipfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
@@ -47,7 +48,10 @@ FINRA_SHORT_VOLUME_SOURCES = {
     "FADF": "https://cdn.finra.org/equity/regsho/daily/FADFshvol{yyyymmdd}.txt",
 }
 SEC_FTD_PAGE = "https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data"
-USER_AGENT = "quant-reference-gateway/1.0 contact: local-research"
+SEC_FTD_FILE_URL = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{yyyymm}{half}.zip"
+DEFAULT_USER_AGENT = "quant-reference-gateway/1.0 contact: local-research"
+RETRY_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
+SEC_RATE_LIMIT_TEXT = "Request Rate Threshold Exceeded"
 IMPLEMENTED_SOURCES = {"finra_short_volume", "sec_fails_to_deliver"}
 WORKSTATION_COMPUTER_NAME = "DESKTOP-SAAI85T"
 WORKSTATION_DATA_ROOT_WIN = Path("D:/market-data")
@@ -99,6 +103,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--execute", action="store_true", help="Write rows and coverage. Without this, only reports planned gaps.")
     parser.add_argument("--request-timeout-seconds", type=int, default=60)
     parser.add_argument("--request-min-interval-seconds", type=float, default=0.12)
+    parser.add_argument("--request-max-retries", type=int, default=5)
+    parser.add_argument("--request-retry-base-seconds", type=float, default=2.0)
+    parser.add_argument("--request-retry-max-seconds", type=float, default=120.0)
+    parser.add_argument(
+        "--sec-ftd-link-mode",
+        choices=["direct", "html", "auto"],
+        default="direct",
+        help=(
+            "direct generates SEC FTD zip URLs from the requested dates. "
+            "html scrapes the SEC landing page. auto tries html and falls back to direct."
+        ),
+    )
+    parser.add_argument(
+        "--user-agent",
+        default=default_user_agent(),
+        help="HTTP user agent. SEC requests should use a compliant contact-bearing SEC_USER_AGENT value.",
+    )
     parser.add_argument("--batch-size", type=int, default=50_000)
     return parser.parse_args()
 
@@ -303,7 +324,7 @@ def fetch_finra_short_volume_day(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     yyyymmdd = day.strftime("%Y%m%d")
     url = FINRA_SHORT_VOLUME_SOURCES[venue].format(yyyymmdd=yyyymmdd)
-    content = fetch_bytes(url, timeout=args.request_timeout_seconds)
+    content = fetch_bytes(args, url)
     text = content.decode("utf-8", errors="replace")
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines or len(lines) == 1:
@@ -364,7 +385,7 @@ def run_sec_ftd(
     ) if args.resume_from_coverage else []
     if not args.resume_from_coverage:
         gaps = [PublicationDateGap(start_date, end_date)]  # type: ignore[list-item]
-    links = fetch_sec_ftd_links(args)
+    links = fetch_sec_ftd_links(args, start_date, end_date)
     latest_published_end = max((item["end_date"] for item in links), default=None)
     results: list[SourceResult] = []
     for gap in gaps:
@@ -410,6 +431,26 @@ def run_sec_ftd(
                 written = insert_rows(client, args.write_database, "market_fails_to_deliver_v1", rows, args.batch_size) if args.execute else 0
                 status = "completed" if rows else "covered_empty"
                 failed = 0
+            except FileNotFoundError as exc:
+                rows = []
+                written = 0
+                failed = 0
+                expected_after = sec_ftd_expected_publish_after(item)
+                if datetime.now(UTC).date() <= expected_after:
+                    status = "source_not_yet_available"
+                    details = {
+                        "message": str(exc),
+                        "url": item.get("url"),
+                        "expected_after": expected_after.isoformat(),
+                    }
+                else:
+                    failed = 1
+                    status = "failed"
+                    details = {
+                        "error": repr(exc),
+                        "url": item.get("url"),
+                        "expected_after": expected_after.isoformat(),
+                    }
             except Exception as exc:  # noqa: BLE001
                 rows = []
                 written = 0
@@ -422,7 +463,7 @@ def run_sec_ftd(
             result = SourceResult("sec_fails_to_deliver", "sec_fails_to_deliver", cov_start, cov_end, len(rows), written, failed, status, details)
             results.append(result)
             print(f"sec_fails_to_deliver {cov_start.isoformat()}->{cov_end.isoformat()} status={status} rows={len(rows):,} written={written:,}", flush=True)
-            if args.execute:
+            if args.execute and status != "source_not_yet_available":
                 insert_publication_coverage(
                     client,
                     database=args.write_database,
@@ -444,8 +485,24 @@ def run_sec_ftd(
     return results
 
 
-def fetch_sec_ftd_links(args: argparse.Namespace) -> list[dict[str, Any]]:
-    html = fetch_bytes(SEC_FTD_PAGE, timeout=args.request_timeout_seconds).decode("utf-8", errors="replace")
+def fetch_sec_ftd_links(args: argparse.Namespace, start_date: date, end_date: date) -> list[dict[str, Any]]:
+    if args.sec_ftd_link_mode == "direct":
+        return generate_sec_ftd_links(start_date, end_date)
+    if args.sec_ftd_link_mode == "auto":
+        try:
+            return fetch_sec_ftd_links_from_page(args)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                "sec_fails_to_deliver link_discovery=html_failed "
+                f"fallback=direct error={repr(exc)}",
+                flush=True,
+            )
+            return generate_sec_ftd_links(start_date, end_date)
+    return fetch_sec_ftd_links_from_page(args)
+
+
+def fetch_sec_ftd_links_from_page(args: argparse.Namespace) -> list[dict[str, Any]]:
+    html = fetch_bytes(args, SEC_FTD_PAGE).decode("utf-8", errors="replace")
     links: list[dict[str, Any]] = []
     for href in re.findall(r"href=[\"']([^\"']+\.zip)[\"']", html, flags=re.IGNORECASE):
         url = parse.urljoin(SEC_FTD_PAGE, href)
@@ -464,6 +521,43 @@ def fetch_sec_ftd_links(args: argparse.Namespace) -> list[dict[str, Any]]:
     return links
 
 
+def generate_sec_ftd_links(start_date: date, end_date: date) -> list[dict[str, Any]]:
+    links: list[dict[str, Any]] = []
+    cursor = date(start_date.year, start_date.month, 1)
+    while cursor < end_date:
+        year = cursor.year
+        month = cursor.month
+        first = date(year, month, 1)
+        sixteenth = date(year, month, 16)
+        month_end = date(year + (1 if month == 12 else 0), 1 if month == 12 else month + 1, 1)
+        for half, half_start, half_end in (("a", first, sixteenth), ("b", sixteenth, month_end)):
+            if half_end > start_date and half_start < end_date:
+                links.append(
+                    {
+                        "url": SEC_FTD_FILE_URL.format(yyyymm=f"{year}{month:02d}", half=half),
+                        "start_date": half_start,
+                        "end_date": half_end,
+                        "link_mode": "direct",
+                    }
+                )
+        cursor = month_end
+    return links
+
+
+def sec_ftd_expected_publish_after(item: dict[str, Any]) -> date:
+    start = item["start_date"]
+    end = item["end_date"]
+    if not isinstance(start, date) or not isinstance(end, date):
+        return datetime.now(UTC).date()
+    if start.day == 1 and end.day == 16:
+        return end_of_month(start)
+    return date(end.year, end.month, min(15, calendar.monthrange(end.year, end.month)[1]))
+
+
+def end_of_month(day: date) -> date:
+    return date(day.year, day.month, calendar.monthrange(day.year, day.month)[1])
+
+
 def fetch_sec_ftd_file(
     args: argparse.Namespace,
     item: dict[str, Any],
@@ -471,7 +565,7 @@ def fetch_sec_ftd_file(
     end_date: date,
     symbols: dict[str, SymbolRef],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    content = fetch_bytes(str(item["url"]), timeout=args.request_timeout_seconds)
+    content = fetch_bytes(args, str(item["url"]))
     digest = sha256_bytes(content)
     rows: list[dict[str, Any]] = []
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
@@ -555,16 +649,91 @@ def stamp_rows(rows: list[dict[str, Any]], run_id: str) -> None:
         row["inserted_at"] = inserted_at
 
 
-def fetch_bytes(url: str, *, timeout: int) -> bytes:
-    req = request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
+def fetch_bytes(args: argparse.Namespace, url: str) -> bytes:
+    headers = {
+        "User-Agent": args.user_agent or DEFAULT_USER_AGENT,
+        "Accept": "*/*",
+    }
+    req = request.Request(url, headers=headers)
+    attempts = max(1, int(args.request_max_retries) + 1)
+    last_body = ""
+    for attempt in range(1, attempts + 1):
+        if args.request_min_interval_seconds > 0:
+            time.sleep(args.request_min_interval_seconds)
+        try:
+            with request.urlopen(req, timeout=args.request_timeout_seconds) as response:
+                return response.read()
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            last_body = body[:500]
+            if exc.code == 404:
+                raise FileNotFoundError(f"{url} returned HTTP 404") from exc
+            if not should_retry_http_error(exc, body) or attempt >= attempts:
+                raise RuntimeError(f"{url} returned HTTP {exc.code}: {last_body}") from exc
+            sleep_seconds = retry_sleep_seconds(args, exc, attempt)
+            print(
+                f"request_retry url={safe_url(url)} status={exc.code} "
+                f"attempt={attempt}/{attempts} sleep={sleep_seconds:.1f}s",
+                flush=True,
+            )
+            time.sleep(sleep_seconds)
+        except (TimeoutError, error.URLError) as exc:
+            if attempt >= attempts:
+                raise RuntimeError(f"{url} request failed after {attempts} attempts: {repr(exc)}") from exc
+            sleep_seconds = retry_sleep_seconds(args, None, attempt)
+            print(
+                f"request_retry url={safe_url(url)} status=transport_error "
+                f"attempt={attempt}/{attempts} sleep={sleep_seconds:.1f}s error={repr(exc)}",
+                flush=True,
+            )
+            time.sleep(sleep_seconds)
+    raise RuntimeError(f"{url} request failed: {last_body}")
+
+
+def should_retry_http_error(exc: error.HTTPError, body: str) -> bool:
+    if exc.code in RETRY_HTTP_CODES:
+        return True
+    return exc.code == 403 and SEC_RATE_LIMIT_TEXT.lower() in body.lower()
+
+
+def retry_sleep_seconds(args: argparse.Namespace, exc: error.HTTPError | None, attempt: int) -> float:
+    if exc is not None:
+        retry_after = parse_retry_after_seconds(exc.headers.get("Retry-After", ""))
+        if retry_after is not None:
+            return min(max(0.0, retry_after), max(1.0, args.request_retry_max_seconds))
+    base = max(0.1, float(args.request_retry_base_seconds))
+    cap = max(base, float(args.request_retry_max_seconds))
+    return min(cap, base * (2 ** (attempt - 1)))
+
+
+def parse_retry_after_seconds(value: str) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
     try:
-        with request.urlopen(req, timeout=timeout) as response:
-            return response.read()
-    except error.HTTPError as exc:
-        if exc.code == 404:
-            raise FileNotFoundError(f"{url} returned HTTP 404") from exc
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"{url} returned HTTP {exc.code}: {body[:500]}") from exc
+        return float(text)
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(text)
+        except Exception:
+            return None
+        return max(0.0, (parsed.astimezone(UTC) - datetime.now(UTC)).total_seconds())
+
+
+def safe_url(url: str) -> str:
+    parsed = parse.urlsplit(url)
+    params = parse.parse_qsl(parsed.query, keep_blank_values=True)
+    redacted = [(key, "redacted" if key.lower() in {"apikey", "api_key", "token"} else value) for key, value in params]
+    return parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parse.urlencode(redacted), parsed.fragment))
+
+
+def default_user_agent() -> str:
+    return (
+        os.environ.get("SEC_USER_AGENT")
+        or os.environ.get("SEC_EDGAR_USER_AGENT")
+        or os.environ.get("NEWS_SEC_USER_AGENT")
+        or DEFAULT_USER_AGENT
+    )
 
 
 def parse_finra_date(value: str, fallback: date) -> date:
