@@ -34,8 +34,10 @@ Global:
 - latest 64 market-news items
 - global market bars
 
-The event cache warm-loads enough prior rows to satisfy the configured chunk
-coverage. The default market context is:
+The event cache warm-loads enough prior raw rows to satisfy the configured
+chunk coverage. Warmup does not encode chunks. Context chunks from the warm
+range are encoded lazily only when a sample references their origins. The
+default market context is:
 
 ```text
 chunk_size = 128 events

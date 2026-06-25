@@ -116,7 +116,10 @@ class RollingContextLoader:
                 cache = self._event_cache(str(ticker).upper())
                 for row in rows:
                     cache.push_row(row)
-                self._encode_new_chunks(cache, emit_samples=False)
+                # Warmup is raw high-frequency cache state only. Chunks from
+                # the warm range are encoded lazily when a sample references a
+                # specific context origin.
+                cache.last_origin_encoded = cache.last_ordinal
                 self.profiler.incr("warm_tickers", 1)
 
     def push_event(self, ticker: str, row: np.void) -> RollingSamplePointer | None:
@@ -299,7 +302,7 @@ class RollingContextLoader:
             chunk_ids: list[int] = []
             for lag in self.config.context_lags:
                 lag_origin = int(origin) - int(lag)
-                chunk_id = cache.chunk_id(lag_origin)
+                chunk_id = self._chunk_id_or_encode(cache, lag_origin)
                 if chunk_id is None:
                     return None
                 chunk_ids.append(int(chunk_id))
@@ -316,6 +319,34 @@ class RollingContextLoader:
                 ticker_macro_bar_ids=self.ticker_macro_bars[ticker].latest(self.config.macro_bar_cache_size),
                 global_market_bar_ids=self.global_market_bars.latest(self.config.global_bar_cache_size),
             )
+
+    def _chunk_id_or_encode(self, cache: PerTickerEventCache, origin: int) -> int | None:
+        existing = cache.chunk_id(int(origin))
+        if existing is not None:
+            return int(existing)
+        with self.profiler.stage("lazy_context_chunk_encode", items=1):
+            window_with_previous = cache.window_ending(int(origin), int(self.config.events_per_chunk))
+            if window_with_previous is None:
+                return None
+            window, previous_sip_us = window_with_previous
+            encoded = encode_unified_event_window(window, previous_sip_us=previous_sip_us)
+            if isinstance(encoded, str):
+                self.profiler.incr(f"chunk_reject_{encoded}", 1)
+                return None
+            header, events = encoded
+            chunk = EncodedEventChunk(
+                ticker=cache.ticker,
+                origin_ordinal=int(origin),
+                origin_timestamp_us=int(window[-1]["sip_timestamp_us"]),
+                previous_sip_us=previous_sip_us,
+                header_uint8=header.copy(),
+                events_uint8=events.copy(),
+            )
+            chunk_id = self.chunk_arena.add(ticker=cache.ticker, timestamp_us=chunk.origin_timestamp_us, payload=chunk)
+            cache.remember_chunk(int(origin), chunk_id)
+            self.profiler.incr("chunks_created", 1)
+            self.profiler.incr("lazy_chunks_created", 1)
+            return int(chunk_id)
 
     def _materialize_external_payloads(self, id_arrays: dict[str, np.ndarray]) -> dict[str, dict[str, np.ndarray]]:
         with self.profiler.stage("external_payload_materialize", items=sum(int(array.size) for array in id_arrays.values())):
