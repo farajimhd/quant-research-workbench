@@ -246,8 +246,8 @@ class RollingMarketSampleEngine:
         self._processed_offsets: dict[str, int] = {}
         self.macro_bars = MacroBarFrame(rows=[])
         q_live_context_configs = {
-            "news": ExternalAsOfContextConfig(name="news", timestamp_column="timestamp_us", max_items=config.news_max_items),
-            "sec_filings": ExternalAsOfContextConfig(name="sec_filings", timestamp_column="timestamp_us", max_items=config.sec_max_items),
+            "news": ExternalAsOfContextConfig(name="news", timestamp_column="timestamp_us", max_items=config.news_max_items * config.news_token_chunks),
+            "sec_filings": ExternalAsOfContextConfig(name="sec_filings", timestamp_column="timestamp_us", max_items=config.sec_max_items * config.sec_token_chunks),
             "xbrl": ExternalAsOfContextConfig(name="xbrl", timestamp_column="timestamp_us", max_items=config.xbrl_max_items),
         }
         enabled_q_live = {
@@ -706,27 +706,51 @@ class RollingMarketSampleEngine:
 
     def _materialize_text_inputs(self, external: Mapping[str, list[list[dict[str, Any]]]]) -> dict[str, dict[str, np.ndarray]]:
         out: dict[str, dict[str, np.ndarray]] = {}
-        for name, max_items in (("news", self.config.news_max_items), ("sec_filings", self.config.sec_max_items)):
+        specs = {
+            "news": (int(self.config.news_max_items), int(self.config.news_token_chunks)),
+            "sec_filings": (int(self.config.sec_max_items), int(self.config.sec_token_chunks)),
+        }
+        for name, (max_items, max_chunks) in specs.items():
             rows_by_sample = external.get(name)
             if rows_by_sample is None:
                 continue
             batch = len(rows_by_sample)
-            max_items = int(max_items)
-            input_ids = np.zeros((batch, max_items, self._text_tokenizer.max_tokens), dtype=np.int32)
-            attention_mask = np.zeros((batch, max_items, self._text_tokenizer.max_tokens), dtype=np.uint8)
+            token_width = int(self.config.text_max_tokens)
+            input_ids = np.zeros((batch, max_items, max_chunks, token_width), dtype=np.int32)
+            attention_mask = np.zeros((batch, max_items, max_chunks, token_width), dtype=np.uint8)
             source_ts = np.zeros((batch, max_items), dtype=np.int64)
             item_mask = np.zeros((batch, max_items), dtype=np.bool_)
+            chunk_mask = np.zeros((batch, max_items, max_chunks), dtype=np.bool_)
             misses: list[tuple[tuple[str, str], str]] = []
             placements: list[tuple[int, int, tuple[str, str]]] = []
             for sample_index, rows in enumerate(rows_by_sample):
-                selected = list(rows)[-max_items:]
-                for item_index, row in enumerate(selected):
+                grouped = _group_text_token_rows(name, rows)
+                selected = grouped[-max_items:]
+                for item_index, item in enumerate(selected):
+                    source_ts[sample_index, item_index] = int(item["timestamp_us"])
+                    item_mask[sample_index, item_index] = True
+                    token_rows = item["rows"]
+                    used_precomputed = False
+                    for token_row in token_rows:
+                        chunk_index = int(token_row.get("token_chunk_index", 0) or 0)
+                        if chunk_index < 0 or chunk_index >= max_chunks:
+                            continue
+                        row_input_ids = token_row.get("input_ids")
+                        row_attention_mask = token_row.get("attention_mask")
+                        if isinstance(row_input_ids, list) and isinstance(row_attention_mask, list):
+                            length = min(token_width, len(row_input_ids), len(row_attention_mask))
+                            if length > 0:
+                                input_ids[sample_index, item_index, chunk_index, :length] = np.asarray(row_input_ids[:length], dtype=np.int32)
+                                attention_mask[sample_index, item_index, chunk_index, :length] = np.asarray(row_attention_mask[:length], dtype=np.uint8)
+                                chunk_mask[sample_index, item_index, chunk_index] = True
+                                used_precomputed = True
+                    if used_precomputed:
+                        continue
+                    row = token_rows[0] if token_rows else item["row"]
                     text = _row_to_model_text(name, row)
                     if not text:
                         continue
                     cache_key = _text_cache_key(name, row, text)
-                    source_ts[sample_index, item_index] = int(row.get("timestamp_us", 0) or 0)
-                    item_mask[sample_index, item_index] = True
                     placements.append((sample_index, item_index, cache_key))
                     if cache_key not in self._text_token_cache:
                         misses.append((cache_key, text))
@@ -745,12 +769,14 @@ class RollingMarketSampleEngine:
                 tokenized = self._text_token_cache.get(cache_key)
                 if tokenized is None:
                     continue
-                input_ids[sample_index, item_index] = tokenized.input_ids
-                attention_mask[sample_index, item_index] = tokenized.attention_mask
+                input_ids[sample_index, item_index, 0] = tokenized.input_ids
+                attention_mask[sample_index, item_index, 0] = tokenized.attention_mask
+                chunk_mask[sample_index, item_index, 0] = bool(tokenized.attention_mask.any())
             out[name] = {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
                 "item_mask": item_mask,
+                "chunk_mask": chunk_mask,
                 "timestamp_us": source_ts,
             }
         return out
@@ -968,62 +994,90 @@ FORMAT JSONEachRow
         return out
 
     def _fetch_q_live_news(self, *, start_timestamp_us: int, end_timestamp_us: int, tickers: tuple[str, ...]) -> list[dict[str, Any]]:
-        database = quote_ident(self.config.q_live_database)
+        database = quote_ident(self.config.database)
+        table = f"{database}.{quote_ident(self.config.news_token_table)}"
         ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
         start_expr = _date_time64_from_us(max(0, int(start_timestamp_us) - int(self.config.news_lookback_days) * 86_400_000_000))
         end_expr = _date_time64_from_us(int(end_timestamp_us))
+        row_limit = int(self.config.news_max_items) * int(self.config.news_token_chunks)
         query = f"""
 SELECT
-    nt.ticker AS ticker,
-    toUnixTimestamp64Micro(nt.published_at_utc) AS timestamp_us,
-    nt.canonical_news_id AS source_id,
-    nt.provider AS provider,
-    nt.provider_article_id AS provider_article_id,
-    n.title AS title,
-    n.teaser AS teaser,
-    substring(n.normalized_full_text, 1, 12000) AS text,
-    n.article_url AS article_url,
-    n.url_domain AS url_domain,
-    n.channels AS channels,
-    n.provider_tags AS provider_tags,
-    n.content_quality_flags AS quality_flags
-FROM {database}.benzinga_news_ticker_v1 AS nt
-ANY INNER JOIN {database}.benzinga_news_normalized_v1 AS n
-    ON nt.canonical_news_id = n.canonical_news_id
-WHERE nt.ticker IN ({ticker_sql})
-  AND nt.published_at_utc >= {start_expr}
-  AND nt.published_at_utc <= {end_expr}
-ORDER BY nt.ticker, nt.published_at_utc DESC, nt.canonical_news_id
-LIMIT {int(self.config.news_max_items)} BY nt.ticker
+    ticker,
+    timestamp_us,
+    source_id,
+    provider,
+    provider_article_id,
+    title,
+    article_url,
+    url_domain,
+    channels,
+    provider_tags,
+    quality_flags,
+    tokenizer_model,
+    max_tokens,
+    token_chunk_index,
+    token_start,
+    token_end,
+    original_token_count,
+    token_count,
+    padding_tokens,
+    was_truncated,
+    input_ids,
+    attention_mask,
+    text_hash,
+    text_char_count,
+    source_text_char_count,
+    text_prefix_truncated
+FROM {table}
+PREWHERE ticker IN ({ticker_sql})
+WHERE published_at_utc >= {start_expr}
+  AND published_at_utc <= {end_expr}
+ORDER BY ticker, published_at_utc DESC, source_id, token_chunk_index
+LIMIT {row_limit} BY ticker
 FORMAT JSONEachRow
 """
         return [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
 
     def _fetch_sec_filing_context(self, *, start_timestamp_us: int, end_timestamp_us: int, tickers: tuple[str, ...]) -> list[dict[str, Any]]:
         database = quote_ident(self.config.sec_context_database)
-        table = f"{database}.{quote_ident(self.config.sec_filing_text_context_table)}"
+        table = f"{database}.{quote_ident(self.config.sec_filing_text_token_table)}"
         ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
         start_us = max(0, int(start_timestamp_us) - int(self.config.sec_lookback_days) * 86_400_000_000)
         end_us = int(end_timestamp_us)
+        row_limit = int(self.config.sec_max_items) * int(self.config.sec_token_chunks)
         query = f"""
 SELECT
     ticker,
     timestamp_us,
-    accession_number AS source_id,
+    source_id,
     accession_number,
     cik,
     form_type,
+    text_rank,
     document_id,
     text_kind,
-    text,
+    quality_flags,
+    tokenizer_model,
+    max_tokens,
+    token_chunk_index,
+    token_start,
+    token_end,
+    original_token_count,
+    token_count,
+    padding_tokens,
+    was_truncated,
+    input_ids,
+    attention_mask,
+    text_hash,
     text_char_count,
-    quality_flags
+    source_text_char_count,
+    text_prefix_truncated
 FROM {table}
 PREWHERE ticker IN ({ticker_sql})
 WHERE timestamp_us >= {start_us}
   AND timestamp_us <= {end_us}
 ORDER BY ticker, timestamp_us DESC, accession_number, text_rank, document_id
-LIMIT {int(self.config.sec_max_items)} BY ticker
+LIMIT {row_limit} BY ticker
 FORMAT JSONEachRow
 """
         rows = [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
@@ -1184,6 +1238,33 @@ def _fallback_tokenize(texts: list[str], *, max_tokens: int) -> dict[str, np.nda
     return {"input_ids": input_ids, "attention_mask": attention_mask}
 
 
+def _group_text_token_rows(name: str, rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        source_id = str(row.get("source_id", "") or row.get("id", "") or row.get("accession_number", ""))
+        timestamp_us = str(row.get("timestamp_us", "") or row.get("timestamp_ns", "") or "")
+        if not source_id:
+            text = _row_to_model_text(name, row)
+            source_id = f"text:{_stable_uint32(text)}:{len(text)}"
+        key = (str(row.get("ticker", "")).upper(), timestamp_us, source_id)
+        item = grouped.setdefault(
+            key,
+            {
+                "ticker": key[0],
+                "timestamp_us": int(row.get("timestamp_us", 0) or 0),
+                "source_id": source_id,
+                "rows": [],
+                "row": dict(row),
+            },
+        )
+        item["rows"].append(dict(row))
+    out = list(grouped.values())
+    for item in out:
+        item["rows"].sort(key=lambda row: int(row.get("token_chunk_index", 0) or 0))
+    out.sort(key=lambda item: (int(item["timestamp_us"]), str(item["source_id"])))
+    return out
+
+
 def _row_to_model_text(name: str, row: Mapping[str, Any]) -> str:
     if name == "news":
         parts = [
@@ -1227,6 +1308,10 @@ def _count_external_text_items(external: Mapping[str, list[list[dict[str, Any]]]
     count = 0
     for name in names:
         for rows in external.get(name, []):
+            grouped = _group_text_token_rows(name, rows)
+            if grouped:
+                count += len(grouped)
+                continue
             for row in rows:
                 if _row_to_model_text(name, row):
                     count += 1

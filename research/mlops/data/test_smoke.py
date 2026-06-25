@@ -198,8 +198,10 @@ def smoke_rolling_provider() -> None:
     assert "future_1d_close" in batch.labels
     assert "future_intraday_bar_100ms_high" in batch.labels
     assert "news" in batch.external_context
-    assert batch.text_inputs["news"]["input_ids"].shape == (8, config.news_max_items, config.text_max_tokens)
-    assert batch.text_inputs["sec_filings"]["attention_mask"].shape == (8, config.sec_max_items, config.text_max_tokens)
+    assert batch.text_inputs["news"]["input_ids"].shape == (8, config.news_max_items, config.news_token_chunks, config.text_max_tokens)
+    assert batch.text_inputs["news"]["chunk_mask"].shape == (8, config.news_max_items, config.news_token_chunks)
+    assert batch.text_inputs["sec_filings"]["attention_mask"].shape == (8, config.sec_max_items, config.sec_token_chunks, config.text_max_tokens)
+    assert batch.text_inputs["sec_filings"]["chunk_mask"].shape == (8, config.sec_max_items, config.sec_token_chunks)
     assert batch.xbrl_inputs["value"].shape == (8, config.xbrl_max_items)
     assert batch.xbrl_inputs["mask"].shape == (8, config.xbrl_max_items)
     assert batch.xbrl_inputs["row_kind_id"].shape == (8, config.xbrl_max_items)

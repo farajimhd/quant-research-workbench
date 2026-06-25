@@ -65,7 +65,7 @@ production:
    - metadata arrays for ticker, origin ordinal, origin timestamp, and chunk origins
    - `macro_features`: as-of ticker bars plus current session prefix features
    - `global_features`: as-of bars for configured market symbols
-   - `text_inputs`: Qwen-ready token tensors for news and SEC filing text
+   - `text_inputs`: Qwen-ready pre-tokenized tensors for news and SEC filing text
    - `xbrl_inputs`: tensorized SEC XBRL fact rows
    - `external_context`: raw as-of payloads retained for audit/debugging
    - `labels`: strict-future macro bars plus same-queue intraday future bars
@@ -108,14 +108,17 @@ temporal model broad market state without leaking future bars.
 
 The default multimodal context comes from concrete ClickHouse tables:
 
-- news: `benzinga_news_ticker_v1` joined to `benzinga_news_normalized_v1` by
-  `canonical_news_id`, timestamped by `published_at_utc` in `q_live`.
-- SEC filing text: training reads the migrated context table
-  `market_sip_compact.sec_filing_text_context` by default. This table is built
-  from SEC filings using `sec_filing_v2.accepted_at_utc` as the no-lookahead
-  event time and stores bounded text snippets already mapped to market tickers.
-  The rolling data loader does not repeatedly join raw SEC filings, text rows,
-  or bridge mappings during training.
+- news: `market_sip_compact.news_text_tokens` by default. That table is built
+  from `q_live.benzinga_news_ticker_v1` joined to
+  `q_live.benzinga_news_normalized_v1`, timestamped by `published_at_utc`, and
+  tokenized into up to two 1024-token chunks per ticker/article row. The
+  tokenized text is assembled explicitly from title, teaser, `body_text`,
+  `external_text`, and `pdf_text`.
+- SEC filing text: `market_sip_compact.sec_filing_text_tokens` by default. That
+  table is built from `market_sip_compact.sec_filing_text_context`, which in
+  turn uses `sec_filing_v2.accepted_at_utc` as the no-lookahead event time and
+  maps SEC filings to market tickers ahead of training. SEC text is tokenized
+  into up to eight 1024-token chunks per selected filing text row.
 - XBRL fundamentals: training reads the migrated context table
   `market_sip_compact.sec_xbrl_context` by default. The table contains company
   facts and frame observations joined to their filing accepted timestamp and
@@ -128,19 +131,25 @@ fundamental rows cannot leak into features. Extra sources can still be added
 with `ExternalAsOfContextConfig`; its `timestamp_unit` supports microseconds,
 nanoseconds, milliseconds, and seconds.
 
-Text context is materialized into model-ready Qwen inputs:
+Text context is materialized from pre-tokenized ClickHouse rows into model-ready
+Qwen inputs:
 
-- `text_inputs["news"]["input_ids"]`: `[batch, news_max_items, text_max_tokens]`
+- `text_inputs["news"]["input_ids"]`: `[batch, news_max_items, news_token_chunks, text_max_tokens]`, default `[batch, 32, 2, 1024]`, `int32`
 - `text_inputs["news"]["attention_mask"]`: same shape, `uint8`
-- `text_inputs["news"]["item_mask"]`: `[batch, news_max_items]`
-- `text_inputs["sec_filings"]["input_ids"]`: `[batch, sec_max_items, text_max_tokens]`
+- `text_inputs["news"]["item_mask"]`: `[batch, news_max_items]`, `bool`
+- `text_inputs["news"]["chunk_mask"]`: `[batch, news_max_items, news_token_chunks]`, `bool`
+- `text_inputs["news"]["timestamp_us"]`: `[batch, news_max_items]`, `int64`
+- `text_inputs["sec_filings"]["input_ids"]`: `[batch, sec_max_items, sec_token_chunks, text_max_tokens]`, default `[batch, 16, 8, 1024]`, `int32`
 - `text_inputs["sec_filings"]["attention_mask"]`: same shape, `uint8`
-- `text_inputs["sec_filings"]["item_mask"]`: `[batch, sec_max_items]`
+- `text_inputs["sec_filings"]["item_mask"]`: `[batch, sec_max_items]`, `bool`
+- `text_inputs["sec_filings"]["chunk_mask"]`: `[batch, sec_max_items, sec_token_chunks]`, `bool`
+- `text_inputs["sec_filings"]["timestamp_us"]`: `[batch, sec_max_items]`, `int64`
 
-The default tokenizer model is `Qwen/Qwen3-0.6B`. By default the loader uses
-local tokenizer files if present and falls back to a deterministic hash
-tokenizer for smoke tests. Set `strict_text_tokenizer=True` when a training run
-must fail unless the real Qwen tokenizer is available.
+The rolling loader no longer tokenizes real ClickHouse news/SEC text in Python.
+It reads `input_ids`, `attention_mask`, `token_chunk_index`, `token_start`, and
+`token_end` from the token tables. Python tokenization remains only as a fallback
+for synthetic smoke tests or custom external text rows that do not already carry
+token arrays.
 
 XBRL context is materialized into fixed tensors:
 

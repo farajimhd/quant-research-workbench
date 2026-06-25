@@ -33,12 +33,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--events-table", default="events")
     parser.add_argument("--macro-bars-table", default="macro_bars_by_time_symbol")
     parser.add_argument("--sec-filing-text-context-table", default="sec_filing_text_context")
+    parser.add_argument("--news-token-table", default="news_text_tokens")
+    parser.add_argument("--sec-filing-text-token-table", default="sec_filing_text_tokens")
     parser.add_argument("--sec-xbrl-context-table", default="sec_xbrl_context")
     parser.add_argument("--index-table", default="train_2019_to_2025")
     parser.add_argument("--event-date", default="2025-01-02")
     parser.add_argument("--ticker-limit", type=int, default=64)
     parser.add_argument("--tickers", default="")
     parser.add_argument("--batch-size", type=int, default=4096)
+    parser.add_argument("--news-max-items", type=int, default=32)
+    parser.add_argument("--news-token-chunks", type=int, default=2)
+    parser.add_argument("--sec-max-items", type=int, default=16)
+    parser.add_argument("--sec-token-chunks", type=int, default=8)
+    parser.add_argument("--text-max-tokens", type=int, default=1024)
     parser.add_argument("--materialize-batches", type=int, default=2)
     parser.add_argument("--sample-stride-events", type=int, default=1)
     parser.add_argument("--max-ready-samples", type=int, default=0)
@@ -64,9 +71,16 @@ def main() -> int:
         events_table=args.events_table,
         macro_bars_table=args.macro_bars_table,
         sec_filing_text_context_table=args.sec_filing_text_context_table,
+        news_token_table=args.news_token_table,
+        sec_filing_text_token_table=args.sec_filing_text_token_table,
         sec_xbrl_context_table=args.sec_xbrl_context_table,
         index_table=args.index_table,
         batch_size=int(args.batch_size),
+        news_max_items=int(args.news_max_items),
+        news_token_chunks=int(args.news_token_chunks),
+        sec_max_items=int(args.sec_max_items),
+        sec_token_chunks=int(args.sec_token_chunks),
+        text_max_tokens=int(args.text_max_tokens),
         sample_stride_events=int(args.sample_stride_events),
         max_ready_samples=int(args.max_ready_samples),
         max_threads=int(args.max_threads),
@@ -76,8 +90,15 @@ def main() -> int:
     print("Rolling market data-provider profiler", flush=True)
     print(f"database={config.database} events_table={config.events_table} macro_bars_table={config.macro_bars_table}", flush=True)
     print(
-        f"contexts=news:{config.q_live_database} sec:{config.sec_context_database}.{config.sec_filing_text_context_table} "
+        f"contexts=news_tokens:{config.database}.{config.news_token_table} "
+        f"sec_tokens:{config.sec_context_database}.{config.sec_filing_text_token_table} "
         f"xbrl:{config.sec_context_database}.{config.sec_xbrl_context_table}",
+        flush=True,
+    )
+    print(
+        "text_shapes="
+        f"news=[batch,{config.news_max_items},{config.news_token_chunks},{config.text_max_tokens}] "
+        f"sec=[batch,{config.sec_max_items},{config.sec_token_chunks},{config.text_max_tokens}]",
         flush=True,
     )
     print(
@@ -166,6 +187,7 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
             f"samples_per_sec={metrics.get('rolling_training/samples_per_second', 0.0):.1f} "
             f"labels={len(batch.labels)} macro={len(batch.macro_features)} global={len(batch.global_features)} "
             f"text={_shape_summary(batch.text_inputs)} xbrl={_shape_summary(batch.xbrl_inputs)} "
+            f"text_items={_text_item_summary(batch.text_inputs)} "
             f"external={len(batch.external_context)} shape_headers={tuple(batch.headers_uint8.shape)} "
             f"shape_events={tuple(batch.events_uint8.shape)}",
             flush=True,
@@ -210,6 +232,7 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
         "global_feature_count": int(len(materialized[0].global_features)) if materialized else 0,
         "external_context_count": int(len(materialized[0].external_context)) if materialized else 0,
         "text_inputs": _json_shape_summary(materialized[0].text_inputs) if materialized else {},
+        "text_item_counts": _json_text_item_counts(materialized[0].text_inputs) if materialized else {},
         "xbrl_inputs": _json_shape_summary(materialized[0].xbrl_inputs) if materialized else {},
     }
     if args.report_path is not None:
@@ -249,6 +272,29 @@ def _shape_summary(value) -> str:
     for key, shape in summary.items():
         parts.append(f"{key}:{shape}")
     return "{" + ", ".join(parts[:6]) + ("..." if len(parts) > 6 else "") + "}"
+
+
+def _text_item_summary(value) -> str:
+    counts = _json_text_item_counts(value)
+    if not counts:
+        return "{}"
+    return "{" + ", ".join(f"{key}:{item}" for key, item in counts.items()) + "}"
+
+
+def _json_text_item_counts(value) -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {}
+    if not isinstance(value, dict):
+        return out
+    for name, item in value.items():
+        if not isinstance(item, dict):
+            continue
+        item_mask = item.get("item_mask")
+        chunk_mask = item.get("chunk_mask")
+        out[name] = {
+            "items": int(item_mask.sum()) if hasattr(item_mask, "sum") else 0,
+            "chunks": int(chunk_mask.sum()) if hasattr(chunk_mask, "sum") else 0,
+        }
+    return out
 
 
 def _json_shape_summary(value) -> dict[str, tuple[int, ...]]:

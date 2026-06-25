@@ -180,6 +180,8 @@ class RollingMarketDataConfig:
     events_table: str = "events"
     macro_bars_table: str = "macro_bars_by_time_symbol"
     sec_filing_text_context_table: str = "sec_filing_text_context"
+    news_token_table: str = "news_text_tokens"
+    sec_filing_text_token_table: str = "sec_filing_text_tokens"
     sec_xbrl_context_table: str = "sec_xbrl_context"
     index_table: str = "train_2019_to_2025"
     events_per_chunk: int = 128
@@ -201,13 +203,15 @@ class RollingMarketDataConfig:
     q_live_contexts: tuple[str, ...] = ("news", "sec_filings", "xbrl")
     news_lookback_days: int = 30
     news_max_items: int = 32
+    news_token_chunks: int = 2
     sec_lookback_days: int = 365
     sec_max_items: int = 16
+    sec_token_chunks: int = 8
     xbrl_lookback_days: int = 730
     xbrl_max_items: int = 64
     intraday_label_horizons: tuple[TimeBarHorizon, ...] = field(default_factory=lambda: DEFAULT_INTRADAY_LABEL_HORIZONS)
     text_tokenizer_model: str = "Qwen/Qwen3-0.6B"
-    text_max_tokens: int = 512
+    text_max_tokens: int = 1024
     text_tokenizer_local_files_only: bool = True
     strict_text_tokenizer: bool = False
     seed: int = 17
