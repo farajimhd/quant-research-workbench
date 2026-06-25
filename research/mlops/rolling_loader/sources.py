@@ -26,6 +26,14 @@ class ClickHouseReplayConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RollingTickerIndexRow:
+    ticker: str
+    first_ordinal: int
+    max_valid_ordinal: int
+    split_event_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class RollingEventBlock:
     """Rows fetched from a vectorized per-ticker ordinal cursor request."""
 
@@ -95,16 +103,98 @@ class ClickHouseRollingSource:
         self.text_client = text_client
         self.bytes_client = bytes_client
 
-    def load_tickers_from_index(self, *, limit: int = 0) -> tuple[str, ...]:
+    def close(self) -> None:
+        self.bytes_client.close()
+
+    def load_ticker_index_rows(self, *, limit: int = 0, min_events: int = 1) -> list[RollingTickerIndexRow]:
         limit_sql = f" LIMIT {int(limit)}" if int(limit) > 0 else ""
         query = f"""
-SELECT ticker
+SELECT
+    ticker,
+    first_ordinal,
+    max_valid_ordinal,
+    split_event_count
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.index_table)}
+WHERE split_event_count >= {int(min_events)}
+  AND max_valid_ordinal >= first_ordinal + {int(min_events) - 1}
 ORDER BY ticker
 {limit_sql}
 FORMAT TSV
 """
-        return tuple(line.strip().upper() for line in self.text_client.execute(query).splitlines() if line.strip())
+        rows: list[RollingTickerIndexRow] = []
+        for line in self.text_client.execute(query).splitlines():
+            if not line.strip():
+                continue
+            ticker, first_ordinal, max_valid_ordinal, split_event_count = line.split("\t")
+            rows.append(
+                RollingTickerIndexRow(
+                    ticker=ticker.upper(),
+                    first_ordinal=int(first_ordinal),
+                    max_valid_ordinal=int(max_valid_ordinal),
+                    split_event_count=int(split_event_count),
+                )
+            )
+        return rows
+
+    def load_tickers_from_index(self, *, limit: int = 0) -> tuple[str, ...]:
+        return tuple(row.ticker for row in self.load_ticker_index_rows(limit=limit, min_events=1))
+
+    def warm_rows_from_index(self, *, index_rows: Iterable[RollingTickerIndexRow], warm_count: int) -> dict[str, np.ndarray]:
+        row_tuple = tuple(index_rows)
+        if not row_tuple:
+            return {}
+        ticker_tuple = tuple(row.ticker for row in row_tuple)
+        ticker_sql = "[" + ", ".join(sql_string(ticker) for ticker in ticker_tuple) + "]"
+        first_sql = "[" + ", ".join(str(int(row.first_ordinal)) for row in row_tuple) + "]"
+        end_sql = "[" + ", ".join(str(min(int(row.max_valid_ordinal), int(row.first_ordinal) + int(warm_count) - 1)) for row in row_tuple) + "]"
+        query = f"""
+WITH
+    {ticker_sql} AS request_tickers,
+    {first_sql} AS request_first_ordinals,
+    {end_sql} AS request_end_ordinals
+SELECT
+    toUInt32(indexOf(request_tickers, ticker) - 1) AS span_id,
+    ordinal,
+    event_type,
+    sip_timestamp_us,
+    price_primary_int,
+    price_secondary_int,
+    size_primary,
+    size_secondary,
+    exchange_primary,
+    exchange_secondary,
+    event_flags,
+    conditions_packed
+FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
+WHERE ticker IN request_tickers
+  AND ordinal >= arrayElement(request_first_ordinals, indexOf(request_tickers, ticker))
+  AND ordinal <= arrayElement(request_end_ordinals, indexOf(request_tickers, ticker))
+ORDER BY ticker, ordinal
+SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
+FORMAT RowBinary
+"""
+        payload = self.bytes_client.execute_bytes(query)
+        if len(payload) % EVENT_ROW_DTYPE.itemsize != 0:
+            raise RuntimeError(f"RowBinary payload size {len(payload):,} is not divisible by event row size {EVENT_ROW_DTYPE.itemsize}")
+        rows = np.frombuffer(payload, dtype=EVENT_ROW_DTYPE).copy()
+        out: dict[str, np.ndarray] = {}
+        if rows.size == 0:
+            return out
+        span_ids = rows["span_id"]
+        boundaries = np.flatnonzero(span_ids[1:] != span_ids[:-1]) + 1
+        starts = np.concatenate(([0], boundaries))
+        ends = np.concatenate((boundaries, [rows.shape[0]]))
+        for start, end in zip(starts, ends):
+            out[ticker_tuple[int(span_ids[start])]] = rows[start:end].copy()
+        return out
+
+    @staticmethod
+    def initial_cursors_from_index(*, index_rows: Iterable[RollingTickerIndexRow], warm_count: int) -> dict[str, int]:
+        cursors: dict[str, int] = {}
+        for row in index_rows:
+            warm_end = min(int(row.max_valid_ordinal), int(row.first_ordinal) + int(warm_count) - 1)
+            cursors[row.ticker] = int(warm_end)
+        return cursors
 
     def fetch_day_rows_by_ticker(self, *, tickers: Iterable[str], date: str) -> dict[str, np.ndarray]:
         ticker_tuple = tuple(str(ticker).upper() for ticker in tickers if str(ticker).strip())
@@ -113,7 +203,7 @@ FORMAT TSV
         ticker_sql = ", ".join(sql_string(ticker) for ticker in ticker_tuple)
         query = f"""
 SELECT
-    arrayEnumerate([{ticker_sql}])[indexOf([{ticker_sql}], ticker)] - 1 AS span_id,
+    toUInt32(arrayEnumerate([{ticker_sql}])[indexOf([{ticker_sql}], ticker)] - 1) AS span_id,
     ordinal,
     event_type,
     sip_timestamp_us,
@@ -158,7 +248,7 @@ WITH
     {ticker_sql} AS request_tickers,
     {cursor_sql} AS request_cursors
 SELECT
-    indexOf(request_tickers, ticker) - 1 AS span_id,
+    toUInt32(indexOf(request_tickers, ticker) - 1) AS span_id,
     ordinal,
     event_type,
     sip_timestamp_us,

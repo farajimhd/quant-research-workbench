@@ -81,11 +81,15 @@ sizes and context sizes directly.
 
 ## Profiler
 
-Run a local synthetic profile:
+Run a ClickHouse-backed profile:
 
 ```powershell
-python -m research.mlops.rolling_loader.run_profile --tickers 64 --rows-per-ticker 8000 --batch-size 4096 --batches 4
+python -m research.mlops.rolling_loader.run_profile --database market_sip_compact --events-table events --index-table train_2019_to_2025 --tickers 64 --batch-size 4096 --batches 4 --events-per-ticker-block 64 --max-threads 8 --max-memory-usage 80G
 ```
+
+The default profile source is `--source clickhouse`. It uses the configured
+ClickHouse URL/user/password from the standard `.env` discovery path unless
+`--clickhouse-url`, `--user`, or `--password` are passed explicitly.
 
 The default profile uses `--context-chunks 32 --context-chunk-stride-events 64`.
 
@@ -101,7 +105,7 @@ SEC, XBRL, or bar payload collation cost, add:
 The profiler can also be run directly from a synced workstation copy:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_profile.py --tickers 64 --rows-per-ticker 8000 --batch-size 4096 --batches 4
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_profile.py --database market_sip_compact --events-table events --index-table train_2019_to_2025 --tickers 64 --batch-size 4096 --batches 4 --events-per-ticker-block 64 --max-threads 8 --max-memory-usage 80G
 ```
 
 The profiler uses the real `RollingContextLoader` class and reports:
@@ -121,6 +125,8 @@ The profiler uses the real `RollingContextLoader` class and reports:
 Reports are appended as JSONL under:
 
 `D:/market-data/prepared/data_provider_profiles/rolling_loader_profile.jsonl`
+
+For local no-ClickHouse smoke profiling, pass `--source synthetic`.
 
 ## Smoke Test
 
