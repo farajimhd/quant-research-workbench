@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batches", type=int, default=4)
     parser.add_argument("--sample-stride-events", type=int, default=1)
     parser.add_argument("--external-every-events", type=int, default=512)
-    parser.add_argument("--materialize-external-payloads", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--materialize-external-payloads", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--report-path",
         type=Path,

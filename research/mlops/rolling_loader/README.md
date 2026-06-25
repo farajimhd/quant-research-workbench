@@ -73,6 +73,15 @@ Run a local synthetic profile:
 python -m research.mlops.rolling_loader.run_profile --tickers 64 --rows-per-ticker 8000 --batch-size 4096 --batches 4
 ```
 
+The default profile is ID-only for low-frequency context. This matches the
+intended training/production flow where sample pointers carry stable cache ids
+and the final collator decides which payloads to resolve. To diagnose raw text,
+SEC, XBRL, or bar payload collation cost, add:
+
+```powershell
+--materialize-external-payloads
+```
+
 The profiler can also be run directly from a synced workstation copy:
 
 ```powershell

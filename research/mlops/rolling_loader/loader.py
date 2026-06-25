@@ -250,27 +250,25 @@ class RollingContextLoader:
 
     def _encode_new_chunks(self, cache: PerTickerEventCache, *, emit_samples: bool) -> list[RollingSamplePointer]:
         cfg = self.config
-        rows = cache.rows_array() if cache.rows else None
-        if rows is None or rows.shape[0] < int(cfg.events_per_chunk):
+        if not cache.has_minimum_rows(int(cfg.events_per_chunk)) or cache.last_ordinal is None:
             return []
         created_samples: list[RollingSamplePointer] = []
-        ordinals = rows["ordinal"].astype(np.int64, copy=False)
-        latest_origin = int(ordinals[-1])
+        latest_origin = int(cache.last_ordinal)
+        first_ready_origin = cache.ordinal_at_offset(int(cfg.events_per_chunk) - 1)
+        if first_ready_origin is None:
+            return []
         start_origin = (
-            int(ordinals[int(cfg.events_per_chunk) - 1])
+            int(first_ready_origin)
             if cache.last_origin_encoded is None
             else int(cache.last_origin_encoded) + int(cfg.chunk_stride_events)
         )
         if start_origin > latest_origin:
             return []
-        first_ordinal = int(ordinals[0])
         for origin in range(start_origin, latest_origin + 1, int(cfg.chunk_stride_events)):
-            position = int(origin) - first_ordinal
-            if position < 0 or position >= rows.shape[0] or int(ordinals[position]) != int(origin) or position + 1 < int(cfg.events_per_chunk):
+            window_with_previous = cache.window_ending(origin, int(cfg.events_per_chunk))
+            if window_with_previous is None:
                 continue
-            start = position + 1 - int(cfg.events_per_chunk)
-            window = rows[start : position + 1]
-            previous_sip_us = int(rows[start - 1]["sip_timestamp_us"]) if start > 0 else None
+            window, previous_sip_us = window_with_previous
             encoded = encode_unified_event_window(window, previous_sip_us=previous_sip_us)
             cache.last_origin_encoded = int(origin)
             if isinstance(encoded, str):
@@ -323,7 +321,9 @@ class RollingContextLoader:
         with self.profiler.stage("external_payload_materialize", items=sum(int(array.size) for array in id_arrays.values())):
             out: dict[str, dict[str, np.ndarray]] = {}
             for kind, ids in id_arrays.items():
-                payloads = [self.external_arena.payload(int(item_id)) for item_id in ids.reshape(-1) if int(item_id) != 0]
+                flat_ids = ids.reshape(-1)
+                unique_ids = np.unique(flat_ids[flat_ids != 0])
+                payloads = [self.external_arena.payload(int(item_id)) for item_id in unique_ids]
                 if not payloads:
                     continue
                 arrays: dict[str, list[np.ndarray]] = defaultdict(list)
@@ -341,4 +341,6 @@ class RollingContextLoader:
                     if payload.time_features is not None:
                         arrays["time_features"].append(payload.time_features.reshape(1, *payload.time_features.shape))
                 out[kind] = {name: np.concatenate(parts, axis=0) for name, parts in arrays.items() if parts}
+                out[kind]["item_ids"] = unique_ids.astype(np.uint64, copy=False)
+                self.profiler.incr(f"external_unique_{kind}", int(unique_ids.shape[0]))
             return out

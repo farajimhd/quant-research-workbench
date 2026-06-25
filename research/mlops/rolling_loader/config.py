@@ -80,5 +80,5 @@ class SyntheticRollingLoaderConfig:
     event_spacing_us: int = 1_000
     external_every_events: int = 512
     batches: int = 4
-    materialize_external_payloads: bool = True
+    materialize_external_payloads: bool = False
     loader: RollingLoaderConfig = field(default_factory=RollingLoaderConfig)

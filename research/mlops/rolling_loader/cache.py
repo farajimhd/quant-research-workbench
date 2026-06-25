@@ -98,20 +98,69 @@ class PerTickerEventCache:
     ticker: str
     rows_capacity: int
     chunk_capacity: int
-    rows: Deque[np.void] = field(default_factory=deque)
+    rows: np.ndarray | None = None
+    count: int = 0
+    next_write: int = 0
+    first_ordinal: int | None = None
+    last_ordinal: int | None = None
     chunk_ids_by_origin: dict[int, int] = field(default_factory=dict)
     chunk_origin_order: Deque[int] = field(default_factory=deque)
     last_origin_encoded: int | None = None
 
     def push_row(self, row: np.void) -> None:
-        self.rows.append(row.copy())
-        while len(self.rows) > int(self.rows_capacity):
-            self.rows.popleft()
+        if self.rows is None:
+            self.rows = np.zeros((int(self.rows_capacity),), dtype=row.dtype)
+        self.rows[int(self.next_write)] = row
+        if self.count < int(self.rows_capacity):
+            self.count += 1
+        self.next_write = (int(self.next_write) + 1) % int(self.rows_capacity)
+        self.last_ordinal = int(row["ordinal"])
+        oldest = self._oldest_index()
+        self.first_ordinal = int(self.rows[oldest]["ordinal"]) if self.count else None
 
-    def rows_array(self) -> np.ndarray:
-        if not self.rows:
-            raise ValueError("cannot build rows array from empty event cache")
-        return np.asarray(list(self.rows), dtype=self.rows[0].dtype)
+    def has_minimum_rows(self, size: int) -> bool:
+        return self.rows is not None and int(self.count) >= int(size)
+
+    def ordinal_at_offset(self, offset: int) -> int | None:
+        if self.rows is None or self.count == 0 or offset < 0 or offset >= self.count:
+            return None
+        index = (self._oldest_index() + int(offset)) % int(self.rows_capacity)
+        return int(self.rows[index]["ordinal"])
+
+    def window_ending(self, origin_ordinal: int, size: int) -> tuple[np.ndarray, int | None] | None:
+        if self.rows is None or self.count < int(size):
+            return None
+        position = self._position_for_ordinal(int(origin_ordinal))
+        if position is None or position + 1 < int(size):
+            return None
+        start_offset = int(position) + 1 - int(size)
+        oldest = self._oldest_index()
+        offsets = np.arange(start_offset, start_offset + int(size), dtype=np.int64)
+        indices = (oldest + offsets) % int(self.rows_capacity)
+        window = self.rows[indices].copy()
+        previous_sip_us: int | None = None
+        if start_offset > 0:
+            previous_index = (oldest + start_offset - 1) % int(self.rows_capacity)
+            previous_sip_us = int(self.rows[previous_index]["sip_timestamp_us"])
+        return window, previous_sip_us
+
+    def _oldest_index(self) -> int:
+        if self.count < int(self.rows_capacity):
+            return 0
+        return int(self.next_write)
+
+    def _position_for_ordinal(self, ordinal: int) -> int | None:
+        if self.rows is None or self.first_ordinal is None or self.last_ordinal is None:
+            return None
+        if int(ordinal) < int(self.first_ordinal) or int(ordinal) > int(self.last_ordinal):
+            return None
+        offset = int(ordinal) - int(self.first_ordinal)
+        if offset < 0 or offset >= int(self.count):
+            return None
+        index = (self._oldest_index() + offset) % int(self.rows_capacity)
+        if int(self.rows[index]["ordinal"]) != int(ordinal):
+            return None
+        return offset
 
     def remember_chunk(self, origin_ordinal: int, chunk_id: int) -> int | None:
         self.chunk_ids_by_origin[int(origin_ordinal)] = int(chunk_id)
