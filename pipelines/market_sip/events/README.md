@@ -3,34 +3,30 @@
 This folder contains ClickHouse pipelines that derive reusable event-level
 training tables from `market_sip_compact.events`.
 
-## QMD-Compatible Market Bars
+## Macro Bars
 
-`clickhouse_build_trade_bars.py` builds three qmd-gateway-compatible bar tables
-from `market_sip_compact.events`. The schema mirrors
-`services/qmd-gateway/src/bars.rs` `BAR_SCHEMA_VERSION = 2`, so historical
-flatfile-derived bars and live qmd bars can be queried with the same column
-contract.
+`clickhouse_build_trade_bars.py` builds training macro bars directly from
+`market_sip_compact.events` into `market_sip_compact.macro_bars_by_time_symbol`.
+The default path does not create `_staging_trade_bars` and does not copy rows
+through the qmd-compatible intraday layouts.
 
-The three tables contain identical rows and columns but use different physical
-layouts for the main access patterns:
+The macro table is intentionally small:
 
 | Table | Partition | Order key | Primary use |
 | --- | --- | --- | --- |
-| `live_market_bars` | `session_date` | `(session_date, timeframe, sym, bar_start)` | QMD/chart-compatible date slices |
-| `bars_by_symbol_time` | `toYYYYMM(bar_start)` | `(sym, timeframe, bar_start)` | per-ticker temporal training windows |
-| `bars_by_time_symbol` | `toYYYYMM(bar_start)` | `(timeframe, bar_start, sym)` | market-wide time-snapshot training |
+| `macro_bars_by_time_symbol` | `toYYYYMM(bar_start)` | `(timeframe, bar_start, sym)` | macrostructure and future-label joins |
 
 The default timeframes are:
 
 ```text
-1s,5s,1m,5m,1d,1w,1mo
+1d,1w,1y
 ```
 
-The builder uses trade events for OHLCV and quote events for bid/ask, midpoint,
-spread, quote counts, quote rates, and displayed-size fields. Tape-side,
-effective-spread, LULD, and some intra-bar path fields are filled with
-deterministic historical proxies or neutral values where the live qmd writer
-depends on stream-local state that is not durable in the compact events table.
+The builder uses trade events for OHLCV/dollar volume/VWAP and quote events for
+`quote_count`. Daily bars are grouped by the New York extended-hours session:
+04:00 ET inclusive through 20:00 ET exclusive. This means the daily `close` is
+the last valid trade before the after-hours close, not the 16:00 regular-market
+close.
 
 Run on the workstation:
 
@@ -69,27 +65,30 @@ Preview DDL/DML without mutating ClickHouse:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_trade_bars.py --dry-run
 ```
 
-By default, the builder replaces rows in the requested date range before
-inserting in all three layouts. Use `--drop-table` only when intentionally
-rebuilding the selected bar tables from scratch.
+By default, the builder replaces rows in the requested macro timeframe/date
+range before inserting into `macro_bars_by_time_symbol`. Use `--drop-table` only
+when intentionally rebuilding the selected macro bar table from scratch.
 
 ## Bar Boundaries
 
-All bar boundaries are computed in UTC from `events.sip_timestamp_us`.
+Macro bar grouping is based on `events.sip_timestamp_us`, converted to
+`America/New_York` for session filtering and period assignment.
 
-- Intraday bars use exact UTC interval starts: `1s`, `5s`, `1m`, and `5m`.
-- Daily bars start at UTC midnight.
-- Weekly bars start on Monday UTC.
-- Monthly bars start on the first day of the UTC month.
+- Daily bars include events from 04:00 ET through 20:00 ET for one New York
+  trading date.
+- Weekly bars group those same extended-session events by Monday-start New York
+  week.
+- Yearly bars group those same extended-session events by New York calendar
+  year.
 
 `--expand-boundaries` is enabled by default. Boundary expansion is applied per
-timeframe before that timeframe is deleted and inserted. Intraday and daily
-timeframes use the requested date range. Weekly timeframes expand to the full
-affected Monday-Sunday week, and monthly timeframes expand to the full affected
-month. For example, requesting `2026-06-03` with `1s,1w,1mo` builds `1s` only
-for `2026-06-03`, `1w` for `2026-06-01 -> 2026-06-07`, and `1mo` for
-`2026-06-01 -> 2026-06-30`. Use `--no-expand-boundaries` only when
-intentionally building partial-period bars.
+timeframe before that timeframe is deleted and inserted. Daily timeframes use
+the requested date range. Weekly timeframes expand to the full affected
+Monday-Sunday week, and yearly timeframes expand to the full affected calendar
+year. For example, requesting `2026-06-03` with `1d,1w,1y` builds `1d` only for
+`2026-06-03`, `1w` for `2026-06-01 -> 2026-06-07`, and `1y` for
+`2026-01-01 -> 2026-12-31`. Use `--no-expand-boundaries` only when intentionally
+building partial-period bars.
 
 The first bar in a build window has no earlier bar inside that same window, so
 history-derived fields such as `return_1_bar`, `return_3_bar`, `return_5_bar`,
@@ -99,8 +98,23 @@ only the final desired slice afterward.
 
 The last bar is built from all events currently present through the requested
 end date. If the source event table does not yet contain the complete current
-day/week/month, the last higher-timeframe bar is necessarily partial and should
+day/week/year, the last higher-timeframe bar is necessarily partial and should
 be rebuilt after the remaining events arrive.
+
+## Legacy QMD-Compatible Bars
+
+The old qmd-compatible staging path is still available for explicit repair or
+chart backfills:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_trade_bars.py `
+  --bar-mode qmd `
+  --timeframes "1s,5s,1m,5m,1d,1w,1mo"
+```
+
+That path writes `live_market_bars`, `bars_by_symbol_time`, and
+`bars_by_time_symbol` through `_staging_trade_bars`. It is no longer the default
+training macro-bar build.
 
 ## SEC Context Migration
 

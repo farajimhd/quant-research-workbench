@@ -13,12 +13,14 @@ SCRIPT = REPO_ROOT / "pipelines" / "market_sip" / "events" / "clickhouse_build_t
 DEFAULTS = {
     "database": "market_sip_compact",
     "events_table": "events",
+    "bar_mode": "macro",
+    "macro_bars_table": "macro_bars_by_time_symbol",
     "bars_table": "live_market_bars",
     "bars_by_symbol_time_table": "bars_by_symbol_time",
     "bars_by_time_symbol_table": "bars_by_time_symbol",
     "start_date": "2019-01-01",
     "end_date": "2026-12-31",
-    "timeframes": "1s,5s,1m,5m,1d,1w,1mo",
+    "timeframes": "1d,1w,1y",
     "max_threads": 32,
     "max_memory_usage": "400G",
     "output_root_win": r"D:\market-data\prepared\clickhouse_sip_ingest\trade_bars",
@@ -29,9 +31,11 @@ DEFAULTS = {
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Launcher for qmd-compatible SIP live_market_bars build.")
+    parser = argparse.ArgumentParser(description="Launcher for SIP macro-bar build from compact events.")
     parser.add_argument("--database", default=DEFAULTS["database"])
     parser.add_argument("--events-table", default=DEFAULTS["events_table"])
+    parser.add_argument("--bar-mode", choices=("macro", "qmd"), default=DEFAULTS["bar_mode"])
+    parser.add_argument("--macro-bars-table", default=DEFAULTS["macro_bars_table"])
     parser.add_argument("--bars-table", default=DEFAULTS["bars_table"])
     parser.add_argument("--bars-by-symbol-time-table", default=DEFAULTS["bars_by_symbol_time_table"])
     parser.add_argument("--bars-by-time-symbol-table", default=DEFAULTS["bars_by_time_symbol_table"])
@@ -65,6 +69,10 @@ def main() -> int:
         args.database,
         "--events-table",
         args.events_table,
+        "--bar-mode",
+        args.bar_mode,
+        "--macro-bars-table",
+        args.macro_bars_table,
         "--bars-table",
         args.bars_table,
         "--bars-by-symbol-time-table",

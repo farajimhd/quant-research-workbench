@@ -49,9 +49,10 @@ from pipelines.market_sip.events.clickhouse_build_trade_bars import (  # noqa: E
     DEFAULT_BARS_BY_SYMBOL_TIME_TABLE,
     DEFAULT_BARS_BY_TIME_SYMBOL_TABLE,
     DEFAULT_BARS_TABLE,
+    DEFAULT_MACRO_BARS_TABLE,
     DEFAULT_TIMEFRAMES as DEFAULT_BAR_TIMEFRAMES,
     bar_table_specs,
-    build_live_market_bars,
+    build_macro_bars,
     format_timeframe_ranges,
     format_bar_tables,
     parse_timeframes,
@@ -141,6 +142,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--events-table", default=DEFAULT_EVENTS_TABLE)
     parser.add_argument("--manifest-table", default=DEFAULT_MANIFEST_TABLE)
     parser.add_argument("--continuity-table", default=DEFAULT_CONTINUITY_TABLE)
+    parser.add_argument("--macro-bars-table", default=DEFAULT_MACRO_BARS_TABLE)
     parser.add_argument("--bars-table", default=DEFAULT_BARS_TABLE)
     parser.add_argument("--bars-by-symbol-time-table", default=DEFAULT_BARS_BY_SYMBOL_TIME_TABLE)
     parser.add_argument("--bars-by-time-symbol-table", default=DEFAULT_BARS_BY_TIME_SYMBOL_TABLE)
@@ -183,7 +185,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--retry-started", action="store_true")
     parser.add_argument("--force-day-delete", action="store_true")
-    parser.add_argument("--skip-bars", action="store_true", help="Only update compact events; do not rebuild qmd-compatible bar rows.")
+    parser.add_argument("--skip-bars", action="store_true", help="Only update compact events; do not rebuild macro bar rows.")
     parser.add_argument(
         "--bar-replace-range",
         action=argparse.BooleanOptionalAction,
@@ -968,7 +970,15 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
     prefix = str(args.test_table_prefix).strip()
     if not SAFE_TEST_TABLE_RE.match(prefix):
         raise ValueError(f"--test-table-prefix must be a safe ClickHouse identifier prefix, got {prefix!r}")
-    if prefix in {DEFAULT_EVENTS_TABLE, DEFAULT_MANIFEST_TABLE, DEFAULT_CONTINUITY_TABLE, DEFAULT_BARS_TABLE, DEFAULT_BARS_BY_SYMBOL_TIME_TABLE, DEFAULT_BARS_BY_TIME_SYMBOL_TABLE}:
+    if prefix in {
+        DEFAULT_EVENTS_TABLE,
+        DEFAULT_MANIFEST_TABLE,
+        DEFAULT_CONTINUITY_TABLE,
+        DEFAULT_MACRO_BARS_TABLE,
+        DEFAULT_BARS_TABLE,
+        DEFAULT_BARS_BY_SYMBOL_TIME_TABLE,
+        DEFAULT_BARS_BY_TIME_SYMBOL_TABLE,
+    }:
         raise ValueError("--test-table-prefix cannot be a production table name")
     if args.dry_run:
         raise ValueError("--test-mode needs to insert and audit temp tables; do not combine it with --dry-run")
@@ -977,6 +987,7 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
     args.events_table = f"{prefix}_{run_id}_events"
     args.manifest_table = f"{prefix}_{run_id}_manifest"
     args.continuity_table = f"{prefix}_{run_id}_continuity"
+    args.macro_bars_table = f"{prefix}_{run_id}_macro_bars_by_time_symbol"
     args.bars_table = f"{prefix}_{run_id}_bars"
     args.bars_by_symbol_time_table = f"{prefix}_{run_id}_bars_by_symbol_time"
     args.bars_by_time_symbol_table = f"{prefix}_{run_id}_bars_by_time_symbol"
@@ -984,11 +995,20 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
         args.events_table,
         args.manifest_table,
         args.continuity_table,
+        args.macro_bars_table,
         args.bars_table,
         args.bars_by_symbol_time_table,
         args.bars_by_time_symbol_table,
     ):
-        if table in {DEFAULT_EVENTS_TABLE, DEFAULT_MANIFEST_TABLE, DEFAULT_CONTINUITY_TABLE, DEFAULT_BARS_TABLE, DEFAULT_BARS_BY_SYMBOL_TIME_TABLE, DEFAULT_BARS_BY_TIME_SYMBOL_TABLE} or not SAFE_TEST_TABLE_RE.match(table):
+        if table in {
+            DEFAULT_EVENTS_TABLE,
+            DEFAULT_MANIFEST_TABLE,
+            DEFAULT_CONTINUITY_TABLE,
+            DEFAULT_MACRO_BARS_TABLE,
+            DEFAULT_BARS_TABLE,
+            DEFAULT_BARS_BY_SYMBOL_TIME_TABLE,
+            DEFAULT_BARS_BY_TIME_SYMBOL_TABLE,
+        } or not SAFE_TEST_TABLE_RE.match(table):
             raise ValueError(f"Unsafe test table name generated: {table!r}")
     args.retry_failed = True
     args.retry_started = True
@@ -1003,6 +1023,7 @@ def drop_test_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> 
         args.events_table,
         args.manifest_table,
         args.continuity_table,
+        args.macro_bars_table,
         args.bars_table,
         args.bars_by_symbol_time_table,
         args.bars_by_time_symbol_table,
@@ -1493,11 +1514,13 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
     min_day = min(day.source_date for day in days)
     max_day = max(day.source_date for day in days)
     bar_args = argparse.Namespace(
+        bar_mode="macro",
         clickhouse_url=args.clickhouse_url,
         user=args.user,
         password=args.password,
         database=args.database,
         events_table=args.events_table,
+        macro_bars_table=args.macro_bars_table,
         bars_table=args.bars_table,
         bars_by_symbol_time_table=args.bars_by_symbol_time_table,
         bars_by_time_symbol_table=args.bars_by_time_symbol_table,
@@ -1523,12 +1546,12 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
     bar_tables = bar_table_specs(bar_args)
     print("=" * 100, flush=True)
     print(
-        f"BAR UPDATE tables={format_bar_tables(bar_tables)} timeframes={bar_args.timeframes} "
+        f"MACRO BAR UPDATE tables={format_bar_tables(bar_tables)} timeframes={bar_args.timeframes} "
         f"requested_days={min_day}->{max_day} build_ranges={format_timeframe_ranges(ranges)}",
         flush=True,
     )
     print("=" * 100, flush=True)
-    results = build_live_market_bars(client, bar_args, report_path=report_path)
+    results = build_macro_bars(client, bar_args, report_path=report_path)
     append_jsonl(
         report_path,
         {
@@ -1559,7 +1582,7 @@ def main() -> None:
     if args.test_mode:
         print(
             f"test_tables manifest={args.manifest_table} continuity={args.continuity_table} "
-            f"bars={format_bar_tables(bar_tables)} raw_csv_sample_size={args.test_sample_size}",
+            f"macro_bars={format_bar_tables(bar_tables)} raw_csv_sample_size={args.test_sample_size}",
             flush=True,
         )
     print(f"date_range={args.start_date} -> {args.end_date}", flush=True)
@@ -1567,7 +1590,7 @@ def main() -> None:
     print(f"flatfiles_root_ch={args.flatfiles_root_ch}", flush=True)
     print(f"download_workers={args.download_workers} max_threads={args.max_threads}", flush=True)
     print(f"storage_policy={args.storage_policy}", flush=True)
-    print(f"bar_timeframes={args.bar_timeframes} skip_bars={args.skip_bars} bar_replace_range={args.bar_replace_range}", flush=True)
+    print(f"macro_bar_timeframes={args.bar_timeframes} skip_bars={args.skip_bars} bar_replace_range={args.bar_replace_range}", flush=True)
     print(f"report={report_path}", flush=True)
     print(f"secret_status={secret_status(env_status_keys() + ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'S3_ENDPOINT_URL', 'BUCKET'])}", flush=True)
     print(f"loaded_env_files={loaded_env_files}", flush=True)

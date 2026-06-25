@@ -2,7 +2,7 @@
 
 `pipelines/market_sip/flatfiles/download_update_events.py` keeps Massive quote
 and trade flatfiles on disk, then inserts unified compact events and
-qmd-compatible bars into ClickHouse. It does not persist raw or compact
+training macro bars into ClickHouse. It does not persist raw or compact
 quote/trade tables.
 
 Use this pipeline when the goal is to extend `market_sip_compact.events` from
@@ -19,9 +19,7 @@ The pipeline writes:
 - day build status rows in `market_sip_compact.events_build_manifest`
 - per-ticker ordinal carry-forward rows in
   `market_sip_compact.events_ordinal_continuity`
-- qmd-gateway-compatible bar rows in `market_sip_compact.live_market_bars`,
-  `market_sip_compact.bars_by_symbol_time`, and
-  `market_sip_compact.bars_by_time_symbol`
+- macro bar rows in `market_sip_compact.macro_bars_by_time_symbol`
 
 It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
 
@@ -42,17 +40,16 @@ It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
 7. Assign ticker-local ordinals using `events_ordinal_continuity`.
 8. Write `events_build_manifest` and `events_ordinal_continuity` rows for the
    processed day.
-9. Rebuild qmd-compatible bar rows for the successfully updated date range in
-   all three physical layouts. Each timeframe is rebuilt independently:
-   intraday and daily bars use the updated day range, while weekly and monthly
-   bars expand only their own delete/insert ranges to full affected week/month
-   boundaries.
+9. Rebuild macro bar rows for the successfully updated date range directly from
+   `events`. The default macro timeframes are `1d,1w,1y`. Daily bars use the
+   New York extended-hours session, 04:00 ET through 20:00 ET, so the daily
+   close is the after-hours close. Weekly and yearly bars expand their own
+   delete/insert ranges to full affected week/year boundaries.
 
 The standalone bar builder, `pipelines/market_sip/events/run_build_trade_bars.py`,
-uses the same qmd-compatible schema as qmd-gateway and writes identical rows to
-`live_market_bars`, `bars_by_symbol_time`, and `bars_by_time_symbol`. It has a
-Rich progress layout for long backfills. Use it directly when rebuilding bars
-from already inserted `events` rows:
+uses the same direct event-to-macro aggregation and writes
+`macro_bars_by_time_symbol`. It has a Rich progress layout for long backfills.
+Use it directly when rebuilding macro bars from already inserted `events` rows:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_trade_bars.py `
@@ -61,11 +58,11 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
   --end-date 2026-12-31
 ```
 
-Bar boundaries are UTC-based. Intraday bars use exact interval starts, daily
-bars start at UTC midnight, weekly bars start Monday UTC, and monthly bars start
-on the first UTC day of the month. The builder expands weekly/monthly requests
-per timeframe by default; pass `--no-expand-boundaries` only when a partial
-boundary bar is intentional.
+Macro bars are assigned from `events.sip_timestamp_us` converted to
+`America/New_York`. Daily bars cover 04:00-20:00 ET. Weekly bars are Monday-start
+New York weeks. Yearly bars are New York calendar years. The builder expands
+weekly/yearly requests per timeframe by default; pass `--no-expand-boundaries`
+only when a partial boundary bar is intentional.
 
 Downloads can run concurrently. Event insertion is intentionally chronological:
 each day depends on the previous continuity state, so concurrent day inserts
@@ -123,12 +120,12 @@ Temp table names use this pattern:
 - `{test_prefix}_{run_id}_events`
 - `{test_prefix}_{run_id}_manifest`
 - `{test_prefix}_{run_id}_continuity`
-- `{test_prefix}_{run_id}_bars`
+- `{test_prefix}_{run_id}_macro_bars_by_time_symbol`
 
-The production `events`, `events_build_manifest`, and
-`events_ordinal_continuity` tables are not touched. The production
-`live_market_bars` table is also not touched. Test mode also refuses `--dry-run`,
-because it must insert temp rows and then audit them.
+The production `events`, `events_build_manifest`,
+`events_ordinal_continuity`, and `macro_bars_by_time_symbol` tables are not
+touched. Test mode also refuses `--dry-run`, because it must insert temp rows
+and then audit them.
 
 After the temp insert, the script audits:
 
@@ -187,7 +184,7 @@ The script prints:
 - discovered complete quote/trade day pairs
 - per-day download completion
 - day insert start and ETA
-- qmd-compatible bar rebuild range and per-timeframe insert profiles
+- macro bar rebuild range and per-timeframe insert profiles
 - ClickHouse query profile lines from the shared `run_profiled` helper
 - final JSONL report path
 
@@ -215,14 +212,10 @@ ClickHouse:
 - `--password`: ClickHouse password.
 - `--database`: target database, default `market_sip_compact`.
 - `--events-table`: target events table, default `events`.
-- `--bars-table`: target qmd/chart-compatible bar table, default
-  `live_market_bars`.
-- `--bars-by-symbol-time-table`: per-symbol temporal training layout, default
-  `bars_by_symbol_time`.
-- `--bars-by-time-symbol-table`: market-wide time-snapshot training layout,
-  default `bars_by_time_symbol`.
-- `--bar-timeframes`: comma-separated bar timeframes to rebuild after event
-  insertion. Default: `1s,5s,1m,5m,1d,1w,1mo`.
+- `--macro-bars-table`: target macro bar table, default
+  `macro_bars_by_time_symbol`.
+- `--bar-timeframes`: comma-separated macro bar timeframes to rebuild after
+  event insertion. Default: `1d,1w,1y`.
 - `--manifest-table`: build manifest table, default `events_build_manifest`.
 - `--continuity-table`: ordinal continuity table, default
   `events_ordinal_continuity`.

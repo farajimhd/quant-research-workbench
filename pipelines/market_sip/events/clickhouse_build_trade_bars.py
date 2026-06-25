@@ -39,8 +39,9 @@ DEFAULT_EVENTS_TABLE = "events"
 DEFAULT_BARS_TABLE = "live_market_bars"
 DEFAULT_BARS_BY_SYMBOL_TIME_TABLE = "bars_by_symbol_time"
 DEFAULT_BARS_BY_TIME_SYMBOL_TABLE = "bars_by_time_symbol"
+DEFAULT_MACRO_BARS_TABLE = "macro_bars_by_time_symbol"
 DEFAULT_STAGING_BARS_TABLE = "_staging_trade_bars"
-DEFAULT_TIMEFRAMES = ("1m",)
+DEFAULT_TIMEFRAMES = ("1d", "1w", "1y")
 DEFAULT_OUTPUT_ROOT = DEFAULT_OUTPUT_ROOT_WIN / "trade_bars"
 
 
@@ -71,14 +72,15 @@ TIMEFRAME_SPECS: dict[str, TimeframeSpec] = {
     "1d": TimeframeSpec("1d", 86400, "toStartOfDay(event_dt, 'UTC')", "bar_start + INTERVAL 1 DAY"),
     "1w": TimeframeSpec("1w", 604800, "toStartOfWeek(event_dt, 1, 'UTC')", "bar_start + INTERVAL 1 WEEK"),
     "1mo": TimeframeSpec("1mo", 0, "toStartOfMonth(event_dt, 'UTC')", "addMonths(bar_start, 1)"),
+    "1y": TimeframeSpec("1y", 0, "toStartOfYear(event_dt, 'UTC')", "addYears(bar_start, 1)"),
 }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Build qmd-gateway-compatible live_market_bars rows from market_sip_compact.events. "
-            "The output schema mirrors services/qmd-gateway/src/bars.rs BAR_SCHEMA_VERSION=2."
+            "Build training macro bars from market_sip_compact.events. "
+            "Use --bar-mode qmd only for the legacy qmd-compatible staging layouts."
         )
     )
     parser.add_argument("--clickhouse-url", default=default_clickhouse_url_with_network_fallback())
@@ -86,13 +88,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--password", default=default_clickhouse_password())
     parser.add_argument("--database", default=DEFAULT_DATABASE)
     parser.add_argument("--events-table", default=DEFAULT_EVENTS_TABLE)
+    parser.add_argument(
+        "--bar-mode",
+        choices=("macro", "qmd"),
+        default="macro",
+        help=(
+            "macro builds training macro bars directly into --macro-bars-table. "
+            "qmd preserves the legacy staging-based live_market_bars/bars_by_* build."
+        ),
+    )
+    parser.add_argument("--macro-bars-table", default=DEFAULT_MACRO_BARS_TABLE)
     parser.add_argument("--bars-table", default=DEFAULT_BARS_TABLE)
     parser.add_argument("--bars-by-symbol-time-table", default=DEFAULT_BARS_BY_SYMBOL_TIME_TABLE)
     parser.add_argument("--bars-by-time-symbol-table", default=DEFAULT_BARS_BY_TIME_SYMBOL_TABLE)
     parser.add_argument(
         "--staging-table",
         default=DEFAULT_STAGING_BARS_TABLE,
-        help="Scratch table used to hold one aggregated timeframe/date chunk before copying into final bar layouts.",
+        help="QMD mode only: scratch table used before copying into final qmd-compatible layouts.",
     )
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default="2026-12-31")
@@ -107,7 +119,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=7,
         help=(
-            "Build event-derived bars in bounded date chunks. Weekly/monthly bars are chunked on "
+            "Build event-derived bars in bounded date chunks. Weekly/yearly bars are chunked on "
             "their natural boundaries; other timeframes use this many UTC dates per query."
         ),
     )
@@ -118,7 +130,7 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help=(
             "Stage every date chunk for a timeframe first, then copy the whole staged timeframe "
-            "to final layouts once. This is faster for historical 1m training/chart bars."
+            "to final layouts once. QMD mode only."
         ),
     )
     parser.add_argument(
@@ -155,8 +167,9 @@ def main() -> int:
     bar_tables = bar_table_specs(args)
 
     print("=" * 96, flush=True)
-    print("Build qmd-compatible ClickHouse SIP bars", flush=True)
+    print("Build ClickHouse SIP bars", flush=True)
     print(f"database={args.database} events_table={args.events_table}", flush=True)
+    print(f"bar_mode={args.bar_mode}", flush=True)
     print(f"bar_tables={format_bar_tables(bar_tables)}", flush=True)
     print(f"staging_table={args.staging_table} keep_staging_table={args.keep_staging_table}", flush=True)
     print(f"timeframes={','.join(spec.name for spec in specs)}", flush=True)
@@ -180,7 +193,10 @@ def main() -> int:
 
     try:
         with BarBuildReporter(args, specs=specs, report_path=report_path, requested_start_date=requested_start_date, requested_end_date=requested_end_date) as reporter:
-            build_live_market_bars(client, args, specs=specs, report_path=report_path, reporter=reporter)
+            if args.bar_mode == "macro":
+                build_macro_bars(client, args, specs=specs, report_path=report_path, reporter=reporter)
+            else:
+                build_live_market_bars(client, args, specs=specs, report_path=report_path, reporter=reporter)
     except KeyboardInterrupt:
         append_jsonl(
             report_path,
@@ -315,8 +331,11 @@ class BarBuildReporter:
         summary.add_row("build ranges", format_timeframe_ranges(self._timeframe_ranges))
         summary.add_row("timeframes", ",".join(spec.name for spec in self.specs))
         summary.add_row("chunks", f"{self._total_chunks:,} chunks, chunk_days={self.args.chunk_days}")
-        copy_mode = "copy after timeframe" if self.args.copy_at_end else "copy after chunk"
-        summary.add_row("layout mode", f"events -> {self.args.staging_table} -> final tables ({copy_mode})")
+        if self.args.bar_mode == "macro":
+            summary.add_row("layout mode", "events -> macro bars")
+        else:
+            copy_mode = "copy after timeframe" if self.args.copy_at_end else "copy after chunk"
+            summary.add_row("layout mode", f"events -> {self.args.staging_table} -> final tables ({copy_mode})")
         summary.add_row("stage", self._stage)
         if self._active_query_id:
             summary.add_row("active query", self._active_query_id)
@@ -330,6 +349,132 @@ class BarBuildReporter:
         )
 
 
+def build_macro_bars(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    *,
+    specs: list[TimeframeSpec] | None = None,
+    report_path: Path | None = None,
+    reporter: BarBuildReporter | None = None,
+) -> list[dict[str, object]]:
+    specs = specs or parse_timeframes(args.timeframes)
+    unsupported = [spec.name for spec in specs if spec.name not in {"1d", "1w", "1y"}]
+    if unsupported:
+        raise ValueError(f"Macro bars support only 1d,1w,1y; got unsupported timeframes {unsupported}")
+    table_spec = macro_bar_table_spec(args)
+    report_path = report_path or (Path(args.output_root_win) / f"trade_bars_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    expand_boundaries = getattr(args, "expand_boundaries", True)
+    results: list[dict[str, object]] = []
+
+    if args.dry_run:
+        print_sql_preview("create macro bars", create_macro_bar_table_sql(args.database, table_spec.table, args.storage_policy, layout=table_spec))
+        if args.drop_table:
+            print_sql_preview("drop macro bars", drop_table_sql(args.database, table_spec.table))
+        for spec in specs:
+            start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
+            chunks = date_chunks_for_timeframe(start_date, end_date, spec, max(1, int(args.chunk_days)))
+            for chunk_start, chunk_end in chunks:
+                if args.replace_range:
+                    print_sql_preview(
+                        f"delete macro {spec.name} {chunk_start}->{chunk_end}",
+                        delete_range_sql(args.database, table_spec.table, chunk_start, chunk_end, args, timeframe=spec.name),
+                    )
+                print_sql_preview(f"insert macro {spec.name} {chunk_start}->{chunk_end}", insert_macro_bars_sql(args_with_date_range(args, chunk_start, chunk_end), spec))
+        return results
+
+    if args.drop_table:
+        if reporter is not None:
+            reporter.set_stage("drop macro bars table")
+        client.execute(drop_table_sql(args.database, table_spec.table))
+        if reporter is not None:
+            reporter.finish_stage(f"dropped {args.database}.{table_spec.table}")
+        else:
+            print(f"DROPPED {args.database}.{table_spec.table}", flush=True)
+
+    if reporter is not None:
+        reporter.set_stage("create/verify macro bars table")
+    client.execute(create_macro_bar_table_sql(args.database, table_spec.table, args.storage_policy, layout=table_spec))
+    if reporter is not None:
+        reporter.finish_stage(f"ensured {args.database}.{table_spec.table}")
+
+    total_chunks = planned_chunk_count(args, specs)
+    chunk_index = 0
+    for spec in specs:
+        start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
+        chunks = date_chunks_for_timeframe(start_date, end_date, spec, max(1, int(args.chunk_days)))
+        for chunk_start, chunk_end in chunks:
+            chunk_index += 1
+            scoped_args = args_with_date_range(args, chunk_start, chunk_end)
+            if args.replace_range:
+                if reporter is not None:
+                    reporter.set_stage(f"delete macro {spec.name} {chunk_start}->{chunk_end} [{chunk_index}/{total_chunks}]")
+                delete_profile = run_bar_query_profiled(
+                    client,
+                    f"delete_{table_spec.table}_{spec.name}_{chunk_start}_{chunk_end}",
+                    delete_range_sql(args.database, table_spec.table, chunk_start, chunk_end, args, timeframe=spec.name),
+                    reporter=reporter,
+                )
+                append_jsonl(
+                    report_path,
+                    {
+                        "operation": "delete_range",
+                        "bar_layout": table_spec.layout,
+                        "bars_table": table_spec.table,
+                        "timeframe": spec.name,
+                        "start_date": chunk_start,
+                        "end_date": chunk_end,
+                        "profile": asdict(delete_profile),
+                    },
+                )
+                if reporter is not None:
+                    reporter.finish_stage(
+                        f"deleted macro {spec.name} {chunk_start}->{chunk_end} "
+                        f"wall={delete_profile.wall_seconds:.1f}s read_rows={format_optional_int(delete_profile.read_rows)}"
+                    )
+                else:
+                    print_profile("DELETE", delete_profile)
+
+            if reporter is not None:
+                reporter.set_stage(f"insert macro {spec.name} {chunk_start}->{chunk_end} [{chunk_index}/{total_chunks}]")
+            else:
+                print("=" * 96, flush=True)
+                print(f"MACRO BAR INSERT [{chunk_index:,}/{total_chunks:,}] timeframe={spec.name} range={chunk_start}->{chunk_end}", flush=True)
+            insert_profile = run_bar_query_profiled(
+                client,
+                f"insert_{table_spec.table}_{spec.name}_{chunk_start}_{chunk_end}",
+                insert_macro_bars_sql(scoped_args, spec),
+                query_settings(scoped_args),
+                reporter=reporter,
+            )
+            summary = summarize_table(client, args.database, table_spec.table, spec.name, chunk_start, chunk_end)
+            result = {
+                "operation": "insert_macro_from_events",
+                "bar_layout": table_spec.layout,
+                "bars_table": table_spec.table,
+                "timeframe": spec.name,
+                "start_date": chunk_start,
+                "end_date": chunk_end,
+                "profile": asdict(insert_profile),
+                "summary": summary,
+            }
+            append_jsonl(report_path, result)
+            results.append(result)
+            if reporter is not None:
+                reporter.finish_stage(
+                    f"inserted macro {spec.name} {chunk_start}->{chunk_end} "
+                    f"rows={summary['rows']:,} wall={insert_profile.wall_seconds:.1f}s"
+                )
+            else:
+                print_profile("INSERT", insert_profile)
+                print(
+                    f"MACRO BAR INSERTED timeframe={spec.name} rows={summary['rows']:,} "
+                    f"tickers={summary['tickers']:,} volume={summary['volume']:.0f}",
+                    flush=True,
+                )
+    return results
+
+
 def build_live_market_bars(
     client: ClickHouseHttpClient,
     args: argparse.Namespace,
@@ -339,7 +484,7 @@ def build_live_market_bars(
     reporter: BarBuildReporter | None = None,
 ) -> list[dict[str, object]]:
     specs = specs or parse_timeframes(args.timeframes)
-    bar_tables = bar_table_specs(args)
+    bar_tables = qmd_bar_table_specs(args)
     if args.staging_table in {table.table for table in bar_tables}:
         raise ValueError("--staging-table must be different from every final bar table")
     report_path = report_path or (Path(args.output_root_win) / f"trade_bars_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
@@ -715,6 +860,11 @@ def planned_chunk_count(args: argparse.Namespace, specs: list[TimeframeSpec]) ->
 
 def planned_step_count(args: argparse.Namespace, specs: list[TimeframeSpec], bar_tables: list[BarTableSpec]) -> int:
     chunks = planned_chunk_count(args, specs)
+    if getattr(args, "bar_mode", "macro") == "macro":
+        setup_steps = len(bar_tables)
+        if args.drop_table:
+            setup_steps += len(bar_tables)
+        return setup_steps + chunks * (2 if args.replace_range else 1)
     if args.copy_at_end:
         # Per timeframe: truncate staging once, stage every chunk, then delete/copy each final layout once.
         per_timeframe_steps = 1 + len(bar_tables)
@@ -750,6 +900,10 @@ def date_range_for_timeframe(start_date: str, end_date: str, spec: TimeframeSpec
         next_month = end.replace(day=28) + timedelta(days=4)
         end = next_month.replace(day=1) - timedelta(days=1)
         return start.isoformat(), end.isoformat()
+    if spec.name == "1y":
+        start = date.fromisoformat(start_date).replace(month=1, day=1)
+        end = date.fromisoformat(end_date).replace(month=12, day=31)
+        return start.isoformat(), end.isoformat()
     return start_date, end_date
 
 
@@ -766,6 +920,13 @@ def date_chunks_for_timeframe(start_date: str, end_date: str, spec: TimeframeSpe
             month_end = next_month.replace(day=1) - timedelta(days=1)
             chunks.append((max(current, start).isoformat(), min(month_end, end).isoformat()))
             current = month_end + timedelta(days=1)
+        return chunks
+    if spec.name == "1y":
+        current = start.replace(month=1, day=1)
+        while current <= end:
+            year_end = current.replace(month=12, day=31)
+            chunks.append((max(current, start).isoformat(), min(year_end, end).isoformat()))
+            current = date(current.year + 1, 1, 1)
         return chunks
 
     step_days = 7 if spec.name == "1w" else max(1, chunk_days)
@@ -788,6 +949,12 @@ def format_timeframe_ranges(ranges: dict[str, tuple[str, str]]) -> str:
 
 
 def bar_table_specs(args: argparse.Namespace) -> list[BarTableSpec]:
+    if getattr(args, "bar_mode", "macro") == "macro":
+        return [macro_bar_table_spec(args)]
+    return qmd_bar_table_specs(args)
+
+
+def qmd_bar_table_specs(args: argparse.Namespace) -> list[BarTableSpec]:
     specs = [
         BarTableSpec(
             layout="chart",
@@ -816,6 +983,15 @@ def bar_table_specs(args: argparse.Namespace) -> list[BarTableSpec]:
         seen.add(spec.table)
         deduped.append(spec)
     return deduped
+
+
+def macro_bar_table_spec(args: argparse.Namespace) -> BarTableSpec:
+    return BarTableSpec(
+        layout="macro_time_symbol",
+        table=args.macro_bars_table,
+        partition_sql="PARTITION BY toYYYYMM(bar_start)",
+        order_by_sql="ORDER BY (timeframe, bar_start, sym)",
+    )
 
 
 def staging_bar_table_spec(args: argparse.Namespace) -> BarTableSpec:
@@ -888,6 +1064,34 @@ def query_settings(args: argparse.Namespace) -> str:
     if str(args.max_memory_usage) != "0":
         settings.append(f"max_memory_usage = {parse_size_bytes(str(args.max_memory_usage))}")
     return "\nSETTINGS " + ", ".join(settings) if settings else ""
+
+
+def create_macro_bar_table_sql(database: str, table: str, storage_policy: str, *, layout: BarTableSpec | None = None) -> str:
+    partition_sql = layout.partition_sql if layout is not None else "PARTITION BY toYYYYMM(bar_start)"
+    order_by_sql = layout.order_by_sql if layout is not None else "ORDER BY (timeframe, bar_start, sym)"
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
+(
+    session_date Date,
+    timeframe LowCardinality(String),
+    sym LowCardinality(String),
+    bar_start DateTime64(3, 'UTC'),
+    bar_end DateTime64(3, 'UTC'),
+    open Float64,
+    high Float64,
+    low Float64,
+    close Float64,
+    volume Float64,
+    dollar_volume Float64,
+    trade_count UInt64,
+    quote_count UInt64,
+    vwap Float64
+)
+ENGINE = ReplacingMergeTree
+{partition_sql}
+{order_by_sql}
+{mergetree_settings_sql(storage_policy)}
+"""
 
 
 def create_bar_table_sql(database: str, table: str, storage_policy: str, *, layout: BarTableSpec | None = None) -> str:
@@ -1026,6 +1230,102 @@ DELETE WHERE bar_start < (toDateTime64(toDate({sql_string(end_date)}) + INTERVAL
   AND bar_end > toDateTime64(toDate({sql_string(start_date)}), 3, 'UTC')
 {timeframe_filter}
 {mutation_settings(args)}
+"""
+
+
+def macro_period_expressions(spec: TimeframeSpec) -> tuple[str, str, str]:
+    if spec.name == "1d":
+        return (
+            "session_date_et",
+            "toTimeZone(toDateTime64(concat(toString(period_start_date), ' 04:00:00'), 3, 'America/New_York'), 'UTC')",
+            "toTimeZone(toDateTime64(concat(toString(period_start_date), ' 20:00:00'), 3, 'America/New_York'), 'UTC')",
+        )
+    if spec.name == "1w":
+        return (
+            "toStartOfWeek(session_date_et, 1)",
+            "toTimeZone(toDateTime64(concat(toString(period_start_date), ' 04:00:00'), 3, 'America/New_York'), 'UTC')",
+            "toTimeZone(toDateTime64(concat(toString(period_start_date + INTERVAL 7 DAY), ' 04:00:00'), 3, 'America/New_York'), 'UTC')",
+        )
+    if spec.name == "1y":
+        return (
+            "toStartOfYear(session_date_et)",
+            "toTimeZone(toDateTime64(concat(toString(period_start_date), ' 04:00:00'), 3, 'America/New_York'), 'UTC')",
+            "toTimeZone(toDateTime64(concat(toString(addYears(period_start_date, 1)), ' 04:00:00'), 3, 'America/New_York'), 'UTC')",
+        )
+    raise ValueError(f"Unsupported macro timeframe {spec.name!r}")
+
+
+def insert_macro_bars_sql(args: argparse.Namespace, spec: TimeframeSpec) -> str:
+    db = quote_ident(args.database)
+    src = f"{db}.{quote_ident(args.events_table)}"
+    dst = f"{db}.{quote_ident(args.macro_bars_table)}"
+    period_start_expr, bar_start_expr, bar_end_expr = macro_period_expressions(spec)
+    trade_price = "if(bitAnd(event_flags, 1) = 1, toFloat64(price_primary_int) / 10000.0, toFloat64(price_primary_int) / 100.0)"
+    ask_price = trade_price
+    bid_price = "if(bitAnd(bitShiftRight(event_flags, 1), 1) = 1, toFloat64(price_secondary_int) / 10000.0, toFloat64(price_secondary_int) / 100.0)"
+    return f"""
+INSERT INTO {dst}
+WITH
+source AS
+(
+    SELECT
+        ticker AS sym,
+        ordinal,
+        event_type,
+        sip_timestamp_us,
+        fromUnixTimestamp64Micro(toInt64(sip_timestamp_us), 'UTC') AS event_dt,
+        toTimeZone(event_dt, 'America/New_York') AS event_et,
+        toDate(event_et) AS session_date_et,
+        toHour(event_et) * 60 + toMinute(event_et) AS session_minute_et,
+        {trade_price} AS trade_price,
+        toFloat64(size_primary) AS trade_size,
+        {ask_price} AS ask_price,
+        {bid_price} AS bid_price
+    FROM {src}
+    WHERE event_date >= toDate({sql_string(args.start_date)})
+      AND event_date <= toDate({sql_string(args.end_date)}) + INTERVAL 1 DAY
+      AND ticker != ''
+      AND sip_timestamp_us > 0
+),
+session_events AS
+(
+    SELECT
+        *,
+        {period_start_expr} AS period_start_date
+    FROM source
+    WHERE session_date_et >= toDate({sql_string(args.start_date)})
+      AND session_date_et <= toDate({sql_string(args.end_date)})
+      AND session_minute_et >= 4 * 60
+      AND session_minute_et < 20 * 60
+),
+bucketed AS
+(
+    SELECT
+        *,
+        {bar_start_expr} AS bar_start,
+        {bar_end_expr} AS bar_end,
+        event_type = 1 AND trade_price > 0 AND trade_size > 0 AS valid_trade,
+        event_type = 0 AND bid_price > 0 AND ask_price > 0 AS valid_quote
+    FROM session_events
+)
+SELECT
+    period_start_date AS session_date,
+    {sql_string(spec.name)} AS timeframe,
+    sym,
+    bar_start,
+    bar_end,
+    argMinIf(trade_price, tuple(sip_timestamp_us, ordinal), valid_trade) AS open,
+    maxIf(trade_price, valid_trade) AS high,
+    minIf(trade_price, valid_trade) AS low,
+    argMaxIf(trade_price, tuple(sip_timestamp_us, ordinal), valid_trade) AS close,
+    sumIf(trade_size, valid_trade) AS volume,
+    sumIf(trade_price * trade_size, valid_trade) AS dollar_volume,
+    countIf(valid_trade) AS trade_count,
+    countIf(valid_quote) AS quote_count,
+    if(volume > 0, dollar_volume / volume, 0.0) AS vwap
+FROM bucketed
+GROUP BY period_start_date, sym, bar_start, bar_end
+HAVING trade_count > 0 OR quote_count > 0
 """
 
 

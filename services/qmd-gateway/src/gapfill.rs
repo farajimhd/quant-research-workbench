@@ -1923,7 +1923,7 @@ impl GapFillService {
             self.config.historical_pipeline_code_root
         );
         format!(
-            "python {} --database {} --events-table events --bars-table live_market_bars --bar-timeframes 1s,5s,1m,5m,1d,1w,1mo --start-date {} --end-date {}",
+            "python {} --database {} --events-table events --macro-bars-table macro_bars_by_time_symbol --bar-timeframes 1d,1w,1y --start-date {} --end-date {}",
             shell_arg(&script),
             shell_arg(&self.config.historical_clickhouse_database),
             start_date,
