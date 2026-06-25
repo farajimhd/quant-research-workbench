@@ -98,6 +98,7 @@ class RollingContextLoader:
     def __init__(self, config: RollingLoaderConfig, *, profiler: RollingLoaderProfiler | None = None) -> None:
         self.config = config
         self.profiler = profiler or RollingLoaderProfiler(enabled=False)
+        self.initialized_tickers: set[str] = set()
         self.event_caches: dict[str, PerTickerEventCache] = {}
         arena_size = max(10_000, int(config.batch_size) * max(8, int(config.context_chunks) + 2))
         self.chunk_arena: StableArena[EncodedEventChunk] = StableArena(max_items=arena_size)
@@ -109,6 +110,26 @@ class RollingContextLoader:
         self.xbrl: dict[str, LatestIdRing] = defaultdict(lambda: LatestIdRing(config.xbrl_cache_size))
         self.ticker_macro_bars: dict[str, LatestIdRing] = defaultdict(lambda: LatestIdRing(config.macro_bar_cache_size))
         self.ready_samples: list[RollingSamplePointer] = []
+
+    def initialize_universe(self, tickers: Iterable[str]) -> tuple[str, ...]:
+        """Create every per-ticker cache before replay starts.
+
+        Guide-aligned replay should not discover ticker caches lazily. The
+        source resolves the full training/serving universe first, then this
+        loader owns an empty-but-ready cache set for every ticker before any
+        warm rows or as-of low-frequency context are applied.
+        """
+
+        normalized = tuple(sorted({str(ticker).upper() for ticker in tickers if str(ticker).strip()}))
+        with self.profiler.stage("initialize_universe", items=len(normalized)):
+            for ticker in normalized:
+                self._event_cache(ticker)
+                _ = self.ticker_news[ticker]
+                _ = self.sec_filings[ticker]
+                _ = self.xbrl[ticker]
+                _ = self.ticker_macro_bars[ticker]
+                self.initialized_tickers.add(ticker)
+        return normalized
 
     def warm_load_events(self, rows_by_ticker: dict[str, np.ndarray]) -> None:
         with self.profiler.stage("warm_load_events", items=sum(int(rows.shape[0]) for rows in rows_by_ticker.values())):
@@ -145,7 +166,12 @@ class RollingContextLoader:
     ) -> int:
         ticker = str(ticker).upper()
         with self.profiler.stage("external_cache_push_pop", items=1, bytes_count=payload.nbytes):
-            item_id = self.external_arena.add(ticker=ticker, timestamp_us=int(timestamp_us), payload=payload)
+            item_id = self.external_arena.add(
+                ticker=ticker,
+                timestamp_us=int(timestamp_us),
+                payload=payload,
+                retain_ids=self._ready_external_ids(),
+            )
             kind = str(kind)
             if kind == "global_news" or global_item:
                 self.global_news.push(item_id)
@@ -186,13 +212,18 @@ class RollingContextLoader:
             tickers = np.asarray([sample.ticker for sample in sample_tuple], dtype=object)
             origin_ordinal = np.asarray([sample.origin_ordinal for sample in sample_tuple], dtype=np.uint64)
             origin_timestamp_us = np.asarray([sample.origin_timestamp_us for sample in sample_tuple], dtype=np.uint64)
+            missing_chunk_ids: list[int] = []
             for sample_index, sample in enumerate(sample_tuple):
                 for chunk_index, chunk_id in enumerate(sample.event_chunk_ids):
                     chunk = self.chunk_arena.payload(chunk_id)
                     if chunk is None:
+                        missing_chunk_ids.append(int(chunk_id))
                         continue
                     headers[sample_index, chunk_index] = chunk.header_uint8
                     events[sample_index, chunk_index] = chunk.events_uint8
+            if missing_chunk_ids:
+                preview = ", ".join(str(value) for value in missing_chunk_ids[:8])
+                raise RuntimeError(f"Missing {len(missing_chunk_ids)} event chunk payloads for ready samples: {preview}")
 
             global_news_ids = padded_id_matrix((sample.global_news_ids for sample in sample_tuple), width=cfg.global_news_cache_size)
             ticker_news_ids = padded_id_matrix((sample.ticker_news_ids for sample in sample_tuple), width=cfg.ticker_news_cache_size)
@@ -235,7 +266,18 @@ class RollingContextLoader:
 
     def cache_summary(self) -> dict[str, int]:
         return {
+            "initialized_tickers": len(self.initialized_tickers),
             "event_tickers": len(self.event_caches),
+            "ticker_news_rings": len(self.ticker_news),
+            "sec_filing_rings": len(self.sec_filings),
+            "xbrl_rings": len(self.xbrl),
+            "ticker_macro_bar_rings": len(self.ticker_macro_bars),
+            "global_news_items": len(self.global_news.ids),
+            "global_market_bar_items": len(self.global_market_bars.ids),
+            "ticker_news_items": sum(len(ring.ids) for ring in self.ticker_news.values()),
+            "sec_filing_items": sum(len(ring.ids) for ring in self.sec_filings.values()),
+            "xbrl_items": sum(len(ring.ids) for ring in self.xbrl.values()),
+            "ticker_macro_bar_items": sum(len(ring.ids) for ring in self.ticker_macro_bars.values()),
             "chunk_arena_items": len(self.chunk_arena.items),
             "external_arena_items": len(self.external_arena.items),
             "ready_samples": len(self.ready_samples),
@@ -287,13 +329,19 @@ class RollingContextLoader:
                 header_uint8=header.copy(),
                 events_uint8=events.copy(),
             )
-            chunk_id = self.chunk_arena.add(ticker=cache.ticker, timestamp_us=chunk.origin_timestamp_us, payload=chunk)
+            chunk_id = self.chunk_arena.add(
+                ticker=cache.ticker,
+                timestamp_us=chunk.origin_timestamp_us,
+                payload=chunk,
+                retain_ids=self._active_event_chunk_ids(cache),
+            )
             cache.remember_chunk(origin, chunk_id)
             self.profiler.incr("chunks_created", 1)
             if emit_samples and (int(origin) % max(1, int(cfg.sample_stride_events)) == 0):
                 sample = self._sample_pointer_for_origin(cache, int(origin), int(chunk.origin_timestamp_us))
                 if sample is not None:
                     self.ready_samples.append(sample)
+                    self._trim_ready_samples()
                     created_samples.append(sample)
                     self.profiler.incr("sample_indices_created", 1)
         return created_samples
@@ -343,11 +391,43 @@ class RollingContextLoader:
                 header_uint8=header.copy(),
                 events_uint8=events.copy(),
             )
-            chunk_id = self.chunk_arena.add(ticker=cache.ticker, timestamp_us=chunk.origin_timestamp_us, payload=chunk)
+            chunk_id = self.chunk_arena.add(
+                ticker=cache.ticker,
+                timestamp_us=chunk.origin_timestamp_us,
+                payload=chunk,
+                retain_ids=self._active_event_chunk_ids(cache),
+            )
             cache.remember_chunk(int(origin), chunk_id)
             self.profiler.incr("chunks_created", 1)
             self.profiler.incr("lazy_chunks_created", 1)
             return int(chunk_id)
+
+    def _trim_ready_samples(self) -> None:
+        max_ready = int(self.config.max_ready_samples)
+        if max_ready <= 0 or len(self.ready_samples) <= max_ready:
+            return
+        dropped = len(self.ready_samples) - max_ready
+        del self.ready_samples[:dropped]
+        self.profiler.incr("ready_samples_dropped", dropped)
+        self.chunk_arena.trim(retain_ids=self._ready_event_chunk_ids())
+        self.external_arena.trim(retain_ids=self._ready_external_ids())
+
+    def _ready_event_chunk_ids(self) -> tuple[int, ...]:
+        return tuple(int(chunk_id) for sample in self.ready_samples for chunk_id in sample.event_chunk_ids)
+
+    def _active_event_chunk_ids(self, cache: PerTickerEventCache) -> tuple[int, ...]:
+        return tuple(sorted(set(self._ready_event_chunk_ids()).union(int(value) for value in cache.chunk_ids_by_origin.values())))
+
+    def _ready_external_ids(self) -> tuple[int, ...]:
+        ids: list[int] = []
+        for sample in self.ready_samples:
+            ids.extend(sample.global_news_ids)
+            ids.extend(sample.ticker_news_ids)
+            ids.extend(sample.sec_filing_ids)
+            ids.extend(sample.xbrl_ids)
+            ids.extend(sample.ticker_macro_bar_ids)
+            ids.extend(sample.global_market_bar_ids)
+        return tuple(int(value) for value in ids if int(value) != 0)
 
     def _materialize_external_payloads(self, id_arrays: dict[str, np.ndarray]) -> dict[str, dict[str, np.ndarray]]:
         with self.profiler.stage("external_payload_materialize", items=sum(int(array.size) for array in id_arrays.values())):
@@ -355,13 +435,15 @@ class RollingContextLoader:
             for kind, ids in id_arrays.items():
                 flat_ids = ids.reshape(-1)
                 unique_ids = np.unique(flat_ids[flat_ids != 0])
-                payloads = [self.external_arena.payload(int(item_id)) for item_id in unique_ids]
-                if not payloads:
+                if unique_ids.size == 0:
                     continue
+                payloads = [self.external_arena.payload(int(item_id)) for item_id in unique_ids]
+                missing_ids = [int(item_id) for item_id, payload in zip(unique_ids, payloads) if payload is None]
+                if missing_ids:
+                    preview = ", ".join(str(value) for value in missing_ids[:8])
+                    raise RuntimeError(f"Missing {len(missing_ids)} {kind} payloads for ready samples: {preview}")
                 arrays: dict[str, list[np.ndarray]] = defaultdict(list)
                 for payload in payloads:
-                    if payload is None:
-                        continue
                     if payload.token_ids is not None:
                         arrays["token_ids"].append(payload.token_ids.reshape(1, *payload.token_ids.shape))
                     if payload.attention_mask is not None:

@@ -4,7 +4,6 @@ import argparse
 import json
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -25,6 +24,7 @@ from research.mlops.clickhouse import (
 from research.mlops.clickhouse_events import PersistentClickHouseBytesClient
 from research.mlops.env import load_env_files, secret_status
 from research.mlops.rolling_loader.config import RollingLoaderConfig
+from research.mlops.rolling_loader.initialize import InitializedRollingReplay, initialize_clickhouse_replay
 from research.mlops.rolling_loader.loader import RollingContextLoader
 from research.mlops.rolling_loader.profiler import RollingLoaderProfiler, format_profile_table, write_profile_jsonl
 from research.mlops.rolling_loader.sources import (
@@ -34,16 +34,6 @@ from research.mlops.rolling_loader.sources import (
     ClickHouseRollingSource,
     replay_items_for_block,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class ProfileSourceState:
-    source: ClickHouseRollingSource
-    context_source: ClickHouseExternalContextSource
-    cursors: dict[str, int]
-    warm_tickers: int
-    initial_context_updates: int
-    source_summary: dict[str, object]
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,6 +66,12 @@ def parse_args() -> argparse.Namespace:
         help="Event spacing between context chunks. Sample origins still use --sample-stride-events.",
     )
     parser.add_argument("--sample-stride-events", type=int, default=1)
+    parser.add_argument(
+        "--start-timestamp-us",
+        type=int,
+        default=0,
+        help="Replay start timestamp. When set, all high- and low-frequency caches are initialized as-of this timestamp.",
+    )
     parser.add_argument("--news-lookback-days", type=int, default=30)
     parser.add_argument("--sec-lookback-days", type=int, default=365)
     parser.add_argument("--xbrl-lookback-days", type=int, default=730)
@@ -95,8 +91,7 @@ def build_profile_source(
     loader: RollingContextLoader,
     loader_config: RollingLoaderConfig,
     profiler: RollingLoaderProfiler,
-) -> ProfileSourceState:
-    warm_count = int(loader_config.warmup_events_per_ticker)
+) -> InitializedRollingReplay:
     text_client = ClickHouseHttpClient(args.clickhouse_url or default_clickhouse_url(), args.user or default_clickhouse_user(), args.password or default_clickhouse_password())
     bytes_client = PersistentClickHouseBytesClient(args.clickhouse_url or default_clickhouse_url(), args.user or default_clickhouse_user(), args.password or default_clickhouse_password())
     source = ClickHouseRollingSource(
@@ -132,40 +127,28 @@ def build_profile_source(
         ),
         text_client=text_client,
     )
-    min_events = warm_count + max(1, int(args.events_per_ticker_block))
-    with profiler.stage("source_load_ticker_index", items=int(args.tickers)):
-        index_rows = source.load_ticker_index_rows(limit=int(args.tickers), min_events=min_events)
-    if not index_rows:
-        raise RuntimeError(f"No eligible tickers found in {args.database}.{args.index_table} for min_events={min_events:,}")
-    with profiler.stage("warm_load_source_rows", items=len(index_rows)):
-        warm_rows = source.warm_rows_from_index(index_rows=index_rows, warm_count=warm_count)
-    loader.warm_load_events(warm_rows)
-    warm_asof_us = _initial_context_asof_timestamp_us(warm_rows)
-    initial_updates = []
-    if warm_asof_us > 0:
-        with profiler.stage("warm_load_external_context_fetch", items=len(index_rows)):
-            initial_updates = context_source.fetch_initial_and_block_updates(
-                tickers=tuple(row.ticker for row in index_rows),
-                start_timestamp_us=warm_asof_us,
-                end_timestamp_us=warm_asof_us,
-            )
-        with profiler.stage("warm_load_external_context_apply", items=len(initial_updates), bytes_count=sum(update.payload.nbytes for update in initial_updates)):
-            for update in initial_updates:
-                loader.push_external(
-                    kind=update.kind,
-                    ticker=update.ticker,
-                    timestamp_us=update.timestamp_us,
-                    payload=update.payload,
-                    global_item=update.global_item,
-                )
-    cursors = source.initial_cursors_from_index(index_rows=index_rows, warm_count=warm_count)
-    return ProfileSourceState(
+    state = initialize_clickhouse_replay(
+        loader=loader,
+        loader_config=loader_config,
         source=source,
         context_source=context_source,
-        cursors=cursors,
-        warm_tickers=len(warm_rows),
-        initial_context_updates=len(initial_updates),
+        profiler=profiler,
+        ticker_limit=int(args.tickers),
+        events_per_ticker_block=int(args.events_per_ticker_block),
+        start_timestamp_us=int(args.start_timestamp_us),
+    )
+    return InitializedRollingReplay(
+        source=state.source,
+        context_source=state.context_source,
+        cursors=state.cursors,
+        index_rows=state.index_rows,
+        initialized_tickers=state.initialized_tickers,
+        warm_tickers=state.warm_tickers,
+        warm_rows=state.warm_rows,
+        initial_context_updates=state.initial_context_updates,
+        start_timestamp_us=state.start_timestamp_us,
         source_summary={
+            **state.source_summary,
             "source": "clickhouse",
             "database": str(args.database),
             "sec_context_database": str(args.sec_context_database),
@@ -175,11 +158,6 @@ def build_profile_source(
             "sec_filing_text_token_table": str(args.sec_filing_text_token_table),
             "sec_xbrl_context_table": str(args.sec_xbrl_context_table),
             "macro_bars_table": str(args.macro_bars_table),
-            "tickers_requested": int(args.tickers),
-            "tickers_loaded": len(index_rows),
-            "warm_count": warm_count,
-            "initial_context_asof_us": warm_asof_us,
-            "initial_context_updates": len(initial_updates),
             "clickhouse_url": args.clickhouse_url or default_clickhouse_url(),
         },
     )
@@ -242,10 +220,10 @@ def main() -> int:
                 break
             cursors.update(block.latest_ordinals())
             with profiler.stage("low_frequency_update_fetch", items=block.row_count):
-                updates = context_source.fetch_initial_and_block_updates(
+                updates = context_source.fetch_context_updates(
                     tickers=block.tickers,
-                    start_timestamp_us=int(block.min_timestamp_us or 0),
-                    end_timestamp_us=int(block.max_timestamp_us or 0),
+                    start_exclusive_us=int(block.min_timestamp_us or 0) - 1,
+                    end_inclusive_us=int(block.max_timestamp_us or 0),
                 )
             with profiler.stage("block_replay_events", items=block.row_count, bytes_count=int(block.rows.nbytes)):
                 for item in replay_items_for_block(block, updates):
@@ -318,15 +296,6 @@ def main() -> int:
     print("-" * 100)
     print(json.dumps({"completed_batches": completed_batches, "events_replayed": event_count, "report": str(args.report_path)}, indent=2))
     return 0
-
-
-def _initial_context_asof_timestamp_us(rows_by_ticker: dict[str, object]) -> int:
-    values = []
-    for rows in rows_by_ticker.values():
-        if getattr(rows, "size", 0):
-            values.append(int(rows["sip_timestamp_us"][-1]))
-    return min(values) if values else 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

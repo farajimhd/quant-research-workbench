@@ -6,13 +6,15 @@ stateful caches and stable sample pointers.
 
 ## Core Flow
 
-1. A source replays chronological market events and low-frequency context
-   updates.
-2. `RollingContextLoader` appends each item to the correct bounded cache.
-3. Every eligible event origin creates or reuses 128-event chunk ids.
-4. A `RollingSamplePointer` is emitted once the 32 configured context chunks
+1. Resolve the ticker universe and create every per-ticker cache before replay.
+2. Warm-load enough high-frequency rows per ticker to satisfy context coverage.
+3. Load bounded low-frequency and global context as-of the replay start.
+4. Replay chronological market events and later low-frequency context updates.
+5. `RollingContextLoader` appends each item to the correct bounded cache.
+6. Every eligible event origin creates or reuses 128-event chunk ids.
+7. A `RollingSamplePointer` is emitted once the 32 configured context chunks
    spaced by the context stride are available.
-5. Training materializes raw chunks/tokens from stable ids at the collator step.
+8. Training materializes raw chunks/tokens from stable ids at the collator step.
    Production can resolve the same ids to cached embeddings.
 
 The key rule is that low-frequency context is pushed once and referenced by id
@@ -35,9 +37,9 @@ Global:
 - global market bars
 
 The event cache warm-loads enough prior raw rows to satisfy the configured
-chunk coverage. Warmup does not encode chunks. Context chunks from the warm
-range are encoded lazily only when a sample references their origins. The
-default market context is:
+chunk coverage as-of the replay start timestamp. Warmup does not encode chunks.
+Context chunks from the warm range are encoded lazily only when a sample
+references their origins. The default market context is:
 
 ```text
 chunk_size = 128 events
@@ -67,6 +69,25 @@ while each sample uses context chunks ending at `origin`, `origin-64`,
 The pointer is intentionally payload-free. This is what keeps both training and
 production consistent while letting training fine-tune encoders.
 
+Pending sample pointers protect their referenced arena payload ids. Event chunk
+payloads are materialized strictly: if a ready pointer references a chunk that
+is no longer available, batch materialization fails instead of silently filling
+zeros.
+
+## Initialization
+
+Use `initialize_clickhouse_replay()` to build a guide-aligned replay state:
+
+- every ticker from the resolved universe has event, news, SEC, XBRL, and macro
+  caches before replay starts
+- high-frequency warm rows end at `--start-timestamp-us` when provided
+- ticker/global low-frequency context is loaded once as-of the replay start
+- later replay blocks fetch only incremental context updates
+- cursors are positioned at the warm high-frequency boundary
+
+If `--start-timestamp-us` is omitted, the profiler uses a compatibility mode
+that warms from the start of the configured index table.
+
 ## Materialized Batch
 
 `materialize_training_batch()` resolves pointers into:
@@ -92,6 +113,8 @@ ClickHouse URL/user/password from the standard `.env` discovery path unless
 `--clickhouse-url`, `--user`, or `--password` are passed explicitly.
 
 The default profile uses `--context-chunks 32 --context-chunk-stride-events 64`.
+Pass `--start-timestamp-us <utc_microseconds>` to initialize all caches as-of a
+specific replay timestamp instead of using the profiler compatibility warmup.
 
 The default profile is ID-only for low-frequency context. This matches the
 intended training/production flow where sample pointers carry stable cache ids

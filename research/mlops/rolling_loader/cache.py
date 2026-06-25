@@ -33,15 +33,25 @@ class StableArena(Generic[T]):
     items: dict[int, CacheItem[T]] = field(default_factory=dict)
     insertion_order: Deque[int] = field(default_factory=deque)
 
-    def add(self, *, ticker: str, timestamp_us: int, payload: T) -> int:
+    def add(self, *, ticker: str, timestamp_us: int, payload: T, retain_ids: Iterable[int] = ()) -> int:
         item_id = int(self.next_id)
         self.next_id += 1
         self.items[item_id] = CacheItem(item_id=item_id, ticker=str(ticker), timestamp_us=int(timestamp_us), payload=payload)
         self.insertion_order.append(item_id)
-        while len(self.insertion_order) > int(self.max_items):
-            old_id = self.insertion_order.popleft()
-            self.items.pop(old_id, None)
+        self.trim(retain_ids=retain_ids)
         return item_id
+
+    def trim(self, *, retain_ids: Iterable[int] = ()) -> None:
+        retain = {int(value) for value in retain_ids}
+        scanned_retained = 0
+        while len(self.insertion_order) > int(self.max_items) and scanned_retained < len(self.insertion_order):
+            old_id = self.insertion_order.popleft()
+            if old_id in retain and old_id in self.items:
+                self.insertion_order.append(old_id)
+                scanned_retained += 1
+                continue
+            self.items.pop(old_id, None)
+            scanned_retained = 0
 
     def get(self, item_id: int) -> CacheItem[T] | None:
         return self.items.get(int(item_id))

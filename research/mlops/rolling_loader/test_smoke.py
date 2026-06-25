@@ -28,6 +28,15 @@ def main() -> int:
     profiler = RollingLoaderProfiler(enabled=True)
     loader = RollingContextLoader(loader_config, profiler=profiler)
     rows_by_ticker = synthetic_rows_by_ticker(synthetic_config)
+    initialized = loader.initialize_universe(rows_by_ticker)
+    assert len(initialized) == synthetic_config.tickers
+    initialized_summary = loader.cache_summary()
+    assert initialized_summary["initialized_tickers"] == synthetic_config.tickers
+    assert initialized_summary["event_tickers"] == synthetic_config.tickers
+    assert initialized_summary["ticker_news_rings"] == synthetic_config.tickers
+    assert initialized_summary["sec_filing_rings"] == synthetic_config.tickers
+    assert initialized_summary["xbrl_rings"] == synthetic_config.tickers
+    assert initialized_summary["ticker_macro_bar_rings"] == synthetic_config.tickers
     warm_count = loader_config.warmup_events_per_ticker
     loader.warm_load_events({ticker: rows[:warm_count] for ticker, rows in rows_by_ticker.items()})
     replay_rows = {ticker: rows[warm_count:] for ticker, rows in rows_by_ticker.items()}

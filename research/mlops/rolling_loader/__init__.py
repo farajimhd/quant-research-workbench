@@ -7,6 +7,7 @@ final collator/profiler step.
 """
 
 from research.mlops.rolling_loader.config import RollingLoaderConfig
+from research.mlops.rolling_loader.initialize import InitializedRollingReplay, initialize_clickhouse_replay
 from research.mlops.rolling_loader.loader import (
     MaterializedRollingBatch,
     RollingContextLoader,
@@ -14,8 +15,10 @@ from research.mlops.rolling_loader.loader import (
 )
 
 __all__ = [
+    "InitializedRollingReplay",
     "MaterializedRollingBatch",
     "RollingContextLoader",
     "RollingLoaderConfig",
     "RollingSamplePointer",
+    "initialize_clickhouse_replay",
 ]

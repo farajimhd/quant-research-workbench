@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import numpy as np
 
@@ -225,6 +225,112 @@ FORMAT RowBinary
             out[ticker_tuple[int(span_ids[start])]] = rows[start:end].copy()
         return out
 
+    def load_start_ordinals(
+        self,
+        *,
+        index_rows: Iterable[RollingTickerIndexRow],
+        start_timestamp_us: int,
+    ) -> dict[str, int]:
+        """Resolve each ticker's replay cursor as-of the requested timestamp."""
+
+        row_tuple = tuple(index_rows)
+        if not row_tuple:
+            return {}
+        ticker_tuple = tuple(row.ticker for row in row_tuple)
+        ticker_sql = "[" + ", ".join(sql_string(ticker) for ticker in ticker_tuple) + "]"
+        first_sql = "[" + ", ".join(str(int(row.first_ordinal)) for row in row_tuple) + "]"
+        max_sql = "[" + ", ".join(str(int(row.max_valid_ordinal)) for row in row_tuple) + "]"
+        query = f"""
+WITH
+    {ticker_sql} AS request_tickers,
+    {first_sql} AS request_first_ordinals,
+    {max_sql} AS request_max_ordinals
+SELECT
+    ticker,
+    max(ordinal) AS start_ordinal
+FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
+WHERE ticker IN request_tickers
+  AND sip_timestamp_us <= {int(start_timestamp_us)}
+  AND ordinal >= arrayElement(request_first_ordinals, indexOf(request_tickers, ticker))
+  AND ordinal <= arrayElement(request_max_ordinals, indexOf(request_tickers, ticker))
+GROUP BY ticker
+ORDER BY ticker
+SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
+FORMAT TSV
+"""
+        out: dict[str, int] = {}
+        for line in self.text_client.execute(query).splitlines():
+            if not line.strip():
+                continue
+            ticker, ordinal = line.split("\t")
+            out[str(ticker).upper()] = int(ordinal)
+        return out
+
+    def warm_rows_ending_at(
+        self,
+        *,
+        index_rows: Iterable[RollingTickerIndexRow],
+        end_ordinals: Mapping[str, int],
+        warm_count: int,
+    ) -> dict[str, np.ndarray]:
+        """Load the in-memory high-frequency carryover ending at each cursor."""
+
+        by_ticker = {row.ticker: row for row in index_rows}
+        ticker_tuple = tuple(ticker for ticker in sorted(end_ordinals) if ticker in by_ticker)
+        if not ticker_tuple:
+            return {}
+        starts = []
+        ends = []
+        for ticker in ticker_tuple:
+            row = by_ticker[ticker]
+            end_ordinal = min(int(end_ordinals[ticker]), int(row.max_valid_ordinal))
+            start_ordinal = max(int(row.first_ordinal), end_ordinal - int(warm_count) + 1)
+            starts.append(start_ordinal)
+            ends.append(end_ordinal)
+        ticker_sql = "[" + ", ".join(sql_string(ticker) for ticker in ticker_tuple) + "]"
+        start_sql = "[" + ", ".join(str(value) for value in starts) + "]"
+        end_sql = "[" + ", ".join(str(value) for value in ends) + "]"
+        query = f"""
+WITH
+    {ticker_sql} AS request_tickers,
+    {start_sql} AS request_start_ordinals,
+    {end_sql} AS request_end_ordinals
+SELECT
+    toUInt32(indexOf(request_tickers, ticker) - 1) AS span_id,
+    ordinal,
+    event_type,
+    sip_timestamp_us,
+    price_primary_int,
+    price_secondary_int,
+    size_primary,
+    size_secondary,
+    exchange_primary,
+    exchange_secondary,
+    event_flags,
+    conditions_packed
+FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
+WHERE ticker IN request_tickers
+  AND ordinal >= arrayElement(request_start_ordinals, indexOf(request_tickers, ticker))
+  AND ordinal <= arrayElement(request_end_ordinals, indexOf(request_tickers, ticker))
+ORDER BY ticker, ordinal
+SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
+FORMAT RowBinary
+"""
+        payload = self.bytes_client.execute_bytes(query)
+        if len(payload) % EVENT_ROW_DTYPE.itemsize != 0:
+            raise RuntimeError(f"RowBinary payload size {len(payload):,} is not divisible by event row size {EVENT_ROW_DTYPE.itemsize}")
+        rows = np.frombuffer(payload, dtype=EVENT_ROW_DTYPE).copy()
+        out: dict[str, np.ndarray] = {}
+        if rows.size == 0:
+            return out
+        span_ids = rows["span_id"]
+        boundaries = np.flatnonzero(span_ids[1:] != span_ids[:-1]) + 1
+        starts_array = np.concatenate(([0], boundaries))
+        ends_array = np.concatenate((boundaries, [rows.shape[0]]))
+        for start, end in zip(starts_array, ends_array):
+            out[ticker_tuple[int(span_ids[start])]] = rows[start:end].copy()
+        return out
+
     @staticmethod
     def initial_cursors_from_index(*, index_rows: Iterable[RollingTickerIndexRow], warm_count: int) -> dict[str, int]:
         cursors: dict[str, int] = {}
@@ -232,6 +338,10 @@ FORMAT RowBinary
             warm_end = min(int(row.max_valid_ordinal), int(row.first_ordinal) + int(warm_count) - 1)
             cursors[row.ticker] = int(warm_end)
         return cursors
+
+    @staticmethod
+    def initial_cursors_from_ordinals(*, end_ordinals: Mapping[str, int]) -> dict[str, int]:
+        return {str(ticker).upper(): int(ordinal) for ticker, ordinal in end_ordinals.items()}
 
     def fetch_day_rows_by_ticker(self, *, tickers: Iterable[str], date: str) -> dict[str, np.ndarray]:
         ticker_tuple = tuple(str(ticker).upper() for ticker in tickers if str(ticker).strip())
@@ -355,19 +465,60 @@ class ClickHouseExternalContextSource:
         rows after the previous block high watermark.
         """
 
-        end_us = int(end_timestamp_us)
-        if end_us <= 0:
-            return []
         if self._fetched_until_us <= 0:
-            lower_bounds = {
-                "news": max(0, int(start_timestamp_us) - int(self.config.news_lookback_days) * 86_400_000_000),
-                "sec": max(0, int(start_timestamp_us) - int(self.config.sec_lookback_days) * 86_400_000_000),
-                "xbrl": max(0, int(start_timestamp_us) - int(self.config.xbrl_lookback_days) * 86_400_000_000),
-                "macro": max(0, int(start_timestamp_us) - int(self.config.macro_lookback_days) * 86_400_000_000),
-            }
-        else:
-            start = int(self._fetched_until_us) + 1
-            lower_bounds = {"news": start, "sec": start, "xbrl": start, "macro": start}
+            return self.load_initial_context_asof(tickers=tickers, asof_timestamp_us=int(end_timestamp_us))
+        return self.fetch_context_updates(
+            tickers=tickers,
+            start_exclusive_us=max(int(start_timestamp_us) - 1, int(self._fetched_until_us)),
+            end_inclusive_us=int(end_timestamp_us),
+        )
+
+    def load_initial_context_asof(
+        self,
+        *,
+        tickers: Iterable[str],
+        asof_timestamp_us: int,
+    ) -> list[LowFrequencyContextUpdate]:
+        """Load bounded low-frequency/global caches as-of replay start."""
+
+        asof_us = int(asof_timestamp_us)
+        if asof_us <= 0:
+            return []
+        lower_bounds = {
+            "news": max(0, asof_us - int(self.config.news_lookback_days) * 86_400_000_000),
+            "sec": max(0, asof_us - int(self.config.sec_lookback_days) * 86_400_000_000),
+            "xbrl": max(0, asof_us - int(self.config.xbrl_lookback_days) * 86_400_000_000),
+            "macro": max(0, asof_us - int(self.config.macro_lookback_days) * 86_400_000_000),
+        }
+        updates = self._fetch_context_range(tickers=tickers, lower_bounds=lower_bounds, end_us=asof_us)
+        self._fetched_until_us = max(int(self._fetched_until_us), asof_us)
+        return updates
+
+    def fetch_context_updates(
+        self,
+        *,
+        tickers: Iterable[str],
+        start_exclusive_us: int,
+        end_inclusive_us: int,
+    ) -> list[LowFrequencyContextUpdate]:
+        """Fetch only newly visible low-frequency/global rows for a replay block."""
+
+        end_us = int(end_inclusive_us)
+        if end_us <= int(start_exclusive_us) or end_us <= 0:
+            return []
+        start = max(int(start_exclusive_us), int(self._fetched_until_us)) + 1
+        lower_bounds = {"news": start, "sec": start, "xbrl": start, "macro": start}
+        updates = self._fetch_context_range(tickers=tickers, lower_bounds=lower_bounds, end_us=end_us)
+        self._fetched_until_us = max(int(self._fetched_until_us), end_us)
+        return updates
+
+    def _fetch_context_range(
+        self,
+        *,
+        tickers: Iterable[str],
+        lower_bounds: Mapping[str, int],
+        end_us: int,
+    ) -> list[LowFrequencyContextUpdate]:
         ticker_tuple = tuple(sorted({str(ticker).upper() for ticker in tickers if str(ticker).strip()}))
         updates: list[LowFrequencyContextUpdate] = []
         updates.extend(self._fetch_ticker_news(tickers=ticker_tuple, start_us=lower_bounds["news"], end_us=end_us))
@@ -375,7 +526,6 @@ class ClickHouseExternalContextSource:
         updates.extend(self._fetch_sec_filings(tickers=ticker_tuple, start_us=lower_bounds["sec"], end_us=end_us))
         updates.extend(self._fetch_xbrl(tickers=ticker_tuple, start_us=lower_bounds["xbrl"], end_us=end_us))
         updates.extend(self._fetch_macro_bars(tickers=ticker_tuple, start_us=lower_bounds["macro"], end_us=end_us))
-        self._fetched_until_us = max(int(self._fetched_until_us), end_us)
         updates.sort(key=lambda item: (int(item.timestamp_us), str(item.kind), str(item.ticker)))
         return updates
 
