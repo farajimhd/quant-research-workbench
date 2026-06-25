@@ -35,6 +35,123 @@ the database rather than saving large raw cache payloads.
 - Keep model batches compact by passing stable cache item ids until the final
   collator/materializer step.
 
+## Loader Parameters
+
+The loader must be constructed from explicit parameters. These parameters define
+how the initial cache is rebuilt, how much data each cache can hold, how samples
+are emitted, and how training can resume deterministically.
+
+### Time and Universe Parameters
+
+| Parameter | Meaning |
+| --- | --- |
+| `start_timestamp_us` | UTC timestamp where replay or live inference begins. All caches are warm-loaded as-of this timestamp before samples are emitted. |
+| `end_timestamp_us` | Optional UTC timestamp where a training/evaluation replay stops. Production leaves this unset. |
+| `event_date` | Optional date shard used for efficient historical replay queries. It should be derived from timestamps, not used as the source of truth for no-lookahead logic. |
+| `ticker_universe` | Explicit ticker list, universe table name, or universe query. The loader only maintains per-ticker caches for this universe. |
+| `global_symbols` | Symbols used for global market context, for example `SPY`, `QQQ`, `IWM`, and `DIA`. |
+| `timezone` | Timezone used only for session/calendar feature derivation. Source timestamps remain UTC. |
+
+### Event Cache Parameters
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `events_per_chunk` | 128 | Number of events in one market-structure chunk. |
+| `short_context_chunks` | 16 | Number of dense recent chunk embeddings/indices. |
+| `short_context_stride_chunks` | 1 | Stride between dense recent context chunks. |
+| `long_context_lags` | `(32, 48, 72, 108, 162, 243, 365, 548, 822, 1233, 1850)` | Sparse older chunk lags retained for longer history. |
+| `max_context_lag` | derived | Maximum lag from dense and sparse context. |
+| `event_warmup_events` | derived | Minimum prior events to query during initialization. Usually `max_context_lag + events_per_chunk - 1`. |
+| `event_cache_events_per_ticker` | derived | Runtime raw-event cache size per ticker. It must be at least `event_warmup_events` plus enough headroom for newly appended live events before trimming. |
+| `chunk_cache_size_per_ticker` | derived | Number of chunk ids or embeddings retained per ticker. It must cover all context lags plus pending samples. |
+
+The event cache should be warm at `start_timestamp_us`. If sufficient prior
+events exist, the first emitted sample at or after `start_timestamp_us` can use
+full context immediately.
+
+### Low-Frequency Cache Size Parameters
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `global_news_cache_size` | 64 | Latest global market-news items as-of the origin. |
+| `ticker_news_cache_size` | 32 | Latest ticker-related news items per ticker. |
+| `sec_filing_cache_size` | 16 | Latest SEC filing text items per ticker. |
+| `xbrl_cache_size` | 512 | Latest XBRL rows per ticker. |
+| `ticker_macro_bar_cache_size` | derived | Number of ticker bar states retained. Should cover all configured as-of macro horizons. |
+| `global_market_bar_cache_size` | derived | Number of global market bar states retained for each global symbol. |
+| `arena_retention_samples` | derived | Number of pending samples or batches whose referenced cache payloads must remain available before garbage collection. |
+
+These sizes bound memory. They also define the tensor shapes used by the final
+collator when raw training payloads are materialized.
+
+### Text and Category Parameters
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `text_tokenizer_model` | `Qwen/Qwen3-0.6B` | Tokenizer/model family used to produce text token ids. |
+| `text_max_tokens` | 1024 | Token width per text chunk. |
+| `news_token_chunks` | 2 | Maximum token chunks per news item. |
+| `market_news_token_chunks` | 2 | Maximum token chunks per global news item. |
+| `sec_token_chunks` | 8 | Maximum token chunks per SEC text item. |
+| `news_max_channels` | 8 | Maximum news channel category ids per item. |
+| `news_max_provider_tags` | 16 | Maximum provider tag category ids per item. |
+| `news_max_quality_flags` | 8 | Maximum news quality flag ids per item. |
+| `sec_max_quality_flags` | 8 | Maximum SEC text quality flag ids per item. |
+| `category_reference_table` | `training_category_reference` | Dense category-id mapping table. Id `0` is reserved for missing or unknown. |
+
+Category tables are loaded during initialization and can be refreshed only at
+well-defined dataset boundaries. Changing category ids mid-run would make
+resume and model interpretation ambiguous.
+
+### Bar and Label Parameters
+
+| Parameter | Meaning |
+| --- | --- |
+| `macro_bars_table` | Source table for historical ticker and global macro bars. |
+| `macro_timeframes` | Timeframes used as as-of features, for example `1d`, `1w`, `1mo`, `1y`. |
+| `label_timeframes` | Timeframes used for future macro labels. |
+| `intraday_label_horizons` | Short future bar horizons such as `100ms`, `250ms`, `1s`, `5s`, through multi-hour horizons. |
+| `bar_feature_keys` | As-of bar fields. Current design uses `open`, `high`, `low`, `close`, `volume`, `dollar_volume`, `trade_count`, `quote_count`, `vwap`. |
+| `future_bar_feature_keys` | Future label fields. Current design uses `open`, `close`, `high`, `low`, `volume`. |
+
+### Replay, Sampling, and Batching Parameters
+
+| Parameter | Meaning |
+| --- | --- |
+| `sample_stride_events` | Event-origin stride for historical replay. Production usually emits when a ticker update creates a ready sample. |
+| `batch_size` | Number of sample indices gathered before training materialization. |
+| `shuffle_policy` | Whether samples are emitted chronologically, shuffled within a day/block, or scheduled by ticker. |
+| `seed` | Base seed for deterministic sampling/shuffle behavior when reproducibility is requested. |
+| `repeatable_randomness` | If true, every resume/replay must reproduce the same sample order and stochastic choices. If false, resumes remain stateful but new epochs can get fresh randomness. |
+| `max_ready_samples` | Optional cap for profiling or smoke tests. |
+
+### Resume Parameters
+
+| Parameter | Meaning |
+| --- | --- |
+| `resume_timestamp_us` | Timestamp from which caches should be rebuilt. Usually equal to the next unprocessed origin timestamp. |
+| `per_ticker_last_processed_ordinal` | Cursor map used to continue without replaying already-consumed samples. |
+| `rng_state` | Serialized RNG state for deterministic replay. |
+| `sample_count` | Number of samples emitted so far. |
+| `batch_count` | Number of batches emitted so far. |
+| `source_watermarks` | Last consumed timestamp or source id for events, news, SEC, XBRL, and bars. |
+| `pending_sample_ids` | Optional set of already-assembled samples that must be emitted after resume. |
+
+Resume state should be small. Raw event arrays and low-frequency payload arrays
+should be rebuilt from the database using these parameters and cursors.
+
+### Payload Mode Parameters
+
+| Parameter | Training Value | Production Value |
+| --- | --- | --- |
+| `market_payload_mode` | raw compact chunks or chunk ids | market encoder embeddings |
+| `text_payload_mode` | token ids and metadata ids | text encoder embeddings |
+| `xbrl_payload_mode` | numeric rows and category ids | XBRL encoder embeddings |
+| `bar_payload_mode` | numeric bar rows | bar encoder embeddings |
+
+This separation is critical. Training keeps raw inputs when encoders are
+trainable. Production stores embeddings to minimize repeated encoder inference.
+
 ## Cache Categories
 
 ### High-Frequency Event Cache
