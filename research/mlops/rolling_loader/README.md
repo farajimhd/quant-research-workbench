@@ -87,7 +87,7 @@ Run a ClickHouse-backed profile:
 python -m research.mlops.rolling_loader.run_profile --database market_sip_compact --events-table events --index-table train_2019_to_2025 --tickers 64 --batch-size 4096 --batches 4 --events-per-ticker-block 64 --max-threads 8 --max-memory-usage 80G
 ```
 
-The default profile source is `--source clickhouse`. It uses the configured
+The profiler is ClickHouse-backed. It uses the configured
 ClickHouse URL/user/password from the standard `.env` discovery path unless
 `--clickhouse-url`, `--user`, or `--password` are passed explicitly.
 
@@ -108,11 +108,17 @@ The profiler can also be run directly from a synced workstation copy:
 python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_profile.py --database market_sip_compact --events-table events --index-table train_2019_to_2025 --tickers 64 --batch-size 4096 --batches 4 --events-per-ticker-block 64 --max-threads 8 --max-memory-usage 80G
 ```
 
-The profiler uses the real `RollingContextLoader` class and reports:
+The profiler uses the real `RollingContextLoader` class and real ClickHouse
+sources for both high-frequency events and low-frequency/global context. During
+each event block it fetches real ticker news, global news, SEC filing tokens,
+XBRL rows, ticker macro bars, and global market bars, then replays context
+updates and events in timestamp order.
+
+The profiler reports:
 
 - vectorized next-K per-ticker event-block fetch time
 - timestamp-ordered block replay time
-- low-frequency update fetch/apply time for each block
+- low-frequency/global context fetch/apply time for each block
 - warm-load time
 - event cache push time
 - event chunk creation time
@@ -126,8 +132,6 @@ Reports are appended as JSONL under:
 
 `D:/market-data/prepared/data_provider_profiles/rolling_loader_profile.jsonl`
 
-For local no-ClickHouse smoke profiling, pass `--source synthetic`.
-
 ## Smoke Test
 
 ```powershell
@@ -140,5 +144,7 @@ Direct workstation form:
 python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\test_smoke.py
 ```
 
-The smoke test checks that synthetic replay creates ready sample pointers and
-that the materialized batch has the expected event tensor shapes.
+The smoke test is intentionally isolated from the profiler and uses generated
+events only to verify cache mechanics, ready sample pointers, and materialized
+event tensor shapes. Profiling must use the ClickHouse-backed `run_profile.py`
+path described above.

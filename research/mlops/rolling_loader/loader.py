@@ -161,6 +161,7 @@ class RollingContextLoader:
                 self.global_market_bars.push(item_id)
             else:
                 raise ValueError(f"unknown external cache kind: {kind!r}")
+            self.profiler.incr(f"external_pushed_{kind}", 1)
         return item_id
 
     def drain_ready_samples(self, max_count: int | None = None) -> list[RollingSamplePointer]:

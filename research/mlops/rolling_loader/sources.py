@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import datetime as dt
+import json
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 import numpy as np
 
@@ -12,7 +14,6 @@ from research.mlops.clickhouse import (
 )
 from research.mlops.clickhouse_events import EVENT_ROW_DTYPE, PersistentClickHouseBytesClient
 from research.mlops.rolling_loader.cache import ExternalContextPayload
-from research.mlops.rolling_loader.synthetic import SyntheticEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,29 @@ class ClickHouseReplayConfig:
     date: str = ""
     max_threads: int = 8
     max_memory_usage: str = "80G"
+
+
+@dataclass(frozen=True, slots=True)
+class ClickHouseExternalContextConfig:
+    database: str = "market_sip_compact"
+    sec_context_database: str = "market_sip_compact"
+    news_token_table: str = "news_text_tokens"
+    sec_filing_text_token_table: str = "sec_filing_text_tokens"
+    sec_xbrl_context_table: str = "sec_xbrl_context"
+    macro_bars_table: str = "macro_bars_by_time_symbol"
+    news_lookback_days: int = 30
+    sec_lookback_days: int = 365
+    xbrl_lookback_days: int = 730
+    macro_lookback_days: int = 400
+    ticker_news_items: int = 32
+    global_news_items: int = 64
+    sec_filing_items: int = 16
+    xbrl_items: int = 512
+    news_token_chunks: int = 2
+    sec_token_chunks: int = 8
+    text_max_tokens: int = 1024
+    macro_timeframes: tuple[str, ...] = ("1d", "1w", "1mo", "1y")
+    global_symbols: tuple[str, ...] = ("SPY", "QQQ", "IWM", "DIA")
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,13 +81,13 @@ class RollingEventBlock:
             return None
         return int(np.max(self.rows["sip_timestamp_us"]))
 
-    def iter_chronological(self) -> Iterable[SyntheticEvent]:
+    def iter_chronological(self) -> Iterable["ReplayEvent"]:
         if self.rows.size == 0:
             return
         order = np.lexsort((self.ticker_index, self.rows["ordinal"], self.rows["sip_timestamp_us"]))
         for row_index in order:
             ticker = self.tickers[int(self.ticker_index[int(row_index)])]
-            yield SyntheticEvent(ticker=ticker, row=self.rows[int(row_index)])
+            yield ReplayEvent(ticker=ticker, row=self.rows[int(row_index)])
 
     def latest_ordinals(self) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -81,6 +105,19 @@ class LowFrequencyContextUpdate:
     timestamp_us: int
     payload: ExternalContextPayload
     global_item: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayEvent:
+    ticker: str
+    row: np.void
+
+
+@dataclass(frozen=True, slots=True)
+class TimestampedReplayItem:
+    timestamp_us: int
+    event: ReplayEvent | None = None
+    context: LowFrequencyContextUpdate | None = None
 
 
 class ClickHouseRollingSource:
@@ -291,7 +328,366 @@ FORMAT RowBinary
         return int(float(text) * multiplier)
 
 
-def iter_rows_by_ticker_chronological(rows_by_ticker: dict[str, np.ndarray]) -> Iterable[SyntheticEvent]:
+class ClickHouseExternalContextSource:
+    """Fetches real low-frequency/global context rows for rolling replay.
+
+    It returns cache updates only. The caller is responsible for merging those
+    updates with event rows by timestamp before calling `push_external`.
+    """
+
+    def __init__(self, *, config: ClickHouseExternalContextConfig, text_client: ClickHouseHttpClient) -> None:
+        self.config = config
+        self.text_client = text_client
+        self._seen_keys: set[tuple[Any, ...]] = set()
+        self._fetched_until_us = 0
+
+    def fetch_initial_and_block_updates(
+        self,
+        *,
+        tickers: Iterable[str],
+        start_timestamp_us: int,
+        end_timestamp_us: int,
+    ) -> list[LowFrequencyContextUpdate]:
+        """Fetch updates needed before and during the next event block.
+
+        The first call uses table-specific lookbacks so caches are warm before
+        the first event in the block. Later calls fetch only newly available
+        rows after the previous block high watermark.
+        """
+
+        end_us = int(end_timestamp_us)
+        if end_us <= 0:
+            return []
+        if self._fetched_until_us <= 0:
+            lower_bounds = {
+                "news": max(0, int(start_timestamp_us) - int(self.config.news_lookback_days) * 86_400_000_000),
+                "sec": max(0, int(start_timestamp_us) - int(self.config.sec_lookback_days) * 86_400_000_000),
+                "xbrl": max(0, int(start_timestamp_us) - int(self.config.xbrl_lookback_days) * 86_400_000_000),
+                "macro": max(0, int(start_timestamp_us) - int(self.config.macro_lookback_days) * 86_400_000_000),
+            }
+        else:
+            start = int(self._fetched_until_us) + 1
+            lower_bounds = {"news": start, "sec": start, "xbrl": start, "macro": start}
+        ticker_tuple = tuple(sorted({str(ticker).upper() for ticker in tickers if str(ticker).strip()}))
+        updates: list[LowFrequencyContextUpdate] = []
+        updates.extend(self._fetch_ticker_news(tickers=ticker_tuple, start_us=lower_bounds["news"], end_us=end_us))
+        updates.extend(self._fetch_global_news(start_us=lower_bounds["news"], end_us=end_us))
+        updates.extend(self._fetch_sec_filings(tickers=ticker_tuple, start_us=lower_bounds["sec"], end_us=end_us))
+        updates.extend(self._fetch_xbrl(tickers=ticker_tuple, start_us=lower_bounds["xbrl"], end_us=end_us))
+        updates.extend(self._fetch_macro_bars(tickers=ticker_tuple, start_us=lower_bounds["macro"], end_us=end_us))
+        self._fetched_until_us = max(int(self._fetched_until_us), end_us)
+        updates.sort(key=lambda item: (int(item.timestamp_us), str(item.kind), str(item.ticker)))
+        return updates
+
+    def _fetch_ticker_news(self, *, tickers: tuple[str, ...], start_us: int, end_us: int) -> list[LowFrequencyContextUpdate]:
+        if not tickers:
+            return []
+        table = f"{quote_ident(self.config.database)}.{quote_ident(self.config.news_token_table)}"
+        ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
+        row_limit = int(self.config.ticker_news_items) * int(self.config.news_token_chunks)
+        query = f"""
+SELECT *
+FROM
+(
+    SELECT
+        ticker,
+        timestamp_us,
+        source_id,
+        provider,
+        provider_article_id,
+        title,
+        article_url,
+        url_domain,
+        channels,
+        provider_tags,
+        quality_flags,
+        tokenizer_model,
+        max_tokens,
+        token_chunk_index,
+        input_ids,
+        attention_mask,
+        text_hash,
+        text_char_count,
+        source_text_char_count
+    FROM {table}
+    PREWHERE ticker IN ({ticker_sql})
+    WHERE timestamp_us >= {int(start_us)}
+      AND timestamp_us <= {int(end_us)}
+    ORDER BY ticker, timestamp_us DESC, source_id, token_chunk_index
+    LIMIT {row_limit} BY ticker
+)
+ORDER BY timestamp_us, ticker, source_id, token_chunk_index
+FORMAT JSONEachRow
+"""
+        return self._token_updates(kind="ticker_news", rows=self._query_json_rows(query), chunks=int(self.config.news_token_chunks))
+
+    def _fetch_global_news(self, *, start_us: int, end_us: int) -> list[LowFrequencyContextUpdate]:
+        table = f"{quote_ident(self.config.database)}.{quote_ident(self.config.news_token_table)}"
+        max_items = int(self.config.global_news_items)
+        max_chunks = int(self.config.news_token_chunks)
+        query = f"""
+WITH latest_sources AS
+(
+    SELECT
+        source_id,
+        max(timestamp_us) AS latest_timestamp_us
+    FROM {table}
+    WHERE timestamp_us >= {int(start_us)}
+      AND timestamp_us <= {int(end_us)}
+    GROUP BY source_id
+    ORDER BY latest_timestamp_us DESC
+    LIMIT {max_items}
+)
+SELECT
+    '__MARKET__' AS ticker,
+    timestamp_us,
+    source_id,
+    provider,
+    provider_article_id,
+    title,
+    article_url,
+    url_domain,
+    channels,
+    provider_tags,
+    quality_flags,
+    tokenizer_model,
+    max_tokens,
+    token_chunk_index,
+    input_ids,
+    attention_mask,
+    text_hash,
+    text_char_count,
+    source_text_char_count
+FROM
+(
+    SELECT t.*
+    FROM {table} AS t
+    INNER JOIN latest_sources AS s ON t.source_id = s.source_id
+    WHERE t.token_chunk_index < {max_chunks}
+    ORDER BY t.source_id, t.token_chunk_index, t.ticker
+    LIMIT 1 BY source_id, token_chunk_index
+)
+ORDER BY timestamp_us, source_id, token_chunk_index
+FORMAT JSONEachRow
+"""
+        return self._token_updates(kind="global_news", rows=self._query_json_rows(query), chunks=max_chunks, global_item=True)
+
+    def _fetch_sec_filings(self, *, tickers: tuple[str, ...], start_us: int, end_us: int) -> list[LowFrequencyContextUpdate]:
+        if not tickers:
+            return []
+        table = f"{quote_ident(self.config.sec_context_database)}.{quote_ident(self.config.sec_filing_text_token_table)}"
+        ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
+        row_limit = int(self.config.sec_filing_items) * int(self.config.sec_token_chunks)
+        query = f"""
+SELECT *
+FROM
+(
+    SELECT
+        ticker,
+        timestamp_us,
+        source_id,
+        accession_number,
+        cik,
+        form_type,
+        text_rank,
+        document_id,
+        text_kind,
+        quality_flags,
+        tokenizer_model,
+        max_tokens,
+        token_chunk_index,
+        input_ids,
+        attention_mask,
+        text_hash,
+        text_char_count,
+        source_text_char_count
+    FROM {table}
+    PREWHERE ticker IN ({ticker_sql})
+    WHERE timestamp_us >= {int(start_us)}
+      AND timestamp_us <= {int(end_us)}
+    ORDER BY ticker, timestamp_us DESC, accession_number, text_rank, document_id, token_chunk_index
+    LIMIT {row_limit} BY ticker
+)
+ORDER BY timestamp_us, ticker, accession_number, text_rank, document_id, token_chunk_index
+FORMAT JSONEachRow
+"""
+        return self._token_updates(kind="sec_filing", rows=self._query_json_rows(query), chunks=int(self.config.sec_token_chunks))
+
+    def _fetch_xbrl(self, *, tickers: tuple[str, ...], start_us: int, end_us: int) -> list[LowFrequencyContextUpdate]:
+        if not tickers:
+            return []
+        table = f"{quote_ident(self.config.sec_context_database)}.{quote_ident(self.config.sec_xbrl_context_table)}"
+        ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
+        query = f"""
+SELECT *
+FROM
+(
+    SELECT
+        ticker,
+        timestamp_us,
+        source_id,
+        cik,
+        issuer_id,
+        taxonomy,
+        tag,
+        unit_code,
+        fiscal_year,
+        fiscal_period,
+        form_type,
+        accepted_at_source,
+        accession_number,
+        period_end_date,
+        value,
+        calendar_period_code,
+        location_code,
+        xbrl_row_kind,
+        bridge_id,
+        mapping_confidence AS mapping_confidence_score
+    FROM {table}
+    PREWHERE ticker IN ({ticker_sql})
+    WHERE timestamp_us >= {int(start_us)}
+      AND timestamp_us <= {int(end_us)}
+    ORDER BY ticker, timestamp_us DESC, xbrl_row_kind, taxonomy, tag, unit_code, period_end_date
+    LIMIT {int(self.config.xbrl_items)} BY ticker
+)
+ORDER BY timestamp_us, ticker, xbrl_row_kind, taxonomy, tag, unit_code, period_end_date
+FORMAT JSONEachRow
+"""
+        updates: list[LowFrequencyContextUpdate] = []
+        for row in self._query_json_rows(query):
+            ticker = str(row.get("ticker", "")).upper()
+            ts = int(row.get("timestamp_us", 0) or 0)
+            key = (
+                "xbrl",
+                ticker,
+                ts,
+                str(row.get("source_id", "")),
+                str(row.get("taxonomy", "")),
+                str(row.get("tag", "")),
+                str(row.get("unit_code", "")),
+                str(row.get("period_end_date", "")),
+                str(row.get("xbrl_row_kind", "")),
+            )
+            if not ticker or ts <= 0 or not self._mark_seen(key):
+                continue
+            numeric = np.asarray(
+                [
+                    _safe_float(row.get("value")),
+                    _safe_float(row.get("fiscal_year")),
+                    _date_to_epoch_day(row.get("period_end_date")),
+                    _safe_float(row.get("mapping_confidence_score")),
+                ],
+                dtype=np.float32,
+            )
+            updates.append(
+                LowFrequencyContextUpdate(
+                    kind="xbrl",
+                    ticker=ticker,
+                    timestamp_us=ts,
+                    payload=ExternalContextPayload(kind="xbrl", numeric_values=numeric, metadata=dict(row)),
+                )
+            )
+        return updates
+
+    def _fetch_macro_bars(self, *, tickers: tuple[str, ...], start_us: int, end_us: int) -> list[LowFrequencyContextUpdate]:
+        symbols = {str(ticker).upper() for ticker in tickers if str(ticker).strip()}
+        global_symbols = {str(symbol).upper() for symbol in self.config.global_symbols if str(symbol).strip()}
+        symbols.update(global_symbols)
+        if not symbols:
+            return []
+        table = f"{quote_ident(self.config.database)}.{quote_ident(self.config.macro_bars_table)}"
+        symbol_sql = ", ".join(sql_string(symbol) for symbol in sorted(symbols))
+        timeframe_sql = ", ".join(sql_string(tf) for tf in self.config.macro_timeframes)
+        query = f"""
+SELECT
+    sym,
+    timeframe,
+    toUnixTimestamp64Micro(bar_start) AS bar_start_us,
+    toUnixTimestamp64Micro(bar_end) AS timestamp_us,
+    open,
+    high,
+    low,
+    close,
+    volume,
+    dollar_volume,
+    trade_count,
+    quote_count,
+    vwap
+FROM {table}
+WHERE sym IN ({symbol_sql})
+  AND timeframe IN ({timeframe_sql})
+  AND bar_end >= {_date_time64_from_us(int(start_us))}
+  AND bar_end <= {_date_time64_from_us(int(end_us))}
+ORDER BY timestamp_us, sym, timeframe
+FORMAT JSONEachRow
+"""
+        updates: list[LowFrequencyContextUpdate] = []
+        for row in self._query_json_rows(query):
+            symbol = str(row.get("sym", "")).upper()
+            ts = int(row.get("timestamp_us", 0) or 0)
+            key = ("macro_bar", symbol, str(row.get("timeframe", "")), int(row.get("bar_start_us", 0) or 0), ts)
+            if not symbol or ts <= 0 or not self._mark_seen(key):
+                continue
+            values = np.asarray(
+                [
+                    _safe_float(row.get("open")),
+                    _safe_float(row.get("high")),
+                    _safe_float(row.get("low")),
+                    _safe_float(row.get("close")),
+                    _safe_float(row.get("volume")),
+                    _safe_float(row.get("dollar_volume")),
+                    _safe_float(row.get("trade_count")),
+                    _safe_float(row.get("quote_count")),
+                    _safe_float(row.get("vwap")),
+                ],
+                dtype=np.float32,
+            )
+            is_global = symbol in global_symbols
+            updates.append(
+                LowFrequencyContextUpdate(
+                    kind="global_market_bar" if is_global else "ticker_macro_bar",
+                    ticker=symbol,
+                    timestamp_us=ts,
+                    payload=ExternalContextPayload(kind="global_market_bar" if is_global else "ticker_macro_bar", numeric_values=values, metadata=dict(row)),
+                )
+            )
+        return updates
+
+    def _token_updates(
+        self,
+        *,
+        kind: str,
+        rows: list[dict[str, Any]],
+        chunks: int,
+        global_item: bool = False,
+    ) -> list[LowFrequencyContextUpdate]:
+        grouped: dict[tuple[str, int, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            ticker = str(row.get("ticker", "")).upper()
+            ts = int(row.get("timestamp_us", 0) or 0)
+            source_id = str(row.get("source_id", "") or row.get("accession_number", "") or row.get("text_hash", ""))
+            if ticker and ts > 0 and source_id:
+                grouped.setdefault((ticker, ts, source_id), []).append(row)
+        updates: list[LowFrequencyContextUpdate] = []
+        for (ticker, ts, source_id), token_rows in sorted(grouped.items(), key=lambda item: (item[0][1], item[0][0], item[0][2])):
+            key = (kind, ticker, ts, source_id)
+            if not self._mark_seen(key):
+                continue
+            payload = _token_payload_from_rows(kind=kind, rows=token_rows, chunks=chunks, text_max_tokens=int(self.config.text_max_tokens))
+            updates.append(LowFrequencyContextUpdate(kind=kind, ticker=ticker, timestamp_us=ts, payload=payload, global_item=global_item))
+        return updates
+
+    def _query_json_rows(self, query: str) -> list[dict[str, Any]]:
+        return [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
+
+    def _mark_seen(self, key: tuple[Any, ...]) -> bool:
+        if key in self._seen_keys:
+            return False
+        self._seen_keys.add(key)
+        return True
+
+
+def iter_rows_by_ticker_chronological(rows_by_ticker: dict[str, np.ndarray]) -> Iterable[ReplayEvent]:
     positions = {ticker: 0 for ticker in rows_by_ticker}
     while True:
         best_ticker = ""
@@ -308,7 +704,7 @@ def iter_rows_by_ticker_chronological(rows_by_ticker: dict[str, np.ndarray]) -> 
             break
         pos = positions[best_ticker]
         positions[best_ticker] = pos + 1
-        yield SyntheticEvent(ticker=best_ticker, row=rows_by_ticker[best_ticker][pos])
+        yield ReplayEvent(ticker=best_ticker, row=rows_by_ticker[best_ticker][pos])
 
 
 class SyntheticOrdinalBlockSource:
@@ -350,3 +746,70 @@ class SyntheticOrdinalBlockSource:
         ticker_index = np.concatenate(block_ticker_index)
         order = np.lexsort((ticker_index, rows["ordinal"], rows["sip_timestamp_us"]))
         return RollingEventBlock(tickers=tickers, rows=rows[order], ticker_index=ticker_index[order])
+
+
+def replay_items_for_block(block: RollingEventBlock, context_updates: Iterable[LowFrequencyContextUpdate]) -> Iterable[TimestampedReplayItem]:
+    updates = sorted(context_updates, key=lambda item: (int(item.timestamp_us), str(item.kind), str(item.ticker)))
+    update_index = 0
+    for event in block.iter_chronological():
+        event_ts = int(event.row["sip_timestamp_us"])
+        while update_index < len(updates) and int(updates[update_index].timestamp_us) <= event_ts:
+            yield TimestampedReplayItem(timestamp_us=int(updates[update_index].timestamp_us), context=updates[update_index])
+            update_index += 1
+        yield TimestampedReplayItem(timestamp_us=event_ts, event=event)
+    while update_index < len(updates):
+        yield TimestampedReplayItem(timestamp_us=int(updates[update_index].timestamp_us), context=updates[update_index])
+        update_index += 1
+
+
+def _token_payload_from_rows(*, kind: str, rows: list[dict[str, Any]], chunks: int, text_max_tokens: int) -> ExternalContextPayload:
+    token_ids = np.zeros((int(chunks), int(text_max_tokens)), dtype=np.uint32)
+    attention_mask = np.zeros((int(chunks), int(text_max_tokens)), dtype=np.uint8)
+    metadata = dict(rows[0]) if rows else {}
+    for row in rows:
+        chunk_index = int(row.get("token_chunk_index", 0) or 0)
+        if chunk_index < 0 or chunk_index >= int(chunks):
+            continue
+        ids = _as_int_array(row.get("input_ids"), dtype=np.uint32)
+        mask = _as_int_array(row.get("attention_mask"), dtype=np.uint8)
+        length = min(int(text_max_tokens), int(ids.shape[0]), int(mask.shape[0]))
+        if length <= 0:
+            continue
+        token_ids[chunk_index, :length] = ids[:length]
+        attention_mask[chunk_index, :length] = mask[:length]
+    return ExternalContextPayload(kind=kind, token_ids=token_ids, attention_mask=attention_mask, metadata=metadata)
+
+
+def _as_int_array(value: Any, *, dtype: Any) -> np.ndarray:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = []
+    if not isinstance(value, list):
+        value = []
+    return np.asarray(value, dtype=dtype)
+
+
+def _date_time64_from_us(timestamp_us: int) -> str:
+    value = dt.datetime.fromtimestamp(int(timestamp_us) / 1_000_000.0, tz=dt.timezone.utc)
+    text = value.strftime("%Y-%m-%d %H:%M:%S.%f")
+    return f"toDateTime64({sql_string(text)}, 6, 'UTC')"
+
+
+def _date_to_epoch_day(value: Any) -> float:
+    if value in {None, ""}:
+        return 0.0
+    try:
+        return float(dt.date.fromisoformat(str(value)[:10]).toordinal())
+    except ValueError:
+        return 0.0
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        if value is None:
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0

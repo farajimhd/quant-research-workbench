@@ -24,35 +24,45 @@ from research.mlops.clickhouse import (
 )
 from research.mlops.clickhouse_events import PersistentClickHouseBytesClient
 from research.mlops.env import load_env_files, secret_status
-from research.mlops.rolling_loader.config import RollingLoaderConfig, SyntheticRollingLoaderConfig
+from research.mlops.rolling_loader.config import RollingLoaderConfig
 from research.mlops.rolling_loader.loader import RollingContextLoader
 from research.mlops.rolling_loader.profiler import RollingLoaderProfiler, format_profile_table, write_profile_jsonl
-from research.mlops.rolling_loader.sources import ClickHouseReplayConfig, ClickHouseRollingSource, SyntheticOrdinalBlockSource
-from research.mlops.rolling_loader.synthetic import synthetic_external_updates_for_block, synthetic_rows_by_ticker
+from research.mlops.rolling_loader.sources import (
+    ClickHouseExternalContextConfig,
+    ClickHouseExternalContextSource,
+    ClickHouseReplayConfig,
+    ClickHouseRollingSource,
+    replay_items_for_block,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class ProfileSourceState:
-    source: ClickHouseRollingSource | SyntheticOrdinalBlockSource
+    source: ClickHouseRollingSource
+    context_source: ClickHouseExternalContextSource
     cursors: dict[str, int]
     warm_tickers: int
+    initial_context_updates: int
     source_summary: dict[str, object]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Profile the stateful rolling loader with the exact loader class.")
-    parser.add_argument("--source", choices=("clickhouse", "synthetic"), default="clickhouse")
     parser.add_argument("--clickhouse-url", default="")
     parser.add_argument("--user", default="")
     parser.add_argument("--password", default="")
     parser.add_argument("--database", default="market_sip_compact")
+    parser.add_argument("--sec-context-database", default="market_sip_compact")
     parser.add_argument("--events-table", default="events")
     parser.add_argument("--index-table", default="train_2019_to_2025")
+    parser.add_argument("--news-token-table", default="news_text_tokens")
+    parser.add_argument("--sec-filing-text-token-table", default="sec_filing_text_tokens")
+    parser.add_argument("--sec-xbrl-context-table", default="sec_xbrl_context")
+    parser.add_argument("--macro-bars-table", default="macro_bars_by_time_symbol")
     parser.add_argument("--max-threads", type=int, default=8)
     parser.add_argument("--max-memory-usage", default="80G")
     parser.add_argument("--env-file", type=Path, default=None)
     parser.add_argument("--tickers", type=int, default=64)
-    parser.add_argument("--rows-per-ticker", type=int, default=8000)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--batches", type=int, default=4)
     parser.add_argument("--events-per-ticker-block", type=int, default=64)
@@ -66,7 +76,10 @@ def parse_args() -> argparse.Namespace:
         help="Event spacing between context chunks. Sample origins still use --sample-stride-events.",
     )
     parser.add_argument("--sample-stride-events", type=int, default=1)
-    parser.add_argument("--external-every-events", type=int, default=512)
+    parser.add_argument("--news-lookback-days", type=int, default=30)
+    parser.add_argument("--sec-lookback-days", type=int, default=365)
+    parser.add_argument("--xbrl-lookback-days", type=int, default=730)
+    parser.add_argument("--macro-lookback-days", type=int, default=400)
     parser.add_argument("--materialize-external-payloads", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--report-path",
@@ -81,28 +94,9 @@ def build_profile_source(
     args: argparse.Namespace,
     loader: RollingContextLoader,
     loader_config: RollingLoaderConfig,
-    synthetic_config: SyntheticRollingLoaderConfig,
     profiler: RollingLoaderProfiler,
 ) -> ProfileSourceState:
     warm_count = int(loader_config.warmup_events_per_ticker)
-    if args.source == "synthetic":
-        rows_by_ticker = synthetic_rows_by_ticker(synthetic_config)
-        source = SyntheticOrdinalBlockSource(rows_by_ticker)
-        with profiler.stage("warm_load_source_rows", items=len(rows_by_ticker)):
-            warm_rows = source.warm_rows(count=min(warm_count, synthetic_config.rows_per_ticker // 2))
-        loader.warm_load_events(warm_rows)
-        cursors = source.initial_cursors(warm_count=min(warm_count, synthetic_config.rows_per_ticker // 2))
-        return ProfileSourceState(
-            source=source,
-            cursors=cursors,
-            warm_tickers=len(warm_rows),
-            source_summary={
-                "source": "synthetic",
-                "tickers": synthetic_config.tickers,
-                "rows_per_ticker": synthetic_config.rows_per_ticker,
-            },
-        )
-
     text_client = ClickHouseHttpClient(args.clickhouse_url or default_clickhouse_url(), args.user or default_clickhouse_user(), args.password or default_clickhouse_password())
     bytes_client = PersistentClickHouseBytesClient(args.clickhouse_url or default_clickhouse_url(), args.user or default_clickhouse_user(), args.password or default_clickhouse_password())
     source = ClickHouseRollingSource(
@@ -116,6 +110,28 @@ def build_profile_source(
         text_client=text_client,
         bytes_client=bytes_client,
     )
+    context_source = ClickHouseExternalContextSource(
+        config=ClickHouseExternalContextConfig(
+            database=str(args.database),
+            sec_context_database=str(args.sec_context_database),
+            news_token_table=str(args.news_token_table),
+            sec_filing_text_token_table=str(args.sec_filing_text_token_table),
+            sec_xbrl_context_table=str(args.sec_xbrl_context_table),
+            macro_bars_table=str(args.macro_bars_table),
+            news_lookback_days=int(args.news_lookback_days),
+            sec_lookback_days=int(args.sec_lookback_days),
+            xbrl_lookback_days=int(args.xbrl_lookback_days),
+            macro_lookback_days=int(args.macro_lookback_days),
+            ticker_news_items=int(loader_config.ticker_news_cache_size),
+            global_news_items=int(loader_config.global_news_cache_size),
+            sec_filing_items=int(loader_config.sec_filing_cache_size),
+            xbrl_items=int(loader_config.xbrl_cache_size),
+            news_token_chunks=int(loader_config.news_token_chunks),
+            sec_token_chunks=int(loader_config.sec_token_chunks),
+            text_max_tokens=int(loader_config.text_max_tokens),
+        ),
+        text_client=text_client,
+    )
     min_events = warm_count + max(1, int(args.events_per_ticker_block))
     with profiler.stage("source_load_ticker_index", items=int(args.tickers)):
         index_rows = source.load_ticker_index_rows(limit=int(args.tickers), min_events=min_events)
@@ -124,19 +140,46 @@ def build_profile_source(
     with profiler.stage("warm_load_source_rows", items=len(index_rows)):
         warm_rows = source.warm_rows_from_index(index_rows=index_rows, warm_count=warm_count)
     loader.warm_load_events(warm_rows)
+    warm_asof_us = _initial_context_asof_timestamp_us(warm_rows)
+    initial_updates = []
+    if warm_asof_us > 0:
+        with profiler.stage("warm_load_external_context_fetch", items=len(index_rows)):
+            initial_updates = context_source.fetch_initial_and_block_updates(
+                tickers=tuple(row.ticker for row in index_rows),
+                start_timestamp_us=warm_asof_us,
+                end_timestamp_us=warm_asof_us,
+            )
+        with profiler.stage("warm_load_external_context_apply", items=len(initial_updates), bytes_count=sum(update.payload.nbytes for update in initial_updates)):
+            for update in initial_updates:
+                loader.push_external(
+                    kind=update.kind,
+                    ticker=update.ticker,
+                    timestamp_us=update.timestamp_us,
+                    payload=update.payload,
+                    global_item=update.global_item,
+                )
     cursors = source.initial_cursors_from_index(index_rows=index_rows, warm_count=warm_count)
     return ProfileSourceState(
         source=source,
+        context_source=context_source,
         cursors=cursors,
         warm_tickers=len(warm_rows),
+        initial_context_updates=len(initial_updates),
         source_summary={
             "source": "clickhouse",
             "database": str(args.database),
+            "sec_context_database": str(args.sec_context_database),
             "events_table": str(args.events_table),
             "index_table": str(args.index_table),
+            "news_token_table": str(args.news_token_table),
+            "sec_filing_text_token_table": str(args.sec_filing_text_token_table),
+            "sec_xbrl_context_table": str(args.sec_xbrl_context_table),
+            "macro_bars_table": str(args.macro_bars_table),
             "tickers_requested": int(args.tickers),
             "tickers_loaded": len(index_rows),
             "warm_count": warm_count,
+            "initial_context_asof_us": warm_asof_us,
+            "initial_context_updates": len(initial_updates),
             "clickhouse_url": args.clickhouse_url or default_clickhouse_url(),
         },
     )
@@ -157,27 +200,19 @@ def main() -> int:
         sample_stride_events=int(args.sample_stride_events),
         profile_report_path=args.report_path,
     )
-    synthetic_config = SyntheticRollingLoaderConfig(
-        tickers=int(args.tickers),
-        rows_per_ticker=int(args.rows_per_ticker),
-        external_every_events=int(args.external_every_events),
-        batches=int(args.batches),
-        materialize_external_payloads=bool(args.materialize_external_payloads),
-        loader=loader_config,
-    )
     profiler = RollingLoaderProfiler(enabled=True)
     loader = RollingContextLoader(loader_config, profiler=profiler)
     started = time.perf_counter()
     print("=" * 100)
     print("Stateful rolling loader profiler")
     print(
-        f"source={args.source} database={args.database} events_table={args.events_table} index_table={args.index_table} "
-        f"tickers={synthetic_config.tickers} rows_per_ticker={synthetic_config.rows_per_ticker} "
+        f"source=clickhouse database={args.database} events_table={args.events_table} index_table={args.index_table} "
+        f"tickers={int(args.tickers)} "
         f"batch_size={loader_config.batch_size} context_chunks={loader_config.context_chunks} "
         f"chunk_size={loader_config.events_per_chunk} origin_chunk_stride={loader_config.chunk_stride_events} "
         f"context_chunk_stride={loader_config.context_chunk_stride_events} "
         f"coverage_events={loader_config.context_coverage_events} overlap_events={loader_config.adjacent_chunk_overlap_events} "
-        f"materialize_external={synthetic_config.materialize_external_payloads}"
+        f"materialize_external={bool(args.materialize_external_payloads)}"
     )
     print(f"clickhouse_url={args.clickhouse_url} max_threads={args.max_threads} max_memory_usage={args.max_memory_usage}")
     print(f"report={args.report_path}")
@@ -188,10 +223,10 @@ def main() -> int:
         args=args,
         loader=loader,
         loader_config=loader_config,
-        synthetic_config=synthetic_config,
         profiler=profiler,
     )
     source = source_state.source
+    context_source = source_state.context_source
     cursors = source_state.cursors
     print(f"SOURCE READY {json.dumps(source_state.source_summary, sort_keys=True)}", flush=True)
     completed_batches = 0
@@ -199,7 +234,7 @@ def main() -> int:
     last_batch_bytes = 0
     exhausted = False
     try:
-        while completed_batches < synthetic_config.batches and not exhausted:
+        while completed_batches < int(args.batches) and not exhausted:
             with profiler.stage("source_fetch_event_block", items=len(cursors)):
                 block = source.fetch_next_by_ordinal(cursors=cursors, rows_per_ticker=int(args.events_per_ticker_block))
             if block.row_count == 0:
@@ -207,25 +242,33 @@ def main() -> int:
                 break
             cursors.update(block.latest_ordinals())
             with profiler.stage("low_frequency_update_fetch", items=block.row_count):
-                updates = synthetic_external_updates_for_block(block=block, synthetic_config=synthetic_config)
-            with profiler.stage("low_frequency_update_apply", items=len(updates), bytes_count=sum(update.payload.nbytes for update in updates)):
-                for update in updates:
-                    loader.push_external(
-                        kind=update.kind,
-                        ticker=update.ticker,
-                        timestamp_us=update.timestamp_us,
-                        payload=update.payload,
-                        global_item=update.global_item,
-                    )
+                updates = context_source.fetch_initial_and_block_updates(
+                    tickers=block.tickers,
+                    start_timestamp_us=int(block.min_timestamp_us or 0),
+                    end_timestamp_us=int(block.max_timestamp_us or 0),
+                )
             with profiler.stage("block_replay_events", items=block.row_count, bytes_count=int(block.rows.nbytes)):
-                for event in block.iter_chronological():
+                for item in replay_items_for_block(block, updates):
+                    if item.context is not None:
+                        update = item.context
+                        with profiler.stage("low_frequency_update_apply", items=1, bytes_count=update.payload.nbytes):
+                            loader.push_external(
+                                kind=update.kind,
+                                ticker=update.ticker,
+                                timestamp_us=update.timestamp_us,
+                                payload=update.payload,
+                                global_item=update.global_item,
+                            )
+                        continue
+                    if item.event is None:
+                        continue
                     event_count += 1
-                    loader.push_event(event.ticker, event.row)
-                    while len(loader.ready_samples) >= loader_config.batch_size and completed_batches < synthetic_config.batches:
+                    loader.push_event(item.event.ticker, item.event.row)
+                    while len(loader.ready_samples) >= loader_config.batch_size and completed_batches < int(args.batches):
                         samples = loader.drain_ready_samples(loader_config.batch_size)
                         batch = loader.materialize_training_batch(
                             samples,
-                            materialize_external_payloads=synthetic_config.materialize_external_payloads,
+                            materialize_external_payloads=bool(args.materialize_external_payloads),
                         )
                         completed_batches += 1
                         last_batch_bytes = batch.nbytes
@@ -238,21 +281,20 @@ def main() -> int:
                             "cache": loader.cache_summary(),
                             "source": source_state.source_summary,
                             "config": {
-                                "tickers": synthetic_config.tickers,
-                                "rows_per_ticker": synthetic_config.rows_per_ticker,
+                                "tickers": int(args.tickers),
                                 "events_per_ticker_block": int(args.events_per_ticker_block),
                                 "batch_size": loader_config.batch_size,
                                 "context_chunks": loader_config.context_chunks,
                                 "origin_chunk_stride_events": loader_config.chunk_stride_events,
                                 "context_chunk_stride_events": loader_config.context_chunk_stride_events,
                                 "context_coverage_events": loader_config.context_coverage_events,
-                                "materialize_external_payloads": synthetic_config.materialize_external_payloads,
+                                "materialize_external_payloads": bool(args.materialize_external_payloads),
                             },
                             "profile": profiler.snapshot(),
                         }
                         write_profile_jsonl(args.report_path, payload)
                         print(
-                            f"BATCH [{completed_batches}/{synthetic_config.batches}] "
+                            f"BATCH [{completed_batches}/{int(args.batches)}] "
                             f"events={event_count:,} block_rows={block.row_count:,} batch_mib={payload['last_batch_mib']:.2f} "
                             f"elapsed={time.perf_counter() - started:.1f}s"
                         )
@@ -276,6 +318,14 @@ def main() -> int:
     print("-" * 100)
     print(json.dumps({"completed_batches": completed_batches, "events_replayed": event_count, "report": str(args.report_path)}, indent=2))
     return 0
+
+
+def _initial_context_asof_timestamp_us(rows_by_ticker: dict[str, object]) -> int:
+    values = []
+    for rows in rows_by_ticker.values():
+        if getattr(rows, "size", 0):
+            values.append(int(rows["sip_timestamp_us"][-1]))
+    return min(values) if values else 0
 
 
 if __name__ == "__main__":
