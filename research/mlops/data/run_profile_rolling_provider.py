@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import sys
 import time
@@ -60,6 +61,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile-production-gather", action="store_true")
     parser.add_argument("--skip-q-live-contexts", action="store_true", help="Backward-compatible alias for --skip-external-contexts.")
     parser.add_argument("--skip-external-contexts", action="store_true")
+    parser.add_argument(
+        "--external-context-asof-date",
+        default="",
+        help=(
+            "Optional UTC date/timestamp used only for tokenized news/SEC/XBRL context lookup. "
+            "This lets profiling use already-tokenized context coverage, for example 2021-11-01, "
+            "while event_date remains a different market-data day."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -150,9 +160,21 @@ def run_clickhouse(args: argparse.Namespace, config: RollingMarketDataConfig) ->
         engine.load_macro_bars(macro)
         if not (args.skip_q_live_contexts or args.skip_external_contexts) and day.rows_by_ticker:
             start_us, end_us = event_time_bounds(day.rows_by_ticker)
-            print(f"FETCH external contexts start_us={start_us} end_us={end_us}", flush=True)
+            if str(args.external_context_asof_date).strip():
+                context_anchor_us = _parse_utc_timestamp_us(str(args.external_context_asof_date))
+                context_start_us = context_anchor_us
+                context_end_us = context_anchor_us
+                print(
+                    f"FETCH external contexts override_asof={args.external_context_asof_date} "
+                    f"event_start_us={start_us} event_end_us={end_us} context_anchor_us={context_anchor_us}",
+                    flush=True,
+                )
+            else:
+                context_start_us = start_us
+                context_end_us = end_us
+                print(f"FETCH external contexts start_us={start_us} end_us={end_us}", flush=True)
             started = time.perf_counter()
-            contexts = source.fetch_q_live_contexts(start_timestamp_us=start_us, end_timestamp_us=end_us, tickers=tickers)
+            contexts = source.fetch_q_live_contexts(start_timestamp_us=context_start_us, end_timestamp_us=context_end_us, tickers=tickers)
             seconds = time.perf_counter() - started
             counts = {name: len(rows) for name, rows in contexts.items()}
             engine.load_external_contexts(contexts)
@@ -219,6 +241,7 @@ def profile_engine(args: argparse.Namespace, config: RollingMarketDataConfig, en
     materialized_stage_counts = _sum_metric_suffix(materialized_metrics, "_count")
     payload = {
         "event_date": str(args.event_date),
+        "external_context_asof_date": str(args.external_context_asof_date or ""),
         "rows_returned": int(rows_returned),
         "fetch_seconds": float(fetch_seconds),
         "index_seconds": float(index_seconds),
@@ -276,6 +299,22 @@ def _fake_embedding_lookup(samples) -> dict[tuple[str, int], np.ndarray]:
         for window in sample.chunk_windows:
             lookup[(str(sample.ticker).upper(), int(window.origin_ordinal))] = rng.normal(0.0, 0.01, size=(32,)).astype(np.float32)
     return lookup
+
+
+def _parse_utc_timestamp_us(value: str) -> int:
+    text = str(value).strip()
+    if not text:
+        raise ValueError("external context as-of date is empty")
+    if len(text) == 10:
+        parsed = dt.datetime.fromisoformat(text).replace(tzinfo=dt.timezone.utc)
+    else:
+        normalized = text.replace("Z", "+00:00")
+        parsed = dt.datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        else:
+            parsed = parsed.astimezone(dt.timezone.utc)
+    return int(parsed.timestamp() * 1_000_000)
 
 
 def _shape_summary(value) -> str:
