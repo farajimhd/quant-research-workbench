@@ -259,8 +259,7 @@ The current model-facing XBRL tensor consumes reference ids for:
 - `xbrl.xbrl_row_kind`
 - `xbrl.location_code`
 
-The builder also records text metadata categories for future text-metadata
-encoders:
+The rolling text tensor path consumes these text metadata categories:
 
 - `news.provider`
 - `news.url_domain`

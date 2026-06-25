@@ -859,6 +859,23 @@ class RollingMarketSampleEngine:
             origin_timestamp_us = np.zeros((batch, max_items), dtype=np.int64)
             item_mask = np.zeros((batch, max_items), dtype=np.bool_)
             chunk_mask = np.zeros((batch, max_items, max_chunks), dtype=np.bool_)
+            single_category_ids: dict[str, np.ndarray] = {}
+            multi_category_ids: dict[str, np.ndarray] = {}
+            multi_category_masks: dict[str, np.ndarray] = {}
+            if name in {"ticker_news", "market_news"}:
+                single_category_ids["provider_id"] = np.zeros((batch, max_items), dtype=np.uint32)
+                single_category_ids["url_domain_id"] = np.zeros((batch, max_items), dtype=np.uint32)
+                multi_category_ids["channels_ids"] = np.zeros((batch, max_items, int(self.config.news_max_channels)), dtype=np.uint32)
+                multi_category_masks["channels_mask"] = np.zeros((batch, max_items, int(self.config.news_max_channels)), dtype=np.bool_)
+                multi_category_ids["provider_tags_ids"] = np.zeros((batch, max_items, int(self.config.news_max_provider_tags)), dtype=np.uint32)
+                multi_category_masks["provider_tags_mask"] = np.zeros((batch, max_items, int(self.config.news_max_provider_tags)), dtype=np.bool_)
+                multi_category_ids["quality_flags_ids"] = np.zeros((batch, max_items, int(self.config.news_max_quality_flags)), dtype=np.uint32)
+                multi_category_masks["quality_flags_mask"] = np.zeros((batch, max_items, int(self.config.news_max_quality_flags)), dtype=np.bool_)
+            elif name == "sec_filings":
+                single_category_ids["form_id"] = np.zeros((batch, max_items), dtype=np.uint32)
+                single_category_ids["text_kind_id"] = np.zeros((batch, max_items), dtype=np.uint32)
+                multi_category_ids["quality_flags_ids"] = np.zeros((batch, max_items, int(self.config.sec_max_quality_flags)), dtype=np.uint32)
+                multi_category_masks["quality_flags_mask"] = np.zeros((batch, max_items, int(self.config.sec_max_quality_flags)), dtype=np.bool_)
             misses: list[tuple[tuple[str, str], str]] = []
             placements: list[tuple[int, int, tuple[str, str]]] = []
             for sample_index, rows in enumerate(rows_by_sample):
@@ -870,6 +887,16 @@ class RollingMarketSampleEngine:
                     origin_timestamp_us[sample_index, item_index] = int(origin_us)
                     item_mask[sample_index, item_index] = True
                     token_rows = item["rows"]
+                    row = token_rows[0] if token_rows else item["row"]
+                    self._fill_text_metadata_ids(
+                        name=name,
+                        row=row,
+                        sample_index=sample_index,
+                        item_index=item_index,
+                        single_category_ids=single_category_ids,
+                        multi_category_ids=multi_category_ids,
+                        multi_category_masks=multi_category_masks,
+                    )
                     used_precomputed = False
                     for token_row in token_rows:
                         chunk_index = int(token_row.get("token_chunk_index", 0) or 0)
@@ -886,7 +913,6 @@ class RollingMarketSampleEngine:
                                 used_precomputed = True
                     if used_precomputed:
                         continue
-                    row = token_rows[0] if token_rows else item["row"]
                     text = _row_to_model_text(name, row)
                     if not text:
                         continue
@@ -917,9 +943,71 @@ class RollingMarketSampleEngine:
                 "attention_mask": attention_mask,
                 "item_mask": item_mask,
                 "chunk_mask": chunk_mask,
+                **single_category_ids,
+                **multi_category_ids,
+                **multi_category_masks,
                 **_timestamp_feature_arrays(source_timestamp_us, origin_timestamp_us),
             }
         return out
+
+    def _fill_text_metadata_ids(
+        self,
+        *,
+        name: str,
+        row: Mapping[str, Any],
+        sample_index: int,
+        item_index: int,
+        single_category_ids: dict[str, np.ndarray],
+        multi_category_ids: dict[str, np.ndarray],
+        multi_category_masks: dict[str, np.ndarray],
+    ) -> None:
+        if name in {"ticker_news", "market_news"}:
+            single_category_ids["provider_id"][sample_index, item_index] = self.category_references.id("news", "provider", row.get("provider", ""))
+            single_category_ids["url_domain_id"][sample_index, item_index] = self.category_references.id("news", "url_domain", row.get("url_domain", ""))
+            _fill_multi_category_ids(
+                ids=multi_category_ids["channels_ids"],
+                mask=multi_category_masks["channels_mask"],
+                sample_index=sample_index,
+                item_index=item_index,
+                values=_split_category_values(row.get("channels", "")),
+                store=self.category_references,
+                domain="news",
+                field_name="channels",
+            )
+            _fill_multi_category_ids(
+                ids=multi_category_ids["provider_tags_ids"],
+                mask=multi_category_masks["provider_tags_mask"],
+                sample_index=sample_index,
+                item_index=item_index,
+                values=_split_category_values(row.get("provider_tags", "")),
+                store=self.category_references,
+                domain="news",
+                field_name="provider_tags",
+            )
+            _fill_multi_category_ids(
+                ids=multi_category_ids["quality_flags_ids"],
+                mask=multi_category_masks["quality_flags_mask"],
+                sample_index=sample_index,
+                item_index=item_index,
+                values=_split_category_values(row.get("quality_flags", "")),
+                store=self.category_references,
+                domain="news",
+                field_name="quality_flags",
+            )
+            return
+        if name == "sec_filings":
+            single_category_ids["form_id"][sample_index, item_index] = self.category_references.id("sec_filings", "form_type", row.get("form_type", ""))
+            single_category_ids["text_kind_id"][sample_index, item_index] = self.category_references.id("sec_filings", "text_kind", row.get("text_kind", ""))
+            _fill_multi_category_ids(
+                ids=multi_category_ids["quality_flags_ids"],
+                mask=multi_category_masks["quality_flags_mask"],
+                sample_index=sample_index,
+                item_index=item_index,
+                values=_split_category_values(row.get("quality_flags", "")),
+                store=self.category_references,
+                domain="sec_filings",
+                field_name="quality_flags",
+            )
 
     def _materialize_xbrl_inputs(
         self,
@@ -1630,6 +1718,42 @@ def _stable_uint32(value: Any) -> int:
 
 def _normalize_category_value(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _split_category_values(value: Any) -> tuple[str, ...]:
+    text = str(value or "")
+    if not text:
+        return ()
+    return tuple(item for item in (_normalize_category_value(part) for part in text.split(",")) if item)
+
+
+def _fill_multi_category_ids(
+    *,
+    ids: np.ndarray,
+    mask: np.ndarray,
+    sample_index: int,
+    item_index: int,
+    values: Iterable[str],
+    store: CategoryReferenceStore,
+    domain: str,
+    field_name: str,
+) -> None:
+    max_values = int(ids.shape[-1])
+    out_index = 0
+    seen: set[str] = set()
+    for value in values:
+        normalized = _normalize_category_value(value)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        category_id = store.id(domain, field_name, normalized)
+        if category_id <= 0:
+            continue
+        ids[sample_index, item_index, out_index] = category_id
+        mask[sample_index, item_index, out_index] = True
+        out_index += 1
+        if out_index >= max_values:
+            break
 
 
 def _safe_float32(value: Any) -> np.float32:

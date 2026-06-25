@@ -374,6 +374,14 @@ The tensor group is `text_inputs["ticker_news"]`.
 | `item_mask` | `[B, 32]` | `bool` | True when the article slot is present. |
 | `chunk_mask` | `[B, 32, 2]` | `bool` | True when the article chunk exists. |
 | `time_*` | `[B, 32]` | `float32` | Unified time features for the article timestamp. |
+| `provider_id` | `[B, 32]` | `uint32` | Dense category id from `training_category_reference` for `news.provider`. |
+| `url_domain_id` | `[B, 32]` | `uint32` | Dense category id for `news.url_domain`. |
+| `channels_ids` | `[B, 32, 8]` | `uint32` | Bounded multi-category ids for comma-separated `news.channels`. |
+| `channels_mask` | `[B, 32, 8]` | `bool` | True where a channel id is present. |
+| `provider_tags_ids` | `[B, 32, 16]` | `uint32` | Bounded multi-category ids for comma-separated `news.provider_tags`. |
+| `provider_tags_mask` | `[B, 32, 16]` | `bool` | True where a provider tag id is present. |
+| `quality_flags_ids` | `[B, 32, 8]` | `uint32` | Bounded multi-category ids for comma-separated `news.quality_flags`. |
+| `quality_flags_mask` | `[B, 32, 8]` | `bool` | True where a quality flag id is present. |
 
 Example:
 
@@ -406,6 +414,14 @@ The tensor group is `text_inputs["market_news"]`.
 | `item_mask` | `[B, 64]` | `bool` | True when the market-news slot is present. |
 | `chunk_mask` | `[B, 64, 2]` | `bool` | True when the article chunk exists. |
 | `time_*` | `[B, 64]` | `float32` | Unified time features for the market-news timestamp. |
+| `provider_id` | `[B, 64]` | `uint32` | Dense category id from `training_category_reference` for `news.provider`. |
+| `url_domain_id` | `[B, 64]` | `uint32` | Dense category id for `news.url_domain`. |
+| `channels_ids` | `[B, 64, 8]` | `uint32` | Bounded multi-category ids for comma-separated `news.channels`. |
+| `channels_mask` | `[B, 64, 8]` | `bool` | True where a channel id is present. |
+| `provider_tags_ids` | `[B, 64, 16]` | `uint32` | Bounded multi-category ids for comma-separated `news.provider_tags`. |
+| `provider_tags_mask` | `[B, 64, 16]` | `bool` | True where a provider tag id is present. |
+| `quality_flags_ids` | `[B, 64, 8]` | `uint32` | Bounded multi-category ids for comma-separated `news.quality_flags`. |
+| `quality_flags_mask` | `[B, 64, 8]` | `bool` | True where a quality flag id is present. |
 
 ### SEC Filing Text Inputs
 
@@ -423,6 +439,10 @@ The tensor group is `text_inputs["sec_filings"]`.
 | `item_mask` | `[B, 16]` | `bool` | True when the filing-text slot is present. |
 | `chunk_mask` | `[B, 16, 8]` | `bool` | True when the text chunk exists. |
 | `time_*` | `[B, 16]` | `float32` | Unified time features for the accepted filing timestamp. |
+| `form_id` | `[B, 16]` | `uint32` | Dense category id from `training_category_reference` for `sec_filings.form_type`. |
+| `text_kind_id` | `[B, 16]` | `uint32` | Dense category id for `sec_filings.text_kind`. |
+| `quality_flags_ids` | `[B, 16, 8]` | `uint32` | Bounded multi-category ids for comma-separated `sec_filings.quality_flags`. |
+| `quality_flags_mask` | `[B, 16, 8]` | `bool` | True where a quality flag id is present. |
 
 Example filing text item:
 
@@ -433,8 +453,9 @@ text_rank = 0
 time_delta_seconds = -12_345_600.0
 ```
 
-The model-facing tensor receives token ids and relative age. The accession,
-form, and source metadata remain available in `external_context` for audit.
+The model-facing tensor receives token ids, relative age, and dense metadata
+category ids. Accession and source identifiers remain available in
+`external_context` for audit.
 
 ### XBRL Fundamental Inputs
 
@@ -542,8 +563,7 @@ The current rolling tensor path consumes the XBRL reference ids for:
 - `xbrl.xbrl_row_kind`
 - `xbrl.location_code`
 
-The builder also records text metadata categories for future text-metadata
-encoders:
+The rolling text tensor path consumes these text metadata references:
 
 - `news.provider`
 - `news.url_domain`

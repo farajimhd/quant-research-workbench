@@ -205,11 +205,15 @@ class RollingMarketDataConfig:
     news_lookback_days: int = 30
     news_max_items: int = 32
     news_token_chunks: int = 2
+    news_max_channels: int = 8
+    news_max_provider_tags: int = 16
+    news_max_quality_flags: int = 8
     market_news_max_items: int = 64
     market_news_token_chunks: int = 2
     sec_lookback_days: int = 365
     sec_max_items: int = 16
     sec_token_chunks: int = 8
+    sec_max_quality_flags: int = 8
     xbrl_lookback_days: int = 730
     xbrl_max_items: int = 512
     intraday_label_horizons: tuple[TimeBarHorizon, ...] = field(default_factory=lambda: DEFAULT_INTRADAY_LABEL_HORIZONS)

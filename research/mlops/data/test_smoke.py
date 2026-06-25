@@ -147,7 +147,22 @@ def smoke_rolling_provider() -> None:
             ]
         )
     )
-    engine.load_external_context("ticker_news", [{"ticker": "T0000", "timestamp_ns": 1_700_000_000_001_000_000, "id": "n1", "headline": "test"}])
+    engine.load_external_context(
+        "ticker_news",
+        [
+            {
+                "ticker": "T0000",
+                "timestamp_ns": 1_700_000_000_001_000_000,
+                "id": "n1",
+                "headline": "test",
+                "provider": "benzinga",
+                "url_domain": "benzinga.com",
+                "channels": "analyst-ratings,earnings",
+                "provider_tags": "AAPL,earnings",
+                "quality_flags": "ok",
+            }
+        ],
+    )
     engine.load_external_context(
         "market_news",
         [
@@ -156,6 +171,11 @@ def smoke_rolling_provider() -> None:
                 "timestamp_us": 1_700_000_000_001_000,
                 "source_id": "mn1",
                 "title": "Market-wide test news",
+                "provider": "benzinga",
+                "url_domain": "benzinga.com",
+                "channels": "macro",
+                "provider_tags": "market",
+                "quality_flags": "ok",
                 "input_ids": [101, 102],
                 "attention_mask": [1, 1],
                 "token_chunk_index": 0,
@@ -172,6 +192,8 @@ def smoke_rolling_provider() -> None:
                 "form_type": "10-Q",
                 "company_name": "Test Company",
                 "items": "Item 2",
+                "text_kind": "body",
+                "quality_flags": "parsed",
                 "texts": [{"text_kind": "body", "text": "Management discussion text"}],
             }
         ],
@@ -205,6 +227,18 @@ def smoke_rolling_provider() -> None:
             {"domain": "xbrl", "field_name": "unit_code", "category_value": "USD", "category_id": 3},
             {"domain": "xbrl", "field_name": "form_type", "category_value": "10-Q", "category_id": 4},
             {"domain": "xbrl", "field_name": "xbrl_row_kind", "category_value": "company_fact", "category_id": 5},
+            {"domain": "news", "field_name": "provider", "category_value": "benzinga", "category_id": 11},
+            {"domain": "news", "field_name": "url_domain", "category_value": "benzinga.com", "category_id": 12},
+            {"domain": "news", "field_name": "channels", "category_value": "analyst-ratings", "category_id": 13},
+            {"domain": "news", "field_name": "channels", "category_value": "earnings", "category_id": 14},
+            {"domain": "news", "field_name": "channels", "category_value": "macro", "category_id": 15},
+            {"domain": "news", "field_name": "provider_tags", "category_value": "AAPL", "category_id": 16},
+            {"domain": "news", "field_name": "provider_tags", "category_value": "earnings", "category_id": 17},
+            {"domain": "news", "field_name": "provider_tags", "category_value": "market", "category_id": 18},
+            {"domain": "news", "field_name": "quality_flags", "category_value": "ok", "category_id": 19},
+            {"domain": "sec_filings", "field_name": "form_type", "category_value": "10-Q", "category_id": 21},
+            {"domain": "sec_filings", "field_name": "text_kind", "category_value": "body", "category_id": 22},
+            {"domain": "sec_filings", "field_name": "quality_flags", "category_value": "parsed", "category_id": 23},
         ]
     )
     samples = engine.build_ready_indices()
@@ -237,11 +271,22 @@ def smoke_rolling_provider() -> None:
     assert batch.text_inputs["ticker_news"]["time_delta_seconds"].shape == (8, config.news_max_items)
     assert batch.text_inputs["ticker_news"]["time_age_seconds_log1p"].shape == (8, config.news_max_items)
     assert "timestamp_us" not in batch.text_inputs["ticker_news"]
+    assert batch.text_inputs["ticker_news"]["provider_id"][0, 0] == 11
+    assert batch.text_inputs["ticker_news"]["url_domain_id"][0, 0] == 12
+    assert batch.text_inputs["ticker_news"]["channels_ids"][0, 0, 0] == 13
+    assert batch.text_inputs["ticker_news"]["channels_ids"][0, 0, 1] == 14
+    assert bool(batch.text_inputs["ticker_news"]["channels_mask"][0, 0, 1])
+    assert batch.text_inputs["ticker_news"]["provider_tags_ids"][0, 0, 0] == 16
+    assert batch.text_inputs["ticker_news"]["quality_flags_ids"][0, 0, 0] == 19
     assert batch.text_inputs["market_news"]["input_ids"].shape == (8, config.market_news_max_items, config.market_news_token_chunks, config.text_max_tokens)
     assert batch.text_inputs["market_news"]["chunk_mask"].shape == (8, config.market_news_max_items, config.market_news_token_chunks)
+    assert batch.text_inputs["market_news"]["provider_tags_ids"][0, 0, 0] == 18
     assert batch.text_inputs["sec_filings"]["attention_mask"].shape == (8, config.sec_max_items, config.sec_token_chunks, config.text_max_tokens)
     assert batch.text_inputs["sec_filings"]["chunk_mask"].shape == (8, config.sec_max_items, config.sec_token_chunks)
     assert batch.text_inputs["sec_filings"]["time_delta_seconds"].shape == (8, config.sec_max_items)
+    assert batch.text_inputs["sec_filings"]["form_id"][0, 0] == 21
+    assert batch.text_inputs["sec_filings"]["text_kind_id"][0, 0] == 22
+    assert batch.text_inputs["sec_filings"]["quality_flags_ids"][0, 0, 0] == 23
     assert batch.xbrl_inputs["value"].shape == (8, config.xbrl_max_items)
     assert batch.xbrl_inputs["mask"].shape == (8, config.xbrl_max_items)
     assert batch.xbrl_inputs["time_delta_seconds"].shape == (8, config.xbrl_max_items)
