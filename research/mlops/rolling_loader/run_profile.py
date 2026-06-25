@@ -25,6 +25,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rows-per-ticker", type=int, default=8000)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--batches", type=int, default=4)
+    parser.add_argument("--context-chunks", type=int, default=32)
+    parser.add_argument("--chunk-stride-events", type=int, default=64)
     parser.add_argument("--sample-stride-events", type=int, default=1)
     parser.add_argument("--external-every-events", type=int, default=512)
     parser.add_argument("--materialize-external-payloads", action=argparse.BooleanOptionalAction, default=False)
@@ -40,6 +42,9 @@ def main() -> int:
     args = parse_args()
     loader_config = RollingLoaderConfig(
         batch_size=int(args.batch_size),
+        short_context_chunks=int(args.context_chunks),
+        chunk_stride_events=int(args.chunk_stride_events),
+        long_context_lags=(),
         sample_stride_events=int(args.sample_stride_events),
         profile_report_path=args.report_path,
     )
@@ -59,7 +64,9 @@ def main() -> int:
     print(
         f"tickers={synthetic_config.tickers} rows_per_ticker={synthetic_config.rows_per_ticker} "
         f"batch_size={loader_config.batch_size} context_chunks={loader_config.context_chunks} "
-        f"max_lag={loader_config.max_context_lag} materialize_external={synthetic_config.materialize_external_payloads}"
+        f"chunk_size={loader_config.events_per_chunk} chunk_stride={loader_config.chunk_stride_events} "
+        f"coverage_events={loader_config.context_coverage_events} overlap_events={loader_config.adjacent_chunk_overlap_events} "
+        f"materialize_external={synthetic_config.materialize_external_payloads}"
     )
     print(f"report={args.report_path}")
     print("=" * 100)
@@ -107,6 +114,8 @@ def main() -> int:
                     "rows_per_ticker": synthetic_config.rows_per_ticker,
                     "batch_size": loader_config.batch_size,
                     "context_chunks": loader_config.context_chunks,
+                    "chunk_stride_events": loader_config.chunk_stride_events,
+                    "context_coverage_events": loader_config.context_coverage_events,
                     "materialize_external_payloads": synthetic_config.materialize_external_payloads,
                 },
                 "profile": profiler.snapshot(),

@@ -8,20 +8,21 @@ from pathlib import Path
 class RollingLoaderConfig:
     """Configuration for the stateful rolling loader.
 
-    The defaults mirror the current market-structure encoder and the context
-    sizes discussed for the production serving path. Lags are measured in
-    chunk-origin steps; with ``chunk_stride_events=1`` a lag of 32 means the
-    128-event chunk ending 32 events before the current origin.
+    The defaults mirror the current production-aligned market-structure plan:
+    32 chunks, 128 events per chunk, and a 64-event stride between chunk
+    origins. Lags are measured in chunk-origin steps; with
+    ``chunk_stride_events=64`` a lag of 1 means the 128-event chunk ending 64
+    events before the current origin.
     """
 
     events_per_chunk: int = 128
     header_bytes: int = 14
     event_bytes: int = 16
-    chunk_stride_events: int = 1
+    chunk_stride_events: int = 64
     sample_stride_events: int = 1
-    short_context_chunks: int = 16
+    short_context_chunks: int = 32
     short_context_stride_chunks: int = 1
-    long_context_lags: tuple[int, ...] = (32, 48, 72, 108, 162, 243, 365, 548, 822, 1233, 1850)
+    long_context_lags: tuple[int, ...] = ()
     batch_size: int = 4096
     max_ready_samples: int = 0
     global_news_cache_size: int = 64
@@ -61,6 +62,16 @@ class RollingLoaderConfig:
         return int(self.max_context_lag) * int(self.chunk_stride_events) + int(self.events_per_chunk)
 
     @property
+    def context_coverage_events(self) -> int:
+        if self.context_chunks <= 0:
+            return 0
+        return int(self.events_per_chunk) + int(self.max_context_lag) * int(self.chunk_stride_events)
+
+    @property
+    def adjacent_chunk_overlap_events(self) -> int:
+        return max(0, int(self.events_per_chunk) - int(self.chunk_stride_events))
+
+    @property
     def event_cache_events_per_ticker(self) -> int:
         # Keep enough rows for the largest lag plus a headroom chunk so live
         # append/trim does not invalidate just-created sample pointers.
@@ -68,7 +79,7 @@ class RollingLoaderConfig:
 
     @property
     def chunk_cache_size_per_ticker(self) -> int:
-        return int(self.max_context_lag) + int(self.events_per_chunk) + int(self.batch_size)
+        return max(int(self.max_context_lag) + 1, int(self.context_chunks)) + 8
 
 
 @dataclass(frozen=True, slots=True)

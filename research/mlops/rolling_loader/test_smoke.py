@@ -17,7 +17,13 @@ from research.mlops.rolling_loader.synthetic import iter_synthetic_events, synth
 
 
 def main() -> int:
-    loader_config = RollingLoaderConfig(batch_size=16, short_context_chunks=4, long_context_lags=(8, 16), sample_stride_events=4)
+    loader_config = RollingLoaderConfig(
+        batch_size=16,
+        chunk_stride_events=4,
+        short_context_chunks=4,
+        long_context_lags=(8, 16),
+        sample_stride_events=1,
+    )
     synthetic_config = SyntheticRollingLoaderConfig(tickers=4, rows_per_ticker=512, external_every_events=32, loader=loader_config)
     profiler = RollingLoaderProfiler(enabled=True)
     loader = RollingContextLoader(loader_config, profiler=profiler)
