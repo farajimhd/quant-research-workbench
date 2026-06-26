@@ -752,6 +752,19 @@ def _format_rate_bytes(bytes_per_second: float) -> str:
     return f"{value:,.1f} {unit}"
 
 
+def _single_line(value: Any, *, width: int) -> str:
+    text = " ".join(str(value or "").split())
+    if width <= 0 or len(text) <= width:
+        return text
+    if width <= 1:
+        return text[:width]
+    return text[: width - 1] + "."
+
+
+def _single_line_items(values: list[str], *, width: int) -> list[str]:
+    return [_single_line(value, width=width) for value in values]
+
+
 class MaterializedCacheDashboard:
     def __init__(self, *, enabled: bool, refresh_seconds: float, stats: BuildStats) -> None:
         self.enabled = bool(enabled)
@@ -782,7 +795,12 @@ class MaterializedCacheDashboard:
             "Table": Table,
             "Text": Text,
         }
-        self._live = Live(self._render(), refresh_per_second=2, transient=False, vertical_overflow="crop")
+        self._live = Live(
+            self._render(),
+            auto_refresh=False,
+            transient=False,
+            vertical_overflow="crop",
+        )
         self._live.start()
 
     def refresh(self) -> None:
@@ -880,7 +898,7 @@ class MaterializedCacheDashboard:
         if not compact:
             workers.add_column("Tickers", no_wrap=True, justify="right", width=8)
         workers.add_column("Elapsed", no_wrap=True, width=7 if compact else 8)
-        workers.add_column("Message", overflow="fold", ratio=2)
+        workers.add_column("Message", no_wrap=True, overflow="ellipsis", ratio=2)
         for worker in self.stats.workers.values():
             total_done = int(worker.materializing_done) + int(worker.writing_done)
             total_expected = int(worker.materializing_total) + int(worker.writing_total)
@@ -911,12 +929,14 @@ class MaterializedCacheDashboard:
             ]
             if not compact:
                 row.append(f"{worker.ticker_count:,}")
-            row.extend([_format_duration(worker.seconds), worker.last_message[-32 if compact else -48 :]])
+            message_width = 28 if compact else 48
+            row.extend([_format_duration(worker.seconds), _single_line(worker.last_message, width=message_width)])
             workers.add_row(*row)
 
         messages = Table.grid(expand=True)
-        messages.add_column()
-        for message in self.stats.messages[-8:]:
+        messages.add_column(no_wrap=True, overflow="ellipsis")
+        padded_messages = [*_single_line_items(self.stats.messages[-8:], width=max(40, terminal_width - 8)), *[""] * 8][:8]
+        for message in padded_messages:
             messages.add_row(message)
 
         return Group(
