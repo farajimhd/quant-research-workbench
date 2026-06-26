@@ -17,7 +17,12 @@ from research.mlops.clickhouse import ClickHouseHttpClient, parse_size_bytes, qu
 from research.mlops.clickhouse_events import EVENT_ROW_DTYPE
 from research.mlops.data.config import RollingMarketDataConfig
 from research.mlops.data.contracts import RollingSampleIndex, RollingTrainingBatch
-from research.mlops.data.rolling import MacroBarFrame, RollingMarketSampleEngine
+from research.mlops.data.rolling import (
+    MacroBarFrame,
+    RollingMarketSampleEngine,
+    max_daily_label_lookahead_days,
+    max_daily_macro_lookback_days,
+)
 
 
 EVENT_COLUMNS: tuple[str, ...] = (
@@ -330,8 +335,13 @@ FORMAT JSONEachRow
         end_date: dt.date,
     ) -> MacroBarFrame:
         table = f"{quote_ident(self.config.database)}.{quote_ident(self.config.macro_bars_table)}"
-        macro_start = start_date - dt.timedelta(days=int(self.config.macro_lookback_days))
-        label_end = end_date + dt.timedelta(days=int(self.config.label_lookahead_days))
+        macro_lookback_days = max(
+            int(self.config.macro_lookback_days),
+            max_daily_macro_lookback_days() * 2,
+        )
+        label_lookahead_days = max(int(self.config.label_lookahead_days), max_daily_label_lookahead_days())
+        macro_start = start_date - dt.timedelta(days=macro_lookback_days)
+        label_end = end_date + dt.timedelta(days=label_lookahead_days)
         query = f"""
 SELECT
     sym,

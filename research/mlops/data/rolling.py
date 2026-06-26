@@ -29,6 +29,33 @@ from research.mlops.data.profiling import DataPrepProfile, DataPrepProfiler
 from research.mlops.data.ticker_blocks import build_future_time_bar_labels
 
 
+DAILY_MACRO_WINDOWS: tuple[tuple[str, int], ...] = (
+    ("today_asof", 0),
+    ("past_1d", 1),
+    ("past_2d", 2),
+    ("past_3d", 3),
+    ("past_7d", 7),
+    ("past_14d", 14),
+    ("past_28d", 28),
+    ("past_40d", 40),
+    ("past_200d", 200),
+)
+DAILY_GLOBAL_WINDOWS: tuple[tuple[str, int], ...] = (
+    ("today_asof", 0),
+    ("past_1d", 1),
+    ("past_2d", 2),
+    ("past_7d", 7),
+)
+DAILY_LABEL_WINDOWS: tuple[tuple[str, int], ...] = (
+    ("current_day_full", 0),
+    ("plus_1d", 1),
+    ("plus_2d", 2),
+    ("plus_3d", 3),
+    ("plus_7d", 7),
+    ("plus_28d", 28),
+)
+
+
 @dataclass(frozen=True, slots=True)
 class HistoricalDayFetchResult:
     rows_by_ticker: dict[str, np.ndarray]
@@ -105,6 +132,71 @@ class MacroBarFrame:
 
     def future_tensor(self, *, symbol: str, timestamp_us: int, timeframes: Iterable[str]) -> tuple[np.ndarray, np.ndarray]:
         return self._lookup_tensor(symbol=symbol, timestamp_us=timestamp_us, timeframes=tuple(timeframes), side="future")
+
+    def daily_window_tensor(
+        self,
+        *,
+        symbol: str,
+        timestamp_us: int,
+        windows: tuple[tuple[str, int], ...],
+        today_asof: np.ndarray | None = None,
+        today_asof_valid: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        symbol = symbol.upper()
+        arrays = self._index.get((symbol, "1d"))
+        bars = np.zeros((len(windows), len(BAR_FEATURE_KEYS)), dtype=np.float32)
+        mask = np.zeros((len(windows),), dtype=np.bool_)
+        current_day_start_ms = _utc_day_start_ms(timestamp_us)
+        completed_end = 0
+        if arrays is not None and arrays["bar_start_ms"].size:
+            completed_end = int(np.searchsorted(arrays["bar_start_ms"], current_day_start_ms, side="left"))
+        for window_index, (name, count) in enumerate(windows):
+            if name == "today_asof":
+                if today_asof is not None and bool(today_asof_valid):
+                    bars[window_index] = np.asarray(today_asof, dtype=np.float32)
+                    mask[window_index] = True
+                continue
+            if arrays is None or int(count) <= 0:
+                continue
+            start = max(0, completed_end - int(count))
+            end = completed_end
+            if start >= end or end > arrays["bar_start_ms"].shape[0]:
+                continue
+            bars[window_index] = _aggregate_daily_bar_arrays(arrays, start=start, end=end)
+            mask[window_index] = True
+        return bars, mask
+
+    def daily_future_tensor(
+        self,
+        *,
+        symbol: str,
+        timestamp_us: int,
+        windows: tuple[tuple[str, int], ...],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        symbol = symbol.upper()
+        arrays = self._index.get((symbol, "1d"))
+        bars = np.zeros((len(windows), len(BAR_FEATURE_KEYS)), dtype=np.float32)
+        mask = np.zeros((len(windows),), dtype=np.bool_)
+        if arrays is None or arrays["bar_start_ms"].size == 0:
+            return bars, mask
+        current_day_start_ms = _utc_day_start_ms(timestamp_us)
+        current_index = int(np.searchsorted(arrays["bar_start_ms"], current_day_start_ms, side="left"))
+        if current_index >= arrays["bar_start_ms"].shape[0] or int(arrays["bar_start_ms"][current_index]) != current_day_start_ms:
+            return bars, mask
+        for window_index, (name, count) in enumerate(windows):
+            if name == "current_day_full":
+                bars[window_index] = _aggregate_daily_bar_arrays(arrays, start=current_index, end=current_index + 1)
+                mask[window_index] = True
+                continue
+            if int(count) <= 0:
+                continue
+            start = current_index + 1
+            end = start + int(count)
+            if end > arrays["bar_start_ms"].shape[0]:
+                continue
+            bars[window_index] = _aggregate_daily_bar_arrays(arrays, start=start, end=end)
+            mask[window_index] = True
+        return bars, mask
 
     def _lookup_tensor(self, *, symbol: str, timestamp_us: int, timeframes: tuple[str, ...], side: str) -> tuple[np.ndarray, np.ndarray]:
         symbol = symbol.upper()
@@ -566,6 +658,8 @@ class RollingMarketSampleEngine:
             (
                 macro_features,
                 global_features,
+                macro_bar_timeframes,
+                global_bar_timeframes,
                 ticker_macro_bars,
                 ticker_macro_bar_mask,
                 global_market_bars,
@@ -577,7 +671,7 @@ class RollingMarketSampleEngine:
         with profiler.stage("session_features", count=batch):
             session_features = self._materialize_session_features(sample_tuple)
         with profiler.stage("macro_future_labels", count=batch):
-            labels, future_macro_bars, future_macro_bar_mask = self._materialize_future_labels(sample_tuple)
+            labels, future_macro_bars, future_macro_bar_mask, future_macro_bar_timeframes = self._materialize_future_labels(sample_tuple)
         with profiler.stage("intraday_future_labels", count=batch):
             intraday_labels = self._materialize_intraday_future_labels(sample_tuple)
             labels.update(intraday_labels)
@@ -621,10 +715,10 @@ class RollingMarketSampleEngine:
             chunk_time_features=chunk_time_features,
             bar_feature_keys=BAR_FEATURE_KEYS,
             future_bar_feature_keys=FUTURE_BAR_FEATURE_KEYS,
-            macro_bar_timeframes=tuple(self.config.macro_timeframes),
+            macro_bar_timeframes=macro_bar_timeframes,
             global_bar_symbols=tuple(self.config.global_symbols),
-            global_bar_timeframes=tuple(self.config.macro_timeframes),
-            future_macro_bar_timeframes=tuple(self.config.label_timeframes),
+            global_bar_timeframes=global_bar_timeframes,
+            future_macro_bar_timeframes=future_macro_bar_timeframes,
             future_intraday_bar_horizons=tuple(horizon.name for horizon in self.config.intraday_label_horizons),
             ticker_macro_bars=ticker_macro_bars,
             ticker_macro_bar_mask=ticker_macro_bar_mask,
@@ -666,6 +760,8 @@ class RollingMarketSampleEngine:
         (
             macro_features,
             global_features,
+            macro_bar_timeframes,
+            global_bar_timeframes,
             ticker_macro_bars,
             ticker_macro_bar_mask,
             global_market_bars,
@@ -691,9 +787,9 @@ class RollingMarketSampleEngine:
             samples=sample_tuple,
             time_features=time_features,
             bar_feature_keys=BAR_FEATURE_KEYS,
-            macro_bar_timeframes=tuple(self.config.macro_timeframes),
+            macro_bar_timeframes=macro_bar_timeframes,
             global_bar_symbols=tuple(self.config.global_symbols),
-            global_bar_timeframes=tuple(self.config.macro_timeframes),
+            global_bar_timeframes=global_bar_timeframes,
             ticker_macro_bars=ticker_macro_bars,
             ticker_macro_bar_mask=ticker_macro_bar_mask,
             global_market_bars=global_market_bars,
@@ -726,64 +822,84 @@ class RollingMarketSampleEngine:
 
     def _materialize_bar_features(
         self, samples: tuple[RollingSampleIndex, ...]
-    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], tuple[str, ...], tuple[str, ...], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         batch = len(samples)
-        macro_timeframes = tuple(self.config.macro_timeframes)
+        macro_timeframes = _resolved_macro_timeframes()
+        global_timeframes = _resolved_global_timeframes()
         global_symbols = tuple(self.config.global_symbols)
         fields = len(BAR_FEATURE_KEYS)
         ticker_macro_bars = np.zeros((batch, len(macro_timeframes), fields), dtype=np.float32)
         ticker_macro_bar_mask = np.zeros((batch, len(macro_timeframes)), dtype=np.bool_)
-        global_market_bars = np.zeros((batch, len(global_symbols), len(macro_timeframes), fields), dtype=np.float32)
-        global_market_bar_mask = np.zeros((batch, len(global_symbols), len(macro_timeframes)), dtype=np.bool_)
+        global_market_bars = np.zeros((batch, len(global_symbols), len(global_timeframes), fields), dtype=np.float32)
+        global_market_bar_mask = np.zeros((batch, len(global_symbols), len(global_timeframes)), dtype=np.bool_)
         macro_rows: list[dict[str, float]] = []
         global_rows: dict[str, list[dict[str, float]]] = {symbol: [] for symbol in self.config.global_symbols}
         for sample_index, sample in enumerate(samples):
-            bars, mask = self.macro_bars.asof_tensor(
+            today_bar, today_valid = self._today_asof_bar(sample.ticker, sample.origin_timestamp_us)
+            bars, mask = self.macro_bars.daily_window_tensor(
                 symbol=sample.ticker,
                 timestamp_us=sample.origin_timestamp_us,
-                timeframes=macro_timeframes,
+                windows=DAILY_MACRO_WINDOWS,
+                today_asof=today_bar,
+                today_asof_valid=today_valid,
             )
             ticker_macro_bars[sample_index] = bars
             ticker_macro_bar_mask[sample_index] = mask
             macro_rows.append(_bar_tensor_row(macro_timeframes, bars))
             for symbol_index, symbol in enumerate(global_symbols):
-                bars, mask = self.macro_bars.asof_tensor(
+                today_bar, today_valid = self._today_asof_bar(symbol, sample.origin_timestamp_us)
+                bars, mask = self.macro_bars.daily_window_tensor(
                     symbol=symbol,
                     timestamp_us=sample.global_asof_timestamp_us,
-                    timeframes=macro_timeframes,
+                    windows=DAILY_GLOBAL_WINDOWS,
+                    today_asof=today_bar,
+                    today_asof_valid=today_valid,
                 )
                 global_market_bars[sample_index, symbol_index] = bars
                 global_market_bar_mask[sample_index, symbol_index] = mask
-                global_rows[symbol].append(_bar_tensor_row(macro_timeframes, bars))
+                global_rows[symbol].append(_bar_tensor_row(global_timeframes, bars))
         macro = _rows_to_feature_arrays(macro_rows)
         global_features = {f"{symbol}_{key}": value for symbol, rows in global_rows.items() for key, value in _rows_to_feature_arrays(rows).items()}
-        return macro, global_features, ticker_macro_bars, ticker_macro_bar_mask, global_market_bars, global_market_bar_mask
+        return macro, global_features, macro_timeframes, global_timeframes, ticker_macro_bars, ticker_macro_bar_mask, global_market_bars, global_market_bar_mask
 
-    def _materialize_future_labels(self, samples: tuple[RollingSampleIndex, ...]) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
+    def _materialize_future_labels(self, samples: tuple[RollingSampleIndex, ...]) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, tuple[str, ...]]:
         batch = len(samples)
-        label_timeframes = tuple(self.config.label_timeframes)
+        label_timeframes = _resolved_label_timeframes()
         bars_out = np.zeros((batch, len(label_timeframes), len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32)
         mask_out = np.zeros((batch, len(label_timeframes)), dtype=np.bool_)
         rows: list[dict[str, float]] = []
         for sample_index, sample in enumerate(samples):
-            bars, mask = self.macro_bars.future_tensor(
+            bars, mask = self.macro_bars.daily_future_tensor(
                 symbol=sample.ticker,
                 timestamp_us=sample.origin_timestamp_us,
-                timeframes=label_timeframes,
+                windows=DAILY_LABEL_WINDOWS,
             )
             bars_out[sample_index] = _select_future_bar_fields(bars)
             mask_out[sample_index] = mask
             rows.append(_future_bar_tensor_row(label_timeframes, bars_out[sample_index]))
         labels = {f"future_{key}": value for key, value in _rows_to_feature_arrays(rows).items()}
-        return labels, bars_out, mask_out
+        return labels, bars_out, mask_out, label_timeframes
+
+    def _today_asof_bar(self, ticker: str, origin_timestamp_us: int) -> tuple[np.ndarray, bool]:
+        ticker_rows = self.rows_by_ticker.get(str(ticker).upper())
+        if ticker_rows is None or ticker_rows.size == 0:
+            return np.zeros((len(BAR_FEATURE_KEYS),), dtype=np.float32), False
+        timestamps = ticker_rows["sip_timestamp_us"].astype(np.int64, copy=False)
+        end = int(np.searchsorted(timestamps, int(origin_timestamp_us), side="right"))
+        if end <= 0:
+            return np.zeros((len(BAR_FEATURE_KEYS),), dtype=np.float32), False
+        day_start_us = _utc_day_start_ms(origin_timestamp_us) * 1000
+        start = int(np.searchsorted(timestamps[:end], day_start_us, side="left"))
+        if start >= end:
+            return np.zeros((len(BAR_FEATURE_KEYS),), dtype=np.float32), False
+        return _today_asof_bar_from_events(ticker_rows[start:end]), True
 
     def _materialize_intraday_future_labels(self, samples: tuple[RollingSampleIndex, ...]) -> dict[str, np.ndarray]:
         """Future same-queue trade bars for short horizons.
 
         These labels are derived from the current in-memory event queue, so they
         line up with production stream semantics. They intentionally complement
-        the macro future labels above, which come from offline daily/weekly/monthly
-        bars.
+        the macro future labels above, which come from offline daily bars.
         """
 
         batch = len(samples)
@@ -1776,6 +1892,111 @@ def _date_to_epoch_day(value: Any) -> int:
         return (dt.date.fromisoformat(text[:10]) - dt.date(1970, 1, 1)).days
     except Exception:
         return 0
+
+
+def _resolved_macro_timeframes() -> tuple[str, ...]:
+    return tuple(name for name, _count in DAILY_MACRO_WINDOWS)
+
+
+def _resolved_global_timeframes() -> tuple[str, ...]:
+    return tuple(name for name, _count in DAILY_GLOBAL_WINDOWS)
+
+
+def _resolved_label_timeframes() -> tuple[str, ...]:
+    return tuple(name for name, _count in DAILY_LABEL_WINDOWS)
+
+
+def max_daily_macro_lookback_days() -> int:
+    return max(count for _name, count in DAILY_MACRO_WINDOWS)
+
+
+def max_daily_label_lookahead_days() -> int:
+    return max(count for _name, count in DAILY_LABEL_WINDOWS)
+
+
+def _utc_day_start_ms(timestamp_us: int) -> int:
+    day = dt.datetime.fromtimestamp(int(timestamp_us) / 1_000_000.0, tz=dt.timezone.utc).date()
+    return int(dt.datetime.combine(day, dt.time.min, tzinfo=dt.timezone.utc).timestamp() * 1000)
+
+
+def _aggregate_daily_bar_arrays(arrays: Mapping[str, np.ndarray], *, start: int, end: int) -> np.ndarray:
+    out = np.zeros((len(BAR_FEATURE_KEYS),), dtype=np.float32)
+    if end <= start:
+        return out
+    open_values = arrays.get("open")
+    close_values = arrays.get("close")
+    high_values = arrays.get("high")
+    low_values = arrays.get("low")
+    volume_values = arrays.get("volume")
+    dollar_values = arrays.get("dollar_volume")
+    trade_count_values = arrays.get("trade_count")
+    quote_count_values = arrays.get("quote_count")
+    vwap_values = arrays.get("vwap")
+    volume = float(np.sum(volume_values[start:end])) if volume_values is not None else 0.0
+    dollar_volume = float(np.sum(dollar_values[start:end])) if dollar_values is not None else 0.0
+    weighted_vwap = 0.0
+    if vwap_values is not None and volume_values is not None and volume > 0:
+        weighted_vwap = float(np.sum(vwap_values[start:end] * volume_values[start:end]) / volume)
+    values = {
+        "open": float(open_values[start]) if open_values is not None else 0.0,
+        "high": float(np.max(high_values[start:end])) if high_values is not None else 0.0,
+        "low": float(np.min(low_values[start:end])) if low_values is not None else 0.0,
+        "close": float(close_values[end - 1]) if close_values is not None else 0.0,
+        "volume": volume,
+        "dollar_volume": dollar_volume,
+        "trade_count": float(np.sum(trade_count_values[start:end])) if trade_count_values is not None else 0.0,
+        "quote_count": float(np.sum(quote_count_values[start:end])) if quote_count_values is not None else 0.0,
+        "vwap": float(dollar_volume / volume) if volume > 0 and dollar_volume > 0 else weighted_vwap,
+    }
+    for index, name in enumerate(BAR_FEATURE_KEYS):
+        out[index] = np.float32(values.get(name, 0.0))
+    return out
+
+
+def _today_asof_bar_from_events(rows: np.ndarray) -> np.ndarray:
+    out = np.zeros((len(BAR_FEATURE_KEYS),), dtype=np.float32)
+    if rows.size == 0:
+        return out
+    quotes = rows[rows["event_type"] == QUOTE_EVENT_TYPE]
+    trades = rows[rows["event_type"] == TRADE_EVENT_TYPE]
+    quote_count = float(quotes.size)
+    if trades.size:
+        prices = _decode_primary_price(trades)
+        sizes = np.maximum(0.0, trades["size_primary"].astype(np.float64, copy=False))
+        volume = float(np.sum(sizes))
+        dollar_volume = float(np.sum(prices * sizes))
+        values = {
+            "open": float(prices[0]),
+            "high": float(np.max(prices)),
+            "low": float(np.min(prices)),
+            "close": float(prices[-1]),
+            "volume": volume,
+            "dollar_volume": dollar_volume,
+            "trade_count": float(trades.size),
+            "quote_count": quote_count,
+            "vwap": float(dollar_volume / volume) if volume > 0 else 0.0,
+        }
+    elif quotes.size:
+        last = quotes[-1:]
+        ask = _decode_primary_price(last)[0]
+        bid = _decode_secondary_price(last)[0]
+        mid = float((ask + bid) * 0.5) if ask > 0 and bid > 0 else float(max(ask, bid))
+        values = {
+            "open": mid,
+            "high": mid,
+            "low": mid,
+            "close": mid,
+            "volume": 0.0,
+            "dollar_volume": 0.0,
+            "trade_count": 0.0,
+            "quote_count": quote_count,
+            "vwap": mid,
+        }
+    else:
+        return out
+    for index, name in enumerate(BAR_FEATURE_KEYS):
+        out[index] = np.float32(values.get(name, 0.0))
+    return out
 
 
 def _fill_empty_bar_values(out: dict[str, float], prefix: str) -> None:

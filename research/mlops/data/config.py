@@ -197,9 +197,9 @@ class RollingMarketDataConfig:
     max_threads: int = 8
     max_memory_usage: str = "80G"
     global_symbols: tuple[str, ...] = ("SPY", "QQQ", "IWM", "DIA")
-    macro_timeframes: tuple[str, ...] = ("1d", "1w", "1mo", "1y")
-    label_timeframes: tuple[str, ...] = ("1d", "1w", "1mo", "1y")
-    macro_lookback_days: int = 40
+    macro_timeframes: tuple[str, ...] = ("1d",)
+    label_timeframes: tuple[str, ...] = ("1d",)
+    macro_lookback_days: int = 400
     label_lookahead_days: int = 400
     q_live_contexts: tuple[str, ...] = ("ticker_news", "market_news", "sec_filings", "xbrl")
     news_lookback_days: int = 30

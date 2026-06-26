@@ -74,7 +74,7 @@ DEFAULTS: dict[str, Any] = {
     "sample_stride_events": 1,
     "max_threads": 8,
     "max_memory_usage": "80G",
-    "macro_lookback_days": 40,
+    "macro_lookback_days": 400,
     "label_lookahead_days": 400,
     "news_lookback_days": 30,
     "ticker_news_items": 8,

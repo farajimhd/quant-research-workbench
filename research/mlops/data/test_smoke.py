@@ -141,9 +141,13 @@ def smoke_rolling_provider() -> None:
     engine.load_macro_bars(
         MacroBarFrame(
             rows=[
-                {"sym": "T0000", "timeframe": "1d", "bar_start_ms": 1_699_999_000_000, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 100, "dollar_volume": 150, "trade_count": 10, "quote_count": 50, "vwap": 1.4},
-                {"sym": "T0000", "timeframe": "1d", "bar_start_ms": 1_700_000_100_000, "open": 2, "high": 3, "low": 1.5, "close": 2.5, "volume": 200, "dollar_volume": 500, "trade_count": 20, "quote_count": 60, "vwap": 2.2},
-                {"sym": "SPY", "timeframe": "1d", "bar_start_ms": 1_699_999_000_000, "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 1000, "dollar_volume": 10_500, "trade_count": 100, "quote_count": 500, "vwap": 10.3},
+                {"sym": "T0000", "timeframe": "1d", "bar_start_ms": 1_699_833_600_000, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 100, "dollar_volume": 150, "trade_count": 10, "quote_count": 50, "vwap": 1.4},
+                {"sym": "T0000", "timeframe": "1d", "bar_start_ms": 1_699_920_000_000, "open": 2, "high": 3, "low": 1.5, "close": 2.5, "volume": 200, "dollar_volume": 500, "trade_count": 20, "quote_count": 60, "vwap": 2.2},
+                {"sym": "T0000", "timeframe": "1d", "bar_start_ms": 1_700_006_400_000, "open": 3, "high": 4, "low": 2.5, "close": 3.5, "volume": 300, "dollar_volume": 1050, "trade_count": 30, "quote_count": 70, "vwap": 3.2},
+                {"sym": "T0000", "timeframe": "1d", "bar_start_ms": 1_700_092_800_000, "open": 4, "high": 5, "low": 3.5, "close": 4.5, "volume": 400, "dollar_volume": 1800, "trade_count": 40, "quote_count": 80, "vwap": 4.2},
+                {"sym": "SPY", "timeframe": "1d", "bar_start_ms": 1_699_833_600_000, "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 1000, "dollar_volume": 10_500, "trade_count": 100, "quote_count": 500, "vwap": 10.3},
+                {"sym": "SPY", "timeframe": "1d", "bar_start_ms": 1_699_920_000_000, "open": 11, "high": 12, "low": 10, "close": 11.5, "volume": 1100, "dollar_volume": 12_650, "trade_count": 110, "quote_count": 510, "vwap": 11.3},
+                {"sym": "SPY", "timeframe": "1d", "bar_start_ms": 1_700_006_400_000, "open": 12, "high": 13, "low": 11, "close": 12.5, "volume": 1200, "dollar_volume": 15_000, "trade_count": 120, "quote_count": 520, "vwap": 12.3},
             ]
         )
     )
@@ -250,19 +254,34 @@ def smoke_rolling_provider() -> None:
     assert batch.events_uint8.shape == (8, len(config.context_lags), 128, 16)
     assert batch.bar_feature_keys == BAR_FEATURE_KEYS
     assert batch.future_bar_feature_keys == FUTURE_BAR_FEATURE_KEYS
-    assert batch.ticker_macro_bars.shape == (8, len(config.macro_timeframes), len(BAR_FEATURE_KEYS))
-    assert batch.ticker_macro_bar_mask.shape == (8, len(config.macro_timeframes))
-    assert batch.global_market_bars.shape == (8, len(config.global_symbols), len(config.macro_timeframes), len(BAR_FEATURE_KEYS))
-    assert batch.global_market_bar_mask.shape == (8, len(config.global_symbols), len(config.macro_timeframes))
-    assert batch.future_macro_bars.shape == (8, len(config.label_timeframes), len(FUTURE_BAR_FEATURE_KEYS))
-    assert batch.future_macro_bar_mask.shape == (8, len(config.label_timeframes))
+    assert batch.macro_bar_timeframes == ("today_asof", "past_1d", "past_2d", "past_3d", "past_7d", "past_14d", "past_28d", "past_40d", "past_200d")
+    assert batch.global_bar_timeframes == ("today_asof", "past_1d", "past_2d", "past_7d")
+    assert batch.future_macro_bar_timeframes == ("current_day_full", "plus_1d", "plus_2d", "plus_3d", "plus_7d", "plus_28d")
+    assert batch.ticker_macro_bars.shape == (8, len(batch.macro_bar_timeframes), len(BAR_FEATURE_KEYS))
+    assert batch.ticker_macro_bar_mask.shape == (8, len(batch.macro_bar_timeframes))
+    assert batch.global_market_bars.shape == (8, len(config.global_symbols), len(batch.global_bar_timeframes), len(BAR_FEATURE_KEYS))
+    assert batch.global_market_bar_mask.shape == (8, len(config.global_symbols), len(batch.global_bar_timeframes))
+    assert batch.future_macro_bars.shape == (8, len(batch.future_macro_bar_timeframes), len(FUTURE_BAR_FEATURE_KEYS))
+    assert batch.future_macro_bar_mask.shape == (8, len(batch.future_macro_bar_timeframes))
     assert batch.future_intraday_bars.shape == (8, len(config.intraday_label_horizons), len(FUTURE_BAR_FEATURE_KEYS))
     assert batch.future_intraday_bar_mask.shape == (8, len(config.intraday_label_horizons))
     assert float(batch.ticker_macro_bars[0, 0, BAR_FEATURE_KEYS.index("close")]) > 0.0
-    assert "1d_close" in batch.macro_features
+    assert float(batch.ticker_macro_bars[0, batch.macro_bar_timeframes.index("past_1d"), BAR_FEATURE_KEYS.index("close")]) == 1.5
+    assert bool(batch.ticker_macro_bar_mask[0, batch.macro_bar_timeframes.index("past_200d")])
+    assert float(batch.ticker_macro_bars[0, batch.macro_bar_timeframes.index("past_200d"), BAR_FEATURE_KEYS.index("close")]) == 1.5
+    assert float(batch.future_macro_bars[0, batch.future_macro_bar_timeframes.index("current_day_full"), FUTURE_BAR_FEATURE_KEYS.index("close")]) == 2.5
+    assert float(batch.future_macro_bars[0, batch.future_macro_bar_timeframes.index("plus_1d"), FUTURE_BAR_FEATURE_KEYS.index("close")]) == 3.5
+    assert "today_asof_close" in batch.macro_features
+    assert "past_1d_close" in batch.macro_features
+    assert "1w_close" not in batch.macro_features
+    assert "1mo_close" not in batch.macro_features
+    assert "1y_close" not in batch.macro_features
     assert "session_trade_count_so_far" in batch.macro_features
-    assert "SPY_1d_close" in batch.global_features
-    assert "future_1d_close" in batch.labels
+    assert "SPY_today_asof_close" in batch.global_features
+    assert "SPY_past_7d_close" in batch.global_features
+    assert "future_current_day_full_close" in batch.labels
+    assert "future_plus_1d_close" in batch.labels
+    assert "future_1w_close" not in batch.labels
     assert "future_intraday_bar_100ms_high" in batch.labels
     assert "future_intraday_bar_100ms_vwap" not in batch.labels
     assert "ticker_news" in batch.external_context
