@@ -350,7 +350,7 @@ learning rate, validation split, and W&B project:
 Workstation command:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v1\run_compare_v20_full_vs_masked_probe.py
+python D:\TradingML\codes\temporal_event_model\v1\research\temporal_event_model\v1\run_compare_v20_full_vs_masked_probe.py
 ```
 
 Use `--print-only` first to inspect both generated commands. Use `--only full`
