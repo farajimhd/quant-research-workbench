@@ -17,6 +17,8 @@ from research.mlops.rolling_loader.cache import ExternalContextPayload
 
 
 DEFAULT_TICKER_QUERY_CHUNK_SIZE = 512
+NEXT_EVENT_LOOKAHEAD_DAYS = 7
+MAX_NEXT_EVENT_SEARCH_DAYS = 3650
 
 
 @dataclass(frozen=True, slots=True)
@@ -665,27 +667,155 @@ FORMAT TSV
 
         if int(window_us) <= 0:
             return RollingEventBlock(tickers=(), rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
-        next_start_us = self._next_event_timestamp_from_index(
-            start_exclusive_us=int(start_exclusive_us),
-            min_events=int(min_events),
-            ticker_limit=int(ticker_limit),
-        )
+        if int(ticker_limit) > 0:
+            next_start_us = self._next_event_timestamp_from_index(
+                start_exclusive_us=int(start_exclusive_us),
+                min_events=int(min_events),
+                ticker_limit=int(ticker_limit),
+            )
+        else:
+            next_start_us = self._next_event_timestamp_all(start_exclusive_us=int(start_exclusive_us))
         if next_start_us is None:
             return RollingEventBlock(tickers=(), rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
         end_inclusive_us = int(next_start_us) + int(window_us)
-        tickers = self._window_tickers_from_index(
+        if int(ticker_limit) > 0:
+            tickers = self._window_tickers_from_index(
+                start_exclusive_us=int(next_start_us) - 1,
+                end_inclusive_us=end_inclusive_us,
+                min_events=int(min_events),
+                ticker_limit=int(ticker_limit),
+            )
+            if not tickers:
+                return RollingEventBlock(tickers=(), rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+            return self.fetch_time_window(
+                tickers=tickers,
+                start_exclusive_us=int(next_start_us) - 1,
+                end_inclusive_us=end_inclusive_us,
+            )
+        return self.fetch_time_window_all(
             start_exclusive_us=int(next_start_us) - 1,
             end_inclusive_us=end_inclusive_us,
-            min_events=int(min_events),
-            ticker_limit=int(ticker_limit),
         )
-        if not tickers:
+
+    def _next_event_timestamp_all(self, *, start_exclusive_us: int) -> int | None:
+        start_date = _date_obj_from_us(int(start_exclusive_us))
+        for offset_days in range(0, MAX_NEXT_EVENT_SEARCH_DAYS, NEXT_EVENT_LOOKAHEAD_DAYS):
+            window_start = start_date + dt.timedelta(days=offset_days)
+            window_end = window_start + dt.timedelta(days=NEXT_EVENT_LOOKAHEAD_DAYS)
+            value = self._next_event_timestamp_all_date_range(
+                start_exclusive_us=int(start_exclusive_us),
+                start_date=window_start,
+                end_date=window_end,
+            )
+            if value is not None:
+                return value
+        return None
+
+    def _next_event_timestamp_all_date_range(
+        self,
+        *,
+        start_exclusive_us: int,
+        start_date: dt.date,
+        end_date: dt.date,
+    ) -> int | None:
+        start_date_sql = f"toDate({sql_string(start_date.isoformat())})"
+        end_date_sql = f"toDate({sql_string(end_date.isoformat())})"
+        query = f"""
+WITH toUInt64({int(start_exclusive_us)}) AS request_start_us
+SELECT minOrNull(sip_timestamp_us) AS next_start_us
+FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
+PREWHERE event_date >= {start_date_sql}
+  AND event_date < {end_date_sql}
+WHERE sip_timestamp_us > request_start_us
+SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
+FORMAT TSV
+"""
+        text = self.text_client.execute(query).strip()
+        if not text or text == "\\N":
+            return None
+        return int(text.splitlines()[0])
+
+    def fetch_time_window_all(self, *, start_exclusive_us: int, end_inclusive_us: int) -> RollingEventBlock:
+        if int(end_inclusive_us) <= int(start_exclusive_us):
             return RollingEventBlock(tickers=(), rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
-        return self.fetch_time_window(
-            tickers=tickers,
-            start_exclusive_us=int(next_start_us) - 1,
-            end_inclusive_us=end_inclusive_us,
-        )
+        start_date_sql = f"toDate({sql_string(_date_from_us(int(start_exclusive_us)))})"
+        end_date_sql = f"toDate({sql_string(_date_from_us(int(end_inclusive_us)))})"
+        query = f"""
+WITH window_rows AS
+(
+    SELECT
+        ticker,
+        ordinal,
+        event_type,
+        sip_timestamp_us,
+        price_primary_int,
+        price_secondary_int,
+        size_primary,
+        size_secondary,
+        exchange_primary,
+        exchange_secondary,
+        event_flags,
+        conditions_packed
+    FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
+    PREWHERE event_date >= {start_date_sql}
+      AND event_date <= {end_date_sql}
+    WHERE sip_timestamp_us > {int(start_exclusive_us)}
+      AND sip_timestamp_us <= {int(end_inclusive_us)}
+),
+window_tickers AS
+(
+    SELECT groupArray(ticker) AS request_tickers
+    FROM
+    (
+        SELECT DISTINCT ticker
+        FROM window_rows
+        ORDER BY ticker
+    )
+)
+SELECT
+    toUInt32(indexOf(request_tickers, ticker) - 1) AS span_id,
+    ordinal,
+    event_type,
+    sip_timestamp_us,
+    price_primary_int,
+    price_secondary_int,
+    size_primary,
+    size_secondary,
+    exchange_primary,
+    exchange_secondary,
+    event_flags,
+    conditions_packed
+FROM window_rows
+CROSS JOIN window_tickers
+ORDER BY sip_timestamp_us, ticker, ordinal
+SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
+FORMAT RowBinary
+"""
+        payload = self.bytes_client.execute_bytes(query)
+        if len(payload) % EVENT_ROW_DTYPE.itemsize != 0:
+            raise RuntimeError(f"RowBinary payload size {len(payload):,} is not divisible by event row size {EVENT_ROW_DTYPE.itemsize}")
+        rows = np.frombuffer(payload, dtype=EVENT_ROW_DTYPE).copy()
+        if rows.size == 0:
+            return RollingEventBlock(tickers=(), rows=rows, ticker_index=np.zeros((0,), dtype=np.uint32))
+        tickers = self._window_tickers_all(start_exclusive_us=int(start_exclusive_us), end_inclusive_us=int(end_inclusive_us))
+        ticker_index = rows["span_id"].astype(np.uint32, copy=True)
+        return RollingEventBlock(tickers=tickers, rows=rows, ticker_index=ticker_index)
+
+    def _window_tickers_all(self, *, start_exclusive_us: int, end_inclusive_us: int) -> tuple[str, ...]:
+        start_date_sql = f"toDate({sql_string(_date_from_us(int(start_exclusive_us)))})"
+        end_date_sql = f"toDate({sql_string(_date_from_us(int(end_inclusive_us)))})"
+        query = f"""
+SELECT DISTINCT ticker
+FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
+PREWHERE event_date >= {start_date_sql}
+  AND event_date <= {end_date_sql}
+WHERE sip_timestamp_us > {int(start_exclusive_us)}
+  AND sip_timestamp_us <= {int(end_inclusive_us)}
+ORDER BY ticker
+SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
+FORMAT TSV
+"""
+        return tuple(str(line).upper() for line in self.text_client.execute(query).splitlines() if line.strip())
 
     def _next_event_timestamp_from_index(
         self,
@@ -694,7 +824,32 @@ FORMAT TSV
         min_events: int,
         ticker_limit: int,
     ) -> int | None:
-        start_date_sql = f"toDate({sql_string(_date_from_us(int(start_exclusive_us)))})"
+        start_date = _date_obj_from_us(int(start_exclusive_us))
+        for offset_days in range(0, MAX_NEXT_EVENT_SEARCH_DAYS, NEXT_EVENT_LOOKAHEAD_DAYS):
+            window_start = start_date + dt.timedelta(days=offset_days)
+            window_end = window_start + dt.timedelta(days=NEXT_EVENT_LOOKAHEAD_DAYS)
+            value = self._next_event_timestamp_from_index_date_range(
+                start_exclusive_us=int(start_exclusive_us),
+                min_events=int(min_events),
+                ticker_limit=int(ticker_limit),
+                start_date=window_start,
+                end_date=window_end,
+            )
+            if value is not None:
+                return value
+        return None
+
+    def _next_event_timestamp_from_index_date_range(
+        self,
+        *,
+        start_exclusive_us: int,
+        min_events: int,
+        ticker_limit: int,
+        start_date: dt.date,
+        end_date: dt.date,
+    ) -> int | None:
+        start_date_sql = f"toDate({sql_string(start_date.isoformat())})"
+        end_date_sql = f"toDate({sql_string(end_date.isoformat())})"
         eligible_sql = self._eligible_index_subquery(min_events=int(min_events), ticker_limit=int(ticker_limit))
         query = f"""
 WITH
@@ -703,6 +858,7 @@ SELECT minOrNull(e.sip_timestamp_us) AS next_start_us
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)} AS e
 INNER JOIN ({eligible_sql}) AS i ON e.ticker = i.ticker
 WHERE e.event_date >= {start_date_sql}
+  AND e.event_date < {end_date_sql}
   AND e.sip_timestamp_us > request_start_us
   AND e.ordinal >= i.first_ordinal
   AND e.ordinal <= i.max_valid_ordinal
@@ -1303,8 +1459,12 @@ def _date_time64_from_us(timestamp_us: int) -> str:
 
 
 def _date_from_us(timestamp_us: int) -> str:
+    return _date_obj_from_us(timestamp_us).isoformat()
+
+
+def _date_obj_from_us(timestamp_us: int) -> dt.date:
     value = dt.datetime.fromtimestamp(int(timestamp_us) / 1_000_000.0, tz=dt.timezone.utc)
-    return value.strftime("%Y-%m-%d")
+    return value.date()
 
 
 def _date_to_epoch_day(value: Any) -> float:

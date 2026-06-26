@@ -534,6 +534,7 @@ def replay_training_batches(
             )
             dynamic_tickers_initialized += len(new_window_tickers)
             active_tickers = tuple(sorted(loader.initialized_tickers))
+            replay_tickers = tuple(ticker for ticker in block.tickers if ticker in loader.initialized_tickers)
         else:
             with StepTimer(recorder, memory, "fetch_event_block", {"block_index": block_count, "active_tickers": len(cursors)}):
                 block = source.fetch_next_by_ordinal(cursors=cursors, rows_per_ticker=int(args.events_per_ticker_block))
@@ -544,6 +545,7 @@ def replay_training_batches(
             context_start_us = int(block.min_timestamp_us or 0) - 1
             context_end_us = int(block.max_timestamp_us or 0)
             new_window_tickers = ()
+            replay_tickers = block.tickers
         with StepTimer(
             recorder,
             memory,
@@ -559,7 +561,7 @@ def replay_training_batches(
             },
         ):
             updates = context_source.fetch_context_updates(
-                tickers=block.tickers,
+                tickers=replay_tickers,
                 start_exclusive_us=context_start_us,
                 end_inclusive_us=context_end_us,
             )
@@ -595,6 +597,8 @@ def replay_training_batches(
                     )
                     continue
                 if item.event is None:
+                    continue
+                if item.event.ticker not in loader.initialized_tickers:
                     continue
                 event_count += 1
                 block_events += 1
