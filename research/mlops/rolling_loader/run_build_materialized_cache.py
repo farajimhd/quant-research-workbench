@@ -824,17 +824,52 @@ class MaterializedCacheDashboard:
         progress_pct = min(100.0, 100.0 * float(self.stats.bytes_written) / float(target_bytes))
         terminal_width = shutil.get_terminal_size((120, 40)).columns
         compact = terminal_width < 140
-        summary = Table.grid(expand=True)
-        summary.add_column(ratio=1)
-        summary.add_column(ratio=1)
-        summary.add_column(ratio=1)
-        summary.add_row("Phase", self.stats.phase, f"Elapsed {elapsed / 60.0:.1f} min")
-        summary.add_row("Block", f"{self.stats.block_index} {self.stats.block_start}->{self.stats.block_end}", f"RSS {self.stats.current_rss_mib:,.0f} MiB")
-        summary.add_row("Loaded", f"{self.stats.rows_loaded:,} rows / {self.stats.tickers_loaded:,} tickers", f"Ready {self.stats.ready_samples:,}")
-        summary.add_row("Written", f"{self.stats.samples_written:,} samples", f"{rate:,.1f} samples/s")
-        summary.add_row("Shards", f"{self.stats.shards_done:,}", f"{self.stats.bytes_written / 1024**3:.2f}/{target_bytes / 1024**3:.2f} GiB")
-        summary.add_row("Throughput", _format_rate_bytes(byte_rate), f"Remaining {remaining_bytes / 1024**3:.2f} GiB")
-        summary.add_row("ETA", _format_duration(eta_seconds), f"{progress_pct:.1f}%")
+        summary = Table.grid(expand=False)
+        pair_count = 2 if compact else 3
+        for pair_index in range(pair_count):
+            if pair_index:
+                summary.add_column(no_wrap=True, width=3)
+            summary.add_column(justify="right", style="dim", no_wrap=True)
+            summary.add_column(no_wrap=True)
+        summary_rows = [
+            (
+                ("Phase", self.stats.phase),
+                ("Elapsed", _format_duration(elapsed)),
+                ("RSS", f"{self.stats.current_rss_mib:,.0f} MiB"),
+            ),
+            (
+                ("Block", str(self.stats.block_index)),
+                ("Window", f"{self.stats.block_start}->{self.stats.block_end}"),
+                ("Ready", f"{self.stats.ready_samples:,}"),
+            ),
+            (
+                ("Rows", f"{self.stats.rows_loaded:,}"),
+                ("Tickers", f"{self.stats.tickers_loaded:,}"),
+                ("Samples", f"{self.stats.samples_written:,}"),
+            ),
+            (
+                ("Shards", f"{self.stats.shards_done:,}"),
+                ("Size", f"{self.stats.bytes_written / 1024**3:.2f}/{target_bytes / 1024**3:.2f} GiB"),
+                ("Rate", f"{rate:,.1f}/s"),
+            ),
+            (
+                ("Bytes/s", _format_rate_bytes(byte_rate)),
+                ("Remain", f"{remaining_bytes / 1024**3:.2f} GiB"),
+                ("ETA", _format_duration(eta_seconds)),
+            ),
+            (
+                ("Progress", f"{progress_pct:.1f}%"),
+                ("Tasks", f"{self.stats.completed_tasks:,}/{self.stats.submitted_tasks:,}"),
+                ("Logs", str(self.stats.log_path or "")),
+            ),
+        ]
+        for row in summary_rows:
+            cells: list[Any] = []
+            for pair_index, (label, value) in enumerate(row[:pair_count]):
+                if pair_index:
+                    cells.append("")
+                cells.extend([f"{label}:", f" {value}"])
+            summary.add_row(*cells)
 
         workers = Table(expand=True)
         workers.add_column("W", no_wrap=True, width=3 if compact else 6)
