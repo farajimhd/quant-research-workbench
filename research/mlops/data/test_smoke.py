@@ -59,6 +59,7 @@ def main() -> int:
     smoke_streaming_replay()
     smoke_ticker_blocks()
     smoke_rolling_ready_index_balanced_cap()
+    smoke_rolling_ordinal_gap_materialization()
     smoke_rolling_provider()
     return 0
 
@@ -156,6 +157,36 @@ def smoke_rolling_ready_index_balanced_cap() -> None:
         assert previous.ticker == current.ticker
         assert int(current.origin_offsets[0]) == int(previous.origin_offsets[-1]) + 1
     print("rolling_ready_index_balanced_cap_ok tickers=6 samples=24")
+
+
+def smoke_rolling_ordinal_gap_materialization() -> None:
+    config = RollingMarketDataConfig(
+        short_context_chunks=1,
+        long_context_lags=(),
+        sample_stride_events=1,
+        batch_size=2,
+        max_ready_samples=8,
+        q_live_contexts=(),
+    )
+    engine = RollingMarketSampleEngine(config)
+    rows = make_synthetic_event_rows(512, low_ordinal=0)
+    rows = rows[rows["ordinal"] != 10]
+    engine.append_rows_by_ticker({"GAP": rows})
+
+    samples = engine.build_ready_indices(max_samples=8)
+    assert samples
+    sample = samples[0]
+    window = sample.chunk_windows[0]
+    assert int(window.start_ordinal) > 10
+    assert int(window.end_ordinal) - int(window.start_ordinal) == config.events_per_chunk - 1
+
+    batch = engine.materialize_training_batch(samples[:2])
+    assert batch.headers_uint8.shape == (2, 1, 14)
+    assert batch.events_uint8.shape == (2, 1, 128, 16)
+    engine.mark_processed(samples[:2])
+    expected_processed = int(np.searchsorted(rows["ordinal"], int(samples[1].origin_ordinal), side="left")) + 1
+    assert engine._processed_offsets["GAP"] == expected_processed
+    print("rolling_ordinal_gap_materialization_ok samples=2")
 
 
 def smoke_rolling_provider() -> None:

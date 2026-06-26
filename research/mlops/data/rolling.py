@@ -638,7 +638,6 @@ class RollingMarketSampleEngine:
                 rows = self.rows_by_ticker.get(sample.ticker)
                 if rows is None:
                     continue
-                low_ordinal = int(rows["ordinal"][0])
                 for context_index, window in enumerate(sample.chunk_windows):
                     cache_key = (sample.ticker, int(window.origin_ordinal))
                     encoded = encoded_window_cache.get(cache_key)
@@ -646,11 +645,16 @@ class RollingMarketSampleEngine:
                         cache_hits += 1
                     else:
                         cache_misses += 1
-                        start = int(window.start_ordinal) - low_ordinal
-                        end = int(window.end_ordinal) - low_ordinal + 1
-                        if start < 0 or end > rows.shape[0] or end - start != int(self.config.events_per_chunk):
+                        bounds = _ordinal_window_bounds(
+                            rows,
+                            start_ordinal=int(window.start_ordinal),
+                            end_ordinal=int(window.end_ordinal),
+                            expected_events=int(self.config.events_per_chunk),
+                        )
+                        if bounds is None:
                             encoded_window_cache[cache_key] = None
                             continue
+                        start, end = bounds
                         previous_sip_us = int(rows["sip_timestamp_us"][start - 1]) if start > 0 else None
                         result = encode_unified_event_window(rows[start:end], previous_sip_us=previous_sip_us)
                         encoded = None if isinstance(result, str) else result
@@ -821,8 +825,10 @@ class RollingMarketSampleEngine:
             rows = self.rows_by_ticker.get(sample.ticker)
             if rows is None or rows.size == 0:
                 continue
-            offset = int(sample.origin_ordinal) - int(rows["ordinal"][0]) + 1
-            self._processed_offsets[sample.ticker] = max(self._processed_offsets.get(sample.ticker, 0), offset)
+            position = _ordinal_position(rows, int(sample.origin_ordinal))
+            if position is None:
+                continue
+            self._processed_offsets[sample.ticker] = max(self._processed_offsets.get(sample.ticker, 0), int(position) + 1)
 
     def trim_processed_tails(self) -> None:
         keep_tail = max(0, int(self.config.carryover_events))
@@ -934,8 +940,8 @@ class RollingMarketSampleEngine:
             ticker_rows = self.rows_by_ticker.get(sample.ticker)
             if ticker_rows is None or ticker_rows.size == 0:
                 continue
-            origin_offset = int(sample.origin_ordinal) - int(ticker_rows["ordinal"][0])
-            if 0 <= origin_offset < ticker_rows.shape[0]:
+            origin_offset = _ordinal_position(ticker_rows, int(sample.origin_ordinal))
+            if origin_offset is not None:
                 by_ticker.setdefault(sample.ticker, []).append((batch_index, origin_offset))
 
         for ticker, indexed_offsets in by_ticker.items():
@@ -962,9 +968,8 @@ class RollingMarketSampleEngine:
             if ticker_rows is None or ticker_rows.size == 0:
                 rows.append(_empty_session_features())
                 continue
-            low = int(ticker_rows["ordinal"][0])
-            origin_offset = int(sample.origin_ordinal) - low
-            if origin_offset < 0:
+            origin_offset = _ordinal_position(ticker_rows, int(sample.origin_ordinal))
+            if origin_offset is None:
                 rows.append(_empty_session_features())
                 continue
             rows.append(_session_features_from_prefix(ticker_rows[: origin_offset + 1]))
@@ -1660,6 +1665,36 @@ def _filter_contiguous_origins(rows: np.ndarray, origin_offsets: np.ndarray, lag
                 valid[index] = False
                 break
     return origin_offsets[valid]
+
+
+def _ordinal_position(rows: np.ndarray, ordinal: int) -> int | None:
+    ordinals = rows["ordinal"].astype(np.int64, copy=False)
+    position = int(np.searchsorted(ordinals, int(ordinal), side="left"))
+    if position >= int(ordinals.shape[0]) or int(ordinals[position]) != int(ordinal):
+        return None
+    return position
+
+
+def _ordinal_window_bounds(
+    rows: np.ndarray,
+    *,
+    start_ordinal: int,
+    end_ordinal: int,
+    expected_events: int,
+) -> tuple[int, int] | None:
+    if int(expected_events) <= 0:
+        return None
+    start = _ordinal_position(rows, int(start_ordinal))
+    end_position = _ordinal_position(rows, int(end_ordinal))
+    if start is None or end_position is None:
+        return None
+    end = int(end_position) + 1
+    if end - int(start) != int(expected_events):
+        return None
+    ordinals = rows["ordinal"].astype(np.int64, copy=False)
+    if int(ordinals[end_position]) - int(ordinals[start]) != int(expected_events) - 1:
+        return None
+    return int(start), end
 
 
 def _allocate_ready_sample_cap(available_counts: list[int], cap: int) -> list[int]:
