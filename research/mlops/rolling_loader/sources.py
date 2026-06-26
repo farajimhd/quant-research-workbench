@@ -16,6 +16,9 @@ from research.mlops.clickhouse_events import EVENT_ROW_DTYPE, PersistentClickHou
 from research.mlops.rolling_loader.cache import ExternalContextPayload
 
 
+DEFAULT_TICKER_QUERY_CHUNK_SIZE = 512
+
+
 @dataclass(frozen=True, slots=True)
 class ClickHouseReplayConfig:
     database: str = "market_sip_compact"
@@ -230,9 +233,24 @@ FORMAT RowBinary
         *,
         index_rows: Iterable[RollingTickerIndexRow],
         start_timestamp_us: int,
+        chunk_size: int = DEFAULT_TICKER_QUERY_CHUNK_SIZE,
     ) -> dict[str, int]:
         """Resolve each ticker's replay cursor as-of the requested timestamp."""
 
+        row_tuple = tuple(index_rows)
+        if not row_tuple:
+            return {}
+        out: dict[str, int] = {}
+        for chunk in _chunks(row_tuple, max(1, int(chunk_size))):
+            out.update(self._load_start_ordinals_chunk(index_rows=chunk, start_timestamp_us=int(start_timestamp_us)))
+        return out
+
+    def _load_start_ordinals_chunk(
+        self,
+        *,
+        index_rows: tuple[RollingTickerIndexRow, ...],
+        start_timestamp_us: int,
+    ) -> dict[str, int]:
         row_tuple = tuple(index_rows)
         if not row_tuple:
             return {}
@@ -240,6 +258,7 @@ FORMAT RowBinary
         ticker_sql = "[" + ", ".join(sql_string(ticker) for ticker in ticker_tuple) + "]"
         first_sql = "[" + ", ".join(str(int(row.first_ordinal)) for row in row_tuple) + "]"
         max_sql = "[" + ", ".join(str(int(row.max_valid_ordinal)) for row in row_tuple) + "]"
+        start_date_sql = f"toDate({sql_string(_date_from_us(int(start_timestamp_us)))})"
         query = f"""
 WITH
     {ticker_sql} AS request_tickers,
@@ -249,8 +268,9 @@ SELECT
     ticker,
     max(ordinal) AS start_ordinal
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
-WHERE ticker IN request_tickers
-  AND sip_timestamp_us <= {int(start_timestamp_us)}
+PREWHERE ticker IN request_tickers
+  AND event_date <= {start_date_sql}
+WHERE sip_timestamp_us <= {int(start_timestamp_us)}
   AND ordinal >= arrayElement(request_first_ordinals, indexOf(request_tickers, ticker))
   AND ordinal <= arrayElement(request_max_ordinals, indexOf(request_tickers, ticker))
 GROUP BY ticker
@@ -272,6 +292,7 @@ FORMAT TSV
         index_rows: Iterable[RollingTickerIndexRow],
         end_ordinals: Mapping[str, int],
         warm_count: int,
+        chunk_size: int = DEFAULT_TICKER_QUERY_CHUNK_SIZE,
     ) -> dict[str, np.ndarray]:
         """Load the in-memory high-frequency carryover ending at each cursor."""
 
@@ -279,6 +300,26 @@ FORMAT TSV
         ticker_tuple = tuple(ticker for ticker in sorted(end_ordinals) if ticker in by_ticker)
         if not ticker_tuple:
             return {}
+        out: dict[str, np.ndarray] = {}
+        for ticker_chunk in _chunks(ticker_tuple, max(1, int(chunk_size))):
+            out.update(
+                self._warm_rows_ending_at_chunk(
+                    ticker_tuple=ticker_chunk,
+                    by_ticker=by_ticker,
+                    end_ordinals=end_ordinals,
+                    warm_count=int(warm_count),
+                )
+            )
+        return out
+
+    def _warm_rows_ending_at_chunk(
+        self,
+        *,
+        ticker_tuple: tuple[str, ...],
+        by_ticker: Mapping[str, RollingTickerIndexRow],
+        end_ordinals: Mapping[str, int],
+        warm_count: int,
+    ) -> dict[str, np.ndarray]:
         starts = []
         ends = []
         for ticker in ticker_tuple:
@@ -428,11 +469,44 @@ FORMAT RowBinary
         tickers: Iterable[str],
         start_exclusive_us: int,
         end_inclusive_us: int,
+        chunk_size: int = DEFAULT_TICKER_QUERY_CHUNK_SIZE,
     ) -> RollingEventBlock:
         ticker_tuple = tuple(str(ticker).upper() for ticker in tickers if str(ticker).strip())
         if not ticker_tuple or int(end_inclusive_us) <= int(start_exclusive_us):
             return RollingEventBlock(tickers=ticker_tuple, rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+        block_rows: list[np.ndarray] = []
+        block_ticker_index: list[np.ndarray] = []
+        global_index = {ticker: index for index, ticker in enumerate(ticker_tuple)}
+        for ticker_chunk in _chunks(ticker_tuple, max(1, int(chunk_size))):
+            block = self._fetch_time_window_chunk(
+                ticker_tuple=ticker_chunk,
+                start_exclusive_us=int(start_exclusive_us),
+                end_inclusive_us=int(end_inclusive_us),
+            )
+            if block.row_count <= 0:
+                continue
+            rows = block.rows.copy()
+            remapped = np.asarray([global_index[block.tickers[int(local_index)]] for local_index in block.ticker_index], dtype=np.uint32)
+            rows["span_id"] = remapped
+            block_rows.append(rows)
+            block_ticker_index.append(remapped)
+        if not block_rows:
+            return RollingEventBlock(tickers=ticker_tuple, rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+        rows = np.concatenate(block_rows)
+        ticker_index = np.concatenate(block_ticker_index)
+        order = np.lexsort((ticker_index, rows["ordinal"], rows["sip_timestamp_us"]))
+        return RollingEventBlock(tickers=ticker_tuple, rows=rows[order], ticker_index=ticker_index[order])
+
+    def _fetch_time_window_chunk(
+        self,
+        *,
+        ticker_tuple: tuple[str, ...],
+        start_exclusive_us: int,
+        end_inclusive_us: int,
+    ) -> RollingEventBlock:
         ticker_sql = "[" + ", ".join(sql_string(ticker) for ticker in ticker_tuple) + "]"
+        start_date_sql = f"toDate({sql_string(_date_from_us(int(start_exclusive_us)))})"
+        end_date_sql = f"toDate({sql_string(_date_from_us(int(end_inclusive_us)))})"
         query = f"""
 WITH
     {ticker_sql} AS request_tickers
@@ -450,8 +524,10 @@ SELECT
     event_flags,
     conditions_packed
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
-WHERE ticker IN request_tickers
-  AND sip_timestamp_us > {int(start_exclusive_us)}
+PREWHERE ticker IN request_tickers
+  AND event_date >= {start_date_sql}
+  AND event_date <= {end_date_sql}
+WHERE sip_timestamp_us > {int(start_exclusive_us)}
   AND sip_timestamp_us <= {int(end_inclusive_us)}
 ORDER BY sip_timestamp_us, ticker, ordinal
 SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
@@ -470,51 +546,66 @@ FORMAT RowBinary
         tickers: Iterable[str],
         start_exclusive_us: int,
         window_us: int,
+        chunk_size: int = DEFAULT_TICKER_QUERY_CHUNK_SIZE,
     ) -> RollingEventBlock:
         """Fetch the next non-empty event-anchored time window after the cursor."""
 
         ticker_tuple = tuple(str(ticker).upper() for ticker in tickers if str(ticker).strip())
         if not ticker_tuple or int(window_us) <= 0:
             return RollingEventBlock(tickers=ticker_tuple, rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+        next_start_us = self._next_event_timestamp_us(
+            tickers=ticker_tuple,
+            start_exclusive_us=int(start_exclusive_us),
+            chunk_size=max(1, int(chunk_size)),
+        )
+        if next_start_us is None:
+            return RollingEventBlock(tickers=ticker_tuple, rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+        return self.fetch_time_window(
+            tickers=ticker_tuple,
+            start_exclusive_us=int(next_start_us) - 1,
+            end_inclusive_us=int(next_start_us) + int(window_us),
+            chunk_size=max(1, int(chunk_size)),
+        )
+
+    def _next_event_timestamp_us(
+        self,
+        *,
+        tickers: tuple[str, ...],
+        start_exclusive_us: int,
+        chunk_size: int,
+    ) -> int | None:
+        next_values: list[int] = []
+        for ticker_chunk in _chunks(tickers, max(1, int(chunk_size))):
+            value = self._next_event_timestamp_us_chunk(ticker_tuple=ticker_chunk, start_exclusive_us=int(start_exclusive_us))
+            if value is not None:
+                next_values.append(int(value))
+        return min(next_values) if next_values else None
+
+    def _next_event_timestamp_us_chunk(
+        self,
+        *,
+        ticker_tuple: tuple[str, ...],
+        start_exclusive_us: int,
+    ) -> int | None:
         ticker_sql = "[" + ", ".join(sql_string(ticker) for ticker in ticker_tuple) + "]"
+        start_date_sql = f"toDate({sql_string(_date_from_us(int(start_exclusive_us)))})"
         query = f"""
 WITH
     {ticker_sql} AS request_tickers,
-    toUInt64({int(start_exclusive_us)}) AS request_start_us,
-    toUInt64({int(window_us)}) AS request_window_us,
-    (
-        SELECT min(sip_timestamp_us)
-        FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
-        WHERE ticker IN request_tickers
-          AND sip_timestamp_us > request_start_us
-    ) AS next_start_us
+    toUInt64({int(start_exclusive_us)}) AS request_start_us
 SELECT
-    toUInt32(indexOf(request_tickers, ticker) - 1) AS span_id,
-    ordinal,
-    event_type,
-    sip_timestamp_us,
-    price_primary_int,
-    price_secondary_int,
-    size_primary,
-    size_secondary,
-    exchange_primary,
-    exchange_secondary,
-    event_flags,
-    conditions_packed
+    minOrNull(sip_timestamp_us) AS next_start_us
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
-WHERE ticker IN request_tickers
-  AND sip_timestamp_us >= next_start_us
-  AND sip_timestamp_us <= next_start_us + request_window_us
-ORDER BY sip_timestamp_us, ticker, ordinal
+PREWHERE ticker IN request_tickers
+  AND event_date >= {start_date_sql}
+WHERE sip_timestamp_us > request_start_us
 SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
-FORMAT RowBinary
+FORMAT TSV
 """
-        payload = self.bytes_client.execute_bytes(query)
-        if len(payload) % EVENT_ROW_DTYPE.itemsize != 0:
-            raise RuntimeError(f"RowBinary payload size {len(payload):,} is not divisible by event row size {EVENT_ROW_DTYPE.itemsize}")
-        rows = np.frombuffer(payload, dtype=EVENT_ROW_DTYPE).copy()
-        ticker_index = rows["span_id"].astype(np.uint32, copy=True) if rows.size else np.zeros((0,), dtype=np.uint32)
-        return RollingEventBlock(tickers=ticker_tuple, rows=rows, ticker_index=ticker_index)
+        text = self.text_client.execute(query).strip()
+        if not text or text == "\\N":
+            return None
+        return int(text.splitlines()[0])
 
     @staticmethod
     def _memory_bytes(value: str) -> int:
@@ -615,11 +706,19 @@ class ClickHouseExternalContextSource:
     ) -> list[LowFrequencyContextUpdate]:
         ticker_tuple = tuple(sorted({str(ticker).upper() for ticker in tickers if str(ticker).strip()}))
         updates: list[LowFrequencyContextUpdate] = []
-        updates.extend(self._fetch_ticker_news(tickers=ticker_tuple, start_us=lower_bounds["news"], end_us=end_us))
         updates.extend(self._fetch_global_news(start_us=lower_bounds["news"], end_us=end_us))
-        updates.extend(self._fetch_sec_filings(tickers=ticker_tuple, start_us=lower_bounds["sec"], end_us=end_us))
-        updates.extend(self._fetch_xbrl(tickers=ticker_tuple, start_us=lower_bounds["xbrl"], end_us=end_us))
-        updates.extend(self._fetch_macro_bars(tickers=ticker_tuple, start_us=lower_bounds["macro"], end_us=end_us))
+        for chunk_index, ticker_chunk in enumerate(_chunks(ticker_tuple, DEFAULT_TICKER_QUERY_CHUNK_SIZE)):
+            updates.extend(self._fetch_ticker_news(tickers=ticker_chunk, start_us=lower_bounds["news"], end_us=end_us))
+            updates.extend(self._fetch_sec_filings(tickers=ticker_chunk, start_us=lower_bounds["sec"], end_us=end_us))
+            updates.extend(self._fetch_xbrl(tickers=ticker_chunk, start_us=lower_bounds["xbrl"], end_us=end_us))
+            updates.extend(
+                self._fetch_macro_bars(
+                    tickers=ticker_chunk,
+                    start_us=lower_bounds["macro"],
+                    end_us=end_us,
+                    include_global_symbols=chunk_index == 0,
+                )
+            )
         updates.sort(key=lambda item: (int(item.timestamp_us), str(item.kind), str(item.ticker)))
         return updates
 
@@ -833,10 +932,18 @@ FORMAT JSONEachRow
             )
         return updates
 
-    def _fetch_macro_bars(self, *, tickers: tuple[str, ...], start_us: int, end_us: int) -> list[LowFrequencyContextUpdate]:
+    def _fetch_macro_bars(
+        self,
+        *,
+        tickers: tuple[str, ...],
+        start_us: int,
+        end_us: int,
+        include_global_symbols: bool = True,
+    ) -> list[LowFrequencyContextUpdate]:
         symbols = {str(ticker).upper() for ticker in tickers if str(ticker).strip()}
         global_symbols = {str(symbol).upper() for symbol in self.config.global_symbols if str(symbol).strip()}
-        symbols.update(global_symbols)
+        if include_global_symbols:
+            symbols.update(global_symbols)
         if not symbols:
             return []
         table = f"{quote_ident(self.config.database)}.{quote_ident(self.config.macro_bars_table)}"
@@ -1035,10 +1142,21 @@ def _as_int_array(value: Any, *, dtype: Any) -> np.ndarray:
     return np.asarray(value, dtype=dtype)
 
 
+def _chunks(items: tuple[Any, ...], size: int) -> Iterable[tuple[Any, ...]]:
+    step = max(1, int(size))
+    for start in range(0, len(items), step):
+        yield items[start : start + step]
+
+
 def _date_time64_from_us(timestamp_us: int) -> str:
     value = dt.datetime.fromtimestamp(int(timestamp_us) / 1_000_000.0, tz=dt.timezone.utc)
     text = value.strftime("%Y-%m-%d %H:%M:%S.%f")
     return f"toDateTime64({sql_string(text)}, 6, 'UTC')"
+
+
+def _date_from_us(timestamp_us: int) -> str:
+    value = dt.datetime.fromtimestamp(int(timestamp_us) / 1_000_000.0, tz=dt.timezone.utc)
+    return value.strftime("%Y-%m-%d")
 
 
 def _date_to_epoch_day(value: Any) -> float:
