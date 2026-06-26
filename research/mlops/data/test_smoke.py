@@ -9,6 +9,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 
+from research.mlops.clickhouse_events import DEFAULT_CONTEXT_EVENTS, encode_unified_event_window, encode_unified_event_windows
 from research.mlops.compact_events import QUOTE_EVENT_TYPE, TRADE_EVENT_TYPE
 from research.mlops.data.audit import audit_temporal_batch
 from research.mlops.data.config import DataProviderConfig, ExternalAsOfContextConfig, MarketStreamConfig, RollingMarketDataConfig, TickerBlockDataConfig
@@ -57,6 +58,7 @@ def make_synthetic_events(count: int = 1024, *, ticker: str = "TEST") -> tuple[C
 
 
 def main() -> int:
+    smoke_vectorized_event_encoder_parity()
     smoke_streaming_replay()
     smoke_ticker_blocks()
     smoke_rolling_ready_index_balanced_cap()
@@ -64,6 +66,31 @@ def main() -> int:
     smoke_rolling_ready_index_filters_unencodable_windows()
     smoke_rolling_provider()
     return 0
+
+
+def smoke_vectorized_event_encoder_parity() -> None:
+    rows = synthetic_rows_by_ticker(tickers=1, rows_per_ticker=512)["T0000"]
+    starts = np.asarray([0, 1, 7, 32, 127, 255], dtype=np.int64)
+    windows = rows[starts[:, None] + np.arange(DEFAULT_CONTEXT_EVENTS, dtype=np.int64)[None, :]]
+    previous = np.asarray([-1 if start == 0 else int(rows["sip_timestamp_us"][start - 1]) for start in starts], dtype=np.int64)
+    headers, events, valid, reasons = encode_unified_event_windows(windows, previous_sip_us=previous)
+    assert bool(valid.all()), reasons.tolist()
+    for index, start in enumerate(starts.tolist()):
+        scalar = encode_unified_event_window(
+            rows[start : start + DEFAULT_CONTEXT_EVENTS],
+            previous_sip_us=None if start == 0 else int(rows["sip_timestamp_us"][start - 1]),
+        )
+        assert not isinstance(scalar, str), scalar
+        scalar_header, scalar_events = scalar
+        assert np.array_equal(headers[index], scalar_header)
+        assert np.array_equal(events[index], scalar_events)
+    invalid = windows[:1].copy()
+    invalid["event_type"] = TRADE_EVENT_TYPE
+    _headers, _events, invalid_valid, invalid_reasons = encode_unified_event_windows(invalid, previous_sip_us=previous[:1])
+    scalar_invalid = encode_unified_event_window(invalid[0], previous_sip_us=None)
+    assert scalar_invalid == "no_quote_anchor"
+    assert not bool(invalid_valid[0])
+    assert str(invalid_reasons[0]) == scalar_invalid
 
 
 def smoke_streaming_replay() -> None:

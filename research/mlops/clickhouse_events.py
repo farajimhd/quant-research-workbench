@@ -948,6 +948,138 @@ def encode_unified_event_window(rows: np.ndarray, *, previous_sip_us: int | None
     return header, events
 
 
+def encode_unified_event_windows(
+    windows: np.ndarray,
+    *,
+    previous_sip_us: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorized equivalent of ``encode_unified_event_window``.
+
+    Returns ``headers, events, valid, reasons``. Valid rows are byte-identical
+    to the scalar encoder; invalid rows carry the same first rejection reason.
+    """
+
+    if windows.ndim != 2 or int(windows.shape[1]) != DEFAULT_CONTEXT_EVENTS:
+        count = int(windows.shape[0]) if windows.ndim >= 1 else 0
+        return (
+            np.zeros((count, HEADER_BYTES), dtype=np.uint8),
+            np.zeros((count, DEFAULT_CONTEXT_EVENTS, EVENT_BYTES), dtype=np.uint8),
+            np.zeros((count,), dtype=np.bool_),
+            np.asarray(["invalid_window_size"] * count, dtype=object),
+        )
+    count = int(windows.shape[0])
+    headers = np.zeros((count, HEADER_BYTES), dtype=np.uint8)
+    events = np.zeros((count, DEFAULT_CONTEXT_EVENTS, EVENT_BYTES), dtype=np.uint8)
+    valid = np.ones((count,), dtype=np.bool_)
+    reasons = np.empty((count,), dtype=object)
+    reasons[:] = ""
+    if count == 0:
+        return headers, events, valid, reasons
+
+    event_types = windows["event_type"].astype(np.uint8, copy=False)
+    quote_mask = event_types == QUOTE_EVENT_TYPE
+    trade_mask = event_types == TRADE_EVENT_TYPE
+    row_index = np.arange(count)
+
+    has_quote = quote_mask.any(axis=1)
+    _mark_invalid(valid, reasons, ~has_quote, "no_quote_anchor")
+    reversed_quote = quote_mask[:, ::-1]
+    anchor_idx = DEFAULT_CONTEXT_EVENTS - 1 - np.argmax(reversed_quote, axis=1)
+
+    primary_prices = decode_price_array(windows["price_primary_int"], windows["event_flags"] & 1)
+    secondary_prices = decode_price_array(windows["price_secondary_int"], (windows["event_flags"] >> 1) & 1)
+    anchor_ask = primary_prices[row_index, anchor_idx]
+    anchor_bid = secondary_prices[row_index, anchor_idx]
+    invalid_anchor = (anchor_ask <= 0.0) | (anchor_bid <= 0.0) | (anchor_ask < anchor_bid)
+    _mark_invalid(valid, reasons, has_quote & invalid_anchor, "invalid_quote_anchor")
+
+    tick_size = np.where(anchor_ask >= 1.0, 0.01, 0.0001)
+    ask_anchor_ticks = np.rint(anchor_ask / tick_size).astype(np.int64)
+    spread_anchor_ticks = np.rint((anchor_ask - anchor_bid) / tick_size).astype(np.int64)
+    _mark_invalid(valid, reasons, ask_anchor_ticks >= 2**20, "ask_anchor_overflow")
+    _mark_invalid(valid, reasons, spread_anchor_ticks >= 2**16, "spread_anchor_overflow")
+
+    sip_us = windows["sip_timestamp_us"].astype(np.int64, copy=False)
+    deltas_us = np.zeros((count, DEFAULT_CONTEXT_EVENTS), dtype=np.int64)
+    deltas_us[:, 1:] = np.maximum(0, sip_us[:, 1:] - sip_us[:, :-1])
+    quote_count = np.count_nonzero(quote_mask, axis=1)
+    trade_count = np.count_nonzero(trade_mask, axis=1)
+    _mark_invalid(valid, reasons, (quote_count > 255) | (trade_count > 255), "event_count_overflow")
+
+    ask_valid = (primary_prices > 0.0) & (secondary_prices > 0.0) & (primary_prices >= secondary_prices)
+    invalid_quote_event = np.any(quote_mask & ~ask_valid, axis=1)
+    _mark_invalid(valid, reasons, invalid_quote_event, "invalid_quote_event")
+    invalid_trade_event = np.any(trade_mask & (primary_prices <= 0.0), axis=1)
+    _mark_invalid(valid, reasons, invalid_trade_event, "invalid_trade_event")
+
+    price_1 = np.zeros((count, DEFAULT_CONTEXT_EVENTS), dtype=np.int64)
+    price_2 = np.zeros((count, DEFAULT_CONTEXT_EVENTS), dtype=np.int64)
+    ask_ticks = np.rint(primary_prices / tick_size[:, None]).astype(np.int64)
+    spread_ticks = np.rint((primary_prices - secondary_prices) / tick_size[:, None]).astype(np.int64)
+    trade_ticks = ask_ticks
+    price_1[quote_mask] = (ask_ticks - ask_anchor_ticks[:, None])[quote_mask]
+    price_2[quote_mask] = (spread_ticks - spread_anchor_ticks[:, None])[quote_mask]
+    price_1[trade_mask] = (trade_ticks - ask_anchor_ticks[:, None])[trade_mask]
+    price_overflow = np.any((price_1 < -32768) | (price_1 > 32767) | (price_2 < -32768) | (price_2 > 32767), axis=1)
+    _mark_invalid(valid, reasons, price_overflow, "price_delta_overflow")
+
+    _put_uint_le_columns(headers, 0, ask_anchor_ticks, 3)
+    headers[:, 2] &= 0x0F
+    _put_uint_le_columns(headers, 3, spread_anchor_ticks, 2)
+    _put_uint_le_columns(headers, 5, log_time_bucket_array(sip_us[:, -1] - sip_us[:, 0]), 2)
+    _put_uint_le_columns(headers, 7, np.zeros((count,), dtype=np.int64), 2)
+    if previous_sip_us is None:
+        start_gap_us = np.zeros((count,), dtype=np.int64)
+    else:
+        previous = np.asarray(previous_sip_us, dtype=np.int64)
+        start_gap_us = np.where(previous < 0, 0, np.maximum(0, sip_us[:, 0] - previous))
+    _put_uint_le_columns(headers, 9, log_time_bucket_array(start_gap_us).astype(np.int64), 2)
+    headers[:, 11] = quote_count.astype(np.uint8)
+    headers[:, 12] = trade_count.astype(np.uint8)
+    headers[:, 13] = (
+        0x01
+        | ((trade_count > 0).astype(np.uint8) << 1)
+        | ((tick_size == 0.01).astype(np.uint8) << 2)
+    ).astype(np.uint8)
+
+    events[:, :, 0] = ((event_types & 0x01) | 0x02).astype(np.uint8)
+    events[:, :, 1:3] = np.ascontiguousarray(log_time_bucket_array(deltas_us).astype("<u2", copy=False)).view(np.uint8).reshape(
+        count, DEFAULT_CONTEXT_EVENTS, 2
+    )
+    events[:, :, 3:5] = np.ascontiguousarray(price_1.astype("<i2", copy=False)).view(np.uint8).reshape(count, DEFAULT_CONTEXT_EVENTS, 2)
+    events[:, :, 5:7] = np.ascontiguousarray(price_2.astype("<i2", copy=False)).view(np.uint8).reshape(count, DEFAULT_CONTEXT_EVENTS, 2)
+    size_primary = windows["size_primary"].astype(np.float64, copy=False)
+    size_secondary = windows["size_secondary"].astype(np.float64, copy=False)
+    events[:, :, 7] = size_bucket_array(size_primary)
+    events[:, :, 8] = size_bucket_array(size_secondary)
+    tape = (windows["event_flags"] >> 2) & 0x07
+    events[:, :, 9] = (
+        ((size_primary > 0.0) & (size_primary < 100.0)).astype(np.uint8)
+        | (((size_secondary > 0.0) & (size_secondary < 100.0)).astype(np.uint8) << 1)
+        | ((tape & 0x07) << 2)
+    ).astype(np.uint8)
+    events[:, :, 10] = windows["exchange_primary"] & 0x1F
+    events[:, :, 11] = windows["exchange_secondary"] & 0x1F
+    events[:, :, 12:16] = np.ascontiguousarray(windows["conditions_packed"].astype("<u4", copy=False)).view(np.uint8).reshape(
+        count, DEFAULT_CONTEXT_EVENTS, 4
+    )
+    reasons[valid] = ""
+    return headers, events, valid, reasons
+
+
+def _mark_invalid(valid: np.ndarray, reasons: np.ndarray, mask: np.ndarray, reason: str) -> None:
+    target = np.asarray(mask, dtype=np.bool_) & valid
+    if np.any(target):
+        reasons[target] = reason
+        valid[target] = False
+
+
+def _put_uint_le_columns(buffer: np.ndarray, offset: int, values: np.ndarray, width: int) -> None:
+    unsigned = np.asarray(values, dtype=np.int64) & ((1 << (8 * int(width))) - 1)
+    for byte_index in range(int(width)):
+        buffer[:, int(offset) + byte_index] = ((unsigned >> (8 * byte_index)) & 0xFF).astype(np.uint8)
+
+
 def decode_price_array(price_int: np.ndarray, scale: np.ndarray) -> np.ndarray:
     denominator = np.where(scale.astype(np.uint8, copy=False) == 1, 10000.0, 100.0)
     return price_int.astype(np.float64, copy=False) / denominator

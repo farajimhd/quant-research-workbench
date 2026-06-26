@@ -12,7 +12,7 @@ from typing import Any, Callable, Iterable, Mapping
 import numpy as np
 
 from research.mlops.clickhouse import ClickHouseHttpClient, parse_size_bytes, quote_ident, sql_string
-from research.mlops.clickhouse_events import DEFAULT_CONTEXT_EVENTS, EVENT_ROW_DTYPE, PersistentClickHouseBytesClient, decode_price_array, encode_unified_event_window
+from research.mlops.clickhouse_events import DEFAULT_CONTEXT_EVENTS, EVENT_ROW_DTYPE, PersistentClickHouseBytesClient, decode_price_array, encode_unified_event_windows
 from research.mlops.compact_events import EVENT_BYTES, HEADER_BYTES, QUOTE_EVENT_TYPE, TRADE_EVENT_TYPE
 from research.mlops.data.config import ExternalAsOfContextConfig, RollingMarketDataConfig
 from research.mlops.data.contracts import (
@@ -645,6 +645,8 @@ class RollingMarketSampleEngine:
         encode_total = int(batch * context_chunks)
         _call_progress(progress_callback, "encode", 0, encode_total)
         with profiler.stage("encode_compact_windows", count=batch * context_chunks):
+            placements: list[tuple[int, int, tuple[str, int], RollingSampleIndex]] = []
+            pending_by_ticker: dict[str, dict[tuple[str, int], tuple[np.ndarray, int, int | None]]] = {}
             for sample_index, sample in enumerate(sample_tuple):
                 rows = self.rows_by_ticker.get(sample.ticker)
                 if rows is None:
@@ -660,41 +662,61 @@ class RollingMarketSampleEngine:
                     continue
                 for context_index, window in enumerate(sample.chunk_windows):
                     cache_key = (sample.ticker, int(window.origin_ordinal))
-                    encoded = encoded_window_cache.get(cache_key)
                     if cache_key in encoded_window_cache:
                         cache_hits += 1
-                    else:
-                        cache_misses += 1
-                        bounds = _ordinal_window_bounds(
-                            rows,
-                            start_ordinal=int(window.start_ordinal),
-                            end_ordinal=int(window.end_ordinal),
-                            expected_events=int(self.config.events_per_chunk),
-                        )
-                        if bounds is None:
-                            encoded_window_cache[cache_key] = "ordinal_window_not_exact"
-                            continue
-                        start, end = bounds
-                        previous_sip_us = int(rows["sip_timestamp_us"][start - 1]) if start > 0 else None
-                        result = encode_unified_event_window(rows[start:end], previous_sip_us=previous_sip_us)
-                        encoded = result
-                        encoded_window_cache[cache_key] = encoded
-                    if isinstance(encoded, str):
-                        _record_invalid_context(
-                            invalid_reasons,
-                            invalid_examples,
-                            reason=encoded,
-                            sample=sample,
-                            context_index=context_index,
-                        )
-                        encode_done += 1
-                        _maybe_call_progress(progress_callback, "encode", encode_done, encode_total)
+                        placements.append((sample_index, context_index, cache_key, sample))
                         continue
-                    headers[sample_index, context_index], events[sample_index, context_index] = encoded
-                    mask[sample_index, context_index] = True
-                    chunk_origin_ts[sample_index, context_index] = int(window.origin_timestamp_us)
+                    pending_for_ticker = pending_by_ticker.setdefault(sample.ticker, {})
+                    if cache_key in pending_for_ticker:
+                        cache_hits += 1
+                        placements.append((sample_index, context_index, cache_key, sample))
+                        continue
+                    cache_misses += 1
+                    bounds = _ordinal_window_bounds(
+                        rows,
+                        start_ordinal=int(window.start_ordinal),
+                        end_ordinal=int(window.end_ordinal),
+                        expected_events=int(self.config.events_per_chunk),
+                    )
+                    if bounds is None:
+                        encoded_window_cache[cache_key] = "ordinal_window_not_exact"
+                        placements.append((sample_index, context_index, cache_key, sample))
+                        continue
+                    start, _end = bounds
+                    previous_sip_us = int(rows["sip_timestamp_us"][start - 1]) if start > 0 else None
+                    pending_for_ticker[cache_key] = (rows, int(start), previous_sip_us)
+                    placements.append((sample_index, context_index, cache_key, sample))
+            for pending in pending_by_ticker.values():
+                _encode_pending_windows(pending, encoded_window_cache, tile_size=4096)
+            for sample_index, context_index, cache_key, sample in placements:
+                encoded = encoded_window_cache.get(cache_key)
+                if isinstance(encoded, str):
+                    _record_invalid_context(
+                        invalid_reasons,
+                        invalid_examples,
+                        reason=encoded,
+                        sample=sample,
+                        context_index=context_index,
+                    )
                     encode_done += 1
                     _maybe_call_progress(progress_callback, "encode", encode_done, encode_total)
+                    continue
+                if encoded is None:
+                    _record_invalid_context(
+                        invalid_reasons,
+                        invalid_examples,
+                        reason="window_encode_missing",
+                        sample=sample,
+                        context_index=context_index,
+                    )
+                    encode_done += 1
+                    _maybe_call_progress(progress_callback, "encode", encode_done, encode_total)
+                    continue
+                headers[sample_index, context_index], events[sample_index, context_index] = encoded
+                mask[sample_index, context_index] = True
+                chunk_origin_ts[sample_index, context_index] = int(sample.chunk_windows[context_index].origin_timestamp_us)
+                encode_done += 1
+                _maybe_call_progress(progress_callback, "encode", encode_done, encode_total)
         _call_progress(progress_callback, "encode", encode_total, encode_total)
 
         profiler.add_stage("encoded_window_cache_hits", 0.0, count=cache_hits)
@@ -1733,6 +1755,45 @@ def _filter_materializable_origins(rows: np.ndarray, origin_offsets: np.ndarray,
     chunk_valid = _materializable_chunk_origin_flags(rows, unique_chunk_origins, context)
     valid = chunk_valid[inverse].reshape(origins.shape[0], lag_values.shape[0]).all(axis=1)
     return origin_offsets[valid]
+
+
+def _encode_pending_windows(
+    pending: Mapping[tuple[str, int], tuple[np.ndarray, int, int | None]],
+    encoded_window_cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray] | str],
+    *,
+    tile_size: int,
+) -> None:
+    if not pending:
+        return
+    keys = list(pending)
+    context = DEFAULT_CONTEXT_EVENTS
+    tile = max(1, int(tile_size))
+    offsets = np.arange(context, dtype=np.int64)
+    for start_index in range(0, len(keys), tile):
+        tile_keys = keys[start_index : start_index + tile]
+        starts = np.asarray([pending[key][1] for key in tile_keys], dtype=np.int64)
+        rows = pending[tile_keys[0]][0]
+        if any(pending[key][0] is not rows for key in tile_keys):
+            for key in tile_keys:
+                row_array, row_start, previous_sip_us = pending[key]
+                indices = int(row_start) + offsets
+                windows = row_array[indices][None, :]
+                previous = np.asarray([-1 if previous_sip_us is None else int(previous_sip_us)], dtype=np.int64)
+                batch_headers, batch_events, batch_valid, batch_reasons = encode_unified_event_windows(windows, previous_sip_us=previous)
+                encoded_window_cache[key] = (
+                    (batch_headers[0].copy(), batch_events[0].copy()) if bool(batch_valid[0]) else str(batch_reasons[0])
+                )
+            continue
+        indices = starts[:, None] + offsets[None, :]
+        windows = rows[indices]
+        previous = np.asarray([-1 if pending[key][2] is None else int(pending[key][2]) for key in tile_keys], dtype=np.int64)
+        batch_headers, batch_events, batch_valid, batch_reasons = encode_unified_event_windows(windows, previous_sip_us=previous)
+        for row_index, key in enumerate(tile_keys):
+            encoded_window_cache[key] = (
+                (batch_headers[row_index].copy(), batch_events[row_index].copy())
+                if bool(batch_valid[row_index])
+                else str(batch_reasons[row_index])
+            )
 
 
 def _materializable_chunk_origin_flags(rows: np.ndarray, chunk_origins: np.ndarray, context: int) -> np.ndarray:
