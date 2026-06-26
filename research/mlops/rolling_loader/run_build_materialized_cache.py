@@ -5,10 +5,11 @@ import datetime as dt
 import json
 import os
 import random
+import shutil
 import sys
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -91,8 +92,14 @@ class WorkerState:
     status: str = "idle"
     ticker_count: int = 0
     queued_samples: int = 0
+    materializing_done: int = 0
+    materializing_total: int = 0
+    writing_done: int = 0
+    writing_total: int = 0
     batches_done: int = 0
     samples_done: int = 0
+    active_slice_id: int = -1
+    started_at: float = 0.0
     seconds: float = 0.0
     last_message: str = ""
 
@@ -111,16 +118,27 @@ class BuildStats:
     completed_tasks: int = 0
     samples_written: int = 0
     bytes_written: int = 0
+    target_bytes: int = 0
     shards_done: int = 0
     current_rss_mib: float = 0.0
     interrupted: bool = False
     messages: list[str] = field(default_factory=list)
     workers: dict[int, WorkerState] = field(default_factory=dict)
+    log_path: Path | None = None
 
-    def message(self, text: str) -> None:
+    def message(self, text: str, **fields: Any) -> None:
         stamp = dt.datetime.now().strftime("%H:%M:%S")
         self.messages.append(f"{stamp} {text}")
         self.messages = self.messages[-8:]
+        if self.log_path is not None:
+            payload = {
+                "timestamp": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
+                "message": text,
+                "phase": self.phase,
+                **fields,
+            }
+            with self.log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(_jsonable(payload), sort_keys=True) + "\n")
 
 
 def parse_args() -> argparse.Namespace:
@@ -189,6 +207,8 @@ def main() -> int:
     split_dir = cache_root / args.split
     cache_root.mkdir(parents=True, exist_ok=bool(args.resume))
     stats = BuildStats()
+    stats.target_bytes = int(float(args.target_cache_gib) * 1024**3)
+    stats.log_path = cache_root / "builder_events.jsonl"
     dashboard = MaterializedCacheDashboard(enabled=not args.no_rich, refresh_seconds=float(args.refresh_seconds), stats=stats)
     source: StreamingClickHouseTrainingSource | None = None
     writer: RollingMaterializedShardWriter | None = None
@@ -348,7 +368,25 @@ def main() -> int:
                     worker_state.status = "queued"
                     worker_state.ticker_count = len({block.ticker for block in blocks_for_task})
                     worker_state.queued_samples = sum(block.sample_count for block in blocks_for_task)
-                    future = executor.submit(_materialize_worker_task, engine, blocks_for_task, int(args.builder_batch_size), worker_id, next_slice_id)
+                    worker_state.materializing_done = 0
+                    worker_state.materializing_total = max(1, worker_state.queued_samples)
+                    worker_state.writing_done = 0
+                    worker_state.writing_total = max(1, worker_state.queued_samples)
+                    worker_state.batches_done = 0
+                    worker_state.samples_done = 0
+                    worker_state.active_slice_id = next_slice_id
+                    worker_state.started_at = time.perf_counter()
+                    worker_state.seconds = 0.0
+                    worker_state.last_message = f"queued slice={next_slice_id} samples={worker_state.queued_samples:,}"
+                    future = executor.submit(
+                        _materialize_worker_task,
+                        engine,
+                        blocks_for_task,
+                        int(args.builder_batch_size),
+                        worker_id,
+                        next_slice_id,
+                        worker_state,
+                    )
                     futures[future] = {"worker_id": worker_id, "slice_id": next_slice_id, "submitted_at": time.perf_counter()}
                     stats.submitted_tasks += 1
                     next_slice_id += 1
@@ -365,15 +403,20 @@ def main() -> int:
                     result = future.result()
                     worker_id = int(meta["worker_id"])
                     worker_state = stats.workers[worker_id]
-                    worker_state.status = "done"
-                    worker_state.batches_done += int(result["batch_count"])
-                    worker_state.samples_done += int(result["samples"])
-                    worker_state.seconds += float(result["seconds"])
-                    worker_state.last_message = f"samples={int(result['samples']):,} seconds={float(result['seconds']):.1f}"
+                    worker_state.status = "materialized"
+                    worker_state.materializing_done = int(result["samples"])
+                    worker_state.materializing_total = max(worker_state.materializing_total, int(result["samples"]))
+                    worker_state.batches_done = int(result["batch_count"])
+                    worker_state.seconds = time.perf_counter() - max(worker_state.started_at, 1e-9)
+                    worker_state.last_message = f"materialized samples={int(result['samples']):,} seconds={float(result['seconds']):.1f}"
                     completed[int(meta["slice_id"])] = result
                     stats.completed_tasks += 1
                 while next_to_write in completed:
                     result = completed.pop(next_to_write)
+                    write_worker = stats.workers[int(result["worker_id"])]
+                    write_worker.status = "writing"
+                    write_worker.writing_done = 0
+                    write_worker.writing_total = max(1, int(result["samples"]))
                     for batch in result["batches"]:
                         writer.set_source_block(
                             block_index=stats.block_index,
@@ -383,11 +426,20 @@ def main() -> int:
                             end_label=block_end.isoformat(),
                         )
                         writer.write_batch(batch)
-                        stats.samples_written += int(batch.headers_uint8.shape[0])
+                        batch_samples = int(batch.headers_uint8.shape[0])
+                        stats.samples_written += batch_samples
                         stats.bytes_written += batch_nbytes(batch)
+                        write_worker.writing_done += batch_samples
+                        write_worker.samples_done += batch_samples
+                        write_worker.seconds = time.perf_counter() - max(write_worker.started_at, 1e-9)
+                        write_worker.last_message = f"wrote {write_worker.writing_done:,}/{write_worker.writing_total:,}"
+                        _write_progress(cache_root, args.split, stats, writer)
+                        _refresh(stats, dashboard, writer)
                         if args.one_shard and len(writer.shards) >= 1:
                             stop_requested = True
                             break
+                    write_worker.status = "done"
+                    write_worker.last_message = f"done samples={write_worker.samples_done:,}"
                     next_to_write += 1
                     if stop_requested:
                         break
@@ -443,8 +495,14 @@ def _materialize_worker_task(
     batch_size: int,
     worker_id: int,
     slice_id: int,
+    state: WorkerState | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    if state is not None:
+        state.status = "materializing"
+        state.materializing_done = 0
+        state.last_message = f"materializing slice={slice_id}"
+    state_started = state.started_at if state is not None and state.started_at > 0 else started
     engine = RollingMarketSampleEngine(base_engine.config)
     tickers = {block.ticker for block in blocks}
     engine.rows_by_ticker = {ticker: base_engine.rows_by_ticker[ticker] for ticker in tickers if ticker in base_engine.rows_by_ticker}
@@ -456,7 +514,13 @@ def _materialize_worker_task(
     for sample_tuple in engine.iter_ready_sample_batches(batch_size=batch_size, blocks=tuple(blocks)):
         batch = engine.materialize_training_batch(sample_tuple, batch_id=slice_id)
         batches.append(batch)
-        samples += int(batch.headers_uint8.shape[0])
+        batch_samples = int(batch.headers_uint8.shape[0])
+        samples += batch_samples
+        if state is not None:
+            state.materializing_done = samples
+            state.batches_done = len(batches)
+            state.seconds = time.perf_counter() - state_started
+            state.last_message = f"materialized {samples:,}/{state.materializing_total:,}"
     return {
         "worker_id": worker_id,
         "slice_id": slice_id,
@@ -566,6 +630,9 @@ def _manifest(
 def _write_progress(cache_root: Path, split: str, stats: BuildStats, writer: RollingMaterializedShardWriter | None) -> None:
     elapsed = time.perf_counter() - stats.started
     rate = stats.samples_written / max(elapsed, 1e-9)
+    byte_rate = stats.bytes_written / max(elapsed, 1e-9)
+    remaining_bytes = max(0, int(stats.target_bytes) - int(stats.bytes_written))
+    eta_seconds = remaining_bytes / byte_rate if stats.target_bytes > 0 and byte_rate > 0 else None
     progress = {
         "split": split,
         "updated_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
@@ -573,11 +640,17 @@ def _write_progress(cache_root: Path, split: str, stats: BuildStats, writer: Rol
         "block_index": stats.block_index,
         "samples_written": stats.samples_written,
         "bytes_written": stats.bytes_written,
+        "target_bytes": stats.target_bytes,
+        "remaining_bytes": remaining_bytes,
         "elapsed_seconds": elapsed,
         "samples_per_second": rate,
+        "bytes_per_second": byte_rate,
+        "eta_seconds": eta_seconds,
+        "eta_minutes": eta_seconds / 60.0 if eta_seconds is not None else None,
+        "eta_hours": eta_seconds / 3600.0 if eta_seconds is not None else None,
         "shards_done": len(writer.shards) if writer is not None else 0,
         "current_shard": writer.current_shard_status() if writer is not None else {},
-        "workers": {str(key): worker.__dict__ for key, worker in stats.workers.items()},
+        "workers": {str(key): asdict(worker) for key, worker in stats.workers.items()},
         "messages": stats.messages,
     }
     tmp = cache_root / f"{split}_progress.json.tmp"
@@ -619,6 +692,34 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def _format_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "estimating"
+    if seconds < 0:
+        seconds = 0.0
+    total = int(seconds)
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def _format_rate_bytes(bytes_per_second: float) -> str:
+    if bytes_per_second <= 0:
+        return "0 B/s"
+    units = ("B/s", "KiB/s", "MiB/s", "GiB/s")
+    value = float(bytes_per_second)
+    unit = units[0]
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            break
+        value /= 1024.0
+    return f"{value:,.1f} {unit}"
+
+
 class MaterializedCacheDashboard:
     def __init__(self, *, enabled: bool, refresh_seconds: float, stats: BuildStats) -> None:
         self.enabled = bool(enabled)
@@ -637,10 +738,18 @@ class MaterializedCacheDashboard:
             from rich.live import Live
             from rich.panel import Panel
             from rich.table import Table
+            from rich.text import Text
         except Exception:
             self.enabled = False
             return
-        self._rich = {"box": box, "Group": Group, "Live": Live, "Panel": Panel, "Table": Table}
+        self._rich = {
+            "box": box,
+            "Group": Group,
+            "Live": Live,
+            "Panel": Panel,
+            "Table": Table,
+            "Text": Text,
+        }
         self._live = Live(self._render(), refresh_per_second=2, transient=False, vertical_overflow="crop")
         self._live.start()
 
@@ -652,9 +761,12 @@ class MaterializedCacheDashboard:
                 self._last = now
         elif now - self._last >= self.refresh_seconds:
             elapsed = now - self.stats.started
+            byte_rate = self.stats.bytes_written / max(elapsed, 1e-9)
+            remaining = max(0, int(self.stats.target_bytes) - int(self.stats.bytes_written))
+            eta = remaining / byte_rate if self.stats.target_bytes > 0 and byte_rate > 0 else None
             print(
                 f"[{self.stats.phase}] samples={self.stats.samples_written:,} shards={self.stats.shards_done:,} "
-                f"rss_mib={self.stats.current_rss_mib:.0f} elapsed_min={elapsed / 60.0:.1f}",
+                f"rss_mib={self.stats.current_rss_mib:.0f} elapsed={_format_duration(elapsed)} eta={_format_duration(eta)}",
                 flush=True,
             )
             self._last = now
@@ -670,8 +782,16 @@ class MaterializedCacheDashboard:
         Group = self._rich["Group"]
         Panel = self._rich["Panel"]
         Table = self._rich["Table"]
+        Text = self._rich["Text"]
         elapsed = time.perf_counter() - self.stats.started
         rate = self.stats.samples_written / max(elapsed, 1e-9)
+        byte_rate = self.stats.bytes_written / max(elapsed, 1e-9)
+        target_bytes = max(1, int(self.stats.target_bytes))
+        remaining_bytes = max(0, target_bytes - int(self.stats.bytes_written))
+        eta_seconds = remaining_bytes / byte_rate if byte_rate > 0 else None
+        progress_pct = min(100.0, 100.0 * float(self.stats.bytes_written) / float(target_bytes))
+        terminal_width = shutil.get_terminal_size((120, 40)).columns
+        compact = terminal_width < 140
         summary = Table.grid(expand=True)
         summary.add_column(ratio=1)
         summary.add_column(ratio=1)
@@ -680,21 +800,52 @@ class MaterializedCacheDashboard:
         summary.add_row("Block", f"{self.stats.block_index} {self.stats.block_start}->{self.stats.block_end}", f"RSS {self.stats.current_rss_mib:,.0f} MiB")
         summary.add_row("Loaded", f"{self.stats.rows_loaded:,} rows / {self.stats.tickers_loaded:,} tickers", f"Ready {self.stats.ready_samples:,}")
         summary.add_row("Written", f"{self.stats.samples_written:,} samples", f"{rate:,.1f} samples/s")
-        summary.add_row("Shards", f"{self.stats.shards_done:,}", f"{self.stats.bytes_written / 1024**3:.2f} GiB materialized")
+        summary.add_row("Shards", f"{self.stats.shards_done:,}", f"{self.stats.bytes_written / 1024**3:.2f}/{target_bytes / 1024**3:.2f} GiB")
+        summary.add_row("Throughput", _format_rate_bytes(byte_rate), f"Remaining {remaining_bytes / 1024**3:.2f} GiB")
+        summary.add_row("ETA", _format_duration(eta_seconds), f"{progress_pct:.1f}%")
 
         workers = Table(expand=True)
-        for column in ("Worker", "Status", "Tickers", "Queued", "Done", "Seconds", "Message"):
-            workers.add_column(column)
+        workers.add_column("W", no_wrap=True, width=3 if compact else 6)
+        workers.add_column("Status", no_wrap=True, width=10 if compact else 13)
+        workers.add_column("Mat", no_wrap=True, min_width=10 if compact else 26, ratio=2)
+        workers.add_column("Write", no_wrap=True, min_width=10 if compact else 26, ratio=2)
+        workers.add_column("Total", no_wrap=True, min_width=10 if compact else 26, ratio=2)
+        if not compact:
+            workers.add_column("Tickers", no_wrap=True, justify="right", width=8)
+        workers.add_column("Elapsed", no_wrap=True, width=7 if compact else 8)
+        workers.add_column("Message", overflow="fold", ratio=2)
         for worker in self.stats.workers.values():
-            workers.add_row(
+            total_done = int(worker.materializing_done) + int(worker.writing_done)
+            total_expected = int(worker.materializing_total) + int(worker.writing_total)
+            row = [
                 str(worker.worker_id),
-                worker.status,
-                f"{worker.ticker_count:,}",
-                f"{worker.queued_samples:,}",
-                f"{worker.samples_done:,}",
-                f"{worker.seconds:.1f}",
-                worker.last_message[-48:],
-            )
+                worker.status[:10] if compact else worker.status,
+                self._progress_cell(
+                    done=worker.materializing_done,
+                    total=worker.materializing_total,
+                    elapsed_seconds=worker.seconds,
+                    Text=Text,
+                    compact=compact,
+                ),
+                self._progress_cell(
+                    done=worker.writing_done,
+                    total=worker.writing_total,
+                    elapsed_seconds=worker.seconds,
+                    Text=Text,
+                    compact=compact,
+                ),
+                self._progress_cell(
+                    done=total_done,
+                    total=total_expected,
+                    elapsed_seconds=worker.seconds,
+                    Text=Text,
+                    compact=compact,
+                ),
+            ]
+            if not compact:
+                row.append(f"{worker.ticker_count:,}")
+            row.extend([_format_duration(worker.seconds), worker.last_message[-32 if compact else -48 :]])
+            workers.add_row(*row)
 
         messages = Table.grid(expand=True)
         messages.add_column()
@@ -706,6 +857,31 @@ class MaterializedCacheDashboard:
             Panel(workers, title="Workers", box=box.ROUNDED, border_style="magenta", padding=(0, 1)),
             Panel(messages, title="Messages", box=box.ROUNDED, border_style="green", padding=(0, 1)),
         )
+
+    @staticmethod
+    def _progress_cell(
+        *,
+        done: int,
+        total: int,
+        elapsed_seconds: float,
+        Text: Any,
+        compact: bool,
+    ) -> Any:
+        if int(total) <= 0:
+            return Text("-", style="dim")
+        safe_total = max(1, int(total))
+        safe_done = min(max(0, int(done)), safe_total)
+        rate = safe_done / max(float(elapsed_seconds), 1e-9)
+        remaining = max(0, safe_total - safe_done)
+        eta = remaining / rate if safe_done > 0 and rate > 0 else None
+        pct = 100.0 * float(safe_done) / float(safe_total)
+        bar_width = 4 if compact else 10
+        filled = min(bar_width, int(round((pct / 100.0) * bar_width)))
+        bar = "#" * filled + "-" * (bar_width - filled)
+        style = "green" if safe_done >= safe_total else "cyan"
+        if compact:
+            return Text(f"{bar}{pct:02.0f}%", style=style)
+        return Text(f"[{bar}] {safe_done:,}/{safe_total:,} {pct:4.0f}% eta {_format_duration(eta)}", style=style)
 
 
 if __name__ == "__main__":
