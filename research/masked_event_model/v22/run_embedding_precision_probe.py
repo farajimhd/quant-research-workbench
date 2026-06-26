@@ -30,7 +30,7 @@ class Variant:
 
 
 VARIANTS = (
-    Variant(name="emb80-bf16", embedding_dim=80, bottleneck_force_fp32=False),
+    Variant(name="emb160-bf16", embedding_dim=160, bottleneck_force_fp32=False),
 )
 
 
@@ -176,6 +176,8 @@ def build_pretrain_command(args: argparse.Namespace, variant: Variant, run_name:
         str(args.batch_size),
         "--embedding-dim",
         str(variant.embedding_dim),
+        "--bottleneck-branch-embedding-dim",
+        "16",
         "--learning-rate",
         str(args.learning_rate),
         "--amp-dtype",
@@ -237,6 +239,8 @@ def build_probe_command(args: argparse.Namespace, variant: Variant, run_name: st
         str(version_runtime_root()),
         "--encoder-embedding-dim",
         str(variant.embedding_dim),
+        "--encoder-bottleneck-branch-embedding-dim",
+        "16",
         "--run-name",
         run_name,
         "--wandb-project",

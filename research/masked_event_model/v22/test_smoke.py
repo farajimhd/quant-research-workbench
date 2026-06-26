@@ -25,7 +25,7 @@ def test_forward_and_encode_shapes() -> None:
     event_bytes = torch.randint(0, 256, (batch, events, 16), dtype=torch.uint8)
     model = EventTokenMaskedAutoencoder(
         events_per_chunk=events,
-        config=ModelConfig(d_byte=8, d_model=32, embedding_dim=80, n_heads=4, encoder_layers=1, decoder_layers=1),
+        config=ModelConfig(d_byte=8, d_model=32, embedding_dim=160, n_heads=4, encoder_layers=1, decoder_layers=1),
     )
     masks = build_event_masks(event_bytes, MaskConfig(event_mask_ratio=0.5))
     output = model(header, event_bytes, masks, MaskConfig(event_mask_ratio=0.5))
@@ -43,7 +43,7 @@ def test_forward_and_encode_shapes() -> None:
     assert "semantic/train/event_type_acc_pct" in result.metrics
     assert "semantic/train/quote_ask_tick_mae" in result.metrics
     embedding = model.encode(header, event_bytes)
-    assert embedding.shape == (batch, 80)
+    assert embedding.shape == (batch, 160)
 
 
 def test_final_events_schema_encoder_shapes() -> None:

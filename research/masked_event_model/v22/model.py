@@ -268,8 +268,9 @@ class FixedGridChunkBottleneck(nn.Module):
 
     v22 differs from v21 by removing the final nonlinear merge projection.
     CLS, header, and each 16-event block each get a two-layer nonlinear MLP
-    branch ending in 8 features. The exported chunk embedding is the direct
-    concatenation of those 10 branch outputs, so its width is fixed at 80.
+    branch ending in `bottleneck_branch_embedding_dim` features. The exported
+    chunk embedding is the direct concatenation of those 10 branch outputs, so
+    its width is `10 * bottleneck_branch_embedding_dim`.
     """
 
     def __init__(self, *, events_per_chunk: int, config: ModelConfig) -> None:
@@ -281,21 +282,22 @@ class FixedGridChunkBottleneck(nn.Module):
         if self.events_per_chunk % self.event_group_size != 0:
             raise ValueError(f"events_per_chunk={self.events_per_chunk} must be divisible by {self.event_group_size}")
         self.event_group_count = self.events_per_chunk // self.event_group_size
-        self.branch_hidden_dim = 64
-        self.branch_embedding_dim = 8
+        self.branch_hidden_dim = int(config.bottleneck_branch_hidden_dim)
+        self.branch_embedding_dim = int(config.bottleneck_branch_embedding_dim)
         self.exported_embedding_dim = (2 + self.event_group_count) * self.branch_embedding_dim
         if int(config.embedding_dim) != self.exported_embedding_dim:
             raise ValueError(
-                f"v22 grouped bottleneck exports {self.exported_embedding_dim} features; "
+                f"v22 grouped bottleneck exports {self.exported_embedding_dim} features from "
+                f"10 branches x {self.branch_embedding_dim}; "
                 f"set embedding_dim={self.exported_embedding_dim}, got {config.embedding_dim}"
             )
         self.cls_token_to_branch_embedding = nn.Sequential(
             OrderedDict(
                 [
-                    ("cls_token_model_width_to_branch_hidden64", nn.Linear(config.d_model, self.branch_hidden_dim)),
+                    ("cls_token_model_width_to_branch_hidden", nn.Linear(config.d_model, self.branch_hidden_dim)),
                     ("cls_token_branch_hidden_gelu", nn.GELU()),
                     ("cls_token_branch_hidden_layer_norm", nn.LayerNorm(self.branch_hidden_dim)),
-                    ("cls_token_branch_hidden64_to_features8", nn.Linear(self.branch_hidden_dim, self.branch_embedding_dim)),
+                    ("cls_token_branch_hidden_to_branch_features", nn.Linear(self.branch_hidden_dim, self.branch_embedding_dim)),
                     ("cls_token_branch_output_gelu", nn.GELU()),
                     ("cls_token_branch_output_layer_norm", nn.LayerNorm(self.branch_embedding_dim)),
                 ]
@@ -304,10 +306,10 @@ class FixedGridChunkBottleneck(nn.Module):
         self.header_token_to_branch_embedding = nn.Sequential(
             OrderedDict(
                 [
-                    ("header_token_model_width_to_branch_hidden64", nn.Linear(config.d_model, self.branch_hidden_dim)),
+                    ("header_token_model_width_to_branch_hidden", nn.Linear(config.d_model, self.branch_hidden_dim)),
                     ("header_token_branch_hidden_gelu", nn.GELU()),
                     ("header_token_branch_hidden_layer_norm", nn.LayerNorm(self.branch_hidden_dim)),
-                    ("header_token_branch_hidden64_to_features8", nn.Linear(self.branch_hidden_dim, self.branch_embedding_dim)),
+                    ("header_token_branch_hidden_to_branch_features", nn.Linear(self.branch_hidden_dim, self.branch_embedding_dim)),
                     ("header_token_branch_output_gelu", nn.GELU()),
                     ("header_token_branch_output_layer_norm", nn.LayerNorm(self.branch_embedding_dim)),
                 ]
@@ -321,12 +323,12 @@ class FixedGridChunkBottleneck(nn.Module):
                         OrderedDict(
                             [
                                 (
-                                    "event_group_flattened_tokens_to_branch_hidden64",
+                                    "event_group_flattened_tokens_to_branch_hidden",
                                     nn.Linear(self.event_group_size * config.d_model, self.branch_hidden_dim),
                                 ),
                                 ("event_group_branch_hidden_gelu", nn.GELU()),
                                 ("event_group_branch_hidden_layer_norm", nn.LayerNorm(self.branch_hidden_dim)),
-                                ("event_group_branch_hidden64_to_features8", nn.Linear(self.branch_hidden_dim, self.branch_embedding_dim)),
+                                ("event_group_branch_hidden_to_branch_features", nn.Linear(self.branch_hidden_dim, self.branch_embedding_dim)),
                                 ("event_group_branch_output_gelu", nn.GELU()),
                                 ("event_group_branch_output_layer_norm", nn.LayerNorm(self.branch_embedding_dim)),
                             ]
@@ -389,7 +391,7 @@ class FixedGridChunkBottleneck(nn.Module):
             flattened_event_group = event_tokens[:, group_start:group_end, :].flatten(1)
             # Input shape: [B, 16 * D]. Output shape: [B, Z].
             branch_embeddings.append(group_mlp(flattened_event_group))
-        # Input shape: 10 x [B, 8]. Output shape: [B, 80].
+        # Input shape: 10 x [B, branch_embedding_dim]. Output shape: [B, embedding_dim].
         concatenated_branch_embeddings = torch.cat(branch_embeddings, dim=1)
         return concatenated_branch_embeddings
 

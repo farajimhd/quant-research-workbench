@@ -89,6 +89,8 @@ class ProbeConfig:
     encoder_ffn_mult: int = 4
     encoder_dropout: float = 0.08
     encoder_bottleneck_force_fp32: bool = False
+    encoder_bottleneck_branch_hidden_dim: int = 64
+    encoder_bottleneck_branch_embedding_dim: int = 16
     encoder_visible_mode: str = "full"
     encoder_visible_mask_ratio: float = 0.0
     extra_research_roots: tuple[Path, ...] = ()
@@ -312,6 +314,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--encoder-ffn-mult", type=int, default=4)
     parser.add_argument("--encoder-dropout", type=float, default=0.08)
     parser.add_argument("--encoder-bottleneck-force-fp32", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--encoder-bottleneck-branch-hidden-dim", type=int, default=64)
+    parser.add_argument("--encoder-bottleneck-branch-embedding-dim", type=int, default=16)
     parser.add_argument(
         "--encoder-visible-mode",
         choices=("full", "random_visible"),
@@ -394,6 +398,8 @@ def build_config(args: argparse.Namespace) -> ProbeConfig:
         encoder_ffn_mult=args.encoder_ffn_mult,
         encoder_dropout=args.encoder_dropout,
         encoder_bottleneck_force_fp32=bool(args.encoder_bottleneck_force_fp32),
+        encoder_bottleneck_branch_hidden_dim=args.encoder_bottleneck_branch_hidden_dim,
+        encoder_bottleneck_branch_embedding_dim=args.encoder_bottleneck_branch_embedding_dim,
         encoder_visible_mode=args.encoder_visible_mode,
         encoder_visible_mask_ratio=args.encoder_visible_mask_ratio,
         extra_research_roots=tuple(args.extra_research_root or ()),
@@ -464,6 +470,10 @@ def build_frozen_encoder(config: ProbeConfig, device: torch.device) -> nn.Module
     }
     if "bottleneck_force_fp32" in getattr(config_module.ModelConfig, "__dataclass_fields__", {}):
         model_config_kwargs["bottleneck_force_fp32"] = config.encoder_bottleneck_force_fp32
+    if "bottleneck_branch_hidden_dim" in getattr(config_module.ModelConfig, "__dataclass_fields__", {}):
+        model_config_kwargs["bottleneck_branch_hidden_dim"] = config.encoder_bottleneck_branch_hidden_dim
+    if "bottleneck_branch_embedding_dim" in getattr(config_module.ModelConfig, "__dataclass_fields__", {}):
+        model_config_kwargs["bottleneck_branch_embedding_dim"] = config.encoder_bottleneck_branch_embedding_dim
     model_config = config_module.ModelConfig(**model_config_kwargs)
     autoencoder = model_module.EventTokenMaskedAutoencoder(events_per_chunk=128, config=model_config)
     payload = load_trusted_torch_checkpoint(config.encoder_checkpoint, map_location="cpu")

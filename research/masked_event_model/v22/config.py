@@ -95,7 +95,7 @@ class ModelConfig:
     input_representation: str = "bit"
     d_byte: int = 24
     d_model: int = 128
-    embedding_dim: int = 80
+    embedding_dim: int = 160
     n_heads: int = 4
     encoder_layers: int = 6
     # Accepted for launcher compatibility with earlier versions. v22 ignores
@@ -113,6 +113,8 @@ class ModelConfig:
     # remain in BF16. This isolates whether precision in the bottleneck itself
     # is limiting downstream linear probes.
     bottleneck_force_fp32: bool = False
+    bottleneck_branch_hidden_dim: int = 64
+    bottleneck_branch_embedding_dim: int = 16
 
     @property
     def ff_dim(self) -> int:

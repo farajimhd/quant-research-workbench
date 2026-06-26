@@ -34,7 +34,9 @@ DEFAULTS: dict[str, Any] = {
     "input_representation": "bit",
     "d_byte": 40,
     "d_model": 256,
-    "embedding_dim": 32,
+    "embedding_dim": 160,
+    "bottleneck_branch_hidden_dim": 64,
+    "bottleneck_branch_embedding_dim": 16,
     "n_heads": 8,
     "encoder_layers": 10,
     "decoder_layers": 4,
@@ -68,11 +70,11 @@ DEFAULTS: dict[str, Any] = {
     "wandb_project": "June2026-event-token-mae-v22-mlp-decoder",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
-    "wandb_run_name": "v22-mlpdecoder-medium-event-token-emb32-bs8192-10shards",
+    "wandb_run_name": "v22-mlpdecoder-medium-event-token-emb160-bs8192-10shards",
     "warm_start_checkpoint": "",
 }
 
-PROFILED_TRAINING_PATH = "v22 event-token MAE medium emb32 bs8192 compile-enabled, shard-cycle scheduler, no interleave"
+PROFILED_TRAINING_PATH = "v22 event-token MAE medium emb160 bs8192 compile-enabled, shard-cycle scheduler, no interleave"
 VALIDATION_BATCHES = 8
 
 
@@ -86,6 +88,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interleave-shards", type=int, default=DEFAULTS["sample_cache_interleave_shards"])
     parser.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
+    parser.add_argument("--embedding-dim", type=int, default=DEFAULTS["embedding_dim"])
+    parser.add_argument("--bottleneck-branch-hidden-dim", type=int, default=DEFAULTS["bottleneck_branch_hidden_dim"])
+    parser.add_argument("--bottleneck-branch-embedding-dim", type=int, default=DEFAULTS["bottleneck_branch_embedding_dim"])
     parser.add_argument("--device", default=DEFAULTS["device"])
     parser.add_argument("--run-name", default=DEFAULTS["wandb_run_name"])
     parser.add_argument("--wandb-project", default=DEFAULTS["wandb_project"])
@@ -144,6 +149,9 @@ def main() -> None:
             # roughly 1.7s to 9.6s after shard-group transitions.
             "sample_cache_interleave_shards": interleave_shards,
             "batch_size": batch_size,
+            "embedding_dim": int(args.embedding_dim),
+            "bottleneck_branch_hidden_dim": int(args.bottleneck_branch_hidden_dim),
+            "bottleneck_branch_embedding_dim": int(args.bottleneck_branch_embedding_dim),
             "epochs": int(args.epochs),
             "pretrain_validation_frequency": steps_per_shard,
             "pretrain_validation_steps": validation_batches,

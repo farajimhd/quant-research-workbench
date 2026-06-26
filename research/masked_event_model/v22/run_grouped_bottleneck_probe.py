@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_RUN_PREFIX = "v22-branch8concat80-1shard5ep"
+DEFAULT_RUN_PREFIX = "v22-branch16concat160-1shard5ep"
 DEFAULT_BATCH_SIZE = 4096
 DEFAULT_EPOCHS = 5
 DEFAULT_PROBE_EPOCHS = 5
@@ -18,7 +18,7 @@ def main() -> int:
         sys.executable,
         str(Path(__file__).with_name("run_embedding_precision_probe.py")),
         "--only",
-        "emb80-bf16",
+        "emb160-bf16",
         "--run-prefix",
         args.run_prefix,
         "--batch-size",
@@ -35,7 +35,7 @@ def main() -> int:
     command.extend(passthrough)
 
     print("=" * 104, flush=True)
-    print("v22 branch-concat emb80 benchmark", flush=True)
+    print("v22 branch-concat emb160 benchmark", flush=True)
     print("pretrain: one x-only shard, 5 epochs by default", flush=True)
     print("probe: temporal v1 labeled-cache linear probe, same W&B projects as v20 capacity tests", flush=True)
     print("=" * 104, flush=True)
@@ -46,7 +46,7 @@ def main() -> int:
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the single v22 branch-concat comparison: emb80 BF16 "
+            "Run the single v22 branch-concat comparison: emb160 BF16 "
             "pretraining on one shard, then the same temporal v1 linear probe."
         )
     )

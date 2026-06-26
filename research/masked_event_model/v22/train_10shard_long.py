@@ -38,7 +38,9 @@ DEFAULTS: dict[str, Any] = {
     "input_representation": "bit",
     "d_byte": 40,
     "d_model": 256,
-    "embedding_dim": 32,
+    "embedding_dim": 160,
+    "bottleneck_branch_hidden_dim": 64,
+    "bottleneck_branch_embedding_dim": 16,
     "n_heads": 8,
     "encoder_layers": 10,
     "decoder_layers": 4,
@@ -78,7 +80,7 @@ DEFAULTS: dict[str, Any] = {
     "wandb_project": "June2026-event-token-mae-v22-mlp-decoder",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
-    "wandb_run_name": "v22-mlpdecoder-fixedmask070-emb32-bs8192-10shards",
+    "wandb_run_name": "v22-mlpdecoder-fixedmask070-emb160-bs8192-10shards",
     "amp_initial_scale": 1024.0,
     "amp_overflow_fatal_threshold": 8,
     "float32_matmul_precision": "high",
@@ -102,7 +104,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Long v22 pretraining over 10 sample-cache shards. Defaults target the "
-            "medium emb32 bs8192 setup; model-size arguments are explicit so the "
+            "medium emb160 bs8192 setup; model-size arguments are explicit so the "
             "same launcher can run high/small variants after profiling."
         )
     )
@@ -123,6 +125,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--d-model", type=int, default=DEFAULTS["d_model"])
     parser.add_argument("--embedding-dim", type=int, default=DEFAULTS["embedding_dim"])
+    parser.add_argument("--bottleneck-branch-hidden-dim", type=int, default=DEFAULTS["bottleneck_branch_hidden_dim"])
+    parser.add_argument("--bottleneck-branch-embedding-dim", type=int, default=DEFAULTS["bottleneck_branch_embedding_dim"])
     parser.add_argument("--n-heads", type=int, default=DEFAULTS["n_heads"])
     parser.add_argument("--encoder-layers", type=int, default=DEFAULTS["encoder_layers"])
     parser.add_argument("--decoder-layers", type=int, default=DEFAULTS["decoder_layers"])
@@ -231,6 +235,8 @@ def main() -> None:
             "epochs": int(args.epochs),
             "d_model": int(args.d_model),
             "embedding_dim": int(args.embedding_dim),
+            "bottleneck_branch_hidden_dim": int(args.bottleneck_branch_hidden_dim),
+            "bottleneck_branch_embedding_dim": int(args.bottleneck_branch_embedding_dim),
             "n_heads": int(args.n_heads),
             "encoder_layers": int(args.encoder_layers),
             "decoder_layers": int(args.decoder_layers),

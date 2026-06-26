@@ -44,7 +44,7 @@ DEFAULTS: dict[str, Any] = {
     "input_representation": "bit",
     "d_byte": 40,
     "d_model": 256,
-    "embedding_dim": 80,
+    "embedding_dim": 160,
     "n_heads": 8,
     "encoder_layers": 10,
     "decoder_layers": 4,
@@ -52,6 +52,8 @@ DEFAULTS: dict[str, Any] = {
     "dropout": 0.08,
     "decoder_force_fp32": False,
     "bottleneck_force_fp32": False,
+    "bottleneck_branch_hidden_dim": 64,
+    "bottleneck_branch_embedding_dim": 16,
     "event_mask_ratio": 0.70,
     "event_mask_schedule": "fixed",
     "min_masked_events": 1,
@@ -88,15 +90,12 @@ DEFAULTS: dict[str, Any] = {
     "wandb_project": "June2026-event-token-mae-full",
     "wandb_entity": "mehdifaraji",
     "wandb_mode": "online",
-    "wandb_run_name": "v22-fullpretrain-sharddecay-fixedmask070-emb32-bs8192-lr1e4-epoch09-shard095-continue5epochs",
+    "wandb_run_name": "v22-fullpretrain-sharddecay-fixedmask070-emb160-bs8192-lr1e4-epoch09-shard095",
     "amp_initial_scale": 1024.0,
     "amp_overflow_fatal_threshold": 8,
     "float32_matmul_precision": "high",
     "repeatable_randomness": False,
-    "warm_start_checkpoint": (
-        r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\masked_event_model\v22\pretrain"
-        r"\v22-fullpretrain-sharddecay-fixedmask070-emb32-bs8192-3epochs\checkpoints\checkpoint_latest.pt"
-    ),
+    "warm_start_checkpoint": "",
 }
 
 VALIDATION_BATCHES = DEFAULTS["sample_cache_validation_max_shards"]
@@ -136,6 +135,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=DEFAULTS["dropout"])
     parser.add_argument("--decoder-force-fp32", action=argparse.BooleanOptionalAction, default=DEFAULTS["decoder_force_fp32"])
     parser.add_argument("--bottleneck-force-fp32", action=argparse.BooleanOptionalAction, default=DEFAULTS["bottleneck_force_fp32"])
+    parser.add_argument("--bottleneck-branch-hidden-dim", type=int, default=DEFAULTS["bottleneck_branch_hidden_dim"])
+    parser.add_argument("--bottleneck-branch-embedding-dim", type=int, default=DEFAULTS["bottleneck_branch_embedding_dim"])
     parser.add_argument("--event-mask-ratio", type=float, default=DEFAULTS["event_mask_ratio"])
     parser.add_argument("--event-mask-schedule", choices=("fixed", "mixed"), default=DEFAULTS["event_mask_schedule"])
     parser.add_argument("--learning-rate", type=float, default=DEFAULTS["learning_rate"])
@@ -238,6 +239,8 @@ def main() -> None:
             "dropout": float(args.dropout),
             "decoder_force_fp32": bool(args.decoder_force_fp32),
             "bottleneck_force_fp32": bool(args.bottleneck_force_fp32),
+            "bottleneck_branch_hidden_dim": int(args.bottleneck_branch_hidden_dim),
+            "bottleneck_branch_embedding_dim": int(args.bottleneck_branch_embedding_dim),
             "event_mask_ratio": float(args.event_mask_ratio),
             "event_mask_schedule": args.event_mask_schedule,
             "learning_rate": float(args.learning_rate),

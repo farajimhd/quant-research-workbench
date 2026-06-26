@@ -49,24 +49,24 @@ still processes only visible events during MAE training.
 The v22 bottleneck tests whether preserving coarse semantic groups helps the
 exported representation without a final global merge projection. The fixed grid
 is split into 10 nonlinear branches. Each branch has two nonlinear layers:
-input -> 64 hidden features -> 8 output features. The final chunk embedding is
-the direct concatenation of the 10 branch outputs, so its width is 80.
+input -> 64 hidden features -> 16 output features. The final chunk embedding is
+the direct concatenation of the 10 branch outputs, so its width is 160.
 
 ```text
-slot 0 CLS token             -> MLP 256 -> 64 -> 8
-slot 1 header token          -> MLP 256 -> 64 -> 8
-events 0..15                 -> flatten -> MLP 4096 -> 64 -> 8
-events 16..31                -> flatten -> MLP 4096 -> 64 -> 8
-events 32..47                -> flatten -> MLP 4096 -> 64 -> 8
-events 48..63                -> flatten -> MLP 4096 -> 64 -> 8
-events 64..79                -> flatten -> MLP 4096 -> 64 -> 8
-events 80..95                -> flatten -> MLP 4096 -> 64 -> 8
-events 96..111               -> flatten -> MLP 4096 -> 64 -> 8
-events 112..127              -> flatten -> MLP 4096 -> 64 -> 8
-10 branch outputs concat     -> [B, 80]
+slot 0 CLS token             -> MLP 256 -> 64 -> 16
+slot 1 header token          -> MLP 256 -> 64 -> 16
+events 0..15                 -> flatten -> MLP 4096 -> 64 -> 16
+events 16..31                -> flatten -> MLP 4096 -> 64 -> 16
+events 32..47                -> flatten -> MLP 4096 -> 64 -> 16
+events 48..63                -> flatten -> MLP 4096 -> 64 -> 16
+events 64..79                -> flatten -> MLP 4096 -> 64 -> 16
+events 80..95                -> flatten -> MLP 4096 -> 64 -> 16
+events 96..111               -> flatten -> MLP 4096 -> 64 -> 16
+events 112..127              -> flatten -> MLP 4096 -> 64 -> 16
+10 branch outputs concat     -> [B, 160]
 ```
 
-The decoder and temporal linear probe must therefore use `embedding_dim=80`.
+The decoder and temporal linear probe must therefore use `embedding_dim=160`.
 
 The decoder matches
 the v12 low-cost reconstruction path: it receives the exported chunk embedding
@@ -209,7 +209,7 @@ It runs only:
 
 ```text
 v22 branch-concat bottleneck
-embedding_dim=80
+embedding_dim=160
 AMP dtype=bf16
 batch_size=4096
 pretrain on one x-only shard for 5 epochs
@@ -243,7 +243,7 @@ pretrains from scratch on one x-only pretraining shard for 5 epochs at
 the labeled cache:
 
 ```text
-emb80 bf16 branch-concat bottleneck
+emb160 bf16 branch-concat bottleneck
 ```
 
 The FP32 bottleneck variants keep the transformer and decoder in the active AMP
@@ -257,19 +257,19 @@ python D:\TradingML\codes\masked_event_model\v22\research\masked_event_model\v22
 ```
 
 Use `--print-only` first to inspect all generated pretrain and linear-probe
-commands. The only valid v22 capacity variant is `emb80-bf16`.
+commands. The only valid v22 capacity variant is `emb160-bf16`.
 
 By default this v22 launcher uses BF16 AMP and keeps the cheaper MLP decoder inside the active AMP
 dtype. To run the explicit FP16 decoder experiment:
 
 ```powershell
-python research\masked_event_model\v22\train_10shard_long.py --fresh-start --run-name v22-fixedgrid-fp16decoder-fixedmask070-emb32-bs8192-10shards --amp-dtype fp16
+python research\masked_event_model\v22\train_10shard_long.py --fresh-start --run-name v22-fixedgrid-fp16decoder-fixedmask070-emb160-bs8192-10shards --amp-dtype fp16
 ```
 
 If the FP16 decoder run raises non-finite loss/gradient errors, compare against
 the conservative decoder path with `--decoder-force-fp32`.
 
-Defaults are medium `d_model=256`, `embedding_dim=80`, `batch_size=8192`, 10
+Defaults are medium `d_model=256`, `embedding_dim=160`, `batch_size=8192`, 10
 training shards, 4 epochs, one cosine cycle per selected-shard epoch,
 validation at each shard boundary, async latest checkpoints every 25 steps, and no shard
 interleaving. The launcher prints the equivalent low-level trainer command
