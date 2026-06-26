@@ -69,6 +69,7 @@ def main() -> int:
     smoke_vectorized_event_encoder_parity()
     smoke_vectorized_ready_origin_parity()
     smoke_vectorized_today_asof_bar_parity()
+    smoke_ordered_append_fast_path()
     smoke_streaming_replay()
     smoke_ticker_blocks()
     smoke_rolling_ready_index_balanced_cap()
@@ -124,6 +125,28 @@ def smoke_vectorized_today_asof_bar_parity() -> None:
     for index, origin in enumerate(origins.tolist()):
         scalar = _today_asof_bar_from_events(rows[: origin + 1])
         assert np.allclose(bars[index], scalar)
+
+
+def smoke_ordered_append_fast_path() -> None:
+    config = RollingMarketDataConfig(q_live_contexts=())
+    engine = RollingMarketSampleEngine(config)
+    rows = synthetic_rows_by_ticker(tickers=1, rows_per_ticker=256)["T0000"]
+    first = rows[:128].copy()
+    second = rows[128:256].copy()
+    engine.append_rows_by_ticker({"FAST": first})
+    assert engine.rows_by_ticker["FAST"].shape[0] == 128
+    assert np.array_equal(engine.rows_by_ticker["FAST"]["ordinal"], first["ordinal"])
+    engine.append_rows_by_ticker({"FAST": second})
+    assert engine.rows_by_ticker["FAST"].shape[0] == 256
+    assert np.array_equal(engine.rows_by_ticker["FAST"]["ordinal"], rows["ordinal"])
+
+    overlap = rows[120:132].copy()
+    overlap["price_primary_int"] += 5
+    engine.append_rows_by_ticker({"FAST": overlap})
+    merged = engine.rows_by_ticker["FAST"]
+    assert merged.shape[0] == 256
+    ordinal_120 = int(np.searchsorted(merged["ordinal"], int(overlap["ordinal"][0]), side="left"))
+    assert int(merged["price_primary_int"][ordinal_120]) == int(overlap["price_primary_int"][0])
 
 
 def smoke_streaming_replay() -> None:
@@ -399,8 +422,14 @@ def smoke_rolling_provider() -> None:
     samples = engine.build_ready_indices()
     assert len(samples) == 16
     assert len(samples[0].chunk_windows) == len(config.context_lags)
+    assert len(samples[0].metadata.get("chunk_start_offsets", ())) == len(config.context_lags)
+    assert len(samples[0].metadata.get("chunk_origin_offsets", ())) == len(config.context_lags)
     assert samples[0].chunk_windows[0].end_ordinal - samples[0].chunk_windows[0].start_ordinal == 127
-    batch = engine.materialize_training_batch(samples[:8])
+    progress_events: list[tuple[str, int, int]] = []
+    batch = engine.materialize_training_batch(samples[:8], progress_callback=lambda stage, done, total: progress_events.append((stage, done, total)))
+    encode_events = [(done, total) for stage, done, total in progress_events if stage == "encode"]
+    assert any(0 < done < total for done, total in encode_events)
+    assert any(done == total for done, total in encode_events)
     assert batch.headers_uint8.shape == (8, len(config.context_lags), 14)
     assert batch.events_uint8.shape == (8, len(config.context_lags), 128, 16)
     assert batch.bar_feature_keys == BAR_FEATURE_KEYS

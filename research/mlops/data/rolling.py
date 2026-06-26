@@ -429,14 +429,17 @@ class RollingMarketSampleEngine:
                         normalized[name] = rows[name]
                 rows = normalized
             current = self.rows_by_ticker.get(ticker)
-            merged = rows.copy() if current is None or current.size == 0 else np.concatenate([current, rows])
-            order = np.argsort(merged["ordinal"], kind="mergesort")
-            merged = merged[order]
-            if merged.shape[0] > 1:
-                _, unique_last = np.unique(merged["ordinal"][::-1], return_index=True)
-                keep = merged.shape[0] - 1 - unique_last
-                merged = merged[np.sort(keep)]
-            self.rows_by_ticker[ticker] = merged
+            if current is None or current.size == 0:
+                if _ordinals_are_strictly_increasing(rows):
+                    self.rows_by_ticker[ticker] = rows
+                    continue
+                merged = rows.copy()
+            elif _ordinals_are_strictly_increasing(rows) and int(current["ordinal"][-1]) < int(rows["ordinal"][0]):
+                self.rows_by_ticker[ticker] = np.concatenate([current, rows])
+                continue
+            else:
+                merged = np.concatenate([current, rows])
+            self.rows_by_ticker[ticker] = _sort_unique_by_ordinal_last(merged)
 
     def append_compact_events(self, events: Iterable[CompactEvent]) -> None:
         grouped: dict[str, list[CompactEvent]] = {}
@@ -598,10 +601,14 @@ class RollingMarketSampleEngine:
         timestamps = rows["sip_timestamp_us"]
         for origin_offset in origin_offsets.tolist():
             chunk_windows = []
+            chunk_start_offsets: list[int] = []
+            chunk_origin_offsets: list[int] = []
             for lag in lags:
                 chunk_origin_offset = int(origin_offset) - int(lag)
                 start = chunk_origin_offset - context + 1
                 end = chunk_origin_offset
+                chunk_start_offsets.append(int(start))
+                chunk_origin_offsets.append(int(chunk_origin_offset))
                 chunk_windows.append(
                     ChunkWindowIndex(
                         ticker=ticker,
@@ -620,6 +627,11 @@ class RollingMarketSampleEngine:
                     chunk_windows=tuple(chunk_windows),
                     macro_asof_timestamp_us=int(timestamps[origin_offset]),
                     global_asof_timestamp_us=int(timestamps[origin_offset]),
+                    metadata={
+                        "origin_offset": int(origin_offset),
+                        "chunk_start_offsets": tuple(chunk_start_offsets),
+                        "chunk_origin_offsets": tuple(chunk_origin_offsets),
+                    },
                 )
             )
         return tuple(out)
@@ -652,8 +664,11 @@ class RollingMarketSampleEngine:
         encode_total = int(batch * context_chunks)
         _call_progress(progress_callback, "encode", 0, encode_total)
         with profiler.stage("encode_compact_windows", count=batch * context_chunks):
+            encode_progress_total = max(1, encode_total * 2)
+            _call_progress(progress_callback, "encode", 0, encode_progress_total)
             placements: list[tuple[int, int, tuple[str, int], RollingSampleIndex]] = []
             pending_by_ticker: dict[str, dict[tuple[str, int], tuple[np.ndarray, int, int | None]]] = {}
+            prepared_count = 0
             for sample_index, sample in enumerate(sample_tuple):
                 rows = self.rows_by_ticker.get(sample.ticker)
                 if rows is None:
@@ -665,36 +680,77 @@ class RollingMarketSampleEngine:
                         context_index=-1,
                     )
                     encode_done += context_chunks
-                    _maybe_call_progress(progress_callback, "encode", encode_done, encode_total)
+                    prepared_count += context_chunks
+                    _maybe_call_progress(progress_callback, "encode", prepared_count, encode_progress_total)
                     continue
+                ordinals = rows["ordinal"].astype(np.int64, copy=False)
+                timestamps = rows["sip_timestamp_us"].astype(np.int64, copy=False)
+                chunk_start_offsets = _metadata_int_tuple(sample.metadata.get("chunk_start_offsets"), expected=context_chunks)
                 for context_index, window in enumerate(sample.chunk_windows):
                     cache_key = (sample.ticker, int(window.origin_ordinal))
                     if cache_key in encoded_window_cache:
                         cache_hits += 1
                         placements.append((sample_index, context_index, cache_key, sample))
+                        prepared_count += 1
+                        _maybe_call_progress(progress_callback, "encode", prepared_count, encode_progress_total)
                         continue
                     pending_for_ticker = pending_by_ticker.setdefault(sample.ticker, {})
                     if cache_key in pending_for_ticker:
                         cache_hits += 1
                         placements.append((sample_index, context_index, cache_key, sample))
+                        prepared_count += 1
+                        _maybe_call_progress(progress_callback, "encode", prepared_count, encode_progress_total)
                         continue
                     cache_misses += 1
-                    bounds = _ordinal_window_bounds(
-                        rows,
+                    start = (
+                        int(chunk_start_offsets[context_index])
+                        if chunk_start_offsets is not None and context_index < len(chunk_start_offsets)
+                        else -1
+                    )
+                    if not _offset_window_matches(
+                        ordinals,
+                        start_offset=start,
                         start_ordinal=int(window.start_ordinal),
                         end_ordinal=int(window.end_ordinal),
                         expected_events=int(self.config.events_per_chunk),
-                    )
-                    if bounds is None:
+                    ):
+                        bounds = _ordinal_window_bounds(
+                            rows,
+                            start_ordinal=int(window.start_ordinal),
+                            end_ordinal=int(window.end_ordinal),
+                            expected_events=int(self.config.events_per_chunk),
+                        )
+                        if bounds is None:
+                            encoded_window_cache[cache_key] = "ordinal_window_not_exact"
+                            placements.append((sample_index, context_index, cache_key, sample))
+                            prepared_count += 1
+                            _maybe_call_progress(progress_callback, "encode", prepared_count, encode_progress_total)
+                            continue
+                        start, _end = bounds
+                    if start <= 0:
+                        previous_sip_us = None
+                    else:
+                        previous_sip_us = int(timestamps[start - 1])
+                    if start < 0:
                         encoded_window_cache[cache_key] = "ordinal_window_not_exact"
                         placements.append((sample_index, context_index, cache_key, sample))
+                        prepared_count += 1
+                        _maybe_call_progress(progress_callback, "encode", prepared_count, encode_progress_total)
                         continue
-                    start, _end = bounds
-                    previous_sip_us = int(rows["sip_timestamp_us"][start - 1]) if start > 0 else None
                     pending_for_ticker[cache_key] = (rows, int(start), previous_sip_us)
                     placements.append((sample_index, context_index, cache_key, sample))
+                    prepared_count += 1
+                    _maybe_call_progress(progress_callback, "encode", prepared_count, encode_progress_total)
+            encoded_tiles_done = 0
             for pending in pending_by_ticker.values():
-                _encode_pending_windows(pending, encoded_window_cache, tile_size=4096)
+                encoded_tiles_done += _encode_pending_windows(
+                    pending,
+                    encoded_window_cache,
+                    tile_size=1024,
+                    progress_callback=progress_callback,
+                    progress_base=encode_total + encoded_tiles_done,
+                    progress_total=encode_progress_total,
+                )
             for sample_index, context_index, cache_key, sample in placements:
                 encoded = encoded_window_cache.get(cache_key)
                 if isinstance(encoded, str):
@@ -706,7 +762,7 @@ class RollingMarketSampleEngine:
                         context_index=context_index,
                     )
                     encode_done += 1
-                    _maybe_call_progress(progress_callback, "encode", encode_done, encode_total)
+                    _maybe_call_progress(progress_callback, "encode", encode_total + encode_done, encode_progress_total)
                     continue
                 if encoded is None:
                     _record_invalid_context(
@@ -717,14 +773,14 @@ class RollingMarketSampleEngine:
                         context_index=context_index,
                     )
                     encode_done += 1
-                    _maybe_call_progress(progress_callback, "encode", encode_done, encode_total)
+                    _maybe_call_progress(progress_callback, "encode", encode_total + encode_done, encode_progress_total)
                     continue
                 headers[sample_index, context_index], events[sample_index, context_index] = encoded
                 mask[sample_index, context_index] = True
                 chunk_origin_ts[sample_index, context_index] = int(sample.chunk_windows[context_index].origin_timestamp_us)
                 encode_done += 1
-                _maybe_call_progress(progress_callback, "encode", encode_done, encode_total)
-        _call_progress(progress_callback, "encode", encode_total, encode_total)
+                _maybe_call_progress(progress_callback, "encode", encode_total + encode_done, encode_progress_total)
+        _call_progress(progress_callback, "encode", encode_progress_total, encode_progress_total)
 
         profiler.add_stage("encoded_window_cache_hits", 0.0, count=cache_hits)
         profiler.add_stage("encoded_window_cache_misses", 0.0, count=cache_misses)
@@ -1807,18 +1863,39 @@ def _filter_materializable_origins(rows: np.ndarray, origin_offsets: np.ndarray,
     return origin_offsets[valid]
 
 
+def _ordinals_are_strictly_increasing(rows: np.ndarray) -> bool:
+    if rows.shape[0] <= 1:
+        return True
+    ordinals = rows["ordinal"].astype(np.int64, copy=False)
+    return bool(np.all(ordinals[1:] > ordinals[:-1]))
+
+
+def _sort_unique_by_ordinal_last(rows: np.ndarray) -> np.ndarray:
+    if rows.shape[0] <= 1:
+        return rows.copy()
+    order = np.argsort(rows["ordinal"], kind="mergesort")
+    merged = rows[order]
+    _, unique_last = np.unique(merged["ordinal"][::-1], return_index=True)
+    keep = merged.shape[0] - 1 - unique_last
+    return merged[np.sort(keep)]
+
+
 def _encode_pending_windows(
     pending: Mapping[tuple[str, int], tuple[np.ndarray, int, int | None]],
     encoded_window_cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray] | str],
     *,
     tile_size: int,
-) -> None:
+    progress_callback: Callable[[str, int, int], None] | None = None,
+    progress_base: int = 0,
+    progress_total: int = 0,
+) -> int:
     if not pending:
-        return
+        return 0
     keys = list(pending)
     context = DEFAULT_CONTEXT_EVENTS
     tile = max(1, int(tile_size))
     offsets = np.arange(context, dtype=np.int64)
+    done = 0
     for start_index in range(0, len(keys), tile):
         tile_keys = keys[start_index : start_index + tile]
         starts = np.asarray([pending[key][1] for key in tile_keys], dtype=np.int64)
@@ -1833,6 +1910,8 @@ def _encode_pending_windows(
                 encoded_window_cache[key] = (
                     (batch_headers[0].copy(), batch_events[0].copy()) if bool(batch_valid[0]) else str(batch_reasons[0])
                 )
+                done += 1
+                _maybe_call_progress(progress_callback, "encode", int(progress_base) + done, max(1, int(progress_total)))
             continue
         indices = starts[:, None] + offsets[None, :]
         windows = rows[indices]
@@ -1844,6 +1923,9 @@ def _encode_pending_windows(
                 if bool(batch_valid[row_index])
                 else str(batch_reasons[row_index])
             )
+        done += len(tile_keys)
+        _maybe_call_progress(progress_callback, "encode", int(progress_base) + done, max(1, int(progress_total)))
+    return done
 
 
 def _materializable_chunk_origin_flags(rows: np.ndarray, chunk_origins: np.ndarray, context: int) -> np.ndarray:
@@ -1886,7 +1968,8 @@ def _maybe_call_progress(callback: Callable[[str, int, int], None] | None, stage
         return
     done_int = int(done)
     total_int = int(total)
-    if done_int >= total_int or done_int % 128 == 0:
+    step = max(1, min(128, max(1, total_int) // 64))
+    if done_int >= total_int or done_int % step == 0:
         callback(str(stage), done_int, total_int)
 
 
@@ -1978,6 +2061,38 @@ def _ordinal_position(rows: np.ndarray, ordinal: int) -> int | None:
     if position >= int(ordinals.shape[0]) or int(ordinals[position]) != int(ordinal):
         return None
     return position
+
+
+def _metadata_int_tuple(value: Any, *, expected: int) -> tuple[int, ...] | None:
+    if value is None:
+        return None
+    try:
+        out = tuple(int(item) for item in value)
+    except TypeError:
+        return None
+    return out if len(out) == int(expected) else None
+
+
+def _offset_window_matches(
+    ordinals: np.ndarray,
+    *,
+    start_offset: int,
+    start_ordinal: int,
+    end_ordinal: int,
+    expected_events: int,
+) -> bool:
+    start = int(start_offset)
+    expected = int(expected_events)
+    if expected <= 0 or start < 0:
+        return False
+    end = start + expected - 1
+    if end >= int(ordinals.shape[0]):
+        return False
+    return (
+        int(ordinals[start]) == int(start_ordinal)
+        and int(ordinals[end]) == int(end_ordinal)
+        and int(ordinals[end]) - int(ordinals[start]) == expected - 1
+    )
 
 
 def _ordinal_window_bounds(
