@@ -19,6 +19,7 @@ from research.mlops.rolling_loader.cache import ExternalContextPayload
 DEFAULT_TICKER_QUERY_CHUNK_SIZE = 512
 NEXT_EVENT_LOOKAHEAD_DAYS = 7
 MAX_NEXT_EVENT_SEARCH_DAYS = 3650
+WARM_ROW_LOOKBACK_DAYS = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,6 +342,8 @@ FORMAT TSV
         end_ordinals: Mapping[str, int],
         warm_count: int,
         chunk_size: int = DEFAULT_TICKER_QUERY_CHUNK_SIZE,
+        asof_timestamp_us: int = 0,
+        lookback_days: int = WARM_ROW_LOOKBACK_DAYS,
     ) -> dict[str, np.ndarray]:
         """Load the in-memory high-frequency carryover ending at each cursor."""
 
@@ -356,9 +359,37 @@ FORMAT TSV
                     by_ticker=by_ticker,
                     end_ordinals=end_ordinals,
                     warm_count=int(warm_count),
+                    asof_timestamp_us=int(asof_timestamp_us),
+                    lookback_days=int(lookback_days),
                 )
             )
+        if int(asof_timestamp_us) > 0:
+            deficient = tuple(
+                ticker
+                for ticker in ticker_tuple
+                if int(out.get(ticker, np.empty(0, dtype=EVENT_ROW_DTYPE)).size)
+                < self._warm_expected_count(
+                    row=by_ticker[ticker],
+                    end_ordinal=int(end_ordinals[ticker]),
+                    warm_count=int(warm_count),
+                )
+            )
+            for ticker_chunk in _chunks(deficient, max(1, int(chunk_size))):
+                out.update(
+                    self._warm_rows_ending_at_chunk(
+                        ticker_tuple=ticker_chunk,
+                        by_ticker=by_ticker,
+                        end_ordinals=end_ordinals,
+                        warm_count=int(warm_count),
+                    )
+                )
         return out
+
+    @staticmethod
+    def _warm_expected_count(*, row: RollingTickerIndexRow, end_ordinal: int, warm_count: int) -> int:
+        end = min(int(end_ordinal), int(row.max_valid_ordinal))
+        start = max(int(row.first_ordinal), end - int(warm_count) + 1)
+        return max(0, end - start + 1)
 
     def _warm_rows_ending_at_chunk(
         self,
@@ -367,6 +398,8 @@ FORMAT TSV
         by_ticker: Mapping[str, RollingTickerIndexRow],
         end_ordinals: Mapping[str, int],
         warm_count: int,
+        asof_timestamp_us: int = 0,
+        lookback_days: int = WARM_ROW_LOOKBACK_DAYS,
     ) -> dict[str, np.ndarray]:
         starts = []
         ends = []
@@ -379,6 +412,22 @@ FORMAT TSV
         ticker_sql = "[" + ", ".join(sql_string(ticker) for ticker in ticker_tuple) + "]"
         start_sql = "[" + ", ".join(str(value) for value in starts) + "]"
         end_sql = "[" + ", ".join(str(value) for value in ends) + "]"
+        if int(asof_timestamp_us) > 0:
+            end_date = _date_obj_from_us(int(asof_timestamp_us))
+            start_date = end_date - dt.timedelta(days=max(0, int(lookback_days)))
+            prewhere_sql = f"""
+PREWHERE ticker IN request_tickers
+  AND event_date >= toDate({sql_string(start_date.isoformat())})
+  AND event_date <= toDate({sql_string(end_date.isoformat())})
+WHERE ordinal >= arrayElement(request_start_ordinals, indexOf(request_tickers, ticker))
+  AND ordinal <= arrayElement(request_end_ordinals, indexOf(request_tickers, ticker))
+"""
+        else:
+            prewhere_sql = """
+WHERE ticker IN request_tickers
+  AND ordinal >= arrayElement(request_start_ordinals, indexOf(request_tickers, ticker))
+  AND ordinal <= arrayElement(request_end_ordinals, indexOf(request_tickers, ticker))
+"""
         query = f"""
 WITH
     {ticker_sql} AS request_tickers,
@@ -398,9 +447,7 @@ SELECT
     event_flags,
     conditions_packed
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
-WHERE ticker IN request_tickers
-  AND ordinal >= arrayElement(request_start_ordinals, indexOf(request_tickers, ticker))
-  AND ordinal <= arrayElement(request_end_ordinals, indexOf(request_tickers, ticker))
+{prewhere_sql}
 ORDER BY ticker, ordinal
 SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
 FORMAT RowBinary

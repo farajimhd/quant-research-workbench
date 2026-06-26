@@ -74,6 +74,7 @@ def initialize_clickhouse_replay(
                 index_rows=available_index_rows,
                 end_ordinals=start_ordinals,
                 warm_count=warm_count,
+                asof_timestamp_us=start_us,
             )
         cursors = source.initial_cursors_from_ordinals(end_ordinals={ticker: start_ordinals[ticker] for ticker in initialized_tickers})
         initial_context_asof_us = start_us

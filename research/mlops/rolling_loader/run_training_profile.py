@@ -306,7 +306,12 @@ def initialize_replay_from_scratch(
         with StepTimer(recorder, memory, "initialize_universe", {"tickers": len(available_index_rows), "source": "start_time_available"}):
             initialized_tickers = loader.initialize_universe(row.ticker for row in available_index_rows)
         with StepTimer(recorder, memory, "warm_load_source_rows", {"tickers": len(initialized_tickers), "warm_count": warm_count}):
-            warm_rows = source.warm_rows_ending_at(index_rows=available_index_rows, end_ordinals=start_ordinals, warm_count=warm_count)
+            warm_rows = source.warm_rows_ending_at(
+                index_rows=available_index_rows,
+                end_ordinals=start_ordinals,
+                warm_count=warm_count,
+                asof_timestamp_us=start_timestamp_us,
+            )
         cursors = source.initial_cursors_from_ordinals(end_ordinals={ticker: start_ordinals[ticker] for ticker in initialized_tickers})
         initial_context_asof_us = start_timestamp_us
     else:
@@ -408,6 +413,7 @@ def _initialize_new_window_tickers(
             index_rows=index_rows,
             end_ordinals=end_ordinals,
             warm_count=int(loader_config.warmup_events_per_ticker),
+            asof_timestamp_us=int(asof_timestamp_us),
         )
     with StepTimer(
         recorder,
