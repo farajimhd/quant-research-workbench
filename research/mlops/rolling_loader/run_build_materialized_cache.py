@@ -82,6 +82,7 @@ DEFAULTS: dict[str, Any] = {
     "sec_filing_items": 4,
     "xbrl_items": 512,
     "event_row_limit": 0,
+    "one_shard_max_days": 14,
     "output_root": str(DEFAULT_MATERIALIZED_CACHE_ROOT),
 }
 
@@ -160,6 +161,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", default="train")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--one-shard", action="store_true", help="Stop after finalizing the first shard. Useful for test cache builds.")
+    parser.add_argument(
+        "--one-shard-max-days",
+        type=int,
+        default=DEFAULTS["one_shard_max_days"],
+        help="When --one-shard is used without an explicit end timestamp, scan up to this many days to find the first non-empty shard.",
+    )
     parser.add_argument("--start-utc", default=DEFAULTS["start_utc"])
     parser.add_argument("--start-timestamp-us", type=int, default=0)
     parser.add_argument("--end-utc", default="")
@@ -202,6 +209,9 @@ def main() -> int:
     )
     start_us = int(args.start_timestamp_us or parse_utc_us(args.start_utc))
     end_us = _resolve_end_timestamp_us(args, start_us)
+    if args.one_shard and not _has_explicit_end_arg() and int(args.days) == int(DEFAULTS["days"]):
+        one_shard_end_us = start_us + max(1, int(args.one_shard_max_days)) * 86_400_000_000 - 1
+        end_us = max(end_us, one_shard_end_us)
     cache_id = args.cache_id.strip() or dt.datetime.now(tz=dt.timezone.utc).strftime("rolling_cache_%Y%m%d_%H%M%S")
     cache_root = Path(args.cache_root) / cache_id
     split_dir = cache_root / args.split
@@ -435,8 +445,13 @@ def main() -> int:
                         write_worker.last_message = f"wrote {write_worker.writing_done:,}/{write_worker.writing_total:,}"
                         _write_progress(cache_root, args.split, stats, writer)
                         _refresh(stats, dashboard, writer)
-                        if args.one_shard and len(writer.shards) >= 1:
+                        if args.one_shard and (len(writer.shards) >= 1 or writer.current_shard_samples > 0):
                             stop_requested = True
+                            stats.message(
+                                "one-shard captured first non-empty shard; finalizing",
+                                completed_shards=len(writer.shards),
+                                current_shard_samples=writer.current_shard_samples,
+                            )
                             break
                     write_worker.status = "done"
                     write_worker.last_message = f"done samples={write_worker.samples_done:,}"
@@ -467,6 +482,12 @@ def main() -> int:
             "shard_count": len(writer.shards),
             "elapsed_seconds": time.perf_counter() - stats.started,
         }
+        if not writer.shards:
+            stats.message(
+                "no shards were created; no materialized samples were written in the requested window",
+                start_utc=timestamp_us_to_utc(start_us),
+                end_utc=timestamp_us_to_utc(end_us),
+            )
         _write_json(cache_root / "manifest.json", manifest)
         stats.message("done")
         _refresh(stats, dashboard, writer)
@@ -585,6 +606,17 @@ def _resolve_end_timestamp_us(args: argparse.Namespace, start_us: int) -> int:
     if str(args.end_utc).strip():
         return parse_utc_us(str(args.end_utc))
     return start_us + max(1, int(args.days)) * 86_400_000_000 - 1
+
+
+def _has_explicit_end_arg(argv: list[str] | None = None) -> bool:
+    values = sys.argv[1:] if argv is None else argv
+    return any(
+        value == "--end-utc"
+        or value.startswith("--end-utc=")
+        or value == "--end-timestamp-us"
+        or value.startswith("--end-timestamp-us=")
+        for value in values
+    )
 
 
 def _manifest(
