@@ -1,11 +1,30 @@
 # Streaming Rolling Loader Guide
 
-This guide defines the target formulation for the next rolling-loader
-implementation. It keeps the existing rolling-cache idea, but changes the data
-access pattern so ClickHouse is used for large aligned scans and all rolling
-logic happens in memory.
+This guide defines the practical training implementation for the stateful
+rolling context design described in
+`research/mlops/data/STATEFUL_ROLLING_CONTEXT_DESIGN.md`.
+
+The original design remains the source of truth for semantics:
+
+- training and production share the same cache and sample-index logic
+- caches are warm-loaded as-of the replay start
+- caches advance chronologically
+- samples are lightweight stable-id indices before final materialization
+- training uses raw trainable payloads, while production can use cached
+  embeddings
+- model-facing batches follow the shared `research.mlops.data` contract
+
+The change in this guide is operational, not semantic. The original design is
+hard to implement efficiently by issuing many small database queries. For
+historical training, this loader instead streams larger blocks from ClickHouse,
+brings data to memory, processes it with vectorized CPU operations, and feeds
+ready batches to the trainer.
 
 ## Goal
+
+The main goal is to keep the GPU training loop supplied with model-ready
+batches while the CPU side performs data loading, replay, cache updates, and
+batch materialization concurrently.
 
 The loader should prepare training data with these properties:
 
@@ -15,10 +34,47 @@ The loader should prepare training data with these properties:
 - high-frequency events streamed from ClickHouse in large date blocks
 - tokenized low-frequency context loaded as cache updates, not raw text
 - cache retention controlled only by the cache configuration
-- batch construction performed from in-memory state
+- sample-index creation performed from rolling cache state
+- batch construction performed from in-memory state using vectorized CPU work
+- asynchronous prefetch so GPU training and CPU data prep overlap
 
 The three-day load window is an I/O prefetch window. It is not the semantic
 retention policy. Caches decide what stays resident and what is evicted.
+
+## Relationship To The Original Stateful Design
+
+The input and output contract is the same as the stateful design. The difference
+is how historical training obtains source rows efficiently.
+
+Original stateful idea:
+
+```text
+initialize caches at start timestamp
+advance chronologically
+update caches when source data arrives
+create stable sample indices from current cache state
+materialize batches from ids at the final collator/materializer step
+```
+
+Streaming training implementation:
+
+```text
+initialize caches at start timestamp
+stream 3-day source blocks from ClickHouse
+convert blocks to in-memory Arrow/Polars/NumPy structures
+replay rows chronologically through the same caches
+create the same stable sample indices
+materialize the same RollingTrainingBatch contract
+prepare future batches on CPU while GPU trains on current batches
+```
+
+The streaming loader should therefore be judged by two requirements:
+
+1. It must preserve the stateful no-lookahead cache semantics.
+2. It must make the historical training path fast enough by changing I/O and
+   CPU processing strategy.
+
+It is not a separate model contract and not a separate sampling concept.
 
 ## Source Table Shape
 
@@ -204,6 +260,90 @@ while cursor < training_end:
 
 The next block may overlap by timestamp if needed for deterministic replay, but
 the caches must be responsible for deduplication and retention.
+
+## Concurrent Training Pipeline
+
+The streaming loader should run as a CPU-side producer for the GPU training
+loop. It should not wait for the GPU to finish a step before preparing the next
+batch.
+
+Recommended pipeline:
+
+```text
+CPU source loader thread/process:
+  stream next 3-day event/context blocks from ClickHouse
+  normalize Arrow/Polars blocks
+  hand normalized blocks to replay workers
+
+CPU replay/materialization workers:
+  replay rows through rolling caches in timestamp order
+  create RollingSampleIndex records
+  materialize RollingTrainingBatch objects
+  enqueue ready batches
+
+GPU training loop:
+  dequeue ready batch
+  move tensors to device
+  run forward/backward/optimizer step
+```
+
+The queues should be bounded:
+
+```text
+source_block_queue_size = 1 or 2
+ready_batch_queue_size = 2 to 8
+```
+
+Bounded queues prevent CPU prefetch from consuming unbounded memory while still
+allowing overlap. When the GPU is slower than data prep, the ready-batch queue
+fills and CPU workers naturally backpressure. When data prep is slower than the
+GPU, profiler output should show the GPU waiting on the batch queue.
+
+The CPU pipeline should be deterministic when configured for reproducibility:
+
+- block boundaries are deterministic
+- source ordering is deterministic
+- tie-break rules are deterministic
+- shuffle policies use explicit RNG state
+- resume state records replay cursor, per-ticker cursors, sample count, batch
+  count, and RNG state
+
+The GPU loop should receive only completed `RollingTrainingBatch` objects. It
+should not directly manipulate source DataFrames, ClickHouse clients, or cache
+mutation state.
+
+## Vectorized CPU Processing
+
+The loader should use Polars/Arrow for bulk operations where they reduce Python
+loop overhead:
+
+- loading ClickHouse Arrow results
+- adding dense ticker ids
+- sorting a block by `sip_timestamp_us`
+- grouping or filtering loaded context updates
+- building candidate origin tables
+- computing time features for whole arrays
+- gathering token/category/numeric payloads for a batch
+
+The rolling caches can still use compact NumPy-backed arenas/rings internally
+when that is the faster or simpler representation. Polars is not required to be
+the final cache storage format. The important rule is that expensive per-row
+Python materialization should be delayed or avoided until the final batch
+assembly boundary.
+
+The intended data path is:
+
+```text
+ClickHouse Arrow block
+  -> Polars/Arrow normalization and ordering
+  -> compact cache updates
+  -> RollingSampleIndex table/list
+  -> vectorized batch materialization
+  -> RollingTrainingBatch
+```
+
+This preserves the original stable-id cache design while making the training
+implementation practical for historical data volume.
 
 ## High-Frequency Block Handling
 
@@ -567,8 +707,10 @@ initialize:
   warm high-frequency event caches
   warm token context caches as-of start
   load full 1d macro/global bars
+  start bounded source and batch queues
+  start CPU loader/materialization workers
 
-loop:
+CPU loader/materialization loop:
   stream 3-day event block
   stream 3-day token context block
   normalize loaded data
@@ -576,9 +718,19 @@ loop:
   replay into caches in timestamp order
   collect eligible origins
   build batches vectorized
+  enqueue RollingTrainingBatch
   release transient block
   advance
+
+GPU training loop:
+  dequeue RollingTrainingBatch
+  move tensors to device
+  train step
+  repeat until source exhausted and queues are drained
 ```
 
 This keeps the guide-aligned rolling-cache behavior while using ClickHouse in
-the fastest way supported by the current event table layout.
+the fastest way supported by the current event table layout. The loader's public
+contract remains the original stateful rolling data contract; streaming and
+vectorized processing are implementation details used to make historical
+training feasible.
