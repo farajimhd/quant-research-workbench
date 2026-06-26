@@ -166,13 +166,13 @@ memory samples, cache sizes, and a final summary under one run directory.
 Laptop form:
 
 ```powershell
-python -m research.mlops.rolling_loader.run_training_profile --database market_sip_compact --events-table events --index-table train_2019_to_2025 --tickers 64 --batch-size 4096 --batches 4 --replay-mode time-window --replay-window-us 200000 --context-chunks 32 --context-chunk-stride-events 64 --sample-stride-events 1 --start-utc 2025-01-02T15:00:00Z --max-threads 8 --max-memory-usage 80G --materialize-external-payloads --run-name train64_b4096_tw200ms_20250102_1500
+python -m research.mlops.rolling_loader.run_training_profile --database market_sip_compact --events-table events --index-table train_2019_to_2025 --batch-size 4096 --batches 4 --replay-mode time-window --replay-window-us 200000 --context-chunks 32 --context-chunk-stride-events 64 --sample-stride-events 1 --start-utc 2025-01-02T15:00:00Z --max-threads 8 --max-memory-usage 80G --materialize-external-payloads --run-name train_all_b4096_tw200ms_20250102_1500
 ```
 
 Direct workstation form:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_training_profile.py --database market_sip_compact --events-table events --index-table train_2019_to_2025 --tickers 64 --batch-size 4096 --batches 4 --replay-mode time-window --replay-window-us 200000 --context-chunks 32 --context-chunk-stride-events 64 --sample-stride-events 1 --start-utc 2025-01-02T15:00:00Z --max-threads 8 --max-memory-usage 80G --materialize-external-payloads --run-name train64_b4096_tw200ms_20250102_1500
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_training_profile.py --database market_sip_compact --events-table events --index-table train_2019_to_2025 --batch-size 4096 --batches 4 --replay-mode time-window --replay-window-us 200000 --context-chunks 32 --context-chunk-stride-events 64 --sample-stride-events 1 --start-utc 2025-01-02T15:00:00Z --max-threads 8 --max-memory-usage 80G --materialize-external-payloads --run-name train_all_b4096_tw200ms_20250102_1500
 ```
 
 Outputs are written under:
@@ -195,6 +195,11 @@ by `RollingLoaderConfig.replay_time_window_us` (`200000` microseconds by
 default). Market events and low-frequency/global updates are fetched for that
 exact time window. Tickers without market events in the window keep their cache
 state but emit no samples for that window.
+
+By default `--tickers 0` means no ticker cap. The profiler initializes every
+ticker from the index that has a valid event at or before `--start-utc` and can
+be warm-loaded as-of that timestamp. Pass `--tickers N` only for a smaller debug
+profile.
 
 ## Smoke Test
 

@@ -60,7 +60,6 @@ def initialize_clickhouse_replay(
     if not index_rows:
         raise RuntimeError(f"No eligible tickers found for min_events={min_events:,}")
 
-    initialized_tickers = loader.initialize_universe(row.ticker for row in index_rows)
     start_us = int(start_timestamp_us)
 
     if start_us > 0:
@@ -68,15 +67,18 @@ def initialize_clickhouse_replay(
             start_ordinals = source.load_start_ordinals(index_rows=index_rows, start_timestamp_us=start_us)
         if not start_ordinals:
             raise RuntimeError(f"No ticker has events at or before start_timestamp_us={start_us}")
+        available_index_rows = tuple(row for row in index_rows if row.ticker in start_ordinals)
+        initialized_tickers = loader.initialize_universe(row.ticker for row in available_index_rows)
         with profiler.stage("warm_load_source_rows", items=len(start_ordinals)):
             warm_rows_by_ticker = source.warm_rows_ending_at(
-                index_rows=index_rows,
+                index_rows=available_index_rows,
                 end_ordinals=start_ordinals,
                 warm_count=warm_count,
             )
-        cursors = source.initial_cursors_from_ordinals(end_ordinals=start_ordinals)
+        cursors = source.initial_cursors_from_ordinals(end_ordinals={ticker: start_ordinals[ticker] for ticker in initialized_tickers})
         initial_context_asof_us = start_us
     else:
+        initialized_tickers = loader.initialize_universe(row.ticker for row in index_rows)
         with profiler.stage("warm_load_source_rows", items=len(index_rows)):
             warm_rows_by_ticker = source.warm_rows_from_index(index_rows=index_rows, warm_count=warm_count)
         cursors = source.initial_cursors_from_index(index_rows=index_rows, warm_count=warm_count)
@@ -117,7 +119,7 @@ def initialize_clickhouse_replay(
         start_timestamp_us=initial_context_asof_us,
         source_summary={
             "source": "clickhouse",
-            "tickers_requested": int(ticker_limit),
+            "ticker_limit": int(ticker_limit),
             "tickers_initialized": len(initialized_tickers),
             "tickers_loaded": len(index_rows),
             "tickers_warmed": len(warm_rows_by_ticker),

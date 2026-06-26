@@ -48,7 +48,7 @@ DEFAULTS: dict[str, Any] = {
     "sec_filing_text_token_table": "sec_filing_text_tokens",
     "sec_xbrl_context_table": "sec_xbrl_context",
     "macro_bars_table": "macro_bars_by_time_symbol",
-    "tickers": 64,
+    "tickers": 0,
     "batch_size": 4096,
     "batches": 4,
     "events_per_ticker_block": 64,
@@ -87,7 +87,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--macro-bars-table", default=DEFAULTS["macro_bars_table"])
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
-    parser.add_argument("--tickers", type=int, default=DEFAULTS["tickers"])
+    parser.add_argument("--tickers", type=int, default=DEFAULTS["tickers"], help="Maximum ticker count. Use 0 for all tickers available at replay start.")
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--batches", type=int, default=DEFAULTS["batches"])
     parser.add_argument("--events-per-ticker-block", type=int, default=DEFAULTS["events_per_ticker_block"])
@@ -154,7 +154,7 @@ def main() -> int:
             "tables": _table_config(args),
             "loader": _loader_config_payload(loader_config),
             "profile": {
-                "tickers": int(args.tickers),
+                "ticker_limit": int(args.tickers),
                 "batch_size": int(args.batch_size),
                 "batches": int(args.batches),
                 "events_per_ticker_block": int(args.events_per_ticker_block),
@@ -269,24 +269,26 @@ def initialize_replay_from_scratch(
 ) -> tuple[dict[str, int], dict[str, Any]]:
     warm_count = int(loader_config.warmup_events_per_ticker)
     min_events = warm_count + max(1, int(args.events_per_ticker_block))
-    with StepTimer(recorder, memory, "source_load_ticker_index", {"requested_tickers": int(args.tickers), "min_events": min_events}):
+    with StepTimer(recorder, memory, "source_load_ticker_index", {"ticker_limit": int(args.tickers), "min_events": min_events}):
         index_rows = tuple(source.load_ticker_index_rows(limit=int(args.tickers), min_events=min_events))
     if not index_rows:
         raise RuntimeError(f"No eligible tickers found for min_events={min_events:,}")
-
-    with StepTimer(recorder, memory, "initialize_universe", {"tickers": len(index_rows)}):
-        initialized_tickers = loader.initialize_universe(row.ticker for row in index_rows)
 
     if start_timestamp_us > 0:
         with StepTimer(recorder, memory, "resolve_start_ordinals", {"tickers": len(index_rows), "start_timestamp_us": start_timestamp_us}):
             start_ordinals = source.load_start_ordinals(index_rows=index_rows, start_timestamp_us=start_timestamp_us)
         if not start_ordinals:
             raise RuntimeError(f"No ticker has events at or before start_timestamp_us={start_timestamp_us}")
-        with StepTimer(recorder, memory, "warm_load_source_rows", {"tickers": len(start_ordinals), "warm_count": warm_count}):
-            warm_rows = source.warm_rows_ending_at(index_rows=index_rows, end_ordinals=start_ordinals, warm_count=warm_count)
-        cursors = source.initial_cursors_from_ordinals(end_ordinals=start_ordinals)
+        available_index_rows = tuple(row for row in index_rows if row.ticker in start_ordinals)
+        with StepTimer(recorder, memory, "initialize_universe", {"tickers": len(available_index_rows), "source": "start_time_available"}):
+            initialized_tickers = loader.initialize_universe(row.ticker for row in available_index_rows)
+        with StepTimer(recorder, memory, "warm_load_source_rows", {"tickers": len(initialized_tickers), "warm_count": warm_count}):
+            warm_rows = source.warm_rows_ending_at(index_rows=available_index_rows, end_ordinals=start_ordinals, warm_count=warm_count)
+        cursors = source.initial_cursors_from_ordinals(end_ordinals={ticker: start_ordinals[ticker] for ticker in initialized_tickers})
         initial_context_asof_us = start_timestamp_us
     else:
+        with StepTimer(recorder, memory, "initialize_universe", {"tickers": len(index_rows), "source": "index"}):
+            initialized_tickers = loader.initialize_universe(row.ticker for row in index_rows)
         with StepTimer(recorder, memory, "warm_load_source_rows", {"tickers": len(index_rows), "warm_count": warm_count}):
             warm_rows = source.warm_rows_from_index(index_rows=index_rows, warm_count=warm_count)
         cursors = source.initial_cursors_from_index(index_rows=index_rows, warm_count=warm_count)
@@ -323,8 +325,9 @@ def initialize_replay_from_scratch(
                 )
 
     summary = {
-        "tickers_requested": int(args.tickers),
+        "ticker_limit": int(args.tickers),
         "tickers_indexed": len(index_rows),
+        "tickers_available_at_start": len(initialized_tickers),
         "tickers_initialized": len(initialized_tickers),
         "tickers_warmed": len(warm_rows),
         "warm_count": warm_count,
