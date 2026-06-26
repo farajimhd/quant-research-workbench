@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 if __package__ in {None, ""}:
     here = Path(__file__).resolve()
     for parent in here.parents:
@@ -66,6 +68,7 @@ DEFAULTS: dict[str, Any] = {
     "max_replay_windows": 100_000,
     "progress_every_blocks": 100,
     "start_utc": "2019-01-05T00:00:00Z",
+    "event_prefetch_rows": 8_192,
     "output_root": "D:/market-data/prepared/data_provider_profiles/rolling_loader_training",
 }
 
@@ -110,6 +113,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-name", default="")
     parser.add_argument("--max-replay-windows", type=int, default=DEFAULTS["max_replay_windows"])
     parser.add_argument("--progress-every-blocks", type=int, default=DEFAULTS["progress_every_blocks"])
+    parser.add_argument("--event-prefetch-rows", type=int, default=DEFAULTS["event_prefetch_rows"])
     return parser.parse_args()
 
 
@@ -161,6 +165,7 @@ def main() -> int:
                 "events_per_ticker_block": int(args.events_per_ticker_block),
                 "replay_mode": str(args.replay_mode),
                 "replay_window_us": int(loader_config.replay_time_window_us),
+                "event_prefetch_rows": int(args.event_prefetch_rows),
                 "start_timestamp_us": start_timestamp_us,
                 "start_utc": _format_us(start_timestamp_us) if start_timestamp_us else "",
                 "materialize_external_payloads": bool(args.materialize_external_payloads),
@@ -458,6 +463,64 @@ def _load_initial_context_for_new_tickers(
     return updates
 
 
+class EventWindowBuffer:
+    def __init__(self) -> None:
+        self.block: Any | None = None
+        self.position = 0
+
+    def next_window(
+        self,
+        *,
+        source: ClickHouseRollingSource,
+        current_time_us: int,
+        window_us: int,
+        prefetch_rows: int,
+        recorder: "JsonlRecorder",
+        memory: "MemorySampler",
+        block_index: int,
+    ) -> tuple[Any, int, int]:
+        while self.block is None or self.position >= int(self.block.row_count):
+            with StepTimer(
+                recorder,
+                memory,
+                "fetch_event_stream",
+                {
+                    "block_index": int(block_index),
+                    "cursor_start_us": int(current_time_us),
+                    "prefetch_rows": int(prefetch_rows),
+                },
+            ):
+                self.block = source.fetch_event_stream_all(
+                    start_exclusive_us=int(current_time_us),
+                    max_rows=int(prefetch_rows),
+                )
+            self.position = 0
+            if self.block.row_count <= 0:
+                return self.block, int(current_time_us), int(current_time_us)
+
+        rows = self.block.rows
+        start_pos = int(self.position)
+        window_start_us = int(rows[start_pos]["sip_timestamp_us"])
+        window_end_us = window_start_us + int(window_us)
+        end_pos = start_pos
+        while end_pos < int(rows.shape[0]) and int(rows[end_pos]["sip_timestamp_us"]) <= window_end_us:
+            end_pos += 1
+        self.position = end_pos
+        return _slice_event_block(self.block, start_pos=start_pos, end_pos=end_pos), window_start_us, window_end_us
+
+
+def _slice_event_block(block: Any, *, start_pos: int, end_pos: int) -> Any:
+    rows = block.rows[int(start_pos) : int(end_pos)].copy()
+    if rows.size == 0:
+        return type(block)(tickers=(), rows=rows, ticker_index=np.zeros((0,), dtype=np.uint32))
+    old_indices = block.ticker_index[int(start_pos) : int(end_pos)]
+    ticker_names = tuple(sorted({block.tickers[int(index)] for index in old_indices}))
+    remap = {ticker: index for index, ticker in enumerate(ticker_names)}
+    ticker_index = np.asarray([remap[block.tickers[int(index)]] for index in old_indices], dtype=np.uint32)
+    rows["span_id"] = ticker_index
+    return type(block)(tickers=ticker_names, rows=rows, ticker_index=ticker_index)
+
+
 def replay_training_batches(
     *,
     args: argparse.Namespace,
@@ -485,6 +548,7 @@ def replay_training_batches(
     active_tickers = tuple(sorted(loader.initialized_tickers))
     warm_count = int(loader_config.warmup_events_per_ticker)
     min_events = warm_count + max(1, int(args.events_per_ticker_block))
+    event_buffer = EventWindowBuffer()
 
     while completed_batches < int(args.batches):
         block_count += 1
@@ -506,17 +570,28 @@ def replay_training_batches(
                     "ticker_limit": int(args.tickers),
                 },
             ):
-                block = source.fetch_next_time_window_from_index(
-                    start_exclusive_us=cursor_start_us,
-                    window_us=int(loader_config.replay_time_window_us),
-                    min_events=min_events,
-                    ticker_limit=int(args.tickers),
-                )
+                if int(args.tickers) <= 0:
+                    block, event_window_start_us, window_end_us = event_buffer.next_window(
+                        source=source,
+                        current_time_us=cursor_start_us,
+                        window_us=int(loader_config.replay_time_window_us),
+                        prefetch_rows=int(args.event_prefetch_rows),
+                        recorder=recorder,
+                        memory=memory,
+                        block_index=block_count,
+                    )
+                else:
+                    block = source.fetch_next_time_window_from_index(
+                        start_exclusive_us=cursor_start_us,
+                        window_us=int(loader_config.replay_time_window_us),
+                        min_events=min_events,
+                        ticker_limit=int(args.tickers),
+                    )
+                    event_window_start_us = int(block.min_timestamp_us or cursor_start_us)
+                    window_end_us = event_window_start_us + int(loader_config.replay_time_window_us)
             if block.row_count == 0:
                 exhausted = True
                 break
-            event_window_start_us = int(block.min_timestamp_us or cursor_start_us)
-            window_end_us = event_window_start_us + int(loader_config.replay_time_window_us)
             context_start_us = cursor_start_us
             context_end_us = window_end_us
             current_time_us = window_end_us

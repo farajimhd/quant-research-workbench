@@ -817,6 +817,98 @@ FORMAT TSV
 """
         return tuple(str(line).upper() for line in self.text_client.execute(query).splitlines() if line.strip())
 
+    def fetch_event_stream_all(self, *, start_exclusive_us: int, max_rows: int) -> RollingEventBlock:
+        if int(max_rows) <= 0:
+            return RollingEventBlock(tickers=(), rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+        start_date = _date_obj_from_us(int(start_exclusive_us))
+        for offset_days in range(0, MAX_NEXT_EVENT_SEARCH_DAYS, NEXT_EVENT_LOOKAHEAD_DAYS):
+            window_start = start_date + dt.timedelta(days=offset_days)
+            window_end = window_start + dt.timedelta(days=NEXT_EVENT_LOOKAHEAD_DAYS)
+            block = self._fetch_event_stream_all_date_range(
+                start_exclusive_us=int(start_exclusive_us),
+                max_rows=int(max_rows),
+                start_date=window_start,
+                end_date=window_end,
+            )
+            if block.row_count > 0:
+                return block
+        return RollingEventBlock(tickers=(), rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+
+    def _fetch_event_stream_all_date_range(
+        self,
+        *,
+        start_exclusive_us: int,
+        max_rows: int,
+        start_date: dt.date,
+        end_date: dt.date,
+    ) -> RollingEventBlock:
+        start_date_sql = f"toDate({sql_string(start_date.isoformat())})"
+        end_date_sql = f"toDate({sql_string(end_date.isoformat())})"
+        stream_cte = f"""
+stream_rows AS
+(
+    SELECT
+        ticker,
+        ordinal,
+        event_type,
+        sip_timestamp_us,
+        price_primary_int,
+        price_secondary_int,
+        size_primary,
+        size_secondary,
+        exchange_primary,
+        exchange_secondary,
+        event_flags,
+        conditions_packed
+    FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
+    PREWHERE event_date >= {start_date_sql}
+      AND event_date < {end_date_sql}
+    WHERE sip_timestamp_us > {int(start_exclusive_us)}
+    ORDER BY sip_timestamp_us, ticker, ordinal
+    LIMIT {int(max_rows)}
+)
+"""
+        ticker_query = f"""
+WITH {stream_cte}
+SELECT DISTINCT ticker
+FROM stream_rows
+ORDER BY ticker
+SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
+FORMAT TSV
+"""
+        tickers = tuple(str(line).upper() for line in self.text_client.execute(ticker_query).splitlines() if line.strip())
+        if not tickers:
+            return RollingEventBlock(tickers=(), rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+        ticker_sql = "[" + ", ".join(sql_string(ticker) for ticker in tickers) + "]"
+        query = f"""
+WITH
+    {ticker_sql} AS request_tickers,
+    {stream_cte}
+SELECT
+    toUInt32(indexOf(request_tickers, ticker) - 1) AS span_id,
+    ordinal,
+    event_type,
+    sip_timestamp_us,
+    price_primary_int,
+    price_secondary_int,
+    size_primary,
+    size_secondary,
+    exchange_primary,
+    exchange_secondary,
+    event_flags,
+    conditions_packed
+FROM stream_rows
+ORDER BY sip_timestamp_us, ticker, ordinal
+SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
+FORMAT RowBinary
+"""
+        payload = self.bytes_client.execute_bytes(query)
+        if len(payload) % EVENT_ROW_DTYPE.itemsize != 0:
+            raise RuntimeError(f"RowBinary payload size {len(payload):,} is not divisible by event row size {EVENT_ROW_DTYPE.itemsize}")
+        rows = np.frombuffer(payload, dtype=EVENT_ROW_DTYPE).copy()
+        ticker_index = rows["span_id"].astype(np.uint32, copy=True) if rows.size else np.zeros((0,), dtype=np.uint32)
+        return RollingEventBlock(tickers=tickers, rows=rows, ticker_index=ticker_index)
+
     def _next_event_timestamp_from_index(
         self,
         *,
