@@ -102,7 +102,6 @@ class _TodayAsOfDayState:
     cumulative_dollars: np.ndarray
     prefix_high: np.ndarray
     prefix_low: np.ndarray
-    quote_mid: np.ndarray
 
 
 @dataclass(frozen=True, slots=True)
@@ -1057,7 +1056,7 @@ class RollingMarketSampleEngine:
         global_rows: dict[str, list[dict[str, float]]] = {symbol: [] for symbol in self.config.global_symbols}
         origin_offsets_by_ticker: dict[str, dict[int, int | None]] = {}
         global_symbol_set = {str(symbol).upper() for symbol in global_symbols}
-        _call_progress(progress_callback, "features", 1, max(int(progress_total), batch + 4))
+        _call_progress(progress_callback, "features:collect", 1, max(int(progress_total), batch + 4))
         for sample_index, sample in enumerate(samples):
             for symbol in (str(sample.ticker).upper(), *(str(value).upper() for value in global_symbols)):
                 if symbol not in origin_offsets_by_ticker:
@@ -1073,7 +1072,9 @@ class RollingMarketSampleEngine:
                         offset = int(np.searchsorted(timestamps, int(sample.origin_timestamp_us), side="right") - 1)
                         origin_offsets_by_ticker[symbol][sample_index] = offset if offset >= 0 else None
         today_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-        for symbol, offsets_by_sample in origin_offsets_by_ticker.items():
+        symbol_count = len(origin_offsets_by_ticker)
+        feature_total = max(int(progress_total), batch + symbol_count + 4)
+        for symbol_index, (symbol, offsets_by_sample) in enumerate(origin_offsets_by_ticker.items(), start=1):
             rows = self.rows_by_ticker.get(symbol)
             bars = np.zeros((batch, fields), dtype=np.float32)
             mask = np.zeros((batch,), dtype=np.bool_)
@@ -1091,7 +1092,8 @@ class RollingMarketSampleEngine:
                 bars[sample_indexes] = symbol_bars
                 mask[sample_indexes] = symbol_mask
             today_cache[symbol] = (bars, mask)
-        _call_progress(progress_callback, "features", 2, max(int(progress_total), batch + 4))
+            _maybe_call_progress(progress_callback, "features:asof", 1 + symbol_index, feature_total)
+        _call_progress(progress_callback, "features:asof", 1 + symbol_count, feature_total)
 
         for sample_index, sample in enumerate(samples):
             today_bars, today_mask = today_cache.get(str(sample.ticker).upper(), (None, None))
@@ -1121,7 +1123,7 @@ class RollingMarketSampleEngine:
                 global_market_bars[sample_index, symbol_index] = bars
                 global_market_bar_mask[sample_index, symbol_index] = mask
                 global_rows[symbol].append(_bar_tensor_row(global_timeframes, bars))
-            _maybe_call_progress(progress_callback, "features", sample_index + 3, max(int(progress_total), batch + 4))
+            _maybe_call_progress(progress_callback, "features:rows", symbol_count + sample_index + 2, feature_total)
         macro = _rows_to_feature_arrays(macro_rows)
         global_features = {f"{symbol}_{key}": value for symbol, rows in global_rows.items() for key, value in _rows_to_feature_arrays(rows).items()}
         return macro, global_features, macro_timeframes, global_timeframes, ticker_macro_bars, ticker_macro_bar_mask, global_market_bars, global_market_bar_mask
@@ -2666,7 +2668,10 @@ def _today_asof_bars_from_events(
         quote_only_targets = (trade_counts == 0) & (quote_counts > 0)
         if bool(quote_only_targets.any()):
             last_quote_indexes = quote_counts[quote_only_targets] - 1
-            mid = state.quote_mid[last_quote_indexes].astype(np.float32)
+            quote_rows = rows[state.start_offset + state.quote_positions[last_quote_indexes]]
+            ask = _decode_primary_price(quote_rows)
+            bid = _decode_secondary_price(quote_rows)
+            mid = np.where((ask > 0.0) & (bid > 0.0), (ask + bid) * 0.5, np.maximum(ask, bid)).astype(np.float32)
             target_rows = target_positions[quote_only_targets]
             out[target_rows, BAR_FEATURE_KEYS.index("open")] = mid
             out[target_rows, BAR_FEATURE_KEYS.index("high")] = mid
@@ -2713,7 +2718,6 @@ def _build_today_asof_day_state(rows: np.ndarray, *, timestamps: np.ndarray, day
     if start >= end:
         empty_i64 = np.zeros((0,), dtype=np.int64)
         empty_f64 = np.zeros((0,), dtype=np.float64)
-        empty_f32 = np.zeros((0,), dtype=np.float32)
         return _TodayAsOfDayState(
             start_offset=start,
             end_offset=end,
@@ -2724,7 +2728,6 @@ def _build_today_asof_day_state(rows: np.ndarray, *, timestamps: np.ndarray, day
             cumulative_dollars=empty_f64,
             prefix_high=empty_f64,
             prefix_low=empty_f64,
-            quote_mid=empty_f32,
         )
     segment = rows[start:end]
     event_types = segment["event_type"].astype(np.uint8, copy=False)
@@ -2744,13 +2747,6 @@ def _build_today_asof_day_state(rows: np.ndarray, *, timestamps: np.ndarray, day
         cumulative_dollars = np.zeros((0,), dtype=np.float64)
         prefix_high = np.zeros((0,), dtype=np.float64)
         prefix_low = np.zeros((0,), dtype=np.float64)
-    if quote_positions.size:
-        quote_rows = segment[quote_positions]
-        ask = _decode_primary_price(quote_rows)
-        bid = _decode_secondary_price(quote_rows)
-        quote_mid = np.where((ask > 0.0) & (bid > 0.0), (ask + bid) * 0.5, np.maximum(ask, bid)).astype(np.float32)
-    else:
-        quote_mid = np.zeros((0,), dtype=np.float32)
     return _TodayAsOfDayState(
         start_offset=start,
         end_offset=end,
@@ -2761,7 +2757,6 @@ def _build_today_asof_day_state(rows: np.ndarray, *, timestamps: np.ndarray, day
         cumulative_dollars=cumulative_dollars,
         prefix_high=prefix_high,
         prefix_low=prefix_low,
-        quote_mid=quote_mid,
     )
 
 

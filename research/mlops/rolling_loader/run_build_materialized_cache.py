@@ -891,26 +891,27 @@ def _update_worker_materialization_progress(
     safe_total = max(1, int(total))
     safe_done = min(max(0, int(done)), safe_total)
     stage_name = str(stage)
-    if stage_name == "encode":
+    stage_group = stage_name.split(":", 1)[0]
+    if stage_group == "encode":
         state.encoding_done = safe_done
         state.encoding_total = safe_total
-    elif stage_name == "features":
+    elif stage_group == "features":
         state.features_done = safe_done
         state.features_total = safe_total
-    elif stage_name == "labels":
+    elif stage_group == "labels":
         state.labels_done = safe_done
         state.labels_total = safe_total
-    elif stage_name == "context":
+    elif stage_group == "context":
         state.context_done = safe_done
         state.context_total = safe_total
-    elif stage_name == "text":
+    elif stage_group == "text":
         state.text_done = safe_done
         state.text_total = safe_total
-    elif stage_name == "xbrl":
+    elif stage_group == "xbrl":
         state.xbrl_done = safe_done
         state.xbrl_total = safe_total
     state.current_stage = stage_name
-    batch_fraction = _weighted_materialization_fraction(stage_name, safe_done, safe_total)
+    batch_fraction = _weighted_materialization_fraction(stage_group, safe_done, safe_total)
     estimated_batch_done = int(round(float(max(0, int(batch_samples))) * batch_fraction))
     state.materializing_done = min(
         max(1, int(state.materializing_total)),
