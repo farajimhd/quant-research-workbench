@@ -209,9 +209,12 @@ def smoke_rolling_ready_index_filters_unencodable_windows() -> None:
     samples = engine.build_ready_indices(max_samples=4)
     assert samples
     assert int(samples[0].origin_ordinal) > config.events_per_chunk - 1
-    batch = engine.materialize_training_batch(samples[:2])
+    progress_events: list[tuple[str, int, int]] = []
+    batch = engine.materialize_training_batch(samples[:2], progress_callback=lambda stage, done, total: progress_events.append((stage, done, total)))
     assert batch.headers_uint8.shape == (2, 1, 14)
     assert batch.events_uint8.shape == (2, 1, 128, 16)
+    assert any(stage == "encode" and done == total for stage, done, total in progress_events)
+    assert any(stage == "text" and done == total for stage, done, total in progress_events)
     print("rolling_ready_index_filters_unencodable_windows_ok samples=2")
 
 

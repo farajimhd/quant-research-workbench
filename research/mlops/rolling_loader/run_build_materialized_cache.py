@@ -98,6 +98,18 @@ class WorkerState:
     queued_samples: int = 0
     materializing_done: int = 0
     materializing_total: int = 0
+    encoding_done: int = 0
+    encoding_total: int = 0
+    features_done: int = 0
+    features_total: int = 0
+    labels_done: int = 0
+    labels_total: int = 0
+    context_done: int = 0
+    context_total: int = 0
+    text_done: int = 0
+    text_total: int = 0
+    xbrl_done: int = 0
+    xbrl_total: int = 0
     writing_done: int = 0
     writing_total: int = 0
     batches_done: int = 0
@@ -105,6 +117,7 @@ class WorkerState:
     active_slice_id: int = -1
     started_at: float = 0.0
     seconds: float = 0.0
+    current_stage: str = ""
     last_message: str = ""
 
 
@@ -499,6 +512,18 @@ def main() -> int:
                     worker_state.queued_samples = sum(block.sample_count for block in blocks_for_task)
                     worker_state.materializing_done = 0
                     worker_state.materializing_total = max(1, worker_state.queued_samples)
+                    worker_state.encoding_done = 0
+                    worker_state.encoding_total = 0
+                    worker_state.features_done = 0
+                    worker_state.features_total = 0
+                    worker_state.labels_done = 0
+                    worker_state.labels_total = 0
+                    worker_state.context_done = 0
+                    worker_state.context_total = 0
+                    worker_state.text_done = 0
+                    worker_state.text_total = 0
+                    worker_state.xbrl_done = 0
+                    worker_state.xbrl_total = 0
                     worker_state.writing_done = 0
                     worker_state.writing_total = max(1, worker_state.queued_samples)
                     worker_state.batches_done = 0
@@ -506,6 +531,7 @@ def main() -> int:
                     worker_state.active_slice_id = next_slice_id
                     worker_state.started_at = time.perf_counter()
                     worker_state.seconds = 0.0
+                    worker_state.current_stage = "queued"
                     worker_state.last_message = f"queued slice={next_slice_id} samples={worker_state.queued_samples:,}"
                     future = executor.submit(
                         _materialize_worker_task,
@@ -533,6 +559,7 @@ def main() -> int:
                     worker_id = int(meta["worker_id"])
                     worker_state = stats.workers[worker_id]
                     worker_state.status = "materialized"
+                    worker_state.current_stage = "materialized"
                     worker_state.materializing_done = int(result["samples"])
                     worker_state.materializing_total = max(worker_state.materializing_total, int(result["samples"]))
                     worker_state.batches_done = int(result["batch_count"])
@@ -544,6 +571,7 @@ def main() -> int:
                     result = completed.pop(next_to_write)
                     write_worker = stats.workers[int(result["worker_id"])]
                     write_worker.status = "writing"
+                    write_worker.current_stage = "writing"
                     write_worker.writing_done = 0
                     write_worker.writing_total = max(1, int(result["samples"]))
                     for batch in result["batches"]:
@@ -573,6 +601,7 @@ def main() -> int:
                             )
                             break
                     write_worker.status = "done"
+                    write_worker.current_stage = "done"
                     write_worker.last_message = f"done samples={write_worker.samples_done:,}"
                     next_to_write += 1
                     if stop_requested:
@@ -705,7 +734,23 @@ def _materialize_worker_task(
     batches = []
     samples = 0
     for sample_tuple in engine.iter_ready_sample_batches(batch_size=batch_size, blocks=tuple(blocks)):
-        batch = engine.materialize_training_batch(sample_tuple, batch_id=slice_id)
+        batch_start_samples = samples
+        batch_size_actual = len(sample_tuple)
+
+        def progress_callback(stage: str, done: int, total: int) -> None:
+            if state is None:
+                return
+            _update_worker_materialization_progress(
+                state,
+                stage=str(stage),
+                done=int(done),
+                total=int(total),
+                completed_samples=batch_start_samples,
+                batch_samples=batch_size_actual,
+                state_started=state_started,
+            )
+
+        batch = engine.materialize_training_batch(sample_tuple, batch_id=slice_id, progress_callback=progress_callback)
         batches.append(batch)
         batch_samples = int(batch.headers_uint8.shape[0])
         samples += batch_samples
@@ -722,6 +767,67 @@ def _materialize_worker_task(
         "samples": samples,
         "seconds": time.perf_counter() - started,
     }
+
+
+def _update_worker_materialization_progress(
+    state: WorkerState,
+    *,
+    stage: str,
+    done: int,
+    total: int,
+    completed_samples: int,
+    batch_samples: int,
+    state_started: float,
+) -> None:
+    safe_total = max(1, int(total))
+    safe_done = min(max(0, int(done)), safe_total)
+    stage_name = str(stage)
+    if stage_name == "encode":
+        state.encoding_done = safe_done
+        state.encoding_total = safe_total
+    elif stage_name == "features":
+        state.features_done = safe_done
+        state.features_total = safe_total
+    elif stage_name == "labels":
+        state.labels_done = safe_done
+        state.labels_total = safe_total
+    elif stage_name == "context":
+        state.context_done = safe_done
+        state.context_total = safe_total
+    elif stage_name == "text":
+        state.text_done = safe_done
+        state.text_total = safe_total
+    elif stage_name == "xbrl":
+        state.xbrl_done = safe_done
+        state.xbrl_total = safe_total
+    state.current_stage = stage_name
+    batch_fraction = _weighted_materialization_fraction(stage_name, safe_done, safe_total)
+    estimated_batch_done = int(round(float(max(0, int(batch_samples))) * batch_fraction))
+    state.materializing_done = min(
+        max(1, int(state.materializing_total)),
+        int(completed_samples) + max(0, estimated_batch_done),
+    )
+    state.seconds = time.perf_counter() - state_started
+    state.last_message = f"{stage_name} {safe_done:,}/{safe_total:,}"
+
+
+def _weighted_materialization_fraction(stage: str, done: int, total: int) -> float:
+    weights = (
+        ("encode", 0.55),
+        ("features", 0.10),
+        ("labels", 0.10),
+        ("context", 0.05),
+        ("text", 0.15),
+        ("xbrl", 0.05),
+    )
+    stage_name = str(stage)
+    completed = 0.0
+    for name, weight in weights:
+        if name == stage_name:
+            stage_fraction = min(1.0, max(0.0, float(done) / float(max(1, int(total)))))
+            return min(1.0, completed + float(weight) * stage_fraction)
+        completed += float(weight)
+    return min(1.0, completed)
 
 
 def _build_task_specs(
@@ -934,6 +1040,20 @@ def _format_rate_bytes(bytes_per_second: float) -> str:
     return f"{value:,.1f} {unit}"
 
 
+def _worker_stage_label(worker: WorkerState, *, compact: bool) -> str:
+    stage = str(worker.current_stage or worker.status or "idle")
+    if compact:
+        names = {
+            "materializing": "mat",
+            "features": "feat",
+            "labels": "lbl",
+            "context": "ctx",
+            "writing": "write",
+        }
+        return names.get(stage, stage)[:7]
+    return stage[:10]
+
+
 def _single_line(value: Any, *, width: int) -> str:
     text = " ".join(str(value or "").split())
     if width <= 0 or len(text) <= width:
@@ -1051,7 +1171,8 @@ class MaterializedCacheDashboard:
             total_done = int(worker.materializing_done) + int(worker.writing_done)
             total_expected = int(worker.materializing_total) + int(worker.writing_total)
             pct = 0.0 if total_expected <= 0 else 100.0 * float(total_done) / float(max(1, total_expected))
-            worker_bits.append(f"W{worker.worker_id}:{worker.status[:4]}:{pct:03.0f}%")
+            stage = str(worker.current_stage or worker.status)[:4]
+            worker_bits.append(f"W{worker.worker_id}:{stage}:{pct:03.0f}%")
         text = (
             f"[{self.stats.phase}] block={self.stats.block_index} rows={self.stats.rows_loaded:,} "
             f"tickers={self.stats.tickers_loaded:,} ready={self.stats.ready_samples:,} "
@@ -1138,10 +1259,15 @@ class MaterializedCacheDashboard:
 
         workers = Table(expand=True)
         workers.add_column("W", no_wrap=True, width=3 if compact else 6)
-        workers.add_column("Status", no_wrap=True, width=10 if compact else 13)
-        workers.add_column("Mat", no_wrap=True, min_width=10 if compact else 26, ratio=2)
-        workers.add_column("Write", no_wrap=True, min_width=10 if compact else 26, ratio=2)
-        workers.add_column("Total", no_wrap=True, min_width=10 if compact else 26, ratio=2)
+        workers.add_column("Stage", no_wrap=True, width=7 if compact else 10)
+        workers.add_column("Enc", no_wrap=True, min_width=8 if compact else 16, ratio=1)
+        workers.add_column("Feat", no_wrap=True, min_width=8 if compact else 14, ratio=1)
+        workers.add_column("Lbl", no_wrap=True, min_width=8 if compact else 14, ratio=1)
+        workers.add_column("Ctx", no_wrap=True, min_width=8 if compact else 14, ratio=1)
+        workers.add_column("Text", no_wrap=True, min_width=8 if compact else 14, ratio=1)
+        workers.add_column("XBRL", no_wrap=True, min_width=8 if compact else 14, ratio=1)
+        workers.add_column("Write", no_wrap=True, min_width=8 if compact else 16, ratio=1)
+        workers.add_column("Total", no_wrap=True, min_width=8 if compact else 16, ratio=1)
         if not compact:
             workers.add_column("Tickers", no_wrap=True, justify="right", width=8)
         workers.add_column("Elapsed", no_wrap=True, width=7 if compact else 8)
@@ -1151,10 +1277,45 @@ class MaterializedCacheDashboard:
             total_expected = int(worker.materializing_total) + int(worker.writing_total)
             row = [
                 str(worker.worker_id),
-                worker.status[:10] if compact else worker.status,
+                _worker_stage_label(worker, compact=compact),
                 self._progress_cell(
-                    done=worker.materializing_done,
-                    total=worker.materializing_total,
+                    done=worker.encoding_done,
+                    total=worker.encoding_total,
+                    elapsed_seconds=worker.seconds,
+                    Text=Text,
+                    compact=compact,
+                ),
+                self._progress_cell(
+                    done=worker.features_done,
+                    total=worker.features_total,
+                    elapsed_seconds=worker.seconds,
+                    Text=Text,
+                    compact=compact,
+                ),
+                self._progress_cell(
+                    done=worker.labels_done,
+                    total=worker.labels_total,
+                    elapsed_seconds=worker.seconds,
+                    Text=Text,
+                    compact=compact,
+                ),
+                self._progress_cell(
+                    done=worker.context_done,
+                    total=worker.context_total,
+                    elapsed_seconds=worker.seconds,
+                    Text=Text,
+                    compact=compact,
+                ),
+                self._progress_cell(
+                    done=worker.text_done,
+                    total=worker.text_total,
+                    elapsed_seconds=worker.seconds,
+                    Text=Text,
+                    compact=compact,
+                ),
+                self._progress_cell(
+                    done=worker.xbrl_done,
+                    total=worker.xbrl_total,
                     elapsed_seconds=worker.seconds,
                     Text=Text,
                     compact=compact,

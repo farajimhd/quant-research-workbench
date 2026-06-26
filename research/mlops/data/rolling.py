@@ -7,7 +7,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 import numpy as np
 
@@ -617,7 +617,13 @@ class RollingMarketSampleEngine:
             )
         return tuple(out)
 
-    def materialize_training_batch(self, samples: Iterable[RollingSampleIndex], *, batch_id: int = 0) -> RollingTrainingBatch:
+    def materialize_training_batch(
+        self,
+        samples: Iterable[RollingSampleIndex],
+        *,
+        batch_id: int = 0,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> RollingTrainingBatch:
         sample_tuple = tuple(samples)
         profiler = DataPrepProfiler("rolling_training_materialize", batch_id=int(batch_id), enabled=True)
         batch = len(sample_tuple)
@@ -635,6 +641,9 @@ class RollingMarketSampleEngine:
         cache_misses = 0
         invalid_reasons: dict[str, int] = {}
         invalid_examples: list[str] = []
+        encode_done = 0
+        encode_total = int(batch * context_chunks)
+        _call_progress(progress_callback, "encode", 0, encode_total)
         with profiler.stage("encode_compact_windows", count=batch * context_chunks):
             for sample_index, sample in enumerate(sample_tuple):
                 rows = self.rows_by_ticker.get(sample.ticker)
@@ -646,6 +655,8 @@ class RollingMarketSampleEngine:
                         sample=sample,
                         context_index=-1,
                     )
+                    encode_done += context_chunks
+                    _maybe_call_progress(progress_callback, "encode", encode_done, encode_total)
                     continue
                 for context_index, window in enumerate(sample.chunk_windows):
                     cache_key = (sample.ticker, int(window.origin_ordinal))
@@ -676,10 +687,15 @@ class RollingMarketSampleEngine:
                             sample=sample,
                             context_index=context_index,
                         )
+                        encode_done += 1
+                        _maybe_call_progress(progress_callback, "encode", encode_done, encode_total)
                         continue
                     headers[sample_index, context_index], events[sample_index, context_index] = encoded
                     mask[sample_index, context_index] = True
                     chunk_origin_ts[sample_index, context_index] = int(window.origin_timestamp_us)
+                    encode_done += 1
+                    _maybe_call_progress(progress_callback, "encode", encode_done, encode_total)
+        _call_progress(progress_callback, "encode", encode_total, encode_total)
 
         profiler.add_stage("encoded_window_cache_hits", 0.0, count=cache_hits)
         profiler.add_stage("encoded_window_cache_misses", 0.0, count=cache_misses)
@@ -694,6 +710,7 @@ class RollingMarketSampleEngine:
                 f"reasons: {reason_text}. examples: {example_text}"
             )
 
+        _call_progress(progress_callback, "features", 0, 3)
         with profiler.stage("bar_features", count=batch):
             (
                 macro_features,
@@ -705,13 +722,18 @@ class RollingMarketSampleEngine:
                 global_market_bars,
                 global_market_bar_mask,
             ) = self._materialize_bar_features(sample_tuple)
+        _call_progress(progress_callback, "features", 1, 3)
         with profiler.stage("origin_time_features", count=batch):
             time_features = _origin_time_features(sample_tuple)
             chunk_time_features = _timestamp_feature_arrays(chunk_origin_ts, origin_ts[:, None])
+        _call_progress(progress_callback, "features", 2, 3)
         with profiler.stage("session_features", count=batch):
             session_features = self._materialize_session_features(sample_tuple)
+        _call_progress(progress_callback, "features", 3, 3)
+        _call_progress(progress_callback, "labels", 0, 2)
         with profiler.stage("macro_future_labels", count=batch):
             labels, future_macro_bars, future_macro_bar_mask, future_macro_bar_timeframes = self._materialize_future_labels(sample_tuple)
+        _call_progress(progress_callback, "labels", 1, 2)
         with profiler.stage("intraday_future_labels", count=batch):
             intraday_labels = self._materialize_intraday_future_labels(sample_tuple)
             labels.update(intraday_labels)
@@ -719,7 +741,9 @@ class RollingMarketSampleEngine:
                 intraday_labels,
                 horizons=tuple(horizon.name for horizon in self.config.intraday_label_horizons),
             )
+        _call_progress(progress_callback, "labels", 2, 2)
         macro_features.update(session_features)
+        _call_progress(progress_callback, "context", 0, max(1, len(self.external_contexts)))
         with profiler.stage("external_context_asof", count=batch * len(self.external_contexts)):
             external = {
                 name: [
@@ -728,17 +752,22 @@ class RollingMarketSampleEngine:
                 ]
                 for name, store in self.external_contexts.items()
             }
+        _call_progress(progress_callback, "context", max(1, len(self.external_contexts)), max(1, len(self.external_contexts)))
         text_cache_before = len(self._text_token_cache)
         text_items = _count_external_text_items(external, names=("ticker_news", "market_news", "sec_filings"))
+        _call_progress(progress_callback, "text", 0, batch)
         with profiler.stage("text_inputs", count=batch):
             text_inputs = self._materialize_text_inputs(external)
+        _call_progress(progress_callback, "text", batch, batch)
         text_cache_after = len(self._text_token_cache)
         text_misses = max(0, text_cache_after - text_cache_before)
         profiler.add_stage("text_token_cache_entries", 0.0, count=text_cache_after)
         profiler.add_stage("text_token_cache_hits", 0.0, count=max(0, text_items - text_misses))
         profiler.add_stage("text_token_cache_misses", 0.0, count=text_misses)
+        _call_progress(progress_callback, "xbrl", 0, batch)
         with profiler.stage("xbrl_inputs", count=batch):
             xbrl_inputs = self._materialize_xbrl_inputs(sample_tuple, external)
+        _call_progress(progress_callback, "xbrl", batch, batch)
         profile = profiler.finish()
         profile.rows_read = int(sum(len(sample.chunk_windows) * self.config.events_per_chunk for sample in sample_tuple))
         profile.chunks_created = int(mask.sum())
@@ -1692,6 +1721,20 @@ def _filter_materializable_origins(rows: np.ndarray, origin_offsets: np.ndarray,
                 valid[index] = False
                 break
     return origin_offsets[valid]
+
+
+def _call_progress(callback: Callable[[str, int, int], None] | None, stage: str, done: int, total: int) -> None:
+    if callback is not None:
+        callback(str(stage), int(done), int(total))
+
+
+def _maybe_call_progress(callback: Callable[[str, int, int], None] | None, stage: str, done: int, total: int) -> None:
+    if callback is None:
+        return
+    done_int = int(done)
+    total_int = int(total)
+    if done_int >= total_int or done_int % 128 == 0:
+        callback(str(stage), done_int, total_int)
 
 
 def _is_materializable_chunk_origin(rows: np.ndarray, origin_offset: int, context: int) -> bool:
