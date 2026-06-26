@@ -236,6 +236,8 @@ def build_probe_command(args: argparse.Namespace, variant: Variant, run_name: st
         "v21",
         "--encoder-checkpoint",
         str(checkpoint),
+        "--extra-research-root",
+        str(version_runtime_root()),
         "--encoder-embedding-dim",
         str(variant.embedding_dim),
         "--run-name",
@@ -278,6 +280,10 @@ def resolve_probe_script(configured: Path) -> Path:
     raise FileNotFoundError(f"Temporal probe script not found. Tried {configured} and {fallback}")
 
 
+def version_runtime_root() -> Path:
+    return next((parent for parent in Path(__file__).resolve().parents if (parent / "research").exists()), Path(__file__).resolve().parents[3])
+
+
 def path_exists(path: Path) -> bool:
     try:
         return Path(path).exists()
@@ -300,7 +306,7 @@ def run_command(stage: str, variant_name: str, command: list[str]) -> int:
 
 def subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
-    repo_root = next((parent for parent in Path(__file__).resolve().parents if (parent / "research").exists()), Path(__file__).resolve().parents[3])
+    repo_root = version_runtime_root()
     temporal_root = Path(r"D:\TradingML\codes\temporal_event_model\v1")
     extra_paths = [str(repo_root)]
     if temporal_root.exists():

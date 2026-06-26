@@ -91,6 +91,7 @@ class ProbeConfig:
     encoder_bottleneck_force_fp32: bool = False
     encoder_visible_mode: str = "full"
     encoder_visible_mask_ratio: float = 0.0
+    extra_research_roots: tuple[Path, ...] = ()
     output_root: Path = DEFAULT_OUTPUT_ROOT
     run_name: str = ""
     wandb_project: str = DEFAULT_WANDB_PROJECT
@@ -326,6 +327,16 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=0.0,
         help="Mask ratio for --encoder-visible-mode random_visible. Use 0.70 to mirror fixed-mask v20 pretraining.",
     )
+    parser.add_argument(
+        "--extra-research-root",
+        action="append",
+        type=Path,
+        default=[],
+        help=(
+            "Additional runtime root containing a research package. Use this when the frozen encoder version "
+            "lives outside the temporal_event_model runtime, for example D:/TradingML/codes/masked_event_model/v21."
+        ),
+    )
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--run-name", default="")
     parser.add_argument("--wandb-project", default=DEFAULT_WANDB_PROJECT)
@@ -385,6 +396,7 @@ def build_config(args: argparse.Namespace) -> ProbeConfig:
         encoder_bottleneck_force_fp32=bool(args.encoder_bottleneck_force_fp32),
         encoder_visible_mode=args.encoder_visible_mode,
         encoder_visible_mask_ratio=args.encoder_visible_mask_ratio,
+        extra_research_roots=tuple(args.extra_research_root or ()),
         output_root=args.output_root,
         run_name=args.run_name,
         wandb_project=args.wandb_project,
@@ -437,6 +449,7 @@ def discover_labeled_shards(config: ProbeConfig, *, split: str, start: int, max_
 
 def build_frozen_encoder(config: ProbeConfig, device: torch.device) -> nn.Module:
     version = config.encoder_version.lower().strip()
+    extend_research_package_path(config.extra_research_roots)
     model_module = importlib.import_module(f"research.masked_event_model.{version}.model")
     config_module = importlib.import_module(f"research.masked_event_model.{version}.config")
     model_config_kwargs = {
@@ -473,6 +486,39 @@ def build_frozen_encoder(config: ProbeConfig, device: torch.device) -> nn.Module
         for parameter in encoder.parameters():
             parameter.requires_grad_(False)
     return encoder
+
+
+def extend_research_package_path(extra_roots: tuple[Path, ...]) -> None:
+    """Allow frozen encoders to live in separate workstation runtime roots."""
+
+    if not extra_roots:
+        return
+    import research  # noqa: PLC0415
+
+    for root in extra_roots:
+        candidate = Path(root)
+        research_root = candidate / "research" if (candidate / "research").exists() else candidate
+        if not research_root.exists():
+            print(f"WARN extra research root missing: {root}", flush=True)
+            continue
+        research_root_text = str(research_root)
+        if research_root_text not in research.__path__:
+            research.__path__.append(research_root_text)
+
+    importlib.invalidate_caches()
+    try:
+        masked_model = importlib.import_module("research.masked_event_model")
+    except ModuleNotFoundError:
+        return
+    if masked_model is None or not hasattr(masked_model, "__path__"):
+        return
+    for root in extra_roots:
+        candidate = Path(root)
+        masked_path = candidate / "research" / "masked_event_model"
+        if not masked_path.exists():
+            masked_path = candidate / "masked_event_model"
+        if masked_path.exists() and str(masked_path) not in masked_model.__path__:
+            masked_model.__path__.append(str(masked_path))
 
 
 class RandomVisibleFrozenEncoder(nn.Module):
