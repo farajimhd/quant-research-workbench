@@ -375,6 +375,15 @@ def smoke_rolling_provider() -> None:
     assert "future_1w_close" not in batch.labels
     assert "future_intraday_bar_100ms_high" in batch.labels
     assert "future_intraday_bar_100ms_vwap" not in batch.labels
+    assert batch.input_availability["event_context_available"].shape == (8,)
+    assert bool(batch.input_availability["event_context_available"].all())
+    assert bool(batch.input_availability["ticker_macro_available"].all())
+    assert bool(batch.input_availability["global_market_available"].any())
+    assert bool(batch.input_availability["ticker_news_available"].any())
+    assert bool(batch.input_availability["market_news_available"].any())
+    assert bool(batch.input_availability["sec_filings_available"].any())
+    assert bool(batch.input_availability["xbrl_available"].any())
+    assert "all_core_inputs_available" in batch.input_availability
     assert "ticker_news" in batch.external_context
     assert batch.text_inputs["ticker_news"]["input_ids"].shape == (8, config.news_max_items, config.news_token_chunks, config.text_max_tokens)
     assert batch.text_inputs["ticker_news"]["chunk_mask"].shape == (8, config.news_max_items, config.news_token_chunks)

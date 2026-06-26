@@ -516,6 +516,7 @@ The target training batch contains these model-facing groups:
 | global market mask | `global_market_bar_mask` | `[B, global_symbols, macro_timeframes]` |
 | legacy ticker/session dict | `macro_features[*]` | `[B]` |
 | legacy global dict | `global_features[*]` | `[B]` |
+| sample input availability | `input_availability[*]` | `[B]` boolean masks |
 | ticker news tokens | `text_inputs["ticker_news"][*]` | `[B, 32, 2, 1024]` for token arrays |
 | market news tokens | `text_inputs["market_news"][*]` | `[B, 64, 2, 1024]` for token arrays |
 | SEC filing tokens | `text_inputs["sec_filings"][*]` | `[B, 16, 8, 1024]` for token arrays |
@@ -533,6 +534,11 @@ The target training batch contains these model-facing groups:
 Invalid market event windows should be filtered before materialization. The
 model-facing batch should not rely on a context mask to hide invalid raw event
 chunks.
+
+Optional contexts stay zero-filled when absent. The corresponding
+`input_availability` mask, for example `sec_filings_available` or
+`xbrl_available`, tells the trainer whether that zero-filled group represents
+missing source data for that sample.
 
 ### Production Batch Groups
 

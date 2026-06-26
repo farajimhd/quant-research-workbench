@@ -212,8 +212,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prefetch-blocks",
         type=int,
-        default=DEFAULTS["prefetch_blocks"],
-        help="Number of fetched event/context blocks to keep queued ahead of materialization. Use 0 for synchronous block loading.",
+        default=None,
+        help=(
+            "Number of fetched event/context blocks to keep queued ahead of materialization. "
+            "Defaults to 1 for full builds and 0 for --one-shard test builds."
+        ),
     )
     parser.add_argument("--shard-size-gib", type=float, default=DEFAULTS["shard_size_gib"])
     parser.add_argument("--target-cache-gib", type=float, default=DEFAULTS["target_cache_gib"])
@@ -242,6 +245,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.prefetch_blocks is None:
+        args.prefetch_blocks = 0 if bool(args.one_shard) else int(DEFAULTS["prefetch_blocks"])
     loaded_env = load_env_files(
         discover_clickhouse_env_files() if args.env_file is None else discover_clickhouse_env_files() + [args.env_file]
     )
@@ -432,7 +437,6 @@ def main() -> int:
                 fetched = future.result()
                 stats.prefetch_pending = len(fetch_queue)
                 stats.prefetch_ready = sum(1 for item in fetch_queue if item.done())
-                submit_prefetches()
 
             block = fetched.block
             block_start = fetched.block_start
@@ -449,6 +453,7 @@ def main() -> int:
                 f"fetch_seconds={fetched.fetch_seconds:.1f}"
             )
             if block.row_count <= 0:
+                submit_prefetches()
                 continue
             stats.phase = "updating cache"
             _refresh(stats, dashboard, writer)
@@ -457,6 +462,7 @@ def main() -> int:
             if block.max_timestamp_us < start_us:
                 with profiler.stage("warmup_event_cache_trim", block_index=stats.block_index):
                     _trim_pre_start_event_cache(engine, start_us)
+                submit_prefetches()
                 continue
             if fetched.context is not None:
                 context = fetched.context
@@ -465,12 +471,16 @@ def main() -> int:
                 stats.message(f"block context rows={context.row_count:,}")
             stats.phase = "building ready index"
             _refresh(stats, dashboard, writer)
-            with profiler.stage("ready_index_build", block_index=stats.block_index):
-                ready_blocks = engine.build_ready_index_blocks(max_samples=max(0, int(args.ready_sample_cap)))
+            ready_sample_cap = _ready_sample_cap_for_budget(args=args, stats=stats, writer=writer)
+            with profiler.stage("ready_index_build", block_index=stats.block_index, max_samples=ready_sample_cap):
+                ready_blocks = engine.build_ready_index_blocks(max_samples=ready_sample_cap)
             stats.ready_samples = engine.ready_index_count(ready_blocks)
             stats.message(f"ready samples={stats.ready_samples:,} blocks={len(ready_blocks):,}")
             if not ready_blocks:
+                submit_prefetches()
                 continue
+            if not _ready_samples_can_satisfy_target(stats=stats, writer=writer, ready_samples=stats.ready_samples):
+                submit_prefetches()
             stats.phase = "materializing"
             futures: dict[Future[dict[str, Any]], dict[str, Any]] = {}
             next_slice_id = 0
@@ -619,6 +629,7 @@ def main() -> int:
             if float(stats.bytes_written) >= float(args.target_cache_gib) * 1024**3:
                 stats.message("target cache size reached")
                 break
+            submit_prefetches()
         if fetch_queue:
             cancelled = 0
             for future in fetch_queue:
@@ -711,6 +722,59 @@ def _fetch_materialized_cache_block(
     )
 
 
+def _estimated_sample_bytes(writer: RollingMaterializedShardWriter) -> int:
+    status = writer.current_shard_status()
+    estimate = status.get("estimate") if isinstance(status, dict) else {}
+    if isinstance(estimate, dict):
+        sample_bytes = int(estimate.get("sample_bytes") or 0)
+        if sample_bytes > 0:
+            return sample_bytes
+    for shard in reversed(writer.shards):
+        samples = int(shard.get("num_samples") or 0)
+        bytes_value = int(shard.get("actual_shard_bytes") or 0)
+        if samples > 0 and bytes_value > 0:
+            return max(1, bytes_value // samples)
+    return 0
+
+
+def _ready_sample_cap_for_budget(
+    *,
+    args: argparse.Namespace,
+    stats: BuildStats,
+    writer: RollingMaterializedShardWriter,
+) -> int:
+    configured_cap = max(0, int(args.ready_sample_cap))
+    sample_bytes = _estimated_sample_bytes(writer)
+    if sample_bytes <= 0 or int(stats.target_bytes) <= 0:
+        return configured_cap
+    remaining_bytes = max(0, int(stats.target_bytes) - int(stats.bytes_written))
+    if remaining_bytes <= 0:
+        return 0
+    needed = max(1, (remaining_bytes + sample_bytes - 1) // sample_bytes)
+    multiple = max(1, int(args.sample_multiple))
+    aligned = ((int(needed) + multiple - 1) // multiple) * multiple
+    if configured_cap > 0:
+        return max(1, min(configured_cap, int(aligned)))
+    return max(1, int(aligned))
+
+
+def _ready_samples_can_satisfy_target(
+    *,
+    stats: BuildStats,
+    writer: RollingMaterializedShardWriter,
+    ready_samples: int,
+) -> bool:
+    if int(stats.target_bytes) <= 0:
+        return False
+    remaining_bytes = max(0, int(stats.target_bytes) - int(stats.bytes_written))
+    if remaining_bytes <= 0:
+        return True
+    sample_bytes = _estimated_sample_bytes(writer)
+    if sample_bytes <= 0:
+        return False
+    return int(ready_samples) * int(sample_bytes) >= int(remaining_bytes)
+
+
 def _materialize_worker_task(
     base_engine: RollingMarketSampleEngine,
     blocks: list[RollingReadyIndexBlock],
@@ -726,7 +790,8 @@ def _materialize_worker_task(
         state.last_message = f"materializing slice={slice_id}"
     state_started = state.started_at if state is not None and state.started_at > 0 else started
     engine = RollingMarketSampleEngine(base_engine.config)
-    tickers = {block.ticker for block in blocks}
+    tickers = {str(block.ticker).upper() for block in blocks}
+    tickers.update(str(symbol).upper() for symbol in base_engine.config.global_symbols)
     engine.rows_by_ticker = {ticker: base_engine.rows_by_ticker[ticker] for ticker in tickers if ticker in base_engine.rows_by_ticker}
     engine.macro_bars = base_engine.macro_bars
     engine.external_contexts = base_engine.external_contexts

@@ -391,6 +391,7 @@ def flatten_training_batch(batch: RollingTrainingBatch) -> dict[str, np.ndarray]
     _add_array_group(out, "chunk_time_features", batch.chunk_time_features)
     _add_array_group(out, "macro_features", batch.macro_features)
     _add_array_group(out, "global_features", batch.global_features)
+    _add_array_group(out, "input_availability", batch.input_availability)
     _add_array_group(out, "labels", batch.labels)
     for context_name, group in batch.text_inputs.items():
         _add_array_group(out, f"text_inputs/{context_name}", group)

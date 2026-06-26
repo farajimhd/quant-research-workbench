@@ -213,6 +213,7 @@ class RollingTrainingBatch:
     - `future_intraday_bars`: `[batch, intraday_label_horizons, 5]`
     - `time_features[*]`: `[batch]`
     - `chunk_time_features[*]`: `[batch, context_chunks]`
+    - `input_availability[*]`: `[batch]` boolean masks for optional inputs
     """
 
     headers_uint8: np.ndarray
@@ -239,6 +240,7 @@ class RollingTrainingBatch:
     future_intraday_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
     macro_features: dict[str, np.ndarray] = field(default_factory=dict)
     global_features: dict[str, np.ndarray] = field(default_factory=dict)
+    input_availability: dict[str, np.ndarray] = field(default_factory=dict)
     text_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
     xbrl_inputs: dict[str, np.ndarray] = field(default_factory=dict)
     external_context: dict[str, Any] = field(default_factory=dict)
@@ -274,6 +276,7 @@ class RollingProductionBatch:
     global_market_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 0), dtype=np.bool_))
     macro_features: dict[str, np.ndarray] = field(default_factory=dict)
     global_features: dict[str, np.ndarray] = field(default_factory=dict)
+    input_availability: dict[str, np.ndarray] = field(default_factory=dict)
     text_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
     xbrl_inputs: dict[str, np.ndarray] = field(default_factory=dict)
     external_context: dict[str, Any] = field(default_factory=dict)

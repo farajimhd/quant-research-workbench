@@ -102,6 +102,7 @@ Complete default training-batch shape summary:
 | global market bar mask | `global_market_bar_mask` | `[B, global_symbols, macro_timeframes]` |
 | legacy ticker macro/session dict | `macro_features[*]` | `[B]` |
 | legacy global dict | `global_features[*]` | `[B]` |
+| sample input availability | `input_availability[*]` | `[B]` boolean masks |
 | ticker news tokens | `text_inputs["ticker_news"]["input_ids"]` | `[B, 32, 2, 1024]` |
 | market news tokens | `text_inputs["market_news"]["input_ids"]` | `[B, 64, 2, 1024]` |
 | SEC text tokens | `text_inputs["sec_filings"]["input_ids"]` | `[B, 16, 8, 1024]` |
@@ -109,6 +110,11 @@ Complete default training-batch shape summary:
 | future macro bars | `future_macro_bars` | `[B, label_timeframes, 5]` |
 | future intraday bars | `future_intraday_bars` | `[B, intraday_label_horizons, 5]` |
 | legacy future labels dict | `labels[*]` | usually `[B]` |
+
+`input_availability` distinguishes a real zero value from a missing optional
+input. Examples include `sec_filings_available`, `xbrl_available`,
+`ticker_news_available`, `market_news_available`, `global_market_available`,
+and `all_core_inputs_available`.
 
 ### Sample Identity
 

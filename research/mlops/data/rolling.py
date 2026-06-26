@@ -768,6 +768,13 @@ class RollingMarketSampleEngine:
         with profiler.stage("xbrl_inputs", count=batch):
             xbrl_inputs = self._materialize_xbrl_inputs(sample_tuple, external)
         _call_progress(progress_callback, "xbrl", batch, batch)
+        input_availability = _input_availability_masks(
+            event_context_mask=mask,
+            ticker_macro_bar_mask=ticker_macro_bar_mask,
+            global_market_bar_mask=global_market_bar_mask,
+            text_inputs=text_inputs,
+            xbrl_inputs=xbrl_inputs,
+        )
         profile = profiler.finish()
         profile.rows_read = int(sum(len(sample.chunk_windows) * self.config.events_per_chunk for sample in sample_tuple))
         profile.chunks_created = int(mask.sum())
@@ -799,6 +806,7 @@ class RollingMarketSampleEngine:
             future_intraday_bar_mask=future_intraday_bar_mask,
             macro_features=macro_features,
             global_features=global_features,
+            input_availability=input_availability,
             text_inputs=text_inputs,
             xbrl_inputs=xbrl_inputs,
             external_context=external,
@@ -846,6 +854,13 @@ class RollingMarketSampleEngine:
         }
         text_inputs = self._materialize_text_inputs(external)
         xbrl_inputs = self._materialize_xbrl_inputs(sample_tuple, external)
+        input_availability = _input_availability_masks(
+            event_context_mask=mask,
+            ticker_macro_bar_mask=ticker_macro_bar_mask,
+            global_market_bar_mask=global_market_bar_mask,
+            text_inputs=text_inputs,
+            xbrl_inputs=xbrl_inputs,
+        )
         profile = profiler.finish()
         profile.samples_created = len(sample_tuple)
         profile.embeddings_created = int(mask.sum())
@@ -865,6 +880,7 @@ class RollingMarketSampleEngine:
             global_market_bar_mask=global_market_bar_mask,
             macro_features=macro_features,
             global_features=global_features,
+            input_availability=input_availability,
             text_inputs=text_inputs,
             xbrl_inputs=xbrl_inputs,
             external_context=external,
@@ -1708,19 +1724,40 @@ def _query_settings(config: RollingMarketDataConfig) -> str:
 def _filter_materializable_origins(rows: np.ndarray, origin_offsets: np.ndarray, lags: tuple[int, ...], context: int) -> np.ndarray:
     if origin_offsets.size == 0:
         return origin_offsets
-    valid = np.ones((origin_offsets.shape[0],), dtype=np.bool_)
-    chunk_cache: dict[int, bool] = {}
-    for index, origin_offset in enumerate(origin_offsets.tolist()):
-        for lag in lags:
-            chunk_origin_offset = int(origin_offset) - int(lag)
-            cached = chunk_cache.get(chunk_origin_offset)
-            if cached is None:
-                cached = _is_materializable_chunk_origin(rows, chunk_origin_offset, context)
-                chunk_cache[chunk_origin_offset] = cached
-            if not cached:
-                valid[index] = False
-                break
+    if not lags:
+        return np.empty((0,), dtype=np.int64)
+    origins = np.asarray(origin_offsets, dtype=np.int64)
+    lag_values = np.asarray(lags, dtype=np.int64)
+    chunk_origins = origins[:, None] - lag_values[None, :]
+    unique_chunk_origins, inverse = np.unique(chunk_origins.reshape(-1), return_inverse=True)
+    chunk_valid = _materializable_chunk_origin_flags(rows, unique_chunk_origins, context)
+    valid = chunk_valid[inverse].reshape(origins.shape[0], lag_values.shape[0]).all(axis=1)
     return origin_offsets[valid]
+
+
+def _materializable_chunk_origin_flags(rows: np.ndarray, chunk_origins: np.ndarray, context: int) -> np.ndarray:
+    origins = np.asarray(chunk_origins, dtype=np.int64)
+    valid = np.zeros((origins.shape[0],), dtype=np.bool_)
+    if origins.size == 0:
+        return valid
+    context_int = int(context)
+    starts = origins - context_int + 1
+    in_bounds = (starts >= 0) & (origins < int(rows.shape[0]))
+    if not bool(in_bounds.any()):
+        return valid
+    ordinals = rows["ordinal"].astype(np.int64, copy=False)
+    candidate_indices = np.flatnonzero(in_bounds)
+    candidate_starts = starts[candidate_indices]
+    candidate_ends = origins[candidate_indices]
+    contiguous = (ordinals[candidate_ends] - ordinals[candidate_starts]) == (context_int - 1)
+    if not bool(contiguous.any()):
+        return valid
+    for index in candidate_indices[np.flatnonzero(contiguous)]:
+        end = int(origins[index])
+        start = int(starts[index])
+        if _event_window_rejection_reason(rows[start : end + 1]) is None:
+            valid[index] = True
+    return valid
 
 
 def _call_progress(callback: Callable[[str, int, int], None] | None, stage: str, done: int, total: int) -> None:
@@ -2043,6 +2080,63 @@ def _count_external_text_items(external: Mapping[str, list[list[dict[str, Any]]]
                 if _row_to_model_text(name, row):
                     count += 1
     return count
+
+
+def _input_availability_masks(
+    *,
+    event_context_mask: np.ndarray,
+    ticker_macro_bar_mask: np.ndarray,
+    global_market_bar_mask: np.ndarray,
+    text_inputs: Mapping[str, Mapping[str, np.ndarray]],
+    xbrl_inputs: Mapping[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    batch = int(event_context_mask.shape[0]) if event_context_mask.ndim >= 1 else 0
+
+    def zeros() -> np.ndarray:
+        return np.zeros((batch,), dtype=np.bool_)
+
+    def any_by_sample(value: np.ndarray | None) -> np.ndarray:
+        if value is None or value.ndim == 0 or int(value.shape[0]) != batch:
+            return zeros()
+        return np.asarray(value, dtype=np.bool_).reshape(batch, -1).any(axis=1)
+
+    def all_by_sample(value: np.ndarray | None) -> np.ndarray:
+        if value is None or value.ndim == 0 or int(value.shape[0]) != batch:
+            return zeros()
+        flat = np.asarray(value, dtype=np.bool_).reshape(batch, -1)
+        if flat.shape[1] == 0:
+            return zeros()
+        return flat.all(axis=1)
+
+    ticker_news = text_inputs.get("ticker_news", {})
+    market_news = text_inputs.get("market_news", {})
+    sec_filings = text_inputs.get("sec_filings", {})
+    xbrl_mask = xbrl_inputs.get("mask")
+    availability = {
+        "event_context_available": all_by_sample(event_context_mask),
+        "ticker_macro_available": any_by_sample(ticker_macro_bar_mask),
+        "ticker_macro_complete": all_by_sample(ticker_macro_bar_mask),
+        "global_market_available": any_by_sample(global_market_bar_mask),
+        "global_market_complete": all_by_sample(global_market_bar_mask),
+        "ticker_news_available": any_by_sample(ticker_news.get("item_mask")),
+        "market_news_available": any_by_sample(market_news.get("item_mask")),
+        "sec_filings_available": any_by_sample(sec_filings.get("item_mask")),
+        "xbrl_available": any_by_sample(xbrl_mask if isinstance(xbrl_mask, np.ndarray) else None),
+    }
+    optional_keys = (
+        "ticker_news_available",
+        "market_news_available",
+        "sec_filings_available",
+        "xbrl_available",
+    )
+    availability["any_optional_context_available"] = np.logical_or.reduce([availability[key] for key in optional_keys])
+    availability["all_optional_contexts_available"] = np.logical_and.reduce([availability[key] for key in optional_keys])
+    availability["all_core_inputs_available"] = (
+        availability["event_context_available"]
+        & availability["ticker_macro_available"]
+        & availability["global_market_available"]
+    )
+    return availability
 
 
 def _stable_uint32(value: Any) -> int:
