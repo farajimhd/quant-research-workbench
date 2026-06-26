@@ -100,6 +100,14 @@ class RollingEventBlock:
                 out[ticker] = int(np.max(self.rows["ordinal"][mask]))
         return out
 
+    def first_ordinals(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for ticker_index, ticker in enumerate(self.tickers):
+            mask = self.ticker_index == int(ticker_index)
+            if np.any(mask):
+                out[ticker] = int(np.min(self.rows["ordinal"][mask]))
+        return out
+
 
 @dataclass(frozen=True, slots=True)
 class LowFrequencyContextUpdate:
@@ -159,6 +167,44 @@ WHERE split_event_count >= {int(min_events)}
   AND max_valid_ordinal >= first_ordinal + {int(min_events) - 1}
 ORDER BY ticker
 {limit_sql}
+FORMAT TSV
+"""
+        rows: list[RollingTickerIndexRow] = []
+        for line in self.text_client.execute(query).splitlines():
+            if not line.strip():
+                continue
+            ticker, first_ordinal, max_valid_ordinal, split_event_count = line.split("\t")
+            rows.append(
+                RollingTickerIndexRow(
+                    ticker=ticker.upper(),
+                    first_ordinal=int(first_ordinal),
+                    max_valid_ordinal=int(max_valid_ordinal),
+                    split_event_count=int(split_event_count),
+                )
+            )
+        return rows
+
+    def load_ticker_index_rows_for_tickers(
+        self,
+        *,
+        tickers: Iterable[str],
+        min_events: int = 1,
+    ) -> list[RollingTickerIndexRow]:
+        ticker_tuple = tuple(sorted({str(ticker).upper() for ticker in tickers if str(ticker).strip()}))
+        if not ticker_tuple:
+            return []
+        ticker_sql = ", ".join(sql_string(ticker) for ticker in ticker_tuple)
+        query = f"""
+SELECT
+    ticker,
+    first_ordinal,
+    max_valid_ordinal,
+    split_event_count
+FROM {quote_ident(self.config.database)}.{quote_ident(self.config.index_table)}
+WHERE ticker IN ({ticker_sql})
+  AND split_event_count >= {int(min_events)}
+  AND max_valid_ordinal >= first_ordinal + {int(min_events) - 1}
+ORDER BY ticker
 FORMAT TSV
 """
         rows: list[RollingTickerIndexRow] = []
@@ -606,6 +652,108 @@ FORMAT TSV
         if not text or text == "\\N":
             return None
         return int(text.splitlines()[0])
+
+    def fetch_next_time_window_from_index(
+        self,
+        *,
+        start_exclusive_us: int,
+        window_us: int,
+        min_events: int,
+        ticker_limit: int = 0,
+    ) -> RollingEventBlock:
+        """Fetch the next non-empty event window without sending a ticker array."""
+
+        if int(window_us) <= 0:
+            return RollingEventBlock(tickers=(), rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+        next_start_us = self._next_event_timestamp_from_index(
+            start_exclusive_us=int(start_exclusive_us),
+            min_events=int(min_events),
+            ticker_limit=int(ticker_limit),
+        )
+        if next_start_us is None:
+            return RollingEventBlock(tickers=(), rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+        end_inclusive_us = int(next_start_us) + int(window_us)
+        tickers = self._window_tickers_from_index(
+            start_exclusive_us=int(next_start_us) - 1,
+            end_inclusive_us=end_inclusive_us,
+            min_events=int(min_events),
+            ticker_limit=int(ticker_limit),
+        )
+        if not tickers:
+            return RollingEventBlock(tickers=(), rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+        return self.fetch_time_window(
+            tickers=tickers,
+            start_exclusive_us=int(next_start_us) - 1,
+            end_inclusive_us=end_inclusive_us,
+        )
+
+    def _next_event_timestamp_from_index(
+        self,
+        *,
+        start_exclusive_us: int,
+        min_events: int,
+        ticker_limit: int,
+    ) -> int | None:
+        start_date_sql = f"toDate({sql_string(_date_from_us(int(start_exclusive_us)))})"
+        eligible_sql = self._eligible_index_subquery(min_events=int(min_events), ticker_limit=int(ticker_limit))
+        query = f"""
+WITH
+    toUInt64({int(start_exclusive_us)}) AS request_start_us
+SELECT minOrNull(e.sip_timestamp_us) AS next_start_us
+FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)} AS e
+INNER JOIN ({eligible_sql}) AS i ON e.ticker = i.ticker
+WHERE e.event_date >= {start_date_sql}
+  AND e.sip_timestamp_us > request_start_us
+  AND e.ordinal >= i.first_ordinal
+  AND e.ordinal <= i.max_valid_ordinal
+SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
+FORMAT TSV
+"""
+        text = self.text_client.execute(query).strip()
+        if not text or text == "\\N":
+            return None
+        return int(text.splitlines()[0])
+
+    def _window_tickers_from_index(
+        self,
+        *,
+        start_exclusive_us: int,
+        end_inclusive_us: int,
+        min_events: int,
+        ticker_limit: int,
+    ) -> tuple[str, ...]:
+        start_date_sql = f"toDate({sql_string(_date_from_us(int(start_exclusive_us)))})"
+        end_date_sql = f"toDate({sql_string(_date_from_us(int(end_inclusive_us)))})"
+        eligible_sql = self._eligible_index_subquery(min_events=int(min_events), ticker_limit=int(ticker_limit))
+        query = f"""
+SELECT DISTINCT e.ticker
+FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)} AS e
+INNER JOIN ({eligible_sql}) AS i ON e.ticker = i.ticker
+WHERE e.event_date >= {start_date_sql}
+  AND e.event_date <= {end_date_sql}
+  AND e.sip_timestamp_us > {int(start_exclusive_us)}
+  AND e.sip_timestamp_us <= {int(end_inclusive_us)}
+  AND e.ordinal >= i.first_ordinal
+  AND e.ordinal <= i.max_valid_ordinal
+ORDER BY e.ticker
+SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
+FORMAT TSV
+"""
+        return tuple(str(line).upper() for line in self.text_client.execute(query).splitlines() if line.strip())
+
+    def _eligible_index_subquery(self, *, min_events: int, ticker_limit: int) -> str:
+        limit_sql = f" LIMIT {int(ticker_limit)}" if int(ticker_limit) > 0 else ""
+        return f"""
+SELECT
+    ticker,
+    first_ordinal,
+    max_valid_ordinal
+FROM {quote_ident(self.config.database)}.{quote_ident(self.config.index_table)}
+WHERE split_event_count >= {int(min_events)}
+  AND max_valid_ordinal >= first_ordinal + {int(min_events) - 1}
+ORDER BY ticker
+{limit_sql}
+"""
 
     @staticmethod
     def _memory_bytes(value: str) -> int:

@@ -112,12 +112,12 @@ class RollingContextLoader:
         self.ready_samples: list[RollingSamplePointer] = []
 
     def initialize_universe(self, tickers: Iterable[str]) -> tuple[str, ...]:
-        """Create every per-ticker cache before replay starts.
+        """Create per-ticker caches before replaying events for those tickers.
 
-        Guide-aligned replay should not discover ticker caches lazily. The
-        source resolves the full training/serving universe first, then this
-        loader owns an empty-but-ready cache set for every ticker before any
-        warm rows or as-of low-frequency context are applied.
+        Event-driven replay can call this repeatedly as new tickers appear.
+        The important invariant is that each ticker has empty-but-ready caches
+        before its warm rows, as-of low-frequency context, or first live event
+        are applied.
         """
 
         normalized = tuple(sorted({str(ticker).upper() for ticker in tickers if str(ticker).strip()}))

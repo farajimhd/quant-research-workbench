@@ -88,7 +88,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--macro-bars-table", default=DEFAULTS["macro_bars_table"])
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
-    parser.add_argument("--tickers", type=int, default=DEFAULTS["tickers"], help="Maximum ticker count. Use 0 for all tickers available at replay start.")
+    parser.add_argument("--tickers", type=int, default=DEFAULTS["tickers"], help="Maximum eligible ticker cap. Use 0 for no cap.")
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--batches", type=int, default=DEFAULTS["batches"])
     parser.add_argument("--events-per-ticker-block", type=int, default=DEFAULTS["events_per_ticker_block"])
@@ -270,6 +270,23 @@ def initialize_replay_from_scratch(
 ) -> tuple[dict[str, int], dict[str, Any]]:
     warm_count = int(loader_config.warmup_events_per_ticker)
     min_events = warm_count + max(1, int(args.events_per_ticker_block))
+    if str(args.replay_mode) == "time-window":
+        return {}, {
+            "source": "event_window",
+            "ticker_limit": int(args.tickers),
+            "tickers_indexed": 0,
+            "tickers_available_at_start": 0,
+            "tickers_initialized": 0,
+            "tickers_warmed": 0,
+            "warm_count": warm_count,
+            "warm_rows": 0,
+            "start_timestamp_us": int(start_timestamp_us),
+            "start_utc": _format_us(start_timestamp_us) if start_timestamp_us else "",
+            "initial_context_updates": 0,
+            "initial_context_payload_mib": 0.0,
+            "min_events": min_events,
+        }
+
     with StepTimer(recorder, memory, "source_load_ticker_index", {"ticker_limit": int(args.tickers), "min_events": min_events}):
         index_rows = tuple(source.load_ticker_index_rows(limit=int(args.tickers), min_events=min_events))
     if not index_rows:
@@ -341,6 +358,106 @@ def initialize_replay_from_scratch(
     return cursors, summary
 
 
+def _initialize_new_window_tickers(
+    *,
+    args: argparse.Namespace,
+    loader: RollingContextLoader,
+    loader_config: RollingLoaderConfig,
+    source: ClickHouseRollingSource,
+    block: Any,
+    recorder: "JsonlRecorder",
+    memory: "MemorySampler",
+    block_index: int,
+    asof_timestamp_us: int,
+    min_events: int,
+) -> tuple[str, ...]:
+    new_tickers = tuple(ticker for ticker in block.tickers if ticker not in loader.initialized_tickers)
+    if not new_tickers:
+        return ()
+
+    first_ordinals = block.first_ordinals()
+    with StepTimer(
+        recorder,
+        memory,
+        "dynamic_load_ticker_index",
+        {"block_index": int(block_index), "tickers": len(new_tickers), "min_events": int(min_events)},
+    ):
+        index_rows = tuple(source.load_ticker_index_rows_for_tickers(tickers=new_tickers, min_events=int(min_events)))
+    if not index_rows:
+        return ()
+
+    initialized = loader.initialize_universe(row.ticker for row in index_rows)
+    end_ordinals = {ticker: int(first_ordinals[ticker]) - 1 for ticker in initialized if ticker in first_ordinals}
+    with StepTimer(
+        recorder,
+        memory,
+        "dynamic_warm_load_source_rows",
+        {
+            "block_index": int(block_index),
+            "tickers": len(initialized),
+            "warm_count": int(loader_config.warmup_events_per_ticker),
+            "asof_timestamp_us": int(asof_timestamp_us),
+        },
+    ):
+        warm_rows = source.warm_rows_ending_at(
+            index_rows=index_rows,
+            end_ordinals=end_ordinals,
+            warm_count=int(loader_config.warmup_events_per_ticker),
+        )
+    with StepTimer(
+        recorder,
+        memory,
+        "dynamic_warm_apply_event_rows",
+        {"block_index": int(block_index), "tickers": len(warm_rows), "rows": _row_count(warm_rows)},
+    ):
+        loader.warm_load_events(warm_rows)
+
+    recorder.write(
+        {
+            "kind": "dynamic_ticker_initialization",
+            "block_index": int(block_index),
+            "tickers": len(initialized),
+            "warm_tickers": len(warm_rows),
+            "warm_rows": _row_count(warm_rows),
+            "asof_timestamp_us": int(asof_timestamp_us),
+            "asof_utc": _format_us(asof_timestamp_us),
+        }
+    )
+    return tuple(initialized)
+
+
+def _load_initial_context_for_new_tickers(
+    *,
+    context_source: ClickHouseExternalContextSource,
+    tickers: tuple[str, ...],
+    asof_timestamp_us: int,
+    recorder: "JsonlRecorder",
+    memory: "MemorySampler",
+    block_index: int,
+) -> list[Any]:
+    if not tickers or int(asof_timestamp_us) <= 0:
+        return []
+    with StepTimer(
+        recorder,
+        memory,
+        "dynamic_initial_context_fetch",
+        {"block_index": int(block_index), "tickers": len(tickers), "asof_timestamp_us": int(asof_timestamp_us)},
+    ):
+        updates = context_source.load_initial_context_asof(tickers=tickers, asof_timestamp_us=int(asof_timestamp_us))
+    recorder.write(
+        {
+            "kind": "dynamic_initial_context",
+            "block_index": int(block_index),
+            "tickers": len(tickers),
+            "updates": len(updates),
+            "payload_mib": sum(update.payload.nbytes for update in updates) / (1024 * 1024),
+            "asof_timestamp_us": int(asof_timestamp_us),
+            "asof_utc": _format_us(asof_timestamp_us),
+        }
+    )
+    return updates
+
+
 def replay_training_batches(
     *,
     args: argparse.Namespace,
@@ -359,12 +476,15 @@ def replay_training_batches(
     event_count = 0
     block_count = 0
     context_updates = 0
+    dynamic_tickers_initialized = 0
     last_batch_mib = 0.0
     replay_started = time.perf_counter()
     exhausted = False
     replay_mode = str(args.replay_mode)
     current_time_us = int(start_timestamp_us)
     active_tickers = tuple(sorted(loader.initialized_tickers))
+    warm_count = int(loader_config.warmup_events_per_ticker)
+    min_events = warm_count + max(1, int(args.events_per_ticker_block))
 
     while completed_batches < int(args.batches):
         block_count += 1
@@ -380,14 +500,17 @@ def replay_training_batches(
                 {
                     "block_index": block_count,
                     "active_tickers": len(active_tickers),
+                    "initialized_tickers": len(loader.initialized_tickers),
                     "cursor_start_us": cursor_start_us,
                     "replay_window_us": int(loader_config.replay_time_window_us),
+                    "ticker_limit": int(args.tickers),
                 },
             ):
-                block = source.fetch_next_time_window(
-                    tickers=active_tickers,
+                block = source.fetch_next_time_window_from_index(
                     start_exclusive_us=cursor_start_us,
                     window_us=int(loader_config.replay_time_window_us),
+                    min_events=min_events,
+                    ticker_limit=int(args.tickers),
                 )
             if block.row_count == 0:
                 exhausted = True
@@ -397,6 +520,20 @@ def replay_training_batches(
             context_start_us = cursor_start_us
             context_end_us = window_end_us
             current_time_us = window_end_us
+            new_window_tickers = _initialize_new_window_tickers(
+                args=args,
+                loader=loader,
+                loader_config=loader_config,
+                source=source,
+                block=block,
+                recorder=recorder,
+                memory=memory,
+                block_index=block_count,
+                asof_timestamp_us=event_window_start_us,
+                min_events=min_events,
+            )
+            dynamic_tickers_initialized += len(new_window_tickers)
+            active_tickers = tuple(sorted(loader.initialized_tickers))
         else:
             with StepTimer(recorder, memory, "fetch_event_block", {"block_index": block_count, "active_tickers": len(cursors)}):
                 block = source.fetch_next_by_ordinal(cursors=cursors, rows_per_ticker=int(args.events_per_ticker_block))
@@ -406,6 +543,7 @@ def replay_training_batches(
             cursors.update(block.latest_ordinals())
             context_start_us = int(block.min_timestamp_us or 0) - 1
             context_end_us = int(block.max_timestamp_us or 0)
+            new_window_tickers = ()
         with StepTimer(
             recorder,
             memory,
@@ -421,10 +559,20 @@ def replay_training_batches(
             },
         ):
             updates = context_source.fetch_context_updates(
-                tickers=active_tickers if replay_mode == "time-window" else block.tickers,
+                tickers=block.tickers,
                 start_exclusive_us=context_start_us,
                 end_inclusive_us=context_end_us,
             )
+        new_ticker_updates = _load_initial_context_for_new_tickers(
+            context_source=context_source,
+            tickers=new_window_tickers,
+            asof_timestamp_us=int(block.min_timestamp_us or context_end_us or 0),
+            recorder=recorder,
+            memory=memory,
+            block_index=block_count,
+        )
+        if new_ticker_updates:
+            updates = list(new_ticker_updates) + list(updates)
         context_updates += len(updates)
         replay_block_started = time.perf_counter()
         block_events = 0
@@ -519,6 +667,8 @@ def replay_training_batches(
         "completed_samples": completed_samples,
         "events_replayed": event_count,
         "context_updates": context_updates,
+        "dynamic_tickers_initialized": dynamic_tickers_initialized,
+        "tickers_initialized": len(loader.initialized_tickers),
         "blocks": block_count,
         "exhausted": exhausted,
         "replay_mode": replay_mode,

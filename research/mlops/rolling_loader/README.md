@@ -191,21 +191,23 @@ Use `--no-materialize-external-payloads` to measure the ID-only path and
 `--materialize-external-payloads` to measure the raw external payload gather
 path that trainable encoders need.
 
-The default replay mode is `time-window`: each block starts at the next market
-event after the current replay cursor, then loads the following
+The default replay mode is `time-window`: each block starts at the next eligible
+market event after the current replay cursor, then loads the following
 `RollingLoaderConfig.replay_time_window_us` (`200000` microseconds by default).
-This keeps the profiler anchored to event time while skipping empty overnight,
-weekend, and holiday wall-clock windows. Low-frequency/global updates since the
-previous replay cursor are applied before samples are emitted from the next
-event window. Tickers without market events in the window keep their cache state
-but emit no samples for that window.
+The first query is event-driven and does not send the full ticker universe to
+ClickHouse. Tickers are discovered from each event window. A newly discovered
+ticker is initialized, high-frequency-warmed through the event immediately
+before its first row in that window, and loaded with bounded low-frequency
+context before any of its events are replayed. Existing tickers keep their cache
+state; tickers without market events in the window do not participate in that
+batch window.
 
 The default replay start is `2019-01-05T00:00:00Z`.
 
-By default `--tickers 0` means no ticker cap. The profiler initializes every
-ticker from the index that has a valid event at or before `--start-utc` and can
-be warm-loaded as-of that timestamp. Pass `--tickers N` only for a smaller debug
-profile.
+By default `--tickers 0` means no ticker cap. The source still uses the index
+table as the eligibility filter, but ticker caches are created only when a
+ticker first appears in an event window. Pass `--tickers N` only for a smaller
+debug profile.
 
 ## Smoke Test
 
