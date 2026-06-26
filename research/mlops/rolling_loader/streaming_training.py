@@ -653,6 +653,12 @@ class StreamingRollingTrainingProvider:
                 max_timestamp_us=block.max_timestamp_us,
             ):
                 self.engine.append_rows_by_ticker(block.rows_by_ticker)
+            if block.max_timestamp_us < self.start_timestamp_us:
+                with self.profiler.stage("warmup_event_cache_trim", block_index=block_index):
+                    self._trim_pre_start_event_cache()
+                cursor_date = block_end
+                block_index += 1
+                continue
             if self.load_token_contexts:
                 with self.profiler.stage("token_context_block_fetch", block_index=block_index):
                     context = self.source.fetch_token_contexts(
@@ -664,7 +670,7 @@ class StreamingRollingTrainingProvider:
                 with self.profiler.stage("token_context_block_load", block_index=block_index, rows=context.row_count, counts=context.counts()):
                     self.engine.load_external_contexts(context.rows_by_context)
             with self.profiler.stage("ready_index_build", block_index=block_index):
-                ready_blocks = self.engine.build_ready_index_blocks(max_samples=int(self.config.max_ready_samples))
+                ready_blocks = self.engine.build_ready_index_blocks(max_samples=self._ready_sample_cap(produced))
                 ready_count = self.engine.ready_index_count(ready_blocks)
             self.profiler.add(
                 StreamingStageRecord(
@@ -702,6 +708,29 @@ class StreamingRollingTrainingProvider:
             cursor_date = block_end
             block_index += 1
         return produced
+
+    def _ready_sample_cap(self, produced_batches: int) -> int:
+        configured = int(self.config.max_ready_samples)
+        if self.max_batches <= 0:
+            return configured
+        remaining = max(0, int(self.max_batches) - int(produced_batches))
+        batch_cap = remaining * int(self.config.batch_size)
+        if configured > 0:
+            return min(configured, batch_cap)
+        return batch_cap
+
+    def _trim_pre_start_event_cache(self) -> None:
+        keep_tail = max(0, int(self.config.carryover_events))
+        for ticker, rows in list(self.engine.rows_by_ticker.items()):
+            if rows.size == 0:
+                continue
+            timestamps = rows["sip_timestamp_us"]
+            pre_start_count = int(np.searchsorted(timestamps, self.start_timestamp_us, side="left"))
+            trim_to = max(0, pre_start_count - keep_tail)
+            if trim_to <= 0:
+                continue
+            self.engine.rows_by_ticker[ticker] = rows[trim_to:].copy()
+            self.engine._processed_offsets[ticker] = 0
 
 
 def date_from_us(timestamp_us: int) -> dt.date:
