@@ -198,6 +198,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-row-limit", type=int, default=DEFAULTS["event_row_limit"])
     parser.add_argument("--audit-samples", type=int, default=256)
     parser.add_argument("--no-rich", action="store_true")
+    parser.add_argument("--live-rich", action="store_true", help="Use the full Rich Live panel dashboard. The default is a non-blinking status line.")
     parser.add_argument("--refresh-seconds", type=float, default=1.0)
     return parser.parse_args()
 
@@ -219,7 +220,12 @@ def main() -> int:
     stats = BuildStats()
     stats.target_bytes = int(float(args.target_cache_gib) * 1024**3)
     stats.log_path = cache_root / "builder_events.jsonl"
-    dashboard = MaterializedCacheDashboard(enabled=not args.no_rich, refresh_seconds=float(args.refresh_seconds), stats=stats)
+    dashboard = MaterializedCacheDashboard(
+        enabled=not args.no_rich,
+        live=bool(args.live_rich),
+        refresh_seconds=float(args.refresh_seconds),
+        stats=stats,
+    )
     source: StreamingClickHouseTrainingSource | None = None
     writer: RollingMaterializedShardWriter | None = None
     executor: ThreadPoolExecutor | None = None
@@ -788,16 +794,21 @@ def _single_line_items(values: list[str], *, width: int) -> list[str]:
 
 
 class MaterializedCacheDashboard:
-    def __init__(self, *, enabled: bool, refresh_seconds: float, stats: BuildStats) -> None:
+    def __init__(self, *, enabled: bool, live: bool, refresh_seconds: float, stats: BuildStats) -> None:
         self.enabled = bool(enabled)
+        self.live = bool(live)
         self.refresh_seconds = max(0.25, float(refresh_seconds))
         self.stats = stats
         self._last = 0.0
         self._live: Any | None = None
         self._rich: dict[str, Any] = {}
+        self._printed_messages = 0
+        self._status_width = 0
 
     def start(self) -> None:
         if not self.enabled:
+            return
+        if not self.live:
             return
         try:
             from rich import box
@@ -831,6 +842,10 @@ class MaterializedCacheDashboard:
             if now - self._last >= self.refresh_seconds:
                 self._live.update(self._render(), refresh=True)
                 self._last = now
+        elif self.enabled and not self.live:
+            if now - self._last >= self.refresh_seconds:
+                self._print_status_line(final=False)
+                self._last = now
         elif now - self._last >= self.refresh_seconds:
             elapsed = now - self.stats.started
             byte_rate = self.stats.bytes_written / max(elapsed, 1e-9)
@@ -848,6 +863,46 @@ class MaterializedCacheDashboard:
             self._live.update(self._render(), refresh=True)
             self._live.stop()
             self._live = None
+        elif self.enabled and not self.live:
+            self._print_status_line(final=True)
+
+    def _print_status_line(self, *, final: bool) -> None:
+        while self._printed_messages < len(self.stats.messages):
+            if self._status_width:
+                sys.stdout.write("\r" + " " * self._status_width + "\r")
+            print(self.stats.messages[self._printed_messages], flush=True)
+            self._printed_messages += 1
+            self._status_width = 0
+        terminal_width = shutil.get_terminal_size((120, 40)).columns
+        status = self._status_text(width=max(40, terminal_width - 1))
+        padding = max(0, self._status_width - len(status))
+        end = "\n" if final else ""
+        sys.stdout.write("\r" + status + (" " * padding) + end)
+        sys.stdout.flush()
+        self._status_width = 0 if final else len(status)
+
+    def _status_text(self, *, width: int) -> str:
+        elapsed = time.perf_counter() - self.stats.started
+        byte_rate = self.stats.bytes_written / max(elapsed, 1e-9)
+        remaining = max(0, int(self.stats.target_bytes) - int(self.stats.bytes_written))
+        eta = remaining / byte_rate if self.stats.target_bytes > 0 and byte_rate > 0 else None
+        worker_bits = []
+        for worker in self.stats.workers.values():
+            total_done = int(worker.materializing_done) + int(worker.writing_done)
+            total_expected = int(worker.materializing_total) + int(worker.writing_total)
+            pct = 0.0 if total_expected <= 0 else 100.0 * float(total_done) / float(max(1, total_expected))
+            worker_bits.append(f"W{worker.worker_id}:{worker.status[:4]}:{pct:03.0f}%")
+        text = (
+            f"[{self.stats.phase}] block={self.stats.block_index} rows={self.stats.rows_loaded:,} "
+            f"tickers={self.stats.tickers_loaded:,} ready={self.stats.ready_samples:,} "
+            f"samples={self.stats.samples_written:,} shards={self.stats.shards_done:,} "
+            f"size={self.stats.bytes_written / 1024**3:.2f}/{max(1, self.stats.target_bytes) / 1024**3:.2f}GiB "
+            f"rate={_format_rate_bytes(byte_rate)} rss={self.stats.current_rss_mib:,.0f}MiB "
+            f"elapsed={_format_duration(elapsed)} eta={_format_duration(eta)}"
+        )
+        if worker_bits:
+            text = f"{text} {' '.join(worker_bits)}"
+        return _single_line(text, width=width)
 
     def _render(self) -> Any:
         box = self._rich["box"]
