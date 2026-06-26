@@ -9,13 +9,21 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 
-from research.mlops.clickhouse_events import DEFAULT_CONTEXT_EVENTS, encode_unified_event_window, encode_unified_event_windows
+from research.mlops.clickhouse_events import DEFAULT_CONTEXT_EVENTS, encode_unified_event_window, encode_unified_event_windows, validate_unified_event_windows
 from research.mlops.compact_events import QUOTE_EVENT_TYPE, TRADE_EVENT_TYPE
 from research.mlops.data.audit import audit_temporal_batch
 from research.mlops.data.config import DataProviderConfig, ExternalAsOfContextConfig, MarketStreamConfig, RollingMarketDataConfig, TickerBlockDataConfig
 from research.mlops.data.providers import StreamingReplayBatchProvider
 from research.mlops.data.replay import iter_replay_batches
-from research.mlops.data.rolling import MacroBarFrame, RollingMarketSampleEngine, synthetic_rows_by_ticker
+from research.mlops.data.rolling import (
+    MacroBarFrame,
+    RollingMarketSampleEngine,
+    _is_materializable_chunk_origin,
+    _materializable_chunk_origin_flags,
+    _today_asof_bar_from_events,
+    _today_asof_bars_from_events,
+    synthetic_rows_by_ticker,
+)
 from research.mlops.data.sources import InMemoryEventSource
 from research.mlops.data.ticker_blocks import TickerCursor, TickerEpochScheduler, build_event_time_bar_batch, build_requests, make_synthetic_event_rows
 from research.mlops.data.contracts import BAR_FEATURE_KEYS, CompactEvent, FUTURE_BAR_FEATURE_KEYS
@@ -59,6 +67,8 @@ def make_synthetic_events(count: int = 1024, *, ticker: str = "TEST") -> tuple[C
 
 def main() -> int:
     smoke_vectorized_event_encoder_parity()
+    smoke_vectorized_ready_origin_parity()
+    smoke_vectorized_today_asof_bar_parity()
     smoke_streaming_replay()
     smoke_ticker_blocks()
     smoke_rolling_ready_index_balanced_cap()
@@ -75,6 +85,7 @@ def smoke_vectorized_event_encoder_parity() -> None:
     previous = np.asarray([-1 if start == 0 else int(rows["sip_timestamp_us"][start - 1]) for start in starts], dtype=np.int64)
     headers, events, valid, reasons = encode_unified_event_windows(windows, previous_sip_us=previous)
     assert bool(valid.all()), reasons.tolist()
+    assert np.array_equal(validate_unified_event_windows(windows), valid)
     for index, start in enumerate(starts.tolist()):
         scalar = encode_unified_event_window(
             rows[start : start + DEFAULT_CONTEXT_EVENTS],
@@ -90,7 +101,29 @@ def smoke_vectorized_event_encoder_parity() -> None:
     scalar_invalid = encode_unified_event_window(invalid[0], previous_sip_us=None)
     assert scalar_invalid == "no_quote_anchor"
     assert not bool(invalid_valid[0])
+    assert not bool(validate_unified_event_windows(invalid)[0])
     assert str(invalid_reasons[0]) == scalar_invalid
+
+
+def smoke_vectorized_ready_origin_parity() -> None:
+    rows = synthetic_rows_by_ticker(tickers=1, rows_per_ticker=512)["T0000"]
+    origins = np.arange(DEFAULT_CONTEXT_EVENTS - 1, 450, 3, dtype=np.int64)
+    flags = _materializable_chunk_origin_flags(rows, origins, DEFAULT_CONTEXT_EVENTS)
+    scalar = np.asarray(
+        [_is_materializable_chunk_origin(rows, int(origin), DEFAULT_CONTEXT_EVENTS) for origin in origins],
+        dtype=np.bool_,
+    )
+    assert np.array_equal(flags, scalar)
+
+
+def smoke_vectorized_today_asof_bar_parity() -> None:
+    rows = synthetic_rows_by_ticker(tickers=1, rows_per_ticker=512)["T0000"]
+    origins = np.asarray([0, 1, 32, 127, 255, 511], dtype=np.int64)
+    bars, mask = _today_asof_bars_from_events(rows, origins)
+    assert bool(mask.all())
+    for index, origin in enumerate(origins.tolist()):
+        scalar = _today_asof_bar_from_events(rows[: origin + 1])
+        assert np.allclose(bars[index], scalar)
 
 
 def smoke_streaming_replay() -> None:

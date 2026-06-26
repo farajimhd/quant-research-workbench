@@ -1067,6 +1067,58 @@ def encode_unified_event_windows(
     return headers, events, valid, reasons
 
 
+def validate_unified_event_windows(windows: np.ndarray) -> np.ndarray:
+    """Return scalar-compatible validity flags without packing output bytes."""
+
+    if windows.ndim != 2 or int(windows.shape[1]) != DEFAULT_CONTEXT_EVENTS:
+        count = int(windows.shape[0]) if windows.ndim >= 1 else 0
+        return np.zeros((count,), dtype=np.bool_)
+    count = int(windows.shape[0])
+    valid = np.ones((count,), dtype=np.bool_)
+    if count == 0:
+        return valid
+
+    event_types = windows["event_type"].astype(np.uint8, copy=False)
+    quote_mask = event_types == QUOTE_EVENT_TYPE
+    trade_mask = event_types == TRADE_EVENT_TYPE
+    row_index = np.arange(count)
+
+    has_quote = quote_mask.any(axis=1)
+    valid &= has_quote
+    reversed_quote = quote_mask[:, ::-1]
+    anchor_idx = DEFAULT_CONTEXT_EVENTS - 1 - np.argmax(reversed_quote, axis=1)
+
+    primary_prices = decode_price_array(windows["price_primary_int"], windows["event_flags"] & 1)
+    secondary_prices = decode_price_array(windows["price_secondary_int"], (windows["event_flags"] >> 1) & 1)
+    anchor_ask = primary_prices[row_index, anchor_idx]
+    anchor_bid = secondary_prices[row_index, anchor_idx]
+    valid &= ~((anchor_ask <= 0.0) | (anchor_bid <= 0.0) | (anchor_ask < anchor_bid))
+
+    tick_size = np.where(anchor_ask >= 1.0, 0.01, 0.0001)
+    ask_anchor_ticks = np.rint(anchor_ask / tick_size).astype(np.int64)
+    spread_anchor_ticks = np.rint((anchor_ask - anchor_bid) / tick_size).astype(np.int64)
+    valid &= ask_anchor_ticks < 2**20
+    valid &= spread_anchor_ticks < 2**16
+
+    quote_count = np.count_nonzero(quote_mask, axis=1)
+    trade_count = np.count_nonzero(trade_mask, axis=1)
+    valid &= (quote_count <= 255) & (trade_count <= 255)
+
+    ask_valid = (primary_prices > 0.0) & (secondary_prices > 0.0) & (primary_prices >= secondary_prices)
+    valid &= ~np.any(quote_mask & ~ask_valid, axis=1)
+    valid &= ~np.any(trade_mask & (primary_prices <= 0.0), axis=1)
+
+    price_1 = np.zeros((count, DEFAULT_CONTEXT_EVENTS), dtype=np.int64)
+    price_2 = np.zeros((count, DEFAULT_CONTEXT_EVENTS), dtype=np.int64)
+    ask_ticks = np.rint(primary_prices / tick_size[:, None]).astype(np.int64)
+    spread_ticks = np.rint((primary_prices - secondary_prices) / tick_size[:, None]).astype(np.int64)
+    price_1[quote_mask] = (ask_ticks - ask_anchor_ticks[:, None])[quote_mask]
+    price_2[quote_mask] = (spread_ticks - spread_anchor_ticks[:, None])[quote_mask]
+    price_1[trade_mask] = (ask_ticks - ask_anchor_ticks[:, None])[trade_mask]
+    valid &= ~np.any((price_1 < -32768) | (price_1 > 32767) | (price_2 < -32768) | (price_2 > 32767), axis=1)
+    return valid
+
+
 def _mark_invalid(valid: np.ndarray, reasons: np.ndarray, mask: np.ndarray, reason: str) -> None:
     target = np.asarray(mask, dtype=np.bool_) & valid
     if np.any(target):
