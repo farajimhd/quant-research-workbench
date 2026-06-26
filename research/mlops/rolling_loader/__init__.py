@@ -13,6 +13,10 @@ from research.mlops.rolling_loader.loader import (
     RollingContextLoader,
     RollingSamplePointer,
 )
+from research.mlops.rolling_loader.materialized_cache import (
+    MATERIALIZED_CACHE_FORMAT,
+    RollingMaterializedShardWriter,
+)
 from research.mlops.rolling_loader.streaming_training import (
     StreamingBatchEnvelope,
     StreamingClickHouseTrainingSource,
@@ -22,7 +26,9 @@ from research.mlops.rolling_loader.streaming_training import (
 
 __all__ = [
     "InitializedRollingReplay",
+    "MATERIALIZED_CACHE_FORMAT",
     "MaterializedRollingBatch",
+    "RollingMaterializedShardWriter",
     "StreamingBatchEnvelope",
     "StreamingClickHouseTrainingSource",
     "StreamingProfiler",

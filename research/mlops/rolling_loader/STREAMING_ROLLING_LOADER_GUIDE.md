@@ -750,6 +750,63 @@ python research\mlops\rolling_loader\run_streaming_training_profile.py --simulat
 python research\mlops\rolling_loader\run_streaming_training_profile.py --shutdown-timeout-seconds 5
 ```
 
+## Materialized Shard Cache
+
+For repeated training runs, the streaming loader can build SSD shards of fully
+materialized `RollingTrainingBatch` samples:
+
+```powershell
+python research\mlops\rolling_loader\run_build_materialized_cache.py --one-shard
+```
+
+The builder uses the same streaming source path, but instead of yielding to a
+trainer it writes complete sample tensors to disk. Shard sizing is sample-count
+based:
+
+```text
+target_shard_bytes = shard_size_gib * 1024^3
+estimated_sample_bytes = measured from the first materialized builder batch
+raw_target_samples = floor(target_shard_bytes / estimated_sample_bytes)
+shard_samples = floor(raw_target_samples / 4096) * 4096
+```
+
+This keeps shard sizes near 16 GiB while preserving 4096-sample training
+alignment. The builder defaults to reduced text payloads:
+
+```text
+ticker_news_items: 8
+market_news_items: 16
+sec_filing_items: 4
+```
+
+Each shard is written as a temporary directory and atomically renamed after all
+tensor files are flushed. Per-shard metadata includes tensor paths, shapes,
+dtypes, byte sizes, SHA256 hashes, origin timestamp ranges, and human-readable
+UTC dates.
+
+Concurrency is block-local and ticker-partitioned:
+
+```text
+single writer:
+  load ClickHouse block
+  update rolling event/context caches
+  build ready ticker blocks
+
+worker pool:
+  split active ready ticker blocks by estimated sample count
+  materialize vectorized builder batches for each ticker partition
+
+single writer:
+  merge completed slices in deterministic order
+  append complete materialized samples to 4096-aligned shards
+  finalize shards with tmp -> final rename
+  trim processed cache tails
+```
+
+Cache mutation and shard finalization stay single-threaded. Workers receive
+read-only cache snapshots for their ticker partitions, which avoids concurrent
+updates to the same ticker state.
+
 ## Anti-Patterns
 
 Avoid these patterns in the training loader:
