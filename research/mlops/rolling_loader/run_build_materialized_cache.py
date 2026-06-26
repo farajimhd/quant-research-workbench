@@ -42,7 +42,9 @@ from research.mlops.rolling_loader.materialized_cache import (
     timestamp_us_to_utc,
 )
 from research.mlops.rolling_loader.streaming_training import (
+    StreamingContextBlock,
     StreamingClickHouseTrainingSource,
+    StreamingEventBlock,
     StreamingProfiler,
     batch_nbytes,
     current_rss_mib,
@@ -68,6 +70,7 @@ DEFAULTS: dict[str, Any] = {
     "sample_multiple": 4096,
     "workers": 4,
     "max_pending_tasks": 8,
+    "prefetch_blocks": 1,
     "shard_size_gib": 16.0,
     "target_cache_gib": 16.0,
     "ready_sample_cap": 65536,
@@ -105,6 +108,16 @@ class WorkerState:
     last_message: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class PrefetchedTrainingBlock:
+    block_index: int
+    block_start: dt.date
+    block_end: dt.date
+    block: StreamingEventBlock
+    context: StreamingContextBlock | None
+    fetch_seconds: float
+
+
 @dataclass(slots=True)
 class BuildStats:
     started: float = field(default_factory=time.perf_counter)
@@ -117,6 +130,11 @@ class BuildStats:
     ready_samples: int = 0
     submitted_tasks: int = 0
     completed_tasks: int = 0
+    prefetch_depth: int = 0
+    prefetch_pending: int = 0
+    prefetch_ready: int = 0
+    prefetch_next_block: int = 0
+    prefetch_last_seconds: float = 0.0
     samples_written: int = 0
     bytes_written: int = 0
     target_bytes: int = 0
@@ -178,6 +196,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-multiple", type=int, default=DEFAULTS["sample_multiple"])
     parser.add_argument("--workers", type=int, default=DEFAULTS["workers"])
     parser.add_argument("--max-pending-tasks", type=int, default=DEFAULTS["max_pending_tasks"])
+    parser.add_argument(
+        "--prefetch-blocks",
+        type=int,
+        default=DEFAULTS["prefetch_blocks"],
+        help="Number of fetched event/context blocks to keep queued ahead of materialization. Use 0 for synchronous block loading.",
+    )
     parser.add_argument("--shard-size-gib", type=float, default=DEFAULTS["shard_size_gib"])
     parser.add_argument("--target-cache-gib", type=float, default=DEFAULTS["target_cache_gib"])
     parser.add_argument("--ready-sample-cap", type=int, default=DEFAULTS["ready_sample_cap"])
@@ -229,6 +253,7 @@ def main() -> int:
     source: StreamingClickHouseTrainingSource | None = None
     writer: RollingMaterializedShardWriter | None = None
     executor: ThreadPoolExecutor | None = None
+    fetch_executor: ThreadPoolExecutor | None = None
 
     try:
         stats.message(f"cache_root={cache_root}")
@@ -314,57 +339,124 @@ def main() -> int:
             stats.message(f"loaded initial context rows={initial_context.row_count:,}")
 
         executor = ThreadPoolExecutor(max_workers=max(1, int(args.workers)))
+        prefetch_depth = max(0, int(args.prefetch_blocks))
+        stats.prefetch_depth = prefetch_depth
+        fetch_executor = ThreadPoolExecutor(max_workers=1) if prefetch_depth > 0 else None
         for worker_id in range(max(1, int(args.workers))):
             stats.workers[worker_id] = WorkerState(worker_id=worker_id)
         cursor_date = date_from_us(start_us) - dt.timedelta(days=max(0, int(args.warmup_days)))
         final_date = date_from_us(end_us) + dt.timedelta(days=1)
+        next_fetch_date = cursor_date
+        next_fetch_index = 0
+        fetch_queue: deque[Future[PrefetchedTrainingBlock]] = deque()
         stop_requested = False
-        while cursor_date < final_date and not stop_requested:
-            block_start = cursor_date
-            block_end = min(final_date, cursor_date + dt.timedelta(days=max(1, int(args.block_days))))
-            stats.phase = "loading block"
+
+        def submit_prefetches() -> None:
+            nonlocal next_fetch_date, next_fetch_index
+            if fetch_executor is None or prefetch_depth <= 0:
+                return
+            while not stop_requested and next_fetch_date < final_date and len(fetch_queue) < prefetch_depth:
+                block_start = next_fetch_date
+                block_end = min(final_date, next_fetch_date + dt.timedelta(days=max(1, int(args.block_days))))
+                block_index = next_fetch_index
+                future = fetch_executor.submit(
+                    _fetch_materialized_cache_block,
+                    source,
+                    profiler,
+                    block_start,
+                    block_end,
+                    block_index,
+                    max(0, int(args.event_row_limit)),
+                    start_us,
+                    end_us,
+                    not bool(args.skip_token_contexts),
+                    not bool(args.skip_xbrl),
+                )
+                fetch_queue.append(future)
+                next_fetch_date = block_end
+                next_fetch_index += 1
+                stats.prefetch_pending = len(fetch_queue)
+                stats.prefetch_ready = sum(1 for item in fetch_queue if item.done())
+                stats.prefetch_next_block = next_fetch_index
+                stats.message(f"prefetch submitted block {block_index} window={block_start.isoformat()}->{block_end.isoformat()}")
+
+        submit_prefetches()
+        while not stop_requested:
+            if fetch_executor is None:
+                if cursor_date >= final_date:
+                    break
+                block_start = cursor_date
+                block_end = min(final_date, cursor_date + dt.timedelta(days=max(1, int(args.block_days))))
+                stats.phase = "loading block"
+                stats.block_index = next_fetch_index
+                stats.block_start = block_start.isoformat()
+                stats.block_end = block_end.isoformat()
+                stats.message(f"loading block {next_fetch_index} window={block_start.isoformat()}->{block_end.isoformat()}")
+                _refresh(stats, dashboard, writer, force=True)
+                fetched = _fetch_materialized_cache_block(
+                    source,
+                    profiler,
+                    block_start,
+                    block_end,
+                    next_fetch_index,
+                    max(0, int(args.event_row_limit)),
+                    start_us,
+                    end_us,
+                    not bool(args.skip_token_contexts),
+                    not bool(args.skip_xbrl),
+                )
+                cursor_date = block_end
+                next_fetch_index += 1
+                stats.prefetch_next_block = next_fetch_index
+            else:
+                if not fetch_queue:
+                    break
+                stats.phase = "waiting prefetched block"
+                stats.prefetch_pending = len(fetch_queue)
+                stats.prefetch_ready = sum(1 for item in fetch_queue if item.done())
+                _refresh(stats, dashboard, writer)
+                future = fetch_queue.popleft()
+                fetched = future.result()
+                stats.prefetch_pending = len(fetch_queue)
+                stats.prefetch_ready = sum(1 for item in fetch_queue if item.done())
+                submit_prefetches()
+
+            block = fetched.block
+            block_start = fetched.block_start
+            block_end = fetched.block_end
+            stats.block_index = int(fetched.block_index)
             stats.block_start = block_start.isoformat()
             stats.block_end = block_end.isoformat()
-            stats.message(f"loading block {stats.block_index} window={block_start.isoformat()}->{block_end.isoformat()}")
-            _refresh(stats, dashboard, writer, force=True)
-            with profiler.stage("event_block_query_arrow_polars", block_index=stats.block_index):
-                frame = source.fetch_event_frame(start_date=block_start, end_date=block_end, row_limit=max(0, int(args.event_row_limit)))
-            with profiler.stage("event_block_polars_to_numpy", block_index=stats.block_index, rows=int(frame.height)):
-                block = source.event_frame_to_block(frame=frame, start_date=block_start, end_date=block_end)
+            stats.prefetch_last_seconds = float(fetched.fetch_seconds)
+            stats.phase = "loading block"
             stats.rows_loaded = block.row_count
             stats.tickers_loaded = block.ticker_count
-            stats.message(f"block {stats.block_index} events rows={block.row_count:,} tickers={block.ticker_count:,}")
+            stats.message(
+                f"block {stats.block_index} events rows={block.row_count:,} tickers={block.ticker_count:,} "
+                f"fetch_seconds={fetched.fetch_seconds:.1f}"
+            )
             if block.row_count <= 0:
-                cursor_date = block_end
-                stats.block_index += 1
                 continue
             stats.phase = "updating cache"
             _refresh(stats, dashboard, writer)
-            engine.append_rows_by_ticker(block.rows_by_ticker)
+            with profiler.stage("event_block_append_engine", block_index=stats.block_index, rows=block.row_count, tickers=block.ticker_count):
+                engine.append_rows_by_ticker(block.rows_by_ticker)
             if block.max_timestamp_us < start_us:
-                _trim_pre_start_event_cache(engine, start_us)
-                cursor_date = block_end
-                stats.block_index += 1
+                with profiler.stage("warmup_event_cache_trim", block_index=stats.block_index):
+                    _trim_pre_start_event_cache(engine, start_us)
                 continue
-            if not args.skip_token_contexts:
-                _refresh(stats, dashboard, writer, force=True)
-                with profiler.stage("token_context_block_fetch", block_index=stats.block_index):
-                    context = source.fetch_token_contexts(
-                        start_timestamp_us=max(start_us, block.min_timestamp_us),
-                        end_timestamp_us=min(end_us + 1, block.max_timestamp_us + 1),
-                        include_lookback=False,
-                        include_xbrl=not args.skip_xbrl,
-                    )
-                engine.load_external_contexts(context.rows_by_context)
+            if fetched.context is not None:
+                context = fetched.context
+                with profiler.stage("token_context_block_load", block_index=stats.block_index, rows=context.row_count, counts=context.counts()):
+                    engine.load_external_contexts(context.rows_by_context)
                 stats.message(f"block context rows={context.row_count:,}")
             stats.phase = "building ready index"
             _refresh(stats, dashboard, writer)
-            ready_blocks = engine.build_ready_index_blocks(max_samples=max(0, int(args.ready_sample_cap)))
+            with profiler.stage("ready_index_build", block_index=stats.block_index):
+                ready_blocks = engine.build_ready_index_blocks(max_samples=max(0, int(args.ready_sample_cap)))
             stats.ready_samples = engine.ready_index_count(ready_blocks)
             stats.message(f"ready samples={stats.ready_samples:,} blocks={len(ready_blocks):,}")
             if not ready_blocks:
-                cursor_date = block_end
-                stats.block_index += 1
                 continue
             stats.phase = "materializing"
             futures: dict[Future[dict[str, Any]], dict[str, Any]] = {}
@@ -490,14 +582,21 @@ def main() -> int:
                 if stop_requested:
                     break
                 submit_available()
-            _mark_ready_blocks_processed(engine, ready_blocks)
-            engine.trim_processed_tails()
-            cursor_date = block_end
-            stats.block_index += 1
+            with profiler.stage("mark_ready_blocks_processed", block_index=stats.block_index):
+                _mark_ready_blocks_processed(engine, ready_blocks)
+            with profiler.stage("event_cache_trim_processed_tails", block_index=stats.block_index):
+                engine.trim_processed_tails()
             stats.shards_done = len(writer.shards)
             if float(stats.bytes_written) >= float(args.target_cache_gib) * 1024**3:
                 stats.message("target cache size reached")
                 break
+        if fetch_queue:
+            cancelled = 0
+            for future in fetch_queue:
+                cancelled += 1 if future.cancel() else 0
+            stats.prefetch_pending = 0
+            stats.prefetch_ready = 0
+            stats.message(f"prefetch queue stopped cancelled={cancelled:,} remaining={len(fetch_queue):,}")
         stats.phase = "finalizing"
         writer.close()
         manifest["completed_at"] = dt.datetime.now(tz=dt.timezone.utc).isoformat()
@@ -523,6 +622,9 @@ def main() -> int:
         stats.interrupted = True
         stats.phase = "interrupt"
         stats.message("interrupt received; closing writer and stopping workers")
+        if fetch_executor is not None:
+            fetch_executor.shutdown(wait=False, cancel_futures=True)
+            fetch_executor = None
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
         if writer is not None:
@@ -530,11 +632,54 @@ def main() -> int:
         _write_progress(cache_root, args.split, stats, writer)
         return 130
     finally:
+        if fetch_executor is not None:
+            fetch_executor.shutdown(wait=True, cancel_futures=True)
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
         if source is not None:
             source.close()
         dashboard.stop()
+
+
+def _fetch_materialized_cache_block(
+    source: StreamingClickHouseTrainingSource,
+    profiler: StreamingProfiler,
+    block_start: dt.date,
+    block_end: dt.date,
+    block_index: int,
+    event_row_limit: int,
+    start_timestamp_us: int,
+    end_timestamp_us: int,
+    load_token_contexts: bool,
+    include_xbrl: bool,
+) -> PrefetchedTrainingBlock:
+    started = time.perf_counter()
+    with profiler.stage(
+        "event_block_query_arrow_polars",
+        block_index=int(block_index),
+        start_date=block_start.isoformat(),
+        end_date=block_end.isoformat(),
+    ):
+        frame = source.fetch_event_frame(start_date=block_start, end_date=block_end, row_limit=max(0, int(event_row_limit)))
+    with profiler.stage("event_block_polars_to_numpy", block_index=int(block_index), rows=int(frame.height)):
+        block = source.event_frame_to_block(frame=frame, start_date=block_start, end_date=block_end)
+    context: StreamingContextBlock | None = None
+    if load_token_contexts and block.row_count > 0 and block.max_timestamp_us >= int(start_timestamp_us):
+        with profiler.stage("token_context_block_fetch", block_index=int(block_index)):
+            context = source.fetch_token_contexts(
+                start_timestamp_us=max(int(start_timestamp_us), int(block.min_timestamp_us)),
+                end_timestamp_us=min(int(end_timestamp_us) + 1, int(block.max_timestamp_us) + 1),
+                include_lookback=False,
+                include_xbrl=bool(include_xbrl),
+            )
+    return PrefetchedTrainingBlock(
+        block_index=int(block_index),
+        block_start=block_start,
+        block_end=block_end,
+        block=block,
+        context=context,
+        fetch_seconds=time.perf_counter() - started,
+    )
 
 
 def _materialize_worker_task(
@@ -702,6 +847,11 @@ def _write_progress(cache_root: Path, split: str, stats: BuildStats, writer: Rol
         "updated_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
         "phase": stats.phase,
         "block_index": stats.block_index,
+        "prefetch_depth": stats.prefetch_depth,
+        "prefetch_pending": stats.prefetch_pending,
+        "prefetch_ready": stats.prefetch_ready,
+        "prefetch_next_block": stats.prefetch_next_block,
+        "prefetch_last_seconds": stats.prefetch_last_seconds,
         "samples_written": stats.samples_written,
         "bytes_written": stats.bytes_written,
         "target_bytes": stats.target_bytes,
@@ -905,6 +1055,7 @@ class MaterializedCacheDashboard:
         text = (
             f"[{self.stats.phase}] block={self.stats.block_index} rows={self.stats.rows_loaded:,} "
             f"tickers={self.stats.tickers_loaded:,} ready={self.stats.ready_samples:,} "
+            f"prefetch={self.stats.prefetch_ready}/{self.stats.prefetch_pending}/{self.stats.prefetch_depth} "
             f"samples={self.stats.samples_written:,} shards={self.stats.shards_done:,} "
             f"size={self.stats.bytes_written / 1024**3:.2f}/{max(1, self.stats.target_bytes) / 1024**3:.2f}GiB "
             f"rate={_format_rate_bytes(byte_rate)} rss={self.stats.current_rss_mib:,.0f}MiB "
@@ -968,6 +1119,11 @@ class MaterializedCacheDashboard:
                 ("Progress", f"{progress_pct:.1f}%"),
                 ("Tasks", f"{self.stats.completed_tasks:,}/{self.stats.submitted_tasks:,}"),
                 ("Logs", str(self.stats.log_path or "")),
+            ),
+            (
+                ("Prefetch", f"{self.stats.prefetch_ready}/{self.stats.prefetch_pending}/{self.stats.prefetch_depth}"),
+                ("Next", str(self.stats.prefetch_next_block)),
+                ("Fetch", f"{self.stats.prefetch_last_seconds:.1f}s"),
             ),
         ]
         if terminal_height < 22:
