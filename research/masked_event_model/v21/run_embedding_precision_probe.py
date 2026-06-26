@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -266,15 +267,22 @@ def validation_frequency_steps_for(args: argparse.Namespace) -> int:
 
 def resolve_probe_script(configured: Path) -> Path:
     configured = Path(configured)
-    if configured.exists():
+    if path_exists(configured):
         return configured
-    if DEFAULT_PROBE_SCRIPT_FROM_LAPTOP.exists():
+    if path_exists(DEFAULT_PROBE_SCRIPT_FROM_LAPTOP):
         return DEFAULT_PROBE_SCRIPT_FROM_LAPTOP
     repo_root = next((parent for parent in Path(__file__).resolve().parents if (parent / "research").exists()), Path(__file__).resolve().parents[3])
     fallback = repo_root / "research" / "temporal_event_model" / "v1" / "cache_probe.py"
-    if fallback.exists():
+    if path_exists(fallback):
         return fallback
     raise FileNotFoundError(f"Temporal probe script not found. Tried {configured} and {fallback}")
+
+
+def path_exists(path: Path) -> bool:
+    try:
+        return Path(path).exists()
+    except OSError:
+        return False
 
 
 def run_command(stage: str, variant_name: str, command: list[str]) -> int:
@@ -282,12 +290,24 @@ def run_command(stage: str, variant_name: str, command: list[str]) -> int:
     print(f"RUN START [{stage} {variant_name}]", flush=True)
     print(subprocess.list2cmdline(command), flush=True)
     print("=" * 104, flush=True)
-    completed = subprocess.run(command, check=False)
+    completed = subprocess.run(command, check=False, env=subprocess_env())
     if completed.returncode != 0:
         print(f"RUN FAILED [{stage} {variant_name}] returncode={completed.returncode}", flush=True)
     else:
         print(f"RUN DONE [{stage} {variant_name}]", flush=True)
     return int(completed.returncode)
+
+
+def subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    repo_root = next((parent for parent in Path(__file__).resolve().parents if (parent / "research").exists()), Path(__file__).resolve().parents[3])
+    temporal_root = Path(r"D:\TradingML\codes\temporal_event_model\v1")
+    extra_paths = [str(repo_root)]
+    if temporal_root.exists():
+        extra_paths.append(str(temporal_root))
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join([*extra_paths, existing]) if existing else os.pathsep.join(extra_paths)
+    return env
 
 
 if __name__ == "__main__":

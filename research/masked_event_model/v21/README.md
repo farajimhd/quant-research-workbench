@@ -201,6 +201,39 @@ and warm-starts from:
 Use `--print-only` before starting a long run if you want to inspect the exact
 expanded trainer arguments and discovered shard counts.
 
+## Grouped Bottleneck v20 Comparison
+
+Use this focused launcher to compare v21 against the v20 capacity-test runs
+without running the whole four-variant sweep. It runs only:
+
+```text
+v21 grouped bottleneck
+embedding_dim=32
+AMP dtype=bf16
+batch_size=4096
+pretrain on one x-only shard for 5 epochs
+then temporal v1 labeled-cache linear probe
+```
+
+It uses the same W&B projects as the v20 capacity experiment:
+
+```text
+pretrain: June2026-event-token-mae-capacity-tests
+linear probe: June2026-event-encoder-linear-probes
+```
+
+Workstation command:
+
+```powershell
+python D:\TradingML\codes\masked_event_model\v21\research\masked_event_model\v21\run_grouped_bottleneck_probe.py
+```
+
+Dry run:
+
+```powershell
+python D:\TradingML\codes\masked_event_model\v21\research\masked_event_model\v21\run_grouped_bottleneck_probe.py --print-only
+```
+
 ## Embedding Capacity And Bottleneck Precision Test
 
 The capacity/precision launcher runs four controlled variants sequentially.
