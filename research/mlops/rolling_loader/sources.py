@@ -422,6 +422,48 @@ FORMAT RowBinary
         ticker_index = rows["span_id"].astype(np.uint32, copy=True) if rows.size else np.zeros((0,), dtype=np.uint32)
         return RollingEventBlock(tickers=ticker_tuple, rows=rows, ticker_index=ticker_index)
 
+    def fetch_time_window(
+        self,
+        *,
+        tickers: Iterable[str],
+        start_exclusive_us: int,
+        end_inclusive_us: int,
+    ) -> RollingEventBlock:
+        ticker_tuple = tuple(str(ticker).upper() for ticker in tickers if str(ticker).strip())
+        if not ticker_tuple or int(end_inclusive_us) <= int(start_exclusive_us):
+            return RollingEventBlock(tickers=ticker_tuple, rows=np.zeros((0,), dtype=EVENT_ROW_DTYPE), ticker_index=np.zeros((0,), dtype=np.uint32))
+        ticker_sql = "[" + ", ".join(sql_string(ticker) for ticker in ticker_tuple) + "]"
+        query = f"""
+WITH
+    {ticker_sql} AS request_tickers
+SELECT
+    toUInt32(indexOf(request_tickers, ticker) - 1) AS span_id,
+    ordinal,
+    event_type,
+    sip_timestamp_us,
+    price_primary_int,
+    price_secondary_int,
+    size_primary,
+    size_secondary,
+    exchange_primary,
+    exchange_secondary,
+    event_flags,
+    conditions_packed
+FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
+WHERE ticker IN request_tickers
+  AND sip_timestamp_us > {int(start_exclusive_us)}
+  AND sip_timestamp_us <= {int(end_inclusive_us)}
+ORDER BY sip_timestamp_us, ticker, ordinal
+SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}
+FORMAT RowBinary
+"""
+        payload = self.bytes_client.execute_bytes(query)
+        if len(payload) % EVENT_ROW_DTYPE.itemsize != 0:
+            raise RuntimeError(f"RowBinary payload size {len(payload):,} is not divisible by event row size {EVENT_ROW_DTYPE.itemsize}")
+        rows = np.frombuffer(payload, dtype=EVENT_ROW_DTYPE).copy()
+        ticker_index = rows["span_id"].astype(np.uint32, copy=True) if rows.size else np.zeros((0,), dtype=np.uint32)
+        return RollingEventBlock(tickers=ticker_tuple, rows=rows, ticker_index=ticker_index)
+
     @staticmethod
     def _memory_bytes(value: str) -> int:
         text = str(value).strip().upper()

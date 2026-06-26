@@ -21,6 +21,7 @@ class RollingLoaderConfig:
     chunk_stride_events: int = 1
     context_chunk_stride_events: int = 64
     sample_stride_events: int = 1
+    replay_time_window_us: int = 200_000
     short_context_chunks: int = 32
     short_context_stride_chunks: int = 1
     long_context_lags: tuple[int, ...] = ()

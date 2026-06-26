@@ -52,6 +52,8 @@ DEFAULTS: dict[str, Any] = {
     "batch_size": 4096,
     "batches": 4,
     "events_per_ticker_block": 64,
+    "replay_mode": "time-window",
+    "replay_window_us": 200_000,
     "context_chunks": 32,
     "context_chunk_stride_events": 64,
     "sample_stride_events": 1,
@@ -61,6 +63,8 @@ DEFAULTS: dict[str, Any] = {
     "sec_lookback_days": 365,
     "xbrl_lookback_days": 730,
     "macro_lookback_days": 400,
+    "max_replay_windows": 100_000,
+    "progress_every_blocks": 100,
     "output_root": "D:/market-data/prepared/data_provider_profiles/rolling_loader_training",
 }
 
@@ -87,6 +91,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--batches", type=int, default=DEFAULTS["batches"])
     parser.add_argument("--events-per-ticker-block", type=int, default=DEFAULTS["events_per_ticker_block"])
+    parser.add_argument("--replay-mode", choices=("time-window", "ordinal"), default=DEFAULTS["replay_mode"])
+    parser.add_argument("--replay-window-us", type=int, default=DEFAULTS["replay_window_us"])
     parser.add_argument("--context-chunks", type=int, default=DEFAULTS["context_chunks"])
     parser.add_argument("--context-chunk-stride-events", type=int, default=DEFAULTS["context_chunk_stride_events"])
     parser.add_argument("--sample-stride-events", type=int, default=DEFAULTS["sample_stride_events"])
@@ -101,7 +107,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--memory-sample-interval-seconds", type=float, default=0.25)
     parser.add_argument("--output-root", type=Path, default=Path(DEFAULTS["output_root"]))
     parser.add_argument("--run-name", default="")
-    parser.add_argument("--progress-every-blocks", type=int, default=1)
+    parser.add_argument("--max-replay-windows", type=int, default=DEFAULTS["max_replay_windows"])
+    parser.add_argument("--progress-every-blocks", type=int, default=DEFAULTS["progress_every_blocks"])
     return parser.parse_args()
 
 
@@ -134,6 +141,7 @@ def main() -> int:
             short_context_chunks=int(args.context_chunks),
             chunk_stride_events=1,
             context_chunk_stride_events=int(args.context_chunk_stride_events),
+            replay_time_window_us=int(args.replay_window_us),
             long_context_lags=_parse_int_tuple(args.long_context_lags),
             sample_stride_events=int(args.sample_stride_events),
         )
@@ -150,6 +158,8 @@ def main() -> int:
                 "batch_size": int(args.batch_size),
                 "batches": int(args.batches),
                 "events_per_ticker_block": int(args.events_per_ticker_block),
+                "replay_mode": str(args.replay_mode),
+                "replay_window_us": int(loader_config.replay_time_window_us),
                 "start_timestamp_us": start_timestamp_us,
                 "start_utc": _format_us(start_timestamp_us) if start_timestamp_us else "",
                 "materialize_external_payloads": bool(args.materialize_external_payloads),
@@ -220,6 +230,7 @@ def main() -> int:
             recorder=recorder,
             memory=memory,
             started=started,
+            start_timestamp_us=int(init_summary["start_timestamp_us"]),
         )
         final_summary = {
             "kind": "summary",
@@ -337,6 +348,7 @@ def replay_training_batches(
     recorder: "JsonlRecorder",
     memory: "MemorySampler",
     started: float,
+    start_timestamp_us: int,
 ) -> dict[str, Any]:
     completed_batches = 0
     completed_samples = 0
@@ -346,15 +358,47 @@ def replay_training_batches(
     last_batch_mib = 0.0
     replay_started = time.perf_counter()
     exhausted = False
+    replay_mode = str(args.replay_mode)
+    current_time_us = int(start_timestamp_us)
+    active_tickers = tuple(sorted(loader.initialized_tickers))
 
     while completed_batches < int(args.batches):
         block_count += 1
-        with StepTimer(recorder, memory, "fetch_event_block", {"block_index": block_count, "active_tickers": len(cursors)}):
-            block = source.fetch_next_by_ordinal(cursors=cursors, rows_per_ticker=int(args.events_per_ticker_block))
-        if block.row_count == 0:
+        if int(args.max_replay_windows) > 0 and block_count > int(args.max_replay_windows):
             exhausted = True
             break
-        cursors.update(block.latest_ordinals())
+        if replay_mode == "time-window":
+            window_start_us = current_time_us
+            window_end_us = current_time_us + int(loader_config.replay_time_window_us)
+            with StepTimer(
+                recorder,
+                memory,
+                "fetch_event_window",
+                {
+                    "block_index": block_count,
+                    "active_tickers": len(active_tickers),
+                    "window_start_us": window_start_us,
+                    "window_end_us": window_end_us,
+                    "replay_window_us": int(loader_config.replay_time_window_us),
+                },
+            ):
+                block = source.fetch_time_window(
+                    tickers=active_tickers,
+                    start_exclusive_us=window_start_us,
+                    end_inclusive_us=window_end_us,
+                )
+            context_start_us = window_start_us
+            context_end_us = window_end_us
+            current_time_us = window_end_us
+        else:
+            with StepTimer(recorder, memory, "fetch_event_block", {"block_index": block_count, "active_tickers": len(cursors)}):
+                block = source.fetch_next_by_ordinal(cursors=cursors, rows_per_ticker=int(args.events_per_ticker_block))
+            if block.row_count == 0:
+                exhausted = True
+                break
+            cursors.update(block.latest_ordinals())
+            context_start_us = int(block.min_timestamp_us or 0) - 1
+            context_end_us = int(block.max_timestamp_us or 0)
         with StepTimer(
             recorder,
             memory,
@@ -362,14 +406,17 @@ def replay_training_batches(
             {
                 "block_index": block_count,
                 "event_rows": block.row_count,
+                "replay_mode": replay_mode,
+                "window_start_us": context_start_us,
+                "window_end_us": context_end_us,
                 "min_timestamp_us": int(block.min_timestamp_us or 0),
                 "max_timestamp_us": int(block.max_timestamp_us or 0),
             },
         ):
             updates = context_source.fetch_context_updates(
-                tickers=block.tickers,
-                start_exclusive_us=int(block.min_timestamp_us or 0) - 1,
-                end_inclusive_us=int(block.max_timestamp_us or 0),
+                tickers=active_tickers if replay_mode == "time-window" else block.tickers,
+                start_exclusive_us=context_start_us,
+                end_inclusive_us=context_end_us,
             )
         context_updates += len(updates)
         replay_block_started = time.perf_counter()
@@ -442,6 +489,7 @@ def replay_training_batches(
             block_payload = {
                 "kind": "block",
                 "block_index": block_count,
+                "replay_mode": replay_mode,
                 "event_rows": block.row_count,
                 "events_replayed": block_events,
                 "samples_materialized": block_samples,
@@ -466,6 +514,10 @@ def replay_training_batches(
         "context_updates": context_updates,
         "blocks": block_count,
         "exhausted": exhausted,
+        "replay_mode": replay_mode,
+        "replay_window_us": int(loader_config.replay_time_window_us),
+        "current_time_us": current_time_us,
+        "current_utc": _format_us(current_time_us) if current_time_us else "",
         "replay_seconds": replay_seconds,
         "events_per_sec": event_count / replay_seconds if replay_seconds > 0 else 0.0,
         "samples_per_sec": completed_samples / replay_seconds if replay_seconds > 0 else 0.0,
@@ -634,6 +686,7 @@ def _loader_config_payload(config: RollingLoaderConfig) -> dict[str, Any]:
         "context_lags": tuple(int(value) for value in config.context_lags),
         "context_chunk_stride_events": int(config.context_chunk_stride_events),
         "sample_stride_events": int(config.sample_stride_events),
+        "replay_time_window_us": int(config.replay_time_window_us),
         "warmup_events_per_ticker": int(config.warmup_events_per_ticker),
         "event_cache_events_per_ticker": int(config.event_cache_events_per_ticker),
         "batch_size": int(config.batch_size),
