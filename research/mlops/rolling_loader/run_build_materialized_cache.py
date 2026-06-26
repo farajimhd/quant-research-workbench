@@ -208,7 +208,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--builder-batch-size", type=int, default=DEFAULTS["builder_batch_size"])
     parser.add_argument("--sample-multiple", type=int, default=DEFAULTS["sample_multiple"])
     parser.add_argument("--workers", type=int, default=DEFAULTS["workers"])
-    parser.add_argument("--max-pending-tasks", type=int, default=DEFAULTS["max_pending_tasks"])
+    parser.add_argument(
+        "--max-pending-tasks",
+        type=int,
+        default=None,
+        help="Maximum concurrently materializing worker tasks. Defaults to --workers.",
+    )
     parser.add_argument(
         "--prefetch-blocks",
         type=int,
@@ -220,7 +225,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--shard-size-gib", type=float, default=DEFAULTS["shard_size_gib"])
     parser.add_argument("--target-cache-gib", type=float, default=DEFAULTS["target_cache_gib"])
-    parser.add_argument("--ready-sample-cap", type=int, default=DEFAULTS["ready_sample_cap"])
+    parser.add_argument(
+        "--ready-sample-cap",
+        type=int,
+        default=None,
+        help=(
+            "Maximum ready samples per event block. Defaults to "
+            "--workers * --builder-batch-size, aligned to --sample-multiple. "
+            "Pass 0 to disable the cap."
+        ),
+    )
     parser.add_argument("--sample-stride-events", type=int, default=DEFAULTS["sample_stride_events"])
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
@@ -243,8 +257,33 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _normalize_parallel_args(args: argparse.Namespace) -> None:
+    args.workers = max(1, int(args.workers))
+    args.builder_batch_size = max(1, int(args.builder_batch_size))
+    args.sample_multiple = max(1, int(args.sample_multiple))
+    if args.max_pending_tasks is None:
+        args.max_pending_tasks = int(args.workers)
+    else:
+        args.max_pending_tasks = max(1, int(args.max_pending_tasks))
+    if args.ready_sample_cap is None:
+        args.ready_sample_cap = _default_ready_sample_cap(
+            workers=int(args.workers),
+            builder_batch_size=int(args.builder_batch_size),
+            sample_multiple=int(args.sample_multiple),
+        )
+    else:
+        args.ready_sample_cap = max(0, int(args.ready_sample_cap))
+
+
+def _default_ready_sample_cap(*, workers: int, builder_batch_size: int, sample_multiple: int) -> int:
+    raw = max(1, int(workers)) * max(1, int(builder_batch_size))
+    multiple = max(1, int(sample_multiple))
+    return ((raw + multiple - 1) // multiple) * multiple
+
+
 def main() -> int:
     args = parse_args()
+    _normalize_parallel_args(args)
     if args.prefetch_blocks is None:
         args.prefetch_blocks = 0 if bool(args.one_shard) else int(DEFAULTS["prefetch_blocks"])
     loaded_env = load_env_files(

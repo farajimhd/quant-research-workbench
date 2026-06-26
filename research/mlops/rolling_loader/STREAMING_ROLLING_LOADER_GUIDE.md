@@ -813,6 +813,20 @@ Cache mutation and shard finalization stay single-threaded. Workers receive
 read-only cache snapshots for their ticker partitions, which avoids concurrent
 updates to the same ticker state.
 
+By default the materialized builder derives concurrency-related caps from
+`--workers`:
+
+```text
+max_pending_tasks = workers
+ready_sample_cap = align_up(workers * builder_batch_size, sample_multiple)
+```
+
+For example, `--workers 64` with the default `builder_batch_size=4096` and
+`sample_multiple=4096` creates a default `ready_sample_cap` of `262144`, giving
+the block enough ready samples to keep 64 materialization workers active when
+the data is available. These values remain overrideable for memory-constrained
+runs.
+
 ## Anti-Patterns
 
 Avoid these patterns in the training loader:

@@ -17,11 +17,14 @@ from research.mlops.data.rolling import RollingReadyIndexBlock
 from research.mlops.rolling_loader.loader import RollingContextLoader
 from research.mlops.rolling_loader.materialized_cache import partition_ready_blocks
 from research.mlops.rolling_loader.profiler import RollingLoaderProfiler
-from research.mlops.rolling_loader.run_build_materialized_cache import _build_task_specs
+from research.mlops.rolling_loader.run_build_materialized_cache import _default_ready_sample_cap, _build_task_specs
 from research.mlops.rolling_loader.synthetic import iter_synthetic_events, synthetic_external_updates, synthetic_rows_by_ticker
 
 
 def main() -> int:
+    assert _default_ready_sample_cap(workers=64, builder_batch_size=4096, sample_multiple=4096) == 262144
+    assert _default_ready_sample_cap(workers=3, builder_batch_size=1000, sample_multiple=4096) == 4096
+
     rows = np.zeros((1000,), dtype=[("ordinal", "<i8")])
     large_block = RollingReadyIndexBlock(ticker="BIG", rows=rows, origin_offsets=np.arange(1000, dtype=np.int64))
     partitions = partition_ready_blocks([large_block], workers=4)
