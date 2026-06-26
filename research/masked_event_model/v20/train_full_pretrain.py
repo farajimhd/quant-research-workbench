@@ -51,6 +51,7 @@ DEFAULTS: dict[str, Any] = {
     "ffn_mult": 4,
     "dropout": 0.08,
     "decoder_force_fp32": False,
+    "bottleneck_force_fp32": False,
     "event_mask_ratio": 0.70,
     "event_mask_schedule": "fixed",
     "min_masked_events": 1,
@@ -134,6 +135,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ffn-mult", type=int, default=DEFAULTS["ffn_mult"])
     parser.add_argument("--dropout", type=float, default=DEFAULTS["dropout"])
     parser.add_argument("--decoder-force-fp32", action=argparse.BooleanOptionalAction, default=DEFAULTS["decoder_force_fp32"])
+    parser.add_argument("--bottleneck-force-fp32", action=argparse.BooleanOptionalAction, default=DEFAULTS["bottleneck_force_fp32"])
     parser.add_argument("--event-mask-ratio", type=float, default=DEFAULTS["event_mask_ratio"])
     parser.add_argument("--event-mask-schedule", choices=("fixed", "mixed"), default=DEFAULTS["event_mask_schedule"])
     parser.add_argument("--learning-rate", type=float, default=DEFAULTS["learning_rate"])
@@ -235,6 +237,7 @@ def main() -> None:
             "ffn_mult": int(args.ffn_mult),
             "dropout": float(args.dropout),
             "decoder_force_fp32": bool(args.decoder_force_fp32),
+            "bottleneck_force_fp32": bool(args.bottleneck_force_fp32),
             "event_mask_ratio": float(args.event_mask_ratio),
             "event_mask_schedule": args.event_mask_schedule,
             "learning_rate": float(args.learning_rate),
@@ -377,6 +380,11 @@ def print_plan(values: dict[str, Any], train_shards, validation_shards, validati
     print(
         f"model=d{values['d_model']} emb{values['embedding_dim']} heads{values['n_heads']} "
         f"enc{values['encoder_layers']} decoder=per_masked_event_mlp ffn_mult{values['ffn_mult']} dropout={values['dropout']}",
+        flush=True,
+    )
+    print(
+        f"precision decoder_force_fp32={values['decoder_force_fp32']} "
+        f"bottleneck_force_fp32={values['bottleneck_force_fp32']}",
         flush=True,
     )
     print(f"wandb_project={values['wandb_project']} run={values['wandb_run_name']} mode={values['wandb_mode']}", flush=True)

@@ -174,6 +174,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "v20 decoder training."
         ),
     )
+    parser.add_argument(
+        "--bottleneck-force-fp32",
+        action=argparse.BooleanOptionalAction,
+        default=model_defaults.bottleneck_force_fp32,
+        help="Run the exported fixed-grid chunk embedding bottleneck outside AMP for precision diagnostics.",
+    )
     parser.add_argument("--wandb-project", default=train_defaults.wandb_project)
     parser.add_argument("--wandb-entity", default=train_defaults.wandb_entity)
     parser.add_argument("--wandb-run-name", default="")
@@ -1432,7 +1438,7 @@ def build_config(args: argparse.Namespace) -> ExperimentConfig:
             event_bit_corruption_prob=args.event_bit_corruption_prob,
             event_bit_corruption_ratio=args.event_bit_corruption_ratio,
         ),
-        model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout, decoder_force_fp32=args.decoder_force_fp32),
+        model=ModelConfig(input_representation=args.input_representation, d_byte=args.d_byte, d_model=args.d_model, embedding_dim=args.embedding_dim, n_heads=args.n_heads, encoder_layers=args.encoder_layers, decoder_layers=args.decoder_layers, ffn_mult=args.ffn_mult, dropout=args.dropout, decoder_force_fp32=args.decoder_force_fp32, bottleneck_force_fp32=args.bottleneck_force_fp32),
         losses=LossConfig(objective=args.loss_objective),
         train=TrainConfig(batch_size=args.batch_size, max_steps=args.max_steps, epochs=args.epochs, learning_rate=args.learning_rate, weight_decay=args.weight_decay, scheduler=args.scheduler, scheduler_t0_steps=args.scheduler_t0_steps, scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min, scheduler_epoch_decay_ratio=args.scheduler_epoch_decay_ratio, scheduler_shard_decay_fraction=args.scheduler_shard_decay_fraction, grad_clip_norm=args.grad_clip_norm, logging_steps=args.logging_steps, detailed_metrics_steps=args.detailed_metrics_steps, progress_layout=args.progress_layout, profile_first_steps=args.profile_first_steps, profile_training_every_steps=args.profile_training_every_steps, profile_inference_every_steps=args.profile_inference_every_steps, decoder_chunk_size=args.decoder_chunk_size, pretrain_validation_frequency=args.pretrain_validation_frequency, pretrain_validation_steps=args.pretrain_validation_steps, checkpoint_latest_steps=args.checkpoint_latest_steps, checkpoint_archive_steps=args.checkpoint_archive_steps, checkpoint_best_train=args.checkpoint_best_train, checkpoint_best_val=args.checkpoint_best_val, num_workers=args.num_workers, prefetch_factor=args.prefetch_factor, seed=args.seed, repeatable_randomness=args.repeatable_randomness, amp=args.amp, amp_dtype=args.amp_dtype, amp_initial_scale=args.amp_initial_scale, amp_growth_interval=args.amp_growth_interval, amp_max_scale=args.amp_max_scale, amp_overflow_fatal_threshold=args.amp_overflow_fatal_threshold, float32_matmul_precision=args.float32_matmul_precision, compile_model=args.compile_model, output_root=Path(args.output_root), wandb_project=args.wandb_project, wandb_entity=args.wandb_entity, wandb_run_name=args.wandb_run_name),
     )

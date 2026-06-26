@@ -107,6 +107,12 @@ class ModelConfig:
     # the decoder inside the active AMP dtype. Pass --decoder-force-fp32 when
     # comparing against the conservative FP32 decoder path.
     decoder_force_fp32: bool = False
+    # Diagnostic precision switch for the exported representation path. When
+    # enabled, the fixed-grid bottleneck projection that creates the reusable
+    # chunk embedding runs outside AMP in FP32 while the transformer/decoder can
+    # remain in BF16. This isolates whether precision in the bottleneck itself
+    # is limiting downstream linear probes.
+    bottleneck_force_fp32: bool = False
 
     @property
     def ff_dim(self) -> int:

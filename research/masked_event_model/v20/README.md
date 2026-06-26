@@ -179,6 +179,33 @@ and warm-starts from:
 Use `--print-only` before starting a long run if you want to inspect the exact
 expanded trainer arguments and discovered shard counts.
 
+## Embedding Capacity And Bottleneck Precision Test
+
+The capacity/precision launcher runs four controlled variants sequentially.
+Each variant first pretrains from scratch on one x-only pretraining shard for
+5 epochs at `batch_size=4096`, then immediately runs the same temporal v1
+linear probe on the labeled cache:
+
+```text
+emb32 bf16 bottleneck
+emb32 fp32 bottleneck
+emb128 bf16 bottleneck
+emb128 fp32 bottleneck
+```
+
+The FP32 bottleneck variants keep the transformer and decoder in the active AMP
+dtype, but run only the fixed-grid chunk embedding projection outside AMP. This
+tests whether the exported representation path loses useful signal in BF16.
+
+Workstation command:
+
+```powershell
+python D:\TradingML\codes\masked_event_model\v20\research\masked_event_model\v20\run_embedding_precision_probe.py
+```
+
+Use `--print-only` first to inspect all generated pretrain and linear-probe
+commands. Use `--only emb32-bf16,emb128-bf16` to run a subset.
+
 By default this v20 launcher uses BF16 AMP and keeps the cheaper MLP decoder inside the active AMP
 dtype. To run the explicit FP16 decoder experiment:
 

@@ -88,6 +88,7 @@ class ProbeConfig:
     encoder_decoder_layers: int = 4
     encoder_ffn_mult: int = 4
     encoder_dropout: float = 0.08
+    encoder_bottleneck_force_fp32: bool = False
     encoder_visible_mode: str = "full"
     encoder_visible_mask_ratio: float = 0.0
     output_root: Path = DEFAULT_OUTPUT_ROOT
@@ -309,6 +310,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--encoder-decoder-layers", type=int, default=4)
     parser.add_argument("--encoder-ffn-mult", type=int, default=4)
     parser.add_argument("--encoder-dropout", type=float, default=0.08)
+    parser.add_argument("--encoder-bottleneck-force-fp32", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--encoder-visible-mode",
         choices=("full", "random_visible"),
@@ -380,6 +382,7 @@ def build_config(args: argparse.Namespace) -> ProbeConfig:
         encoder_decoder_layers=args.encoder_decoder_layers,
         encoder_ffn_mult=args.encoder_ffn_mult,
         encoder_dropout=args.encoder_dropout,
+        encoder_bottleneck_force_fp32=bool(args.encoder_bottleneck_force_fp32),
         encoder_visible_mode=args.encoder_visible_mode,
         encoder_visible_mask_ratio=args.encoder_visible_mask_ratio,
         output_root=args.output_root,
@@ -436,16 +439,19 @@ def build_frozen_encoder(config: ProbeConfig, device: torch.device) -> nn.Module
     version = config.encoder_version.lower().strip()
     model_module = importlib.import_module(f"research.masked_event_model.{version}.model")
     config_module = importlib.import_module(f"research.masked_event_model.{version}.config")
-    model_config = config_module.ModelConfig(
-        d_byte=config.encoder_d_byte,
-        d_model=config.encoder_d_model,
-        embedding_dim=config.encoder_embedding_dim,
-        n_heads=config.encoder_heads,
-        encoder_layers=config.encoder_layers,
-        decoder_layers=config.encoder_decoder_layers,
-        ffn_mult=config.encoder_ffn_mult,
-        dropout=config.encoder_dropout,
-    )
+    model_config_kwargs = {
+        "d_byte": config.encoder_d_byte,
+        "d_model": config.encoder_d_model,
+        "embedding_dim": config.encoder_embedding_dim,
+        "n_heads": config.encoder_heads,
+        "encoder_layers": config.encoder_layers,
+        "decoder_layers": config.encoder_decoder_layers,
+        "ffn_mult": config.encoder_ffn_mult,
+        "dropout": config.encoder_dropout,
+    }
+    if "bottleneck_force_fp32" in getattr(config_module.ModelConfig, "__dataclass_fields__", {}):
+        model_config_kwargs["bottleneck_force_fp32"] = config.encoder_bottleneck_force_fp32
+    model_config = config_module.ModelConfig(**model_config_kwargs)
     autoencoder = model_module.EventTokenMaskedAutoencoder(events_per_chunk=128, config=model_config)
     payload = load_trusted_torch_checkpoint(config.encoder_checkpoint, map_location="cpu")
     state = payload.get("model_state_dict") or payload.get("model") or payload.get("state_dict") if isinstance(payload, dict) else payload

@@ -269,6 +269,7 @@ class FixedGridChunkBottleneck(nn.Module):
 
     def __init__(self, *, events_per_chunk: int, config: ModelConfig) -> None:
         super().__init__()
+        self.config = config
         self.events_per_chunk = int(events_per_chunk)
         self.fixed_token_count = 2 + self.events_per_chunk
         self.fixed_grid_to_chunk_embedding = nn.Sequential(
@@ -313,6 +314,14 @@ class FixedGridChunkBottleneck(nn.Module):
         # Input shape: [B, 130, D]. Output shape: [B, 130 * D].
         flattened_grid = fixed_tokens.flatten(1)
         # Input shape: [B, 130 * D]. Output shape: [B, Z].
+        if self.config.bottleneck_force_fp32 and flattened_grid.is_cuda:
+            # Keep the exported representation projection in FP32 for precision
+            # diagnostics while allowing the transformer and decoder to remain
+            # in the active AMP dtype.
+            with torch.amp.autocast("cuda", enabled=False):
+                pooled_embedding = self.fixed_grid_to_chunk_embedding(flattened_grid.float())
+            # Input shape: [B, Z]. Output shape: [B, Z].
+            return self.chunk_embedding_output(pooled_embedding)
         pooled_embedding = self.fixed_grid_to_chunk_embedding(flattened_grid)
         # Input shape: [B, Z]. Output shape: [B, Z].
         return self.chunk_embedding_output(pooled_embedding)
