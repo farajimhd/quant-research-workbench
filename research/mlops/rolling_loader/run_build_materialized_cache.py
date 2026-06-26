@@ -8,6 +8,7 @@ import random
 import shutil
 import sys
 import time
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -362,18 +363,29 @@ def main() -> int:
             next_slice_id = 0
             next_to_write = 0
             completed: dict[int, dict[str, Any]] = {}
-            task_specs = _build_task_specs(worker_partitions, batch_size=max(1, int(args.builder_batch_size)))
-            task_iter = iter(task_specs)
-            exhausted = False
+            task_queue = deque(_build_task_specs(worker_partitions, batch_size=max(1, int(args.builder_batch_size))))
+            partition_samples = [sum(block.sample_count for block in partition) for partition in worker_partitions]
+            stats.message(
+                f"worker partitions active={sum(1 for value in partition_samples if value):,}/{len(partition_samples):,} "
+                f"samples={','.join(str(int(value)) for value in partition_samples)}"
+            )
 
             def submit_available() -> None:
-                nonlocal next_slice_id, exhausted
-                while not exhausted and len(futures) < max(1, int(args.max_pending_tasks)):
-                    try:
-                        worker_id, blocks_for_task = next(task_iter)
-                    except StopIteration:
-                        exhausted = True
+                nonlocal next_slice_id
+                max_parallel = max(1, min(int(args.max_pending_tasks), max(1, int(args.workers))))
+                while task_queue and len(futures) < max_parallel:
+                    active_workers = {int(meta["worker_id"]) for meta in futures.values()}
+                    selected: tuple[int, list[RollingReadyIndexBlock]] | None = None
+                    for _ in range(len(task_queue)):
+                        candidate_worker_id, candidate_blocks = task_queue.popleft()
+                        if int(candidate_worker_id) in active_workers:
+                            task_queue.append((candidate_worker_id, candidate_blocks))
+                            continue
+                        selected = (int(candidate_worker_id), candidate_blocks)
+                        break
+                    if selected is None:
                         return
+                    worker_id, blocks_for_task = selected
                     worker_state = stats.workers[worker_id]
                     worker_state.status = "queued"
                     worker_state.ticker_count = len({block.ticker for block in blocks_for_task})
@@ -553,8 +565,9 @@ def _materialize_worker_task(
 
 
 def _build_task_specs(partitions: list[list[RollingReadyIndexBlock]], *, batch_size: int) -> list[tuple[int, list[RollingReadyIndexBlock]]]:
-    specs: list[tuple[int, list[RollingReadyIndexBlock]]] = []
+    per_worker: list[list[tuple[int, list[RollingReadyIndexBlock]]]] = []
     for worker_id, blocks in enumerate(partitions):
+        worker_specs: list[tuple[int, list[RollingReadyIndexBlock]]] = []
         current: list[RollingReadyIndexBlock] = []
         current_samples = 0
         for block in blocks:
@@ -571,11 +584,18 @@ def _build_task_specs(partitions: list[list[RollingReadyIndexBlock]], *, batch_s
                 current_samples += int(take)
                 offset += int(take)
                 if current_samples >= int(batch_size):
-                    specs.append((worker_id, current))
+                    worker_specs.append((worker_id, current))
                     current = []
                     current_samples = 0
         if current:
-            specs.append((worker_id, current))
+            worker_specs.append((worker_id, current))
+        per_worker.append(worker_specs)
+    specs: list[tuple[int, list[RollingReadyIndexBlock]]] = []
+    max_worker_tasks = max((len(items) for items in per_worker), default=0)
+    for task_index in range(max_worker_tasks):
+        for worker_specs in per_worker:
+            if task_index < len(worker_specs):
+                specs.append(worker_specs[task_index])
     return specs
 
 

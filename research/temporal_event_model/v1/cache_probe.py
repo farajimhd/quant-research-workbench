@@ -88,6 +88,8 @@ class ProbeConfig:
     encoder_decoder_layers: int = 4
     encoder_ffn_mult: int = 4
     encoder_dropout: float = 0.08
+    encoder_visible_mode: str = "full"
+    encoder_visible_mask_ratio: float = 0.0
     output_root: Path = DEFAULT_OUTPUT_ROOT
     run_name: str = ""
     wandb_project: str = DEFAULT_WANDB_PROJECT
@@ -121,6 +123,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"device={device}", flush=True)
     print(f"cache_root={config.cache_root}", flush=True)
     print(f"encoder={config.encoder_version} checkpoint={config.encoder_checkpoint}", flush=True)
+    print(
+        f"encoder_visible_mode={config.encoder_visible_mode} "
+        f"encoder_visible_mask_ratio={config.encoder_visible_mask_ratio:.3f}",
+        flush=True,
+    )
     print(
         f"future_chunks={config.horizons} objective=tick_regression_plus_classes "
         f"tick_normalizer={TICK_REGRESSION_NORMALIZER:g}",
@@ -302,6 +309,21 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--encoder-decoder-layers", type=int, default=4)
     parser.add_argument("--encoder-ffn-mult", type=int, default=4)
     parser.add_argument("--encoder-dropout", type=float, default=0.08)
+    parser.add_argument(
+        "--encoder-visible-mode",
+        choices=("full", "random_visible"),
+        default="full",
+        help=(
+            "full uses the production encoder with all 128 events. random_visible "
+            "uses a MAE-style sparse encoder path with a random visible subset."
+        ),
+    )
+    parser.add_argument(
+        "--encoder-visible-mask-ratio",
+        type=float,
+        default=0.0,
+        help="Mask ratio for --encoder-visible-mode random_visible. Use 0.70 to mirror fixed-mask v20 pretraining.",
+    )
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--run-name", default="")
     parser.add_argument("--wandb-project", default=DEFAULT_WANDB_PROJECT)
@@ -358,6 +380,8 @@ def build_config(args: argparse.Namespace) -> ProbeConfig:
         encoder_decoder_layers=args.encoder_decoder_layers,
         encoder_ffn_mult=args.encoder_ffn_mult,
         encoder_dropout=args.encoder_dropout,
+        encoder_visible_mode=args.encoder_visible_mode,
+        encoder_visible_mask_ratio=args.encoder_visible_mask_ratio,
         output_root=args.output_root,
         run_name=args.run_name,
         wandb_project=args.wandb_project,
@@ -435,7 +459,50 @@ def build_frozen_encoder(config: ProbeConfig, device: torch.device) -> nn.Module
     encoder = autoencoder.build_encoder_model().to(device).eval()
     for parameter in encoder.parameters():
         parameter.requires_grad_(False)
+    if config.encoder_visible_mode == "random_visible":
+        encoder = RandomVisibleFrozenEncoder(
+            encoder=encoder,
+            mask_ratio=config.encoder_visible_mask_ratio,
+        ).to(device).eval()
+        for parameter in encoder.parameters():
+            parameter.requires_grad_(False)
     return encoder
+
+
+class RandomVisibleFrozenEncoder(nn.Module):
+    """Run the frozen v20 encoder through its MAE-style sparse-visible path.
+
+    This is a diagnostic wrapper for the linear probe. The normal production
+    encoder sees all 128 event records; v20 pretraining with fixed mask ratio
+    saw only a random visible subset and scattered it into the fixed-grid
+    bottleneck. This wrapper keeps the same frozen weights but calls
+    `encode_tokens()` with random visible indices so we can test whether the
+    downstream probe improves when the encoder input distribution matches
+    pretraining.
+    """
+
+    def __init__(self, *, encoder: nn.Module, mask_ratio: float) -> None:
+        super().__init__()
+        self.encoder = encoder
+        self.mask_ratio = min(max(float(mask_ratio), 0.0), 0.99)
+
+    def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
+        if events_uint8.ndim != 3:
+            raise ValueError(f"Expected events_uint8 [B,E,16], got {tuple(events_uint8.shape)}")
+        batch_size, event_count, _ = events_uint8.shape
+        masked_count = int(round(event_count * self.mask_ratio))
+        masked_count = min(max(1, masked_count), event_count - 1)
+        visible_count = event_count - masked_count
+        scores = torch.rand((batch_size, event_count), device=events_uint8.device)
+        visible_event_indices = torch.topk(scores, k=visible_count, dim=1, largest=False).indices.sort(dim=1).values
+        _, chunk_embedding = self.encoder.encode_tokens(
+            header_uint8,
+            events_uint8,
+            visible_event_indices=visible_event_indices,
+            mask_config=None,
+            training=False,
+        )
+        return chunk_embedding
 
 
 def resolve_amp_dtype(value: str) -> torch.dtype | None:

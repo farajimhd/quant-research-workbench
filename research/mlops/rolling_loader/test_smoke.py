@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
+
 if __package__ in {None, ""}:
     here = Path(__file__).resolve()
     for parent in here.parents:
@@ -11,12 +13,22 @@ if __package__ in {None, ""}:
             break
 
 from research.mlops.rolling_loader.config import RollingLoaderConfig, SyntheticRollingLoaderConfig
+from research.mlops.data.rolling import RollingReadyIndexBlock
 from research.mlops.rolling_loader.loader import RollingContextLoader
+from research.mlops.rolling_loader.materialized_cache import partition_ready_blocks
 from research.mlops.rolling_loader.profiler import RollingLoaderProfiler
 from research.mlops.rolling_loader.synthetic import iter_synthetic_events, synthetic_external_updates, synthetic_rows_by_ticker
 
 
 def main() -> int:
+    rows = np.zeros((1000,), dtype=[("ordinal", "<i8")])
+    large_block = RollingReadyIndexBlock(ticker="BIG", rows=rows, origin_offsets=np.arange(1000, dtype=np.int64))
+    partitions = partition_ready_blocks([large_block], workers=4)
+    partition_counts = [sum(block.sample_count for block in partition) for partition in partitions]
+    assert len(partitions) == 4
+    assert all(count > 0 for count in partition_counts), partition_counts
+    assert max(partition_counts) - min(partition_counts) <= 1, partition_counts
+
     loader_config = RollingLoaderConfig(
         batch_size=16,
         context_chunk_stride_events=4,

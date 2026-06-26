@@ -334,6 +334,28 @@ batch size:         512
 W&B project:        June2026-event-encoder-linear-probes
 ```
 
+### Full-Grid Versus Masked-Visible v20 Probe
+
+Use this diagnostic to test whether a v20 checkpoint only works under the sparse
+encoder input distribution used during masked-event pretraining.
+
+It runs two cache-v2 linear probes with the same checkpoint, data, batch size,
+learning rate, validation split, and W&B project:
+
+1. `fullgrid`: normal production path where v20 sees all 128 event records.
+2. `masked70`: diagnostic path where the frozen v20 encoder sees a fresh random
+   visible subset and the fixed-grid bottleneck keeps about 70% of event slots
+   zero, matching the fixed-mask pretraining regime.
+
+Workstation command:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v1\run_compare_v20_full_vs_masked_probe.py
+```
+
+Use `--print-only` first to inspect both generated commands. Use `--only full`
+or `--only masked70` to run just one side.
+
 ## Fixed Checkpoint Evaluation
 
 Training-time validation in `run_cache_probe_laptop.py` samples a validation

@@ -404,9 +404,26 @@ def flatten_training_batch(batch: RollingTrainingBatch) -> dict[str, np.ndarray]
 
 def partition_ready_blocks(blocks: Iterable[RollingReadyIndexBlock], workers: int) -> list[list[RollingReadyIndexBlock]]:
     count = max(1, int(workers))
+    source_blocks = [block for block in blocks if block.sample_count > 0]
+    total_samples = sum(int(block.sample_count) for block in source_blocks)
+    target_chunk_samples = max(1, (total_samples + count - 1) // count) if total_samples > 0 else 1
+    split_blocks: list[RollingReadyIndexBlock] = []
+    for block in source_blocks:
+        offset = 0
+        while offset < block.origin_offsets.shape[0]:
+            take = min(target_chunk_samples, int(block.origin_offsets.shape[0] - offset))
+            split_blocks.append(
+                RollingReadyIndexBlock(
+                    ticker=block.ticker,
+                    rows=block.rows,
+                    origin_offsets=block.origin_offsets[offset : offset + take],
+                )
+            )
+            offset += int(take)
+
     partitions: list[list[RollingReadyIndexBlock]] = [[] for _ in range(count)]
     weights = [0 for _ in range(count)]
-    for block in sorted(blocks, key=lambda item: item.sample_count, reverse=True):
+    for block in sorted(split_blocks, key=lambda item: item.sample_count, reverse=True):
         index = min(range(count), key=lambda value: weights[value])
         partitions[index].append(block)
         weights[index] += int(block.sample_count)
