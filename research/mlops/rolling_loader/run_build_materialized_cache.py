@@ -165,7 +165,7 @@ def parse_args() -> argparse.Namespace:
         "--one-shard-max-days",
         type=int,
         default=DEFAULTS["one_shard_max_days"],
-        help="When --one-shard is used without an explicit end timestamp, scan up to this many days to find the first non-empty shard.",
+        help="When --one-shard is used without an explicit end timestamp, scan up to this many days to build the first complete shard.",
     )
     parser.add_argument("--start-utc", default=DEFAULTS["start_utc"])
     parser.add_argument("--start-timestamp-us", type=int, default=0)
@@ -445,10 +445,10 @@ def main() -> int:
                         write_worker.last_message = f"wrote {write_worker.writing_done:,}/{write_worker.writing_total:,}"
                         _write_progress(cache_root, args.split, stats, writer)
                         _refresh(stats, dashboard, writer)
-                        if args.one_shard and (len(writer.shards) >= 1 or writer.current_shard_samples > 0):
+                        if args.one_shard and len(writer.shards) >= 1:
                             stop_requested = True
                             stats.message(
-                                "one-shard captured first non-empty shard; finalizing",
+                                "one-shard finalized first complete shard; stopping",
                                 completed_shards=len(writer.shards),
                                 current_shard_samples=writer.current_shard_samples,
                             )

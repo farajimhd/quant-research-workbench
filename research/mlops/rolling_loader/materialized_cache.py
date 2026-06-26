@@ -28,8 +28,7 @@ class TensorFileState:
     name: str
     dtype: str
     tail_shape: tuple[int, ...]
-    relative_path: str
-    file: Any
+    sample_bytes: int
     sha: Any = field(default_factory=hashlib.sha256)
     byte_size: int = 0
 
@@ -44,11 +43,11 @@ class MaterializedShardEstimate:
 
 
 class RollingMaterializedShardWriter:
-    """Append fully materialized rolling samples into 4096-aligned shard directories.
+    """Append fully materialized rolling samples into 4096-aligned shard files.
 
-    A shard is a directory containing one raw binary file per numeric tensor plus
-    a JSON sidecar. The directory is written as ``shard_N.tmp`` and atomically
-    renamed to ``shard_N`` only after all tensor files are flushed and fsynced.
+    A shard is one raw binary file plus a JSON sidecar. Tensor slices are packed
+    append-only into ``shard_N.bin.tmp`` and atomically renamed to
+    ``shard_N.bin`` only after all bytes are flushed and fsynced.
     """
 
     def __init__(
@@ -77,10 +76,13 @@ class RollingMaterializedShardWriter:
         self._shard_samples = 0
         self._shard_bytes = 0
         self._shard_sample_target = 0
-        self._tmp_dir: Path | None = None
-        self._final_dir: Path | None = None
+        self._tmp_path: Path | None = None
+        self._final_path: Path | None = None
+        self._file: Any | None = None
+        self._file_sha: Any = hashlib.sha256()
         self._tensor_files: dict[str, TensorFileState] = {}
         self._tensor_order: list[str] = []
+        self._chunks: list[dict[str, Any]] = []
         self._first_origin_us: int | None = None
         self._last_origin_us: int | None = None
         self._first_ticker: str = ""
@@ -111,12 +113,13 @@ class RollingMaterializedShardWriter:
                     handle.write(json.dumps(row, separators=(",", ":")) + "\n")
 
     def current_shard_status(self) -> dict[str, Any]:
-        disk_bytes = _directory_size(self._tmp_dir) if self._tmp_dir is not None and self._tmp_dir.exists() else 0
+        active_path = self._tmp_path if self._tmp_path is not None else self._final_path
+        disk_bytes = active_path.stat().st_size if active_path is not None and active_path.exists() else 0
         return {
             "split": self.split,
             "shard_index": self._shard_index,
-            "tmp_dir": str(self._tmp_dir or ""),
-            "final_dir": str(self._final_dir or ""),
+            "tmp_path": str(self._tmp_path or ""),
+            "final_path": str(self._final_path or ""),
             "samples_in_current_shard": self._shard_samples,
             "target_samples_in_current_shard": self._shard_sample_target,
             "bytes_in_current_shard": self._shard_bytes,
@@ -133,7 +136,7 @@ class RollingMaterializedShardWriter:
             return 0
         offset = 0
         while offset < sample_count:
-            if self._tmp_dir is None:
+            if self._file is None:
                 self._open_next_shard(tensors, sample_count=sample_count, batch_nbytes_value=batch_nbytes(batch))
             remaining = max(0, self._shard_sample_target - self._shard_samples)
             if remaining <= 0:
@@ -175,15 +178,17 @@ class RollingMaterializedShardWriter:
         self._last_estimate = estimate
         self._shard_sample_target = estimate.aligned_target_samples
         stem = f"shard_{self._shard_index:06d}"
-        self._final_dir = self.split_dir / stem
-        self._tmp_dir = self.split_dir / f"{stem}.tmp"
-        if self._final_dir.exists():
-            raise FileExistsError(f"Refusing to overwrite existing shard directory: {self._final_dir}")
-        if self._tmp_dir.exists():
-            shutil.rmtree(self._tmp_dir)
-        self._tmp_dir.mkdir(parents=True, exist_ok=False)
+        self._final_path = self.split_dir / f"{stem}.bin"
+        self._tmp_path = self.split_dir / f"{stem}.bin.tmp"
+        meta_path = self.split_dir / f"{stem}.json"
+        if self._final_path.exists() or meta_path.exists():
+            raise FileExistsError(f"Refusing to overwrite existing shard: {stem}")
+        self._tmp_path.unlink(missing_ok=True)
+        self._file = self._tmp_path.open("wb")
+        self._file_sha = hashlib.sha256()
         self._tensor_files = {}
         self._tensor_order = sorted(tensors)
+        self._chunks = []
         self._shard_samples = 0
         self._shard_bytes = 0
         self._first_origin_us = None
@@ -193,25 +198,29 @@ class RollingMaterializedShardWriter:
         self._source_blocks = []
         for name in self._tensor_order:
             array = tensors[name]
-            relative_path = f"tensors/{_safe_tensor_name(name)}.bin"
-            path = self._tmp_dir / relative_path
-            path.parent.mkdir(parents=True, exist_ok=True)
+            sample_bytes = int(np.asarray(array[:1]).nbytes)
             state = TensorFileState(
                 name=name,
                 dtype=str(array.dtype),
                 tail_shape=tuple(int(value) for value in array.shape[1:]),
-                relative_path=relative_path,
-                file=path.open("wb"),
+                sample_bytes=sample_bytes,
             )
             self._tensor_files[name] = state
 
     def _write_tensor_slice(self, tensors: Mapping[str, np.ndarray], *, offset: int, take: int) -> None:
+        if self._file is None:
+            raise RuntimeError("No active materialized shard file is open")
         expected = set(self._tensor_files)
         actual = set(tensors)
         if actual != expected:
             missing = sorted(expected - actual)
             extra = sorted(actual - expected)
             raise ValueError(f"Tensor set changed while writing shard. missing={missing} extra={extra}")
+        chunk: dict[str, Any] = {
+            "sample_start": int(self._shard_samples),
+            "sample_count": int(take),
+            "tensors": {},
+        }
         for name in self._tensor_order:
             array = np.ascontiguousarray(tensors[name][offset : offset + take])
             state = self._tensor_files[name]
@@ -221,10 +230,20 @@ class RollingMaterializedShardWriter:
                     f"got dtype={array.dtype} tail={tuple(array.shape[1:])}"
                 )
             payload = array.tobytes(order="C")
-            state.file.write(payload)
+            byte_offset = int(self._shard_bytes)
+            self._file.write(payload)
+            self._file_sha.update(payload)
             state.sha.update(payload)
             state.byte_size += len(payload)
             self._shard_bytes += len(payload)
+            chunk["tensors"][name] = {
+                "byte_offset": byte_offset,
+                "byte_size": int(len(payload)),
+                "shape": [int(take), *state.tail_shape],
+                "sample_start": int(self._shard_samples),
+                "sample_count": int(take),
+            }
+        self._chunks.append(chunk)
         self._shard_samples += int(take)
 
     def _record_sample_metadata(self, tensors: Mapping[str, np.ndarray], *, offset: int, take: int) -> None:
@@ -270,27 +289,31 @@ class RollingMaterializedShardWriter:
             self._global_sample_index += int(take)
 
     def _finalize_current_shard(self) -> None:
-        if self._tmp_dir is None:
+        if self._file is None:
             return
-        for state in self._tensor_files.values():
-            state.file.flush()
-            os.fsync(state.file.fileno())
-            state.file.close()
+        self._file.flush()
+        os.fsync(self._file.fileno())
+        self._file.close()
+        self._file = None
         if self._shard_samples == 0:
-            shutil.rmtree(self._tmp_dir, ignore_errors=True)
-            self._tmp_dir = None
-            self._final_dir = None
+            if self._tmp_path is not None:
+                self._tmp_path.unlink(missing_ok=True)
+            self._tmp_path = None
+            self._final_path = None
             self._tensor_files = {}
             return
-        assert self._final_dir is not None
-        self._tmp_dir.replace(self._final_dir)
+        assert self._final_path is not None and self._tmp_path is not None
+        self._tmp_path.replace(self._final_path)
+        relative_bin_path = str(self._final_path.relative_to(self.cache_root))
         tensors_meta = {
             name: {
-                "path": str((self._final_dir / state.relative_path).relative_to(self.cache_root)),
+                "path": relative_bin_path,
                 "dtype": state.dtype,
                 "shape": [int(self._shard_samples), *state.tail_shape],
+                "sample_bytes": int(state.sample_bytes),
                 "byte_size": int(state.byte_size),
                 "sha256": state.sha.hexdigest(),
+                "layout": "chunked",
             }
             for name, state in self._tensor_files.items()
         }
@@ -299,12 +322,14 @@ class RollingMaterializedShardWriter:
             "version": MATERIALIZED_CACHE_VERSION,
             "split": self.split,
             "shard_index": self._shard_index,
-            "path": str(self._final_dir.relative_to(self.cache_root)),
+            "path": relative_bin_path,
             "num_samples": int(self._shard_samples),
             "sample_multiple": int(self.sample_multiple),
             "target_shard_bytes": int(self.target_shard_bytes),
             "target_samples": int(self._shard_sample_target),
             "actual_shard_bytes": int(self._shard_bytes),
+            "sha256": self._file_sha.hexdigest(),
+            "file_count": 1,
             "first_origin_timestamp_us": int(self._first_origin_us or 0),
             "last_origin_timestamp_us": int(self._last_origin_us or 0),
             "first_origin_utc": timestamp_us_to_utc(int(self._first_origin_us or 0)),
@@ -313,7 +338,9 @@ class RollingMaterializedShardWriter:
             "last_ticker": self._last_ticker,
             "source_blocks": self._source_blocks,
             "tensor_count": len(tensors_meta),
+            "tensor_order": list(self._tensor_order),
             "tensors": tensors_meta,
+            "chunks": self._chunks,
             "created_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
         }
         meta_path = self.split_dir / f"shard_{self._shard_index:06d}.json"
@@ -322,10 +349,11 @@ class RollingMaterializedShardWriter:
         self._shard_index += 1
         self._shard_samples = 0
         self._shard_bytes = 0
-        self._tmp_dir = None
-        self._final_dir = None
+        self._tmp_path = None
+        self._final_path = None
         self._tensor_files = {}
         self._tensor_order = []
+        self._chunks = []
 
 
 def estimate_shard_samples(*, sample_bytes: int, target_shard_bytes: int, sample_multiple: int) -> MaterializedShardEstimate:
@@ -393,6 +421,10 @@ def cleanup_orphan_materialized_tmp(split_dir: Path) -> int:
         if tmp_dir.is_dir():
             shutil.rmtree(tmp_dir, ignore_errors=True)
             removed += 1
+    for tmp_file in sorted(split_dir.glob("shard_*.bin.tmp")):
+        if tmp_file.is_file():
+            tmp_file.unlink(missing_ok=True)
+            removed += 1
     return removed
 
 
@@ -407,9 +439,9 @@ def load_existing_materialized_shards(cache_root: Path, split: str) -> list[dict
             continue
         if str(row.get("split", "")) != split:
             raise RuntimeError(f"Shard split mismatch in {meta_path}: {row.get('split')!r}")
-        shard_dir = Path(cache_root) / str(row.get("path", "")).replace("\\", "/")
-        if not shard_dir.exists():
-            raise RuntimeError(f"Missing materialized shard directory referenced by {meta_path}: {shard_dir}")
+        shard_path = Path(cache_root) / str(row.get("path", "")).replace("\\", "/")
+        if not shard_path.exists():
+            raise RuntimeError(f"Missing materialized shard file referenced by {meta_path}: {shard_path}")
         rows.append(row)
     rows.sort(key=lambda item: int(item["shard_index"]))
     actual = [int(row["shard_index"]) for row in rows]
@@ -429,10 +461,6 @@ def _add_array_group(out: dict[str, np.ndarray], prefix: str, group: Mapping[str
     for name, value in group.items():
         if isinstance(value, np.ndarray):
             out[f"{prefix}/{name}"] = np.asarray(value)
-
-
-def _safe_tensor_name(name: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in "._-" else "__" for ch in name)
 
 
 def _infer_sample_count(tensors: Mapping[str, np.ndarray]) -> int:
@@ -458,17 +486,6 @@ def _decode_ticker_array(values: np.ndarray) -> list[str]:
         else:
             out.append(str(value))
     return out
-
-
-def _directory_size(path: Path | None) -> int:
-    if path is None or not path.exists():
-        return 0
-    total = 0
-    for child in path.rglob("*"):
-        if child.is_file():
-            total += child.stat().st_size
-    return int(total)
-
 
 def _estimate_to_dict(value: MaterializedShardEstimate | None) -> dict[str, Any]:
     if value is None:
