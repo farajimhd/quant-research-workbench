@@ -5,9 +5,10 @@ import datetime as dt
 import hashlib
 import re
 import time
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, MutableMapping
 
 import numpy as np
 
@@ -88,6 +89,20 @@ class RollingReadyIndexBlock:
     @property
     def sample_count(self) -> int:
         return int(self.origin_offsets.shape[0])
+
+
+@dataclass(slots=True)
+class _TodayAsOfDayState:
+    start_offset: int
+    end_offset: int
+    trade_positions: np.ndarray
+    quote_positions: np.ndarray
+    trade_prices: np.ndarray
+    cumulative_volume: np.ndarray
+    cumulative_dollars: np.ndarray
+    prefix_high: np.ndarray
+    prefix_low: np.ndarray
+    quote_mid: np.ndarray
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,6 +406,8 @@ class RollingMarketSampleEngine:
         self.rows_by_ticker: dict[str, np.ndarray] = {}
         self._processed_offsets: dict[str, int] = {}
         self.macro_bars = MacroBarFrame(rows=[])
+        self._today_asof_day_cache: dict[tuple[int, int], _TodayAsOfDayState] = {}
+        self._today_asof_day_cache_lock = threading.Lock()
         q_live_context_configs = {
             "ticker_news": ExternalAsOfContextConfig(name="ticker_news", timestamp_column="timestamp_us", max_items=config.news_max_items * config.news_token_chunks),
             "market_news": ExternalAsOfContextConfig(name="market_news", timestamp_column="timestamp_us", max_items=config.market_news_max_items * config.market_news_token_chunks),
@@ -495,6 +512,29 @@ class RollingMarketSampleEngine:
             self.category_references = rows
         else:
             self.category_references = CategoryReferenceStore.from_rows(rows)
+
+    def prewarm_today_asof_day_cache(self, *, symbols: Iterable[str] | None = None) -> int:
+        target_symbols = tuple(str(symbol).upper() for symbol in (symbols if symbols is not None else self.config.global_symbols))
+        built = 0
+        for symbol in target_symbols:
+            rows = self.rows_by_ticker.get(symbol)
+            if rows is None or rows.size == 0:
+                continue
+            timestamps = rows["sip_timestamp_us"].astype(np.int64, copy=False)
+            day_ids = np.unique(timestamps // 86_400_000_000)
+            for day_id in day_ids.tolist():
+                before = len(self._today_asof_day_cache)
+                _today_asof_day_state(
+                    rows,
+                    timestamps=timestamps,
+                    day_id=int(day_id),
+                    day_start_us=int(day_id) * 86_400_000_000,
+                    day_cache=self._today_asof_day_cache,
+                    day_cache_lock=self._today_asof_day_cache_lock,
+                )
+                if len(self._today_asof_day_cache) > before:
+                    built += 1
+        return built
 
     def build_ready_index_blocks(self, *, max_samples: int = 0) -> tuple[RollingReadyIndexBlock, ...]:
         """Return lightweight ready-origin arrays without allocating windows.
@@ -795,7 +835,7 @@ class RollingMarketSampleEngine:
                 f"reasons: {reason_text}. examples: {example_text}"
             )
 
-        feature_total = max(3, batch + 2)
+        feature_total = max(4, batch + 4)
         _call_progress(progress_callback, "features", 0, feature_total)
         with profiler.stage("bar_features", count=batch):
             (
@@ -812,11 +852,11 @@ class RollingMarketSampleEngine:
                 progress_callback=progress_callback,
                 progress_total=feature_total,
             )
-        _call_progress(progress_callback, "features", batch, feature_total)
+        _call_progress(progress_callback, "features", batch + 2, feature_total)
         with profiler.stage("origin_time_features", count=batch):
             time_features = _origin_time_features(sample_tuple)
             chunk_time_features = _timestamp_feature_arrays(chunk_origin_ts, origin_ts[:, None])
-        _call_progress(progress_callback, "features", batch + 1, feature_total)
+        _call_progress(progress_callback, "features", batch + 3, feature_total)
         with profiler.stage("session_features", count=batch):
             session_features = self._materialize_session_features(sample_tuple)
         _call_progress(progress_callback, "features", feature_total, feature_total)
@@ -1016,6 +1056,8 @@ class RollingMarketSampleEngine:
         macro_rows: list[dict[str, float]] = []
         global_rows: dict[str, list[dict[str, float]]] = {symbol: [] for symbol in self.config.global_symbols}
         origin_offsets_by_ticker: dict[str, dict[int, int | None]] = {}
+        global_symbol_set = {str(symbol).upper() for symbol in global_symbols}
+        _call_progress(progress_callback, "features", 1, max(int(progress_total), batch + 4))
         for sample_index, sample in enumerate(samples):
             for symbol in (str(sample.ticker).upper(), *(str(value).upper() for value in global_symbols)):
                 if symbol not in origin_offsets_by_ticker:
@@ -1039,10 +1081,17 @@ class RollingMarketSampleEngine:
             if rows is not None and rows.size and valid_items:
                 sample_indexes = np.asarray([item[0] for item in valid_items], dtype=np.int64)
                 origin_offsets = np.asarray([item[1] for item in valid_items], dtype=np.int64)
-                symbol_bars, symbol_mask = _today_asof_bars_from_events(rows, origin_offsets)
+                use_shared_cache = symbol in global_symbol_set
+                symbol_bars, symbol_mask = _today_asof_bars_from_events(
+                    rows,
+                    origin_offsets,
+                    day_cache=self._today_asof_day_cache if use_shared_cache else None,
+                    day_cache_lock=self._today_asof_day_cache_lock if use_shared_cache else None,
+                )
                 bars[sample_indexes] = symbol_bars
                 mask[sample_indexes] = symbol_mask
             today_cache[symbol] = (bars, mask)
+        _call_progress(progress_callback, "features", 2, max(int(progress_total), batch + 4))
 
         for sample_index, sample in enumerate(samples):
             today_bars, today_mask = today_cache.get(str(sample.ticker).upper(), (None, None))
@@ -1072,7 +1121,7 @@ class RollingMarketSampleEngine:
                 global_market_bars[sample_index, symbol_index] = bars
                 global_market_bar_mask[sample_index, symbol_index] = mask
                 global_rows[symbol].append(_bar_tensor_row(global_timeframes, bars))
-            _maybe_call_progress(progress_callback, "features", sample_index + 1, max(int(progress_total), batch))
+            _maybe_call_progress(progress_callback, "features", sample_index + 3, max(int(progress_total), batch + 4))
         macro = _rows_to_feature_arrays(macro_rows)
         global_features = {f"{symbol}_{key}": value for symbol, rows in global_rows.items() for key, value in _rows_to_feature_arrays(rows).items()}
         return macro, global_features, macro_timeframes, global_timeframes, ticker_macro_bars, ticker_macro_bar_mask, global_market_bars, global_market_bar_mask
@@ -2545,7 +2594,13 @@ def _today_asof_bar_from_events(rows: np.ndarray) -> np.ndarray:
     return out
 
 
-def _today_asof_bars_from_events(rows: np.ndarray, origin_offsets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _today_asof_bars_from_events(
+    rows: np.ndarray,
+    origin_offsets: np.ndarray,
+    *,
+    day_cache: MutableMapping[tuple[int, int], _TodayAsOfDayState] | None = None,
+    day_cache_lock: threading.Lock | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     origins = np.asarray(origin_offsets, dtype=np.int64)
     out = np.zeros((origins.shape[0], len(BAR_FEATURE_KEYS)), dtype=np.float32)
     valid = np.zeros((origins.shape[0],), dtype=np.bool_)
@@ -2563,37 +2618,40 @@ def _today_asof_bars_from_events(rows: np.ndarray, origin_offsets: np.ndarray) -
         target_positions = valid_positions[position_mask]
         target_origins = origins[target_positions]
         day_start_us = int(day_id) * day_us
-        start = int(np.searchsorted(timestamps, day_start_us, side="left"))
-        end = int(target_origins.max()) + 1
-        if start >= end:
+        state = _today_asof_day_state(
+            rows,
+            timestamps=timestamps,
+            day_id=int(day_id),
+            day_start_us=day_start_us,
+            day_cache=day_cache,
+            day_cache_lock=day_cache_lock,
+        )
+        if state.end_offset <= state.start_offset:
             continue
-        segment = rows[start:end]
-        rel_origins = target_origins - int(start)
-        event_types = segment["event_type"].astype(np.uint8, copy=False)
-        quote_positions = np.flatnonzero(event_types == QUOTE_EVENT_TYPE)
-        trade_positions = np.flatnonzero(event_types == TRADE_EVENT_TYPE)
-        quote_counts = np.searchsorted(quote_positions, rel_origins, side="right") if quote_positions.size else np.zeros((rel_origins.shape[0],), dtype=np.int64)
-        trade_counts = np.searchsorted(trade_positions, rel_origins, side="right") if trade_positions.size else np.zeros((rel_origins.shape[0],), dtype=np.int64)
+        rel_origins = np.clip(target_origins, state.start_offset, state.end_offset - 1) - int(state.start_offset)
+        quote_counts = (
+            np.searchsorted(state.quote_positions, rel_origins, side="right")
+            if state.quote_positions.size
+            else np.zeros((rel_origins.shape[0],), dtype=np.int64)
+        )
+        trade_counts = (
+            np.searchsorted(state.trade_positions, rel_origins, side="right")
+            if state.trade_positions.size
+            else np.zeros((rel_origins.shape[0],), dtype=np.int64)
+        )
 
         trade_targets = trade_counts > 0
         if bool(trade_targets.any()):
-            trade_rows = segment[trade_positions]
-            trade_prices = _decode_primary_price(trade_rows).astype(np.float64, copy=False)
-            trade_sizes = np.maximum(0.0, trade_rows["size_primary"].astype(np.float64, copy=False))
-            cumulative_volume = np.cumsum(trade_sizes)
-            cumulative_dollars = np.cumsum(trade_prices * trade_sizes)
-            prefix_high = np.maximum.accumulate(trade_prices)
-            prefix_low = np.minimum.accumulate(trade_prices)
             target_trade_counts = trade_counts[trade_targets]
             last_trade_indexes = target_trade_counts - 1
             target_rows = target_positions[trade_targets]
-            out[target_rows, BAR_FEATURE_KEYS.index("open")] = np.float32(trade_prices[0])
-            out[target_rows, BAR_FEATURE_KEYS.index("high")] = prefix_high[last_trade_indexes].astype(np.float32)
-            out[target_rows, BAR_FEATURE_KEYS.index("low")] = prefix_low[last_trade_indexes].astype(np.float32)
-            out[target_rows, BAR_FEATURE_KEYS.index("close")] = trade_prices[last_trade_indexes].astype(np.float32)
-            out[target_rows, BAR_FEATURE_KEYS.index("volume")] = cumulative_volume[last_trade_indexes].astype(np.float32)
-            dollars = cumulative_dollars[last_trade_indexes]
-            volumes = cumulative_volume[last_trade_indexes]
+            out[target_rows, BAR_FEATURE_KEYS.index("open")] = np.float32(state.trade_prices[0])
+            out[target_rows, BAR_FEATURE_KEYS.index("high")] = state.prefix_high[last_trade_indexes].astype(np.float32)
+            out[target_rows, BAR_FEATURE_KEYS.index("low")] = state.prefix_low[last_trade_indexes].astype(np.float32)
+            out[target_rows, BAR_FEATURE_KEYS.index("close")] = state.trade_prices[last_trade_indexes].astype(np.float32)
+            out[target_rows, BAR_FEATURE_KEYS.index("volume")] = state.cumulative_volume[last_trade_indexes].astype(np.float32)
+            dollars = state.cumulative_dollars[last_trade_indexes]
+            volumes = state.cumulative_volume[last_trade_indexes]
             out[target_rows, BAR_FEATURE_KEYS.index("dollar_volume")] = dollars.astype(np.float32)
             out[target_rows, BAR_FEATURE_KEYS.index("trade_count")] = target_trade_counts.astype(np.float32)
             out[target_rows, BAR_FEATURE_KEYS.index("quote_count")] = quote_counts[trade_targets].astype(np.float32)
@@ -2608,10 +2666,7 @@ def _today_asof_bars_from_events(rows: np.ndarray, origin_offsets: np.ndarray) -
         quote_only_targets = (trade_counts == 0) & (quote_counts > 0)
         if bool(quote_only_targets.any()):
             last_quote_indexes = quote_counts[quote_only_targets] - 1
-            quote_rows = segment[quote_positions[last_quote_indexes]]
-            ask = _decode_primary_price(quote_rows)
-            bid = _decode_secondary_price(quote_rows)
-            mid = np.where((ask > 0.0) & (bid > 0.0), (ask + bid) * 0.5, np.maximum(ask, bid)).astype(np.float32)
+            mid = state.quote_mid[last_quote_indexes].astype(np.float32)
             target_rows = target_positions[quote_only_targets]
             out[target_rows, BAR_FEATURE_KEYS.index("open")] = mid
             out[target_rows, BAR_FEATURE_KEYS.index("high")] = mid
@@ -2621,6 +2676,93 @@ def _today_asof_bars_from_events(rows: np.ndarray, origin_offsets: np.ndarray) -
             out[target_rows, BAR_FEATURE_KEYS.index("vwap")] = mid
             valid[target_rows] = True
     return out, valid
+
+
+def _today_asof_day_state(
+    rows: np.ndarray,
+    *,
+    timestamps: np.ndarray,
+    day_id: int,
+    day_start_us: int,
+    day_cache: MutableMapping[tuple[int, int], _TodayAsOfDayState] | None,
+    day_cache_lock: threading.Lock | None,
+) -> _TodayAsOfDayState:
+    cache_key = (id(rows), int(day_id))
+    if day_cache is not None:
+        if day_cache_lock is not None:
+            with day_cache_lock:
+                cached = day_cache.get(cache_key)
+                if cached is not None:
+                    return cached
+                state = _build_today_asof_day_state(rows, timestamps=timestamps, day_start_us=int(day_start_us))
+                day_cache[cache_key] = state
+                return state
+        cached = day_cache.get(cache_key)
+        if cached is not None:
+            return cached
+    state = _build_today_asof_day_state(rows, timestamps=timestamps, day_start_us=int(day_start_us))
+    if day_cache is not None:
+        day_cache[cache_key] = state
+    return state
+
+
+def _build_today_asof_day_state(rows: np.ndarray, *, timestamps: np.ndarray, day_start_us: int) -> _TodayAsOfDayState:
+    day_end_us = int(day_start_us) + 86_400_000_000
+    start = int(np.searchsorted(timestamps, int(day_start_us), side="left"))
+    end = int(np.searchsorted(timestamps, day_end_us, side="left"))
+    if start >= end:
+        empty_i64 = np.zeros((0,), dtype=np.int64)
+        empty_f64 = np.zeros((0,), dtype=np.float64)
+        empty_f32 = np.zeros((0,), dtype=np.float32)
+        return _TodayAsOfDayState(
+            start_offset=start,
+            end_offset=end,
+            trade_positions=empty_i64,
+            quote_positions=empty_i64,
+            trade_prices=empty_f64,
+            cumulative_volume=empty_f64,
+            cumulative_dollars=empty_f64,
+            prefix_high=empty_f64,
+            prefix_low=empty_f64,
+            quote_mid=empty_f32,
+        )
+    segment = rows[start:end]
+    event_types = segment["event_type"].astype(np.uint8, copy=False)
+    trade_positions = np.flatnonzero(event_types == TRADE_EVENT_TYPE).astype(np.int64, copy=False)
+    quote_positions = np.flatnonzero(event_types == QUOTE_EVENT_TYPE).astype(np.int64, copy=False)
+    if trade_positions.size:
+        trade_rows = segment[trade_positions]
+        trade_prices = _decode_primary_price(trade_rows).astype(np.float64, copy=False)
+        trade_sizes = np.maximum(0.0, trade_rows["size_primary"].astype(np.float64, copy=False))
+        cumulative_volume = np.cumsum(trade_sizes)
+        cumulative_dollars = np.cumsum(trade_prices * trade_sizes)
+        prefix_high = np.maximum.accumulate(trade_prices)
+        prefix_low = np.minimum.accumulate(trade_prices)
+    else:
+        trade_prices = np.zeros((0,), dtype=np.float64)
+        cumulative_volume = np.zeros((0,), dtype=np.float64)
+        cumulative_dollars = np.zeros((0,), dtype=np.float64)
+        prefix_high = np.zeros((0,), dtype=np.float64)
+        prefix_low = np.zeros((0,), dtype=np.float64)
+    if quote_positions.size:
+        quote_rows = segment[quote_positions]
+        ask = _decode_primary_price(quote_rows)
+        bid = _decode_secondary_price(quote_rows)
+        quote_mid = np.where((ask > 0.0) & (bid > 0.0), (ask + bid) * 0.5, np.maximum(ask, bid)).astype(np.float32)
+    else:
+        quote_mid = np.zeros((0,), dtype=np.float32)
+    return _TodayAsOfDayState(
+        start_offset=start,
+        end_offset=end,
+        trade_positions=trade_positions,
+        quote_positions=quote_positions,
+        trade_prices=trade_prices,
+        cumulative_volume=cumulative_volume,
+        cumulative_dollars=cumulative_dollars,
+        prefix_high=prefix_high,
+        prefix_low=prefix_low,
+        quote_mid=quote_mid,
+    )
 
 
 def _fill_empty_bar_values(out: dict[str, float], prefix: str) -> None:

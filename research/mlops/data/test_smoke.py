@@ -147,6 +147,9 @@ def smoke_ordered_append_fast_path() -> None:
     assert merged.shape[0] == 256
     ordinal_120 = int(np.searchsorted(merged["ordinal"], int(overlap["ordinal"][0]), side="left"))
     assert int(merged["price_primary_int"][ordinal_120]) == int(overlap["price_primary_int"][0])
+    warmed = engine.prewarm_today_asof_day_cache(symbols=("FAST",))
+    assert warmed == 1
+    assert engine.prewarm_today_asof_day_cache(symbols=("FAST",)) == 0
 
 
 def smoke_streaming_replay() -> None:

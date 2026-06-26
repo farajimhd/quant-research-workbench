@@ -518,6 +518,9 @@ def main() -> int:
             if not ready_blocks:
                 submit_prefetches()
                 continue
+            with profiler.stage("global_today_asof_cache_prewarm", block_index=stats.block_index):
+                warmed_today_states = engine.prewarm_today_asof_day_cache(symbols=engine.config.global_symbols)
+            stats.message(f"global today-asof cache states={warmed_today_states:,}")
             if not _ready_samples_can_satisfy_target(stats=stats, writer=writer, ready_samples=stats.ready_samples):
                 submit_prefetches()
             stats.phase = "materializing"
@@ -829,6 +832,8 @@ def _materialize_worker_task(
         state.last_message = f"materializing slice={slice_id}"
     state_started = state.started_at if state is not None and state.started_at > 0 else started
     engine = RollingMarketSampleEngine(base_engine.config)
+    engine._today_asof_day_cache = base_engine._today_asof_day_cache
+    engine._today_asof_day_cache_lock = base_engine._today_asof_day_cache_lock
     tickers = {str(block.ticker).upper() for block in blocks}
     tickers.update(str(symbol).upper() for symbol in base_engine.config.global_symbols)
     engine.rows_by_ticker = {ticker: base_engine.rows_by_ticker[ticker] for ticker in tickers if ticker in base_engine.rows_by_ticker}
