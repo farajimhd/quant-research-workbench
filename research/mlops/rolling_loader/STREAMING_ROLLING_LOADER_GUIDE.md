@@ -335,6 +335,154 @@ An event origin is eligible only when:
 Eligible origins should be collected into a micro-batch candidate table rather
 than materialized immediately one by one.
 
+## Output Contract
+
+The streaming loader must not expose Polars DataFrames as its training API.
+Polars and Arrow are internal loading and vectorization tools only.
+
+The public output must match the shared `research.mlops.data` rolling contract:
+
+- training emits `RollingTrainingBatch`
+- production emits `RollingProductionBatch`
+- both are keyed by the same `RollingSampleIndex` list
+- model versions should not need loader-specific code paths
+
+Each sample row represents one ticker at one selected origin event:
+
+```text
+ticker
+origin_ordinal
+origin_timestamp_us
+```
+
+`origin_timestamp_us` is the only absolute timestamp that should be exposed as a
+model-facing identity field. Other event/context timestamps are transformed into
+the shared time-feature convention.
+
+### Training Batch Groups
+
+The target training batch contains these model-facing groups:
+
+| Group | Key Pattern | Shape Policy |
+| --- | --- | --- |
+| sample identity | `ticker`, `origin_ordinal`, `origin_timestamp_us` | `[B]` |
+| origin time | `time_features[*]` | `[B]` |
+| market chunks | `headers_uint8` | `[B, C, 14]` |
+| market chunks | `events_uint8` | `[B, C, 128, 16]` |
+| market chunk time | `chunk_time_features[*]` | `[B, C]` |
+| ticker macro bars | `ticker_macro_bars` | `[B, macro_timeframes, 9]` |
+| ticker macro mask | `ticker_macro_bar_mask` | `[B, macro_timeframes]` |
+| global market bars | `global_market_bars` | `[B, global_symbols, macro_timeframes, 9]` |
+| global market mask | `global_market_bar_mask` | `[B, global_symbols, macro_timeframes]` |
+| legacy ticker/session dict | `macro_features[*]` | `[B]` |
+| legacy global dict | `global_features[*]` | `[B]` |
+| ticker news tokens | `text_inputs["ticker_news"][*]` | `[B, 32, 2, 1024]` for token arrays |
+| market news tokens | `text_inputs["market_news"][*]` | `[B, 64, 2, 1024]` for token arrays |
+| SEC filing tokens | `text_inputs["sec_filings"][*]` | `[B, 16, 8, 1024]` for token arrays |
+| XBRL fundamentals | `xbrl_inputs[*]` | `[B, 512]` per attribute |
+| future macro labels | `future_macro_bars` | `[B, label_timeframes, 5]` |
+| future intraday labels | `future_intraday_bars` | `[B, intraday_label_horizons, 5]` |
+| legacy labels dict | `labels[*]` | usually `[B]` |
+| audit context | `external_context` | source metadata, not primary model input |
+
+`C = len(context_lags)`. The current shared data package default is `C = 27`:
+
+- 16 dense recent chunks
+- 11 sparse long-history chunks with lags up to the farthest configured lag
+
+Invalid market event windows should be filtered before materialization. The
+model-facing batch should not rely on a context mask to hide invalid raw event
+chunks.
+
+### Production Batch Groups
+
+`RollingProductionBatch` uses the same sample indices, identity fields,
+time features, macro/global features, text inputs, XBRL inputs, and audit
+context. It replaces raw market chunk bytes with cached market-encoder outputs:
+
+```text
+market_embeddings[B, C, D]
+market_mask[B, C]
+```
+
+The streaming training loader should therefore build sample indices in a way
+that production can reuse directly.
+
+### Time Features
+
+Every model-facing timestamp except `origin_timestamp_us` must use the shared
+time-feature convention:
+
+```text
+time_delta_seconds
+time_delta_seconds_log1p_signed
+time_age_seconds_log1p
+time_utc_second_of_day_sin/cos
+time_utc_day_of_week_sin/cos
+time_utc_day_of_year_sin/cos
+time_years_since_2000
+```
+
+This applies to:
+
+- origin time features
+- market chunk origin times
+- ticker news
+- market news
+- SEC filings
+- XBRL rows
+
+Raw source timestamps can remain in `external_context` for audits and debugging.
+
+### Macro And Global Bars
+
+The contract exposes structured 9-field bars:
+
+```text
+open, high, low, close, volume,
+dollar_volume, trade_count, quote_count, vwap
+```
+
+For this streaming loader path, the source policy is to load `1d` bars and
+construct the configured as-of windows from completed daily bars plus current
+session state from events. Do not load independent `1w`, `1mo`, or `1y` bar rows
+unless a future model explicitly requires them.
+
+Ticker and global bar features must obey:
+
+```text
+bar_timestamp <= origin_timestamp_us
+```
+
+Future bar labels are separate targets, not context features.
+
+### Text And XBRL Inputs
+
+Ticker news, market news, and SEC filing text inputs come from token tables.
+The streaming loader should fetch token ids, attention masks, masks, dense
+category ids, and source metadata required by the shared contract. It should not
+load or tokenize raw text.
+
+XBRL inputs are structured attribute arrays under `xbrl_inputs`, with shape
+`[B, xbrl_max_items]` per attribute. Category values should use dense ids from
+`training_category_reference`, with `0` reserved for missing or unknown.
+
+### Labels
+
+Labels are part of the training batch and must remain separate from features:
+
+- future macro labels use `future_macro_bars`
+- future intraday labels use `future_intraday_bars`
+- legacy compatibility values remain under `labels`
+
+Features are selected with:
+
+```text
+timestamp <= origin_timestamp_us
+```
+
+Labels are selected strictly after the origin according to their label horizon.
+
 ## Vectorized Batch Building
 
 Batch construction should work from a set of origin events:
@@ -355,20 +503,23 @@ window start positions
 window end positions
 context cache ids
 daily macro/global as-of row ids
+future label row ids
 ```
 
 High-frequency windows are gathered from per-ticker event caches. Token context
 payloads are gathered by cache ids. Daily macro/global bars are gathered by
-as-of index where `bar_end_us <= origin_timestamp_us`.
+as-of index where `bar_end_us <= origin_timestamp_us`. Future labels are
+gathered from in-memory future event/bar indexes after the origin.
 
 When `batch_size` eligible origins are available:
 
 ```text
-materialize_training_batch(origins)
+build RollingSampleIndex list
+materialize RollingTrainingBatch or RollingProductionBatch
 yield batch
 ```
 
-The emitted batch should match the existing model-facing tensor contract.
+The emitted batch must match the shared data package contract.
 
 ## Memory Model
 
