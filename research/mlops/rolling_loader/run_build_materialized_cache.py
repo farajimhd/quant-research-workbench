@@ -198,7 +198,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event-row-limit", type=int, default=DEFAULTS["event_row_limit"])
     parser.add_argument("--audit-samples", type=int, default=256)
     parser.add_argument("--no-rich", action="store_true")
-    parser.add_argument("--live-rich", action="store_true", help="Use the full Rich Live panel dashboard. The default is a non-blinking status line.")
+    parser.add_argument("--plain-status", action="store_true", help="Use a single non-Rich status line instead of the Rich panel dashboard.")
     parser.add_argument("--refresh-seconds", type=float, default=1.0)
     return parser.parse_args()
 
@@ -222,7 +222,7 @@ def main() -> int:
     stats.log_path = cache_root / "builder_events.jsonl"
     dashboard = MaterializedCacheDashboard(
         enabled=not args.no_rich,
-        live=bool(args.live_rich),
+        live=not bool(args.plain_status),
         refresh_seconds=float(args.refresh_seconds),
         stats=stats,
     )
@@ -289,18 +289,20 @@ def main() -> int:
         dashboard.start()
 
         stats.phase = "initializing"
-        _refresh(stats, dashboard, writer)
+        _refresh(stats, dashboard, writer, force=True)
         with profiler.stage("category_references_fetch"):
             refs = source.fetch_category_references()
         engine.load_category_references(refs)
         stats.message(f"loaded category refs rows={len(refs):,}")
         start_date = date_from_us(start_us)
         end_date = date_from_us(end_us) + dt.timedelta(days=1)
+        _refresh(stats, dashboard, writer, force=True)
         with profiler.stage("macro_bars_1d_full_fetch"):
             macro = source.fetch_macro_bars_1d(start_date=start_date, end_date=end_date)
         engine.load_macro_bars(macro)
         stats.message(f"loaded 1d macro/global rows={len(macro.rows):,}")
         if not args.skip_token_contexts:
+            _refresh(stats, dashboard, writer, force=True)
             with profiler.stage("initial_token_context_fetch"):
                 initial_context = source.fetch_token_contexts(
                     start_timestamp_us=start_us,
@@ -323,7 +325,8 @@ def main() -> int:
             stats.phase = "loading block"
             stats.block_start = block_start.isoformat()
             stats.block_end = block_end.isoformat()
-            _refresh(stats, dashboard, writer)
+            stats.message(f"loading block {stats.block_index} window={block_start.isoformat()}->{block_end.isoformat()}")
+            _refresh(stats, dashboard, writer, force=True)
             with profiler.stage("event_block_query_arrow_polars", block_index=stats.block_index):
                 frame = source.fetch_event_frame(start_date=block_start, end_date=block_end, row_limit=max(0, int(args.event_row_limit)))
             with profiler.stage("event_block_polars_to_numpy", block_index=stats.block_index, rows=int(frame.height)):
@@ -344,6 +347,7 @@ def main() -> int:
                 stats.block_index += 1
                 continue
             if not args.skip_token_contexts:
+                _refresh(stats, dashboard, writer, force=True)
                 with profiler.stage("token_context_block_fetch", block_index=stats.block_index):
                     context = source.fetch_token_contexts(
                         start_timestamp_us=max(start_us, block.min_timestamp_us),
@@ -719,10 +723,10 @@ def _write_progress(cache_root: Path, split: str, stats: BuildStats, writer: Rol
     tmp.replace(final)
 
 
-def _refresh(stats: BuildStats, dashboard: "MaterializedCacheDashboard", writer: RollingMaterializedShardWriter | None) -> None:
+def _refresh(stats: BuildStats, dashboard: "MaterializedCacheDashboard", writer: RollingMaterializedShardWriter | None, *, force: bool = False) -> None:
     stats.current_rss_mib = current_rss_mib()
     stats.shards_done = len(writer.shards) if writer is not None else stats.shards_done
-    dashboard.refresh()
+    dashboard.refresh(force=force)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -812,6 +816,7 @@ class MaterializedCacheDashboard:
             return
         try:
             from rich import box
+            from rich.console import Console
             from rich.console import Group
             from rich.live import Live
             from rich.panel import Panel
@@ -822,31 +827,36 @@ class MaterializedCacheDashboard:
             return
         self._rich = {
             "box": box,
+            "Console": Console,
             "Group": Group,
             "Live": Live,
             "Panel": Panel,
             "Table": Table,
             "Text": Text,
         }
+        console = Console()
         self._live = Live(
             self._render(),
+            console=console,
+            refresh_per_second=max(0.5, 1.0 / self.refresh_seconds),
             auto_refresh=False,
+            screen=True,
             transient=False,
-            vertical_overflow="crop",
+            vertical_overflow="visible",
         )
         self._live.start()
 
-    def refresh(self) -> None:
+    def refresh(self, *, force: bool = False) -> None:
         now = time.perf_counter()
         if self.enabled and self._live is not None:
-            if now - self._last >= self.refresh_seconds:
+            if force or now - self._last >= self.refresh_seconds:
                 self._live.update(self._render(), refresh=True)
                 self._last = now
         elif self.enabled and not self.live:
-            if now - self._last >= self.refresh_seconds:
+            if force or now - self._last >= self.refresh_seconds:
                 self._print_status_line(final=False)
                 self._last = now
-        elif now - self._last >= self.refresh_seconds:
+        elif force or now - self._last >= self.refresh_seconds:
             elapsed = now - self.stats.started
             byte_rate = self.stats.bytes_written / max(elapsed, 1e-9)
             remaining = max(0, int(self.stats.target_bytes) - int(self.stats.bytes_written))
@@ -1021,7 +1031,8 @@ class MaterializedCacheDashboard:
 
         messages = Table.grid(expand=True)
         messages.add_column(no_wrap=True, overflow="ellipsis")
-        padded_messages = [*_single_line_items(self.stats.messages[-message_rows:], width=max(40, terminal_width - 8)), *[""] * message_rows][:message_rows]
+        visible_messages = self.stats.messages[-message_rows:] if message_rows > 0 else []
+        padded_messages = [*_single_line_items(visible_messages, width=max(40, terminal_width - 8)), *[""] * message_rows][:message_rows]
         for message in padded_messages:
             messages.add_row(message)
 
