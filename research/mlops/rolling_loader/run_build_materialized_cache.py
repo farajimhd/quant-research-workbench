@@ -860,8 +860,10 @@ class MaterializedCacheDashboard:
         remaining_bytes = max(0, target_bytes - int(self.stats.bytes_written))
         eta_seconds = remaining_bytes / byte_rate if byte_rate > 0 else None
         progress_pct = min(100.0, 100.0 * float(self.stats.bytes_written) / float(target_bytes))
-        terminal_width = shutil.get_terminal_size((120, 40)).columns
-        compact = terminal_width < 140
+        terminal_size = shutil.get_terminal_size((120, 40))
+        terminal_width = terminal_size.columns
+        terminal_height = terminal_size.lines
+        compact = terminal_width < 140 or terminal_height < 26
         summary = Table.grid(expand=False)
         pair_count = 2 if compact else 3
         for pair_index in range(pair_count):
@@ -901,6 +903,8 @@ class MaterializedCacheDashboard:
                 ("Logs", str(self.stats.log_path or "")),
             ),
         ]
+        if terminal_height < 22:
+            summary_rows = summary_rows[:4]
         for row in summary_rows:
             cells: list[Any] = []
             for pair_index, (label, value) in enumerate(row[:pair_count]):
@@ -953,16 +957,21 @@ class MaterializedCacheDashboard:
             row.extend([_format_duration(worker.seconds), _single_line(worker.last_message, width=message_width)])
             workers.add_row(*row)
 
+        summary_panel_rows = len(summary_rows) + 2
+        workers_panel_rows = max(1, len(self.stats.workers)) + 6
+        message_rows = max(0, min(8, terminal_height - summary_panel_rows - workers_panel_rows - 2))
+        message_panel_height = message_rows + 2
+
         messages = Table.grid(expand=True)
         messages.add_column(no_wrap=True, overflow="ellipsis")
-        padded_messages = [*_single_line_items(self.stats.messages[-8:], width=max(40, terminal_width - 8)), *[""] * 8][:8]
+        padded_messages = [*_single_line_items(self.stats.messages[-message_rows:], width=max(40, terminal_width - 8)), *[""] * message_rows][:message_rows]
         for message in padded_messages:
             messages.add_row(message)
 
         return Group(
             Panel(summary, title="Rolling Materialized Cache", box=box.ROUNDED, border_style="cyan", padding=(0, 1)),
             Panel(workers, title="Workers", box=box.ROUNDED, border_style="magenta", padding=(0, 1)),
-            Panel(messages, title="Messages", box=box.ROUNDED, border_style="green", padding=(0, 1)),
+            Panel(messages, title="Messages", box=box.ROUNDED, border_style="green", padding=(0, 1), height=message_panel_height),
         )
 
     @staticmethod
