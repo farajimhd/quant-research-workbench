@@ -32,7 +32,9 @@ class ReferenceGatewayConfig:
     massive_base_url: str
     massive_api_key_present: bool
     ibkr_resolution_enabled: bool
+    ibkr_required: bool
     ibkr_base_url: str
+    preflight_enabled: bool
     active_ticker_check_enabled: bool
     active_ticker_check_market_hours_only: bool
     active_ticker_max_pages: int
@@ -43,6 +45,7 @@ class ReferenceGatewayConfig:
     market_hours_write_reason: str
     write_discovered_issues: bool
     write_canonical_graph: bool
+    immediate_tradability_block_enabled: bool
     resolve_stale_issues: bool
     rebuild_tradable_on_execute: bool
     rebuild_tradable_in_test_mode: bool
@@ -84,8 +87,10 @@ class ReferenceGatewayConfig:
             source_massive_enabled=env_bool("REFERENCE_GATEWAY_MASSIVE_ENABLED", True),
             massive_base_url=env_string("MASSIVE_BASE_URL", "https://api.massive.com").rstrip("/"),
             massive_api_key_present=bool(env_string("MASSIVE_API_KEY", "")),
-            ibkr_resolution_enabled=env_bool("REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED", False),
+            ibkr_resolution_enabled=env_bool("REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED", True),
+            ibkr_required=env_bool("REFERENCE_GATEWAY_IBKR_REQUIRED", True),
             ibkr_base_url=env_string("IBKR_CPAPI_BASE_URL", "https://localhost:5000/v1/api").rstrip("/"),
+            preflight_enabled=env_bool("REFERENCE_GATEWAY_PREFLIGHT_ENABLED", True),
             active_ticker_check_enabled=env_bool("REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_ENABLED", False),
             active_ticker_check_market_hours_only=env_bool("REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_MARKET_HOURS_ONLY", True),
             active_ticker_max_pages=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES", 1_000),
@@ -96,6 +101,7 @@ class ReferenceGatewayConfig:
             market_hours_write_reason=env_string("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON", ""),
             write_discovered_issues=env_bool("REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES", True),
             write_canonical_graph=env_bool("REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH", True),
+            immediate_tradability_block_enabled=env_bool("REFERENCE_GATEWAY_IMMEDIATE_TRADABILITY_BLOCK_ENABLED", True),
             resolve_stale_issues=env_bool("REFERENCE_GATEWAY_RESOLVE_STALE_ISSUES", True),
             rebuild_tradable_on_execute=env_bool("REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE", True),
             rebuild_tradable_in_test_mode=env_bool("REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE", False),

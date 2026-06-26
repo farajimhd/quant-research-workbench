@@ -122,6 +122,8 @@ def issue_message(candidate: MissingTickerCandidate) -> str:
         return f"Massive active ticker {candidate.ticker} is missing from q_live and IBKR lookup failed."
     if candidate.proposed_action == "open_mapping_issue_ambiguous_ibkr_contract":
         return f"Massive active ticker {candidate.ticker} is missing from q_live and IBKR returned multiple plausible stock contracts."
+    if candidate.proposed_action == "open_mapping_issue_missing_unique_ibkr_conid":
+        return f"Massive active ticker {candidate.ticker} is missing from q_live and no unique IBKR stock contract was resolved."
     return f"Massive active ticker {candidate.ticker} is missing from q_live and needs mapping before it can become tradable."
 
 

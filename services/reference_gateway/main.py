@@ -19,10 +19,13 @@ from services.reference_gateway.issue_resolution import resolve_stale_active_tic
 from services.reference_gateway.issue_writer import write_active_ticker_mapping_issues, write_graph_mapping_issues
 from services.reference_gateway.market_publications import ensure_market_publication_schema
 from services.reference_gateway.policy import evaluate_write_policy
+from services.reference_gateway.preflight import run_preflight
 from services.reference_gateway.publication_maintenance import run_recent_publication_gap_fill
 from services.reference_gateway.publication_rebuild import rebuild_tradable_publications
+from services.reference_gateway.runtime_log import RuntimeLogger
 from services.reference_gateway.table_groups import table_group_markdown
 from services.reference_gateway.terminal import OperationRecord, ReferenceRunRecord, render_reference_run
+from services.reference_gateway.tradable_blocker import block_latest_universe_for_open_issues
 from services.reference_gateway.tradability import tradability_rule_markdown
 
 
@@ -89,6 +92,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--market-publication-gap-fill", action=argparse.BooleanOptionalAction, default=None, help="Run recent coverage-aware reference publication gap fill after audit in execute mode.")
     parser.add_argument("--daemon", action=argparse.BooleanOptionalAction, default=None, help="Run repeated audit/sync cycles. Active-window cycles are read-only unless an override is supplied.")
+    parser.add_argument("--preflight", action=argparse.BooleanOptionalAction, default=None, help="Check ClickHouse, storage, Massive, and IBKR dependencies before doing work.")
+    parser.add_argument("--ibkr-resolution", action=argparse.BooleanOptionalAction, default=None, help="Use IBKR Client Portal for active ticker conid resolution.")
+    parser.add_argument("--ibkr-required", action=argparse.BooleanOptionalAction, default=None, help="Fail preflight when IBKR Client Portal is unavailable.")
+    parser.add_argument("--immediate-tradability-block", action=argparse.BooleanOptionalAction, default=None, help="Immediately publish latest-universe non-tradable replacement rows for open issues.")
     return parser.parse_args()
 
 
@@ -124,6 +131,14 @@ def main() -> None:
         os.environ["REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_ENABLED"] = "true" if args.market_publication_gap_fill else "false"
     if args.daemon is not None:
         os.environ["REFERENCE_GATEWAY_DAEMON"] = "true" if args.daemon else "false"
+    if args.preflight is not None:
+        os.environ["REFERENCE_GATEWAY_PREFLIGHT_ENABLED"] = "true" if args.preflight else "false"
+    if args.ibkr_resolution is not None:
+        os.environ["REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED"] = "true" if args.ibkr_resolution else "false"
+    if args.ibkr_required is not None:
+        os.environ["REFERENCE_GATEWAY_IBKR_REQUIRED"] = "true" if args.ibkr_required else "false"
+    if args.immediate_tradability_block is not None:
+        os.environ["REFERENCE_GATEWAY_IMMEDIATE_TRADABILITY_BLOCK_ENABLED"] = "true" if args.immediate_tradability_block else "false"
     if args.print_rules:
         print(tradability_rule_markdown())
         return
@@ -137,6 +152,7 @@ def main() -> None:
     write_policy = evaluate_write_policy(config)
     rich_output = config.terminal_rich_enabled
     run_started = time.perf_counter()
+    logger = RuntimeLogger.from_env()
     record = ReferenceRunRecord(config=config, write_policy=write_policy)
 
     def emit(message: str) -> None:
@@ -145,6 +161,7 @@ def main() -> None:
 
     def add_operation(name: str, status: str, detail: str = "", rows: int | None = None, seconds: float | None = None) -> None:
         record.operations.append(OperationRecord(name=name, status=status, detail=detail, rows=rows, seconds=seconds))
+        logger.event("operation", name=name, status=status, detail=detail, rows=rows, seconds=seconds)
 
     emit("=" * 96)
     emit("Reference Gateway audit")
@@ -189,6 +206,32 @@ def main() -> None:
         )
     )
     emit("=" * 96)
+    logger.event(
+        "run_started",
+        config=config.public_dict(),
+        write_policy=asdict(write_policy),
+        argv=sys.argv[1:],
+    )
+    should_check_tickers = args.active_ticker_check if args.active_ticker_check is not None else config.active_ticker_check_enabled
+    if config.preflight_enabled:
+        started = time.perf_counter()
+        preflight = run_preflight(config, require_active_ticker_dependencies=bool(should_check_tickers), logger=logger)
+        add_operation(
+            "Dependency preflight",
+            preflight.status,
+            "; ".join(f"{check.name}={check.status}" for check in preflight.checks),
+            seconds=time.perf_counter() - started,
+        )
+        emit("preflight=" + json.dumps(preflight.public_dict(), sort_keys=True))
+        if preflight.status != "ok":
+            record.final_status = "failed"
+            record.wall_seconds = time.perf_counter() - run_started
+            logger.event("run_failed", reason="preflight_failed", wall_seconds=record.wall_seconds)
+            if rich_output:
+                render_reference_run(record)
+            sys.exit(2)
+    else:
+        add_operation("Dependency preflight", "skipped", "REFERENCE_GATEWAY_PREFLIGHT_ENABLED_FALSE")
     if config.execute and not write_policy.writes_allowed:
         add_operation("Promotion write policy", "skipped", write_policy.reason)
     if args.ensure_market_publication_schema:
@@ -240,7 +283,6 @@ def main() -> None:
         )
     if report_path:
         emit(f"report={report_path}")
-    should_check_tickers = args.active_ticker_check if args.active_ticker_check is not None else config.active_ticker_check_enabled
     if should_check_tickers:
         if config.active_ticker_check_market_hours_only and not active_collection_window(service_prefix="REFERENCE"):
             add_operation("Active ticker check", "skipped", "outside_reference_collection_window")
@@ -276,6 +318,17 @@ def main() -> None:
                     issue_write = write_active_ticker_mapping_issues(config, plan)
                     add_operation("Write active ticker issues", "completed", issue_write.reason, rows=issue_write.written, seconds=time.perf_counter() - started)
                     emit("active_ticker_issue_write=" + json.dumps(asdict(issue_write), sort_keys=True))
+                    if config.immediate_tradability_block_enabled:
+                        started = time.perf_counter()
+                        block_result = block_latest_universe_for_open_issues(config, reason="active_ticker_issue_write")
+                        add_operation(
+                            "Immediate tradability block",
+                            block_result.status,
+                            block_result.reason,
+                            rows=block_result.rows_blocked,
+                            seconds=time.perf_counter() - started,
+                        )
+                        emit("immediate_tradability_block=" + json.dumps(asdict(block_result), sort_keys=True))
                 else:
                     add_operation("Write active ticker issues", "skipped", "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
                     emit("active_ticker_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
@@ -289,6 +342,17 @@ def main() -> None:
                         graph_issue_write = write_graph_mapping_issues(config, graph_write.issues)
                         add_operation("Write graph issues", "completed", graph_issue_write.reason, rows=graph_issue_write.written, seconds=time.perf_counter() - started)
                         emit("canonical_graph_issue_write=" + json.dumps(asdict(graph_issue_write), sort_keys=True))
+                        if config.immediate_tradability_block_enabled:
+                            started = time.perf_counter()
+                            block_result = block_latest_universe_for_open_issues(config, reason="canonical_graph_issue_write")
+                            add_operation(
+                                "Immediate tradability block",
+                                block_result.status,
+                                block_result.reason,
+                                rows=block_result.rows_blocked,
+                                seconds=time.perf_counter() - started,
+                            )
+                            emit("immediate_tradability_block=" + json.dumps(asdict(block_result), sort_keys=True))
                     elif graph_write.issues:
                         add_operation("Write graph issues", "skipped", "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
                         emit("canonical_graph_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
@@ -341,6 +405,7 @@ def main() -> None:
         emit("market_publication_gap_fill=skipped reason=test_write_mode_requires_explicit_flag")
     record.final_status = report.status
     record.wall_seconds = time.perf_counter() - run_started
+    logger.event("run_finished", status=record.final_status, wall_seconds=record.wall_seconds, report_path=record.report_path)
     if rich_output:
         render_reference_run(record)
     emit(f"status={report.status} wall_seconds={report.wall_seconds:.2f}")

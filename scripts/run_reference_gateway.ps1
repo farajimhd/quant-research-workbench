@@ -15,6 +15,10 @@ param(
     [switch]$NoRebuildTradable,
     [switch]$RebuildTradableInTestMode,
     [switch]$NoMarketPublicationGapFill,
+    [switch]$NoPreflight,
+    [switch]$NoIbkrResolution,
+    [switch]$NoIbkrRequired,
+    [switch]$NoImmediateTradabilityBlock,
     [switch]$Daemon
 )
 
@@ -71,6 +75,18 @@ if ($RebuildTradableInTestMode) {
 }
 if ($NoMarketPublicationGapFill) {
     $argsList += "--no-market-publication-gap-fill"
+}
+if ($NoPreflight) {
+    $argsList += "--no-preflight"
+}
+if ($NoIbkrResolution) {
+    $argsList += "--no-ibkr-resolution"
+}
+if ($NoIbkrRequired) {
+    $argsList += "--no-ibkr-required"
+}
+if ($NoImmediateTradabilityBlock) {
+    $argsList += "--no-immediate-tradability-block"
 }
 if ($Daemon) {
     $argsList += "--daemon"

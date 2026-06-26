@@ -76,6 +76,15 @@ class IbkrReferenceClient:
         rows = result if isinstance(result, list) else result.get("results", []) if isinstance(result, dict) else []
         return [row for row in rows if isinstance(row, dict)]
 
+    def auth_status(self) -> dict[str, Any]:
+        result = fetch_json(
+            self.base_url + "/iserver/auth/status",
+            timeout=self.timeout_seconds,
+            allow_self_signed=True,
+            user_agent="quant-reference-gateway-ibkr/1.0",
+        )
+        return result if isinstance(result, dict) else {"raw_status": result}
+
 
 def append_api_key(url: str, api_key: str) -> str:
     if "apiKey=" in url:
@@ -145,4 +154,3 @@ def safe_url(url: str) -> str:
     params = parse.parse_qsl(parsed.query, keep_blank_values=True)
     redacted = [(key, "redacted" if key.lower() in {"apikey", "api_key", "token"} else value) for key, value in params]
     return parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parse.urlencode(redacted), parsed.fragment))
-

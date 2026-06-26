@@ -215,7 +215,7 @@ def proposed_action(overview: dict[str, Any], ibkr_rows: list[dict[str, Any]]) -
         return "candidate_ready_for_dry_run_graph_resolution"
     if ibkr_rows and len(exact_ibkr) > 1:
         return "open_mapping_issue_ambiguous_ibkr_contract"
-    return "candidate_needs_ibkr_resolution"
+    return "open_mapping_issue_missing_unique_ibkr_conid"
 
 
 def normalize_cik(value: Any) -> str:

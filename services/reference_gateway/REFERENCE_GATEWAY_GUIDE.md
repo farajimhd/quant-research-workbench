@@ -32,6 +32,8 @@ Market-hours behavior:
 - allowed to run
 - allowed to save observations, reports, and open issues
 - not allowed to promote ambiguous observations directly into canonical rows
+- allowed to immediately block any currently tradable latest-universe row
+  touched by a new open issue
 
 Example:
 
@@ -67,6 +69,12 @@ must make the affected issuer/security/listing/symbol non-tradable.
 
 The code resolves only cases with deterministic evidence. Ambiguous cases stay
 open and block tradability.
+
+When a new issue touches a row that is already tradable in the latest
+`feature_tradable_universe_v1`, the gateway inserts a newer replacement row for
+that same latest-universe key with `is_tradable = 0` and
+`exclusion_reason = 'open_mapping_issue'`. This targeted block is allowed during
+market hours because it reduces risk and does not promote any new instrument.
 
 ### 4. Canonical Graph Maintenance
 
@@ -246,7 +254,8 @@ Allowed:
 - query IBKR candidates when Client Portal is authenticated
 - write discovered issue rows
 - close deterministic stale issues
-- block unsafe instruments through issue rows
+- block unsafe instruments through issue rows and targeted latest-universe
+  replacement rows
 
 Blocked by default:
 
@@ -265,12 +274,35 @@ Allowed:
 - run recent market-publication gap fills
 - run full audit and write reports
 
+The service runs a startup preflight before normal work. It checks ClickHouse,
+artifact storage, Massive reference API access when active ticker reconciliation
+is requested, and IBKR Client Portal authentication when IBKR resolution is
+enabled or required. If a required dependency is missing, the gateway exits
+instead of running partial maintenance.
+
+Daemon runs also write JSONL runtime logs:
+
+```text
+<market-data>/prepared/reference_gateway/logs/<run_id>/reference_gateway_events.jsonl
+```
+
+The daemon stops if a child maintenance cycle exits non-zero. A broken
+dependency or failed publication step should not be hidden by the next loop.
+
 ## Common Commands
 
 Continuous daemon:
 
 ```powershell
 .\scripts\run_reference_gateway.ps1 -Execute -ActiveTickerCheck -Daemon
+```
+
+Controlled test-only guards:
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Execute -ActiveTickerCheck -Daemon -NoIbkrRequired
+.\scripts\run_reference_gateway.ps1 -Execute -ActiveTickerCheck -Daemon -NoPreflight
+.\scripts\run_reference_gateway.ps1 -Execute -ActiveTickerCheck -Daemon -NoImmediateTradabilityBlock
 ```
 
 One-shot after-hours maintenance:

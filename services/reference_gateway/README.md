@@ -127,7 +127,7 @@ python -m services.reference_gateway.main --active-ticker-check
 
 That pass fetches Massive active US stock tickers, compares them against
 `id_symbol_v1`/`id_listing_v1`, fetches compact Massive overview evidence for
-new tickers, and optionally queries IBKR Client Portal when
+new tickers, and queries IBKR Client Portal by default when
 `REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED=true`.
 
 Without `--execute`, this is still report-only. With `--execute`, discovered
@@ -139,17 +139,22 @@ In execute mode the gateway also rebuilds `feature_tradable_universe_v1` and
 `feature_scanner_static_v1` before audit, using the existing step 6 publisher.
 If active-ticker reconciliation writes new open issues, it rebuilds the feature
 publications again so the latest tradable universe reflects those new blockers.
+During market hours, full rebuilds are blocked by policy, so the gateway uses a
+targeted immediate blocker instead: it inserts newer replacement rows for
+currently tradable latest-universe symbols touched by open issues, with
+`is_tradable = 0` and `exclusion_reason = 'open_mapping_issue'`.
 
 The safety flow is:
 
 1. discover provider/reference issue
 2. write canonical open row in `id_mapping_issue_v1`
-3. insert clean new candidates into the canonical graph only when CIK, FIGI,
+3. immediately block any affected latest-universe tradable row
+4. insert clean new candidates into the canonical graph only when CIK, FIGI,
    exchange, currency, ticker, and one compatible IBKR conid are unambiguous
-4. close stale reference-gateway issues when the canonical symbol is now valid
-5. rebuild `feature_tradable_universe_v1`
-6. publish affected rows as `is_tradable = 0` unless every hard rule passes
-7. audit validates that no tradable row violates hard rules
+5. close stale reference-gateway issues when the canonical symbol is now valid
+6. rebuild `feature_tradable_universe_v1` after-hours or with an explicit override
+7. publish affected rows as `is_tradable = 0` unless every hard rule passes
+8. audit validates that no tradable row violates hard rules
 
 The canonical graph writer is intentionally conservative. It writes new rows to
 `id_issuer_v1`, `id_issuer_identifier_v1`, `id_security_v1`,
@@ -166,9 +171,12 @@ REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_MARKET_HOURS_ONLY=true
 REFERENCE_GATEWAY_ACTIVE_TICKER_PAGE_LIMIT=1000
 REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES=1000
 REFERENCE_GATEWAY_ACTIVE_TICKER_NEW_CANDIDATE_LIMIT=250
-REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED=false
+REFERENCE_GATEWAY_PREFLIGHT_ENABLED=true
+REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED=true
+REFERENCE_GATEWAY_IBKR_REQUIRED=true
 REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES=true
 REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH=true
+REFERENCE_GATEWAY_IMMEDIATE_TRADABILITY_BLOCK_ENABLED=true
 REFERENCE_GATEWAY_RESOLVE_STALE_ISSUES=true
 REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE=true
 REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE=false
@@ -190,6 +198,9 @@ python -m services.reference_gateway.main --execute --no-resolve-stale-issues
 python -m services.reference_gateway.main --execute --no-rebuild-tradable
 python -m services.reference_gateway.main --execute --rebuild-tradable-in-test-mode
 python -m services.reference_gateway.main --execute --no-market-publication-gap-fill
+python -m services.reference_gateway.main --execute --no-preflight
+python -m services.reference_gateway.main --execute --no-ibkr-required
+python -m services.reference_gateway.main --execute --no-immediate-tradability-block
 ```
 
 Wrapper equivalents:
@@ -201,11 +212,14 @@ Wrapper equivalents:
 .\scripts\run_reference_gateway.ps1 -Execute -NoRebuildTradable
 .\scripts\run_reference_gateway.ps1 -Execute -RebuildTradableInTestMode
 .\scripts\run_reference_gateway.ps1 -Execute -NoMarketPublicationGapFill
+.\scripts\run_reference_gateway.ps1 -Execute -NoPreflight
+.\scripts\run_reference_gateway.ps1 -Execute -NoIbkrRequired
+.\scripts\run_reference_gateway.ps1 -Execute -NoImmediateTradabilityBlock
 ```
 
-Enable IBKR resolution only when Client Portal Gateway is authenticated. IBKR
-results are compacted to candidate contract fields; the gateway does not persist
-raw IBKR payloads.
+IBKR Client Portal Gateway should be running and authenticated for active ticker
+maintenance. IBKR results are compacted to candidate contract fields; the
+gateway does not persist raw IBKR payloads.
 
 Reports are written under:
 
@@ -217,6 +231,12 @@ or by default:
 
 ```text
 <market-data>/prepared/reference_gateway/reports
+```
+
+Daemon runtime logs are written under:
+
+```text
+<market-data>/prepared/reference_gateway/logs/<run_id>/reference_gateway_events.jsonl
 ```
 
 ## Scheduling Policy
@@ -241,6 +261,8 @@ promotion, tradable/scanner rebuilds, and heavy market-publication fills unless
 an explicit override is supplied. The gateway may still write safe staged
 evidence and issue rows. This lets it keep observing providers and blocking
 unsafe instruments without changing the active tradable publication mid-session.
+If the process opens an issue that touches a currently tradable latest-universe
+row, immediate blocking remains enabled because it only reduces trading risk.
 
 If a market-hours promotion operation is truly required, it must be explicit:
 
