@@ -17,6 +17,7 @@ from research.mlops.data.rolling import RollingReadyIndexBlock
 from research.mlops.rolling_loader.loader import RollingContextLoader
 from research.mlops.rolling_loader.materialized_cache import partition_ready_blocks
 from research.mlops.rolling_loader.profiler import RollingLoaderProfiler
+from research.mlops.rolling_loader.run_build_materialized_cache import _build_task_specs
 from research.mlops.rolling_loader.synthetic import iter_synthetic_events, synthetic_external_updates, synthetic_rows_by_ticker
 
 
@@ -28,6 +29,9 @@ def main() -> int:
     assert len(partitions) == 4
     assert all(count > 0 for count in partition_counts), partition_counts
     assert max(partition_counts) - min(partition_counts) <= 1, partition_counts
+    task_specs = _build_task_specs((large_block,), batch_size=250, workers=4)
+    assert [worker_id for worker_id, _blocks in task_specs[:4]] == [0, 1, 2, 3]
+    assert [int(blocks[0].origin_offsets[0]) for _worker_id, blocks in task_specs[:4]] == [0, 250, 500, 750]
 
     loader_config = RollingLoaderConfig(
         batch_size=16,

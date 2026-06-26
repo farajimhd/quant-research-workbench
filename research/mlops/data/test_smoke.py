@@ -58,6 +58,7 @@ def make_synthetic_events(count: int = 1024, *, ticker: str = "TEST") -> tuple[C
 def main() -> int:
     smoke_streaming_replay()
     smoke_ticker_blocks()
+    smoke_rolling_ready_index_balanced_cap()
     smoke_rolling_provider()
     return 0
 
@@ -125,6 +126,36 @@ def smoke_ticker_blocks() -> None:
         f"samples={batch.header_uint8.shape[0]} labels={len(batch.labels)} "
         f"samples_per_sec={batch.profile.samples_per_second():.1f}"
     )
+
+
+def smoke_rolling_ready_index_balanced_cap() -> None:
+    config = RollingMarketDataConfig(
+        short_context_chunks=2,
+        long_context_lags=(),
+        sample_stride_events=1,
+        batch_size=8,
+        max_ready_samples=24,
+    )
+    engine = RollingMarketSampleEngine(config)
+    engine.append_rows_by_ticker(synthetic_rows_by_ticker(tickers=6, rows_per_ticker=512))
+    blocks = engine.build_ready_index_blocks(max_samples=24)
+    counts = {block.ticker: block.sample_count for block in blocks}
+    assert len(blocks) == 6, counts
+    assert sum(counts.values()) == 24, counts
+    assert set(counts.values()) == {4}, counts
+    for block in blocks:
+        assert np.all(block.origin_offsets[1:] == block.origin_offsets[:-1] + 1)
+        rows = engine.rows_by_ticker[block.ticker]
+        ordinals = rows["ordinal"][block.origin_offsets]
+        assert np.all(ordinals[1:] == ordinals[:-1] + 1)
+    engine.mark_processed(engine.build_ready_indices(max_samples=24))
+    next_blocks = engine.build_ready_index_blocks(max_samples=24)
+    next_counts = {block.ticker: block.sample_count for block in next_blocks}
+    assert len(next_blocks) == 6, next_counts
+    for previous, current in zip(blocks, next_blocks, strict=True):
+        assert previous.ticker == current.ticker
+        assert int(current.origin_offsets[0]) == int(previous.origin_offsets[-1]) + 1
+    print("rolling_ready_index_balanced_cap_ok tickers=6 samples=24")
 
 
 def smoke_rolling_provider() -> None:

@@ -494,7 +494,6 @@ class RollingMarketSampleEngine:
         until a concrete batch is materialized.
         """
 
-        blocks: list[RollingReadyIndexBlock] = []
         context = int(self.config.events_per_chunk)
         lags = self.context_lags
         if not lags:
@@ -502,27 +501,42 @@ class RollingMarketSampleEngine:
         min_origin_offset = int(self.config.max_context_lag) + context - 1
         stride = max(1, int(self.config.sample_stride_events))
         cap = int(max_samples or self.config.max_ready_samples)
-        remaining = cap if cap > 0 else 0
-
+        eligible: list[tuple[str, np.ndarray, int, int, bool]] = []
         for ticker in sorted(self.rows_by_ticker):
             rows = self.rows_by_ticker[ticker]
             if rows.shape[0] <= min_origin_offset:
                 continue
             start_offset = max(min_origin_offset, self._processed_offsets.get(ticker, min_origin_offset))
-            origin_offsets = np.arange(start_offset, rows.shape[0], stride, dtype=np.int64)
+            if start_offset >= rows.shape[0]:
+                continue
+            available = ((int(rows.shape[0]) - int(start_offset) - 1) // stride) + 1
+            has_gaps = bool(rows.shape[0] > 1 and np.any(rows["ordinal"][1:] != rows["ordinal"][:-1] + 1))
+            eligible.append((ticker, rows, start_offset, int(available), has_gaps))
+
+        if not eligible:
+            return ()
+        allocations = _allocate_ready_sample_cap([item[3] for item in eligible], cap) if cap > 0 else [item[3] for item in eligible]
+        blocks: list[RollingReadyIndexBlock] = []
+        for (ticker, rows, start_offset, available, has_gaps), allocation in zip(eligible, allocations, strict=True):
+            if allocation <= 0:
+                continue
+            if cap > 0:
+                candidate_count = int(allocation)
+                if has_gaps:
+                    candidate_count = min(int(available), max(candidate_count * 4, candidate_count + 1024))
+                end_offset = min(int(rows.shape[0]), int(start_offset) + stride * candidate_count)
+                origin_offsets = np.arange(start_offset, end_offset, stride, dtype=np.int64)
+            else:
+                origin_offsets = np.arange(start_offset, rows.shape[0], stride, dtype=np.int64)
             if origin_offsets.size == 0:
                 continue
-            if rows.shape[0] > 1 and np.any(rows["ordinal"][1:] != rows["ordinal"][:-1] + 1):
+            if has_gaps:
                 origin_offsets = _filter_contiguous_origins(rows, origin_offsets, lags, context)
                 if origin_offsets.size == 0:
                     continue
-            if remaining > 0:
-                if origin_offsets.shape[0] > remaining:
-                    origin_offsets = origin_offsets[:remaining]
-                remaining -= int(origin_offsets.shape[0])
+            if cap > 0 and origin_offsets.shape[0] > allocation:
+                origin_offsets = origin_offsets[:allocation]
             blocks.append(RollingReadyIndexBlock(ticker=ticker, rows=rows, origin_offsets=origin_offsets))
-            if cap > 0 and remaining <= 0:
-                break
         return tuple(blocks)
 
     def iter_ready_sample_batches(
@@ -1646,6 +1660,26 @@ def _filter_contiguous_origins(rows: np.ndarray, origin_offsets: np.ndarray, lag
                 valid[index] = False
                 break
     return origin_offsets[valid]
+
+
+def _allocate_ready_sample_cap(available_counts: list[int], cap: int) -> list[int]:
+    allocations = [0 for _count in available_counts]
+    remaining = max(0, int(cap))
+    active = [index for index, count in enumerate(available_counts) if int(count) > 0]
+    while active and remaining > 0:
+        quota = max(1, remaining // len(active))
+        next_active: list[int] = []
+        for index in active:
+            available = max(0, int(available_counts[index]) - int(allocations[index]))
+            take = min(available, quota, remaining)
+            allocations[index] += int(take)
+            remaining -= int(take)
+            if allocations[index] < int(available_counts[index]):
+                next_active.append(index)
+            if remaining <= 0:
+                break
+        active = next_active
+    return allocations
 
 
 def _rows_to_feature_arrays(rows: list[dict[str, float]]) -> dict[str, np.ndarray]:

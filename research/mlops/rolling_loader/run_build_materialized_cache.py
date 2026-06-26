@@ -39,7 +39,6 @@ from research.mlops.rolling_loader.materialized_cache import (
     RollingMaterializedShardWriter,
     cleanup_orphan_materialized_tmp,
     load_existing_materialized_shards,
-    partition_ready_blocks,
     timestamp_us_to_utc,
 )
 from research.mlops.rolling_loader.streaming_training import (
@@ -358,16 +357,22 @@ def main() -> int:
                 stats.block_index += 1
                 continue
             stats.phase = "materializing"
-            worker_partitions = partition_ready_blocks(ready_blocks, max(1, int(args.workers)))
             futures: dict[Future[dict[str, Any]], dict[str, Any]] = {}
             next_slice_id = 0
             next_to_write = 0
             completed: dict[int, dict[str, Any]] = {}
-            task_queue = deque(_build_task_specs(worker_partitions, batch_size=max(1, int(args.builder_batch_size))))
-            partition_samples = [sum(block.sample_count for block in partition) for partition in worker_partitions]
+            task_specs = _build_task_specs(
+                ready_blocks,
+                batch_size=max(1, int(args.builder_batch_size)),
+                workers=max(1, int(args.workers)),
+            )
+            task_queue = deque(task_specs)
+            worker_task_samples = [0 for _index in range(max(1, int(args.workers)))]
+            for worker_id, blocks_for_task in task_specs:
+                worker_task_samples[int(worker_id)] += sum(block.sample_count for block in blocks_for_task)
             stats.message(
-                f"worker partitions active={sum(1 for value in partition_samples if value):,}/{len(partition_samples):,} "
-                f"samples={','.join(str(int(value)) for value in partition_samples)}"
+                f"ordered worker tasks active={sum(1 for value in worker_task_samples if value):,}/{len(worker_task_samples):,} "
+                f"samples={','.join(str(int(value)) for value in worker_task_samples)}"
             )
 
             def submit_available() -> None:
@@ -564,38 +569,35 @@ def _materialize_worker_task(
     }
 
 
-def _build_task_specs(partitions: list[list[RollingReadyIndexBlock]], *, batch_size: int) -> list[tuple[int, list[RollingReadyIndexBlock]]]:
-    per_worker: list[list[tuple[int, list[RollingReadyIndexBlock]]]] = []
-    for worker_id, blocks in enumerate(partitions):
-        worker_specs: list[tuple[int, list[RollingReadyIndexBlock]]] = []
-        current: list[RollingReadyIndexBlock] = []
-        current_samples = 0
-        for block in blocks:
-            offset = 0
-            while offset < block.origin_offsets.shape[0]:
-                remaining = max(1, int(batch_size) - current_samples)
-                take = min(remaining, int(block.origin_offsets.shape[0] - offset))
-                sliced = RollingReadyIndexBlock(
-                    ticker=block.ticker,
-                    rows=block.rows,
-                    origin_offsets=block.origin_offsets[offset : offset + take],
-                )
-                current.append(sliced)
-                current_samples += int(take)
-                offset += int(take)
-                if current_samples >= int(batch_size):
-                    worker_specs.append((worker_id, current))
-                    current = []
-                    current_samples = 0
-        if current:
-            worker_specs.append((worker_id, current))
-        per_worker.append(worker_specs)
+def _build_task_specs(
+    blocks: tuple[RollingReadyIndexBlock, ...],
+    *,
+    batch_size: int,
+    workers: int,
+) -> list[tuple[int, list[RollingReadyIndexBlock]]]:
     specs: list[tuple[int, list[RollingReadyIndexBlock]]] = []
-    max_worker_tasks = max((len(items) for items in per_worker), default=0)
-    for task_index in range(max_worker_tasks):
-        for worker_specs in per_worker:
-            if task_index < len(worker_specs):
-                specs.append(worker_specs[task_index])
+    worker_count = max(1, int(workers))
+    current: list[RollingReadyIndexBlock] = []
+    current_samples = 0
+    for block in blocks:
+        offset = 0
+        while offset < block.origin_offsets.shape[0]:
+            remaining = max(1, int(batch_size) - current_samples)
+            take = min(remaining, int(block.origin_offsets.shape[0] - offset))
+            sliced = RollingReadyIndexBlock(
+                ticker=block.ticker,
+                rows=block.rows,
+                origin_offsets=block.origin_offsets[offset : offset + take],
+            )
+            current.append(sliced)
+            current_samples += int(take)
+            offset += int(take)
+            if current_samples >= int(batch_size):
+                specs.append((len(specs) % worker_count, current))
+                current = []
+                current_samples = 0
+    if current:
+        specs.append((len(specs) % worker_count, current))
     return specs
 
 
