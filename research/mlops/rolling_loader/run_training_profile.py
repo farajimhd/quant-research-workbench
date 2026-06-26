@@ -65,6 +65,7 @@ DEFAULTS: dict[str, Any] = {
     "macro_lookback_days": 400,
     "max_replay_windows": 100_000,
     "progress_every_blocks": 100,
+    "start_utc": "2019-01-05T00:00:00Z",
     "output_root": "D:/market-data/prepared/data_provider_profiles/rolling_loader_training",
 }
 
@@ -98,7 +99,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-stride-events", type=int, default=DEFAULTS["sample_stride_events"])
     parser.add_argument("--long-context-lags", default="", help="Comma-separated additional event lags.")
     parser.add_argument("--start-timestamp-us", type=int, default=0)
-    parser.add_argument("--start-utc", default="", help="Alternative replay start, for example 2025-01-02T15:00:00Z.")
+    parser.add_argument("--start-utc", default=DEFAULTS["start_utc"], help="Replay start, for example 2019-01-05T00:00:00Z.")
     parser.add_argument("--news-lookback-days", type=int, default=DEFAULTS["news_lookback_days"])
     parser.add_argument("--sec-lookback-days", type=int, default=DEFAULTS["sec_lookback_days"])
     parser.add_argument("--xbrl-lookback-days", type=int, default=DEFAULTS["xbrl_lookback_days"])
@@ -371,8 +372,7 @@ def replay_training_batches(
             exhausted = True
             break
         if replay_mode == "time-window":
-            window_start_us = current_time_us
-            window_end_us = current_time_us + int(loader_config.replay_time_window_us)
+            cursor_start_us = current_time_us
             with StepTimer(
                 recorder,
                 memory,
@@ -380,17 +380,21 @@ def replay_training_batches(
                 {
                     "block_index": block_count,
                     "active_tickers": len(active_tickers),
-                    "window_start_us": window_start_us,
-                    "window_end_us": window_end_us,
+                    "cursor_start_us": cursor_start_us,
                     "replay_window_us": int(loader_config.replay_time_window_us),
                 },
             ):
-                block = source.fetch_time_window(
+                block = source.fetch_next_time_window(
                     tickers=active_tickers,
-                    start_exclusive_us=window_start_us,
-                    end_inclusive_us=window_end_us,
+                    start_exclusive_us=cursor_start_us,
+                    window_us=int(loader_config.replay_time_window_us),
                 )
-            context_start_us = window_start_us
+            if block.row_count == 0:
+                exhausted = True
+                break
+            event_window_start_us = int(block.min_timestamp_us or cursor_start_us)
+            window_end_us = event_window_start_us + int(loader_config.replay_time_window_us)
+            context_start_us = cursor_start_us
             context_end_us = window_end_us
             current_time_us = window_end_us
         else:

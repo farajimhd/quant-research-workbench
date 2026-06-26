@@ -85,8 +85,9 @@ Use `initialize_clickhouse_replay()` to build a guide-aligned replay state:
 - later replay blocks fetch only incremental context updates
 - cursors are positioned at the warm high-frequency boundary
 
-If `--start-timestamp-us` is omitted, the profiler uses a compatibility mode
-that warms from the start of the configured index table.
+A zero replay start is a compatibility mode that warms from the start of the
+configured index table. The training-accurate profiler passes a replay start by
+default.
 
 ## Materialized Batch
 
@@ -114,7 +115,7 @@ ClickHouse URL/user/password from the standard `.env` discovery path unless
 
 The default profile uses `--context-chunks 32 --context-chunk-stride-events 64`.
 Pass `--start-timestamp-us <utc_microseconds>` to initialize all caches as-of a
-specific replay timestamp instead of using the profiler compatibility warmup.
+specific replay timestamp. A zero value keeps the older compatibility warmup.
 
 The default profile is ID-only for low-frequency context. This matches the
 intended training/production flow where sample pointers carry stable cache ids
@@ -166,13 +167,13 @@ memory samples, cache sizes, and a final summary under one run directory.
 Laptop form:
 
 ```powershell
-python -m research.mlops.rolling_loader.run_training_profile --database market_sip_compact --events-table events --index-table train_2019_to_2025 --batch-size 4096 --batches 4 --replay-mode time-window --replay-window-us 200000 --context-chunks 32 --context-chunk-stride-events 64 --sample-stride-events 1 --start-utc 2025-01-02T15:00:00Z --max-threads 8 --max-memory-usage 80G --materialize-external-payloads --run-name train_all_b4096_tw200ms_20250102_1500
+python -m research.mlops.rolling_loader.run_training_profile --database market_sip_compact --events-table events --index-table train_2019_to_2025 --batch-size 4096 --batches 4 --replay-mode time-window --replay-window-us 200000 --context-chunks 32 --context-chunk-stride-events 64 --sample-stride-events 1 --start-utc 2019-01-05T00:00:00Z --max-threads 8 --max-memory-usage 80G --materialize-external-payloads --run-name train_all_b4096_tw200ms_20190105
 ```
 
 Direct workstation form:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_training_profile.py --database market_sip_compact --events-table events --index-table train_2019_to_2025 --batch-size 4096 --batches 4 --replay-mode time-window --replay-window-us 200000 --context-chunks 32 --context-chunk-stride-events 64 --sample-stride-events 1 --start-utc 2025-01-02T15:00:00Z --max-threads 8 --max-memory-usage 80G --materialize-external-payloads --run-name train_all_b4096_tw200ms_20250102_1500
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_training_profile.py --database market_sip_compact --events-table events --index-table train_2019_to_2025 --batch-size 4096 --batches 4 --replay-mode time-window --replay-window-us 200000 --context-chunks 32 --context-chunk-stride-events 64 --sample-stride-events 1 --start-utc 2019-01-05T00:00:00Z --max-threads 8 --max-memory-usage 80G --materialize-external-payloads --run-name train_all_b4096_tw200ms_20190105
 ```
 
 Outputs are written under:
@@ -190,11 +191,16 @@ Use `--no-materialize-external-payloads` to measure the ID-only path and
 `--materialize-external-payloads` to measure the raw external payload gather
 path that trainable encoders need.
 
-The default replay mode is `time-window`: each block advances global replay time
-by `RollingLoaderConfig.replay_time_window_us` (`200000` microseconds by
-default). Market events and low-frequency/global updates are fetched for that
-exact time window. Tickers without market events in the window keep their cache
-state but emit no samples for that window.
+The default replay mode is `time-window`: each block starts at the next market
+event after the current replay cursor, then loads the following
+`RollingLoaderConfig.replay_time_window_us` (`200000` microseconds by default).
+This keeps the profiler anchored to event time while skipping empty overnight,
+weekend, and holiday wall-clock windows. Low-frequency/global updates since the
+previous replay cursor are applied before samples are emitted from the next
+event window. Tickers without market events in the window keep their cache state
+but emit no samples for that window.
+
+The default replay start is `2019-01-05T00:00:00Z`.
 
 By default `--tickers 0` means no ticker cap. The profiler initializes every
 ticker from the index that has a valid event at or before `--start-utc` and can
