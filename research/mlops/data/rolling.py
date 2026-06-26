@@ -1054,34 +1054,30 @@ class RollingMarketSampleEngine:
         global_market_bar_mask = np.zeros((batch, len(global_symbols), len(global_timeframes)), dtype=np.bool_)
         macro_rows: list[dict[str, float]] = []
         global_rows: dict[str, list[dict[str, float]]] = {symbol: [] for symbol in self.config.global_symbols}
-        origin_offsets_by_ticker: dict[str, dict[int, int | None]] = {}
+        origin_offsets_by_ticker = _origin_offsets_by_sample_ticker(samples, self.rows_by_ticker)
         global_symbol_set = {str(symbol).upper() for symbol in global_symbols}
-        _call_progress(progress_callback, "features:collect", 1, max(int(progress_total), batch + 4))
-        for sample_index, sample in enumerate(samples):
-            for symbol in (str(sample.ticker).upper(), *(str(value).upper() for value in global_symbols)):
-                if symbol not in origin_offsets_by_ticker:
-                    origin_offsets_by_ticker[symbol] = {}
-                if sample_index not in origin_offsets_by_ticker[symbol]:
-                    rows = self.rows_by_ticker.get(symbol)
-                    if rows is None or rows.size == 0:
-                        origin_offsets_by_ticker[symbol][sample_index] = None
-                    elif symbol == str(sample.ticker).upper():
-                        origin_offsets_by_ticker[symbol][sample_index] = _ordinal_position(rows, int(sample.origin_ordinal))
-                    else:
-                        timestamps = rows["sip_timestamp_us"].astype(np.int64, copy=False)
-                        offset = int(np.searchsorted(timestamps, int(sample.origin_timestamp_us), side="right") - 1)
-                        origin_offsets_by_ticker[symbol][sample_index] = offset if offset >= 0 else None
+        origin_timestamps = np.fromiter((int(sample.origin_timestamp_us) for sample in samples), dtype=np.int64, count=batch)
+        ticker_collect_count = len(origin_offsets_by_ticker)
+        collect_total = max(1, ticker_collect_count + len(global_symbols) + 1)
+        _call_progress(progress_callback, "features:collect", 0, collect_total)
+        _maybe_call_progress(progress_callback, "features:collect", ticker_collect_count, collect_total)
+        for global_index, symbol_raw in enumerate(global_symbols, start=1):
+            symbol = str(symbol_raw).upper()
+            rows = self.rows_by_ticker.get(symbol)
+            global_offsets = _origin_offsets_by_timestamp(rows, origin_timestamps)
+            if global_offsets is not None:
+                existing = origin_offsets_by_ticker.get(symbol)
+                origin_offsets_by_ticker[symbol] = _merge_origin_offset_groups(existing, global_offsets)
+            _maybe_call_progress(progress_callback, "features:collect", ticker_collect_count + global_index, collect_total)
+        _call_progress(progress_callback, "features:collect", collect_total, collect_total)
         today_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         symbol_count = len(origin_offsets_by_ticker)
         feature_total = max(int(progress_total), batch + symbol_count + 4)
-        for symbol_index, (symbol, offsets_by_sample) in enumerate(origin_offsets_by_ticker.items(), start=1):
+        for symbol_index, (symbol, (sample_indexes, origin_offsets)) in enumerate(origin_offsets_by_ticker.items(), start=1):
             rows = self.rows_by_ticker.get(symbol)
             bars = np.zeros((batch, fields), dtype=np.float32)
             mask = np.zeros((batch,), dtype=np.bool_)
-            valid_items = [(sample_index, offset) for sample_index, offset in offsets_by_sample.items() if offset is not None]
-            if rows is not None and rows.size and valid_items:
-                sample_indexes = np.asarray([item[0] for item in valid_items], dtype=np.int64)
-                origin_offsets = np.asarray([item[1] for item in valid_items], dtype=np.int64)
+            if rows is not None and rows.size and sample_indexes.size and origin_offsets.size:
                 use_shared_cache = symbol in global_symbol_set
                 symbol_bars, symbol_mask = _today_asof_bars_from_events(
                     rows,
@@ -1181,21 +1177,11 @@ class RollingMarketSampleEngine:
             labels[f"{prefix}_close"] = np.zeros((batch,), dtype=np.float32)
             labels[f"{prefix}_volume"] = np.zeros((batch,), dtype=np.float32)
 
-        by_ticker: dict[str, list[tuple[int, int]]] = {}
-        for batch_index, sample in enumerate(samples):
-            ticker_rows = self.rows_by_ticker.get(sample.ticker)
-            if ticker_rows is None or ticker_rows.size == 0:
-                continue
-            origin_offset = _ordinal_position(ticker_rows, int(sample.origin_ordinal))
-            if origin_offset is not None:
-                by_ticker.setdefault(sample.ticker, []).append((batch_index, origin_offset))
-
-        for ticker, indexed_offsets in by_ticker.items():
+        by_ticker = _origin_offsets_by_sample_ticker(samples, self.rows_by_ticker)
+        for ticker, (batch_indices, origin_offsets) in by_ticker.items():
             ticker_rows = self.rows_by_ticker.get(ticker)
             if ticker_rows is None or ticker_rows.size == 0:
                 continue
-            batch_indices = np.asarray([item[0] for item in indexed_offsets], dtype=np.int64)
-            origin_offsets = np.asarray([item[1] for item in indexed_offsets], dtype=np.int64)
             ticker_labels = build_future_time_bar_labels(
                 rows=ticker_rows,
                 origin_offsets=origin_offsets,
@@ -1209,13 +1195,19 @@ class RollingMarketSampleEngine:
 
     def _materialize_session_features(self, samples: tuple[RollingSampleIndex, ...]) -> dict[str, np.ndarray]:
         rows: list[dict[str, float]] = []
-        for sample in samples:
-            ticker_rows = self.rows_by_ticker.get(sample.ticker)
-            if ticker_rows is None or ticker_rows.size == 0:
+        offsets_by_ticker = _origin_offsets_by_sample_ticker(samples, self.rows_by_ticker)
+        offset_by_sample: dict[int, tuple[str, int]] = {}
+        for ticker, (sample_indexes, origin_offsets) in offsets_by_ticker.items():
+            for sample_index, origin_offset in zip(sample_indexes.tolist(), origin_offsets.tolist()):
+                offset_by_sample[int(sample_index)] = (ticker, int(origin_offset))
+        for sample_index, sample in enumerate(samples):
+            ticker_and_offset = offset_by_sample.get(int(sample_index))
+            if ticker_and_offset is None:
                 rows.append(_empty_session_features())
                 continue
-            origin_offset = _ordinal_position(ticker_rows, int(sample.origin_ordinal))
-            if origin_offset is None:
+            ticker, origin_offset = ticker_and_offset
+            ticker_rows = self.rows_by_ticker.get(ticker)
+            if ticker_rows is None or ticker_rows.size == 0:
                 rows.append(_empty_session_features())
                 continue
             rows.append(_session_features_from_prefix(ticker_rows[: origin_offset + 1]))
@@ -2112,6 +2104,102 @@ def _ordinal_position(rows: np.ndarray, ordinal: int) -> int | None:
     if position >= int(ordinals.shape[0]) or int(ordinals[position]) != int(ordinal):
         return None
     return position
+
+
+def _origin_offsets_by_sample_ticker(
+    samples: tuple[RollingSampleIndex, ...],
+    rows_by_ticker: Mapping[str, np.ndarray],
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    grouped: dict[str, list[tuple[int, RollingSampleIndex]]] = {}
+    for sample_index, sample in enumerate(samples):
+        grouped.setdefault(str(sample.ticker).upper(), []).append((sample_index, sample))
+
+    out: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for ticker, indexed_samples in grouped.items():
+        rows = rows_by_ticker.get(ticker)
+        if rows is None or rows.size == 0:
+            continue
+        sample_indexes: list[int] = []
+        origin_offsets: list[int] = []
+        fallback_indexes: list[int] = []
+        fallback_ordinals: list[int] = []
+        ordinals = rows["ordinal"].astype(np.int64, copy=False)
+        row_count = int(rows.shape[0])
+        for sample_index, sample in indexed_samples:
+            offset = _sample_metadata_origin_offset(sample, rows=rows, ordinals=ordinals, row_count=row_count)
+            if offset is not None:
+                sample_indexes.append(int(sample_index))
+                origin_offsets.append(int(offset))
+                continue
+            fallback_indexes.append(int(sample_index))
+            fallback_ordinals.append(int(sample.origin_ordinal))
+        if fallback_indexes:
+            requested = np.asarray(fallback_ordinals, dtype=np.int64)
+            positions = np.searchsorted(ordinals, requested, side="left").astype(np.int64, copy=False)
+            in_bounds = positions < row_count
+            matches = np.zeros((positions.shape[0],), dtype=np.bool_)
+            if bool(in_bounds.any()):
+                valid_positions = positions[in_bounds]
+                matches[in_bounds] = ordinals[valid_positions] == requested[in_bounds]
+            if bool(matches.any()):
+                sample_indexes.extend(int(fallback_indexes[index]) for index in np.flatnonzero(matches).tolist())
+                origin_offsets.extend(int(positions[index]) for index in np.flatnonzero(matches).tolist())
+        if sample_indexes:
+            out[ticker] = (
+                np.asarray(sample_indexes, dtype=np.int64),
+                np.asarray(origin_offsets, dtype=np.int64),
+            )
+    return out
+
+
+def _sample_metadata_origin_offset(
+    sample: RollingSampleIndex,
+    *,
+    rows: np.ndarray,
+    ordinals: np.ndarray,
+    row_count: int,
+) -> int | None:
+    try:
+        offset = int(sample.metadata.get("origin_offset", -1))
+    except Exception:
+        return None
+    if offset < 0 or offset >= int(row_count):
+        return None
+    if int(ordinals[offset]) != int(sample.origin_ordinal):
+        return None
+    return int(offset)
+
+
+def _origin_offsets_by_timestamp(rows: np.ndarray | None, timestamps_us: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+    if rows is None or rows.size == 0 or timestamps_us.size == 0:
+        return None
+    row_timestamps = rows["sip_timestamp_us"].astype(np.int64, copy=False)
+    offsets = np.searchsorted(row_timestamps, timestamps_us, side="right").astype(np.int64, copy=False) - 1
+    valid = offsets >= 0
+    if not bool(valid.any()):
+        return None
+    return np.flatnonzero(valid).astype(np.int64, copy=False), offsets[valid].astype(np.int64, copy=False)
+
+
+def _merge_origin_offset_groups(
+    existing: tuple[np.ndarray, np.ndarray] | None,
+    incoming: tuple[np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    if existing is None:
+        return incoming
+    existing_indexes, existing_offsets = existing
+    incoming_indexes, incoming_offsets = incoming
+    if incoming_indexes.size == 0:
+        return existing
+    if existing_indexes.size == 0:
+        return incoming
+    new_mask = ~np.isin(incoming_indexes, existing_indexes, assume_unique=False)
+    if not bool(new_mask.any()):
+        return existing
+    merged_indexes = np.concatenate([existing_indexes, incoming_indexes[new_mask]]).astype(np.int64, copy=False)
+    merged_offsets = np.concatenate([existing_offsets, incoming_offsets[new_mask]]).astype(np.int64, copy=False)
+    order = np.argsort(merged_indexes, kind="stable")
+    return merged_indexes[order], merged_offsets[order]
 
 
 def _metadata_int_tuple(value: Any, *, expected: int) -> tuple[int, ...] | None:
