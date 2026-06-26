@@ -9,6 +9,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 
+from research.mlops.compact_events import QUOTE_EVENT_TYPE, TRADE_EVENT_TYPE
 from research.mlops.data.audit import audit_temporal_batch
 from research.mlops.data.config import DataProviderConfig, ExternalAsOfContextConfig, MarketStreamConfig, RollingMarketDataConfig, TickerBlockDataConfig
 from research.mlops.data.providers import StreamingReplayBatchProvider
@@ -60,6 +61,7 @@ def main() -> int:
     smoke_ticker_blocks()
     smoke_rolling_ready_index_balanced_cap()
     smoke_rolling_ordinal_gap_materialization()
+    smoke_rolling_ready_index_filters_unencodable_windows()
     smoke_rolling_provider()
     return 0
 
@@ -187,6 +189,30 @@ def smoke_rolling_ordinal_gap_materialization() -> None:
     expected_processed = int(np.searchsorted(rows["ordinal"], int(samples[1].origin_ordinal), side="left")) + 1
     assert engine._processed_offsets["GAP"] == expected_processed
     print("rolling_ordinal_gap_materialization_ok samples=2")
+
+
+def smoke_rolling_ready_index_filters_unencodable_windows() -> None:
+    config = RollingMarketDataConfig(
+        short_context_chunks=1,
+        long_context_lags=(),
+        sample_stride_events=1,
+        batch_size=2,
+        max_ready_samples=4,
+        q_live_contexts=(),
+    )
+    engine = RollingMarketSampleEngine(config)
+    rows = make_synthetic_event_rows(384, low_ordinal=0)
+    rows[: config.events_per_chunk]["event_type"] = TRADE_EVENT_TYPE
+    rows[config.events_per_chunk]["event_type"] = QUOTE_EVENT_TYPE
+    engine.append_rows_by_ticker({"ENC": rows})
+
+    samples = engine.build_ready_indices(max_samples=4)
+    assert samples
+    assert int(samples[0].origin_ordinal) > config.events_per_chunk - 1
+    batch = engine.materialize_training_batch(samples[:2])
+    assert batch.headers_uint8.shape == (2, 1, 14)
+    assert batch.events_uint8.shape == (2, 1, 128, 16)
+    print("rolling_ready_index_filters_unencodable_windows_ok samples=2")
 
 
 def smoke_rolling_provider() -> None:

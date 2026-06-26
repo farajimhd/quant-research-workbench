@@ -12,7 +12,7 @@ from typing import Any, Iterable, Mapping
 import numpy as np
 
 from research.mlops.clickhouse import ClickHouseHttpClient, parse_size_bytes, quote_ident, sql_string
-from research.mlops.clickhouse_events import EVENT_ROW_DTYPE, PersistentClickHouseBytesClient, encode_unified_event_window
+from research.mlops.clickhouse_events import DEFAULT_CONTEXT_EVENTS, EVENT_ROW_DTYPE, PersistentClickHouseBytesClient, decode_price_array, encode_unified_event_window
 from research.mlops.compact_events import EVENT_BYTES, HEADER_BYTES, QUOTE_EVENT_TYPE, TRADE_EVENT_TYPE
 from research.mlops.data.config import ExternalAsOfContextConfig, RollingMarketDataConfig
 from research.mlops.data.contracts import (
@@ -501,7 +501,7 @@ class RollingMarketSampleEngine:
         min_origin_offset = int(self.config.max_context_lag) + context - 1
         stride = max(1, int(self.config.sample_stride_events))
         cap = int(max_samples or self.config.max_ready_samples)
-        eligible: list[tuple[str, np.ndarray, int, int, bool]] = []
+        eligible: list[tuple[str, np.ndarray, int, int]] = []
         for ticker in sorted(self.rows_by_ticker):
             rows = self.rows_by_ticker[ticker]
             if rows.shape[0] <= min_origin_offset:
@@ -510,30 +510,30 @@ class RollingMarketSampleEngine:
             if start_offset >= rows.shape[0]:
                 continue
             available = ((int(rows.shape[0]) - int(start_offset) - 1) // stride) + 1
-            has_gaps = bool(rows.shape[0] > 1 and np.any(rows["ordinal"][1:] != rows["ordinal"][:-1] + 1))
-            eligible.append((ticker, rows, start_offset, int(available), has_gaps))
+            eligible.append((ticker, rows, start_offset, int(available)))
 
         if not eligible:
             return ()
         allocations = _allocate_ready_sample_cap([item[3] for item in eligible], cap) if cap > 0 else [item[3] for item in eligible]
         blocks: list[RollingReadyIndexBlock] = []
-        for (ticker, rows, start_offset, available, has_gaps), allocation in zip(eligible, allocations, strict=True):
+        for (ticker, rows, start_offset, available), allocation in zip(eligible, allocations, strict=True):
             if allocation <= 0:
                 continue
             if cap > 0:
-                candidate_count = int(allocation)
-                if has_gaps:
-                    candidate_count = min(int(available), max(candidate_count * 4, candidate_count + 1024))
-                end_offset = min(int(rows.shape[0]), int(start_offset) + stride * candidate_count)
-                origin_offsets = np.arange(start_offset, end_offset, stride, dtype=np.int64)
+                candidate_count = min(int(available), max(int(allocation), 1))
+                origin_offsets = np.empty((0,), dtype=np.int64)
+                while True:
+                    end_offset = min(int(rows.shape[0]), int(start_offset) + stride * candidate_count)
+                    candidates = np.arange(start_offset, end_offset, stride, dtype=np.int64)
+                    origin_offsets = _filter_materializable_origins(rows, candidates, lags, context)
+                    if origin_offsets.shape[0] >= allocation or candidate_count >= int(available):
+                        break
+                    candidate_count = min(int(available), max(candidate_count * 2, candidate_count + 1024))
             else:
                 origin_offsets = np.arange(start_offset, rows.shape[0], stride, dtype=np.int64)
+                origin_offsets = _filter_materializable_origins(rows, origin_offsets, lags, context)
             if origin_offsets.size == 0:
                 continue
-            if has_gaps:
-                origin_offsets = _filter_contiguous_origins(rows, origin_offsets, lags, context)
-                if origin_offsets.size == 0:
-                    continue
             if cap > 0 and origin_offsets.shape[0] > allocation:
                 origin_offsets = origin_offsets[:allocation]
             blocks.append(RollingReadyIndexBlock(ticker=ticker, rows=rows, origin_offsets=origin_offsets))
@@ -630,13 +630,22 @@ class RollingMarketSampleEngine:
         origin_ord = np.asarray([sample.origin_ordinal for sample in sample_tuple], dtype=np.int64)
         origin_ts = np.asarray([sample.origin_timestamp_us for sample in sample_tuple], dtype=np.int64)
 
-        encoded_window_cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray] | None] = {}
+        encoded_window_cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray] | str] = {}
         cache_hits = 0
         cache_misses = 0
+        invalid_reasons: dict[str, int] = {}
+        invalid_examples: list[str] = []
         with profiler.stage("encode_compact_windows", count=batch * context_chunks):
             for sample_index, sample in enumerate(sample_tuple):
                 rows = self.rows_by_ticker.get(sample.ticker)
                 if rows is None:
+                    _record_invalid_context(
+                        invalid_reasons,
+                        invalid_examples,
+                        reason="ticker_rows_missing",
+                        sample=sample,
+                        context_index=-1,
+                    )
                     continue
                 for context_index, window in enumerate(sample.chunk_windows):
                     cache_key = (sample.ticker, int(window.origin_ordinal))
@@ -652,14 +661,21 @@ class RollingMarketSampleEngine:
                             expected_events=int(self.config.events_per_chunk),
                         )
                         if bounds is None:
-                            encoded_window_cache[cache_key] = None
+                            encoded_window_cache[cache_key] = "ordinal_window_not_exact"
                             continue
                         start, end = bounds
                         previous_sip_us = int(rows["sip_timestamp_us"][start - 1]) if start > 0 else None
                         result = encode_unified_event_window(rows[start:end], previous_sip_us=previous_sip_us)
-                        encoded = None if isinstance(result, str) else result
+                        encoded = result
                         encoded_window_cache[cache_key] = encoded
-                    if encoded is None:
+                    if isinstance(encoded, str):
+                        _record_invalid_context(
+                            invalid_reasons,
+                            invalid_examples,
+                            reason=encoded,
+                            sample=sample,
+                            context_index=context_index,
+                        )
                         continue
                     headers[sample_index, context_index], events[sample_index, context_index] = encoded
                     mask[sample_index, context_index] = True
@@ -670,7 +686,13 @@ class RollingMarketSampleEngine:
         profiler.add_stage("encoded_window_cache_entries", 0.0, count=len(encoded_window_cache))
         if not bool(mask.all()):
             invalid = int(mask.size - mask.sum())
-            raise RuntimeError(f"Training materialization produced {invalid:,} invalid context chunks; filter bad event windows before batching.")
+            reason_text = ", ".join(f"{key}={value:,}" for key, value in sorted(invalid_reasons.items())) or "unknown"
+            example_text = "; ".join(invalid_examples[:5])
+            raise RuntimeError(
+                f"Training materialization produced {invalid:,} invalid context chunks; "
+                f"ready-index construction must filter bad event windows before batching. "
+                f"reasons: {reason_text}. examples: {example_text}"
+            )
 
         with profiler.stage("bar_features", count=batch):
             (
@@ -1654,17 +1676,104 @@ def _query_settings(config: RollingMarketDataConfig) -> str:
     return " SETTINGS " + ", ".join(settings) if settings else ""
 
 
-def _filter_contiguous_origins(rows: np.ndarray, origin_offsets: np.ndarray, lags: tuple[int, ...], context: int) -> np.ndarray:
-    ordinals = rows["ordinal"].astype(np.int64, copy=False)
+def _filter_materializable_origins(rows: np.ndarray, origin_offsets: np.ndarray, lags: tuple[int, ...], context: int) -> np.ndarray:
+    if origin_offsets.size == 0:
+        return origin_offsets
     valid = np.ones((origin_offsets.shape[0],), dtype=np.bool_)
+    chunk_cache: dict[int, bool] = {}
     for index, origin_offset in enumerate(origin_offsets.tolist()):
         for lag in lags:
-            end = int(origin_offset) - int(lag)
-            start = end - int(context) + 1
-            if start < 0 or ordinals[end] - ordinals[start] != int(context) - 1:
+            chunk_origin_offset = int(origin_offset) - int(lag)
+            cached = chunk_cache.get(chunk_origin_offset)
+            if cached is None:
+                cached = _is_materializable_chunk_origin(rows, chunk_origin_offset, context)
+                chunk_cache[chunk_origin_offset] = cached
+            if not cached:
                 valid[index] = False
                 break
     return origin_offsets[valid]
+
+
+def _is_materializable_chunk_origin(rows: np.ndarray, origin_offset: int, context: int) -> bool:
+    end = int(origin_offset)
+    start = end - int(context) + 1
+    if start < 0 or end >= int(rows.shape[0]):
+        return False
+    window = rows[start : end + 1]
+    ordinals = window["ordinal"].astype(np.int64, copy=False)
+    if ordinals.shape[0] != int(context) or not bool(np.all(ordinals[1:] == ordinals[:-1] + 1)):
+        return False
+    return _event_window_rejection_reason(window) is None
+
+
+def _event_window_rejection_reason(rows: np.ndarray) -> str | None:
+    if rows.shape[0] != DEFAULT_CONTEXT_EVENTS:
+        return "invalid_window_size"
+    event_types = rows["event_type"].astype(np.uint8, copy=False)
+    quote_mask = event_types == QUOTE_EVENT_TYPE
+    quote_positions = np.flatnonzero(quote_mask)
+    if quote_positions.size == 0:
+        return "no_quote_anchor"
+    anchor_idx = int(quote_positions[-1])
+    primary_prices = decode_price_array(rows["price_primary_int"], rows["event_flags"] & 1)
+    secondary_prices = decode_price_array(rows["price_secondary_int"], (rows["event_flags"] >> 1) & 1)
+    anchor_ask = float(primary_prices[anchor_idx])
+    anchor_bid = float(secondary_prices[anchor_idx])
+    if anchor_ask <= 0.0 or anchor_bid <= 0.0 or anchor_ask < anchor_bid:
+        return "invalid_quote_anchor"
+    tick_size = 0.01 if anchor_ask >= 1.0 else 0.0001
+    ask_anchor_ticks = int(round(anchor_ask / tick_size))
+    spread_anchor_ticks = int(round((anchor_ask - anchor_bid) / tick_size))
+    if ask_anchor_ticks >= 2**20:
+        return "ask_anchor_overflow"
+    if spread_anchor_ticks >= 2**16:
+        return "spread_anchor_overflow"
+    quote_count = int(np.count_nonzero(quote_mask))
+    trade_mask = event_types == TRADE_EVENT_TYPE
+    trade_count = int(np.count_nonzero(trade_mask))
+    if quote_count > 255 or trade_count > 255:
+        return "event_count_overflow"
+
+    price_1 = np.zeros((rows.shape[0],), dtype=np.int64)
+    price_2 = np.zeros((rows.shape[0],), dtype=np.int64)
+    ask = primary_prices[quote_mask]
+    bid = secondary_prices[quote_mask]
+    if np.any((ask <= 0.0) | (bid <= 0.0) | (ask < bid)):
+        return "invalid_quote_event"
+    ask_ticks = np.rint(ask / tick_size).astype(np.int64)
+    spread_ticks = np.rint((ask - bid) / tick_size).astype(np.int64)
+    price_1[quote_mask] = ask_ticks - ask_anchor_ticks
+    price_2[quote_mask] = spread_ticks - spread_anchor_ticks
+    if np.any(trade_mask):
+        trade_price = primary_prices[trade_mask]
+        if np.any(trade_price <= 0.0):
+            return "invalid_trade_event"
+        trade_ticks = np.rint(trade_price / tick_size).astype(np.int64)
+        price_1[trade_mask] = trade_ticks - ask_anchor_ticks
+    if np.any((price_1 < -32768) | (price_1 > 32767) | (price_2 < -32768) | (price_2 > 32767)):
+        return "price_delta_overflow"
+    return None
+
+
+def _record_invalid_context(
+    reasons: dict[str, int],
+    examples: list[str],
+    *,
+    reason: str,
+    sample: RollingSampleIndex,
+    context_index: int,
+) -> None:
+    reasons[reason] = int(reasons.get(reason, 0)) + 1
+    if len(examples) >= 8:
+        return
+    window_text = ""
+    if 0 <= int(context_index) < len(sample.chunk_windows):
+        window = sample.chunk_windows[int(context_index)]
+        window_text = f" window={int(window.start_ordinal)}-{int(window.end_ordinal)} lag={int(window.lag_chunks)}"
+    examples.append(
+        f"ticker={sample.ticker} origin={int(sample.origin_ordinal)} "
+        f"context={int(context_index)} reason={reason}{window_text}"
+    )
 
 
 def _ordinal_position(rows: np.ndarray, ordinal: int) -> int | None:
