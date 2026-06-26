@@ -28,6 +28,7 @@ from research.mlops.rolling_loader.streaming_training import (
     StreamingClickHouseTrainingSource,
     StreamingProfiler,
     StreamingRollingTrainingProvider,
+    StreamingStageRecord,
     batch_nbytes,
     batch_shape_summary,
     current_rss_mib,
@@ -61,6 +62,7 @@ DEFAULTS: dict[str, Any] = {
     "xbrl_lookback_days": 730,
     "event_row_limit": 0,
     "ready_queue_size": 4,
+    "shutdown_timeout_seconds": 2.0,
     "simulate_gpu_seconds": 0.0,
     "output_root": "D:/market-data/prepared/data_provider_profiles/streaming_rolling_loader_training",
 }
@@ -120,6 +122,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--xbrl-lookback-days", type=int, default=DEFAULTS["xbrl_lookback_days"])
     parser.add_argument("--event-row-limit", type=int, default=DEFAULTS["event_row_limit"], help="Debug cap per event block. Use 0 for full blocks.")
     parser.add_argument("--ready-queue-size", type=int, default=DEFAULTS["ready_queue_size"])
+    parser.add_argument("--shutdown-timeout-seconds", type=float, default=DEFAULTS["shutdown_timeout_seconds"])
     parser.add_argument("--simulate-gpu-seconds", type=float, default=DEFAULTS["simulate_gpu_seconds"])
     parser.add_argument("--skip-token-contexts", action="store_true")
     parser.add_argument("--skip-xbrl", action="store_true")
@@ -188,6 +191,7 @@ def main() -> int:
         load_token_contexts=not args.skip_token_contexts,
         load_xbrl=not args.skip_xbrl,
         ready_queue_size=max(1, int(args.ready_queue_size)),
+        shutdown_timeout_seconds=max(0.0, float(args.shutdown_timeout_seconds)),
         profiler=profiler,
     )
     run_args = {
@@ -208,6 +212,7 @@ def main() -> int:
     started = time.perf_counter()
     batches: list[BatchProfileRow] = []
     sample_count = 0
+    interrupted = False
     try:
         with batch_rows_path.open("w", encoding="utf-8") as batch_handle:
             for envelope in provider:
@@ -244,6 +249,19 @@ def main() -> int:
                     f"elapsed_s={elapsed:.2f}",
                     flush=True,
                 )
+    except KeyboardInterrupt:
+        interrupted = True
+        print("INTERRUPT received; requesting streaming loader shutdown...", flush=True)
+        profiler.add(
+            StreamingStageRecord(
+                stage="consumer_keyboard_interrupt",
+                seconds=0.0,
+                rss_before_mib=current_rss_mib(),
+                rss_after_mib=current_rss_mib(),
+                metadata={"batches": len(batches), "samples": sample_count},
+            )
+        )
+        provider.stop(join_timeout=max(0.0, float(args.shutdown_timeout_seconds)))
     finally:
         source.close()
 
@@ -252,6 +270,7 @@ def main() -> int:
         "run_dir": str(run_dir),
         "elapsed_seconds": elapsed_seconds,
         "batches": len(batches),
+        "status": "interrupted" if interrupted else "complete",
         "samples": sample_count,
         "samples_per_second": sample_count / elapsed_seconds if elapsed_seconds > 0 else 0.0,
         "batches_per_second": len(batches) / elapsed_seconds if elapsed_seconds > 0 else 0.0,

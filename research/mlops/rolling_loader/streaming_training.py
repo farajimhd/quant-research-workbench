@@ -535,6 +535,7 @@ class StreamingRollingTrainingProvider:
         load_token_contexts: bool = True,
         load_xbrl: bool = True,
         ready_queue_size: int = 4,
+        shutdown_timeout_seconds: float = 2.0,
         profiler: StreamingProfiler | None = None,
     ) -> None:
         self.source = source
@@ -548,18 +549,24 @@ class StreamingRollingTrainingProvider:
         self.load_token_contexts = bool(load_token_contexts)
         self.load_xbrl = bool(load_xbrl)
         self.ready_queue: queue.Queue[Any] = queue.Queue(maxsize=max(1, int(ready_queue_size)))
+        self.shutdown_timeout_seconds = max(0.0, float(shutdown_timeout_seconds))
         self.profiler = profiler or StreamingProfiler()
         self.source.profiler = self.profiler
         self.engine = RollingMarketSampleEngine(config)
         self._thread: threading.Thread | None = None
         self._sentinel = object()
+        self._stop_event = threading.Event()
+        self._finished_event = threading.Event()
 
     def __iter__(self) -> Iterator[StreamingBatchEnvelope]:
         self.start()
         try:
             while True:
                 queued_at = time.perf_counter()
-                item = self.ready_queue.get()
+                try:
+                    item = self.ready_queue.get(timeout=0.25)
+                except queue.Empty:
+                    continue
                 wait_seconds = time.perf_counter() - queued_at
                 if item is self._sentinel:
                     break
@@ -575,48 +582,76 @@ class StreamingRollingTrainingProvider:
                         source_queue_wait_seconds=wait_seconds,
                     )
         finally:
-            self.join()
+            self.stop(join_timeout=self.shutdown_timeout_seconds)
 
     def start(self) -> None:
         if self._thread is not None:
             return
+        self._stop_event.clear()
+        self._finished_event.clear()
         self._thread = threading.Thread(target=self._run_worker, name="streaming-rolling-loader", daemon=True)
         self._thread.start()
 
-    def join(self) -> None:
+    def join(self, timeout: float | None = None) -> None:
         if self._thread is not None:
-            self._thread.join()
-            self._thread = None
+            self._thread.join(timeout=timeout)
+            if not self._thread.is_alive():
+                self._thread = None
+
+    def stop(self, *, join_timeout: float | None = None) -> None:
+        self._stop_event.set()
+        self.source.close()
+        self._try_put_sentinel()
+        self.join(timeout=join_timeout)
 
     def _run_worker(self) -> None:
         try:
+            self._raise_if_stopped()
             self._initialize()
+            self._raise_if_stopped()
             produced = self._stream_blocks()
-            self.profiler.add(
-                StreamingStageRecord(
-                    stage="producer_complete",
-                    seconds=0.0,
-                    rss_before_mib=current_rss_mib(),
-                    rss_after_mib=current_rss_mib(),
-                    metadata={"batches": int(produced)},
+            if not self._stop_event.is_set():
+                self.profiler.add(
+                    StreamingStageRecord(
+                        stage="producer_complete",
+                        seconds=0.0,
+                        rss_before_mib=current_rss_mib(),
+                        rss_after_mib=current_rss_mib(),
+                        metadata={"batches": int(produced)},
+                    )
                 )
-            )
-            self.ready_queue.put(self._sentinel)
         except BaseException as exc:  # noqa: BLE001 - worker must surface all failures to the consumer.
-            self.ready_queue.put(exc)
-            self.ready_queue.put(self._sentinel)
+            if self._stop_event.is_set():
+                self.profiler.add(
+                    StreamingStageRecord(
+                        stage="producer_cancelled",
+                        seconds=0.0,
+                        rss_before_mib=current_rss_mib(),
+                        rss_after_mib=current_rss_mib(),
+                        metadata={"reason": repr(exc)},
+                    )
+                )
+            else:
+                self._put_queue_item(exc)
+        finally:
+            self._finished_event.set()
+            self._try_put_sentinel()
 
     def _initialize(self) -> None:
         start_date = date_from_us(self.start_timestamp_us)
         end_date = date_from_us(self.end_timestamp_us) + dt.timedelta(days=1)
         with self.profiler.stage("category_references_fetch"):
             references = self.source.fetch_category_references()
+        self._raise_if_stopped()
         with self.profiler.stage("category_references_load", rows=len(references)):
             self.engine.load_category_references(references)
+        self._raise_if_stopped()
         with self.profiler.stage("macro_bars_1d_full_fetch", start_date=start_date.isoformat(), end_date=end_date.isoformat()):
             macro = self.source.fetch_macro_bars_1d(start_date=start_date, end_date=end_date)
+        self._raise_if_stopped()
         with self.profiler.stage("macro_bars_1d_full_load", rows=len(macro.rows), fetch_seconds=macro.fetch_seconds):
             self.engine.load_macro_bars(macro)
+        self._raise_if_stopped()
         if self.load_token_contexts:
             with self.profiler.stage("initial_token_context_fetch"):
                 context = self.source.fetch_token_contexts(
@@ -625,6 +660,7 @@ class StreamingRollingTrainingProvider:
                     include_lookback=True,
                     include_xbrl=self.load_xbrl,
                 )
+            self._raise_if_stopped()
             with self.profiler.stage("initial_token_context_load", rows=context.row_count, counts=context.counts()):
                 self.engine.load_external_contexts(context.rows_by_context)
 
@@ -633,13 +669,15 @@ class StreamingRollingTrainingProvider:
         cursor_date = date_from_us(self.start_timestamp_us) - dt.timedelta(days=self.warmup_days)
         end_date = date_from_us(self.end_timestamp_us) + dt.timedelta(days=1)
         block_index = 0
-        while cursor_date < end_date and (self.max_batches <= 0 or produced < self.max_batches):
+        while not self._stop_event.is_set() and cursor_date < end_date and (self.max_batches <= 0 or produced < self.max_batches):
             block_start = cursor_date
             block_end = min(end_date, cursor_date + dt.timedelta(days=self.block_days))
             with self.profiler.stage("event_block_query_arrow_polars", block_index=block_index, start_date=block_start.isoformat(), end_date=block_end.isoformat()):
                 frame = self.source.fetch_event_frame(start_date=block_start, end_date=block_end, row_limit=self.event_row_limit)
+            self._raise_if_stopped()
             with self.profiler.stage("event_block_polars_to_numpy", block_index=block_index, rows=int(frame.height)):
                 block = self.source.event_frame_to_block(frame=frame, start_date=block_start, end_date=block_end)
+            self._raise_if_stopped()
             if block.row_count <= 0:
                 cursor_date = block_end
                 block_index += 1
@@ -653,6 +691,7 @@ class StreamingRollingTrainingProvider:
                 max_timestamp_us=block.max_timestamp_us,
             ):
                 self.engine.append_rows_by_ticker(block.rows_by_ticker)
+            self._raise_if_stopped()
             if block.max_timestamp_us < self.start_timestamp_us:
                 with self.profiler.stage("warmup_event_cache_trim", block_index=block_index):
                     self._trim_pre_start_event_cache()
@@ -667,11 +706,14 @@ class StreamingRollingTrainingProvider:
                         include_lookback=False,
                         include_xbrl=self.load_xbrl,
                     )
+                self._raise_if_stopped()
                 with self.profiler.stage("token_context_block_load", block_index=block_index, rows=context.row_count, counts=context.counts()):
                     self.engine.load_external_contexts(context.rows_by_context)
+                self._raise_if_stopped()
             with self.profiler.stage("ready_index_build", block_index=block_index):
                 ready_blocks = self.engine.build_ready_index_blocks(max_samples=self._ready_sample_cap(produced))
                 ready_count = self.engine.ready_index_count(ready_blocks)
+            self._raise_if_stopped()
             self.profiler.add(
                 StreamingStageRecord(
                     stage="ready_index_count",
@@ -694,14 +736,15 @@ class StreamingRollingTrainingProvider:
                     continue
                 with self.profiler.stage("batch_materialize", block_index=block_index, batch_index=produced, samples=len(eligible)):
                     batch = self.engine.materialize_training_batch(eligible, batch_id=produced)
-                self.ready_queue.put(
+                if not self._put_queue_item(
                     StreamingBatchEnvelope(
                         batch=batch,
                         samples=eligible,
                         batch_index=produced,
                         block_index=block_index,
                     )
-                )
+                ):
+                    break
                 produced += 1
             with self.profiler.stage("engine_trim_processed_tails", block_index=block_index):
                 self.engine.trim_processed_tails()
@@ -731,6 +774,25 @@ class StreamingRollingTrainingProvider:
                 continue
             self.engine.rows_by_ticker[ticker] = rows[trim_to:].copy()
             self.engine._processed_offsets[ticker] = 0
+
+    def _raise_if_stopped(self) -> None:
+        if self._stop_event.is_set():
+            raise RuntimeError("Streaming rolling provider was stopped.")
+
+    def _put_queue_item(self, item: Any) -> bool:
+        while not self._stop_event.is_set():
+            try:
+                self.ready_queue.put(item, timeout=0.25)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _try_put_sentinel(self) -> None:
+        try:
+            self.ready_queue.put_nowait(self._sentinel)
+        except queue.Full:
+            pass
 
 
 def date_from_us(timestamp_us: int) -> dt.date:

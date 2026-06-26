@@ -707,6 +707,7 @@ label_timeframes: 1d
 q_live_contexts: ticker_news, market_news, sec_filings, xbrl
 max_threads: 8
 max_memory_usage: 80G
+shutdown_timeout_seconds: 2.0
 output_root: D:/market-data/prepared/data_provider_profiles/streaming_rolling_loader_training
 ```
 
@@ -736,6 +737,7 @@ batch_profiles.jsonl
 
 summary.json
   aggregate throughput, memory, payload size, stage totals, and resolved args
+  status is "interrupted" when Ctrl-C stops the profiler before completion
 ```
 
 Useful variants:
@@ -745,6 +747,7 @@ python research\mlops\rolling_loader\run_streaming_training_profile.py --days 1 
 python research\mlops\rolling_loader\run_streaming_training_profile.py --days 5 --block-days 5 --batches 8
 python research\mlops\rolling_loader\run_streaming_training_profile.py --skip-xbrl
 python research\mlops\rolling_loader\run_streaming_training_profile.py --simulate-gpu-seconds 0.05
+python research\mlops\rolling_loader\run_streaming_training_profile.py --shutdown-timeout-seconds 5
 ```
 
 ## Anti-Patterns
