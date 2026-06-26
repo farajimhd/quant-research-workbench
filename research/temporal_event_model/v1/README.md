@@ -356,6 +356,12 @@ python D:\TradingML\codes\temporal_event_model\v1\research\temporal_event_model\
 Use `--print-only` first to inspect both generated commands. Use `--only full`
 or `--only masked70` to run just one side.
 
+Validation frequency is sample-normalized by default. The launcher targets
+about 512k training samples between validation checks, so `--batch-size 8192`
+validates every 63 steps instead of every 500 steps. Pass
+`--validation-frequency-steps N` only when you intentionally want a fixed
+step interval.
+
 ## Fixed Checkpoint Evaluation
 
 Training-time validation in `run_cache_probe_laptop.py` samples a validation

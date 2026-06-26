@@ -24,7 +24,7 @@ DEFAULTS = {
     "batch_size": 1024,
     "epochs": 5,
     "learning_rate": 1e-3,
-    "validation_frequency_steps": 500,
+    "validation_frequency_samples": 512_000,
     "validation_frequency_shards": 0,
     "amp_dtype": "bf16",
 }
@@ -53,7 +53,8 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
     parser.add_argument("--max-batches-per-shard", type=int, default=0)
     parser.add_argument("--learning-rate", type=float, default=DEFAULTS["learning_rate"])
-    parser.add_argument("--validation-frequency-steps", type=int, default=DEFAULTS["validation_frequency_steps"])
+    parser.add_argument("--validation-frequency-steps", type=int, default=0)
+    parser.add_argument("--validation-frequency-samples", type=int, default=DEFAULTS["validation_frequency_samples"])
     parser.add_argument("--validation-frequency-shards", type=int, default=DEFAULTS["validation_frequency_shards"])
     parser.add_argument("--amp-dtype", choices=("off", "fp16", "bf16"), default=DEFAULTS["amp_dtype"])
     parser.add_argument("--preload-shards-to-ram", action=argparse.BooleanOptionalAction, default=True)
@@ -71,6 +72,12 @@ def main() -> int:
     print(f"checkpoint={args.encoder_checkpoint}", flush=True)
     print(f"cache_root={args.cache_root}", flush=True)
     print(f"wandb_project={args.wandb_project}", flush=True)
+    print(
+        "validation_frequency="
+        f"{resolve_validation_frequency_steps(args):,} steps "
+        f"(requested_samples={int(args.validation_frequency_samples):,})",
+        flush=True,
+    )
     print("=" * 100, flush=True)
     for label, command in commands:
         print(f"\nCOMMAND [{label}]", flush=True)
@@ -94,6 +101,7 @@ def main() -> int:
 def build_command(args: argparse.Namespace, suffix: str, visible_mode: str, visible_mask_ratio: float) -> tuple[str, list[str]]:
     script = Path(__file__).with_name("cache_probe.py")
     run_name = f"{args.run_prefix}-{suffix}-1train1val-{args.epochs}ep-bs{args.batch_size}"
+    validation_frequency_steps = resolve_validation_frequency_steps(args)
     command = [
         sys.executable,
         str(script),
@@ -114,7 +122,7 @@ def build_command(args: argparse.Namespace, suffix: str, visible_mode: str, visi
         "--epochs",
         str(args.epochs),
         "--validation-frequency-steps",
-        str(args.validation_frequency_steps),
+        str(validation_frequency_steps),
         "--validation-frequency-shards",
         str(args.validation_frequency_shards),
         "--encoder-version",
@@ -140,6 +148,15 @@ def build_command(args: argparse.Namespace, suffix: str, visible_mode: str, visi
     if int(args.max_batches_per_shard) > 0:
         command.extend(["--max-batches-per-shard", str(args.max_batches_per_shard)])
     return suffix, command
+
+
+def resolve_validation_frequency_steps(args: argparse.Namespace) -> int:
+    if int(args.validation_frequency_steps) > 0:
+        return int(args.validation_frequency_steps)
+    samples = int(args.validation_frequency_samples)
+    if samples <= 0:
+        return 0
+    return max(1, (samples + int(args.batch_size) - 1) // int(args.batch_size))
 
 
 if __name__ == "__main__":
