@@ -684,6 +684,69 @@ continue forward and evict only according to their own limits.
 - Full-load only `1d` macro/global bars unless a future model explicitly uses
   other timeframes.
 
+## Profiler Entry Point
+
+Use the streaming profiler to measure the implemented training path:
+
+```powershell
+python research\mlops\rolling_loader\run_streaming_training_profile.py
+```
+
+Default profiler settings:
+
+```text
+start_utc: 2019-01-05T00:00:00Z
+days: 3
+block_days: 3
+warmup_days: 3
+batch_size: 4096
+batches: 4
+sample_stride_events: 1
+macro_timeframes: 1d
+label_timeframes: 1d
+q_live_contexts: ticker_news, market_news, sec_filings, xbrl
+max_threads: 8
+max_memory_usage: 80G
+output_root: D:/market-data/prepared/data_provider_profiles/streaming_rolling_loader_training
+```
+
+Important profiler outputs:
+
+```text
+profile_events.jsonl
+  low-level stage timing and RSS deltas:
+  category reference fetch/load
+  full 1d macro/global bar fetch/load
+  initial token context fetch/load
+  event block Arrow/Polars query
+  Polars-to-NumPy ticker grouping
+  event cache append
+  per-context token/XBRL fetches
+  context cache load
+  ready index build
+  batch materialization
+  processed-tail trimming
+
+batch_profiles.jsonl
+  one row per emitted RollingTrainingBatch:
+  batch shape summary
+  materialized payload MiB
+  queue wait time
+  shared engine materialization metrics
+
+summary.json
+  aggregate throughput, memory, payload size, stage totals, and resolved args
+```
+
+Useful variants:
+
+```powershell
+python research\mlops\rolling_loader\run_streaming_training_profile.py --days 1 --batches 2
+python research\mlops\rolling_loader\run_streaming_training_profile.py --days 5 --block-days 5 --batches 8
+python research\mlops\rolling_loader\run_streaming_training_profile.py --skip-xbrl
+python research\mlops\rolling_loader\run_streaming_training_profile.py --simulate-gpu-seconds 0.05
+```
+
 ## Anti-Patterns
 
 Avoid these patterns in the training loader:

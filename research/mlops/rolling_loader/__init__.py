@@ -13,10 +13,20 @@ from research.mlops.rolling_loader.loader import (
     RollingContextLoader,
     RollingSamplePointer,
 )
+from research.mlops.rolling_loader.streaming_training import (
+    StreamingBatchEnvelope,
+    StreamingClickHouseTrainingSource,
+    StreamingProfiler,
+    StreamingRollingTrainingProvider,
+)
 
 __all__ = [
     "InitializedRollingReplay",
     "MaterializedRollingBatch",
+    "StreamingBatchEnvelope",
+    "StreamingClickHouseTrainingSource",
+    "StreamingProfiler",
+    "StreamingRollingTrainingProvider",
     "RollingContextLoader",
     "RollingLoaderConfig",
     "RollingSamplePointer",
