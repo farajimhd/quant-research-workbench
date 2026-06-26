@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import random
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, MutableMapping
 
 import numpy as np
 
@@ -65,6 +66,15 @@ class FetchResult:
     fetch_seconds: float
     rows_returned: int
     query_mode: str
+
+
+@dataclass(frozen=True, slots=True)
+class FutureTimeBarLabelState:
+    trade_ts: np.ndarray
+    trade_price: np.ndarray
+    trade_size: np.ndarray
+    volume_prefix: np.ndarray
+    price_rmq: "_RangeMinMax | None"
 
 
 @dataclass(slots=True)
@@ -631,39 +641,36 @@ def build_future_time_bar_labels(
     rows: np.ndarray,
     origin_offsets: np.ndarray,
     horizons: tuple[TimeBarHorizon, ...],
+    state_cache: MutableMapping[int, FutureTimeBarLabelState] | None = None,
+    state_cache_lock: threading.Lock | None = None,
 ) -> dict[str, np.ndarray]:
     origin_ts = rows["sip_timestamp_us"][origin_offsets].astype(np.int64, copy=False)
     labels: dict[str, np.ndarray] = {}
-    trade_mask = rows["event_type"].astype(np.uint8, copy=False) == TRADE_EVENT_TYPE
-    trade_rows = rows[trade_mask]
-    trade_ts = trade_rows["sip_timestamp_us"].astype(np.int64, copy=False)
-    trade_price = _decode_trade_price(trade_rows)
-    trade_size = trade_rows["size_primary"].astype(np.float64, copy=False)
-    if trade_rows.size == 0:
+    state = _future_time_bar_label_state(rows, state_cache=state_cache, state_cache_lock=state_cache_lock)
+    if state.trade_ts.size == 0:
         for horizon in horizons:
             _add_empty_bar_labels(labels, horizon.name, origin_ts.shape[0])
         return labels
 
-    price_rmq = _RangeMinMax(trade_price)
-    volume_prefix = np.concatenate(([0.0], np.cumsum(np.maximum(0.0, trade_size), dtype=np.float64)))
     for horizon in horizons:
-        start_idx = np.searchsorted(trade_ts, origin_ts, side="right")
-        end_idx = np.searchsorted(trade_ts, origin_ts + int(horizon.microseconds), side="right")
+        start_idx = np.searchsorted(state.trade_ts, origin_ts, side="right")
+        end_idx = np.searchsorted(state.trade_ts, origin_ts + int(horizon.microseconds), side="right")
         count = np.maximum(0, end_idx - start_idx).astype(np.uint32)
         has_trade = count > 0
         open_price = np.zeros((origin_ts.shape[0],), dtype=np.float32)
         close_price = np.zeros((origin_ts.shape[0],), dtype=np.float32)
         high_price = np.zeros((origin_ts.shape[0],), dtype=np.float32)
         low_price = np.zeros((origin_ts.shape[0],), dtype=np.float32)
-        volume = (volume_prefix[end_idx] - volume_prefix[start_idx]).astype(np.float32)
+        volume = (state.volume_prefix[end_idx] - state.volume_prefix[start_idx]).astype(np.float32)
         if np.any(has_trade):
             valid_start = start_idx[has_trade]
             valid_end = end_idx[has_trade]
-            open_price[has_trade] = trade_price[valid_start].astype(np.float32, copy=False)
-            close_price[has_trade] = trade_price[valid_end - 1].astype(np.float32, copy=False)
-            low, high = price_rmq.query(valid_start, valid_end)
-            high_price[has_trade] = high.astype(np.float32, copy=False)
-            low_price[has_trade] = low.astype(np.float32, copy=False)
+            open_price[has_trade] = state.trade_price[valid_start].astype(np.float32, copy=False)
+            close_price[has_trade] = state.trade_price[valid_end - 1].astype(np.float32, copy=False)
+            if state.price_rmq is not None:
+                low, high = state.price_rmq.query(valid_start, valid_end)
+                high_price[has_trade] = high.astype(np.float32, copy=False)
+                low_price[has_trade] = low.astype(np.float32, copy=False)
         prefix = f"future_bar_{horizon.name}"
         labels[f"{prefix}_has_trade"] = has_trade.astype(np.uint8)
         labels[f"{prefix}_open"] = open_price
@@ -672,6 +679,51 @@ def build_future_time_bar_labels(
         labels[f"{prefix}_close"] = close_price
         labels[f"{prefix}_volume"] = volume
     return labels
+
+
+def _future_time_bar_label_state(
+    rows: np.ndarray,
+    *,
+    state_cache: MutableMapping[int, FutureTimeBarLabelState] | None = None,
+    state_cache_lock: threading.Lock | None = None,
+) -> FutureTimeBarLabelState:
+    cache_key = id(rows)
+    if state_cache is not None:
+        if state_cache_lock is not None:
+            with state_cache_lock:
+                cached = state_cache.get(cache_key)
+                if cached is not None:
+                    return cached
+            state = _build_future_time_bar_label_state(rows)
+            with state_cache_lock:
+                cached = state_cache.get(cache_key)
+                if cached is not None:
+                    return cached
+                state_cache[cache_key] = state
+                return state
+        cached = state_cache.get(cache_key)
+        if cached is not None:
+            return cached
+    state = _build_future_time_bar_label_state(rows)
+    if state_cache is not None:
+        state_cache[cache_key] = state
+    return state
+
+
+def _build_future_time_bar_label_state(rows: np.ndarray) -> FutureTimeBarLabelState:
+    trade_mask = rows["event_type"].astype(np.uint8, copy=False) == TRADE_EVENT_TYPE
+    trade_rows = rows[trade_mask]
+    trade_ts = trade_rows["sip_timestamp_us"].astype(np.int64, copy=False)
+    trade_price = _decode_trade_price(trade_rows)
+    trade_size = trade_rows["size_primary"].astype(np.float64, copy=False)
+    volume_prefix = np.concatenate(([0.0], np.cumsum(np.maximum(0.0, trade_size), dtype=np.float64)))
+    return FutureTimeBarLabelState(
+        trade_ts=trade_ts,
+        trade_price=trade_price,
+        trade_size=trade_size,
+        volume_prefix=volume_prefix,
+        price_rmq=_RangeMinMax(trade_price) if trade_price.size else None,
+    )
 
 
 class _RangeMinMax:

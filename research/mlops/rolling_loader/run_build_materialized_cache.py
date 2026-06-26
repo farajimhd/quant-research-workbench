@@ -834,6 +834,8 @@ def _materialize_worker_task(
     engine = RollingMarketSampleEngine(base_engine.config)
     engine._today_asof_day_cache = base_engine._today_asof_day_cache
     engine._today_asof_day_cache_lock = base_engine._today_asof_day_cache_lock
+    engine._future_label_state_cache = base_engine._future_label_state_cache
+    engine._future_label_state_cache_lock = base_engine._future_label_state_cache_lock
     tickers = {str(block.ticker).upper() for block in blocks}
     tickers.update(str(symbol).upper() for symbol in base_engine.config.global_symbols)
     engine.rows_by_ticker = {ticker: base_engine.rows_by_ticker[ticker] for ticker in tickers if ticker in base_engine.rows_by_ticker}

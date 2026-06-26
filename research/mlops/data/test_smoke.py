@@ -432,11 +432,14 @@ def smoke_rolling_provider() -> None:
     batch = engine.materialize_training_batch(samples[:8], progress_callback=lambda stage, done, total: progress_events.append((stage, done, total)))
     encode_events = [(done, total) for stage, done, total in progress_events if stage == "encode"]
     feature_collect_events = [(done, total) for stage, done, total in progress_events if stage == "features:collect"]
+    intraday_label_events = [(done, total) for stage, done, total in progress_events if stage == "labels:intraday"]
     assert any(0 < done < total for done, total in encode_events)
     assert any(done == total for done, total in encode_events)
     assert feature_collect_events
     assert feature_collect_events[-1][0] == feature_collect_events[-1][1]
     assert feature_collect_events[-1][1] <= len(samples[:8])
+    assert intraday_label_events
+    assert intraday_label_events[-1][0] == intraday_label_events[-1][1]
     assert batch.headers_uint8.shape == (8, len(config.context_lags), 14)
     assert batch.events_uint8.shape == (8, len(config.context_lags), 128, 16)
     assert batch.bar_feature_keys == BAR_FEATURE_KEYS

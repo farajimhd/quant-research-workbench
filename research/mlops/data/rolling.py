@@ -34,7 +34,7 @@ from research.mlops.data.contracts import (
 )
 from research.mlops.data.market_events import events_to_rows
 from research.mlops.data.profiling import DataPrepProfile, DataPrepProfiler
-from research.mlops.data.ticker_blocks import build_future_time_bar_labels
+from research.mlops.data.ticker_blocks import FutureTimeBarLabelState, _RangeMinMax, build_future_time_bar_labels
 
 
 DAILY_MACRO_WINDOWS: tuple[tuple[str, int], ...] = (
@@ -187,6 +187,47 @@ class MacroBarFrame:
             mask[window_index] = True
         return bars, mask
 
+    def daily_window_tensor_batch(
+        self,
+        *,
+        symbol: str,
+        timestamps_us: np.ndarray,
+        windows: tuple[tuple[str, int], ...],
+        today_asof: np.ndarray | None = None,
+        today_asof_valid: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        symbol = symbol.upper()
+        timestamps = np.asarray(timestamps_us, dtype=np.int64)
+        batch = int(timestamps.shape[0])
+        bars = np.zeros((batch, len(windows), len(BAR_FEATURE_KEYS)), dtype=np.float32)
+        mask = np.zeros((batch, len(windows)), dtype=np.bool_)
+        arrays = self._index.get((symbol, "1d"))
+        current_day_start_ms = _utc_day_start_ms_array(timestamps)
+        completed_end = (
+            np.searchsorted(arrays["bar_start_ms"], current_day_start_ms, side="left").astype(np.int64, copy=False)
+            if arrays is not None and arrays["bar_start_ms"].size
+            else np.zeros((batch,), dtype=np.int64)
+        )
+        for window_index, (name, count) in enumerate(windows):
+            if name == "today_asof":
+                if today_asof is not None and today_asof_valid is not None:
+                    valid = np.asarray(today_asof_valid, dtype=np.bool_)
+                    if bool(valid.any()):
+                        bars[valid, window_index] = np.asarray(today_asof, dtype=np.float32)[valid]
+                        mask[valid, window_index] = True
+                continue
+            if arrays is None or int(count) <= 0:
+                continue
+            end = completed_end
+            start = np.maximum(0, end - int(count)).astype(np.int64, copy=False)
+            valid = (end > start) & (end <= int(arrays["bar_start_ms"].shape[0]))
+            if not bool(valid.any()):
+                continue
+            aggregated = _aggregate_daily_bar_arrays_batch(arrays, start=start[valid], end=end[valid])
+            bars[valid, window_index] = aggregated
+            mask[valid, window_index] = True
+        return bars, mask
+
     def daily_future_tensor(
         self,
         *,
@@ -217,6 +258,44 @@ class MacroBarFrame:
                 continue
             bars[window_index] = _aggregate_daily_bar_arrays(arrays, start=start, end=end)
             mask[window_index] = True
+        return bars, mask
+
+    def daily_future_tensor_batch(
+        self,
+        *,
+        symbol: str,
+        timestamps_us: np.ndarray,
+        windows: tuple[tuple[str, int], ...],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        symbol = symbol.upper()
+        timestamps = np.asarray(timestamps_us, dtype=np.int64)
+        batch = int(timestamps.shape[0])
+        bars = np.zeros((batch, len(windows), len(BAR_FEATURE_KEYS)), dtype=np.float32)
+        mask = np.zeros((batch, len(windows)), dtype=np.bool_)
+        arrays = self._index.get((symbol, "1d"))
+        if arrays is None or arrays["bar_start_ms"].size == 0:
+            return bars, mask
+        current_day_start_ms = _utc_day_start_ms_array(timestamps)
+        current_index = np.searchsorted(arrays["bar_start_ms"], current_day_start_ms, side="left").astype(np.int64, copy=False)
+        in_bounds = current_index < int(arrays["bar_start_ms"].shape[0])
+        has_current = np.zeros((batch,), dtype=np.bool_)
+        if bool(in_bounds.any()):
+            has_current[in_bounds] = arrays["bar_start_ms"][current_index[in_bounds]] == current_day_start_ms[in_bounds]
+        for window_index, (name, count) in enumerate(windows):
+            if name == "current_day_full":
+                start = current_index
+                end = current_index + 1
+                valid = has_current & (end <= int(arrays["bar_start_ms"].shape[0]))
+            else:
+                if int(count) <= 0:
+                    continue
+                start = current_index + 1
+                end = start + int(count)
+                valid = has_current & (end <= int(arrays["bar_start_ms"].shape[0]))
+            if not bool(valid.any()):
+                continue
+            bars[valid, window_index] = _aggregate_daily_bar_arrays_batch(arrays, start=start[valid], end=end[valid])
+            mask[valid, window_index] = True
         return bars, mask
 
     def _lookup_tensor(self, *, symbol: str, timestamp_us: int, timeframes: tuple[str, ...], side: str) -> tuple[np.ndarray, np.ndarray]:
@@ -407,6 +486,8 @@ class RollingMarketSampleEngine:
         self.macro_bars = MacroBarFrame(rows=[])
         self._today_asof_day_cache: dict[tuple[int, int], _TodayAsOfDayState] = {}
         self._today_asof_day_cache_lock = threading.Lock()
+        self._future_label_state_cache: dict[int, FutureTimeBarLabelState] = {}
+        self._future_label_state_cache_lock = threading.Lock()
         q_live_context_configs = {
             "ticker_news": ExternalAsOfContextConfig(name="ticker_news", timestamp_column="timestamp_us", max_items=config.news_max_items * config.news_token_chunks),
             "market_news": ExternalAsOfContextConfig(name="market_news", timestamp_column="timestamp_us", max_items=config.market_news_max_items * config.market_news_token_chunks),
@@ -864,7 +945,7 @@ class RollingMarketSampleEngine:
             labels, future_macro_bars, future_macro_bar_mask, future_macro_bar_timeframes = self._materialize_future_labels(sample_tuple)
         _call_progress(progress_callback, "labels", 1, 2)
         with profiler.stage("intraday_future_labels", count=batch):
-            intraday_labels = self._materialize_intraday_future_labels(sample_tuple)
+            intraday_labels = self._materialize_intraday_future_labels(sample_tuple, progress_callback=progress_callback)
             labels.update(intraday_labels)
             future_intraday_bars, future_intraday_bar_mask = _intraday_label_bar_tensor(
                 intraday_labels,
@@ -1028,6 +1109,7 @@ class RollingMarketSampleEngine:
 
     def trim_processed_tails(self) -> None:
         keep_tail = max(0, int(self.config.carryover_events))
+        trimmed_any = False
         for ticker, rows in list(self.rows_by_ticker.items()):
             processed = self._processed_offsets.get(ticker, 0)
             trim_to = max(0, int(processed) - keep_tail)
@@ -1035,6 +1117,12 @@ class RollingMarketSampleEngine:
                 continue
             self.rows_by_ticker[ticker] = rows[trim_to:].copy()
             self._processed_offsets[ticker] = max(0, processed - trim_to)
+            trimmed_any = True
+        if trimmed_any:
+            with self._today_asof_day_cache_lock:
+                self._today_asof_day_cache.clear()
+            with self._future_label_state_cache_lock:
+                self._future_label_state_cache.clear()
 
     def _materialize_bar_features(
         self,
@@ -1052,11 +1140,10 @@ class RollingMarketSampleEngine:
         ticker_macro_bar_mask = np.zeros((batch, len(macro_timeframes)), dtype=np.bool_)
         global_market_bars = np.zeros((batch, len(global_symbols), len(global_timeframes), fields), dtype=np.float32)
         global_market_bar_mask = np.zeros((batch, len(global_symbols), len(global_timeframes)), dtype=np.bool_)
-        macro_rows: list[dict[str, float]] = []
-        global_rows: dict[str, list[dict[str, float]]] = {symbol: [] for symbol in self.config.global_symbols}
         origin_offsets_by_ticker = _origin_offsets_by_sample_ticker(samples, self.rows_by_ticker)
         global_symbol_set = {str(symbol).upper() for symbol in global_symbols}
         origin_timestamps = np.fromiter((int(sample.origin_timestamp_us) for sample in samples), dtype=np.int64, count=batch)
+        global_timestamps = np.fromiter((int(sample.global_asof_timestamp_us) for sample in samples), dtype=np.int64, count=batch)
         ticker_collect_count = len(origin_offsets_by_ticker)
         collect_total = max(1, ticker_collect_count + len(global_symbols) + 1)
         _call_progress(progress_callback, "features:collect", 0, collect_total)
@@ -1091,37 +1178,48 @@ class RollingMarketSampleEngine:
             _maybe_call_progress(progress_callback, "features:asof", 1 + symbol_index, feature_total)
         _call_progress(progress_callback, "features:asof", 1 + symbol_count, feature_total)
 
-        for sample_index, sample in enumerate(samples):
-            today_bars, today_mask = today_cache.get(str(sample.ticker).upper(), (None, None))
-            today_bar = today_bars[sample_index] if today_bars is not None else None
-            today_valid = bool(today_mask[sample_index]) if today_mask is not None else False
-            bars, mask = self.macro_bars.daily_window_tensor(
-                symbol=sample.ticker,
-                timestamp_us=sample.origin_timestamp_us,
+        rows_total = max(1, len(origin_offsets_by_ticker) + len(global_symbols))
+        _call_progress(progress_callback, "features:rows", 0, rows_total)
+        rows_done = 0
+        for symbol, (sample_indexes, _origin_offsets) in origin_offsets_by_ticker.items():
+            today_bars, today_mask = today_cache.get(str(symbol).upper(), (None, None))
+            if today_bars is None or today_mask is None or sample_indexes.size == 0:
+                rows_done += 1
+                _maybe_call_progress(progress_callback, "features:rows", rows_done, rows_total)
+                continue
+            bars, mask = self.macro_bars.daily_window_tensor_batch(
+                symbol=symbol,
+                timestamps_us=origin_timestamps[sample_indexes],
                 windows=DAILY_MACRO_WINDOWS,
-                today_asof=today_bar,
-                today_asof_valid=today_valid,
+                today_asof=today_bars[sample_indexes],
+                today_asof_valid=today_mask[sample_indexes],
             )
-            ticker_macro_bars[sample_index] = bars
-            ticker_macro_bar_mask[sample_index] = mask
-            macro_rows.append(_bar_tensor_row(macro_timeframes, bars))
-            for symbol_index, symbol in enumerate(global_symbols):
-                today_bars, today_mask = today_cache.get(str(symbol).upper(), (None, None))
-                today_bar = today_bars[sample_index] if today_bars is not None else None
-                today_valid = bool(today_mask[sample_index]) if today_mask is not None else False
-                bars, mask = self.macro_bars.daily_window_tensor(
-                    symbol=symbol,
-                    timestamp_us=sample.global_asof_timestamp_us,
-                    windows=DAILY_GLOBAL_WINDOWS,
-                    today_asof=today_bar,
-                    today_asof_valid=today_valid,
-                )
-                global_market_bars[sample_index, symbol_index] = bars
-                global_market_bar_mask[sample_index, symbol_index] = mask
-                global_rows[symbol].append(_bar_tensor_row(global_timeframes, bars))
-            _maybe_call_progress(progress_callback, "features:rows", symbol_count + sample_index + 2, feature_total)
-        macro = _rows_to_feature_arrays(macro_rows)
-        global_features = {f"{symbol}_{key}": value for symbol, rows in global_rows.items() for key, value in _rows_to_feature_arrays(rows).items()}
+            ticker_macro_bars[sample_indexes] = bars
+            ticker_macro_bar_mask[sample_indexes] = mask
+            rows_done += 1
+            _maybe_call_progress(progress_callback, "features:rows", rows_done, rows_total)
+        for symbol_index, symbol in enumerate(global_symbols):
+            today_bars, today_mask = today_cache.get(str(symbol).upper(), (None, None))
+            if today_bars is None or today_mask is None:
+                today_bars = np.zeros((batch, fields), dtype=np.float32)
+                today_mask = np.zeros((batch,), dtype=np.bool_)
+            bars, mask = self.macro_bars.daily_window_tensor_batch(
+                symbol=symbol,
+                timestamps_us=global_timestamps,
+                windows=DAILY_GLOBAL_WINDOWS,
+                today_asof=today_bars,
+                today_asof_valid=today_mask,
+            )
+            global_market_bars[:, symbol_index] = bars
+            global_market_bar_mask[:, symbol_index] = mask
+            rows_done += 1
+            _maybe_call_progress(progress_callback, "features:rows", rows_done, rows_total)
+        macro = _bar_tensor_feature_arrays(macro_timeframes, ticker_macro_bars)
+        global_features = {
+            f"{symbol}_{key}": value
+            for symbol_index, symbol in enumerate(global_symbols)
+            for key, value in _bar_tensor_feature_arrays(global_timeframes, global_market_bars[:, symbol_index]).items()
+        }
         return macro, global_features, macro_timeframes, global_timeframes, ticker_macro_bars, ticker_macro_bar_mask, global_market_bars, global_market_bar_mask
 
     def _materialize_future_labels(self, samples: tuple[RollingSampleIndex, ...]) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, tuple[str, ...]]:
@@ -1129,17 +1227,17 @@ class RollingMarketSampleEngine:
         label_timeframes = _resolved_label_timeframes()
         bars_out = np.zeros((batch, len(label_timeframes), len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32)
         mask_out = np.zeros((batch, len(label_timeframes)), dtype=np.bool_)
-        rows: list[dict[str, float]] = []
-        for sample_index, sample in enumerate(samples):
-            bars, mask = self.macro_bars.daily_future_tensor(
-                symbol=sample.ticker,
-                timestamp_us=sample.origin_timestamp_us,
+        timestamps = np.fromiter((int(sample.origin_timestamp_us) for sample in samples), dtype=np.int64, count=batch)
+        offsets_by_ticker = _origin_offsets_by_sample_ticker(samples, self.rows_by_ticker)
+        for ticker, (sample_indexes, _origin_offsets) in offsets_by_ticker.items():
+            bars, mask = self.macro_bars.daily_future_tensor_batch(
+                symbol=ticker,
+                timestamps_us=timestamps[sample_indexes],
                 windows=DAILY_LABEL_WINDOWS,
             )
-            bars_out[sample_index] = _select_future_bar_fields(bars)
-            mask_out[sample_index] = mask
-            rows.append(_future_bar_tensor_row(label_timeframes, bars_out[sample_index]))
-        labels = {f"future_{key}": value for key, value in _rows_to_feature_arrays(rows).items()}
+            bars_out[sample_indexes] = _select_future_bar_fields_batch(bars)
+            mask_out[sample_indexes] = mask
+        labels = {f"future_{key}": value for key, value in _future_bar_tensor_feature_arrays(label_timeframes, bars_out).items()}
         return labels, bars_out, mask_out, label_timeframes
 
     def _today_asof_bar(self, ticker: str, origin_timestamp_us: int) -> tuple[np.ndarray, bool]:
@@ -1156,7 +1254,12 @@ class RollingMarketSampleEngine:
             return np.zeros((len(BAR_FEATURE_KEYS),), dtype=np.float32), False
         return _today_asof_bar_from_events(ticker_rows[start:end]), True
 
-    def _materialize_intraday_future_labels(self, samples: tuple[RollingSampleIndex, ...]) -> dict[str, np.ndarray]:
+    def _materialize_intraday_future_labels(
+        self,
+        samples: tuple[RollingSampleIndex, ...],
+        *,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> dict[str, np.ndarray]:
         """Future same-queue trade bars for short horizons.
 
         These labels are derived from the current in-memory event queue, so they
@@ -1178,40 +1281,40 @@ class RollingMarketSampleEngine:
             labels[f"{prefix}_volume"] = np.zeros((batch,), dtype=np.float32)
 
         by_ticker = _origin_offsets_by_sample_ticker(samples, self.rows_by_ticker)
-        for ticker, (batch_indices, origin_offsets) in by_ticker.items():
+        ticker_total = max(1, len(by_ticker))
+        _call_progress(progress_callback, "labels:intraday", 0, ticker_total)
+        for ticker_index, (ticker, (batch_indices, origin_offsets)) in enumerate(by_ticker.items(), start=1):
             ticker_rows = self.rows_by_ticker.get(ticker)
             if ticker_rows is None or ticker_rows.size == 0:
+                _maybe_call_progress(progress_callback, "labels:intraday", ticker_index, ticker_total)
                 continue
             ticker_labels = build_future_time_bar_labels(
                 rows=ticker_rows,
                 origin_offsets=origin_offsets,
                 horizons=tuple(self.config.intraday_label_horizons),
+                state_cache=self._future_label_state_cache,
+                state_cache_lock=self._future_label_state_cache_lock,
             )
             for source_key, values in ticker_labels.items():
                 target_key = source_key.replace("future_bar_", "future_intraday_bar_", 1)
                 if target_key in labels:
                     labels[target_key][batch_indices] = values
+            _maybe_call_progress(progress_callback, "labels:intraday", ticker_index, ticker_total)
+        _call_progress(progress_callback, "labels:intraday", ticker_total, ticker_total)
         return labels
 
     def _materialize_session_features(self, samples: tuple[RollingSampleIndex, ...]) -> dict[str, np.ndarray]:
-        rows: list[dict[str, float]] = []
+        batch = len(samples)
+        out = {key: np.zeros((batch,), dtype=np.float32) for key in _empty_session_features()}
         offsets_by_ticker = _origin_offsets_by_sample_ticker(samples, self.rows_by_ticker)
-        offset_by_sample: dict[int, tuple[str, int]] = {}
         for ticker, (sample_indexes, origin_offsets) in offsets_by_ticker.items():
-            for sample_index, origin_offset in zip(sample_indexes.tolist(), origin_offsets.tolist()):
-                offset_by_sample[int(sample_index)] = (ticker, int(origin_offset))
-        for sample_index, sample in enumerate(samples):
-            ticker_and_offset = offset_by_sample.get(int(sample_index))
-            if ticker_and_offset is None:
-                rows.append(_empty_session_features())
-                continue
-            ticker, origin_offset = ticker_and_offset
             ticker_rows = self.rows_by_ticker.get(ticker)
             if ticker_rows is None or ticker_rows.size == 0:
-                rows.append(_empty_session_features())
                 continue
-            rows.append(_session_features_from_prefix(ticker_rows[: origin_offset + 1]))
-        return _rows_to_feature_arrays(rows)
+            values = _session_feature_arrays_from_offsets(ticker_rows, origin_offsets)
+            for key, array in values.items():
+                out[key][sample_indexes] = array
+        return out
 
     def _materialize_text_inputs(self, external: Mapping[str, list[list[dict[str, Any]]]]) -> dict[str, dict[str, np.ndarray]]:
         out: dict[str, dict[str, np.ndarray]] = {}
@@ -2604,6 +2707,11 @@ def _utc_day_start_ms(timestamp_us: int) -> int:
     return int(dt.datetime.combine(day, dt.time.min, tzinfo=dt.timezone.utc).timestamp() * 1000)
 
 
+def _utc_day_start_ms_array(timestamps_us: np.ndarray) -> np.ndarray:
+    timestamps = np.asarray(timestamps_us, dtype=np.int64)
+    return ((timestamps // 86_400_000_000) * 86_400_000).astype(np.int64, copy=False)
+
+
 def _aggregate_daily_bar_arrays(arrays: Mapping[str, np.ndarray], *, start: int, end: int) -> np.ndarray:
     out = np.zeros((len(BAR_FEATURE_KEYS),), dtype=np.float32)
     if end <= start:
@@ -2636,6 +2744,75 @@ def _aggregate_daily_bar_arrays(arrays: Mapping[str, np.ndarray], *, start: int,
     for index, name in enumerate(BAR_FEATURE_KEYS):
         out[index] = np.float32(values.get(name, 0.0))
     return out
+
+
+def _aggregate_daily_bar_arrays_batch(arrays: Mapping[str, np.ndarray], *, start: np.ndarray, end: np.ndarray) -> np.ndarray:
+    starts = np.asarray(start, dtype=np.int64)
+    ends = np.asarray(end, dtype=np.int64)
+    out = np.zeros((starts.shape[0], len(BAR_FEATURE_KEYS)), dtype=np.float32)
+    valid = ends > starts
+    if starts.size == 0 or not bool(valid.any()):
+        return out
+    starts_valid = starts[valid]
+    ends_valid = ends[valid]
+
+    def values(name: str) -> np.ndarray:
+        return np.asarray(arrays.get(name, np.zeros((0,), dtype=np.float32)), dtype=np.float32)
+
+    open_values = values("open")
+    close_values = values("close")
+    high_values = values("high")
+    low_values = values("low")
+    volume_values = values("volume")
+    dollar_values = values("dollar_volume")
+    trade_count_values = values("trade_count")
+    quote_count_values = values("quote_count")
+    vwap_values = values("vwap")
+
+    def prefix_sum(source: np.ndarray) -> np.ndarray:
+        return np.concatenate(([0.0], np.cumsum(source.astype(np.float64, copy=False), dtype=np.float64)))
+
+    volume_prefix = prefix_sum(volume_values)
+    dollar_prefix = prefix_sum(dollar_values)
+    trade_prefix = prefix_sum(trade_count_values)
+    quote_prefix = prefix_sum(quote_count_values)
+    vwap_volume_prefix = prefix_sum(vwap_values * volume_values)
+
+    high_query = _RangeMinMax(high_values.astype(np.float64, copy=False)) if high_values.size else None
+    low_query = _RangeMinMax(low_values.astype(np.float64, copy=False)) if low_values.size else None
+    row_indexes = np.flatnonzero(valid)
+    field_index = {name: index for index, name in enumerate(BAR_FEATURE_KEYS)}
+    out[row_indexes, field_index["open"]] = open_values[starts_valid].astype(np.float32, copy=False)
+    out[row_indexes, field_index["close"]] = close_values[ends_valid - 1].astype(np.float32, copy=False)
+    if high_query is not None and low_query is not None:
+        lows, highs = _daily_range_min_max(low_query=low_query, high_query=high_query, start=starts_valid, end=ends_valid)
+        out[row_indexes, field_index["high"]] = highs.astype(np.float32, copy=False)
+        out[row_indexes, field_index["low"]] = lows.astype(np.float32, copy=False)
+    volume = volume_prefix[ends_valid] - volume_prefix[starts_valid]
+    dollars = dollar_prefix[ends_valid] - dollar_prefix[starts_valid]
+    out[row_indexes, field_index["volume"]] = volume.astype(np.float32, copy=False)
+    out[row_indexes, field_index["dollar_volume"]] = dollars.astype(np.float32, copy=False)
+    out[row_indexes, field_index["trade_count"]] = (trade_prefix[ends_valid] - trade_prefix[starts_valid]).astype(np.float32, copy=False)
+    out[row_indexes, field_index["quote_count"]] = (quote_prefix[ends_valid] - quote_prefix[starts_valid]).astype(np.float32, copy=False)
+    out[row_indexes, field_index["vwap"]] = np.divide(
+        dollars,
+        volume,
+        out=(vwap_volume_prefix[ends_valid] - vwap_volume_prefix[starts_valid]),
+        where=volume > 0,
+    ).astype(np.float32, copy=False)
+    return out
+
+
+def _daily_range_min_max(
+    *,
+    low_query: "_RangeMinMax",
+    high_query: "_RangeMinMax",
+    start: np.ndarray,
+    end: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    lows, _unused_low_high = low_query.query(start, end)
+    _unused_high_low, highs = high_query.query(start, end)
+    return lows, highs
 
 
 def _today_asof_bar_from_events(rows: np.ndarray) -> np.ndarray:
@@ -2861,6 +3038,15 @@ def _bar_tensor_row(timeframes: tuple[str, ...], bars: np.ndarray) -> dict[str, 
     return out
 
 
+def _bar_tensor_feature_arrays(timeframes: tuple[str, ...], bars: np.ndarray) -> dict[str, np.ndarray]:
+    values = np.asarray(bars, dtype=np.float32)
+    return {
+        f"{timeframe}_{name}": values[:, row_index, field_index].astype(np.float32, copy=False)
+        for row_index, timeframe in enumerate(timeframes)
+        for field_index, name in enumerate(BAR_FEATURE_KEYS)
+    }
+
+
 def _future_bar_tensor_row(timeframes: tuple[str, ...], bars: np.ndarray) -> dict[str, float]:
     out: dict[str, float] = {}
     for row_index, timeframe in enumerate(timeframes):
@@ -2869,11 +3055,29 @@ def _future_bar_tensor_row(timeframes: tuple[str, ...], bars: np.ndarray) -> dic
     return out
 
 
+def _future_bar_tensor_feature_arrays(timeframes: tuple[str, ...], bars: np.ndarray) -> dict[str, np.ndarray]:
+    values = np.asarray(bars, dtype=np.float32)
+    return {
+        f"{timeframe}_{name}": values[:, row_index, field_index].astype(np.float32, copy=False)
+        for row_index, timeframe in enumerate(timeframes)
+        for field_index, name in enumerate(FUTURE_BAR_FEATURE_KEYS)
+    }
+
+
 def _select_future_bar_fields(bars: np.ndarray) -> np.ndarray:
     out = np.zeros((bars.shape[0], len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32)
     for target_index, name in enumerate(FUTURE_BAR_FEATURE_KEYS):
         source_index = BAR_FEATURE_KEYS.index(name)
         out[:, target_index] = bars[:, source_index]
+    return out
+
+
+def _select_future_bar_fields_batch(bars: np.ndarray) -> np.ndarray:
+    values = np.asarray(bars, dtype=np.float32)
+    out = np.zeros((values.shape[0], values.shape[1], len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32)
+    for target_index, name in enumerate(FUTURE_BAR_FEATURE_KEYS):
+        source_index = BAR_FEATURE_KEYS.index(name)
+        out[:, :, target_index] = values[:, :, source_index]
     return out
 
 
@@ -2936,6 +3140,77 @@ def _session_features_from_prefix(rows: np.ndarray) -> dict[str, float]:
                 "session_trade_vwap_so_far": float(np.sum(trade_price * trade_size) / np.sum(trade_size)) if np.sum(trade_size) > 0 else 0.0,
             }
         )
+    return out
+
+
+def _session_feature_arrays_from_offsets(rows: np.ndarray, origin_offsets: np.ndarray) -> dict[str, np.ndarray]:
+    origins = np.asarray(origin_offsets, dtype=np.int64)
+    out = {key: np.zeros((origins.shape[0],), dtype=np.float32) for key in _empty_session_features()}
+    if rows.size == 0 or origins.size == 0:
+        return out
+    timestamps = rows["sip_timestamp_us"].astype(np.int64, copy=False)
+    in_bounds = (origins >= 0) & (origins < int(rows.shape[0]))
+    if not bool(in_bounds.any()):
+        return out
+    valid_positions = np.flatnonzero(in_bounds)
+    day_us = 86_400_000_000
+    day_ids = timestamps[origins[in_bounds]] // day_us
+    event_types = rows["event_type"].astype(np.uint8, copy=False)
+    for day_id in np.unique(day_ids):
+        day_mask = day_ids == day_id
+        target_positions = valid_positions[day_mask]
+        target_origins = origins[target_positions]
+        day_start_us = int(day_id) * day_us
+        day_end_us = day_start_us + day_us
+        start = int(np.searchsorted(timestamps, day_start_us, side="left"))
+        end = int(np.searchsorted(timestamps, day_end_us, side="left"))
+        if start >= end:
+            continue
+        segment_types = event_types[start:end]
+        rel_origins = np.clip(target_origins, start, end - 1) - start
+        quote_positions = np.flatnonzero(segment_types == QUOTE_EVENT_TYPE).astype(np.int64, copy=False)
+        if quote_positions.size:
+            quote_counts = np.searchsorted(quote_positions, rel_origins, side="right")
+            has_quote = quote_counts > 0
+            if bool(has_quote.any()):
+                target_rows = target_positions[has_quote]
+                last_quote_indexes = quote_positions[quote_counts[has_quote] - 1]
+                quote_rows = rows[start + last_quote_indexes]
+                out["session_has_quote"][target_rows] = 1.0
+                out["session_last_ask"][target_rows] = _decode_primary_price(quote_rows).astype(np.float32, copy=False)
+                out["session_last_bid"][target_rows] = _decode_secondary_price(quote_rows).astype(np.float32, copy=False)
+                out["session_last_ask_size"][target_rows] = quote_rows["size_primary"].astype(np.float32, copy=False)
+                out["session_last_bid_size"][target_rows] = quote_rows["size_secondary"].astype(np.float32, copy=False)
+                out["session_quote_count_so_far"][target_rows] = quote_counts[has_quote].astype(np.float32, copy=False)
+        trade_positions = np.flatnonzero(segment_types == TRADE_EVENT_TYPE).astype(np.int64, copy=False)
+        if trade_positions.size:
+            trade_counts = np.searchsorted(trade_positions, rel_origins, side="right")
+            has_trade = trade_counts > 0
+            if bool(has_trade.any()):
+                trade_rows = rows[start + trade_positions]
+                trade_prices = _decode_primary_price(trade_rows).astype(np.float64, copy=False)
+                trade_sizes = np.maximum(0.0, trade_rows["size_primary"].astype(np.float64, copy=False))
+                prefix_high = np.maximum.accumulate(trade_prices)
+                prefix_low = np.minimum.accumulate(trade_prices)
+                cumulative_volume = np.cumsum(trade_sizes)
+                cumulative_dollars = np.cumsum(trade_prices * trade_sizes)
+                last_trade_indexes = trade_counts[has_trade] - 1
+                target_rows = target_positions[has_trade]
+                volumes = cumulative_volume[last_trade_indexes]
+                dollars = cumulative_dollars[last_trade_indexes]
+                out["session_has_trade"][target_rows] = 1.0
+                out["session_last_trade_price"][target_rows] = trade_prices[last_trade_indexes].astype(np.float32, copy=False)
+                out["session_last_trade_size"][target_rows] = trade_sizes[last_trade_indexes].astype(np.float32, copy=False)
+                out["session_trade_high_so_far"][target_rows] = prefix_high[last_trade_indexes].astype(np.float32, copy=False)
+                out["session_trade_low_so_far"][target_rows] = prefix_low[last_trade_indexes].astype(np.float32, copy=False)
+                out["session_trade_volume_so_far"][target_rows] = volumes.astype(np.float32, copy=False)
+                out["session_trade_count_so_far"][target_rows] = trade_counts[has_trade].astype(np.float32, copy=False)
+                out["session_trade_vwap_so_far"][target_rows] = np.divide(
+                    dollars,
+                    volumes,
+                    out=np.zeros_like(dollars, dtype=np.float64),
+                    where=volumes > 0,
+                ).astype(np.float32, copy=False)
     return out
 
 
