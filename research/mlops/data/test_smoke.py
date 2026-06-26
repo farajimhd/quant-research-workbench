@@ -459,6 +459,12 @@ def smoke_rolling_provider() -> None:
     assert "1w_close" not in batch.macro_features
     assert "1mo_close" not in batch.macro_features
     assert "1y_close" not in batch.macro_features
+    assert "session_last_bid" in batch.macro_features
+    assert "session_last_ask" in batch.macro_features
+    assert "session_last_bid_size" in batch.macro_features
+    assert "session_last_ask_size" in batch.macro_features
+    assert "session_last_mid" not in batch.macro_features
+    assert "session_last_spread" not in batch.macro_features
     assert "session_trade_count_so_far" in batch.macro_features
     assert "SPY_today_asof_close" in batch.global_features
     assert "SPY_past_7d_close" in batch.global_features

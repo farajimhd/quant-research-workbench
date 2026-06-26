@@ -526,6 +526,12 @@ The target training batch contains these model-facing groups:
 | legacy labels dict | `labels[*]` | usually `[B]` |
 | audit context | `external_context` | source metadata, not primary model input |
 
+The legacy ticker/session dict keeps quote state as
+`session_last_bid`, `session_last_ask`, `session_last_bid_size`, and
+`session_last_ask_size`. It does not persist midpoint or spread columns; those
+values are deterministic from bid and ask and should be derived by a consumer
+only when explicitly needed.
+
 `C = len(context_lags)`. The current shared data package default is `C = 27`:
 
 - 16 dense recent chunks

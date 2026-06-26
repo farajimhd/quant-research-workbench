@@ -2830,8 +2830,6 @@ def _session_features_from_prefix(rows: np.ndarray) -> dict[str, float]:
                 "session_last_bid": float(bid),
                 "session_last_ask_size": ask_size,
                 "session_last_bid_size": bid_size,
-                "session_last_spread": float(max(0.0, ask - bid)),
-                "session_last_mid": float((ask + bid) * 0.5) if ask > 0 and bid > 0 else 0.0,
                 "session_quote_count_so_far": float(quotes.size),
             }
         )
@@ -2860,8 +2858,6 @@ def _empty_session_features() -> dict[str, float]:
         "session_last_bid": 0.0,
         "session_last_ask_size": 0.0,
         "session_last_bid_size": 0.0,
-        "session_last_spread": 0.0,
-        "session_last_mid": 0.0,
         "session_quote_count_so_far": 0.0,
         "session_has_trade": 0.0,
         "session_last_trade_price": 0.0,
