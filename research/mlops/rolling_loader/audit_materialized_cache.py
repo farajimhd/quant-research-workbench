@@ -83,6 +83,8 @@ class MaterializedCacheAuditConfig:
     events_table: str = ""
     max_threads: int = 4
     max_memory_usage: str = "8G"
+    min_source_coverage_ratio: float = 0.90
+    max_source_overage_ratio: float = 1.01
 
 
 @dataclass(slots=True)
@@ -151,6 +153,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--events-table", default="")
     parser.add_argument("--max-threads", type=int, default=4)
     parser.add_argument("--max-memory-usage", default="8G")
+    parser.add_argument("--min-source-coverage-ratio", type=float, default=0.90)
+    parser.add_argument("--max-source-overage-ratio", type=float, default=1.01)
     return parser.parse_args(argv)
 
 
@@ -184,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         events_table=args.events_table,
         max_threads=max(1, int(args.max_threads)),
         max_memory_usage=str(args.max_memory_usage),
+        min_source_coverage_ratio=max(0.0, float(args.min_source_coverage_ratio)),
+        max_source_overage_ratio=max(1.0, float(args.max_source_overage_ratio)),
     )
     result = run_audit(config)
     print(json.dumps(_compact_console_summary(result), indent=2, sort_keys=True), flush=True)
@@ -231,9 +237,31 @@ def run_audit(config: MaterializedCacheAuditConfig) -> AuditResult:
         zero_sample_rows=config.zero_sample_rows,
         issues=issues,
     )
+    cache_config = _config_from_manifest(manifest)
+    sample_stride_events = max(1, int(cache_config.sample_stride_events))
+    source_coverage: dict[str, Any] = {
+        "skipped": not bool(config.source_checks),
+        "reason": "source_checks_disabled" if not bool(config.source_checks) else "",
+    }
     source_summary: dict[str, Any] = {"checked_samples": 0, "checked_windows": 0, "skipped": not bool(config.source_checks)}
-    if config.source_checks and selected:
+    client: ClickHouseHttpClient | None = None
+    if config.source_checks:
         client = ClickHouseHttpClient(config.clickhouse_url or default_clickhouse_url(), config.clickhouse_user, config.clickhouse_password)
+        source_coverage = _check_source_period_coverage(
+            client=client,
+            database=database,
+            events_table=events_table,
+            start_us=start_us,
+            end_us=end_us,
+            materialized_samples=int(identity_summary.get("samples_checked") or 0),
+            sample_stride_events=sample_stride_events,
+            issues=issues,
+            max_threads=max(1, int(config.max_threads)),
+            max_memory_usage=str(config.max_memory_usage),
+            min_coverage_ratio=float(config.min_source_coverage_ratio),
+            max_overage_ratio=float(config.max_source_overage_ratio),
+        )
+    if config.source_checks and selected and client is not None:
         events_per_chunk, context_lags = _context_geometry_from_manifest(manifest)
         source_summary = _check_source_event_windows(
             client=client,
@@ -260,6 +288,7 @@ def run_audit(config: MaterializedCacheAuditConfig) -> AuditResult:
             "origin_periods": period_summary,
             "sample_identities": identity_summary,
             "sample_content": content_summary,
+            "source_period_coverage": source_coverage,
             "source_event_windows": source_summary,
             "issue_counts": _issue_counts(issues),
         }
@@ -524,6 +553,102 @@ def _check_sample_identities(*, cache_root: Path, shards: list[dict[str, Any]], 
         "duplicate_count": int(len(duplicates)),
         "duplicate_examples": duplicates[:10],
     }
+
+
+def _check_source_period_coverage(
+    *,
+    client: ClickHouseHttpClient,
+    database: str,
+    events_table: str,
+    start_us: int,
+    end_us: int,
+    materialized_samples: int,
+    sample_stride_events: int,
+    issues: list[AuditIssue],
+    max_threads: int,
+    max_memory_usage: str,
+    min_coverage_ratio: float,
+    max_overage_ratio: float,
+) -> dict[str, Any]:
+    if int(start_us) <= 0 or int(end_us) <= int(start_us):
+        return {"skipped": True, "reason": "missing_period_bounds"}
+    stride = max(1, int(sample_stride_events))
+    settings = f" SETTINGS max_threads = {int(max_threads)}"
+    if str(max_memory_usage).strip() != "0":
+        settings += f", max_memory_usage = {parse_size_bytes(str(max_memory_usage))}"
+    start_date = _date_from_us(int(start_us)).isoformat()
+    end_date = _exclusive_date_from_us(int(end_us)).isoformat()
+    query = f"""
+SELECT
+    sum(c) AS event_count,
+    count() AS ticker_count,
+    sum(intDiv(c + {stride - 1}, {stride})) AS stride_expected_samples
+FROM
+(
+    SELECT
+        ticker,
+        count() AS c
+    FROM {quote_ident(database)}.{quote_ident(events_table)}
+    PREWHERE event_date >= toDate({sql_string(start_date)})
+      AND event_date < toDate({sql_string(end_date)})
+    WHERE sip_timestamp_us >= {int(start_us)}
+      AND sip_timestamp_us < {int(end_us)}
+    GROUP BY ticker
+)
+{settings}
+FORMAT JSONEachRow
+"""
+    rows = [json.loads(line) for line in client.execute(query).splitlines() if line.strip()]
+    row = rows[0] if rows else {}
+    event_count = int(row.get("event_count") or 0)
+    ticker_count = int(row.get("ticker_count") or 0)
+    expected = int(row.get("stride_expected_samples") or 0)
+    materialized = int(materialized_samples)
+    missing = max(0, expected - materialized)
+    extra = max(0, materialized - expected)
+    coverage_ratio = float(materialized / expected) if expected > 0 else (1.0 if materialized == 0 else float("inf"))
+    missing_ratio = float(missing / expected) if expected > 0 else 0.0
+    overage_ratio = float(materialized / expected) if expected > 0 else (1.0 if materialized == 0 else float("inf"))
+    summary = {
+        "skipped": False,
+        "database": str(database),
+        "events_table": str(events_table),
+        "start_timestamp_us": int(start_us),
+        "end_timestamp_us": int(end_us),
+        "start_utc": timestamp_us_to_utc(int(start_us)),
+        "end_utc": timestamp_us_to_utc(int(end_us)),
+        "event_date_start": start_date,
+        "event_date_end_exclusive": end_date,
+        "source_event_count": event_count,
+        "source_ticker_count": ticker_count,
+        "sample_stride_events": stride,
+        "stride_expected_samples": expected,
+        "materialized_samples": materialized,
+        "missing_samples_vs_stride_expected": missing,
+        "extra_samples_vs_stride_expected": extra,
+        "coverage_ratio": coverage_ratio,
+        "missing_ratio": missing_ratio,
+        "overage_ratio": overage_ratio,
+    }
+    if expected > 0 and materialized > int(expected * float(max_overage_ratio)):
+        issues.append(
+            AuditIssue(
+                "error",
+                "source_sample_coverage_overrun",
+                "Materialized sample count exceeds stride-adjusted source event count for the requested period.",
+                details=summary,
+            )
+        )
+    elif expected > 0 and coverage_ratio < float(min_coverage_ratio):
+        issues.append(
+            AuditIssue(
+                "warning",
+                "source_sample_coverage_low",
+                "Materialized sample count is far below stride-adjusted source event count for the requested period.",
+                details=summary,
+            )
+        )
+    return summary
 
 
 def _select_sample_points(shards: list[dict[str, Any]], *, sample_shards: int, samples_per_shard: int, seed: int) -> list[tuple[int, int]]:
@@ -827,6 +952,14 @@ def _decode_ticker_value(value: Any) -> str:
     return str(value or "").rstrip("\x00").upper()
 
 
+def _date_from_us(timestamp_us: int) -> dt.date:
+    return dt.datetime.fromtimestamp(int(timestamp_us) / 1_000_000.0, tz=dt.timezone.utc).date()
+
+
+def _exclusive_date_from_us(timestamp_us: int) -> dt.date:
+    return _date_from_us(max(0, int(timestamp_us) - 1)) + dt.timedelta(days=1)
+
+
 def _config_from_manifest(manifest: Mapping[str, Any]) -> RollingMarketDataConfig:
     raw = dict(manifest.get("config") or {})
     allowed: dict[str, Any] = {}
@@ -937,6 +1070,8 @@ def _compact_console_summary(result: AuditResult) -> dict[str, Any]:
         "issue_counts": result.summary.get("issue_counts", {}),
         "shards": result.summary.get("shards", {}),
         "origin_periods": result.summary.get("origin_periods", {}),
+        "sample_identities": result.summary.get("sample_identities", {}),
+        "source_period_coverage": result.summary.get("source_period_coverage", {}),
         "source_event_windows": result.summary.get("source_event_windows", {}),
     }
 
