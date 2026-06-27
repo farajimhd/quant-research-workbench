@@ -13,6 +13,7 @@ fixed version before moving to the next stage.
 | C2 | Stage 1 | The guide must be self-contained and explain what each argument/config value does before asking for comments. | Fixed |
 | C3 | Stage 1 | Keep advanced knobs, but provide one normal prod knob and one normal temp/debug knob so routine operation is not a long argument matrix. | Fixed |
 | C4 | Stage 1 | Explain the gateway by objectives, not by defensive flags: source sync and integrity can run during market hours; maintenance should run after hours. | Fixed |
+| C5 | Stage 1 | Remove stale defensive knobs and group the remaining controls by objective. IBKR is required for active ticker conid resolution, so it should not have a bypass flag. | Fixed |
 
 ## Stage 1: Process Start And Configuration
 
@@ -54,6 +55,7 @@ Mode safety rules:
    `-Daemon` explicitly so it is an intentional choice.
 4. Advanced flags still work with modes, but the mode sets the normal defaults
    first.
+5. Removed/stale wrapper flags fail parameter binding instead of being ignored.
 
 ### Gateway Objectives
 
@@ -86,6 +88,11 @@ Useful wrapper arguments not used in the command:
 | Wrapper argument | Python argument | Meaning | When to use |
 | --- | --- | --- | --- |
 | `-TestWriteDatabase q_reference_tmp` | `--test-write-database q_reference_tmp` | Reads from the normal source DB but writes to a temp DB. | Testing schema/write behavior without touching `q_live`. |
+| `-NoDaemon` | removes `--daemon` | Forces a one-shot run even when a mode would normally enable daemon mode. | After-hours production maintenance with `-Mode Prod -NoDaemon`. |
+| `-NoPreflight` | `--no-preflight` | Skip dependency checks. | Only for offline documentation/tests; unsafe for real daemon. |
+| `-NoImmediateTradabilityBlock` | `--no-immediate-tradability-block` | Do not write targeted non-tradable replacement rows for open issues. | Debug only; unsafe for live trading protection. |
+| `-PrintRules` | `--print-rules` | Print hard tradability rules and exit. | Diagnostics. |
+| `-PrintTableGroups` | `--print-table-groups` | Print reference table ownership groups and exit. | Diagnostics. |
 | `-EnsureMarketPublicationSchema` | `--ensure-market-publication-schema` | Creates/updates market reference publication tables. | After-hours setup or temp DB setup. |
 | `-MarketHoursWriteOverride` | `--market-hours-write-override` | Allows normally blocked market-hours promotion writes. | Rare emergency or controlled temp test. Requires a reason. |
 | `-MarketHoursWriteReason "..."` | `--market-hours-write-reason "..."` | Auditable explanation for market-hours override. | Required with `-MarketHoursWriteOverride`. |
@@ -95,11 +102,14 @@ Useful wrapper arguments not used in the command:
 | `-NoRebuildTradable` | `--no-rebuild-tradable` | Do not rebuild `feature_tradable_universe_v1` and scanner static publications. | Market-hours cycles or narrow tests. |
 | `-RebuildTradableInTestMode` | `--rebuild-tradable-in-test-mode` | Allows tradable rebuild when read DB and write DB differ. | Only after the temp DB has required source tables cloned. |
 | `-NoMarketPublicationGapFill` | `--no-market-publication-gap-fill` | Skip FINRA/SEC publication maintenance. | Market-hours daemon cycles or narrow tests. |
-| `-NoPreflight` | `--no-preflight` | Skip dependency checks. | Only for offline documentation/tests; unsafe for real daemon. |
-| `-NoIbkrResolution` | `--no-ibkr-resolution` | Do not query IBKR for conid candidates. | Testing Massive-only discovery; unresolved conids become blockers. |
-| `-NoIbkrRequired` | `--no-ibkr-required` | Do not fail startup if IBKR is unavailable. | Temporary operation when IBKR Client Portal is down. |
-| `-NoImmediateTradabilityBlock` | `--no-immediate-tradability-block` | Do not write targeted non-tradable replacement rows for open issues. | Debug only; unsafe for live trading protection. |
-| `-NoDaemon` | removes `--daemon` | Forces a one-shot run even when a mode would normally enable daemon mode. | After-hours production maintenance with `-Mode Prod -NoDaemon`. |
+
+Removed stale controls:
+
+| Removed control | Why it was removed |
+| --- | --- |
+| `-NoIbkrResolution` / `--no-ibkr-resolution` / `REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED` | Active ticker sync must find IBKR conids. Running without IBKR creates known-unusable candidates. |
+| `-NoIbkrRequired` / `--no-ibkr-required` / `REFERENCE_GATEWAY_IBKR_REQUIRED` | If active ticker sync is enabled and IBKR is unavailable, the gateway should fail preflight instead of running partial work. |
+| `REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_MARKET_HOURS_ONLY` | Source sync is a core objective and can run during both active and after-hours daemon cycles. |
 
 ### Important Config Values In Plain English
 
@@ -110,10 +120,7 @@ These values are loaded from env unless overridden by CLI.
 | `execute` | `false` | Whether the gateway may write. | Writes are possible if policy allows. | Report-only. |
 | `daemon_loop_enabled` | `false` | Whether the process repeats cycles. | Parent daemon keeps launching one-shot child cycles. | Single pass only. |
 | `active_ticker_check_enabled` | `false` | Whether to poll Massive active tickers. | Detects new/missing Massive tickers. | Skips ticker reconciliation. |
-| `active_ticker_check_market_hours_only` | `false` | Whether active ticker sync is restricted to active collection hours. | Source sync only runs during active collection hours. | Source sync can run in both market-hours and after-hours daemon cycles. |
 | `preflight_enabled` | `true` | Whether startup dependency checks run. | Fails fast if required dependencies are down. | Gateway may fail later or run partial work. |
-| `ibkr_resolution_enabled` | `true` | Whether to call IBKR Client Portal for conids. | Missing tickers get IBKR contract evidence. | No IBKR evidence; candidates usually remain blocked. |
-| `ibkr_required` | `true` | Whether IBKR must be reachable/authenticated when ticker reconciliation runs. | Startup fails if IBKR is unavailable. | Gateway can run without IBKR, but conid fixes are deferred. |
 | `write_discovered_issues` | `true` | Whether discovered problems become rows in `id_mapping_issue_v1`. | Problems become durable blockers. | Problems stay in reports only. |
 | `write_canonical_graph` | `true` | Whether clean candidates can be promoted into identity tables. | After-hours clean candidates can become canonical rows. | No identity graph promotion. |
 | `immediate_tradability_block_enabled` | `true` | Whether open issues immediately block currently tradable latest-universe rows. | Inserts replacement `is_tradable=0` rows for touched symbols. | Waits for full tradable rebuild; unsafe during live trading. |
@@ -179,10 +186,8 @@ Not all writes have the same risk.
 
    - `preflight_enabled = true`
      - run dependency checks before useful work
-   - `ibkr_resolution_enabled = true`
-     - query IBKR Client Portal for conid evidence
-   - `ibkr_required = true`
-     - fail startup if IBKR is unavailable when ticker reconciliation is active
+   - IBKR Client Portal is required when active ticker reconciliation is active
+     - active ticker sync cannot be run without conid evidence
    - `immediate_tradability_block_enabled = true`
      - immediately publish non-tradable replacement rows for currently tradable
        rows touched by open issues

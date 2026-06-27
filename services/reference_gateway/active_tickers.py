@@ -62,7 +62,7 @@ def run_active_ticker_plan(config: ReferenceGatewayConfig) -> ActiveTickerPlan:
     missing = [normalize_massive_ticker(row) for row in provider.tickers]
     missing = [row for row in missing if row.get("ticker") and row["ticker"].upper() not in known]
     candidate_rows = missing[: config.active_ticker_new_candidate_limit]
-    ibkr = IbkrReferenceClient(base_url=config.ibkr_base_url) if config.ibkr_resolution_enabled else None
+    ibkr = IbkrReferenceClient(base_url=config.ibkr_base_url)
     candidates: list[MissingTickerCandidate] = []
     overview_fetched = 0
     ibkr_searched = 0

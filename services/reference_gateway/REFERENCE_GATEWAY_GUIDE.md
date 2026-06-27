@@ -334,7 +334,6 @@ Continuous daemon:
 Controlled test-only guards:
 
 ```powershell
-.\scripts\run_reference_gateway.ps1 -Mode Prod -NoIbkrRequired
 .\scripts\run_reference_gateway.ps1 -Mode Prod -NoPreflight
 .\scripts\run_reference_gateway.ps1 -Mode Prod -NoImmediateTradabilityBlock
 ```

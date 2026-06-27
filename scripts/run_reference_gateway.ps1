@@ -1,28 +1,43 @@
+[CmdletBinding()]
 param(
+    # Launcher.
     [string]$PythonExe = "python",
     [ValidateSet("Custom", "Prod", "Temp")]
     [string]$Mode = "Custom",
+
+    # Database targets.
     [string]$ReadDatabase = "",
     [string]$WriteDatabase = "",
     [string]$TestWriteDatabase = "",
+
+    # Execution mode.
     [switch]$Execute,
-    [switch]$PrintRules,
+    [switch]$Daemon,
+    [switch]$NoDaemon,
+
+    # Objective 1: source sync.
     [switch]$ActiveTickerCheck,
-    [switch]$EnsureMarketPublicationSchema,
-    [switch]$MarketHoursWriteOverride,
-    [string]$MarketHoursWriteReason = "",
+
+    # Objective 2: integrity guardrail.
     [switch]$NoWriteDiscoveredIssues,
-    [switch]$NoWriteCanonicalGraph,
     [switch]$NoResolveStaleIssues,
+    [switch]$NoImmediateTradabilityBlock,
+
+    # Objective 3: maintenance.
+    [switch]$EnsureMarketPublicationSchema,
+    [switch]$NoWriteCanonicalGraph,
     [switch]$NoRebuildTradable,
     [switch]$RebuildTradableInTestMode,
     [switch]$NoMarketPublicationGapFill,
-    [switch]$NoPreflight,
-    [switch]$NoIbkrResolution,
-    [switch]$NoIbkrRequired,
-    [switch]$NoImmediateTradabilityBlock,
-    [switch]$Daemon,
-    [switch]$NoDaemon
+
+    # Market-hours override for maintenance/promotion.
+    [switch]$MarketHoursWriteOverride,
+    [string]$MarketHoursWriteReason = "",
+
+    # Objective 4: observability and diagnostics.
+    [switch]$PrintRules,
+    [switch]$PrintTableGroups,
+    [switch]$NoPreflight
 )
 
 $ErrorActionPreference = "Stop"
@@ -91,6 +106,9 @@ if ($MarketHoursWriteReason.Trim()) {
 if ($PrintRules) {
     $argsList += "--print-rules"
 }
+if ($PrintTableGroups) {
+    $argsList += "--print-table-groups"
+}
 if ($ActiveTickerCheck) {
     $argsList += "--active-ticker-check"
 }
@@ -117,12 +135,6 @@ if ($NoMarketPublicationGapFill) {
 }
 if ($NoPreflight) {
     $argsList += "--no-preflight"
-}
-if ($NoIbkrResolution) {
-    $argsList += "--no-ibkr-resolution"
-}
-if ($NoIbkrRequired) {
-    $argsList += "--no-ibkr-required"
 }
 if ($NoImmediateTradabilityBlock) {
     $argsList += "--no-immediate-tradability-block"

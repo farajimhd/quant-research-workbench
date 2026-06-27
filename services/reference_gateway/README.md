@@ -127,8 +127,9 @@ python -m services.reference_gateway.main --active-ticker-check
 
 That pass fetches Massive active US stock tickers, compares them against
 `id_symbol_v1`/`id_listing_v1`, fetches compact Massive overview evidence for
-new tickers, and queries IBKR Client Portal by default when
-`REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED=true`.
+new tickers, and queries IBKR Client Portal for conid evidence. IBKR is required
+for active ticker reconciliation; if Client Portal is unavailable or not
+authenticated, preflight fails.
 
 Without `--execute`, this is still report-only. With `--execute`, discovered
 open mapping issues are inserted into `id_mapping_issue_v1` by default. Those
@@ -167,13 +168,10 @@ Useful controls:
 
 ```text
 REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_ENABLED=false
-REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_MARKET_HOURS_ONLY=true
 REFERENCE_GATEWAY_ACTIVE_TICKER_PAGE_LIMIT=1000
 REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES=1000
 REFERENCE_GATEWAY_ACTIVE_TICKER_NEW_CANDIDATE_LIMIT=250
 REFERENCE_GATEWAY_PREFLIGHT_ENABLED=true
-REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED=true
-REFERENCE_GATEWAY_IBKR_REQUIRED=true
 REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES=true
 REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH=true
 REFERENCE_GATEWAY_IMMEDIATE_TRADABILITY_BLOCK_ENABLED=true
@@ -199,7 +197,6 @@ python -m services.reference_gateway.main --execute --no-rebuild-tradable
 python -m services.reference_gateway.main --execute --rebuild-tradable-in-test-mode
 python -m services.reference_gateway.main --execute --no-market-publication-gap-fill
 python -m services.reference_gateway.main --execute --no-preflight
-python -m services.reference_gateway.main --execute --no-ibkr-required
 python -m services.reference_gateway.main --execute --no-immediate-tradability-block
 ```
 
@@ -213,11 +210,12 @@ Wrapper equivalents:
 .\scripts\run_reference_gateway.ps1 -Execute -RebuildTradableInTestMode
 .\scripts\run_reference_gateway.ps1 -Execute -NoMarketPublicationGapFill
 .\scripts\run_reference_gateway.ps1 -Execute -NoPreflight
-.\scripts\run_reference_gateway.ps1 -Execute -NoIbkrRequired
 .\scripts\run_reference_gateway.ps1 -Execute -NoImmediateTradabilityBlock
 ```
 
-IBKR Client Portal Gateway should be running and authenticated for active ticker
+IBKR Client Portal Gateway must be running and authenticated for active ticker
+maintenance because conid resolution is required. If active ticker sync is
+enabled and IBKR is unavailable, preflight fails instead of running partial
 maintenance. IBKR results are compacted to candidate contract fields; the
 gateway does not persist raw IBKR payloads.
 

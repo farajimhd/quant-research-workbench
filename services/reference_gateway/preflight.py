@@ -36,8 +36,7 @@ def run_preflight(config: ReferenceGatewayConfig, *, require_active_ticker_depen
     ]
     if require_active_ticker_dependencies:
         checks.append(check_massive(config))
-        if config.ibkr_required or config.ibkr_resolution_enabled:
-            checks.append(check_ibkr(config))
+        checks.append(check_ibkr(config))
     status = "ok" if all(check.status == "ok" for check in checks) else "failed"
     result = PreflightResult(status=status, checks=checks)
     if logger is not None:
