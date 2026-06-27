@@ -44,7 +44,7 @@ DEFAULTS.update(
         "sample_cache_validation_start_shard": 0,
         "sample_cache_validation_batches_per_shard": 1,
         "batch_size": 8192,
-        "epochs": 2,
+        "epochs": 1,
         "embedding_dim": 32,
         "learning_rate": 4e-4,
         "scheduler": "shard_decay_cosine",
@@ -55,7 +55,7 @@ DEFAULTS.update(
         "warm_start_load_optimizer": False,
         "repeatable_randomness": False,
         "wandb_project": "June2026-event-token-mae-full",
-        "wandb_run_name": "v25-fullpretrain-dualcache-headerrecon-emb32-bs8192-lr4e4-2epochs-freshrng",
+        "wandb_run_name": "v25-fullpretrain-dualcache-headerrecon-emb32-bs8192-lr4e4-1epoch-freshrng",
     }
 )
 

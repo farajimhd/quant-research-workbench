@@ -209,7 +209,7 @@ The full dual-cache v25 header-reconstruction pretrain launcher starts a fresh
 run over all discovered train shards from both `cache_20260611_195259` and
 `cache_pretrain_xonly_20260621_140813`. It validates from
 `cache_20260617_112833`, uses embedding dim `32`, batch size `8192`, BF16 AMP,
-torch compile, shard-decay cosine scheduling, and runs 2 epochs by default:
+torch compile, shard-decay cosine scheduling, and runs 1 epoch by default:
 
 ```powershell
 python research\masked_event_model\\v25\train_full_pretrain_dual_cache.py
