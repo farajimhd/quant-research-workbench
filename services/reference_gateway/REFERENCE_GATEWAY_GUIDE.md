@@ -293,20 +293,27 @@ Check:
 
 ## Stage 3: Runtime Status And Terminal UX
 
-After Stage 2 passes, improve the live operator surface.
+Implemented.
 
-The reference gateway should have a Rich terminal layout consistent with the
-news/sec/QMD services:
+When Rich output is enabled, one-shot gateway cycles now render a live terminal
+dashboard and refresh it after each major operation. The dashboard is organized
+into stable panels:
 
-- current phase
+- header with UTC, ET, Vancouver time, mode, read/write DBs, policy, data root,
+  and report path
+- current operation
 - dependency status
+- runtime summary
 - source-sync counters
-- integrity findings
+- integrity guardrail status
 - maintenance state
-- market-hours policy state
-- last cycle summary
-- latest blocking or resolved issues
+- operation log
+- prioritized audit findings
 
-The terminal should be backed by structured JSONL runtime events, wrap long
-messages instead of truncating important values, and remain readable in normal
-and compact console heights.
+The compact layout keeps the current operation, summary, maintenance, and audit
+findings visible in shorter consoles. Long values fold inside their panels
+instead of changing column counts.
+
+Runtime JSONL logs now include structured `audit_completed` and
+`source_sync_completed` events in addition to per-operation events. These events
+record status and counts, not raw provider payloads.

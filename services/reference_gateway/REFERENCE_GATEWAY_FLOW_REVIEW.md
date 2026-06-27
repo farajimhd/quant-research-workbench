@@ -16,6 +16,7 @@ source first.
 | C6 | CLI | Active ticker sync is an internal source-sync task, not a public flag. | Fixed |
 | C7 | CLI | Replace low-level write switches with high-level operator knobs. | Fixed |
 | C8 | Stage 2 | Add the real runtime validation sequence before moving to UI/terminal polish. | Added |
+| C9 | Stage 3 | Add live Rich status panels and structured runtime events for operator visibility. | Fixed |
 
 ## Public Operator Knobs
 
@@ -238,27 +239,35 @@ Pass condition:
 
 ## Stage 3: Runtime Status And Terminal UX
 
-After Stage 2 passes, improve the operator-facing status surface so the
-reference gateway matches the service pattern used by news/sec/QMD.
+Status: implemented.
 
-Planned work:
+The reference gateway now uses a live Rich terminal session during one-shot
+child cycles when Rich output is enabled. The terminal updates after each major
+operation and keeps a stable panel structure:
 
-1. Add a Rich terminal layout with stable panels:
+- header with UTC, ET, Vancouver time, mode, read/write DBs, data root, and
+  report path
+- current operation
+- dependency status
+- runtime summary
+- source-sync counters
+- integrity guardrail status
+- maintenance policy/state
+- full operation log
+- prioritized audit findings
 
-   - current phase
-   - dependency status
-   - source-sync counters
-   - integrity findings
-   - maintenance state
-   - last cycle summary
-   - latest blocking issues or resolved issues
+The compact layout removes lower-priority panels when the terminal height is
+short, keeping the current operation, summary, maintenance, and audit findings
+visible.
 
-2. Add or refine structured runtime events so every terminal field has a JSONL
-   source.
+Structured JSONL events were added for audit summaries and source-sync
+summaries. Existing `operation` events continue to back the per-step terminal
+rows.
 
-3. Make long messages wrap instead of truncating important values.
+Validation performed:
 
-4. Show active market-hours policy and whether maintenance is allowed,
-   deferred, skipped, or forced.
-
-5. Validate the layout in normal and compact console heights.
+- `python -m py_compile services\reference_gateway\terminal.py services\reference_gateway\main.py`
+- `python -m services.reference_gateway.main --help`
+- `python -m services.reference_gateway.smoke_test`
+- normal-height terminal render smoke
+- compact-height terminal render smoke

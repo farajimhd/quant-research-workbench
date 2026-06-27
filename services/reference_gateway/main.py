@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import sys
@@ -23,7 +24,7 @@ from services.reference_gateway.publication_maintenance import run_recent_public
 from services.reference_gateway.publication_rebuild import rebuild_tradable_publications
 from services.reference_gateway.runtime_log import RuntimeLogger
 from services.reference_gateway.table_groups import table_group_markdown
-from services.reference_gateway.terminal import OperationRecord, ReferenceRunRecord, render_reference_run
+from services.reference_gateway.terminal import OperationRecord, ReferenceRunRecord, ReferenceTerminalSession
 from services.reference_gateway.tradable_blocker import block_latest_universe_for_open_issues
 from services.reference_gateway.tradability import tradability_rule_markdown
 
@@ -73,6 +74,10 @@ def main() -> None:
     run_started = time.perf_counter()
     logger = RuntimeLogger.from_env()
     record = ReferenceRunRecord(config=config, write_policy=write_policy)
+    terminal = ReferenceTerminalSession(record) if rich_output else None
+    if terminal is not None:
+        terminal.start()
+        atexit.register(terminal.stop)
 
     def emit(message: str) -> None:
         if not rich_output:
@@ -81,6 +86,15 @@ def main() -> None:
     def add_operation(name: str, status: str, detail: str = "", rows: int | None = None, seconds: float | None = None) -> None:
         record.operations.append(OperationRecord(name=name, status=status, detail=detail, rows=rows, seconds=seconds))
         logger.event("operation", name=name, status=status, detail=detail, rows=rows, seconds=seconds)
+        refresh_terminal()
+
+    def refresh_terminal() -> None:
+        if terminal is not None:
+            terminal.update()
+
+    def stop_terminal() -> None:
+        if terminal is not None:
+            terminal.stop()
 
     emit("=" * 96)
     emit("Reference Gateway audit")
@@ -145,8 +159,8 @@ def main() -> None:
             record.final_status = "failed"
             record.wall_seconds = time.perf_counter() - run_started
             logger.event("run_failed", reason="preflight_failed", wall_seconds=record.wall_seconds)
-            if rich_output:
-                render_reference_run(record)
+            refresh_terminal()
+            stop_terminal()
             sys.exit(2)
     else:
         add_operation("Dependency preflight", "skipped", "REFERENCE_GATEWAY_PREFLIGHT_ENABLED_FALSE")
@@ -195,6 +209,8 @@ def main() -> None:
     add_operation("Reference audit", report.status, f"{len(report.checks)} checks", seconds=time.perf_counter() - audit_started)
     report_path = write_report(report, config.report_root_win)
     record.report_path = str(report_path or "")
+    logger.event("audit_completed", **audit_log_summary(report, report_path=record.report_path))
+    refresh_terminal()
     for check in report.checks:
         emit(
             f"{check.status.upper():7} {check.severity:7} {check.name:45} count={check.count:,} {check.message}",
@@ -205,6 +221,19 @@ def main() -> None:
         started = time.perf_counter()
         plan = run_active_ticker_plan(config)
         plan_path = write_active_ticker_plan(plan, config.report_root_win)
+        logger.event(
+            "source_sync_completed",
+            provider_rows=plan.provider_rows,
+            provider_pages=plan.provider_pages,
+            provider_saturated=plan.provider_saturated,
+            known_active_symbols=plan.known_active_symbols,
+            missing_tickers=plan.missing_tickers,
+            overview_fetched=plan.overview_fetched,
+            ibkr_searched=plan.ibkr_searched,
+            candidate_limit=plan.candidate_limit,
+            wall_seconds=plan.wall_seconds,
+            report_path=str(plan_path or ""),
+        )
         add_operation(
             "Source sync",
             "completed",
@@ -292,6 +321,8 @@ def main() -> None:
                 add_operation("Post-write reference audit", report.status, f"{len(report.checks)} checks", seconds=time.perf_counter() - audit_started)
                 report_path = write_report(report, config.report_root_win)
                 record.report_path = str(report_path or record.report_path)
+                logger.event("audit_completed", **audit_log_summary(report, report_path=record.report_path, post_write=True))
+                refresh_terminal()
                 if report_path:
                     emit(f"post_issue_report={report_path}")
             elif changed_rows > 0 and config.rebuild_tradable_on_execute:
@@ -317,8 +348,8 @@ def main() -> None:
     record.final_status = report.status
     record.wall_seconds = time.perf_counter() - run_started
     logger.event("run_finished", status=record.final_status, wall_seconds=record.wall_seconds, report_path=record.report_path)
-    if rich_output:
-        render_reference_run(record)
+    refresh_terminal()
+    stop_terminal()
     emit(f"status={report.status} wall_seconds={report.wall_seconds:.2f}")
     if report.status == "failed":
         sys.exit(2)
@@ -342,6 +373,30 @@ def resolution_detail(resolution: object) -> str:
         f"review={getattr(resolution, 'human_review_required', 0):,} "
         f"historical={getattr(resolution, 'historical_repair', 0):,}"
     )
+
+
+def audit_log_summary(report: object, *, report_path: str, post_write: bool = False) -> dict[str, object]:
+    checks = list(getattr(report, "checks", []) or [])
+    failed = [check for check in checks if getattr(check, "status", "") != "ok"]
+    return {
+        "post_write": post_write,
+        "status": getattr(report, "status", ""),
+        "checked_at_utc": getattr(report, "checked_at_utc", ""),
+        "read_database": getattr(report, "read_database", ""),
+        "write_database": getattr(report, "write_database", ""),
+        "check_count": len(checks),
+        "failed_check_count": len(failed),
+        "failed_checks": [
+            {
+                "name": getattr(check, "name", ""),
+                "severity": getattr(check, "severity", ""),
+                "status": getattr(check, "status", ""),
+                "count": getattr(check, "count", 0),
+            }
+            for check in failed[:20]
+        ],
+        "report_path": report_path,
+    }
 
 
 if __name__ == "__main__":
