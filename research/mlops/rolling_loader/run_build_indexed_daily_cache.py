@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import signal
 import shutil
 import sys
+import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -117,6 +119,7 @@ class DayState:
 @dataclass(slots=True)
 class BuildStats:
     started: float = field(default_factory=time.perf_counter)
+    split: str = "train"
     phase: str = "starting"
     days_total: int = 0
     days_done: int = 0
@@ -133,6 +136,7 @@ class BuildStats:
     log_path: Path | None = None
     progress_path: Path | None = None
     interrupted: bool = False
+    stop_requested: bool = False
 
     def message(self, text: str, **fields: Any) -> None:
         stamp = dt.datetime.now().strftime("%H:%M:%S")
@@ -278,9 +282,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     source.profiler = profiler
     stats = BuildStats(
+        split=str(args.split),
         days_total=len(session_dates),
         log_path=cache_root / "builder_events.jsonl",
-        progress_path=cache_root / "train_progress.json",
+        progress_path=cache_root / f"{args.split}_progress.json",
     )
     stats.workers = {idx: DayState(worker_id=idx, session_date="") for idx in range(max(1, int(args.workers)))}
     dashboard = IndexedCacheDashboard(enabled=not args.no_rich, live=not args.plain_status, refresh_seconds=args.refresh_seconds, stats=stats)
@@ -289,6 +294,18 @@ def main(argv: list[str] | None = None) -> int:
 
     fetch_executor: ThreadPoolExecutor | None = None
     build_executor: ThreadPoolExecutor | None = None
+    stop_event = threading.Event()
+    previous_sigint = signal.getsignal(signal.SIGINT)
+
+    def request_stop(signum: int, _frame: Any) -> None:
+        stop_event.set()
+        stats.interrupted = True
+        stats.stop_requested = True
+        stats.phase = "stopping"
+        stats.message("stop requested; cancelling queued work after completed day packages")
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, request_stop)
     try:
         dashboard.start()
         stats.message(f"cache_root={cache_root}")
@@ -312,10 +329,14 @@ def main(argv: list[str] | None = None) -> int:
 
         submit_fetches()
         for day in session_dates:
+            if stop_event.is_set():
+                break
             if fetch_executor is None:
                 fetched = _fetch_day(args, source, config, day, context_lags)
             else:
                 while True:
+                    if stop_event.is_set():
+                        raise KeyboardInterrupt
                     ready = [future for future in pending_fetches if future.done()]
                     if ready:
                         future = min(ready, key=lambda item: session_dates.index(pending_fetches[item]))
@@ -333,11 +354,19 @@ def main(argv: list[str] | None = None) -> int:
             state.session_date = fetched.session_date.isoformat()
             state.status = "queued"
             state.stage = "queued"
-            pending_builds[build_executor.submit(_write_indexed_day, args, cache_root, config, context_lags, fetched, worker_id, stats)] = worker_id
+            pending_builds[build_executor.submit(_write_indexed_day, args, cache_root, config, context_lags, fetched, worker_id, stats, stop_event)] = worker_id
             while len(pending_builds) >= max(1, int(args.workers)):
+                if stop_event.is_set():
+                    break
                 _drain_one_build(pending_builds, stats, manifest, cache_root, dashboard)
+            if stop_event.is_set():
+                break
         while pending_builds:
+            if stop_event.is_set():
+                break
             _drain_one_build(pending_builds, stats, manifest, cache_root, dashboard)
+        if stop_event.is_set():
+            raise KeyboardInterrupt
 
         manifest["status"] = "complete"
         manifest["completed_at"] = dt.datetime.now(tz=dt.timezone.utc).isoformat()
@@ -381,16 +410,19 @@ def main(argv: list[str] | None = None) -> int:
         _refresh(stats, dashboard, cache_root, force=True)
         return 0
     except KeyboardInterrupt:
+        stop_event.set()
         stats.interrupted = True
+        stats.stop_requested = True
         stats.phase = "interrupted"
-        stats.message("interrupted by user; finalized complete days remain usable")
+        stats.message("interrupted by user; complete day folders remain usable and temporary folders are ignored")
         write_json_atomic(cache_root / "manifest.json", manifest | {"status": "interrupted"})
         return 130
     finally:
+        signal.signal(signal.SIGINT, previous_sigint)
         if fetch_executor is not None:
             fetch_executor.shutdown(wait=False, cancel_futures=True)
         if build_executor is not None:
-            build_executor.shutdown(wait=True, cancel_futures=True)
+            build_executor.shutdown(wait=not stats.interrupted, cancel_futures=True)
         source.close()
         _write_progress(cache_root, args.split, stats)
         dashboard.stop()
@@ -428,6 +460,7 @@ def _write_indexed_day(
     fetched: DayFetch,
     worker_id: int,
     stats: BuildStats,
+    stop_event: threading.Event,
 ) -> IndexedDailyCacheDayResult:
     started = time.perf_counter()
     pl = _polars()
@@ -438,6 +471,7 @@ def _write_indexed_day(
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
     tmp_dir.mkdir(parents=True, exist_ok=True)
+    _raise_if_stopping(stop_event)
     state.status = "running"
     state.stage = "events"
     state.message = "normalizing events"
@@ -464,8 +498,7 @@ def _write_indexed_day(
         events = pl.DataFrame({"row_offset": [], "ticker": [], "ticker_id": [], **{column: [] for column in EVENT_PAYLOAD_COLUMNS}})
     state.events_total = max(1, int(events.height))
     state.events_done = int(events.height)
-    events.write_parquet(tmp_dir / "events.parquet", compression="zstd")
-    _write_event_ranges(tmp_dir, events, ticker_id_map)
+    _raise_if_stopping(stop_event)
 
     state.stage = "origins"
     state.message = "building origin and event-window indices"
@@ -479,23 +512,27 @@ def _write_indexed_day(
     )
     state.origins_total = max(1, int(origins.height))
     state.origins_done = int(origins.height)
-    origins.write_parquet(tmp_dir / "origins.parquet", compression="zstd")
-    windows.write_parquet(tmp_dir / "event_window_index.parquet", compression="zstd")
+    _raise_if_stopping(stop_event)
 
     state.stage = "context"
-    state.message = "writing macro/context dependencies"
+    state.message = "writing independent cache files"
     active_tickers = set(origins.get_column("ticker").unique().to_list()) if origins.height else set()
-    _write_dependency_files_concurrently(
+    _write_day_files_concurrently(
         args=args,
         day_dir=tmp_dir,
         pl=pl,
-        fetched=fetched,
+        events=events,
+        ticker_id_map=ticker_id_map,
         origins=origins,
+        windows=windows,
+        fetched=fetched,
         session=session,
         config=config,
         active_tickers=active_tickers,
         state=state,
+        stop_event=stop_event,
     )
+    _raise_if_stopping(stop_event)
 
     source_session_events = int(events.filter((pl.col("timestamp_us") >= session.start_timestamp_us) & (pl.col("timestamp_us") < session.end_timestamp_us)).height)
     day_manifest = {
@@ -538,6 +575,7 @@ def _write_indexed_day(
         "completed_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
     }
     write_json_atomic(tmp_dir / "day_manifest.json", day_manifest)
+    _raise_if_stopping(stop_event)
     state.stage = "write"
     state.write_done = 1
     state.write_total = 1
@@ -570,13 +608,15 @@ def _build_origin_windows(
     session_end_us: int,
 ) -> tuple[Any, Any, int, int]:
     pl = _polars()
-    origin_rows: list[dict[str, Any]] = []
-    window_rows: list[dict[str, Any]] = []
+    origin_frames: list[Any] = []
+    window_frames: list[Any] = []
     skipped_history = 0
     skipped_gap = 0
     if events.height == 0 or not context_lags:
         return _empty_origins(pl), _empty_windows(pl, context_lags), 0, 0
     origin_id = 0
+    lags = np.asarray(context_lags, dtype=np.int64)
+    context = int(events_per_chunk)
     for key, part in events.partition_by("ticker", as_dict=True, maintain_order=True).items():
         ticker = key[0] if isinstance(key, tuple) else key
         ordinals = part.get_column("ordinal").to_numpy().astype(np.int64, copy=False)
@@ -589,42 +629,49 @@ def _build_origin_windows(
         if session_positions.size == 0:
             continue
         candidates = session_positions[:: max(1, int(sample_stride))]
-        for pos in candidates.tolist():
-            starts: dict[str, int] = {}
-            valid = True
-            not_enough = False
-            for context_index, lag in enumerate(context_lags):
-                end_pos = int(pos) - int(lag)
-                start_pos = end_pos - int(events_per_chunk) + 1
-                if start_pos < 0 or end_pos >= ordinals.shape[0]:
-                    valid = False
-                    not_enough = True
-                    break
-                window_ordinals = ordinals[start_pos : end_pos + 1]
-                if window_ordinals.shape[0] != int(events_per_chunk) or not bool(np.all(window_ordinals[1:] == window_ordinals[:-1] + 1)):
-                    valid = False
-                    break
-                starts[f"window_start_{context_index:03d}"] = int(row_offsets[start_pos])
-            if not valid:
-                if not_enough:
-                    skipped_history += 1
-                else:
-                    skipped_gap += 1
-                continue
-            origin_rows.append(
+        if candidates.size == 0:
+            continue
+        ends = candidates[:, None] - lags[None, :]
+        starts = ends - context + 1
+        history_ok = (starts >= 0) & (ends >= 0) & (ends < int(ordinals.shape[0]))
+        history_all = np.all(history_ok, axis=1)
+        skipped_history += int(np.count_nonzero(~history_all))
+        if not bool(history_all.any()):
+            continue
+        valid_candidate_indexes = np.flatnonzero(history_all)
+        valid_starts = starts[valid_candidate_indexes]
+        valid_ends = ends[valid_candidate_indexes]
+        start_ordinals = ordinals[valid_starts]
+        end_ordinals = ordinals[valid_ends]
+        contiguous_all = np.all((end_ordinals - start_ordinals) == (context - 1), axis=1)
+        skipped_gap += int(np.count_nonzero(~contiguous_all))
+        if not bool(contiguous_all.any()):
+            continue
+        final_candidate_indexes = valid_candidate_indexes[np.flatnonzero(contiguous_all)]
+        final_positions = candidates[final_candidate_indexes]
+        final_starts = valid_starts[np.flatnonzero(contiguous_all)]
+        count = int(final_positions.shape[0])
+        ids = np.arange(origin_id, origin_id + count, dtype=np.int64)
+        origin_frames.append(
+            pl.DataFrame(
                 {
-                    "origin_id": origin_id,
-                    "ticker": str(ticker),
-                    "ticker_id": ticker_id,
-                    "origin_ordinal": int(ordinals[pos]),
-                    "origin_timestamp_us": int(timestamps[pos]),
-                    "event_row_offset": int(row_offsets[pos]),
+                    "origin_id": ids,
+                    "ticker": [str(ticker)] * count,
+                    "ticker_id": np.full((count,), ticker_id, dtype=np.uint32),
+                    "origin_ordinal": ordinals[final_positions],
+                    "origin_timestamp_us": timestamps[final_positions],
+                    "event_row_offset": row_offsets[final_positions],
                 }
             )
-            window_rows.append({"origin_id": origin_id, **starts})
-            origin_id += 1
-    origins = pl.DataFrame(origin_rows) if origin_rows else _empty_origins(pl)
-    windows = pl.DataFrame(window_rows) if window_rows else _empty_windows(pl, context_lags)
+        )
+        window_columns: dict[str, Any] = {"origin_id": ids}
+        start_offsets = row_offsets[final_starts]
+        for context_index in range(len(context_lags)):
+            window_columns[f"window_start_{context_index:03d}"] = start_offsets[:, context_index]
+        window_frames.append(pl.DataFrame(window_columns))
+        origin_id += count
+    origins = pl.concat(origin_frames, how="vertical") if origin_frames else _empty_origins(pl)
+    windows = pl.concat(window_frames, how="vertical") if window_frames else _empty_windows(pl, context_lags)
     return origins, windows, skipped_history, skipped_gap
 
 
@@ -687,34 +734,57 @@ def _write_macro_rows(day_dir: Path, pl: Any, rows: list[dict[str, Any]], *, act
     ranges.write_parquet(day_dir / "macro_ranges.parquet", compression="zstd")
 
 
-def _write_dependency_files_concurrently(
+def _write_day_files_concurrently(
     *,
     args: argparse.Namespace,
     day_dir: Path,
     pl: Any,
-    fetched: DayFetch,
+    events: Any,
+    ticker_id_map: Mapping[str, int],
     origins: Any,
+    windows: Any,
+    fetched: DayFetch,
     session: Any,
     config: RollingMarketDataConfig,
     active_tickers: set[str],
     state: DayState,
+    stop_event: threading.Event,
 ) -> None:
     tasks = {
+        "events": lambda: events.write_parquet(day_dir / "events.parquet", compression="zstd"),
+        "ranges": lambda: _write_event_ranges(day_dir, events, ticker_id_map),
+        "origins": lambda: origins.write_parquet(day_dir / "origins.parquet", compression="zstd"),
+        "windows": lambda: windows.write_parquet(day_dir / "event_window_index.parquet", compression="zstd"),
         "macro": lambda: _write_macro_rows(day_dir, pl, fetched.macro_rows, active_tickers=active_tickers, global_symbols=set(config.global_symbols)),
         "context": lambda: _write_context_rows(day_dir, pl, fetched.context, active_tickers=active_tickers),
         "labels": lambda: _write_label_indices(day_dir, pl, origins, session=session, config=config),
     }
-    state.context_total = len(tasks)
-    state.context_done = 0
+    state.write_total = len(tasks)
+    state.write_done = 0
     workers = max(1, min(len(tasks), int(args.stage_workers)))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
+    executor = ThreadPoolExecutor(max_workers=workers)
+    try:
         future_to_name = {executor.submit(task): name for name, task in tasks.items()}
-        for future in as_completed(future_to_name):
-            name = future_to_name[future]
-            state.stage = name
-            state.message = f"{name} dependency write"
-            future.result()
-            state.context_done += 1
+        pending = set(future_to_name)
+        while pending:
+            _raise_if_stopping(stop_event)
+            done, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+            if not done:
+                continue
+            for future in done:
+                name = future_to_name[future]
+                state.stage = name
+                state.message = f"{name} file write"
+                future.result()
+                state.write_done += 1
+        _raise_if_stopping(stop_event)
+    except BaseException:
+        for future in future_to_name:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True, cancel_futures=False)
 
 
 def _write_context_rows(day_dir: Path, pl: Any, context: StreamingContextBlock | None, *, active_tickers: set[str]) -> None:
@@ -761,6 +831,11 @@ def _write_label_indices(day_dir: Path, pl: Any, origins: Any, *, session: Any, 
         expressions.append((target < int(session.end_timestamp_us)).alias(f"intraday_target_{name}_valid"))
     out = out.with_columns(expressions)
     out.write_parquet(day_dir / "intraday_label_index.parquet", compression="zstd")
+
+
+def _raise_if_stopping(stop_event: threading.Event) -> None:
+    if stop_event.is_set():
+        raise KeyboardInterrupt
 
 
 def _empty_origins(pl: Any) -> Any:
@@ -925,7 +1000,7 @@ def _write_progress(cache_root: Path, split: str, stats: BuildStats) -> None:
 
 def _refresh(stats: BuildStats, dashboard: "IndexedCacheDashboard", cache_root: Path, *, force: bool = False) -> None:
     stats.current_rss_mib = current_rss_mib()
-    _write_progress(cache_root, "train", stats)
+    _write_progress(cache_root, stats.split, stats)
     dashboard.refresh(force=force)
 
 
