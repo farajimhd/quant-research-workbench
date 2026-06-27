@@ -74,6 +74,11 @@ below.
 | v18 | Compact event tokens, bit input | Perceiver-style latent pooling | Per-masked-event MLP | Ordinary BCE mean | Tests learned latent cross-attention pooling. |
 | v19 | Compact event tokens, bit input | Mean + max + last/header/CLS summaries | Per-masked-event MLP | Ordinary BCE mean | Tests cheap richer summaries before fixed embedding. |
 | v20 | Compact event tokens, bit input | Fixed-grid chunk bottleneck | Per-masked-event MLP | Ordinary BCE mean | Current full-pretrain candidate: v12 speed with fixed semantic slots. |
+| v21 | Compact event tokens, bit input | Grouped semantic bottleneck merged to one vector | Per-masked-event MLP | Ordinary BCE mean | Tests CLS/header/eight event-group branches before final merge. |
+| v22 | Compact event tokens, bit input | Ten branch outputs concatenated to wider embedding | Per-masked-event MLP | Ordinary BCE mean | Tests branch-local nonlinear capacity before concatenation. |
+| v24 | Compact event tokens, bit input | v20 fixed-grid bottleneck | Residual MLP decoder | Ordinary BCE mean | Tests whether a stronger residual decoder improves downstream signal. |
+| v25 | Compact event tokens, bit input | Grouped semantic bottleneck merged to one vector | Per-masked-event MLP + header decoder | Ordinary BCE mean + header BCE | Adds header reconstruction to force anchor/count/timing information into the exported embedding. |
+| v26 | Compact event tokens, bit input | Ten exported branch tokens `[B,10,Z]` | Branch-token cross-attention event decoder + header decoder | Ordinary BCE mean + header BCE | Tests preserving semantic branch tokens for both reconstruction and downstream probing. |
 
 ## Experiment Log
 

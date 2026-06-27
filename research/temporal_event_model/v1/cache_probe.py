@@ -91,6 +91,8 @@ class ProbeConfig:
     encoder_bottleneck_force_fp32: bool = False
     encoder_bottleneck_branch_hidden_dim: int = 64
     encoder_bottleneck_branch_embedding_dim: int = 16
+    encoder_structured_token_count: int = 0
+    encoder_structured_attention_heads: int = 4
     encoder_visible_mode: str = "full"
     encoder_visible_mask_ratio: float = 0.0
     extra_research_roots: tuple[Path, ...] = ()
@@ -132,6 +134,12 @@ def main(argv: list[str] | None = None) -> int:
         f"encoder_visible_mask_ratio={config.encoder_visible_mask_ratio:.3f}",
         flush=True,
     )
+    if config.encoder_structured_token_count > 1:
+        print(
+            f"encoder_structured_tokens={config.encoder_structured_token_count} "
+            f"structured_attention_heads={config.encoder_structured_attention_heads}",
+            flush=True,
+        )
     print(
         f"future_chunks={config.horizons} objective=tick_regression_plus_classes "
         f"tick_normalizer={TICK_REGRESSION_NORMALIZER:g}",
@@ -158,6 +166,8 @@ def main(argv: list[str] | None = None) -> int:
         hidden_dim=config.hidden_dim,
         target_chunks=len(config.horizons),
         dropout=config.dropout,
+        structured_token_count=config.encoder_structured_token_count,
+        structured_attention_heads=config.encoder_structured_attention_heads,
     ).to(device)
     optimizer = torch.optim.AdamW(
         (parameter for parameter in model.parameters() if parameter.requires_grad),
@@ -317,6 +327,18 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--encoder-bottleneck-branch-hidden-dim", type=int, default=64)
     parser.add_argument("--encoder-bottleneck-branch-embedding-dim", type=int, default=16)
     parser.add_argument(
+        "--encoder-structured-token-count",
+        type=int,
+        default=0,
+        help="Set to 10 for v26-style [B,10,E] branch-token encoder outputs. Zero keeps the legacy [B,E] probe.",
+    )
+    parser.add_argument(
+        "--encoder-structured-attention-heads",
+        type=int,
+        default=4,
+        help="Attention heads used by the probe summary query when --encoder-structured-token-count is greater than one.",
+    )
+    parser.add_argument(
         "--encoder-visible-mode",
         choices=("full", "random_visible"),
         default="full",
@@ -400,6 +422,8 @@ def build_config(args: argparse.Namespace) -> ProbeConfig:
         encoder_bottleneck_force_fp32=bool(args.encoder_bottleneck_force_fp32),
         encoder_bottleneck_branch_hidden_dim=args.encoder_bottleneck_branch_hidden_dim,
         encoder_bottleneck_branch_embedding_dim=args.encoder_bottleneck_branch_embedding_dim,
+        encoder_structured_token_count=args.encoder_structured_token_count,
+        encoder_structured_attention_heads=args.encoder_structured_attention_heads,
         encoder_visible_mode=args.encoder_visible_mode,
         encoder_visible_mask_ratio=args.encoder_visible_mask_ratio,
         extra_research_roots=tuple(args.extra_research_root or ()),
@@ -437,6 +461,11 @@ def to_manifest_config(config: ProbeConfig) -> dict[str, Any]:
         "regression_values_per_future_chunk": PRICE_REGRESSION_VALUES_PER_HORIZON,
         "tick_regression_normalizer": TICK_REGRESSION_NORMALIZER,
         "classification_basis": "future low/high absolute ticks versus current price converted to target tick scale",
+    }
+    payload["encoder_output"] = {
+        "structured_token_count": int(config.encoder_structured_token_count),
+        "structured_attention_heads": int(config.encoder_structured_attention_heads),
+        "embedding_dim_per_token": int(config.encoder_embedding_dim),
     }
     return payload
 

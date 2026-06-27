@@ -74,6 +74,57 @@ class FuturePriceExtremaMLPDecoder(nn.Module):
         return low_high_tick_pred, up_class_logits, down_class_logits, path_class_logits
 
 
+class BranchTokenFuturePriceExtremaDecoder(nn.Module):
+    """Probe head for structured encoder outputs such as v26 `[B, R, E]`.
+
+    A learned summary query attends over the exported branch tokens. This keeps
+    the downstream test aligned with the representation we want to evaluate,
+    instead of flattening or averaging the branch structure away before the
+    probe has a chance to use it.
+    """
+
+    def __init__(
+        self,
+        *,
+        embedding_dim: int,
+        token_count: int,
+        hidden_dim: int,
+        target_chunks: int,
+        dropout: float,
+        attention_heads: int = 4,
+    ) -> None:
+        super().__init__()
+        self.token_count = int(token_count)
+        self.branch_token_position_embedding = nn.Embedding(self.token_count, embedding_dim)
+        self.summary_query = nn.Parameter(torch.zeros(1, 1, embedding_dim))
+        self.branch_attention = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=max(1, int(attention_heads)),
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.summary_layer_norm = nn.LayerNorm(embedding_dim)
+        self.output_decoder = FuturePriceExtremaMLPDecoder(
+            embedding_dim=embedding_dim,
+            hidden_dim=hidden_dim,
+            target_chunks=target_chunks,
+            dropout=dropout,
+        )
+        nn.init.normal_(self.summary_query, mean=0.0, std=0.02)
+
+    def forward(self, branch_tokens: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if branch_tokens.ndim != 3:
+            raise ValueError(f"Expected branch token embedding [B,R,E], got {tuple(branch_tokens.shape)}")
+        if int(branch_tokens.shape[1]) != self.token_count:
+            raise ValueError(f"Expected {self.token_count} branch tokens, got {int(branch_tokens.shape[1])}")
+        positions = torch.arange(self.token_count, device=branch_tokens.device).view(1, -1)
+        branch_tokens = branch_tokens.float() + self.branch_token_position_embedding(positions)
+        query = self.summary_query.expand(branch_tokens.shape[0], -1, -1)
+        summary, _ = self.branch_attention(query=query, key=branch_tokens, value=branch_tokens, need_weights=False)
+        summary = self.summary_layer_norm(summary[:, 0, :])
+        return self.output_decoder(summary)
+
+
 class SingleChunkFutureLabelPredictor(nn.Module):
     """Frozen event encoder plus simple MLP decoder for cache-v2 labels.
 
@@ -95,20 +146,38 @@ class SingleChunkFutureLabelPredictor(nn.Module):
         hidden_dim: int,
         target_chunks: int,
         dropout: float,
+        structured_token_count: int = 0,
+        structured_attention_heads: int = 4,
     ) -> None:
         super().__init__()
         self.event_encoder = event_encoder
-        self.decoder = FuturePriceExtremaMLPDecoder(
-            embedding_dim=embedding_dim,
-            hidden_dim=hidden_dim,
-            target_chunks=target_chunks,
-            dropout=dropout,
-        )
+        self.structured_token_count = int(structured_token_count)
+        if self.structured_token_count > 1:
+            self.decoder = BranchTokenFuturePriceExtremaDecoder(
+                embedding_dim=embedding_dim,
+                token_count=self.structured_token_count,
+                hidden_dim=hidden_dim,
+                target_chunks=target_chunks,
+                dropout=dropout,
+                attention_heads=structured_attention_heads,
+            )
+        else:
+            self.decoder = FuturePriceExtremaMLPDecoder(
+                embedding_dim=embedding_dim,
+                hidden_dim=hidden_dim,
+                target_chunks=target_chunks,
+                dropout=dropout,
+            )
 
     def encode_chunk(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> torch.Tensor:
         return self.event_encoder(header_uint8, events_uint8)
 
     def decode_embedding(self, chunk_embedding: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.structured_token_count <= 1 and chunk_embedding.ndim != 2:
+            raise ValueError(
+                "Single-vector probe expected encoder output [B,E]. "
+                f"Got {tuple(chunk_embedding.shape)}. Pass --encoder-structured-token-count for branch-token encoders."
+            )
         return self.decoder(chunk_embedding)
 
     def forward(self, header_uint8: torch.Tensor, events_uint8: torch.Tensor) -> FutureChunkLabelOutput:
