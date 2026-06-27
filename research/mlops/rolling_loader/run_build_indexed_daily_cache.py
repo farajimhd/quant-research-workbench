@@ -6,7 +6,7 @@ import json
 import shutil
 import sys
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -72,6 +72,7 @@ DEFAULTS: dict[str, Any] = {
     "days": 1,
     "warmup_days": 3,
     "workers": 4,
+    "stage_workers": 3,
     "prefetch_days": 1,
     "sample_stride_events": 1,
     "events_per_chunk": 128,
@@ -182,6 +183,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--end-session-date", default="", help="Exclusive session date label YYYY-MM-DD. Defaults to --end-utc date or start+days.")
     parser.add_argument("--warmup-days", type=int, default=DEFAULTS["warmup_days"])
     parser.add_argument("--workers", type=int, default=DEFAULTS["workers"])
+    parser.add_argument("--stage-workers", type=int, default=DEFAULTS["stage_workers"], help="Per-day workers for independent dependency writes after event/origin indexing.")
     parser.add_argument("--prefetch-days", type=int, default=DEFAULTS["prefetch_days"])
     parser.add_argument("--events-per-chunk", type=int, default=DEFAULTS["events_per_chunk"])
     parser.add_argument("--short-context-chunks", type=int, default=DEFAULTS["short_context_chunks"])
@@ -483,10 +485,17 @@ def _write_indexed_day(
     state.stage = "context"
     state.message = "writing macro/context dependencies"
     active_tickers = set(origins.get_column("ticker").unique().to_list()) if origins.height else set()
-    _write_macro_rows(tmp_dir, pl, fetched.macro_rows, active_tickers=active_tickers, global_symbols=set(config.global_symbols))
-    _write_context_rows(tmp_dir, pl, fetched.context, active_tickers=active_tickers)
-    _write_label_indices(tmp_dir, pl, origins, session=session, config=config)
-    state.context_done = 1
+    _write_dependency_files_concurrently(
+        args=args,
+        day_dir=tmp_dir,
+        pl=pl,
+        fetched=fetched,
+        origins=origins,
+        session=session,
+        config=config,
+        active_tickers=active_tickers,
+        state=state,
+    )
 
     source_session_events = int(events.filter((pl.col("timestamp_us") >= session.start_timestamp_us) & (pl.col("timestamp_us") < session.end_timestamp_us)).height)
     day_manifest = {
@@ -676,6 +685,36 @@ def _write_macro_rows(day_dir: Path, pl: Any, rows: list[dict[str, Any]], *, act
     else:
         ranges = _empty_macro_ranges(pl)
     ranges.write_parquet(day_dir / "macro_ranges.parquet", compression="zstd")
+
+
+def _write_dependency_files_concurrently(
+    *,
+    args: argparse.Namespace,
+    day_dir: Path,
+    pl: Any,
+    fetched: DayFetch,
+    origins: Any,
+    session: Any,
+    config: RollingMarketDataConfig,
+    active_tickers: set[str],
+    state: DayState,
+) -> None:
+    tasks = {
+        "macro": lambda: _write_macro_rows(day_dir, pl, fetched.macro_rows, active_tickers=active_tickers, global_symbols=set(config.global_symbols)),
+        "context": lambda: _write_context_rows(day_dir, pl, fetched.context, active_tickers=active_tickers),
+        "labels": lambda: _write_label_indices(day_dir, pl, origins, session=session, config=config),
+    }
+    state.context_total = len(tasks)
+    state.context_done = 0
+    workers = max(1, min(len(tasks), int(args.stage_workers)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_name = {executor.submit(task): name for name, task in tasks.items()}
+        for future in as_completed(future_to_name):
+            name = future_to_name[future]
+            state.stage = name
+            state.message = f"{name} dependency write"
+            future.result()
+            state.context_done += 1
 
 
 def _write_context_rows(day_dir: Path, pl: Any, context: StreamingContextBlock | None, *, active_tickers: set[str]) -> None:
@@ -966,6 +1005,9 @@ class IndexedCacheDashboard:
         self._last = 0.0
         self._live: Any | None = None
         self._rich: dict[str, Any] = {}
+        self._printed_messages = 0
+        self._status_width = 0
+        self._fallback_reason = ""
 
     def start(self) -> None:
         if not self.enabled or not self.live:
@@ -976,8 +1018,10 @@ class IndexedCacheDashboard:
             from rich.live import Live
             from rich.panel import Panel
             from rich.table import Table
-        except Exception:
+        except Exception as exc:
             self.enabled = False
+            self._fallback_reason = repr(exc)
+            self.stats.message(f"Rich dashboard unavailable; using compact status line: {exc!r}")
             return
         self._rich = {"box": box, "Console": Console, "Group": Group, "Live": Live, "Panel": Panel, "Table": Table}
         self._live = Live(
@@ -987,7 +1031,7 @@ class IndexedCacheDashboard:
             auto_refresh=False,
             screen=True,
             transient=False,
-            vertical_overflow="visible",
+            vertical_overflow="crop",
         )
         self._live.start()
 
@@ -996,14 +1040,8 @@ class IndexedCacheDashboard:
         if self._live is not None and (force or now - self._last >= self.refresh_seconds):
             self._live.update(self._render(), refresh=True)
             self._last = now
-        elif (not self.enabled or not self.live) and (force or now - self._last >= self.refresh_seconds):
-            elapsed = now - self.stats.started
-            print(
-                f"[{self.stats.phase}] days={self.stats.days_done}/{self.stats.days_total} "
-                f"origins={self.stats.origins_written:,} events={self.stats.events_written:,} "
-                f"size={_format_bytes(self.stats.bytes_written)} elapsed={_format_duration(elapsed)}",
-                flush=True,
-            )
+        elif force or now - self._last >= self.refresh_seconds:
+            self._print_status_line(final=False)
             self._last = now
 
     def stop(self) -> None:
@@ -1011,6 +1049,44 @@ class IndexedCacheDashboard:
             self._live.update(self._render(), refresh=True)
             self._live.stop()
             self._live = None
+        elif not self.live or not self.enabled:
+            self._print_status_line(final=True)
+
+    def _print_status_line(self, *, final: bool) -> None:
+        while self._printed_messages < len(self.stats.messages):
+            if self._status_width:
+                sys.stdout.write("\r" + " " * self._status_width + "\r")
+            print(self.stats.messages[self._printed_messages], flush=True)
+            self._printed_messages += 1
+            self._status_width = 0
+        terminal_width = shutil.get_terminal_size((120, 40)).columns
+        status = self._status_text(width=max(40, terminal_width - 1))
+        padding = max(0, self._status_width - len(status))
+        end = "\n" if final else ""
+        sys.stdout.write("\r" + status + (" " * padding) + end)
+        sys.stdout.flush()
+        self._status_width = 0 if final else len(status)
+
+    def _status_text(self, *, width: int) -> str:
+        elapsed = time.perf_counter() - self.stats.started
+        remaining_days = max(0, int(self.stats.days_total) - int(self.stats.days_done))
+        day_rate = self.stats.days_done / max(elapsed, 1e-9)
+        eta = remaining_days / day_rate if day_rate > 0 else None
+        active = []
+        for worker in self.stats.workers.values():
+            if worker.status not in {"pending", "idle", "done"} or worker.stage not in {"", "done"}:
+                active.append(f"W{worker.worker_id}:{worker.session_date}:{worker.stage or worker.status}")
+        text = (
+            f"[{self.stats.phase}] days={self.stats.days_done}/{self.stats.days_total} "
+            f"origins={self.stats.origins_written:,} events={self.stats.events_written:,} "
+            f"size={_format_bytes(self.stats.bytes_written)} prefetch={self.stats.prefetch_ready}/{self.stats.prefetch_pending} "
+            f"rss={_format_bytes(self.stats.current_rss_mib * 1024 * 1024)} elapsed={_format_duration(elapsed)} eta={_format_duration(eta)}"
+        )
+        if active:
+            text += " " + " ".join(active[:6])
+        if len(text) <= width:
+            return text
+        return text[: max(0, width - 1)] + "."
 
     def _render(self) -> Any:
         box = self._rich["box"]
