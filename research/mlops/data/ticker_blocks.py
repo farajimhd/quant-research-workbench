@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 import random
 import threading
@@ -652,9 +653,13 @@ def build_future_time_bar_labels(
             _add_empty_bar_labels(labels, horizon.name, origin_ts.shape[0])
         return labels
 
+    session_end_us = _us_eastern_session_end_us(origin_ts)
     for horizon in horizons:
         start_idx = np.searchsorted(state.trade_ts, origin_ts, side="right")
-        end_idx = np.searchsorted(state.trade_ts, origin_ts + int(horizon.microseconds), side="right")
+        horizon_end_us = origin_ts + int(horizon.microseconds)
+        capped_end_us = np.minimum(horizon_end_us, session_end_us)
+        end_idx = np.searchsorted(state.trade_ts, capped_end_us, side="right")
+        end_idx = np.maximum(start_idx, end_idx)
         count = np.maximum(0, end_idx - start_idx).astype(np.uint32)
         has_trade = count > 0
         open_price = np.zeros((origin_ts.shape[0],), dtype=np.float32)
@@ -679,6 +684,74 @@ def build_future_time_bar_labels(
         labels[f"{prefix}_close"] = close_price
         labels[f"{prefix}_volume"] = volume
     return labels
+
+
+def _us_eastern_session_end_us(timestamps_us: np.ndarray) -> np.ndarray:
+    """Return the 20:00 America/New_York session end for each UTC timestamp.
+
+    This keeps intraday future bars inside the same extended-hours trading
+    session without a per-row timezone conversion in the hot path.
+    """
+
+    values = np.asarray(timestamps_us, dtype=np.int64)
+    if values.size == 0:
+        return np.zeros(values.shape, dtype=np.int64)
+    day_us = 86_400_000_000
+    hour_us = 3_600_000_000
+    est_offset_us = -5 * hour_us
+    edt_offset_us = -4 * hour_us
+    dst_mask = _us_eastern_dst_mask_utc(values)
+    local_us = values + np.where(dst_mask, edt_offset_us, est_offset_us)
+    local_day = np.floor_divide(local_us, day_us)
+    local_noon_us = local_day * day_us + 12 * hour_us
+    close_dst_mask = _us_eastern_dst_mask_local_noon(local_noon_us)
+    close_offset_us = np.where(close_dst_mask, edt_offset_us, est_offset_us)
+    return local_day * day_us + 20 * hour_us - close_offset_us
+
+
+def _us_eastern_dst_mask_utc(timestamps_us: np.ndarray) -> np.ndarray:
+    values = np.asarray(timestamps_us, dtype=np.int64)
+    years = _utc_years_from_timestamp_us(values)
+    out = np.zeros(values.shape, dtype=np.bool_)
+    for year in np.unique(years):
+        year_int = int(year)
+        start = _timestamp_us_utc(_nth_weekday(year_int, 3, 6, 2), hour=7)
+        end = _timestamp_us_utc(_nth_weekday(year_int, 11, 6, 1), hour=6)
+        mask = years == year_int
+        out[mask] = (values[mask] >= start) & (values[mask] < end)
+    return out
+
+
+def _us_eastern_dst_mask_local_noon(local_noon_us: np.ndarray) -> np.ndarray:
+    values = np.asarray(local_noon_us, dtype=np.int64)
+    years = _utc_years_from_timestamp_us(values)
+    out = np.zeros(values.shape, dtype=np.bool_)
+    for year in np.unique(years):
+        year_int = int(year)
+        start_local = _timestamp_us_utc(_nth_weekday(year_int, 3, 6, 2), hour=2)
+        end_local = _timestamp_us_utc(_nth_weekday(year_int, 11, 6, 1), hour=2)
+        mask = years == year_int
+        out[mask] = (values[mask] >= start_local) & (values[mask] < end_local)
+    return out
+
+
+def _utc_years_from_timestamp_us(timestamps_us: np.ndarray) -> np.ndarray:
+    seconds = np.floor_divide(np.asarray(timestamps_us, dtype=np.int64), 1_000_000)
+    days = np.floor_divide(seconds, 86_400)
+    years = np.empty(days.shape, dtype=np.int32)
+    for day in np.unique(days):
+        years[days == day] = dt.datetime.fromtimestamp(int(day) * 86_400, tz=dt.timezone.utc).year
+    return years
+
+
+def _timestamp_us_utc(day: dt.date, *, hour: int) -> int:
+    return int(dt.datetime.combine(day, dt.time(hour=int(hour)), tzinfo=dt.timezone.utc).timestamp() * 1_000_000)
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> dt.date:
+    first = dt.date(int(year), int(month), 1)
+    delta = (int(weekday) - first.weekday()) % 7
+    return first + dt.timedelta(days=delta + 7 * (int(n) - 1))
 
 
 def _future_time_bar_label_state(

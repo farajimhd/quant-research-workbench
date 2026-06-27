@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import sys
 from pathlib import Path
 
@@ -12,7 +13,7 @@ import numpy as np
 from research.mlops.clickhouse_events import DEFAULT_CONTEXT_EVENTS, encode_unified_event_window, encode_unified_event_windows, validate_unified_event_windows
 from research.mlops.compact_events import QUOTE_EVENT_TYPE, TRADE_EVENT_TYPE
 from research.mlops.data.audit import audit_temporal_batch
-from research.mlops.data.config import DataProviderConfig, ExternalAsOfContextConfig, MarketStreamConfig, RollingMarketDataConfig, TickerBlockDataConfig
+from research.mlops.data.config import DataProviderConfig, ExternalAsOfContextConfig, MarketStreamConfig, RollingMarketDataConfig, TickerBlockDataConfig, TimeBarHorizon
 from research.mlops.data.providers import StreamingReplayBatchProvider
 from research.mlops.data.replay import iter_replay_batches
 from research.mlops.data.rolling import (
@@ -25,7 +26,7 @@ from research.mlops.data.rolling import (
     synthetic_rows_by_ticker,
 )
 from research.mlops.data.sources import InMemoryEventSource
-from research.mlops.data.ticker_blocks import TickerCursor, TickerEpochScheduler, build_event_time_bar_batch, build_requests, make_synthetic_event_rows
+from research.mlops.data.ticker_blocks import TickerCursor, TickerEpochScheduler, build_event_time_bar_batch, build_future_time_bar_labels, build_requests, make_synthetic_event_rows
 from research.mlops.data.contracts import BAR_FEATURE_KEYS, CompactEvent, FUTURE_BAR_FEATURE_KEYS
 
 
@@ -210,11 +211,42 @@ def smoke_ticker_blocks() -> None:
     scheduler.update_after_success(requests)
     assert scheduler.cursors["AAA"].next_origin_ordinal > 127
     assert scheduler.cursors["BBB"].next_origin_ordinal > 127
+    smoke_intraday_future_labels_stop_at_eastern_session_end()
     print(
         "ticker_block_smoke_ok "
         f"samples={batch.header_uint8.shape[0]} labels={len(batch.labels)} "
         f"samples_per_sec={batch.profile.samples_per_second():.1f}"
     )
+
+
+def smoke_intraday_future_labels_stop_at_eastern_session_end() -> None:
+    rows = make_synthetic_event_rows(4, low_ordinal=0)
+    rows["event_type"] = TRADE_EVENT_TYPE
+    rows["sip_timestamp_us"] = np.asarray(
+        [
+            _utc_us("2019-02-02T00:59:00Z"),  # 19:59 EST, origin.
+            _utc_us("2019-02-02T00:59:30Z"),  # 19:59:30 EST, inside same session.
+            _utc_us("2019-02-02T01:00:00Z"),  # 20:00 EST, included at session close.
+            _utc_us("2019-02-02T01:01:00Z"),  # 20:01 EST, next session boundary-excluded.
+        ],
+        dtype=np.uint64,
+    )
+    rows["price_primary_int"] = np.asarray([10_000, 10_100, 10_200, 99_900], dtype=np.uint32)
+    rows["size_primary"] = np.asarray([1.0, 10.0, 20.0, 200.0], dtype=np.float32)
+    rows["event_flags"] = 0
+    labels = build_future_time_bar_labels(
+        rows=rows,
+        origin_offsets=np.asarray([0], dtype=np.int64),
+        horizons=(TimeBarHorizon("5m", 300_000_000),),
+    )
+    assert int(labels["future_bar_5m_has_trade"][0]) == 1
+    assert float(labels["future_bar_5m_close"][0]) == 102.0
+    assert float(labels["future_bar_5m_high"][0]) == 102.0
+    assert float(labels["future_bar_5m_volume"][0]) == 30.0
+
+
+def _utc_us(value: str) -> int:
+    return int(dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1_000_000)
 
 
 def smoke_rolling_ready_index_balanced_cap() -> None:

@@ -78,6 +78,7 @@ DEFAULTS: dict[str, Any] = {
     "sample_stride_events": 1,
     "max_threads": 8,
     "max_memory_usage": "80G",
+    "max_rss_gib": 0.0,
     "macro_lookback_days": 400,
     "label_lookahead_days": 400,
     "news_lookback_days": 30,
@@ -160,6 +161,7 @@ class BuildStats:
     target_bytes: int = 0
     shards_done: int = 0
     current_rss_mib: float = 0.0
+    max_rss_mib: float = 0.0
     interrupted: bool = False
     messages: list[str] = field(default_factory=list)
     workers: dict[int, WorkerState] = field(default_factory=dict)
@@ -266,6 +268,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-stride-events", type=int, default=DEFAULTS["sample_stride_events"])
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
+    parser.add_argument("--max-rss-gib", type=float, default=DEFAULTS["max_rss_gib"], help="Soft process RSS limit in GiB. 0 disables the guard.")
     parser.add_argument("--macro-lookback-days", type=int, default=DEFAULTS["macro_lookback_days"])
     parser.add_argument("--label-lookahead-days", type=int, default=DEFAULTS["label_lookahead_days"])
     parser.add_argument("--news-lookback-days", type=int, default=DEFAULTS["news_lookback_days"])
@@ -312,6 +315,7 @@ def _normalize_parallel_args(args: argparse.Namespace) -> None:
         )
     else:
         args.ready_sample_cap = max(0, int(args.ready_sample_cap))
+    args.max_rss_gib = max(0.0, float(args.max_rss_gib))
 
 
 def _default_ready_sample_cap(*, workers: int, builder_batch_size: int, sample_multiple: int) -> int:
@@ -342,6 +346,7 @@ def main() -> int:
     stats.materialization_workers = int(args.materialization_workers)
     stats.stage_workers = int(args.stage_workers)
     stats.target_bytes = int(float(args.target_cache_gib) * 1024**3)
+    stats.max_rss_mib = float(args.max_rss_gib) * 1024.0
     stats.log_path = cache_root / "builder_events.jsonl"
     dashboard = MaterializedCacheDashboard(
         enabled=not args.no_rich,
@@ -457,6 +462,7 @@ def main() -> int:
             if fetch_executor is None or prefetch_depth <= 0:
                 return
             while not stop_requested and next_fetch_date < final_date and len(fetch_queue) < prefetch_depth:
+                _enforce_rss_limit(args, stats, label="before_prefetch_submit")
                 block_start = next_fetch_date
                 block_end = min(final_date, next_fetch_date + dt.timedelta(days=max(1, int(args.block_days))))
                 block_index = next_fetch_index
@@ -483,6 +489,7 @@ def main() -> int:
 
         submit_prefetches()
         while not stop_requested:
+            _enforce_rss_limit(args, stats, label="loop_start")
             if fetch_executor is None:
                 if cursor_date >= final_date:
                     break
@@ -518,10 +525,12 @@ def main() -> int:
                 _refresh(stats, dashboard, writer)
                 future = fetch_queue.popleft()
                 fetched = future.result()
+                _enforce_rss_limit(args, stats, label="after_prefetch_result")
                 stats.prefetch_pending = len(fetch_queue)
                 stats.prefetch_ready = sum(1 for item in fetch_queue if item.done())
 
             block = fetched.block
+            _enforce_rss_limit(args, stats, label="after_block_fetch")
             block_start = fetched.block_start
             block_end = fetched.block_end
             stats.block_index = int(fetched.block_index)
@@ -542,6 +551,7 @@ def main() -> int:
             _refresh(stats, dashboard, writer)
             with profiler.stage("event_block_append_engine", block_index=stats.block_index, rows=block.row_count, tickers=block.ticker_count):
                 engine.append_rows_by_ticker(block.rows_by_ticker)
+            _enforce_rss_limit(args, stats, label="after_event_block_append")
             if block.max_timestamp_us < start_us:
                 with profiler.stage("warmup_event_cache_trim", block_index=stats.block_index):
                     _trim_pre_start_event_cache(engine, start_us)
@@ -552,11 +562,13 @@ def main() -> int:
                 with profiler.stage("token_context_block_load", block_index=stats.block_index, rows=context.row_count, counts=context.counts()):
                     engine.load_external_contexts(context.rows_by_context)
                 stats.message(f"block context rows={context.row_count:,}")
+                _enforce_rss_limit(args, stats, label="after_context_load")
             stats.phase = "building ready index"
             _refresh(stats, dashboard, writer)
             ready_sample_cap = _ready_sample_cap_for_budget(args=args, stats=stats, writer=writer)
             with profiler.stage("ready_index_build", block_index=stats.block_index, max_samples=ready_sample_cap):
                 ready_blocks = engine.build_ready_index_blocks(max_samples=ready_sample_cap)
+            _enforce_rss_limit(args, stats, label="after_ready_index_build")
             stats.ready_samples = engine.ready_index_count(ready_blocks)
             with profiler.stage("ready_index_origin_window_filter", block_index=stats.block_index, samples=stats.ready_samples):
                 eligible_blocks, origin_filter = _filter_ready_blocks_by_origin_window(
@@ -676,6 +688,7 @@ def main() -> int:
                 for future in done:
                     meta = futures.pop(future)
                     result = future.result()
+                    _enforce_rss_limit(args, stats, label="after_materialize_task")
                     worker_id = int(meta["worker_id"])
                     worker_state = stats.workers[worker_id]
                     worker_state.status = "materialized"
@@ -704,6 +717,7 @@ def main() -> int:
                             end_label=block_end.isoformat(),
                         )
                         writer.write_batch(batch)
+                        _enforce_rss_limit(args, stats, label="after_write_batch")
                         batch_samples = int(batch.headers_uint8.shape[0])
                         stats.samples_written += batch_samples
                         stats.bytes_written += batch_nbytes(batch)
@@ -736,6 +750,7 @@ def main() -> int:
                 _mark_ready_blocks_processed(engine, ready_blocks)
             with profiler.stage("event_cache_trim_processed_tails", block_index=stats.block_index):
                 engine.trim_processed_tails()
+            _enforce_rss_limit(args, stats, label="after_event_cache_trim")
             stats.shards_done = len(writer.shards)
             if float(stats.bytes_written) >= float(args.target_cache_gib) * 1024**3:
                 stats.message("target cache size reached")
@@ -880,6 +895,24 @@ def _estimated_sample_bytes(writer: RollingMaterializedShardWriter) -> int:
         if samples > 0 and bytes_value > 0:
             return max(1, bytes_value // samples)
     return 0
+
+
+def _enforce_rss_limit(args: argparse.Namespace, stats: BuildStats, *, label: str) -> None:
+    limit_mib = float(getattr(args, "max_rss_gib", 0.0) or 0.0) * 1024.0
+    if limit_mib <= 0.0:
+        return
+    rss_mib = float(current_rss_mib())
+    stats.current_rss_mib = rss_mib
+    stats.max_rss_mib = limit_mib
+    if rss_mib <= limit_mib:
+        return
+    stats.message(
+        "rss limit exceeded",
+        label=str(label),
+        rss_mib=rss_mib,
+        max_rss_mib=limit_mib,
+    )
+    raise MemoryError(f"RSS limit exceeded at {label}: {rss_mib:,.0f} MiB > {limit_mib:,.0f} MiB")
 
 
 def _filter_ready_blocks_by_origin_window(
@@ -1275,6 +1308,7 @@ def _write_progress(cache_root: Path, split: str, stats: BuildStats, writer: Rol
         "total_workers": stats.total_workers,
         "materialization_workers": stats.materialization_workers,
         "stage_workers": stats.stage_workers,
+        "max_rss_mib": stats.max_rss_mib,
         "prefetch_pending": stats.prefetch_pending,
         "prefetch_ready": stats.prefetch_ready,
         "prefetch_next_block": stats.prefetch_next_block,
@@ -1363,6 +1397,12 @@ def _format_rate_bytes(bytes_per_second: float) -> str:
             break
         value /= 1024.0
     return f"{value:,.1f} {unit}"
+
+
+def _format_rss(current_mib: float, limit_mib: float = 0.0) -> str:
+    if float(limit_mib) > 0.0:
+        return f"{float(current_mib) / 1024.0:,.1f}/{float(limit_mib) / 1024.0:,.1f} GiB"
+    return f"{float(current_mib):,.0f} MiB"
 
 
 def _worker_stage_label(worker: WorkerState, *, compact: bool) -> str:
@@ -1458,7 +1498,8 @@ class MaterializedCacheDashboard:
             eta = remaining / byte_rate if self.stats.target_bytes > 0 and byte_rate > 0 else None
             print(
                 f"[{self.stats.phase}] samples={self.stats.samples_written:,} shards={self.stats.shards_done:,} "
-                f"rss_mib={self.stats.current_rss_mib:.0f} elapsed={_format_duration(elapsed)} eta={_format_duration(eta)}",
+                f"rss={_format_rss(self.stats.current_rss_mib, self.stats.max_rss_mib)} "
+                f"elapsed={_format_duration(elapsed)} eta={_format_duration(eta)}",
                 flush=True,
             )
             self._last = now
@@ -1505,7 +1546,7 @@ class MaterializedCacheDashboard:
             f"prefetch={self.stats.prefetch_ready}/{self.stats.prefetch_pending}/{self.stats.prefetch_depth} "
             f"samples={self.stats.samples_written:,} shards={self.stats.shards_done:,} "
             f"size={self.stats.bytes_written / 1024**3:.2f}/{max(1, self.stats.target_bytes) / 1024**3:.2f}GiB "
-            f"rate={_format_rate_bytes(byte_rate)} rss={self.stats.current_rss_mib:,.0f}MiB "
+            f"rate={_format_rate_bytes(byte_rate)} rss={_format_rss(self.stats.current_rss_mib, self.stats.max_rss_mib)} "
             f"elapsed={_format_duration(elapsed)} eta={_format_duration(eta)}"
         )
         if worker_bits:
@@ -1540,7 +1581,7 @@ class MaterializedCacheDashboard:
             (
                 ("Phase", self.stats.phase),
                 ("Elapsed", _format_duration(elapsed)),
-                ("RSS", f"{self.stats.current_rss_mib:,.0f} MiB"),
+                ("RSS", _format_rss(self.stats.current_rss_mib, self.stats.max_rss_mib)),
             ),
             (
                 ("Block", str(self.stats.block_index)),
