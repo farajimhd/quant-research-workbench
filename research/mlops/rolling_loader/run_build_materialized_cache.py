@@ -69,6 +69,7 @@ DEFAULTS: dict[str, Any] = {
     "builder_batch_size": 4096,
     "sample_multiple": 4096,
     "workers": 4,
+    "stage_workers": 0,
     "max_pending_tasks": 8,
     "prefetch_blocks": 1,
     "shard_size_gib": 16.0,
@@ -144,6 +145,7 @@ class BuildStats:
     submitted_tasks: int = 0
     completed_tasks: int = 0
     prefetch_depth: int = 0
+    stage_workers: int = 1
     prefetch_pending: int = 0
     prefetch_ready: int = 0
     prefetch_next_block: int = 0
@@ -209,6 +211,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-multiple", type=int, default=DEFAULTS["sample_multiple"])
     parser.add_argument("--workers", type=int, default=DEFAULTS["workers"])
     parser.add_argument(
+        "--stage-workers",
+        type=int,
+        default=DEFAULTS["stage_workers"],
+        help=(
+            "Per-materialization-task workers for independent feature/label/context branches. "
+            "Default 0 auto-sizes from CPU count and --workers; 1 disables branch parallelism."
+        ),
+    )
+    parser.add_argument(
         "--max-pending-tasks",
         type=int,
         default=None,
@@ -259,6 +270,11 @@ def parse_args() -> argparse.Namespace:
 
 def _normalize_parallel_args(args: argparse.Namespace) -> None:
     args.workers = max(1, int(args.workers))
+    if int(args.stage_workers) <= 0:
+        cpu_count = os.cpu_count() or int(args.workers)
+        args.stage_workers = max(1, min(3, int(cpu_count) // max(1, int(args.workers))))
+    else:
+        args.stage_workers = max(1, int(args.stage_workers))
     args.builder_batch_size = max(1, int(args.builder_batch_size))
     args.sample_multiple = max(1, int(args.sample_multiple))
     if args.max_pending_tasks is None:
@@ -299,6 +315,7 @@ def main() -> int:
     split_dir = cache_root / args.split
     cache_root.mkdir(parents=True, exist_ok=bool(args.resume))
     stats = BuildStats()
+    stats.stage_workers = int(args.stage_workers)
     stats.target_bytes = int(float(args.target_cache_gib) * 1024**3)
     stats.log_path = cache_root / "builder_events.jsonl"
     dashboard = MaterializedCacheDashboard(
@@ -590,6 +607,7 @@ def main() -> int:
                         engine,
                         blocks_for_task,
                         int(args.builder_batch_size),
+                        int(args.stage_workers),
                         worker_id,
                         next_slice_id,
                         worker_state,
@@ -821,6 +839,7 @@ def _materialize_worker_task(
     base_engine: RollingMarketSampleEngine,
     blocks: list[RollingReadyIndexBlock],
     batch_size: int,
+    stage_workers: int,
     worker_id: int,
     slice_id: int,
     state: WorkerState | None = None,
@@ -861,7 +880,12 @@ def _materialize_worker_task(
                 state_started=state_started,
             )
 
-        batch = engine.materialize_training_batch(sample_tuple, batch_id=slice_id, progress_callback=progress_callback)
+        batch = engine.materialize_training_batch(
+            sample_tuple,
+            batch_id=slice_id,
+            progress_callback=progress_callback,
+            independent_stage_workers=max(1, int(stage_workers)),
+        )
         batches.append(batch)
         batch_samples = int(batch.headers_uint8.shape[0])
         samples += batch_samples
@@ -1066,6 +1090,7 @@ def _write_progress(cache_root: Path, split: str, stats: BuildStats, writer: Rol
         "phase": stats.phase,
         "block_index": stats.block_index,
         "prefetch_depth": stats.prefetch_depth,
+        "stage_workers": stats.stage_workers,
         "prefetch_pending": stats.prefetch_pending,
         "prefetch_ready": stats.prefetch_ready,
         "prefetch_next_block": stats.prefetch_next_block,
@@ -1355,7 +1380,7 @@ class MaterializedCacheDashboard:
             ),
             (
                 ("Prefetch", f"{self.stats.prefetch_ready}/{self.stats.prefetch_pending}/{self.stats.prefetch_depth}"),
-                ("Next", str(self.stats.prefetch_next_block)),
+                ("StageW", str(self.stats.stage_workers)),
                 ("Fetch", f"{self.stats.prefetch_last_seconds:.1f}s"),
             ),
         ]

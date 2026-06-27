@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -74,6 +75,7 @@ class DataPrepProfiler:
         self.profile = DataPrepProfile(provider_name=provider_name, batch_id=int(batch_id))
         self.enabled = bool(enabled)
         self._start = time.perf_counter()
+        self._lock = threading.Lock()
 
     @contextmanager
     def stage(self, name: str, *, count: int = 0) -> Iterator[None]:
@@ -87,12 +89,14 @@ class DataPrepProfiler:
             self.add_stage(name, time.perf_counter() - started, count=count)
 
     def add_stage(self, name: str, seconds: float, *, count: int = 0) -> None:
-        timer = self.profile.stages.setdefault(name, StageTimer(name=name))
-        timer.add(seconds, count=count)
+        with self._lock:
+            timer = self.profile.stages.setdefault(name, StageTimer(name=name))
+            timer.add(seconds, count=count)
 
     def finish(self) -> DataPrepProfile:
-        self.profile.total_seconds = time.perf_counter() - self._start
-        return self.profile
+        with self._lock:
+            self.profile.total_seconds = time.perf_counter() - self._start
+            return self.profile
 
 
 def aggregate_profiles(profiles: list[DataPrepProfile], *, provider_name: str = "aggregate") -> DataPrepProfile:
@@ -113,4 +117,3 @@ def aggregate_profiles(profiles: list[DataPrepProfile], *, provider_name: str = 
         for name, timer in profile.stages.items():
             out.stages.setdefault(name, StageTimer(name=name)).add(timer.seconds, timer.count)
     return out
-
