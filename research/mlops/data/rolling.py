@@ -776,6 +776,138 @@ class RollingMarketSampleEngine:
         tickers = np.asarray([sample.ticker for sample in sample_tuple], dtype=object)
         origin_ord = np.asarray([sample.origin_ordinal for sample in sample_tuple], dtype=np.int64)
         origin_ts = np.asarray([sample.origin_timestamp_us for sample in sample_tuple], dtype=np.int64)
+        for sample_index, sample in enumerate(sample_tuple):
+            for context_index, window in enumerate(sample.chunk_windows):
+                if context_index < context_chunks:
+                    chunk_origin_ts[sample_index, context_index] = int(window.origin_timestamp_us)
+
+        def build_feature_branch() -> tuple[
+            dict[str, np.ndarray],
+            dict[str, np.ndarray],
+            tuple[str, ...],
+            tuple[str, ...],
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            dict[str, np.ndarray],
+            dict[str, np.ndarray],
+        ]:
+            feature_total = max(4, batch + 4)
+            _call_progress(progress_callback, "features", 0, feature_total)
+            with profiler.stage("bar_features", count=batch):
+                (
+                    branch_macro_features,
+                    branch_global_features,
+                    branch_macro_bar_timeframes,
+                    branch_global_bar_timeframes,
+                    branch_ticker_macro_bars,
+                    branch_ticker_macro_bar_mask,
+                    branch_global_market_bars,
+                    branch_global_market_bar_mask,
+                ) = self._materialize_bar_features(
+                    sample_tuple,
+                    progress_callback=progress_callback,
+                    progress_total=feature_total,
+                )
+            _call_progress(progress_callback, "features", batch + 2, feature_total)
+            with profiler.stage("origin_time_features", count=batch):
+                branch_time_features = _origin_time_features(sample_tuple)
+                branch_chunk_time_features = _timestamp_feature_arrays(chunk_origin_ts, origin_ts[:, None])
+            _call_progress(progress_callback, "features", batch + 3, feature_total)
+            with profiler.stage("session_features", count=batch):
+                session_features = self._materialize_session_features(sample_tuple)
+            branch_macro_features.update(session_features)
+            _call_progress(progress_callback, "features", feature_total, feature_total)
+            return (
+                branch_macro_features,
+                branch_global_features,
+                branch_macro_bar_timeframes,
+                branch_global_bar_timeframes,
+                branch_ticker_macro_bars,
+                branch_ticker_macro_bar_mask,
+                branch_global_market_bars,
+                branch_global_market_bar_mask,
+                branch_time_features,
+                branch_chunk_time_features,
+            )
+
+        def build_label_branch() -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, tuple[str, ...], np.ndarray, np.ndarray]:
+            _call_progress(progress_callback, "labels", 0, 2)
+            with profiler.stage("macro_future_labels", count=batch):
+                branch_labels, branch_future_macro_bars, branch_future_macro_bar_mask, branch_future_macro_bar_timeframes = self._materialize_future_labels(sample_tuple)
+            _call_progress(progress_callback, "labels", 1, 2)
+            with profiler.stage("intraday_future_labels", count=batch):
+                intraday_labels = self._materialize_intraday_future_labels(sample_tuple, progress_callback=progress_callback)
+                branch_labels.update(intraday_labels)
+                branch_future_intraday_bars, branch_future_intraday_bar_mask = _intraday_label_bar_tensor(
+                    intraday_labels,
+                    horizons=tuple(horizon.name for horizon in self.config.intraday_label_horizons),
+                )
+            _call_progress(progress_callback, "labels", 2, 2)
+            return (
+                branch_labels,
+                branch_future_macro_bars,
+                branch_future_macro_bar_mask,
+                branch_future_macro_bar_timeframes,
+                branch_future_intraday_bars,
+                branch_future_intraday_bar_mask,
+            )
+
+        def build_context_branch() -> tuple[dict[str, list[list[dict[str, Any]]]], dict[str, dict[str, np.ndarray]], dict[str, np.ndarray]]:
+            _call_progress(progress_callback, "context", 0, max(1, len(self.external_contexts)))
+            with profiler.stage("external_context_asof", count=batch * len(self.external_contexts)):
+                branch_external = {
+                    name: [
+                        _external_asof_for_sample(name=name, store=store, sample=sample)
+                        for sample in sample_tuple
+                    ]
+                    for name, store in self.external_contexts.items()
+                }
+            _call_progress(progress_callback, "context", max(1, len(self.external_contexts)), max(1, len(self.external_contexts)))
+
+            def build_text_inputs() -> dict[str, dict[str, np.ndarray]]:
+                text_cache_before = len(self._text_token_cache)
+                text_items = _count_external_text_items(branch_external, names=("ticker_news", "market_news", "sec_filings"))
+                _call_progress(progress_callback, "text", 0, batch)
+                with profiler.stage("text_inputs", count=batch):
+                    branch_text_inputs = self._materialize_text_inputs(branch_external)
+                _call_progress(progress_callback, "text", batch, batch)
+                text_cache_after = len(self._text_token_cache)
+                text_misses = max(0, text_cache_after - text_cache_before)
+                profiler.add_stage("text_token_cache_entries", 0.0, count=text_cache_after)
+                profiler.add_stage("text_token_cache_hits", 0.0, count=max(0, text_items - text_misses))
+                profiler.add_stage("text_token_cache_misses", 0.0, count=text_misses)
+                return branch_text_inputs
+
+            def build_xbrl_inputs() -> dict[str, np.ndarray]:
+                _call_progress(progress_callback, "xbrl", 0, batch)
+                with profiler.stage("xbrl_inputs", count=batch):
+                    branch_xbrl_inputs = self._materialize_xbrl_inputs(sample_tuple, branch_external)
+                _call_progress(progress_callback, "xbrl", batch, batch)
+                return branch_xbrl_inputs
+
+            if int(independent_stage_workers) >= 4:
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    text_future = executor.submit(build_text_inputs)
+                    xbrl_future = executor.submit(build_xbrl_inputs)
+                    branch_text_inputs = text_future.result()
+                    branch_xbrl_inputs = xbrl_future.result()
+            else:
+                branch_text_inputs = build_text_inputs()
+                branch_xbrl_inputs = build_xbrl_inputs()
+            return branch_external, branch_text_inputs, branch_xbrl_inputs
+
+        stage_workers = max(1, int(independent_stage_workers))
+        stage_executor: ThreadPoolExecutor | None = None
+        feature_future: Any | None = None
+        label_future: Any | None = None
+        context_future: Any | None = None
+        if stage_workers > 1:
+            stage_executor = ThreadPoolExecutor(max_workers=min(3, stage_workers))
+            feature_future = stage_executor.submit(build_feature_branch)
+            label_future = stage_executor.submit(build_label_branch)
+            context_future = stage_executor.submit(build_context_branch)
 
         encoded_window_cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray] | str] = {}
         cache_hits = 0
@@ -911,135 +1043,17 @@ class RollingMarketSampleEngine:
             invalid = int(mask.size - mask.sum())
             reason_text = ", ".join(f"{key}={value:,}" for key, value in sorted(invalid_reasons.items())) or "unknown"
             example_text = "; ".join(invalid_examples[:5])
+            if stage_executor is not None:
+                stage_executor.shutdown(wait=True, cancel_futures=True)
             raise RuntimeError(
                 f"Training materialization produced {invalid:,} invalid context chunks; "
                 f"ready-index construction must filter bad event windows before batching. "
                 f"reasons: {reason_text}. examples: {example_text}"
             )
 
-        def build_feature_branch() -> tuple[
-            dict[str, np.ndarray],
-            dict[str, np.ndarray],
-            tuple[str, ...],
-            tuple[str, ...],
-            np.ndarray,
-            np.ndarray,
-            np.ndarray,
-            np.ndarray,
-            dict[str, np.ndarray],
-            dict[str, np.ndarray],
-        ]:
-            feature_total = max(4, batch + 4)
-            _call_progress(progress_callback, "features", 0, feature_total)
-            with profiler.stage("bar_features", count=batch):
-                (
-                    branch_macro_features,
-                    branch_global_features,
-                    branch_macro_bar_timeframes,
-                    branch_global_bar_timeframes,
-                    branch_ticker_macro_bars,
-                    branch_ticker_macro_bar_mask,
-                    branch_global_market_bars,
-                    branch_global_market_bar_mask,
-                ) = self._materialize_bar_features(
-                    sample_tuple,
-                    progress_callback=progress_callback,
-                    progress_total=feature_total,
-                )
-            _call_progress(progress_callback, "features", batch + 2, feature_total)
-            with profiler.stage("origin_time_features", count=batch):
-                branch_time_features = _origin_time_features(sample_tuple)
-                branch_chunk_time_features = _timestamp_feature_arrays(chunk_origin_ts, origin_ts[:, None])
-            _call_progress(progress_callback, "features", batch + 3, feature_total)
-            with profiler.stage("session_features", count=batch):
-                session_features = self._materialize_session_features(sample_tuple)
-            branch_macro_features.update(session_features)
-            _call_progress(progress_callback, "features", feature_total, feature_total)
-            return (
-                branch_macro_features,
-                branch_global_features,
-                branch_macro_bar_timeframes,
-                branch_global_bar_timeframes,
-                branch_ticker_macro_bars,
-                branch_ticker_macro_bar_mask,
-                branch_global_market_bars,
-                branch_global_market_bar_mask,
-                branch_time_features,
-                branch_chunk_time_features,
-            )
-
-        def build_label_branch() -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, tuple[str, ...], np.ndarray, np.ndarray]:
-            _call_progress(progress_callback, "labels", 0, 2)
-            with profiler.stage("macro_future_labels", count=batch):
-                branch_labels, branch_future_macro_bars, branch_future_macro_bar_mask, branch_future_macro_bar_timeframes = self._materialize_future_labels(sample_tuple)
-            _call_progress(progress_callback, "labels", 1, 2)
-            with profiler.stage("intraday_future_labels", count=batch):
-                intraday_labels = self._materialize_intraday_future_labels(sample_tuple, progress_callback=progress_callback)
-                branch_labels.update(intraday_labels)
-                branch_future_intraday_bars, branch_future_intraday_bar_mask = _intraday_label_bar_tensor(
-                    intraday_labels,
-                    horizons=tuple(horizon.name for horizon in self.config.intraday_label_horizons),
-                )
-            _call_progress(progress_callback, "labels", 2, 2)
-            return (
-                branch_labels,
-                branch_future_macro_bars,
-                branch_future_macro_bar_mask,
-                branch_future_macro_bar_timeframes,
-                branch_future_intraday_bars,
-                branch_future_intraday_bar_mask,
-            )
-
-        def build_context_branch() -> tuple[dict[str, list[list[dict[str, Any]]]], dict[str, dict[str, np.ndarray]], dict[str, np.ndarray]]:
-            _call_progress(progress_callback, "context", 0, max(1, len(self.external_contexts)))
-            with profiler.stage("external_context_asof", count=batch * len(self.external_contexts)):
-                branch_external = {
-                    name: [
-                        _external_asof_for_sample(name=name, store=store, sample=sample)
-                        for sample in sample_tuple
-                    ]
-                    for name, store in self.external_contexts.items()
-                }
-            _call_progress(progress_callback, "context", max(1, len(self.external_contexts)), max(1, len(self.external_contexts)))
-
-            def build_text_inputs() -> dict[str, dict[str, np.ndarray]]:
-                text_cache_before = len(self._text_token_cache)
-                text_items = _count_external_text_items(branch_external, names=("ticker_news", "market_news", "sec_filings"))
-                _call_progress(progress_callback, "text", 0, batch)
-                with profiler.stage("text_inputs", count=batch):
-                    branch_text_inputs = self._materialize_text_inputs(branch_external)
-                _call_progress(progress_callback, "text", batch, batch)
-                text_cache_after = len(self._text_token_cache)
-                text_misses = max(0, text_cache_after - text_cache_before)
-                profiler.add_stage("text_token_cache_entries", 0.0, count=text_cache_after)
-                profiler.add_stage("text_token_cache_hits", 0.0, count=max(0, text_items - text_misses))
-                profiler.add_stage("text_token_cache_misses", 0.0, count=text_misses)
-                return branch_text_inputs
-
-            def build_xbrl_inputs() -> dict[str, np.ndarray]:
-                _call_progress(progress_callback, "xbrl", 0, batch)
-                with profiler.stage("xbrl_inputs", count=batch):
-                    branch_xbrl_inputs = self._materialize_xbrl_inputs(sample_tuple, branch_external)
-                _call_progress(progress_callback, "xbrl", batch, batch)
-                return branch_xbrl_inputs
-
-            if int(independent_stage_workers) >= 4:
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    text_future = executor.submit(build_text_inputs)
-                    xbrl_future = executor.submit(build_xbrl_inputs)
-                    branch_text_inputs = text_future.result()
-                    branch_xbrl_inputs = xbrl_future.result()
-            else:
-                branch_text_inputs = build_text_inputs()
-                branch_xbrl_inputs = build_xbrl_inputs()
-            return branch_external, branch_text_inputs, branch_xbrl_inputs
-
-        stage_workers = max(1, int(independent_stage_workers))
-        if stage_workers > 1:
-            with ThreadPoolExecutor(max_workers=min(3, stage_workers)) as executor:
-                feature_future = executor.submit(build_feature_branch)
-                label_future = executor.submit(build_label_branch)
-                context_future = executor.submit(build_context_branch)
+        if stage_executor is not None:
+            assert feature_future is not None and label_future is not None and context_future is not None
+            try:
                 (
                     macro_features,
                     global_features,
@@ -1061,6 +1075,8 @@ class RollingMarketSampleEngine:
                     future_intraday_bar_mask,
                 ) = label_future.result()
                 external, text_inputs, xbrl_inputs = context_future.result()
+            finally:
+                stage_executor.shutdown(wait=True, cancel_futures=True)
         else:
             (
                 macro_features,
