@@ -19,6 +19,13 @@ DEFAULT_PROBE_SCRIPT_FROM_LAPTOP = Path(
 DEFAULT_PRETRAIN_WANDB_PROJECT = "June2026-event-token-mae-capacity-tests"
 DEFAULT_PROBE_WANDB_PROJECT = "June2026-event-encoder-linear-probes"
 DEFAULT_RUN_PREFIX = "v20-capacity-1shard5ep"
+DEFAULT_D_BYTE = 40
+DEFAULT_D_MODEL = 256
+DEFAULT_N_HEADS = 8
+DEFAULT_ENCODER_LAYERS = 10
+DEFAULT_DECODER_LAYERS = 4
+DEFAULT_FFN_MULT = 4
+DEFAULT_DROPOUT = 0.08
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +59,11 @@ def main() -> int:
     print(f"variants={','.join(variant.name for variant in selected)}", flush=True)
     print(f"pretrain_cache={args.pretrain_cache_root}", flush=True)
     print(f"labeled_cache={args.labeled_cache_root}", flush=True)
+    print(
+        f"encoder=d_model{args.d_model}/heads{args.n_heads}/layers{args.encoder_layers} "
+        f"d_byte={args.d_byte} decoder_layers={args.decoder_layers}",
+        flush=True,
+    )
     print(f"batch_size={args.batch_size:,} pretrain_epochs={args.epochs:,} probe_epochs={args.probe_epochs:,}", flush=True)
     print("=" * 104, flush=True)
     for stage, variant_name, command in commands:
@@ -99,6 +111,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--probe-epochs", type=int, default=5)
+    parser.add_argument("--d-byte", type=int, default=DEFAULT_D_BYTE)
+    parser.add_argument("--d-model", type=int, default=DEFAULT_D_MODEL)
+    parser.add_argument("--n-heads", type=int, default=DEFAULT_N_HEADS)
+    parser.add_argument("--encoder-layers", type=int, default=DEFAULT_ENCODER_LAYERS)
+    parser.add_argument("--decoder-layers", type=int, default=DEFAULT_DECODER_LAYERS)
+    parser.add_argument("--ffn-mult", type=int, default=DEFAULT_FFN_MULT)
+    parser.add_argument("--dropout", type=float, default=DEFAULT_DROPOUT)
     parser.add_argument("--pretrain-train-start-shard", type=int, default=0)
     parser.add_argument("--pretrain-train-shards", type=int, default=1)
     parser.add_argument("--pretrain-validation-shard-index", type=int, default=0)
@@ -133,12 +152,14 @@ def select_variants(value: str) -> list[Variant]:
 
 def pretrain_run_name_for(args: argparse.Namespace, variant: Variant) -> str:
     precision = "fp32bn" if variant.bottleneck_force_fp32 else "bf16bn"
-    return f"{args.run_prefix}-{precision}-emb{variant.embedding_dim}-bs{args.batch_size}-pretrain"
+    model_tag = f"d{args.d_model}l{args.encoder_layers}h{args.n_heads}"
+    return f"{args.run_prefix}-{model_tag}-{precision}-emb{variant.embedding_dim}-bs{args.batch_size}-pretrain"
 
 
 def probe_run_name_for(args: argparse.Namespace, variant: Variant) -> str:
     precision = "fp32bn" if variant.bottleneck_force_fp32 else "bf16bn"
-    return f"{args.run_prefix}-{precision}-emb{variant.embedding_dim}-bs{args.batch_size}-linearprobe"
+    model_tag = f"d{args.d_model}l{args.encoder_layers}h{args.n_heads}"
+    return f"{args.run_prefix}-{model_tag}-{precision}-emb{variant.embedding_dim}-bs{args.batch_size}-linearprobe"
 
 
 def checkpoint_path(output_root: Path, run_name: str, epochs: int) -> Path:
@@ -176,8 +197,22 @@ def build_pretrain_command(args: argparse.Namespace, variant: Variant, run_name:
         str(args.epochs),
         "--batch-size",
         str(args.batch_size),
+        "--d-byte",
+        str(args.d_byte),
+        "--d-model",
+        str(args.d_model),
         "--embedding-dim",
         str(variant.embedding_dim),
+        "--n-heads",
+        str(args.n_heads),
+        "--encoder-layers",
+        str(args.encoder_layers),
+        "--decoder-layers",
+        str(args.decoder_layers),
+        "--ffn-mult",
+        str(args.ffn_mult),
+        "--dropout",
+        str(args.dropout),
         "--learning-rate",
         str(args.learning_rate),
         "--amp-dtype",
@@ -235,8 +270,22 @@ def build_probe_command(args: argparse.Namespace, variant: Variant, run_name: st
         "v20",
         "--encoder-checkpoint",
         str(checkpoint),
+        "--encoder-d-byte",
+        str(args.d_byte),
+        "--encoder-d-model",
+        str(args.d_model),
         "--encoder-embedding-dim",
         str(variant.embedding_dim),
+        "--encoder-heads",
+        str(args.n_heads),
+        "--encoder-layers",
+        str(args.encoder_layers),
+        "--encoder-decoder-layers",
+        str(args.decoder_layers),
+        "--encoder-ffn-mult",
+        str(args.ffn_mult),
+        "--encoder-dropout",
+        str(args.dropout),
         "--run-name",
         run_name,
         "--wandb-project",
