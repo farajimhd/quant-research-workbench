@@ -1832,6 +1832,8 @@ FORMAT JSONEachRow
         ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
         start_us = max(0, int(start_timestamp_us) - int(self.config.sec_lookback_days) * 86_400_000_000)
         end_us = int(end_timestamp_us)
+        start_expr = _date_time64_from_us(start_us)
+        end_expr = _date_time64_from_us(end_us)
         row_limit = int(self.config.sec_max_items) * int(self.config.sec_token_chunks)
         query = f"""
 SELECT
@@ -1862,9 +1864,11 @@ SELECT
     text_prefix_truncated
 FROM {table}
 PREWHERE ticker IN ({ticker_sql})
-WHERE timestamp_us >= {start_us}
+WHERE accepted_at_utc >= {start_expr}
+  AND accepted_at_utc <= {end_expr}
+  AND timestamp_us >= {start_us}
   AND timestamp_us <= {end_us}
-ORDER BY ticker, timestamp_us DESC, accession_number, text_rank, document_id
+ORDER BY ticker, timestamp_us DESC, accession_number, text_rank, document_id, source_id, token_chunk_index
 LIMIT {row_limit} BY ticker
 FORMAT JSONEachRow
 """

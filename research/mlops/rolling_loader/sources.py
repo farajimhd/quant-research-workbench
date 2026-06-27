@@ -1171,6 +1171,8 @@ class ClickHouseExternalContextSource:
         table = f"{quote_ident(self.config.database)}.{quote_ident(self.config.news_token_table)}"
         ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
         row_limit = int(self.config.ticker_news_items) * int(self.config.news_token_chunks)
+        start_expr = _date_time64_from_us(int(start_us))
+        end_expr = _date_time64_from_us(int(end_us))
         query = f"""
 SELECT *
 FROM
@@ -1197,7 +1199,9 @@ FROM
         source_text_char_count
     FROM {table}
     PREWHERE ticker IN ({ticker_sql})
-    WHERE timestamp_us >= {int(start_us)}
+    WHERE published_at_utc >= {start_expr}
+      AND published_at_utc <= {end_expr}
+      AND timestamp_us >= {int(start_us)}
       AND timestamp_us <= {int(end_us)}
     ORDER BY ticker, timestamp_us DESC, source_id, token_chunk_index
     LIMIT {row_limit} BY ticker
@@ -1211,6 +1215,8 @@ FORMAT JSONEachRow
         table = f"{quote_ident(self.config.database)}.{quote_ident(self.config.news_token_table)}"
         max_items = int(self.config.global_news_items)
         max_chunks = int(self.config.news_token_chunks)
+        start_expr = _date_time64_from_us(int(start_us))
+        end_expr = _date_time64_from_us(int(end_us))
         query = f"""
 WITH latest_sources AS
 (
@@ -1218,7 +1224,9 @@ WITH latest_sources AS
         source_id,
         max(timestamp_us) AS latest_timestamp_us
     FROM {table}
-    WHERE timestamp_us >= {int(start_us)}
+    WHERE published_at_utc >= {start_expr}
+      AND published_at_utc <= {end_expr}
+      AND timestamp_us >= {int(start_us)}
       AND timestamp_us <= {int(end_us)}
     GROUP BY source_id
     ORDER BY latest_timestamp_us DESC
@@ -1249,7 +1257,9 @@ FROM
     SELECT t.*
     FROM {table} AS t
     INNER JOIN latest_sources AS s ON t.source_id = s.source_id
-    WHERE t.token_chunk_index < {max_chunks}
+    WHERE t.published_at_utc >= {start_expr}
+      AND t.published_at_utc <= {end_expr}
+      AND t.token_chunk_index < {max_chunks}
     ORDER BY t.source_id, t.token_chunk_index, t.ticker
     LIMIT 1 BY source_id, token_chunk_index
 )
@@ -1264,6 +1274,8 @@ FORMAT JSONEachRow
         table = f"{quote_ident(self.config.sec_context_database)}.{quote_ident(self.config.sec_filing_text_token_table)}"
         ticker_sql = ", ".join(sql_string(ticker) for ticker in tickers)
         row_limit = int(self.config.sec_filing_items) * int(self.config.sec_token_chunks)
+        start_expr = _date_time64_from_us(int(start_us))
+        end_expr = _date_time64_from_us(int(end_us))
         query = f"""
 SELECT *
 FROM
@@ -1289,12 +1301,14 @@ FROM
         source_text_char_count
     FROM {table}
     PREWHERE ticker IN ({ticker_sql})
-    WHERE timestamp_us >= {int(start_us)}
+    WHERE accepted_at_utc >= {start_expr}
+      AND accepted_at_utc <= {end_expr}
+      AND timestamp_us >= {int(start_us)}
       AND timestamp_us <= {int(end_us)}
-    ORDER BY ticker, timestamp_us DESC, accession_number, text_rank, document_id, token_chunk_index
+    ORDER BY ticker, timestamp_us DESC, accession_number, text_rank, document_id, source_id, token_chunk_index
     LIMIT {row_limit} BY ticker
 )
-ORDER BY timestamp_us, ticker, accession_number, text_rank, document_id, token_chunk_index
+ORDER BY timestamp_us, ticker, accession_number, text_rank, document_id, source_id, token_chunk_index
 FORMAT JSONEachRow
 """
         return self._token_updates(kind="sec_filing", rows=self._query_json_rows(query), chunks=int(self.config.sec_token_chunks))

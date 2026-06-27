@@ -457,7 +457,7 @@ WHERE accepted_at_utc >= {start_expr}
   AND accepted_at_utc < {end_expr}
   AND timestamp_us >= {int(start_us)}
   AND timestamp_us < {int(end_us)}
-ORDER BY ticker, timestamp_us, accession_number, text_rank, document_id, token_chunk_index
+ORDER BY ticker, timestamp_us, accession_number, text_rank, document_id, source_id, token_chunk_index
 FORMAT JSONEachRow
 """
         return [json.loads(line) for line in self.text_client.execute(query).splitlines() if line.strip()]
