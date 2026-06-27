@@ -437,9 +437,7 @@ def _fetch_day(
 ) -> DayFetch:
     started = time.perf_counter()
     session = session_window(session_date)
-    dep_start_date = session_date - dt.timedelta(days=max(0, int(args.warmup_days)))
-    dep_end_date = utc_date_from_us(session.end_timestamp_us) + dt.timedelta(days=1)
-    block = source.fetch_event_block(start_date=dep_start_date, end_date=dep_end_date, row_limit=max(0, int(args.event_row_limit)))
+    block = _fetch_session_dependency_events(args, source, config, session_date, session, context_lags)
     context = None
     if not args.skip_token_contexts:
         context = source.fetch_token_contexts(
@@ -450,6 +448,77 @@ def _fetch_day(
         )
     macro = source.fetch_macro_bars_1d(start_date=session_date, end_date=session_date + dt.timedelta(days=1))
     return DayFetch(session_date=session_date, block=block, context=context, macro_rows=macro.rows, fetch_seconds=time.perf_counter() - started)
+
+
+def _fetch_session_dependency_events(
+    args: argparse.Namespace,
+    source: StreamingClickHouseTrainingSource,
+    config: RollingMarketDataConfig,
+    session_date: dt.date,
+    session: Any,
+    context_lags: tuple[int, ...],
+) -> StreamingEventBlock:
+    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    required_lookback = int(max(context_lags, default=0)) + max(1, int(args.events_per_chunk))
+    dep_start_date = session_date - dt.timedelta(days=max(0, int(args.warmup_days)))
+    dep_end_date = utc_date_from_us(session.end_timestamp_us) + dt.timedelta(days=1)
+    session_start_date = utc_date_from_us(session.start_timestamp_us)
+    session_end_date = utc_date_from_us(session.end_timestamp_us) + dt.timedelta(days=1)
+    limit_sql = f"\nLIMIT {int(args.event_row_limit)}" if int(args.event_row_limit) > 0 else ""
+    query = f"""
+SELECT
+    e.ticker,
+    e.ordinal,
+    e.event_type,
+    e.sip_timestamp_us,
+    e.price_primary_int,
+    e.price_secondary_int,
+    e.size_primary,
+    e.size_secondary,
+    e.exchange_primary,
+    e.exchange_secondary,
+    e.event_flags,
+    e.conditions_packed
+FROM
+(
+    SELECT
+        ticker,
+        ordinal,
+        event_type,
+        sip_timestamp_us,
+        price_primary_int,
+        price_secondary_int,
+        size_primary,
+        size_secondary,
+        exchange_primary,
+        exchange_secondary,
+        event_flags,
+        conditions_packed
+    FROM {table}
+    PREWHERE event_date >= toDate({sql_string(dep_start_date.isoformat())})
+      AND event_date < toDate({sql_string(dep_end_date.isoformat())})
+) AS e
+INNER JOIN
+(
+    SELECT
+        ticker,
+        min(ordinal) AS min_ordinal,
+        max(ordinal) AS max_ordinal
+    FROM {table}
+    PREWHERE event_date >= toDate({sql_string(session_start_date.isoformat())})
+      AND event_date < toDate({sql_string(session_end_date.isoformat())})
+    WHERE sip_timestamp_us >= {int(session.start_timestamp_us)}
+      AND sip_timestamp_us < {int(session.end_timestamp_us)}
+    GROUP BY ticker
+) AS b ON e.ticker = b.ticker
+WHERE e.ordinal >= if(b.min_ordinal > {required_lookback}, b.min_ordinal - {required_lookback}, 0)
+  AND e.ordinal <= b.max_ordinal
+ORDER BY e.ticker, e.ordinal
+{limit_sql}
+{source._settings()}
+"""
+    frame = source.query_polars(query)
+    return source.event_frame_to_block(frame=frame, start_date=dep_start_date, end_date=dep_end_date)
 
 
 def _write_indexed_day(
@@ -1199,7 +1268,7 @@ class IndexedCacheDashboard:
                     cells.append("")
                 cells.extend([f"{key}:", f" {value}"])
             summary.add_row(*cells)
-        workers = Table(expand=True)
+        workers = Table(expand=True, box=box.ASCII)
         workers.add_column("W", width=4, no_wrap=True)
         workers.add_column("Day", width=12, no_wrap=True)
         workers.add_column("Stage", width=10, no_wrap=True)
@@ -1225,9 +1294,9 @@ class IndexedCacheDashboard:
         for message in self.stats.messages[-8:]:
             messages.add_row(message)
         return Group(
-            Panel(summary, title="Indexed Rolling Cache", box=box.SIMPLE_HEAVY),
-            Panel(workers, title="Daily Workers", box=box.SIMPLE),
-            Panel(messages, title="Messages", box=box.SIMPLE),
+            Panel(summary, title="Indexed Rolling Cache", box=box.ASCII),
+            Panel(workers, title="Daily Workers", box=box.ASCII),
+            Panel(messages, title="Messages", box=box.ASCII),
         )
 
 
