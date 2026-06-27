@@ -274,12 +274,15 @@ def validation_frequency_steps_for(args: argparse.Namespace) -> int:
 
 
 def resolve_probe_script(configured: Path) -> Path:
+    repo_root = version_runtime_root()
+    bundled = repo_root / "research" / "temporal_event_model" / "v1" / "cache_probe.py"
+    if path_exists(bundled):
+        return bundled
     configured = Path(configured)
     if path_exists(configured):
         return configured
     if path_exists(DEFAULT_PROBE_SCRIPT_FROM_LAPTOP):
         return DEFAULT_PROBE_SCRIPT_FROM_LAPTOP
-    repo_root = next((parent for parent in Path(__file__).resolve().parents if (parent / "research").exists()), Path(__file__).resolve().parents[3])
     fallback = repo_root / "research" / "temporal_event_model" / "v1" / "cache_probe.py"
     if path_exists(fallback):
         return fallback
