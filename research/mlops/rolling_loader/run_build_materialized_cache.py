@@ -276,6 +276,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-xbrl", action="store_true")
     parser.add_argument("--event-row-limit", type=int, default=DEFAULTS["event_row_limit"])
     parser.add_argument("--audit-samples", type=int, default=256)
+    parser.add_argument("--skip-final-audit", action="store_true", help="Do not run the materialized-cache integrity audit after finalizing shards.")
+    parser.add_argument("--audit-source-checks", action=argparse.BooleanOptionalAction, default=True, help="Spot-check sampled event windows against ClickHouse after the build.")
+    parser.add_argument("--audit-sample-shards", type=int, default=3, help="Number of shards sampled by the final audit.")
+    parser.add_argument("--audit-samples-per-shard", type=int, default=2, help="Number of samples checked per sampled shard.")
+    parser.add_argument("--audit-zero-sample-rows", type=int, default=64, help="Rows per shard sampled for all-zero required tensor checks.")
+    parser.add_argument("--audit-fail-on-warning", action="store_true", help="Treat audit warnings as failures.")
     parser.add_argument("--no-rich", action="store_true")
     parser.add_argument("--plain-status", action="store_true", help="Use a single non-Rich status line instead of the Rich panel dashboard.")
     parser.add_argument("--refresh-seconds", type=float, default=1.0)
@@ -731,7 +737,41 @@ def main() -> int:
                 end_utc=timestamp_us_to_utc(end_us),
             )
         _write_json(cache_root / "manifest.json", manifest)
+        _write_progress(cache_root, args.split, stats, writer)
+        if writer.shards and not stats.interrupted and not bool(args.skip_final_audit):
+            stats.phase = "auditing"
+            stats.message("running final materialized cache audit")
+            _write_progress(cache_root, args.split, stats, writer)
+            _refresh(stats, dashboard, writer, force=True)
+            audit = _run_final_audit(args=args, cache_root=cache_root, start_us=start_us, end_us=end_us)
+            manifest["audit"] = {
+                "ok": bool(audit.ok),
+                "status": audit.status,
+                "report_path": audit.report_path,
+                "sample_report_path": audit.sample_report_path,
+                "elapsed_seconds": audit.elapsed_seconds,
+                "summary": audit.summary,
+            }
+            if not audit.ok:
+                manifest["status"] = "audit_failed"
+                _write_json(cache_root / "manifest.json", manifest)
+                stats.message(
+                    "final materialized cache audit failed",
+                    report_path=audit.report_path,
+                    issue_counts=audit.summary.get("issue_counts", {}),
+                )
+                _write_progress(cache_root, args.split, stats, writer)
+                raise RuntimeError(f"Final materialized cache audit failed; see {audit.report_path}")
+            _write_json(cache_root / "manifest.json", manifest)
+            stats.message(
+                "final materialized cache audit passed",
+                report_path=audit.report_path,
+                issue_counts=audit.summary.get("issue_counts", {}),
+            )
+            _write_progress(cache_root, args.split, stats, writer)
+        stats.phase = "done"
         stats.message("done")
+        _write_progress(cache_root, args.split, stats, writer)
         _refresh(stats, dashboard, writer)
         return 130 if stats.interrupted else 0
     except KeyboardInterrupt:
@@ -1043,6 +1083,36 @@ def _resolve_end_timestamp_us(args: argparse.Namespace, start_us: int) -> int:
     return start_us + max(1, int(args.days)) * 86_400_000_000 - 1
 
 
+def _run_final_audit(*, args: argparse.Namespace, cache_root: Path, start_us: int, end_us: int) -> Any:
+    from research.mlops.rolling_loader.audit_materialized_cache import (
+        MaterializedCacheAuditConfig,
+        run_audit,
+    )
+
+    return run_audit(
+        MaterializedCacheAuditConfig(
+            cache_root=cache_root,
+            split=args.split,
+            start_timestamp_us=int(start_us),
+            end_timestamp_us=int(end_us),
+            sample_shards=max(0, int(args.audit_sample_shards)),
+            samples_per_shard=max(0, int(args.audit_samples_per_shard)),
+            zero_sample_rows=max(0, int(args.audit_zero_sample_rows)),
+            seed=17,
+            source_checks=bool(args.audit_source_checks),
+            hash_files=False,
+            fail_on_warning=bool(args.audit_fail_on_warning),
+            clickhouse_url=args.clickhouse_url or default_clickhouse_url(),
+            clickhouse_user=args.user or default_clickhouse_user(),
+            clickhouse_password=args.password or default_clickhouse_password(),
+            database=args.database,
+            events_table=args.events_table,
+            max_threads=max(1, int(args.max_threads)),
+            max_memory_usage=str(args.max_memory_usage),
+        )
+    )
+
+
 def _has_explicit_end_arg(argv: list[str] | None = None) -> bool:
     values = sys.argv[1:] if argv is None else argv
     return any(
@@ -1089,6 +1159,8 @@ def _manifest(
             "q_live_contexts": list(config.q_live_contexts),
             "macro_timeframes": list(config.macro_timeframes),
             "label_timeframes": list(config.label_timeframes),
+            "events_per_chunk": int(config.events_per_chunk),
+            "context_lags": list(config.context_lags),
         },
         "shards": [],
     }

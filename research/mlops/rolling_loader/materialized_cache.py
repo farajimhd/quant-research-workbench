@@ -253,8 +253,8 @@ class RollingMaterializedShardWriter:
         ordinal = tensors.get("origin_ordinal")
         if origin is not None and origin.size:
             values = np.asarray(origin[offset : offset + take], dtype=np.int64)
-            first = int(values[0])
-            last = int(values[-1])
+            first = int(values.min())
+            last = int(values.max())
             self._first_origin_us = first if self._first_origin_us is None else min(self._first_origin_us, first)
             self._last_origin_us = last if self._last_origin_us is None else max(self._last_origin_us, last)
         ticker_values = _decode_ticker_array(ticker[offset : offset + take]) if ticker is not None and ticker.size else []
