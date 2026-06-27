@@ -404,11 +404,15 @@ FORMAT JSONEachRow
     def _fetch_ticker_news_tokens(self, *, start_us: int, end_us: int) -> list[dict[str, Any]]:
         table = f"{quote_ident(self.config.database)}.{quote_ident(self.config.news_token_table)}"
         columns = ",\n    ".join(quote_ident(column) for column in NEWS_TOKEN_COLUMNS)
+        start_expr = date_time64_from_us(start_us)
+        end_expr = date_time64_from_us(end_us)
         query = f"""
 SELECT
     {columns}
 FROM {table}
-WHERE timestamp_us >= {int(start_us)}
+WHERE published_at_utc >= {start_expr}
+  AND published_at_utc < {end_expr}
+  AND timestamp_us >= {int(start_us)}
   AND timestamp_us < {int(end_us)}
 ORDER BY ticker, timestamp_us, source_id, token_chunk_index
 FORMAT JSONEachRow
@@ -418,6 +422,8 @@ FORMAT JSONEachRow
     def _fetch_market_news_tokens(self, *, start_us: int, end_us: int) -> list[dict[str, Any]]:
         table = f"{quote_ident(self.config.database)}.{quote_ident(self.config.news_token_table)}"
         source_columns = ",\n        ".join(f"t.{quote_ident(column)}" for column in NEWS_TOKEN_COLUMNS if column != "ticker")
+        start_expr = date_time64_from_us(start_us)
+        end_expr = date_time64_from_us(end_us)
         query = f"""
 SELECT
     '__MARKET__' AS ticker,
@@ -426,7 +432,9 @@ FROM
 (
     SELECT *
     FROM {table}
-    WHERE timestamp_us >= {int(start_us)}
+    WHERE published_at_utc >= {start_expr}
+      AND published_at_utc < {end_expr}
+      AND timestamp_us >= {int(start_us)}
       AND timestamp_us < {int(end_us)}
     ORDER BY source_id, token_chunk_index, ticker
     LIMIT 1 BY source_id, token_chunk_index
@@ -439,11 +447,15 @@ FORMAT JSONEachRow
     def _fetch_sec_tokens(self, *, start_us: int, end_us: int) -> list[dict[str, Any]]:
         table = f"{quote_ident(self.config.sec_context_database)}.{quote_ident(self.config.sec_filing_text_token_table)}"
         columns = ",\n    ".join(quote_ident(column) for column in SEC_TOKEN_COLUMNS)
+        start_expr = date_time64_from_us(start_us)
+        end_expr = date_time64_from_us(end_us)
         query = f"""
 SELECT
     {columns}
 FROM {table}
-WHERE timestamp_us >= {int(start_us)}
+WHERE accepted_at_utc >= {start_expr}
+  AND accepted_at_utc < {end_expr}
+  AND timestamp_us >= {int(start_us)}
   AND timestamp_us < {int(end_us)}
 ORDER BY ticker, timestamp_us, accession_number, text_rank, document_id, token_chunk_index
 FORMAT JSONEachRow
@@ -807,6 +819,11 @@ class StreamingRollingTrainingProvider:
 
 def date_from_us(timestamp_us: int) -> dt.date:
     return dt.datetime.fromtimestamp(int(timestamp_us) / 1_000_000.0, tz=dt.timezone.utc).date()
+
+
+def date_time64_from_us(timestamp_us: int) -> str:
+    value = dt.datetime.fromtimestamp(int(timestamp_us) / 1_000_000.0, tz=dt.timezone.utc)
+    return f"toDateTime64({sql_string(value.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
 
 
 def parse_utc_us(value: str) -> int:
