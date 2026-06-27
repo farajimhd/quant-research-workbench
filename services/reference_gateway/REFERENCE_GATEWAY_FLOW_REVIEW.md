@@ -11,13 +11,20 @@ fixed version before moving to the next stage.
 | --- | --- | --- | --- |
 | C1 | Stage 1 | CLI flags should not be converted into environment variables before `ReferenceGatewayConfig` is built. | Fixed |
 | C2 | Stage 1 | The guide must be self-contained and explain what each argument/config value does before asking for comments. | Fixed |
+| C3 | Stage 1 | Keep advanced knobs, but provide one normal prod knob and one normal temp/debug knob so routine operation is not a long argument matrix. | Fixed |
 
 ## Stage 1: Process Start And Configuration
 
 Command under review:
 
 ```powershell
-.\scripts\run_reference_gateway.ps1 -ReadDatabase q_live -WriteDatabase q_live -Execute -ActiveTickerCheck -Daemon
+.\scripts\run_reference_gateway.ps1 -Mode Prod
+```
+
+Temp/debug command under review:
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Mode Temp
 ```
 
 ### What This Command Means
@@ -26,8 +33,31 @@ The wrapper command is a convenience layer around Python. It does not do the
 gateway work itself; it only builds the Python command and runs it from the repo
 root.
 
+### Operator Modes
+
+These are the normal entry points. Use these first. The lower-level arguments
+remain available only when a run needs an intentional override.
+
+| Mode | Command | What it is for | What the wrapper sets |
+| --- | --- | --- | --- |
+| `Prod` | `.\scripts\run_reference_gateway.ps1 -Mode Prod` | Normal production daemon against `q_live`. | `ReadDatabase=q_live`, `WriteDatabase=q_live`, `Execute=true`, `ActiveTickerCheck=true`, `Daemon=true`. |
+| `Temp` | `.\scripts\run_reference_gateway.ps1 -Mode Temp` | One-shot test/debug run that reads production data but writes to a temp DB. | `ReadDatabase=q_live`, `TestWriteDatabase=q_reference_tmp`, `Execute=true`, `ActiveTickerCheck=true`, `EnsureMarketPublicationSchema=true`, `MarketHoursWriteOverride=true`, `MarketHoursWriteReason="reference gateway temp mode"`. |
+| `Custom` | explicit advanced flags | Manual override mode. | The wrapper only passes the flags you provide. |
+
+Mode safety rules:
+
+1. `Prod` cannot be combined with `-TestWriteDatabase`.
+2. `Temp` cannot be combined with `-WriteDatabase`; temp mode always writes
+   through `-TestWriteDatabase`.
+3. `Temp` is one-shot by default. If a continuous temp daemon is needed, pass
+   `-Daemon` explicitly so it is an intentional choice.
+4. Advanced flags still work with modes, but the mode sets the normal defaults
+   first.
+
 | Wrapper argument | Python argument | Meaning | Effect in this command |
 | --- | --- | --- | --- |
+| `-Mode Prod` | expands to several Python arguments | Normal production mode. | Runs a q_live daemon with execution, active ticker reconciliation, preflight, IBKR resolution, and immediate tradability blocking. |
+| `-Mode Temp` | expands to several Python arguments | Normal test/debug mode. | Runs one temp-database execution pass, with schema setup and a market-hours test override. |
 | `-ReadDatabase q_live` | `--read-database q_live` | Database used as the canonical source of existing reference data. | The gateway reads existing identity, issue, and publication rows from `q_live`. |
 | `-WriteDatabase q_live` | `--write-database q_live` | Database where allowed writes go. | The gateway writes issues, blocks, graph updates, and publication updates to `q_live` when policy allows. |
 | `-Execute` | `--execute` | Allows write operations. Without this, the gateway is report-only. | The gateway may mutate ClickHouse, but write policy still blocks risky market-hours operations. |
@@ -90,6 +120,14 @@ Not all writes have the same risk.
 
    ```powershell
    python -m services.reference_gateway.main --read-database q_live --write-database q_live --execute --active-ticker-check --daemon
+   ```
+
+   With `-Mode Prod`, the wrapper expands to the command above.
+
+   With `-Mode Temp`, the wrapper expands to:
+
+   ```powershell
+   python -m services.reference_gateway.main --read-database q_live --test-write-database q_reference_tmp --execute --active-ticker-check --ensure-market-publication-schema --market-hours-write-override --market-hours-write-reason "reference gateway temp mode"
    ```
 
 2. `services.reference_gateway.main` starts and parses command-line arguments.

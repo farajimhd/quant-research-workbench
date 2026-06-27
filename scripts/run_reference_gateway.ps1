@@ -1,5 +1,7 @@
 param(
     [string]$PythonExe = "python",
+    [ValidateSet("Custom", "Prod", "Temp")]
+    [string]$Mode = "Custom",
     [string]$ReadDatabase = "",
     [string]$WriteDatabase = "",
     [string]$TestWriteDatabase = "",
@@ -26,6 +28,39 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
+
+if ($Mode -eq "Prod") {
+    if ($TestWriteDatabase) {
+        throw "-Mode Prod cannot be combined with -TestWriteDatabase."
+    }
+    if (-not $ReadDatabase) {
+        $ReadDatabase = "q_live"
+    }
+    if (-not $WriteDatabase) {
+        $WriteDatabase = "q_live"
+    }
+    $Execute = $true
+    $ActiveTickerCheck = $true
+    $Daemon = $true
+}
+elseif ($Mode -eq "Temp") {
+    if ($WriteDatabase) {
+        throw "-Mode Temp writes through -TestWriteDatabase; do not pass -WriteDatabase."
+    }
+    if (-not $ReadDatabase) {
+        $ReadDatabase = "q_live"
+    }
+    if (-not $TestWriteDatabase) {
+        $TestWriteDatabase = "q_reference_tmp"
+    }
+    if (-not $MarketHoursWriteReason.Trim()) {
+        $MarketHoursWriteReason = "reference gateway temp mode"
+    }
+    $Execute = $true
+    $ActiveTickerCheck = $true
+    $EnsureMarketPublicationSchema = $true
+    $MarketHoursWriteOverride = $true
+}
 
 $argsList = @("-m", "services.reference_gateway.main")
 if ($ReadDatabase) {
