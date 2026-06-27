@@ -21,6 +21,7 @@ from research.mlops.rolling_loader.streaming_training import batch_nbytes
 MATERIALIZED_CACHE_FORMAT = "rolling_materialized_training_cache"
 MATERIALIZED_CACHE_VERSION = 1
 DEFAULT_MATERIALIZED_CACHE_ROOT = Path("D:/market-data/prepared/rolling_materialized_cache")
+TICKER_BYTE_WIDTH = 32
 
 
 @dataclass(slots=True)
@@ -492,8 +493,10 @@ def _infer_sample_count(tensors: Mapping[str, np.ndarray]) -> int:
 
 def _encode_ticker_array(values: np.ndarray) -> np.ndarray:
     text = [str(value).upper() for value in np.asarray(values).tolist()]
-    width = max(8, min(32, max((len(value.encode("utf-8")) for value in text), default=1)))
-    return np.asarray(text, dtype=f"S{width}")
+    too_wide = [value for value in text if len(value.encode("utf-8")) > TICKER_BYTE_WIDTH]
+    if too_wide:
+        raise ValueError(f"Ticker exceeds {TICKER_BYTE_WIDTH} encoded bytes: {too_wide[0]!r}")
+    return np.asarray(text, dtype=f"S{TICKER_BYTE_WIDTH}")
 
 
 def _decode_ticker_array(values: np.ndarray) -> list[str]:
