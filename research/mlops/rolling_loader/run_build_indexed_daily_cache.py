@@ -317,17 +317,24 @@ def main(argv: list[str] | None = None) -> int:
         next_fetch_index = 0
         next_worker = 0
 
+        def update_prefetch_stats() -> None:
+            stats.prefetch_pending = len(pending_fetches)
+            stats.prefetch_ready = sum(1 for future in pending_fetches if future.done())
+
         def submit_fetches() -> None:
             nonlocal next_fetch_index
             if fetch_executor is None:
+                update_prefetch_stats()
                 return
             while next_fetch_index < len(session_dates) and len(pending_fetches) < max(1, fetch_depth):
                 day = session_dates[next_fetch_index]
                 pending_fetches[fetch_executor.submit(_fetch_day, args, source, config, day, context_lags)] = day
                 stats.message(f"prefetch submitted {day.isoformat()}")
                 next_fetch_index += 1
+            update_prefetch_stats()
 
         submit_fetches()
+        stats.phase = "fetching"
         for day in session_dates:
             if stop_event.is_set():
                 break
@@ -343,9 +350,9 @@ def main(argv: list[str] | None = None) -> int:
                         fetched = future.result()
                         del pending_fetches[future]
                         submit_fetches()
+                        update_prefetch_stats()
                         break
-                    stats.prefetch_pending = len(pending_fetches)
-                    stats.prefetch_ready = 0
+                    update_prefetch_stats()
                     _refresh(stats, dashboard, cache_root)
                     time.sleep(0.25)
             worker_id = next_worker % max(1, int(args.workers))
@@ -354,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
             state.session_date = fetched.session_date.isoformat()
             state.status = "queued"
             state.stage = "queued"
+            stats.phase = "building"
             pending_builds[build_executor.submit(_write_indexed_day, args, cache_root, config, context_lags, fetched, worker_id, stats, stop_event)] = worker_id
             while len(pending_builds) >= max(1, int(args.workers)):
                 if stop_event.is_set():
@@ -368,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
         if stop_event.is_set():
             raise KeyboardInterrupt
 
+        stats.prefetch_pending = 0
+        stats.prefetch_ready = 0
         manifest["status"] = "complete"
         manifest["completed_at"] = dt.datetime.now(tz=dt.timezone.utc).isoformat()
         manifest["summary"] = {
@@ -440,14 +450,32 @@ def _fetch_day(
     block = _fetch_session_dependency_events(args, source, config, session_date, session, context_lags)
     context = None
     if not args.skip_token_contexts:
-        context = source.fetch_token_contexts(
-            start_timestamp_us=session.start_timestamp_us,
-            end_timestamp_us=session.end_timestamp_us,
-            include_lookback=True,
-            include_xbrl=not bool(args.skip_xbrl),
-        )
+        if block.row_count:
+            context = source.fetch_token_contexts(
+                start_timestamp_us=session.start_timestamp_us,
+                end_timestamp_us=session.end_timestamp_us,
+                include_lookback=True,
+                include_xbrl=not bool(args.skip_xbrl),
+            )
+        else:
+            context = _empty_context_block(config, session, include_xbrl=not bool(args.skip_xbrl))
     macro = source.fetch_macro_bars_1d(start_date=session_date, end_date=session_date + dt.timedelta(days=1))
     return DayFetch(session_date=session_date, block=block, context=context, macro_rows=macro.rows, fetch_seconds=time.perf_counter() - started)
+
+
+def _empty_context_block(config: RollingMarketDataConfig, session: Any, *, include_xbrl: bool) -> StreamingContextBlock:
+    enabled = set(config.q_live_contexts)
+    rows: dict[str, list[dict[str, Any]]] = {}
+    for name in ("ticker_news", "market_news", "sec_filings"):
+        if name in enabled:
+            rows[name] = []
+    if include_xbrl and "xbrl" in enabled:
+        rows["xbrl"] = []
+    return StreamingContextBlock(
+        start_timestamp_us=int(session.start_timestamp_us),
+        end_timestamp_us=int(session.end_timestamp_us),
+        rows_by_context=rows,
+    )
 
 
 def _fetch_session_dependency_events(
@@ -866,6 +894,8 @@ def _write_context_rows(day_dir: Path, pl: Any, context: StreamingContextBlock |
         frame = pl.DataFrame(rows) if rows else pl.DataFrame({"ticker": [], "timestamp_us": [], "context_offset": []})
         if frame.height and "ticker" in frame.columns:
             frame = frame.with_columns(pl.col("ticker").cast(pl.Utf8).str.to_uppercase())
+        if frame.height and "text_hash" in frame.columns:
+            frame = frame.with_columns(pl.col("text_hash").cast(pl.Utf8))
         if frame.height and "timestamp_us" in frame.columns:
             sort_cols = [column for column in ("ticker", "timestamp_us", "source_id", "token_chunk_index") if column in frame.columns]
             frame = frame.sort(sort_cols).with_row_index("context_offset")
