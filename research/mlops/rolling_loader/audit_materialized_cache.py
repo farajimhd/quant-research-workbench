@@ -239,6 +239,7 @@ def run_audit(config: MaterializedCacheAuditConfig) -> AuditResult:
     )
     cache_config = _config_from_manifest(manifest)
     sample_stride_events = max(1, int(cache_config.sample_stride_events))
+    low_coverage_severity = _source_coverage_low_severity(manifest)
     source_coverage: dict[str, Any] = {
         "skipped": not bool(config.source_checks),
         "reason": "source_checks_disabled" if not bool(config.source_checks) else "",
@@ -260,6 +261,7 @@ def run_audit(config: MaterializedCacheAuditConfig) -> AuditResult:
             max_memory_usage=str(config.max_memory_usage),
             min_coverage_ratio=float(config.min_source_coverage_ratio),
             max_overage_ratio=float(config.max_source_overage_ratio),
+            low_coverage_severity=low_coverage_severity,
         )
     if config.source_checks and selected and client is not None:
         events_per_chunk, context_lags = _context_geometry_from_manifest(manifest)
@@ -569,6 +571,7 @@ def _check_source_period_coverage(
     max_memory_usage: str,
     min_coverage_ratio: float,
     max_overage_ratio: float,
+    low_coverage_severity: str,
 ) -> dict[str, Any]:
     if int(start_us) <= 0 or int(end_us) <= int(start_us):
         return {"skipped": True, "reason": "missing_period_bounds"}
@@ -629,6 +632,7 @@ FORMAT JSONEachRow
         "coverage_ratio": coverage_ratio,
         "missing_ratio": missing_ratio,
         "overage_ratio": overage_ratio,
+        "low_coverage_severity": str(low_coverage_severity),
     }
     if expected > 0 and materialized > int(expected * float(max_overage_ratio)):
         issues.append(
@@ -642,7 +646,7 @@ FORMAT JSONEachRow
     elif expected > 0 and coverage_ratio < float(min_coverage_ratio):
         issues.append(
             AuditIssue(
-                "warning",
+                str(low_coverage_severity),
                 "source_sample_coverage_low",
                 "Materialized sample count is far below stride-adjusted source event count for the requested period.",
                 details=summary,
@@ -960,6 +964,19 @@ def _exclusive_date_from_us(timestamp_us: int) -> dt.date:
     return _date_from_us(max(0, int(timestamp_us) - 1)) + dt.timedelta(days=1)
 
 
+def _source_coverage_low_severity(manifest: Mapping[str, Any]) -> str:
+    raw_config = dict(manifest.get("config") or {})
+    if bool(raw_config.get("one_shard")):
+        return "warning"
+    summary = dict(manifest.get("summary") or {})
+    target_gib = _float_value(raw_config.get("target_cache_gib"), 0.0)
+    target_bytes = int(target_gib * 1024**3) if target_gib > 0 else 0
+    bytes_written = _int_value(summary.get("bytes_written"), 0)
+    if target_bytes > 0 and bytes_written >= int(target_bytes * 0.99):
+        return "warning"
+    return "error"
+
+
 def _config_from_manifest(manifest: Mapping[str, Any]) -> RollingMarketDataConfig:
     raw = dict(manifest.get("config") or {})
     allowed: dict[str, Any] = {}
@@ -1039,6 +1056,15 @@ def _int_value(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return int(default)
+
+
+def _float_value(value: Any, default: float = 0.0) -> float:
+    if value is None:
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _sha256_file(path: Path) -> str:

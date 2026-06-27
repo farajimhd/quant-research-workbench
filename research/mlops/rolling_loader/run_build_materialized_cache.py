@@ -65,7 +65,7 @@ DEFAULTS: dict[str, Any] = {
     "start_utc": "2019-01-05T00:00:00Z",
     "days": 1,
     "block_days": 1,
-    "warmup_days": 0,
+    "warmup_days": 3,
     "builder_batch_size": 4096,
     "sample_multiple": 4096,
     "workers": 4,
@@ -564,198 +564,27 @@ def main() -> int:
                     engine.load_external_contexts(context.rows_by_context)
                 stats.message(f"block context rows={context.row_count:,}")
                 _enforce_rss_limit(args, stats, label="after_context_load")
-            stats.phase = "building ready index"
-            _refresh(stats, dashboard, writer)
-            ready_sample_cap = _ready_sample_cap_for_budget(args=args, stats=stats, writer=writer)
-            with profiler.stage("ready_index_build", block_index=stats.block_index, max_samples=ready_sample_cap):
-                ready_blocks = engine.build_ready_index_blocks(max_samples=ready_sample_cap)
-            _enforce_rss_limit(args, stats, label="after_ready_index_build")
-            stats.ready_samples = engine.ready_index_count(ready_blocks)
-            with profiler.stage("ready_index_origin_window_filter", block_index=stats.block_index, samples=stats.ready_samples):
-                eligible_blocks, origin_filter = _filter_ready_blocks_by_origin_window(
-                    ready_blocks,
-                    start_timestamp_us=start_us,
-                    end_timestamp_us=end_us,
+            while not stop_requested:
+                processed_ready, stop_requested = _materialize_ready_slice(
+                    args=args,
+                    cache_root=cache_root,
+                    engine=engine,
+                    executor=executor,
+                    writer=writer,
+                    stats=stats,
+                    profiler=profiler,
+                    dashboard=dashboard,
+                    start_us=start_us,
+                    end_us=end_us,
+                    block=block,
+                    block_start=block_start,
+                    block_end=block_end,
+                    written_identities=written_identities,
+                    submit_prefetches=submit_prefetches,
                 )
-            stats.eligible_samples = int(origin_filter["eligible"])
-            stats.skipped_before_start_samples += int(origin_filter["before_start"])
-            stats.skipped_at_or_after_end_samples += int(origin_filter["at_or_after_end"])
-            stats.message(
-                f"ready samples={stats.ready_samples:,} eligible={stats.eligible_samples:,} "
-                f"skip_before={int(origin_filter['before_start']):,} skip_after={int(origin_filter['at_or_after_end']):,} "
-                f"blocks={len(eligible_blocks):,}"
-            )
-            if not ready_blocks:
-                submit_prefetches()
-                continue
-            if not eligible_blocks:
-                with profiler.stage("mark_ready_blocks_processed", block_index=stats.block_index, skipped_samples=stats.ready_samples):
-                    _mark_ready_blocks_processed(engine, ready_blocks)
-                with profiler.stage("event_cache_trim_processed_tails", block_index=stats.block_index):
-                    engine.trim_processed_tails()
-                if block.min_timestamp_us >= end_us:
-                    stats.message("reached cache period end; no eligible origins remain")
+                if not processed_ready:
                     break
-                submit_prefetches()
-                continue
-            with profiler.stage("global_today_asof_cache_prewarm", block_index=stats.block_index):
-                warmed_today_states = engine.prewarm_today_asof_day_cache(symbols=engine.config.global_symbols)
-            stats.message(f"global today-asof cache states={warmed_today_states:,}")
-            if not _ready_samples_can_satisfy_target(stats=stats, writer=writer, ready_samples=stats.eligible_samples):
-                submit_prefetches()
-            stats.phase = "materializing"
-            futures: dict[Future[dict[str, Any]], dict[str, Any]] = {}
-            next_slice_id = 0
-            next_to_write = 0
-            completed: dict[int, dict[str, Any]] = {}
-            task_specs = _build_task_specs(
-                eligible_blocks,
-                batch_size=max(1, int(args.builder_batch_size)),
-                workers=max(1, int(args.materialization_workers)),
-            )
-            task_queue = deque(task_specs)
-            worker_task_samples = [0 for _index in range(max(1, int(args.materialization_workers)))]
-            for worker_id, blocks_for_task in task_specs:
-                worker_task_samples[int(worker_id)] += sum(block.sample_count for block in blocks_for_task)
-            stats.message(
-                f"ordered worker tasks active={sum(1 for value in worker_task_samples if value):,}/{len(worker_task_samples):,} "
-                f"samples={','.join(str(int(value)) for value in worker_task_samples)}"
-            )
-
-            def submit_available() -> None:
-                nonlocal next_slice_id
-                max_parallel = max(1, min(int(args.max_pending_tasks), max(1, int(args.materialization_workers))))
-                while task_queue and len(futures) < max_parallel:
-                    active_workers = {int(meta["worker_id"]) for meta in futures.values()}
-                    selected: tuple[int, list[RollingReadyIndexBlock]] | None = None
-                    for _ in range(len(task_queue)):
-                        candidate_worker_id, candidate_blocks = task_queue.popleft()
-                        if int(candidate_worker_id) in active_workers:
-                            task_queue.append((candidate_worker_id, candidate_blocks))
-                            continue
-                        selected = (int(candidate_worker_id), candidate_blocks)
-                        break
-                    if selected is None:
-                        return
-                    worker_id, blocks_for_task = selected
-                    worker_state = stats.workers[worker_id]
-                    worker_state.status = "queued"
-                    worker_state.ticker_count = len({block.ticker for block in blocks_for_task})
-                    worker_state.queued_samples = sum(block.sample_count for block in blocks_for_task)
-                    worker_state.materializing_done = 0
-                    worker_state.materializing_total = max(1, worker_state.queued_samples)
-                    worker_state.encoding_done = 0
-                    worker_state.encoding_total = 0
-                    worker_state.features_done = 0
-                    worker_state.features_total = 0
-                    worker_state.labels_done = 0
-                    worker_state.labels_total = 0
-                    worker_state.context_done = 0
-                    worker_state.context_total = 0
-                    worker_state.text_done = 0
-                    worker_state.text_total = 0
-                    worker_state.xbrl_done = 0
-                    worker_state.xbrl_total = 0
-                    worker_state.writing_done = 0
-                    worker_state.writing_total = max(1, worker_state.queued_samples)
-                    worker_state.batches_done = 0
-                    worker_state.samples_done = 0
-                    worker_state.active_slice_id = next_slice_id
-                    worker_state.started_at = time.perf_counter()
-                    worker_state.seconds = 0.0
-                    worker_state.current_stage = "queued"
-                    worker_state.last_message = f"queued slice={next_slice_id} samples={worker_state.queued_samples:,}"
-                    future = executor.submit(
-                        _materialize_worker_task,
-                        engine,
-                        blocks_for_task,
-                        int(args.builder_batch_size),
-                        int(args.stage_workers),
-                        worker_id,
-                        next_slice_id,
-                        worker_state,
-                    )
-                    futures[future] = {"worker_id": worker_id, "slice_id": next_slice_id, "submitted_at": time.perf_counter()}
-                    stats.submitted_tasks += 1
-                    next_slice_id += 1
-
-            submit_available()
-            while futures or completed:
-                done, _pending = wait(set(futures), timeout=max(0.5, float(args.refresh_seconds)), return_when=FIRST_COMPLETED)
-                if not done:
-                    _write_progress(cache_root, args.split, stats, writer)
-                    _refresh(stats, dashboard, writer)
-                    continue
-                for future in done:
-                    meta = futures.pop(future)
-                    result = future.result()
-                    _enforce_rss_limit(args, stats, label="after_materialize_task")
-                    worker_id = int(meta["worker_id"])
-                    worker_state = stats.workers[worker_id]
-                    worker_state.status = "materialized"
-                    worker_state.current_stage = "materialized"
-                    worker_state.materializing_done = int(result["samples"])
-                    worker_state.materializing_total = max(worker_state.materializing_total, int(result["samples"]))
-                    worker_state.batches_done = int(result["batch_count"])
-                    worker_state.seconds = time.perf_counter() - max(worker_state.started_at, 1e-9)
-                    worker_state.last_message = f"materialized samples={int(result['samples']):,} seconds={float(result['seconds']):.1f}"
-                    completed[int(meta["slice_id"])] = result
-                    stats.completed_tasks += 1
-                while next_to_write in completed:
-                    result = completed.pop(next_to_write)
-                    write_worker = stats.workers[int(result["worker_id"])]
-                    write_worker.status = "writing"
-                    write_worker.current_stage = "writing"
-                    write_worker.writing_done = 0
-                    write_worker.writing_total = max(1, int(result["samples"]))
-                    for batch in result["batches"]:
-                        _assert_batch_origin_window(batch, start_timestamp_us=start_us, end_timestamp_us=end_us)
-                        _assert_batch_new_identities(batch, written_identities)
-                        writer.set_source_block(
-                            block_index=stats.block_index,
-                            start_timestamp_us=max(start_us, block.min_timestamp_us),
-                            end_timestamp_us=min(end_us, block.max_timestamp_us),
-                            start_label=block_start.isoformat(),
-                            end_label=block_end.isoformat(),
-                        )
-                        writer.write_batch(batch)
-                        _enforce_rss_limit(args, stats, label="after_write_batch")
-                        batch_samples = int(batch.headers_uint8.shape[0])
-                        stats.samples_written += batch_samples
-                        stats.bytes_written += batch_nbytes(batch)
-                        write_worker.writing_done += batch_samples
-                        write_worker.samples_done += batch_samples
-                        write_worker.seconds = time.perf_counter() - max(write_worker.started_at, 1e-9)
-                        write_worker.last_message = f"wrote {write_worker.writing_done:,}/{write_worker.writing_total:,}"
-                        _write_progress(cache_root, args.split, stats, writer)
-                        _refresh(stats, dashboard, writer)
-                        if args.one_shard and len(writer.shards) >= 1:
-                            stop_requested = True
-                            stats.message(
-                                "one-shard finalized first complete shard; stopping",
-                                completed_shards=len(writer.shards),
-                                current_shard_samples=writer.current_shard_samples,
-                            )
-                            break
-                    write_worker.status = "done"
-                    write_worker.current_stage = "done"
-                    write_worker.last_message = f"done samples={write_worker.samples_done:,}"
-                    next_to_write += 1
-                    if stop_requested:
-                        break
-                _write_progress(cache_root, args.split, stats, writer)
-                _refresh(stats, dashboard, writer)
-                if stop_requested:
-                    break
-                submit_available()
-            with profiler.stage("mark_ready_blocks_processed", block_index=stats.block_index):
-                _mark_ready_blocks_processed(engine, ready_blocks)
-            with profiler.stage("event_cache_trim_processed_tails", block_index=stats.block_index):
-                engine.trim_processed_tails()
-            _enforce_rss_limit(args, stats, label="after_event_cache_trim")
-            stats.shards_done = len(writer.shards)
-            if float(stats.bytes_written) >= float(args.target_cache_gib) * 1024**3:
-                stats.message("target cache size reached")
+            if stop_requested:
                 break
             submit_prefetches()
         if fetch_queue:
@@ -1102,6 +931,224 @@ def _materialize_worker_task(
         "samples": samples,
         "seconds": time.perf_counter() - started,
     }
+
+
+def _materialize_ready_slice(
+    *,
+    args: argparse.Namespace,
+    cache_root: Path,
+    engine: RollingMarketSampleEngine,
+    executor: ThreadPoolExecutor,
+    writer: RollingMaterializedShardWriter,
+    stats: BuildStats,
+    profiler: StreamingProfiler,
+    dashboard: BuildDashboard,
+    start_us: int,
+    end_us: int,
+    block: StreamingEventBlock,
+    block_start: dt.date,
+    block_end: dt.date,
+    written_identities: set[tuple[str, int]],
+    submit_prefetches: Any,
+) -> tuple[bool, bool]:
+    stats.phase = "building ready index"
+    _refresh(stats, dashboard, writer)
+    ready_sample_cap = _ready_sample_cap_for_budget(args=args, stats=stats, writer=writer)
+    with profiler.stage("ready_index_build", block_index=stats.block_index, max_samples=ready_sample_cap):
+        ready_blocks = engine.build_ready_index_blocks(max_samples=ready_sample_cap)
+    _enforce_rss_limit(args, stats, label="after_ready_index_build")
+    stats.ready_samples = engine.ready_index_count(ready_blocks)
+    with profiler.stage("ready_index_origin_window_filter", block_index=stats.block_index, samples=stats.ready_samples):
+        eligible_blocks, origin_filter = _filter_ready_blocks_by_origin_window(
+            ready_blocks,
+            start_timestamp_us=start_us,
+            end_timestamp_us=end_us,
+        )
+    stats.eligible_samples = int(origin_filter["eligible"])
+    stats.skipped_before_start_samples += int(origin_filter["before_start"])
+    stats.skipped_at_or_after_end_samples += int(origin_filter["at_or_after_end"])
+    stats.message(
+        f"ready samples={stats.ready_samples:,} eligible={stats.eligible_samples:,} "
+        f"skip_before={int(origin_filter['before_start']):,} skip_after={int(origin_filter['at_or_after_end']):,} "
+        f"blocks={len(eligible_blocks):,}"
+    )
+    if not ready_blocks:
+        return False, False
+    if not eligible_blocks:
+        with profiler.stage("mark_ready_blocks_processed", block_index=stats.block_index, skipped_samples=stats.ready_samples):
+            _mark_ready_blocks_processed(engine, ready_blocks)
+        with profiler.stage("event_cache_trim_processed_tails", block_index=stats.block_index):
+            engine.trim_processed_tails()
+        _enforce_rss_limit(args, stats, label="after_event_cache_trim")
+        all_after_end = int(origin_filter["at_or_after_end"]) >= int(origin_filter["total"]) > 0
+        if all_after_end or block.min_timestamp_us >= end_us:
+            stats.message("reached cache period end; no eligible origins remain")
+            return True, True
+        return True, False
+
+    with profiler.stage("global_today_asof_cache_prewarm", block_index=stats.block_index):
+        warmed_today_states = engine.prewarm_today_asof_day_cache(symbols=engine.config.global_symbols)
+    stats.message(f"global today-asof cache states={warmed_today_states:,}")
+    if not _ready_samples_can_satisfy_target(stats=stats, writer=writer, ready_samples=stats.eligible_samples):
+        submit_prefetches()
+    stats.phase = "materializing"
+    futures: dict[Future[dict[str, Any]], dict[str, Any]] = {}
+    next_slice_id = 0
+    next_to_write = 0
+    completed: dict[int, dict[str, Any]] = {}
+    task_specs = _build_task_specs(
+        eligible_blocks,
+        batch_size=max(1, int(args.builder_batch_size)),
+        workers=max(1, int(args.materialization_workers)),
+    )
+    task_queue = deque(task_specs)
+    worker_task_samples = [0 for _index in range(max(1, int(args.materialization_workers)))]
+    for worker_id, blocks_for_task in task_specs:
+        worker_task_samples[int(worker_id)] += sum(block.sample_count for block in blocks_for_task)
+    stats.message(
+        f"ordered worker tasks active={sum(1 for value in worker_task_samples if value):,}/{len(worker_task_samples):,} "
+        f"samples={','.join(str(int(value)) for value in worker_task_samples)}"
+    )
+    stop_requested = False
+
+    def submit_available() -> None:
+        nonlocal next_slice_id
+        max_parallel = max(1, min(int(args.max_pending_tasks), max(1, int(args.materialization_workers))))
+        while task_queue and len(futures) < max_parallel:
+            active_workers = {int(meta["worker_id"]) for meta in futures.values()}
+            selected: tuple[int, list[RollingReadyIndexBlock]] | None = None
+            for _ in range(len(task_queue)):
+                candidate_worker_id, candidate_blocks = task_queue.popleft()
+                if int(candidate_worker_id) in active_workers:
+                    task_queue.append((candidate_worker_id, candidate_blocks))
+                    continue
+                selected = (int(candidate_worker_id), candidate_blocks)
+                break
+            if selected is None:
+                return
+            worker_id, blocks_for_task = selected
+            worker_state = stats.workers[worker_id]
+            worker_state.status = "queued"
+            worker_state.ticker_count = len({block.ticker for block in blocks_for_task})
+            worker_state.queued_samples = sum(block.sample_count for block in blocks_for_task)
+            worker_state.materializing_done = 0
+            worker_state.materializing_total = max(1, worker_state.queued_samples)
+            worker_state.encoding_done = 0
+            worker_state.encoding_total = 0
+            worker_state.features_done = 0
+            worker_state.features_total = 0
+            worker_state.labels_done = 0
+            worker_state.labels_total = 0
+            worker_state.context_done = 0
+            worker_state.context_total = 0
+            worker_state.text_done = 0
+            worker_state.text_total = 0
+            worker_state.xbrl_done = 0
+            worker_state.xbrl_total = 0
+            worker_state.writing_done = 0
+            worker_state.writing_total = max(1, worker_state.queued_samples)
+            worker_state.batches_done = 0
+            worker_state.samples_done = 0
+            worker_state.active_slice_id = next_slice_id
+            worker_state.started_at = time.perf_counter()
+            worker_state.seconds = 0.0
+            worker_state.current_stage = "queued"
+            worker_state.last_message = f"queued slice={next_slice_id} samples={worker_state.queued_samples:,}"
+            future = executor.submit(
+                _materialize_worker_task,
+                engine,
+                blocks_for_task,
+                int(args.builder_batch_size),
+                int(args.stage_workers),
+                worker_id,
+                next_slice_id,
+                worker_state,
+            )
+            futures[future] = {"worker_id": worker_id, "slice_id": next_slice_id, "submitted_at": time.perf_counter()}
+            stats.submitted_tasks += 1
+            next_slice_id += 1
+
+    submit_available()
+    while futures or completed:
+        done, _pending = wait(set(futures), timeout=max(0.5, float(args.refresh_seconds)), return_when=FIRST_COMPLETED)
+        if not done:
+            _write_progress(cache_root, args.split, stats, writer)
+            _refresh(stats, dashboard, writer)
+            continue
+        for future in done:
+            meta = futures.pop(future)
+            result = future.result()
+            _enforce_rss_limit(args, stats, label="after_materialize_task")
+            worker_id = int(meta["worker_id"])
+            worker_state = stats.workers[worker_id]
+            worker_state.status = "materialized"
+            worker_state.current_stage = "materialized"
+            worker_state.materializing_done = int(result["samples"])
+            worker_state.materializing_total = max(worker_state.materializing_total, int(result["samples"]))
+            worker_state.batches_done = int(result["batch_count"])
+            worker_state.seconds = time.perf_counter() - max(worker_state.started_at, 1e-9)
+            worker_state.last_message = f"materialized samples={int(result['samples']):,} seconds={float(result['seconds']):.1f}"
+            completed[int(meta["slice_id"])] = result
+            stats.completed_tasks += 1
+        while next_to_write in completed:
+            result = completed.pop(next_to_write)
+            write_worker = stats.workers[int(result["worker_id"])]
+            write_worker.status = "writing"
+            write_worker.current_stage = "writing"
+            write_worker.writing_done = 0
+            write_worker.writing_total = max(1, int(result["samples"]))
+            for batch in result["batches"]:
+                _assert_batch_origin_window(batch, start_timestamp_us=start_us, end_timestamp_us=end_us)
+                _assert_batch_new_identities(batch, written_identities)
+                writer.set_source_block(
+                    block_index=stats.block_index,
+                    start_timestamp_us=max(start_us, block.min_timestamp_us),
+                    end_timestamp_us=min(end_us, block.max_timestamp_us),
+                    start_label=block_start.isoformat(),
+                    end_label=block_end.isoformat(),
+                )
+                writer.write_batch(batch)
+                _enforce_rss_limit(args, stats, label="after_write_batch")
+                batch_samples = int(batch.headers_uint8.shape[0])
+                stats.samples_written += batch_samples
+                stats.bytes_written += batch_nbytes(batch)
+                write_worker.writing_done += batch_samples
+                write_worker.samples_done += batch_samples
+                write_worker.seconds = time.perf_counter() - max(write_worker.started_at, 1e-9)
+                write_worker.last_message = f"wrote {write_worker.writing_done:,}/{write_worker.writing_total:,}"
+                _write_progress(cache_root, args.split, stats, writer)
+                _refresh(stats, dashboard, writer)
+                if args.one_shard and len(writer.shards) >= 1:
+                    stop_requested = True
+                    stats.message(
+                        "one-shard finalized first complete shard; stopping",
+                        completed_shards=len(writer.shards),
+                        current_shard_samples=writer.current_shard_samples,
+                    )
+                    break
+            write_worker.status = "done"
+            write_worker.current_stage = "done"
+            write_worker.last_message = f"done samples={write_worker.samples_done:,}"
+            next_to_write += 1
+            if stop_requested:
+                break
+        _write_progress(cache_root, args.split, stats, writer)
+        _refresh(stats, dashboard, writer)
+        if stop_requested:
+            break
+        submit_available()
+    with profiler.stage("mark_ready_blocks_processed", block_index=stats.block_index):
+        _mark_ready_blocks_processed(engine, ready_blocks)
+    with profiler.stage("event_cache_trim_processed_tails", block_index=stats.block_index):
+        engine.trim_processed_tails()
+    _enforce_rss_limit(args, stats, label="after_event_cache_trim")
+    stats.shards_done = len(writer.shards)
+    if stop_requested:
+        return True, True
+    if float(stats.bytes_written) >= float(args.target_cache_gib) * 1024**3:
+        stats.message("target cache size reached")
+        return True, True
+    return True, False
 
 
 def _update_worker_materialization_progress(
