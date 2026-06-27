@@ -142,6 +142,9 @@ class BuildStats:
     rows_loaded: int = 0
     tickers_loaded: int = 0
     ready_samples: int = 0
+    eligible_samples: int = 0
+    skipped_before_start_samples: int = 0
+    skipped_at_or_after_end_samples: int = 0
     submitted_tasks: int = 0
     completed_tasks: int = 0
     prefetch_depth: int = 0
@@ -328,7 +331,7 @@ def main() -> int:
     start_us = int(args.start_timestamp_us or parse_utc_us(args.start_utc))
     end_us = _resolve_end_timestamp_us(args, start_us)
     if args.one_shard and not _has_explicit_end_arg() and int(args.days) == int(DEFAULTS["days"]):
-        one_shard_end_us = start_us + max(1, int(args.one_shard_max_days)) * 86_400_000_000 - 1
+        one_shard_end_us = start_us + max(1, int(args.one_shard_max_days)) * 86_400_000_000
         end_us = max(end_us, one_shard_end_us)
     cache_id = args.cache_id.strip() or dt.datetime.now(tz=dt.timezone.utc).strftime("rolling_cache_%Y%m%d_%H%M%S")
     cache_root = Path(args.cache_root) / cache_id
@@ -403,6 +406,8 @@ def main() -> int:
             existing_shards=existing_shards,
             audit_sample_limit=int(args.audit_samples),
             audit_rng=random.Random(17),
+            origin_start_timestamp_us=start_us,
+            origin_end_timestamp_us=end_us,
         )
         manifest = _manifest(args, cache_id, cache_root, loaded_env, start_us, end_us, config)
         manifest["resume"] = {"enabled": bool(args.resume), "removed_tmp_dirs": removed_tmp, "existing_shards": len(existing_shards)}
@@ -416,7 +421,7 @@ def main() -> int:
         engine.load_category_references(refs)
         stats.message(f"loaded category refs rows={len(refs):,}")
         start_date = date_from_us(start_us)
-        end_date = date_from_us(end_us) + dt.timedelta(days=1)
+        end_date = _exclusive_timestamp_end_date(end_us)
         _refresh(stats, dashboard, writer, force=True)
         with profiler.stage("macro_bars_1d_full_fetch"):
             macro = source.fetch_macro_bars_1d(start_date=start_date, end_date=end_date)
@@ -441,7 +446,7 @@ def main() -> int:
         for worker_id in range(max(1, int(args.materialization_workers))):
             stats.workers[worker_id] = WorkerState(worker_id=worker_id)
         cursor_date = date_from_us(start_us) - dt.timedelta(days=max(0, int(args.warmup_days)))
-        final_date = date_from_us(end_us) + dt.timedelta(days=1)
+        final_date = _exclusive_timestamp_end_date(end_us)
         next_fetch_date = cursor_date
         next_fetch_index = 0
         fetch_queue: deque[Future[PrefetchedTrainingBlock]] = deque()
@@ -553,14 +558,37 @@ def main() -> int:
             with profiler.stage("ready_index_build", block_index=stats.block_index, max_samples=ready_sample_cap):
                 ready_blocks = engine.build_ready_index_blocks(max_samples=ready_sample_cap)
             stats.ready_samples = engine.ready_index_count(ready_blocks)
-            stats.message(f"ready samples={stats.ready_samples:,} blocks={len(ready_blocks):,}")
+            with profiler.stage("ready_index_origin_window_filter", block_index=stats.block_index, samples=stats.ready_samples):
+                eligible_blocks, origin_filter = _filter_ready_blocks_by_origin_window(
+                    ready_blocks,
+                    start_timestamp_us=start_us,
+                    end_timestamp_us=end_us,
+                )
+            stats.eligible_samples = int(origin_filter["eligible"])
+            stats.skipped_before_start_samples += int(origin_filter["before_start"])
+            stats.skipped_at_or_after_end_samples += int(origin_filter["at_or_after_end"])
+            stats.message(
+                f"ready samples={stats.ready_samples:,} eligible={stats.eligible_samples:,} "
+                f"skip_before={int(origin_filter['before_start']):,} skip_after={int(origin_filter['at_or_after_end']):,} "
+                f"blocks={len(eligible_blocks):,}"
+            )
             if not ready_blocks:
+                submit_prefetches()
+                continue
+            if not eligible_blocks:
+                with profiler.stage("mark_ready_blocks_processed", block_index=stats.block_index, skipped_samples=stats.ready_samples):
+                    _mark_ready_blocks_processed(engine, ready_blocks)
+                with profiler.stage("event_cache_trim_processed_tails", block_index=stats.block_index):
+                    engine.trim_processed_tails()
+                if block.min_timestamp_us >= end_us:
+                    stats.message("reached cache period end; no eligible origins remain")
+                    break
                 submit_prefetches()
                 continue
             with profiler.stage("global_today_asof_cache_prewarm", block_index=stats.block_index):
                 warmed_today_states = engine.prewarm_today_asof_day_cache(symbols=engine.config.global_symbols)
             stats.message(f"global today-asof cache states={warmed_today_states:,}")
-            if not _ready_samples_can_satisfy_target(stats=stats, writer=writer, ready_samples=stats.ready_samples):
+            if not _ready_samples_can_satisfy_target(stats=stats, writer=writer, ready_samples=stats.eligible_samples):
                 submit_prefetches()
             stats.phase = "materializing"
             futures: dict[Future[dict[str, Any]], dict[str, Any]] = {}
@@ -568,7 +596,7 @@ def main() -> int:
             next_to_write = 0
             completed: dict[int, dict[str, Any]] = {}
             task_specs = _build_task_specs(
-                ready_blocks,
+                eligible_blocks,
                 batch_size=max(1, int(args.builder_batch_size)),
                 workers=max(1, int(args.materialization_workers)),
             )
@@ -667,6 +695,7 @@ def main() -> int:
                     write_worker.writing_done = 0
                     write_worker.writing_total = max(1, int(result["samples"]))
                     for batch in result["batches"]:
+                        _assert_batch_origin_window(batch, start_timestamp_us=start_us, end_timestamp_us=end_us)
                         writer.set_source_block(
                             block_index=stats.block_index,
                             start_timestamp_us=max(start_us, block.min_timestamp_us),
@@ -824,7 +853,7 @@ def _fetch_materialized_cache_block(
         with profiler.stage("token_context_block_fetch", block_index=int(block_index)):
             context = source.fetch_token_contexts(
                 start_timestamp_us=max(int(start_timestamp_us), int(block.min_timestamp_us)),
-                end_timestamp_us=min(int(end_timestamp_us) + 1, int(block.max_timestamp_us) + 1),
+                end_timestamp_us=min(int(end_timestamp_us), int(block.max_timestamp_us) + 1),
                 include_lookback=False,
                 include_xbrl=bool(include_xbrl),
             )
@@ -851,6 +880,67 @@ def _estimated_sample_bytes(writer: RollingMaterializedShardWriter) -> int:
         if samples > 0 and bytes_value > 0:
             return max(1, bytes_value // samples)
     return 0
+
+
+def _filter_ready_blocks_by_origin_window(
+    blocks: tuple[RollingReadyIndexBlock, ...],
+    *,
+    start_timestamp_us: int,
+    end_timestamp_us: int,
+) -> tuple[tuple[RollingReadyIndexBlock, ...], dict[str, int]]:
+    start_us = int(start_timestamp_us)
+    end_us = int(end_timestamp_us)
+    filtered: list[RollingReadyIndexBlock] = []
+    total = 0
+    before_start = 0
+    at_or_after_end = 0
+    for block in blocks:
+        offsets = np.asarray(block.origin_offsets, dtype=np.int64)
+        if offsets.size == 0:
+            continue
+        timestamps = block.rows["sip_timestamp_us"].astype(np.int64, copy=False)[offsets]
+        total += int(offsets.shape[0])
+        before_mask = timestamps < start_us
+        after_mask = timestamps >= end_us
+        eligible_mask = ~(before_mask | after_mask)
+        before_start += int(np.count_nonzero(before_mask))
+        at_or_after_end += int(np.count_nonzero(after_mask))
+        if bool(np.any(eligible_mask)):
+            filtered.append(
+                RollingReadyIndexBlock(
+                    ticker=block.ticker,
+                    rows=block.rows,
+                    origin_offsets=offsets[eligible_mask],
+                )
+            )
+    eligible = int(sum(block.sample_count for block in filtered))
+    return (
+        tuple(filtered),
+        {
+            "total": int(total),
+            "eligible": int(eligible),
+            "before_start": int(before_start),
+            "at_or_after_end": int(at_or_after_end),
+        },
+    )
+
+
+def _assert_batch_origin_window(batch: Any, *, start_timestamp_us: int, end_timestamp_us: int) -> None:
+    origins = np.asarray(batch.origin_timestamp_us, dtype=np.int64).reshape(-1)
+    if origins.size == 0:
+        raise RuntimeError("Materialized training batch has no origin timestamps.")
+    min_origin = int(origins.min())
+    max_origin = int(origins.max())
+    if min_origin < int(start_timestamp_us):
+        raise RuntimeError(
+            "Materialized training batch contains origins before the requested cache period: "
+            f"min={timestamp_us_to_utc(min_origin)} start={timestamp_us_to_utc(int(start_timestamp_us))}"
+        )
+    if max_origin >= int(end_timestamp_us):
+        raise RuntimeError(
+            "Materialized training batch contains origins at/after the requested cache period end: "
+            f"max={timestamp_us_to_utc(max_origin)} end={timestamp_us_to_utc(int(end_timestamp_us))}"
+        )
 
 
 def _ready_sample_cap_for_budget(
@@ -1080,7 +1170,11 @@ def _resolve_end_timestamp_us(args: argparse.Namespace, start_us: int) -> int:
         return int(args.end_timestamp_us)
     if str(args.end_utc).strip():
         return parse_utc_us(str(args.end_utc))
-    return start_us + max(1, int(args.days)) * 86_400_000_000 - 1
+    return start_us + max(1, int(args.days)) * 86_400_000_000
+
+
+def _exclusive_timestamp_end_date(end_timestamp_us: int) -> dt.date:
+    return date_from_us(max(0, int(end_timestamp_us) - 1)) + dt.timedelta(days=1)
 
 
 def _run_final_audit(*, args: argparse.Namespace, cache_root: Path, start_us: int, end_us: int) -> Any:
@@ -1185,6 +1279,10 @@ def _write_progress(cache_root: Path, split: str, stats: BuildStats, writer: Rol
         "prefetch_ready": stats.prefetch_ready,
         "prefetch_next_block": stats.prefetch_next_block,
         "prefetch_last_seconds": stats.prefetch_last_seconds,
+        "ready_samples": stats.ready_samples,
+        "eligible_samples": stats.eligible_samples,
+        "skipped_before_start_samples": stats.skipped_before_start_samples,
+        "skipped_at_or_after_end_samples": stats.skipped_at_or_after_end_samples,
         "samples_written": stats.samples_written,
         "bytes_written": stats.bytes_written,
         "target_bytes": stats.target_bytes,
@@ -1402,7 +1500,8 @@ class MaterializedCacheDashboard:
             worker_bits.append(f"W{worker.worker_id}:{stage}:{pct:03.0f}%")
         text = (
             f"[{self.stats.phase}] block={self.stats.block_index} rows={self.stats.rows_loaded:,} "
-            f"tickers={self.stats.tickers_loaded:,} ready={self.stats.ready_samples:,} "
+            f"tickers={self.stats.tickers_loaded:,} ready={self.stats.ready_samples:,}/{self.stats.eligible_samples:,} "
+            f"skip={self.stats.skipped_before_start_samples:,}/{self.stats.skipped_at_or_after_end_samples:,} "
             f"prefetch={self.stats.prefetch_ready}/{self.stats.prefetch_pending}/{self.stats.prefetch_depth} "
             f"samples={self.stats.samples_written:,} shards={self.stats.shards_done:,} "
             f"size={self.stats.bytes_written / 1024**3:.2f}/{max(1, self.stats.target_bytes) / 1024**3:.2f}GiB "
@@ -1447,6 +1546,11 @@ class MaterializedCacheDashboard:
                 ("Block", str(self.stats.block_index)),
                 ("Window", f"{self.stats.block_start}->{self.stats.block_end}"),
                 ("Ready", f"{self.stats.ready_samples:,}"),
+            ),
+            (
+                ("Eligible", f"{self.stats.eligible_samples:,}"),
+                ("Skip<Start", f"{self.stats.skipped_before_start_samples:,}"),
+                ("Skip>=End", f"{self.stats.skipped_at_or_after_end_samples:,}"),
             ),
             (
                 ("Rows", f"{self.stats.rows_loaded:,}"),

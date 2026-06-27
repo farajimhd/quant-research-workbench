@@ -62,6 +62,8 @@ class RollingMaterializedShardWriter:
         existing_shards: list[dict[str, Any]] | None = None,
         audit_sample_limit: int = 256,
         audit_rng: random.Random | None = None,
+        origin_start_timestamp_us: int = 0,
+        origin_end_timestamp_us: int = 0,
     ) -> None:
         self.cache_root = Path(cache_root)
         self.split = str(split)
@@ -72,6 +74,8 @@ class RollingMaterializedShardWriter:
         self.shards: list[dict[str, Any]] = list(existing_shards or [])
         self.audit_sample_limit = max(0, int(audit_sample_limit))
         self.audit_rng = audit_rng or random.Random(17)
+        self.origin_start_timestamp_us = max(0, int(origin_start_timestamp_us))
+        self.origin_end_timestamp_us = max(0, int(origin_end_timestamp_us))
         self.audit_rows: list[dict[str, Any]] = []
         self._shard_index = int(start_shard_index)
         self._shard_samples = 0
@@ -135,6 +139,7 @@ class RollingMaterializedShardWriter:
         sample_count = _infer_sample_count(tensors)
         if sample_count <= 0:
             return 0
+        self._validate_origin_window(tensors)
         offset = 0
         while offset < sample_count:
             if self._file is None:
@@ -224,6 +229,7 @@ class RollingMaterializedShardWriter:
         }
         for name in self._tensor_order:
             array = np.ascontiguousarray(tensors[name][offset : offset + take])
+            self._validate_required_tensor_sample(name, array)
             state = self._tensor_files[name]
             if str(array.dtype) != state.dtype or tuple(array.shape[1:]) != state.tail_shape:
                 raise ValueError(
@@ -303,6 +309,12 @@ class RollingMaterializedShardWriter:
             self._final_path = None
             self._tensor_files = {}
             return
+        self._validate_current_shard_origin_window()
+        if self._shard_samples >= self._shard_sample_target and self._shard_samples % self.sample_multiple:
+            raise RuntimeError(
+                f"Completed shard {self._shard_index} sample count {self._shard_samples:,} "
+                f"is not aligned to sample_multiple={self.sample_multiple:,}."
+            )
         assert self._final_path is not None and self._tmp_path is not None
         self._tmp_path.replace(self._final_path)
         relative_bin_path = str(self._final_path.relative_to(self.cache_root))
@@ -355,6 +367,53 @@ class RollingMaterializedShardWriter:
         self._tensor_files = {}
         self._tensor_order = []
         self._chunks = []
+
+    def _validate_origin_window(self, tensors: Mapping[str, np.ndarray]) -> None:
+        origin = tensors.get("origin_timestamp_us")
+        if origin is None or np.asarray(origin).size == 0:
+            raise RuntimeError("Materialized batch is missing origin_timestamp_us.")
+        values = np.asarray(origin, dtype=np.int64).reshape(-1)
+        min_origin = int(values.min())
+        max_origin = int(values.max())
+        if self.origin_start_timestamp_us and min_origin < self.origin_start_timestamp_us:
+            raise RuntimeError(
+                "Materialized batch contains origins before the configured cache period: "
+                f"min={timestamp_us_to_utc(min_origin)} start={timestamp_us_to_utc(self.origin_start_timestamp_us)}"
+            )
+        if self.origin_end_timestamp_us and max_origin >= self.origin_end_timestamp_us:
+            raise RuntimeError(
+                "Materialized batch contains origins at/after the configured cache period end: "
+                f"max={timestamp_us_to_utc(max_origin)} end={timestamp_us_to_utc(self.origin_end_timestamp_us)}"
+            )
+
+    def _validate_current_shard_origin_window(self) -> None:
+        min_origin = int(self._first_origin_us or 0)
+        max_origin = int(self._last_origin_us or 0)
+        if min_origin <= 0 or max_origin <= 0:
+            raise RuntimeError(f"Shard {self._shard_index} is missing valid origin timestamp metadata.")
+        if self.origin_start_timestamp_us and min_origin < self.origin_start_timestamp_us:
+            raise RuntimeError(
+                f"Shard {self._shard_index} contains origins before the configured cache period: "
+                f"min={timestamp_us_to_utc(min_origin)} start={timestamp_us_to_utc(self.origin_start_timestamp_us)}"
+            )
+        if self.origin_end_timestamp_us and max_origin >= self.origin_end_timestamp_us:
+            raise RuntimeError(
+                f"Shard {self._shard_index} contains origins at/after the configured cache period end: "
+                f"max={timestamp_us_to_utc(max_origin)} end={timestamp_us_to_utc(self.origin_end_timestamp_us)}"
+            )
+
+    def _validate_required_tensor_sample(self, name: str, array: np.ndarray) -> None:
+        if name not in {"headers_uint8", "events_uint8", "origin_ordinal", "origin_timestamp_us"}:
+            return
+        if array.size == 0 or array.shape[0] <= 0:
+            raise RuntimeError(f"Required tensor {name!r} is empty while writing shard {self._shard_index}.")
+        sample_indices = sorted({0, int(array.shape[0]) // 2, int(array.shape[0]) - 1})
+        for sample_index in sample_indices:
+            sample = np.asarray(array[sample_index])
+            if not bool(np.any(sample != 0)):
+                raise RuntimeError(
+                    f"Required tensor {name!r} has an all-zero sampled row while writing shard {self._shard_index}."
+                )
 
 
 def estimate_shard_samples(*, sample_bytes: int, target_shard_bytes: int, sample_multiple: int) -> MaterializedShardEstimate:
