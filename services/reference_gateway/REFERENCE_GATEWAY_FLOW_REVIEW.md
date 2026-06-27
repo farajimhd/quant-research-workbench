@@ -15,6 +15,7 @@ source first.
 | C5 | CLI | Remove stale defensive knobs. IBKR is required for conid resolution and should not have a bypass flag. | Fixed |
 | C6 | CLI | Active ticker sync is an internal source-sync task, not a public flag. | Fixed |
 | C7 | CLI | Replace low-level write switches with high-level operator knobs. | Fixed |
+| C8 | Stage 2 | Add the real runtime validation sequence before moving to UI/terminal polish. | Added |
 
 ## Public Operator Knobs
 
@@ -148,3 +149,116 @@ The public contract now matches the service objectives:
 The detailed implementation controls remain internal fields on
 `ReferenceGatewayConfig`, but the operator no longer has to assemble them by
 hand.
+
+## Stage 2: Runtime Behavior Validation
+
+Goal: prove the simplified public controls behave correctly in real gateway
+execution before adding more functionality.
+
+Run these in order.
+
+### 1. Temp One-Shot
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Mode Temp
+```
+
+Expected behavior:
+
+- reads from `q_live`
+- writes only to `q_reference_tmp`
+- runs preflight
+- runs source sync
+- runs reference audit
+- writes temp reports/logs
+- does not mutate `q_live`
+
+Pass condition:
+
+- no `q_live` writes are observed
+- temp report clearly shows `read_database=q_live`,
+  `write_database=q_reference_tmp`, and `test_write_mode=true`
+
+### 2. Temp Force Maintenance
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Mode Temp -Maintenance Force
+```
+
+Expected behavior:
+
+- reads from `q_live`
+- writes to `q_reference_tmp`
+- allows schema/maintenance paths in the temp database
+- uses the wrapper's default temp maintenance reason
+- does not mutate `q_live`
+
+Pass condition:
+
+- temp schema/maintenance paths complete or fail with an actionable temp-DB
+  missing-table reason
+- no production table is changed
+
+### 3. Production One-Shot
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Mode Prod -Run Once
+```
+
+Expected behavior:
+
+- reads and writes `q_live`
+- runs strict integrity guardrails
+- writes issues and immediate non-tradable blocks if needed
+- defers maintenance if market-hours policy blocks it
+
+Pass condition:
+
+- any blocked maintenance is reported as policy-blocked, not silently skipped
+- any discovered blocking issue makes affected rows non-tradable
+
+### 4. Production Daemon
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Mode Prod
+```
+
+Expected behavior:
+
+- parent daemon performs startup preflight
+- each child cycle runs with `--run once`
+- runtime JSONL logs are written
+- a child failure stops the daemon instead of being hidden
+
+Pass condition:
+
+- daemon logs show parent start, child cycle command, child result, and next
+  interval
+- stopping/restarting is clear and does not leave an orphaned child process
+
+## Stage 3: Runtime Status And Terminal UX
+
+After Stage 2 passes, improve the operator-facing status surface so the
+reference gateway matches the service pattern used by news/sec/QMD.
+
+Planned work:
+
+1. Add a Rich terminal layout with stable panels:
+
+   - current phase
+   - dependency status
+   - source-sync counters
+   - integrity findings
+   - maintenance state
+   - last cycle summary
+   - latest blocking issues or resolved issues
+
+2. Add or refine structured runtime events so every terminal field has a JSONL
+   source.
+
+3. Make long messages wrap instead of truncating important values.
+
+4. Show active market-hours policy and whether maintenance is allowed,
+   deferred, skipped, or forced.
+
+5. Validate the layout in normal and compact console heights.

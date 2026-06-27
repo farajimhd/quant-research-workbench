@@ -221,3 +221,92 @@ Runtime JSONL logs:
 
 The daemon exits if a child cycle exits non-zero. It does not silently continue
 after a failed dependency or maintenance cycle.
+
+## Stage 2: Runtime Behavior Validation
+
+Before adding more behavior, validate the simplified controls against the real
+service path.
+
+### 1. Temp One-Shot
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Mode Temp
+```
+
+This should read from `q_live`, write only to `q_reference_tmp`, run preflight,
+run source sync, run the audit, and avoid production writes.
+
+Check:
+
+- report/config says `read_database=q_live`
+- report/config says `write_database=q_reference_tmp`
+- `test_write_mode=true`
+- no `q_live` table changes were made by this run
+
+### 2. Temp Force Maintenance
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Mode Temp -Maintenance Force
+```
+
+This should exercise schema and maintenance paths against `q_reference_tmp`.
+The wrapper supplies a default temp maintenance reason. It must still read from
+`q_live` and must not mutate production tables.
+
+Check:
+
+- schema/maintenance operations target `q_reference_tmp`
+- failures, if any, are actionable temp-DB dependency errors
+- production tables remain unchanged
+
+### 3. Production One-Shot
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Mode Prod -Run Once
+```
+
+This should run one strict production pass. Source sync and integrity guardrails
+should run. Heavy maintenance should obey the market-hours policy.
+
+Check:
+
+- strict integrity writes issue rows when issues are discovered
+- affected latest-universe rows are blocked with `is_tradable=0`
+- maintenance is either completed or explicitly policy-blocked
+
+### 4. Production Daemon
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Mode Prod
+```
+
+This should start the continuous production daemon. The parent process should
+preflight once, then launch child cycles with `--run once`.
+
+Check:
+
+- runtime JSONL log is created under
+  `<market-data>/prepared/reference_gateway/logs/<run_id>/`
+- each child command and result is logged
+- a child failure stops the daemon instead of being hidden
+- no orphaned child process remains after shutdown
+
+## Stage 3: Runtime Status And Terminal UX
+
+After Stage 2 passes, improve the live operator surface.
+
+The reference gateway should have a Rich terminal layout consistent with the
+news/sec/QMD services:
+
+- current phase
+- dependency status
+- source-sync counters
+- integrity findings
+- maintenance state
+- market-hours policy state
+- last cycle summary
+- latest blocking or resolved issues
+
+The terminal should be backed by structured JSONL runtime events, wrap long
+messages instead of truncating important values, and remain readable in normal
+and compact console heights.
