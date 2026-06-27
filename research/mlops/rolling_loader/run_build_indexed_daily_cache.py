@@ -1099,16 +1099,25 @@ class IndexedCacheDashboard:
             self.stats.message(f"Rich dashboard unavailable; using compact status line: {exc!r}")
             return
         self._rich = {"box": box, "Console": Console, "Group": Group, "Live": Live, "Panel": Panel, "Table": Table}
+        console = Console(force_terminal=True, color_system="auto", soft_wrap=False)
         self._live = Live(
             self._render(),
-            console=Console(),
+            console=console,
             refresh_per_second=max(0.5, 1.0 / self.refresh_seconds),
             auto_refresh=False,
-            screen=True,
+            screen=False,
             transient=False,
             vertical_overflow="crop",
         )
-        self._live.start()
+        try:
+            self._live.start()
+        except Exception as exc:
+            self._live = None
+            self.enabled = False
+            self._fallback_reason = repr(exc)
+            self.stats.message(f"Rich dashboard failed to start; using compact status line: {exc!r}")
+            return
+        self.stats.message("Rich dashboard active")
 
     def refresh(self, *, force: bool = False) -> None:
         now = time.perf_counter()
