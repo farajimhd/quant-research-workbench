@@ -13,7 +13,7 @@ from services.gateway_policy import active_collection_window
 from services.reference_gateway.active_tickers import run_active_ticker_plan, write_active_ticker_plan
 from services.reference_gateway.audit import run_reference_audit, write_report
 from services.reference_gateway.canonical_graph_writer import write_canonical_graph_candidates
-from services.reference_gateway.config import ReferenceGatewayConfig
+from services.reference_gateway.config import ReferenceGatewayConfig, ReferenceGatewayConfigOverrides
 from services.reference_gateway.daemon import run_reference_daemon
 from services.reference_gateway.issue_resolution import resolve_stale_active_ticker_issues
 from services.reference_gateway.issue_writer import write_active_ticker_mapping_issues, write_graph_mapping_issues
@@ -102,50 +102,16 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     load_env_files(discover_clickhouse_env_files())
-    if args.execute is not None:
-        os.environ["REFERENCE_GATEWAY_EXECUTE"] = "true" if args.execute else "false"
     if args.market_hours_write_override and not args.market_hours_write_reason.strip():
         print("--market-hours-write-reason is required with --market-hours-write-override.", flush=True)
         sys.exit(2)
-    if args.read_database:
-        os.environ["REFERENCE_CLICKHOUSE_READ_DATABASE"] = args.read_database
-    if args.test_write_database:
-        os.environ["REFERENCE_CLICKHOUSE_WRITE_DATABASE"] = args.test_write_database
-    elif args.write_database:
-        os.environ["REFERENCE_CLICKHOUSE_WRITE_DATABASE"] = args.write_database
-    if args.market_hours_write_override is not None:
-        os.environ["REFERENCE_GATEWAY_MARKET_HOURS_WRITE_OVERRIDE"] = "true" if args.market_hours_write_override else "false"
-    if args.market_hours_write_reason:
-        os.environ["REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON"] = args.market_hours_write_reason
-    if args.write_discovered_issues is not None:
-        os.environ["REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES"] = "true" if args.write_discovered_issues else "false"
-    if args.write_canonical_graph is not None:
-        os.environ["REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH"] = "true" if args.write_canonical_graph else "false"
-    if args.resolve_stale_issues is not None:
-        os.environ["REFERENCE_GATEWAY_RESOLVE_STALE_ISSUES"] = "true" if args.resolve_stale_issues else "false"
-    if args.rebuild_tradable is not None:
-        os.environ["REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE"] = "true" if args.rebuild_tradable else "false"
-    if args.rebuild_tradable_in_test_mode is not None:
-        os.environ["REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE"] = "true" if args.rebuild_tradable_in_test_mode else "false"
-    if args.market_publication_gap_fill is not None:
-        os.environ["REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_ENABLED"] = "true" if args.market_publication_gap_fill else "false"
-    if args.daemon is not None:
-        os.environ["REFERENCE_GATEWAY_DAEMON"] = "true" if args.daemon else "false"
-    if args.preflight is not None:
-        os.environ["REFERENCE_GATEWAY_PREFLIGHT_ENABLED"] = "true" if args.preflight else "false"
-    if args.ibkr_resolution is not None:
-        os.environ["REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED"] = "true" if args.ibkr_resolution else "false"
-    if args.ibkr_required is not None:
-        os.environ["REFERENCE_GATEWAY_IBKR_REQUIRED"] = "true" if args.ibkr_required else "false"
-    if args.immediate_tradability_block is not None:
-        os.environ["REFERENCE_GATEWAY_IMMEDIATE_TRADABILITY_BLOCK_ENABLED"] = "true" if args.immediate_tradability_block else "false"
     if args.print_rules:
         print(tradability_rule_markdown())
         return
     if args.print_table_groups:
         print(table_group_markdown())
         return
-    config = ReferenceGatewayConfig.from_env()
+    config = ReferenceGatewayConfig.from_env(config_overrides_from_args(args))
     if config.daemon_loop_enabled:
         run_reference_daemon(config, sys.argv[1:])
         return
@@ -212,7 +178,7 @@ def main() -> None:
         write_policy=asdict(write_policy),
         argv=sys.argv[1:],
     )
-    should_check_tickers = args.active_ticker_check if args.active_ticker_check is not None else config.active_ticker_check_enabled
+    should_check_tickers = config.active_ticker_check_enabled
     if config.preflight_enabled:
         started = time.perf_counter()
         preflight = run_preflight(config, require_active_ticker_dependencies=bool(should_check_tickers), logger=logger)
@@ -411,6 +377,28 @@ def main() -> None:
     emit(f"status={report.status} wall_seconds={report.wall_seconds:.2f}")
     if report.status == "failed":
         sys.exit(2)
+
+
+def config_overrides_from_args(args: argparse.Namespace) -> ReferenceGatewayConfigOverrides:
+    return ReferenceGatewayConfigOverrides(
+        execute=args.execute,
+        clickhouse_read_database=args.read_database or None,
+        clickhouse_write_database=args.test_write_database or args.write_database or None,
+        market_hours_write_override=args.market_hours_write_override,
+        market_hours_write_reason=args.market_hours_write_reason or None,
+        write_discovered_issues=args.write_discovered_issues,
+        write_canonical_graph=args.write_canonical_graph,
+        immediate_tradability_block_enabled=args.immediate_tradability_block,
+        resolve_stale_issues=args.resolve_stale_issues,
+        rebuild_tradable_on_execute=args.rebuild_tradable,
+        rebuild_tradable_in_test_mode=args.rebuild_tradable_in_test_mode,
+        daemon_loop_enabled=args.daemon,
+        market_publication_gap_fill_enabled=args.market_publication_gap_fill,
+        preflight_enabled=args.preflight,
+        ibkr_resolution_enabled=args.ibkr_resolution,
+        ibkr_required=args.ibkr_required,
+        active_ticker_check_enabled=args.active_ticker_check,
+    )
 
 
 def resolution_detail(resolution: object) -> str:

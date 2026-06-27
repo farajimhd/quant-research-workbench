@@ -14,6 +14,27 @@ WORKSTATION_SHARE_DATA_ROOT_WIN = Path(r"\\DESKTOP-SAAI85T\Workstation-D\market-
 
 
 @dataclass(frozen=True, slots=True)
+class ReferenceGatewayConfigOverrides:
+    execute: bool | None = None
+    clickhouse_read_database: str | None = None
+    clickhouse_write_database: str | None = None
+    market_hours_write_override: bool | None = None
+    market_hours_write_reason: str | None = None
+    write_discovered_issues: bool | None = None
+    write_canonical_graph: bool | None = None
+    immediate_tradability_block_enabled: bool | None = None
+    resolve_stale_issues: bool | None = None
+    rebuild_tradable_on_execute: bool | None = None
+    rebuild_tradable_in_test_mode: bool | None = None
+    daemon_loop_enabled: bool | None = None
+    market_publication_gap_fill_enabled: bool | None = None
+    preflight_enabled: bool | None = None
+    ibkr_resolution_enabled: bool | None = None
+    ibkr_required: bool | None = None
+    active_ticker_check_enabled: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ReferenceGatewayConfig:
     bind: str
     host: str
@@ -58,17 +79,24 @@ class ReferenceGatewayConfig:
     terminal_refresh_seconds: float
 
     @classmethod
-    def from_env(cls) -> "ReferenceGatewayConfig":
+    def from_env(cls, overrides: ReferenceGatewayConfigOverrides | None = None) -> "ReferenceGatewayConfig":
+        overrides = overrides or ReferenceGatewayConfigOverrides()
         bind = env_string("REFERENCE_GATEWAY_BIND", "127.0.0.1:8798")
         host, port = parse_bind(bind)
         data_root = resolve_data_root()
         prepared_root = Path(env_string("REFERENCE_GATEWAY_PREPARED_ROOT_WIN", str(data_root / "prepared")))
         password = default_clickhouse_password()
         legacy_database = env_string("REFERENCE_GATEWAY_CLICKHOUSE_DATABASE", "q_live")
-        read_database = env_string("REFERENCE_CLICKHOUSE_READ_DATABASE", env_string("REFERENCE_GATEWAY_READ_DATABASE", legacy_database))
-        write_database = env_string(
-            "REFERENCE_CLICKHOUSE_WRITE_DATABASE",
-            env_string("REFERENCE_GATEWAY_WRITE_DATABASE", legacy_database),
+        read_database = string_override(
+            overrides.clickhouse_read_database,
+            env_string("REFERENCE_CLICKHOUSE_READ_DATABASE", env_string("REFERENCE_GATEWAY_READ_DATABASE", legacy_database)),
+        )
+        write_database = string_override(
+            overrides.clickhouse_write_database,
+            env_string(
+                "REFERENCE_CLICKHOUSE_WRITE_DATABASE",
+                env_string("REFERENCE_GATEWAY_WRITE_DATABASE", legacy_database),
+            ),
         )
         return cls(
             bind=bind,
@@ -78,7 +106,7 @@ class ReferenceGatewayConfig:
             prepared_root_win=prepared_root,
             report_root_win=Path(env_string("REFERENCE_GATEWAY_REPORT_ROOT_WIN", str(prepared_root / "reference_gateway" / "reports"))),
             is_workstation=is_workstation_host(),
-            execute=env_bool("REFERENCE_GATEWAY_EXECUTE", False),
+            execute=bool_override(overrides.execute, env_bool("REFERENCE_GATEWAY_EXECUTE", False)),
             clickhouse_url=default_clickhouse_url(),
             clickhouse_user=default_clickhouse_user(),
             clickhouse_password_present=bool(password),
@@ -87,28 +115,28 @@ class ReferenceGatewayConfig:
             source_massive_enabled=env_bool("REFERENCE_GATEWAY_MASSIVE_ENABLED", True),
             massive_base_url=env_string("MASSIVE_BASE_URL", "https://api.massive.com").rstrip("/"),
             massive_api_key_present=bool(env_string("MASSIVE_API_KEY", "")),
-            ibkr_resolution_enabled=env_bool("REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED", True),
-            ibkr_required=env_bool("REFERENCE_GATEWAY_IBKR_REQUIRED", True),
+            ibkr_resolution_enabled=bool_override(overrides.ibkr_resolution_enabled, env_bool("REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED", True)),
+            ibkr_required=bool_override(overrides.ibkr_required, env_bool("REFERENCE_GATEWAY_IBKR_REQUIRED", True)),
             ibkr_base_url=env_string("IBKR_CPAPI_BASE_URL", "https://localhost:5000/v1/api").rstrip("/"),
-            preflight_enabled=env_bool("REFERENCE_GATEWAY_PREFLIGHT_ENABLED", True),
-            active_ticker_check_enabled=env_bool("REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_ENABLED", False),
+            preflight_enabled=bool_override(overrides.preflight_enabled, env_bool("REFERENCE_GATEWAY_PREFLIGHT_ENABLED", True)),
+            active_ticker_check_enabled=bool_override(overrides.active_ticker_check_enabled, env_bool("REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_ENABLED", False)),
             active_ticker_check_market_hours_only=env_bool("REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_MARKET_HOURS_ONLY", True),
             active_ticker_max_pages=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES", 1_000),
             active_ticker_page_limit=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_PAGE_LIMIT", 1_000),
             active_ticker_new_candidate_limit=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_NEW_CANDIDATE_LIMIT", 250),
             after_hours_writes_only=env_bool("REFERENCE_GATEWAY_AFTER_HOURS_WRITES_ONLY", True),
-            market_hours_write_override=env_bool("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_OVERRIDE", False),
-            market_hours_write_reason=env_string("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON", ""),
-            write_discovered_issues=env_bool("REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES", True),
-            write_canonical_graph=env_bool("REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH", True),
-            immediate_tradability_block_enabled=env_bool("REFERENCE_GATEWAY_IMMEDIATE_TRADABILITY_BLOCK_ENABLED", True),
-            resolve_stale_issues=env_bool("REFERENCE_GATEWAY_RESOLVE_STALE_ISSUES", True),
-            rebuild_tradable_on_execute=env_bool("REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE", True),
-            rebuild_tradable_in_test_mode=env_bool("REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE", False),
-            daemon_loop_enabled=env_bool("REFERENCE_GATEWAY_DAEMON", False),
+            market_hours_write_override=bool_override(overrides.market_hours_write_override, env_bool("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_OVERRIDE", False)),
+            market_hours_write_reason=string_override(overrides.market_hours_write_reason, env_string("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON", "")),
+            write_discovered_issues=bool_override(overrides.write_discovered_issues, env_bool("REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES", True)),
+            write_canonical_graph=bool_override(overrides.write_canonical_graph, env_bool("REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH", True)),
+            immediate_tradability_block_enabled=bool_override(overrides.immediate_tradability_block_enabled, env_bool("REFERENCE_GATEWAY_IMMEDIATE_TRADABILITY_BLOCK_ENABLED", True)),
+            resolve_stale_issues=bool_override(overrides.resolve_stale_issues, env_bool("REFERENCE_GATEWAY_RESOLVE_STALE_ISSUES", True)),
+            rebuild_tradable_on_execute=bool_override(overrides.rebuild_tradable_on_execute, env_bool("REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE", True)),
+            rebuild_tradable_in_test_mode=bool_override(overrides.rebuild_tradable_in_test_mode, env_bool("REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE", False)),
+            daemon_loop_enabled=bool_override(overrides.daemon_loop_enabled, env_bool("REFERENCE_GATEWAY_DAEMON", False)),
             daemon_active_interval_seconds=env_float("REFERENCE_GATEWAY_DAEMON_ACTIVE_INTERVAL_SECONDS", 900.0),
             daemon_after_hours_interval_seconds=env_float("REFERENCE_GATEWAY_DAEMON_AFTER_HOURS_INTERVAL_SECONDS", 3600.0),
-            market_publication_gap_fill_enabled=env_bool("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_ENABLED", True),
+            market_publication_gap_fill_enabled=bool_override(overrides.market_publication_gap_fill_enabled, env_bool("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_ENABLED", True)),
             market_publication_gap_fill_days=env_int("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_DAYS", 14),
             terminal_rich_enabled=env_bool_auto("REFERENCE_GATEWAY_TERMINAL_RICH_ENABLED", sys.stdout.isatty()),
             terminal_refresh_seconds=env_float("REFERENCE_GATEWAY_TERMINAL_REFRESH_SECONDS", 1.0),
@@ -180,6 +208,14 @@ def default_clickhouse_url() -> str:
 def env_string(name: str, default: str) -> str:
     value = os.environ.get(name)
     return value.strip() if value and value.strip() else default
+
+
+def string_override(value: str | None, fallback: str) -> str:
+    return value.strip() if value is not None and value.strip() else fallback
+
+
+def bool_override(value: bool | None, fallback: bool) -> bool:
+    return fallback if value is None else bool(value)
 
 
 def env_int(name: str, default: int) -> int:
