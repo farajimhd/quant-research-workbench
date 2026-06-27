@@ -10,6 +10,7 @@ fixed version before moving to the next stage.
 | ID | Stage | Comment | Status |
 | --- | --- | --- | --- |
 | C1 | Stage 1 | CLI flags should not be converted into environment variables before `ReferenceGatewayConfig` is built. | Fixed |
+| C2 | Stage 1 | The guide must be self-contained and explain what each argument/config value does before asking for comments. | Fixed |
 
 ## Stage 1: Process Start And Configuration
 
@@ -18,6 +19,70 @@ Command under review:
 ```powershell
 .\scripts\run_reference_gateway.ps1 -ReadDatabase q_live -WriteDatabase q_live -Execute -ActiveTickerCheck -Daemon
 ```
+
+### What This Command Means
+
+The wrapper command is a convenience layer around Python. It does not do the
+gateway work itself; it only builds the Python command and runs it from the repo
+root.
+
+| Wrapper argument | Python argument | Meaning | Effect in this command |
+| --- | --- | --- | --- |
+| `-ReadDatabase q_live` | `--read-database q_live` | Database used as the canonical source of existing reference data. | The gateway reads existing identity, issue, and publication rows from `q_live`. |
+| `-WriteDatabase q_live` | `--write-database q_live` | Database where allowed writes go. | The gateway writes issues, blocks, graph updates, and publication updates to `q_live` when policy allows. |
+| `-Execute` | `--execute` | Allows write operations. Without this, the gateway is report-only. | The gateway may mutate ClickHouse, but write policy still blocks risky market-hours operations. |
+| `-ActiveTickerCheck` | `--active-ticker-check` | Poll Massive active US tickers and compare them to the canonical symbol graph. | The daemon will look for new/missing Massive tickers every cycle. |
+| `-Daemon` | `--daemon` | Run continuously instead of a single pass. | The parent process loops forever until stopped or until a child cycle fails. |
+
+Useful wrapper arguments not used in the command:
+
+| Wrapper argument | Python argument | Meaning | When to use |
+| --- | --- | --- | --- |
+| `-TestWriteDatabase q_reference_tmp` | `--test-write-database q_reference_tmp` | Reads from the normal source DB but writes to a temp DB. | Testing schema/write behavior without touching `q_live`. |
+| `-EnsureMarketPublicationSchema` | `--ensure-market-publication-schema` | Creates/updates market reference publication tables. | After-hours setup or temp DB setup. |
+| `-MarketHoursWriteOverride` | `--market-hours-write-override` | Allows normally blocked market-hours promotion writes. | Rare emergency or controlled temp test. Requires a reason. |
+| `-MarketHoursWriteReason "..."` | `--market-hours-write-reason "..."` | Auditable explanation for market-hours override. | Required with `-MarketHoursWriteOverride`. |
+| `-NoWriteDiscoveredIssues` | `--no-write-discovered-issues` | Do not insert discovered open issues. | Report-only issue discovery, not safe for live protection. |
+| `-NoWriteCanonicalGraph` | `--no-write-canonical-graph` | Do not promote clean candidates into canonical issuer/security/listing/symbol tables. | Useful during market hours or cautious testing. |
+| `-NoResolveStaleIssues` | `--no-resolve-stale-issues` | Do not close issues even if deterministic evidence now exists. | Debugging resolver behavior. |
+| `-NoRebuildTradable` | `--no-rebuild-tradable` | Do not rebuild `feature_tradable_universe_v1` and scanner static publications. | Market-hours cycles or narrow tests. |
+| `-RebuildTradableInTestMode` | `--rebuild-tradable-in-test-mode` | Allows tradable rebuild when read DB and write DB differ. | Only after the temp DB has required source tables cloned. |
+| `-NoMarketPublicationGapFill` | `--no-market-publication-gap-fill` | Skip FINRA/SEC publication maintenance. | Market-hours daemon cycles or narrow tests. |
+| `-NoPreflight` | `--no-preflight` | Skip dependency checks. | Only for offline documentation/tests; unsafe for real daemon. |
+| `-NoIbkrResolution` | `--no-ibkr-resolution` | Do not query IBKR for conid candidates. | Testing Massive-only discovery; unresolved conids become blockers. |
+| `-NoIbkrRequired` | `--no-ibkr-required` | Do not fail startup if IBKR is unavailable. | Temporary operation when IBKR Client Portal is down. |
+| `-NoImmediateTradabilityBlock` | `--no-immediate-tradability-block` | Do not write targeted non-tradable replacement rows for open issues. | Debug only; unsafe for live trading protection. |
+
+### Important Config Values In Plain English
+
+These values are loaded from env unless overridden by CLI.
+
+| Config value | Default | Meaning | Behavior if `true` | Behavior if `false` |
+| --- | --- | --- | --- | --- |
+| `execute` | `false` | Whether the gateway may write. | Writes are possible if policy allows. | Report-only. |
+| `daemon_loop_enabled` | `false` | Whether the process repeats cycles. | Parent daemon keeps launching one-shot child cycles. | Single pass only. |
+| `active_ticker_check_enabled` | `false` | Whether to poll Massive active tickers. | Detects new/missing Massive tickers. | Skips ticker reconciliation. |
+| `preflight_enabled` | `true` | Whether startup dependency checks run. | Fails fast if required dependencies are down. | Gateway may fail later or run partial work. |
+| `ibkr_resolution_enabled` | `true` | Whether to call IBKR Client Portal for conids. | Missing tickers get IBKR contract evidence. | No IBKR evidence; candidates usually remain blocked. |
+| `ibkr_required` | `true` | Whether IBKR must be reachable/authenticated when ticker reconciliation runs. | Startup fails if IBKR is unavailable. | Gateway can run without IBKR, but conid fixes are deferred. |
+| `write_discovered_issues` | `true` | Whether discovered problems become rows in `id_mapping_issue_v1`. | Problems become durable blockers. | Problems stay in reports only. |
+| `write_canonical_graph` | `true` | Whether clean candidates can be promoted into identity tables. | After-hours clean candidates can become canonical rows. | No identity graph promotion. |
+| `immediate_tradability_block_enabled` | `true` | Whether open issues immediately block currently tradable latest-universe rows. | Inserts replacement `is_tradable=0` rows for touched symbols. | Waits for full tradable rebuild; unsafe during live trading. |
+| `resolve_stale_issues` | `true` | Whether deterministic open issues can be closed. | Issues close when the missing evidence now exists. | Issues remain open even if fixed. |
+| `rebuild_tradable_on_execute` | `true` | Whether full tradable/scanner publications are rebuilt in execute mode. | After-hours cycles refresh the full publication. | No full publication refresh. |
+| `after_hours_writes_only` | `true` | Whether promotion-style writes are blocked during active collection hours. | Market-hours cycles are conservative. | Promotion writes can run during market hours. |
+| `market_publication_gap_fill_enabled` | `true` | Whether recent FINRA/SEC publication gaps are filled. | After-hours maintenance fills recent reference publication gaps. | Publication gaps are not filled by this service. |
+
+### Write Categories
+
+Not all writes have the same risk.
+
+| Write category | Examples | Market-hours policy |
+| --- | --- | --- |
+| Risk-reducing writes | open issue rows, immediate `is_tradable=0` replacement rows | Allowed because they prevent trading unsafe instruments. |
+| Promotion writes | new issuer/security/listing/symbol rows, full tradable rebuilds | Blocked by default during market hours. |
+| Maintenance writes | FINRA short-volume/SEC FTD publication gap fill | Blocked by default during market hours. |
+| Schema writes | creating/altering reference publication tables | Blocked by policy unless explicitly allowed. |
 
 ### Flow
 
@@ -55,12 +120,20 @@ Command under review:
 7. Important default config values:
 
    - `preflight_enabled = true`
+     - run dependency checks before useful work
    - `ibkr_resolution_enabled = true`
+     - query IBKR Client Portal for conid evidence
    - `ibkr_required = true`
+     - fail startup if IBKR is unavailable when ticker reconciliation is active
    - `immediate_tradability_block_enabled = true`
+     - immediately publish non-tradable replacement rows for currently tradable
+       rows touched by open issues
    - `after_hours_writes_only = true`
+     - block promotion/heavy maintenance writes during active collection hours
    - `daemon_active_interval_seconds = 900`
+     - wait 15 minutes between market-hours daemon cycles
    - `daemon_after_hours_interval_seconds = 3600`
+     - wait 60 minutes between after-hours daemon cycles
 
 8. The service resolves the data root:
 
@@ -97,6 +170,9 @@ layer, env is the default layer, and downstream code receives one final config
 object. This is better than mutating env during startup because it avoids hidden
 side effects and makes daemon parent/child command behavior easier to audit.
 
+The guide now explains each argument/config before using it. This should make
+the next stages reviewable without reading source code.
+
 ### Possible Comments For Stage 1
 
 1. Require `--write-database q_live` for daemon mode unless explicitly running
@@ -112,4 +188,3 @@ side effects and makes daemon parent/child command behavior easier to audit.
 8. Make IBKR required only when active ticker reconciliation is enabled.
 9. Keep IBKR required by default for all daemon runs because unresolved conids
    are trading blockers.
-
