@@ -145,6 +145,8 @@ class BuildStats:
     submitted_tasks: int = 0
     completed_tasks: int = 0
     prefetch_depth: int = 0
+    total_workers: int = 1
+    materialization_workers: int = 1
     stage_workers: int = 1
     prefetch_pending: int = 0
     prefetch_ready: int = 0
@@ -209,21 +211,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-days", type=int, default=DEFAULTS["warmup_days"])
     parser.add_argument("--builder-batch-size", type=int, default=DEFAULTS["builder_batch_size"])
     parser.add_argument("--sample-multiple", type=int, default=DEFAULTS["sample_multiple"])
-    parser.add_argument("--workers", type=int, default=DEFAULTS["workers"])
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULTS["workers"],
+        help=(
+            "Total materialization worker budget. By default this is split into three lanes: "
+            "encode/task workers, feature workers, label/context workers. For example, --workers 75 "
+            "runs 25 outer materialization tasks with 3 branch lanes each."
+        ),
+    )
     parser.add_argument(
         "--stage-workers",
         type=int,
         default=DEFAULTS["stage_workers"],
         help=(
-            "Per-materialization-task workers for independent feature/label/context branches. "
-            "Default 0 auto-sizes from CPU count and --workers; 1 disables branch parallelism."
+            "Per-materialization-task branch lanes. Default 0 means 3 lanes: features, labels, "
+            "and context/text/xbrl. 1 disables branch parallelism."
         ),
     )
     parser.add_argument(
         "--max-pending-tasks",
         type=int,
         default=None,
-        help="Maximum concurrently materializing worker tasks. Defaults to --workers.",
+        help=(
+            "Maximum concurrently materializing outer tasks. Defaults to the derived outer worker count. "
+            "Values below that count are raised so --workers controls the active split."
+        ),
     )
     parser.add_argument(
         "--prefetch-blocks",
@@ -271,19 +285,19 @@ def parse_args() -> argparse.Namespace:
 def _normalize_parallel_args(args: argparse.Namespace) -> None:
     args.workers = max(1, int(args.workers))
     if int(args.stage_workers) <= 0:
-        cpu_count = os.cpu_count() or int(args.workers)
-        args.stage_workers = max(1, min(3, int(cpu_count) // max(1, int(args.workers))))
+        args.stage_workers = 3
     else:
         args.stage_workers = max(1, int(args.stage_workers))
+    args.materialization_workers = max(1, int(args.workers) // max(1, int(args.stage_workers)))
     args.builder_batch_size = max(1, int(args.builder_batch_size))
     args.sample_multiple = max(1, int(args.sample_multiple))
     if args.max_pending_tasks is None:
-        args.max_pending_tasks = int(args.workers)
+        args.max_pending_tasks = int(args.materialization_workers)
     else:
-        args.max_pending_tasks = max(1, int(args.max_pending_tasks))
+        args.max_pending_tasks = max(1, int(args.max_pending_tasks), int(args.materialization_workers))
     if args.ready_sample_cap is None:
         args.ready_sample_cap = _default_ready_sample_cap(
-            workers=int(args.workers),
+            workers=int(args.materialization_workers),
             builder_batch_size=int(args.builder_batch_size),
             sample_multiple=int(args.sample_multiple),
         )
@@ -315,6 +329,8 @@ def main() -> int:
     split_dir = cache_root / args.split
     cache_root.mkdir(parents=True, exist_ok=bool(args.resume))
     stats = BuildStats()
+    stats.total_workers = int(args.workers)
+    stats.materialization_workers = int(args.materialization_workers)
     stats.stage_workers = int(args.stage_workers)
     stats.target_bytes = int(float(args.target_cache_gib) * 1024**3)
     stats.log_path = cache_root / "builder_events.jsonl"
@@ -412,11 +428,11 @@ def main() -> int:
             engine.load_external_contexts(initial_context.rows_by_context)
             stats.message(f"loaded initial context rows={initial_context.row_count:,}")
 
-        executor = ThreadPoolExecutor(max_workers=max(1, int(args.workers)))
+        executor = ThreadPoolExecutor(max_workers=max(1, int(args.materialization_workers)))
         prefetch_depth = max(0, int(args.prefetch_blocks))
         stats.prefetch_depth = prefetch_depth
         fetch_executor = ThreadPoolExecutor(max_workers=1) if prefetch_depth > 0 else None
-        for worker_id in range(max(1, int(args.workers))):
+        for worker_id in range(max(1, int(args.materialization_workers))):
             stats.workers[worker_id] = WorkerState(worker_id=worker_id)
         cursor_date = date_from_us(start_us) - dt.timedelta(days=max(0, int(args.warmup_days)))
         final_date = date_from_us(end_us) + dt.timedelta(days=1)
@@ -548,10 +564,10 @@ def main() -> int:
             task_specs = _build_task_specs(
                 ready_blocks,
                 batch_size=max(1, int(args.builder_batch_size)),
-                workers=max(1, int(args.workers)),
+                workers=max(1, int(args.materialization_workers)),
             )
             task_queue = deque(task_specs)
-            worker_task_samples = [0 for _index in range(max(1, int(args.workers)))]
+            worker_task_samples = [0 for _index in range(max(1, int(args.materialization_workers)))]
             for worker_id, blocks_for_task in task_specs:
                 worker_task_samples[int(worker_id)] += sum(block.sample_count for block in blocks_for_task)
             stats.message(
@@ -561,7 +577,7 @@ def main() -> int:
 
             def submit_available() -> None:
                 nonlocal next_slice_id
-                max_parallel = max(1, min(int(args.max_pending_tasks), max(1, int(args.workers))))
+                max_parallel = max(1, min(int(args.max_pending_tasks), max(1, int(args.materialization_workers))))
                 while task_queue and len(futures) < max_parallel:
                     active_workers = {int(meta["worker_id"]) for meta in futures.values()}
                     selected: tuple[int, list[RollingReadyIndexBlock]] | None = None
@@ -1090,6 +1106,8 @@ def _write_progress(cache_root: Path, split: str, stats: BuildStats, writer: Rol
         "phase": stats.phase,
         "block_index": stats.block_index,
         "prefetch_depth": stats.prefetch_depth,
+        "total_workers": stats.total_workers,
+        "materialization_workers": stats.materialization_workers,
         "stage_workers": stats.stage_workers,
         "prefetch_pending": stats.prefetch_pending,
         "prefetch_ready": stats.prefetch_ready,
@@ -1380,7 +1398,7 @@ class MaterializedCacheDashboard:
             ),
             (
                 ("Prefetch", f"{self.stats.prefetch_ready}/{self.stats.prefetch_pending}/{self.stats.prefetch_depth}"),
-                ("StageW", str(self.stats.stage_workers)),
+                ("Workers", f"{self.stats.total_workers}->{self.stats.materialization_workers}x{self.stats.stage_workers}"),
                 ("Fetch", f"{self.stats.prefetch_last_seconds:.1f}s"),
             ),
         ]
