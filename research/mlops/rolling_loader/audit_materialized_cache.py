@@ -222,6 +222,7 @@ def run_audit(config: MaterializedCacheAuditConfig) -> AuditResult:
     file_summary = _check_shard_files(cache_root=cache_root, shards=shards, issues=issues, hash_files=bool(config.hash_files))
     tensor_summary = _check_tensor_layouts(cache_root=cache_root, shards=shards, issues=issues)
     period_summary = _check_origin_periods(cache_root=cache_root, shards=shards, start_us=start_us, end_us=end_us, issues=issues)
+    identity_summary = _check_sample_identities(cache_root=cache_root, shards=shards, issues=issues)
     selected = _select_sample_points(shards, sample_shards=config.sample_shards, samples_per_shard=config.samples_per_shard, seed=config.seed)
     content_summary, sample_rows = _check_sample_content(
         cache_root=cache_root,
@@ -257,6 +258,7 @@ def run_audit(config: MaterializedCacheAuditConfig) -> AuditResult:
             "files": file_summary,
             "tensors": tensor_summary,
             "origin_periods": period_summary,
+            "sample_identities": identity_summary,
             "sample_content": content_summary,
             "source_event_windows": source_summary,
             "issue_counts": _issue_counts(issues),
@@ -458,6 +460,69 @@ def _check_origin_periods(
         "last_origin_timestamp_us": global_max or 0,
         "first_origin_utc": timestamp_us_to_utc(global_min or 0),
         "last_origin_utc": timestamp_us_to_utc(global_max or 0),
+    }
+
+
+def _check_sample_identities(*, cache_root: Path, shards: list[dict[str, Any]], issues: list[AuditIssue]) -> dict[str, Any]:
+    seen: dict[tuple[str, int], tuple[int, int, int]] = {}
+    duplicates: list[dict[str, Any]] = []
+    sample_count = 0
+    for row in shards:
+        tensors = row.get("tensors") or {}
+        shard_index = _int_value(row.get("shard_index"), -1)
+        if not {"ticker", "origin_ordinal", "origin_timestamp_us"}.issubset(tensors):
+            continue
+        tickers = _read_tensor_all(cache_root, row, "ticker").reshape(-1)
+        ordinals = _read_tensor_all(cache_root, row, "origin_ordinal").astype(np.int64, copy=False).reshape(-1)
+        timestamps = _read_tensor_all(cache_root, row, "origin_timestamp_us").astype(np.int64, copy=False).reshape(-1)
+        count = min(int(tickers.shape[0]), int(ordinals.shape[0]), int(timestamps.shape[0]))
+        sample_count += count
+        for sample_index in range(count):
+            ticker = _decode_ticker_value(tickers[sample_index])
+            origin_ordinal = int(ordinals[sample_index])
+            origin_timestamp_us = int(timestamps[sample_index])
+            key = (ticker, origin_ordinal)
+            previous = seen.get(key)
+            if previous is not None:
+                prev_shard, prev_sample, prev_timestamp_us = previous
+                duplicate = {
+                    "ticker": ticker,
+                    "origin_ordinal": origin_ordinal,
+                    "origin_timestamp_us": origin_timestamp_us,
+                    "shard_index": shard_index,
+                    "sample_index": sample_index,
+                    "previous_shard_index": prev_shard,
+                    "previous_sample_index": prev_sample,
+                    "previous_origin_timestamp_us": prev_timestamp_us,
+                }
+                duplicates.append(duplicate)
+                if len(duplicates) <= 10:
+                    issues.append(
+                        AuditIssue(
+                            "error",
+                            "duplicate_sample_identity",
+                            "Duplicate ticker/origin_ordinal sample identity found across materialized cache.",
+                            shard_index=shard_index,
+                            sample_index=sample_index,
+                            details=duplicate,
+                        )
+                    )
+                continue
+            seen[key] = (shard_index, sample_index, origin_timestamp_us)
+    if len(duplicates) > 10:
+        issues.append(
+            AuditIssue(
+                "error",
+                "duplicate_sample_identity_overflow",
+                "Additional duplicate sample identities found beyond the first 10 reported examples.",
+                details={"additional_duplicates": len(duplicates) - 10},
+            )
+        )
+    return {
+        "samples_checked": int(sample_count),
+        "unique_ticker_origin_ordinals": int(len(seen)),
+        "duplicate_count": int(len(duplicates)),
+        "duplicate_examples": duplicates[:10],
     }
 
 
@@ -749,6 +814,17 @@ def _scalar_or_ticker(value: np.ndarray, name: str) -> Any:
     if arr.size == 1:
         return arr.reshape(-1)[0].item()
     return arr.tolist()
+
+
+def _decode_ticker_value(value: Any) -> str:
+    if isinstance(value, np.ndarray):
+        if value.shape == ():
+            value = value.item()
+        else:
+            value = value.reshape(-1)[0].item()
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore").rstrip("\x00").upper()
+    return str(value or "").rstrip("\x00").upper()
 
 
 def _config_from_manifest(manifest: Mapping[str, Any]) -> RollingMarketDataConfig:

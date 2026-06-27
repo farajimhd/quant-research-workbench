@@ -414,6 +414,7 @@ def main() -> int:
             origin_start_timestamp_us=start_us,
             origin_end_timestamp_us=end_us,
         )
+        written_identities: set[tuple[str, int]] = set()
         manifest = _manifest(args, cache_id, cache_root, loaded_env, start_us, end_us, config)
         manifest["resume"] = {"enabled": bool(args.resume), "removed_tmp_dirs": removed_tmp, "existing_shards": len(existing_shards)}
         _write_json(cache_root / "manifest.json", manifest)
@@ -709,6 +710,7 @@ def main() -> int:
                     write_worker.writing_total = max(1, int(result["samples"]))
                     for batch in result["batches"]:
                         _assert_batch_origin_window(batch, start_timestamp_us=start_us, end_timestamp_us=end_us)
+                        _assert_batch_new_identities(batch, written_identities)
                         writer.set_source_block(
                             block_index=stats.block_index,
                             start_timestamp_us=max(start_us, block.min_timestamp_us),
@@ -976,6 +978,25 @@ def _assert_batch_origin_window(batch: Any, *, start_timestamp_us: int, end_time
         )
 
 
+def _assert_batch_new_identities(batch: Any, seen: set[tuple[str, int]]) -> None:
+    tickers = np.asarray(batch.ticker).reshape(-1)
+    ordinals = np.asarray(batch.origin_ordinal, dtype=np.int64).reshape(-1)
+    if tickers.shape[0] != ordinals.shape[0]:
+        raise RuntimeError(f"Materialized training batch identity shape mismatch: tickers={tickers.shape} ordinals={ordinals.shape}")
+    pending: list[tuple[str, int]] = []
+    local_seen: set[tuple[str, int]] = set()
+    for ticker_raw, ordinal_raw in zip(tickers.tolist(), ordinals.tolist(), strict=True):
+        ticker = str(ticker_raw).upper()
+        key = (ticker, int(ordinal_raw))
+        if key in local_seen:
+            raise RuntimeError(f"Materialized training batch contains duplicate sample identity within batch: ticker={ticker} origin_ordinal={int(ordinal_raw)}")
+        if key in seen:
+            raise RuntimeError(f"Materialized training cache would write duplicate sample identity: ticker={ticker} origin_ordinal={int(ordinal_raw)}")
+        local_seen.add(key)
+        pending.append(key)
+    seen.update(pending)
+
+
 def _ready_sample_cap_for_budget(
     *,
     args: argparse.Namespace,
@@ -1181,8 +1202,15 @@ def _mark_ready_blocks_processed(engine: RollingMarketSampleEngine, blocks: tupl
     for block in blocks:
         if block.origin_offsets.size == 0:
             continue
+        ticker = str(block.ticker).upper()
         max_offset = int(block.origin_offsets[-1]) + 1
-        engine._processed_offsets[block.ticker] = max(int(engine._processed_offsets.get(block.ticker, 0)), max_offset)
+        engine._processed_offsets[ticker] = max(int(engine._processed_offsets.get(ticker, 0)), max_offset)
+        ordinals = block.rows["ordinal"].astype(np.int64, copy=False)
+        max_ordinal = int(ordinals[block.origin_offsets].max())
+        engine._processed_origin_ordinals[ticker] = max(
+            int(engine._processed_origin_ordinals.get(ticker, -1)),
+            max_ordinal,
+        )
 
 
 def _trim_pre_start_event_cache(engine: RollingMarketSampleEngine, start_timestamp_us: int) -> None:

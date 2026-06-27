@@ -484,6 +484,7 @@ class RollingMarketSampleEngine:
         self.config = config
         self.rows_by_ticker: dict[str, np.ndarray] = {}
         self._processed_offsets: dict[str, int] = {}
+        self._processed_origin_ordinals: dict[str, int] = {}
         self.macro_bars = MacroBarFrame(rows=[])
         self._today_asof_day_cache: dict[tuple[int, int], _TodayAsOfDayState] = {}
         self._today_asof_day_cache_lock = threading.Lock()
@@ -637,7 +638,16 @@ class RollingMarketSampleEngine:
             rows = self.rows_by_ticker[ticker]
             if rows.shape[0] <= min_origin_offset:
                 continue
-            start_offset = max(min_origin_offset, self._processed_offsets.get(ticker, min_origin_offset))
+            ordinal_start_offset = 0
+            last_processed_ordinal = self._processed_origin_ordinals.get(ticker)
+            if last_processed_ordinal is not None:
+                ordinals = rows["ordinal"].astype(np.int64, copy=False)
+                ordinal_start_offset = int(np.searchsorted(ordinals, int(last_processed_ordinal), side="right"))
+            start_offset = max(
+                min_origin_offset,
+                self._processed_offsets.get(ticker, min_origin_offset),
+                ordinal_start_offset,
+            )
             if start_offset >= rows.shape[0]:
                 continue
             available = ((int(rows.shape[0]) - int(start_offset) - 1) // stride) + 1
@@ -1220,13 +1230,18 @@ class RollingMarketSampleEngine:
 
     def mark_processed(self, samples: Iterable[RollingSampleIndex]) -> None:
         for sample in samples:
-            rows = self.rows_by_ticker.get(sample.ticker)
+            ticker = str(sample.ticker).upper()
+            rows = self.rows_by_ticker.get(ticker)
             if rows is None or rows.size == 0:
                 continue
             position = _ordinal_position(rows, int(sample.origin_ordinal))
             if position is None:
                 continue
-            self._processed_offsets[sample.ticker] = max(self._processed_offsets.get(sample.ticker, 0), int(position) + 1)
+            self._processed_offsets[ticker] = max(self._processed_offsets.get(ticker, 0), int(position) + 1)
+            self._processed_origin_ordinals[ticker] = max(
+                self._processed_origin_ordinals.get(ticker, -1),
+                int(sample.origin_ordinal),
+            )
 
     def trim_processed_tails(self) -> None:
         keep_tail = max(0, int(self.config.carryover_events))

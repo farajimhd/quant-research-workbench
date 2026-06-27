@@ -74,6 +74,7 @@ def main() -> int:
     smoke_streaming_replay()
     smoke_ticker_blocks()
     smoke_rolling_ready_index_balanced_cap()
+    smoke_rolling_ready_index_uses_ordinal_watermark()
     smoke_rolling_ordinal_gap_materialization()
     smoke_rolling_ready_index_filters_unencodable_windows()
     smoke_rolling_provider()
@@ -279,6 +280,30 @@ def smoke_rolling_ready_index_balanced_cap() -> None:
     print("rolling_ready_index_balanced_cap_ok tickers=6 samples=24")
 
 
+def smoke_rolling_ready_index_uses_ordinal_watermark() -> None:
+    config = RollingMarketDataConfig(
+        short_context_chunks=1,
+        long_context_lags=(548, 822, 1233, 1850),
+        sample_stride_events=1,
+        batch_size=8,
+        max_ready_samples=8,
+        q_live_contexts=(),
+    )
+    engine = RollingMarketSampleEngine(config)
+    rows = make_synthetic_event_rows(4096, low_ordinal=74914)
+    engine.append_rows_by_ticker({"TAIL": rows})
+    min_origin_offset = config.max_context_lag + config.events_per_chunk - 1
+    processed_ordinal = int(rows["ordinal"][min_origin_offset])
+    engine._processed_offsets["TAIL"] = min_origin_offset
+    engine._processed_origin_ordinals["TAIL"] = processed_ordinal
+
+    next_samples = engine.build_ready_indices(max_samples=8)
+    assert next_samples
+    assert all(int(sample.origin_ordinal) > processed_ordinal for sample in next_samples)
+    assert int(next_samples[0].origin_ordinal) == processed_ordinal + 1
+    print("rolling_ready_index_ordinal_watermark_ok")
+
+
 def smoke_rolling_ordinal_gap_materialization() -> None:
     config = RollingMarketDataConfig(
         short_context_chunks=1,
@@ -306,6 +331,7 @@ def smoke_rolling_ordinal_gap_materialization() -> None:
     engine.mark_processed(samples[:2])
     expected_processed = int(np.searchsorted(rows["ordinal"], int(samples[1].origin_ordinal), side="left")) + 1
     assert engine._processed_offsets["GAP"] == expected_processed
+    assert engine._processed_origin_ordinals["GAP"] == int(samples[1].origin_ordinal)
     print("rolling_ordinal_gap_materialization_ok samples=2")
 
 
