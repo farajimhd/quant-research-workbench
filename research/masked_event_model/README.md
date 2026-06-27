@@ -79,6 +79,7 @@ below.
 | v24 | Compact event tokens, bit input | v20 fixed-grid bottleneck | Residual MLP decoder | Ordinary BCE mean | Tests whether a stronger residual decoder improves downstream signal. |
 | v25 | Compact event tokens, bit input | Grouped semantic bottleneck merged to one vector | Per-masked-event MLP + header decoder | Ordinary BCE mean + header BCE | Adds header reconstruction to force anchor/count/timing information into the exported embedding. |
 | v26 | Compact event tokens, bit input | Ten exported branch tokens `[B,10,Z]` | Branch-token cross-attention event decoder + header decoder | Ordinary BCE mean + header BCE | Tests preserving semantic branch tokens for both reconstruction and downstream probing. |
+| v27 | Compact event tokens, bit input | Grouped semantic bottleneck merged to one vector | Per-masked-event MLP + masked-header-bit decoder | Ordinary BCE mean + masked header BCE | Tests batch-shared header bit masking with visible header values kept strictly in `-1/+1`. |
 
 ## Experiment Log
 
