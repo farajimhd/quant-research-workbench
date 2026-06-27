@@ -21,7 +21,8 @@ param(
     [switch]$NoIbkrResolution,
     [switch]$NoIbkrRequired,
     [switch]$NoImmediateTradabilityBlock,
-    [switch]$Daemon
+    [switch]$Daemon,
+    [switch]$NoDaemon
 )
 
 $ErrorActionPreference = "Stop"
@@ -60,6 +61,9 @@ elseif ($Mode -eq "Temp") {
     $ActiveTickerCheck = $true
     $EnsureMarketPublicationSchema = $true
     $MarketHoursWriteOverride = $true
+}
+if ($NoDaemon) {
+    $Daemon = $false
 }
 
 $argsList = @("-m", "services.reference_gateway.main")

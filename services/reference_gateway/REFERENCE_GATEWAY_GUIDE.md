@@ -6,10 +6,38 @@ like QMD. Its job is to keep the identity graph and tradability publications
 safe for live trading, scanner setup, and model data joins.
 
 The service can run during market hours. Market hours are not a blocker for
-observation, auditing, issue discovery, or risk-reducing issue writes. Market
-hours only block promotion-style writes that can change the active canonical
+source sync, observation, auditing, issue discovery, deterministic issue
+resolution, or risk-reducing issue writes. Market hours only defer heavy
+maintenance and promotion-style writes that can reshape the active canonical
 graph or rebuild the live tradable universe while trading components may be
 using it.
+
+## Main Objectives
+
+1. Source sync
+
+   Download new reference evidence from Massive, IBKR, FINRA, SEC, and other
+   configured providers. Keep q_live reference inputs current and expose new
+   provider drift quickly.
+
+2. Integrity guardrail
+
+   Constantly check q_live reference integrity, find issues, resolve issues
+   with deterministic evidence, or tag issues for review. Any unresolved
+   tradability blocker must make the affected instrument non-tradable until it
+   is fixed.
+
+3. Maintenance
+
+   Run heavier work: schema upkeep, historical/reference publication gap fill,
+   full tradable/scanner publication rebuilds, and clean canonical graph
+   promotion. This is after-hours work by default.
+
+4. Observability and control
+
+   Preflight, runtime logs, reports, terminal summaries, and failure handling.
+   This is not a reference-data objective, but it is required for safe
+   operation.
 
 ## Responsibility Lanes
 
@@ -264,6 +292,12 @@ Blocked by default:
 - tradable/scanner publication rebuilds
 - heavy market-publication historical gap fills
 
+Daemon behavior:
+
+- source sync and integrity guardrails continue every active-window cycle
+- maintenance and promotion work are skipped until an after-hours cycle unless
+  an explicit override is supplied
+
 ### After Hours
 
 Allowed:
@@ -294,21 +328,21 @@ dependency or failed publication step should not be hidden by the next loop.
 Continuous daemon:
 
 ```powershell
-.\scripts\run_reference_gateway.ps1 -Execute -ActiveTickerCheck -Daemon
+.\scripts\run_reference_gateway.ps1 -Mode Prod
 ```
 
 Controlled test-only guards:
 
 ```powershell
-.\scripts\run_reference_gateway.ps1 -Execute -ActiveTickerCheck -Daemon -NoIbkrRequired
-.\scripts\run_reference_gateway.ps1 -Execute -ActiveTickerCheck -Daemon -NoPreflight
-.\scripts\run_reference_gateway.ps1 -Execute -ActiveTickerCheck -Daemon -NoImmediateTradabilityBlock
+.\scripts\run_reference_gateway.ps1 -Mode Prod -NoIbkrRequired
+.\scripts\run_reference_gateway.ps1 -Mode Prod -NoPreflight
+.\scripts\run_reference_gateway.ps1 -Mode Prod -NoImmediateTradabilityBlock
 ```
 
 One-shot after-hours maintenance:
 
 ```powershell
-.\scripts\run_reference_gateway.ps1 -ReadDatabase q_live -WriteDatabase q_live -Execute -EnsureMarketPublicationSchema -ActiveTickerCheck
+.\scripts\run_reference_gateway.ps1 -Mode Prod -NoDaemon -EnsureMarketPublicationSchema
 ```
 
 Read-only audit:
@@ -320,5 +354,5 @@ Read-only audit:
 Temp database test:
 
 ```powershell
-.\scripts\run_reference_gateway.ps1 -ReadDatabase q_live -TestWriteDatabase q_reference_tmp -Execute -EnsureMarketPublicationSchema -MarketHoursWriteOverride -MarketHoursWriteReason "temp reference gateway test"
+.\scripts\run_reference_gateway.ps1 -Mode Temp
 ```

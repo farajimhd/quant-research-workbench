@@ -91,7 +91,16 @@ def parse_args() -> argparse.Namespace:
         help="Allow step 6 tradable rebuild when read and write databases differ. Only use after cloning required source tables.",
     )
     parser.add_argument("--market-publication-gap-fill", action=argparse.BooleanOptionalAction, default=None, help="Run recent coverage-aware reference publication gap fill after audit in execute mode.")
-    parser.add_argument("--daemon", action=argparse.BooleanOptionalAction, default=None, help="Run repeated audit/sync cycles. Active-window cycles are read-only unless an override is supplied.")
+    parser.add_argument(
+        "--daemon",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Run repeated audit/sync cycles. Active-window cycles still sync "
+            "source data and integrity blockers, but defer promotion and heavy "
+            "maintenance unless an override is supplied."
+        ),
+    )
     parser.add_argument("--preflight", action=argparse.BooleanOptionalAction, default=None, help="Check ClickHouse, storage, Massive, and IBKR dependencies before doing work.")
     parser.add_argument("--ibkr-resolution", action=argparse.BooleanOptionalAction, default=None, help="Use IBKR Client Portal for active ticker conid resolution.")
     parser.add_argument("--ibkr-required", action=argparse.BooleanOptionalAction, default=None, help="Fail preflight when IBKR Client Portal is unavailable.")

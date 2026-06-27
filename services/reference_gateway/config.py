@@ -120,7 +120,7 @@ class ReferenceGatewayConfig:
             ibkr_base_url=env_string("IBKR_CPAPI_BASE_URL", "https://localhost:5000/v1/api").rstrip("/"),
             preflight_enabled=bool_override(overrides.preflight_enabled, env_bool("REFERENCE_GATEWAY_PREFLIGHT_ENABLED", True)),
             active_ticker_check_enabled=bool_override(overrides.active_ticker_check_enabled, env_bool("REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_ENABLED", False)),
-            active_ticker_check_market_hours_only=env_bool("REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_MARKET_HOURS_ONLY", True),
+            active_ticker_check_market_hours_only=env_bool("REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_MARKET_HOURS_ONLY", False),
             active_ticker_max_pages=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES", 1_000),
             active_ticker_page_limit=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_PAGE_LIMIT", 1_000),
             active_ticker_new_candidate_limit=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_NEW_CANDIDATE_LIMIT", 250),

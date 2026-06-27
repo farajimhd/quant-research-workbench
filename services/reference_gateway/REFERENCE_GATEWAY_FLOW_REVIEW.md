@@ -12,6 +12,7 @@ fixed version before moving to the next stage.
 | C1 | Stage 1 | CLI flags should not be converted into environment variables before `ReferenceGatewayConfig` is built. | Fixed |
 | C2 | Stage 1 | The guide must be self-contained and explain what each argument/config value does before asking for comments. | Fixed |
 | C3 | Stage 1 | Keep advanced knobs, but provide one normal prod knob and one normal temp/debug knob so routine operation is not a long argument matrix. | Fixed |
+| C4 | Stage 1 | Explain the gateway by objectives, not by defensive flags: source sync and integrity can run during market hours; maintenance should run after hours. | Fixed |
 
 ## Stage 1: Process Start And Configuration
 
@@ -54,6 +55,22 @@ Mode safety rules:
 4. Advanced flags still work with modes, but the mode sets the normal defaults
    first.
 
+### Gateway Objectives
+
+The gateway should be understood by these objectives first. Command-line flags
+exist to override details, not to define the service's purpose.
+
+| Objective | What it does | Market-hours behavior | After-hours behavior |
+| --- | --- | --- | --- |
+| 1. Source sync | Pull active tickers and reference evidence from Massive, IBKR, FINRA, SEC, and other configured providers. Keep q_live reference inputs current. | Allowed. The service can download new evidence, compare it to q_live, and persist observations/issues. | Allowed. Runs with lower urgency and can also feed maintenance. |
+| 2. Integrity guardrail | Audit q_live reference tables, find identity/conid/exchange/tradability issues, resolve deterministic issues, and block unsafe instruments. | Allowed. Issue rows, deterministic resolutions, and targeted `is_tradable=0` blocks reduce trading risk. | Allowed. Same checks plus deeper repair context. |
+| 3. Maintenance | Schema upkeep, heavy publication gap fill, full tradable/scanner publication rebuilds, and clean canonical graph promotion. | Deferred by default. These can reshape downstream publications while trading is active. | Allowed by default. This is the normal window for heavy or promotion-style work. |
+| 4. Observability and control | Preflight, runtime logs, reports, terminal output, and failure handling. | Always allowed. This is service safety infrastructure. | Always allowed. |
+
+So the extra objective is not another data objective; it is operational
+observability/control. The business objectives are source sync, integrity, and
+maintenance.
+
 | Wrapper argument | Python argument | Meaning | Effect in this command |
 | --- | --- | --- | --- |
 | `-Mode Prod` | expands to several Python arguments | Normal production mode. | Runs a q_live daemon with execution, active ticker reconciliation, preflight, IBKR resolution, and immediate tradability blocking. |
@@ -82,6 +99,7 @@ Useful wrapper arguments not used in the command:
 | `-NoIbkrResolution` | `--no-ibkr-resolution` | Do not query IBKR for conid candidates. | Testing Massive-only discovery; unresolved conids become blockers. |
 | `-NoIbkrRequired` | `--no-ibkr-required` | Do not fail startup if IBKR is unavailable. | Temporary operation when IBKR Client Portal is down. |
 | `-NoImmediateTradabilityBlock` | `--no-immediate-tradability-block` | Do not write targeted non-tradable replacement rows for open issues. | Debug only; unsafe for live trading protection. |
+| `-NoDaemon` | removes `--daemon` | Forces a one-shot run even when a mode would normally enable daemon mode. | After-hours production maintenance with `-Mode Prod -NoDaemon`. |
 
 ### Important Config Values In Plain English
 
@@ -92,6 +110,7 @@ These values are loaded from env unless overridden by CLI.
 | `execute` | `false` | Whether the gateway may write. | Writes are possible if policy allows. | Report-only. |
 | `daemon_loop_enabled` | `false` | Whether the process repeats cycles. | Parent daemon keeps launching one-shot child cycles. | Single pass only. |
 | `active_ticker_check_enabled` | `false` | Whether to poll Massive active tickers. | Detects new/missing Massive tickers. | Skips ticker reconciliation. |
+| `active_ticker_check_market_hours_only` | `false` | Whether active ticker sync is restricted to active collection hours. | Source sync only runs during active collection hours. | Source sync can run in both market-hours and after-hours daemon cycles. |
 | `preflight_enabled` | `true` | Whether startup dependency checks run. | Fails fast if required dependencies are down. | Gateway may fail later or run partial work. |
 | `ibkr_resolution_enabled` | `true` | Whether to call IBKR Client Portal for conids. | Missing tickers get IBKR contract evidence. | No IBKR evidence; candidates usually remain blocked. |
 | `ibkr_required` | `true` | Whether IBKR must be reachable/authenticated when ticker reconciliation runs. | Startup fails if IBKR is unavailable. | Gateway can run without IBKR, but conid fixes are deferred. |
@@ -100,7 +119,7 @@ These values are loaded from env unless overridden by CLI.
 | `immediate_tradability_block_enabled` | `true` | Whether open issues immediately block currently tradable latest-universe rows. | Inserts replacement `is_tradable=0` rows for touched symbols. | Waits for full tradable rebuild; unsafe during live trading. |
 | `resolve_stale_issues` | `true` | Whether deterministic open issues can be closed. | Issues close when the missing evidence now exists. | Issues remain open even if fixed. |
 | `rebuild_tradable_on_execute` | `true` | Whether full tradable/scanner publications are rebuilt in execute mode. | After-hours cycles refresh the full publication. | No full publication refresh. |
-| `after_hours_writes_only` | `true` | Whether promotion-style writes are blocked during active collection hours. | Market-hours cycles are conservative. | Promotion writes can run during market hours. |
+| `after_hours_writes_only` | `true` | Whether promotion and heavy maintenance writes are blocked during active collection hours. | Source sync and integrity writes still run; promotion/heavy maintenance waits. | Promotion and maintenance writes can run during market hours. |
 | `market_publication_gap_fill_enabled` | `true` | Whether recent FINRA/SEC publication gaps are filled. | After-hours maintenance fills recent reference publication gaps. | Publication gaps are not filled by this service. |
 
 ### Write Categories
@@ -109,8 +128,9 @@ Not all writes have the same risk.
 
 | Write category | Examples | Market-hours policy |
 | --- | --- | --- |
-| Risk-reducing writes | open issue rows, immediate `is_tradable=0` replacement rows | Allowed because they prevent trading unsafe instruments. |
-| Promotion writes | new issuer/security/listing/symbol rows, full tradable rebuilds | Blocked by default during market hours. |
+| Source-sync writes | provider observations, active ticker issue evidence, compact reports | Allowed because they keep the service aware of current provider state. |
+| Integrity writes | open issue rows, deterministic issue resolution, immediate `is_tradable=0` replacement rows | Allowed because they prevent trading unsafe instruments. |
+| Promotion writes | new issuer/security/listing/symbol rows, full tradable rebuilds | Deferred by default during market hours. |
 | Maintenance writes | FINRA short-volume/SEC FTD publication gap fill | Blocked by default during market hours. |
 | Schema writes | creating/altering reference publication tables | Blocked by policy unless explicitly allowed. |
 

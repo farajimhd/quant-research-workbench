@@ -63,7 +63,6 @@ def evaluate_write_policy(config: ReferenceGatewayConfig, now_utc: datetime | No
         active_collection_window=True,
         writes_allowed=False,
         override_enabled=False,
-        reason="writes_blocked_during_active_collection_window",
+        reason="promotion_and_maintenance_writes_blocked_during_active_collection_window",
         window_label=window.label,
     )
-
