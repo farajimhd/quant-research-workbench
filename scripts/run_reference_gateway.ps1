@@ -2,39 +2,27 @@
 param(
     # Launcher.
     [string]$PythonExe = "python",
-    [ValidateSet("Custom", "Prod", "Temp")]
-    [string]$Mode = "Custom",
 
-    # Database targets.
-    [string]$ReadDatabase = "",
-    [string]$WriteDatabase = "",
-    [string]$TestWriteDatabase = "",
+    # Operator mode.
+    [ValidateSet("Prod", "Temp")]
+    [string]$Mode = "Prod",
 
-    # Execution mode.
-    [switch]$Execute,
-    [switch]$Daemon,
-    [switch]$NoDaemon,
+    # Process lifetime. Empty means mode default: Prod=Daemon, Temp=Once.
+    [ValidateSet("", "Daemon", "Once")]
+    [string]$Run = "",
 
-    # Objective 2: integrity guardrail.
-    [switch]$NoWriteDiscoveredIssues,
-    [switch]$NoResolveStaleIssues,
-    [switch]$NoImmediateTradabilityBlock,
+    # Integrity behavior.
+    [ValidateSet("Strict", "ReportOnly")]
+    [string]$Integrity = "Strict",
 
-    # Objective 3: maintenance.
-    [switch]$EnsureMarketPublicationSchema,
-    [switch]$NoWriteCanonicalGraph,
-    [switch]$NoRebuildTradable,
-    [switch]$RebuildTradableInTestMode,
-    [switch]$NoMarketPublicationGapFill,
+    # Maintenance behavior. Empty means Auto.
+    [ValidateSet("", "Auto", "Skip", "Force")]
+    [string]$Maintenance = "",
+    [string]$MaintenanceReason = "",
 
-    # Market-hours override for maintenance/promotion.
-    [switch]$MarketHoursWriteOverride,
-    [string]$MarketHoursWriteReason = "",
-
-    # Objective 4: observability and diagnostics.
-    [switch]$PrintRules,
-    [switch]$PrintTableGroups,
-    [switch]$NoPreflight
+    # Diagnostics.
+    [ValidateSet("None", "Rules", "TableGroups", "Config")]
+    [string]$Diagnostics = "None"
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,97 +30,30 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
-if ($Mode -eq "Prod") {
-    if ($TestWriteDatabase) {
-        throw "-Mode Prod cannot be combined with -TestWriteDatabase."
-    }
-    if (-not $ReadDatabase) {
-        $ReadDatabase = "q_live"
-    }
-    if (-not $WriteDatabase) {
-        $WriteDatabase = "q_live"
-    }
-    $Execute = $true
-    $Daemon = $true
+$argsList = @("-m", "services.reference_gateway.main")
+
+if (-not $Run) {
+    $Run = if ($Mode -eq "Prod") { "Daemon" } else { "Once" }
 }
-elseif ($Mode -eq "Temp") {
-    if ($WriteDatabase) {
-        throw "-Mode Temp writes through -TestWriteDatabase; do not pass -WriteDatabase."
-    }
-    if (-not $ReadDatabase) {
-        $ReadDatabase = "q_live"
-    }
-    if (-not $TestWriteDatabase) {
-        $TestWriteDatabase = "q_reference_tmp"
-    }
-    if (-not $MarketHoursWriteReason.Trim()) {
-        $MarketHoursWriteReason = "reference gateway temp mode"
-    }
-    $Execute = $true
-    $EnsureMarketPublicationSchema = $true
-    $MarketHoursWriteOverride = $true
+if (-not $Maintenance) {
+    $Maintenance = "Auto"
 }
-if ($NoDaemon) {
-    $Daemon = $false
+if ($Maintenance -eq "Force" -and -not $MaintenanceReason.Trim()) {
+    if ($Mode -eq "Temp") {
+        $MaintenanceReason = "reference gateway temp maintenance force"
+    }
+    else {
+        throw "-MaintenanceReason is required when -Maintenance Force is set."
+    }
 }
 
-$argsList = @("-m", "services.reference_gateway.main")
-if ($ReadDatabase) {
-    $argsList += @("--read-database", $ReadDatabase)
-}
-if ($WriteDatabase) {
-    $argsList += @("--write-database", $WriteDatabase)
-}
-if ($TestWriteDatabase) {
-    $argsList += @("--test-write-database", $TestWriteDatabase)
-}
-if ($Execute) {
-    $argsList += "--execute"
-}
-if ($MarketHoursWriteOverride) {
-    $argsList += "--market-hours-write-override"
-    if (-not $MarketHoursWriteReason.Trim()) {
-        throw "-MarketHoursWriteReason is required when -MarketHoursWriteOverride is set."
-    }
-}
-if ($MarketHoursWriteReason.Trim()) {
-    $argsList += @("--market-hours-write-reason", $MarketHoursWriteReason)
-}
-if ($PrintRules) {
-    $argsList += "--print-rules"
-}
-if ($PrintTableGroups) {
-    $argsList += "--print-table-groups"
-}
-if ($EnsureMarketPublicationSchema) {
-    $argsList += "--ensure-market-publication-schema"
-}
-if ($NoWriteDiscoveredIssues) {
-    $argsList += "--no-write-discovered-issues"
-}
-if ($NoWriteCanonicalGraph) {
-    $argsList += "--no-write-canonical-graph"
-}
-if ($NoResolveStaleIssues) {
-    $argsList += "--no-resolve-stale-issues"
-}
-if ($NoRebuildTradable) {
-    $argsList += "--no-rebuild-tradable"
-}
-if ($RebuildTradableInTestMode) {
-    $argsList += "--rebuild-tradable-in-test-mode"
-}
-if ($NoMarketPublicationGapFill) {
-    $argsList += "--no-market-publication-gap-fill"
-}
-if ($NoPreflight) {
-    $argsList += "--no-preflight"
-}
-if ($NoImmediateTradabilityBlock) {
-    $argsList += "--no-immediate-tradability-block"
-}
-if ($Daemon) {
-    $argsList += "--daemon"
+$argsList += @("--mode", $Mode.ToLowerInvariant())
+$argsList += @("--run", $Run.ToLowerInvariant())
+$argsList += @("--integrity", $Integrity.ToLowerInvariant().Replace("reportonly", "report-only"))
+$argsList += @("--maintenance", $Maintenance.ToLowerInvariant())
+$argsList += @("--diagnostics", $Diagnostics.ToLowerInvariant().Replace("tablegroups", "table-groups"))
+if ($MaintenanceReason.Trim()) {
+    $argsList += @("--maintenance-reason", $MaintenanceReason)
 }
 
 & $PythonExe @argsList

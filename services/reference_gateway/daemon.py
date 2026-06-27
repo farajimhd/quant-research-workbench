@@ -71,21 +71,8 @@ def run_reference_daemon(config: ReferenceGatewayConfig, base_args: list[str]) -
 def run_daemon_cycle(config: ReferenceGatewayConfig, base_args: list[str], *, log_path) -> DaemonCycle:
     started = time.perf_counter()
     active = active_collection_window(service_prefix="REFERENCE")
-    command = [sys.executable, "-m", "services.reference_gateway.main", "--no-daemon"]
-    command.extend(arg for arg in base_args if arg != "--daemon")
-    if "--preflight" not in command and "--no-preflight" not in command:
-        command.append("--no-preflight")
-    if active and config.after_hours_writes_only and not config.market_hours_write_override:
-        if "--execute" not in command and "--no-execute" not in command:
-            command.append("--execute")
-        if "--no-write-discovered-issues" not in command:
-            command.append("--write-discovered-issues")
-        if "--no-write-canonical-graph" not in command:
-            command.append("--no-write-canonical-graph")
-        if "--no-rebuild-tradable" not in command:
-            command.append("--no-rebuild-tradable")
-        if "--no-market-publication-gap-fill" not in command:
-            command.append("--no-market-publication-gap-fill")
+    command = [sys.executable, "-m", "services.reference_gateway.main"]
+    command.extend(child_cycle_args(base_args))
     env = dict(os.environ)
     env[RUNTIME_LOG_ENV] = str(log_path)
     returncode = subprocess.run(command, check=False, env=env).returncode
@@ -98,3 +85,18 @@ def run_daemon_cycle(config: ReferenceGatewayConfig, base_args: list[str], *, lo
         returncode=returncode,
         elapsed_seconds=time.perf_counter() - started,
     )
+
+
+def child_cycle_args(base_args: list[str]) -> list[str]:
+    result: list[str] = []
+    skip_next = False
+    for arg in base_args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--run":
+            skip_next = True
+            continue
+        result.append(arg)
+    result.extend(["--run", "once"])
+    return result

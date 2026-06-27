@@ -31,103 +31,40 @@ from services.reference_gateway.tradability import tradability_rule_markdown
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Reference gateway audit and sync planner. Source sync is built "
-            "into operational runs; flags below control execution, integrity, "
-            "maintenance, and diagnostics."
+            "Reference gateway audit and sync service. Operational runs always "
+            "perform source sync and integrity checks; the public knobs only "
+            "select operator mode, lifetime, integrity strictness, maintenance "
+            "policy, and diagnostics."
         )
     )
-    execution = parser.add_argument_group("execution mode")
-    database = parser.add_argument_group("database targets")
-    integrity = parser.add_argument_group("integrity guardrail controls")
-    maintenance = parser.add_argument_group("maintenance controls")
-    observability = parser.add_argument_group("observability and diagnostics")
-
-    execution.add_argument("--execute", action=argparse.BooleanOptionalAction, default=None, help="Override REFERENCE_GATEWAY_EXECUTE for this run.")
-    execution.add_argument(
-        "--daemon",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help=(
-            "Run repeated audit/sync cycles. Active-window cycles still sync "
-            "source data and integrity blockers, but defer promotion and heavy "
-            "maintenance unless an override is supplied."
-        ),
-    )
-    execution.add_argument(
-        "--market-hours-write-override",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Allow execute-mode writes during the active collection window. Requires --market-hours-write-reason.",
-    )
-    execution.add_argument(
-        "--market-hours-write-reason",
-        default="",
-        help="Auditable reason for market-hours write override.",
-    )
-
-    database.add_argument("--read-database", default="", help="Canonical source database. Defaults to REFERENCE_* read DB or q_live.")
-    database.add_argument("--write-database", default="", help="Target database for writes. Defaults to REFERENCE_* write DB or q_live.")
-    database.add_argument("--test-write-database", default="", help="Shortcut for temp testing: read from q_live/read DB and write to this temp DB.")
-
-    integrity.add_argument(
-        "--write-discovered-issues",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="In execute mode, write discovered provider/reference issues to id_mapping_issue_v1.",
-    )
-    integrity.add_argument(
-        "--resolve-stale-issues",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="In execute mode, close reference-gateway active ticker issues once the canonical symbol exists.",
-    )
-    integrity.add_argument("--immediate-tradability-block", action=argparse.BooleanOptionalAction, default=None, help="Immediately publish latest-universe non-tradable replacement rows for open issues.")
-
-    maintenance.add_argument(
-        "--ensure-market-publication-schema",
-        action="store_true",
-        help="Create/alter market reference publication and coverage tables before auditing.",
-    )
-    maintenance.add_argument(
-        "--write-canonical-graph",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="In execute mode, insert clean new Massive ticker candidates into the canonical issuer/security/listing/symbol graph.",
-    )
-    maintenance.add_argument(
-        "--rebuild-tradable",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="In execute mode, rebuild tradable/scanner feature publications before audit and after issue writes.",
-    )
-    maintenance.add_argument(
-        "--rebuild-tradable-in-test-mode",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Allow step 6 tradable rebuild when read and write databases differ. Only use after cloning required source tables.",
-    )
-    maintenance.add_argument("--market-publication-gap-fill", action=argparse.BooleanOptionalAction, default=None, help="Run recent coverage-aware reference publication gap fill after audit in execute mode.")
-
-    observability.add_argument("--write-report", action=argparse.BooleanOptionalAction, default=True)
-    observability.add_argument("--preflight", action=argparse.BooleanOptionalAction, default=None, help="Check ClickHouse, storage, Massive, and IBKR dependencies before doing work.")
-    observability.add_argument("--print-rules", action="store_true", help="Print the hard tradability blocking rules.")
-    observability.add_argument("--print-table-groups", action="store_true", help="Print reference gateway table ownership groups.")
+    parser.add_argument("--mode", choices=["prod", "temp"], default="prod", help="prod writes to q_live; temp reads q_live and writes q_reference_tmp.")
+    parser.add_argument("--run", choices=["daemon", "once"], default="", help="Process lifetime. Empty means prod=daemon and temp=once.")
+    parser.add_argument("--integrity", choices=["strict", "report-only"], default="strict", help="strict writes issues/blocks tradability; report-only audits without guardrail writes.")
+    parser.add_argument("--maintenance", choices=["auto", "skip", "force"], default="auto", help="auto defers heavy work during market hours; skip disables maintenance; force allows it with a reason.")
+    parser.add_argument("--maintenance-reason", default="", help="Auditable reason required when --maintenance force is used.")
+    parser.add_argument("--diagnostics", choices=["none", "rules", "table-groups", "config"], default="none", help="Print diagnostics and exit without operational writes.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     load_env_files(discover_clickhouse_env_files())
-    if args.market_hours_write_override and not args.market_hours_write_reason.strip():
-        print("--market-hours-write-reason is required with --market-hours-write-override.", flush=True)
+    if args.maintenance == "force" and not args.maintenance_reason.strip():
+        print("--maintenance-reason is required with --maintenance force.", flush=True)
         sys.exit(2)
-    if args.print_rules:
+    if args.diagnostics == "rules":
         print(tradability_rule_markdown())
         return
-    if args.print_table_groups:
+    if args.diagnostics == "table-groups":
         print(table_group_markdown())
         return
     config = ReferenceGatewayConfig.from_env(config_overrides_from_args(args))
+    if config.maintenance_mode == "force" and not config.market_hours_write_reason.strip():
+        print("--maintenance-reason or REFERENCE_GATEWAY_MAINTENANCE_REASON is required when maintenance mode is force.", flush=True)
+        sys.exit(2)
+    if args.diagnostics == "config":
+        print(json.dumps(config.public_dict(), indent=2, sort_keys=True))
+        return
     if config.daemon_loop_enabled:
         run_reference_daemon(config, sys.argv[1:])
         return
@@ -171,17 +108,16 @@ def main() -> None:
                     "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD",
                     "REFERENCE_CLICKHOUSE_READ_DATABASE",
                     "REFERENCE_CLICKHOUSE_WRITE_DATABASE",
-                    "REFERENCE_GATEWAY_READ_DATABASE",
-                    "REFERENCE_GATEWAY_WRITE_DATABASE",
+                    "REFERENCE_GATEWAY_MODE",
+                    "REFERENCE_GATEWAY_RUN",
+                    "REFERENCE_GATEWAY_INTEGRITY",
+                    "REFERENCE_GATEWAY_MAINTENANCE",
+                    "REFERENCE_GATEWAY_MAINTENANCE_REASON",
+                    "REFERENCE_GATEWAY_DIAGNOSTICS",
                     "CLICKHOUSE_WORKSTATION_USER",
                     "CLICKHOUSE_WORKSTATION_PASSWORD",
                     "MASSIVE_API_KEY",
                     "IBKR_CPAPI_BASE_URL",
-                    "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES",
-                    "REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH",
-                    "REFERENCE_GATEWAY_RESOLVE_STALE_ISSUES",
-                    "REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE",
-                    "REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE",
                 ]
             ),
             sort_keys=True,
@@ -216,7 +152,7 @@ def main() -> None:
         add_operation("Dependency preflight", "skipped", "REFERENCE_GATEWAY_PREFLIGHT_ENABLED_FALSE")
     if config.execute and not write_policy.writes_allowed:
         add_operation("Promotion write policy", "skipped", write_policy.reason)
-    if args.ensure_market_publication_schema:
+    if config.execute and config.maintenance_mode != "skip":
         if not write_policy.writes_allowed:
             add_operation("Market publication schema", "skipped", write_policy.reason)
             emit("market_publication_schema=blocked reason=" + write_policy.reason)
@@ -257,7 +193,7 @@ def main() -> None:
     report = run_reference_audit(config)
     record.audit = report
     add_operation("Reference audit", report.status, f"{len(report.checks)} checks", seconds=time.perf_counter() - audit_started)
-    report_path = write_report(report, config.report_root_win) if args.write_report else None
+    report_path = write_report(report, config.report_root_win)
     record.report_path = str(report_path or "")
     for check in report.checks:
         emit(
@@ -268,7 +204,7 @@ def main() -> None:
     if should_sync_sources:
         started = time.perf_counter()
         plan = run_active_ticker_plan(config)
-        plan_path = write_active_ticker_plan(plan, config.report_root_win) if args.write_report else None
+        plan_path = write_active_ticker_plan(plan, config.report_root_win)
         add_operation(
             "Source sync",
             "completed",
@@ -354,7 +290,7 @@ def main() -> None:
                 report = run_reference_audit(config)
                 record.audit = report
                 add_operation("Post-write reference audit", report.status, f"{len(report.checks)} checks", seconds=time.perf_counter() - audit_started)
-                report_path = write_report(report, config.report_root_win) if args.write_report else None
+                report_path = write_report(report, config.report_root_win)
                 record.report_path = str(report_path or record.report_path)
                 if report_path:
                     emit(f"post_issue_report={report_path}")
@@ -364,7 +300,7 @@ def main() -> None:
         config.execute
         and write_policy.writes_allowed
         and config.market_publication_gap_fill_enabled
-        and (not config.test_write_mode or args.market_publication_gap_fill is True)
+        and (not config.test_write_mode or config.maintenance_mode == "force")
     ):
         started = time.perf_counter()
         maintenance = run_recent_publication_gap_fill(config)
@@ -376,8 +312,8 @@ def main() -> None:
         )
         emit("market_publication_gap_fill=" + json.dumps(asdict(maintenance), sort_keys=True))
     elif config.execute and config.test_write_mode and config.market_publication_gap_fill_enabled:
-        add_operation("Market publication gap fill", "skipped", "test_write_mode_requires_explicit_flag")
-        emit("market_publication_gap_fill=skipped reason=test_write_mode_requires_explicit_flag")
+        add_operation("Market publication gap fill", "skipped", "temp_mode_requires_maintenance_force")
+        emit("market_publication_gap_fill=skipped reason=temp_mode_requires_maintenance_force")
     record.final_status = report.status
     record.wall_seconds = time.perf_counter() - run_started
     logger.event("run_finished", status=record.final_status, wall_seconds=record.wall_seconds, report_path=record.report_path)
@@ -390,20 +326,12 @@ def main() -> None:
 
 def config_overrides_from_args(args: argparse.Namespace) -> ReferenceGatewayConfigOverrides:
     return ReferenceGatewayConfigOverrides(
-        execute=args.execute,
-        clickhouse_read_database=args.read_database or None,
-        clickhouse_write_database=args.test_write_database or args.write_database or None,
-        market_hours_write_override=args.market_hours_write_override,
-        market_hours_write_reason=args.market_hours_write_reason or None,
-        write_discovered_issues=args.write_discovered_issues,
-        write_canonical_graph=args.write_canonical_graph,
-        immediate_tradability_block_enabled=args.immediate_tradability_block,
-        resolve_stale_issues=args.resolve_stale_issues,
-        rebuild_tradable_on_execute=args.rebuild_tradable,
-        rebuild_tradable_in_test_mode=args.rebuild_tradable_in_test_mode,
-        daemon_loop_enabled=args.daemon,
-        market_publication_gap_fill_enabled=args.market_publication_gap_fill,
-        preflight_enabled=args.preflight,
+        operator_mode=args.mode,
+        run_mode=args.run or None,
+        integrity_mode=args.integrity,
+        maintenance_mode=args.maintenance,
+        diagnostics_mode=args.diagnostics,
+        market_hours_write_reason=args.maintenance_reason or None,
     )
 
 

@@ -15,24 +15,23 @@ WORKSTATION_SHARE_DATA_ROOT_WIN = Path(r"\\DESKTOP-SAAI85T\Workstation-D\market-
 
 @dataclass(frozen=True, slots=True)
 class ReferenceGatewayConfigOverrides:
-    execute: bool | None = None
+    operator_mode: str | None = None
+    run_mode: str | None = None
+    integrity_mode: str | None = None
+    maintenance_mode: str | None = None
+    diagnostics_mode: str | None = None
     clickhouse_read_database: str | None = None
     clickhouse_write_database: str | None = None
-    market_hours_write_override: bool | None = None
     market_hours_write_reason: str | None = None
-    write_discovered_issues: bool | None = None
-    write_canonical_graph: bool | None = None
-    immediate_tradability_block_enabled: bool | None = None
-    resolve_stale_issues: bool | None = None
-    rebuild_tradable_on_execute: bool | None = None
-    rebuild_tradable_in_test_mode: bool | None = None
-    daemon_loop_enabled: bool | None = None
-    market_publication_gap_fill_enabled: bool | None = None
-    preflight_enabled: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ReferenceGatewayConfig:
+    operator_mode: str
+    run_mode: str
+    integrity_mode: str
+    maintenance_mode: str
+    diagnostics_mode: str
     bind: str
     host: str
     port: int
@@ -79,18 +78,38 @@ class ReferenceGatewayConfig:
         prepared_root = Path(env_string("REFERENCE_GATEWAY_PREPARED_ROOT_WIN", str(data_root / "prepared")))
         password = default_clickhouse_password()
         legacy_database = env_string("REFERENCE_GATEWAY_CLICKHOUSE_DATABASE", "q_live")
-        read_database = string_override(
-            overrides.clickhouse_read_database,
-            env_string("REFERENCE_CLICKHOUSE_READ_DATABASE", env_string("REFERENCE_GATEWAY_READ_DATABASE", legacy_database)),
-        )
-        write_database = string_override(
-            overrides.clickhouse_write_database,
-            env_string(
-                "REFERENCE_CLICKHOUSE_WRITE_DATABASE",
-                env_string("REFERENCE_GATEWAY_WRITE_DATABASE", legacy_database),
-            ),
-        )
+        operator_mode = normalized_choice(overrides.operator_mode, env_string("REFERENCE_GATEWAY_MODE", "prod"), {"prod", "temp"}, "prod")
+        run_mode = normalized_choice(overrides.run_mode, env_string("REFERENCE_GATEWAY_RUN", ""), {"daemon", "once"}, "daemon" if operator_mode == "prod" else "once")
+        integrity_mode = normalized_choice(overrides.integrity_mode, env_string("REFERENCE_GATEWAY_INTEGRITY", "strict"), {"strict", "report-only"}, "strict")
+        maintenance_mode = normalized_choice(overrides.maintenance_mode, env_string("REFERENCE_GATEWAY_MAINTENANCE", "auto"), {"auto", "skip", "force"}, "auto")
+        diagnostics_mode = normalized_choice(overrides.diagnostics_mode, env_string("REFERENCE_GATEWAY_DIAGNOSTICS", "none"), {"none", "rules", "table-groups", "config"}, "none")
+        default_read_database = "q_live"
+        default_write_database = "q_reference_tmp" if operator_mode == "temp" else "q_live"
+        if overrides.operator_mode is not None:
+            read_database = string_override(overrides.clickhouse_read_database, default_read_database)
+            write_database = string_override(overrides.clickhouse_write_database, default_write_database)
+        else:
+            read_database = string_override(
+                overrides.clickhouse_read_database,
+                env_string("REFERENCE_CLICKHOUSE_READ_DATABASE", env_string("REFERENCE_GATEWAY_READ_DATABASE", default_read_database or legacy_database)),
+            )
+            write_database = string_override(
+                overrides.clickhouse_write_database,
+                env_string(
+                    "REFERENCE_CLICKHOUSE_WRITE_DATABASE",
+                    env_string("REFERENCE_GATEWAY_WRITE_DATABASE", default_write_database or legacy_database),
+                ),
+            )
+        maintenance_reason = string_override(overrides.market_hours_write_reason, env_string("REFERENCE_GATEWAY_MAINTENANCE_REASON", env_string("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON", "")))
+        maintenance_force = maintenance_mode == "force"
+        maintenance_skip = maintenance_mode == "skip"
+        integrity_report_only = integrity_mode == "report-only"
         return cls(
+            operator_mode=operator_mode,
+            run_mode=run_mode,
+            integrity_mode=integrity_mode,
+            maintenance_mode=maintenance_mode,
+            diagnostics_mode=diagnostics_mode,
             bind=bind,
             host=host,
             port=port,
@@ -98,7 +117,7 @@ class ReferenceGatewayConfig:
             prepared_root_win=prepared_root,
             report_root_win=Path(env_string("REFERENCE_GATEWAY_REPORT_ROOT_WIN", str(prepared_root / "reference_gateway" / "reports"))),
             is_workstation=is_workstation_host(),
-            execute=bool_override(overrides.execute, env_bool("REFERENCE_GATEWAY_EXECUTE", False)),
+            execute=diagnostics_mode == "none",
             clickhouse_url=default_clickhouse_url(),
             clickhouse_user=default_clickhouse_user(),
             clickhouse_password_present=bool(password),
@@ -107,23 +126,23 @@ class ReferenceGatewayConfig:
             massive_base_url=env_string("MASSIVE_BASE_URL", "https://api.massive.com").rstrip("/"),
             massive_api_key_present=bool(env_string("MASSIVE_API_KEY", "")),
             ibkr_base_url=env_string("IBKR_CPAPI_BASE_URL", "https://localhost:5000/v1/api").rstrip("/"),
-            preflight_enabled=bool_override(overrides.preflight_enabled, env_bool("REFERENCE_GATEWAY_PREFLIGHT_ENABLED", True)),
+            preflight_enabled=env_bool("REFERENCE_GATEWAY_PREFLIGHT_ENABLED", True),
             active_ticker_max_pages=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES", 1_000),
             active_ticker_page_limit=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_PAGE_LIMIT", 1_000),
             active_ticker_new_candidate_limit=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_NEW_CANDIDATE_LIMIT", 250),
             after_hours_writes_only=env_bool("REFERENCE_GATEWAY_AFTER_HOURS_WRITES_ONLY", True),
-            market_hours_write_override=bool_override(overrides.market_hours_write_override, env_bool("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_OVERRIDE", False)),
-            market_hours_write_reason=string_override(overrides.market_hours_write_reason, env_string("REFERENCE_GATEWAY_MARKET_HOURS_WRITE_REASON", "")),
-            write_discovered_issues=bool_override(overrides.write_discovered_issues, env_bool("REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES", True)),
-            write_canonical_graph=bool_override(overrides.write_canonical_graph, env_bool("REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH", True)),
-            immediate_tradability_block_enabled=bool_override(overrides.immediate_tradability_block_enabled, env_bool("REFERENCE_GATEWAY_IMMEDIATE_TRADABILITY_BLOCK_ENABLED", True)),
-            resolve_stale_issues=bool_override(overrides.resolve_stale_issues, env_bool("REFERENCE_GATEWAY_RESOLVE_STALE_ISSUES", True)),
-            rebuild_tradable_on_execute=bool_override(overrides.rebuild_tradable_on_execute, env_bool("REFERENCE_GATEWAY_REBUILD_TRADABLE_ON_EXECUTE", True)),
-            rebuild_tradable_in_test_mode=bool_override(overrides.rebuild_tradable_in_test_mode, env_bool("REFERENCE_GATEWAY_REBUILD_TRADABLE_IN_TEST_MODE", False)),
-            daemon_loop_enabled=bool_override(overrides.daemon_loop_enabled, env_bool("REFERENCE_GATEWAY_DAEMON", False)),
+            market_hours_write_override=maintenance_force,
+            market_hours_write_reason=maintenance_reason,
+            write_discovered_issues=not integrity_report_only,
+            write_canonical_graph=not maintenance_skip,
+            immediate_tradability_block_enabled=not integrity_report_only,
+            resolve_stale_issues=not integrity_report_only,
+            rebuild_tradable_on_execute=not maintenance_skip,
+            rebuild_tradable_in_test_mode=operator_mode == "temp" and maintenance_force,
+            daemon_loop_enabled=run_mode == "daemon" and diagnostics_mode == "none",
             daemon_active_interval_seconds=env_float("REFERENCE_GATEWAY_DAEMON_ACTIVE_INTERVAL_SECONDS", 900.0),
             daemon_after_hours_interval_seconds=env_float("REFERENCE_GATEWAY_DAEMON_AFTER_HOURS_INTERVAL_SECONDS", 3600.0),
-            market_publication_gap_fill_enabled=bool_override(overrides.market_publication_gap_fill_enabled, env_bool("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_ENABLED", True)),
+            market_publication_gap_fill_enabled=not maintenance_skip,
             market_publication_gap_fill_days=env_int("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_DAYS", 14),
             terminal_rich_enabled=env_bool_auto("REFERENCE_GATEWAY_TERMINAL_RICH_ENABLED", sys.stdout.isatty()),
             terminal_refresh_seconds=env_float("REFERENCE_GATEWAY_TERMINAL_REFRESH_SECONDS", 1.0),
@@ -132,6 +151,8 @@ class ReferenceGatewayConfig:
     def public_dict(self) -> dict[str, object]:
         return {
             "service": {
+                "operator_mode": self.operator_mode,
+                "run_mode": self.run_mode,
                 "bind": self.bind,
                 "host": self.host,
                 "port": self.port,
@@ -157,6 +178,7 @@ class ReferenceGatewayConfig:
             "execution": {
                 "execute": self.execute,
                 "daemon_loop_enabled": self.daemon_loop_enabled,
+                "diagnostics_mode": self.diagnostics_mode,
                 "daemon_active_interval_seconds": self.daemon_active_interval_seconds,
                 "daemon_after_hours_interval_seconds": self.daemon_after_hours_interval_seconds,
                 "preflight_enabled": self.preflight_enabled,
@@ -168,11 +190,13 @@ class ReferenceGatewayConfig:
                 "active_ticker_new_candidate_limit": self.active_ticker_new_candidate_limit,
             },
             "integrity": {
+                "mode": self.integrity_mode,
                 "write_discovered_issues": self.write_discovered_issues,
                 "immediate_tradability_block_enabled": self.immediate_tradability_block_enabled,
                 "resolve_stale_issues": self.resolve_stale_issues,
             },
             "maintenance": {
+                "mode": self.maintenance_mode,
                 "after_hours_writes_only": self.after_hours_writes_only,
                 "market_hours_write_override": self.market_hours_write_override,
                 "market_hours_write_reason": self.market_hours_write_reason,
@@ -253,8 +277,9 @@ def string_override(value: str | None, fallback: str) -> str:
     return value.strip() if value is not None and value.strip() else fallback
 
 
-def bool_override(value: bool | None, fallback: bool) -> bool:
-    return fallback if value is None else bool(value)
+def normalized_choice(value: str | None, fallback: str, choices: set[str], default: str) -> str:
+    candidate = (value or fallback or default).strip().lower().replace("_", "-")
+    return candidate if candidate in choices else default
 
 
 def env_int(name: str, default: int) -> int:
