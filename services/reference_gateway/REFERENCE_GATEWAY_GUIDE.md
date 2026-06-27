@@ -309,10 +309,9 @@ Allowed:
 - run full audit and write reports
 
 The service runs a startup preflight before normal work. It checks ClickHouse,
-artifact storage, Massive reference API access when active ticker reconciliation
-is requested, and IBKR Client Portal authentication when IBKR resolution is
-enabled or required. If a required dependency is missing, the gateway exits
-instead of running partial maintenance.
+artifact storage, Massive reference API access, and IBKR Client Portal
+authentication for source sync. If a required dependency is missing, the
+gateway exits instead of running partial maintenance.
 
 Daemon runs also write JSONL runtime logs:
 

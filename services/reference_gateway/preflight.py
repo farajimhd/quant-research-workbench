@@ -29,12 +29,12 @@ class PreflightResult:
         return asdict(self)
 
 
-def run_preflight(config: ReferenceGatewayConfig, *, require_active_ticker_dependencies: bool, logger: RuntimeLogger | None = None) -> PreflightResult:
+def run_preflight(config: ReferenceGatewayConfig, *, require_source_sync_dependencies: bool, logger: RuntimeLogger | None = None) -> PreflightResult:
     checks = [
         check_artifact_storage(config),
         check_clickhouse(config),
     ]
-    if require_active_ticker_dependencies:
+    if require_source_sync_dependencies:
         checks.append(check_massive(config))
         checks.append(check_ibkr(config))
     status = "ok" if all(check.status == "ok" for check in checks) else "failed"

@@ -119,16 +119,16 @@ To print the table ownership groups:
 python -m services.reference_gateway.main --print-table-groups
 ```
 
-To run the market-open ticker reconciliation once:
+Source sync is built into operational gateway runs. It is not a separate
+operator switch. A normal run fetches Massive active US stock tickers, compares
+them against `id_symbol_v1`/`id_listing_v1`, fetches compact Massive overview
+evidence for new tickers, and queries IBKR Client Portal for conid evidence.
 
 ```powershell
-python -m services.reference_gateway.main --active-ticker-check
+.\scripts\run_reference_gateway.ps1 -Mode Prod
 ```
 
-That pass fetches Massive active US stock tickers, compares them against
-`id_symbol_v1`/`id_listing_v1`, fetches compact Massive overview evidence for
-new tickers, and queries IBKR Client Portal for conid evidence. IBKR is required
-for active ticker reconciliation; if Client Portal is unavailable or not
+IBKR is required for source sync; if Client Portal is unavailable or not
 authenticated, preflight fails.
 
 Without `--execute`, this is still report-only. With `--execute`, discovered
@@ -138,8 +138,8 @@ issue rows are the source-of-truth blocker; the audit is not allowed to patch
 
 In execute mode the gateway also rebuilds `feature_tradable_universe_v1` and
 `feature_scanner_static_v1` before audit, using the existing step 6 publisher.
-If active-ticker reconciliation writes new open issues, it rebuilds the feature
-publications again so the latest tradable universe reflects those new blockers.
+If source sync writes new open issues, it rebuilds the feature publications
+again so the latest tradable universe reflects those new blockers.
 During market hours, full rebuilds are blocked by policy, so the gateway uses a
 targeted immediate blocker instead: it inserts newer replacement rows for
 currently tradable latest-universe symbols touched by open issues, with
@@ -167,7 +167,6 @@ instead of a guessed tradable listing.
 Useful controls:
 
 ```text
-REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_ENABLED=false
 REFERENCE_GATEWAY_ACTIVE_TICKER_PAGE_LIMIT=1000
 REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES=1000
 REFERENCE_GATEWAY_ACTIVE_TICKER_NEW_CANDIDATE_LIMIT=250
@@ -213,11 +212,10 @@ Wrapper equivalents:
 .\scripts\run_reference_gateway.ps1 -Execute -NoImmediateTradabilityBlock
 ```
 
-IBKR Client Portal Gateway must be running and authenticated for active ticker
-maintenance because conid resolution is required. If active ticker sync is
-enabled and IBKR is unavailable, preflight fails instead of running partial
-maintenance. IBKR results are compacted to candidate contract fields; the
-gateway does not persist raw IBKR payloads.
+IBKR Client Portal Gateway must be running and authenticated because source sync
+requires conid resolution. If IBKR is unavailable, preflight fails instead of
+running partial maintenance. IBKR results are compacted to candidate contract
+fields; the gateway does not persist raw IBKR payloads.
 
 Reports are written under:
 
@@ -276,7 +274,7 @@ mapping evidence has been reviewed.
 The gateway can also run as a simple daemon:
 
 ```powershell
-.\scripts\run_reference_gateway.ps1 -Execute -ActiveTickerCheck -Daemon
+.\scripts\run_reference_gateway.ps1 -Mode Prod
 ```
 
 In daemon mode, the process reruns the same one-shot gateway command. During the

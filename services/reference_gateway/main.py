@@ -29,13 +29,18 @@ from services.reference_gateway.tradability import tradability_rule_markdown
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Reference gateway audit and sync planner.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Reference gateway audit and sync planner. Source sync is built "
+            "into operational runs; flags below control execution, integrity, "
+            "maintenance, and diagnostics."
+        )
+    )
     execution = parser.add_argument_group("execution mode")
     database = parser.add_argument_group("database targets")
-    source_sync = parser.add_argument_group("objective 1: source sync")
-    integrity = parser.add_argument_group("objective 2: integrity guardrail")
-    maintenance = parser.add_argument_group("objective 3: maintenance")
-    observability = parser.add_argument_group("objective 4: observability and diagnostics")
+    integrity = parser.add_argument_group("integrity guardrail controls")
+    maintenance = parser.add_argument_group("maintenance controls")
+    observability = parser.add_argument_group("observability and diagnostics")
 
     execution.add_argument("--execute", action=argparse.BooleanOptionalAction, default=None, help="Override REFERENCE_GATEWAY_EXECUTE for this run.")
     execution.add_argument(
@@ -63,13 +68,6 @@ def parse_args() -> argparse.Namespace:
     database.add_argument("--read-database", default="", help="Canonical source database. Defaults to REFERENCE_* read DB or q_live.")
     database.add_argument("--write-database", default="", help="Target database for writes. Defaults to REFERENCE_* write DB or q_live.")
     database.add_argument("--test-write-database", default="", help="Shortcut for temp testing: read from q_live/read DB and write to this temp DB.")
-
-    source_sync.add_argument(
-        "--active-ticker-check",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Fetch Massive active tickers, query IBKR conids, and compare them with q_live symbols.",
-    )
 
     integrity.add_argument(
         "--write-discovered-issues",
@@ -196,10 +194,10 @@ def main() -> None:
         write_policy=asdict(write_policy),
         argv=sys.argv[1:],
     )
-    should_check_tickers = config.active_ticker_check_enabled
+    should_sync_sources = True
     if config.preflight_enabled:
         started = time.perf_counter()
-        preflight = run_preflight(config, require_active_ticker_dependencies=bool(should_check_tickers), logger=logger)
+        preflight = run_preflight(config, require_source_sync_dependencies=should_sync_sources, logger=logger)
         add_operation(
             "Dependency preflight",
             preflight.status,
@@ -267,25 +265,25 @@ def main() -> None:
         )
     if report_path:
         emit(f"report={report_path}")
-    if should_check_tickers:
+    if should_sync_sources:
         started = time.perf_counter()
         plan = run_active_ticker_plan(config)
         plan_path = write_active_ticker_plan(plan, config.report_root_win) if args.write_report else None
         add_operation(
-            "Active ticker check",
+            "Source sync",
             "completed",
             f"provider={plan.provider_rows:,} missing={plan.missing_tickers:,} overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,}",
             rows=plan.missing_tickers,
             seconds=time.perf_counter() - started,
         )
         emit(
-            "active_ticker_check=done "
+            "source_sync=done "
             f"provider_rows={plan.provider_rows:,} known_symbols={plan.known_active_symbols:,} "
             f"missing={plan.missing_tickers:,} overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
             f"saturated={plan.provider_saturated} wall_seconds={plan.wall_seconds:.2f}"
         )
         if plan_path:
-            emit(f"active_ticker_report={plan_path}")
+            emit(f"source_sync_report={plan_path}")
         if config.execute:
             issue_write = None
             graph_write = None
@@ -293,11 +291,11 @@ def main() -> None:
             if config.write_discovered_issues:
                 started = time.perf_counter()
                 issue_write = write_active_ticker_mapping_issues(config, plan)
-                add_operation("Write active ticker issues", "completed", issue_write.reason, rows=issue_write.written, seconds=time.perf_counter() - started)
-                emit("active_ticker_issue_write=" + json.dumps(asdict(issue_write), sort_keys=True))
+                add_operation("Write source-sync issues", "completed", issue_write.reason, rows=issue_write.written, seconds=time.perf_counter() - started)
+                emit("source_sync_issue_write=" + json.dumps(asdict(issue_write), sort_keys=True))
                 if config.immediate_tradability_block_enabled:
                     started = time.perf_counter()
-                    block_result = block_latest_universe_for_open_issues(config, reason="active_ticker_issue_write")
+                    block_result = block_latest_universe_for_open_issues(config, reason="source_sync_issue_write")
                     add_operation(
                         "Immediate tradability block",
                         block_result.status,
@@ -307,8 +305,8 @@ def main() -> None:
                     )
                     emit("immediate_tradability_block=" + json.dumps(asdict(block_result), sort_keys=True))
             else:
-                add_operation("Write active ticker issues", "skipped", "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
-                emit("active_ticker_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
+                add_operation("Write source-sync issues", "skipped", "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
+                emit("source_sync_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
             if config.write_canonical_graph and write_policy.writes_allowed:
                 started = time.perf_counter()
                 graph_write = write_canonical_graph_candidates(config, plan)
@@ -349,7 +347,7 @@ def main() -> None:
                 changed_rows += graph_issue_write.written
             if changed_rows > 0 and config.rebuild_tradable_on_execute and write_policy.writes_allowed:
                 started = time.perf_counter()
-                rebuild = rebuild_tradable_publications(config, reason="post_active_ticker_issue_write")
+                rebuild = rebuild_tradable_publications(config, reason="post_source_sync_issue_write")
                 add_operation("Rebuild tradable publications", rebuild.status, rebuild.reason, seconds=time.perf_counter() - started)
                 emit("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True))
                 audit_started = time.perf_counter()
@@ -406,7 +404,6 @@ def config_overrides_from_args(args: argparse.Namespace) -> ReferenceGatewayConf
         daemon_loop_enabled=args.daemon,
         market_publication_gap_fill_enabled=args.market_publication_gap_fill,
         preflight_enabled=args.preflight,
-        active_ticker_check_enabled=args.active_ticker_check,
     )
 
 

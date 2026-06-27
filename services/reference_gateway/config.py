@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 from research.mlops.clickhouse import default_clickhouse_password, default_clickhouse_user
@@ -29,7 +29,6 @@ class ReferenceGatewayConfigOverrides:
     daemon_loop_enabled: bool | None = None
     market_publication_gap_fill_enabled: bool | None = None
     preflight_enabled: bool | None = None
-    active_ticker_check_enabled: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +50,6 @@ class ReferenceGatewayConfig:
     massive_api_key_present: bool
     ibkr_base_url: str
     preflight_enabled: bool
-    active_ticker_check_enabled: bool
     active_ticker_max_pages: int
     active_ticker_page_limit: int
     active_ticker_new_candidate_limit: int
@@ -110,7 +108,6 @@ class ReferenceGatewayConfig:
             massive_api_key_present=bool(env_string("MASSIVE_API_KEY", "")),
             ibkr_base_url=env_string("IBKR_CPAPI_BASE_URL", "https://localhost:5000/v1/api").rstrip("/"),
             preflight_enabled=bool_override(overrides.preflight_enabled, env_bool("REFERENCE_GATEWAY_PREFLIGHT_ENABLED", True)),
-            active_ticker_check_enabled=bool_override(overrides.active_ticker_check_enabled, env_bool("REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_ENABLED", False)),
             active_ticker_max_pages=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES", 1_000),
             active_ticker_page_limit=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_PAGE_LIMIT", 1_000),
             active_ticker_new_candidate_limit=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_NEW_CANDIDATE_LIMIT", 250),
@@ -133,11 +130,63 @@ class ReferenceGatewayConfig:
         )
 
     def public_dict(self) -> dict[str, object]:
-        payload = asdict(self)
-        payload["data_root_win"] = str(self.data_root_win)
-        payload["prepared_root_win"] = str(self.prepared_root_win)
-        payload["report_root_win"] = str(self.report_root_win)
-        return payload
+        return {
+            "service": {
+                "bind": self.bind,
+                "host": self.host,
+                "port": self.port,
+                "is_workstation": self.is_workstation,
+                "data_root_win": str(self.data_root_win),
+                "prepared_root_win": str(self.prepared_root_win),
+                "report_root_win": str(self.report_root_win),
+            },
+            "database": {
+                "clickhouse_url": self.clickhouse_url,
+                "clickhouse_user": self.clickhouse_user,
+                "clickhouse_password_present": self.clickhouse_password_present,
+                "read_database": self.clickhouse_read_database,
+                "write_database": self.clickhouse_write_database,
+                "test_write_mode": self.test_write_mode,
+            },
+            "providers": {
+                "massive_base_url": self.massive_base_url,
+                "massive_api_key_present": self.massive_api_key_present,
+                "ibkr_base_url": self.ibkr_base_url,
+                "ibkr_required_for_source_sync": True,
+            },
+            "execution": {
+                "execute": self.execute,
+                "daemon_loop_enabled": self.daemon_loop_enabled,
+                "daemon_active_interval_seconds": self.daemon_active_interval_seconds,
+                "daemon_after_hours_interval_seconds": self.daemon_after_hours_interval_seconds,
+                "preflight_enabled": self.preflight_enabled,
+            },
+            "source_sync": {
+                "enabled_for_operational_runs": True,
+                "active_ticker_max_pages": self.active_ticker_max_pages,
+                "active_ticker_page_limit": self.active_ticker_page_limit,
+                "active_ticker_new_candidate_limit": self.active_ticker_new_candidate_limit,
+            },
+            "integrity": {
+                "write_discovered_issues": self.write_discovered_issues,
+                "immediate_tradability_block_enabled": self.immediate_tradability_block_enabled,
+                "resolve_stale_issues": self.resolve_stale_issues,
+            },
+            "maintenance": {
+                "after_hours_writes_only": self.after_hours_writes_only,
+                "market_hours_write_override": self.market_hours_write_override,
+                "market_hours_write_reason": self.market_hours_write_reason,
+                "write_canonical_graph": self.write_canonical_graph,
+                "rebuild_tradable_on_execute": self.rebuild_tradable_on_execute,
+                "rebuild_tradable_in_test_mode": self.rebuild_tradable_in_test_mode,
+                "market_publication_gap_fill_enabled": self.market_publication_gap_fill_enabled,
+                "market_publication_gap_fill_days": self.market_publication_gap_fill_days,
+            },
+            "terminal": {
+                "rich_enabled": self.terminal_rich_enabled,
+                "refresh_seconds": self.terminal_refresh_seconds,
+            },
+        }
 
     @property
     def clickhouse_database(self) -> str:

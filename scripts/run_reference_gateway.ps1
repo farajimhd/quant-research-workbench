@@ -15,9 +15,6 @@ param(
     [switch]$Daemon,
     [switch]$NoDaemon,
 
-    # Objective 1: source sync.
-    [switch]$ActiveTickerCheck,
-
     # Objective 2: integrity guardrail.
     [switch]$NoWriteDiscoveredIssues,
     [switch]$NoResolveStaleIssues,
@@ -56,7 +53,6 @@ if ($Mode -eq "Prod") {
         $WriteDatabase = "q_live"
     }
     $Execute = $true
-    $ActiveTickerCheck = $true
     $Daemon = $true
 }
 elseif ($Mode -eq "Temp") {
@@ -73,7 +69,6 @@ elseif ($Mode -eq "Temp") {
         $MarketHoursWriteReason = "reference gateway temp mode"
     }
     $Execute = $true
-    $ActiveTickerCheck = $true
     $EnsureMarketPublicationSchema = $true
     $MarketHoursWriteOverride = $true
 }
@@ -108,9 +103,6 @@ if ($PrintRules) {
 }
 if ($PrintTableGroups) {
     $argsList += "--print-table-groups"
-}
-if ($ActiveTickerCheck) {
-    $argsList += "--active-ticker-check"
 }
 if ($EnsureMarketPublicationSchema) {
     $argsList += "--ensure-market-publication-schema"

@@ -40,9 +40,8 @@ def run_reference_daemon(config: ReferenceGatewayConfig, base_args: list[str]) -
         write_database=config.clickhouse_write_database,
         base_args=base_args,
     )
-    active_ticker_requested = "--active-ticker-check" in base_args or config.active_ticker_check_enabled
     if config.preflight_enabled:
-        result = run_preflight(config, require_active_ticker_dependencies=active_ticker_requested, logger=logger)
+        result = run_preflight(config, require_source_sync_dependencies=True, logger=logger)
         print("reference_gateway_preflight=" + json.dumps(result.public_dict(), sort_keys=True), flush=True)
         if result.status != "ok":
             logger.event("daemon_failed", reason="preflight_failed")
@@ -79,8 +78,6 @@ def run_daemon_cycle(config: ReferenceGatewayConfig, base_args: list[str], *, lo
     if active and config.after_hours_writes_only and not config.market_hours_write_override:
         if "--execute" not in command and "--no-execute" not in command:
             command.append("--execute")
-        if "--active-ticker-check" not in command:
-            command.append("--active-ticker-check")
         if "--no-write-discovered-issues" not in command:
             command.append("--write-discovered-issues")
         if "--no-write-canonical-graph" not in command:

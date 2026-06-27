@@ -14,6 +14,7 @@ fixed version before moving to the next stage.
 | C3 | Stage 1 | Keep advanced knobs, but provide one normal prod knob and one normal temp/debug knob so routine operation is not a long argument matrix. | Fixed |
 | C4 | Stage 1 | Explain the gateway by objectives, not by defensive flags: source sync and integrity can run during market hours; maintenance should run after hours. | Fixed |
 | C5 | Stage 1 | Remove stale defensive knobs and group the remaining controls by objective. IBKR is required for active ticker conid resolution, so it should not have a bypass flag. | Fixed |
+| C6 | Stage 1 | Active ticker sync is an internal source-sync task, not an operator/config knob. Config and args should expose high-level behavior groups only. | Fixed |
 
 ## Stage 1: Process Start And Configuration
 
@@ -42,8 +43,8 @@ remain available only when a run needs an intentional override.
 
 | Mode | Command | What it is for | What the wrapper sets |
 | --- | --- | --- | --- |
-| `Prod` | `.\scripts\run_reference_gateway.ps1 -Mode Prod` | Normal production daemon against `q_live`. | `ReadDatabase=q_live`, `WriteDatabase=q_live`, `Execute=true`, `ActiveTickerCheck=true`, `Daemon=true`. |
-| `Temp` | `.\scripts\run_reference_gateway.ps1 -Mode Temp` | One-shot test/debug run that reads production data but writes to a temp DB. | `ReadDatabase=q_live`, `TestWriteDatabase=q_reference_tmp`, `Execute=true`, `ActiveTickerCheck=true`, `EnsureMarketPublicationSchema=true`, `MarketHoursWriteOverride=true`, `MarketHoursWriteReason="reference gateway temp mode"`. |
+| `Prod` | `.\scripts\run_reference_gateway.ps1 -Mode Prod` | Normal production daemon against `q_live`. | `ReadDatabase=q_live`, `WriteDatabase=q_live`, `Execute=true`, `Daemon=true`. Source sync is built in. |
+| `Temp` | `.\scripts\run_reference_gateway.ps1 -Mode Temp` | One-shot test/debug run that reads production data but writes to a temp DB. | `ReadDatabase=q_live`, `TestWriteDatabase=q_reference_tmp`, `Execute=true`, `EnsureMarketPublicationSchema=true`, `MarketHoursWriteOverride=true`, `MarketHoursWriteReason="reference gateway temp mode"`. Source sync is built in. |
 | `Custom` | explicit advanced flags | Manual override mode. | The wrapper only passes the flags you provide. |
 
 Mode safety rules:
@@ -75,12 +76,11 @@ maintenance.
 
 | Wrapper argument | Python argument | Meaning | Effect in this command |
 | --- | --- | --- | --- |
-| `-Mode Prod` | expands to several Python arguments | Normal production mode. | Runs a q_live daemon with execution, active ticker reconciliation, preflight, IBKR resolution, and immediate tradability blocking. |
-| `-Mode Temp` | expands to several Python arguments | Normal test/debug mode. | Runs one temp-database execution pass, with schema setup and a market-hours test override. |
+| `-Mode Prod` | expands to several Python arguments | Normal production mode. | Runs a q_live daemon with execution, source sync, preflight, IBKR conid resolution, and immediate tradability blocking. |
+| `-Mode Temp` | expands to several Python arguments | Normal test/debug mode. | Runs one temp-database execution pass with source sync, schema setup, and a market-hours test override. |
 | `-ReadDatabase q_live` | `--read-database q_live` | Database used as the canonical source of existing reference data. | The gateway reads existing identity, issue, and publication rows from `q_live`. |
 | `-WriteDatabase q_live` | `--write-database q_live` | Database where allowed writes go. | The gateway writes issues, blocks, graph updates, and publication updates to `q_live` when policy allows. |
 | `-Execute` | `--execute` | Allows write operations. Without this, the gateway is report-only. | The gateway may mutate ClickHouse, but write policy still blocks risky market-hours operations. |
-| `-ActiveTickerCheck` | `--active-ticker-check` | Poll Massive active US tickers and compare them to the canonical symbol graph. | The daemon will look for new/missing Massive tickers every cycle. |
 | `-Daemon` | `--daemon` | Run continuously instead of a single pass. | The parent process loops forever until stopped or until a child cycle fails. |
 
 Useful wrapper arguments not used in the command:
@@ -108,18 +108,33 @@ Removed stale controls:
 | Removed control | Why it was removed |
 | --- | --- |
 | `-NoIbkrResolution` / `--no-ibkr-resolution` / `REFERENCE_GATEWAY_IBKR_RESOLUTION_ENABLED` | Active ticker sync must find IBKR conids. Running without IBKR creates known-unusable candidates. |
-| `-NoIbkrRequired` / `--no-ibkr-required` / `REFERENCE_GATEWAY_IBKR_REQUIRED` | If active ticker sync is enabled and IBKR is unavailable, the gateway should fail preflight instead of running partial work. |
+| `-NoIbkrRequired` / `--no-ibkr-required` / `REFERENCE_GATEWAY_IBKR_REQUIRED` | IBKR is required for the source-sync objective, so the gateway should fail preflight instead of running partial work. |
 | `REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_MARKET_HOURS_ONLY` | Source sync is a core objective and can run during both active and after-hours daemon cycles. |
+| `-ActiveTickerCheck` / `--active-ticker-check` / `REFERENCE_GATEWAY_ACTIVE_TICKER_CHECK_ENABLED` | Specific source-sync tasks are not public controls. Operational runs always include source sync. |
 
-### Important Config Values In Plain English
+### Config Groups In Plain English
 
-These values are loaded from env unless overridden by CLI.
+Runtime config is now logged in high-level groups. This keeps specific tasks
+such as Massive active-ticker reconciliation internal to the source-sync
+objective.
+
+| Group | What it controls | Examples |
+| --- | --- | --- |
+| `service` | Process identity and storage roots. | bind, port, workstation/share data root, report root. |
+| `database` | Read/write ClickHouse targets. | ClickHouse URL/user, read DB, write DB, test-write mode. |
+| `providers` | External dependency endpoints and presence checks. | Massive base URL/API-key presence, IBKR Client Portal base URL, IBKR required for source sync. |
+| `execution` | Whether this is a report-only, one-shot, or daemon run. | execute, daemon intervals, preflight. |
+| `source_sync` | Limits for source-sync tasks. The objective itself is always part of operational runs. | active ticker page limit, max pages, new-candidate cap. |
+| `integrity` | Issue writing, stale issue resolution, and immediate trading blocks. | write discovered issues, resolve stale issues, immediate tradability block. |
+| `maintenance` | After-hours/promotion/heavy maintenance behavior. | canonical graph writes, publication rebuilds, market publication gap fill. |
+| `terminal` | Operator display behavior. | Rich terminal enabled, refresh seconds. |
+
+Important grouped values:
 
 | Config value | Default | Meaning | Behavior if `true` | Behavior if `false` |
 | --- | --- | --- | --- | --- |
 | `execute` | `false` | Whether the gateway may write. | Writes are possible if policy allows. | Report-only. |
 | `daemon_loop_enabled` | `false` | Whether the process repeats cycles. | Parent daemon keeps launching one-shot child cycles. | Single pass only. |
-| `active_ticker_check_enabled` | `false` | Whether to poll Massive active tickers. | Detects new/missing Massive tickers. | Skips ticker reconciliation. |
 | `preflight_enabled` | `true` | Whether startup dependency checks run. | Fails fast if required dependencies are down. | Gateway may fail later or run partial work. |
 | `write_discovered_issues` | `true` | Whether discovered problems become rows in `id_mapping_issue_v1`. | Problems become durable blockers. | Problems stay in reports only. |
 | `write_canonical_graph` | `true` | Whether clean candidates can be promoted into identity tables. | After-hours clean candidates can become canonical rows. | No identity graph promotion. |
@@ -146,7 +161,7 @@ Not all writes have the same risk.
 1. `scripts/run_reference_gateway.ps1` builds a Python command:
 
    ```powershell
-   python -m services.reference_gateway.main --read-database q_live --write-database q_live --execute --active-ticker-check --daemon
+   python -m services.reference_gateway.main --read-database q_live --write-database q_live --execute --daemon
    ```
 
    With `-Mode Prod`, the wrapper expands to the command above.
@@ -154,7 +169,7 @@ Not all writes have the same risk.
    With `-Mode Temp`, the wrapper expands to:
 
    ```powershell
-   python -m services.reference_gateway.main --read-database q_live --test-write-database q_reference_tmp --execute --active-ticker-check --ensure-market-publication-schema --market-hours-write-override --market-hours-write-reason "reference gateway temp mode"
+   python -m services.reference_gateway.main --read-database q_live --test-write-database q_reference_tmp --execute --ensure-market-publication-schema --market-hours-write-override --market-hours-write-reason "reference gateway temp mode"
    ```
 
 2. `services.reference_gateway.main` starts and parses command-line arguments.
@@ -179,15 +194,15 @@ Not all writes have the same risk.
    - `clickhouse_read_database = q_live`
    - `clickhouse_write_database = q_live`
    - `execute = true`
-   - `active_ticker_check_enabled = true`
    - `daemon_loop_enabled = true`
+   - source sync is built into the operational run
 
 7. Important default config values:
 
    - `preflight_enabled = true`
      - run dependency checks before useful work
-   - IBKR Client Portal is required when active ticker reconciliation is active
-     - active ticker sync cannot be run without conid evidence
+   - IBKR Client Portal is required for source sync
+     - source sync cannot be run without conid evidence
    - `immediate_tradability_block_enabled = true`
      - immediately publish non-tradable replacement rows for currently tradable
        rows touched by open issues
@@ -241,13 +256,13 @@ the next stages reviewable without reading source code.
 1. Require `--write-database q_live` for daemon mode unless explicitly running
    temp/test mode.
 2. Refuse daemon mode if `--execute` is not set.
-3. Require `--active-ticker-check` in daemon mode, because otherwise the service
-   is mostly just periodic audit.
+3. Keep source sync internal to the gateway; do not reintroduce specific
+   source-sync task flags.
 4. Make data root explicit and fail if it is inferred from the workstation share.
 5. Keep the current data-root inference because it matches news/sec gateway
    behavior.
 6. Reduce active daemon interval from `900s` to a shorter interval.
 7. Keep active daemon interval at `900s` because reference data is slow-moving.
-8. Make IBKR required only when active ticker reconciliation is enabled.
-9. Keep IBKR required by default for all daemon runs because unresolved conids
+8. Make IBKR required only when source sync is active.
+9. Keep IBKR required by default for all operational runs because unresolved conids
    are trading blockers.
