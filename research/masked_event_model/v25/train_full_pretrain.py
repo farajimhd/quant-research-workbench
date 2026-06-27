@@ -54,6 +54,13 @@ DEFAULTS: dict[str, Any] = {
     "bottleneck_force_fp32": False,
     "event_mask_ratio": 0.70,
     "event_mask_schedule": "fixed",
+    "event_mask_high_probability": 0.70,
+    "event_mask_zero_probability": 0.10,
+    "event_mask_low_probability": 0.20,
+    "event_mask_high_min": 0.50,
+    "event_mask_high_max": 0.80,
+    "event_mask_low_min": 0.01,
+    "event_mask_low_max": 0.50,
     "min_masked_events": 1,
     "header_bit_corruption_prob": 0.20,
     "header_bit_corruption_ratio": 0.05,
@@ -139,6 +146,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bottleneck-force-fp32", action=argparse.BooleanOptionalAction, default=DEFAULTS["bottleneck_force_fp32"])
     parser.add_argument("--event-mask-ratio", type=float, default=DEFAULTS["event_mask_ratio"])
     parser.add_argument("--event-mask-schedule", choices=("fixed", "mixed"), default=DEFAULTS["event_mask_schedule"])
+    parser.add_argument("--event-mask-high-probability", type=float, default=DEFAULTS["event_mask_high_probability"])
+    parser.add_argument("--event-mask-zero-probability", type=float, default=DEFAULTS["event_mask_zero_probability"])
+    parser.add_argument("--event-mask-low-probability", type=float, default=DEFAULTS["event_mask_low_probability"])
+    parser.add_argument("--event-mask-high-min", type=float, default=DEFAULTS["event_mask_high_min"])
+    parser.add_argument("--event-mask-high-max", type=float, default=DEFAULTS["event_mask_high_max"])
+    parser.add_argument("--event-mask-low-min", type=float, default=DEFAULTS["event_mask_low_min"])
+    parser.add_argument("--event-mask-low-max", type=float, default=DEFAULTS["event_mask_low_max"])
     parser.add_argument("--header-loss-weight", type=float, default=DEFAULTS["header_loss_weight"])
     parser.add_argument("--learning-rate", type=float, default=DEFAULTS["learning_rate"])
     parser.add_argument("--scheduler-eta-min", type=float, default=DEFAULTS["scheduler_eta_min"])
@@ -242,6 +256,13 @@ def main() -> None:
             "bottleneck_force_fp32": bool(args.bottleneck_force_fp32),
             "event_mask_ratio": float(args.event_mask_ratio),
             "event_mask_schedule": args.event_mask_schedule,
+            "event_mask_high_probability": float(args.event_mask_high_probability),
+            "event_mask_zero_probability": float(args.event_mask_zero_probability),
+            "event_mask_low_probability": float(args.event_mask_low_probability),
+            "event_mask_high_min": float(args.event_mask_high_min),
+            "event_mask_high_max": float(args.event_mask_high_max),
+            "event_mask_low_min": float(args.event_mask_low_min),
+            "event_mask_low_max": float(args.event_mask_low_max),
             "header_loss_weight": float(args.header_loss_weight),
             "learning_rate": float(args.learning_rate),
             "scheduler": "shard_decay_cosine",
