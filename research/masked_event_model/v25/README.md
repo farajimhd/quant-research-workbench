@@ -205,6 +205,20 @@ python research\masked_event_model\\v25\train_full_pretrain_mixed_cache.py
 Use `--print-only` to inspect the fully expanded trainer command before
 starting the run. Use `--repeatable-randomness` only for deterministic replay.
 
+The full dual-cache v25 header-reconstruction pretrain launcher starts a fresh
+run over all discovered train shards from both `cache_20260611_195259` and
+`cache_pretrain_xonly_20260621_140813`. It validates from
+`cache_20260617_112833`, uses embedding dim `32`, batch size `8192`, BF16 AMP,
+torch compile, shard-decay cosine scheduling, and runs 2 epochs by default:
+
+```powershell
+python research\masked_event_model\\v25\train_full_pretrain_dual_cache.py
+```
+
+Use `--primary-train-shards` or `--secondary-train-shards` only when you want to
+cap a cache for a shorter test run. The default `0` value means all discovered
+shards in that cache.
+
 After `cache_pretrain_xonly_20260621_140813` has enough x-only shards, continue
 from the latest mixed-cache checkpoint using only that cache:
 
