@@ -21,6 +21,7 @@ source first.
 | C11 | Flow Stage 2 | Preflight and dependency gate reviewed and accepted. | Accepted |
 | C12 | Flow Stage 3 | Write policy and market-hours decision reviewed and accepted. | Accepted |
 | C13 | Flow Stage 4 | Audit and current-state read reviewed and accepted. Audit warnings/errors must be visible as grouped terminal aggregates plus recent/high-priority messages. | Accepted |
+| C14 | Flow Stage 5 | Source sync is the core service function. It must run on predefined provider/data-domain frequencies and sync active-ticker data from Massive, IBKR, SEC, FINRA, and future providers without using low-level operator flags. | Added |
 
 ## Reviewed Flow Stages
 
@@ -385,6 +386,137 @@ The terminal must show audit warnings and errors in two ways:
 - An audit error means structural inconsistency and may stop or fail the run.
 
 Review status: accepted.
+
+## Stage 5: Source Sync And Provider Schedules
+
+This stage answers: how does the gateway keep active ticker reference data
+fresh, complete, and safe for trading?
+
+Source sync is the most important operational part of this service. It is not
+a one-off command and it is not controlled by a low-level public flag. It is a
+scheduled set of provider/data-domain jobs that run at predefined frequencies.
+
+### Source Sync Objective
+
+The objective is to keep the reference graph aligned across providers:
+
+- Massive active ticker universe
+- IBKR tradability and conid evidence
+- SEC issuer/company identity evidence
+- FINRA short-sale or regulatory publication evidence
+- future providers that add useful reference fields
+
+The gateway should treat source sync as a recurring data freshness process.
+Each provider/data domain has its own frequency because the source data updates
+at different speeds and may have different rate limits.
+
+### Active Ticker Sync
+
+Active ticker sync is always part of an operational source-sync cycle.
+
+It should:
+
+- pull active ticker listings from Massive
+- compare them with canonical symbol/listing/security rows in `q_live`
+- identify new, missing, changed, inactive, or delisted candidates
+- keep exchange/currency/security-type relationships consistent
+- avoid promoting a candidate into tradable state until required provider
+  evidence is complete
+
+If a new active ticker appears, the gateway gathers the required evidence from
+other providers before the ticker can become tradable.
+
+### IBKR Contract Sync
+
+IBKR is required for tradable US stock candidates because order routing needs a
+valid conid.
+
+For each candidate that needs IBKR evidence, the gateway should:
+
+- query IBKR Client Portal for candidate contracts
+- filter to supported US stock contracts
+- require USD currency for the current trading scope
+- handle multiple returned contracts as an ambiguity, not as success
+- write an issue and keep the candidate non-tradable when conid resolution is
+  missing or ambiguous
+
+IBKR evidence is not the source of truth for issuer identity. It is routing
+evidence for tradability.
+
+### SEC Identity Sync
+
+SEC data helps validate issuer/company identity.
+
+For active tickers where SEC identity is applicable, the gateway should sync:
+
+- CIK associations when available
+- issuer/company names that help validate durable identity
+- evidence that helps detect ticker/name changes or weak identity rows
+
+SEC sync can run at a different frequency from Massive active ticker sync
+because SEC reference data does not update with the same cadence.
+
+### FINRA And Regulatory Publication Sync
+
+FINRA and similar sources are publication-style providers. Their data may be
+useful for static scanner fields, short-sale context, or regulatory labels.
+
+These jobs should:
+
+- run on their own publication-aware frequency
+- update only fields or tables owned by the publication source
+- avoid overwriting canonical graph identity fields directly
+- write issue rows if the publication cannot be linked cleanly to a known
+  active symbol/listing/security
+
+### Provider Frequency Model
+
+The gateway should have predefined sync frequencies by provider/data domain.
+
+Examples:
+
+| Sync Domain | Example Frequency | Reason |
+| --- | --- | --- |
+| Massive active ticker universe | frequent during market/premarket, less frequent after hours | new tickers, halts, or active-status drift affect scanner/tradability quickly |
+| IBKR conid resolution | on demand for new or unresolved candidates, plus periodic retry | IBKR is needed only when a candidate needs routing evidence |
+| SEC issuer identity | daily or after SEC refresh windows | issuer identity changes slower than market data |
+| FINRA/regulatory publications | provider-specific publication schedule | publication data usually arrives on known delayed schedules |
+| Derived tradable publications | after source sync and integrity checks, subject to maintenance policy | derived rows should reflect clean provider evidence |
+
+The operator should not need to enable these one by one. The high-level
+`Mode`, `Run`, `Integrity`, and `Maintenance` knobs decide whether the gateway
+runs normally, in temp mode, once, or continuously. Provider schedules are
+service configuration, not routine operator decisions.
+
+### Source Sync Writes
+
+Source sync may write:
+
+- provider observation rows
+- source-sync issue rows
+- evidence needed to explain why a ticker is non-tradable
+- candidate rows in temp/test mode
+
+Source sync should not blindly overwrite canonical rows. If a provider
+conflicts with current canonical data, the gateway writes an issue and keeps
+the affected candidate non-tradable until the conflict is resolved.
+
+### Stage 5 Rules
+
+- Source sync is always enabled for operational runs.
+- Source sync is scheduled by provider/data domain.
+- Provider frequencies are predefined service configuration.
+- Massive is the active-ticker universe entry point.
+- IBKR is required for conid/routing evidence, not issuer identity truth.
+- SEC, FINRA, and future providers enrich or validate active ticker data on
+  their own schedules.
+- Missing, ambiguous, or conflicting required evidence makes the affected
+  security non-tradable.
+- Source sync writes evidence and issues during market hours when needed.
+- Promotion into canonical graph/publication tables follows the Stage 3
+  maintenance policy.
+
+Review status: under review.
 
 ## Public Operator Knobs
 
