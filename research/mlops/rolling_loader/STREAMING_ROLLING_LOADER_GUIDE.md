@@ -522,7 +522,7 @@ The target training batch contains these model-facing groups:
 | SEC filing tokens | `text_inputs["sec_filings"][*]` | `[B, 16, 8, 1024]` for token arrays |
 | XBRL fundamentals | `xbrl_inputs[*]` | `[B, 512]` per attribute |
 | future macro labels | `future_macro_bars` | `[B, label_timeframes, 5]` |
-| future intraday labels | `future_intraday_bars` | `[B, intraday_label_horizons, 5]` |
+| future intraday labels | `intraday_forward_labels[*]` | `[B, intraday_label_horizons, fields]` |
 | legacy labels dict | `labels[*]` | usually `[B]` |
 | audit context | `external_context` | source metadata, not primary model input |
 
@@ -620,6 +620,23 @@ bar_timestamp <= origin_timestamp_us
 
 Future bar labels are separate targets, not context features.
 
+For intraday labels, the ticker/month SSD cache path stores only
+origin-relative `next_*` labels. It does not store dense intraday bar grids and
+does not store `current_*` labels. ClickHouse should compute these labels with
+set-based ticker/month queries:
+
+```text
+event_timestamp_us > origin_timestamp_us
+event_timestamp_us <= origin_timestamp_us + horizon_us
+same ticker
+same session
+origin_timestamp_us + horizon_us <= session_end_us
+```
+
+The persisted cache artifact is an `intraday_forward_labels` table keyed by
+`origin_key`, with one mask per horizon. Horizons that cross the session end are
+unavailable rather than filled from the next trading day.
+
 ### Text And XBRL Inputs
 
 Ticker news, market news, and SEC filing text inputs come from token tables.
@@ -636,7 +653,7 @@ XBRL inputs are structured attribute arrays under `xbrl_inputs`, with shape
 Labels are part of the training batch and must remain separate from features:
 
 - future macro labels use `future_macro_bars`
-- future intraday labels use `future_intraday_bars`
+- future intraday labels use origin-relative `intraday_forward_labels`
 - legacy compatibility values remain under `labels`
 
 Features are selected with:
@@ -672,8 +689,8 @@ future label row ids
 
 High-frequency windows are gathered from per-ticker event caches. Token context
 payloads are gathered by cache ids. Daily macro/global bars are gathered by
-as-of index where `bar_end_us <= origin_timestamp_us`. Future labels are
-gathered from in-memory future event/bar indexes after the origin.
+as-of index where `bar_end_us <= origin_timestamp_us`. Intraday forward labels
+are gathered by `origin_key` from the precomputed label table.
 
 When `batch_size` eligible origins are available:
 

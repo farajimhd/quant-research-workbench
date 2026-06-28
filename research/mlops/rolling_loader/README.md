@@ -17,6 +17,10 @@ time features during cache construction. Absolute calendar/session features are
 computed once from `timestamp_us`; origin-relative deltas are computed later
 when a training batch resolves an event window.
 
+Intraday labels are stored as origin-relative `next_*` forward labels computed
+by set-based ClickHouse queries. The default SSD cache does not store dense
+intraday bar grids and does not store `current_*` intraday labels.
+
 ## Core Flow
 
 1. Resolve the ticker universe and create every per-ticker cache before replay.

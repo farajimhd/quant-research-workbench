@@ -69,7 +69,7 @@ cache_root/
         ticker=ABC/
           manifest.json
           events.parquet
-          intraday_bars.parquet
+          intraday_forward_labels.parquet
           daily_bars.parquet
           ticker_news_tokens.parquet
           sec_filing_tokens.parquet
@@ -251,38 +251,66 @@ lookback and forward label horizons, not the full historical bar stream.
 Global daily bars are cheap and can be stored once per month/global package for
 the required symbol set and date span.
 
-## Intraday Bars And Labels
+## Intraday Forward Labels
 
-Intraday bars are built once per ticker/month package from the stored event
-stream. They are not rebuilt per origin.
+Dense intraday bar grids are not stored by default. At small horizons such as
+`100ms`, a full session grid can become large and sparse while training only
+uses labels attached to event origins.
 
-For each trading session and each configured horizon:
+The builder should ask ClickHouse to compute origin-relative forward labels
+set-wise for each ticker/month package. This is not a per-origin query. It is
+one bounded query per ticker/month, or per ticker/month/horizon group, that
+joins origins to later events in the same session.
 
-```text
-session_start = 04:00:00 America/New_York
-session_end = 20:00:00 America/New_York
-bar_index = floor((timestamp_us - session_start_us) / horizon_us)
-```
-
-Bars are session-bounded. A bar for a late after-hours origin must never use
-events from the next trading day.
-
-Origin-to-bar lookup is closed-form:
+For each origin and horizon:
 
 ```text
-origin_bar_index = floor((origin_timestamp_us - session_start_us) / horizon_us)
+window_start_us = origin_timestamp_us
+window_end_us = origin_timestamp_us + horizon_us
 ```
 
-Intraday targets include current and next bars for the configured horizons:
+The label aggregates events that satisfy:
 
 ```text
-current_100ms, current_250ms, ...
-next_100ms, next_250ms, ...
+event_ticker_id = origin_ticker_id
+event_timestamp_us > origin_timestamp_us
+event_timestamp_us <= origin_timestamp_us + horizon_us
+event_session = origin_session
 ```
 
-Current intraday bars are labels, not context features, because a current bar
-can include events after the origin inside the same bar interval. They must not
-be fed as no-lookahead features.
+There are no `current_*` intraday labels. Current fixed-grid bars are ambiguous
+for event origins because they can include after-origin events inside the same
+bar bucket. The persisted label table contains only `next_*` targets.
+
+Example persisted columns:
+
+```text
+origin_key
+ticker_id
+origin_ordinal
+origin_timestamp_us
+next_100ms_bid
+next_100ms_ask
+next_100ms_bid_size
+next_100ms_ask_size
+next_100ms_trade_count
+next_100ms_quote_count
+next_100ms_available
+next_250ms_...
+```
+
+Session boundaries are hard validity boundaries:
+
+```text
+origin_timestamp_us + horizon_us <= session_end_us
+```
+
+If the forward window crosses the 20:00 America/New_York session end, that
+horizon is masked unavailable for the origin. The query must not pull events
+from the next trading day.
+
+Full dense intraday bars may be emitted only under an explicit debug/profiling
+option. They are not part of the default permanent cache.
 
 ## Training-Time Materialization
 
@@ -301,8 +329,8 @@ At materialization time, the loader:
 2. Resolves event windows by ordinal range.
 3. Reads raw compact event columns and cached event time features.
 4. Computes origin-relative time deltas.
-5. Resolves token, XBRL, daily, global, and intraday label indexes by as-of or
-   forward rules.
+5. Resolves token, XBRL, daily, global, and precomputed intraday forward label
+   rows by as-of, forward, or `origin_key` rules.
 6. Builds model-facing tensors for the requested batch.
 
 An optional small rolling RAM or temporary SSD queue can hold ready batches
@@ -339,7 +367,7 @@ Long-running tasks are split into:
 - ticker/month XBRL fetch
 - ticker/month daily bar fetch
 - event time-feature computation
-- intraday bar construction
+- intraday forward-label query/fetch
 - range metadata construction
 - package write
 - package audit
@@ -353,8 +381,7 @@ work through one sequential stage:
   ticker/month event reads.
 - `context_fetch_workers`: higher concurrency for smaller token, XBRL, and bar
   reads.
-- `cpu_polars_workers`: vectorized time-feature, intraday-bar, and range-index
-  construction.
+- `cpu_polars_workers`: vectorized time-feature and range-index construction.
 - `disk_write_workers`: independent Parquet/JSON writes after each payload is
   ready.
 - `audit_workers`: low-concurrency source checks and invariant checks.
@@ -370,10 +397,9 @@ For a ticker/month package:
 ```text
 event fetch --------------> event time features ---> events write
        |                         |
-       |                         +----> intraday bars ---> intraday write
-       |                         |
        |                         +----> event ranges -----> ranges write
        |
+intraday label query ------------------------------------> intraday labels write
 daily bars fetch ----------------------------------------> daily write
 text token fetch ----------------------------------------> text write
 SEC token fetch -----------------------------------------> SEC write
@@ -422,7 +448,8 @@ The standalone audit and end-of-build audit should verify:
 - ordinal windows are continuous or explicitly invalidated
 - event time features match timestamp-derived formulas
 - all context as-of rows obey `context_timestamp_us <= origin_timestamp_us`
-- intraday bars are session-bounded and do not cross into the next day
+- intraday forward labels are origin-relative, session-bounded, and do not cross
+  into the next day
 - daily future labels use only forward label targets, never context features
 - optional missing text/SEC/XBRL inputs are zero-filled and masked
 - no encoded chunks or final materialized tensors are present in the permanent
