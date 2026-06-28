@@ -47,6 +47,29 @@ The builder writes `terminal.log`, `builder_events.jsonl`,
 the cache root so failed workstation runs can be reviewed without copying the
 interactive terminal output.
 
+Default concurrency is tuned for the 128-core / 512GB workstation and targets
+roughly 65% practical utilization without flooding ClickHouse with too many
+heavy scans at once:
+
+```text
+package workers          64
+max inflight packages    96
+event fetch workers       6
+context fetch workers    16
+label fetch workers       6
+CPU workers              16
+write workers             8
+audit workers             2
+ClickHouse max_threads    8 per query
+ClickHouse memory cap   120G per query
+```
+
+These defaults are intentionally not the full 128-core capacity. The event and
+label lanes issue ClickHouse queries, and each query can use up to
+`max_threads`; increasing those lanes too aggressively can reduce total
+throughput by making the database compete with itself. For a dedicated quiet
+workstation, the first override to test is usually `--label-fetch-workers 8`.
+
 Progress reporting is heartbeat-driven, so the Rich panels and progress JSON
 continue updating while the main thread is waiting on long ClickHouse futures.
 The dashboard also reports active ClickHouse query count and longest active
@@ -55,6 +78,11 @@ query duration.
 Ctrl+C requests a graceful stop, cancels active ClickHouse queries by their
 tracked query ids, writes an interrupted manifest, and leaves completed package
 directories intact.
+
+The final audit is still part of the normal build loop. After all requested
+month packages complete, the builder runs `audit_ticker_month_cache` unless
+`--skip-final-audit` is passed. During package creation the audit panel remains
+idle; it starts only after the build phase changes to `auditing`.
 
 ## Core Flow
 

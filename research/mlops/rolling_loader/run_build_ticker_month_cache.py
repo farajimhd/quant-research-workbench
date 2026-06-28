@@ -79,14 +79,14 @@ DEFAULTS: dict[str, Any] = {
     "category_reference_table": "training_category_reference",
     "cache_root": str(DEFAULT_TICKER_MONTH_CACHE_ROOT),
     "split": "train",
-    "workers": 8,
-    "event_fetch_workers": 2,
-    "context_fetch_workers": 4,
-    "label_fetch_workers": 2,
-    "cpu_workers": 2,
-    "write_workers": 4,
-    "audit_workers": 1,
-    "max_inflight_packages": 16,
+    "workers": 64,
+    "event_fetch_workers": 6,
+    "context_fetch_workers": 16,
+    "label_fetch_workers": 6,
+    "cpu_workers": 16,
+    "write_workers": 8,
+    "audit_workers": 2,
+    "max_inflight_packages": 96,
     "max_origin_events_per_part": 2_000_000,
     "events_per_chunk": 128,
     "short_context_chunks": 32,
@@ -95,7 +95,7 @@ DEFAULTS: dict[str, Any] = {
     "long_context_lags": "",
     "sample_stride_events": 1,
     "max_threads": 8,
-    "max_memory_usage": "80G",
+    "max_memory_usage": "120G",
     "macro_lookback_days": 400,
     "label_lookahead_days": 400,
     "news_lookback_days": 30,
@@ -199,6 +199,25 @@ class PackageState:
     started_at: float = 0.0
     seconds: float = 0.0
     message: str = ""
+
+    def start_package(self, *, month: str, ticker: str) -> None:
+        self.month = month
+        self.ticker = ticker
+        self.status = "running"
+        self.stage = "query"
+        self.events_done = 0
+        self.events_total = 0
+        self.labels_done = 0
+        self.labels_total = 0
+        self.context_done = 0
+        self.context_total = 0
+        self.cpu_done = 0
+        self.cpu_total = 0
+        self.write_done = 0
+        self.write_total = 0
+        self.started_at = time.perf_counter()
+        self.seconds = 0.0
+        self.message = "submitting package tasks"
 
 
 @dataclass(frozen=True, slots=True)
@@ -759,12 +778,7 @@ def _build_ticker_month_package(
     stop_event: threading.Event,
 ) -> TickerMonthResult:
     state = stats.workers[worker_id]
-    state.month = month
-    state.ticker = ticker
-    state.status = "running"
-    state.stage = "query"
-    state.started_at = time.perf_counter()
-    state.message = "submitting package tasks"
+    state.start_package(month=month, ticker=ticker)
     package_dir = ticker_package_dir(month_dir_for(cache_root, args.split, month), ticker)
     if package_dir.exists() and not args.resume:
         state.status = "done"
@@ -789,10 +803,10 @@ def _build_ticker_month_package(
         else:
             futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:xbrl_empty", lambda: _empty_frame())
         state.context_total = 4 if not args.skip_xbrl else 3
-        state.events_total = max(1, len(parts))
-        state.labels_total = max(1, len(parts))
-        state.cpu_total = max(1, len(parts))
-        state.write_total = max(1, len(parts) * 5 + state.context_total)
+        state.events_total = len(parts)
+        state.labels_total = len(parts)
+        state.cpu_total = len(parts)
+        state.write_total = len(parts) * 5 + state.context_total
         total_events = 0
         total_origins = 0
         total_windows = 0
