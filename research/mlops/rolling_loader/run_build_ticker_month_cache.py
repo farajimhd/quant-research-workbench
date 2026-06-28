@@ -144,6 +144,7 @@ class ActiveQueryRegistry:
 
 
 ACTIVE_QUERIES = ActiveQueryRegistry()
+QUERY_CONTEXT = threading.local()
 
 
 class TeeStream:
@@ -301,6 +302,7 @@ class LaneExecutors:
                 state.running += 1
                 state.active[thread_id] = label
             self.stats.profile_event(f"{lane}_start", label=label)
+            QUERY_CONTEXT.label = label
             try:
                 result = fn()
             except BaseException as exc:
@@ -312,6 +314,8 @@ class LaneExecutors:
                     state.active.pop(thread_id, None)
                 self.stats.profile_event(f"{lane}_error", label=label, seconds=elapsed, error=repr(exc))
                 raise
+            finally:
+                QUERY_CONTEXT.label = ""
             elapsed = time.perf_counter() - started
             rows = _row_count(result)
             bytes_count = _byte_count(result)
@@ -832,6 +836,7 @@ def _build_ticker_month_package(
             )
             origins, windows, ranges, part_skipped_history, part_skipped_gap = cpu_future.result()
             state.cpu_done += 1
+            state.stage = f"labels {part.part_id + 1}/{len(parts)}"
             labels = labels_future.result()
             state.labels_done += 1
             state.stage = f"write {part.part_id + 1}/{len(parts)}"
@@ -1074,43 +1079,26 @@ def _query_intraday_forward_labels(
     horizons = parse_horizons(args.intraday_label_horizons)
     if not horizons:
         return _empty_frame()
-    frames = []
-    for horizon in horizons:
-        frames.append(_query_intraday_forward_label_horizon(args, client_opts, config, window, ticker, horizon, part, month_min_ordinal))
-    pl = _polars()
-    return pl.concat(frames, how="vertical") if frames else _empty_frame()
+    return _query_intraday_forward_labels_asof(args, client_opts, config, window, ticker, horizons, part, month_min_ordinal)
 
 
-def _query_intraday_forward_label_horizon(
+def _query_intraday_forward_labels_asof(
     args: argparse.Namespace,
     client_opts: Mapping[str, str],
     config: RollingMarketDataConfig,
     window: Any,
     ticker: str,
-    horizon: TimeBarHorizon,
+    horizons: list[TimeBarHorizon],
     part: OriginOrdinalPart,
     month_min_ordinal: int,
 ) -> Any:
     table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
-    horizon_us = int(horizon.microseconds)
-    # This is a set query for one ticker/month/horizon. It intentionally avoids per-origin round trips.
+    horizon_tuples = ",\n        ".join(f"tuple({sql_string(horizon.name)}, toUInt64({int(horizon.microseconds)}))" for horizon in horizons)
+    # One set query per ticker/month/part. It resolves every horizon through cumulative ASOF lookups
+    # instead of repeatedly range-joining future events for every horizon.
     query = f"""
 WITH
-    toUInt64({int(horizon_us)}) AS horizon_us,
-    part_bounds AS
-    (
-        SELECT
-            min(sip_timestamp_us) AS min_origin_timestamp_us,
-            max(sip_timestamp_us) AS max_origin_timestamp_us
-        FROM {table}
-        PREWHERE ticker = {sql_string(ticker)}
-          AND ordinal >= {int(part.origin_ordinal_start)}
-          AND ordinal <= {int(part.origin_ordinal_end)}
-          AND event_date >= toDate({sql_string(window.first_date.isoformat())})
-          AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
-        WHERE sip_timestamp_us >= {int(window.first_session_start_us)}
-          AND sip_timestamp_us < {int(window.last_session_end_us)}
-    ),
+    [{horizon_tuples}] AS horizons,
     origins AS
     (
         SELECT
@@ -1135,56 +1123,105 @@ WITH
           AND dateDiff('second', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) >= 14400
           AND dateDiff('second', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) < 72000
     ),
-    future_events AS
+    origin_horizons AS
+    (
+        SELECT
+            origin_key,
+            ticker_id,
+            ticker,
+            origin_ordinal,
+            origin_timestamp_us,
+            origin_local_date,
+            local_second,
+            tupleElement(horizon_tuple, 1) AS horizon,
+            tupleElement(horizon_tuple, 2) AS horizon_us,
+            origin_timestamp_us + tupleElement(horizon_tuple, 2) AS target_timestamp_us
+        FROM origins
+        ARRAY JOIN horizons AS horizon_tuple
+        ORDER BY ticker, origin_local_date, target_timestamp_us, origin_ordinal, horizon_us
+    ),
+    cumulative_events AS
     (
         SELECT
             ticker,
+            local_date,
             ordinal,
             sip_timestamp_us,
             price_primary_int,
             price_secondary_int,
-            toFloat32(size_primary) AS size_primary,
-            toFloat32(size_secondary) AS size_secondary,
-            event_type,
-            toDate(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) AS local_date
-        FROM {table}
-        PREWHERE ticker = {sql_string(ticker)}
-          AND event_date >= toDate({sql_string(window.first_date.isoformat())})
-          AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
-        WHERE sip_timestamp_us > (SELECT min_origin_timestamp_us FROM part_bounds)
-          AND sip_timestamp_us <= least({int(window.last_session_end_us)}, (SELECT max_origin_timestamp_us FROM part_bounds) + horizon_us)
+            count() OVER event_window AS cum_count,
+            sum(toFloat64(size_primary)) OVER event_window AS cum_size_primary,
+            sum(toFloat64(size_secondary)) OVER event_window AS cum_size_secondary
+        FROM
+        (
+            SELECT
+                ticker,
+                ordinal,
+                sip_timestamp_us,
+                price_primary_int,
+                price_secondary_int,
+                size_primary,
+                size_secondary,
+                toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
+                toDate(ts_local) AS local_date,
+                dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second
+            FROM {table}
+            PREWHERE ticker = {sql_string(ticker)}
+              AND event_date >= toDate({sql_string(window.first_date.isoformat())})
+              AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
+            WHERE sip_timestamp_us >= {int(window.first_session_start_us)}
+              AND sip_timestamp_us <= {int(window.last_session_end_us)}
+              AND toDate(ts_local) >= toDate({sql_string(window.first_date.isoformat())})
+              AND toDate(ts_local) < toDate({sql_string(window.next_month_date.isoformat())})
+              AND local_second < 72000
+        )
+        WINDOW event_window AS (PARTITION BY ticker, local_date ORDER BY sip_timestamp_us, ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+        ORDER BY ticker, local_date, sip_timestamp_us, ordinal
     )
 SELECT
-    o.origin_key,
-    o.ticker_id,
-    o.ticker,
-    o.origin_ordinal,
-    o.origin_timestamp_us,
-    {sql_string(horizon.name)} AS horizon,
+    origin_key,
+    ticker_id,
+    ticker,
+    origin_ordinal,
+    origin_timestamp_us,
+    horizon,
     horizon_us,
-    argMax(e.price_primary_int, e.sip_timestamp_us) AS price_primary_int,
-    argMax(e.price_secondary_int, e.sip_timestamp_us) AS price_secondary_int,
-    sum(e.size_primary) AS size_primary_sum,
-    sum(e.size_secondary) AS size_secondary_sum,
-    count(e.ordinal) AS event_count,
-    max(e.sip_timestamp_us) AS last_event_timestamp_us,
-    toUInt8((o.local_second * 1000000 + horizon_us) <= 72000000000 AND count(e.ordinal) > 0) AS available
-FROM origins AS o
-LEFT JOIN future_events AS e
-    ON e.ticker = o.ticker
-   AND e.local_date = o.origin_local_date
-   AND e.sip_timestamp_us > o.origin_timestamp_us
-   AND e.sip_timestamp_us <= o.origin_timestamp_us + horizon_us
-GROUP BY
-    o.origin_key,
-    o.ticker_id,
-    o.ticker,
-    o.origin_ordinal,
-    o.origin_timestamp_us,
-    o.origin_local_date,
-    o.local_second
-ORDER BY origin_ordinal
-{_settings_sql(config, extra={"allow_experimental_join_condition": 1})}
+    toInt32(if(event_count > 0, target_price_primary_int, 0)) AS price_primary_int,
+    toInt32(if(event_count > 0, target_price_secondary_int, 0)) AS price_secondary_int,
+    toFloat32(greatest(size_primary_sum, 0.0)) AS size_primary_sum,
+    toFloat32(greatest(size_secondary_sum, 0.0)) AS size_secondary_sum,
+    toUInt64(event_count) AS event_count,
+    toInt64(if(event_count > 0, target_timestamp_us, 0)) AS last_event_timestamp_us,
+    toUInt8((local_second * 1000000 + horizon_us) <= 72000000000 AND event_count > 0) AS available
+FROM
+(
+    SELECT
+        o.origin_key AS origin_key,
+        o.ticker_id AS ticker_id,
+        o.ticker AS ticker,
+        o.origin_ordinal AS origin_ordinal,
+        o.origin_timestamp_us AS origin_timestamp_us,
+        o.local_second AS local_second,
+        o.horizon AS horizon,
+        o.horizon_us AS horizon_us,
+        target.price_primary_int AS target_price_primary_int,
+        target.price_secondary_int AS target_price_secondary_int,
+        target.sip_timestamp_us AS target_timestamp_us,
+        greatest(toInt64(ifNull(target.cum_count, 0)) - toInt64(ifNull(base.cum_count, 0)), 0) AS event_count,
+        ifNull(target.cum_size_primary, 0.0) - ifNull(base.cum_size_primary, 0.0) AS size_primary_sum,
+        ifNull(target.cum_size_secondary, 0.0) - ifNull(base.cum_size_secondary, 0.0) AS size_secondary_sum
+    FROM origin_horizons AS o
+    ASOF LEFT JOIN cumulative_events AS target
+        ON target.ticker = o.ticker
+       AND target.local_date = o.origin_local_date
+       AND o.target_timestamp_us >= target.sip_timestamp_us
+    ASOF LEFT JOIN cumulative_events AS base
+        ON base.ticker = o.ticker
+       AND base.local_date = o.origin_local_date
+       AND o.origin_timestamp_us >= base.sip_timestamp_us
+)
+ORDER BY origin_ordinal, horizon_us
+{_settings_sql(config)}
 """
     return query_polars(client_opts, query)
 
@@ -1455,7 +1492,7 @@ def query_polars(client_opts: Mapping[str, str], query: str) -> Any:
     parsed = urlparse(str(client_opts["clickhouse_url"]))
     secure = parsed.scheme == "https"
     query_id = f"rolling_ticker_month_{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex}"
-    ACTIVE_QUERIES.register(query_id)
+    ACTIVE_QUERIES.register(query_id, label=str(getattr(QUERY_CONTEXT, "label", "")))
     client = clickhouse_connect.get_client(
         host=parsed.hostname or "localhost",
         port=parsed.port or (8443 if secure else 8123),
