@@ -22,6 +22,7 @@ source first.
 | C12 | Flow Stage 3 | Write policy and market-hours decision reviewed and accepted. | Accepted |
 | C13 | Flow Stage 4 | Audit and current-state read reviewed and accepted. Audit warnings/errors must be visible as grouped terminal aggregates plus recent/high-priority messages. | Accepted |
 | C14 | Flow Stage 5 | Source sync is the core service function. It must run on predefined provider/data-domain frequencies and sync active-ticker data from Massive, IBKR, SEC, FINRA, and future providers without using low-level operator flags. | Added |
+| C15 | Flow Stage 5 | Provider contracts must list exactly what is received from each provider, how it is used, and what creates non-tradable issues. | Added |
 
 ## Reviewed Flow Stages
 
@@ -409,6 +410,309 @@ The objective is to keep the reference graph aligned across providers:
 The gateway should treat source sync as a recurring data freshness process.
 Each provider/data domain has its own frequency because the source data updates
 at different speeds and may have different rate limits.
+
+### Provider Input Contracts
+
+This section defines what the gateway expects to receive from each provider.
+The exact provider response may contain more fields. The gateway should keep
+only the compact fields needed for identity, tradability, publication, audit,
+or issue evidence.
+
+#### Massive Active Ticker List
+
+Purpose:
+
+- entry point for active ticker discovery
+- detects new, missing, inactive, changed, or delisted symbols
+- drives follow-up work in IBKR, SEC, FINRA, and publication syncs
+
+Received from provider:
+
+- `ticker`
+- `name`
+- `market`
+- `locale`
+- `primary_exchange`
+- `currency_symbol`
+- `cik`
+- `composite_figi`
+- `share_class_figi`
+- `type`
+
+Used for:
+
+- ticker/symbol identity
+- candidate exchange and currency
+- first durable issuer hint through CIK
+- security identity hint through FIGI
+- security/ticker type classification
+
+Creates issues when:
+
+- ticker is active at Massive but missing from canonical `id_symbol_v1`
+- CIK is missing for a candidate that needs durable issuer identity
+- FIGI is missing for a candidate that needs durable security identity
+- exchange cannot be mapped to canonical `ref_exchange_v1`
+- currency is not USD for the current US-stock trading scope
+- ticker type is unsupported for current tradability rules
+
+#### Massive Ticker Overview
+
+Purpose:
+
+- enriches a new or changed Massive ticker with company/security context
+- fills missing evidence from the active ticker list
+- provides scanner/static-publication fields when owned by Massive
+
+Received from provider:
+
+- `ticker`
+- `name`
+- `active`
+- `market`
+- `locale`
+- `primary_exchange`
+- `currency_name`
+- `cik`
+- `composite_figi`
+- `share_class_figi`
+- `sic_code`
+- `sic_description`
+- `homepage_url`
+- `branding.logo_url`
+- `branding.icon_url`
+- `list_date`
+- `market_cap`
+- `weighted_shares_outstanding`
+- `share_class_shares_outstanding`
+
+Used for:
+
+- issuer display/name evidence
+- CIK confirmation when active ticker row is incomplete
+- FIGI confirmation when active ticker row is incomplete
+- SIC code/description fields on issuer rows
+- list-date and share-count/market-cap publication snapshots
+- logo/icon discovery for presentation assets
+
+Creates issues when:
+
+- overview cannot be fetched for a new active ticker
+- overview conflicts with active ticker evidence in a way that cannot be
+  resolved deterministically
+- overview says inactive while the active ticker list says active
+- overview exchange/currency/FIGI/CIK conflicts with existing canonical rows
+
+#### IBKR Client Portal Contract Search
+
+Purpose:
+
+- resolves broker routing evidence for order execution
+- validates that a ticker has one compatible tradeable contract
+
+Received from provider:
+
+- `symbol`
+- `conid`
+- `secType` or `assetClass`
+- `exchange`
+- `listingExchange`
+- `currency`
+- `companyName` or `description`
+
+Used for:
+
+- `ibkr_conid` on listing rows
+- broker routing eligibility
+- exchange/currency cross-checks against Massive/canonical data
+- ambiguity detection
+
+Accepted for current scope only when:
+
+- symbol exactly matches the candidate ticker
+- conid is a valid positive identifier
+- security type is compatible with US stocks
+- currency is USD
+- returned contract set has exactly one compatible candidate
+
+Creates issues when:
+
+- IBKR is unreachable or unauthenticated
+- no compatible contract is returned
+- multiple plausible compatible contracts are returned
+- conid conflicts with an already accepted canonical listing
+- IBKR exchange evidence cannot be mapped or conflicts with canonical exchange
+
+#### SEC Identity And Filing Data
+
+Purpose:
+
+- validates issuer identity and durable company identifiers
+- links securities/listings to SEC filing and XBRL evidence
+- supports future fundamental and country/issuer assertions
+
+Received from SEC-maintained data already handled by SEC pipelines/gateway:
+
+- CIK
+- accession number
+- accepted timestamp
+- form type
+- filing/report period
+- issuer/company name
+- SEC entity metadata from submissions
+- companyfacts/XBRL facts and units
+- frame/fiscal-period references when available
+- filing text and normalized filing metadata
+
+Used for:
+
+- issuer CIK confirmation
+- SEC-to-market bridge rows
+- issuer/company-name conflict checks
+- XBRL-derived fundamentals used by downstream models
+- country or domicile assertions when evidence is strong enough
+- filing availability/recency checks
+
+Creates issues when:
+
+- a Massive active ticker has no SEC identity but should have one
+- CIK maps to multiple issuers without a deterministic resolution
+- SEC company identity conflicts with canonical issuer identity
+- SEC filing/XBRL data cannot be linked to a known issuer/security/listing
+- accepted timestamp is missing for post-2019 filings needed for market
+  reaction alignment
+
+#### FINRA And Regulatory Publication Data
+
+Purpose:
+
+- adds delayed regulatory/publication context for scanner and risk labels
+- does not directly define canonical issuer/security identity
+
+Received from FINRA or regulatory-publication jobs:
+
+- provider ticker
+- source venue or publication name
+- trade/settlement/publication date
+- short volume
+- total volume when provided by the publication
+- exempt short volume when provided
+- short-interest quantity when available
+- source event key
+- source file/reference
+- source content hash
+
+Used for:
+
+- `market_short_volume_v1`
+- `market_short_interest_v1`
+- short-pressure and short-crowding labels
+- publication coverage checks
+- scanner static fields that do not require real-time updates
+
+Creates issues when:
+
+- publication ticker cannot be mapped to a known active symbol/listing/security
+- publication date is duplicated with conflicting values
+- publication row is outside the expected provider coverage window
+- source file/hash does not match a previously recorded coverage row
+
+#### SEC Fails-To-Deliver And Reg SHO
+
+Purpose:
+
+- adds settlement-failure and threshold-list context for tradability/risk
+  labels
+
+Received from SEC/regulatory publication jobs:
+
+- provider ticker
+- CUSIP when available
+- settlement date
+- fails quantity
+- issuer name
+- previous close price when available
+- threshold date
+- listing exchange when available
+- threshold status
+- source event key/reference/hash
+
+Used for:
+
+- `market_fails_to_deliver_v1`
+- `market_reg_sho_threshold_v1`
+- scanner labels for settlement stress or threshold-list status
+- issue evidence when CUSIP/ticker cannot link to canonical rows
+
+Creates issues when:
+
+- CUSIP/ticker maps to multiple securities
+- publication row cannot be linked to a canonical symbol/listing/security
+- regulatory publication coverage has a gap
+
+#### IBKR Borrow Availability
+
+Purpose:
+
+- records broker-specific borrow/shortability state
+- supports shortability labels but does not define market identity
+
+Received from IBKR or broker borrow source:
+
+- provider ticker
+- IBKR conid
+- observation timestamp
+- borrow status
+- shortable shares
+- lender count
+- indicative borrow rate
+- fee rate
+
+Used for:
+
+- `market_security_borrow_v1`
+- easy-to-borrow/hard-to-borrow labels
+- broker-specific trading constraints
+
+Creates issues when:
+
+- borrow row has no matching conid/listing
+- broker says non-shortable while a derived publication says shortable without
+  source-specific explanation
+- observation timestamp is stale beyond the configured borrow-data frequency
+
+#### Massive Corporate Actions And Presentation Assets
+
+Purpose:
+
+- updates scanner/static publication fields and UI presentation data
+- records market-structure events that can change symbol/listing interpretation
+
+Received from Massive publication endpoints or synchronized artifacts:
+
+- split date and split ratio
+- cash dividend ex-date/pay-date/amount/currency
+- IPO date/price/range/status when available
+- logo/icon URL or downloaded presentation asset metadata
+- snapshot fields such as market cap, price, volume, and share counts when
+  used as a publication snapshot
+
+Used for:
+
+- `market_stock_split_v1`
+- `market_cash_dividend_v1`
+- `market_ipo_v1`
+- `market_presentation_asset_v1`
+- `market_security_market_snapshot_v1`
+- `market_security_float_v1` when the field is the best available source
+
+Creates issues when:
+
+- corporate action ticker cannot be mapped
+- split/dividend publication conflicts with existing canonical event rows
+- presentation asset cannot be linked to a known active symbol
+- snapshot date/source conflicts with another accepted source for the same
+  field
 
 ### Active Ticker Sync
 
