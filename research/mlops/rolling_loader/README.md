@@ -4,6 +4,19 @@ This package implements the production-aligned rolling-loader design from
 scratch. It replaces the old dense-per-sample materialization path with bounded
 stateful caches and stable sample pointers.
 
+## Current SSD Cache Direction
+
+The next implementation target is the query-driven ticker/month SSD cache
+described in `TICKER_MONTH_SSD_CACHE_DESIGN.md`. That design keeps the same
+stateful no-lookahead semantics, but stores raw compact event packages and
+derived cache indexes instead of encoded event chunks or fully materialized
+training tensors.
+
+New cache-build rule: every stored event row must derive timestamp-based event
+time features during cache construction. Absolute calendar/session features are
+computed once from `timestamp_us`; origin-relative deltas are computed later
+when a training batch resolves an event window.
+
 ## Core Flow
 
 1. Resolve the ticker universe and create every per-ticker cache before replay.

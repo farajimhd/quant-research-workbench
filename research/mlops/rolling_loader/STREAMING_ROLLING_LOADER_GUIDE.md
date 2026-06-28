@@ -584,6 +584,18 @@ This applies to:
 - SEC filings
 - XBRL rows
 
+For the ticker/month SSD cache path, every stored event row must derive
+cache-time event features from `timestamp_us` during cache construction. These
+are the absolute calendar/session features that do not depend on a later sample
+origin, such as UTC second-of-day, UTC day-of-week, UTC day-of-year,
+years-since-2000, session second, session progress, and regular-hours/session
+flags.
+
+Origin-relative event-window features are computed only when a batch is
+materialized because the same event row can be referenced by many origin events.
+Those include `origin_timestamp_us - event_timestamp_us`, signed/log deltas, and
+age features.
+
 Raw source timestamps can remain in `external_context` for audits and debugging.
 
 ### Macro And Global Bars
