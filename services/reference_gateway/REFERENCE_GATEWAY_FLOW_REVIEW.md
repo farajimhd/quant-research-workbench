@@ -19,6 +19,7 @@ source first.
 | C9 | Stage 3 | Add live Rich status panels and structured runtime events for operator visibility. | Fixed |
 | C10 | Flow Stage 1 | Process entry and mode resolution reviewed and accepted. | Accepted |
 | C11 | Flow Stage 2 | Preflight and dependency gate reviewed and accepted. | Accepted |
+| C12 | Flow Stage 3 | Write policy and market-hours decision reviewed and accepted. | Accepted |
 
 ## Reviewed Flow Stages
 
@@ -224,6 +225,93 @@ If preflight fails:
 - There should not be a real-operation bypass such as `--no-preflight`.
 - Diagnostics that do not require dependencies should live under
   `-Diagnostics`, not under operational modes.
+
+Review status: accepted.
+
+## Stage 3: Write Policy And Market-Hours Decision
+
+This stage answers: after dependencies are OK, which writes are allowed right
+now?
+
+The gateway separates writes into three categories.
+
+### Integrity Writes
+
+Examples:
+
+- write open mapping issues
+- resolve deterministic stale issues
+- publish immediate `is_tradable=0` blocks for unsafe instruments
+
+Purpose:
+
+- reduce trading risk
+- make unsafe instruments non-tradable as soon as the issue is known
+
+### Source-Sync Evidence Writes
+
+Examples:
+
+- write provider observations, plans, and reports
+- write issue evidence derived from Massive, IBKR, or another source-sync
+  provider
+
+Purpose:
+
+- keep provider drift visible
+- preserve the evidence needed to diagnose and resolve mapping issues
+
+### Maintenance/Promotion Writes
+
+Examples:
+
+- create or update schema
+- promote clean candidates into canonical graph tables
+- rebuild `feature_tradable_universe_v1`
+- rebuild `feature_scanner_static_v1`
+- run market publication gap fill
+
+Purpose:
+
+- update durable reference tables and derived publications
+- perform heavier or broader changes that can reshape downstream views
+
+### Market-Hours Policy
+
+During market hours:
+
+- integrity writes are allowed because they reduce trading risk
+- source-sync evidence writes are allowed
+- maintenance/promotion writes are blocked in `Maintenance=Auto`
+- maintenance/promotion writes are allowed only with `Maintenance=Force` and a
+  reason
+
+Outside market hours:
+
+- integrity writes are allowed
+- source-sync evidence writes are allowed
+- maintenance/promotion writes are allowed in `Maintenance=Auto`
+
+With `Maintenance=Skip`:
+
+- maintenance/promotion writes are skipped regardless of time
+- source sync and integrity still run
+
+With `Integrity=ReportOnly`:
+
+- no issue writes
+- no immediate tradability blocks
+- audit/report only for integrity
+
+### Stage 3 Rules
+
+- Market hours should not block the service.
+- Market hours only block risky maintenance/promotion work.
+- The gateway should still detect problems during the market session.
+- The gateway should still make unsafe instruments non-tradable during the
+  market session.
+- Any market-hours maintenance/promotion override must be explicit and
+  auditable through `Maintenance=Force` plus `MaintenanceReason`.
 
 Review status: accepted.
 
