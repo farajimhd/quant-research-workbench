@@ -215,47 +215,47 @@ def masked_event_bce_loss(
             "mask/header_masked_bits_total": float(target_header_bits.numel()),
             }
         )
-        if metric_level != "cheap":
-            # Baselines are calculated from the current masked targets, not from
-            # a global prior. That makes the lift metrics interpretable even when
-            # sampled shards have different byte distributions.
-            target_one_rate = target_bits.float().mean()
-            pred_one_rate = hard_bits.float().mean()
-            majority_baseline = torch.maximum(target_one_rate, 1.0 - target_one_rate)
-            one_mask = target_bool
-            zero_mask = ~target_bool
-            one_acc = (hard_bits[one_mask] == target_bool[one_mask]).float().mean() if one_mask.any() else probabilities.new_tensor(0.0)
-            zero_acc = (hard_bits[zero_mask] == target_bool[zero_mask]).float().mean() if zero_mask.any() else probabilities.new_tensor(0.0)
-            balanced_bit_acc = (one_acc + zero_acc) * 0.5 if one_mask.any() and zero_mask.any() else bit_acc
-            target_float = target_bytes.float()
-            hard_mae = (hard_bytes.float() - target_float).abs().mean()
-            soft_bytes = (probabilities.float() * BYTE_VALUE_BIT_WEIGHTS.to(probabilities.device)).sum(dim=-1)
-            soft_mae = (soft_bytes - target_float).abs().mean()
-            mode_count = torch.bincount(target_bytes_long.flatten(), minlength=256).max()
-            byte_mode_baseline = mode_count.float() / target_bytes.numel()
-            metrics.update(
-                {
-                    "pretrain/event_bit_majority_baseline_pct": float(majority_baseline.detach().cpu() * 100.0),
-                    "pretrain/event_bit_acc_lift_pct": float((bit_acc - majority_baseline).detach().cpu() * 100.0),
-                    "pretrain/event_balanced_bit_acc_pct": float(balanced_bit_acc.detach().cpu() * 100.0),
-                    "pretrain/event_zero_bit_acc_pct": float(zero_acc.detach().cpu() * 100.0),
-                    "pretrain/event_one_bit_acc_pct": float(one_acc.detach().cpu() * 100.0),
-                    "pretrain/event_target_one_rate_pct": float(target_one_rate.detach().cpu() * 100.0),
-                    "pretrain/event_pred_one_rate_pct": float(pred_one_rate.detach().cpu() * 100.0),
-                    "pretrain/event_byte_mode_baseline_pct": float(byte_mode_baseline.detach().cpu() * 100.0),
-                    "pretrain/event_byte_exact_lift_pct": float((exact - byte_mode_baseline).detach().cpu() * 100.0),
-                    "pretrain/event_hard_byte_mae": float(hard_mae.detach().cpu()),
-                    "pretrain/event_soft_byte_mae": float(soft_mae.detach().cpu()),
-                    "pretrain/event_bit_conf_min": float(confidence.min().detach().cpu()),
-                }
-            )
-            if include_diagnostics:
-                hard_mse = (hard_bytes.float() - target_float).pow(2).mean()
-                soft_mse = (soft_bytes - target_float).pow(2).mean()
-                metrics["pretrain/event_hard_byte_psnr_db"] = float(byte_psnr_db(hard_mse).detach().cpu())
-                metrics["pretrain/event_soft_byte_psnr_db"] = float(byte_psnr_db(soft_mse).detach().cpu())
-            if header_uint8 is not None:
-                metrics.update(masked_event_semantic_metrics(header_uint8, target_bytes, hard_bytes))
+        # Baselines are calculated from the current masked targets, not from a
+        # global prior. These are light enough for logging steps and prevent the
+        # terminal/W&B panels from showing default zeros between full semantic
+        # diagnostic steps.
+        target_one_rate = target_bits.float().mean()
+        pred_one_rate = hard_bits.float().mean()
+        majority_baseline = torch.maximum(target_one_rate, 1.0 - target_one_rate)
+        one_mask = target_bool
+        zero_mask = ~target_bool
+        one_acc = (hard_bits[one_mask] == target_bool[one_mask]).float().mean() if one_mask.any() else probabilities.new_tensor(0.0)
+        zero_acc = (hard_bits[zero_mask] == target_bool[zero_mask]).float().mean() if zero_mask.any() else probabilities.new_tensor(0.0)
+        balanced_bit_acc = (one_acc + zero_acc) * 0.5 if one_mask.any() and zero_mask.any() else bit_acc
+        target_float = target_bytes.float()
+        hard_mae = (hard_bytes.float() - target_float).abs().mean()
+        soft_bytes = (probabilities.float() * BYTE_VALUE_BIT_WEIGHTS.to(probabilities.device)).sum(dim=-1)
+        soft_mae = (soft_bytes - target_float).abs().mean()
+        mode_count = torch.bincount(target_bytes_long.flatten(), minlength=256).max()
+        byte_mode_baseline = mode_count.float() / target_bytes.numel()
+        metrics.update(
+            {
+                "pretrain/event_bit_majority_baseline_pct": float(majority_baseline.detach().cpu() * 100.0),
+                "pretrain/event_bit_acc_lift_pct": float((bit_acc - majority_baseline).detach().cpu() * 100.0),
+                "pretrain/event_balanced_bit_acc_pct": float(balanced_bit_acc.detach().cpu() * 100.0),
+                "pretrain/event_zero_bit_acc_pct": float(zero_acc.detach().cpu() * 100.0),
+                "pretrain/event_one_bit_acc_pct": float(one_acc.detach().cpu() * 100.0),
+                "pretrain/event_target_one_rate_pct": float(target_one_rate.detach().cpu() * 100.0),
+                "pretrain/event_pred_one_rate_pct": float(pred_one_rate.detach().cpu() * 100.0),
+                "pretrain/event_byte_mode_baseline_pct": float(byte_mode_baseline.detach().cpu() * 100.0),
+                "pretrain/event_byte_exact_lift_pct": float((exact - byte_mode_baseline).detach().cpu() * 100.0),
+                "pretrain/event_hard_byte_mae": float(hard_mae.detach().cpu()),
+                "pretrain/event_soft_byte_mae": float(soft_mae.detach().cpu()),
+                "pretrain/event_bit_conf_min": float(confidence.min().detach().cpu()),
+            }
+        )
+        if include_diagnostics:
+            hard_mse = (hard_bytes.float() - target_float).pow(2).mean()
+            soft_mse = (soft_bytes - target_float).pow(2).mean()
+            metrics["pretrain/event_hard_byte_psnr_db"] = float(byte_psnr_db(hard_mse).detach().cpu())
+            metrics["pretrain/event_soft_byte_psnr_db"] = float(byte_psnr_db(soft_mse).detach().cpu())
+        if metric_level == "standard" and header_uint8 is not None:
+            metrics.update(masked_event_semantic_metrics(header_uint8, target_bytes, hard_bytes))
         if profile_metrics:
             if logits.is_cuda:
                 torch.cuda.synchronize(logits.device)

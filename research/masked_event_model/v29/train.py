@@ -920,10 +920,11 @@ def run_training_step(
     mask_seconds = time.perf_counter() - mask_started
     forward_started = time.perf_counter()
     include_diagnostics = force_diagnostics or (config.train.detailed_metrics_steps > 0 and global_step % config.train.detailed_metrics_steps == 0)
+    include_logging_metrics = config.train.logging_steps > 0 and global_step % config.train.logging_steps == 0
     # Detailed reconstruction metrics touch large masked-byte tensors. Most
     # steps keep the same BCE objective but skip that extra metric work so the
     # training loop measures model learning instead of metric bookkeeping.
-    metric_level = "cheap" if force_diagnostics else "loss_only"
+    metric_level = "cheap" if (force_diagnostics or include_logging_metrics) else "loss_only"
     if include_diagnostics:
         metric_level = "standard"
     amp_dtype = resolve_amp_dtype(config.train, device)
