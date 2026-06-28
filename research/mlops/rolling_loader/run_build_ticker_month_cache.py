@@ -19,6 +19,8 @@ from typing import Any, Callable, Iterable, Mapping
 from urllib import request as url_request
 from urllib.parse import urlparse
 
+import numpy as np
+
 if __package__ in {None, ""}:
     here = Path(__file__).resolve()
     for parent in here.parents:
@@ -85,6 +87,7 @@ DEFAULTS: dict[str, Any] = {
     "write_workers": 4,
     "audit_workers": 1,
     "max_inflight_packages": 16,
+    "max_origin_events_per_part": 2_000_000,
     "events_per_chunk": 128,
     "short_context_chunks": 32,
     "context_chunk_stride_events": 64,
@@ -195,6 +198,15 @@ class PackageState:
     started_at: float = 0.0
     seconds: float = 0.0
     message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class OriginOrdinalPart:
+    part_id: int
+    origin_ordinal_start: int
+    origin_ordinal_end: int
+    fetch_ordinal_start: int
+    fetch_ordinal_end: int
 
 
 @dataclass(slots=True)
@@ -376,6 +388,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--write-workers", type=int, default=DEFAULTS["write_workers"])
     parser.add_argument("--audit-workers", type=int, default=DEFAULTS["audit_workers"])
     parser.add_argument("--max-inflight-packages", type=int, default=DEFAULTS["max_inflight_packages"])
+    parser.add_argument("--max-origin-events-per-part", type=int, default=DEFAULTS["max_origin_events_per_part"], help="Maximum origin ordinal span per physical part inside a ticker-month package.")
     parser.add_argument("--events-per-chunk", type=int, default=DEFAULTS["events_per_chunk"])
     parser.add_argument("--short-context-chunks", type=int, default=DEFAULTS["short_context_chunks"])
     parser.add_argument("--context-chunk-stride-events", type=int, default=DEFAULTS["context_chunk_stride_events"])
@@ -745,30 +758,110 @@ def _build_ticker_month_package(
     tmp_dir.mkdir(parents=True, exist_ok=True)
     try:
         required_lookback = required_event_lookback_rows(context_lags, args.events_per_chunk)
+        origin_bounds = _query_origin_bounds(args, client_opts, config, window, ticker)
+        parts = _origin_ordinal_parts(origin_bounds, required_lookback=required_lookback, max_origin_events_per_part=args.max_origin_events_per_part)
         futures: dict[str, Future[Any]] = {
-            "events": lanes.submit("event", f"{month}:{ticker}:events", lambda: _query_events(args, client_opts, config, window, ticker, required_lookback)),
             "ticker_news": lanes.submit("context", f"{month}:{ticker}:ticker_news", lambda: _query_ticker_news(args, client_opts, config, window, ticker)),
             "sec_filings": lanes.submit("context", f"{month}:{ticker}:sec", lambda: _query_sec_tokens(args, client_opts, config, window, ticker)),
             "daily_bars": lanes.submit("context", f"{month}:{ticker}:daily", lambda: _query_daily_bars(args, client_opts, config, window, symbols=(ticker,))),
-            "labels": lanes.submit("label", f"{month}:{ticker}:intraday_labels", lambda: _query_intraday_forward_labels(args, client_opts, config, window, ticker)),
         }
         if not args.skip_xbrl:
             futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:xbrl", lambda: _query_xbrl(args, client_opts, config, window, ticker))
         else:
             futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:xbrl_empty", lambda: _empty_frame())
         state.context_total = 4 if not args.skip_xbrl else 3
-        state.labels_total = 1
-        events = futures["events"].result()
-        state.events_done = int(events.height)
-        state.events_total = max(1, int(events.height))
-        state.stage = "cpu"
-        cpu_future = lanes.submit("cpu", f"{month}:{ticker}:origins_windows", lambda: _build_origins_and_windows(events, context_lags, args.events_per_chunk, args.sample_stride_events, window))
-        origins, windows, ranges, skipped_history, skipped_gap = cpu_future.result()
-        state.cpu_done = 1
-        state.cpu_total = 1
+        state.events_total = max(1, len(parts))
+        state.labels_total = max(1, len(parts))
+        state.cpu_total = max(1, len(parts))
+        state.write_total = max(1, len(parts) * 5 + state.context_total)
+        total_events = 0
+        total_origins = 0
+        total_windows = 0
+        total_labels = 0
+        skipped_history = 0
+        skipped_gap = 0
+        part_manifests: list[dict[str, Any]] = []
+        month_min_ordinal = int(origin_bounds[0]) if origin_bounds else 0
+        for part in parts:
+            if stop_event.is_set():
+                raise KeyboardInterrupt
+            part_name = f"part_{part.part_id:05d}"
+            state.stage = f"query {part.part_id + 1}/{len(parts)}"
+            state.message = f"{part_name} ordinals {part.origin_ordinal_start:,}-{part.origin_ordinal_end:,}"
+            events_future = lanes.submit(
+                "event",
+                f"{month}:{ticker}:{part_name}:events",
+                lambda part=part: _query_events_part(args, client_opts, config, window, ticker, part),
+            )
+            labels_future = lanes.submit(
+                "label",
+                f"{month}:{ticker}:{part_name}:intraday_labels",
+                lambda part=part: _query_intraday_forward_labels(args, client_opts, config, window, ticker, part, month_min_ordinal),
+            )
+            events = events_future.result()
+            state.events_done += 1
+            state.stage = f"cpu {part.part_id + 1}/{len(parts)}"
+            cpu_future = lanes.submit(
+                "cpu",
+                f"{month}:{ticker}:{part_name}:origins_windows",
+                lambda events=events, part=part: _build_origins_and_windows(
+                    events,
+                    context_lags,
+                    args.events_per_chunk,
+                    args.sample_stride_events,
+                    window,
+                    origin_ordinal_start=part.origin_ordinal_start,
+                    origin_ordinal_end=part.origin_ordinal_end,
+                    month_min_ordinal=month_min_ordinal,
+                ),
+            )
+            origins, windows, ranges, part_skipped_history, part_skipped_gap = cpu_future.result()
+            state.cpu_done += 1
+            labels = labels_future.result()
+            state.labels_done += 1
+            state.stage = f"write {part.part_id + 1}/{len(parts)}"
+            part_files = {
+                "events": f"events_{part_name}.parquet",
+                "origins": f"origins_{part_name}.parquet",
+                "event_window_index": f"event_window_index_{part_name}.parquet",
+                "ranges": f"ranges_{part_name}.parquet",
+                "intraday_forward_labels": f"intraday_forward_labels_{part_name}.parquet",
+            }
+            writes = {
+                "events": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_events", lambda events=events, path=tmp_dir / part_files["events"]: _write_parquet(events, path)),
+                "origins": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_origins", lambda origins=origins, path=tmp_dir / part_files["origins"]: _write_parquet(origins, path)),
+                "windows": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_windows", lambda windows=windows, path=tmp_dir / part_files["event_window_index"]: _write_parquet(windows, path)),
+                "ranges": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_ranges", lambda ranges=ranges, path=tmp_dir / part_files["ranges"]: _write_parquet(ranges, path)),
+                "labels": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_labels", lambda labels=labels, path=tmp_dir / part_files["intraday_forward_labels"]: _write_parquet(labels, path)),
+            }
+            for future in writes.values():
+                future.result()
+                state.write_done += 1
+            total_events += int(events.height)
+            total_origins += int(origins.height)
+            total_windows += int(windows.height)
+            total_labels += int(labels.height)
+            skipped_history += int(part_skipped_history)
+            skipped_gap += int(part_skipped_gap)
+            part_manifests.append(
+                {
+                    "part_id": int(part.part_id),
+                    "origin_ordinal_start": int(part.origin_ordinal_start),
+                    "origin_ordinal_end": int(part.origin_ordinal_end),
+                    "fetch_ordinal_start": int(part.fetch_ordinal_start),
+                    "fetch_ordinal_end": int(part.fetch_ordinal_end),
+                    "files": part_files,
+                    "counts": {
+                        "events": int(events.height),
+                        "origins": int(origins.height),
+                        "event_windows": int(windows.height),
+                        "intraday_forward_labels": int(labels.height),
+                        "skipped_not_enough_history": int(part_skipped_history),
+                        "skipped_window_gap": int(part_skipped_gap),
+                    },
+                }
+            )
         state.context_done = sum(1 for key in ("ticker_news", "sec_filings", "daily_bars", "xbrl") if futures[key].done())
-        labels = futures["labels"].result()
-        state.labels_done = 1
         ticker_news = futures["ticker_news"].result()
         sec_filings = futures["sec_filings"].result()
         daily_bars = futures["daily_bars"].result()
@@ -777,21 +870,15 @@ def _build_ticker_month_package(
         if stop_event.is_set():
             raise KeyboardInterrupt
         state.stage = "write"
-        writes = {
-            "events": lanes.submit("write", f"{month}:{ticker}:write_events", lambda: _write_parquet(events, tmp_dir / "events.parquet")),
-            "origins": lanes.submit("write", f"{month}:{ticker}:write_origins", lambda: _write_parquet(origins, tmp_dir / "origins.parquet")),
-            "windows": lanes.submit("write", f"{month}:{ticker}:write_windows", lambda: _write_parquet(windows, tmp_dir / "event_window_index.parquet")),
-            "ranges": lanes.submit("write", f"{month}:{ticker}:write_ranges", lambda: _write_parquet(ranges, tmp_dir / "ranges.parquet")),
-            "labels": lanes.submit("write", f"{month}:{ticker}:write_labels", lambda: _write_parquet(labels, tmp_dir / "intraday_forward_labels.parquet")),
+        context_writes = {
             "ticker_news": lanes.submit("write", f"{month}:{ticker}:write_news", lambda: _write_parquet(ticker_news, tmp_dir / "ticker_news_tokens.parquet")),
             "sec_filings": lanes.submit("write", f"{month}:{ticker}:write_sec", lambda: _write_parquet(sec_filings, tmp_dir / "sec_filing_tokens.parquet")),
             "xbrl": lanes.submit("write", f"{month}:{ticker}:write_xbrl", lambda: _write_parquet(xbrl, tmp_dir / "xbrl.parquet")),
             "daily_bars": lanes.submit("write", f"{month}:{ticker}:write_daily", lambda: _write_parquet(daily_bars, tmp_dir / "daily_bars.parquet")),
         }
-        state.write_total = len(writes)
-        for index, future in enumerate(writes.values(), start=1):
+        for future in context_writes.values():
             future.result()
-            state.write_done = index
+            state.write_done += 1
         manifest = {
             "format": TICKER_MONTH_CACHE_FORMAT,
             "version": TICKER_MONTH_CACHE_VERSION,
@@ -804,15 +891,17 @@ def _build_ticker_month_package(
                 "context_lags": list(context_lags),
                 "sample_stride_events": int(args.sample_stride_events),
                 "required_event_lookback_rows": int(required_lookback),
+                "max_origin_events_per_part": int(args.max_origin_events_per_part),
                 "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
                 "event_payload_columns": list(EVENT_PAYLOAD_COLUMNS),
                 "event_time_feature_columns": list(EVENT_TIME_FEATURE_COLUMNS),
             },
             "counts": {
-                "events": int(events.height),
-                "origins": int(origins.height),
-                "event_windows": int(windows.height),
-                "intraday_forward_labels": int(labels.height),
+                "parts": int(len(part_manifests)),
+                "events": int(total_events),
+                "origins": int(total_origins),
+                "event_windows": int(total_windows),
+                "intraday_forward_labels": int(total_labels),
                 "ticker_news_tokens": int(ticker_news.height),
                 "sec_filing_tokens": int(sec_filings.height),
                 "xbrl": int(xbrl.height),
@@ -821,16 +910,12 @@ def _build_ticker_month_package(
                 "skipped_window_gap": int(skipped_gap),
             },
             "files": {
-                "events": "events.parquet",
-                "origins": "origins.parquet",
-                "event_window_index": "event_window_index.parquet",
-                "ranges": "ranges.parquet",
-                "intraday_forward_labels": "intraday_forward_labels.parquet",
                 "ticker_news_tokens": "ticker_news_tokens.parquet",
                 "sec_filing_tokens": "sec_filing_tokens.parquet",
                 "xbrl": "xbrl.parquet",
                 "daily_bars": "daily_bars.parquet",
             },
+            "parts": part_manifests,
             "completed_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
         }
         write_json_atomic(tmp_dir / "manifest.json", manifest)
@@ -839,15 +924,15 @@ def _build_ticker_month_package(
         state.status = "done"
         state.stage = "done"
         state.seconds = time.perf_counter() - state.started_at
-        state.message = f"done origins={int(origins.height):,}"
+        state.message = f"done parts={len(part_manifests):,} origins={total_origins:,}"
         return TickerMonthResult(
             month=month,
             ticker=ticker,
             package_dir=package_dir,
             status="complete",
-            event_count=int(events.height),
-            origin_count=int(origins.height),
-            label_rows=int(labels.height),
+            event_count=int(total_events),
+            origin_count=int(total_origins),
+            label_rows=int(total_labels),
             byte_count=byte_count,
             skipped_not_enough_history=int(skipped_history),
             skipped_window_gap=int(skipped_gap),
@@ -862,12 +947,31 @@ def _build_ticker_month_package(
         raise
 
 
-def _query_events(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str, required_lookback: int) -> Any:
-    bounds = _query_origin_bounds(args, client_opts, config, window, ticker)
+def _origin_ordinal_parts(bounds: tuple[int, int] | None, *, required_lookback: int, max_origin_events_per_part: int) -> list[OriginOrdinalPart]:
     if not bounds:
-        return _empty_events_frame()
-    min_ordinal, max_ordinal = bounds
-    lower = max(0, int(min_ordinal) - int(required_lookback))
+        return []
+    min_ordinal, max_ordinal = int(bounds[0]), int(bounds[1])
+    if max_ordinal < min_ordinal:
+        return []
+    step = max(1, int(max_origin_events_per_part))
+    parts: list[OriginOrdinalPart] = []
+    start = min_ordinal
+    while start <= max_ordinal:
+        end = min(max_ordinal, start + step - 1)
+        parts.append(
+            OriginOrdinalPart(
+                part_id=len(parts),
+                origin_ordinal_start=int(start),
+                origin_ordinal_end=int(end),
+                fetch_ordinal_start=max(0, int(start) - int(required_lookback)),
+                fetch_ordinal_end=int(end),
+            )
+        )
+        start = end + 1
+    return parts
+
+
+def _query_events_part(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str, part: OriginOrdinalPart) -> Any:
     table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
     query = f"""
 WITH
@@ -904,10 +1008,10 @@ SELECT
     toUInt8(local_second >= 14400 AND local_second < 34200) AS is_premarket,
     toUInt8(local_second >= 57600 AND local_second < 72000) AS is_afterhours
 FROM {table}
-PREWHERE event_date <= toDate({sql_string(window.next_month_date.isoformat())})
-WHERE ticker = {sql_string(ticker)}
-  AND ordinal >= {int(lower)}
-  AND ordinal <= {int(max_ordinal)}
+PREWHERE ticker = {sql_string(ticker)}
+  AND ordinal >= {int(part.fetch_ordinal_start)}
+  AND ordinal <= {int(part.fetch_ordinal_end)}
+  AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
 ORDER BY ticker, ordinal
 {_settings_sql(config)}
 """
@@ -926,10 +1030,10 @@ SELECT
     max(ordinal) AS max_ordinal,
     count() AS rows
 FROM {table}
-PREWHERE event_date >= toDate({sql_string(window.first_date.isoformat())})
+PREWHERE ticker = {sql_string(ticker)}
+  AND event_date >= toDate({sql_string(window.first_date.isoformat())})
   AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
-WHERE ticker = {sql_string(ticker)}
-  AND sip_timestamp_us >= {int(window.first_session_start_us)}
+WHERE sip_timestamp_us >= {int(window.first_session_start_us)}
   AND sip_timestamp_us < {int(window.last_session_end_us)}
   AND toDate(ts_local) >= toDate({sql_string(window.first_date.isoformat())})
   AND toDate(ts_local) < toDate({sql_string(window.next_month_date.isoformat())})
@@ -943,49 +1047,78 @@ WHERE ticker = {sql_string(ticker)}
     return int(frame.get_column("min_ordinal")[0]), int(frame.get_column("max_ordinal")[0])
 
 
-def _query_intraday_forward_labels(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str) -> Any:
+def _query_intraday_forward_labels(
+    args: argparse.Namespace,
+    client_opts: Mapping[str, str],
+    config: RollingMarketDataConfig,
+    window: Any,
+    ticker: str,
+    part: OriginOrdinalPart,
+    month_min_ordinal: int,
+) -> Any:
     horizons = parse_horizons(args.intraday_label_horizons)
     if not horizons:
         return _empty_frame()
     frames = []
     for horizon in horizons:
-        frames.append(_query_intraday_forward_label_horizon(args, client_opts, config, window, ticker, horizon))
+        frames.append(_query_intraday_forward_label_horizon(args, client_opts, config, window, ticker, horizon, part, month_min_ordinal))
     pl = _polars()
     return pl.concat(frames, how="vertical") if frames else _empty_frame()
 
 
-def _query_intraday_forward_label_horizon(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str, horizon: TimeBarHorizon) -> Any:
+def _query_intraday_forward_label_horizon(
+    args: argparse.Namespace,
+    client_opts: Mapping[str, str],
+    config: RollingMarketDataConfig,
+    window: Any,
+    ticker: str,
+    horizon: TimeBarHorizon,
+    part: OriginOrdinalPart,
+    month_min_ordinal: int,
+) -> Any:
     table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
     horizon_us = int(horizon.microseconds)
     # This is a set query for one ticker/month/horizon. It intentionally avoids per-origin round trips.
     query = f"""
 WITH
     {int(horizon_us)} AS horizon_us,
+    part_bounds AS
+    (
+        SELECT
+            min(sip_timestamp_us) AS min_origin_timestamp_us,
+            max(sip_timestamp_us) AS max_origin_timestamp_us
+        FROM {table}
+        PREWHERE ticker = {sql_string(ticker)}
+          AND ordinal >= {int(part.origin_ordinal_start)}
+          AND ordinal <= {int(part.origin_ordinal_end)}
+          AND event_date >= toDate({sql_string(window.first_date.isoformat())})
+          AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
+        WHERE sip_timestamp_us >= {int(window.first_session_start_us)}
+          AND sip_timestamp_us < {int(window.last_session_end_us)}
+    ),
     origins AS
     (
-        SELECT *
-        FROM
-        (
-            SELECT
-                upper(ticker) AS ticker,
-                cityHash64(ticker) AS ticker_id,
-                ordinal AS origin_ordinal,
-                sip_timestamp_us AS origin_timestamp_us,
-                concat(upper(ticker), '|', toString(ordinal)) AS origin_key,
-                dateDiff('second', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) AS local_second,
-                row_number() OVER (ORDER BY ordinal) AS rn
-            FROM {table}
-            PREWHERE event_date >= toDate({sql_string(window.first_date.isoformat())})
-              AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
-            WHERE ticker = {sql_string(ticker)}
-              AND sip_timestamp_us >= {int(window.first_session_start_us)}
-              AND sip_timestamp_us < {int(window.last_session_end_us)}
-              AND toDate(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) >= toDate({sql_string(window.first_date.isoformat())})
-              AND toDate(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) < toDate({sql_string(window.next_month_date.isoformat())})
-              AND dateDiff('second', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) >= 14400
-              AND dateDiff('second', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) < 72000
-        )
-        WHERE modulo(rn - 1, {max(1, int(args.sample_stride_events))}) = 0
+        SELECT
+            upper(ticker) AS ticker,
+            cityHash64(ticker) AS ticker_id,
+            ordinal AS origin_ordinal,
+            sip_timestamp_us AS origin_timestamp_us,
+            concat(upper(ticker), '|', toString(ordinal)) AS origin_key,
+            toDate(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) AS origin_local_date,
+            dateDiff('second', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) AS local_second
+        FROM {table}
+        PREWHERE ticker = {sql_string(ticker)}
+          AND ordinal >= {int(part.origin_ordinal_start)}
+          AND ordinal <= {int(part.origin_ordinal_end)}
+          AND event_date >= toDate({sql_string(window.first_date.isoformat())})
+          AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
+        WHERE modulo(ordinal - {int(month_min_ordinal)}, {max(1, int(args.sample_stride_events))}) = 0
+          AND sip_timestamp_us >= {int(window.first_session_start_us)}
+          AND sip_timestamp_us < {int(window.last_session_end_us)}
+          AND toDate(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) >= toDate({sql_string(window.first_date.isoformat())})
+          AND toDate(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) < toDate({sql_string(window.next_month_date.isoformat())})
+          AND dateDiff('second', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) >= 14400
+          AND dateDiff('second', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) < 72000
     ),
     future_events AS
     (
@@ -997,13 +1130,14 @@ WITH
             price_secondary_int,
             toFloat32(size_primary) AS size_primary,
             toFloat32(size_secondary) AS size_secondary,
-            event_type
+            event_type,
+            toDate(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) AS local_date
         FROM {table}
-        PREWHERE event_date >= toDate({sql_string(window.first_date.isoformat())})
+        PREWHERE ticker = {sql_string(ticker)}
+          AND event_date >= toDate({sql_string(window.first_date.isoformat())})
           AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
-        WHERE ticker = {sql_string(ticker)}
-          AND sip_timestamp_us >= {int(window.first_session_start_us)}
-          AND sip_timestamp_us <= {int(window.last_session_end_us)}
+        WHERE sip_timestamp_us > (SELECT min_origin_timestamp_us FROM part_bounds)
+          AND sip_timestamp_us <= least({int(window.last_session_end_us)}, (SELECT max_origin_timestamp_us FROM part_bounds) + horizon_us)
     )
 SELECT
     o.origin_key,
@@ -1023,6 +1157,7 @@ SELECT
 FROM origins AS o
 LEFT JOIN future_events AS e
     ON e.ticker = o.ticker
+   AND e.local_date = o.origin_local_date
    AND e.sip_timestamp_us > o.origin_timestamp_us
    AND e.sip_timestamp_us <= o.origin_timestamp_us + horizon_us
 GROUP BY
@@ -1031,6 +1166,7 @@ GROUP BY
     o.ticker,
     o.origin_ordinal,
     o.origin_timestamp_us,
+    o.origin_local_date,
     o.local_second
 ORDER BY origin_ordinal
 {_settings_sql(config, extra={"allow_experimental_join_condition": 1})}
@@ -1197,7 +1333,17 @@ ORDER BY
     return query_polars(client_opts, query)
 
 
-def _build_origins_and_windows(events: Any, context_lags: tuple[int, ...], events_per_chunk: int, sample_stride: int, window: Any) -> tuple[Any, Any, Any, int, int]:
+def _build_origins_and_windows(
+    events: Any,
+    context_lags: tuple[int, ...],
+    events_per_chunk: int,
+    sample_stride: int,
+    window: Any,
+    *,
+    origin_ordinal_start: int,
+    origin_ordinal_end: int,
+    month_min_ordinal: int,
+) -> tuple[Any, Any, Any, int, int]:
     pl = _polars()
     if events.height == 0 or not context_lags:
         return _empty_origins(), _empty_windows(context_lags), _empty_ranges(), 0, 0
@@ -1227,10 +1373,20 @@ def _build_origins_and_windows(events: Any, context_lags: tuple[int, ...], event
         timestamps = part.get_column("timestamp_us").to_numpy().astype(np.int64, copy=False)
         row_offsets = part.get_column("row_offset").to_numpy().astype(np.int64, copy=False)
         ticker_ids = part.get_column("ticker_id").to_numpy()
-        positions = np.flatnonzero((timestamps >= int(window.first_session_start_us)) & (timestamps < int(window.last_session_end_us)))
+        positions = np.flatnonzero(
+            (ordinals >= int(origin_ordinal_start))
+            & (ordinals <= int(origin_ordinal_end))
+            & (timestamps >= int(window.first_session_start_us))
+            & (timestamps < int(window.last_session_end_us))
+        )
         if positions.size == 0:
             continue
-        candidates = positions[:: max(1, int(sample_stride))]
+        stride = max(1, int(sample_stride))
+        if stride > 1:
+            positions = positions[((ordinals[positions] - int(month_min_ordinal)) % stride) == 0]
+            if positions.size == 0:
+                continue
+        candidates = positions
         lag_array = np.asarray(lags, dtype=np.int64)
         ends = candidates[:, None] - lag_array[None, :]
         starts = ends - int(events_per_chunk) + 1

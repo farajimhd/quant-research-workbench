@@ -27,11 +27,16 @@ That makes the natural high-throughput unit:
 one ticker, one month
 ```
 
-For each `(ticker, month)` package, the builder reads the full ordinal sequence
-for that ticker and month, adds only the required prior context from earlier
-data, builds the reusable derived indexes once, and writes compact columnar
-files to SSD. Training then loads these packages and materializes batches on CPU
-while the GPU trains.
+For each `(ticker, month)` package, the builder reads the ordinal sequence for
+that ticker and month, adds only the required prior context from earlier data,
+builds the reusable derived indexes once, and writes compact columnar files to
+SSD. Training then loads these packages and materializes batches on CPU while
+the GPU trains.
+
+Very liquid tickers can have too many monthly events for a single in-memory
+fetch. The package therefore remains logical `(ticker, month)` state, but its
+large files are physically split into ordinal-bounded parts. Part boundaries are
+storage boundaries only; they are not model or cache-state boundaries.
 
 ## Keys
 
@@ -68,19 +73,54 @@ cache_root/
       ticker_hash=XX/
         ticker=ABC/
           manifest.json
-          events.parquet
-          intraday_forward_labels.parquet
+          events_part_00000.parquet
+          origins_part_00000.parquet
+          event_window_index_part_00000.parquet
+          ranges_part_00000.parquet
+          intraday_forward_labels_part_00000.parquet
+          events_part_00001.parquet
+          origins_part_00001.parquet
+          event_window_index_part_00001.parquet
+          ranges_part_00001.parquet
+          intraday_forward_labels_part_00001.parquet
           daily_bars.parquet
           ticker_news_tokens.parquet
           sec_filing_tokens.parquet
           xbrl.parquet
-          ranges.parquet
           audit_summary.json
 ```
 
 Ticker directories can be hash-sharded to avoid very large filesystem
 directories. The exact physical layout can change during implementation, but
 the logical contents should remain the same.
+
+The package manifest owns the part list:
+
+```json
+{
+  "parts": [
+    {
+      "part_id": 0,
+      "origin_ordinal_start": 1000000,
+      "origin_ordinal_end": 2999999,
+      "fetch_ordinal_start": 997888,
+      "fetch_ordinal_end": 2999999,
+      "files": {
+        "events": "events_part_00000.parquet",
+        "origins": "origins_part_00000.parquet",
+        "event_window_index": "event_window_index_part_00000.parquet",
+        "ranges": "ranges_part_00000.parquet",
+        "intraday_forward_labels": "intraday_forward_labels_part_00000.parquet"
+      }
+    }
+  ]
+}
+```
+
+`origin_ordinal_start/end` defines the samples saved in the part.
+`fetch_ordinal_start/end` defines the event rows saved for that part. The fetch
+start may be earlier than the origin start because event windows need prior
+context rows. Only origins inside `origin_ordinal_start/end` are emitted.
 
 ## Event Payload
 
@@ -183,6 +223,13 @@ continuous. If source filtering removes invalid events, the stored ordinal map
 must make the resulting discontinuity explicit so the loader never silently
 builds a window across an ordinal gap.
 
+For split packages, the same formula is applied within each physical part using
+part-local row offsets. The part must include enough `fetch_ordinal_start`
+lookback rows to satisfy the maximum configured context lag. If the lookback is
+not available or the ordinal span contains a gap, the affected origins are
+skipped and counted in the manifest. The next part starts a new physical row
+offset range but continues the same logical ticker/month origin sequence.
+
 ## Origins
 
 For a package month, eligible origins are the package events whose UTC timestamp
@@ -201,6 +248,10 @@ The default origin stride is one event. With `sample_stride_events=1`, the best
 case sample count should be close to the number of valid source events in the
 requested period after removing events whose required context or labels are not
 available.
+
+If `sample_stride_events` is greater than one, stride is computed from the
+month's first eligible origin ordinal, not from each physical part. This keeps
+origin selection stable when a liquid ticker is split into several files.
 
 ## Text, SEC, And XBRL Context
 
@@ -347,6 +398,22 @@ The ticker/month package shape matches the current physical order. It converts
 one heavy sequential read into reusable SSD state and lets training sample or
 materialize without repeatedly stressing ClickHouse.
 
+For liquid tickers, ClickHouse access should be:
+
+1. Query the eligible monthly origin bounds for one ticker:
+   `min(ordinal), max(ordinal)`.
+2. Split that ordinal span into bounded physical parts.
+3. Fetch event rows with `ticker = X AND ordinal BETWEEN fetch_start AND
+   fetch_end`, where `fetch_start` includes required event-window lookback.
+4. Compute intraday forward labels in ClickHouse with origins restricted to
+   `origin_ordinal_start/end`. Future rows are limited to the part's origin
+   timestamp range plus the current horizon and are joined on the same local
+   session date, so intraday labels do not cross into the next trading day.
+
+This query shape is aligned with `ORDER BY (ticker, ordinal)`. It avoids one
+massive liquid-ticker fetch while still keeping sequential reads and set-based
+ClickHouse computation.
+
 If a future timestamp-ordered projection is added, the direct query/materialize
 path should be revisited.
 
@@ -361,13 +428,14 @@ the large vectorized work.
 Long-running tasks are split into:
 
 - global/month package build
-- ticker/month event fetch
+- ticker/month origin-bound discovery
+- ticker/month part event fetch
 - ticker/month text token fetch
 - ticker/month SEC token fetch
 - ticker/month XBRL fetch
 - ticker/month daily bar fetch
 - event time-feature computation
-- intraday forward-label query/fetch
+- part intraday forward-label query/fetch
 - range metadata construction
 - package write
 - package audit
@@ -395,22 +463,31 @@ are still processing prior packages.
 For a ticker/month package:
 
 ```text
-event fetch --------------> event time features ---> events write
-       |                         |
-       |                         +----> event ranges -----> ranges write
-       |
-intraday label query ------------------------------------> intraday labels write
-daily bars fetch ----------------------------------------> daily write
-text token fetch ----------------------------------------> text write
-SEC token fetch -----------------------------------------> SEC write
-XBRL fetch ----------------------------------------------> XBRL write
-global/month package ------------------------------------> manifest reference
-all writes ----------------------------------------------> audit
+origin bounds ----> ordinal parts
+                       |
+                       +---- part event fetch ------> event time features ---> part events write
+                       |          |                         |
+                       |          |                         +----> part ranges/windows write
+                       |          |
+                       |          +---- part intraday label query -----------> part labels write
+                       |
+daily bars fetch -----------------------------------------------------------> daily write
+text token fetch -----------------------------------------------------------> text write
+SEC token fetch ------------------------------------------------------------> SEC write
+XBRL fetch ----------------------------------------------------------------> XBRL write
+global/month package ------------------------------------------------------> manifest reference
+all part/context writes ---------------------------------------------------> audit
 ```
 
 Independent fetches for one ticker/month can run concurrently. Independent
 ticker/month packages can also run concurrently, bounded by ClickHouse, CPU, and
 memory limits.
+
+Within one liquid ticker/month, parts are processed sequentially by default to
+bound peak RAM, but each part overlaps its event query, label query, CPU
+window-index build, and writes through the existing resource lanes. If memory
+gates later allow it, a small number of parts from the same liquid ticker can be
+prefetched without changing the package format.
 
 Global/month packages should be built once and reused by every ticker package in
 that month.

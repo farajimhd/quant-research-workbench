@@ -134,32 +134,67 @@ def _audit_package(package_dir: Path, issues: list[AuditIssue], totals: dict[str
     if not manifest:
         return
     files = manifest.get("files") or {}
-    required = ("events", "origins", "event_window_index", "ranges", "intraday_forward_labels", "ticker_news_tokens", "sec_filing_tokens", "xbrl", "daily_bars")
-    for key in required:
+    context_required = ("ticker_news_tokens", "sec_filing_tokens", "xbrl", "daily_bars")
+    for key in context_required:
         rel = files.get(key)
         if not rel or not (package_dir / str(rel)).exists():
             issues.append(AuditIssue("error", "missing_file", f"Missing package file {key}.", {"package": str(package_dir), "file": rel}))
+    part_specs = _package_part_specs(manifest)
+    if not part_specs:
+        issues.append(AuditIssue("error", "missing_parts", "Package manifest has no event parts.", {"package": str(package_dir)}))
+        return
     try:
         import polars as pl  # type: ignore
     except ModuleNotFoundError as exc:
         issues.append(AuditIssue("error", "polars_missing", str(exc)))
         return
-    try:
-        events = pl.read_parquet(package_dir / str(files.get("events", "events.parquet")))
-        origins = pl.read_parquet(package_dir / str(files.get("origins", "origins.parquet")))
-        labels = pl.read_parquet(package_dir / str(files.get("intraday_forward_labels", "intraday_forward_labels.parquet")))
-        windows = pl.read_parquet(package_dir / str(files.get("event_window_index", "event_window_index.parquet")))
-    except Exception as exc:
-        issues.append(AuditIssue("error", "read_failed", f"Failed to read parquet: {exc!r}", {"package": str(package_dir)}))
+    for part in part_specs:
+        part_id = int(part.get("part_id") or 0)
+        part_files = part.get("files") or {}
+        for key in ("events", "origins", "event_window_index", "ranges", "intraday_forward_labels"):
+            rel = part_files.get(key)
+            if not rel or not (package_dir / str(rel)).exists():
+                issues.append(AuditIssue("error", "missing_file", f"Missing part file {key}.", {"package": str(package_dir), "part_id": part_id, "file": rel}))
+        try:
+            events = pl.read_parquet(package_dir / str(part_files.get("events", "events.parquet")))
+            origins = pl.read_parquet(package_dir / str(part_files.get("origins", "origins.parquet")))
+            labels = pl.read_parquet(package_dir / str(part_files.get("intraday_forward_labels", "intraday_forward_labels.parquet")))
+            windows = pl.read_parquet(package_dir / str(part_files.get("event_window_index", "event_window_index.parquet")))
+        except Exception as exc:
+            issues.append(AuditIssue("error", "read_failed", f"Failed to read parquet: {exc!r}", {"package": str(package_dir), "part_id": part_id}))
+            continue
+        totals["events"] += int(events.height)
+        totals["origins"] += int(origins.height)
+        totals["labels"] += int(labels.height)
+        _check_part_origin_bounds(origins, part, issues, package_dir)
+        _check_event_order(events, issues, package_dir)
+        _check_windows(events, origins, windows, manifest, issues, package_dir)
+        _check_labels(origins, labels, issues, package_dir)
+        if config.source_checks and origins.height:
+            _source_check_origin(origins, manifest, config, client_opts, issues, package_dir)
+
+
+def _package_part_specs(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    parts = manifest.get("parts")
+    if isinstance(parts, list) and parts:
+        return [part for part in parts if isinstance(part, dict)]
+    files = manifest.get("files") or {}
+    legacy_keys = ("events", "origins", "event_window_index", "ranges", "intraday_forward_labels")
+    if all(key in files for key in legacy_keys):
+        return [{"part_id": 0, "files": {key: files[key] for key in legacy_keys}}]
+    return []
+
+
+def _check_part_origin_bounds(origins: Any, part: Mapping[str, Any], issues: list[AuditIssue], package_dir: Path) -> None:
+    if not origins.height:
         return
-    totals["events"] += int(events.height)
-    totals["origins"] += int(origins.height)
-    totals["labels"] += int(labels.height)
-    _check_event_order(events, issues, package_dir)
-    _check_windows(events, origins, windows, manifest, issues, package_dir)
-    _check_labels(origins, labels, issues, package_dir)
-    if config.source_checks and origins.height:
-        _source_check_origin(origins, manifest, config, client_opts, issues, package_dir)
+    start = part.get("origin_ordinal_start")
+    end = part.get("origin_ordinal_end")
+    if start is None or end is None:
+        return
+    ordinals = origins.get_column("origin_ordinal").to_numpy()
+    if (ordinals < int(start)).any() or (ordinals > int(end)).any():
+        issues.append(AuditIssue("error", "part_origin_bounds", "Part contains origins outside its ordinal bounds.", {"package": str(package_dir), "part_id": int(part.get("part_id") or 0), "origin_ordinal_start": int(start), "origin_ordinal_end": int(end)}))
 
 
 def _check_event_order(events: Any, issues: list[AuditIssue], package_dir: Path) -> None:

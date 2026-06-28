@@ -21,6 +21,14 @@ Intraday labels are stored as origin-relative `next_*` forward labels computed
 by set-based ClickHouse queries. The default SSD cache does not store dense
 intraday bar grids and does not store `current_*` intraday labels.
 
+Liquid tickers are still one logical ticker/month package, but the event,
+origin, window-index, and intraday-label files are physically split into
+ordinal-bounded parts. Each part uses ClickHouse's native access pattern,
+`ticker = ... AND ordinal BETWEEN ...`, and includes the required prior event
+lookback rows so event-window continuity is checked inside the part without
+creating a training boundary at the part edge. The default maximum origin span
+is controlled by `--max-origin-events-per-part`.
+
 Build the new ticker/month SSD cache with:
 
 ```powershell
