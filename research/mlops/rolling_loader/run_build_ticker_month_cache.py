@@ -111,6 +111,9 @@ DEFAULTS: dict[str, Any] = {
     "profile_slow_seconds": 10.0,
 }
 
+SESSION_START_SECOND = 4 * 60 * 60
+SESSION_END_SECOND = 20 * 60 * 60
+
 
 class ActiveQueryRegistry:
     def __init__(self) -> None:
@@ -782,7 +785,7 @@ def _build_ticker_month_package(
     state = stats.workers[worker_id]
     state.start_package(month=month, ticker=ticker)
     package_dir = ticker_package_dir(month_dir_for(cache_root, args.split, month), ticker)
-    if package_dir.exists() and not args.resume:
+    if package_dir.exists() and args.resume:
         state.status = "done"
         state.stage = "exists"
         state.message = "already exists"
@@ -1046,6 +1049,9 @@ def _light_audit_part_in_memory(
     events_per_chunk = max(1, int(events_per_chunk))
     event_ordinals = events.get_column("ordinal").to_numpy().astype(np.int64, copy=False)
     event_timestamps = events.get_column("timestamp_us").to_numpy().astype(np.int64, copy=False)
+    if "session_second" not in events.columns:
+        raise RuntimeError(f"{prefix} inline audit failed: events are missing session_second.")
+    session_seconds = events.get_column("session_second").to_numpy().astype(np.int64, copy=False)
     if event_ordinals.size > 1 and np.any(event_ordinals[1:] <= event_ordinals[:-1]):
         raise RuntimeError(f"{prefix} inline audit failed: events are not strictly increasing by ordinal.")
     origin_count = int(origins.height)
@@ -1070,6 +1076,9 @@ def _light_audit_part_in_memory(
             raise RuntimeError(f"{prefix} inline audit failed: sampled origin {origin_ordinal:,} event_row_offset is out of bounds.")
         if int(event_ordinals[event_row_offset]) != origin_ordinal or int(event_timestamps[event_row_offset]) != origin_timestamp_us:
             raise RuntimeError(f"{prefix} inline audit failed: sampled origin {origin_key} does not match event row offset.")
+        origin_session_second = int(session_seconds[event_row_offset])
+        if origin_session_second < SESSION_START_SECOND or origin_session_second >= SESSION_END_SECOND:
+            raise RuntimeError(f"{prefix} inline audit failed: sampled origin {origin_key} is outside the active session.")
         window = windows.row(int(origin_index), named=True)
         if int(window.get("origin_id", -1)) != origin_id or str(window.get("origin_key", "")) != origin_key:
             raise RuntimeError(f"{prefix} inline audit failed: window row is not aligned with sampled origin {origin_key}.")
@@ -1552,6 +1561,9 @@ def _build_origins_and_windows(
         ticker = key[0] if isinstance(key, tuple) else key
         ordinals = part.get_column("ordinal").to_numpy().astype(np.int64, copy=False)
         timestamps = part.get_column("timestamp_us").to_numpy().astype(np.int64, copy=False)
+        if "session_second" not in part.columns:
+            raise RuntimeError("Event frame is missing session_second; cannot build no-lookahead session-aligned origins.")
+        session_seconds = part.get_column("session_second").to_numpy().astype(np.int64, copy=False)
         row_offsets = part.get_column("row_offset").to_numpy().astype(np.int64, copy=False)
         ticker_ids = part.get_column("ticker_id").to_numpy()
         positions = np.flatnonzero(
@@ -1559,6 +1571,8 @@ def _build_origins_and_windows(
             & (ordinals <= int(origin_ordinal_end))
             & (timestamps >= int(window.first_session_start_us))
             & (timestamps < int(window.last_session_end_us))
+            & (session_seconds >= SESSION_START_SECOND)
+            & (session_seconds < SESSION_END_SECOND)
         )
         if positions.size == 0:
             continue

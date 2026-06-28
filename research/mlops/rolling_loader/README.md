@@ -79,6 +79,11 @@ Ctrl+C requests a graceful stop, cancels active ClickHouse queries by their
 tracked query ids, writes an interrupted manifest, and leaves completed package
 directories intact.
 
+Rerun semantics are explicit: a normal run rebuilds and atomically replaces
+existing ticker packages for the selected cache id. Pass `--resume` only when
+you intentionally want to reuse already completed package directories from an
+interrupted compatible build.
+
 The final audit is still part of the normal build loop. After all requested
 month packages complete, the builder runs `audit_ticker_month_cache` unless
 `--skip-final-audit` is passed. During package creation the audit panel remains
