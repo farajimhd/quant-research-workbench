@@ -21,6 +21,24 @@ Intraday labels are stored as origin-relative `next_*` forward labels computed
 by set-based ClickHouse queries. The default SSD cache does not store dense
 intraday bar grids and does not store `current_*` intraday labels.
 
+Build the new ticker/month SSD cache with:
+
+```powershell
+python -m research.mlops.rolling_loader.run_build_ticker_month_cache --month 2019-02 --cache-id train_201902_ticker_month
+```
+
+Or build every complete month inside a period; partial months at the boundaries
+are ignored:
+
+```powershell
+python -m research.mlops.rolling_loader.run_build_ticker_month_cache --start-utc 2019-01-01T00:00:00Z --end-utc 2019-04-15T00:00:00Z --cache-id train_201901_201903_ticker_month
+```
+
+The builder writes `terminal.log`, `builder_events.jsonl`,
+`builder_profile_events.jsonl`, `errors.jsonl`, and split progress JSON under
+the cache root so failed workstation runs can be reviewed without copying the
+interactive terminal output.
+
 ## Core Flow
 
 1. Resolve the ticker universe and create every per-ticker cache before replay.
