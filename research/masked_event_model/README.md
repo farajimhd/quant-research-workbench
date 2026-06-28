@@ -81,6 +81,7 @@ below.
 | v26 | Compact event tokens, bit input | Ten exported branch tokens `[B,10,Z]` | Branch-token cross-attention event decoder + header decoder | Ordinary BCE mean + header BCE | Tests preserving semantic branch tokens for both reconstruction and downstream probing. |
 | v27 | Compact event tokens, bit input | Grouped semantic bottleneck merged to one vector | Per-masked-event MLP + masked-header-bit decoder | Ordinary BCE mean + masked header BCE | Tests batch-shared header bit masking with visible header values kept strictly in `-1/+1`. |
 | v28 | Compact event tokens, bit input | Grouped semantic bottleneck merged to one vector | Per-masked-event MLP + pooled-header-mask decoder | Ordinary BCE mean + masked header BCE | Isolates header masking from v25 while keeping one pooled header token in the transformer. |
+| v29 | Compact event tokens, 0/1 bit input | Grouped semantic bottleneck merged to one vector | Per-masked-event MLP + pooled-header-mask decoder | Ordinary BCE mean + masked header BCE | v28 ablation that keeps input bits as literal `0/1` instead of converting to `-1/+1`. |
 
 ## Experiment Log
 
