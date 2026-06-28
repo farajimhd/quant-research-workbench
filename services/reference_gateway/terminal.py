@@ -87,6 +87,7 @@ def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
             current_operation_panel(record),
             summary_panel(record),
             maintenance_panel(record),
+            audit_aggregate_panel(record, limit=3),
             audit_findings_panel(record, limit=5),
         )
     return Group(
@@ -99,6 +100,7 @@ def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
             expand=True,
         ),
         operations_panel(record.operations),
+        audit_aggregate_panel(record, limit=4),
         audit_findings_panel(record, limit=10),
     )
 
@@ -285,6 +287,70 @@ def audit_findings_panel(record: ReferenceRunRecord, *, limit: int) -> Panel:
     return Panel(table, title=title, box=box.ROUNDED, border_style=status_color(status), padding=(0, 1))
 
 
+def audit_aggregate_panel(record: ReferenceRunRecord, *, limit: int) -> Panel:
+    audit = record.audit
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Group", style="cyan", no_wrap=True, width=18)
+    table.add_column("Status", no_wrap=True, width=10)
+    table.add_column("Checks", justify="right", no_wrap=True, width=8)
+    table.add_column("Rows", justify="right", no_wrap=True, width=12)
+    table.add_column("Latest / High Priority Message", overflow="fold", ratio=1)
+
+    if audit is None:
+        table.add_row("audit", style_status("not_started"), "-", "-", "Audit has not run yet.")
+        return Panel(table, title="Audit Issue Summary", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
+
+    checks = list(audit.checks)
+    failed_errors = [check for check in checks if check.severity == "error" and check.status != "ok"]
+    failed_warnings = [check for check in checks if check.severity == "warning" and check.status != "ok"]
+    ok_checks = [check for check in checks if check.status == "ok"]
+    other_checks = [check for check in checks if check.status != "ok" and check.severity not in {"error", "warning"}]
+
+    table.add_row(
+        "Errors",
+        style_status("failed" if failed_errors else "ok"),
+        fmt(len(failed_errors)),
+        fmt(audit_row_count(failed_errors)),
+        audit_group_message(failed_errors, "No failed error checks."),
+    )
+    table.add_row(
+        "Warnings",
+        style_status("warning" if failed_warnings else "ok"),
+        fmt(len(failed_warnings)),
+        fmt(audit_row_count(failed_warnings)),
+        audit_group_message(failed_warnings, "No failed warning checks."),
+    )
+    table.add_row(
+        "Other findings",
+        style_status("warning" if other_checks else "ok"),
+        fmt(len(other_checks)),
+        fmt(audit_row_count(other_checks)),
+        audit_group_message(other_checks, "No other failed checks."),
+    )
+    table.add_row(
+        "OK checks",
+        style_status("ok"),
+        fmt(len(ok_checks)),
+        "-",
+        f"Total checks {fmt(len(checks))}; audit status {status_label(audit.status)}.",
+    )
+
+    prioritized = sorted(failed_errors + failed_warnings + other_checks, key=audit_sort_key)
+    for check in prioritized[:limit]:
+        table.add_row(
+            truncate(check.name, 18),
+            severity_label(check.severity),
+            fmt(1),
+            fmt(check.count),
+            f"{check.message} ({check.name})",
+        )
+    hidden = max(0, len(prioritized) - limit)
+    if hidden:
+        table.add_row("[dim]more[/dim]", "-", fmt(hidden), "-", "Additional audit warnings/errors hidden in this view.")
+
+    return Panel(table, title="Audit Issue Summary", box=box.ROUNDED, border_style=status_color(audit.status), padding=(0, 1))
+
+
 def style_status(value: str) -> str:
     color = status_color(value)
     return f"[{color}]{status_label(value)}[/{color}]"
@@ -394,6 +460,24 @@ def audit_failures(record: ReferenceRunRecord) -> tuple[list[Any], list[Any]]:
     errors = [check for check in record.audit.checks if check.severity == "error" and check.status != "ok"]
     warnings = [check for check in record.audit.checks if check.severity == "warning" and check.status != "ok"]
     return errors, warnings
+
+
+def audit_row_count(checks: list[Any]) -> int:
+    total = 0
+    for check in checks:
+        try:
+            total += int(getattr(check, "count", 0) or 0)
+        except Exception:
+            continue
+    return total
+
+
+def audit_group_message(checks: list[Any], empty_message: str) -> str:
+    if not checks:
+        return empty_message
+    sorted_checks = sorted(checks, key=audit_sort_key)
+    first = sorted_checks[0]
+    return f"{first.message} ({first.name})"
 
 
 def audit_sort_key(check: Any) -> tuple[int, int, str]:

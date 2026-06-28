@@ -20,6 +20,7 @@ source first.
 | C10 | Flow Stage 1 | Process entry and mode resolution reviewed and accepted. | Accepted |
 | C11 | Flow Stage 2 | Preflight and dependency gate reviewed and accepted. | Accepted |
 | C12 | Flow Stage 3 | Write policy and market-hours decision reviewed and accepted. | Accepted |
+| C13 | Flow Stage 4 | Audit and current-state read reviewed and accepted. Audit warnings/errors must be visible as grouped terminal aggregates plus recent/high-priority messages. | Accepted |
 
 ## Reviewed Flow Stages
 
@@ -312,6 +313,76 @@ With `Integrity=ReportOnly`:
   market session.
 - Any market-hours maintenance/promotion override must be explicit and
   auditable through `Maintenance=Force` plus `MaintenanceReason`.
+
+Review status: accepted.
+
+## Stage 4: Audit And Current-State Read
+
+This stage answers: what does the gateway read from `q_live` to decide whether
+the current reference data is safe enough for trading and source-sync work?
+
+Audit runs after preflight and write-policy resolution. It reads current state
+before source-sync changes are applied so the gateway has a clean baseline.
+
+### Audit Inputs
+
+The audit reads reference and publication tables from the configured read
+database, normally `q_live`.
+
+It checks:
+
+- required tables exist
+- parent/child relations are valid
+- issuer identity quality is strong enough for tradability
+- active US stock candidates have a valid tradable-universe state
+- open mapping issues still exist
+- unsupported US-stock shapes are excluded
+- hard rule violations are not present in tradable publications
+- market reference publication tables are present and recent enough for their
+  implemented sources
+
+### Audit Outputs
+
+The audit produces:
+
+- a JSON report under `<market-data>/prepared/reference_gateway/reports`
+- a structured `audit_completed` runtime-log event
+- terminal panels for status, grouped warnings/errors, and detailed findings
+- a status used by later stages
+
+The terminal must show audit warnings and errors in two ways:
+
+- grouped aggregate counts by severity, including affected row counts
+- several recent or high-priority messages so the operator can see what failed
+  without opening the JSON report
+
+### Meaning Of Audit Results
+
+`ok`:
+
+- structural checks passed
+- no warning-level checks failed
+
+`warning`:
+
+- no structural error blocked the run
+- at least one warning-level issue exists
+- affected instruments may still be non-tradable depending on the check
+
+`failed`:
+
+- at least one error-level check failed
+- the run may stop or later stages may be restricted depending on integrity
+  mode
+
+### Stage 4 Rules
+
+- Audit is read-only.
+- Audit never fixes data directly.
+- Audit findings decide what source sync, issue resolution, immediate
+  tradability blocking, or maintenance should do later.
+- An audit warning can still mean an instrument is not tradable.
+- An audit error means structural inconsistency and may stop or fail the run.
 
 Review status: accepted.
 
