@@ -612,8 +612,12 @@ def main(argv: list[str] | None = None) -> int:
             write_json_atomic(cache_root / "manifest.json", manifest | {"status": "interrupted", "summary": _summary(stats)})
         return 130
     except BaseException as exc:
+        stop_event.set()
+        stats.stop_requested = True
         stats.phase = "error"
         stats.log_error("main", exc)
+        stats.message(f"fatal error received; cancelling active ClickHouse queries and queued work: {exc!r}")
+        cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
         if manifest:
             write_json_atomic(cache_root / "manifest.json", manifest | {"status": "error", "error": repr(exc), "summary": _summary(stats)})
         raise

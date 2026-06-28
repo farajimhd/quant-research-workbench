@@ -4,6 +4,8 @@ import datetime as dt
 import json
 import os
 import shutil
+import threading
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -21,6 +23,7 @@ DEFAULT_TICKER_MONTH_CACHE_ROOT = DEFAULT_MATERIALIZED_CACHE_ROOT.parent / "roll
 SESSION_TIMEZONE = "America/New_York"
 SESSION_START = dt.time(4, 0, 0)
 SESSION_END = dt.time(20, 0, 0)
+_WRITE_JSON_LOCK = threading.Lock()
 
 EVENT_PAYLOAD_COLUMNS: tuple[str, ...] = (
     "ticker_id",
@@ -186,9 +189,14 @@ def required_event_lookback_rows(context_lags: tuple[int, ...], events_per_chunk
 
 def write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(jsonable(payload), indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(jsonable(payload), indent=2, sort_keys=True), encoding="utf-8")
+        with _WRITE_JSON_LOCK:
+            tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 def jsonable(value: Any) -> Any:
