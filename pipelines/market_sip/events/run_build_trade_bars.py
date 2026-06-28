@@ -52,6 +52,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--clickhouse-url", default="")
     parser.add_argument("--user", default="")
     parser.add_argument("--password", default="")
+    parser.add_argument(
+        "--full-rebuild",
+        action="store_true",
+        help=(
+            "Repair/rebuild the macro bar table from scratch. This implies --drop-table in macro mode "
+            "and is the recommended path after an old all-bars build left UTC-midnight or 1mo rows."
+        ),
+    )
+    parser.add_argument(
+        "--purge-unsupported-macro-timeframes",
+        action="store_true",
+        help="Macro mode only: delete stale non-macro rows such as 1mo before rebuilding the requested range.",
+    )
     parser.add_argument("--drop-table", action="store_true")
     parser.add_argument("--no-replace-range", action="store_true")
     parser.add_argument("--no-expand-boundaries", action="store_true")
@@ -106,8 +119,14 @@ def main() -> int:
         argv.extend(["--user", args.user])
     if args.password:
         argv.extend(["--password", args.password])
-    if args.drop_table:
+    if args.full_rebuild and args.bar_mode != "macro":
+        raise ValueError("--full-rebuild is only valid with --bar-mode macro")
+    drop_table = bool(args.drop_table or args.full_rebuild)
+    purge_unsupported = bool(args.purge_unsupported_macro_timeframes or args.full_rebuild)
+    if drop_table:
         argv.append("--drop-table")
+    if purge_unsupported:
+        argv.append("--purge-unsupported-macro-timeframes")
     if args.no_replace_range:
         argv.append("--no-replace-range")
     if args.no_expand_boundaries:

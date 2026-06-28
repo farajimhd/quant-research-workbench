@@ -115,6 +115,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--replace-range", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
+        "--purge-unsupported-macro-timeframes",
+        action="store_true",
+        help=(
+            "Macro mode only: remove stale rows whose timeframe is not part of the supported "
+            "macro contract (1d,1w,1y). Use this when repairing tables created by the old all-bars path."
+        ),
+    )
+    parser.add_argument(
         "--chunk-days",
         type=int,
         default=7,
@@ -143,7 +151,7 @@ def parse_args() -> argparse.Namespace:
         "--expand-boundaries",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Expand weekly/monthly builds to full affected bar periods before deleting/inserting bars.",
+        help="Expand weekly/yearly macro builds to full affected bar periods before deleting/inserting bars.",
     )
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
     parser.add_argument("--progress-refresh-per-second", type=float, default=2.0)
@@ -179,6 +187,7 @@ def main() -> int:
     print(f"settings={query_settings(args).strip() or '<none>'}", flush=True)
     print(
         f"replace_range={args.replace_range} drop_table={args.drop_table} "
+        f"purge_unsupported_macro_timeframes={args.purge_unsupported_macro_timeframes} "
         f"copy_at_end={args.copy_at_end} summarize_chunks={args.summarize_chunks} dry_run={args.dry_run}",
         flush=True,
     )
@@ -192,11 +201,17 @@ def main() -> int:
     print("=" * 96, flush=True)
 
     try:
-        with BarBuildReporter(args, specs=specs, report_path=report_path, requested_start_date=requested_start_date, requested_end_date=requested_end_date) as reporter:
+        if args.dry_run:
             if args.bar_mode == "macro":
-                build_macro_bars(client, args, specs=specs, report_path=report_path, reporter=reporter)
+                build_macro_bars(client, args, specs=specs, report_path=report_path, reporter=None)
             else:
-                build_live_market_bars(client, args, specs=specs, report_path=report_path, reporter=reporter)
+                build_live_market_bars(client, args, specs=specs, report_path=report_path, reporter=None)
+        else:
+            with BarBuildReporter(args, specs=specs, report_path=report_path, requested_start_date=requested_start_date, requested_end_date=requested_end_date) as reporter:
+                if args.bar_mode == "macro":
+                    build_macro_bars(client, args, specs=specs, report_path=report_path, reporter=reporter)
+                else:
+                    build_live_market_bars(client, args, specs=specs, report_path=report_path, reporter=reporter)
     except KeyboardInterrupt:
         append_jsonl(
             report_path,
@@ -371,6 +386,11 @@ def build_macro_bars(
         print_sql_preview("create macro bars", create_macro_bar_table_sql(args.database, table_spec.table, args.storage_policy, layout=table_spec))
         if args.drop_table:
             print_sql_preview("drop macro bars", drop_table_sql(args.database, table_spec.table))
+        if getattr(args, "purge_unsupported_macro_timeframes", False):
+            print_sql_preview(
+                "purge unsupported macro timeframes",
+                delete_unsupported_macro_timeframes_sql(args.database, table_spec.table, args),
+            )
         for spec in specs:
             start_date, end_date = date_range_for_timeframe(args.start_date, args.end_date, spec, expand_boundaries)
             chunks = date_chunks_for_timeframe(start_date, end_date, spec, max(1, int(args.chunk_days)))
@@ -397,6 +417,32 @@ def build_macro_bars(
     client.execute(create_macro_bar_table_sql(args.database, table_spec.table, args.storage_policy, layout=table_spec))
     if reporter is not None:
         reporter.finish_stage(f"ensured {args.database}.{table_spec.table}")
+
+    if getattr(args, "purge_unsupported_macro_timeframes", False):
+        if reporter is not None:
+            reporter.set_stage("purge unsupported macro timeframes")
+        purge_profile = run_bar_query_profiled(
+            client,
+            f"purge_unsupported_{table_spec.table}",
+            delete_unsupported_macro_timeframes_sql(args.database, table_spec.table, args),
+            reporter=reporter,
+        )
+        append_jsonl(
+            report_path,
+            {
+                "operation": "purge_unsupported_macro_timeframes",
+                "bar_layout": table_spec.layout,
+                "bars_table": table_spec.table,
+                "profile": asdict(purge_profile),
+            },
+        )
+        if reporter is not None:
+            reporter.finish_stage(
+                f"purged unsupported macro timeframes wall={purge_profile.wall_seconds:.1f}s "
+                f"read_rows={format_optional_int(purge_profile.read_rows)}"
+            )
+        else:
+            print_profile("PURGE", purge_profile)
 
     total_chunks = planned_chunk_count(args, specs)
     chunk_index = 0
@@ -864,6 +910,8 @@ def planned_step_count(args: argparse.Namespace, specs: list[TimeframeSpec], bar
         setup_steps = len(bar_tables)
         if args.drop_table:
             setup_steps += len(bar_tables)
+        if getattr(args, "purge_unsupported_macro_timeframes", False):
+            setup_steps += 1
         return setup_steps + chunks * (2 if args.replace_range else 1)
     if args.copy_at_end:
         # Per timeframe: truncate staging once, stage every chunk, then delete/copy each final layout once.
@@ -1229,6 +1277,15 @@ ALTER TABLE {quote_ident(database)}.{quote_ident(table)}
 DELETE WHERE bar_start < (toDateTime64(toDate({sql_string(end_date)}) + INTERVAL 1 DAY, 3, 'UTC'))
   AND bar_end > toDateTime64(toDate({sql_string(start_date)}), 3, 'UTC')
 {timeframe_filter}
+{mutation_settings(args)}
+"""
+
+
+def delete_unsupported_macro_timeframes_sql(database: str, table: str, args: argparse.Namespace) -> str:
+    supported = ", ".join(sql_string(value) for value in DEFAULT_TIMEFRAMES)
+    return f"""
+ALTER TABLE {quote_ident(database)}.{quote_ident(table)}
+DELETE WHERE timeframe NOT IN ({supported})
 {mutation_settings(args)}
 """
 

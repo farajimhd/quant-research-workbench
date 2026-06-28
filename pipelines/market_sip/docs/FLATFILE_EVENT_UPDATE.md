@@ -58,6 +58,19 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
   --end-date 2026-12-31
 ```
 
+If the table was previously built by the old all-bars/staging path, run a
+one-time full rebuild instead. This drops and recreates the macro table, removes
+stale `1mo` rows, and rewrites `1d,1w,1y` with the current extended-hours
+session boundaries:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_trade_bars.py `
+  --database market_sip_compact `
+  --start-date 2019-01-01 `
+  --end-date 2026-12-31 `
+  --full-rebuild
+```
+
 Macro bars are assigned from `events.sip_timestamp_us` converted to
 `America/New_York`. Daily bars cover 04:00-20:00 ET. Weekly bars are Monday-start
 New York weeks. Yearly bars are New York calendar years. The builder expands

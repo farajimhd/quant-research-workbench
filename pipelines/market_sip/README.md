@@ -38,17 +38,18 @@ and write unified events plus qmd-compatible bars to ClickHouse, use
 `flatfiles/download_update_events.py`. Its runbook is documented in
 `docs/FLATFILE_EVENT_UPDATE.md`.
 
-To materialize reusable qmd-compatible bars from `market_sip_compact.events`,
+To materialize reusable training macro bars from `market_sip_compact.events`,
 use the events bar builder:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_trade_bars.py
 ```
 
-It writes qmd-gateway `BAR_SCHEMA_VERSION = 2` columns into three identical-row
-layouts: `live_market_bars` for chart/date slices, `bars_by_symbol_time` for
-per-ticker temporal training windows, and `bars_by_time_symbol` for
-market-wide time-snapshot training.
+It writes the compact macro table `macro_bars_by_time_symbol` with `1d,1w,1y`
+bars. Use `--full-rebuild` once if an older all-bars run left UTC-midnight daily
+bars or unsupported `1mo` rows in the macro table. The qmd-compatible
+`live_market_bars` / `bars_by_*` staging path is legacy and is available only
+through explicit `--bar-mode qmd`.
 
 To build only validation sample-cache shards, pass `--splits validation` to
 `sample_cache/run_build_event_sample_cache.py` or directly to

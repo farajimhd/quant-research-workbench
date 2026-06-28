@@ -34,6 +34,17 @@ Run on the workstation:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_trade_bars.py
 ```
 
+If `macro_bars_by_time_symbol` was previously populated by the old all-bars
+path, rebuild it once from scratch so stale UTC-midnight daily bars and stale
+`1mo` rows are removed:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_trade_bars.py `
+  --full-rebuild `
+  --start-date 2019-01-01 `
+  --end-date 2026-12-31
+```
+
 The default launcher uses a Rich terminal layout with:
 
 - run summary and per-timeframe build ranges
@@ -66,8 +77,10 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
 ```
 
 By default, the builder replaces rows in the requested macro timeframe/date
-range before inserting into `macro_bars_by_time_symbol`. Use `--drop-table` only
-when intentionally rebuilding the selected macro bar table from scratch.
+range before inserting into `macro_bars_by_time_symbol`. Use `--full-rebuild`
+when intentionally rebuilding the macro bar table from scratch. `--full-rebuild`
+implies `--drop-table` and purges unsupported macro timeframes such as stale
+`1mo` rows left by older all-bars builds.
 
 ## Bar Boundaries
 
@@ -114,7 +127,8 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
 
 That path writes `live_market_bars`, `bars_by_symbol_time`, and
 `bars_by_time_symbol` through `_staging_trade_bars`. It is no longer the default
-training macro-bar build.
+training macro-bar build, and it should not be used to populate
+`macro_bars_by_time_symbol`.
 
 ## SEC Context Migration
 
