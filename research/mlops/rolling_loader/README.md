@@ -39,6 +39,10 @@ The builder writes `terminal.log`, `builder_events.jsonl`,
 the cache root so failed workstation runs can be reviewed without copying the
 interactive terminal output.
 
+Ctrl+C requests a graceful stop, cancels active ClickHouse queries by their
+tracked query ids, writes an interrupted manifest, and leaves completed package
+directories intact.
+
 ## Core Flow
 
 1. Resolve the ticker universe and create every per-ticker cache before replay.

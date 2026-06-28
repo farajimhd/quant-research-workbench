@@ -11,10 +11,12 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from concurrent.futures import Future, ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
+from urllib import request as url_request
 from urllib.parse import urlparse
 
 if __package__ in {None, ""}:
@@ -104,6 +106,35 @@ DEFAULTS: dict[str, Any] = {
     "refresh_seconds": 1.0,
     "profile_slow_seconds": 10.0,
 }
+
+
+class ActiveQueryRegistry:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._queries: dict[str, dict[str, Any]] = {}
+
+    def register(self, query_id: str, *, label: str = "") -> None:
+        with self._lock:
+            self._queries[str(query_id)] = {
+                "label": str(label),
+                "started_at": time.time(),
+                "thread_id": threading.get_ident(),
+            }
+
+    def unregister(self, query_id: str) -> None:
+        with self._lock:
+            self._queries.pop(str(query_id), None)
+
+    def snapshot(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return {key: dict(value) for key, value in self._queries.items()}
+
+    def clear(self) -> None:
+        with self._lock:
+            self._queries.clear()
+
+
+ACTIVE_QUERIES = ActiveQueryRegistry()
 
 
 class TeeStream:
@@ -375,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
     previous_sigint = signal.getsignal(signal.SIGINT)
     stop_event = threading.Event()
     manifest: dict[str, Any] = {}
+    client_opts = _client_options(args)
     try:
         if loaded_env:
             print("Loaded .env files: " + ", ".join(str(path) for path in loaded_env), flush=True)
@@ -400,12 +432,12 @@ def main(argv: list[str] | None = None) -> int:
             stats.stop_requested = True
             stats.interrupted = True
             stats.phase = "stopping"
-            stats.message("stop requested; finishing completed package writes and cancelling queued work")
+            stats.message("stop requested; cancelling active ClickHouse queries and queued work")
+            cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
             raise KeyboardInterrupt
 
         signal.signal(signal.SIGINT, request_stop)
         dashboard.start()
-        client_opts = _client_options(args)
         for month in months:
             if stop_event.is_set():
                 break
@@ -516,7 +548,8 @@ def main(argv: list[str] | None = None) -> int:
         stats.interrupted = True
         stats.stop_requested = True
         stats.phase = "interrupted"
-        stats.message("interrupted by user; completed package directories remain usable")
+        cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
+        stats.message("interrupted by user; active ClickHouse queries were cancelled; completed package directories remain usable")
         if manifest:
             write_json_atomic(cache_root / "manifest.json", manifest | {"status": "interrupted", "summary": _summary(stats)})
         return 130
@@ -528,10 +561,12 @@ def main(argv: list[str] | None = None) -> int:
         raise
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
+        if stats.interrupted or stats.stop_requested:
+            cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
         if package_executor is not None:
             package_executor.shutdown(wait=False, cancel_futures=True)
         if lanes is not None:
-            lanes.shutdown(wait_for_running=not stats.interrupted)
+            lanes.shutdown(wait_for_running=not (stats.interrupted or stats.stop_requested))
         _write_progress(cache_root, stats)
         if dashboard is not None:
             dashboard.stop()
@@ -1211,6 +1246,8 @@ def query_polars(client_opts: Mapping[str, str], query: str) -> Any:
         raise RuntimeError("Install clickhouse-connect in this environment to query ClickHouse Arrow results.") from exc
     parsed = urlparse(str(client_opts["clickhouse_url"]))
     secure = parsed.scheme == "https"
+    query_id = f"rolling_ticker_month_{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex}"
+    ACTIVE_QUERIES.register(query_id)
     client = clickhouse_connect.get_client(
         host=parsed.hostname or "localhost",
         port=parsed.port or (8443 if secure else 8123),
@@ -1219,13 +1256,61 @@ def query_polars(client_opts: Mapping[str, str], query: str) -> Any:
         secure=secure,
     )
     try:
-        table = client.query_arrow(query)
+        table = _query_arrow_with_id(client, query=query, query_id=query_id)
     finally:
+        ACTIVE_QUERIES.unregister(query_id)
         try:
             client.close()
         except Exception:
             pass
     return _polars().from_arrow(table)
+
+
+def _query_arrow_with_id(client: Any, *, query: str, query_id: str) -> Any:
+    try:
+        return client.query_arrow(query, query_id=query_id)
+    except TypeError:
+        try:
+            return client.query_arrow(query, settings={"query_id": query_id})
+        except TypeError:
+            return client.query_arrow(f"/* query_id={query_id} */\n{query}")
+
+
+def cancel_active_clickhouse_queries(*, client_opts: Mapping[str, str], stats: BuildStats | None = None) -> int:
+    active = ACTIVE_QUERIES.snapshot()
+    if not active:
+        return 0
+    ids = sorted(active)
+    if stats is not None:
+        stats.log_event("clickhouse_cancel_start", active_query_ids=ids, active_queries=active)
+    try:
+        quoted = ", ".join(sql_string(query_id) for query_id in ids)
+        _execute_clickhouse_cancel(
+            client_opts=client_opts,
+            sql=f"KILL QUERY WHERE query_id IN ({quoted}) SYNC",
+            timeout_seconds=5.0,
+        )
+    except Exception as exc:
+        if stats is not None:
+            stats.log_event("clickhouse_cancel_error", error=repr(exc), active_query_ids=ids)
+        return 0
+    ACTIVE_QUERIES.clear()
+    if stats is not None:
+        stats.log_event("clickhouse_cancel_done", cancelled=len(ids), active_query_ids=ids)
+    return len(ids)
+
+
+def _execute_clickhouse_cancel(*, client_opts: Mapping[str, str], sql: str, timeout_seconds: float) -> str:
+    url = str(client_opts["clickhouse_url"]).rstrip("/") + "/"
+    req = url_request.Request(url, data=sql.encode("utf-8"), method="POST")
+    user = str(client_opts.get("user") or "default")
+    password = str(client_opts.get("password") or "")
+    if user:
+        req.add_header("X-ClickHouse-User", user)
+    if password:
+        req.add_header("X-ClickHouse-Key", password)
+    with url_request.urlopen(req, timeout=max(1.0, float(timeout_seconds))) as response:
+        return response.read().decode("utf-8", errors="replace")
 
 
 def _settings_sql(config: RollingMarketDataConfig, *, extra: Mapping[str, Any] | None = None) -> str:
@@ -1528,7 +1613,7 @@ class TickerMonthDashboard:
         lanes.add_column("Rows", width=12, justify="right", no_wrap=True)
         lanes.add_column("Bytes", width=11, justify="right", no_wrap=True)
         lanes.add_column("Seconds", width=8, justify="right", no_wrap=True)
-        lanes.add_column("Active", overflow="ellipsis", ratio=2)
+        lanes.add_column("Active", overflow="ellipsis", ratio=2, no_wrap=True)
         for lane in self.stats.lanes.values():
             lanes.add_row(lane.name, str(lane.workers), str(lane.queued), str(lane.running), str(lane.done), f"{lane.rows:,}", _format_bytes(lane.bytes), f"{lane.seconds:.1f}", "; ".join(list(lane.active.values())[:4]))
 
@@ -1543,10 +1628,11 @@ class TickerMonthDashboard:
         workers.add_column("CPU", ratio=1, no_wrap=True)
         workers.add_column("Write", ratio=1, no_wrap=True)
         workers.add_column("Seconds", width=8, no_wrap=True)
-        workers.add_column("Message", overflow="ellipsis", ratio=2)
-        active_workers = [worker for worker in self.stats.workers.values() if worker.status not in {"idle", "done"} or worker.stage not in {"", "done", "exists"}]
-        active_workers.sort(key=lambda item: item.worker_id)
-        for worker in active_workers[:12]:
+        workers.add_column("Message", overflow="ellipsis", ratio=2, no_wrap=True)
+        worker_rows = [self.stats.workers[idx] for idx in sorted(self.stats.workers)[:12]]
+        while len(worker_rows) < 12:
+            worker_rows.append(PackageState(worker_id=len(worker_rows)))
+        for worker in worker_rows:
             elapsed_worker = time.perf_counter() - worker.started_at if worker.started_at else worker.seconds
             worker.seconds = elapsed_worker
             workers.add_row(
@@ -1562,11 +1648,12 @@ class TickerMonthDashboard:
                 f"{elapsed_worker:.1f}",
                 worker.message,
             )
-        if not active_workers:
-            workers.add_row("-", "-", "-", "idle", Text("-", style="dim"), Text("-", style="dim"), Text("-", style="dim"), Text("-", style="dim"), Text("-", style="dim"), "0.0", "")
 
         messages = Table.grid(expand=True)
-        for message in self.stats.messages[-8:]:
+        message_rows = list(self.stats.messages[-8:])
+        while len(message_rows) < 8:
+            message_rows.append("")
+        for message in message_rows:
             messages.add_row(message)
         return Group(
             Panel(summary, title="Ticker/Month Rolling Cache", box=box.ASCII),
