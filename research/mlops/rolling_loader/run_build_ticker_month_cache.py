@@ -1092,7 +1092,7 @@ def _query_intraday_forward_label_horizon(
     # This is a set query for one ticker/month/horizon. It intentionally avoids per-origin round trips.
     query = f"""
 WITH
-    {int(horizon_us)} AS horizon_us,
+    toUInt64({int(horizon_us)}) AS horizon_us,
     part_bounds AS
     (
         SELECT
