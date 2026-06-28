@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import signal
 import shutil
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -75,6 +77,7 @@ DEFAULTS: dict[str, Any] = {
     "days": 1,
     "warmup_days": 3,
     "workers": 4,
+    "day_workers": 1,
     "stage_workers": 3,
     "prefetch_days": 1,
     "sample_stride_events": 1,
@@ -95,7 +98,10 @@ DEFAULTS: dict[str, Any] = {
     "sec_filing_items": 4,
     "xbrl_items": 512,
     "event_row_limit": 0,
-    "event_fetch_buckets": 16,
+    "event_fetch_buckets": 64,
+    "event_fetch_retries": 3,
+    "event_fetch_split_factor": 4,
+    "event_fetch_max_split_depth": 2,
     "output_root": str(DEFAULT_INDEXED_DAILY_CACHE_ROOT),
 }
 
@@ -206,7 +212,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--start-session-date", default="", help="Inclusive session date label YYYY-MM-DD. Defaults to --start-utc date.")
     parser.add_argument("--end-session-date", default="", help="Exclusive session date label YYYY-MM-DD. Defaults to --end-utc date or start+days.")
     parser.add_argument("--warmup-days", type=int, default=DEFAULTS["warmup_days"])
-    parser.add_argument("--workers", type=int, default=DEFAULTS["workers"])
+    parser.add_argument("--workers", type=int, default=DEFAULTS["workers"], help="Legacy worker budget recorded in manifests. Day concurrency is controlled by --day-workers; per-day file concurrency is --stage-workers.")
+    parser.add_argument("--day-workers", type=int, default=DEFAULTS["day_workers"], help="Number of full day packages to build concurrently. Keep at 1 for large event days to preserve memory and cache continuity.")
     parser.add_argument("--stage-workers", type=int, default=DEFAULTS["stage_workers"], help="Per-day workers for independent dependency writes after event/origin indexing.")
     parser.add_argument("--prefetch-days", type=int, default=DEFAULTS["prefetch_days"])
     parser.add_argument("--events-per-chunk", type=int, default=DEFAULTS["events_per_chunk"])
@@ -233,6 +240,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULTS["event_fetch_buckets"],
         help="Split each session dependency event fetch by deterministic ticker hash buckets to keep Arrow HTTP responses bounded.",
     )
+    parser.add_argument("--event-fetch-retries", type=int, default=DEFAULTS["event_fetch_retries"], help="Retries for transient ClickHouse HTTP stream failures per fetch bucket.")
+    parser.add_argument("--event-fetch-split-factor", type=int, default=DEFAULTS["event_fetch_split_factor"], help="When a bucket repeatedly fails, split it into this many deterministic sub-buckets.")
+    parser.add_argument("--event-fetch-max-split-depth", type=int, default=DEFAULTS["event_fetch_max_split_depth"], help="Maximum recursive sub-bucket split depth for unstable event fetch buckets.")
+    parser.add_argument("--clickhouse-fetch-lock", action=argparse.BooleanOptionalAction, default=True, help="Serialize event bucket fetches across local builder processes sharing the same cache root.")
+    parser.add_argument("--clickhouse-fetch-lock-path", type=Path, default=None, help="Optional explicit path for the cross-process ClickHouse fetch lock file.")
     parser.add_argument("--skip-token-contexts", action="store_true")
     parser.add_argument("--skip-xbrl", action="store_true")
     parser.add_argument("--skip-final-audit", action="store_true")
@@ -299,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
         xbrl_max_items=max(0, int(args.xbrl_items)),
     )
     context_lags = _context_lags(args)
+    day_workers = max(1, min(max(1, int(args.workers)), max(1, int(args.day_workers))))
     profiler = StreamingProfiler(output_path=cache_root / "builder_profile_events.jsonl")
     source = StreamingClickHouseTrainingSource(
         config=config,
@@ -313,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
         log_path=cache_root / "builder_events.jsonl",
         progress_path=cache_root / f"{args.split}_progress.json",
     )
-    stats.workers = {idx: DayState(worker_id=idx, session_date="") for idx in range(max(1, int(args.workers)))}
+    stats.workers = {idx: DayState(worker_id=idx, session_date="") for idx in range(day_workers)}
     stats.stage_tasks = {idx: StageTaskState(worker_id=idx) for idx in range(max(1, int(args.stage_workers)))}
     dashboard = IndexedCacheDashboard(enabled=not args.no_rich, live=not args.plain_status, refresh_seconds=args.refresh_seconds, stats=stats)
     manifest = _manifest(args, cache_id, cache_root, loaded_env, session_dates, context_lags)
@@ -338,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
         stats.message(f"cache_root={cache_root}")
         fetch_depth = max(0, int(args.prefetch_days))
         fetch_executor = ThreadPoolExecutor(max_workers=1) if fetch_depth else None
-        build_executor = ThreadPoolExecutor(max_workers=max(1, int(args.workers)))
+        build_executor = ThreadPoolExecutor(max_workers=day_workers)
         pending_fetches: dict[Future[DayFetch], dt.date] = {}
         pending_builds: dict[Future[IndexedDailyCacheDayResult], int] = {}
         next_fetch_index = 0
@@ -382,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
                     update_prefetch_stats()
                     _refresh(stats, dashboard, cache_root)
                     time.sleep(0.25)
-            worker_id = next_worker % max(1, int(args.workers))
+            worker_id = next_worker % day_workers
             next_worker += 1
             state = stats.workers[worker_id]
             state.session_date = fetched.session_date.isoformat()
@@ -390,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
             state.stage = "queued"
             stats.phase = "building"
             pending_builds[build_executor.submit(_write_indexed_day, args, cache_root, config, context_lags, fetched, worker_id, stats, stop_event)] = worker_id
-            while len(pending_builds) >= max(1, int(args.workers)):
+            while len(pending_builds) >= day_workers:
                 if stop_event.is_set():
                     break
                 _drain_one_build(pending_builds, stats, manifest, cache_root, dashboard)
@@ -506,6 +519,75 @@ def _empty_context_block(config: RollingMarketDataConfig, session: Any, *, inclu
     )
 
 
+@contextmanager
+def _clickhouse_fetch_lock(args: argparse.Namespace) -> Any:
+    if not bool(getattr(args, "clickhouse_fetch_lock", True)):
+        yield
+        return
+    lock_path = _clickhouse_fetch_lock_path(args)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    try:
+        _lock_file(handle)
+        yield
+    finally:
+        try:
+            _unlock_file(handle)
+        finally:
+            handle.close()
+
+
+def _clickhouse_fetch_lock_path(args: argparse.Namespace) -> Path:
+    explicit = getattr(args, "clickhouse_fetch_lock_path", None)
+    if explicit:
+        return Path(explicit)
+    return Path(args.cache_root) / ".indexed_daily_cache_clickhouse_fetch.lock"
+
+
+def _lock_file(handle: Any) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        while True:
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                return
+            except OSError:
+                time.sleep(0.25)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_file(handle: Any) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _is_transient_clickhouse_error(exc: BaseException) -> bool:
+    text = repr(exc)
+    markers = (
+        "IncompleteRead",
+        "Connection broken",
+        "RemoteDisconnected",
+        "ProtocolError",
+        "OperationalError",
+        "ConnectionResetError",
+        "Read timed out",
+        "timed out",
+    )
+    return any(marker in text for marker in markers)
+
+
 def _fetch_session_dependency_events(
     args: argparse.Namespace,
     source: StreamingClickHouseTrainingSource,
@@ -533,8 +615,9 @@ def _fetch_session_dependency_events(
     frames: list[Any] = []
     pl = _polars()
     for bucket_index in range(bucket_count):
-        query = _session_dependency_events_query(
+        frame = _fetch_event_bucket_frame(
             args=args,
+            source=source,
             config=config,
             dep_start_date=dep_start_date,
             dep_end_date=dep_end_date,
@@ -544,13 +627,14 @@ def _fetch_session_dependency_events(
             required_lookback=required_lookback,
             bucket_count=bucket_count,
             bucket_index=bucket_index,
+            split_count=1,
+            split_index=0,
+            depth=0,
+            stats=stats,
+            pl=pl,
         )
-        frame = source.query_polars(query)
         if frame.height:
             frames.append(frame)
-        if stats is not None:
-            stats.fetch_bucket_done = bucket_index + 1
-            stats.fetch_rows += int(frame.height)
     if frames:
         frame = frames[0] if len(frames) == 1 else pl.concat(frames, how="vertical").sort(["ticker", "ordinal"])
         if row_limit > 0:
@@ -558,6 +642,103 @@ def _fetch_session_dependency_events(
     else:
         frame = _empty_event_source_frame(pl)
     return source.event_frame_to_block(frame=frame, start_date=dep_start_date, end_date=dep_end_date)
+
+
+def _fetch_event_bucket_frame(
+    *,
+    args: argparse.Namespace,
+    source: StreamingClickHouseTrainingSource,
+    config: RollingMarketDataConfig,
+    dep_start_date: dt.date,
+    dep_end_date: dt.date,
+    session_start_date: dt.date,
+    session_end_date: dt.date,
+    session: Any,
+    required_lookback: int,
+    bucket_count: int,
+    bucket_index: int,
+    split_count: int,
+    split_index: int,
+    depth: int,
+    stats: BuildStats | None,
+    pl: Any,
+) -> Any:
+    query = _session_dependency_events_query(
+        args=args,
+        config=config,
+        dep_start_date=dep_start_date,
+        dep_end_date=dep_end_date,
+        session_start_date=session_start_date,
+        session_end_date=session_end_date,
+        session=session,
+        required_lookback=required_lookback,
+        bucket_count=bucket_count,
+        bucket_index=bucket_index,
+        split_count=split_count,
+        split_index=split_index,
+    )
+    retries = max(0, int(getattr(args, "event_fetch_retries", 0)))
+    last_exc: BaseException | None = None
+    for attempt in range(retries + 1):
+        try:
+            with _clickhouse_fetch_lock(args):
+                frame = source.query_polars(query)
+            if stats is not None:
+                stats.fetch_bucket_done += 1
+                stats.fetch_rows += int(frame.height)
+            return frame
+        except BaseException as exc:
+            last_exc = exc
+            if not _is_transient_clickhouse_error(exc) or attempt >= retries:
+                break
+            source.close()
+            if stats is not None:
+                stats.message(
+                    f"retrying event fetch bucket {bucket_index}/{bucket_count} split {split_index}/{split_count} after {type(exc).__name__}",
+                    bucket=bucket_index,
+                    split_index=split_index,
+                    split_count=split_count,
+                    attempt=attempt + 1,
+                )
+            time.sleep(min(30.0, 2.0 * float(attempt + 1)))
+    max_depth = max(0, int(getattr(args, "event_fetch_max_split_depth", 0)))
+    split_factor = max(2, int(getattr(args, "event_fetch_split_factor", 2)))
+    if last_exc is not None and _is_transient_clickhouse_error(last_exc) and depth < max_depth:
+        source.close()
+        if stats is not None:
+            stats.fetch_bucket_total += split_factor - 1
+            stats.message(
+                f"splitting event fetch bucket {bucket_index}/{bucket_count} into {split_factor} sub-buckets",
+                bucket=bucket_index,
+                split_count=split_count,
+                split_factor=split_factor,
+                depth=depth + 1,
+            )
+        frames: list[Any] = []
+        for child in range(split_factor):
+            child_frame = _fetch_event_bucket_frame(
+                args=args,
+                source=source,
+                config=config,
+                dep_start_date=dep_start_date,
+                dep_end_date=dep_end_date,
+                session_start_date=session_start_date,
+                session_end_date=session_end_date,
+                session=session,
+                required_lookback=required_lookback,
+                bucket_count=bucket_count,
+                bucket_index=bucket_index,
+                split_count=split_count * split_factor,
+                split_index=split_index * split_factor + child,
+                depth=depth + 1,
+                stats=stats,
+                pl=pl,
+            )
+            if child_frame.height:
+                frames.append(child_frame)
+        return frames[0] if len(frames) == 1 else (pl.concat(frames, how="vertical") if frames else _empty_event_source_frame(pl))
+    assert last_exc is not None
+    raise last_exc
 
 
 def _session_dependency_events_query(
@@ -572,11 +753,15 @@ def _session_dependency_events_query(
     required_lookback: int,
     bucket_count: int,
     bucket_index: int,
+    split_count: int,
+    split_index: int,
 ) -> str:
     table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
     bucket_filter = ""
     if bucket_count > 1:
         bucket_filter = f"\n      AND cityHash64(ticker) % {int(bucket_count)} = {int(bucket_index)}"
+    if split_count > 1:
+        bucket_filter += f"\n      AND intDiv(cityHash64(ticker), {int(bucket_count)}) % {int(split_count)} = {int(split_index)}"
     limit_sql = f"\nLIMIT {int(args.event_row_limit)}" if int(args.event_row_limit) > 0 else ""
     settings = []
     if int(config.max_threads) > 0:
@@ -1454,7 +1639,7 @@ class IndexedCacheDashboard:
         visible_workers = [
             worker
             for worker in self.stats.workers.values()
-            if worker.session_date or worker.status not in {"pending", "idle"}
+            if worker.status not in {"pending", "idle", "done"} or worker.stage not in {"", "done"}
         ]
         visible_workers.sort(key=lambda item: (item.status == "done", item.worker_id))
         for worker in visible_workers[:12]:
@@ -1482,7 +1667,7 @@ class IndexedCacheDashboard:
         visible_stages = [
             stage
             for stage in self.stats.stage_tasks.values()
-            if stage.task or stage.status not in {"idle", ""}
+            if stage.status not in {"idle", "", "done"}
         ]
         visible_stages.sort(key=lambda item: (item.status == "done", item.worker_id))
         for stage in visible_stages[:16]:
