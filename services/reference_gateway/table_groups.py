@@ -106,6 +106,16 @@ REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
             "the source of truth for historical/gap-fill completeness."
         ),
     ),
+    ReferenceTableGroup(
+        group_id="reference_alerts",
+        owner="reference_gateway",
+        purpose="Universal reference alerts and per-consumer processing state.",
+        tables=("market_reference_alert_v1", "market_reference_alert_consumer_state_v1"),
+        update_policy=(
+            "Emit compact alerts from normalized provider data and internal reference checks. "
+            "Consumers track their own processing state without mutating the alert row."
+        ),
+    ),
 )
 
 

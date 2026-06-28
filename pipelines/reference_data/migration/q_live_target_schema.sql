@@ -784,6 +784,77 @@ PARTITION BY toYYYYMM(coverage_start_date)
 ORDER BY (coverage_kind, source_system, coverage_start_date, coverage_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
 
+CREATE TABLE IF NOT EXISTS q_live.market_reference_alert_v1
+(
+    alert_id String,
+    alert_version UInt32,
+    alert_family LowCardinality(String),
+    alert_group LowCardinality(String),
+    alert_type LowCardinality(String),
+    alert_subtype LowCardinality(String),
+    severity LowCardinality(String),
+    status LowCardinality(String),
+    source_system LowCardinality(String),
+    source_provider LowCardinality(String),
+    source_table String,
+    source_event_id String,
+    source_event_version String,
+    source_timestamp_utc DateTime64(3, 'UTC'),
+    detected_at_utc DateTime64(3, 'UTC'),
+    source_evidence_ref String,
+    source_content_sha256 String,
+    issuer_id Nullable(String),
+    security_id Nullable(String),
+    listing_id Nullable(String),
+    symbol_id Nullable(String),
+    provider_ticker Nullable(String),
+    cik Nullable(String),
+    accession_number Nullable(String),
+    ibkr_conid Nullable(String),
+    direction LowCardinality(String),
+    event_status LowCardinality(String),
+    impact_scope LowCardinality(String),
+    time_sensitivity LowCardinality(String),
+    confidence_score Nullable(Float64),
+    impact_score Nullable(Float64),
+    requires_recompute UInt8,
+    recompute_scope LowCardinality(String),
+    affects_tradability UInt8,
+    requires_review UInt8,
+    title String,
+    message String,
+    primary_label LowCardinality(String),
+    secondary_labels Array(String),
+    consumer_groups Array(String),
+    action_flags Array(String),
+    first_seen_at_utc DateTime64(3, 'UTC'),
+    last_seen_at_utc DateTime64(3, 'UTC'),
+    processed_at_utc Nullable(DateTime64(3, 'UTC')),
+    expires_at_utc Nullable(DateTime64(3, 'UTC')),
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY toYYYYMM(detected_at_utc)
+ORDER BY (alert_family, alert_group, alert_type, ifNull(symbol_id, ''), source_timestamp_utc, alert_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE TABLE IF NOT EXISTS q_live.market_reference_alert_consumer_state_v1
+(
+    consumer_id String,
+    alert_id String,
+    consumer_group LowCardinality(String),
+    status LowCardinality(String),
+    claimed_at_utc Nullable(DateTime64(3, 'UTC')),
+    processed_at_utc Nullable(DateTime64(3, 'UTC')),
+    last_error Nullable(String),
+    attempt_count UInt32,
+    inserted_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(inserted_at)
+PARTITION BY toYYYYMM(inserted_at)
+ORDER BY (consumer_id, alert_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
 CREATE TABLE IF NOT EXISTS q_live.sec_filing_v2
 (
     filing_id String,
