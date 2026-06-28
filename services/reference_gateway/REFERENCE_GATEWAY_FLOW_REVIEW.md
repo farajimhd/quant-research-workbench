@@ -23,6 +23,7 @@ source first.
 | C13 | Flow Stage 4 | Audit and current-state read reviewed and accepted. Audit warnings/errors must be visible as grouped terminal aggregates plus recent/high-priority messages. | Accepted |
 | C14 | Flow Stage 5 | Source sync is the core service function. It must run on predefined provider/data-domain frequencies and sync active-ticker data from Massive, IBKR, SEC, FINRA, and future providers without using low-level operator flags. | Added |
 | C15 | Flow Stage 5 | Provider contracts must list exactly what is received from each provider, how it is used, and what creates non-tradable issues. | Added |
+| C16 | Flow Stage 6 | Add a universal alert table design. The reference gateway monitors normalized news, SEC, Massive, FINRA, IBKR, and internal reference events, emits configured alerts, and gives consumers enough labels/groups to build detailed strategies. | Added |
 
 ## Reviewed Flow Stages
 
@@ -819,6 +820,371 @@ the affected candidate non-tradable until the conflict is resolved.
 - Source sync writes evidence and issues during market hours when needed.
 - Promotion into canonical graph/publication tables follows the Stage 3
   maintenance policy.
+
+Review status: under review.
+
+## Stage 6: Universal Alert Emission And Consumption
+
+This stage answers: how do source changes become actionable, queryable alerts
+without making every consumer understand every provider table?
+
+The reference gateway should emit alerts into one normalized table when a
+configured rule says a provider event or internal reference event is
+interesting. The alert table is not only for user notifications. It is also the
+invalidation and orchestration layer for recomputing derived features, blocking
+tradability, prompting review, and notifying live-trading/scanner consumers.
+
+### Alert Sources
+
+The gateway can emit alerts from provider data it syncs directly and from
+normalized data produced by other services.
+
+Source examples:
+
+- SEC gateway normalized filing, filing text, and XBRL rows
+- News gateway normalized Benzinga/news rows and enrichment/classification rows
+- Massive reference data, corporate actions, snapshots, IPOs, and presentation
+  assets
+- FINRA short-volume and short-interest publications
+- IBKR conid, contract, and borrow/shortability evidence
+- reference gateway audits, mapping issues, and tradability guardrails
+
+The source services remain responsible for collecting and normalizing their own
+raw data. The reference gateway watches their normalized outputs and emits
+cross-domain alerts when configured conditions are met.
+
+### Alert Rule Catalog
+
+Alerts should be emitted only for predefined rule types.
+
+The system should keep a rule catalog, either as code-backed constants or a
+small table such as `reference_alert_rule_catalog_v1`.
+
+Each rule should define:
+
+- `alert_type`
+- `alert_subtype`
+- provider/source tables it reads
+- entity scope: issuer, security, listing, symbol, provider ticker, or market
+- trigger condition
+- default severity
+- default labels
+- whether a feature recompute is required
+- whether tradability can be affected
+- whether human review may be required
+- deduplication key fields
+
+Routine operators should not enable individual low-level alert rules from the
+wrapper command. Rule activation and frequency are service configuration.
+
+### Main Alert Table
+
+Proposed table:
+
+```text
+q_live.market_reference_alert_v1
+```
+
+This table should be append-only with deterministic alert IDs. If a later event
+updates the same logical alert, insert a newer replacement row with the same
+`alert_id` and a newer `inserted_at`.
+
+Core identity:
+
+```text
+alert_id
+alert_version
+alert_family
+alert_group
+alert_type
+alert_subtype
+severity
+status
+```
+
+Recommended families:
+
+```text
+reference_identity
+tradability_guardrail
+sec_filing
+news_catalyst
+share_supply
+short_pressure
+borrow_pressure
+corporate_action
+ipo_pipeline
+market_publication
+data_quality
+provider_health
+feature_invalidation
+```
+
+Recommended groups:
+
+```text
+identity_mapping
+issuer_identity
+security_identity
+listing_symbol
+conid_routing
+shares_outstanding
+float_estimate
+offering_supply
+insider_activity
+short_interest
+short_volume
+fails_to_deliver
+reg_sho
+borrow_availability
+split_dividend
+ipo_terms
+news_keyword
+news_llm_classification
+sec_form_type
+xbrl_fact_change
+publication_gap
+coverage_gap
+```
+
+Source fields:
+
+```text
+source_system
+source_provider
+source_table
+source_event_id
+source_event_version
+source_timestamp_utc
+detected_at_utc
+source_evidence_ref
+source_content_sha256
+```
+
+Entity fields:
+
+```text
+issuer_id
+security_id
+listing_id
+symbol_id
+provider_ticker
+cik
+accession_number
+ibkr_conid
+```
+
+Trading/action fields:
+
+```text
+direction
+event_status
+impact_scope
+time_sensitivity
+confidence_score
+impact_score
+requires_recompute
+recompute_scope
+affects_tradability
+requires_review
+```
+
+Useful values:
+
+```text
+direction: bullish, bearish, neutral, mixed, supply_increase, supply_decrease, unknown
+event_status: detected, announced, potential, completed, amended, withdrawn, confirmed, disputed
+impact_scope: symbol, security, issuer, sector, market, provider_only
+time_sensitivity: immediate, intraday, daily, delayed_publication, historical
+recompute_scope: none, symbol, security, issuer, provider_ticker, market
+```
+
+Human-readable fields:
+
+```text
+title
+message
+primary_label
+secondary_labels
+consumer_groups
+action_flags
+```
+
+`secondary_labels`, `consumer_groups`, and `action_flags` should be compact
+arrays of strings, not large JSON payloads.
+
+Processing fields:
+
+```text
+first_seen_at_utc
+last_seen_at_utc
+processed_at_utc
+expires_at_utc
+inserted_at
+```
+
+The alert table should not store full news text, filing text, SEC raw payloads,
+or provider JSON. It should store references to normalized source rows and
+artifacts through `source_evidence_ref`, `source_table`, `source_event_id`, and
+hash fields.
+
+### Consumer State Table
+
+Consumers should not mutate the alert row itself for every strategy. A separate
+consumer state table keeps per-consumer progress.
+
+Proposed table:
+
+```text
+q_live.market_reference_alert_consumer_state_v1
+```
+
+Fields:
+
+```text
+consumer_id
+alert_id
+consumer_group
+status
+claimed_at_utc
+processed_at_utc
+last_error
+attempt_count
+inserted_at
+```
+
+This lets multiple consumers use the same alert stream:
+
+- scanner feature recompute
+- live-trading UI
+- model feature builder
+- tradability blocker
+- human-review queue
+- notification/terminal display
+
+### Alert Emission Examples
+
+SEC filing:
+
+```text
+alert_family = sec_filing
+alert_group = sec_form_type
+alert_type = sec_form_submitted
+alert_subtype = S-3
+time_sensitivity = immediate
+requires_recompute = 1
+recompute_scope = issuer
+```
+
+SEC XBRL share change:
+
+```text
+alert_family = share_supply
+alert_group = xbrl_fact_change
+alert_type = sec_xbrl_share_fact_changed
+alert_subtype = EntityCommonStockSharesOutstanding
+direction = supply_increase or supply_decrease
+requires_recompute = 1
+recompute_scope = security
+```
+
+News offering keyword:
+
+```text
+alert_family = news_catalyst
+alert_group = news_keyword
+alert_type = news_supply_keyword_detected
+alert_subtype = registered_direct_offering
+requires_recompute = 1
+recompute_scope = symbol
+requires_review = depends_on_confidence
+```
+
+Massive split:
+
+```text
+alert_family = corporate_action
+alert_group = split_dividend
+alert_type = stock_split_detected
+alert_subtype = reverse_split or forward_split
+requires_recompute = 1
+recompute_scope = security
+```
+
+IBKR borrow:
+
+```text
+alert_family = borrow_pressure
+alert_group = borrow_availability
+alert_type = ibkr_borrow_status_changed
+alert_subtype = hard_to_borrow
+requires_recompute = 1
+recompute_scope = listing
+```
+
+Reference mapping issue:
+
+```text
+alert_family = tradability_guardrail
+alert_group = identity_mapping
+alert_type = mapping_issue_opened
+alert_subtype = ambiguous_ibkr_contract
+affects_tradability = 1
+requires_review = 1
+recompute_scope = symbol
+```
+
+### Deduplication
+
+`alert_id` should be deterministic.
+
+Suggested key:
+
+```text
+source_system
+source_table
+source_event_id
+alert_type
+alert_subtype
+issuer_id/security_id/listing_id/symbol_id/provider_ticker
+source_timestamp_utc
+```
+
+For source rows without stable IDs, use a canonical content hash over compact
+source fields, not full raw payloads.
+
+### Consumer Strategy
+
+Consumers should filter by:
+
+- `alert_family`
+- `alert_group`
+- `alert_type`
+- `alert_subtype`
+- `severity`
+- `time_sensitivity`
+- `consumer_groups`
+- `requires_recompute`
+- `affects_tradability`
+- `requires_review`
+- entity fields such as `symbol_id`, `security_id`, `issuer_id`, or ticker
+
+This gives consumers a detailed alert strategy without making each consumer
+hard-code every provider table.
+
+### Stage 6 Rules
+
+- Alerts are emitted from normalized provider data, not raw payloads.
+- Alert rows are compact and reference source rows/artifacts instead of
+  duplicating full text or JSON.
+- Alert rules are predefined and versioned.
+- The alert table is append/replacing by deterministic `alert_id`.
+- Per-consumer status belongs in a separate consumer-state table.
+- Alerts can trigger feature recompute, UI display, tradability blocking, or
+  human review.
+- The reference gateway owns cross-provider alert emission and alert rule
+  evaluation.
+- Source services own raw ingestion and source-specific normalization.
 
 Review status: under review.
 
