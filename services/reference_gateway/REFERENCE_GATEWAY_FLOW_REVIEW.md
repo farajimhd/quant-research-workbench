@@ -17,6 +17,215 @@ source first.
 | C7 | CLI | Replace low-level write switches with high-level operator knobs. | Fixed |
 | C8 | Stage 2 | Add the real runtime validation sequence before moving to UI/terminal polish. | Added |
 | C9 | Stage 3 | Add live Rich status panels and structured runtime events for operator visibility. | Fixed |
+| C10 | Flow Stage 1 | Process entry and mode resolution reviewed and accepted. | Accepted |
+| C11 | Flow Stage 2 | Preflight and dependency gate reviewed and accepted. | Accepted |
+
+## Reviewed Flow Stages
+
+This section is the stage-by-stage operating flow under active review. Each
+stage should be reviewed before the next stage is finalized.
+
+## Stage 1: Process Entry And Mode Resolution
+
+This stage answers: when the reference gateway command starts, what mode does
+it enter and what databases can it touch?
+
+User-facing entry commands:
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Mode Prod
+.\scripts\run_reference_gateway.ps1 -Mode Temp
+.\scripts\run_reference_gateway.ps1 -Mode Prod -Run Once
+.\scripts\run_reference_gateway.ps1 -Mode Prod -Maintenance Skip
+.\scripts\run_reference_gateway.ps1 -Mode Prod -Maintenance Force -MaintenanceReason "reviewed repair"
+```
+
+### Mode
+
+`Prod`:
+
+- reads from `q_live`
+- writes to `q_live`
+- default run mode is `Daemon`
+- intended for real service operation
+
+`Temp`:
+
+- reads from `q_live`
+- writes to `q_reference_tmp`
+- default run mode is `Once`
+- intended for validation/testing without production writes
+
+### Run
+
+`Daemon`:
+
+- starts a parent process
+- parent loops
+- each cycle starts a one-shot child run
+
+`Once`:
+
+- runs one gateway cycle
+- exits after the cycle finishes or fails
+
+### Integrity
+
+`Strict`:
+
+- writes discovered issue rows
+- resolves deterministic stale issues
+- immediately blocks unsafe instruments by publishing non-tradable replacement
+  rows when needed
+
+`ReportOnly`:
+
+- inspects and reports
+- does not write guardrail rows
+
+### Maintenance
+
+`Auto`:
+
+- runs maintenance only when policy allows
+
+`Skip`:
+
+- skips maintenance
+- still runs source sync and integrity checks
+
+`Force`:
+
+- runs maintenance with an explicit reason
+- production force requires `-MaintenanceReason`
+
+### Stage 1 Rules
+
+- Source sync is not optional in an operational run.
+- IBKR is required because conid resolution is part of source sync.
+- Low-level switches such as active ticker check, write canonical graph, and
+  rebuild tradable are not public controls. They are internal consequences of
+  mode, integrity, and maintenance policy.
+
+Review status: accepted.
+
+## Stage 2: Preflight And Dependency Gate
+
+This stage answers: before the gateway does useful work, what must be
+available, and what happens if something is missing?
+
+Preflight runs at the start of every operational run:
+
+```powershell
+.\scripts\run_reference_gateway.ps1 -Mode Prod
+.\scripts\run_reference_gateway.ps1 -Mode Temp
+.\scripts\run_reference_gateway.ps1 -Mode Prod -Run Once
+```
+
+The gateway should check dependencies before source sync, audit writes,
+maintenance, or publication updates begin.
+
+### ClickHouse
+
+Required because the gateway must read the canonical reference graph and write
+issues/updates when allowed.
+
+Checks:
+
+- ClickHouse endpoint is reachable
+- read database exists, usually `q_live`
+- write database exists, either `q_live` or `q_reference_tmp`
+- required reference tables exist or can be created if maintenance/schema
+  policy allows it
+
+Failure behavior:
+
+- gateway exits
+- gateway must not continue in partial mode
+
+### Artifact/Data Root
+
+Required because reports, runtime logs, plans, and generated scripts must be
+written somewhere predictable.
+
+Expected root:
+
+- workstation: `D:/market-data`
+- laptop/remote: `\\DESKTOP-SAAI85T\Workstation-D\market-data`
+
+Failure behavior:
+
+- gateway exits
+- gateway must not write code or data into random fallback folders
+
+### Massive API
+
+Required for source sync.
+
+Used for:
+
+- active ticker list
+- ticker overview/reference metadata
+- detecting new or changed Massive-side symbols
+
+Failure behavior:
+
+- gateway exits
+- gateway must not run source sync from stale data
+
+### IBKR Client Portal
+
+Required because new tradable candidates need conid resolution.
+
+Used for:
+
+- searching ticker candidates
+- filtering to US stock/USD contracts
+- identifying ambiguous or missing conid cases
+
+Failure behavior:
+
+- gateway exits if IBKR Client Portal is unavailable or unauthenticated
+- gateway must not create or promote candidates that lack conid evidence
+
+### Runtime Log Initialization
+
+Required for observability.
+
+Runtime log path:
+
+```text
+<market-data>/prepared/reference_gateway/logs/<run_id>/reference_gateway_events.jsonl
+```
+
+Failure behavior:
+
+- if runtime logging cannot be initialized, that is a startup failure
+- the gateway should not run a maintenance service with no durable runtime
+  trace
+
+### Stage 2 Output
+
+If preflight passes:
+
+- gateway proceeds to Stage 3
+- terminal shows dependency status as OK
+- JSONL log records preflight status
+
+If preflight fails:
+
+- gateway exits non-zero
+- terminal shows the failed dependency
+- JSONL log records the failure if logging was initialized
+
+### Stage 2 Rules
+
+- Preflight is strict for operational runs.
+- There should not be a real-operation bypass such as `--no-preflight`.
+- Diagnostics that do not require dependencies should live under
+  `-Diagnostics`, not under operational modes.
+
+Review status: accepted.
 
 ## Public Operator Knobs
 
@@ -151,7 +360,7 @@ The detailed implementation controls remain internal fields on
 `ReferenceGatewayConfig`, but the operator no longer has to assemble them by
 hand.
 
-## Stage 2: Runtime Behavior Validation
+## Validation Notes: Runtime Behavior
 
 Goal: prove the simplified public controls behave correctly in real gateway
 execution before adding more functionality.
@@ -237,7 +446,7 @@ Pass condition:
   interval
 - stopping/restarting is clear and does not leave an orphaned child process
 
-## Stage 3: Runtime Status And Terminal UX
+## Implemented Notes: Runtime Status And Terminal UX
 
 Status: implemented.
 
