@@ -1715,18 +1715,18 @@ class TickerMonthDashboard:
             self.stats.message(f"Rich dashboard unavailable; using compact status line: {exc!r}")
             return
         self._rich = {"box": box, "Console": Console, "Group": Group, "Live": Live, "Panel": Panel, "Table": Table, "Text": Text}
-        console = Console(force_terminal=True, color_system="auto", soft_wrap=False)
+        console = Console()
         self._live = Live(
             self._render(),
             console=console,
             refresh_per_second=max(0.5, 1.0 / self.refresh_seconds),
             auto_refresh=False,
-            screen=False,
+            screen=True,
             transient=False,
-            vertical_overflow="crop",
+            vertical_overflow="visible",
         )
         try:
-            self._live.start()
+            self._live.start(refresh=True)
         except Exception as exc:
             self._live = None
             self.enabled = False
