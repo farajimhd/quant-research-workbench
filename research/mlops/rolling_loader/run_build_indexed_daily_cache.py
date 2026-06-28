@@ -27,6 +27,7 @@ from research.mlops.clickhouse import (
     default_clickhouse_url,
     default_clickhouse_user,
     discover_clickhouse_env_files,
+    parse_size_bytes,
     quote_ident,
     sql_string,
 )
@@ -94,6 +95,7 @@ DEFAULTS: dict[str, Any] = {
     "sec_filing_items": 4,
     "xbrl_items": 512,
     "event_row_limit": 0,
+    "event_fetch_buckets": 16,
     "output_root": str(DEFAULT_INDEXED_DAILY_CACHE_ROOT),
 }
 
@@ -117,6 +119,19 @@ class DayState:
 
 
 @dataclass(slots=True)
+class StageTaskState:
+    worker_id: int
+    session_date: str = ""
+    task: str = ""
+    status: str = "idle"
+    done: int = 0
+    total: int = 0
+    started_at: float = 0.0
+    seconds: float = 0.0
+    message: str = ""
+
+
+@dataclass(slots=True)
 class BuildStats:
     started: float = field(default_factory=time.perf_counter)
     split: str = "train"
@@ -131,8 +146,13 @@ class BuildStats:
     max_rss_mib: float = 0.0
     prefetch_pending: int = 0
     prefetch_ready: int = 0
+    fetch_session_date: str = ""
+    fetch_bucket_done: int = 0
+    fetch_bucket_total: int = 0
+    fetch_rows: int = 0
     messages: list[str] = field(default_factory=list)
     workers: dict[int, DayState] = field(default_factory=dict)
+    stage_tasks: dict[int, StageTaskState] = field(default_factory=dict)
     log_path: Path | None = None
     progress_path: Path | None = None
     interrupted: bool = False
@@ -207,6 +227,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sec-filing-items", type=int, default=DEFAULTS["sec_filing_items"])
     parser.add_argument("--xbrl-items", type=int, default=DEFAULTS["xbrl_items"])
     parser.add_argument("--event-row-limit", type=int, default=DEFAULTS["event_row_limit"])
+    parser.add_argument(
+        "--event-fetch-buckets",
+        type=int,
+        default=DEFAULTS["event_fetch_buckets"],
+        help="Split each session dependency event fetch by deterministic ticker hash buckets to keep Arrow HTTP responses bounded.",
+    )
     parser.add_argument("--skip-token-contexts", action="store_true")
     parser.add_argument("--skip-xbrl", action="store_true")
     parser.add_argument("--skip-final-audit", action="store_true")
@@ -288,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
         progress_path=cache_root / f"{args.split}_progress.json",
     )
     stats.workers = {idx: DayState(worker_id=idx, session_date="") for idx in range(max(1, int(args.workers)))}
+    stats.stage_tasks = {idx: StageTaskState(worker_id=idx) for idx in range(max(1, int(args.stage_workers)))}
     dashboard = IndexedCacheDashboard(enabled=not args.no_rich, live=not args.plain_status, refresh_seconds=args.refresh_seconds, stats=stats)
     manifest = _manifest(args, cache_id, cache_root, loaded_env, session_dates, context_lags)
     write_json_atomic(cache_root / "manifest.json", manifest | {"status": "running"})
@@ -328,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
                 return
             while next_fetch_index < len(session_dates) and len(pending_fetches) < max(1, fetch_depth):
                 day = session_dates[next_fetch_index]
-                pending_fetches[fetch_executor.submit(_fetch_day, args, source, config, day, context_lags)] = day
+                pending_fetches[fetch_executor.submit(_fetch_day, args, source, config, day, context_lags, stats)] = day
                 stats.message(f"prefetch submitted {day.isoformat()}")
                 next_fetch_index += 1
             update_prefetch_stats()
@@ -339,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
             if stop_event.is_set():
                 break
             if fetch_executor is None:
-                fetched = _fetch_day(args, source, config, day, context_lags)
+                fetched = _fetch_day(args, source, config, day, context_lags, stats)
             else:
                 while True:
                     if stop_event.is_set():
@@ -444,10 +471,11 @@ def _fetch_day(
     config: RollingMarketDataConfig,
     session_date: dt.date,
     context_lags: tuple[int, ...],
+    stats: BuildStats | None = None,
 ) -> DayFetch:
     started = time.perf_counter()
     session = session_window(session_date)
-    block = _fetch_session_dependency_events(args, source, config, session_date, session, context_lags)
+    block = _fetch_session_dependency_events(args, source, config, session_date, session, context_lags, stats=stats)
     context = None
     if not args.skip_token_contexts:
         if block.row_count:
@@ -485,15 +513,78 @@ def _fetch_session_dependency_events(
     session_date: dt.date,
     session: Any,
     context_lags: tuple[int, ...],
+    *,
+    stats: BuildStats | None = None,
 ) -> StreamingEventBlock:
-    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
     required_lookback = int(max(context_lags, default=0)) + max(1, int(args.events_per_chunk))
     dep_start_date = session_date - dt.timedelta(days=max(0, int(args.warmup_days)))
     dep_end_date = utc_date_from_us(session.end_timestamp_us) + dt.timedelta(days=1)
     session_start_date = utc_date_from_us(session.start_timestamp_us)
     session_end_date = utc_date_from_us(session.end_timestamp_us) + dt.timedelta(days=1)
+    bucket_count = max(1, int(getattr(args, "event_fetch_buckets", 1)))
+    row_limit = max(0, int(args.event_row_limit))
+    if row_limit > 0:
+        bucket_count = 1
+    if stats is not None:
+        stats.fetch_session_date = session_date.isoformat()
+        stats.fetch_bucket_done = 0
+        stats.fetch_bucket_total = bucket_count
+        stats.fetch_rows = 0
+    frames: list[Any] = []
+    pl = _polars()
+    for bucket_index in range(bucket_count):
+        query = _session_dependency_events_query(
+            args=args,
+            config=config,
+            dep_start_date=dep_start_date,
+            dep_end_date=dep_end_date,
+            session_start_date=session_start_date,
+            session_end_date=session_end_date,
+            session=session,
+            required_lookback=required_lookback,
+            bucket_count=bucket_count,
+            bucket_index=bucket_index,
+        )
+        frame = source.query_polars(query)
+        if frame.height:
+            frames.append(frame)
+        if stats is not None:
+            stats.fetch_bucket_done = bucket_index + 1
+            stats.fetch_rows += int(frame.height)
+    if frames:
+        frame = frames[0] if len(frames) == 1 else pl.concat(frames, how="vertical").sort(["ticker", "ordinal"])
+        if row_limit > 0:
+            frame = frame.head(row_limit)
+    else:
+        frame = _empty_event_source_frame(pl)
+    return source.event_frame_to_block(frame=frame, start_date=dep_start_date, end_date=dep_end_date)
+
+
+def _session_dependency_events_query(
+    *,
+    args: argparse.Namespace,
+    config: RollingMarketDataConfig,
+    dep_start_date: dt.date,
+    dep_end_date: dt.date,
+    session_start_date: dt.date,
+    session_end_date: dt.date,
+    session: Any,
+    required_lookback: int,
+    bucket_count: int,
+    bucket_index: int,
+) -> str:
+    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    bucket_filter = ""
+    if bucket_count > 1:
+        bucket_filter = f"\n      AND cityHash64(ticker) % {int(bucket_count)} = {int(bucket_index)}"
     limit_sql = f"\nLIMIT {int(args.event_row_limit)}" if int(args.event_row_limit) > 0 else ""
-    query = f"""
+    settings = []
+    if int(config.max_threads) > 0:
+        settings.append(f"max_threads = {int(config.max_threads)}")
+    if str(config.max_memory_usage) != "0":
+        settings.append(f"max_memory_usage = {parse_size_bytes(str(config.max_memory_usage))}")
+    settings_sql = "SETTINGS " + ", ".join(settings) if settings else ""
+    return f"""
 SELECT
     e.ticker,
     e.ordinal,
@@ -525,6 +616,7 @@ FROM
     FROM {table}
     PREWHERE event_date >= toDate({sql_string(dep_start_date.isoformat())})
       AND event_date < toDate({sql_string(dep_end_date.isoformat())})
+    WHERE 1 = 1{bucket_filter}
 ) AS e
 INNER JOIN
 (
@@ -537,16 +629,15 @@ INNER JOIN
       AND event_date < toDate({sql_string(session_end_date.isoformat())})
     WHERE sip_timestamp_us >= {int(session.start_timestamp_us)}
       AND sip_timestamp_us < {int(session.end_timestamp_us)}
+      {bucket_filter}
     GROUP BY ticker
 ) AS b ON e.ticker = b.ticker
 WHERE e.ordinal >= if(b.min_ordinal > {required_lookback}, b.min_ordinal - {required_lookback}, 0)
   AND e.ordinal <= b.max_ordinal
 ORDER BY e.ticker, e.ordinal
 {limit_sql}
-{source._settings()}
+{settings_sql}
 """
-    frame = source.query_polars(query)
-    return source.event_frame_to_block(frame=frame, start_date=dep_start_date, end_date=dep_end_date)
 
 
 def _write_indexed_day(
@@ -626,6 +717,7 @@ def _write_indexed_day(
         session=session,
         config=config,
         active_tickers=active_tickers,
+        stats=stats,
         state=state,
         stop_event=stop_event,
     )
@@ -844,6 +936,7 @@ def _write_day_files_concurrently(
     session: Any,
     config: RollingMarketDataConfig,
     active_tickers: set[str],
+    stats: BuildStats,
     state: DayState,
     stop_event: threading.Event,
 ) -> None:
@@ -860,12 +953,49 @@ def _write_day_files_concurrently(
     state.write_done = 0
     workers = max(1, min(len(tasks), int(args.stage_workers)))
     executor = ThreadPoolExecutor(max_workers=workers)
+    task_items = list(tasks.items())
+    stats.stage_tasks = {
+        idx: StageTaskState(
+            worker_id=idx,
+            session_date=fetched.session_date.isoformat(),
+            task=name,
+            status="queued",
+            total=1,
+            message=f"{name} queued",
+        )
+        for idx, (name, _task) in enumerate(task_items)
+    }
+
+    def run_stage_task(slot_id: int, name: str, task: Any) -> None:
+        stage = stats.stage_tasks[slot_id]
+        stage.status = "running"
+        stage.started_at = time.perf_counter()
+        stage.seconds = 0.0
+        stage.done = 0
+        stage.total = 1
+        stage.message = f"{name} running"
+        try:
+            task()
+        except BaseException as exc:
+            stage.status = "failed"
+            stage.message = f"{name} failed: {exc!r}"
+            raise
+        finally:
+            stage.seconds = time.perf_counter() - stage.started_at
+        stage.done = 1
+        stage.status = "done"
+        stage.message = f"{name} done"
+
     try:
-        future_to_name = {executor.submit(task): name for name, task in tasks.items()}
+        future_to_name = {executor.submit(run_stage_task, idx, name, task): name for idx, (name, task) in enumerate(task_items)}
         pending = set(future_to_name)
         while pending:
             _raise_if_stopping(stop_event)
             done, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+            now = time.perf_counter()
+            for stage in stats.stage_tasks.values():
+                if stage.status == "running" and stage.started_at:
+                    stage.seconds = now - stage.started_at
             if not done:
                 continue
             for future in done:
@@ -952,6 +1082,10 @@ def _empty_origins(pl: Any) -> Any:
 
 def _empty_windows(pl: Any, context_lags: tuple[int, ...]) -> Any:
     return pl.DataFrame({"origin_id": [], **{f"window_start_{index:03d}": [] for index, _lag in enumerate(context_lags)}})
+
+
+def _empty_event_source_frame(pl: Any) -> Any:
+    return pl.DataFrame({"ticker": [], **{column: [] for column in EVENT_SOURCE_COLUMNS}})
 
 
 def _empty_macro_bars(pl: Any) -> Any:
@@ -1090,7 +1224,14 @@ def _write_progress(cache_root: Path, split: str, stats: BuildStats) -> None:
         "current_rss_mib": stats.current_rss_mib,
         "prefetch_pending": stats.prefetch_pending,
         "prefetch_ready": stats.prefetch_ready,
+        "fetch": {
+            "session_date": stats.fetch_session_date,
+            "bucket_done": stats.fetch_bucket_done,
+            "bucket_total": stats.fetch_bucket_total,
+            "rows": stats.fetch_rows,
+        },
         "workers": {str(key): asdict(value) for key, value in stats.workers.items()},
+        "stage_tasks": {str(key): asdict(value) for key, value in stats.stage_tasks.items()},
         "messages": stats.messages,
     }
     path = stats.progress_path or (cache_root / f"{split}_progress.json")
@@ -1192,12 +1333,13 @@ class IndexedCacheDashboard:
             from rich.live import Live
             from rich.panel import Panel
             from rich.table import Table
+            from rich.text import Text
         except Exception as exc:
             self.enabled = False
             self._fallback_reason = repr(exc)
             self.stats.message(f"Rich dashboard unavailable; using compact status line: {exc!r}")
             return
-        self._rich = {"box": box, "Console": Console, "Group": Group, "Live": Live, "Panel": Panel, "Table": Table}
+        self._rich = {"box": box, "Console": Console, "Group": Group, "Live": Live, "Panel": Panel, "Table": Table, "Text": Text}
         console = Console(force_terminal=True, color_system="auto", soft_wrap=False)
         self._live = Live(
             self._render(),
@@ -1276,6 +1418,7 @@ class IndexedCacheDashboard:
         Group = self._rich["Group"]
         Panel = self._rich["Panel"]
         Table = self._rich["Table"]
+        Text = self._rich["Text"]
         elapsed = time.perf_counter() - self.stats.started
         remaining_days = max(0, int(self.stats.days_total) - int(self.stats.days_done))
         day_rate = self.stats.days_done / max(elapsed, 1e-9)
@@ -1290,6 +1433,7 @@ class IndexedCacheDashboard:
             (("Phase", self.stats.phase), ("Elapsed", _format_duration(elapsed)), ("ETA", _format_duration(eta))),
             (("Days", f"{self.stats.days_done}/{self.stats.days_total}"), ("Origins", f"{self.stats.origins_written:,}"), ("Events", f"{self.stats.events_written:,}")),
             (("Size", _format_bytes(self.stats.bytes_written)), ("RSS", _format_bytes(self.stats.current_rss_mib * 1024 * 1024)), ("Prefetch", f"{self.stats.prefetch_ready}/{self.stats.prefetch_pending}")),
+            (("Fetch", self.stats.fetch_session_date or "-"), ("Buckets", f"{self.stats.fetch_bucket_done}/{self.stats.fetch_bucket_total}"), ("Fetch Rows", f"{self.stats.fetch_rows:,}")),
         ]
         for row in rows:
             cells: list[str] = []
@@ -1302,39 +1446,82 @@ class IndexedCacheDashboard:
         workers.add_column("W", width=4, no_wrap=True)
         workers.add_column("Day", width=12, no_wrap=True)
         workers.add_column("Stage", width=10, no_wrap=True)
-        workers.add_column("Events", no_wrap=True)
-        workers.add_column("Origins", no_wrap=True)
-        workers.add_column("Context", no_wrap=True)
-        workers.add_column("Write", no_wrap=True)
+        workers.add_column("Events", no_wrap=True, ratio=1)
+        workers.add_column("Origins", no_wrap=True, ratio=1)
+        workers.add_column("Write", no_wrap=True, ratio=1)
         workers.add_column("Seconds", width=8, no_wrap=True)
-        workers.add_column("Message", overflow="ellipsis")
-        for worker in self.stats.workers.values():
+        workers.add_column("Message", overflow="ellipsis", ratio=2)
+        visible_workers = [
+            worker
+            for worker in self.stats.workers.values()
+            if worker.session_date or worker.status not in {"pending", "idle"}
+        ]
+        visible_workers.sort(key=lambda item: (item.status == "done", item.worker_id))
+        for worker in visible_workers[:12]:
             workers.add_row(
                 str(worker.worker_id),
                 worker.session_date,
                 worker.stage or worker.status,
-                _cell(worker.events_done, worker.events_total),
-                _cell(worker.origins_done, worker.origins_total),
-                _cell(worker.context_done, worker.context_total),
-                _cell(worker.write_done, worker.write_total),
+                _progress_text(worker.events_done, worker.events_total, worker.seconds, Text=Text),
+                _progress_text(worker.origins_done, worker.origins_total, worker.seconds, Text=Text),
+                _progress_text(worker.write_done, worker.write_total, worker.seconds, Text=Text),
                 f"{worker.seconds:.1f}",
                 worker.message,
             )
+        if not visible_workers:
+            workers.add_row("-", "-", "idle", Text("-", style="dim"), Text("-", style="dim"), Text("-", style="dim"), "0.0", "")
+
+        stages = Table(expand=True, box=box.ASCII)
+        stages.add_column("S", width=4, no_wrap=True)
+        stages.add_column("Day", width=12, no_wrap=True)
+        stages.add_column("Task", width=10, no_wrap=True)
+        stages.add_column("Status", width=9, no_wrap=True)
+        stages.add_column("Progress", no_wrap=True, ratio=1)
+        stages.add_column("Seconds", width=8, no_wrap=True)
+        stages.add_column("Message", overflow="ellipsis", ratio=2)
+        visible_stages = [
+            stage
+            for stage in self.stats.stage_tasks.values()
+            if stage.task or stage.status not in {"idle", ""}
+        ]
+        visible_stages.sort(key=lambda item: (item.status == "done", item.worker_id))
+        for stage in visible_stages[:16]:
+            stages.add_row(
+                str(stage.worker_id),
+                stage.session_date,
+                stage.task or "-",
+                stage.status,
+                _progress_text(stage.done, stage.total, stage.seconds, Text=Text),
+                f"{stage.seconds:.1f}",
+                stage.message,
+            )
+        if not visible_stages:
+            stages.add_row("-", "-", "-", "idle", Text("-", style="dim"), "0.0", "")
         messages = Table.grid(expand=True)
         for message in self.stats.messages[-8:]:
             messages.add_row(message)
         return Group(
             Panel(summary, title="Indexed Rolling Cache", box=box.ASCII),
-            Panel(workers, title="Daily Workers", box=box.ASCII),
+            Panel(workers, title="Build Workers", box=box.ASCII),
+            Panel(stages, title="Stage Workers", box=box.ASCII),
             Panel(messages, title="Messages", box=box.ASCII),
         )
 
 
-def _cell(done: int, total: int) -> str:
-    if total <= 0:
-        return "0/0"
-    pct = 100.0 * float(done) / float(max(1, total))
-    return f"{int(done):,}/{int(total):,} {pct:5.1f}%"
+def _progress_text(done: int, total: int, elapsed_seconds: float, *, Text: Any) -> Any:
+    if int(total) <= 0:
+        return Text("-", style="dim")
+    safe_total = max(1, int(total))
+    safe_done = min(max(0, int(done)), safe_total)
+    pct = 100.0 * float(safe_done) / float(safe_total)
+    rate = safe_done / max(float(elapsed_seconds), 1e-9)
+    remaining = max(0, safe_total - safe_done)
+    eta = remaining / rate if safe_done > 0 and rate > 0 else None
+    bar_width = 10
+    filled = min(bar_width, int(round((pct / 100.0) * bar_width)))
+    bar = "#" * filled + "-" * (bar_width - filled)
+    style = "green" if safe_done >= safe_total else "cyan"
+    return Text(f"[{bar}] {safe_done:,}/{safe_total:,} {pct:4.0f}% eta {_format_duration(eta)}", style=style)
 
 
 if __name__ == "__main__":
