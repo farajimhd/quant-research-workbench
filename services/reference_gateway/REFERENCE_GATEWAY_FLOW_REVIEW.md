@@ -24,6 +24,7 @@ source first.
 | C14 | Flow Stage 5 | Source sync is the core service function. It must run on predefined provider/data-domain frequencies and sync active-ticker data from Massive, IBKR, SEC, FINRA, and future providers without using low-level operator flags. | Added |
 | C15 | Flow Stage 5 | Provider contracts must list exactly what is received from each provider, how it is used, and what creates non-tradable issues. | Added |
 | C16 | Flow Stage 6 | Add a universal alert table design. The reference gateway monitors normalized news, SEC, Massive, FINRA, IBKR, and internal reference events, emits configured alerts, and gives consumers enough labels/groups to build detailed strategies. | Added |
+| C17 | Flow Stage 6 | Consumer services are external to the reference gateway. The reference gateway may also read its own emitted alerts for internal repair, maintenance, and publication decisions, but consumer execution belongs in downstream services. | Added |
 
 ## Reviewed Flow Stages
 
@@ -853,6 +854,34 @@ The source services remain responsible for collecting and normalizing their own
 raw data. The reference gateway watches their normalized outputs and emits
 cross-domain alerts when configured conditions are met.
 
+### Role In The Flow
+
+Alert emission sits after a provider/source row has been normalized and before
+any downstream service acts on it.
+
+The reference gateway has two alert roles:
+
+1. Emit normalized alerts from source sync, audits, provider observations,
+   publication checks, and cross-source rules.
+2. Use the same alert table for its own internal goals, such as deciding that a
+   ticker needs after-hours repair, a derived publication must be rebuilt, or a
+   tradability block must remain active until a mapping issue is resolved.
+
+The reference gateway does not own every downstream reaction. Trading, scanner,
+model-data, notification, and human-review consumers should live in their own
+services or application modules. Those consumers read alerts and record their
+own progress in the consumer-state table.
+
+So the logical position is:
+
+```text
+source sync / audits / normalized SEC-news-Massive-FINRA-IBKR rows
+-> reference gateway alert rule evaluation
+-> market_reference_alert_v1
+-> reference gateway internal maintenance decisions
+-> external consumer services
+```
+
 ### Alert Rule Catalog
 
 Alerts should be emitted only for predefined rule types.
@@ -1061,6 +1090,13 @@ This lets multiple consumers use the same alert stream:
 - tradability blocker
 - human-review queue
 - notification/terminal display
+- reference gateway internal repair and maintenance planner
+
+The last item is internal to the reference gateway. The others should be
+implemented by the owning downstream service. For example, live trading should
+not rely on the reference gateway process to exclude a ticker from an order
+ticket. It should read the current tradability/publication state and relevant
+alerts itself.
 
 ### Alert Emission Examples
 
@@ -1184,6 +1220,9 @@ hard-code every provider table.
   human review.
 - The reference gateway owns cross-provider alert emission and alert rule
   evaluation.
+- The reference gateway may consume its own alerts only for reference-data
+  repair, maintenance planning, publication rebuilds, and guardrail decisions.
+- External consumer behavior belongs outside the reference gateway.
 - Source services own raw ingestion and source-specific normalization.
 
 Review status: under review.
