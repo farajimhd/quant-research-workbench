@@ -477,7 +477,18 @@ def main(argv: list[str] | None = None) -> int:
             stats.stop_requested = True
             stats.interrupted = True
             stats.phase = "stopping"
-            stats.message("stop requested; cancelling active ClickHouse queries and queued work")
+            interrupt_message = "Ctrl+C received; stopping after cancelling active ClickHouse queries and queued work"
+            stats.message(interrupt_message)
+            try:
+                original_stderr.write("\n" + interrupt_message + "\n")
+                original_stderr.flush()
+            except Exception:
+                pass
+            if dashboard is not None:
+                try:
+                    dashboard.refresh(force=True)
+                except Exception as exc:
+                    stats.log_event("interrupt_dashboard_refresh_failed", error=repr(exc))
             cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
             raise KeyboardInterrupt
 
@@ -1818,7 +1829,7 @@ class TickerMonthDashboard:
                 cells.extend([f"{key}:", f" {value}"])
             summary.add_row(*cells)
 
-        lanes = Table(expand=True, box=box.ASCII)
+        lanes = Table(expand=True, box=box.SIMPLE)
         lanes.add_column("Lane", width=9, no_wrap=True)
         lanes.add_column("Workers", width=7, justify="right", no_wrap=True)
         lanes.add_column("Queue", width=7, justify="right", no_wrap=True)
@@ -1831,7 +1842,7 @@ class TickerMonthDashboard:
         for lane in self.stats.lanes.values():
             lanes.add_row(lane.name, str(lane.workers), str(lane.queued), str(lane.running), str(lane.done), f"{lane.rows:,}", _format_bytes(lane.bytes), f"{lane.seconds:.1f}", "; ".join(list(lane.active.values())[:4]))
 
-        workers = Table(expand=True, box=box.ASCII)
+        workers = Table(expand=True, box=box.SIMPLE)
         workers.add_column("W", width=4, no_wrap=True)
         workers.add_column("Month", width=8, no_wrap=True)
         workers.add_column("Ticker", width=8, no_wrap=True)
@@ -1869,11 +1880,12 @@ class TickerMonthDashboard:
             message_rows.append("")
         for message in message_rows:
             messages.add_row(message)
+        summary_style = _dashboard_status_style(self.stats)
         return Group(
-            Panel(summary, title="Ticker/Month Rolling Cache", box=box.ASCII),
-            Panel(lanes, title="Concurrent Lanes", box=box.ASCII),
-            Panel(workers, title="Package Workers", box=box.ASCII),
-            Panel(messages, title="Messages", box=box.ASCII),
+            Panel(summary, title="Ticker/Month Rolling Cache", box=box.ROUNDED, border_style=summary_style, padding=(0, 1)),
+            Panel(lanes, title="Concurrent Lanes", box=box.ROUNDED, border_style="blue", padding=(0, 1)),
+            Panel(workers, title="Package Workers", box=box.ROUNDED, border_style="green", padding=(0, 1)),
+            Panel(messages, title="Messages", box=box.ROUNDED, border_style="yellow", padding=(0, 1)),
         )
 
 
@@ -1889,6 +1901,17 @@ def _progress_text(done: int, total: int, elapsed_seconds: float, *, Text: Any) 
     rate = safe_done / max(float(elapsed_seconds), 1e-9)
     eta = (safe_total - safe_done) / rate if safe_done > 0 and rate > 0 and safe_done < safe_total else None
     return Text(f"[{bar}] {safe_done:,}/{safe_total:,} {pct:3.0f}% eta {_format_duration(eta)}", style="green" if safe_done >= safe_total else "cyan")
+
+
+def _dashboard_status_style(stats: BuildStats) -> str:
+    phase = str(stats.phase or "").lower()
+    if stats.packages_failed > 0 or phase in {"error", "audit_failed"}:
+        return "red"
+    if stats.stop_requested or stats.interrupted or phase in {"stopping", "interrupted"}:
+        return "yellow"
+    if phase == "complete":
+        return "green"
+    return "cyan"
 
 
 if __name__ == "__main__":
