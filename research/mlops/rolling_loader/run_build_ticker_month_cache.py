@@ -127,7 +127,13 @@ class ActiveQueryRegistry:
 
     def snapshot(self) -> dict[str, dict[str, Any]]:
         with self._lock:
-            return {key: dict(value) for key, value in self._queries.items()}
+            now = time.time()
+            out: dict[str, dict[str, Any]] = {}
+            for key, value in self._queries.items():
+                row = dict(value)
+                row["seconds"] = max(0.0, now - float(row.get("started_at") or now))
+                out[key] = row
+            return out
 
     def clear(self) -> None:
         with self._lock:
@@ -314,6 +320,31 @@ class LaneExecutors:
             executor.shutdown(wait=wait_for_running, cancel_futures=True)
 
 
+class ProgressHeartbeat:
+    def __init__(self, *, cache_root: Path, stats: BuildStats, dashboard: "TickerMonthDashboard", refresh_seconds: float) -> None:
+        self.cache_root = Path(cache_root)
+        self.stats = stats
+        self.dashboard = dashboard
+        self.refresh_seconds = max(0.25, float(refresh_seconds))
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="ticker-month-progress-heartbeat", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=max(1.0, self.refresh_seconds * 2.0))
+        _refresh(self.stats, self.dashboard, self.cache_root, force=True)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.refresh_seconds):
+            try:
+                _refresh(self.stats, self.dashboard, self.cache_root)
+            except Exception as exc:
+                self.stats.log_event("progress_heartbeat_error", error=repr(exc))
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build query-driven ticker/month SSD rolling cache packages.")
     parser.add_argument("--clickhouse-url", default="")
@@ -401,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
         progress_path=cache_root / f"{args.split}_progress.json",
     )
     dashboard: TickerMonthDashboard | None = None
+    heartbeat: ProgressHeartbeat | None = None
     lanes: LaneExecutors | None = None
     package_executor: ThreadPoolExecutor | None = None
     previous_sigint = signal.getsignal(signal.SIGINT)
@@ -438,6 +470,8 @@ def main(argv: list[str] | None = None) -> int:
 
         signal.signal(signal.SIGINT, request_stop)
         dashboard.start()
+        heartbeat = ProgressHeartbeat(cache_root=cache_root, stats=stats, dashboard=dashboard, refresh_seconds=args.refresh_seconds)
+        heartbeat.start()
         for month in months:
             if stop_event.is_set():
                 break
@@ -567,7 +601,10 @@ def main(argv: list[str] | None = None) -> int:
             package_executor.shutdown(wait=False, cancel_futures=True)
         if lanes is not None:
             lanes.shutdown(wait_for_running=not (stats.interrupted or stats.stop_requested))
-        _write_progress(cache_root, stats)
+        if heartbeat is not None:
+            heartbeat.stop()
+        else:
+            _write_progress(cache_root, stats)
         if dashboard is not None:
             dashboard.stop()
         sys.stdout = original_stdout
@@ -1436,6 +1473,7 @@ def _month_summary(*, month: str, window: Any, tickers: list[str], stats: BuildS
 def _write_progress(cache_root: Path, stats: BuildStats) -> None:
     stats.current_rss_mib = current_rss_mib()
     stats.max_rss_mib = max(float(stats.max_rss_mib), float(stats.current_rss_mib))
+    active_queries = ACTIVE_QUERIES.snapshot()
     if stats.progress_path is None:
         return
     lanes = {
@@ -1452,7 +1490,17 @@ def _write_progress(cache_root: Path, stats: BuildStats) -> None:
         for name, lane in stats.lanes.items()
     }
     workers = {str(idx): jsonable(asdict(worker)) for idx, worker in stats.workers.items()}
-    write_json_atomic(stats.progress_path, {"summary": _summary(stats), "phase": stats.phase, "lanes": lanes, "workers": workers, "messages": list(stats.messages)})
+    write_json_atomic(
+        stats.progress_path,
+        {
+            "summary": _summary(stats),
+            "phase": stats.phase,
+            "lanes": lanes,
+            "workers": workers,
+            "active_clickhouse_queries": active_queries,
+            "messages": list(stats.messages),
+        },
+    )
 
 
 def _refresh(stats: BuildStats, dashboard: "TickerMonthDashboard", cache_root: Path, *, force: bool = False) -> None:
@@ -1494,6 +1542,7 @@ class TickerMonthDashboard:
         self._rich: dict[str, Any] = {}
         self._printed_messages = 0
         self._status_width = 0
+        self._lock = threading.Lock()
 
     def start(self) -> None:
         if not self.enabled or not self.live:
@@ -1531,20 +1580,23 @@ class TickerMonthDashboard:
 
     def refresh(self, *, force: bool = False) -> None:
         now = time.perf_counter()
-        if self._live is not None and (force or now - self._last >= self.refresh_seconds):
-            self._live.update(self._render(), refresh=True)
-            self._last = now
-        elif force or now - self._last >= self.refresh_seconds:
-            self._print_status_line(final=False)
+        if not (force or now - self._last >= self.refresh_seconds):
+            return
+        with self._lock:
+            if self._live is not None:
+                self._live.update(self._render(), refresh=True)
+            else:
+                self._print_status_line(final=False)
             self._last = now
 
     def stop(self) -> None:
-        if self._live is not None:
-            self._live.update(self._render(), refresh=True)
-            self._live.stop()
-            self._live = None
-        else:
-            self._print_status_line(final=True)
+        with self._lock:
+            if self._live is not None:
+                self._live.update(self._render(), refresh=True)
+                self._live.stop()
+                self._live = None
+            else:
+                self._print_status_line(final=True)
 
     def _print_status_line(self, *, final: bool) -> None:
         while self._printed_messages < len(self.stats.messages):
@@ -1557,10 +1609,13 @@ class TickerMonthDashboard:
         rate = self.stats.packages_done / max(elapsed, 1e-9)
         remaining = max(0, self.stats.packages_total - self.stats.packages_done)
         eta = remaining / rate if rate > 0 else None
+        active_queries = ACTIVE_QUERIES.snapshot()
+        longest_query_seconds = max((float(row.get("seconds") or 0.0) for row in active_queries.values()), default=0.0)
         status = (
             f"[{self.stats.phase}] packages={self.stats.packages_done}/{self.stats.packages_total} "
             f"origins={self.stats.origins_written:,} labels={self.stats.labels_written:,} "
             f"size={_format_bytes(self.stats.bytes_written)} rss={self.stats.current_rss_mib:.1f}MiB "
+            f"activeQ={len(active_queries)}/{_format_duration(longest_query_seconds)} "
             f"elapsed={_format_duration(elapsed)} eta={_format_duration(eta)}"
         )
         width = shutil.get_terminal_size((120, 40)).columns - 1
@@ -1581,6 +1636,8 @@ class TickerMonthDashboard:
         package_rate = self.stats.packages_done / max(elapsed, 1e-9)
         remaining_packages = max(0, self.stats.packages_total - self.stats.packages_done)
         eta = remaining_packages / package_rate if package_rate > 0 else None
+        active_queries = ACTIVE_QUERIES.snapshot()
+        longest_query_seconds = max((float(row.get("seconds") or 0.0) for row in active_queries.values()), default=0.0)
         terminal_size = shutil.get_terminal_size((140, 40))
         compact = terminal_size.columns < 145 or terminal_size.lines < 28
         summary = Table.grid(expand=False)
@@ -1594,7 +1651,8 @@ class TickerMonthDashboard:
             (("Phase", self.stats.phase), ("Elapsed", _format_duration(elapsed)), ("ETA", _format_duration(eta))),
             (("Months", f"{self.stats.months_done}/{self.stats.months_total}"), ("Packages", f"{self.stats.packages_done}/{self.stats.packages_total}"), ("Failed", f"{self.stats.packages_failed}")),
             (("Events", f"{self.stats.events_written:,}"), ("Origins", f"{self.stats.origins_written:,}"), ("Labels", f"{self.stats.labels_written:,}")),
-            (("Size", _format_bytes(self.stats.bytes_written)), ("RSS", f"{self.stats.current_rss_mib:.1f}/{self.stats.max_rss_mib:.1f} MiB"), ("Logs", str(self.stats.log_path or ""))),
+            (("Size", _format_bytes(self.stats.bytes_written)), ("RSS", f"{self.stats.current_rss_mib:.1f}/{self.stats.max_rss_mib:.1f} MiB"), ("ActiveQ", f"{len(active_queries)} / {_format_duration(longest_query_seconds)}")),
+            (("Logs", str(self.stats.log_path or "")), ("Progress", str(self.stats.progress_path or "")), ("Errors", str(self.stats.errors_path or ""))),
         ]
         for row in rows:
             cells: list[str] = []

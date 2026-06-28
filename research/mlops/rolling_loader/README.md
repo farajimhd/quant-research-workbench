@@ -39,6 +39,11 @@ The builder writes `terminal.log`, `builder_events.jsonl`,
 the cache root so failed workstation runs can be reviewed without copying the
 interactive terminal output.
 
+Progress reporting is heartbeat-driven, so the Rich panels and progress JSON
+continue updating while the main thread is waiting on long ClickHouse futures.
+The dashboard also reports active ClickHouse query count and longest active
+query duration.
+
 Ctrl+C requests a graceful stop, cancels active ClickHouse queries by their
 tracked query ids, writes an interrupted manifest, and leaves completed package
 directories intact.
