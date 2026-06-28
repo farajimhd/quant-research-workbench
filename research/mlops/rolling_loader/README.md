@@ -84,6 +84,15 @@ month packages complete, the builder runs `audit_ticker_month_cache` unless
 `--skip-final-audit` is passed. During package creation the audit panel remains
 idle; it starts only after the build phase changes to `auditing`.
 
+Each ordinal part also runs a lightweight in-memory guard before writing files.
+By default `--inline-audit-samples-per-part 2` checks two deterministic random
+origins from the events, origin table, window index, and intraday labels already
+loaded in memory. It does not query ClickHouse or reread parquet. The guard
+stops the build immediately if sampled origins are misaligned, event windows
+cross ordinal gaps, label rows are missing, or available forward labels violate
+their horizon. Set `--inline-audit-samples-per-part 0` only when profiling the
+absolute minimum build overhead.
+
 ## Core Flow
 
 1. Resolve the ticker universe and create every per-ticker cache before replay.

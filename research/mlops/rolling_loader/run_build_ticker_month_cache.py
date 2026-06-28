@@ -86,6 +86,7 @@ DEFAULTS: dict[str, Any] = {
     "cpu_workers": 16,
     "write_workers": 8,
     "audit_workers": 2,
+    "inline_audit_samples_per_part": 2,
     "max_inflight_packages": 96,
     "max_origin_events_per_part": 2_000_000,
     "events_per_chunk": 128,
@@ -410,6 +411,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cpu-workers", type=int, default=DEFAULTS["cpu_workers"])
     parser.add_argument("--write-workers", type=int, default=DEFAULTS["write_workers"])
     parser.add_argument("--audit-workers", type=int, default=DEFAULTS["audit_workers"])
+    parser.add_argument("--inline-audit-samples-per-part", type=int, default=DEFAULTS["inline_audit_samples_per_part"], help="Cheap in-memory part checks before writing. Set 0 to disable.")
     parser.add_argument("--max-inflight-packages", type=int, default=DEFAULTS["max_inflight_packages"])
     parser.add_argument("--max-origin-events-per-part", type=int, default=DEFAULTS["max_origin_events_per_part"], help="Maximum origin ordinal span per physical part inside a ticker-month package.")
     parser.add_argument("--events-per-chunk", type=int, default=DEFAULTS["events_per_chunk"])
@@ -853,6 +855,19 @@ def _build_ticker_month_package(
             state.stage = f"labels {part.part_id + 1}/{len(parts)}"
             labels = labels_future.result()
             state.labels_done += 1
+            audit_samples = _light_audit_part_in_memory(
+                events=events,
+                origins=origins,
+                windows=windows,
+                labels=labels,
+                context_lags=context_lags,
+                events_per_chunk=int(args.events_per_chunk),
+                horizon_count=len(parse_horizons(args.intraday_label_horizons)),
+                samples_per_part=max(0, int(args.inline_audit_samples_per_part)),
+                month=month,
+                ticker=ticker,
+                part=part,
+            )
             state.stage = f"write {part.part_id + 1}/{len(parts)}"
             part_files = {
                 "events": f"events_{part_name}.parquet",
@@ -892,6 +907,7 @@ def _build_ticker_month_package(
                         "intraday_forward_labels": int(labels.height),
                         "skipped_not_enough_history": int(part_skipped_history),
                         "skipped_window_gap": int(part_skipped_gap),
+                        "inline_audit_samples": int(audit_samples),
                     },
                 }
             )
@@ -1003,6 +1019,105 @@ def _origin_ordinal_parts(bounds: tuple[int, int] | None, *, required_lookback: 
         )
         start = end + 1
     return parts
+
+
+def _light_audit_part_in_memory(
+    *,
+    events: Any,
+    origins: Any,
+    windows: Any,
+    labels: Any,
+    context_lags: tuple[int, ...],
+    events_per_chunk: int,
+    horizon_count: int,
+    samples_per_part: int,
+    month: str,
+    ticker: str,
+    part: OriginOrdinalPart,
+) -> int:
+    samples = max(0, int(samples_per_part))
+    if samples <= 0 or int(getattr(origins, "height", 0) or 0) == 0:
+        return 0
+    prefix = f"{month}:{ticker}:part_{part.part_id:05d}"
+    if int(windows.height) != int(origins.height):
+        raise RuntimeError(f"{prefix} inline audit failed: origins/windows row count mismatch {origins.height:,} != {windows.height:,}.")
+    if int(events.height) <= 0:
+        raise RuntimeError(f"{prefix} inline audit failed: origins exist but events are empty.")
+    events_per_chunk = max(1, int(events_per_chunk))
+    event_ordinals = events.get_column("ordinal").to_numpy().astype(np.int64, copy=False)
+    event_timestamps = events.get_column("timestamp_us").to_numpy().astype(np.int64, copy=False)
+    if event_ordinals.size > 1 and np.any(event_ordinals[1:] <= event_ordinals[:-1]):
+        raise RuntimeError(f"{prefix} inline audit failed: events are not strictly increasing by ordinal.")
+    origin_count = int(origins.height)
+    sample_indexes = _deterministic_sample_indexes(origin_count, min(samples, origin_count), month=month, ticker=ticker, part_id=part.part_id)
+    label_ordinals = None
+    if int(horizon_count) > 0:
+        if int(labels.height) <= 0:
+            raise RuntimeError(f"{prefix} inline audit failed: labels are empty for {origin_count:,} origins.")
+        label_ordinals = labels.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)
+    checked = 0
+    lag0_index = list(context_lags).index(0) if 0 in context_lags else None
+    for origin_index in sample_indexes:
+        origin = origins.row(int(origin_index), named=True)
+        origin_id = int(origin["origin_id"])
+        origin_key = str(origin["origin_key"])
+        origin_ordinal = int(origin["origin_ordinal"])
+        origin_timestamp_us = int(origin["origin_timestamp_us"])
+        event_row_offset = int(origin["event_row_offset"])
+        if origin_ordinal < int(part.origin_ordinal_start) or origin_ordinal > int(part.origin_ordinal_end):
+            raise RuntimeError(f"{prefix} inline audit failed: sampled origin {origin_ordinal:,} is outside part origin bounds.")
+        if event_row_offset < 0 or event_row_offset >= int(event_ordinals.size):
+            raise RuntimeError(f"{prefix} inline audit failed: sampled origin {origin_ordinal:,} event_row_offset is out of bounds.")
+        if int(event_ordinals[event_row_offset]) != origin_ordinal or int(event_timestamps[event_row_offset]) != origin_timestamp_us:
+            raise RuntimeError(f"{prefix} inline audit failed: sampled origin {origin_key} does not match event row offset.")
+        window = windows.row(int(origin_index), named=True)
+        if int(window.get("origin_id", -1)) != origin_id or str(window.get("origin_key", "")) != origin_key:
+            raise RuntimeError(f"{prefix} inline audit failed: window row is not aligned with sampled origin {origin_key}.")
+        for context_index in range(len(context_lags)):
+            column = f"window_start_{context_index:03d}"
+            start = int(window[column])
+            end = start + events_per_chunk - 1
+            if start < 0 or end >= int(event_ordinals.size):
+                raise RuntimeError(f"{prefix} inline audit failed: {origin_key} {column} is out of event bounds.")
+            if int(event_ordinals[end]) - int(event_ordinals[start]) != events_per_chunk - 1:
+                raise RuntimeError(f"{prefix} inline audit failed: {origin_key} {column} crosses an ordinal gap.")
+            if lag0_index is not None and context_index == lag0_index and int(event_ordinals[end]) != origin_ordinal:
+                raise RuntimeError(f"{prefix} inline audit failed: {origin_key} current event window does not end at origin.")
+        if label_ordinals is not None:
+            left = int(np.searchsorted(label_ordinals, origin_ordinal, side="left"))
+            right = int(np.searchsorted(label_ordinals, origin_ordinal, side="right"))
+            if right - left != int(horizon_count):
+                raise RuntimeError(f"{prefix} inline audit failed: {origin_key} has {right - left:,} labels, expected {int(horizon_count):,}.")
+            label_slice = labels.slice(left, right - left)
+            if label_slice.get_column("origin_key").n_unique() != 1 or str(label_slice.get_column("origin_key")[0]) != origin_key:
+                raise RuntimeError(f"{prefix} inline audit failed: label rows are not aligned to sampled origin {origin_key}.")
+            available = label_slice.get_column("available").to_numpy()
+            label_event_counts = label_slice.get_column("event_count").to_numpy()
+            last_ts = label_slice.get_column("last_event_timestamp_us").to_numpy().astype(np.int64, copy=False)
+            horizon_us = label_slice.get_column("horizon_us").to_numpy().astype(np.int64, copy=False)
+            valid = available.astype(bool)
+            if valid.any():
+                if np.any(label_event_counts[valid] <= 0):
+                    raise RuntimeError(f"{prefix} inline audit failed: available label has zero event_count for {origin_key}.")
+                if np.any(last_ts[valid] <= origin_timestamp_us):
+                    raise RuntimeError(f"{prefix} inline audit failed: available label is not forward-looking for {origin_key}.")
+                if np.any(last_ts[valid] > origin_timestamp_us + horizon_us[valid]):
+                    raise RuntimeError(f"{prefix} inline audit failed: label exceeds its horizon for {origin_key}.")
+        checked += 1
+    return checked
+
+
+def _deterministic_sample_indexes(count: int, samples: int, *, month: str, ticker: str, part_id: int) -> list[int]:
+    count = max(0, int(count))
+    samples = max(0, min(int(samples), count))
+    if samples == 0:
+        return []
+    seed = 1469598103934665603
+    for byte in f"{month}|{ticker}|{part_id}".encode("utf-8"):
+        seed ^= int(byte)
+        seed = (seed * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    rng = np.random.default_rng(seed)
+    return sorted(int(value) for value in rng.choice(count, size=samples, replace=False))
 
 
 def _query_events_part(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str, part: OriginOrdinalPart) -> Any:
