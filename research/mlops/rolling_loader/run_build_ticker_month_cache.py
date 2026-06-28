@@ -606,7 +606,7 @@ def main(argv: list[str] | None = None) -> int:
         stats.interrupted = True
         stats.stop_requested = True
         stats.phase = "interrupted"
-        cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
+        _cancel_active_work_with_grace(client_opts=client_opts, stats=stats, dashboard=dashboard, cache_root=cache_root, reason="user interrupt")
         stats.message("interrupted by user; active ClickHouse queries were cancelled; completed package directories remain usable")
         if manifest:
             write_json_atomic(cache_root / "manifest.json", manifest | {"status": "interrupted", "summary": _summary(stats)})
@@ -617,10 +617,10 @@ def main(argv: list[str] | None = None) -> int:
         stats.phase = "error"
         stats.log_error("main", exc)
         stats.message(f"fatal error received; cancelling active ClickHouse queries and queued work: {exc!r}")
-        cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
+        _cancel_active_work_with_grace(client_opts=client_opts, stats=stats, dashboard=dashboard, cache_root=cache_root, reason="fatal error")
         if manifest:
             write_json_atomic(cache_root / "manifest.json", manifest | {"status": "error", "error": repr(exc), "summary": _summary(stats)})
-        raise
+        return 1
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
         if stats.interrupted or stats.stop_requested:
@@ -1502,10 +1502,40 @@ def cancel_active_clickhouse_queries(*, client_opts: Mapping[str, str], stats: B
         if stats is not None:
             stats.log_event("clickhouse_cancel_error", error=repr(exc), active_query_ids=ids)
         return 0
-    ACTIVE_QUERIES.clear()
     if stats is not None:
         stats.log_event("clickhouse_cancel_done", cancelled=len(ids), active_query_ids=ids)
     return len(ids)
+
+
+def _cancel_active_work_with_grace(
+    *,
+    client_opts: Mapping[str, str],
+    stats: BuildStats,
+    dashboard: "TickerMonthDashboard | None",
+    cache_root: Path,
+    reason: str,
+    grace_seconds: float = 12.0,
+) -> None:
+    deadline = time.perf_counter() + max(1.0, float(grace_seconds))
+    attempt = 0
+    while True:
+        active = ACTIVE_QUERIES.snapshot()
+        if not active:
+            stats.log_event("shutdown_active_queries_clear", reason=reason, attempts=attempt)
+            break
+        attempt += 1
+        stats.message(f"{reason}: cancelling {len(active)} active ClickHouse quer{'y' if len(active) == 1 else 'ies'}")
+        cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
+        try:
+            _refresh(stats, dashboard, cache_root, force=True)
+        except Exception as exc:
+            stats.log_event("shutdown_refresh_failed", reason=reason, error=repr(exc))
+        if time.perf_counter() >= deadline:
+            remaining = ACTIVE_QUERIES.snapshot()
+            stats.message(f"{reason}: {len(remaining)} ClickHouse quer{'y is' if len(remaining) == 1 else 'ies are'} still unwinding after cancellation")
+            stats.log_event("shutdown_active_queries_remaining", reason=reason, active_queries=remaining, attempts=attempt)
+            break
+        time.sleep(1.0)
 
 
 def _execute_clickhouse_cancel(*, client_opts: Mapping[str, str], sql: str, timeout_seconds: float) -> str:
