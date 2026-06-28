@@ -34,6 +34,7 @@ VARIANTS = (
     Variant(name="emb32-fp32bottleneck", embedding_dim=32, bottleneck_force_fp32=True),
     Variant(name="emb128-bf16", embedding_dim=128, bottleneck_force_fp32=False),
     Variant(name="emb128-fp32bottleneck", embedding_dim=128, bottleneck_force_fp32=True),
+    Variant(name="emb256-bf16", embedding_dim=256, bottleneck_force_fp32=False),
 )
 
 

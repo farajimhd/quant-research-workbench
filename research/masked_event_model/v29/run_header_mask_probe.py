@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_RUN_PREFIX = "v29-bit01-pooledheadermask050-emb32-1shard5ep"
+DEFAULT_RUN_PREFIX = "v29-bit01-pooledheadermask050-emb256-1shard5ep"
 DEFAULT_BATCH_SIZE = 4096
 DEFAULT_EPOCHS = 5
 DEFAULT_PROBE_EPOCHS = 5
@@ -20,7 +20,7 @@ def main() -> int:
         sys.executable,
         str(Path(__file__).with_name("run_embedding_precision_probe.py")),
         "--only",
-        "emb32-bf16",
+        "emb256-bf16",
         "--run-prefix",
         args.run_prefix,
         "--batch-size",
@@ -41,7 +41,7 @@ def main() -> int:
     command.extend(passthrough)
 
     print("=" * 104, flush=True)
-    print("v29 0/1-bit pooled-header-mask emb32 benchmark", flush=True)
+    print("v29 0/1-bit pooled-header-mask emb256 benchmark", flush=True)
     print("pretrain: v28 architecture with byte inputs unpacked to 0/1 bits", flush=True)
     print("probe: temporal v1 labeled-cache linear probe from the resulting v29 encoder checkpoint", flush=True)
     print("=" * 104, flush=True)
@@ -52,7 +52,7 @@ def main() -> int:
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the v29 0/1-bit header-mask experiment: emb32 BF16 pretraining "
+            "Run the v29 0/1-bit header-mask experiment: emb256 BF16 pretraining "
             "on one shard, then the same temporal v1 linear probe."
         )
     )
