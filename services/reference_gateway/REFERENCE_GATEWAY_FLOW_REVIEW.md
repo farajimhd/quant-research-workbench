@@ -25,6 +25,7 @@ source first.
 | C15 | Flow Stage 5 | Provider contracts must list exactly what is received from each provider, how it is used, and what creates non-tradable issues. | Added |
 | C16 | Flow Stage 6 | Add a universal alert table design. The reference gateway monitors normalized news, SEC, Massive, FINRA, IBKR, and internal reference events, emits configured alerts, and gives consumers enough labels/groups to build detailed strategies. | Added |
 | C17 | Flow Stage 6 | Consumer services are external to the reference gateway. The reference gateway may also read its own emitted alerts for internal repair, maintenance, and publication decisions, but consumer execution belongs in downstream services. | Added |
+| C18 | Flow Stage 7 | Add canonical security fact tables aligned with alert families/groups. Avoid redundant storage: source tables keep provider detail, fact tables keep compact normalized history, and trading publications keep latest pre-joined rows. | Added |
 
 ## Reviewed Flow Stages
 
@@ -1224,6 +1225,235 @@ hard-code every provider table.
   repair, maintenance planning, publication rebuilds, and guardrail decisions.
 - External consumer behavior belongs outside the reference gateway.
 - Source services own raw ingestion and source-specific normalization.
+
+Review status: under review.
+
+## Stage 7: Canonical Security Facts And Trading Publications
+
+This stage answers: after alerts identify that something changed, where should
+the durable security-level information live, and what should the trading system
+read?
+
+The key rule is **no redundant copies of provider payloads**. The system should
+not copy full SEC filings, news text, provider JSON, or wide source rows into
+each fact table. Source tables keep provider-specific detail. Fact tables keep
+compact normalized history. Trading publications keep latest joined rows for
+fast scanner/live-trading reads.
+
+### Data Layers
+
+Layer 1: normalized source tables.
+
+Examples:
+
+- `sec_filing_v2`
+- `sec_filing_text_v2`
+- `sec_xbrl_company_fact_v1`
+- `sec_xbrl_frame_observation_v1`
+- `benzinga_news_normalized_v1`
+- `benzinga_news_ticker_v1`
+- `market_short_volume_v1`
+- `market_fails_to_deliver_v1`
+- provider-specific Massive, FINRA, and IBKR publication tables
+
+These tables should preserve source meaning and enough evidence to audit the
+row. They are not the shape the trading system should query repeatedly.
+
+Layer 2: canonical fact tables.
+
+These tables answer one narrow question about an issuer/security/listing/symbol
+over time. They normalize source-specific rows into compact, queryable facts.
+They should include:
+
+```text
+fact_id
+issuer_id/security_id/listing_id/symbol_id where applicable
+provider_ticker where applicable
+source_system
+source_table
+source_event_id or source_event_key
+observed_at_utc
+effective_at_utc or effective_date
+value fields specific to the fact
+confidence_score when derived or inferred
+source_evidence_ref
+source_content_sha256
+source_run_id
+inserted_at
+```
+
+Layer 3: latest trading publications.
+
+Examples:
+
+- `feature_tradable_universe_v1`
+- `feature_scanner_static_v1`
+- future `security_trading_context_latest_v1`
+
+The scanner and live trading page should read this layer by default. It should
+be compact, pre-joined, and rebuilt or incrementally refreshed when alerts say
+the underlying facts changed.
+
+### Fact Table Redundancy Rules
+
+- Do not store a fact table if the source table already has exactly the right
+  entity keys, time semantics, and value semantics.
+- Do create a fact table when multiple sources need to be reconciled into one
+  meaning, such as float, share supply, borrow status, tradability, or SEC text
+  events.
+- Do not merge unrelated facts into one wide table just because the scanner may
+  eventually display them together.
+- Do not store full text or JSON in fact tables. Store source references and
+  compact extracted values or labels.
+- Do not make live trading perform wide joins across source tables. Reference
+  gateway should publish latest compact rows for trading.
+- Historical research/backtesting should use fact tables with as-of joins, not
+  the latest publication table.
+
+### Fact Catalog
+
+The following catalog lists useful fact families based on the current provider
+data and `q_live` schema.
+
+| Fact family | Table | Existing state | What it means | Main sources | Alert alignment | Redundancy decision |
+| --- | --- | --- | --- | --- | --- | --- |
+| Tradability | `security_tradability_fact_v1` | Proposed | Time-aware reason a security/listing/symbol is tradable or blocked. This is the durable history behind `is_tradable`. | reference audits, mapping issues, IBKR routing, Massive active status | `tradability_guardrail/*` | New table is justified because `feature_tradable_universe_v1` stores latest state only. |
+| Routing | `security_routing_fact_v1` | Proposed | Broker routing evidence such as IBKR conid, selected contract, ambiguity status, and validity window. | IBKR CPAPI, listing/symbol graph | `tradability_guardrail/conid_routing` | New table is justified because conid evidence should be historized separately from listing identity. |
+| Share supply | `security_share_supply_fact_v1` | Proposed | Shares outstanding, weighted shares, share-class shares, units, and source confidence. | SEC XBRL, Massive market snapshot | `share_supply/shares_outstanding`, `share_supply/xbrl_fact_change` | New table is justified because current source rows use different meanings and timestamps. |
+| Float | `market_security_float_v1` or future `security_float_fact_v1` | Existing partial | Provider or derived estimate of freely tradable shares. | Massive overview, future SEC-derived float logic | `share_supply/float_estimate` | Reuse existing table if it can hold source tag, confidence, and evidence cleanly. Avoid a second float table unless semantics diverge. |
+| Market snapshot | `market_security_market_snapshot_v1` | Existing | Provider snapshot values such as market cap, round lot, and shares from Massive. | Massive snapshot/reference endpoints | `market_publication/market_snapshot` | Existing table is enough; do not duplicate into a generic fact table. |
+| Short interest | `market_short_interest_v1` | Existing | Exchange/FINRA short interest for a settlement date, plus days-to-cover when available. | FINRA/exchange short-interest publications | `short_pressure/short_interest` | Existing table is enough. Latest labels belong in scanner publication. |
+| Short volume | `market_short_volume_v1` | Existing | Daily short-sale volume and ratio by venue/source. | FINRA short-volume files | `short_pressure/short_volume` | Existing table is enough. Do not duplicate into scanner except latest compact fields. |
+| Fails to deliver | `market_fails_to_deliver_v1` | Existing | SEC fails-to-deliver quantity by settlement date. | SEC FTD files | `short_pressure/fails_to_deliver` | Existing table is enough once linked to symbol/listing/security. |
+| Reg SHO threshold | `market_reg_sho_threshold_v1` | Existing | Whether a ticker is on a Reg SHO threshold list for a date. | Reg SHO threshold publications | `short_pressure/reg_sho` | Existing table is enough. |
+| Borrow | `market_security_borrow_v1` or future `security_borrow_fact_v1` | Existing partial | Broker-specific shortability, borrow shares, lender count, and fee/rate. | IBKR borrow/shortability | `borrow_pressure/borrow_availability` | Reuse existing table if it remains broker point-in-time. Do not blend it with FINRA short data. |
+| Splits | `market_stock_split_v1` | Existing | Forward/reverse split terms and execution date. | Massive corporate actions, SEC evidence when available | `corporate_action/split_dividend` | Existing table is enough. |
+| Dividends | `market_cash_dividend_v1` | Existing | Cash dividend dates and amount. | Massive corporate actions | `corporate_action/split_dividend` | Existing table is enough. |
+| IPO terms | `market_ipo_v1` | Existing partial | Listing/IPO timing, issue price, offered shares, status. | Massive IPO, SEC S-1/F-1/424B | `ipo_pipeline/ipo_terms` | Reuse existing table, but add SEC-derived rows only as compact terms, not filing text. |
+| Country | `market_security_country_v1` | Existing | Best assertion of listing, issuer legal, HQ, issue, and effective country. | SEC, Massive, exchange/listing data | `reference_identity/country` | Existing table is enough. |
+| Classification | `market_security_classification_v1` | Existing | Sector, industry, SIC, exchange classification, or other controlled taxonomy labels. | SEC SIC, Massive overview, exchange metadata | `reference_identity/classification` | Existing table is enough if scheme/source/level are preserved. |
+| News catalyst | `security_news_catalyst_fact_v1` | Proposed | Compact news-derived event labels tied to tickers/securities, such as offering headline, analyst action, FDA event, M&A, litigation, or macro-sensitive news. | Benzinga normalized news, future LLM classifier | `news_catalyst/*` | New table is justified because normalized news is article-centric, while trading needs security-centric labels. |
+| SEC filing event | `security_sec_filing_event_fact_v1` | Proposed | Compact security-linked filing event: form, accepted time, filing status, report date, and mapped entity. | `sec_filing_v2`, SEC-market bridge | `sec_filing/sec_form_type` | New table is justified if `feature_sec_event_market_bridge_v1` remains a feature bridge rather than canonical history. |
+| SEC text signal | `security_sec_text_signal_fact_v1` | Proposed | Extracted labels from filing text, such as offering, ATM, shelf, warrant, going concern, auditor change, delisting, reverse split mention, or risk flags. | `sec_filing_text_v2`, deterministic rules, future LLM extraction | `sec_filing/offering_supply`, `sec_filing/insider_activity`, `data_quality/text_signal` | New table is justified because source text is large and unstructured. Store labels/spans/evidence refs, not full text. |
+| Fundamental metric | `issuer_fundamental_metric_fact_v1` | Proposed | Normalized XBRL metrics such as revenue, net income, assets, liabilities, cash, debt, operating cash flow, EPS, and shares. | `sec_xbrl_company_fact_v1`, `sec_xbrl_frame_observation_v1` | `fundamental/xbrl_fact_change` | New table is justified only for curated metrics used by models/trading. Do not mirror all XBRL facts. |
+| Valuation | `security_valuation_fact_v1` | Proposed | Derived ratios such as market cap to sales, EV-like approximations, price to book, or cash per share when inputs exist. | market snapshot plus curated fundamental metrics | `fundamental/valuation`, `feature_invalidation/valuation` | New table is justified for derived values with explicit input version/evidence. |
+| Liquidity profile | `security_liquidity_profile_fact_v1` | Proposed, likely QMD-owned | Historical/liquid current profile such as median spread, median volume, dollar volume, volatility, and trade frequency. | QMD bars/events, historical SIP compact events | `market_structure/liquidity` | New table is justified, but QMD should own its raw computation; reference gateway can consume the publication. |
+
+### SEC/XBRL Useful Fact Scope
+
+SEC and XBRL should not be copied wholesale into new tables. The first curated
+XBRL scope should focus on metrics that affect trading context, supply, and
+model features.
+
+Share and supply tags:
+
+- `EntityCommonStockSharesOutstanding`
+- `CommonStocksIncludingAdditionalPaidInCapital`
+- `CommonStockSharesAuthorized`
+- `CommonStockSharesIssued`
+- `CommonStockSharesOutstanding`
+- `WeightedAverageNumberOfSharesOutstandingBasic`
+- `WeightedAverageNumberOfDilutedSharesOutstanding`
+- `CommonStockSharesReservedForFutureIssuance`
+- warrant, option, convertible, and preferred-share tags when available
+
+Balance sheet and liquidity tags:
+
+- cash and cash equivalents
+- total assets
+- total liabilities
+- current assets
+- current liabilities
+- debt and notes payable
+- stockholders equity
+
+Income/cash-flow tags:
+
+- revenue
+- operating income
+- net income
+- operating cash flow
+- free-cash-flow inputs when available
+- EPS basic and diluted
+
+These should become rows in `issuer_fundamental_metric_fact_v1` only when they
+are part of a curated metric catalog. The full SEC XBRL tables remain the source
+of truth for detailed research.
+
+### Text-Derived Fact Scope
+
+Filing and news text is valuable, but it is large and not deterministic enough
+to store repeatedly. Text-derived facts should store compact extraction output:
+
+```text
+signal_type
+signal_subtype
+direction
+confidence_score
+evidence_document_id or canonical_news_id
+evidence_span_start/end when available
+effective_at_utc
+source_content_sha256
+```
+
+Useful SEC text signal groups:
+
+- offering or shelf registration
+- ATM program
+- registered direct or PIPE
+- warrant/conversion/dilution terms
+- reverse split proposal or execution
+- delisting/non-compliance warning
+- going concern
+- auditor resignation/change
+- restatement/amendment
+- buyback authorization
+- insider ownership or control event
+
+Useful news signal groups:
+
+- offering/capital raise
+- analyst action
+- FDA/clinical/regulatory event
+- merger/acquisition/strategic review
+- earnings/guidance
+- litigation/investigation
+- contract/customer/order
+- macro/geopolitical event tied to listed securities
+
+### Alert-To-Fact Filler Flow
+
+Alerts should drive fact updates instead of repeatedly scanning every source
+table.
+
+Example flow:
+
+```text
+new SEC filing row
+-> alert: sec_filing/sec_form_type
+-> SEC filing event filler updates security_sec_filing_event_fact_v1
+-> if form or text implies supply risk, text/supply filler updates security_sec_text_signal_fact_v1 or security_share_supply_fact_v1
+-> alert: feature_invalidation/scanner_static
+-> publication builder refreshes affected ticker rows
+```
+
+For source updates that arrive in batches, the filler should process affected
+entities from alert keys, not recompute the full market unless the alert says
+the publication coverage changed globally.
+
+### Stage 7 Rules
+
+- Fact tables must align with alert families/groups.
+- A fact table must have a clear owner, source tables, entity key, time key, and
+  update trigger.
+- Existing `market_*` publication/fact tables should be reused when their
+  semantics are already correct.
+- New tables are allowed only when they remove ambiguity or prevent expensive
+  repeated joins/parsing.
+- The scanner/live-trading app should read latest publication tables, not run
+  wide joins over source/fact tables during trading.
+- Backtests and model building should use fact tables with as-of joins.
+- Full provider payloads stay in source/artifact tables, not facts.
 
 Review status: under review.
 
