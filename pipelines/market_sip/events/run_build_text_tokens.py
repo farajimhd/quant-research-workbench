@@ -24,7 +24,7 @@ DEFAULTS = {
     "sources": "news,sec",
     "tokenizer_model": "Qwen/Qwen3-0.6B",
     "embedding_input_source": "source_text",
-    "embedding_model": "Qwen/Qwen3-0.6B",
+    "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
     "news_max_tokens": 1024,
     "news_max_chunks": 2,
     "sec_chunk_tokens": 1024,
@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--embedding-model", default=DEFAULTS["embedding_model"])
     parser.add_argument("--embedding-device", default="auto")
     parser.add_argument("--embedding-torch-dtype", default="float32")
-    parser.add_argument("--embedding-pooling", choices=("mean", "last_token"), default="mean")
+    parser.add_argument("--embedding-pooling", choices=("mean", "last_token"), default="last_token")
     parser.add_argument("--embedding-batch-size", type=int, default=DEFAULTS["embedding_batch_size"])
     parser.add_argument("--embedding-insert-batch-size", type=int, default=DEFAULTS["embedding_insert_batch_size"])
     parser.add_argument("--profile-embeddings-only", action="store_true")

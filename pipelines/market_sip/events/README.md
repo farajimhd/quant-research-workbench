@@ -237,6 +237,10 @@ Do not average chunks before storage. The rolling/temporal model should combine
 chunk embeddings later with chunk positional encoding, item pooling or attention,
 and modality-specific context encoders.
 
+The default tokenizer id remains `Qwen/Qwen3-0.6B` to match the existing token
+tables. The default embedding checkpoint is `Qwen/Qwen3-Embedding-0.6B`, and the
+default pooling is `last_token`, matching the Qwen embedding model usage pattern.
+
 The tokenized text starts with explicit metadata lines such as `NEWS` or
 `SEC FILING`, provider/form/ticker/timestamp fields, and then the bounded source
 body. This keeps the modality and provenance visible to the text encoder while
@@ -265,13 +269,15 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
   --start-date 2019-02-01 `
   --end-date 2019-02-01 `
   --profile-embeddings-only `
-  --embedding-profile-source-rows 256
+  --embedding-profile-source-rows 256 `
+  --no-local-files-only
 ```
 
 The profile writes `insert_batch` JSONL rows with `embedding_seconds`,
 `embedding_sequences_per_second`, and `embedding_tokens_per_second`. Saved
 embeddings are always float32; `--embedding-torch-dtype` only controls the model
-inference dtype used during extraction.
+inference dtype used during extraction. Use `--no-local-files-only` on the first
+run if the `Qwen/Qwen3-Embedding-0.6B` weights are not already cached.
 
 Only rebuild tokens and embeddings together when token rows are missing or need
 to be regenerated with a different tokenizer/chunking policy:

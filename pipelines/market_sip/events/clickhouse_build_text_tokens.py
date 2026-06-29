@@ -41,7 +41,7 @@ DEFAULT_SEC_EMBEDDING_TABLE = "sec_filing_text_embeddings"
 DEFAULT_SEC_TEXT_CONTEXT_TABLE = "sec_filing_text_context"
 DEFAULT_OUTPUT_ROOT = DEFAULT_OUTPUT_ROOT_WIN / "text_tokens"
 DEFAULT_TOKENIZER_MODEL = "Qwen/Qwen3-0.6B"
-DEFAULT_EMBEDDING_MODEL = DEFAULT_TOKENIZER_MODEL
+DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 DEFAULT_NEWS_MAX_TOKENS = 1024
 DEFAULT_NEWS_MAX_CHUNKS = 2
 DEFAULT_SEC_CHUNK_TOKENS = 1024
@@ -245,7 +245,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--embedding-model", default=DEFAULT_EMBEDDING_MODEL)
     parser.add_argument("--embedding-device", default="auto", help="auto, cpu, cuda, cuda:0, etc.")
     parser.add_argument("--embedding-torch-dtype", default="float32", help="auto, float32, float16, or bfloat16. Saved embeddings are always float32.")
-    parser.add_argument("--embedding-pooling", choices=("mean", "last_token"), default="mean")
+    parser.add_argument("--embedding-pooling", choices=("mean", "last_token"), default="last_token")
     parser.add_argument("--embedding-batch-size", type=int, default=DEFAULT_EMBEDDING_BATCH_SIZE)
     parser.add_argument("--embedding-insert-batch-size", type=int, default=DEFAULT_EMBEDDING_INSERT_BATCH_SIZE)
     parser.add_argument("--profile-embeddings-only", action="store_true", help="Fetch/tokenize/embed a bounded sample and write timing JSONL without schema changes or ClickHouse inserts.")
