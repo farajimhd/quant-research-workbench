@@ -28,6 +28,7 @@ the ticker/month cache and loader.
 | Ticker/month data loader | `ticker_month_dataset.py` | Reads SSD packages and materializes trainer batches. |
 | Loader profiler | `run_profile_ticker_month_loader.py` | Measures loader speed, memory, and output shapes. |
 | Loader batch audit | `audit_ticker_month_loader_batches.py` | Verifies materialized batches against SSD package files. |
+| Loader batch inspection notebook | `notebooks/ticker_month_loader_batch_inspection.ipynb` | Loads an interactive batch and inspects identities, shapes, masks, labels, tokens, XBRL, and bars. |
 | Cache design guide | `TICKER_MONTH_SSD_CACHE_DESIGN.md` | Detailed design rationale and storage contract. |
 | Legacy stateful replay | `loader.py`, `initialize.py`, `run_training_profile.py` | Older production-style replay/profiling path. |
 
