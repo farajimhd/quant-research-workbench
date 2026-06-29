@@ -26,6 +26,7 @@ source first.
 | C16 | Flow Stage 6 | Add a universal alert table design. The reference gateway monitors normalized news, SEC, Massive, FINRA, IBKR, and internal reference events, emits configured alerts, and gives consumers enough labels/groups to build detailed strategies. | Added |
 | C17 | Flow Stage 6 | Consumer services are external to the reference gateway. The reference gateway may also read its own emitted alerts for internal repair, maintenance, and publication decisions, but consumer execution belongs in downstream services. | Added |
 | C18 | Flow Stage 7 | Add canonical security fact tables aligned with alert families/groups. Avoid redundant storage: source tables keep provider detail, fact tables keep compact normalized history, and trading publications keep latest pre-joined rows. | Added |
+| C19 | Flow Stage 7 | Add the fact-layer flow position and initial-fill design. Separate deterministic DB-only fillers from workstation/LLM batching so cheap SQL fills are not blocked by expensive text/model extraction. | Added |
 
 ## Reviewed Flow Stages
 
@@ -1441,6 +1442,231 @@ For source updates that arrive in batches, the filler should process affected
 entities from alert keys, not recompute the full market unless the alert says
 the publication coverage changed globally.
 
+### Flow Position
+
+The fact layer sits between alert emission and trading publications:
+
+```text
+source services normalize data
+-> reference gateway audits/source-syncs
+-> reference gateway emits alerts
+-> fact fillers update compact canonical fact tables
+-> publication builders refresh latest trading tables
+-> scanner/live trading/model/review consumers read publications and alerts
+```
+
+Fact fillers are internal reference-gateway work. External services may consume
+the finished facts, publications, and alerts, but they should not implement
+their own competing source-to-fact logic.
+
+### Initial Fill Design
+
+Initial fill is different from normal daemon operation. During normal operation,
+alerts tell the reference gateway which source row or entity changed. During
+initial fill, historical alerts may not exist for all old source rows, so the
+initial fill must scan source tables once and build the baseline fact history.
+
+Proposed entry point:
+
+```text
+pipelines/reference_data/facts/reference_fact_initial_fill.py
+```
+
+The script should support:
+
+```text
+--read-database q_live
+--write-database q_reference_tmp
+--execute
+--from-date YYYY-MM-DD
+--to-date YYYY-MM-DD
+--families deterministic|llm|all
+--workers N
+--batch-rows N
+```
+
+Run order:
+
+1. Run against `q_reference_tmp`.
+2. Audit fact counts, source coverage, duplicate keys, and orphan entity links.
+3. Compare latest publications built from temp facts against current `q_live`
+   publications where possible.
+4. Run against `q_live` only after temp audit is accepted.
+
+The initial fill must write manifests and coverage rows so the service knows
+which fact families have a trusted baseline. After that, daemon runs should use
+alerts and incremental source windows rather than rescanning all history.
+
+### Initial Fill Phases
+
+Phase 0: source validation.
+
+Purpose:
+
+- prove the source tables needed by the selected fact families exist
+- prove required identity bridges are populated
+- prevent silent partial fills
+
+Required checks:
+
+- `id_issuer_v1`, `id_security_v1`, `id_listing_v1`, and `id_symbol_v1` exist
+- `id_sec_market_bridge_v1` exists for SEC-linked facts
+- source tables have date ranges compatible with the requested fill window
+- every written fact can carry a source reference
+
+Phase 1: deterministic identity and guardrail facts.
+
+Outputs:
+
+- `security_tradability_fact_v1`
+- `security_routing_fact_v1`
+
+Inputs:
+
+- canonical identity tables
+- latest/open `id_mapping_issue_v1`
+- `feature_tradable_universe_v1`
+- IBKR conid evidence already stored in listing/source-mapping tables
+
+This phase can be done with smart ClickHouse queries. It should not require LLM
+or external provider calls.
+
+Phase 2: deterministic SEC/XBRL and market-publication facts.
+
+Outputs:
+
+- `security_sec_filing_event_fact_v1`
+- `issuer_fundamental_metric_fact_v1`
+- `security_share_supply_fact_v1`
+- existing publication tables such as short volume, short interest, FTD, Reg
+  SHO, borrow, snapshot, split, dividend, IPO, country, and classification
+
+Inputs:
+
+- `sec_filing_v2`
+- `sec_xbrl_company_fact_v1`
+- `sec_xbrl_frame_observation_v1`
+- `id_sec_market_bridge_v1`
+- current `market_*` publication tables
+
+This phase should be SQL-first. It uses curated XBRL tag catalogs and as-of
+logic. It must not mirror all XBRL rows into the curated fact table; only metrics
+selected for trading/model use belong in `issuer_fundamental_metric_fact_v1`.
+
+Phase 3: deterministic text/news rule facts.
+
+Outputs:
+
+- initial rows in `security_sec_text_signal_fact_v1`
+- initial rows in `security_news_catalyst_fact_v1`
+
+Inputs:
+
+- `sec_filing_text_v2`
+- `benzinga_news_normalized_v1`
+- `benzinga_news_ticker_v1`
+
+This phase can use deterministic rules, keyword dictionaries, regexes, and
+already-existing labels. It can run in ClickHouse plus Python batching, but it
+should still avoid LLM calls. Examples: form-type labels, explicit offering
+phrases, reverse-split mentions, going-concern phrases, and headline/source
+labels that are already present.
+
+Phase 4: workstation/model extraction.
+
+Outputs:
+
+- higher-confidence or richer rows in `security_sec_text_signal_fact_v1`
+- higher-confidence or richer rows in `security_news_catalyst_fact_v1`
+
+Inputs:
+
+- source text rows selected by Phase 3 as needing model extraction
+- model prompts and model-output contracts
+
+This phase is separate because it can be expensive and should be batched on the
+workstation. It may use local vLLM/OpenAI-compatible endpoints, but it must write
+the same compact fact schema as deterministic extraction. It should never write
+raw prompts, full source text, or full model traces into fact tables. Store those
+only in controlled artifacts/logs if needed, with source hashes in the fact row.
+
+Phase 5: derived facts.
+
+Outputs:
+
+- `security_valuation_fact_v1`
+- `security_liquidity_profile_fact_v1`
+
+Inputs:
+
+- `issuer_fundamental_metric_fact_v1`
+- `market_security_market_snapshot_v1`
+- QMD/historical SIP publications
+
+Valuation can be reference-gateway-owned once curated fundamentals and snapshots
+exist. Liquidity should be QMD-owned because it is computed from market events
+and bars; reference gateway should consume or publish the compact output, not
+recompute raw market microstructure.
+
+Phase 6: latest trading publications.
+
+Outputs:
+
+- `feature_tradable_universe_v1`
+- `feature_scanner_static_v1`
+- future `security_trading_context_latest_v1`
+
+Inputs:
+
+- canonical graph
+- canonical fact tables
+- existing market publication tables
+
+This phase is what live trading and scanner should read. It is intentionally
+redundant only in the useful direction: it stores latest compact fields so the
+trading UI does not perform heavy joins while the market is open.
+
+Phase 7: audit and coverage close.
+
+Required audits:
+
+- every fact row has source-system, source-table, and source-event reference
+- every security-linked fact maps to the current canonical graph
+- duplicate fact IDs are zero
+- table-specific duplicate semantic keys are zero or intentionally replaced
+- source rows skipped by deterministic filters are counted with reason
+- latest trading publications match latest facts for sampled tickers
+- temp-database output can be recreated with the same parameters
+
+Only after these audits pass should the fill coverage be marked as completed.
+
+### Deterministic Versus LLM Work
+
+The initial fill must keep deterministic SQL/table-only work separate from
+LLM/model work.
+
+Deterministic work:
+
+- can run directly from existing `q_live` tables
+- can be repeated safely
+- should run first
+- should produce the minimum useful baseline
+- should be usable in `q_reference_tmp` without workstation model dependencies
+
+LLM/model work:
+
+- should be optional and separately resumable
+- should run in batches on the workstation
+- should read a queue of source rows selected by deterministic rules or missing
+  labels
+- should write only compact fact rows and model metadata, not raw text copies
+- should be auditable against deterministic labels where possible
+
+If a fact family can be filled by SQL, it should not wait for LLM extraction.
+For example, SEC filing events, XBRL curated metrics, share-supply XBRL facts,
+short volume, short interest, and FTD are DB-only. SEC text signal enrichment
+and nuanced news-catalyst classification can have a second LLM phase.
+
 ### Stage 7 Rules
 
 - Fact tables must align with alert families/groups.
@@ -1450,6 +1676,9 @@ the publication coverage changed globally.
   semantics are already correct.
 - New tables are allowed only when they remove ambiguity or prevent expensive
   repeated joins/parsing.
+- Initial fill must run deterministic DB-only phases before any LLM/model phase.
+- LLM/model phases must be optional, batched, resumable, and written to the same
+  compact fact schemas.
 - The scanner/live-trading app should read latest publication tables, not run
   wide joins over source/fact tables during trading.
 - Backtests and model building should use fact tables with as-of joins.
