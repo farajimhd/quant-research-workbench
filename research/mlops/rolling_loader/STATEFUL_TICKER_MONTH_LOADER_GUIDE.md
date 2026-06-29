@@ -220,22 +220,21 @@ Use an exact allow-list when a trainer needs specific columns:
 
 If `event_columns` is set, the suppress list is ignored.
 
-## Text Token Outputs
+## Text Embedding Outputs
 
-When `data_groups` includes token groups, the loader emits text tensors in
+When `data_groups` includes embedding groups, the loader emits text tensors in
 `batch.text_inputs`:
 
 ```text
-ticker_news_tokens  -> text_inputs["ticker_news"]
-market_news_tokens  -> text_inputs["market_news"]
-sec_filing_tokens   -> text_inputs["sec_filings"]
+ticker_news_embeddings  -> text_inputs["ticker_news"]
+market_news_embeddings  -> text_inputs["market_news"]
+sec_filing_embeddings   -> text_inputs["sec_filings"]
 ```
 
 Each text input contains:
 
 ```text
-input_ids          [B, max_items, token_chunks, text_max_tokens]
-attention_mask     [B, max_items, token_chunks, text_max_tokens]
+embeddings         [B, max_items, token_chunks, text_embedding_dim]
 chunk_mask         [B, max_items, token_chunks]
 item_mask          [B, max_items]
 item_timestamp_us  [B, max_items]
@@ -250,16 +249,16 @@ sec_filing_max_items: 4
 ticker_news_token_chunks: 2
 market_news_token_chunks: 2
 sec_filing_token_chunks: 8
-text_max_tokens: 1024
+text_embedding_dim: 1024
 ```
 
-For each origin, token selection is as-of:
+For each origin, embedding selection is as-of:
 
 ```text
-token.timestamp_us <= origin_timestamp_us
+embedding.timestamp_us <= origin_timestamp_us
 ```
 
-The loader keeps the latest items, places each token row by
+The loader keeps the latest items, places each embedding row by
 `token_chunk_index`, and leaves unavailable items/chunks zero-filled with false
 masks. Future text rows are not eligible.
 
@@ -347,7 +346,7 @@ The no-arg command uses this benchmark profile:
 cache_id: train_201902_201907_ticker_month
 month: 2019-02
 dataset_id: bench_small_201902_v1
-data_groups: events,intraday_labels,daily_bars,global_daily_bars,ticker_news_tokens,market_news_tokens,sec_filing_tokens,xbrl
+data_groups: events,intraday_labels,daily_bars,global_daily_bars,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl
 event_output_mode: raw_stream
 event_stream_length: 1024
 sample_fraction: 1.0
@@ -399,7 +398,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\roll
 
 The audit checks shape consistency, duplicate identities, origin/event
 alignment, raw-stream values, raw-stream ordinal continuity, intraday labels,
-future-bar projection, token as-of selection, token values and masks,
+future-bar projection, embedding as-of selection, embedding values and masks,
 deterministic first-batch replay, and resume-from-state next-batch replay.
 
 Replay from a saved state:

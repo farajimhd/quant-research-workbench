@@ -204,7 +204,7 @@ class RollingTrainingBatch:
     Shapes:
     - `headers_uint8`: `[batch, context_chunks, 14]`
     - `events_uint8`: `[batch, context_chunks, 128, 16]`
-    - `text_inputs[*]["input_ids"]`: `[batch, max_items, token_chunks, text_tokens]`
+    - `text_inputs[*]["embeddings"]`: `[batch, max_items, token_chunks, embedding_dim]`
     - `text_inputs[*]` metadata ids: `[batch, max_items]` or `[batch, max_items, max_values]`
     - `xbrl_inputs[*]`: `[batch, xbrl_max_items]`
     - `ticker_macro_bars`: `[batch, macro_timeframes, 9]`
@@ -255,7 +255,7 @@ class RollingProductionBatch:
     Shapes:
     - `market_embeddings`: `[batch, context_chunks, embedding_dim]`
     - `market_mask`: `[batch, context_chunks]`
-    - `text_inputs[*]["input_ids"]`: `[batch, max_items, token_chunks, text_tokens]`
+    - `text_inputs[*]["embeddings"]`: `[batch, max_items, token_chunks, embedding_dim]`
     - `xbrl_inputs[*]`: `[batch, xbrl_max_items]`
     - `ticker_macro_bars`: `[batch, macro_timeframes, 9]`
     - `global_market_bars`: `[batch, global_symbols, macro_timeframes, 9]`

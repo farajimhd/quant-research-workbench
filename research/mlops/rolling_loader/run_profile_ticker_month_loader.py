@@ -34,7 +34,7 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "batch_size": 4096,
     "batches": 16,
     "seed": 17,
-    "data_groups": "events,intraday_labels,daily_bars,global_daily_bars,ticker_news_tokens,market_news_tokens,sec_filing_tokens,xbrl",
+    "data_groups": "events,intraday_labels,daily_bars,global_daily_bars,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl",
     "event_output_mode": "raw_stream",
     "event_columns": "",
     "suppress_event_columns": "ticker_id,ordinal,timestamp_us",
@@ -52,6 +52,7 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "market_news_token_chunks": 2,
     "sec_filing_token_chunks": 8,
     "text_max_tokens": 1024,
+    "text_embedding_dim": 1024,
     "ticker_daily_bar_offsets": "1,2,3,7,14,28,40,200",
     "global_daily_bar_offsets": "1,2,7",
     "daily_bar_completion_lag_hours": 30.0,
@@ -101,6 +102,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--market-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_token_chunks"])
     parser.add_argument("--sec-filing-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_token_chunks"])
     parser.add_argument("--text-max-tokens", type=int, default=DEFAULT_PROFILE_CONFIG["text_max_tokens"])
+    parser.add_argument("--text-embedding-dim", type=int, default=DEFAULT_PROFILE_CONFIG["text_embedding_dim"])
     parser.add_argument("--ticker-daily-bar-offsets", default=DEFAULT_PROFILE_CONFIG["ticker_daily_bar_offsets"], help="Comma-separated completed daily-bar offsets for ticker macro context.")
     parser.add_argument("--global-daily-bar-offsets", default=DEFAULT_PROFILE_CONFIG["global_daily_bar_offsets"], help="Comma-separated completed daily-bar offsets for global market context.")
     parser.add_argument("--daily-bar-completion-lag-hours", type=float, default=DEFAULT_PROFILE_CONFIG["daily_bar_completion_lag_hours"], help="Lag after bar_start before a daily bar may be used as completed context.")
@@ -171,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         market_news_token_chunks=max(1, int(args.market_news_token_chunks)),
         sec_filing_token_chunks=max(1, int(args.sec_filing_token_chunks)),
         text_max_tokens=max(1, int(args.text_max_tokens)),
+        text_embedding_dim=max(1, int(args.text_embedding_dim)),
         ticker_daily_bar_offsets=tuple(int(item.strip()) for item in str(args.ticker_daily_bar_offsets).split(",") if item.strip()),
         global_daily_bar_offsets=tuple(int(item.strip()) for item in str(args.global_daily_bar_offsets).split(",") if item.strip()),
         daily_bar_completion_lag_hours=max(0.0, float(args.daily_bar_completion_lag_hours)),

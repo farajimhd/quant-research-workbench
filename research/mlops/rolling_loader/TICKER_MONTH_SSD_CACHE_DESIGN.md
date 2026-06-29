@@ -67,7 +67,7 @@ cache_root/
     month=YYYY-MM/
       global/
         manifest.json
-        market_news_tokens.parquet
+        market_news_embeddings.parquet
         global_daily_bars.parquet
         category_references.parquet
       ticker_hash=XX/
@@ -84,8 +84,8 @@ cache_root/
           ranges_part_00001.parquet
           intraday_forward_labels_part_00001.parquet
           daily_bars.parquet
-          ticker_news_tokens.parquet
-          sec_filing_tokens.parquet
+          ticker_news_embeddings.parquet
+          sec_filing_embeddings.parquet
           xbrl.parquet
           audit_summary.json
 ```
@@ -263,21 +263,21 @@ origin selection stable when a liquid ticker is split into several files.
 
 ## Text, SEC, And XBRL Context
 
-The builder reads tokenized context tables, not raw text and not embeddings
-computed in this loader.
+The builder reads precomputed Qwen embedding context tables, not raw text and
+not tokens that would require model inference during training.
 
 Ticker package context:
 
-- ticker news tokens
-- SEC filing text tokens
+- ticker news embeddings
+- SEC filing text embeddings
 - XBRL numeric rows
 
 Global month context:
 
-- market news tokens
+- market news embeddings
 - category references
 
-Each token context package includes enough prior rows to fill the configured
+Each embedding context package includes enough prior rows to fill the configured
 as-of cache at the first origin in the month. If fewer historical rows exist,
 the training loader zero-fills the missing slots and sets the corresponding
 availability mask to false. Missing optional context is valid data; lookahead is
@@ -393,8 +393,8 @@ At materialization time, the loader:
 2. Resolves event windows by ordinal range.
 3. Reads raw compact event columns and cached event time features.
 4. Computes origin-relative time deltas.
-5. Resolves token, XBRL, daily, global, and precomputed intraday forward label
-   rows by as-of, forward, or `origin_key` rules.
+5. Resolves text embeddings, XBRL, daily, global, and precomputed intraday
+   forward label rows by as-of, forward, or `origin_key` rules.
 6. Builds model-facing tensors for the requested batch.
 
 An optional small rolling RAM or temporary SSD queue can hold ready batches
@@ -443,8 +443,8 @@ Long-running tasks are split into:
 - global/month package build
 - ticker/month origin-bound discovery
 - ticker/month part event fetch
-- ticker/month text token fetch
-- ticker/month SEC token fetch
+- ticker/month text embedding fetch
+- ticker/month SEC embedding fetch
 - ticker/month XBRL fetch
 - ticker/month daily bar fetch
 - event time-feature computation
@@ -460,7 +460,7 @@ work through one sequential stage:
 
 - `event_fetch_workers`: low-to-moderate concurrency for large ClickHouse
   ticker/month event reads.
-- `context_fetch_workers`: higher concurrency for smaller token, XBRL, and bar
+- `context_fetch_workers`: higher concurrency for smaller embedding, XBRL, and bar
   reads.
 - `cpu_polars_workers`: vectorized time-feature and range-index construction.
 - `disk_write_workers`: independent Parquet/JSON writes after each payload is
@@ -485,8 +485,8 @@ origin bounds ----> ordinal parts
                        |          +---- part intraday label query -----------> part labels write
                        |
 daily bars fetch -----------------------------------------------------------> daily write
-text token fetch -----------------------------------------------------------> text write
-SEC token fetch ------------------------------------------------------------> SEC write
+text embedding fetch ------------------------------------------------------> text write
+SEC embedding fetch -------------------------------------------------------> SEC write
 XBRL fetch ----------------------------------------------------------------> XBRL write
 global/month package ------------------------------------------------------> manifest reference
 all part/context writes ---------------------------------------------------> audit

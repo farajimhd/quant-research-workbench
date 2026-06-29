@@ -58,7 +58,7 @@ from research.mlops.rolling_loader.ticker_month_dataset import (
 
 
 DEFAULT_AUDIT_REPORT_PATH = DEFAULT_PROFILE_REPORT_PATH.with_name("ticker_month_loader_batch_audit.json")
-DEFAULT_AUDIT_DATA_GROUPS = "events,intraday_labels,ticker_news_tokens,market_news_tokens,sec_filing_tokens,xbrl,daily_bars,global_daily_bars"
+DEFAULT_AUDIT_DATA_GROUPS = "events,intraday_labels,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl,daily_bars,global_daily_bars"
 
 
 @dataclass(slots=True)
@@ -135,6 +135,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--market-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_token_chunks"])
     parser.add_argument("--sec-filing-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_token_chunks"])
     parser.add_argument("--text-max-tokens", type=int, default=DEFAULT_PROFILE_CONFIG["text_max_tokens"])
+    parser.add_argument("--text-embedding-dim", type=int, default=DEFAULT_PROFILE_CONFIG["text_embedding_dim"])
     parser.add_argument("--ticker-daily-bar-offsets", default=DEFAULT_PROFILE_CONFIG["ticker_daily_bar_offsets"])
     parser.add_argument("--global-daily-bar-offsets", default=DEFAULT_PROFILE_CONFIG["global_daily_bar_offsets"])
     parser.add_argument("--daily-bar-completion-lag-hours", type=float, default=DEFAULT_PROFILE_CONFIG["daily_bar_completion_lag_hours"])
@@ -309,6 +310,7 @@ def _loader_config_from_args(args: argparse.Namespace) -> TickerMonthLoaderConfi
         market_news_token_chunks=max(1, int(args.market_news_token_chunks)),
         sec_filing_token_chunks=max(1, int(args.sec_filing_token_chunks)),
         text_max_tokens=max(1, int(args.text_max_tokens)),
+        text_embedding_dim=max(1, int(args.text_embedding_dim)),
         ticker_daily_bar_offsets=tuple(int(item.strip()) for item in str(args.ticker_daily_bar_offsets).split(",") if item.strip()),
         global_daily_bar_offsets=tuple(int(item.strip()) for item in str(args.global_daily_bar_offsets).split(",") if item.strip()),
         daily_bar_completion_lag_hours=max(0.0, float(args.daily_bar_completion_lag_hours)),
@@ -512,15 +514,15 @@ def _source_context_frames_for_sample(
 
 
 def _cached_source_context(source_context: SourceClickHouseAuditContext, month: str, ticker: str, group: str, window: Any) -> Any:
-    cache_ticker = "__MARKET__" if group == "market_news_tokens" else str(ticker).upper()
+    cache_ticker = "__MARKET__" if group == "market_news_embeddings" else str(ticker).upper()
     key = (str(month), cache_ticker, str(group))
     if key in source_context.context_cache:
         return source_context.context_cache[key]
-    if group == "ticker_news_tokens":
+    if group == "ticker_news_embeddings":
         frame = _query_ticker_news(source_context.args, source_context.client_opts, source_context.config, window, ticker)
-    elif group == "market_news_tokens":
+    elif group == "market_news_embeddings":
         frame = _query_market_news(source_context.args, source_context.client_opts, source_context.config, window)
-    elif group == "sec_filing_tokens":
+    elif group == "sec_filing_embeddings":
         frame = _query_sec_tokens(source_context.args, source_context.client_opts, source_context.config, window, ticker)
     elif group == "xbrl":
         frame = _query_xbrl(source_context.args, source_context.client_opts, source_context.config, window, ticker)
@@ -778,11 +780,11 @@ def _check_text_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTi
         if text_key not in batch.text_inputs:
             continue
         payload = batch.text_inputs[text_key]
-        max_items = int(payload["input_ids"].shape[1])
-        max_chunks = int(payload["input_ids"].shape[2])
-        token_width = int(payload["input_ids"].shape[3])
+        max_items = int(payload["embeddings"].shape[1])
+        max_chunks = int(payload["embeddings"].shape[2])
+        embedding_dim = int(payload["embeddings"].shape[3])
         frame = part.context.get(group)
-        source_index = _prepare_text_context_index(frame, group, max_chunks=max_chunks, token_width=token_width) if frame is not None else None
+        source_index = _prepare_text_context_index(frame, group, max_chunks=max_chunks, embedding_dim=embedding_dim) if frame is not None else None
         if source_index is None:
             selected_indices = np.full((1, max_items), -1, dtype=np.int64)
             selected_mask = np.zeros((1, max_items), dtype=np.bool_)
@@ -795,7 +797,7 @@ def _check_text_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTi
         if int(actual_item_mask.sum()) != expected_count:
             issues.append(AuditIssue("error", "text_item_count_mismatch", "Text item mask count does not match as-of source selection.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "actual": int(actual_item_mask.sum()), "expected": expected_count}))
         if np.any(actual_timestamps[actual_item_mask.astype(bool)] > int(origin_timestamp_us)):
-            issues.append(AuditIssue("error", "text_lookahead", "Text tensor contains a future token item.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "origin_timestamp_us": int(origin_timestamp_us)}))
+            issues.append(AuditIssue("error", "text_lookahead", "Text tensor contains a future embedding item.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "origin_timestamp_us": int(origin_timestamp_us)}))
         for item_index in range(expected_count):
             source_item_index = int(selected_indices[0, item_index])
             if source_index is None or source_item_index < 0:
@@ -805,16 +807,15 @@ def _check_text_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTi
             expected_timestamp = int(source_index.timestamps_us[source_item_index])
             if int(actual_timestamps[item_index]) != expected_timestamp:
                 issues.append(AuditIssue("error", "text_timestamp_mismatch", "Text item timestamp does not match source selection.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index, "actual": int(actual_timestamps[item_index]), "expected": expected_timestamp}))
-            expected_ids = source_index.input_ids[source_item_index]
-            expected_mask = source_index.attention_mask[source_item_index]
+            expected_embeddings = source_index.embeddings[source_item_index]
             expected_chunk_mask = source_index.chunk_mask[source_item_index]
             if not np.array_equal(actual_chunk_mask[item_index], expected_chunk_mask):
-                issues.append(AuditIssue("error", "text_chunk_mask_mismatch", "Text chunk mask does not match source token rows.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index}))
-            if not np.array_equal(payload["input_ids"][row, item_index], expected_ids) or not np.array_equal(payload["attention_mask"][row, item_index], expected_mask):
-                issues.append(AuditIssue("error", "text_token_value_mismatch", "Text token tensor does not match source token rows.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index}))
+                issues.append(AuditIssue("error", "text_chunk_mask_mismatch", "Text chunk mask does not match source embedding rows.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index}))
+            if not np.array_equal(payload["embeddings"][row, item_index], expected_embeddings):
+                issues.append(AuditIssue("error", "text_embedding_value_mismatch", "Text embedding tensor does not match source embedding rows.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index}))
         if expected_count < max_items:
-            if np.any(payload["input_ids"][row, expected_count:] != 0) or np.any(payload["attention_mask"][row, expected_count:] != 0) or np.any(payload["chunk_mask"][row, expected_count:]):
-                issues.append(AuditIssue("error", "text_tail_padding_mismatch", "Text tensor has non-zero values after selected as-of items.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "selected": expected_count, "max_items": max_items}))
+            if np.any(payload["embeddings"][row, expected_count:] != 0.0) or np.any(payload["chunk_mask"][row, expected_count:]):
+                issues.append(AuditIssue("error", "text_tail_padding_mismatch", "Text embedding tensor has non-zero values after selected as-of items.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "selected": expected_count, "max_items": max_items}))
         totals["text_rows_checked"] += 1
 
 

@@ -134,7 +134,7 @@ def _audit_package(package_dir: Path, issues: list[AuditIssue], totals: dict[str
     if not manifest:
         return
     files = manifest.get("files") or {}
-    context_required = ("ticker_news_tokens", "sec_filing_tokens", "xbrl", "daily_bars")
+    context_required = ("ticker_news_embeddings", "sec_filing_embeddings", "xbrl", "daily_bars")
     for key in context_required:
         rel = files.get(key)
         if not rel or not (package_dir / str(rel)).exists():

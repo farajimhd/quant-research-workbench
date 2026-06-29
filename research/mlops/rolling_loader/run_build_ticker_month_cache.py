@@ -76,6 +76,8 @@ DEFAULTS: dict[str, Any] = {
     "macro_bars_table": "macro_bars_by_time_symbol",
     "news_token_table": "news_text_tokens",
     "sec_filing_text_token_table": "sec_filing_text_tokens",
+    "news_embedding_table": "news_text_embeddings",
+    "sec_filing_text_embedding_table": "sec_filing_text_embeddings",
     "sec_xbrl_context_table": "sec_xbrl_context",
     "category_reference_table": "training_category_reference",
     "cache_root": str(DEFAULT_TICKER_MONTH_CACHE_ROOT),
@@ -121,6 +123,13 @@ DEFAULTS: dict[str, Any] = {
 
 SESSION_START_SECOND = 4 * 60 * 60
 SESSION_END_SECOND = 20 * 60 * 60
+
+NEWS_EMBEDDING_COLUMNS: tuple[str, ...] = tuple(
+    column for column in NEWS_TOKEN_COLUMNS if column not in {"input_ids", "attention_mask"}
+) + ("embedding_model", "embedding_pooling", "embedding_dtype", "embedding_dim", "embedding")
+SEC_EMBEDDING_COLUMNS: tuple[str, ...] = tuple(
+    column for column in SEC_TOKEN_COLUMNS if column not in {"input_ids", "attention_mask"}
+) + ("embedding_model", "embedding_pooling", "embedding_dtype", "embedding_dim", "embedding")
 
 
 class ActiveQueryRegistry:
@@ -404,6 +413,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--macro-bars-table", default=DEFAULTS["macro_bars_table"])
     parser.add_argument("--news-token-table", default=DEFAULTS["news_token_table"])
     parser.add_argument("--sec-filing-text-token-table", default=DEFAULTS["sec_filing_text_token_table"])
+    parser.add_argument("--news-embedding-table", default=DEFAULTS["news_embedding_table"])
+    parser.add_argument("--sec-filing-text-embedding-table", default=DEFAULTS["sec_filing_text_embedding_table"])
     parser.add_argument("--sec-xbrl-context-table", default=DEFAULTS["sec_xbrl_context_table"])
     parser.add_argument("--category-reference-table", default=DEFAULTS["category_reference_table"])
     parser.add_argument("--cache-root", type=Path, default=Path(DEFAULTS["cache_root"]))
@@ -450,9 +461,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sec-filing-prior-items", type=int, default=DEFAULTS["sec_filing_prior_items"], help="Logical SEC filing text items saved before month start for as-of context.")
     parser.add_argument("--xbrl-prior-rows", type=int, default=DEFAULTS["xbrl_prior_rows"], help="XBRL fact rows saved before month start for as-of context.")
     parser.add_argument("--intraday-label-horizons", default=DEFAULTS["intraday_label_horizons"])
-    parser.add_argument("--skip-token-contexts", action="store_true")
+    parser.add_argument("--skip-token-contexts", action="store_true", help="Skip text embedding context fetches. Name kept for compatibility with older token-cache builds.")
     parser.add_argument("--skip-xbrl", action="store_true")
-    parser.add_argument("--refresh-context-only", action="store_true", help="Refresh only text-token, XBRL, and XBRL category context files for existing ticker/month packages.")
+    parser.add_argument("--refresh-context-only", action="store_true", help="Refresh only text embedding, XBRL, and XBRL category context files for existing ticker/month packages.")
     parser.add_argument("--skip-final-audit", action="store_true")
     parser.add_argument("--audit-source-checks", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--audit-samples-per-month", type=int, default=8)
@@ -772,7 +783,7 @@ def _write_global_month_package(
     if stop_event.is_set():
         raise KeyboardInterrupt
     writes = [
-        lanes.submit("write", f"{month}:write_market_news", lambda frame=outputs["market_news"]: _write_parquet(frame, tmp_dir / "market_news_tokens.parquet")),
+        lanes.submit("write", f"{month}:write_market_news", lambda frame=outputs["market_news"]: _write_parquet(frame, tmp_dir / "market_news_embeddings.parquet")),
         lanes.submit("write", f"{month}:write_global_bars", lambda frame=outputs["global_bars"]: _write_parquet(frame, tmp_dir / "global_daily_bars.parquet")),
         lanes.submit("write", f"{month}:write_categories", lambda frame=outputs["categories"]: _write_parquet(frame, tmp_dir / "category_references.parquet")),
     ]
@@ -787,7 +798,7 @@ def _write_global_month_package(
             "month": month,
             "window": month_window_dict(window),
             "files": {
-                "market_news_tokens": "market_news_tokens.parquet",
+                "market_news_embeddings": "market_news_embeddings.parquet",
                 "global_daily_bars": "global_daily_bars.parquet",
                 "category_references": "category_references.parquet",
             },
@@ -823,7 +834,7 @@ def _refresh_global_context_package(
     if stop_event.is_set():
         raise KeyboardInterrupt
     writes = {
-        "market_news_tokens": lanes.submit("write", f"{month}:refresh_write_market_news", lambda: _write_parquet(outputs["market_news"], final_dir / "market_news_tokens.parquet")),
+        "market_news_embeddings": lanes.submit("write", f"{month}:refresh_write_market_news", lambda: _write_parquet(outputs["market_news"], final_dir / "market_news_embeddings.parquet")),
         "category_references": lanes.submit("write", f"{month}:refresh_write_categories", lambda: _write_parquet(outputs["categories"], final_dir / "category_references.parquet")),
     }
     write_results = {name: future.result() for name, future in writes.items()}
@@ -831,7 +842,8 @@ def _refresh_global_context_package(
     counts["market_news"] = int(outputs["market_news"].height)
     counts["categories"] = int(outputs["categories"].height)
     files = dict(manifest.get("files") or {})
-    files["market_news_tokens"] = "market_news_tokens.parquet"
+    files.pop("market_news_tokens", None)
+    files["market_news_embeddings"] = "market_news_embeddings.parquet"
     files["category_references"] = "category_references.parquet"
     manifest.update(
         {
@@ -897,8 +909,8 @@ def _refresh_ticker_month_context_package(
         raise KeyboardInterrupt
     state.stage = "write-context"
     writes = {
-        "ticker_news_tokens": lanes.submit("write", f"{month}:{ticker}:refresh_write_news", lambda: _write_parquet(outputs["ticker_news"], package_dir / "ticker_news_tokens.parquet")),
-        "sec_filing_tokens": lanes.submit("write", f"{month}:{ticker}:refresh_write_sec", lambda: _write_parquet(outputs["sec_filings"], package_dir / "sec_filing_tokens.parquet")),
+        "ticker_news_embeddings": lanes.submit("write", f"{month}:{ticker}:refresh_write_news", lambda: _write_parquet(outputs["ticker_news"], package_dir / "ticker_news_embeddings.parquet")),
+        "sec_filing_embeddings": lanes.submit("write", f"{month}:{ticker}:refresh_write_sec", lambda: _write_parquet(outputs["sec_filings"], package_dir / "sec_filing_embeddings.parquet")),
         "xbrl": lanes.submit("write", f"{month}:{ticker}:refresh_write_xbrl", lambda: _write_parquet(outputs["xbrl"], package_dir / "xbrl.parquet")),
     }
     state.write_total = len(writes)
@@ -907,12 +919,16 @@ def _refresh_ticker_month_context_package(
         write_results[name] = future.result()
         state.write_done += 1
     counts = dict(manifest.get("counts") or {})
-    counts["ticker_news_tokens"] = int(outputs["ticker_news"].height)
-    counts["sec_filing_tokens"] = int(outputs["sec_filings"].height)
+    counts.pop("ticker_news_tokens", None)
+    counts.pop("sec_filing_tokens", None)
+    counts["ticker_news_embeddings"] = int(outputs["ticker_news"].height)
+    counts["sec_filing_embeddings"] = int(outputs["sec_filings"].height)
     counts["xbrl"] = int(outputs["xbrl"].height)
     files = dict(manifest.get("files") or {})
-    files["ticker_news_tokens"] = "ticker_news_tokens.parquet"
-    files["sec_filing_tokens"] = "sec_filing_tokens.parquet"
+    files.pop("ticker_news_tokens", None)
+    files.pop("sec_filing_tokens", None)
+    files["ticker_news_embeddings"] = "ticker_news_embeddings.parquet"
+    files["sec_filing_embeddings"] = "sec_filing_embeddings.parquet"
     files["xbrl"] = "xbrl.parquet"
     package_config = dict(manifest.get("config") or {})
     package_config.update(_context_refresh_metadata(args))
@@ -930,7 +946,7 @@ def _refresh_ticker_month_context_package(
     state.status = "done"
     state.stage = "done"
     state.seconds = time.perf_counter() - state.started_at
-    state.message = f"context refreshed news={counts['ticker_news_tokens']:,} sec={counts['sec_filing_tokens']:,} xbrl={counts['xbrl']:,}"
+    state.message = f"context refreshed news={counts['ticker_news_embeddings']:,} sec={counts['sec_filing_embeddings']:,} xbrl={counts['xbrl']:,}"
     return TickerMonthResult(
         month=month,
         ticker=ticker,
@@ -950,7 +966,9 @@ def _context_refresh_metadata(args: argparse.Namespace) -> dict[str, Any]:
         "sec_filing_prior_items": max(0, int(args.sec_filing_prior_items)),
         "xbrl_prior_rows": max(0, int(args.xbrl_prior_rows)),
         "xbrl_items": max(0, int(args.xbrl_items)),
-        "context_fetch_mode": "month_plus_latest_prior_items",
+        "context_fetch_mode": "month_plus_latest_prior_embedding_items",
+        "news_embedding_table": str(args.news_embedding_table),
+        "sec_filing_text_embedding_table": str(args.sec_filing_text_embedding_table),
     }
 
 
@@ -1113,8 +1131,8 @@ def _build_ticker_month_package(
             raise KeyboardInterrupt
         state.stage = "write"
         context_writes = {
-            "ticker_news": lanes.submit("write", f"{month}:{ticker}:write_news", lambda: _write_parquet(ticker_news, tmp_dir / "ticker_news_tokens.parquet")),
-            "sec_filings": lanes.submit("write", f"{month}:{ticker}:write_sec", lambda: _write_parquet(sec_filings, tmp_dir / "sec_filing_tokens.parquet")),
+            "ticker_news": lanes.submit("write", f"{month}:{ticker}:write_news", lambda: _write_parquet(ticker_news, tmp_dir / "ticker_news_embeddings.parquet")),
+            "sec_filings": lanes.submit("write", f"{month}:{ticker}:write_sec", lambda: _write_parquet(sec_filings, tmp_dir / "sec_filing_embeddings.parquet")),
             "xbrl": lanes.submit("write", f"{month}:{ticker}:write_xbrl", lambda: _write_parquet(xbrl, tmp_dir / "xbrl.parquet")),
             "daily_bars": lanes.submit("write", f"{month}:{ticker}:write_daily", lambda: _write_parquet(daily_bars, tmp_dir / "daily_bars.parquet")),
         }
@@ -1132,7 +1150,9 @@ def _build_ticker_month_package(
                 "events_per_chunk": int(args.events_per_chunk),
                 "context_lags": list(context_lags),
                 "sample_stride_events": int(args.sample_stride_events),
-                "context_fetch_mode": "month_plus_latest_prior_items",
+                "context_fetch_mode": "month_plus_latest_prior_embedding_items",
+                "news_embedding_table": str(args.news_embedding_table),
+                "sec_filing_text_embedding_table": str(args.sec_filing_text_embedding_table),
                 "ticker_news_prior_items": int(args.ticker_news_prior_items),
                 "market_news_prior_items": int(args.market_news_prior_items),
                 "sec_filing_prior_items": int(args.sec_filing_prior_items),
@@ -1153,16 +1173,16 @@ def _build_ticker_month_package(
                 "origins": int(total_origins),
                 "event_windows": int(total_windows),
                 "intraday_forward_labels": int(total_labels),
-                "ticker_news_tokens": int(ticker_news.height),
-                "sec_filing_tokens": int(sec_filings.height),
+                "ticker_news_embeddings": int(ticker_news.height),
+                "sec_filing_embeddings": int(sec_filings.height),
                 "xbrl": int(xbrl.height),
                 "daily_bars": int(daily_bars.height),
                 "skipped_not_enough_history": int(skipped_history),
                 "skipped_window_gap": int(skipped_gap),
             },
             "files": {
-                "ticker_news_tokens": "ticker_news_tokens.parquet",
-                "sec_filing_tokens": "sec_filing_tokens.parquet",
+                "ticker_news_embeddings": "ticker_news_embeddings.parquet",
+                "sec_filing_embeddings": "sec_filing_embeddings.parquet",
                 "xbrl": "xbrl.parquet",
                 "daily_bars": "daily_bars.parquet",
             },
@@ -1656,8 +1676,8 @@ ORDER BY origin_ordinal
 def _query_ticker_news(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str) -> Any:
     if args.skip_token_contexts:
         return _empty_frame()
-    table = f"{quote_ident(config.database)}.{quote_ident(config.news_token_table)}"
-    columns = ",\n    ".join(quote_ident(column) for column in NEWS_TOKEN_COLUMNS)
+    table = f"{quote_ident(config.database)}.{quote_ident(config.news_embedding_table)}"
+    columns = ",\n    ".join(quote_ident(column) for column in NEWS_EMBEDDING_COLUMNS)
     prior_items = max(0, int(getattr(args, "ticker_news_prior_items", 0) or 0))
     query = f"""
 WITH prior_items AS
@@ -1700,8 +1720,8 @@ ORDER BY ticker, timestamp_us, source_id, token_chunk_index
 def _query_market_news(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any) -> Any:
     if args.skip_token_contexts:
         return _empty_frame()
-    table = f"{quote_ident(config.database)}.{quote_ident(config.news_token_table)}"
-    source_columns = ",\n        ".join(f"t.{quote_ident(column)}" for column in NEWS_TOKEN_COLUMNS if column != "ticker")
+    table = f"{quote_ident(config.database)}.{quote_ident(config.news_embedding_table)}"
+    source_columns = ",\n        ".join(f"t.{quote_ident(column)}" for column in NEWS_EMBEDDING_COLUMNS if column != "ticker")
     prior_items = max(0, int(getattr(args, "market_news_prior_items", 0) or 0))
     query = f"""
 WITH prior_items AS
@@ -1749,8 +1769,8 @@ ORDER BY timestamp_us, source_id, token_chunk_index
 def _query_sec_tokens(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str) -> Any:
     if args.skip_token_contexts:
         return _empty_frame()
-    table = f"{quote_ident(config.sec_context_database)}.{quote_ident(config.sec_filing_text_token_table)}"
-    columns = ",\n    ".join(quote_ident(column) for column in SEC_TOKEN_COLUMNS)
+    table = f"{quote_ident(config.sec_context_database)}.{quote_ident(config.sec_filing_text_embedding_table)}"
+    columns = ",\n    ".join(quote_ident(column) for column in SEC_EMBEDDING_COLUMNS)
     prior_items = max(0, int(getattr(args, "sec_filing_prior_items", 0) or 0))
     query = f"""
 WITH prior_items AS

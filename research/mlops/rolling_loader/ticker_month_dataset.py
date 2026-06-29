@@ -33,11 +33,16 @@ from research.mlops.rolling_loader.ticker_month_cache import (
 DEFAULT_EVENT_OUTPUT_MODE = "raw_stream"
 SUPPORTED_EVENT_OUTPUT_MODES = {"none", "raw_flat", "raw_stream", "raw_windows", "encoded_uint8"}
 DEFAULT_DATA_GROUPS = ("events", "intraday_labels")
-TEXT_CONTEXT_GROUPS = {"ticker_news_tokens", "market_news_tokens", "sec_filing_tokens"}
+TEXT_CONTEXT_GROUPS = {"ticker_news_embeddings", "market_news_embeddings", "sec_filing_embeddings"}
+TEXT_CONTEXT_GROUP_ALIASES = {
+    "ticker_news_tokens": "ticker_news_embeddings",
+    "market_news_tokens": "market_news_embeddings",
+    "sec_filing_tokens": "sec_filing_embeddings",
+}
 TEXT_INPUT_GROUP_TO_KEY = {
-    "ticker_news_tokens": "ticker_news",
-    "market_news_tokens": "market_news",
-    "sec_filing_tokens": "sec_filings",
+    "ticker_news_embeddings": "ticker_news",
+    "market_news_embeddings": "market_news",
+    "sec_filing_embeddings": "sec_filings",
 }
 XBRL_CONTEXT_GROUPS = {"xbrl"}
 BAR_CONTEXT_GROUPS = {"daily_bars", "global_daily_bars"}
@@ -122,6 +127,7 @@ class TickerMonthLoaderConfig:
     market_news_token_chunks: int = 2
     sec_filing_token_chunks: int = 8
     text_max_tokens: int = 1024
+    text_embedding_dim: int = 1024
     ticker_daily_bar_offsets: tuple[int, ...] = DEFAULT_TICKER_DAILY_BAR_OFFSETS
     global_daily_bar_offsets: tuple[int, ...] = DEFAULT_GLOBAL_DAILY_BAR_OFFSETS
     daily_bar_completion_lag_hours: float = DEFAULT_DAILY_BAR_COMPLETION_LAG_HOURS
@@ -210,8 +216,7 @@ class LoadedTickerMonthPart:
 @dataclass(slots=True)
 class TextContextIndex:
     timestamps_us: np.ndarray
-    input_ids: np.ndarray
-    attention_mask: np.ndarray
+    embeddings: np.ndarray
     chunk_mask: np.ndarray
 
     @property
@@ -485,12 +490,12 @@ class TickerMonthPartReader:
             for key, filename in _package_context_files(plan.package_dir).items():
                 if key in self.data_groups:
                     loaded.context[key] = pl.read_parquet(plan.package_dir / filename)
-            if "market_news_tokens" in self.data_groups:
-                global_path = _month_global_dir(plan.package_dir) / "market_news_tokens.parquet"
-                cache_key = (global_path, "market_news_tokens")
+            if "market_news_embeddings" in self.data_groups:
+                global_path = _month_global_dir(plan.package_dir) / "market_news_embeddings.parquet"
+                cache_key = (global_path, "market_news_embeddings")
                 if cache_key not in self._global_context_cache:
                     self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
-                loaded.context["market_news_tokens"] = self._global_context_cache[cache_key]
+                loaded.context["market_news_embeddings"] = self._global_context_cache[cache_key]
             if "global_daily_bars" in self.data_groups:
                 global_path = _month_global_dir(plan.package_dir) / "global_daily_bars.parquet"
                 cache_key = (global_path, "global_daily_bars")
@@ -725,7 +730,7 @@ class TickerMonthBatchMaterializer:
         return out, mask
 
     def _materialize_text_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
-        requested = [group for group in ("ticker_news_tokens", "market_news_tokens", "sec_filing_tokens") if group in self.config.data_groups]
+        requested = [group for group in ("ticker_news_embeddings", "market_news_embeddings", "sec_filing_embeddings") if group in self.config.data_groups]
         if not requested:
             return {}, {}
         out: dict[str, dict[str, np.ndarray]] = {}
@@ -739,16 +744,14 @@ class TickerMonthBatchMaterializer:
         for group in requested:
             key = TEXT_INPUT_GROUP_TO_KEY[group]
             max_items, max_chunks = _text_group_limits(self.config, group)
-            token_width = int(self.config.text_max_tokens)
-            input_ids = np.zeros((len(refs), max_items, max_chunks, token_width), dtype=np.int32)
-            attention_mask = np.zeros((len(refs), max_items, max_chunks, token_width), dtype=np.uint8)
+            embedding_dim = int(self.config.text_embedding_dim)
+            embeddings = np.zeros((len(refs), max_items, max_chunks, embedding_dim), dtype=np.float32)
             chunk_mask = np.zeros((len(refs), max_items, max_chunks), dtype=np.bool_)
             item_mask = np.zeros((len(refs), max_items), dtype=np.bool_)
             item_timestamp_us = np.zeros((len(refs), max_items), dtype=np.int64)
             if max_items <= 0:
                 out[key] = {
-                    "input_ids": input_ids,
-                    "attention_mask": attention_mask,
+                    "embeddings": embeddings,
                     "chunk_mask": chunk_mask,
                     "item_mask": item_mask,
                     "item_timestamp_us": item_timestamp_us,
@@ -760,7 +763,7 @@ class TickerMonthBatchMaterializer:
                 if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
                     continue
                 index_start = time.perf_counter()
-                index = self._text_context_index(frame, group, max_chunks=max_chunks, token_width=token_width)
+                index = self._text_context_index(frame, group, max_chunks=max_chunks, embedding_dim=embedding_dim)
                 profile["text_index_seconds"] = float(profile["text_index_seconds"]) + (time.perf_counter() - index_start)
                 if index.item_count <= 0:
                     continue
@@ -771,39 +774,35 @@ class TickerMonthBatchMaterializer:
                     continue
                 gather_start = time.perf_counter()
                 safe_indices = np.where(selected_mask, selected_indices, 0)
-                gathered_ids = index.input_ids[safe_indices]
-                gathered_attention = index.attention_mask[safe_indices]
+                gathered_embeddings = index.embeddings[safe_indices]
                 gathered_chunks = index.chunk_mask[safe_indices]
                 gathered_timestamps = index.timestamps_us[safe_indices]
                 invalid = ~selected_mask
                 if bool(invalid.any()):
-                    gathered_ids[invalid] = 0
-                    gathered_attention[invalid] = 0
+                    gathered_embeddings[invalid] = 0.0
                     gathered_chunks[invalid] = False
                     gathered_timestamps[invalid] = 0
-                input_ids[rows] = gathered_ids
-                attention_mask[rows] = gathered_attention
+                embeddings[rows] = gathered_embeddings
                 chunk_mask[rows] = gathered_chunks
                 item_mask[rows] = selected_mask
                 item_timestamp_us[rows] = gathered_timestamps
                 profile["text_gather_seconds"] = float(profile["text_gather_seconds"]) + (time.perf_counter() - gather_start)
             out[key] = {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
+                "embeddings": embeddings,
                 "chunk_mask": chunk_mask,
                 "item_mask": item_mask,
                 "item_timestamp_us": item_timestamp_us,
             }
         return out, profile
 
-    def _text_context_index(self, frame: Any, group: str, *, max_chunks: int, token_width: int) -> TextContextIndex:
-        key = (id(frame), str(group), int(max_chunks), int(token_width))
-        cache = self._global_text_index_cache if str(group) == "market_news_tokens" else self._text_index_cache
+    def _text_context_index(self, frame: Any, group: str, *, max_chunks: int, embedding_dim: int) -> TextContextIndex:
+        key = (id(frame), str(group), int(max_chunks), int(embedding_dim))
+        cache = self._global_text_index_cache if str(group) == "market_news_embeddings" else self._text_index_cache
         with self._text_index_lock:
             cached = cache.get(key)
             if cached is not None:
                 return cached
-            index = _prepare_text_context_index(frame, group, max_chunks=max_chunks, token_width=token_width)
+            index = _prepare_text_context_index(frame, group, max_chunks=max_chunks, embedding_dim=embedding_dim)
             cache[key] = index
             return index
 
@@ -1328,7 +1327,7 @@ def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoade
     mode = str(config.event_output_mode)
     if mode not in SUPPORTED_EVENT_OUTPUT_MODES:
         raise ValueError(f"Unsupported event_output_mode={mode!r}; expected one of {sorted(SUPPORTED_EVENT_OUTPUT_MODES)}")
-    groups = tuple(dict.fromkeys(str(group) for group in config.data_groups))
+    groups = tuple(dict.fromkeys(TEXT_CONTEXT_GROUP_ALIASES.get(str(group), str(group)) for group in config.data_groups))
     if mode in {"raw_flat", "raw_stream", "raw_windows"} and "events" not in groups:
         groups = (*groups, "events")
     if mode == "encoded_uint8":
@@ -1366,6 +1365,7 @@ def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoade
         market_news_token_chunks=max(1, int(config.market_news_token_chunks)),
         sec_filing_token_chunks=max(1, int(config.sec_filing_token_chunks)),
         text_max_tokens=max(1, int(config.text_max_tokens)),
+        text_embedding_dim=max(1, int(config.text_embedding_dim)),
         ticker_daily_bar_offsets=tuple(max(1, int(value)) for value in config.ticker_daily_bar_offsets),
         global_daily_bar_offsets=tuple(max(1, int(value)) for value in config.global_daily_bar_offsets),
         daily_bar_completion_lag_hours=max(0.0, float(config.daily_bar_completion_lag_hours)),
@@ -1427,77 +1427,41 @@ def _package_context_files(package_dir: Path) -> dict[str, str]:
     manifest_path = package_dir / "manifest.json"
     manifest = read_json(manifest_path)
     files = manifest.get("files") or {}
-    return {str(key): str(value) for key, value in files.items() if key in {"ticker_news_tokens", "sec_filing_tokens", "xbrl", "daily_bars"}}
+    out: dict[str, str] = {}
+    for key, value in files.items():
+        normalized = TEXT_CONTEXT_GROUP_ALIASES.get(str(key), str(key))
+        if normalized in {"ticker_news_embeddings", "sec_filing_embeddings", "xbrl", "daily_bars"}:
+            out[normalized] = str(value)
+    return out
 
 
 def _text_group_limits(config: TickerMonthLoaderConfig, group: str) -> tuple[int, int]:
-    if group == "ticker_news_tokens":
+    group = TEXT_CONTEXT_GROUP_ALIASES.get(str(group), str(group))
+    if group == "ticker_news_embeddings":
         return max(0, int(config.ticker_news_max_items)), max(1, int(config.ticker_news_token_chunks))
-    if group == "market_news_tokens":
+    if group == "market_news_embeddings":
         return max(0, int(config.market_news_max_items)), max(1, int(config.market_news_token_chunks))
-    if group == "sec_filing_tokens":
+    if group == "sec_filing_embeddings":
         return max(0, int(config.sec_filing_max_items)), max(1, int(config.sec_filing_token_chunks))
     return 0, 1
 
 
-def _prepare_text_context_rows(frame: Any, group: str) -> list[dict[str, Any]]:
-    if int(getattr(frame, "height", 0) or 0) <= 0:
-        return []
-    required = {"timestamp_us", "token_chunk_index", "input_ids", "attention_mask"}
-    if not required.issubset(set(getattr(frame, "columns", ()))):
-        return []
-    grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
-    for row in frame.iter_rows(named=True):
-        timestamp_us = int(row.get("timestamp_us") or 0)
-        item_key = _text_item_key(row, group)
-        item = grouped.setdefault(item_key, {"timestamp_us": timestamp_us, "item_key": item_key, "rows": []})
-        item["timestamp_us"] = max(int(item["timestamp_us"]), timestamp_us)
-        item["rows"].append(row)
-    items = list(grouped.values())
-    for item in items:
-        item["rows"].sort(key=lambda row: int(row.get("token_chunk_index", 0) or 0))
-    items.sort(key=lambda item: (-int(item["timestamp_us"]), item["item_key"]))
-    return items
-
-
-def _text_item_key(row: Mapping[str, Any], group: str) -> tuple[Any, ...]:
-    if group == "sec_filing_tokens":
-        return (
-            str(row.get("accession_number") or ""),
-            str(row.get("document_id") or ""),
-            int(row.get("text_rank") or 0),
-            str(row.get("source_id") or ""),
-        )
-    return (
-        str(row.get("source_id") or ""),
-        str(row.get("provider_article_id") or ""),
-        str(row.get("text_hash") or ""),
-    )
-
-
-def _select_text_items(items: Sequence[Mapping[str, Any]], origin_timestamp_us: int, *, max_items: int) -> list[Mapping[str, Any]]:
-    if max_items <= 0:
-        return []
-    selected = [item for item in items if int(item.get("timestamp_us") or 0) <= int(origin_timestamp_us)]
-    return selected[: int(max_items)]
-
-
-def _prepare_text_context_index(frame: Any, group: str, *, max_chunks: int, token_width: int) -> TextContextIndex:
+def _prepare_text_context_index(frame: Any, group: str, *, max_chunks: int, embedding_dim: int) -> TextContextIndex:
     max_chunks = max(1, int(max_chunks))
-    token_width = max(1, int(token_width))
+    embedding_dim = max(1, int(embedding_dim))
     if int(getattr(frame, "height", 0) or 0) <= 0:
-        return _empty_text_context_index(max_chunks=max_chunks, token_width=token_width)
-    required = {"timestamp_us", "token_chunk_index", "input_ids", "attention_mask"}
-    if not required.issubset(set(getattr(frame, "columns", ()))):
-        return _empty_text_context_index(max_chunks=max_chunks, token_width=token_width)
+        return _empty_text_context_index(max_chunks=max_chunks, embedding_dim=embedding_dim)
+    required = {"timestamp_us", "token_chunk_index", "embedding"}
+    if not required.issubset(set(getattr(frame, "columns", ()))): 
+        return _empty_text_context_index(max_chunks=max_chunks, embedding_dim=embedding_dim)
+    group = TEXT_CONTEXT_GROUP_ALIASES.get(str(group), str(group))
     height = int(frame.height)
     timestamps = frame.get_column("timestamp_us").to_numpy().astype(np.int64, copy=False)
     chunk_indices = frame.get_column("token_chunk_index").to_numpy()
-    input_values = frame.get_column("input_ids").to_numpy()
-    mask_values = frame.get_column("attention_mask").to_numpy()
+    embedding_values = frame.get_column("embedding").to_numpy()
     columns = set(frame.columns)
     source_id = _optional_frame_column(frame, "source_id", "")
-    if group == "sec_filing_tokens":
+    if group == "sec_filing_embeddings":
         accession_number = _optional_frame_column(frame, "accession_number", "")
         document_id = _optional_frame_column(frame, "document_id", "")
         text_rank = _optional_frame_column(frame, "text_rank", 0)
@@ -1527,10 +1491,9 @@ def _prepare_text_context_index(frame: Any, group: str, *, max_chunks: int, toke
             item_timestamp[key] = max(int(item_timestamp.get(key, 0)), int(timestamps[row_index]))
     items = sorted(((int(item_timestamp[key]), key, rows) for key, rows in grouped.items()), key=lambda item: (item[0], item[1]))
     if not items:
-        return _empty_text_context_index(max_chunks=max_chunks, token_width=token_width)
+        return _empty_text_context_index(max_chunks=max_chunks, embedding_dim=embedding_dim)
     out_timestamps = np.empty((len(items),), dtype=np.int64)
-    out_ids = np.zeros((len(items), max_chunks, token_width), dtype=np.int32)
-    out_masks = np.zeros((len(items), max_chunks, token_width), dtype=np.uint8)
+    out_embeddings = np.zeros((len(items), max_chunks, embedding_dim), dtype=np.float32)
     out_chunk_mask = np.zeros((len(items), max_chunks), dtype=np.bool_)
     for item_index, (timestamp_us, _key, rows) in enumerate(items):
         out_timestamps[item_index] = int(timestamp_us)
@@ -1539,15 +1502,15 @@ def _prepare_text_context_index(frame: Any, group: str, *, max_chunks: int, toke
             chunk_index = _safe_int(chunk_indices[row_index])
             if chunk_index < 0 or chunk_index >= max_chunks:
                 continue
-            ids = _cell_array(input_values[row_index]).astype(np.int32, copy=False)
-            mask = _cell_array(mask_values[row_index]).astype(np.uint8, copy=False)
-            width = min(token_width, int(ids.shape[0]), int(mask.shape[0]))
+            embedding = _cell_array(embedding_values[row_index]).astype(np.float32, copy=False)
+            width = min(embedding_dim, int(embedding.shape[0]))
             if width <= 0:
                 continue
-            out_ids[item_index, chunk_index, :width] = ids[:width]
-            out_masks[item_index, chunk_index, :width] = mask[:width]
-            out_chunk_mask[item_index, chunk_index] = bool(mask[:width].any())
-    return TextContextIndex(timestamps_us=out_timestamps, input_ids=out_ids, attention_mask=out_masks, chunk_mask=out_chunk_mask)
+            if not bool(np.isfinite(embedding[:width]).all()):
+                raise RuntimeError(f"Text embedding context contains non-finite values for group={group!r}.")
+            out_embeddings[item_index, chunk_index, :width] = embedding[:width]
+            out_chunk_mask[item_index, chunk_index] = True
+    return TextContextIndex(timestamps_us=out_timestamps, embeddings=out_embeddings, chunk_mask=out_chunk_mask)
 
 
 def _select_text_item_indices(index: TextContextIndex, origin_timestamps_us: np.ndarray, *, max_items: int) -> tuple[np.ndarray, np.ndarray]:
@@ -1562,11 +1525,10 @@ def _select_text_item_indices(index: TextContextIndex, origin_timestamps_us: np.
     return np.where(valid, indices, -1).astype(np.int64, copy=False), valid
 
 
-def _empty_text_context_index(*, max_chunks: int, token_width: int) -> TextContextIndex:
+def _empty_text_context_index(*, max_chunks: int, embedding_dim: int) -> TextContextIndex:
     return TextContextIndex(
         timestamps_us=np.zeros((0,), dtype=np.int64),
-        input_ids=np.zeros((0, max(1, int(max_chunks)), max(1, int(token_width))), dtype=np.int32),
-        attention_mask=np.zeros((0, max(1, int(max_chunks)), max(1, int(token_width))), dtype=np.uint8),
+        embeddings=np.zeros((0, max(1, int(max_chunks)), max(1, int(embedding_dim))), dtype=np.float32),
         chunk_mask=np.zeros((0, max(1, int(max_chunks))), dtype=np.bool_),
     )
 

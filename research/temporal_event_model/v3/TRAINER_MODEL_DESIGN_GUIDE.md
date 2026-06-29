@@ -493,8 +493,6 @@ Before a real training run:
 
 ## Open Implementation Notes
 
-- The current ticker-month loader still needs an embedding-output mode for text
-  context if it only emits token ids in the active branch.
 - Text embedding tables must be available before full v3 training.
 - XBRL pooling must be designed to avoid quadratic attention over 4096 rows.
 - Label normalization constants should be logged in config and manifest.

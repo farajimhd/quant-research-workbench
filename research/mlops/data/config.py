@@ -182,6 +182,8 @@ class RollingMarketDataConfig:
     sec_filing_text_context_table: str = "sec_filing_text_context"
     news_token_table: str = "news_text_tokens"
     sec_filing_text_token_table: str = "sec_filing_text_tokens"
+    news_embedding_table: str = "news_text_embeddings"
+    sec_filing_text_embedding_table: str = "sec_filing_text_embeddings"
     sec_xbrl_context_table: str = "sec_xbrl_context"
     category_reference_table: str = "training_category_reference"
     index_table: str = "train_2019_to_2025"

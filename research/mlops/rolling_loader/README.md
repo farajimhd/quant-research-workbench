@@ -28,7 +28,7 @@ the ticker/month cache and loader.
 | Ticker/month data loader | `ticker_month_dataset.py` | Reads SSD packages and materializes trainer batches. |
 | Loader profiler | `run_profile_ticker_month_loader.py` | Measures loader speed, memory, and output shapes. |
 | Loader batch audit | `audit_ticker_month_loader_batches.py` | Verifies materialized batches against SSD package files. |
-| Loader batch inspection notebook | `notebooks/ticker_month_loader_batch_inspection.ipynb` | Loads an interactive batch and inspects identities, shapes, masks, labels, tokens, XBRL, and bars. |
+| Loader batch inspection notebook | `notebooks/ticker_month_loader_batch_inspection.ipynb` | Loads an interactive batch and inspects identities, shapes, masks, labels, text embeddings, XBRL, and bars. |
 | Cache design guide | `TICKER_MONTH_SSD_CACHE_DESIGN.md` | Detailed design rationale and storage contract. |
 | Legacy stateful replay | `loader.py`, `initialize.py`, `run_training_profile.py` | Older production-style replay/profiling path. |
 
@@ -42,7 +42,7 @@ one ticker, one month
 ```
 
 Each package stores raw compact events, origins, reusable index files, labels,
-and token/context files. It does **not** store encoded event chunks and does
+and context files. It does **not** store encoded event chunks and does
 **not** store fully materialized training batches.
 
 ### Layout
@@ -54,7 +54,7 @@ cache_root/
     month=YYYY-MM/
       global/
         manifest.json
-        market_news_tokens.parquet
+        market_news_embeddings.parquet
         global_daily_bars.parquet
         category_references.parquet
       ticker_hash=XX/
@@ -66,8 +66,8 @@ cache_root/
           ranges_part_00000.parquet
           intraday_forward_labels_part_00000.parquet
           daily_bars.parquet
-          ticker_news_tokens.parquet
-          sec_filing_tokens.parquet
+          ticker_news_embeddings.parquet
+          sec_filing_embeddings.parquet
           xbrl.parquet
 ```
 
@@ -185,14 +185,14 @@ daily-bar sequences, not from independent weekly/monthly/yearly bars.
 
 ### Context Files
 
-The builder reads tokenized context tables. It does not query raw text and does
-not compute embeddings.
+The builder reads precomputed Qwen embedding context tables. It does not query
+raw text and does not run Qwen inference during cache creation.
 
 Per-ticker optional context:
 
 ```text
-ticker_news_tokens
-sec_filing_tokens
+ticker_news_embeddings
+sec_filing_embeddings
 xbrl
 daily_bars
 ```
@@ -211,9 +211,9 @@ sec_filing_prior_items: 32 logical SEC text items per ticker
 xbrl_prior_rows: 4096 XBRL fact rows per ticker
 ```
 
-Market news means all news from the token table, deduplicated by article/chunk
-identity, then stored under `global/market_news_tokens.parquet` with ticker
-`__MARKET__`. It is not limited to rows that have no ticker.
+Market news means all news from the embedding table, deduplicated by
+article/chunk identity, then stored under `global/market_news_embeddings.parquet`
+with ticker `__MARKET__`. It is not limited to rows that have no ticker.
 
 Missing optional context is represented as empty/zero data plus explicit masks
 at load time. For text/XBRL, padding should mean ClickHouse did not have enough
@@ -254,7 +254,7 @@ python -m research.mlops.rolling_loader.run_build_ticker_month_cache `
 
 Partial months at period boundaries are ignored.
 
-Refresh only text/XBRL context for an existing cache:
+Refresh only text-embedding/XBRL context for an existing cache:
 
 ```powershell
 python -m research.mlops.rolling_loader.run_build_ticker_month_cache `
@@ -267,10 +267,10 @@ python -m research.mlops.rolling_loader.run_build_ticker_month_cache `
 This mode discovers existing ticker packages for the month and rewrites only:
 
 ```text
-global/market_news_tokens.parquet
+global/market_news_embeddings.parquet
 global/category_references.parquet
-ticker_news_tokens.parquet
-sec_filing_tokens.parquet
+ticker_news_embeddings.parquet
+sec_filing_embeddings.parquet
 xbrl.parquet
 ```
 
@@ -463,9 +463,9 @@ Common values:
 ```text
 events
 intraday_labels
-ticker_news_tokens
-market_news_tokens
-sec_filing_tokens
+ticker_news_embeddings
+market_news_embeddings
+sec_filing_embeddings
 xbrl
 daily_bars
 global_daily_bars
@@ -476,7 +476,7 @@ Examples:
 ```text
 events
 events,intraday_labels
-ticker_news_tokens,market_news_tokens,sec_filing_tokens
+ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings
 events,intraday_labels,daily_bars,global_daily_bars
 ```
 
@@ -593,19 +593,18 @@ profile
 
 Only fields requested by `data_groups` and `event_output_mode` are populated.
 
-When token data groups are requested, `text_inputs` contains:
+When text embedding data groups are requested, `text_inputs` contains:
 
 ```text
-text_inputs["ticker_news"]["input_ids"]      [B, ticker_news_max_items, ticker_news_token_chunks, text_max_tokens]
-text_inputs["market_news"]["input_ids"]      [B, market_news_max_items, market_news_token_chunks, text_max_tokens]
-text_inputs["sec_filings"]["input_ids"]      [B, sec_filing_max_items, sec_filing_token_chunks, text_max_tokens]
-text_inputs[*]["attention_mask"]             same shape as input_ids
+text_inputs["ticker_news"]["embeddings"]     [B, ticker_news_max_items, ticker_news_token_chunks, text_embedding_dim]
+text_inputs["market_news"]["embeddings"]     [B, market_news_max_items, market_news_token_chunks, text_embedding_dim]
+text_inputs["sec_filings"]["embeddings"]     [B, sec_filing_max_items, sec_filing_token_chunks, text_embedding_dim]
 text_inputs[*]["chunk_mask"]                 [B, max_items, token_chunks]
 text_inputs[*]["item_mask"]                  [B, max_items]
 text_inputs[*]["item_timestamp_us"]          [B, max_items]
 ```
 
-Selection is as-of each origin timestamp. The loader takes the latest tokenized
+Selection is as-of each origin timestamp. The loader takes the latest embedded
 items with `timestamp_us <= origin_timestamp_us`, fills available chunks by
 `token_chunk_index`, and leaves missing items/chunks as zero with false masks.
 Default limits are:
@@ -615,7 +614,7 @@ ticker_news_max_items: 8
 market_news_max_items: 16
 sec_filing_max_items: 4
 xbrl_max_items: 4096
-text_max_tokens: 1024
+text_embedding_dim: 1024
 ```
 
 When `xbrl` is requested, `xbrl_inputs` contains one array per XBRL attribute:
@@ -674,7 +673,7 @@ The no-arg default is a repeatable sliding-stream benchmark over
 
 ```text
 dataset_id: bench_small_201902_v1
-data_groups: events,intraday_labels,daily_bars,global_daily_bars,ticker_news_tokens,market_news_tokens,sec_filing_tokens,xbrl
+data_groups: events,intraday_labels,daily_bars,global_daily_bars,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl
 event_output_mode: raw_stream
 event_stream_length: 1024
 sample_fraction: 1.0
@@ -842,9 +841,9 @@ raw_stream values against source event rows
 raw_stream ordinal continuity
 intraday labels against label parquet
 future_intraday_bars projection from labels
-text token as-of selection
-text token input_ids/attention_mask against token parquet
-text token item/chunk masks and zero padding
+text embedding as-of selection
+text embedding values against embedding parquet
+text embedding item/chunk masks and zero padding
 deterministic first batch for same config/seed
 resume-from-state next batch against uninterrupted loading
 ```
@@ -860,9 +859,10 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\roll
   --samples-per-batch 4
 ```
 
-By default the audit includes `ticker_news_tokens`, `market_news_tokens`, and
-`sec_filing_tokens`, so the no-arg audit validates token tensor materialization
-as well as event and label materialization.
+By default the audit includes `ticker_news_embeddings`,
+`market_news_embeddings`, and `sec_filing_embeddings`, so the no-arg audit
+validates embedding tensor materialization as well as event and label
+materialization.
 
 ## No-Lookahead Rules
 
@@ -892,7 +892,7 @@ config = TickerMonthLoaderConfig(
     split="train",
     months=("2019-02",),
     batch_size=4096,
-    data_groups=("events", "intraday_labels", "ticker_news_tokens", "market_news_tokens", "sec_filing_tokens"),
+    data_groups=("events", "intraday_labels", "ticker_news_embeddings", "market_news_embeddings", "sec_filing_embeddings"),
     event_output_mode="raw_stream",
     event_stream_length=1024,
 )
