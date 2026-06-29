@@ -252,7 +252,14 @@ audit workers                       2
 ClickHouse max_threads              8 per query
 ClickHouse memory cap             120G per query
 max cached event lookback rows   8192
+max origin events per part     500000
+ClickHouse query retries            2 for transient HTTP read failures
 ```
+
+Large liquid tickers are split by ordinal into physical parts. The default part
+size is intentionally below the old 2,000,000-origin setting because intraday
+label queries can return very large Arrow responses. Keeping parts smaller
+reduces the chance of broken HTTP reads and makes retries cheaper.
 
 If the workstation is quiet and ClickHouse has headroom, the first override to
 test is usually:

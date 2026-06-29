@@ -88,8 +88,10 @@ DEFAULTS: dict[str, Any] = {
     "audit_workers": 2,
     "inline_audit_samples_per_part": 2,
     "max_inflight_packages": 96,
-    "max_origin_events_per_part": 2_000_000,
+    "max_origin_events_per_part": 500_000,
     "max_cached_event_lookback_rows": 8_192,
+    "clickhouse_query_retries": 2,
+    "clickhouse_query_retry_backoff_seconds": 2.0,
     "events_per_chunk": 128,
     "short_context_chunks": 32,
     "context_chunk_stride_events": 64,
@@ -419,6 +421,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-inflight-packages", type=int, default=DEFAULTS["max_inflight_packages"])
     parser.add_argument("--max-origin-events-per-part", type=int, default=DEFAULTS["max_origin_events_per_part"], help="Maximum origin ordinal span per physical part inside a ticker-month package.")
     parser.add_argument("--max-cached-event-lookback-rows", type=int, default=DEFAULTS["max_cached_event_lookback_rows"], help="Maximum prior raw event rows stored before each part's first origin so future loaders can choose coverage at load time.")
+    parser.add_argument("--clickhouse-query-retries", type=int, default=DEFAULTS["clickhouse_query_retries"], help="Retries for transient ClickHouse HTTP read failures while fetching SELECT Arrow results.")
+    parser.add_argument("--clickhouse-query-retry-backoff-seconds", type=float, default=DEFAULTS["clickhouse_query_retry_backoff_seconds"], help="Base backoff between transient ClickHouse query retries.")
     parser.add_argument("--events-per-chunk", type=int, default=DEFAULTS["events_per_chunk"])
     parser.add_argument("--short-context-chunks", type=int, default=DEFAULTS["short_context_chunks"])
     parser.add_argument("--context-chunk-stride-events", type=int, default=DEFAULTS["context_chunk_stride_events"])
@@ -683,6 +687,8 @@ def _client_options(args: argparse.Namespace) -> dict[str, str]:
         "clickhouse_url": args.clickhouse_url or default_clickhouse_url(),
         "user": args.user or default_clickhouse_user(),
         "password": args.password or default_clickhouse_password(),
+        "query_retries": str(max(0, int(args.clickhouse_query_retries))),
+        "query_retry_backoff_seconds": str(max(0.0, float(args.clickhouse_query_retry_backoff_seconds))),
     }
 
 
@@ -1731,34 +1737,62 @@ def query_polars(client_opts: Mapping[str, str], query: str) -> Any:
         raise RuntimeError("Install clickhouse-connect in this environment to query ClickHouse Arrow results.") from exc
     parsed = urlparse(str(client_opts["clickhouse_url"]))
     secure = parsed.scheme == "https"
-    query_id = f"rolling_ticker_month_{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex}"
-    ACTIVE_QUERIES.register(query_id, label=str(getattr(QUERY_CONTEXT, "label", "")))
-    client = clickhouse_connect.get_client(
-        host=parsed.hostname or "localhost",
-        port=parsed.port or (8443 if secure else 8123),
-        username=str(client_opts.get("user") or "default"),
-        password=str(client_opts.get("password") or ""),
-        secure=secure,
-    )
-    try:
-        table = _query_arrow_with_id(client, query=query, query_id=query_id)
-    finally:
-        ACTIVE_QUERIES.unregister(query_id)
+    retries = max(0, int(client_opts.get("query_retries") or 0))
+    backoff_seconds = max(0.0, float(client_opts.get("query_retry_backoff_seconds") or 0.0))
+    attempt = 0
+    while True:
+        retry_sleep = 0.0
+        query_id = f"rolling_ticker_month_{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex}"
+        ACTIVE_QUERIES.register(query_id, label=str(getattr(QUERY_CONTEXT, "label", "")))
+        client = clickhouse_connect.get_client(
+            host=parsed.hostname or "localhost",
+            port=parsed.port or (8443 if secure else 8123),
+            username=str(client_opts.get("user") or "default"),
+            password=str(client_opts.get("password") or ""),
+            secure=secure,
+        )
         try:
-            client.close()
-        except Exception:
-            pass
-    return _polars().from_arrow(table)
+            table = _query_arrow_with_id(client, query=query, query_id=query_id)
+            return _polars().from_arrow(table)
+        except Exception as exc:
+            if attempt >= retries or not _is_transient_clickhouse_read_error(exc):
+                raise
+            retry_sleep = backoff_seconds * float(2**attempt)
+            attempt += 1
+        finally:
+            ACTIVE_QUERIES.unregister(query_id)
+            try:
+                client.close()
+            except Exception:
+                pass
+        if retry_sleep > 0:
+            time.sleep(retry_sleep)
 
 
 def _query_arrow_with_id(client: Any, *, query: str, query_id: str) -> Any:
     try:
-        return client.query_arrow(query, query_id=query_id)
+        return client.query_arrow(query, settings={"query_id": query_id})
     except TypeError:
         try:
-            return client.query_arrow(query, settings={"query_id": query_id})
+            return client.query_arrow(query, query_id=query_id)
         except TypeError:
             return client.query_arrow(f"/* query_id={query_id} */\n{query}")
+
+
+def _is_transient_clickhouse_read_error(exc: BaseException) -> bool:
+    text = repr(exc)
+    if "QUERY_WAS_CANCELLED" in text or "DB::Exception" in text:
+        return False
+    transient_markers = (
+        "IncompleteRead",
+        "ProtocolError",
+        "Connection broken",
+        "RemoteDisconnected",
+        "Connection reset",
+        "Read timed out",
+        "timed out",
+    )
+    return any(marker in text for marker in transient_markers)
 
 
 def cancel_active_clickhouse_queries(*, client_opts: Mapping[str, str], stats: BuildStats | None = None) -> int:
