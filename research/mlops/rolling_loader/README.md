@@ -686,6 +686,7 @@ materialize_workers: 16
 materialize_chunk_size: 512
 report_path: D:\market-data\prepared\data_provider_profiles\ticker_month_loader_full_xy_xbrl_profile.jsonl
 state_path: D:\market-data\prepared\data_provider_profiles\ticker_month_loader_full_xy_xbrl_state.json
+audit_report_path: D:\market-data\prepared\data_provider_profiles\ticker_month_loader_full_xy_xbrl_batch_audit.json
 ```
 
 Module form:
@@ -741,6 +742,32 @@ first batch shape summary
 loader state summary
 ```
 
+After the timing pass, the profiler runs the loader batch audit by default.
+That means one no-arg profiler run now measures throughput and then checks the
+emitted batches against SSD package files plus a small ClickHouse source sample.
+The profiler appends a second JSONL record with `event: post_profile_audit`,
+`audit_status`, `audit_ok`, and the audit report path.
+
+Use profiling-only mode when measuring a hot loop repeatedly:
+
+```powershell
+--skip-audit
+```
+
+Keep the SSD-package audit but skip ClickHouse source queries:
+
+```powershell
+--skip-audit-source-clickhouse
+```
+
+Tune the post-profile audit size:
+
+```powershell
+--audit-batches 2 `
+--audit-samples-per-batch 4 `
+--audit-source-clickhouse-samples-per-batch 10
+```
+
 `profile_seconds` breaks emitted materialization time into
 `identity_seconds`, `event_seconds`, `label_seconds`, `xbrl_seconds`, and
 `context_seconds`.
@@ -755,7 +782,7 @@ non-overlapping.
 By default the profiler appends JSONL summaries to:
 
 ```text
-D:\market-data\prepared\data_provider_profiles\ticker_month_loader_profile.jsonl
+D:\market-data\prepared\data_provider_profiles\ticker_month_loader_full_xy_xbrl_profile.jsonl
 ```
 
 Override the report path with:
@@ -779,7 +806,7 @@ Save a replayable loader checkpoint with:
 The no-arg default already saves state to:
 
 ```text
-D:\market-data\prepared\data_provider_profiles\ticker_month_loader_state.json
+D:\market-data\prepared\data_provider_profiles\ticker_month_loader_full_xy_xbrl_state.json
 ```
 
 Resume the same dataset plan and cursor with:

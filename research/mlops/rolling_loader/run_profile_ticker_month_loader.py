@@ -5,7 +5,7 @@ import datetime as dt
 import json
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,7 @@ from research.mlops.rolling_loader.streaming_training import current_rss_mib
 
 DEFAULT_PROFILE_REPORT_PATH = Path("D:/market-data/prepared/data_provider_profiles/ticker_month_loader_full_xy_xbrl_profile.jsonl")
 DEFAULT_PROFILE_STATE_PATH = Path("D:/market-data/prepared/data_provider_profiles/ticker_month_loader_full_xy_xbrl_state.json")
+DEFAULT_PROFILE_AUDIT_REPORT_PATH = DEFAULT_PROFILE_REPORT_PATH.with_name("ticker_month_loader_full_xy_xbrl_batch_audit.json")
 DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "cache_id": "train_201902_201907_ticker_month",
     "split": "train",
@@ -122,6 +123,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-strict-audit", action="store_true")
     parser.add_argument("--report-path", type=Path, default=DEFAULT_PROFILE_REPORT_PATH)
     parser.add_argument("--no-report", action="store_true", help="Disable JSONL report writing.")
+    parser.add_argument("--skip-audit", action="store_true", help="Disable the post-profile batch audit.")
+    parser.add_argument("--audit-batches", type=int, default=2, help="Batches to audit after profiling.")
+    parser.add_argument("--audit-samples-per-batch", type=int, default=4, help="SSD package samples to audit per audited batch.")
+    parser.add_argument("--audit-source-clickhouse-samples-per-batch", type=int, default=10, help="ClickHouse source samples to audit per audited batch. Use 0 to disable source checks.")
+    parser.add_argument("--skip-audit-source-clickhouse", action="store_true", help="Audit only against SSD package files, not source ClickHouse rows.")
+    parser.add_argument("--audit-no-check-determinism", action="store_true", help="Skip same-seed first-batch determinism check in the post-profile audit.")
+    parser.add_argument("--audit-no-check-resume", action="store_true", help="Skip resume-from-state check in the post-profile audit.")
+    parser.add_argument("--audit-report-path", type=Path, default=DEFAULT_PROFILE_AUDIT_REPORT_PATH)
+    parser.add_argument("--clickhouse-url", default="", help="Optional ClickHouse URL for post-profile source audit. Empty uses env/default discovery.")
+    parser.add_argument("--user", default="", help="Optional ClickHouse user for post-profile source audit. Empty uses env/default discovery.")
+    parser.add_argument("--password", default="", help="Optional ClickHouse password for post-profile source audit. Empty uses env/default discovery.")
+    parser.add_argument("--clickhouse-query-retries", type=int, default=2, help="Retries for post-profile source audit ClickHouse queries.")
+    parser.add_argument("--clickhouse-query-retry-backoff-seconds", type=float, default=2.0, help="Backoff between post-profile source audit ClickHouse query retries.")
     return parser.parse_args(argv)
 
 
@@ -254,7 +268,52 @@ def main(argv: list[str] | None = None) -> int:
         args.report_path.parent.mkdir(parents=True, exist_ok=True)
         with args.report_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(summary, sort_keys=True) + "\n")
-    return 0
+    if bool(args.skip_audit):
+        return 0
+    audit_result = _run_post_profile_audit(args, config)
+    audit_payload = {
+        "event": "post_profile_audit",
+        "profile_report_path": "" if bool(args.no_report) else str(args.report_path),
+        "audit_report_path": str(audit_result.report_path),
+        "audit_status": audit_result.status,
+        "audit_ok": bool(audit_result.ok),
+        "audit_summary": audit_result.summary,
+    }
+    print("AUDIT_SUMMARY " + json.dumps(audit_payload, sort_keys=True), flush=True)
+    if not bool(args.no_report):
+        with args.report_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(audit_payload, sort_keys=True) + "\n")
+    return 0 if audit_result.ok else 2
+
+
+def _run_post_profile_audit(args: argparse.Namespace, config: TickerMonthLoaderConfig) -> Any:
+    # Lazy import avoids a module cycle: the standalone audit script imports this
+    # profiler for its default config and report path constants.
+    from research.mlops.rolling_loader.audit_ticker_month_loader_batches import (
+        LoaderBatchAuditConfig,
+        run_audit,
+    )
+
+    print("LOADER_BATCH_AUDIT_START " + str(args.audit_report_path), flush=True)
+    audit_loader_config = replace(config, max_batches=0)
+    return run_audit(
+        LoaderBatchAuditConfig(
+            loader_config=audit_loader_config,
+            batches=max(1, int(args.audit_batches)),
+            samples_per_batch=max(1, int(args.audit_samples_per_batch)),
+            seed=int(args.seed),
+            check_determinism=not bool(args.audit_no_check_determinism),
+            check_resume=not bool(args.audit_no_check_resume),
+            source_clickhouse_audit=not bool(args.skip_audit_source_clickhouse) and int(args.audit_source_clickhouse_samples_per_batch) > 0,
+            source_clickhouse_samples_per_batch=max(0, int(args.audit_source_clickhouse_samples_per_batch)),
+            clickhouse_url=str(args.clickhouse_url or ""),
+            clickhouse_user=str(args.user or ""),
+            clickhouse_password=str(args.password or ""),
+            clickhouse_query_retries=max(0, int(args.clickhouse_query_retries)),
+            clickhouse_query_retry_backoff_seconds=max(0.0, float(args.clickhouse_query_retry_backoff_seconds)),
+            report_path=Path(args.audit_report_path),
+        )
+    )
 
 
 def _shape_summary(batch: Any) -> dict[str, Any]:
