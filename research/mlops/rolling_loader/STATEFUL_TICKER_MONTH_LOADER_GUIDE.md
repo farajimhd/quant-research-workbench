@@ -210,8 +210,17 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\roll
   --batch-size 4096 `
   --materialize-chunk-size 512 `
   --batches 16 `
+  --report-path D:\market-data\prepared\data_provider_profiles\bench_small_loader_profile.jsonl `
   --save-state-path D:\market-data\prepared\data_provider_profiles\bench_small_loader_state.json
 ```
+
+If `--report-path` is omitted, the profiler still writes a JSONL summary to:
+
+```text
+D:\market-data\prepared\data_provider_profiles\ticker_month_loader_profile.jsonl
+```
+
+Use `--no-report` only when a run should not write a timing record.
 
 Replay from a saved state:
 

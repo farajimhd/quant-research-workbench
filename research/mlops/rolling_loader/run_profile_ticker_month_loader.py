@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import sys
 import time
@@ -18,6 +19,9 @@ if __package__ in {None, ""}:
 from research.mlops.rolling_loader.ticker_month_cache import DEFAULT_TICKER_MONTH_CACHE_ROOT, jsonable
 from research.mlops.rolling_loader.ticker_month_dataset import AsyncTickerMonthBatchLoader, TickerMonthLoaderConfig
 from research.mlops.rolling_loader.streaming_training import current_rss_mib
+
+
+DEFAULT_PROFILE_REPORT_PATH = Path("D:/market-data/prepared/data_provider_profiles/ticker_month_loader_profile.jsonl")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -60,13 +64,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--save-state-path", type=Path, default=None, help="Write final loader state JSON to this file.")
     parser.add_argument("--include-external-context", action="store_true")
     parser.add_argument("--no-strict-audit", action="store_true")
-    parser.add_argument("--report-path", type=Path, default=None)
+    parser.add_argument("--report-path", type=Path, default=DEFAULT_PROFILE_REPORT_PATH)
+    parser.add_argument("--no-report", action="store_true", help="Disable JSONL report writing.")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     cache_root = Path(args.cache_root) / str(args.cache_id)
+    started_at_utc = dt.datetime.now(dt.timezone.utc).isoformat()
     config = TickerMonthLoaderConfig(
         cache_root=cache_root,
         split=args.split,
@@ -102,6 +108,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     print("TICKER MONTH LOADER PROFILE " + str(cache_root), flush=True)
     print(json.dumps(jsonable(asdict(config)), sort_keys=True), flush=True)
+    if not bool(args.no_report):
+        print("PROFILE_REPORT " + str(args.report_path), flush=True)
     started = time.perf_counter()
     loader = AsyncTickerMonthBatchLoader(config)
     if args.load_state_path is not None:
@@ -140,6 +148,9 @@ def main(argv: list[str] | None = None) -> int:
     elapsed = time.perf_counter() - started
     summary = {
         "cache_root": str(cache_root),
+        "profile_started_at_utc": started_at_utc,
+        "profile_finished_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "profile_report_path": "" if bool(args.no_report) else str(args.report_path),
         "discovered_parts": discovered,
         "batches": batches,
         "samples": samples,
@@ -155,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         args.save_state_path.parent.mkdir(parents=True, exist_ok=True)
         with args.save_state_path.open("w", encoding="utf-8") as handle:
             json.dump(loader.state_dict(), handle, sort_keys=True, indent=2)
-    if args.report_path is not None:
+    if not bool(args.no_report):
         args.report_path.parent.mkdir(parents=True, exist_ok=True)
         with args.report_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(summary, sort_keys=True) + "\n")

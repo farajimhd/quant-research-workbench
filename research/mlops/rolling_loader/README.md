@@ -549,10 +549,22 @@ first batch shape summary
 loader state summary
 ```
 
-Append JSONL summaries with:
+By default the profiler appends JSONL summaries to:
+
+```text
+D:\market-data\prepared\data_provider_profiles\ticker_month_loader_profile.jsonl
+```
+
+Override the report path with:
 
 ```powershell
 --report-path D:\market-data\prepared\data_provider_profiles\ticker_month_loader_profile.jsonl
+```
+
+Disable report writing only when intentionally profiling terminal output:
+
+```powershell
+--no-report
 ```
 
 Save a replayable loader checkpoint with:
