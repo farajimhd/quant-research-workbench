@@ -22,16 +22,22 @@ from research.mlops.rolling_loader.ticker_month_cache import DEFAULT_TICKER_MONT
 from research.mlops.rolling_loader.ticker_month_dataset import (
     AsyncTickerMonthBatchLoader,
     LoadedTickerMonthPart,
+    TEXT_INPUT_GROUP_TO_KEY,
+    TEXT_CONTEXT_GROUPS,
     TickerMonthLoaderConfig,
     TickerMonthPartPlan,
     TickerMonthPartReader,
     TickerMonthTrainingBatch,
+    _cell_array,
     _label_values_for_origin,
     _part_key,
+    _prepare_text_context_rows,
+    _select_text_items,
 )
 
 
 DEFAULT_AUDIT_REPORT_PATH = DEFAULT_PROFILE_REPORT_PATH.with_name("ticker_month_loader_batch_audit.json")
+DEFAULT_AUDIT_DATA_GROUPS = "events,intraday_labels,ticker_news_tokens,market_news_tokens,sec_filing_tokens"
 
 
 @dataclass(slots=True)
@@ -73,7 +79,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=DEFAULT_PROFILE_CONFIG["batch_size"])
     parser.add_argument("--batches", type=int, default=2)
     parser.add_argument("--seed", type=int, default=DEFAULT_PROFILE_CONFIG["seed"])
-    parser.add_argument("--data-groups", default=DEFAULT_PROFILE_CONFIG["data_groups"])
+    parser.add_argument("--data-groups", default=DEFAULT_AUDIT_DATA_GROUPS)
     parser.add_argument("--event-output-mode", choices=("none", "raw_flat", "raw_stream", "raw_windows", "encoded_uint8"), default=DEFAULT_PROFILE_CONFIG["event_output_mode"])
     parser.add_argument("--event-columns", default=DEFAULT_PROFILE_CONFIG["event_columns"])
     parser.add_argument("--suppress-event-columns", default=DEFAULT_PROFILE_CONFIG["suppress_event_columns"])
@@ -83,6 +89,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--context-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["context_chunks"])
     parser.add_argument("--context-stride-events", type=int, default=DEFAULT_PROFILE_CONFIG["context_stride_events"])
     parser.add_argument("--flat-coverage-events", type=int, default=DEFAULT_PROFILE_CONFIG["flat_coverage_events"])
+    parser.add_argument("--ticker-news-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["ticker_news_max_items"])
+    parser.add_argument("--market-news-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_max_items"])
+    parser.add_argument("--sec-filing-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_max_items"])
+    parser.add_argument("--ticker-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["ticker_news_token_chunks"])
+    parser.add_argument("--market-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_token_chunks"])
+    parser.add_argument("--sec-filing-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_token_chunks"])
+    parser.add_argument("--text-max-tokens", type=int, default=DEFAULT_PROFILE_CONFIG["text_max_tokens"])
     parser.add_argument("--loaded-parts-per-group", type=int, default=DEFAULT_PROFILE_CONFIG["loaded_parts_per_group"])
     parser.add_argument("--read-workers", type=int, default=DEFAULT_PROFILE_CONFIG["read_workers"])
     parser.add_argument("--materialize-workers", type=int, default=DEFAULT_PROFILE_CONFIG["materialize_workers"])
@@ -124,7 +137,7 @@ def run_audit(config: LoaderBatchAuditConfig) -> LoaderBatchAuditResult:
     loader = AsyncTickerMonthBatchLoader(config.loader_config)
     part_map = {_part_key(plan): plan for plan in loader.index.parts}
     part_cache: dict[str, LoadedTickerMonthPart] = {}
-    context_groups = tuple(group for group in config.loader_config.data_groups if group in {"ticker_news_tokens", "sec_filing_tokens", "xbrl", "daily_bars"})
+    context_groups = tuple(group for group in config.loader_config.data_groups if group in TEXT_CONTEXT_GROUPS.union({"xbrl", "daily_bars"}))
     reader_groups = ("events", "intraday_labels", *context_groups)
     reader = TickerMonthPartReader(reader_groups, include_external_context=bool(config.loader_config.include_external_context or context_groups))
     rng = np.random.default_rng(int(config.seed))
@@ -134,6 +147,7 @@ def run_audit(config: LoaderBatchAuditConfig) -> LoaderBatchAuditResult:
         "samples_checked": 0,
         "raw_stream_rows_checked": 0,
         "label_rows_checked": 0,
+        "text_rows_checked": 0,
         "context_parts_checked": 0,
         "duplicate_identities": 0,
     }
@@ -210,6 +224,13 @@ def _loader_config_from_args(args: argparse.Namespace) -> TickerMonthLoaderConfi
         context_chunks=max(0, int(args.context_chunks)),
         context_stride_events=max(1, int(args.context_stride_events)),
         flat_coverage_events=max(0, int(args.flat_coverage_events)),
+        ticker_news_max_items=max(0, int(args.ticker_news_max_items)),
+        market_news_max_items=max(0, int(args.market_news_max_items)),
+        sec_filing_max_items=max(0, int(args.sec_filing_max_items)),
+        ticker_news_token_chunks=max(1, int(args.ticker_news_token_chunks)),
+        market_news_token_chunks=max(1, int(args.market_news_token_chunks)),
+        sec_filing_token_chunks=max(1, int(args.sec_filing_token_chunks)),
+        text_max_tokens=max(1, int(args.text_max_tokens)),
         loaded_parts_per_group=max(1, int(args.loaded_parts_per_group)),
         read_workers=max(1, int(args.read_workers)),
         materialize_workers=max(1, int(args.materialize_workers)),
@@ -241,6 +262,10 @@ def _check_batch_shapes(batch: TickerMonthTrainingBatch, issues: list[AuditIssue
     for name, values in batch.intraday_labels.items():
         if int(values.shape[0]) != n:
             issues.append(AuditIssue("error", "label_shape_mismatch", f"{name} row count does not match sample count.", {"batch": batch_index, "name": name, "shape": list(values.shape), "samples": n}))
+    for name, payload in batch.text_inputs.items():
+        for field, values in payload.items():
+            if int(values.shape[0]) != n:
+                issues.append(AuditIssue("error", "text_shape_mismatch", f"{name}.{field} row count does not match sample count.", {"batch": batch_index, "name": name, "field": field, "shape": list(values.shape), "samples": n}))
 
 
 def _check_duplicate_identities(batch: TickerMonthTrainingBatch, seen: set[tuple[str, int]], issues: list[AuditIssue], totals: dict[str, int], *, batch_index: int) -> None:
@@ -298,6 +323,8 @@ def _audit_batch_row(
         _check_raw_event_stream(batch, row, part, event_offset, issues, totals, batch_index=batch_index, part_key=part_key)
     if batch.intraday_labels:
         _check_intraday_labels(batch, row, part, origin_ordinal, issues, totals, batch_index=batch_index, part_key=part_key)
+    if batch.text_inputs:
+        _check_text_inputs(batch, row, part, origin_timestamp_us, issues, totals, batch_index=batch_index, part_key=part_key)
     _check_context_files(part, origin_timestamp_us, issues, totals, batch_index=batch_index, row=row, part_key=part_key)
     totals["samples_checked"] += 1
 
@@ -403,6 +430,53 @@ def _check_context_files(part: LoadedTickerMonthPart, origin_timestamp_us: int, 
         issues.append(AuditIssue("warning", "context_no_asof_rows", "Context file has rows, but none are as-of this sampled origin.", {"batch": batch_index, "row": row, "source_part_key": part_key, "context": str(name), "origin_timestamp_us": int(origin_timestamp_us), "min_context_timestamp_us": int(timestamps.min())}))
 
 
+def _check_text_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTickerMonthPart, origin_timestamp_us: int, issues: list[AuditIssue], totals: dict[str, int], *, batch_index: int, part_key: str) -> None:
+    for group, text_key in TEXT_INPUT_GROUP_TO_KEY.items():
+        if text_key not in batch.text_inputs:
+            continue
+        payload = batch.text_inputs[text_key]
+        max_items = int(payload["input_ids"].shape[1])
+        max_chunks = int(payload["input_ids"].shape[2])
+        frame = part.context.get(group)
+        source_items = _prepare_text_context_rows(frame, group) if frame is not None else []
+        selected = _select_text_items(source_items, int(origin_timestamp_us), max_items=max_items)
+        actual_item_mask = payload["item_mask"][row]
+        actual_chunk_mask = payload["chunk_mask"][row]
+        actual_timestamps = payload["item_timestamp_us"][row]
+        if int(actual_item_mask.sum()) != len(selected):
+            issues.append(AuditIssue("error", "text_item_count_mismatch", "Text item mask count does not match as-of source selection.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "actual": int(actual_item_mask.sum()), "expected": len(selected)}))
+        if np.any(actual_timestamps[actual_item_mask.astype(bool)] > int(origin_timestamp_us)):
+            issues.append(AuditIssue("error", "text_lookahead", "Text tensor contains a future token item.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "origin_timestamp_us": int(origin_timestamp_us)}))
+        for item_index, item in enumerate(selected):
+            if item_index >= max_items:
+                break
+            if not bool(actual_item_mask[item_index]):
+                issues.append(AuditIssue("error", "text_item_missing", "Expected as-of text item is not marked present.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index}))
+            if int(actual_timestamps[item_index]) != int(item["timestamp_us"]):
+                issues.append(AuditIssue("error", "text_timestamp_mismatch", "Text item timestamp does not match source selection.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index, "actual": int(actual_timestamps[item_index]), "expected": int(item["timestamp_us"])}))
+            for token_row in item["rows"]:
+                chunk_index = int(token_row.get("token_chunk_index", 0) or 0)
+                if chunk_index < 0 or chunk_index >= max_chunks:
+                    continue
+                expected_ids = _cell_array(token_row.get("input_ids")).astype(np.int32, copy=False)
+                expected_mask = _cell_array(token_row.get("attention_mask")).astype(np.uint8, copy=False)
+                width = min(int(payload["input_ids"].shape[3]), int(expected_ids.shape[0]), int(expected_mask.shape[0]))
+                if width <= 0:
+                    continue
+                actual_ids = payload["input_ids"][row, item_index, chunk_index]
+                actual_mask = payload["attention_mask"][row, item_index, chunk_index]
+                if not bool(actual_chunk_mask[item_index, chunk_index]):
+                    issues.append(AuditIssue("error", "text_chunk_missing", "Expected text chunk is not marked present.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index, "chunk_index": chunk_index}))
+                if not np.array_equal(actual_ids[:width], expected_ids[:width]) or not np.array_equal(actual_mask[:width], expected_mask[:width]):
+                    issues.append(AuditIssue("error", "text_token_value_mismatch", "Text token tensor does not match source token row.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index, "chunk_index": chunk_index}))
+                if np.any(actual_ids[width:] != 0) or np.any(actual_mask[width:] != 0):
+                    issues.append(AuditIssue("error", "text_token_padding_mismatch", "Text token padding after source width is not zero.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index, "chunk_index": chunk_index}))
+        if len(selected) < max_items:
+            if np.any(payload["input_ids"][row, len(selected) :] != 0) or np.any(payload["attention_mask"][row, len(selected) :] != 0) or np.any(payload["chunk_mask"][row, len(selected) :]):
+                issues.append(AuditIssue("error", "text_tail_padding_mismatch", "Text tensor has non-zero values after selected as-of items.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "selected": len(selected), "max_items": max_items}))
+        totals["text_rows_checked"] += 1
+
+
 def _check_deterministic_first_batch(config: TickerMonthLoaderConfig, first_batch: TickerMonthTrainingBatch | None, issues: list[AuditIssue]) -> None:
     if first_batch is None:
         issues.append(AuditIssue("error", "determinism_no_batch", "Cannot check determinism because no first batch was emitted."))
@@ -431,7 +505,11 @@ def _check_resume_after_first_batch(config: TickerMonthLoaderConfig, expected_se
     if int(state.get("origin_cursor") or 0) <= 0 and int(state.get("package_position") or 0) == 0:
         issues.append(AuditIssue("error", "resume_state_not_advanced", "Loader state did not advance after first yielded batch.", {"state": state}))
     resumed = AsyncTickerMonthBatchLoader(config)
-    resumed.load_state_dict(state)
+    try:
+        resumed.load_state_dict(state)
+    except ValueError as exc:
+        issues.append(AuditIssue("error", "resume_state_rejected", f"Resumed loader rejected saved state: {exc}", {"state": state}))
+        return state
     try:
         resumed_second = next(resumed.iter_batches())
     except StopIteration:
@@ -451,6 +529,13 @@ def _compare_batches(left: TickerMonthTrainingBatch, right: TickerMonthTrainingB
     for key in set(left.intraday_labels).union(right.intraday_labels):
         if key not in left.intraday_labels or key not in right.intraday_labels or not np.array_equal(left.intraday_labels[key], right.intraday_labels[key]):
             issues.append(AuditIssue("error", code, message, {"field": f"intraday_labels.{key}"}))
+    for name in set(left.text_inputs).union(right.text_inputs):
+        if name not in left.text_inputs or name not in right.text_inputs:
+            issues.append(AuditIssue("error", code, message, {"field": f"text_inputs.{name}"}))
+            continue
+        for field in set(left.text_inputs[name]).union(right.text_inputs[name]):
+            if field not in left.text_inputs[name] or field not in right.text_inputs[name] or not np.array_equal(left.text_inputs[name][field], right.text_inputs[name][field]):
+                issues.append(AuditIssue("error", code, message, {"field": f"text_inputs.{name}.{field}"}))
 
 
 def _issue_counts(issues: Sequence[AuditIssue]) -> dict[str, int]:

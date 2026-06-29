@@ -43,6 +43,13 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "context_chunks": 32,
     "context_stride_events": 64,
     "flat_coverage_events": 0,
+    "ticker_news_max_items": 8,
+    "market_news_max_items": 16,
+    "sec_filing_max_items": 4,
+    "ticker_news_token_chunks": 2,
+    "market_news_token_chunks": 2,
+    "sec_filing_token_chunks": 8,
+    "text_max_tokens": 1024,
     "loaded_parts_per_group": 8,
     "read_workers": 4,
     "materialize_workers": 16,
@@ -81,6 +88,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--context-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["context_chunks"])
     parser.add_argument("--context-stride-events", type=int, default=DEFAULT_PROFILE_CONFIG["context_stride_events"])
     parser.add_argument("--flat-coverage-events", type=int, default=DEFAULT_PROFILE_CONFIG["flat_coverage_events"])
+    parser.add_argument("--ticker-news-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["ticker_news_max_items"])
+    parser.add_argument("--market-news-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_max_items"])
+    parser.add_argument("--sec-filing-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_max_items"])
+    parser.add_argument("--ticker-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["ticker_news_token_chunks"])
+    parser.add_argument("--market-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_token_chunks"])
+    parser.add_argument("--sec-filing-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_token_chunks"])
+    parser.add_argument("--text-max-tokens", type=int, default=DEFAULT_PROFILE_CONFIG["text_max_tokens"])
     parser.add_argument("--loaded-parts-per-group", type=int, default=DEFAULT_PROFILE_CONFIG["loaded_parts_per_group"])
     parser.add_argument("--read-workers", type=int, default=DEFAULT_PROFILE_CONFIG["read_workers"])
     parser.add_argument("--materialize-workers", type=int, default=DEFAULT_PROFILE_CONFIG["materialize_workers"])
@@ -127,6 +141,13 @@ def main(argv: list[str] | None = None) -> int:
         context_chunks=max(0, int(args.context_chunks)),
         context_stride_events=max(1, int(args.context_stride_events)),
         flat_coverage_events=max(0, int(args.flat_coverage_events)),
+        ticker_news_max_items=max(0, int(args.ticker_news_max_items)),
+        market_news_max_items=max(0, int(args.market_news_max_items)),
+        sec_filing_max_items=max(0, int(args.sec_filing_max_items)),
+        ticker_news_token_chunks=max(1, int(args.ticker_news_token_chunks)),
+        market_news_token_chunks=max(1, int(args.market_news_token_chunks)),
+        sec_filing_token_chunks=max(1, int(args.sec_filing_token_chunks)),
+        text_max_tokens=max(1, int(args.text_max_tokens)),
         loaded_parts_per_group=max(1, int(args.loaded_parts_per_group)),
         read_workers=max(1, int(args.read_workers)),
         materialize_workers=max(1, int(args.materialize_workers)),
@@ -247,6 +268,11 @@ def _shape_summary(batch: Any) -> dict[str, Any]:
         out["events_uint8_shape"] = list(batch.events_uint8.shape)
     if batch.intraday_labels:
         out["intraday_label_shapes"] = {key: list(value.shape) for key, value in batch.intraday_labels.items()}
+    if batch.text_inputs:
+        out["text_input_shapes"] = {
+            name: {field: list(value.shape) for field, value in payload.items()}
+            for name, payload in batch.text_inputs.items()
+        }
     return out
 
 

@@ -30,6 +30,12 @@ from research.mlops.rolling_loader.ticker_month_cache import (
 DEFAULT_EVENT_OUTPUT_MODE = "raw_stream"
 SUPPORTED_EVENT_OUTPUT_MODES = {"none", "raw_flat", "raw_stream", "raw_windows", "encoded_uint8"}
 DEFAULT_DATA_GROUPS = ("events", "intraday_labels")
+TEXT_CONTEXT_GROUPS = {"ticker_news_tokens", "market_news_tokens", "sec_filing_tokens"}
+TEXT_INPUT_GROUP_TO_KEY = {
+    "ticker_news_tokens": "ticker_news",
+    "market_news_tokens": "market_news",
+    "sec_filing_tokens": "sec_filings",
+}
 NUMERIC_EVENT_COLUMNS: tuple[str, ...] = tuple(column for column in (*EVENT_PAYLOAD_COLUMNS, *EVENT_TIME_FEATURE_COLUMNS) if column != "ticker")
 DEFAULT_SUPPRESSED_EVENT_COLUMNS = ("ticker_id", "ordinal", "timestamp_us")
 LOADER_STATE_VERSION = 1
@@ -76,6 +82,13 @@ class TickerMonthLoaderConfig:
     shuffle_within_loaded_group: bool = True
     include_external_context: bool = False
     strict_audit: bool = True
+    ticker_news_max_items: int = 8
+    market_news_max_items: int = 16
+    sec_filing_max_items: int = 4
+    ticker_news_token_chunks: int = 2
+    market_news_token_chunks: int = 2
+    sec_filing_token_chunks: int = 8
+    text_max_tokens: int = 1024
     event_columns: tuple[str, ...] = ()
     suppress_event_columns: tuple[str, ...] = DEFAULT_SUPPRESSED_EVENT_COLUMNS
     dataset_id: str = ""
@@ -118,6 +131,7 @@ class LoadedTickerMonthPart:
     _event_matrices: dict[tuple[str, ...], np.ndarray] = field(default_factory=dict, init=False, repr=False)
     _origin_arrays: dict[str, np.ndarray] = field(default_factory=dict, init=False, repr=False)
     _label_arrays: dict[str, np.ndarray] = field(default_factory=dict, init=False, repr=False)
+    _context_arrays: dict[tuple[str, str], np.ndarray] = field(default_factory=dict, init=False, repr=False)
 
     def event_array(self, column: str) -> np.ndarray:
         if self.events is None:
@@ -148,6 +162,14 @@ class LoadedTickerMonthPart:
             self._label_arrays[column] = self.labels.get_column(column).to_numpy()
         return self._label_arrays[column]
 
+    def context_array(self, name: str, column: str) -> np.ndarray:
+        if name not in self.context:
+            raise RuntimeError(f"Context {name!r} was not loaded.")
+        key = (str(name), str(column))
+        if key not in self._context_arrays:
+            self._context_arrays[key] = self.context[str(name)].get_column(str(column)).to_numpy()
+        return self._context_arrays[key]
+
 
 @dataclass(frozen=True, slots=True)
 class TickerMonthSampleRef:
@@ -174,6 +196,7 @@ class TickerMonthTrainingBatch:
     future_intraday_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32))
     future_intraday_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
     input_availability: dict[str, np.ndarray] = field(default_factory=dict)
+    text_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
     external_context: dict[str, Any] = field(default_factory=dict)
     profile: dict[str, float | int] = field(default_factory=dict)
 
@@ -314,6 +337,7 @@ class TickerMonthPartReader:
     def __init__(self, data_groups: Sequence[str], *, include_external_context: bool = False) -> None:
         self.data_groups = set(str(group) for group in data_groups)
         self.include_external_context = bool(include_external_context)
+        self._global_context_cache: dict[tuple[Path, str], Any] = {}
 
     def load(self, plan: TickerMonthPartPlan) -> LoadedTickerMonthPart:
         return self.load_payload(self.load_origins(plan))
@@ -335,10 +359,16 @@ class TickerMonthPartReader:
             loaded.windows = pl.read_parquet(plan.package_dir / plan.files["event_window_index"])
         if need_labels:
             loaded.labels = pl.read_parquet(plan.package_dir / plan.files["intraday_forward_labels"])
-        if self.include_external_context:
+        if self.include_external_context or bool(TEXT_CONTEXT_GROUPS.intersection(self.data_groups)):
             for key, filename in _package_context_files(plan.package_dir).items():
                 if key in self.data_groups:
                     loaded.context[key] = pl.read_parquet(plan.package_dir / filename)
+            if "market_news_tokens" in self.data_groups:
+                global_path = _month_global_dir(plan.package_dir) / "market_news_tokens.parquet"
+                cache_key = (global_path, "market_news_tokens")
+                if cache_key not in self._global_context_cache:
+                    self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
+                loaded.context["market_news_tokens"] = self._global_context_cache[cache_key]
         return loaded
 
 
@@ -400,6 +430,13 @@ class TickerMonthBatchMaterializer:
             "event_context_available": np.ones((len(refs),), dtype=np.bool_) if output_mode != "none" else np.zeros((len(refs),), dtype=np.bool_),
             "intraday_labels_available": future_mask.any(axis=1) if future_mask.size else np.zeros((len(refs),), dtype=np.bool_),
         }
+        text_start = time.perf_counter()
+        text_inputs = self._materialize_text_inputs(parts, refs)
+        for key, value in text_inputs.items():
+            chunk_mask = value.get("chunk_mask")
+            if chunk_mask is not None:
+                availability[f"{key}_available"] = chunk_mask.reshape((len(refs), -1)).any(axis=1)
+        profile["text_seconds"] = time.perf_counter() - text_start
         external_context = {}
         context_start = time.perf_counter()
         if self.config.include_external_context:
@@ -424,6 +461,7 @@ class TickerMonthBatchMaterializer:
             future_intraday_bars=future_bars,
             future_intraday_bar_mask=future_mask,
             input_availability=availability,
+            text_inputs=text_inputs,
             external_context=external_context,
             profile=profile,
         )
@@ -515,6 +553,56 @@ class TickerMonthBatchMaterializer:
                 values[rows] = part.event_array(column)[gather_indices[part_index]]
             out[column] = values
         return out, mask
+
+    def _materialize_text_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> dict[str, dict[str, np.ndarray]]:
+        requested = [group for group in ("ticker_news_tokens", "market_news_tokens", "sec_filing_tokens") if group in self.config.data_groups]
+        if not requested:
+            return {}
+        out: dict[str, dict[str, np.ndarray]] = {}
+        origin_timestamps = _identity_arrays(parts, refs)[2]
+        grouped_rows = _rows_by_part(refs)
+        for group in requested:
+            key = TEXT_INPUT_GROUP_TO_KEY[group]
+            max_items, max_chunks = _text_group_limits(self.config, group)
+            token_width = int(self.config.text_max_tokens)
+            input_ids = np.zeros((len(refs), max_items, max_chunks, token_width), dtype=np.int32)
+            attention_mask = np.zeros((len(refs), max_items, max_chunks, token_width), dtype=np.uint8)
+            chunk_mask = np.zeros((len(refs), max_items, max_chunks), dtype=np.bool_)
+            item_mask = np.zeros((len(refs), max_items), dtype=np.bool_)
+            item_timestamp_us = np.zeros((len(refs), max_items), dtype=np.int64)
+            for part_index, rows in grouped_rows.items():
+                part = parts[int(part_index)]
+                frame = part.context.get(group)
+                if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+                    continue
+                row_context = _prepare_text_context_rows(frame, group)
+                if not row_context:
+                    continue
+                for output_row in rows:
+                    selected = _select_text_items(row_context, int(origin_timestamps[int(output_row)]), max_items=max_items)
+                    for item_index, item in enumerate(selected):
+                        item_mask[int(output_row), item_index] = True
+                        item_timestamp_us[int(output_row), item_index] = int(item["timestamp_us"])
+                        for token_row in item["rows"]:
+                            chunk_index = int(token_row.get("token_chunk_index", 0) or 0)
+                            if chunk_index < 0 or chunk_index >= max_chunks:
+                                continue
+                            ids = _cell_array(token_row.get("input_ids")).astype(np.int32, copy=False)
+                            mask = _cell_array(token_row.get("attention_mask")).astype(np.uint8, copy=False)
+                            width = min(token_width, int(ids.shape[0]), int(mask.shape[0]))
+                            if width <= 0:
+                                continue
+                            input_ids[int(output_row), item_index, chunk_index, :width] = ids[:width]
+                            attention_mask[int(output_row), item_index, chunk_index, :width] = mask[:width]
+                            chunk_mask[int(output_row), item_index, chunk_index] = bool(mask[:width].any())
+            out[key] = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "chunk_mask": chunk_mask,
+                "item_mask": item_mask,
+                "item_timestamp_us": item_timestamp_us,
+            }
+        return out
 
     def _materialize_encoded(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[np.ndarray, np.ndarray]:
         starts = self._window_starts(parts, refs)
@@ -639,7 +727,7 @@ class AsyncTickerMonthBatchLoader:
         self.index = TickerMonthCacheIndex(self.config)
         self.reader = TickerMonthPartReader(self.config.data_groups, include_external_context=self.config.include_external_context)
         self.materializer = TickerMonthBatchMaterializer(self.config)
-        self.cache_manifest_fingerprint = _manifest_fingerprint(self.index.root_manifest)
+        self.cache_manifest_fingerprint = _cache_plan_fingerprint(self.index.root_manifest, self.index.parts)
         self.dataset_plan_id = _dataset_plan_id(self.config, self.cache_manifest_fingerprint)
         seed = secrets.randbits(63) if self.config.randomize_seed else int(self.config.seed)
         self.state = TickerMonthLoaderState(
@@ -854,6 +942,13 @@ def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoade
         shuffle_within_loaded_group=bool(config.shuffle_within_loaded_group),
         include_external_context=bool(config.include_external_context),
         strict_audit=bool(config.strict_audit),
+        ticker_news_max_items=max(0, int(config.ticker_news_max_items)),
+        market_news_max_items=max(0, int(config.market_news_max_items)),
+        sec_filing_max_items=max(0, int(config.sec_filing_max_items)),
+        ticker_news_token_chunks=max(1, int(config.ticker_news_token_chunks)),
+        market_news_token_chunks=max(1, int(config.market_news_token_chunks)),
+        sec_filing_token_chunks=max(1, int(config.sec_filing_token_chunks)),
+        text_max_tokens=max(1, int(config.text_max_tokens)),
         event_columns=tuple(str(column) for column in config.event_columns),
         suppress_event_columns=tuple(str(column) for column in config.suppress_event_columns),
         dataset_id=str(config.dataset_id),
@@ -901,11 +996,70 @@ def _path_value(path: Path, key: str) -> str:
     return ""
 
 
+def _month_global_dir(package_dir: Path) -> Path:
+    for parent in Path(package_dir).parents:
+        if parent.name.startswith("month="):
+            return parent / "global"
+    return Path(package_dir).parent / "global"
+
+
 def _package_context_files(package_dir: Path) -> dict[str, str]:
     manifest_path = package_dir / "manifest.json"
     manifest = read_json(manifest_path)
     files = manifest.get("files") or {}
     return {str(key): str(value) for key, value in files.items() if key in {"ticker_news_tokens", "sec_filing_tokens", "xbrl", "daily_bars"}}
+
+
+def _text_group_limits(config: TickerMonthLoaderConfig, group: str) -> tuple[int, int]:
+    if group == "ticker_news_tokens":
+        return max(0, int(config.ticker_news_max_items)), max(1, int(config.ticker_news_token_chunks))
+    if group == "market_news_tokens":
+        return max(0, int(config.market_news_max_items)), max(1, int(config.market_news_token_chunks))
+    if group == "sec_filing_tokens":
+        return max(0, int(config.sec_filing_max_items)), max(1, int(config.sec_filing_token_chunks))
+    return 0, 1
+
+
+def _prepare_text_context_rows(frame: Any, group: str) -> list[dict[str, Any]]:
+    if int(getattr(frame, "height", 0) or 0) <= 0:
+        return []
+    required = {"timestamp_us", "token_chunk_index", "input_ids", "attention_mask"}
+    if not required.issubset(set(getattr(frame, "columns", ()))):
+        return []
+    grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in frame.iter_rows(named=True):
+        timestamp_us = int(row.get("timestamp_us") or 0)
+        item_key = _text_item_key(row, group)
+        item = grouped.setdefault(item_key, {"timestamp_us": timestamp_us, "item_key": item_key, "rows": []})
+        item["timestamp_us"] = max(int(item["timestamp_us"]), timestamp_us)
+        item["rows"].append(row)
+    items = list(grouped.values())
+    for item in items:
+        item["rows"].sort(key=lambda row: int(row.get("token_chunk_index", 0) or 0))
+    items.sort(key=lambda item: (-int(item["timestamp_us"]), item["item_key"]))
+    return items
+
+
+def _text_item_key(row: Mapping[str, Any], group: str) -> tuple[Any, ...]:
+    if group == "sec_filing_tokens":
+        return (
+            str(row.get("accession_number") or ""),
+            str(row.get("document_id") or ""),
+            int(row.get("text_rank") or 0),
+            str(row.get("source_id") or ""),
+        )
+    return (
+        str(row.get("source_id") or ""),
+        str(row.get("provider_article_id") or ""),
+        str(row.get("text_hash") or ""),
+    )
+
+
+def _select_text_items(items: Sequence[Mapping[str, Any]], origin_timestamp_us: int, *, max_items: int) -> list[Mapping[str, Any]]:
+    if max_items <= 0:
+        return []
+    selected = [item for item in items if int(item.get("timestamp_us") or 0) <= int(origin_timestamp_us)]
+    return selected[: int(max_items)]
 
 
 def _sample_refs_for_loaded_parts(
@@ -1018,6 +1172,7 @@ def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> Tic
         future_intraday_bars=_concat_optional_arrays([batch.future_intraday_bars for batch in nonempty]),
         future_intraday_bar_mask=_concat_optional_arrays([batch.future_intraday_bar_mask for batch in nonempty]),
         input_availability=availability,
+        text_inputs=_concat_text_inputs(batch.text_inputs for batch in nonempty),
         external_context=_merge_external_context(nonempty),
         profile=profile,
     )
@@ -1045,6 +1200,7 @@ def _slice_training_batch(batch: TickerMonthTrainingBatch, start: int, end: int)
         future_intraday_bars=batch.future_intraday_bars[start:end] if batch.future_intraday_bars.shape[0] else batch.future_intraday_bars,
         future_intraday_bar_mask=batch.future_intraday_bar_mask[start:end] if batch.future_intraday_bar_mask.shape[0] else batch.future_intraday_bar_mask,
         input_availability={key: value[start:end] for key, value in batch.input_availability.items()},
+        text_inputs={name: {key: value[start:end] for key, value in payload.items()} for name, payload in batch.text_inputs.items()},
         external_context=dict(batch.external_context),
         profile=profile,
     )
@@ -1056,6 +1212,24 @@ def _concat_dict_arrays(items: Sequence[Mapping[str, np.ndarray]]) -> dict[str, 
     for item in items:
         keys.update(item.keys())
     return {key: np.concatenate([item[key] for item in items if key in item], axis=0) for key in sorted(keys)}
+
+
+def _concat_text_inputs(items: Sequence[Mapping[str, Mapping[str, np.ndarray]]]) -> dict[str, dict[str, np.ndarray]]:
+    items = list(items)
+    names: set[str] = set()
+    for item in items:
+        names.update(item.keys())
+    out: dict[str, dict[str, np.ndarray]] = {}
+    for name in sorted(names):
+        fields: set[str] = set()
+        for item in items:
+            if name in item:
+                fields.update(item[name].keys())
+        out[name] = {
+            field: np.concatenate([item[name][field] for item in items if name in item and field in item[name]], axis=0)
+            for field in sorted(fields)
+        }
+    return out
 
 
 def _slice_profile(profile: Mapping[str, float | int], source_samples: int, output_samples: int) -> dict[str, float | int]:
@@ -1295,6 +1469,31 @@ def _stable_int_seed(*items: object) -> int:
     text = "|".join(str(item) for item in items)
     digest = hashlib.blake2b(text.encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, byteorder="big", signed=False)
+
+
+def _cache_plan_fingerprint(manifest: Mapping[str, Any], parts: Sequence[TickerMonthPartPlan]) -> str:
+    payload = {
+        "format": str(manifest.get("format", "")),
+        "version": int(manifest.get("version") or 0),
+        "parts": [
+            {
+                "month": part.month,
+                "ticker": part.ticker,
+                "part_id": int(part.part_id),
+                "origin_count": int(part.origin_count),
+                "event_count": int(part.event_count),
+                "label_count": int(part.label_count),
+                "origin_ordinal_start": int(part.origin_ordinal_start),
+                "origin_ordinal_end": int(part.origin_ordinal_end),
+                "fetch_ordinal_start": int(part.fetch_ordinal_start),
+                "fetch_ordinal_end": int(part.fetch_ordinal_end),
+                "files": dict(sorted((str(key), str(value)) for key, value in part.files.items())),
+            }
+            for part in parts
+        ],
+    }
+    text = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _manifest_fingerprint(manifest: Mapping[str, Any]) -> str:

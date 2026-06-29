@@ -220,6 +220,49 @@ Use an exact allow-list when a trainer needs specific columns:
 
 If `event_columns` is set, the suppress list is ignored.
 
+## Text Token Outputs
+
+When `data_groups` includes token groups, the loader emits text tensors in
+`batch.text_inputs`:
+
+```text
+ticker_news_tokens  -> text_inputs["ticker_news"]
+market_news_tokens  -> text_inputs["market_news"]
+sec_filing_tokens   -> text_inputs["sec_filings"]
+```
+
+Each text input contains:
+
+```text
+input_ids          [B, max_items, token_chunks, text_max_tokens]
+attention_mask     [B, max_items, token_chunks, text_max_tokens]
+chunk_mask         [B, max_items, token_chunks]
+item_mask          [B, max_items]
+item_timestamp_us  [B, max_items]
+```
+
+The current defaults are:
+
+```text
+ticker_news_max_items: 8
+market_news_max_items: 16
+sec_filing_max_items: 4
+ticker_news_token_chunks: 2
+market_news_token_chunks: 2
+sec_filing_token_chunks: 8
+text_max_tokens: 1024
+```
+
+For each origin, token selection is as-of:
+
+```text
+token.timestamp_us <= origin_timestamp_us
+```
+
+The loader keeps the latest items, places each token row by
+`token_chunk_index`, and leaves unavailable items/chunks zero-filled with false
+masks. Future text rows are not eligible.
+
 For each selected origin, the loader uses the origin row's `event_row_offset`
 to gather the continuous event stream ending at that origin:
 
@@ -323,8 +366,8 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\roll
 
 The audit checks shape consistency, duplicate identities, origin/event
 alignment, raw-stream values, raw-stream ordinal continuity, intraday labels,
-future-bar projection, deterministic first-batch replay, and resume-from-state
-next-batch replay.
+future-bar projection, token as-of selection, token values and masks,
+deterministic first-batch replay, and resume-from-state next-batch replay.
 
 Replay from a saved state:
 

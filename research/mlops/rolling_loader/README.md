@@ -407,6 +407,7 @@ Common values:
 events
 intraday_labels
 ticker_news_tokens
+market_news_tokens
 sec_filing_tokens
 xbrl
 daily_bars
@@ -417,8 +418,7 @@ Examples:
 ```text
 events
 events,intraday_labels
-sec_filing_tokens
-ticker_news_tokens,sec_filing_tokens
+ticker_news_tokens,market_news_tokens,sec_filing_tokens
 ```
 
 For event-only pretraining, use:
@@ -525,11 +525,36 @@ intraday_labels
 future_intraday_bars
 future_intraday_bar_mask
 input_availability
+text_inputs
 external_context
 profile
 ```
 
 Only fields requested by `data_groups` and `event_output_mode` are populated.
+
+When token data groups are requested, `text_inputs` contains:
+
+```text
+text_inputs["ticker_news"]["input_ids"]      [B, ticker_news_max_items, ticker_news_token_chunks, text_max_tokens]
+text_inputs["market_news"]["input_ids"]      [B, market_news_max_items, market_news_token_chunks, text_max_tokens]
+text_inputs["sec_filings"]["input_ids"]      [B, sec_filing_max_items, sec_filing_token_chunks, text_max_tokens]
+text_inputs[*]["attention_mask"]             same shape as input_ids
+text_inputs[*]["chunk_mask"]                 [B, max_items, token_chunks]
+text_inputs[*]["item_mask"]                  [B, max_items]
+text_inputs[*]["item_timestamp_us"]          [B, max_items]
+```
+
+Selection is as-of each origin timestamp. The loader takes the latest tokenized
+items with `timestamp_us <= origin_timestamp_us`, fills available chunks by
+`token_chunk_index`, and leaves missing items/chunks as zero with false masks.
+Default limits are:
+
+```text
+ticker_news_max_items: 8
+market_news_max_items: 16
+sec_filing_max_items: 4
+text_max_tokens: 1024
+```
 
 ## Profile Loader
 
@@ -680,6 +705,9 @@ raw_stream values against source event rows
 raw_stream ordinal continuity
 intraday labels against label parquet
 future_intraday_bars projection from labels
+text token as-of selection
+text token input_ids/attention_mask against token parquet
+text token item/chunk masks and zero padding
 deterministic first batch for same config/seed
 resume-from-state next batch against uninterrupted loading
 ```
@@ -695,9 +723,9 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\roll
   --samples-per-batch 4
 ```
 
-By default the audit reads only event and label payloads. Add
-`--include-external-context` and context data groups when auditing package-level
-token/context files too.
+By default the audit includes `ticker_news_tokens`, `market_news_tokens`, and
+`sec_filing_tokens`, so the no-arg audit validates token tensor materialization
+as well as event and label materialization.
 
 ## No-Lookahead Rules
 
@@ -727,7 +755,7 @@ config = TickerMonthLoaderConfig(
     split="train",
     months=("2019-02",),
     batch_size=4096,
-    data_groups=("events", "intraday_labels"),
+    data_groups=("events", "intraday_labels", "ticker_news_tokens", "market_news_tokens", "sec_filing_tokens"),
     event_output_mode="raw_stream",
     event_stream_length=1024,
 )
