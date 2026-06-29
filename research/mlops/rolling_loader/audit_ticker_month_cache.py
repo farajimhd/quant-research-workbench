@@ -169,7 +169,7 @@ def _audit_package(package_dir: Path, issues: list[AuditIssue], totals: dict[str
         _check_part_origin_bounds(origins, part, issues, package_dir)
         _check_event_order(events, issues, package_dir)
         _check_windows(events, origins, windows, manifest, issues, package_dir)
-        _check_labels(origins, labels, issues, package_dir)
+        _check_labels(origins, labels, manifest, issues, package_dir)
         if config.source_checks and origins.height:
             _source_check_origin(origins, manifest, config, client_opts, issues, package_dir)
 
@@ -230,7 +230,7 @@ def _check_windows(events: Any, origins: Any, windows: Any, manifest: Mapping[st
                 return
 
 
-def _check_labels(origins: Any, labels: Any, issues: list[AuditIssue], package_dir: Path) -> None:
+def _check_labels(origins: Any, labels: Any, manifest: Mapping[str, Any], issues: list[AuditIssue], package_dir: Path) -> None:
     if not origins.height:
         return
     if not labels.height:
@@ -240,6 +240,41 @@ def _check_labels(origins: Any, labels: Any, issues: list[AuditIssue], package_d
     labeled_origins = int(labels.select("origin_key").unique().height) if "origin_key" in labels.columns else 0
     if labeled_origins < max(1, origin_count // 2):
         issues.append(AuditIssue("warning", "label_origin_coverage_low", "Intraday label origin coverage is low.", {"package": str(package_dir), "origins": origin_count, "labeled_origins": labeled_origins}))
+    if _labels_are_pivoted(labels):
+        expected = len(manifest.get("config", {}).get("intraday_label_horizons") or ())
+        if expected <= 0:
+            expected = None
+        for key in ("horizon_us", "price_primary_int", "price_secondary_int", "size_primary_sum", "size_secondary_sum", "event_count", "last_event_timestamp_us", "available"):
+            if key not in labels.columns:
+                issues.append(AuditIssue("error", "label_column_missing", "Compact intraday label column is missing.", {"package": str(package_dir), "column": key}))
+                return
+        sample_count = min(8, int(labels.height))
+        for idx in random.sample(range(int(labels.height)), sample_count):
+            row = labels.row(idx, named=True)
+            for key in ("horizon_us", "available", "event_count", "last_event_timestamp_us"):
+                value_count = len(_cell_list(row.get(key)))
+                if expected is not None and value_count != expected:
+                    issues.append(AuditIssue("error", "compact_label_width", "Compact intraday label width does not match configured horizons.", {"package": str(package_dir), "row": idx, "column": key, "values": value_count, "expected": expected}))
+                    return
+
+
+def _labels_are_pivoted(labels: Any) -> bool:
+    if labels is None or int(getattr(labels, "height", 0) or 0) <= 0 or "horizon_us" not in labels.columns:
+        return False
+    dtype_text = str(labels.schema.get("horizon_us", "")).lower()
+    return "list" in dtype_text or "array" in dtype_text
+
+
+def _cell_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if hasattr(value, "to_list"):
+        return list(value.to_list())
+    if hasattr(value, "to_numpy"):
+        return list(value.to_numpy())
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
 
 
 def _source_check_origin(origins: Any, manifest: Mapping[str, Any], config: TickerMonthAuditConfig, client_opts: Mapping[str, str], issues: list[AuditIssue], package_dir: Path) -> None:

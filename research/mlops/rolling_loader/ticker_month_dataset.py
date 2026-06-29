@@ -395,13 +395,13 @@ class TickerMonthBatchMaterializer:
             if part.labels is None or part.labels.height == 0:
                 continue
             origin = int(part.origins.get_column("origin_ordinal")[int(ref.origin_row)])
-            slice_df = _label_rows_for_origin(part.labels, origin, horizon_count)
-            if slice_df is None:
+            label_values = _label_values_for_origin(part.labels, origin, horizon_count)
+            if label_values is None:
                 if self.config.strict_audit:
                     raise RuntimeError(f"Missing intraday labels for {part.plan.month}:{part.plan.ticker}|{origin}.")
                 continue
             for key in labels_out:
-                values = slice_df.get_column(key).to_numpy()
+                values = label_values[key]
                 labels_out[key][row, : values.shape[0]] = values.astype(labels_out[key].dtype, copy=False)
             available = labels_out["available"][row].astype(bool)
             mask[row] = available
@@ -620,6 +620,57 @@ def _label_rows_for_origin(labels: Any, origin_ordinal: int, expected: int) -> A
     if expected and frame.height != expected:
         return None
     return frame
+
+
+def _label_values_for_origin(labels: Any, origin_ordinal: int, expected: int) -> dict[str, np.ndarray] | None:
+    if labels is None or labels.height == 0:
+        return None
+    ordinals = labels.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)
+    left = int(np.searchsorted(ordinals, int(origin_ordinal), side="left"))
+    right = int(np.searchsorted(ordinals, int(origin_ordinal), side="right"))
+    if right <= left:
+        return None
+    keys = (
+        "price_primary_int",
+        "price_secondary_int",
+        "size_primary_sum",
+        "size_secondary_sum",
+        "event_count",
+        "last_event_timestamp_us",
+        "available",
+    )
+    if _labels_are_pivoted(labels):
+        if right - left != 1:
+            return None
+        row = labels.row(left, named=True)
+        values = {key: _cell_array(row.get(key)) for key in keys}
+    else:
+        frame = labels.slice(left, right - left)
+        if expected and frame.height != expected:
+            return None
+        values = {key: frame.get_column(key).to_numpy() for key in keys}
+    if expected and any(int(value.shape[0]) != int(expected) for value in values.values()):
+        return None
+    return values
+
+
+def _labels_are_pivoted(labels: Any) -> bool:
+    if labels is None or int(getattr(labels, "height", 0) or 0) <= 0 or "horizon_us" not in labels.columns:
+        return False
+    dtype_text = str(labels.schema.get("horizon_us", "")).lower()
+    return "list" in dtype_text or "array" in dtype_text
+
+
+def _cell_array(value: Any) -> np.ndarray:
+    if value is None:
+        return np.asarray([])
+    if hasattr(value, "to_numpy"):
+        return value.to_numpy()
+    if isinstance(value, np.ndarray):
+        return value
+    if isinstance(value, (list, tuple)):
+        return np.asarray(value)
+    return np.asarray([value])
 
 
 def _external_context_summary(parts: Sequence[LoadedTickerMonthPart]) -> dict[str, Any]:

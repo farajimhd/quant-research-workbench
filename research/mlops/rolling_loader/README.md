@@ -163,6 +163,14 @@ Intraday labels are stored as origin-relative `next_*` labels. The cache does
 not store dense intraday bar grids and does not store `current_*` intraday
 labels.
 
+On disk, `intraday_forward_labels_part_*.parquet` stores one row per origin.
+Each horizon-dependent field is a list column ordered by `horizon_us`, for
+example `horizon`, `horizon_us`, `price_primary_int`, `price_secondary_int`,
+`size_primary_sum`, `size_secondary_sum`, `event_count`,
+`last_event_timestamp_us`, and `available`. This keeps the ClickHouse result
+and parquet file proportional to origin count instead of
+`origin_count * horizon_count`.
+
 The current default horizons are:
 
 ```text

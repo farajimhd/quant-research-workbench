@@ -341,6 +341,10 @@ There are no `current_*` intraday labels. Current fixed-grid bars are ambiguous
 for event origins because they can include after-origin events inside the same
 bar bucket. The persisted label table contains only `next_*` targets.
 
+Persisted `intraday_forward_labels_part_*.parquet` files store one row per
+origin. Horizon-dependent fields are list columns sorted by `horizon_us`; this
+avoids transferring and writing one physical row per origin per horizon.
+
 Example persisted columns:
 
 ```text
@@ -348,14 +352,15 @@ origin_key
 ticker_id
 origin_ordinal
 origin_timestamp_us
-next_100ms_bid
-next_100ms_ask
-next_100ms_bid_size
-next_100ms_ask_size
-next_100ms_trade_count
-next_100ms_quote_count
-next_100ms_available
-next_250ms_...
+horizon[]
+horizon_us[]
+price_primary_int[]
+price_secondary_int[]
+size_primary_sum[]
+size_secondary_sum[]
+event_count[]
+last_event_timestamp_us[]
+available[]
 ```
 
 Session boundaries are hard validity boundaries:

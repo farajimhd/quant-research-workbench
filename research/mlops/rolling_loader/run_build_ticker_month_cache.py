@@ -1101,15 +1101,24 @@ def _light_audit_part_in_memory(
         if label_ordinals is not None:
             left = int(np.searchsorted(label_ordinals, origin_ordinal, side="left"))
             right = int(np.searchsorted(label_ordinals, origin_ordinal, side="right"))
-            if right - left != int(horizon_count):
-                raise RuntimeError(f"{prefix} inline audit failed: {origin_key} has {right - left:,} labels, expected {int(horizon_count):,}.")
-            label_slice = labels.slice(left, right - left)
-            if label_slice.get_column("origin_key").n_unique() != 1 or str(label_slice.get_column("origin_key")[0]) != origin_key:
-                raise RuntimeError(f"{prefix} inline audit failed: label rows are not aligned to sampled origin {origin_key}.")
-            available = label_slice.get_column("available").to_numpy()
-            label_event_counts = label_slice.get_column("event_count").to_numpy()
-            last_ts = label_slice.get_column("last_event_timestamp_us").to_numpy().astype(np.int64, copy=False)
-            horizon_us = label_slice.get_column("horizon_us").to_numpy().astype(np.int64, copy=False)
+            if _labels_are_pivoted(labels):
+                if right - left != 1:
+                    raise RuntimeError(f"{prefix} inline audit failed: {origin_key} has {right - left:,} label rows, expected 1 compact row.")
+                values = _label_arrays_from_row(labels, left, int(horizon_count), origin_key)
+                available = values["available"]
+                label_event_counts = values["event_count"]
+                last_ts = values["last_event_timestamp_us"].astype(np.int64, copy=False)
+                horizon_us = values["horizon_us"].astype(np.int64, copy=False)
+            else:
+                if right - left != int(horizon_count):
+                    raise RuntimeError(f"{prefix} inline audit failed: {origin_key} has {right - left:,} labels, expected {int(horizon_count):,}.")
+                label_slice = labels.slice(left, right - left)
+                if label_slice.get_column("origin_key").n_unique() != 1 or str(label_slice.get_column("origin_key")[0]) != origin_key:
+                    raise RuntimeError(f"{prefix} inline audit failed: label rows are not aligned to sampled origin {origin_key}.")
+                available = label_slice.get_column("available").to_numpy()
+                label_event_counts = label_slice.get_column("event_count").to_numpy()
+                last_ts = label_slice.get_column("last_event_timestamp_us").to_numpy().astype(np.int64, copy=False)
+                horizon_us = label_slice.get_column("horizon_us").to_numpy().astype(np.int64, copy=False)
             valid = available.astype(bool)
             if valid.any():
                 if np.any(label_event_counts[valid] <= 0):
@@ -1120,6 +1129,43 @@ def _light_audit_part_in_memory(
                     raise RuntimeError(f"{prefix} inline audit failed: label exceeds its horizon for {origin_key}.")
         checked += 1
     return checked
+
+
+def _labels_are_pivoted(labels: Any) -> bool:
+    if labels is None or int(getattr(labels, "height", 0) or 0) <= 0 or "horizon_us" not in labels.columns:
+        return False
+    dtype_text = str(labels.schema.get("horizon_us", "")).lower()
+    return "list" in dtype_text or "array" in dtype_text
+
+
+def _label_arrays_from_row(labels: Any, row_index: int, expected: int, origin_key: str) -> dict[str, np.ndarray]:
+    row = labels.row(int(row_index), named=True)
+    if str(row.get("origin_key", "")) != origin_key:
+        raise RuntimeError(f"label row is not aligned to sampled origin {origin_key}.")
+    arrays = {
+        "horizon_us": _cell_array(row.get("horizon_us"), np.int64),
+        "event_count": _cell_array(row.get("event_count"), np.uint64),
+        "last_event_timestamp_us": _cell_array(row.get("last_event_timestamp_us"), np.int64),
+        "available": _cell_array(row.get("available"), np.uint8),
+    }
+    for key, value in arrays.items():
+        if int(expected) and int(value.shape[0]) != int(expected):
+            raise RuntimeError(f"{origin_key} compact label field {key} has {value.shape[0]:,} values, expected {int(expected):,}.")
+    return arrays
+
+
+def _cell_array(value: Any, dtype: Any) -> np.ndarray:
+    if value is None:
+        return np.asarray([], dtype=dtype)
+    if hasattr(value, "to_numpy"):
+        arr = value.to_numpy()
+    elif isinstance(value, np.ndarray):
+        arr = value
+    elif isinstance(value, (list, tuple)):
+        arr = np.asarray(value)
+    else:
+        arr = np.asarray([value])
+    return arr.astype(dtype, copy=False)
 
 
 def _deterministic_sample_indexes(count: int, samples: int, *, month: str, ticker: str, part_id: int) -> list[int]:
@@ -1321,6 +1367,51 @@ WITH
         )
         WINDOW event_window AS (PARTITION BY ticker, local_date ORDER BY sip_timestamp_us, ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
         ORDER BY ticker, local_date, sip_timestamp_us, ordinal
+    ),
+    label_rows AS
+    (
+        SELECT
+            origin_key,
+            ticker_id,
+            ticker,
+            origin_ordinal,
+            origin_timestamp_us,
+            horizon,
+            horizon_us,
+            toInt32(if(event_count > 0, target_price_primary_int, 0)) AS price_primary_int,
+            toInt32(if(event_count > 0, target_price_secondary_int, 0)) AS price_secondary_int,
+            toFloat32(greatest(size_primary_sum, 0.0)) AS size_primary_sum,
+            toFloat32(greatest(size_secondary_sum, 0.0)) AS size_secondary_sum,
+            toUInt64(event_count) AS event_count,
+            toInt64(if(event_count > 0, target_timestamp_us, 0)) AS last_event_timestamp_us,
+            toUInt8((local_second * 1000000 + horizon_us) <= 72000000000 AND event_count > 0) AS available
+        FROM
+        (
+            SELECT
+                o.origin_key AS origin_key,
+                o.ticker_id AS ticker_id,
+                o.ticker AS ticker,
+                o.origin_ordinal AS origin_ordinal,
+                o.origin_timestamp_us AS origin_timestamp_us,
+                o.local_second AS local_second,
+                o.horizon AS horizon,
+                o.horizon_us AS horizon_us,
+                target.price_primary_int AS target_price_primary_int,
+                target.price_secondary_int AS target_price_secondary_int,
+                target.sip_timestamp_us AS target_timestamp_us,
+                greatest(toInt64(ifNull(target.cum_count, 0)) - toInt64(ifNull(base.cum_count, 0)), 0) AS event_count,
+                ifNull(target.cum_size_primary, 0.0) - ifNull(base.cum_size_primary, 0.0) AS size_primary_sum,
+                ifNull(target.cum_size_secondary, 0.0) - ifNull(base.cum_size_secondary, 0.0) AS size_secondary_sum
+            FROM origin_horizons AS o
+            ASOF LEFT JOIN cumulative_events AS target
+                ON target.ticker = o.ticker
+               AND target.local_date = o.origin_local_date
+               AND o.target_timestamp_us >= target.sip_timestamp_us
+            ASOF LEFT JOIN cumulative_events AS base
+                ON base.ticker = o.ticker
+               AND base.local_date = o.origin_local_date
+               AND o.origin_timestamp_us >= base.sip_timestamp_us
+        )
     )
 SELECT
     origin_key,
@@ -1328,43 +1419,43 @@ SELECT
     ticker,
     origin_ordinal,
     origin_timestamp_us,
-    horizon,
-    horizon_us,
-    toInt32(if(event_count > 0, target_price_primary_int, 0)) AS price_primary_int,
-    toInt32(if(event_count > 0, target_price_secondary_int, 0)) AS price_secondary_int,
-    toFloat32(greatest(size_primary_sum, 0.0)) AS size_primary_sum,
-    toFloat32(greatest(size_secondary_sum, 0.0)) AS size_secondary_sum,
-    toUInt64(event_count) AS event_count,
-    toInt64(if(event_count > 0, target_timestamp_us, 0)) AS last_event_timestamp_us,
-    toUInt8((local_second * 1000000 + horizon_us) <= 72000000000 AND event_count > 0) AS available
+    arrayMap(x -> tupleElement(x, 1), label_items) AS horizon,
+    arrayMap(x -> tupleElement(x, 2), label_items) AS horizon_us,
+    arrayMap(x -> tupleElement(x, 3), label_items) AS price_primary_int,
+    arrayMap(x -> tupleElement(x, 4), label_items) AS price_secondary_int,
+    arrayMap(x -> tupleElement(x, 5), label_items) AS size_primary_sum,
+    arrayMap(x -> tupleElement(x, 6), label_items) AS size_secondary_sum,
+    arrayMap(x -> tupleElement(x, 7), label_items) AS event_count,
+    arrayMap(x -> tupleElement(x, 8), label_items) AS last_event_timestamp_us,
+    arrayMap(x -> tupleElement(x, 9), label_items) AS available
 FROM
 (
     SELECT
-        o.origin_key AS origin_key,
-        o.ticker_id AS ticker_id,
-        o.ticker AS ticker,
-        o.origin_ordinal AS origin_ordinal,
-        o.origin_timestamp_us AS origin_timestamp_us,
-        o.local_second AS local_second,
-        o.horizon AS horizon,
-        o.horizon_us AS horizon_us,
-        target.price_primary_int AS target_price_primary_int,
-        target.price_secondary_int AS target_price_secondary_int,
-        target.sip_timestamp_us AS target_timestamp_us,
-        greatest(toInt64(ifNull(target.cum_count, 0)) - toInt64(ifNull(base.cum_count, 0)), 0) AS event_count,
-        ifNull(target.cum_size_primary, 0.0) - ifNull(base.cum_size_primary, 0.0) AS size_primary_sum,
-        ifNull(target.cum_size_secondary, 0.0) - ifNull(base.cum_size_secondary, 0.0) AS size_secondary_sum
-    FROM origin_horizons AS o
-    ASOF LEFT JOIN cumulative_events AS target
-        ON target.ticker = o.ticker
-       AND target.local_date = o.origin_local_date
-       AND o.target_timestamp_us >= target.sip_timestamp_us
-    ASOF LEFT JOIN cumulative_events AS base
-        ON base.ticker = o.ticker
-       AND base.local_date = o.origin_local_date
-       AND o.origin_timestamp_us >= base.sip_timestamp_us
+        origin_key,
+        ticker_id,
+        ticker,
+        origin_ordinal,
+        origin_timestamp_us,
+        arraySort(x -> tupleElement(x, 2), groupArray(tuple(
+            horizon,
+            horizon_us,
+            price_primary_int,
+            price_secondary_int,
+            size_primary_sum,
+            size_secondary_sum,
+            event_count,
+            last_event_timestamp_us,
+            available
+        ))) AS label_items
+    FROM label_rows
+    GROUP BY
+        origin_key,
+        ticker_id,
+        ticker,
+        origin_ordinal,
+        origin_timestamp_us
 )
-ORDER BY origin_ordinal, horizon_us
+ORDER BY origin_ordinal
 {_settings_sql(config)}
 """
     return query_polars(client_opts, query)
