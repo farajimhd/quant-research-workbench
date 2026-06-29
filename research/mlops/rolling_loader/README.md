@@ -507,21 +507,28 @@ Only fields requested by `data_groups` and `event_output_mode` are populated.
 Workstation form:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_profile_ticker_month_loader.py `
-  --cache-id train_201902_ticker_month `
-  --month 2019-02 `
-  --batch-size 4096 `
-  --batches 8
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_profile_ticker_month_loader.py
+```
+
+The no-arg default is a small repeatable benchmark over
+`train_201902_201907_ticker_month`, month `2019-02`, with:
+
+```text
+dataset_id: bench_small_201902_v1
+sample_fraction: 0.001
+max_origins_per_epoch: 1,000,000
+batch_size: 4096
+batches: 16
+loaded_parts_per_group: 64
+read_workers: 4
+materialize_workers: 16
+materialize_chunk_size: 512
 ```
 
 Module form:
 
 ```powershell
-python -m research.mlops.rolling_loader.run_profile_ticker_month_loader `
-  --cache-id train_201902_ticker_month `
-  --month 2019-02 `
-  --batch-size 4096 `
-  --batches 8
+python -m research.mlops.rolling_loader.run_profile_ticker_month_loader
 ```
 
 Profile encoded compatibility mode:
@@ -571,6 +578,12 @@ Save a replayable loader checkpoint with:
 
 ```powershell
 --save-state-path D:\market-data\prepared\data_provider_profiles\loader_state.json
+```
+
+The no-arg default already saves state to:
+
+```text
+D:\market-data\prepared\data_provider_profiles\ticker_month_loader_state.json
 ```
 
 Resume the same dataset plan and cursor with:

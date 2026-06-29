@@ -198,6 +198,30 @@ If `event_columns` is set, the suppress list is ignored.
 
 ## Common Commands
 
+Profile with the workstation defaults:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_profile_ticker_month_loader.py
+```
+
+The no-arg command uses this benchmark profile:
+
+```text
+cache_id: train_201902_201907_ticker_month
+month: 2019-02
+dataset_id: bench_small_201902_v1
+sample_fraction: 0.001
+max_origins_per_epoch: 1,000,000
+batch_size: 4096
+batches: 16
+loaded_parts_per_group: 64
+read_workers: 4
+materialize_workers: 16
+materialize_chunk_size: 512
+report_path: D:\market-data\prepared\data_provider_profiles\ticker_month_loader_profile.jsonl
+state_path: D:\market-data\prepared\data_provider_profiles\ticker_month_loader_state.json
+```
+
 Profile a repeatable small benchmark:
 
 ```powershell

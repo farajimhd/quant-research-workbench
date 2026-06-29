@@ -22,46 +22,76 @@ from research.mlops.rolling_loader.streaming_training import current_rss_mib
 
 
 DEFAULT_PROFILE_REPORT_PATH = Path("D:/market-data/prepared/data_provider_profiles/ticker_month_loader_profile.jsonl")
+DEFAULT_PROFILE_STATE_PATH = Path("D:/market-data/prepared/data_provider_profiles/ticker_month_loader_state.json")
+DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
+    "cache_id": "train_201902_201907_ticker_month",
+    "split": "train",
+    "months": ("2019-02",),
+    "start_utc": "",
+    "end_utc": "",
+    "tickers": "",
+    "batch_size": 4096,
+    "batches": 16,
+    "seed": 17,
+    "data_groups": "events,intraday_labels",
+    "event_output_mode": "raw_windows",
+    "event_columns": "",
+    "suppress_event_columns": "ticker_id,ordinal,timestamp_us",
+    "events_per_window": 128,
+    "context_chunks": 32,
+    "context_stride_events": 64,
+    "flat_coverage_events": 0,
+    "loaded_parts_per_group": 64,
+    "read_workers": 4,
+    "materialize_workers": 16,
+    "materialize_chunk_size": 512,
+    "dataset_id": "bench_small_201902_v1",
+    "sample_fraction": 0.001,
+    "sample_hash_modulus": 0,
+    "sample_hash_buckets": "",
+    "max_origins_per_epoch": 1_000_000,
+}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Profile the ticker/month SSD cache training loader.")
     parser.add_argument("--cache-root", type=Path, default=DEFAULT_TICKER_MONTH_CACHE_ROOT)
-    parser.add_argument("--cache-id", required=True)
-    parser.add_argument("--split", default="train")
-    parser.add_argument("--month", action="append", default=[])
-    parser.add_argument("--start-utc", default="")
-    parser.add_argument("--end-utc", default="")
-    parser.add_argument("--tickers", default="")
-    parser.add_argument("--batch-size", type=int, default=4096)
-    parser.add_argument("--batches", type=int, default=8)
-    parser.add_argument("--seed", type=int, default=17)
-    parser.add_argument("--data-groups", default="events,intraday_labels")
-    parser.add_argument("--event-output-mode", choices=("none", "raw_flat", "raw_windows", "encoded_uint8"), default="raw_windows")
-    parser.add_argument("--event-columns", default="", help="Comma-separated event columns to emit. Empty means all cached numeric event columns after suppression.")
+    parser.add_argument("--cache-id", default=DEFAULT_PROFILE_CONFIG["cache_id"])
+    parser.add_argument("--split", default=DEFAULT_PROFILE_CONFIG["split"])
+    parser.add_argument("--month", action="append", default=None)
+    parser.add_argument("--start-utc", default=DEFAULT_PROFILE_CONFIG["start_utc"])
+    parser.add_argument("--end-utc", default=DEFAULT_PROFILE_CONFIG["end_utc"])
+    parser.add_argument("--tickers", default=DEFAULT_PROFILE_CONFIG["tickers"])
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_PROFILE_CONFIG["batch_size"])
+    parser.add_argument("--batches", type=int, default=DEFAULT_PROFILE_CONFIG["batches"])
+    parser.add_argument("--seed", type=int, default=DEFAULT_PROFILE_CONFIG["seed"])
+    parser.add_argument("--data-groups", default=DEFAULT_PROFILE_CONFIG["data_groups"])
+    parser.add_argument("--event-output-mode", choices=("none", "raw_flat", "raw_windows", "encoded_uint8"), default=DEFAULT_PROFILE_CONFIG["event_output_mode"])
+    parser.add_argument("--event-columns", default=DEFAULT_PROFILE_CONFIG["event_columns"], help="Comma-separated event columns to emit. Empty means all cached numeric event columns after suppression.")
     parser.add_argument(
         "--suppress-event-columns",
-        default="ticker_id,ordinal,timestamp_us",
+        default=DEFAULT_PROFILE_CONFIG["suppress_event_columns"],
         help="Comma-separated cached event columns to suppress from raw event outputs.",
     )
-    parser.add_argument("--events-per-window", type=int, default=128)
-    parser.add_argument("--context-chunks", type=int, default=32)
-    parser.add_argument("--context-stride-events", type=int, default=64)
-    parser.add_argument("--flat-coverage-events", type=int, default=0)
-    parser.add_argument("--loaded-parts-per-group", type=int, default=8)
-    parser.add_argument("--read-workers", type=int, default=4)
-    parser.add_argument("--materialize-workers", type=int, default=4)
-    parser.add_argument("--materialize-chunk-size", type=int, default=0, help="Origins per CPU materialization task. Default 0 uses batch-size.")
+    parser.add_argument("--events-per-window", type=int, default=DEFAULT_PROFILE_CONFIG["events_per_window"])
+    parser.add_argument("--context-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["context_chunks"])
+    parser.add_argument("--context-stride-events", type=int, default=DEFAULT_PROFILE_CONFIG["context_stride_events"])
+    parser.add_argument("--flat-coverage-events", type=int, default=DEFAULT_PROFILE_CONFIG["flat_coverage_events"])
+    parser.add_argument("--loaded-parts-per-group", type=int, default=DEFAULT_PROFILE_CONFIG["loaded_parts_per_group"])
+    parser.add_argument("--read-workers", type=int, default=DEFAULT_PROFILE_CONFIG["read_workers"])
+    parser.add_argument("--materialize-workers", type=int, default=DEFAULT_PROFILE_CONFIG["materialize_workers"])
+    parser.add_argument("--materialize-chunk-size", type=int, default=DEFAULT_PROFILE_CONFIG["materialize_chunk_size"], help="Origins per CPU materialization task. Default 0 uses batch-size.")
     parser.add_argument("--drop-last-batch", action="store_true", help="Drop the final partial ready batch for each loaded group.")
     parser.add_argument("--allow-unordered-materialization", action="store_true", help="Yield completed materialization tasks as they finish. Faster but not repeatable.")
-    parser.add_argument("--dataset-id", default="", help="Stable dataset plan id used in hashing/state. Empty creates an automatic id from cache/config.")
+    parser.add_argument("--dataset-id", default=DEFAULT_PROFILE_CONFIG["dataset_id"], help="Stable dataset plan id used in hashing/state. Empty creates an automatic id from cache/config.")
     parser.add_argument("--randomize-seed", action="store_true", help="Generate a random run seed and save it in loader state for replay.")
-    parser.add_argument("--sample-fraction", type=float, default=1.0, help="Deterministic hash fraction of origins to include.")
-    parser.add_argument("--sample-hash-modulus", type=int, default=0, help="Modulo for deterministic hash bucket train/validation splits.")
-    parser.add_argument("--sample-hash-buckets", default="", help="Comma-separated hash buckets to include when sample-hash-modulus is set.")
-    parser.add_argument("--max-origins-per-epoch", type=int, default=0, help="Stop after this many emitted origins in the epoch. 0 means no cap.")
+    parser.add_argument("--sample-fraction", type=float, default=DEFAULT_PROFILE_CONFIG["sample_fraction"], help="Deterministic hash fraction of origins to include.")
+    parser.add_argument("--sample-hash-modulus", type=int, default=DEFAULT_PROFILE_CONFIG["sample_hash_modulus"], help="Modulo for deterministic hash bucket train/validation splits.")
+    parser.add_argument("--sample-hash-buckets", default=DEFAULT_PROFILE_CONFIG["sample_hash_buckets"], help="Comma-separated hash buckets to include when sample-hash-modulus is set.")
+    parser.add_argument("--max-origins-per-epoch", type=int, default=DEFAULT_PROFILE_CONFIG["max_origins_per_epoch"], help="Stop after this many emitted origins in the epoch. 0 means no cap.")
     parser.add_argument("--load-state-path", type=Path, default=None, help="Resume loader state from this JSON file.")
-    parser.add_argument("--save-state-path", type=Path, default=None, help="Write final loader state JSON to this file.")
+    parser.add_argument("--save-state-path", type=Path, default=DEFAULT_PROFILE_STATE_PATH, help="Write final loader state JSON to this file.")
+    parser.add_argument("--no-save-state", action="store_true", help="Disable loader state JSON writing.")
     parser.add_argument("--include-external-context", action="store_true")
     parser.add_argument("--no-strict-audit", action="store_true")
     parser.add_argument("--report-path", type=Path, default=DEFAULT_PROFILE_REPORT_PATH)
@@ -73,12 +103,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     cache_root = Path(args.cache_root) / str(args.cache_id)
     started_at_utc = dt.datetime.now(dt.timezone.utc).isoformat()
+    months = tuple(str(month) for month in (args.month if args.month is not None else DEFAULT_PROFILE_CONFIG["months"]))
     config = TickerMonthLoaderConfig(
         cache_root=cache_root,
         split=args.split,
         start_utc=args.start_utc,
         end_utc=args.end_utc,
-        months=tuple(str(month) for month in args.month),
+        months=months,
         tickers=tuple(item.strip().upper() for item in str(args.tickers).split(",") if item.strip()),
         batch_size=max(1, int(args.batch_size)),
         seed=int(args.seed),
@@ -162,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         "loader_state": loader.summary(),
     }
     print("SUMMARY " + json.dumps(summary, sort_keys=True), flush=True)
-    if args.save_state_path is not None:
+    if args.save_state_path is not None and not bool(args.no_save_state):
         args.save_state_path.parent.mkdir(parents=True, exist_ok=True)
         with args.save_state_path.open("w", encoding="utf-8") as handle:
             json.dump(loader.state_dict(), handle, sort_keys=True, indent=2)
