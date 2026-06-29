@@ -28,11 +28,10 @@ from research.mlops.rolling_loader.ticker_month_dataset import (
     TickerMonthPartPlan,
     TickerMonthPartReader,
     TickerMonthTrainingBatch,
-    _cell_array,
     _label_values_for_origin,
     _part_key,
-    _prepare_text_context_rows,
-    _select_text_items,
+    _prepare_text_context_index,
+    _select_text_item_indices,
 )
 
 
@@ -437,43 +436,41 @@ def _check_text_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTi
         payload = batch.text_inputs[text_key]
         max_items = int(payload["input_ids"].shape[1])
         max_chunks = int(payload["input_ids"].shape[2])
+        token_width = int(payload["input_ids"].shape[3])
         frame = part.context.get(group)
-        source_items = _prepare_text_context_rows(frame, group) if frame is not None else []
-        selected = _select_text_items(source_items, int(origin_timestamp_us), max_items=max_items)
+        source_index = _prepare_text_context_index(frame, group, max_chunks=max_chunks, token_width=token_width) if frame is not None else None
+        if source_index is None:
+            selected_indices = np.full((1, max_items), -1, dtype=np.int64)
+            selected_mask = np.zeros((1, max_items), dtype=np.bool_)
+        else:
+            selected_indices, selected_mask = _select_text_item_indices(source_index, np.asarray([int(origin_timestamp_us)], dtype=np.int64), max_items=max_items)
+        expected_count = int(selected_mask[0].sum())
         actual_item_mask = payload["item_mask"][row]
         actual_chunk_mask = payload["chunk_mask"][row]
         actual_timestamps = payload["item_timestamp_us"][row]
-        if int(actual_item_mask.sum()) != len(selected):
-            issues.append(AuditIssue("error", "text_item_count_mismatch", "Text item mask count does not match as-of source selection.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "actual": int(actual_item_mask.sum()), "expected": len(selected)}))
+        if int(actual_item_mask.sum()) != expected_count:
+            issues.append(AuditIssue("error", "text_item_count_mismatch", "Text item mask count does not match as-of source selection.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "actual": int(actual_item_mask.sum()), "expected": expected_count}))
         if np.any(actual_timestamps[actual_item_mask.astype(bool)] > int(origin_timestamp_us)):
             issues.append(AuditIssue("error", "text_lookahead", "Text tensor contains a future token item.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "origin_timestamp_us": int(origin_timestamp_us)}))
-        for item_index, item in enumerate(selected):
-            if item_index >= max_items:
-                break
+        for item_index in range(expected_count):
+            source_item_index = int(selected_indices[0, item_index])
+            if source_index is None or source_item_index < 0:
+                continue
             if not bool(actual_item_mask[item_index]):
                 issues.append(AuditIssue("error", "text_item_missing", "Expected as-of text item is not marked present.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index}))
-            if int(actual_timestamps[item_index]) != int(item["timestamp_us"]):
-                issues.append(AuditIssue("error", "text_timestamp_mismatch", "Text item timestamp does not match source selection.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index, "actual": int(actual_timestamps[item_index]), "expected": int(item["timestamp_us"])}))
-            for token_row in item["rows"]:
-                chunk_index = int(token_row.get("token_chunk_index", 0) or 0)
-                if chunk_index < 0 or chunk_index >= max_chunks:
-                    continue
-                expected_ids = _cell_array(token_row.get("input_ids")).astype(np.int32, copy=False)
-                expected_mask = _cell_array(token_row.get("attention_mask")).astype(np.uint8, copy=False)
-                width = min(int(payload["input_ids"].shape[3]), int(expected_ids.shape[0]), int(expected_mask.shape[0]))
-                if width <= 0:
-                    continue
-                actual_ids = payload["input_ids"][row, item_index, chunk_index]
-                actual_mask = payload["attention_mask"][row, item_index, chunk_index]
-                if not bool(actual_chunk_mask[item_index, chunk_index]):
-                    issues.append(AuditIssue("error", "text_chunk_missing", "Expected text chunk is not marked present.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index, "chunk_index": chunk_index}))
-                if not np.array_equal(actual_ids[:width], expected_ids[:width]) or not np.array_equal(actual_mask[:width], expected_mask[:width]):
-                    issues.append(AuditIssue("error", "text_token_value_mismatch", "Text token tensor does not match source token row.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index, "chunk_index": chunk_index}))
-                if np.any(actual_ids[width:] != 0) or np.any(actual_mask[width:] != 0):
-                    issues.append(AuditIssue("error", "text_token_padding_mismatch", "Text token padding after source width is not zero.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index, "chunk_index": chunk_index}))
-        if len(selected) < max_items:
-            if np.any(payload["input_ids"][row, len(selected) :] != 0) or np.any(payload["attention_mask"][row, len(selected) :] != 0) or np.any(payload["chunk_mask"][row, len(selected) :]):
-                issues.append(AuditIssue("error", "text_tail_padding_mismatch", "Text tensor has non-zero values after selected as-of items.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "selected": len(selected), "max_items": max_items}))
+            expected_timestamp = int(source_index.timestamps_us[source_item_index])
+            if int(actual_timestamps[item_index]) != expected_timestamp:
+                issues.append(AuditIssue("error", "text_timestamp_mismatch", "Text item timestamp does not match source selection.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index, "actual": int(actual_timestamps[item_index]), "expected": expected_timestamp}))
+            expected_ids = source_index.input_ids[source_item_index]
+            expected_mask = source_index.attention_mask[source_item_index]
+            expected_chunk_mask = source_index.chunk_mask[source_item_index]
+            if not np.array_equal(actual_chunk_mask[item_index], expected_chunk_mask):
+                issues.append(AuditIssue("error", "text_chunk_mask_mismatch", "Text chunk mask does not match source token rows.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index}))
+            if not np.array_equal(payload["input_ids"][row, item_index], expected_ids) or not np.array_equal(payload["attention_mask"][row, item_index], expected_mask):
+                issues.append(AuditIssue("error", "text_token_value_mismatch", "Text token tensor does not match source token rows.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index}))
+        if expected_count < max_items:
+            if np.any(payload["input_ids"][row, expected_count:] != 0) or np.any(payload["attention_mask"][row, expected_count:] != 0) or np.any(payload["chunk_mask"][row, expected_count:]):
+                issues.append(AuditIssue("error", "text_tail_padding_mismatch", "Text tensor has non-zero values after selected as-of items.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "selected": expected_count, "max_items": max_items}))
         totals["text_rows_checked"] += 1
 
 

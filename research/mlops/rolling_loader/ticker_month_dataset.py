@@ -5,6 +5,7 @@ import hashlib
 import json
 import random
 import secrets
+import threading
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -169,6 +170,18 @@ class LoadedTickerMonthPart:
         if key not in self._context_arrays:
             self._context_arrays[key] = self.context[str(name)].get_column(str(column)).to_numpy()
         return self._context_arrays[key]
+
+
+@dataclass(slots=True)
+class TextContextIndex:
+    timestamps_us: np.ndarray
+    input_ids: np.ndarray
+    attention_mask: np.ndarray
+    chunk_mask: np.ndarray
+
+    @property
+    def item_count(self) -> int:
+        return int(self.timestamps_us.shape[0])
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,6 +389,9 @@ class TickerMonthBatchMaterializer:
     def __init__(self, config: TickerMonthLoaderConfig) -> None:
         self.config = normalize_loader_config(config)
         self.context_lags = tuple(index * int(self.config.context_stride_events) for index in range(int(self.config.context_chunks)))
+        self._text_index_cache: dict[tuple[int, str, int, int], TextContextIndex] = {}
+        self._global_text_index_cache: dict[tuple[int, str, int, int], TextContextIndex] = {}
+        self._text_index_lock = threading.Lock()
         self.coverage_events = max(self.context_lags, default=0) + int(self.config.events_per_window)
         if self.config.event_output_mode == "raw_stream":
             self.coverage_events = int(self.config.event_stream_length)
@@ -392,6 +408,10 @@ class TickerMonthBatchMaterializer:
             )
         if self.config.event_output_mode == "encoded_uint8" and int(self.config.events_per_window) != 128:
             raise ValueError("encoded_uint8 mode requires events_per_window=128.")
+
+    def clear_text_context_cache(self) -> None:
+        with self._text_index_lock:
+            self._text_index_cache.clear()
 
     def materialize(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> TickerMonthTrainingBatch:
         start = time.perf_counter()
@@ -431,11 +451,12 @@ class TickerMonthBatchMaterializer:
             "intraday_labels_available": future_mask.any(axis=1) if future_mask.size else np.zeros((len(refs),), dtype=np.bool_),
         }
         text_start = time.perf_counter()
-        text_inputs = self._materialize_text_inputs(parts, refs)
+        text_inputs, text_profile = self._materialize_text_inputs(parts, refs)
         for key, value in text_inputs.items():
             chunk_mask = value.get("chunk_mask")
             if chunk_mask is not None:
                 availability[f"{key}_available"] = chunk_mask.reshape((len(refs), -1)).any(axis=1)
+        profile.update(text_profile)
         profile["text_seconds"] = time.perf_counter() - text_start
         external_context = {}
         context_start = time.perf_counter()
@@ -554,11 +575,16 @@ class TickerMonthBatchMaterializer:
             out[column] = values
         return out, mask
 
-    def _materialize_text_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> dict[str, dict[str, np.ndarray]]:
+    def _materialize_text_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
         requested = [group for group in ("ticker_news_tokens", "market_news_tokens", "sec_filing_tokens") if group in self.config.data_groups]
         if not requested:
-            return {}
+            return {}, {}
         out: dict[str, dict[str, np.ndarray]] = {}
+        profile: dict[str, float | int] = {
+            "text_index_seconds": 0.0,
+            "text_select_seconds": 0.0,
+            "text_gather_seconds": 0.0,
+        }
         origin_timestamps = _identity_arrays(parts, refs)[2]
         grouped_rows = _rows_by_part(refs)
         for group in requested:
@@ -570,31 +596,48 @@ class TickerMonthBatchMaterializer:
             chunk_mask = np.zeros((len(refs), max_items, max_chunks), dtype=np.bool_)
             item_mask = np.zeros((len(refs), max_items), dtype=np.bool_)
             item_timestamp_us = np.zeros((len(refs), max_items), dtype=np.int64)
+            if max_items <= 0:
+                out[key] = {
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                    "chunk_mask": chunk_mask,
+                    "item_mask": item_mask,
+                    "item_timestamp_us": item_timestamp_us,
+                }
+                continue
             for part_index, rows in grouped_rows.items():
                 part = parts[int(part_index)]
                 frame = part.context.get(group)
                 if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
                     continue
-                row_context = _prepare_text_context_rows(frame, group)
-                if not row_context:
+                index_start = time.perf_counter()
+                index = self._text_context_index(frame, group, max_chunks=max_chunks, token_width=token_width)
+                profile["text_index_seconds"] = float(profile["text_index_seconds"]) + (time.perf_counter() - index_start)
+                if index.item_count <= 0:
                     continue
-                for output_row in rows:
-                    selected = _select_text_items(row_context, int(origin_timestamps[int(output_row)]), max_items=max_items)
-                    for item_index, item in enumerate(selected):
-                        item_mask[int(output_row), item_index] = True
-                        item_timestamp_us[int(output_row), item_index] = int(item["timestamp_us"])
-                        for token_row in item["rows"]:
-                            chunk_index = int(token_row.get("token_chunk_index", 0) or 0)
-                            if chunk_index < 0 or chunk_index >= max_chunks:
-                                continue
-                            ids = _cell_array(token_row.get("input_ids")).astype(np.int32, copy=False)
-                            mask = _cell_array(token_row.get("attention_mask")).astype(np.uint8, copy=False)
-                            width = min(token_width, int(ids.shape[0]), int(mask.shape[0]))
-                            if width <= 0:
-                                continue
-                            input_ids[int(output_row), item_index, chunk_index, :width] = ids[:width]
-                            attention_mask[int(output_row), item_index, chunk_index, :width] = mask[:width]
-                            chunk_mask[int(output_row), item_index, chunk_index] = bool(mask[:width].any())
+                select_start = time.perf_counter()
+                selected_indices, selected_mask = _select_text_item_indices(index, origin_timestamps[rows], max_items=max_items)
+                profile["text_select_seconds"] = float(profile["text_select_seconds"]) + (time.perf_counter() - select_start)
+                if not bool(selected_mask.any()):
+                    continue
+                gather_start = time.perf_counter()
+                safe_indices = np.where(selected_mask, selected_indices, 0)
+                gathered_ids = index.input_ids[safe_indices]
+                gathered_attention = index.attention_mask[safe_indices]
+                gathered_chunks = index.chunk_mask[safe_indices]
+                gathered_timestamps = index.timestamps_us[safe_indices]
+                invalid = ~selected_mask
+                if bool(invalid.any()):
+                    gathered_ids[invalid] = 0
+                    gathered_attention[invalid] = 0
+                    gathered_chunks[invalid] = False
+                    gathered_timestamps[invalid] = 0
+                input_ids[rows] = gathered_ids
+                attention_mask[rows] = gathered_attention
+                chunk_mask[rows] = gathered_chunks
+                item_mask[rows] = selected_mask
+                item_timestamp_us[rows] = gathered_timestamps
+                profile["text_gather_seconds"] = float(profile["text_gather_seconds"]) + (time.perf_counter() - gather_start)
             out[key] = {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
@@ -602,7 +645,18 @@ class TickerMonthBatchMaterializer:
                 "item_mask": item_mask,
                 "item_timestamp_us": item_timestamp_us,
             }
-        return out
+        return out, profile
+
+    def _text_context_index(self, frame: Any, group: str, *, max_chunks: int, token_width: int) -> TextContextIndex:
+        key = (id(frame), str(group), int(max_chunks), int(token_width))
+        cache = self._global_text_index_cache if str(group) == "market_news_tokens" else self._text_index_cache
+        with self._text_index_lock:
+            cached = cache.get(key)
+            if cached is not None:
+                return cached
+            index = _prepare_text_context_index(frame, group, max_chunks=max_chunks, token_width=token_width)
+            cache[key] = index
+            return index
 
     def _materialize_encoded(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[np.ndarray, np.ndarray]:
         starts = self._window_starts(parts, refs)
@@ -789,35 +843,38 @@ class AsyncTickerMonthBatchLoader:
                 emitted_from_group = 0
                 group_profile_attached = False
                 materialize_size = int(self.config.materialize_chunk_size) or int(self.config.batch_size)
-                with ThreadPoolExecutor(max_workers=max(1, int(self.config.materialize_workers)), thread_name_prefix="tmc-materialize") as mat_pool:
-                    materialized = _materialize_bounded(
-                        mat_pool,
-                        self.materializer,
-                        loaded,
-                        _batched_refs(refs, materialize_size),
-                        preserve_order=bool(self.config.preserve_batch_order),
-                    )
-                    for chunk in materialized:
-                        chunk_ready_start = time.perf_counter()
-                        if chunk.sample_count == 0:
-                            continue
-                        for batch in ready.add(chunk):
-                            batch.profile["ready_concat_seconds"] = float(batch.profile.get("ready_concat_seconds", 0.0)) + (time.perf_counter() - chunk_ready_start)
-                            if not group_profile_attached:
-                                for key, value in group_profile.items():
-                                    batch.profile[key] = float(batch.profile.get(key, 0.0)) + float(value)
-                                group_profile_attached = True
-                            batch = self._apply_epoch_sample_cap(batch)
-                            if batch.sample_count == 0:
-                                return
-                            emitted_from_group += _count_batch_samples_for_part_keys(batch, group_keys)
-                            self.state.origin_cursor = int(group_origin_base) + int(emitted_from_group)
-                            self._record_emitted_batch(batch)
-                            yield batch
-                            if int(self.config.max_batches) > 0 and int(self.state.emitted_batches) >= int(self.config.max_batches):
-                                return
-                            if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
-                                return
+                try:
+                    with ThreadPoolExecutor(max_workers=max(1, int(self.config.materialize_workers)), thread_name_prefix="tmc-materialize") as mat_pool:
+                        materialized = _materialize_bounded(
+                            mat_pool,
+                            self.materializer,
+                            loaded,
+                            _batched_refs(refs, materialize_size),
+                            preserve_order=bool(self.config.preserve_batch_order),
+                        )
+                        for chunk in materialized:
+                            chunk_ready_start = time.perf_counter()
+                            if chunk.sample_count == 0:
+                                continue
+                            for batch in ready.add(chunk):
+                                batch.profile["ready_concat_seconds"] = float(batch.profile.get("ready_concat_seconds", 0.0)) + (time.perf_counter() - chunk_ready_start)
+                                if not group_profile_attached:
+                                    for key, value in group_profile.items():
+                                        batch.profile[key] = float(batch.profile.get(key, 0.0)) + float(value)
+                                    group_profile_attached = True
+                                batch = self._apply_epoch_sample_cap(batch)
+                                if batch.sample_count == 0:
+                                    return
+                                emitted_from_group += _count_batch_samples_for_part_keys(batch, group_keys)
+                                self.state.origin_cursor = int(group_origin_base) + int(emitted_from_group)
+                                self._record_emitted_batch(batch)
+                                yield batch
+                                if int(self.config.max_batches) > 0 and int(self.state.emitted_batches) >= int(self.config.max_batches):
+                                    return
+                                if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
+                                    return
+                finally:
+                    self.materializer.clear_text_context_cache()
                 self.state.origin_cursor = 0
                 self.state.package_position = int(group_start) + len(group_plans)
                 if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
@@ -1060,6 +1117,110 @@ def _select_text_items(items: Sequence[Mapping[str, Any]], origin_timestamp_us: 
         return []
     selected = [item for item in items if int(item.get("timestamp_us") or 0) <= int(origin_timestamp_us)]
     return selected[: int(max_items)]
+
+
+def _prepare_text_context_index(frame: Any, group: str, *, max_chunks: int, token_width: int) -> TextContextIndex:
+    max_chunks = max(1, int(max_chunks))
+    token_width = max(1, int(token_width))
+    if int(getattr(frame, "height", 0) or 0) <= 0:
+        return _empty_text_context_index(max_chunks=max_chunks, token_width=token_width)
+    required = {"timestamp_us", "token_chunk_index", "input_ids", "attention_mask"}
+    if not required.issubset(set(getattr(frame, "columns", ()))):
+        return _empty_text_context_index(max_chunks=max_chunks, token_width=token_width)
+    height = int(frame.height)
+    timestamps = frame.get_column("timestamp_us").to_numpy().astype(np.int64, copy=False)
+    chunk_indices = frame.get_column("token_chunk_index").to_numpy()
+    input_values = frame.get_column("input_ids").to_numpy()
+    mask_values = frame.get_column("attention_mask").to_numpy()
+    columns = set(frame.columns)
+    source_id = _optional_frame_column(frame, "source_id", "")
+    if group == "sec_filing_tokens":
+        accession_number = _optional_frame_column(frame, "accession_number", "")
+        document_id = _optional_frame_column(frame, "document_id", "")
+        text_rank = _optional_frame_column(frame, "text_rank", 0)
+        grouped: dict[tuple[Any, ...], list[int]] = {}
+        item_timestamp: dict[tuple[Any, ...], int] = {}
+        for row_index in range(height):
+            key = (
+                str(accession_number[row_index] if "accession_number" in columns else ""),
+                str(document_id[row_index] if "document_id" in columns else ""),
+                _safe_int(text_rank[row_index] if "text_rank" in columns else 0),
+                str(source_id[row_index] if "source_id" in columns else ""),
+            )
+            grouped.setdefault(key, []).append(row_index)
+            item_timestamp[key] = max(int(item_timestamp.get(key, 0)), int(timestamps[row_index]))
+    else:
+        provider_article_id = _optional_frame_column(frame, "provider_article_id", "")
+        text_hash = _optional_frame_column(frame, "text_hash", "")
+        grouped = {}
+        item_timestamp = {}
+        for row_index in range(height):
+            key = (
+                str(source_id[row_index] if "source_id" in columns else ""),
+                str(provider_article_id[row_index] if "provider_article_id" in columns else ""),
+                str(text_hash[row_index] if "text_hash" in columns else ""),
+            )
+            grouped.setdefault(key, []).append(row_index)
+            item_timestamp[key] = max(int(item_timestamp.get(key, 0)), int(timestamps[row_index]))
+    items = sorted(((int(item_timestamp[key]), key, rows) for key, rows in grouped.items()), key=lambda item: (item[0], item[1]))
+    if not items:
+        return _empty_text_context_index(max_chunks=max_chunks, token_width=token_width)
+    out_timestamps = np.empty((len(items),), dtype=np.int64)
+    out_ids = np.zeros((len(items), max_chunks, token_width), dtype=np.int32)
+    out_masks = np.zeros((len(items), max_chunks, token_width), dtype=np.uint8)
+    out_chunk_mask = np.zeros((len(items), max_chunks), dtype=np.bool_)
+    for item_index, (timestamp_us, _key, rows) in enumerate(items):
+        out_timestamps[item_index] = int(timestamp_us)
+        rows = sorted(rows, key=lambda row: _safe_int(chunk_indices[row]))
+        for row_index in rows:
+            chunk_index = _safe_int(chunk_indices[row_index])
+            if chunk_index < 0 or chunk_index >= max_chunks:
+                continue
+            ids = _cell_array(input_values[row_index]).astype(np.int32, copy=False)
+            mask = _cell_array(mask_values[row_index]).astype(np.uint8, copy=False)
+            width = min(token_width, int(ids.shape[0]), int(mask.shape[0]))
+            if width <= 0:
+                continue
+            out_ids[item_index, chunk_index, :width] = ids[:width]
+            out_masks[item_index, chunk_index, :width] = mask[:width]
+            out_chunk_mask[item_index, chunk_index] = bool(mask[:width].any())
+    return TextContextIndex(timestamps_us=out_timestamps, input_ids=out_ids, attention_mask=out_masks, chunk_mask=out_chunk_mask)
+
+
+def _select_text_item_indices(index: TextContextIndex, origin_timestamps_us: np.ndarray, *, max_items: int) -> tuple[np.ndarray, np.ndarray]:
+    origins = np.asarray(origin_timestamps_us, dtype=np.int64)
+    max_items = max(0, int(max_items))
+    if max_items <= 0 or index.item_count <= 0 or origins.shape[0] <= 0:
+        return np.full((int(origins.shape[0]), max_items), -1, dtype=np.int64), np.zeros((int(origins.shape[0]), max_items), dtype=np.bool_)
+    rightmost = np.searchsorted(index.timestamps_us, origins, side="right") - 1
+    offsets = np.arange(max_items, dtype=np.int64)
+    indices = rightmost[:, None] - offsets[None, :]
+    valid = indices >= 0
+    return np.where(valid, indices, -1).astype(np.int64, copy=False), valid
+
+
+def _empty_text_context_index(*, max_chunks: int, token_width: int) -> TextContextIndex:
+    return TextContextIndex(
+        timestamps_us=np.zeros((0,), dtype=np.int64),
+        input_ids=np.zeros((0, max(1, int(max_chunks)), max(1, int(token_width))), dtype=np.int32),
+        attention_mask=np.zeros((0, max(1, int(max_chunks)), max(1, int(token_width))), dtype=np.uint8),
+        chunk_mask=np.zeros((0, max(1, int(max_chunks))), dtype=np.bool_),
+    )
+
+
+def _optional_frame_column(frame: Any, name: str, default: Any) -> np.ndarray:
+    if name in getattr(frame, "columns", ()):
+        return frame.get_column(name).to_numpy()
+    return np.full((int(getattr(frame, "height", 0) or 0),), default, dtype=object)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return int(default)
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return int(default)
 
 
 def _sample_refs_for_loaded_parts(
