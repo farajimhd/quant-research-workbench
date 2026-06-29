@@ -21,6 +21,7 @@ from research.mlops.rolling_loader.run_profile_ticker_month_loader import DEFAUL
 from research.mlops.rolling_loader.ticker_month_cache import DEFAULT_TICKER_MONTH_CACHE_ROOT, jsonable, write_json_atomic
 from research.mlops.rolling_loader.ticker_month_dataset import (
     AsyncTickerMonthBatchLoader,
+    BAR_CONTEXT_GROUPS,
     LoadedTickerMonthPart,
     TEXT_INPUT_GROUP_TO_KEY,
     TEXT_CONTEXT_GROUPS,
@@ -30,13 +31,15 @@ from research.mlops.rolling_loader.ticker_month_dataset import (
     TickerMonthTrainingBatch,
     _label_values_for_origin,
     _part_key,
+    _prepare_daily_bar_context_index,
     _prepare_text_context_index,
+    _select_completed_bar_rows,
     _select_text_item_indices,
 )
 
 
 DEFAULT_AUDIT_REPORT_PATH = DEFAULT_PROFILE_REPORT_PATH.with_name("ticker_month_loader_batch_audit.json")
-DEFAULT_AUDIT_DATA_GROUPS = "events,intraday_labels,ticker_news_tokens,market_news_tokens,sec_filing_tokens"
+DEFAULT_AUDIT_DATA_GROUPS = "events,intraday_labels,ticker_news_tokens,market_news_tokens,sec_filing_tokens,daily_bars,global_daily_bars"
 
 
 @dataclass(slots=True)
@@ -95,6 +98,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--market-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_token_chunks"])
     parser.add_argument("--sec-filing-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_token_chunks"])
     parser.add_argument("--text-max-tokens", type=int, default=DEFAULT_PROFILE_CONFIG["text_max_tokens"])
+    parser.add_argument("--ticker-daily-bar-offsets", default=DEFAULT_PROFILE_CONFIG["ticker_daily_bar_offsets"])
+    parser.add_argument("--global-daily-bar-offsets", default=DEFAULT_PROFILE_CONFIG["global_daily_bar_offsets"])
+    parser.add_argument("--daily-bar-completion-lag-hours", type=float, default=DEFAULT_PROFILE_CONFIG["daily_bar_completion_lag_hours"])
     parser.add_argument("--loaded-parts-per-group", type=int, default=DEFAULT_PROFILE_CONFIG["loaded_parts_per_group"])
     parser.add_argument("--read-workers", type=int, default=DEFAULT_PROFILE_CONFIG["read_workers"])
     parser.add_argument("--materialize-workers", type=int, default=DEFAULT_PROFILE_CONFIG["materialize_workers"])
@@ -136,7 +142,7 @@ def run_audit(config: LoaderBatchAuditConfig) -> LoaderBatchAuditResult:
     loader = AsyncTickerMonthBatchLoader(config.loader_config)
     part_map = {_part_key(plan): plan for plan in loader.index.parts}
     part_cache: dict[str, LoadedTickerMonthPart] = {}
-    context_groups = tuple(group for group in config.loader_config.data_groups if group in TEXT_CONTEXT_GROUPS.union({"xbrl", "daily_bars"}))
+    context_groups = tuple(group for group in config.loader_config.data_groups if group in TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).union({"xbrl"}))
     reader_groups = ("events", "intraday_labels", *context_groups)
     reader = TickerMonthPartReader(reader_groups, include_external_context=bool(config.loader_config.include_external_context or context_groups))
     rng = np.random.default_rng(int(config.seed))
@@ -147,6 +153,7 @@ def run_audit(config: LoaderBatchAuditConfig) -> LoaderBatchAuditResult:
         "raw_stream_rows_checked": 0,
         "label_rows_checked": 0,
         "text_rows_checked": 0,
+        "bar_rows_checked": 0,
         "context_parts_checked": 0,
         "duplicate_identities": 0,
     }
@@ -174,6 +181,7 @@ def run_audit(config: LoaderBatchAuditConfig) -> LoaderBatchAuditResult:
                 part_map=part_map,
                 part_cache=part_cache,
                 reader=reader,
+                loader_config=config.loader_config,
                 issues=issues,
                 totals=totals,
             )
@@ -230,6 +238,9 @@ def _loader_config_from_args(args: argparse.Namespace) -> TickerMonthLoaderConfi
         market_news_token_chunks=max(1, int(args.market_news_token_chunks)),
         sec_filing_token_chunks=max(1, int(args.sec_filing_token_chunks)),
         text_max_tokens=max(1, int(args.text_max_tokens)),
+        ticker_daily_bar_offsets=tuple(int(item.strip()) for item in str(args.ticker_daily_bar_offsets).split(",") if item.strip()),
+        global_daily_bar_offsets=tuple(int(item.strip()) for item in str(args.global_daily_bar_offsets).split(",") if item.strip()),
+        daily_bar_completion_lag_hours=max(0.0, float(args.daily_bar_completion_lag_hours)),
         loaded_parts_per_group=max(1, int(args.loaded_parts_per_group)),
         read_workers=max(1, int(args.read_workers)),
         materialize_workers=max(1, int(args.materialize_workers)),
@@ -265,6 +276,11 @@ def _check_batch_shapes(batch: TickerMonthTrainingBatch, issues: list[AuditIssue
         for field, values in payload.items():
             if int(values.shape[0]) != n:
                 issues.append(AuditIssue("error", "text_shape_mismatch", f"{name}.{field} row count does not match sample count.", {"batch": batch_index, "name": name, "field": field, "shape": list(values.shape), "samples": n}))
+    for name, payload in batch.bar_inputs.items():
+        for field in ("values", "mask"):
+            values = payload.get(field)
+            if values is not None and int(values.shape[0]) != n:
+                issues.append(AuditIssue("error", "bar_shape_mismatch", f"{name}.{field} row count does not match sample count.", {"batch": batch_index, "name": name, "field": field, "shape": list(values.shape), "samples": n}))
 
 
 def _check_duplicate_identities(batch: TickerMonthTrainingBatch, seen: set[tuple[str, int]], issues: list[AuditIssue], totals: dict[str, int], *, batch_index: int) -> None:
@@ -297,6 +313,7 @@ def _audit_batch_row(
     part_map: Mapping[str, TickerMonthPartPlan],
     part_cache: dict[str, LoadedTickerMonthPart],
     reader: TickerMonthPartReader,
+    loader_config: TickerMonthLoaderConfig,
     issues: list[AuditIssue],
     totals: dict[str, int],
 ) -> None:
@@ -324,6 +341,8 @@ def _audit_batch_row(
         _check_intraday_labels(batch, row, part, origin_ordinal, issues, totals, batch_index=batch_index, part_key=part_key)
     if batch.text_inputs:
         _check_text_inputs(batch, row, part, origin_timestamp_us, issues, totals, batch_index=batch_index, part_key=part_key)
+    if batch.bar_inputs:
+        _check_bar_inputs(batch, row, part, origin_timestamp_us, loader_config, issues, totals, batch_index=batch_index, part_key=part_key)
     _check_context_files(part, origin_timestamp_us, issues, totals, batch_index=batch_index, row=row, part_key=part_key)
     totals["samples_checked"] += 1
 
@@ -474,6 +493,72 @@ def _check_text_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTi
         totals["text_rows_checked"] += 1
 
 
+def _check_bar_inputs(
+    batch: TickerMonthTrainingBatch,
+    row: int,
+    part: LoadedTickerMonthPart,
+    origin_timestamp_us: int,
+    config: TickerMonthLoaderConfig,
+    issues: list[AuditIssue],
+    totals: dict[str, int],
+    *,
+    batch_index: int,
+    part_key: str,
+) -> None:
+    completion_lag_ms = int(max(0.0, float(config.daily_bar_completion_lag_hours)) * 3_600_000.0)
+    cutoff_ms = np.asarray([int(origin_timestamp_us) // 1000 - completion_lag_ms], dtype=np.int64)
+    if "ticker_daily_bars" in batch.bar_inputs:
+        payload = batch.bar_inputs["ticker_daily_bars"]
+        frame = part.context.get("daily_bars")
+        if frame is None:
+            issues.append(AuditIssue("error", "ticker_daily_bars_not_loaded", "Batch has ticker daily bars but source daily_bars was not loaded.", {"batch": batch_index, "row": row, "source_part_key": part_key}))
+        else:
+            index = _prepare_daily_bar_context_index(frame)
+            symbol = str(part.plan.ticker).upper()
+            offsets = np.asarray(payload.get("offsets"), dtype=np.int64)
+            expected_values, expected_mask = _expected_bar_values(index, symbol, cutoff_ms, offsets)
+            _compare_bar_payload(payload, row, expected_values[0], expected_mask[0], "ticker_daily_bars", issues, batch_index=batch_index, part_key=part_key)
+            totals["bar_rows_checked"] += 1
+    if "global_daily_bars" in batch.bar_inputs:
+        payload = batch.bar_inputs["global_daily_bars"]
+        frame = part.context.get("global_daily_bars")
+        if frame is None:
+            issues.append(AuditIssue("error", "global_daily_bars_not_loaded", "Batch has global daily bars but source global_daily_bars was not loaded.", {"batch": batch_index, "row": row, "source_part_key": part_key}))
+        else:
+            index = _prepare_daily_bar_context_index(frame)
+            offsets = np.asarray(payload.get("offsets"), dtype=np.int64)
+            symbols = tuple(str(symbol).upper() for symbol in np.asarray(payload.get("symbols", np.asarray([], dtype=object))).reshape(-1))
+            expected_values = np.zeros_like(payload["values"][row])
+            expected_mask = np.zeros_like(payload["mask"][row])
+            for symbol_index, symbol in enumerate(symbols):
+                values, mask = _expected_bar_values(index, symbol, cutoff_ms, offsets)
+                expected_values[symbol_index] = values[0]
+                expected_mask[symbol_index] = mask[0]
+            _compare_bar_payload(payload, row, expected_values, expected_mask, "global_daily_bars", issues, batch_index=batch_index, part_key=part_key)
+            totals["bar_rows_checked"] += 1
+
+
+def _expected_bar_values(index: Any, symbol: str, cutoff_ms: np.ndarray, offsets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    values = np.zeros((int(cutoff_ms.shape[0]), int(offsets.shape[0]), 9), dtype=np.float32)
+    mask = np.zeros((int(cutoff_ms.shape[0]), int(offsets.shape[0])), dtype=np.bool_)
+    if str(symbol) not in index.bar_start_ms_by_symbol:
+        return values, mask
+    rows, mask = _select_completed_bar_rows(index.bar_start_ms_by_symbol[str(symbol)], cutoff_ms, offsets)
+    if bool(mask.any()):
+        values = index.values_by_symbol[str(symbol)][np.where(mask, rows, 0)]
+        values[~mask] = 0.0
+    return values, mask
+
+
+def _compare_bar_payload(payload: Mapping[str, np.ndarray], row: int, expected_values: np.ndarray, expected_mask: np.ndarray, name: str, issues: list[AuditIssue], *, batch_index: int, part_key: str) -> None:
+    actual_values = payload["values"][row]
+    actual_mask = payload["mask"][row]
+    if actual_values.shape != expected_values.shape or not bool(np.allclose(actual_values, expected_values, rtol=0.0, atol=0.0, equal_nan=True)):
+        issues.append(AuditIssue("error", "bar_value_mismatch", f"{name} tensor does not match source daily bars.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual_shape": list(actual_values.shape), "expected_shape": list(expected_values.shape)}))
+    if actual_mask.shape != expected_mask.shape or not bool(np.array_equal(actual_mask, expected_mask)):
+        issues.append(AuditIssue("error", "bar_mask_mismatch", f"{name} mask does not match source daily bars.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual_shape": list(actual_mask.shape), "expected_shape": list(expected_mask.shape)}))
+
+
 def _check_deterministic_first_batch(config: TickerMonthLoaderConfig, first_batch: TickerMonthTrainingBatch | None, issues: list[AuditIssue]) -> None:
     if first_batch is None:
         issues.append(AuditIssue("error", "determinism_no_batch", "Cannot check determinism because no first batch was emitted."))
@@ -533,6 +618,13 @@ def _compare_batches(left: TickerMonthTrainingBatch, right: TickerMonthTrainingB
         for field in set(left.text_inputs[name]).union(right.text_inputs[name]):
             if field not in left.text_inputs[name] or field not in right.text_inputs[name] or not np.array_equal(left.text_inputs[name][field], right.text_inputs[name][field]):
                 issues.append(AuditIssue("error", code, message, {"field": f"text_inputs.{name}.{field}"}))
+    for name in set(left.bar_inputs).union(right.bar_inputs):
+        if name not in left.bar_inputs or name not in right.bar_inputs:
+            issues.append(AuditIssue("error", code, message, {"field": f"bar_inputs.{name}"}))
+            continue
+        for field in set(left.bar_inputs[name]).union(right.bar_inputs[name]):
+            if field not in left.bar_inputs[name] or field not in right.bar_inputs[name] or not np.array_equal(left.bar_inputs[name][field], right.bar_inputs[name][field]):
+                issues.append(AuditIssue("error", code, message, {"field": f"bar_inputs.{name}.{field}"}))
 
 
 def _issue_counts(issues: Sequence[AuditIssue]) -> dict[str, int]:

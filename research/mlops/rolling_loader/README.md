@@ -201,6 +201,11 @@ Global context is stored once per month under `global/` where available.
 Missing optional context is represented as empty/zero data plus explicit masks
 at load time. Missing optional context is not an error by itself.
 
+At load time, daily bar context is emitted only when requested in
+`data_groups`. The loader uses completed daily bars only. It does not expose a
+full current-day daily bar as context because that would include future
+information for intraday origins.
+
 ## Build Cache
 
 Workstation form:
@@ -411,6 +416,7 @@ market_news_tokens
 sec_filing_tokens
 xbrl
 daily_bars
+global_daily_bars
 ```
 
 Examples:
@@ -419,6 +425,7 @@ Examples:
 events
 events,intraday_labels
 ticker_news_tokens,market_news_tokens,sec_filing_tokens
+events,intraday_labels,daily_bars,global_daily_bars
 ```
 
 For event-only pretraining, use:
@@ -526,6 +533,7 @@ future_intraday_bars
 future_intraday_bar_mask
 input_availability
 text_inputs
+bar_inputs
 external_context
 profile
 ```
@@ -555,6 +563,26 @@ market_news_max_items: 16
 sec_filing_max_items: 4
 text_max_tokens: 1024
 ```
+
+When daily/global bar groups are requested, `bar_inputs` contains:
+
+```text
+bar_inputs["ticker_daily_bars"]["values"]    [B, ticker_daily_bar_offsets, 9]
+bar_inputs["ticker_daily_bars"]["mask"]      [B, ticker_daily_bar_offsets]
+bar_inputs["global_daily_bars"]["values"]    [B, global_symbols, global_daily_bar_offsets, 9]
+bar_inputs["global_daily_bars"]["mask"]      [B, global_symbols, global_daily_bar_offsets]
+bar_inputs[*]["offsets"]                     completed daily-bar row offsets
+bar_inputs[*]["feature_names"]               open, high, low, close, volume, dollar_volume, trade_count, quote_count, vwap
+```
+
+The default ticker offsets are `1,2,3,7,14,28,40,200`. The default global
+offsets are `1,2,7`. Bars are selected with a completion lag before they become
+eligible, so a full current-day daily bar is not used for an intraday origin.
+
+Pivoted intraday label files are expected to have one row per saved origin.
+The loader first checks whether label rows are already origin-row aligned. If
+they are not, it builds a strict origin-ordinal to label-row map and gathers
+only the label rows requested by the current materialization chunk.
 
 ## Profile Loader
 

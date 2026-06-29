@@ -37,6 +37,25 @@ TEXT_INPUT_GROUP_TO_KEY = {
     "market_news_tokens": "market_news",
     "sec_filing_tokens": "sec_filings",
 }
+BAR_CONTEXT_GROUPS = {"daily_bars", "global_daily_bars"}
+BAR_INPUT_GROUP_TO_KEY = {
+    "daily_bars": "ticker_daily_bars",
+    "global_daily_bars": "global_daily_bars",
+}
+BAR_FEATURE_KEYS: tuple[str, ...] = (
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "dollar_volume",
+    "trade_count",
+    "quote_count",
+    "vwap",
+)
+DEFAULT_TICKER_DAILY_BAR_OFFSETS = (1, 2, 3, 7, 14, 28, 40, 200)
+DEFAULT_GLOBAL_DAILY_BAR_OFFSETS = (1, 2, 7)
+DEFAULT_DAILY_BAR_COMPLETION_LAG_HOURS = 30.0
 LABEL_VALUE_DTYPES: dict[str, np.dtype] = {
     "price_primary_int": np.dtype(np.int32),
     "price_secondary_int": np.dtype(np.int32),
@@ -99,6 +118,9 @@ class TickerMonthLoaderConfig:
     market_news_token_chunks: int = 2
     sec_filing_token_chunks: int = 8
     text_max_tokens: int = 1024
+    ticker_daily_bar_offsets: tuple[int, ...] = DEFAULT_TICKER_DAILY_BAR_OFFSETS
+    global_daily_bar_offsets: tuple[int, ...] = DEFAULT_GLOBAL_DAILY_BAR_OFFSETS
+    daily_bar_completion_lag_hours: float = DEFAULT_DAILY_BAR_COMPLETION_LAG_HOURS
     event_columns: tuple[str, ...] = ()
     suppress_event_columns: tuple[str, ...] = DEFAULT_SUPPRESSED_EVENT_COLUMNS
     dataset_id: str = ""
@@ -196,11 +218,19 @@ class TextContextIndex:
 @dataclass(slots=True)
 class LabelContextIndex:
     ordinals: np.ndarray
-    values: dict[str, np.ndarray]
+    label_rows: np.ndarray
+    missing_mask: np.ndarray
 
     @property
     def row_count(self) -> int:
         return int(self.ordinals.shape[0])
+
+
+@dataclass(slots=True)
+class DailyBarContextIndex:
+    symbols: tuple[str, ...]
+    bar_start_ms_by_symbol: dict[str, np.ndarray]
+    values_by_symbol: dict[str, np.ndarray]
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +259,7 @@ class TickerMonthTrainingBatch:
     future_intraday_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
     input_availability: dict[str, np.ndarray] = field(default_factory=dict)
     text_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
+    bar_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
     external_context: dict[str, Any] = field(default_factory=dict)
     profile: dict[str, float | int] = field(default_factory=dict)
 
@@ -391,7 +422,7 @@ class TickerMonthPartReader:
             loaded.windows = pl.read_parquet(plan.package_dir / plan.files["event_window_index"])
         if need_labels:
             loaded.labels = pl.read_parquet(plan.package_dir / plan.files["intraday_forward_labels"])
-        if self.include_external_context or bool(TEXT_CONTEXT_GROUPS.intersection(self.data_groups)):
+        if self.include_external_context or bool(TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).intersection(self.data_groups)):
             for key, filename in _package_context_files(plan.package_dir).items():
                 if key in self.data_groups:
                     loaded.context[key] = pl.read_parquet(plan.package_dir / filename)
@@ -401,6 +432,12 @@ class TickerMonthPartReader:
                 if cache_key not in self._global_context_cache:
                     self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
                 loaded.context["market_news_tokens"] = self._global_context_cache[cache_key]
+            if "global_daily_bars" in self.data_groups:
+                global_path = _month_global_dir(plan.package_dir) / "global_daily_bars.parquet"
+                cache_key = (global_path, "global_daily_bars")
+                if cache_key not in self._global_context_cache:
+                    self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
+                loaded.context["global_daily_bars"] = self._global_context_cache[cache_key]
         return loaded
 
 
@@ -411,8 +448,10 @@ class TickerMonthBatchMaterializer:
         self._text_index_cache: dict[tuple[int, str, int, int], TextContextIndex] = {}
         self._global_text_index_cache: dict[tuple[int, str, int, int], TextContextIndex] = {}
         self._text_index_lock = threading.Lock()
-        self._label_index_cache: dict[tuple[int, int], LabelContextIndex] = {}
+        self._label_index_cache: dict[tuple[int, int, int], LabelContextIndex] = {}
         self._label_index_lock = threading.Lock()
+        self._bar_index_cache: dict[int, DailyBarContextIndex] = {}
+        self._bar_index_lock = threading.Lock()
         self.coverage_events = max(self.context_lags, default=0) + int(self.config.events_per_window)
         if self.config.event_output_mode == "raw_stream":
             self.coverage_events = int(self.config.event_stream_length)
@@ -482,6 +521,14 @@ class TickerMonthBatchMaterializer:
                 availability[f"{key}_available"] = chunk_mask.reshape((len(refs), -1)).any(axis=1)
         profile.update(text_profile)
         profile["text_seconds"] = time.perf_counter() - text_start
+        bar_start = time.perf_counter()
+        bar_inputs, bar_profile = self._materialize_bar_inputs(parts, refs)
+        for key, value in bar_inputs.items():
+            bar_mask = value.get("mask")
+            if bar_mask is not None:
+                availability[f"{key}_available"] = bar_mask.reshape((len(refs), -1)).any(axis=1)
+        profile.update(bar_profile)
+        profile["bar_seconds"] = time.perf_counter() - bar_start
         external_context = {}
         context_start = time.perf_counter()
         if self.config.include_external_context:
@@ -507,6 +554,7 @@ class TickerMonthBatchMaterializer:
             future_intraday_bar_mask=future_mask,
             input_availability=availability,
             text_inputs=text_inputs,
+            bar_inputs=bar_inputs,
             external_context=external_context,
             profile=profile,
         )
@@ -682,6 +730,103 @@ class TickerMonthBatchMaterializer:
             cache[key] = index
             return index
 
+    def _materialize_bar_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
+        requested = [group for group in ("daily_bars", "global_daily_bars") if group in self.config.data_groups]
+        if not requested:
+            return {}, {}
+        out: dict[str, dict[str, np.ndarray]] = {}
+        profile: dict[str, float | int] = {
+            "bar_index_seconds": 0.0,
+            "bar_select_seconds": 0.0,
+            "bar_gather_seconds": 0.0,
+        }
+        origin_timestamps_ms = _identity_arrays(parts, refs)[2] // 1000
+        completion_lag_ms = int(max(0.0, float(self.config.daily_bar_completion_lag_hours)) * 3_600_000.0)
+        cutoff_ms = origin_timestamps_ms - completion_lag_ms
+        grouped_rows = _rows_by_part(refs)
+        for group in requested:
+            key = BAR_INPUT_GROUP_TO_KEY[group]
+            offsets = np.asarray(_bar_offsets_for_group(self.config, group), dtype=np.int64)
+            if group == "daily_bars":
+                values = np.zeros((len(refs), int(offsets.shape[0]), len(BAR_FEATURE_KEYS)), dtype=np.float32)
+                mask = np.zeros((len(refs), int(offsets.shape[0])), dtype=np.bool_)
+                for part_index, rows in grouped_rows.items():
+                    part = parts[int(part_index)]
+                    frame = part.context.get(group)
+                    if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+                        continue
+                    index_start = time.perf_counter()
+                    index = self._daily_bar_context_index(frame)
+                    profile["bar_index_seconds"] = float(profile["bar_index_seconds"]) + (time.perf_counter() - index_start)
+                    symbol = str(part.plan.ticker).upper()
+                    if symbol not in index.bar_start_ms_by_symbol:
+                        continue
+                    select_start = time.perf_counter()
+                    selected, selected_mask = _select_completed_bar_rows(index.bar_start_ms_by_symbol[symbol], cutoff_ms[rows], offsets)
+                    profile["bar_select_seconds"] = float(profile["bar_select_seconds"]) + (time.perf_counter() - select_start)
+                    if not bool(selected_mask.any()):
+                        continue
+                    gather_start = time.perf_counter()
+                    gathered = index.values_by_symbol[symbol][np.where(selected_mask, selected, 0)]
+                    gathered[~selected_mask] = 0.0
+                    values[rows] = gathered
+                    mask[rows] = selected_mask
+                    profile["bar_gather_seconds"] = float(profile["bar_gather_seconds"]) + (time.perf_counter() - gather_start)
+                out[key] = {
+                    "values": values,
+                    "mask": mask,
+                    "offsets": offsets.astype(np.int32, copy=False),
+                    "feature_names": np.asarray(BAR_FEATURE_KEYS, dtype=object),
+                }
+                continue
+            symbols: tuple[str, ...] = ()
+            values = np.zeros((len(refs), 0, int(offsets.shape[0]), len(BAR_FEATURE_KEYS)), dtype=np.float32)
+            mask = np.zeros((len(refs), 0, int(offsets.shape[0])), dtype=np.bool_)
+            symbol_array = np.asarray([], dtype=object)
+            for part_index, rows in grouped_rows.items():
+                part = parts[int(part_index)]
+                frame = part.context.get(group)
+                if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+                    continue
+                index_start = time.perf_counter()
+                index = self._daily_bar_context_index(frame)
+                profile["bar_index_seconds"] = float(profile["bar_index_seconds"]) + (time.perf_counter() - index_start)
+                if not symbols:
+                    symbols = index.symbols
+                    values = np.zeros((len(refs), len(symbols), int(offsets.shape[0]), len(BAR_FEATURE_KEYS)), dtype=np.float32)
+                    mask = np.zeros((len(refs), len(symbols), int(offsets.shape[0])), dtype=np.bool_)
+                    symbol_array = np.asarray(symbols, dtype=object)
+                gather_start = time.perf_counter()
+                for symbol_index, symbol in enumerate(symbols):
+                    if symbol not in index.bar_start_ms_by_symbol:
+                        continue
+                    selected, selected_mask = _select_completed_bar_rows(index.bar_start_ms_by_symbol[symbol], cutoff_ms[rows], offsets)
+                    if not bool(selected_mask.any()):
+                        continue
+                    gathered = index.values_by_symbol[symbol][np.where(selected_mask, selected, 0)]
+                    gathered[~selected_mask] = 0.0
+                    values[rows, symbol_index] = gathered
+                    mask[rows, symbol_index] = selected_mask
+                profile["bar_gather_seconds"] = float(profile["bar_gather_seconds"]) + (time.perf_counter() - gather_start)
+            out[key] = {
+                "values": values,
+                "mask": mask,
+                "offsets": offsets.astype(np.int32, copy=False),
+                "symbols": symbol_array,
+                "feature_names": np.asarray(BAR_FEATURE_KEYS, dtype=object),
+            }
+        return out, profile
+
+    def _daily_bar_context_index(self, frame: Any) -> DailyBarContextIndex:
+        key = id(frame)
+        with self._bar_index_lock:
+            cached = self._bar_index_cache.get(key)
+            if cached is not None:
+                return cached
+            index = _prepare_daily_bar_context_index(frame)
+            self._bar_index_cache[key] = index
+            return index
+
     def _materialize_encoded(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[np.ndarray, np.ndarray]:
         starts = self._window_starts(parts, refs)
         flat_count = len(refs) * len(self.context_lags)
@@ -761,15 +906,14 @@ class TickerMonthBatchMaterializer:
             origins = part.origin_array("origin_ordinal").astype(np.int64, copy=False)[origin_rows]
             if _labels_are_pivoted(part.labels):
                 index_start = time.perf_counter()
-                label_index = self._label_context_index(part.labels, horizon_count)
+                label_index = self._label_context_index(part, horizon_count)
                 profile["label_index_seconds"] = float(profile["label_index_seconds"]) + (time.perf_counter() - index_start)
                 lookup_start = time.perf_counter()
-                label_indices = np.searchsorted(label_index.ordinals, origins, side="left")
-                in_bounds = label_indices < label_index.ordinals.shape[0]
-                found = np.zeros((origins.shape[0],), dtype=np.bool_)
-                if np.any(in_bounds):
-                    valid_positions = np.flatnonzero(in_bounds)
-                    found[valid_positions] = label_index.ordinals[label_indices[valid_positions]] == origins[valid_positions]
+                max_origin_row = int(origin_rows.max()) if int(origin_rows.shape[0]) else -1
+                if label_index.row_count < max_origin_row + 1:
+                    raise RuntimeError(f"Origin/label index length mismatch for {part.plan.month}:{part.plan.ticker}:part_{part.plan.part_id:05d}.")
+                missing = label_index.missing_mask[origin_rows]
+                found = ~missing
                 profile["label_lookup_seconds"] = float(profile["label_lookup_seconds"]) + (time.perf_counter() - lookup_start)
                 if self.config.strict_audit and not bool(found.all()):
                     missing_pos = int(np.flatnonzero(~found)[0])
@@ -777,10 +921,10 @@ class TickerMonthBatchMaterializer:
                 if not np.any(found):
                     continue
                 output_rows = rows[found]
-                source_indices = label_indices[found]
+                source_indices = label_index.label_rows[origin_rows[found]]
                 gather_start = time.perf_counter()
                 for key, out in labels_out.items():
-                    out[output_rows] = label_index.values[key][source_indices]
+                    out[output_rows] = _label_column_matrix_for_rows(part.labels, key, source_indices, horizon_count, out.dtype)
                 profile["label_gather_seconds"] = float(profile["label_gather_seconds"]) + (time.perf_counter() - gather_start)
                 continue
             for output_row, origin in zip(rows, origins):
@@ -801,13 +945,13 @@ class TickerMonthBatchMaterializer:
         bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("volume")] = labels_out["size_primary_sum"].astype(np.float32, copy=False)
         return labels_out, bars, mask, horizons, profile
 
-    def _label_context_index(self, labels: Any, horizon_count: int) -> LabelContextIndex:
-        key = (id(labels), int(horizon_count))
+    def _label_context_index(self, part: LoadedTickerMonthPart, horizon_count: int) -> LabelContextIndex:
+        key = (id(part.origins), id(part.labels), int(horizon_count))
         with self._label_index_lock:
             cached = self._label_index_cache.get(key)
             if cached is not None:
                 return cached
-            index = _prepare_label_context_index(labels, int(horizon_count))
+            index = _prepare_label_context_index(part.origins, part.labels, int(horizon_count), strict=bool(self.config.strict_audit), part_key=_part_key(part.plan))
             self._label_index_cache[key] = index
             return index
 
@@ -1043,6 +1187,9 @@ def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoade
         market_news_token_chunks=max(1, int(config.market_news_token_chunks)),
         sec_filing_token_chunks=max(1, int(config.sec_filing_token_chunks)),
         text_max_tokens=max(1, int(config.text_max_tokens)),
+        ticker_daily_bar_offsets=tuple(max(1, int(value)) for value in config.ticker_daily_bar_offsets),
+        global_daily_bar_offsets=tuple(max(1, int(value)) for value in config.global_daily_bar_offsets),
+        daily_bar_completion_lag_hours=max(0.0, float(config.daily_bar_completion_lag_hours)),
         event_columns=tuple(str(column) for column in config.event_columns),
         suppress_event_columns=tuple(str(column) for column in config.suppress_event_columns),
         dataset_id=str(config.dataset_id),
@@ -1371,6 +1518,7 @@ def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> Tic
         future_intraday_bar_mask=_concat_optional_arrays([batch.future_intraday_bar_mask for batch in nonempty]),
         input_availability=availability,
         text_inputs=_concat_text_inputs(batch.text_inputs for batch in nonempty),
+        bar_inputs=_concat_bar_inputs(nonempty),
         external_context=_merge_external_context(nonempty),
         profile=profile,
     )
@@ -1399,6 +1547,7 @@ def _slice_training_batch(batch: TickerMonthTrainingBatch, start: int, end: int)
         future_intraday_bar_mask=batch.future_intraday_bar_mask[start:end] if batch.future_intraday_bar_mask.shape[0] else batch.future_intraday_bar_mask,
         input_availability={key: value[start:end] for key, value in batch.input_availability.items()},
         text_inputs={name: {key: value[start:end] for key, value in payload.items()} for name, payload in batch.text_inputs.items()},
+        bar_inputs={name: {key: _slice_batch_payload_field(value, start, end, int(batch.sample_count)) for key, value in payload.items()} for name, payload in batch.bar_inputs.items()},
         external_context=dict(batch.external_context),
         profile=profile,
     )
@@ -1428,6 +1577,33 @@ def _concat_text_inputs(items: Sequence[Mapping[str, Mapping[str, np.ndarray]]])
             for field in sorted(fields)
         }
     return out
+
+
+def _concat_bar_inputs(batches: Sequence[TickerMonthTrainingBatch]) -> dict[str, dict[str, np.ndarray]]:
+    names: set[str] = set()
+    for batch in batches:
+        names.update(batch.bar_inputs.keys())
+    out: dict[str, dict[str, np.ndarray]] = {}
+    for name in sorted(names):
+        fields: set[str] = set()
+        for batch in batches:
+            if name in batch.bar_inputs:
+                fields.update(batch.bar_inputs[name].keys())
+        payload: dict[str, np.ndarray] = {}
+        for field in sorted(fields):
+            values = [batch.bar_inputs[name][field] for batch in batches if name in batch.bar_inputs and field in batch.bar_inputs[name]]
+            if field in {"values", "mask"}:
+                payload[field] = np.concatenate(values, axis=0)
+            else:
+                payload[field] = values[0]
+        out[name] = payload
+    return out
+
+
+def _slice_batch_payload_field(value: np.ndarray, start: int, end: int, sample_count: int) -> np.ndarray:
+    if isinstance(value, np.ndarray) and value.shape[:1] and int(value.shape[0]) == int(sample_count):
+        return value[start:end]
+    return value
 
 
 def _slice_profile(profile: Mapping[str, float | int], source_samples: int, output_samples: int) -> dict[str, float | int]:
@@ -1783,23 +1959,48 @@ def _labels_are_pivoted(labels: Any) -> bool:
     return "list" in dtype_text or "array" in dtype_text
 
 
-def _prepare_label_context_index(labels: Any, expected: int) -> LabelContextIndex:
+def _prepare_label_context_index(origins: Any, labels: Any, expected: int, *, strict: bool, part_key: str) -> LabelContextIndex:
     expected = max(0, int(expected))
-    if labels is None or int(getattr(labels, "height", 0) or 0) <= 0:
+    if origins is None or int(getattr(origins, "height", 0) or 0) <= 0:
         return _empty_label_context_index(expected)
-    ordinals = labels.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)
-    rows = np.arange(int(ordinals.shape[0]), dtype=np.int64)
-    values: dict[str, np.ndarray] = {}
-    for key, dtype in LABEL_VALUE_DTYPES.items():
-        if key in labels.columns and _labels_are_pivoted(labels):
-            values[key] = _label_column_matrix(labels, key, expected, dtype)
-        else:
-            values[key] = np.zeros((int(ordinals.shape[0]), expected), dtype=dtype)
-    if ordinals.shape[0] > 1 and not bool(np.all(ordinals[1:] >= ordinals[:-1])):
-        order = np.argsort(ordinals, kind="stable")
-        ordinals = ordinals[order]
-        values = {key: value[order] for key, value in values.items()}
-    return LabelContextIndex(ordinals=ordinals, values=values)
+    origin_ordinals = origins.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)
+    origin_count = int(origin_ordinals.shape[0])
+    missing = np.ones((origin_count,), dtype=np.bool_)
+    label_rows = np.full((origin_count,), -1, dtype=np.int64)
+    if labels is None or int(getattr(labels, "height", 0) or 0) <= 0:
+        if strict and origin_count:
+            raise RuntimeError(f"Missing all intraday labels for {part_key}.")
+        return LabelContextIndex(ordinals=origin_ordinals, label_rows=label_rows, missing_mask=missing)
+    label_ordinals = labels.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)
+    if int(label_ordinals.shape[0]) == origin_count and bool(np.array_equal(label_ordinals, origin_ordinals)):
+        label_rows = np.arange(origin_count, dtype=np.int64)
+        missing[:] = False
+        return LabelContextIndex(ordinals=origin_ordinals, label_rows=label_rows, missing_mask=missing)
+    if label_ordinals.shape[0] > 1 and not bool(np.all(label_ordinals[1:] >= label_ordinals[:-1])):
+        order = np.argsort(label_ordinals, kind="stable")
+        sorted_ordinals = label_ordinals[order]
+    else:
+        order = np.arange(int(label_ordinals.shape[0]), dtype=np.int64)
+        sorted_ordinals = label_ordinals
+    if sorted_ordinals.shape[0] > 1:
+        duplicate_positions = np.flatnonzero(sorted_ordinals[1:] == sorted_ordinals[:-1])
+        if duplicate_positions.size:
+            duplicate_ordinal = int(sorted_ordinals[int(duplicate_positions[0])])
+            if bool(np.any(origin_ordinals == duplicate_ordinal)):
+                raise RuntimeError(f"Duplicate intraday label rows for {part_key}|{duplicate_ordinal}.")
+    positions = np.searchsorted(sorted_ordinals, origin_ordinals, side="left")
+    in_bounds = positions < sorted_ordinals.shape[0]
+    if np.any(in_bounds):
+        valid_origin_rows = np.flatnonzero(in_bounds)
+        matched = sorted_ordinals[positions[valid_origin_rows]] == origin_ordinals[valid_origin_rows]
+        matched_origin_rows = valid_origin_rows[matched]
+        if matched_origin_rows.size:
+            label_rows[matched_origin_rows] = order[positions[matched_origin_rows]]
+            missing[matched_origin_rows] = False
+    if strict and bool(missing.any()):
+        first_missing = int(np.flatnonzero(missing)[0])
+        raise RuntimeError(f"Missing intraday labels for {part_key}|{int(origin_ordinals[first_missing])}.")
+    return LabelContextIndex(ordinals=origin_ordinals, label_rows=label_rows, missing_mask=missing)
 
 
 def _label_column_matrix(labels: Any, key: str, expected: int, dtype: np.dtype) -> np.ndarray:
@@ -1836,12 +2037,101 @@ def _label_column_matrix(labels: Any, key: str, expected: int, dtype: np.dtype) 
     return _gather_pivoted_label_column(series.to_numpy(), np.arange(row_count, dtype=np.int64), expected, dtype)
 
 
+def _label_column_matrix_for_rows(labels: Any, key: str, rows: np.ndarray, expected: int, dtype: np.dtype) -> np.ndarray:
+    expected = max(0, int(expected))
+    rows = np.asarray(rows, dtype=np.int64)
+    out = np.zeros((int(rows.shape[0]), expected), dtype=dtype)
+    if int(rows.shape[0]) <= 0 or expected <= 0 or labels is None or key not in getattr(labels, "columns", ()):
+        return out
+    row_count = int(getattr(labels, "height", 0) or 0)
+    if np.any(rows < 0) or np.any(rows >= row_count):
+        raise RuntimeError(f"Label row selection is out of bounds for {key}.")
+    if int(rows.shape[0]) == row_count and bool(np.array_equal(rows, np.arange(row_count, dtype=np.int64))):
+        return _label_column_matrix(labels, key, expected, dtype)
+    series = labels.get_column(key)
+    selected = None
+    try:
+        selected = series.gather(rows)
+    except Exception:
+        try:
+            selected = series.take(rows)
+        except Exception:
+            selected = None
+    if selected is not None:
+        dtype_text = str(getattr(selected, "dtype", "")).lower()
+        if "list" in dtype_text:
+            try:
+                values = selected.list.to_array(expected).to_numpy()
+                if isinstance(values, np.ndarray) and values.ndim == 2:
+                    width = min(expected, int(values.shape[1]))
+                    if width:
+                        out[:, :width] = values[:, :width].astype(dtype, copy=False)
+                    return out
+            except Exception:
+                pass
+        try:
+            values = selected.to_numpy()
+            if isinstance(values, np.ndarray) and values.ndim == 2:
+                width = min(expected, int(values.shape[1]))
+                if width:
+                    out[:, :width] = values[:, :width].astype(dtype, copy=False)
+                return out
+            if isinstance(values, np.ndarray) and values.ndim == 1 and values.dtype != object and expected == 1:
+                out[:, 0] = values.astype(dtype, copy=False)
+                return out
+        except Exception:
+            pass
+    return _gather_pivoted_label_column(series.to_numpy(), rows, expected, dtype)
+
+
 def _empty_label_context_index(expected: int) -> LabelContextIndex:
     expected = max(0, int(expected))
     return LabelContextIndex(
         ordinals=np.zeros((0,), dtype=np.int64),
-        values={key: np.zeros((0, expected), dtype=dtype) for key, dtype in LABEL_VALUE_DTYPES.items()},
+        label_rows=np.zeros((0,), dtype=np.int64),
+        missing_mask=np.zeros((0,), dtype=np.bool_),
     )
+
+
+def _bar_offsets_for_group(config: TickerMonthLoaderConfig, group: str) -> tuple[int, ...]:
+    raw = config.global_daily_bar_offsets if str(group) == "global_daily_bars" else config.ticker_daily_bar_offsets
+    offsets = tuple(sorted({max(1, int(value)) for value in raw}))
+    return offsets or (1,)
+
+
+def _prepare_daily_bar_context_index(frame: Any) -> DailyBarContextIndex:
+    if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+        return DailyBarContextIndex(symbols=(), bar_start_ms_by_symbol={}, values_by_symbol={})
+    missing = [column for column in ("sym", "bar_start_ms", *BAR_FEATURE_KEYS) if column not in getattr(frame, "columns", ())]
+    if missing:
+        raise RuntimeError(f"Daily bar context is missing required columns: {', '.join(missing)}")
+    symbols_raw = frame.get_column("sym").to_numpy()
+    symbols = np.asarray([str(symbol).upper() for symbol in symbols_raw], dtype=object)
+    starts = frame.get_column("bar_start_ms").to_numpy().astype(np.int64, copy=False)
+    values = frame.select(list(BAR_FEATURE_KEYS)).to_numpy().astype(np.float32, copy=False)
+    order = np.lexsort((starts, symbols))
+    symbols = symbols[order]
+    starts = starts[order]
+    values = values[order]
+    unique_symbols = tuple(str(symbol) for symbol in np.unique(symbols))
+    starts_by_symbol: dict[str, np.ndarray] = {}
+    values_by_symbol: dict[str, np.ndarray] = {}
+    for symbol in unique_symbols:
+        rows = symbols == symbol
+        starts_by_symbol[str(symbol)] = starts[rows]
+        values_by_symbol[str(symbol)] = values[rows]
+    return DailyBarContextIndex(symbols=unique_symbols, bar_start_ms_by_symbol=starts_by_symbol, values_by_symbol=values_by_symbol)
+
+
+def _select_completed_bar_rows(bar_start_ms: np.ndarray, cutoff_ms: np.ndarray, offsets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    bar_start_ms = np.asarray(bar_start_ms, dtype=np.int64)
+    cutoff_ms = np.asarray(cutoff_ms, dtype=np.int64)
+    offsets = np.asarray(offsets, dtype=np.int64)
+    completed_counts = np.searchsorted(bar_start_ms, cutoff_ms, side="right")
+    rows = completed_counts[:, None] - offsets[None, :]
+    mask = rows >= 0
+    safe_rows = np.where(mask, rows, 0).astype(np.int64, copy=False)
+    return safe_rows, mask
 
 
 def _cell_array(value: Any) -> np.ndarray:

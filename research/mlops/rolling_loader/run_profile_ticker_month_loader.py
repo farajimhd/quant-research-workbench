@@ -33,7 +33,7 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "batch_size": 4096,
     "batches": 16,
     "seed": 17,
-    "data_groups": "events,intraday_labels",
+    "data_groups": "events,intraday_labels,daily_bars,global_daily_bars",
     "event_output_mode": "raw_stream",
     "event_columns": "",
     "suppress_event_columns": "ticker_id,ordinal,timestamp_us",
@@ -50,6 +50,9 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "market_news_token_chunks": 2,
     "sec_filing_token_chunks": 8,
     "text_max_tokens": 1024,
+    "ticker_daily_bar_offsets": "1,2,3,7,14,28,40,200",
+    "global_daily_bar_offsets": "1,2,7",
+    "daily_bar_completion_lag_hours": 30.0,
     "loaded_parts_per_group": 8,
     "read_workers": 4,
     "materialize_workers": 16,
@@ -95,6 +98,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--market-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_token_chunks"])
     parser.add_argument("--sec-filing-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_token_chunks"])
     parser.add_argument("--text-max-tokens", type=int, default=DEFAULT_PROFILE_CONFIG["text_max_tokens"])
+    parser.add_argument("--ticker-daily-bar-offsets", default=DEFAULT_PROFILE_CONFIG["ticker_daily_bar_offsets"], help="Comma-separated completed daily-bar offsets for ticker macro context.")
+    parser.add_argument("--global-daily-bar-offsets", default=DEFAULT_PROFILE_CONFIG["global_daily_bar_offsets"], help="Comma-separated completed daily-bar offsets for global market context.")
+    parser.add_argument("--daily-bar-completion-lag-hours", type=float, default=DEFAULT_PROFILE_CONFIG["daily_bar_completion_lag_hours"], help="Lag after bar_start before a daily bar may be used as completed context.")
     parser.add_argument("--loaded-parts-per-group", type=int, default=DEFAULT_PROFILE_CONFIG["loaded_parts_per_group"])
     parser.add_argument("--read-workers", type=int, default=DEFAULT_PROFILE_CONFIG["read_workers"])
     parser.add_argument("--materialize-workers", type=int, default=DEFAULT_PROFILE_CONFIG["materialize_workers"])
@@ -148,6 +154,9 @@ def main(argv: list[str] | None = None) -> int:
         market_news_token_chunks=max(1, int(args.market_news_token_chunks)),
         sec_filing_token_chunks=max(1, int(args.sec_filing_token_chunks)),
         text_max_tokens=max(1, int(args.text_max_tokens)),
+        ticker_daily_bar_offsets=tuple(int(item.strip()) for item in str(args.ticker_daily_bar_offsets).split(",") if item.strip()),
+        global_daily_bar_offsets=tuple(int(item.strip()) for item in str(args.global_daily_bar_offsets).split(",") if item.strip()),
+        daily_bar_completion_lag_hours=max(0.0, float(args.daily_bar_completion_lag_hours)),
         loaded_parts_per_group=max(1, int(args.loaded_parts_per_group)),
         read_workers=max(1, int(args.read_workers)),
         materialize_workers=max(1, int(args.materialize_workers)),
@@ -272,6 +281,11 @@ def _shape_summary(batch: Any) -> dict[str, Any]:
         out["text_input_shapes"] = {
             name: {field: list(value.shape) for field, value in payload.items()}
             for name, payload in batch.text_inputs.items()
+        }
+    if batch.bar_inputs:
+        out["bar_input_shapes"] = {
+            name: {field: list(value.shape) for field, value in payload.items()}
+            for name, payload in batch.bar_inputs.items()
         }
     return out
 
