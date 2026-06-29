@@ -25,6 +25,7 @@ from services.reference_gateway.audit import run_reference_audit, write_report
 from services.reference_gateway.canonical_graph_writer import write_canonical_graph_candidates
 from services.reference_gateway.config import ReferenceGatewayConfig, ReferenceGatewayConfigOverrides
 from services.reference_gateway.daemon import run_reference_daemon
+from services.reference_gateway.facts import ensure_fact_schema
 from services.reference_gateway.issue_resolution import resolve_stale_active_ticker_issues
 from services.reference_gateway.issue_writer import write_active_ticker_mapping_issues, write_graph_mapping_issues
 from services.reference_gateway.market_publications import ensure_market_publication_schema
@@ -197,6 +198,13 @@ def main() -> None:
             storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
         )
         add_operation("Reference alert schema", "completed", f"write={config.clickhouse_write_database}", seconds=time.perf_counter() - started)
+        started = time.perf_counter()
+        ensure_fact_schema(
+            ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
+            database=config.clickhouse_write_database,
+            storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
+        )
+        add_operation("Reference fact schema", "completed", f"write={config.clickhouse_write_database}", seconds=time.perf_counter() - started)
     if config.execute and config.maintenance_mode != "skip":
         if not write_policy.writes_allowed:
             add_operation("Market publication schema", "skipped", write_policy.reason)

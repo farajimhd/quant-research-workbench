@@ -7,6 +7,8 @@ from services.reference_gateway.active_tickers import ActiveTickerPlan, MissingT
 from services.reference_gateway.alerts import alert_row, build_active_ticker_alerts, build_audit_alerts
 from services.reference_gateway.audit import AuditCheck, ReferenceAuditReport
 from services.reference_gateway.canonical_graph_writer import ExistingGraph, build_candidate_rows
+from services.reference_gateway.facts import FACT_TABLE_SPECS, FACT_TABLES, fact_schema_ddl
+from services.reference_gateway.table_groups import table_group_by_id
 
 
 def main() -> None:
@@ -77,6 +79,13 @@ def main() -> None:
     audit_alerts = build_audit_alerts(audit_report, report_path="smoke.json")
     assert len(audit_alerts) == 1
     assert alert_row(audit_alerts[0])["alert_group"] == "reference_audit"
+    fact_group = table_group_by_id("canonical_security_facts")
+    assert fact_group is not None
+    assert set(FACT_TABLES) == set(fact_group.tables)
+    assert len(FACT_TABLE_SPECS) == len(FACT_TABLES)
+    fact_ddl = "\n".join(fact_schema_ddl("q_live", "index_granularity = 8192"))
+    for table_name in FACT_TABLES:
+        assert table_name in fact_ddl
     print("reference_gateway_smoke_test=passed")
 
 

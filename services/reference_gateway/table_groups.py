@@ -116,10 +116,38 @@ REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
             "Consumers track their own processing state without mutating the alert row."
         ),
     ),
+    ReferenceTableGroup(
+        group_id="canonical_security_facts",
+        owner="reference_gateway",
+        purpose="Compact historical fact tables aligned with reference alerts and trading publications.",
+        tables=(
+            "security_tradability_fact_v1",
+            "security_routing_fact_v1",
+            "security_share_supply_fact_v1",
+            "security_news_catalyst_fact_v1",
+            "security_sec_filing_event_fact_v1",
+            "security_sec_text_signal_fact_v1",
+            "issuer_fundamental_metric_fact_v1",
+            "security_valuation_fact_v1",
+            "security_liquidity_profile_fact_v1",
+        ),
+        update_policy=(
+            "Store compact normalized history only. Source tables keep provider detail, fact fillers update "
+            "affected entities from alerts, and latest trading publications consume these facts instead of "
+            "joining raw provider rows during trading."
+        ),
+    ),
 )
 
 
 OWNED_REFERENCE_TABLES: tuple[str, ...] = tuple(table for group in REFERENCE_TABLE_GROUPS for table in group.tables)
+
+
+def table_group_by_id(group_id: str) -> ReferenceTableGroup | None:
+    for group in REFERENCE_TABLE_GROUPS:
+        if group.group_id == group_id:
+            return group
+    return None
 
 
 def table_group_markdown() -> str:

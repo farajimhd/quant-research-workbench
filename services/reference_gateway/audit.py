@@ -601,7 +601,7 @@ def existing_tables(client: ClickHouseHttpClient, database: str) -> set[str]:
 
 
 def group_database(group_id: str, read_database: str, write_database: str) -> str:
-    if group_id in {"market_reference_publications", "reference_alerts"}:
+    if group_id in {"market_reference_publications", "reference_alerts", "canonical_security_facts"}:
         return write_database
     return read_database
 
