@@ -519,7 +519,7 @@ sample_fraction: 0.001
 max_origins_per_epoch: 1,000,000
 batch_size: 4096
 batches: 16
-loaded_parts_per_group: 64
+loaded_parts_per_group: 8
 read_workers: 4
 materialize_workers: 16
 materialize_chunk_size: 512

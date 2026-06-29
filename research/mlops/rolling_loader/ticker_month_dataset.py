@@ -134,6 +134,7 @@ class TickerMonthTrainingBatch:
     origin_ordinal: np.ndarray
     origin_timestamp_us: np.ndarray
     event_output_mode: str
+    source_part_key: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=object))
     raw_event_windows: dict[str, np.ndarray] = field(default_factory=dict)
     raw_event_flat: dict[str, np.ndarray] = field(default_factory=dict)
     raw_event_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
@@ -332,6 +333,7 @@ class TickerMonthBatchMaterializer:
         for part in parts:
             self.validate_part_config(part.plan)
         tickers, ordinals, timestamps = _identity_arrays(parts, refs)
+        source_part_key = _source_part_keys(parts, refs)
         output_mode = str(self.config.event_output_mode)
         raw_windows: dict[str, np.ndarray] = {}
         raw_flat: dict[str, np.ndarray] = {}
@@ -358,6 +360,7 @@ class TickerMonthBatchMaterializer:
             origin_ordinal=ordinals,
             origin_timestamp_us=timestamps,
             event_output_mode=output_mode,
+            source_part_key=source_part_key,
             raw_event_windows=raw_windows,
             raw_event_flat=raw_flat,
             raw_event_mask=raw_mask,
@@ -529,10 +532,12 @@ class AsyncTickerMonthBatchLoader:
         end_us = _parse_timestamp_us(self.config.end_utc) if self.config.end_utc else None
         group_size = max(1, int(self.config.loaded_parts_per_group))
         plans = self._epoch_plans(int(self.state.epoch))
+        ready = _ReadyBatchBuffer(batch_size=int(self.config.batch_size), drop_last=bool(self.config.drop_last_batch))
         with ThreadPoolExecutor(max_workers=max(1, int(self.config.read_workers)), thread_name_prefix="tmc-load") as read_pool:
             for group_start in range(int(self.state.package_position), len(plans), group_size):
                 self.state.package_position = int(group_start)
                 group_plans = plans[group_start : group_start + group_size]
+                group_keys = {_part_key(plan) for plan in group_plans}
                 loaded = list(read_pool.map(self.reader.load, group_plans))
                 refs = _sample_refs_for_loaded_parts(
                     loaded,
@@ -549,7 +554,6 @@ class AsyncTickerMonthBatchLoader:
                 self.state.planned_origins += len(refs)
                 emitted_from_group = 0
                 materialize_size = int(self.config.materialize_chunk_size) or int(self.config.batch_size)
-                ready = _ReadyBatchBuffer(batch_size=int(self.config.batch_size), drop_last=bool(self.config.drop_last_batch))
                 with ThreadPoolExecutor(max_workers=max(1, int(self.config.materialize_workers)), thread_name_prefix="tmc-materialize") as mat_pool:
                     materialized = _materialize_bounded(
                         mat_pool,
@@ -565,8 +569,8 @@ class AsyncTickerMonthBatchLoader:
                             batch = self._apply_epoch_sample_cap(batch)
                             if batch.sample_count == 0:
                                 return
-                            emitted_from_group += int(batch.sample_count)
-                            self._record_emitted_batch(batch, group_plans)
+                            emitted_from_group += _count_batch_samples_for_part_keys(batch, group_keys)
+                            self._record_emitted_batch(batch)
                             yield batch
                             if int(self.config.max_batches) > 0 and int(self.state.emitted_batches) >= int(self.config.max_batches):
                                 self.state.origin_cursor += emitted_from_group
@@ -574,23 +578,20 @@ class AsyncTickerMonthBatchLoader:
                             if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
                                 self.state.origin_cursor += emitted_from_group
                                 return
-                    for batch in ready.flush():
-                        if batch.sample_count == 0:
-                            continue
-                        batch = self._apply_epoch_sample_cap(batch)
-                        if batch.sample_count == 0:
-                            return
-                        emitted_from_group += int(batch.sample_count)
-                        self._record_emitted_batch(batch, group_plans)
-                        yield batch
-                        if int(self.config.max_batches) > 0 and int(self.state.emitted_batches) >= int(self.config.max_batches):
-                            self.state.origin_cursor += emitted_from_group
-                            return
-                        if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
-                            self.state.origin_cursor += emitted_from_group
-                            return
                 self.state.origin_cursor = 0
                 self.state.package_position = int(group_start) + len(group_plans)
+                if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
+                    return
+            for batch in ready.flush():
+                if batch.sample_count == 0:
+                    continue
+                batch = self._apply_epoch_sample_cap(batch)
+                if batch.sample_count == 0:
+                    return
+                self._record_emitted_batch(batch)
+                yield batch
+                if int(self.config.max_batches) > 0 and int(self.state.emitted_batches) >= int(self.config.max_batches):
+                    return
                 if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
                     return
             self.state.completed_epochs += 1
@@ -637,24 +638,20 @@ class AsyncTickerMonthBatchLoader:
             random.Random(_stable_int_seed("packages", self.state.seed, epoch, self.dataset_plan_id)).shuffle(plans)
         return plans
 
-    def _record_emitted_batch(self, batch: TickerMonthTrainingBatch, group_plans: Sequence[TickerMonthPartPlan]) -> None:
+    def _record_emitted_batch(self, batch: TickerMonthTrainingBatch) -> None:
         samples = int(batch.sample_count)
         self.state.emitted_batches += 1
         self.state.emitted_samples += samples
         self.state.seen_origins_this_epoch += samples
         self.state.seen_origins_total += samples
-        tickers = np.asarray(batch.ticker)
-        ordinals = batch.origin_ordinal.astype(np.int64, copy=False)
-        for part in group_plans:
-            ticker_mask = tickers == part.ticker
-            if not bool(np.any(ticker_mask)):
-                continue
-            ordinal_mask = (ordinals >= int(part.origin_ordinal_start)) & (ordinals <= int(part.origin_ordinal_end))
-            count = int(np.count_nonzero(ticker_mask & ordinal_mask))
-            if count <= 0:
-                continue
-            self.state.seen_by_month[part.month] = int(self.state.seen_by_month.get(part.month, 0)) + count
-            key = _part_key(part)
+        if batch.source_part_key.shape[0] != samples:
+            return
+        keys, counts = np.unique(batch.source_part_key.astype(str, copy=False), return_counts=True)
+        for key, count_value in zip(keys, counts):
+            key = str(key)
+            count = int(count_value)
+            month = key.split("|", 1)[0]
+            self.state.seen_by_month[month] = int(self.state.seen_by_month.get(month, 0)) + count
             self.state.seen_by_part[key] = int(self.state.seen_by_part.get(key, 0)) + count
 
     def _apply_epoch_sample_cap(self, batch: TickerMonthTrainingBatch) -> TickerMonthTrainingBatch:
@@ -841,6 +838,7 @@ def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> Tic
         origin_ordinal=np.concatenate([batch.origin_ordinal for batch in nonempty], axis=0),
         origin_timestamp_us=np.concatenate([batch.origin_timestamp_us for batch in nonempty], axis=0),
         event_output_mode=first.event_output_mode,
+        source_part_key=np.concatenate([batch.source_part_key for batch in nonempty], axis=0),
         raw_event_windows=raw_windows,
         raw_event_flat=raw_flat,
         raw_event_mask=_concat_optional_arrays([batch.raw_event_mask for batch in nonempty]),
@@ -866,6 +864,7 @@ def _slice_training_batch(batch: TickerMonthTrainingBatch, start: int, end: int)
         origin_ordinal=batch.origin_ordinal[start:end],
         origin_timestamp_us=batch.origin_timestamp_us[start:end],
         event_output_mode=batch.event_output_mode,
+        source_part_key=batch.source_part_key[start:end] if batch.source_part_key.shape[0] else batch.source_part_key,
         raw_event_windows={key: value[start:end] for key, value in batch.raw_event_windows.items()},
         raw_event_flat={key: value[start:end] for key, value in batch.raw_event_flat.items()},
         raw_event_mask=batch.raw_event_mask[start:end] if batch.raw_event_mask.shape[0] else batch.raw_event_mask,
@@ -905,6 +904,12 @@ def _merge_external_context(batches: Sequence[TickerMonthTrainingBatch]) -> dict
             else:
                 merged[key] = value
     return merged
+
+
+def _count_batch_samples_for_part_keys(batch: TickerMonthTrainingBatch, part_keys: set[str]) -> int:
+    if batch.source_part_key.shape[0] == 0 or not part_keys:
+        return 0
+    return int(np.count_nonzero(np.isin(batch.source_part_key.astype(str, copy=False), list(part_keys))))
 
 
 def _materialize_bounded(
@@ -965,6 +970,14 @@ def _identity_arrays(parts: Sequence[LoadedTickerMonthPart], refs: Sequence[Tick
         ordinals[rows] = part.origins.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)[origin_rows]
         timestamps[rows] = part.origins.get_column("origin_timestamp_us").to_numpy().astype(np.int64, copy=False)[origin_rows]
     return tickers, ordinals, timestamps
+
+
+def _source_part_keys(parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> np.ndarray:
+    keys = np.empty((len(refs),), dtype=object)
+    part_keys = [_part_key(part.plan) for part in parts]
+    for row, ref in enumerate(refs):
+        keys[row] = part_keys[int(ref.part_index)]
+    return keys
 
 
 def _origin_event_offsets(parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> np.ndarray:
@@ -1184,6 +1197,7 @@ def _empty_batch(mode: str) -> TickerMonthTrainingBatch:
         origin_ordinal=np.asarray([], dtype=np.int64),
         origin_timestamp_us=np.asarray([], dtype=np.int64),
         event_output_mode=str(mode),
+        source_part_key=np.asarray([], dtype=object),
     )
 
 
