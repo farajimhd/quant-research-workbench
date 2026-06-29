@@ -113,6 +113,8 @@ class LoadedTickerMonthPart:
     labels: Any | None = None
     context: dict[str, Any] = field(default_factory=dict)
     _event_arrays: dict[str, np.ndarray] = field(default_factory=dict, init=False, repr=False)
+    _origin_arrays: dict[str, np.ndarray] = field(default_factory=dict, init=False, repr=False)
+    _label_arrays: dict[str, np.ndarray] = field(default_factory=dict, init=False, repr=False)
 
     def event_array(self, column: str) -> np.ndarray:
         if self.events is None:
@@ -120,6 +122,20 @@ class LoadedTickerMonthPart:
         if column not in self._event_arrays:
             self._event_arrays[column] = self.events.get_column(column).to_numpy()
         return self._event_arrays[column]
+
+    def origin_array(self, column: str) -> np.ndarray:
+        if self.origins is None:
+            raise RuntimeError("Part origins were not loaded.")
+        if column not in self._origin_arrays:
+            self._origin_arrays[column] = self.origins.get_column(column).to_numpy()
+        return self._origin_arrays[column]
+
+    def label_array(self, column: str) -> np.ndarray:
+        if self.labels is None:
+            raise RuntimeError("Part labels were not loaded.")
+        if column not in self._label_arrays:
+            self._label_arrays[column] = self.labels.get_column(column).to_numpy()
+        return self._label_arrays[column]
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,15 +303,21 @@ class TickerMonthPartReader:
         self.include_external_context = bool(include_external_context)
 
     def load(self, plan: TickerMonthPartPlan) -> LoadedTickerMonthPart:
+        return self.load_payload(self.load_origins(plan))
+
+    def load_origins(self, plan: TickerMonthPartPlan) -> LoadedTickerMonthPart:
         pl = _polars()
         loaded = LoadedTickerMonthPart(plan=plan)
+        loaded.origins = pl.read_parquet(plan.package_dir / plan.files["origins"])
+        return loaded
+
+    def load_payload(self, loaded: LoadedTickerMonthPart) -> LoadedTickerMonthPart:
+        pl = _polars()
+        plan = loaded.plan
         need_events = bool({"events", "event_windows", "encoded_events"}.intersection(self.data_groups))
-        need_origins = True
         need_labels = "intraday_labels" in self.data_groups or "labels" in self.data_groups
         if need_events:
             loaded.events = pl.read_parquet(plan.package_dir / plan.files["events"])
-        if need_origins:
-            loaded.origins = pl.read_parquet(plan.package_dir / plan.files["origins"])
         if need_events and "event_window_index" in plan.files:
             loaded.windows = pl.read_parquet(plan.package_dir / plan.files["event_window_index"])
         if need_labels:
@@ -332,29 +354,38 @@ class TickerMonthBatchMaterializer:
             return _empty_batch(self.config.event_output_mode)
         for part in parts:
             self.validate_part_config(part.plan)
+        profile: dict[str, float | int] = {"samples": len(refs)}
+        identity_start = time.perf_counter()
         tickers, ordinals, timestamps = _identity_arrays(parts, refs)
         source_part_key = _source_part_keys(parts, refs)
+        profile["identity_seconds"] = time.perf_counter() - identity_start
         output_mode = str(self.config.event_output_mode)
         raw_windows: dict[str, np.ndarray] = {}
         raw_flat: dict[str, np.ndarray] = {}
         raw_mask = np.zeros((len(refs), 0), dtype=np.bool_)
         headers = np.zeros((len(refs), 0, HEADER_BYTES), dtype=np.uint8)
         encoded_events = np.zeros((len(refs), 0, 128, EVENT_BYTES), dtype=np.uint8)
+        event_start = time.perf_counter()
         if output_mode == "raw_windows":
             raw_windows = self._materialize_raw_windows(parts, refs)
         elif output_mode == "raw_flat":
             raw_flat, raw_mask = self._materialize_raw_flat(parts, refs)
         elif output_mode == "encoded_uint8":
             headers, encoded_events = self._materialize_encoded(parts, refs)
+        profile["event_seconds"] = time.perf_counter() - event_start
+        label_start = time.perf_counter()
         labels, future_bars, future_mask, horizons = self._materialize_intraday_labels(parts, refs)
+        profile["label_seconds"] = time.perf_counter() - label_start
         availability = {
             "event_context_available": np.ones((len(refs),), dtype=np.bool_) if output_mode != "none" else np.zeros((len(refs),), dtype=np.bool_),
             "intraday_labels_available": future_mask.any(axis=1) if future_mask.size else np.zeros((len(refs),), dtype=np.bool_),
         }
         external_context = {}
+        context_start = time.perf_counter()
         if self.config.include_external_context:
             external_context = _external_context_summary(parts)
-        profile = {"samples": len(refs), "materialize_seconds": time.perf_counter() - start}
+        profile["context_seconds"] = time.perf_counter() - context_start
+        profile["materialize_seconds"] = time.perf_counter() - start
         return TickerMonthTrainingBatch(
             ticker=tickers,
             origin_ordinal=ordinals,
@@ -484,26 +515,51 @@ class TickerMonthBatchMaterializer:
         }
         bars = np.zeros((len(refs), horizon_count, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32)
         mask = np.zeros((len(refs), horizon_count), dtype=np.bool_)
-        for row, ref in enumerate(refs):
-            part = parts[int(ref.part_index)]
+        for part_index, rows in _rows_by_part(refs).items():
+            part = parts[int(part_index)]
             if part.labels is None or part.labels.height == 0:
-                continue
-            origin = int(part.origins.get_column("origin_ordinal")[int(ref.origin_row)])
-            label_values = _label_values_for_origin(part.labels, origin, horizon_count)
-            if label_values is None:
                 if self.config.strict_audit:
+                    first_row = int(rows[0]) if rows.shape[0] else 0
+                    ref = refs[first_row]
+                    origin = int(part.origin_array("origin_ordinal")[int(ref.origin_row)])
                     raise RuntimeError(f"Missing intraday labels for {part.plan.month}:{part.plan.ticker}|{origin}.")
                 continue
-            for key in labels_out:
-                values = label_values[key]
-                labels_out[key][row, : values.shape[0]] = values.astype(labels_out[key].dtype, copy=False)
-            available = labels_out["available"][row].astype(bool)
-            mask[row] = available
-            bars[row, :, FUTURE_BAR_FEATURE_KEYS.index("open")] = labels_out["price_primary_int"][row].astype(np.float32)
-            bars[row, :, FUTURE_BAR_FEATURE_KEYS.index("close")] = labels_out["price_primary_int"][row].astype(np.float32)
-            bars[row, :, FUTURE_BAR_FEATURE_KEYS.index("high")] = labels_out["price_primary_int"][row].astype(np.float32)
-            bars[row, :, FUTURE_BAR_FEATURE_KEYS.index("low")] = labels_out["price_secondary_int"][row].astype(np.float32)
-            bars[row, :, FUTURE_BAR_FEATURE_KEYS.index("volume")] = labels_out["size_primary_sum"][row].astype(np.float32)
+            origin_rows = _origin_rows_for_refs(refs, rows)
+            origins = part.origin_array("origin_ordinal").astype(np.int64, copy=False)[origin_rows]
+            if _labels_are_pivoted(part.labels):
+                label_ordinals = part.label_array("origin_ordinal").astype(np.int64, copy=False)
+                label_indices = np.searchsorted(label_ordinals, origins, side="left")
+                in_bounds = label_indices < label_ordinals.shape[0]
+                found = np.zeros((origins.shape[0],), dtype=np.bool_)
+                if np.any(in_bounds):
+                    valid_positions = np.flatnonzero(in_bounds)
+                    found[valid_positions] = label_ordinals[label_indices[valid_positions]] == origins[valid_positions]
+                if self.config.strict_audit and not bool(found.all()):
+                    missing_pos = int(np.flatnonzero(~found)[0])
+                    raise RuntimeError(f"Missing intraday labels for {part.plan.month}:{part.plan.ticker}|{int(origins[missing_pos])}.")
+                if not np.any(found):
+                    continue
+                output_rows = rows[found]
+                source_indices = label_indices[found]
+                for key, out in labels_out.items():
+                    out[output_rows] = _gather_pivoted_label_column(part.label_array(key), source_indices, horizon_count, out.dtype)
+                continue
+            for output_row, origin in zip(rows, origins):
+                label_values = _label_values_for_origin(part.labels, int(origin), horizon_count)
+                if label_values is None:
+                    if self.config.strict_audit:
+                        raise RuntimeError(f"Missing intraday labels for {part.plan.month}:{part.plan.ticker}|{int(origin)}.")
+                    continue
+                for key in labels_out:
+                    values = label_values[key]
+                    labels_out[key][int(output_row), : values.shape[0]] = values.astype(labels_out[key].dtype, copy=False)
+        available = labels_out["available"].astype(bool, copy=False)
+        mask[:, : available.shape[1]] = available
+        bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("open")] = labels_out["price_primary_int"].astype(np.float32, copy=False)
+        bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("close")] = labels_out["price_primary_int"].astype(np.float32, copy=False)
+        bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("high")] = labels_out["price_primary_int"].astype(np.float32, copy=False)
+        bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("low")] = labels_out["price_secondary_int"].astype(np.float32, copy=False)
+        bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("volume")] = labels_out["size_primary_sum"].astype(np.float32, copy=False)
         return labels_out, bars, mask, horizons
 
 
@@ -537,10 +593,9 @@ class AsyncTickerMonthBatchLoader:
             for group_start in range(int(self.state.package_position), len(plans), group_size):
                 self.state.package_position = int(group_start)
                 group_plans = plans[group_start : group_start + group_size]
-                group_keys = {_part_key(plan) for plan in group_plans}
-                loaded = list(read_pool.map(self.reader.load, group_plans))
+                loaded_origins = list(read_pool.map(self.reader.load_origins, group_plans))
                 refs = _sample_refs_for_loaded_parts(
-                    loaded,
+                    loaded_origins,
                     config=self.config,
                     seed=int(self.state.seed),
                     dataset_plan_id=self.dataset_plan_id,
@@ -552,6 +607,18 @@ class AsyncTickerMonthBatchLoader:
                 if int(self.state.origin_cursor) > 0:
                     refs = refs[int(self.state.origin_cursor) :]
                 self.state.planned_origins += len(refs)
+                if not refs:
+                    self.state.origin_cursor = 0
+                    self.state.package_position = int(group_start) + len(group_plans)
+                    continue
+                active_part_indices = sorted({int(ref.part_index) for ref in refs})
+                part_index_map = {old_index: new_index for new_index, old_index in enumerate(active_part_indices)}
+                loaded = list(read_pool.map(self.reader.load_payload, (loaded_origins[index] for index in active_part_indices)))
+                refs = [
+                    TickerMonthSampleRef(part_index=int(part_index_map[int(ref.part_index)]), origin_row=int(ref.origin_row))
+                    for ref in refs
+                ]
+                group_keys = {_part_key(part.plan) for part in loaded}
                 emitted_from_group = 0
                 materialize_size = int(self.config.materialize_chunk_size) or int(self.config.batch_size)
                 with ThreadPoolExecutor(max_workers=max(1, int(self.config.materialize_workers)), thread_name_prefix="tmc-materialize") as mat_pool:
@@ -765,7 +832,7 @@ def _sample_refs_for_loaded_parts(
     for part_index, part in enumerate(loaded):
         if part.origins is None or part.origins.height == 0:
             continue
-        ts = part.origins.get_column("origin_timestamp_us").to_numpy().astype(np.int64, copy=False)
+        ts = part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)
         mask = np.ones((ts.shape[0],), dtype=np.bool_)
         if start_us is not None:
             mask &= ts >= int(start_us)
@@ -773,12 +840,15 @@ def _sample_refs_for_loaded_parts(
             mask &= ts < int(end_us)
         candidate_rows = np.flatnonzero(mask)
         if _uses_dataset_hash_filter(config):
-            ordinals = part.origins.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)
-            selected: list[int] = []
-            for row in candidate_rows:
-                if _sample_selected(part.plan, int(ordinals[int(row)]), int(ts[int(row)]), config=config, seed=seed, dataset_plan_id=dataset_plan_id):
-                    selected.append(int(row))
-            candidate_rows = np.asarray(selected, dtype=np.int64)
+            if _uses_fast_fraction_filter(config):
+                candidate_rows = _fast_fraction_candidate_rows(part.plan, candidate_rows, config=config, seed=seed, dataset_plan_id=dataset_plan_id)
+            else:
+                ordinals = part.origin_array("origin_ordinal").astype(np.int64, copy=False)
+                selected: list[int] = []
+                for row in candidate_rows:
+                    if _sample_selected(part.plan, int(ordinals[int(row)]), int(ts[int(row)]), config=config, seed=seed, dataset_plan_id=dataset_plan_id):
+                        selected.append(int(row))
+                candidate_rows = np.asarray(selected, dtype=np.int64)
         for row in candidate_rows:
             refs.append(TickerMonthSampleRef(part_index=int(part_index), origin_row=int(row)))
     return refs
@@ -831,8 +901,13 @@ def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> Tic
     availability = _concat_dict_arrays(batch.input_availability for batch in nonempty)
     profile = {
         "samples": sum(int(batch.sample_count) for batch in nonempty),
-        "materialize_seconds": sum(float(batch.profile.get("materialize_seconds", 0.0)) for batch in nonempty),
     }
+    for batch in nonempty:
+        for key, value in batch.profile.items():
+            if key == "samples":
+                continue
+            if isinstance(value, (int, float)):
+                profile[key] = float(profile.get(key, 0.0)) + float(value)
     return TickerMonthTrainingBatch(
         ticker=np.concatenate([batch.ticker for batch in nonempty], axis=0),
         origin_ordinal=np.concatenate([batch.origin_ordinal for batch in nonempty], axis=0),
@@ -857,8 +932,7 @@ def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> Tic
 def _slice_training_batch(batch: TickerMonthTrainingBatch, start: int, end: int) -> TickerMonthTrainingBatch:
     start = max(0, int(start))
     end = max(start, min(int(end), int(batch.sample_count)))
-    profile = dict(batch.profile)
-    profile["samples"] = end - start
+    profile = _slice_profile(batch.profile, int(batch.sample_count), end - start)
     return TickerMonthTrainingBatch(
         ticker=batch.ticker[start:end],
         origin_ordinal=batch.origin_ordinal[start:end],
@@ -886,6 +960,19 @@ def _concat_dict_arrays(items: Sequence[Mapping[str, np.ndarray]]) -> dict[str, 
     for item in items:
         keys.update(item.keys())
     return {key: np.concatenate([item[key] for item in items if key in item], axis=0) for key in sorted(keys)}
+
+
+def _slice_profile(profile: Mapping[str, float | int], source_samples: int, output_samples: int) -> dict[str, float | int]:
+    out: dict[str, float | int] = {"samples": int(output_samples)}
+    if int(source_samples) <= 0:
+        return out
+    scale = float(output_samples) / float(source_samples)
+    for key, value in profile.items():
+        if key == "samples":
+            continue
+        if isinstance(value, (int, float)):
+            out[key] = float(value) * scale
+    return out
 
 
 def _concat_optional_arrays(items: Sequence[np.ndarray]) -> np.ndarray:
@@ -966,17 +1053,17 @@ def _identity_arrays(parts: Sequence[LoadedTickerMonthPart], refs: Sequence[Tick
     for part_index, rows in _rows_by_part(refs).items():
         part = parts[int(part_index)]
         origin_rows = _origin_rows_for_refs(refs, rows)
-        tickers[rows] = part.origins.get_column("ticker").to_numpy()[origin_rows]
-        ordinals[rows] = part.origins.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)[origin_rows]
-        timestamps[rows] = part.origins.get_column("origin_timestamp_us").to_numpy().astype(np.int64, copy=False)[origin_rows]
+        tickers[rows] = part.origin_array("ticker")[origin_rows]
+        ordinals[rows] = part.origin_array("origin_ordinal").astype(np.int64, copy=False)[origin_rows]
+        timestamps[rows] = part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[origin_rows]
     return tickers, ordinals, timestamps
 
 
 def _source_part_keys(parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> np.ndarray:
     keys = np.empty((len(refs),), dtype=object)
     part_keys = [_part_key(part.plan) for part in parts]
-    for row, ref in enumerate(refs):
-        keys[row] = part_keys[int(ref.part_index)]
+    for part_index, rows in _rows_by_part(refs).items():
+        keys[rows] = part_keys[int(part_index)]
     return keys
 
 
@@ -985,7 +1072,7 @@ def _origin_event_offsets(parts: Sequence[LoadedTickerMonthPart], refs: Sequence
     for part_index, rows in _rows_by_part(refs).items():
         part = parts[int(part_index)]
         origin_rows = _origin_rows_for_refs(refs, rows)
-        offsets[rows] = part.origins.get_column("event_row_offset").to_numpy().astype(np.int64, copy=False)[origin_rows]
+        offsets[rows] = part.origin_array("event_row_offset").astype(np.int64, copy=False)[origin_rows]
     return offsets
 
 
@@ -1032,6 +1119,33 @@ def _uses_dataset_hash_filter(config: TickerMonthLoaderConfig) -> bool:
         or int(config.sample_hash_modulus) > 0
         or bool(config.sample_hash_buckets)
     )
+
+
+def _uses_fast_fraction_filter(config: TickerMonthLoaderConfig) -> bool:
+    return (
+        float(config.sample_fraction) < 1.0
+        and int(config.sample_hash_modulus) <= 0
+        and not bool(config.sample_hash_buckets)
+    )
+
+
+def _fast_fraction_candidate_rows(
+    plan: TickerMonthPartPlan,
+    candidate_rows: np.ndarray,
+    *,
+    config: TickerMonthLoaderConfig,
+    seed: int,
+    dataset_plan_id: str,
+) -> np.ndarray:
+    fraction = float(config.sample_fraction)
+    if fraction <= 0.0 or candidate_rows.shape[0] <= 0:
+        return np.asarray([], dtype=np.int64)
+    if fraction >= 1.0:
+        return candidate_rows.astype(np.int64, copy=False)
+    rng_seed = _stable_int_seed("sample_fraction", dataset_plan_id, int(seed), plan.month, plan.ticker, int(plan.part_id))
+    rng = np.random.default_rng(rng_seed)
+    selected = rng.random(int(candidate_rows.shape[0])) < fraction
+    return candidate_rows[selected].astype(np.int64, copy=False)
 
 
 def _sample_selected(
@@ -1180,6 +1294,18 @@ def _cell_array(value: Any) -> np.ndarray:
     if isinstance(value, (list, tuple)):
         return np.asarray(value)
     return np.asarray([value])
+
+
+def _gather_pivoted_label_column(column_values: np.ndarray, indices: np.ndarray, expected: int, dtype: np.dtype) -> np.ndarray:
+    out = np.zeros((int(indices.shape[0]), int(expected)), dtype=dtype)
+    if int(indices.shape[0]) <= 0:
+        return out
+    for row, cell in enumerate(column_values[indices]):
+        values = _cell_array(cell)
+        width = min(int(values.shape[0]), int(expected))
+        if width:
+            out[row, :width] = values[:width].astype(dtype, copy=False)
+    return out
 
 
 def _external_context_summary(parts: Sequence[LoadedTickerMonthPart]) -> dict[str, Any]:

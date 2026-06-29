@@ -151,12 +151,17 @@ def main(argv: list[str] | None = None) -> int:
     batches = 0
     samples = 0
     materialize_seconds = 0.0
+    profile_seconds: dict[str, float] = {}
     max_rss = current_rss_mib()
     first_shape: dict[str, Any] = {}
     for batch in loader.iter_batches():
         batches += 1
         samples += int(batch.sample_count)
         materialize_seconds += float(batch.profile.get("materialize_seconds", 0.0))
+        for key, value in batch.profile.items():
+            if key == "samples" or not key.endswith("_seconds"):
+                continue
+            profile_seconds[key] = float(profile_seconds.get(key, 0.0)) + float(value)
         max_rss = max(max_rss, current_rss_mib())
         if not first_shape:
             first_shape = _shape_summary(batch)
@@ -168,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
                     "samples": samples,
                     "samples_per_sec": samples / elapsed,
                     "materialize_seconds": materialize_seconds,
+                    "profile_seconds": {key: round(value, 6) for key, value in sorted(profile_seconds.items())},
                     "rss_mib": max_rss,
                 },
                 sort_keys=True,
@@ -188,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         "elapsed_seconds": elapsed,
         "samples_per_sec": samples / max(elapsed, 1e-9),
         "materialize_seconds": materialize_seconds,
+        "profile_seconds": {key: float(value) for key, value in sorted(profile_seconds.items())},
         "max_rss_mib": max_rss,
         "first_batch": first_shape,
         "loader_state": loader.summary(),

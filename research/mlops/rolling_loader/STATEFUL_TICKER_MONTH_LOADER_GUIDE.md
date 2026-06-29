@@ -11,19 +11,23 @@ The loader is stateful and package-local:
 
 1. Discover complete `(month, ticker, part)` packages from the cache manifest.
 2. Build a deterministic epoch package order.
-3. Load a bounded group of packages from SSD.
+3. Read only the origin index for a bounded group of packages.
 4. Build refs for every eligible origin in the loaded group.
-5. Optionally shuffle origin refs inside the group.
-6. Materialize refs in bounded CPU chunks.
-7. Concatenate materialized chunks into a ready buffer.
-8. Emit final trainer batches from the ready buffer.
-9. Do not advance to the next group until all eligible origins in the current
+5. Apply period/ticker/hash/sample filters before reading large payload files.
+6. Load event, label, and context payloads only for packages with selected refs.
+7. Optionally shuffle origin refs inside the group.
+8. Materialize refs in bounded CPU chunks.
+9. Concatenate materialized chunks into a ready buffer.
+10. Emit final trainer batches from the ready buffer.
+11. Do not advance to the next group until all eligible origins in the current
    loaded group have been emitted or an explicit cap stops the epoch.
 
 The ready buffer carries partial leftovers across loaded groups, so loaded-group
 boundaries do not create partial trainer batches. Shuffling changes ordering
 only. It does not drop origins. Origins are dropped only by explicit filters
 such as period, ticker, hash split, sample fraction, or `max_origins_per_epoch`.
+For sparse benchmark sets, this origin-first path avoids reading large event
+parquet files for packages that contribute no selected origins.
 
 ## Dataset Plan
 
@@ -96,6 +100,12 @@ For small benchmark sets, combine an explicit `dataset_id`, hash split, and cap:
 --sample-hash-modulus 100 --sample-hash-buckets 0,1,2,3,4 `
 --max-origins-per-epoch 1000000
 ```
+
+When only `sample_fraction` is set and no hash modulus/buckets are requested,
+the loader uses a deterministic vectorized NumPy mask seeded by
+`dataset_id + seed + month + ticker + part_id`. This is repeatable and much
+faster than per-origin Python hashing. Use hash buckets when exact
+non-overlapping train/validation membership is required.
 
 ## Materialization Strategy
 

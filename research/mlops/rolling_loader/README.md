@@ -332,18 +332,23 @@ TickerMonthTrainingBatch
 
 1. Read the cache root manifest.
 2. Discover complete `(month, ticker, part)` packages.
-3. Build a sample plan over `(month, ticker, part_id, origin_row)`.
-4. Filter origins by requested training period when `start_utc/end_utc` are
+3. Read only the origin index for a small group of packages.
+4. Build local sample refs over `(month, ticker, part_id, origin_row)`.
+5. Filter origins by requested training period when `start_utc/end_utc` are
    provided.
-5. Shuffle package parts.
-6. Load multiple ticker/month parts from SSD.
-7. Build local sample refs from the loaded group.
+6. Apply deterministic dataset sampling or hash buckets.
+7. Load event, label, and context payload files only for packages that have
+   selected origins.
 8. Shuffle again inside the loaded group.
 9. Materialize CPU batches with a bounded worker queue.
 10. Yield batches to the trainer.
 
 This gives useful training randomness while keeping SSD reads mostly
 sequential and package-local.
+
+The origin-first path matters for small repeatable benchmark sets. A sparse
+`sample_fraction` should not force the loader to read large event parquet files
+for packages that contribute no sampled origins.
 
 ### Loader Inputs
 
@@ -551,10 +556,21 @@ samples
 elapsed seconds
 samples/sec
 materialization seconds
+profile_seconds
 max RSS
 first batch shape summary
 loader state summary
 ```
+
+`profile_seconds` breaks emitted materialization time into
+`identity_seconds`, `event_seconds`, `label_seconds`, and `context_seconds`.
+Use it to identify whether the trainer is waiting on event-window gather,
+intraday label gather, or optional context work.
+
+For fraction-only benchmark sampling, the loader uses a deterministic
+vectorized per-part mask instead of hashing every origin in Python. Hash-bucket
+splits still use the exact origin-hash path so train/validation membership stays
+non-overlapping.
 
 By default the profiler appends JSONL summaries to:
 
