@@ -117,7 +117,7 @@ class TickerMonthLoaderConfig:
     ticker_news_max_items: int = 8
     market_news_max_items: int = 16
     sec_filing_max_items: int = 4
-    xbrl_max_items: int = 512
+    xbrl_max_items: int = 4096
     ticker_news_token_chunks: int = 2
     market_news_token_chunks: int = 2
     sec_filing_token_chunks: int = 8

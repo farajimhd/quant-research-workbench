@@ -106,7 +106,7 @@ Complete default training-batch shape summary:
 | ticker news tokens | `text_inputs["ticker_news"]["input_ids"]` | `[B, 32, 2, 1024]` |
 | market news tokens | `text_inputs["market_news"]["input_ids"]` | `[B, 64, 2, 1024]` |
 | SEC text tokens | `text_inputs["sec_filings"]["input_ids"]` | `[B, 16, 8, 1024]` |
-| XBRL fundamentals | `xbrl_inputs[*]` | `[B, 512]` |
+| XBRL fundamentals | `xbrl_inputs[*]` | `[B, 4096]` |
 | future macro bars | `future_macro_bars` | `[B, label_timeframes, 5]` |
 | future intraday bars | `future_intraday_bars` | `[B, intraday_label_horizons, 5]` |
 | legacy future labels dict | `labels[*]` | usually `[B]` |
@@ -472,7 +472,7 @@ observations mapped to a market ticker and an accepted timestamp.
 
 The tensor group is `xbrl_inputs`.
 
-`xbrl_max_items = 512` means up to 512 as-of XBRL rows per sample. It does not
+`xbrl_max_items = 4096` means up to 4096 as-of XBRL rows per sample. It does not
 mean XBRL is squeezed into 512 feature columns. Each XBRL attribute is its own
 array with shape `[B, 512]`.
 

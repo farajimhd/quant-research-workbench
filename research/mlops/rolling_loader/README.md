@@ -198,8 +198,26 @@ daily_bars
 
 Global context is stored once per month under `global/` where available.
 
+Text and XBRL context is saved as `month rows + latest prior context`. The
+prior context is count-based, not just day-lookback based, so early-month
+origins still see the latest backward information available in ClickHouse.
+Defaults:
+
+```text
+ticker_news_prior_items: 64 logical article items per ticker
+market_news_prior_items: 512 logical global news items
+sec_filing_prior_items: 32 logical SEC text items per ticker
+xbrl_prior_rows: 4096 XBRL fact rows per ticker
+```
+
+Market news means all news from the token table, deduplicated by article/chunk
+identity, then stored under `global/market_news_tokens.parquet` with ticker
+`__MARKET__`. It is not limited to rows that have no ticker.
+
 Missing optional context is represented as empty/zero data plus explicit masks
-at load time. Missing optional context is not an error by itself.
+at load time. For text/XBRL, padding should mean ClickHouse did not have enough
+historical as-of rows/items for that origin, not that the builder clipped the
+history window too tightly.
 
 At load time, daily bar context is emitted only when requested in
 `data_groups`. The loader uses completed daily bars only. It does not expose a
@@ -235,6 +253,28 @@ python -m research.mlops.rolling_loader.run_build_ticker_month_cache `
 
 Partial months at period boundaries are ignored.
 
+Refresh only text/XBRL context for an existing cache:
+
+```powershell
+python -m research.mlops.rolling_loader.run_build_ticker_month_cache `
+  --month 2019-02 `
+  --cache-id train_201902_ticker_month `
+  --refresh-context-only `
+  --skip-final-audit
+```
+
+This mode discovers existing ticker packages for the month and rewrites only:
+
+```text
+global/market_news_tokens.parquet
+global/category_references.parquet
+ticker_news_tokens.parquet
+sec_filing_tokens.parquet
+xbrl.parquet
+```
+
+It preserves event, origin, event-window, label, and daily-bar files.
+
 ### Builder Defaults
 
 Defaults are tuned for the 128-core / 512GB workstation and target practical
@@ -254,6 +294,10 @@ ClickHouse memory cap             120G per query
 max cached event lookback rows   8192
 max origin events per part     500000
 ClickHouse query retries            2 for transient HTTP read failures
+ticker news prior items            64
+market news prior items           512
+SEC filing prior items             32
+XBRL prior rows                  4096
 ```
 
 Large liquid tickers are split by ordinal into physical parts. The default part
@@ -569,7 +613,7 @@ Default limits are:
 ticker_news_max_items: 8
 market_news_max_items: 16
 sec_filing_max_items: 4
-xbrl_max_items: 512
+xbrl_max_items: 4096
 text_max_tokens: 1024
 ```
 

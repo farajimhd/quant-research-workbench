@@ -62,6 +62,7 @@ from research.mlops.rolling_loader.ticker_month_cache import (
     parse_lags,
     replace_complete_dir,
     required_event_lookback_rows,
+    read_json,
     ticker_package_dir,
     timestamp_us_to_utc,
     write_json_atomic,
@@ -108,7 +109,11 @@ DEFAULTS: dict[str, Any] = {
     "ticker_news_items": 8,
     "market_news_items": 16,
     "sec_filing_items": 4,
-    "xbrl_items": 512,
+    "ticker_news_prior_items": 64,
+    "market_news_prior_items": 512,
+    "sec_filing_prior_items": 32,
+    "xbrl_items": 4096,
+    "xbrl_prior_rows": 4096,
     "intraday_label_horizons": "100ms,250ms,500ms,750ms,1s,5s,10s,30s,60s,120s,180s,300s,600s,1200s,1800s,3600s,7200s,3h,4h,5h",
     "refresh_seconds": 1.0,
     "profile_slow_seconds": 10.0,
@@ -440,9 +445,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--market-news-items", type=int, default=DEFAULTS["market_news_items"])
     parser.add_argument("--sec-filing-items", type=int, default=DEFAULTS["sec_filing_items"])
     parser.add_argument("--xbrl-items", type=int, default=DEFAULTS["xbrl_items"])
+    parser.add_argument("--ticker-news-prior-items", type=int, default=DEFAULTS["ticker_news_prior_items"], help="Logical ticker-news items saved before month start for as-of context.")
+    parser.add_argument("--market-news-prior-items", type=int, default=DEFAULTS["market_news_prior_items"], help="Logical global news items saved before month start for as-of market context.")
+    parser.add_argument("--sec-filing-prior-items", type=int, default=DEFAULTS["sec_filing_prior_items"], help="Logical SEC filing text items saved before month start for as-of context.")
+    parser.add_argument("--xbrl-prior-rows", type=int, default=DEFAULTS["xbrl_prior_rows"], help="XBRL fact rows saved before month start for as-of context.")
     parser.add_argument("--intraday-label-horizons", default=DEFAULTS["intraday_label_horizons"])
     parser.add_argument("--skip-token-contexts", action="store_true")
     parser.add_argument("--skip-xbrl", action="store_true")
+    parser.add_argument("--refresh-context-only", action="store_true", help="Refresh only text-token, XBRL, and XBRL category context files for existing ticker/month packages.")
     parser.add_argument("--skip-final-audit", action="store_true")
     parser.add_argument("--audit-source-checks", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--audit-samples-per-month", type=int, default=8)
@@ -537,9 +547,9 @@ def main(argv: list[str] | None = None) -> int:
             month_dir = month_dir_for(cache_root, args.split, month)
             month_dir.mkdir(parents=True, exist_ok=True)
             window = month_window(month)
-            month_tickers = _resolve_tickers_for_month(args, client_opts, config, window)
+            month_tickers = _resolve_refresh_tickers(args, cache_root, month) if args.refresh_context_only else _resolve_tickers_for_month(args, client_opts, config, window)
             stats.packages_total += len(month_tickers)
-            stats.message(f"{month}: tickers={len(month_tickers):,}")
+            stats.message(f"{month}: tickers={len(month_tickers):,}" + (" context-refresh-only" if args.refresh_context_only else ""))
             _write_global_month_package(args=args, client_opts=client_opts, config=config, cache_root=cache_root, month=month, window=window, lanes=lanes, stats=stats, stop_event=stop_event)
             package_executor = ThreadPoolExecutor(max_workers=max(1, int(args.workers)), thread_name_prefix="tmc-package")
             pending: dict[Future[TickerMonthResult], int] = {}
@@ -720,6 +730,15 @@ ORDER BY ticker
     return tickers[: int(args.ticker_limit)] if int(args.ticker_limit) > 0 else tickers
 
 
+def _resolve_refresh_tickers(args: argparse.Namespace, cache_root: Path, month: str) -> list[str]:
+    if args.tickers:
+        tickers = sorted({item.strip().upper() for item in args.tickers.split(",") if item.strip()})
+        return tickers[: int(args.ticker_limit)] if int(args.ticker_limit) > 0 else tickers
+    month_dir = month_dir_for(cache_root, args.split, month)
+    tickers = sorted({path.name.split("=", 1)[1].upper() for path in month_dir.glob("ticker_hash=*/ticker=*") if path.is_dir() and path.name.startswith("ticker=")})
+    return tickers[: int(args.ticker_limit)] if int(args.ticker_limit) > 0 else tickers
+
+
 def _write_global_month_package(
     *,
     args: argparse.Namespace,
@@ -734,6 +753,9 @@ def _write_global_month_package(
 ) -> None:
     month_dir = month_dir_for(cache_root, args.split, month)
     final_dir = month_dir / "global"
+    if args.refresh_context_only:
+        _refresh_global_context_package(args=args, client_opts=client_opts, config=config, month=month, window=window, final_dir=final_dir, lanes=lanes, stats=stats, stop_event=stop_event)
+        return
     if final_dir.exists() and not args.resume:
         stats.message(f"{month}: global package exists; keeping existing")
         return
@@ -776,6 +798,162 @@ def _write_global_month_package(
     replace_complete_dir(tmp_dir, final_dir, resume=True)
 
 
+def _refresh_global_context_package(
+    *,
+    args: argparse.Namespace,
+    client_opts: Mapping[str, str],
+    config: RollingMarketDataConfig,
+    month: str,
+    window: Any,
+    final_dir: Path,
+    lanes: LaneExecutors,
+    stats: BuildStats,
+    stop_event: threading.Event,
+) -> None:
+    if not final_dir.exists():
+        stats.message(f"{month}: global package missing; cannot refresh global text/XBRL context")
+        return
+    manifest_path = final_dir / "manifest.json"
+    manifest = read_json(manifest_path) if manifest_path.exists() else {}
+    futures = {
+        "market_news": lanes.submit("context", f"{month}:refresh_global_market_news", lambda: _query_market_news(args, client_opts, config, window)),
+        "categories": lanes.submit("context", f"{month}:refresh_categories", lambda: _query_category_references(args, client_opts, config)),
+    }
+    outputs = {name: future.result() for name, future in futures.items()}
+    if stop_event.is_set():
+        raise KeyboardInterrupt
+    writes = {
+        "market_news_tokens": lanes.submit("write", f"{month}:refresh_write_market_news", lambda: _write_parquet(outputs["market_news"], final_dir / "market_news_tokens.parquet")),
+        "category_references": lanes.submit("write", f"{month}:refresh_write_categories", lambda: _write_parquet(outputs["categories"], final_dir / "category_references.parquet")),
+    }
+    write_results = {name: future.result() for name, future in writes.items()}
+    counts = dict(manifest.get("counts") or {})
+    counts["market_news"] = int(outputs["market_news"].height)
+    counts["categories"] = int(outputs["categories"].height)
+    files = dict(manifest.get("files") or {})
+    files["market_news_tokens"] = "market_news_tokens.parquet"
+    files["category_references"] = "category_references.parquet"
+    manifest.update(
+        {
+            "format": TICKER_MONTH_CACHE_FORMAT,
+            "version": TICKER_MONTH_CACHE_VERSION,
+            "status": "complete",
+            "month": month,
+            "window": month_window_dict(window),
+            "files": files,
+            "counts": counts,
+            "context_refresh": _context_refresh_metadata(args),
+            "context_refreshed_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
+        }
+    )
+    write_json_atomic(manifest_path, manifest)
+    stats.bytes_written += sum(_byte_count(result) for result in write_results.values())
+    stats.message(f"{month}: refreshed global market_news={int(outputs['market_news'].height):,} categories={int(outputs['categories'].height):,}")
+
+
+def _refresh_ticker_month_context_package(
+    args: argparse.Namespace,
+    client_opts: Mapping[str, str],
+    config: RollingMarketDataConfig,
+    cache_root: Path,
+    month: str,
+    window: Any,
+    ticker: str,
+    worker_id: int,
+    stats: BuildStats,
+    lanes: LaneExecutors,
+    stop_event: threading.Event,
+) -> TickerMonthResult:
+    state = stats.workers[worker_id]
+    state.start_package(month=month, ticker=ticker)
+    state.stage = "refresh-context"
+    package_dir = ticker_package_dir(month_dir_for(cache_root, args.split, month), ticker)
+    manifest_path = package_dir / "manifest.json"
+    if not package_dir.exists() or not manifest_path.exists():
+        state.status = "missing"
+        state.stage = "missing"
+        state.message = "existing package missing"
+        return TickerMonthResult(month=month, ticker=ticker, package_dir=package_dir, status="missing", byte_count=0)
+    manifest = read_json(manifest_path)
+    if manifest.get("status") != "complete":
+        state.status = "skipped"
+        state.stage = "skipped"
+        state.message = f"package status={manifest.get('status')!r}"
+        return TickerMonthResult(month=month, ticker=ticker, package_dir=package_dir, status="skipped", byte_count=directory_size(package_dir))
+    futures: dict[str, Future[Any]] = {
+        "ticker_news": lanes.submit("context", f"{month}:{ticker}:refresh_ticker_news", lambda: _query_ticker_news(args, client_opts, config, window, ticker)),
+        "sec_filings": lanes.submit("context", f"{month}:{ticker}:refresh_sec", lambda: _query_sec_tokens(args, client_opts, config, window, ticker)),
+    }
+    if not args.skip_xbrl:
+        futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:refresh_xbrl", lambda: _query_xbrl(args, client_opts, config, window, ticker))
+    else:
+        futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:refresh_xbrl_empty", lambda: _empty_frame())
+    state.context_total = 3
+    outputs = {}
+    for name, future in futures.items():
+        outputs[name] = future.result()
+        state.context_done += 1
+    if stop_event.is_set():
+        raise KeyboardInterrupt
+    state.stage = "write-context"
+    writes = {
+        "ticker_news_tokens": lanes.submit("write", f"{month}:{ticker}:refresh_write_news", lambda: _write_parquet(outputs["ticker_news"], package_dir / "ticker_news_tokens.parquet")),
+        "sec_filing_tokens": lanes.submit("write", f"{month}:{ticker}:refresh_write_sec", lambda: _write_parquet(outputs["sec_filings"], package_dir / "sec_filing_tokens.parquet")),
+        "xbrl": lanes.submit("write", f"{month}:{ticker}:refresh_write_xbrl", lambda: _write_parquet(outputs["xbrl"], package_dir / "xbrl.parquet")),
+    }
+    state.write_total = len(writes)
+    write_results = {}
+    for name, future in writes.items():
+        write_results[name] = future.result()
+        state.write_done += 1
+    counts = dict(manifest.get("counts") or {})
+    counts["ticker_news_tokens"] = int(outputs["ticker_news"].height)
+    counts["sec_filing_tokens"] = int(outputs["sec_filings"].height)
+    counts["xbrl"] = int(outputs["xbrl"].height)
+    files = dict(manifest.get("files") or {})
+    files["ticker_news_tokens"] = "ticker_news_tokens.parquet"
+    files["sec_filing_tokens"] = "sec_filing_tokens.parquet"
+    files["xbrl"] = "xbrl.parquet"
+    package_config = dict(manifest.get("config") or {})
+    package_config.update(_context_refresh_metadata(args))
+    manifest.update(
+        {
+            "status": "complete",
+            "files": files,
+            "counts": counts,
+            "config": package_config,
+            "context_refresh": _context_refresh_metadata(args),
+            "context_refreshed_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
+        }
+    )
+    write_json_atomic(manifest_path, manifest)
+    state.status = "done"
+    state.stage = "done"
+    state.seconds = time.perf_counter() - state.started_at
+    state.message = f"context refreshed news={counts['ticker_news_tokens']:,} sec={counts['sec_filing_tokens']:,} xbrl={counts['xbrl']:,}"
+    return TickerMonthResult(
+        month=month,
+        ticker=ticker,
+        package_dir=package_dir,
+        status="context_refreshed",
+        event_count=0,
+        origin_count=0,
+        label_rows=0,
+        byte_count=sum(_byte_count(result) for result in write_results.values()),
+    )
+
+
+def _context_refresh_metadata(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "ticker_news_prior_items": max(0, int(args.ticker_news_prior_items)),
+        "market_news_prior_items": max(0, int(args.market_news_prior_items)),
+        "sec_filing_prior_items": max(0, int(args.sec_filing_prior_items)),
+        "xbrl_prior_rows": max(0, int(args.xbrl_prior_rows)),
+        "xbrl_items": max(0, int(args.xbrl_items)),
+        "context_fetch_mode": "month_plus_latest_prior_items",
+    }
+
+
 def _build_ticker_month_package(
     args: argparse.Namespace,
     client_opts: Mapping[str, str],
@@ -793,6 +971,8 @@ def _build_ticker_month_package(
     state = stats.workers[worker_id]
     state.start_package(month=month, ticker=ticker)
     package_dir = ticker_package_dir(month_dir_for(cache_root, args.split, month), ticker)
+    if args.refresh_context_only:
+        return _refresh_ticker_month_context_package(args, client_opts, config, cache_root, month, window, ticker, worker_id, stats, lanes, stop_event)
     if package_dir.exists() and args.resume:
         state.status = "done"
         state.stage = "exists"
@@ -952,6 +1132,12 @@ def _build_ticker_month_package(
                 "events_per_chunk": int(args.events_per_chunk),
                 "context_lags": list(context_lags),
                 "sample_stride_events": int(args.sample_stride_events),
+                "context_fetch_mode": "month_plus_latest_prior_items",
+                "ticker_news_prior_items": int(args.ticker_news_prior_items),
+                "market_news_prior_items": int(args.market_news_prior_items),
+                "sec_filing_prior_items": int(args.sec_filing_prior_items),
+                "xbrl_prior_rows": int(args.xbrl_prior_rows),
+                "xbrl_items": int(args.xbrl_items),
                 "required_event_lookback_rows": int(default_required_lookback),
                 "default_required_event_lookback_rows": int(default_required_lookback),
                 "max_cached_event_lookback_rows": int(max_cached_event_lookback),
@@ -1472,16 +1658,39 @@ def _query_ticker_news(args: argparse.Namespace, client_opts: Mapping[str, str],
         return _empty_frame()
     table = f"{quote_ident(config.database)}.{quote_ident(config.news_token_table)}"
     columns = ",\n    ".join(quote_ident(column) for column in NEWS_TOKEN_COLUMNS)
-    start_us = max(0, int(window.first_session_start_us) - int(config.news_lookback_days) * 86_400_000_000)
+    prior_items = max(0, int(getattr(args, "ticker_news_prior_items", 0) or 0))
     query = f"""
+WITH prior_items AS
+(
+    SELECT
+        toString(source_id) AS source_id_key,
+        toString(provider_article_id) AS provider_article_id_key,
+        toString(text_hash) AS text_hash_key
+    FROM {table}
+    WHERE ticker = {sql_string(ticker)}
+      AND timestamp_us < {int(window.first_session_start_us)}
+      AND published_at_utc < {date_time64_from_us(window.first_session_start_us)}
+    GROUP BY
+        source_id_key,
+        provider_article_id_key,
+        text_hash_key
+    ORDER BY
+        max(timestamp_us) DESC,
+        source_id_key,
+        provider_article_id_key,
+        text_hash_key
+    LIMIT {int(prior_items)}
+)
 SELECT
     {columns}
 FROM {table}
 WHERE ticker = {sql_string(ticker)}
-  AND timestamp_us >= {int(start_us)}
   AND timestamp_us < {int(window.last_session_end_us)}
-  AND published_at_utc >= {date_time64_from_us(start_us)}
   AND published_at_utc < {date_time64_from_us(window.last_session_end_us)}
+  AND (
+      timestamp_us >= {int(window.first_session_start_us)}
+      OR tuple(toString(source_id), toString(provider_article_id), toString(text_hash)) IN (SELECT source_id_key, provider_article_id_key, text_hash_key FROM prior_items)
+  )
 ORDER BY ticker, timestamp_us, source_id, token_chunk_index
 {_settings_sql(config)}
 """
@@ -1493,8 +1702,28 @@ def _query_market_news(args: argparse.Namespace, client_opts: Mapping[str, str],
         return _empty_frame()
     table = f"{quote_ident(config.database)}.{quote_ident(config.news_token_table)}"
     source_columns = ",\n        ".join(f"t.{quote_ident(column)}" for column in NEWS_TOKEN_COLUMNS if column != "ticker")
-    start_us = max(0, int(window.first_session_start_us) - int(config.news_lookback_days) * 86_400_000_000)
+    prior_items = max(0, int(getattr(args, "market_news_prior_items", 0) or 0))
     query = f"""
+WITH prior_items AS
+(
+    SELECT
+        toString(source_id) AS source_id_key,
+        toString(provider_article_id) AS provider_article_id_key,
+        toString(text_hash) AS text_hash_key
+    FROM {table}
+    WHERE timestamp_us < {int(window.first_session_start_us)}
+      AND published_at_utc < {date_time64_from_us(window.first_session_start_us)}
+    GROUP BY
+        source_id_key,
+        provider_article_id_key,
+        text_hash_key
+    ORDER BY
+        max(timestamp_us) DESC,
+        source_id_key,
+        provider_article_id_key,
+        text_hash_key
+    LIMIT {int(prior_items)}
+)
 SELECT
     '__MARKET__' AS ticker,
     {source_columns}
@@ -1502,12 +1731,14 @@ FROM
 (
     SELECT *
     FROM {table}
-    WHERE timestamp_us >= {int(start_us)}
-      AND timestamp_us < {int(window.last_session_end_us)}
-      AND published_at_utc >= {date_time64_from_us(start_us)}
+    WHERE timestamp_us < {int(window.last_session_end_us)}
       AND published_at_utc < {date_time64_from_us(window.last_session_end_us)}
-    ORDER BY source_id, token_chunk_index, ticker
-    LIMIT 1 BY source_id, token_chunk_index
+      AND (
+          timestamp_us >= {int(window.first_session_start_us)}
+          OR tuple(toString(source_id), toString(provider_article_id), toString(text_hash)) IN (SELECT source_id_key, provider_article_id_key, text_hash_key FROM prior_items)
+      )
+    ORDER BY source_id, provider_article_id, text_hash, token_chunk_index, ticker
+    LIMIT 1 BY source_id, provider_article_id, text_hash, token_chunk_index
 ) AS t
 ORDER BY timestamp_us, source_id, token_chunk_index
 {_settings_sql(config)}
@@ -1520,16 +1751,42 @@ def _query_sec_tokens(args: argparse.Namespace, client_opts: Mapping[str, str], 
         return _empty_frame()
     table = f"{quote_ident(config.sec_context_database)}.{quote_ident(config.sec_filing_text_token_table)}"
     columns = ",\n    ".join(quote_ident(column) for column in SEC_TOKEN_COLUMNS)
-    start_us = max(0, int(window.first_session_start_us) - int(config.sec_lookback_days) * 86_400_000_000)
+    prior_items = max(0, int(getattr(args, "sec_filing_prior_items", 0) or 0))
     query = f"""
+WITH prior_items AS
+(
+    SELECT
+        toString(accession_number) AS accession_number_key,
+        toString(document_id) AS document_id_key,
+        toString(text_rank) AS text_rank_key,
+        toString(source_id) AS source_id_key
+    FROM {table}
+    WHERE ticker = {sql_string(ticker)}
+      AND timestamp_us < {int(window.first_session_start_us)}
+      AND accepted_at_utc < {date_time64_from_us(window.first_session_start_us)}
+    GROUP BY
+        accession_number_key,
+        document_id_key,
+        text_rank_key,
+        source_id_key
+    ORDER BY
+        max(timestamp_us) DESC,
+        accession_number_key,
+        document_id_key,
+        text_rank_key,
+        source_id_key
+    LIMIT {int(prior_items)}
+)
 SELECT
     {columns}
 FROM {table}
 WHERE ticker = {sql_string(ticker)}
-  AND timestamp_us >= {int(start_us)}
   AND timestamp_us < {int(window.last_session_end_us)}
-  AND accepted_at_utc >= {date_time64_from_us(start_us)}
   AND accepted_at_utc < {date_time64_from_us(window.last_session_end_us)}
+  AND (
+      timestamp_us >= {int(window.first_session_start_us)}
+      OR tuple(toString(accession_number), toString(document_id), toString(text_rank), toString(source_id)) IN (SELECT accession_number_key, document_id_key, text_rank_key, source_id_key FROM prior_items)
+  )
 ORDER BY ticker, timestamp_us, accession_number, text_rank, document_id, source_id, token_chunk_index
 {_settings_sql(config)}
 """
@@ -1538,8 +1795,37 @@ ORDER BY ticker, timestamp_us, accession_number, text_rank, document_id, source_
 
 def _query_xbrl(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str) -> Any:
     table = f"{quote_ident(config.sec_context_database)}.{quote_ident(config.sec_xbrl_context_table)}"
-    start_us = max(0, int(window.first_session_start_us) - int(config.xbrl_lookback_days) * 86_400_000_000)
+    prior_rows = max(0, int(getattr(args, "xbrl_prior_rows", 0) or 0))
     query = f"""
+WITH prior_rows AS
+(
+    SELECT
+        ticker,
+        timestamp_us,
+        source_id,
+        cik,
+        issuer_id,
+        taxonomy,
+        tag,
+        unit_code,
+        fiscal_year,
+        fiscal_period,
+        form_type,
+        accepted_at_source,
+        accession_number,
+        period_end_date,
+        value,
+        calendar_period_code,
+        location_code,
+        xbrl_row_kind,
+        bridge_id,
+        mapping_confidence AS mapping_confidence_score
+    FROM {table}
+    WHERE ticker = {sql_string(ticker)}
+      AND timestamp_us < {int(window.first_session_start_us)}
+    ORDER BY ticker, timestamp_us DESC, xbrl_row_kind DESC, taxonomy DESC, tag DESC, unit_code DESC, period_end_date DESC
+    LIMIT {int(prior_rows)}
+)
 SELECT
     ticker,
     timestamp_us,
@@ -1563,8 +1849,11 @@ SELECT
     mapping_confidence AS mapping_confidence_score
 FROM {table}
 WHERE ticker = {sql_string(ticker)}
-  AND timestamp_us >= {int(start_us)}
+  AND timestamp_us >= {int(window.first_session_start_us)}
   AND timestamp_us < {int(window.last_session_end_us)}
+UNION ALL
+SELECT *
+FROM prior_rows
 ORDER BY ticker, timestamp_us, xbrl_row_kind, taxonomy, tag, unit_code, period_end_date
 {_settings_sql(config)}
 """

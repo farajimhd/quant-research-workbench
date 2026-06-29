@@ -349,6 +349,10 @@ def _source_clickhouse_context(
         skip_xbrl=False,
         intraday_label_horizons=_manifest_horizon_string(manifest_args, manifest_config),
         sample_stride_events=max(1, int(manifest_args.get("sample_stride_events") or manifest_config.get("sample_stride_events") or 1)),
+        ticker_news_prior_items=max(0, int(manifest_args.get("ticker_news_prior_items") or manifest_config.get("ticker_news_prior_items") or BUILDER_DEFAULTS.get("ticker_news_prior_items", 64))),
+        market_news_prior_items=max(0, int(manifest_args.get("market_news_prior_items") or manifest_config.get("market_news_prior_items") or BUILDER_DEFAULTS.get("market_news_prior_items", 512))),
+        sec_filing_prior_items=max(0, int(manifest_args.get("sec_filing_prior_items") or manifest_config.get("sec_filing_prior_items") or BUILDER_DEFAULTS.get("sec_filing_prior_items", 32))),
+        xbrl_prior_rows=max(0, int(manifest_args.get("xbrl_prior_rows") or manifest_config.get("xbrl_prior_rows") or BUILDER_DEFAULTS.get("xbrl_prior_rows", 4096))),
     )
     market_config = RollingMarketDataConfig(
         database=query_args.database,

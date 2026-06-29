@@ -215,7 +215,7 @@ class RollingMarketDataConfig:
     sec_token_chunks: int = 8
     sec_max_quality_flags: int = 8
     xbrl_lookback_days: int = 730
-    xbrl_max_items: int = 512
+    xbrl_max_items: int = 4096
     intraday_label_horizons: tuple[TimeBarHorizon, ...] = field(default_factory=lambda: DEFAULT_INTRADAY_LABEL_HORIZONS)
     text_tokenizer_model: str = "Qwen/Qwen3-0.6B"
     text_max_tokens: int = 1024

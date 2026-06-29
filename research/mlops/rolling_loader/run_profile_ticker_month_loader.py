@@ -46,7 +46,7 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "ticker_news_max_items": 8,
     "market_news_max_items": 16,
     "sec_filing_max_items": 4,
-    "xbrl_max_items": 512,
+    "xbrl_max_items": 4096,
     "ticker_news_token_chunks": 2,
     "market_news_token_chunks": 2,
     "sec_filing_token_chunks": 8,
