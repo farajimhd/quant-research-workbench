@@ -89,6 +89,7 @@ DEFAULTS: dict[str, Any] = {
     "inline_audit_samples_per_part": 2,
     "max_inflight_packages": 96,
     "max_origin_events_per_part": 2_000_000,
+    "max_cached_event_lookback_rows": 8_192,
     "events_per_chunk": 128,
     "short_context_chunks": 32,
     "context_chunk_stride_events": 64,
@@ -417,6 +418,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--inline-audit-samples-per-part", type=int, default=DEFAULTS["inline_audit_samples_per_part"], help="Cheap in-memory part checks before writing. Set 0 to disable.")
     parser.add_argument("--max-inflight-packages", type=int, default=DEFAULTS["max_inflight_packages"])
     parser.add_argument("--max-origin-events-per-part", type=int, default=DEFAULTS["max_origin_events_per_part"], help="Maximum origin ordinal span per physical part inside a ticker-month package.")
+    parser.add_argument("--max-cached-event-lookback-rows", type=int, default=DEFAULTS["max_cached_event_lookback_rows"], help="Maximum prior raw event rows stored before each part's first origin so future loaders can choose coverage at load time.")
     parser.add_argument("--events-per-chunk", type=int, default=DEFAULTS["events_per_chunk"])
     parser.add_argument("--short-context-chunks", type=int, default=DEFAULTS["short_context_chunks"])
     parser.add_argument("--context-chunk-stride-events", type=int, default=DEFAULTS["context_chunk_stride_events"])
@@ -795,9 +797,10 @@ def _build_ticker_month_package(
         shutil.rmtree(tmp_dir)
     tmp_dir.mkdir(parents=True, exist_ok=True)
     try:
-        required_lookback = required_event_lookback_rows(context_lags, args.events_per_chunk)
+        default_required_lookback = required_event_lookback_rows(context_lags, args.events_per_chunk)
+        max_cached_event_lookback = max(int(default_required_lookback), max(0, int(args.max_cached_event_lookback_rows)))
         origin_bounds = _query_origin_bounds(args, client_opts, config, window, ticker)
-        parts = _origin_ordinal_parts(origin_bounds, required_lookback=required_lookback, max_origin_events_per_part=args.max_origin_events_per_part)
+        parts = _origin_ordinal_parts(origin_bounds, fetch_lookback_rows=max_cached_event_lookback, max_origin_events_per_part=args.max_origin_events_per_part)
         futures: dict[str, Future[Any]] = {
             "ticker_news": lanes.submit("context", f"{month}:{ticker}:ticker_news", lambda: _query_ticker_news(args, client_opts, config, window, ticker)),
             "sec_filings": lanes.submit("context", f"{month}:{ticker}:sec", lambda: _query_sec_tokens(args, client_opts, config, window, ticker)),
@@ -943,7 +946,10 @@ def _build_ticker_month_package(
                 "events_per_chunk": int(args.events_per_chunk),
                 "context_lags": list(context_lags),
                 "sample_stride_events": int(args.sample_stride_events),
-                "required_event_lookback_rows": int(required_lookback),
+                "required_event_lookback_rows": int(default_required_lookback),
+                "default_required_event_lookback_rows": int(default_required_lookback),
+                "max_cached_event_lookback_rows": int(max_cached_event_lookback),
+                "default_event_window_index": True,
                 "max_origin_events_per_part": int(args.max_origin_events_per_part),
                 "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
                 "event_payload_columns": list(EVENT_PAYLOAD_COLUMNS),
@@ -1000,7 +1006,7 @@ def _build_ticker_month_package(
         raise
 
 
-def _origin_ordinal_parts(bounds: tuple[int, int] | None, *, required_lookback: int, max_origin_events_per_part: int) -> list[OriginOrdinalPart]:
+def _origin_ordinal_parts(bounds: tuple[int, int] | None, *, fetch_lookback_rows: int, max_origin_events_per_part: int) -> list[OriginOrdinalPart]:
     if not bounds:
         return []
     min_ordinal, max_ordinal = int(bounds[0]), int(bounds[1])
@@ -1016,7 +1022,7 @@ def _origin_ordinal_parts(bounds: tuple[int, int] | None, *, required_lookback: 
                 part_id=len(parts),
                 origin_ordinal_start=int(start),
                 origin_ordinal_end=int(end),
-                fetch_ordinal_start=max(0, int(start) - int(required_lookback)),
+                fetch_ordinal_start=max(0, int(start) - int(fetch_lookback_rows)),
                 fetch_ordinal_end=int(end),
             )
         )

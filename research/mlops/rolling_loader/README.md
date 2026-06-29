@@ -29,6 +29,14 @@ lookback rows so event-window continuity is checked inside the part without
 creating a training boundary at the part edge. The default maximum origin span
 is controlled by `--max-origin-events-per-part`.
 
+The builder now separates cached history from the default training window
+index. `--max-cached-event-lookback-rows` controls how many prior raw event rows
+are stored before each part's first origin. The default `event_window_index`
+is still written for the current configured coverage, but a future loader can
+request any event coverage that fits inside the cached lookback without
+rebuilding the package. If the loader needs more rows than
+`max_cached_event_lookback_rows`, the cache must be rebuilt with a larger value.
+
 Build the new ticker/month SSD cache with:
 
 ```powershell

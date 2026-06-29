@@ -122,6 +122,14 @@ The package manifest owns the part list:
 start may be earlier than the origin start because event windows need prior
 context rows. Only origins inside `origin_ordinal_start/end` are emitted.
 
+The builder stores a configurable maximum raw-event lookback per part. This is
+not the same as the default training event-window geometry. The package may
+write a default `event_window_index` for the configured build coverage, but the
+training loader can recompute raw flat or raw window event gathers from the
+stored events as long as the requested coverage is no larger than
+`max_cached_event_lookback_rows`. Requests beyond that value require rebuilding
+or extending the cache.
+
 ## Event Payload
 
 Events are stored as raw compact event rows. They are not encoded during cache
