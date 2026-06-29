@@ -1,69 +1,383 @@
-# Stateful Rolling Loader
+# Rolling Loader Package
 
-This package implements the production-aligned rolling-loader design from
-scratch. It replaces the old dense-per-sample materialization path with bounded
-stateful caches and stable sample pointers.
+`research.mlops.rolling_loader` is the training and serving data path for
+stateful market-context models. The current recommended path is:
 
-## Current SSD Cache Direction
-
-The next implementation target is the query-driven ticker/month SSD cache
-described in `TICKER_MONTH_SSD_CACHE_DESIGN.md`. That design keeps the same
-stateful no-lookahead semantics, but stores raw compact event packages and
-derived cache indexes instead of encoded event chunks or fully materialized
-training tensors.
-
-New cache-build rule: every stored event row must derive timestamp-based event
-time features during cache construction. Absolute calendar/session features are
-computed once from `timestamp_us`; origin-relative deltas are computed later
-when a training batch resolves an event window.
-
-Intraday labels are stored as origin-relative `next_*` forward labels computed
-by set-based ClickHouse queries. The default SSD cache does not store dense
-intraday bar grids and does not store `current_*` intraday labels.
-
-Liquid tickers are still one logical ticker/month package, but the event,
-origin, window-index, and intraday-label files are physically split into
-ordinal-bounded parts. Each part uses ClickHouse's native access pattern,
-`ticker = ... AND ordinal BETWEEN ...`, and includes the required prior event
-lookback rows so event-window continuity is checked inside the part without
-creating a training boundary at the part edge. The default maximum origin span
-is controlled by `--max-origin-events-per-part`.
-
-The builder now separates cached history from the default training window
-index. `--max-cached-event-lookback-rows` controls how many prior raw event rows
-are stored before each part's first origin. The default `event_window_index`
-is still written for the current configured coverage, but a future loader can
-request any event coverage that fits inside the cached lookback without
-rebuilding the package. If the loader needs more rows than
-`max_cached_event_lookback_rows`, the cache must be rebuilt with a larger value.
-
-Build the new ticker/month SSD cache with:
-
-```powershell
-python -m research.mlops.rolling_loader.run_build_ticker_month_cache --month 2019-02 --cache-id train_201902_ticker_month
+```text
+ClickHouse events/context tables
+  -> ticker/month SSD cache builder
+  -> ticker/month rolling data loader
+  -> trainer batches
 ```
 
-Or build every complete month inside a period; partial months at the boundaries
-are ignored:
+The cache builder writes source-aligned ticker/month packages to SSD. The data
+loader reads those packages, builds a shuffled sample plan, materializes only
+the data groups requested by the trainer, and feeds batches from CPU while the
+GPU trains.
 
-```powershell
-python -m research.mlops.rolling_loader.run_build_ticker_month_cache --start-utc 2019-01-01T00:00:00Z --end-utc 2019-04-15T00:00:00Z --cache-id train_201901_201903_ticker_month
+The older in-memory replay loader and materialized-cache scripts remain in this
+package for comparison and profiling, but new training work should start from
+the ticker/month cache and loader.
+
+## Components
+
+| Component | File | Purpose |
+| --- | --- | --- |
+| Ticker/month cache builder | `run_build_ticker_month_cache.py` | Builds reusable SSD packages from ClickHouse. |
+| Ticker/month cache audit | `audit_ticker_month_cache.py` | Audits completed SSD cache packages. |
+| Ticker/month data loader | `ticker_month_dataset.py` | Reads SSD packages and materializes trainer batches. |
+| Loader profiler | `run_profile_ticker_month_loader.py` | Measures loader speed, memory, and output shapes. |
+| Cache design guide | `TICKER_MONTH_SSD_CACHE_DESIGN.md` | Detailed design rationale and storage contract. |
+| Legacy stateful replay | `loader.py`, `initialize.py`, `run_training_profile.py` | Older production-style replay/profiling path. |
+
+## Ticker/Month SSD Cache
+
+The event table is partitioned by month and ordered by `(ticker, ordinal)`.
+The fastest natural unit is therefore:
+
+```text
+one ticker, one month
 ```
 
-Profile the loader against a built cache with:
+Each package stores raw compact events, origins, reusable index files, labels,
+and token/context files. It does **not** store encoded event chunks and does
+**not** store fully materialized training batches.
 
-```powershell
-python -m research.mlops.rolling_loader.run_profile_ticker_month_loader --cache-id train_201902_ticker_month --month 2019-02 --batch-size 4096 --batches 8
+### Layout
+
+```text
+cache_root/
+  manifest.json
+  train/
+    month=YYYY-MM/
+      global/
+        manifest.json
+        market_news_tokens.parquet
+        global_daily_bars.parquet
+        category_references.parquet
+      ticker_hash=XX/
+        ticker=ABC/
+          manifest.json
+          events_part_00000.parquet
+          origins_part_00000.parquet
+          event_window_index_part_00000.parquet
+          ranges_part_00000.parquet
+          intraday_forward_labels_part_00000.parquet
+          daily_bars.parquet
+          ticker_news_tokens.parquet
+          sec_filing_tokens.parquet
+          xbrl.parquet
 ```
 
-The loader uses a sample plan over `(month, ticker, part, origin row)` and
-performs two-level shuffling: first across ticker/month parts, then again inside
-the currently loaded group of parts. It reads multiple ticker caches at a time,
-materializes CPU batches from the loaded group with a bounded worker queue, and
-emits batches to the trainer.
+Very liquid tickers can be physically split into multiple ordinal-bounded
+parts. These part boundaries are storage boundaries only. They are not model
+or training boundaries.
 
-Use `--data-groups` to avoid loading unneeded files for pretraining or ablation
-runs. Examples:
+### Keys
+
+Two keys are used:
+
+```text
+origin_key = ticker_id + ordinal
+cache_state_key = timestamp_us
+```
+
+`origin_key` uniquely identifies one training sample. `cache_state_key`
+represents an as-of time; many tickers or origins can share it, so it is not a
+sample identity.
+
+### Origin Rule
+
+Origins are only events inside the active trading session:
+
+```text
+04:00:00 America/New_York <= origin session time < 20:00:00 America/New_York
+```
+
+All timestamps in storage remain UTC microseconds. The New York session rule is
+used only for session membership and session-relative features.
+
+### Event Payload
+
+Events are stored as raw compact rows plus cache-time event time features.
+
+Core event columns:
+
+```text
+ticker_id
+ticker
+ordinal
+event_type
+timestamp_us
+price_primary_int
+price_secondary_int
+size_primary
+size_secondary
+exchange_primary
+exchange_secondary
+event_flags
+conditions_packed
+```
+
+Cache-time event features:
+
+```text
+utc_second_of_day_sin/cos
+utc_day_of_week_sin/cos
+utc_day_of_year_sin/cos
+years_since_2000
+session_second
+session_progress
+is_regular_hours
+is_premarket
+is_afterhours
+```
+
+Origin-relative features are not stored because the same event can be reused by
+many origins. The loader computes origin-relative deltas at materialization
+time when a trainer actually asks for them.
+
+### Event Lookback
+
+The builder separates cached history from the default training window index.
+
+`--max-cached-event-lookback-rows` controls how many prior raw event rows are
+stored before each physical part's first origin. The default is:
+
+```text
+8192 rows
+```
+
+This is not per origin. For one normal ticker/month part, it stores up to 8192
+rows before the first eligible origin of the month. For split liquid tickers,
+the overlap is up to 8192 rows per physical part boundary.
+
+The default `event_window_index` is still written for the configured build
+coverage, but the loader can request any event coverage that fits inside
+`max_cached_event_lookback_rows`. If a later experiment needs more history, the
+cache must be rebuilt with a larger value.
+
+### Labels
+
+Intraday labels are stored as origin-relative `next_*` labels. The cache does
+not store dense intraday bar grids and does not store `current_*` intraday
+labels.
+
+The current default horizons are:
+
+```text
+100ms,250ms,500ms,750ms,1s,5s,10s,30s,60s,120s,180s,300s,
+600s,1200s,1800s,3600s,7200s,3h,4h,5h
+```
+
+Daily macro/future labels are based on daily bars and should be computed from
+daily-bar sequences, not from independent weekly/monthly/yearly bars.
+
+### Context Files
+
+The builder reads tokenized context tables. It does not query raw text and does
+not compute embeddings.
+
+Per-ticker optional context:
+
+```text
+ticker_news_tokens
+sec_filing_tokens
+xbrl
+daily_bars
+```
+
+Global context is stored once per month under `global/` where available.
+
+Missing optional context is represented as empty/zero data plus explicit masks
+at load time. Missing optional context is not an error by itself.
+
+## Build Cache
+
+Workstation form:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_build_ticker_month_cache.py `
+  --month 2019-02 `
+  --cache-id train_201902_ticker_month
+```
+
+Laptop/module form:
+
+```powershell
+python -m research.mlops.rolling_loader.run_build_ticker_month_cache `
+  --month 2019-02 `
+  --cache-id train_201902_ticker_month
+```
+
+Build every complete month inside a period:
+
+```powershell
+python -m research.mlops.rolling_loader.run_build_ticker_month_cache `
+  --start-utc 2019-01-01T00:00:00Z `
+  --end-utc 2019-04-15T00:00:00Z `
+  --cache-id train_201901_201903_ticker_month
+```
+
+Partial months at period boundaries are ignored.
+
+### Builder Defaults
+
+Defaults are tuned for the 128-core / 512GB workstation and target practical
+throughput without flooding ClickHouse:
+
+```text
+package workers                    64
+max inflight packages              96
+event fetch workers                 6
+context fetch workers              16
+label fetch workers                 6
+CPU workers                        16
+write workers                       8
+audit workers                       2
+ClickHouse max_threads              8 per query
+ClickHouse memory cap             120G per query
+max cached event lookback rows   8192
+```
+
+If the workstation is quiet and ClickHouse has headroom, the first override to
+test is usually:
+
+```powershell
+--label-fetch-workers 8
+```
+
+### Builder Logging
+
+The builder writes these files under the cache root:
+
+```text
+terminal.log
+builder_events.jsonl
+builder_profile_events.jsonl
+errors.jsonl
+train_progress.json
+manifest.json
+```
+
+The Rich terminal is heartbeat-driven, so progress continues updating while
+the main thread waits on long ClickHouse futures. Ctrl+C requests a graceful
+stop, cancels tracked active ClickHouse query ids, writes an interrupted
+manifest, and keeps completed package directories intact.
+
+### Rerun And Resume
+
+Normal rerun:
+
+```text
+rebuild and atomically replace existing ticker packages
+```
+
+Use `--resume` only when you intentionally want to reuse completed package
+directories from a compatible interrupted build.
+
+### Builder Audits
+
+Two audit layers are active by default.
+
+Inline part audit:
+
+```text
+--inline-audit-samples-per-part 2
+```
+
+This checks two deterministic random origins from each part using only data
+already loaded in memory. It catches origin/window mismatch, ordinal gaps,
+missing labels, wrong label-origin alignment, and forward-label horizon
+violations before files are written.
+
+Final audit:
+
+```text
+audit_ticker_month_cache.py
+```
+
+This runs after all requested month packages finish unless
+`--skip-final-audit` is passed.
+
+## Rolling Data Loader
+
+The loader reads the ticker/month SSD cache and emits trainer-ready batches.
+It is implemented in:
+
+```text
+ticker_month_dataset.py
+```
+
+Main classes:
+
+```text
+TickerMonthLoaderConfig
+TickerMonthCacheIndex
+TickerMonthPartReader
+TickerMonthBatchMaterializer
+AsyncTickerMonthBatchLoader
+TickerMonthTrainingBatch
+```
+
+### Loader Flow
+
+1. Read the cache root manifest.
+2. Discover complete `(month, ticker, part)` packages.
+3. Build a sample plan over `(month, ticker, part_id, origin_row)`.
+4. Filter origins by requested training period when `start_utc/end_utc` are
+   provided.
+5. Shuffle package parts.
+6. Load multiple ticker/month parts from SSD.
+7. Build local sample refs from the loaded group.
+8. Shuffle again inside the loaded group.
+9. Materialize CPU batches with a bounded worker queue.
+10. Yield batches to the trainer.
+
+This gives useful training randomness while keeping SSD reads mostly
+sequential and package-local.
+
+### Loader Inputs
+
+Important `TickerMonthLoaderConfig` fields:
+
+```text
+cache_root
+split
+start_utc
+end_utc
+months
+tickers
+batch_size
+seed
+data_groups
+event_output_mode
+events_per_window
+context_chunks
+context_stride_events
+flat_coverage_events
+loaded_parts_per_group
+read_workers
+materialize_workers
+max_batches
+```
+
+### Data Groups
+
+Use `data_groups` to avoid loading files the objective does not need.
+
+Common values:
+
+```text
+events
+intraday_labels
+ticker_news_tokens
+sec_filing_tokens
+xbrl
+daily_bars
+```
+
+Examples:
 
 ```text
 events
@@ -72,281 +386,198 @@ sec_filing_tokens
 ticker_news_tokens,sec_filing_tokens
 ```
 
-Event output is controlled by `--event-output-mode`:
+For event-only pretraining, use:
+
+```powershell
+--data-groups events --event-output-mode raw_windows
+```
+
+For identity/context experiments with no event tensor:
+
+```powershell
+--event-output-mode none
+```
+
+### Event Output Modes
+
+The default is raw events, not encoded chunks.
 
 ```text
-raw_windows     [B, context_chunks, events_per_window] per numeric event column
-raw_flat        [B, coverage_events] per numeric event column
-encoded_uint8   compatibility headers_uint8/events_uint8 for the old encoder path
-none            identity/context-only batches
+raw_windows
+  per-column arrays shaped [B, context_chunks, events_per_window]
+
+raw_flat
+  per-column arrays shaped [B, coverage_events]
+
+encoded_uint8
+  compatibility path:
+  headers_uint8 [B, context_chunks, 14]
+  events_uint8  [B, context_chunks, 128, 16]
+
+none
+  no event tensor materialization
 ```
 
-The default is `raw_windows`, not encoded chunks. `encoded_uint8` remains
-available for older trainer paths that still consume `headers_uint8` and
-`events_uint8`.
+Use `encoded_uint8` only for older trainer paths that still consume the old
+market-encoder byte tensors.
 
-The builder writes `terminal.log`, `builder_events.jsonl`,
-`builder_profile_events.jsonl`, `errors.jsonl`, and split progress JSON under
-the cache root so failed workstation runs can be reviewed without copying the
-interactive terminal output.
+### Coverage Compatibility
 
-Default concurrency is tuned for the 128-core / 512GB workstation and targets
-roughly 65% practical utilization without flooding ClickHouse with too many
-heavy scans at once:
+The loader validates requested coverage against the package manifest.
+
+For raw/encoded event modes:
 
 ```text
-package workers          64
-max inflight packages    96
-event fetch workers       6
-context fetch workers    16
-label fetch workers       6
-CPU workers              16
-write workers             8
-audit workers             2
-ClickHouse max_threads    8 per query
-ClickHouse memory cap   120G per query
+requested_coverage <= max_cached_event_lookback_rows
 ```
 
-These defaults are intentionally not the full 128-core capacity. The event and
-label lanes issue ClickHouse queries, and each query can use up to
-`max_threads`; increasing those lanes too aggressively can reduce total
-throughput by making the database compete with itself. For a dedicated quiet
-workstation, the first override to test is usually `--label-fetch-workers 8`.
+If requested coverage is larger, the loader fails fast and tells you to rebuild
+the cache with a larger `--max-cached-event-lookback-rows`.
 
-Progress reporting is heartbeat-driven, so the Rich panels and progress JSON
-continue updating while the main thread is waiting on long ClickHouse futures.
-The dashboard also reports active ClickHouse query count and longest active
-query duration.
+### Loader Output
 
-Ctrl+C requests a graceful stop, cancels active ClickHouse queries by their
-tracked query ids, writes an interrupted manifest, and leaves completed package
-directories intact.
-
-Rerun semantics are explicit: a normal run rebuilds and atomically replaces
-existing ticker packages for the selected cache id. Pass `--resume` only when
-you intentionally want to reuse already completed package directories from an
-interrupted compatible build.
-
-The final audit is still part of the normal build loop. After all requested
-month packages complete, the builder runs `audit_ticker_month_cache` unless
-`--skip-final-audit` is passed. During package creation the audit panel remains
-idle; it starts only after the build phase changes to `auditing`.
-
-Each ordinal part also runs a lightweight in-memory guard before writing files.
-By default `--inline-audit-samples-per-part 2` checks two deterministic random
-origins from the events, origin table, window index, and intraday labels already
-loaded in memory. It does not query ClickHouse or reread parquet. The guard
-stops the build immediately if sampled origins are misaligned, event windows
-cross ordinal gaps, label rows are missing, or available forward labels violate
-their horizon. Set `--inline-audit-samples-per-part 0` only when profiling the
-absolute minimum build overhead.
-
-## Core Flow
-
-1. Resolve the ticker universe and create every per-ticker cache before replay.
-2. Warm-load enough high-frequency rows per ticker to satisfy context coverage.
-3. Load bounded low-frequency and global context as-of the replay start.
-4. Replay chronological market events and later low-frequency context updates.
-5. `RollingContextLoader` appends each item to the correct bounded cache.
-6. Every eligible event origin creates or reuses 128-event chunk ids.
-7. A `RollingSamplePointer` is emitted once the 32 configured context chunks
-   spaced by the context stride are available.
-8. Training materializes raw chunks/tokens from stable ids at the collator step.
-   Production can resolve the same ids to cached embeddings.
-
-The key rule is that low-frequency context is pushed once and referenced by id
-many times. This prevents news, SEC, XBRL, macro bars, and global bars from
-being rebuilt for every event-origin sample.
-
-## Caches
-
-Per ticker:
-
-- event rows and encoded 128-event chunks
-- latest 32 ticker-news items
-- latest 16 SEC filing text items
-- latest 512 XBRL rows
-- ticker macro bars
-
-Global:
-
-- latest 64 market-news items
-- global market bars
-
-The event cache warm-loads enough prior raw rows to satisfy the configured
-chunk coverage as-of the replay start timestamp. Warmup does not encode chunks.
-Context chunks from the warm range are encoded lazily only when a sample
-references their origins. The default market context is:
+`TickerMonthTrainingBatch` contains:
 
 ```text
-chunk_size = 128 events
-context_chunks = 32
-context_chunk_stride_events = 64
-coverage = 128 + (32 - 1) * 64 = 2112 events
-adjacent_chunk_overlap = 64 events
+ticker
+origin_ordinal
+origin_timestamp_us
+event_output_mode
+raw_event_windows
+raw_event_flat
+raw_event_mask
+headers_uint8
+events_uint8
+intraday_labels
+future_intraday_bars
+future_intraday_bar_mask
+input_availability
+external_context
+profile
 ```
 
-Sample origins are independent from context spacing. The default
-`sample_stride_events=1` means every event can become a training/serving origin,
-while each sample uses context chunks ending at `origin`, `origin-64`,
-`origin-128`, and so on.
+Only fields requested by `data_groups` and `event_output_mode` are populated.
 
-## Sample Pointers
+## Profile Loader
 
-`RollingSamplePointer` stores stable ids:
-
-- event chunk ids for dense recent and sparse long market context
-- global news ids
-- ticker news ids
-- SEC filing ids
-- XBRL ids
-- ticker macro bar ids
-- global market bar ids
-
-The pointer is intentionally payload-free. This is what keeps both training and
-production consistent while letting training fine-tune encoders.
-
-Pending sample pointers protect their referenced arena payload ids. Event chunk
-payloads are materialized strictly: if a ready pointer references a chunk that
-is no longer available, batch materialization fails instead of silently filling
-zeros.
-
-## Initialization
-
-Use `initialize_clickhouse_replay()` to build a guide-aligned replay state:
-
-- every ticker from the resolved universe has event, news, SEC, XBRL, and macro
-  caches before replay starts
-- high-frequency warm rows end at `--start-timestamp-us` when provided
-- ticker/global low-frequency context is loaded once as-of the replay start
-- later replay blocks fetch only incremental context updates
-- cursors are positioned at the warm high-frequency boundary
-
-A zero replay start is a compatibility mode that warms from the start of the
-configured index table. The training-accurate profiler passes a replay start by
-default.
-
-## Materialized Batch
-
-`materialize_training_batch()` resolves pointers into:
-
-- `headers_uint8`: `[B, context_chunks, 14]`
-- `events_uint8`: `[B, context_chunks, 128, 16]`
-- context id matrices, padded with zero ids
-- optional raw external payload arrays for profiling or encoder training
-
-The profiler records materialized batch bytes so we can compare candidate batch
-sizes and context sizes directly.
-
-## Profiler
-
-Run a ClickHouse-backed profile:
+Workstation form:
 
 ```powershell
-python -m research.mlops.rolling_loader.run_profile --database market_sip_compact --events-table events --index-table train_2019_to_2025 --tickers 64 --batch-size 4096 --batches 4 --events-per-ticker-block 64 --max-threads 8 --max-memory-usage 80G
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_profile_ticker_month_loader.py `
+  --cache-id train_201902_ticker_month `
+  --month 2019-02 `
+  --batch-size 4096 `
+  --batches 8
 ```
 
-The profiler is ClickHouse-backed. It uses the configured
-ClickHouse URL/user/password from the standard `.env` discovery path unless
-`--clickhouse-url`, `--user`, or `--password` are passed explicitly.
-
-The default profile uses `--context-chunks 32 --context-chunk-stride-events 64`.
-Pass `--start-timestamp-us <utc_microseconds>` to initialize all caches as-of a
-specific replay timestamp. A zero value keeps the older compatibility warmup.
-
-The default profile is ID-only for low-frequency context. This matches the
-intended training/production flow where sample pointers carry stable cache ids
-and the final collator decides which payloads to resolve. To diagnose raw text,
-SEC, XBRL, or bar payload collation cost, add:
+Module form:
 
 ```powershell
---materialize-external-payloads
+python -m research.mlops.rolling_loader.run_profile_ticker_month_loader `
+  --cache-id train_201902_ticker_month `
+  --month 2019-02 `
+  --batch-size 4096 `
+  --batches 8
 ```
 
-The profiler can also be run directly from a synced workstation copy:
+Profile encoded compatibility mode:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_profile.py --database market_sip_compact --events-table events --index-table train_2019_to_2025 --tickers 64 --batch-size 4096 --batches 4 --events-per-ticker-block 64 --max-threads 8 --max-memory-usage 80G
+python -m research.mlops.rolling_loader.run_profile_ticker_month_loader `
+  --cache-id train_201902_ticker_month `
+  --month 2019-02 `
+  --event-output-mode encoded_uint8 `
+  --batch-size 4096 `
+  --batches 8
 ```
 
-The profiler uses the real `RollingContextLoader` class and real ClickHouse
-sources for both high-frequency events and low-frequency/global context. During
-each event block it fetches real ticker news, global news, SEC filing tokens,
-XBRL rows, ticker macro bars, and global market bars, then replays context
-updates and events in timestamp order.
+The profiler prints:
 
-The profiler reports:
+```text
+discovered parts
+batches
+samples
+elapsed seconds
+samples/sec
+materialization seconds
+max RSS
+first batch shape summary
+```
 
-- vectorized next-K per-ticker event-block fetch time
-- timestamp-ordered block replay time
-- low-frequency/global context fetch/apply time for each block
-- warm-load time
-- event cache push time
-- event chunk creation time
-- external cache push/pop time
-- sample-index creation time
-- external payload materialization time
-- batch materialization time
-- final batch memory footprint
-
-Reports are appended as JSONL under:
-
-`D:/market-data/prepared/data_provider_profiles/rolling_loader_profile.jsonl`
-
-## Training-Accurate Profiler
-
-`run_training_profile.py` is the workstation-oriented profiler for measuring
-the loader as a training data path. It is separate from `run_profile.py` and
-does not use the loader's internal cumulative profiler for timing. Instead, it
-records phase start/end events, per-batch metrics, per-block throughput, RSS
-memory samples, cache sizes, and a final summary under one run directory.
-
-Laptop form:
+Append JSONL summaries with:
 
 ```powershell
-python -m research.mlops.rolling_loader.run_training_profile --database market_sip_compact --events-table events --index-table train_2019_to_2025 --batch-size 4096 --batches 4 --replay-mode time-window --replay-window-us 200000 --context-chunks 32 --context-chunk-stride-events 64 --sample-stride-events 1 --start-utc 2019-01-05T00:00:00Z --max-threads 8 --max-memory-usage 80G --materialize-external-payloads --run-name train_all_b4096_tw200ms_20190105
+--report-path D:\market-data\prepared\data_provider_profiles\ticker_month_loader_profile.jsonl
 ```
 
-Direct workstation form:
+## No-Lookahead Rules
+
+The builder and loader must preserve these invariants:
+
+- origins are inside the active session
+- event windows end at or before the origin
+- event windows never cross ordinal gaps
+- text/SEC/XBRL context is selected as-of `origin_timestamp_us`
+- labels are strictly future targets
+- optional missing context is zero/masked, not silently treated as real data
+- requested loader coverage must fit inside cached lookback
+- invalid event windows are filtered or fail, not masked into training
+
+## Programmatic Use
+
+```python
+from pathlib import Path
+
+from research.mlops.rolling_loader import (
+    AsyncTickerMonthBatchLoader,
+    TickerMonthLoaderConfig,
+)
+
+config = TickerMonthLoaderConfig(
+    cache_root=Path("D:/market-data/prepared/rolling_ticker_month_cache/train_201902_ticker_month"),
+    split="train",
+    months=("2019-02",),
+    batch_size=4096,
+    data_groups=("events", "intraday_labels"),
+    event_output_mode="raw_windows",
+)
+
+loader = AsyncTickerMonthBatchLoader(config)
+for batch in loader.iter_batches():
+    train_step(batch)
+```
+
+## Legacy Stateful Replay
+
+The original `RollingContextLoader` path is still available. It warms bounded
+in-memory caches, replays chronological ClickHouse events, creates
+`RollingSamplePointer` ids, and materializes batches at the final step. It is
+useful as a production-semantics reference and for profiling live-like replay,
+but it is not the recommended high-throughput historical training path.
+
+Legacy profile:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_training_profile.py --database market_sip_compact --events-table events --index-table train_2019_to_2025 --batch-size 4096 --batches 4 --replay-mode time-window --replay-window-us 200000 --context-chunks 32 --context-chunk-stride-events 64 --sample-stride-events 1 --start-utc 2019-01-05T00:00:00Z --max-threads 8 --max-memory-usage 80G --materialize-external-payloads --run-name train_all_b4096_tw200ms_20190105
+python -m research.mlops.rolling_loader.run_training_profile `
+  --database market_sip_compact `
+  --events-table events `
+  --index-table train_2019_to_2025 `
+  --batch-size 4096 `
+  --batches 4 `
+  --replay-mode time-window `
+  --replay-window-us 200000 `
+  --context-chunks 32 `
+  --context-chunk-stride-events 64 `
+  --sample-stride-events 1 `
+  --start-utc 2019-01-05T00:00:00Z `
+  --max-threads 8 `
+  --max-memory-usage 80G `
+  --materialize-external-payloads
 ```
 
-Outputs are written under:
+## Smoke Tests
 
-`D:/market-data/prepared/data_provider_profiles/rolling_loader_training/<run_name>/`
-
-The key files are:
-
-- `profile_events.jsonl`: phase timing, block, batch, and final events
-- `memory_samples.jsonl`: periodic RSS samples
-- `summary.json`: final elapsed time, throughput, peak RSS, cache state, and
-  initialization/replay summaries
-
-Use `--no-materialize-external-payloads` to measure the ID-only path and
-`--materialize-external-payloads` to measure the raw external payload gather
-path that trainable encoders need.
-
-The default replay mode is `time-window`: each block starts at the next eligible
-market event after the current replay cursor, then loads the following
-`RollingLoaderConfig.replay_time_window_us` (`200000` microseconds by default).
-The first query is event-driven and does not send the full ticker universe to
-ClickHouse. Tickers are discovered from each event window. A newly discovered
-ticker is initialized, high-frequency-warmed through the event immediately
-before its first row in that window, and loaded with bounded low-frequency
-context before any of its events are replayed. Existing tickers keep their cache
-state; tickers without market events in the window do not participate in that
-batch window.
-
-The default replay start is `2019-01-05T00:00:00Z`.
-
-By default `--tickers 0` means no ticker cap. The source still uses the index
-table as the eligibility filter, but ticker caches are created only when a
-ticker first appears in an event window. Pass `--tickers N` only for a smaller
-debug profile.
-
-## Smoke Test
+Package smoke:
 
 ```powershell
 python -m research.mlops.rolling_loader.test_smoke
@@ -358,7 +589,5 @@ Direct workstation form:
 python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\test_smoke.py
 ```
 
-The smoke test is intentionally isolated from the profiler and uses generated
-events only to verify cache mechanics, ready sample pointers, and materialized
-event tensor shapes. Profiling should use the ClickHouse-backed
-`run_training_profile.py` path when measuring real training speed and memory.
+Use the ticker/month loader profiler for real cache throughput and shape
+validation. Use the legacy smoke only for low-level in-memory cache mechanics.
