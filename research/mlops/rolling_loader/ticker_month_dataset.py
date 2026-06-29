@@ -37,6 +37,7 @@ TEXT_INPUT_GROUP_TO_KEY = {
     "market_news_tokens": "market_news",
     "sec_filing_tokens": "sec_filings",
 }
+XBRL_CONTEXT_GROUPS = {"xbrl"}
 BAR_CONTEXT_GROUPS = {"daily_bars", "global_daily_bars"}
 BAR_INPUT_GROUP_TO_KEY = {
     "daily_bars": "ticker_daily_bars",
@@ -114,6 +115,7 @@ class TickerMonthLoaderConfig:
     ticker_news_max_items: int = 8
     market_news_max_items: int = 16
     sec_filing_max_items: int = 4
+    xbrl_max_items: int = 512
     ticker_news_token_chunks: int = 2
     market_news_token_chunks: int = 2
     sec_filing_token_chunks: int = 8
@@ -233,6 +235,35 @@ class DailyBarContextIndex:
     values_by_symbol: dict[str, np.ndarray]
 
 
+@dataclass(slots=True)
+class XbrlCategoryReferenceIndex:
+    ids_by_field_value: dict[tuple[str, str], int]
+
+    def id(self, field_name: str, value: Any) -> int:
+        if value is None:
+            return 0
+        return int(self.ids_by_field_value.get((str(field_name), str(value)), 0))
+
+
+@dataclass(slots=True)
+class XbrlContextIndex:
+    timestamps_us: np.ndarray
+    value: np.ndarray
+    fiscal_year: np.ndarray
+    period_end_days: np.ndarray
+    taxonomy_id: np.ndarray
+    tag_id: np.ndarray
+    unit_id: np.ndarray
+    form_id: np.ndarray
+    row_kind_id: np.ndarray
+    location_id: np.ndarray
+    mapping_confidence: np.ndarray
+
+    @property
+    def item_count(self) -> int:
+        return int(self.timestamps_us.shape[0])
+
+
 @dataclass(frozen=True, slots=True)
 class TickerMonthSampleRef:
     part_index: int
@@ -259,6 +290,7 @@ class TickerMonthTrainingBatch:
     future_intraday_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
     input_availability: dict[str, np.ndarray] = field(default_factory=dict)
     text_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
+    xbrl_inputs: dict[str, np.ndarray] = field(default_factory=dict)
     bar_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
     external_context: dict[str, Any] = field(default_factory=dict)
     profile: dict[str, float | int] = field(default_factory=dict)
@@ -422,7 +454,7 @@ class TickerMonthPartReader:
             loaded.windows = pl.read_parquet(plan.package_dir / plan.files["event_window_index"])
         if need_labels:
             loaded.labels = pl.read_parquet(plan.package_dir / plan.files["intraday_forward_labels"])
-        if self.include_external_context or bool(TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).intersection(self.data_groups)):
+        if self.include_external_context or bool(TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).union(XBRL_CONTEXT_GROUPS).intersection(self.data_groups)):
             for key, filename in _package_context_files(plan.package_dir).items():
                 if key in self.data_groups:
                     loaded.context[key] = pl.read_parquet(plan.package_dir / filename)
@@ -438,6 +470,12 @@ class TickerMonthPartReader:
                 if cache_key not in self._global_context_cache:
                     self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
                 loaded.context["global_daily_bars"] = self._global_context_cache[cache_key]
+            if "xbrl" in self.data_groups:
+                global_path = _month_global_dir(plan.package_dir) / "category_references.parquet"
+                cache_key = (global_path, "category_references")
+                if cache_key not in self._global_context_cache:
+                    self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
+                loaded.context["category_references"] = self._global_context_cache[cache_key]
         return loaded
 
 
@@ -452,6 +490,10 @@ class TickerMonthBatchMaterializer:
         self._label_index_lock = threading.Lock()
         self._bar_index_cache: dict[int, DailyBarContextIndex] = {}
         self._bar_index_lock = threading.Lock()
+        self._xbrl_index_cache: dict[tuple[int, int], XbrlContextIndex] = {}
+        self._xbrl_index_lock = threading.Lock()
+        self._xbrl_category_cache: dict[int, XbrlCategoryReferenceIndex] = {}
+        self._xbrl_category_lock = threading.Lock()
         self.coverage_events = max(self.context_lags, default=0) + int(self.config.events_per_window)
         if self.config.event_output_mode == "raw_stream":
             self.coverage_events = int(self.config.event_stream_length)
@@ -521,6 +563,13 @@ class TickerMonthBatchMaterializer:
                 availability[f"{key}_available"] = chunk_mask.reshape((len(refs), -1)).any(axis=1)
         profile.update(text_profile)
         profile["text_seconds"] = time.perf_counter() - text_start
+        xbrl_start = time.perf_counter()
+        xbrl_inputs, xbrl_profile = self._materialize_xbrl_inputs(parts, refs)
+        xbrl_mask = xbrl_inputs.get("mask")
+        if xbrl_mask is not None:
+            availability["xbrl_available"] = xbrl_mask.reshape((len(refs), -1)).any(axis=1)
+        profile.update(xbrl_profile)
+        profile["xbrl_seconds"] = time.perf_counter() - xbrl_start
         bar_start = time.perf_counter()
         bar_inputs, bar_profile = self._materialize_bar_inputs(parts, refs)
         for key, value in bar_inputs.items():
@@ -554,6 +603,7 @@ class TickerMonthBatchMaterializer:
             future_intraday_bar_mask=future_mask,
             input_availability=availability,
             text_inputs=text_inputs,
+            xbrl_inputs=xbrl_inputs,
             bar_inputs=bar_inputs,
             external_context=external_context,
             profile=profile,
@@ -728,6 +778,107 @@ class TickerMonthBatchMaterializer:
                 return cached
             index = _prepare_text_context_index(frame, group, max_chunks=max_chunks, token_width=token_width)
             cache[key] = index
+            return index
+
+    def _materialize_xbrl_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, np.ndarray], dict[str, float | int]]:
+        if "xbrl" not in self.config.data_groups:
+            return {}, {}
+        max_items = max(0, int(self.config.xbrl_max_items))
+        batch = int(len(refs))
+        shape = (batch, max_items)
+        out: dict[str, np.ndarray] = {
+            "mask": np.zeros(shape, dtype=np.bool_),
+            "value": np.zeros(shape, dtype=np.float32),
+            "fiscal_year": np.zeros(shape, dtype=np.int16),
+            "age_days": np.zeros(shape, dtype=np.float32),
+            "period_end_days": np.zeros(shape, dtype=np.int32),
+            "taxonomy_id": np.zeros(shape, dtype=np.uint32),
+            "tag_id": np.zeros(shape, dtype=np.uint32),
+            "unit_id": np.zeros(shape, dtype=np.uint32),
+            "form_id": np.zeros(shape, dtype=np.uint32),
+            "row_kind_id": np.zeros(shape, dtype=np.uint32),
+            "location_id": np.zeros(shape, dtype=np.uint32),
+            "mapping_confidence": np.zeros(shape, dtype=np.float32),
+        }
+        profile: dict[str, float | int] = {
+            "xbrl_index_seconds": 0.0,
+            "xbrl_select_seconds": 0.0,
+            "xbrl_gather_seconds": 0.0,
+            "xbrl_rows": int(batch),
+            "xbrl_max_items": int(max_items),
+        }
+        time_feature_keys = (
+            "time_delta_seconds",
+            "time_delta_seconds_log1p_signed",
+            "time_age_seconds_log1p",
+            "time_utc_second_of_day_sin",
+            "time_utc_second_of_day_cos",
+            "time_utc_day_of_week_sin",
+            "time_utc_day_of_week_cos",
+            "time_utc_day_of_year_sin",
+            "time_utc_day_of_year_cos",
+            "time_years_since_2000",
+        )
+        for key in time_feature_keys:
+            out[key] = np.zeros(shape, dtype=np.float32)
+        if max_items <= 0 or batch <= 0:
+            return out, profile
+        origin_timestamps = _identity_arrays(parts, refs)[2]
+        grouped_rows = _rows_by_part(refs)
+        for part_index, rows in grouped_rows.items():
+            part = parts[int(part_index)]
+            frame = part.context.get("xbrl")
+            if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+                continue
+            index_start = time.perf_counter()
+            category_index = self._xbrl_category_index(part.context.get("category_references"))
+            index = self._xbrl_context_index(frame, category_index, max_items=max_items)
+            profile["xbrl_index_seconds"] = float(profile["xbrl_index_seconds"]) + (time.perf_counter() - index_start)
+            if index.item_count <= 0:
+                continue
+            select_start = time.perf_counter()
+            selected_indices, selected_mask = _select_xbrl_item_indices(index, origin_timestamps[rows], max_items=max_items)
+            profile["xbrl_select_seconds"] = float(profile["xbrl_select_seconds"]) + (time.perf_counter() - select_start)
+            if not bool(selected_mask.any()):
+                continue
+            gather_start = time.perf_counter()
+            safe_indices = np.where(selected_mask, selected_indices, 0)
+            out["mask"][rows] = selected_mask
+            for key in ("value", "fiscal_year", "period_end_days", "taxonomy_id", "tag_id", "unit_id", "form_id", "row_kind_id", "location_id", "mapping_confidence"):
+                values = getattr(index, key)[safe_indices]
+                values = values.astype(out[key].dtype, copy=False)
+                values[~selected_mask] = 0
+                out[key][rows] = values
+            selected_timestamps = index.timestamps_us[safe_indices]
+            selected_timestamps[~selected_mask] = 0
+            origins = np.broadcast_to(origin_timestamps[rows, None], selected_timestamps.shape)
+            for key, values in _timestamp_feature_arrays(selected_timestamps, origins).items():
+                out[key][rows] = values.astype(np.float32, copy=False)
+            out["age_days"][rows] = np.maximum(
+                0.0,
+                (origin_timestamps[rows, None].astype(np.float64) - selected_timestamps.astype(np.float64)) / 86_400_000_000.0,
+            ).astype(np.float32) * selected_mask
+            profile["xbrl_gather_seconds"] = float(profile["xbrl_gather_seconds"]) + (time.perf_counter() - gather_start)
+        return out, profile
+
+    def _xbrl_context_index(self, frame: Any, category_index: XbrlCategoryReferenceIndex, *, max_items: int) -> XbrlContextIndex:
+        key = (id(frame), int(max_items))
+        with self._xbrl_index_lock:
+            cached = self._xbrl_index_cache.get(key)
+            if cached is not None:
+                return cached
+            index = _prepare_xbrl_context_index(frame, category_index)
+            self._xbrl_index_cache[key] = index
+            return index
+
+    def _xbrl_category_index(self, frame: Any) -> XbrlCategoryReferenceIndex:
+        key = id(frame)
+        with self._xbrl_category_lock:
+            cached = self._xbrl_category_cache.get(key)
+            if cached is not None:
+                return cached
+            index = _prepare_xbrl_category_reference_index(frame)
+            self._xbrl_category_cache[key] = index
             return index
 
     def _materialize_bar_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
@@ -1183,6 +1334,7 @@ def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoade
         ticker_news_max_items=max(0, int(config.ticker_news_max_items)),
         market_news_max_items=max(0, int(config.market_news_max_items)),
         sec_filing_max_items=max(0, int(config.sec_filing_max_items)),
+        xbrl_max_items=max(0, int(config.xbrl_max_items)),
         ticker_news_token_chunks=max(1, int(config.ticker_news_token_chunks)),
         market_news_token_chunks=max(1, int(config.market_news_token_chunks)),
         sec_filing_token_chunks=max(1, int(config.sec_filing_token_chunks)),
@@ -1392,6 +1544,183 @@ def _empty_text_context_index(*, max_chunks: int, token_width: int) -> TextConte
     )
 
 
+def _prepare_xbrl_category_reference_index(frame: Any) -> XbrlCategoryReferenceIndex:
+    if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+        return XbrlCategoryReferenceIndex(ids_by_field_value={})
+    columns = set(getattr(frame, "columns", ()))
+    required = {"domain", "field_name", "category_value", "category_id"}
+    if not required.issubset(columns):
+        return XbrlCategoryReferenceIndex(ids_by_field_value={})
+    domains = frame.get_column("domain").to_numpy()
+    fields = frame.get_column("field_name").to_numpy()
+    values = frame.get_column("category_value").to_numpy()
+    ids = frame.get_column("category_id").to_numpy()
+    out: dict[tuple[str, str], int] = {}
+    for domain, field, value, category_id in zip(domains, fields, values, ids):
+        if str(domain) != "xbrl":
+            continue
+        cid = _safe_int(category_id)
+        if cid <= 0:
+            continue
+        out[(str(field), str(value))] = int(cid)
+    return XbrlCategoryReferenceIndex(ids_by_field_value=out)
+
+
+def _prepare_xbrl_context_index(frame: Any, category_index: XbrlCategoryReferenceIndex) -> XbrlContextIndex:
+    if frame is None or int(getattr(frame, "height", 0) or 0) <= 0 or "timestamp_us" not in getattr(frame, "columns", ()):
+        return _empty_xbrl_context_index()
+    height = int(frame.height)
+    timestamps = _frame_column_as(frame, "timestamp_us", np.int64, 0)
+    order_keys: list[np.ndarray] = [
+        _object_frame_column(frame, "period_end_date", ""),
+        _object_frame_column(frame, "unit_code", ""),
+        _object_frame_column(frame, "tag", ""),
+        _object_frame_column(frame, "taxonomy", ""),
+        _object_frame_column(frame, "xbrl_row_kind", ""),
+        timestamps,
+    ]
+    order = np.lexsort(tuple(order_keys))
+    timestamps = timestamps[order]
+    value = _frame_column_as(frame, "value", np.float32, 0.0)[order]
+    fiscal_year = _frame_column_as(frame, "fiscal_year", np.int16, 0)[order]
+    period_end_days = _epoch_days_array(_optional_frame_column(frame, "period_end_date", ""))[order]
+    taxonomy_id = _map_category_ids(_optional_frame_column(frame, "taxonomy", ""), "taxonomy", category_index)[order]
+    tag_id = _map_category_ids(_optional_frame_column(frame, "tag", ""), "tag", category_index)[order]
+    unit_id = _map_category_ids(_optional_frame_column(frame, "unit_code", ""), "unit_code", category_index)[order]
+    form_id = _map_category_ids(_optional_frame_column(frame, "form_type", ""), "form_type", category_index)[order]
+    row_kind_id = _map_category_ids(_optional_frame_column(frame, "xbrl_row_kind", ""), "xbrl_row_kind", category_index)[order]
+    location_id = _map_category_ids(_optional_frame_column(frame, "location_code", ""), "location_code", category_index)[order]
+    mapping_confidence = _frame_column_as(frame, "mapping_confidence_score", np.float32, 0.0)[order]
+    if int(timestamps.shape[0]) != height:
+        raise RuntimeError("XBRL index row count changed while preparing context.")
+    return XbrlContextIndex(
+        timestamps_us=timestamps,
+        value=value,
+        fiscal_year=fiscal_year,
+        period_end_days=period_end_days,
+        taxonomy_id=taxonomy_id,
+        tag_id=tag_id,
+        unit_id=unit_id,
+        form_id=form_id,
+        row_kind_id=row_kind_id,
+        location_id=location_id,
+        mapping_confidence=mapping_confidence,
+    )
+
+
+def _empty_xbrl_context_index() -> XbrlContextIndex:
+    return XbrlContextIndex(
+        timestamps_us=np.zeros((0,), dtype=np.int64),
+        value=np.zeros((0,), dtype=np.float32),
+        fiscal_year=np.zeros((0,), dtype=np.int16),
+        period_end_days=np.zeros((0,), dtype=np.int32),
+        taxonomy_id=np.zeros((0,), dtype=np.uint32),
+        tag_id=np.zeros((0,), dtype=np.uint32),
+        unit_id=np.zeros((0,), dtype=np.uint32),
+        form_id=np.zeros((0,), dtype=np.uint32),
+        row_kind_id=np.zeros((0,), dtype=np.uint32),
+        location_id=np.zeros((0,), dtype=np.uint32),
+        mapping_confidence=np.zeros((0,), dtype=np.float32),
+    )
+
+
+def _select_xbrl_item_indices(index: XbrlContextIndex, origin_timestamps_us: np.ndarray, *, max_items: int) -> tuple[np.ndarray, np.ndarray]:
+    origins = np.asarray(origin_timestamps_us, dtype=np.int64)
+    max_items = max(0, int(max_items))
+    if max_items <= 0 or index.item_count <= 0 or origins.shape[0] <= 0:
+        return np.full((int(origins.shape[0]), max_items), -1, dtype=np.int64), np.zeros((int(origins.shape[0]), max_items), dtype=np.bool_)
+    rightmost = np.searchsorted(index.timestamps_us, origins, side="right") - 1
+    offsets = np.arange(max_items, dtype=np.int64)
+    indices = rightmost[:, None] - offsets[None, :]
+    valid = indices >= 0
+    return np.where(valid, indices, -1).astype(np.int64, copy=False), valid
+
+
+def _map_category_ids(values: np.ndarray, field_name: str, category_index: XbrlCategoryReferenceIndex) -> np.ndarray:
+    out = np.zeros((int(values.shape[0]),), dtype=np.uint32)
+    mapping = category_index.ids_by_field_value
+    if not mapping:
+        return out
+    for idx, value in enumerate(values):
+        out[idx] = np.uint32(mapping.get((str(field_name), str(value)), 0))
+    return out
+
+
+def _frame_column_as(frame: Any, name: str, dtype: Any, default: Any) -> np.ndarray:
+    if name not in getattr(frame, "columns", ()):
+        return np.full((int(getattr(frame, "height", 0) or 0),), default, dtype=dtype)
+    return frame.get_column(name).to_numpy().astype(dtype, copy=False)
+
+
+def _object_frame_column(frame: Any, name: str, default: Any) -> np.ndarray:
+    return _optional_frame_column(frame, name, default).astype(object, copy=False)
+
+
+def _epoch_days_array(values: np.ndarray) -> np.ndarray:
+    out = np.zeros((int(values.shape[0]),), dtype=np.int32)
+    for idx, value in enumerate(values):
+        out[idx] = np.int32(_date_to_epoch_day(value))
+    return out
+
+
+def _date_to_epoch_day(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, dt.datetime):
+        return int(value.date().toordinal() - dt.date(1970, 1, 1).toordinal())
+    if isinstance(value, dt.date):
+        return int(value.toordinal() - dt.date(1970, 1, 1).toordinal())
+    if isinstance(value, np.datetime64):
+        if np.isnat(value):
+            return 0
+        return int((value.astype("datetime64[D]") - np.datetime64("1970-01-01", "D")).astype(np.int64))
+    text = str(value).strip()
+    if not text:
+        return 0
+    try:
+        return int(dt.date.fromisoformat(text[:10]).toordinal() - dt.date(1970, 1, 1).toordinal())
+    except ValueError:
+        return 0
+
+
+def _timestamp_feature_arrays(timestamps_us: np.ndarray, origins_us: np.ndarray) -> dict[str, np.ndarray]:
+    source = np.asarray(timestamps_us, dtype=np.int64)
+    origin = np.asarray(origins_us, dtype=np.int64)
+    source, origin = np.broadcast_arrays(source, origin)
+    valid = source > 0
+    delta_us = np.where(valid, source - origin, 0).astype(np.int64, copy=False)
+    delta_seconds = (delta_us.astype(np.float64) / 1_000_000.0).astype(np.float32)
+    delta_seconds_log1p_signed = (
+        np.sign(delta_seconds).astype(np.float32) * np.log1p(np.abs(delta_seconds).astype(np.float64)).astype(np.float32)
+    )
+    age_seconds_log1p = np.log1p(np.maximum(0.0, -delta_seconds.astype(np.float64))).astype(np.float32)
+    source_dt = source.astype("datetime64[us]")
+    source_day = source_dt.astype("datetime64[D]")
+    seconds_of_day = ((source_dt - source_day).astype("timedelta64[us]").astype(np.float64) / 1_000_000.0).astype(np.float32)
+    epoch_days = (source_day - np.datetime64("1970-01-01", "D")).astype(np.int64)
+    day_of_week = ((epoch_days + 3) % 7).astype(np.float32)
+    source_year = source_day.astype("datetime64[Y]")
+    day_of_year = (source_day - source_year.astype("datetime64[D]")).astype(np.int64).astype(np.float32)
+    years_since_2000 = ((source_dt - np.datetime64("2000-01-01T00:00:00", "us")).astype("timedelta64[us]").astype(np.float64) / (365.2425 * 86_400_000_000.0)).astype(np.float32)
+    zeros = np.zeros(source.shape, dtype=np.float32)
+    seconds_of_day = np.where(valid, seconds_of_day, zeros)
+    day_of_week = np.where(valid, day_of_week, zeros)
+    day_of_year = np.where(valid, day_of_year, zeros)
+    years_since_2000 = np.where(valid, years_since_2000, zeros)
+    return {
+        "time_delta_seconds": delta_seconds,
+        "time_delta_seconds_log1p_signed": delta_seconds_log1p_signed,
+        "time_age_seconds_log1p": age_seconds_log1p,
+        "time_utc_second_of_day_sin": np.sin(2.0 * np.pi * seconds_of_day / 86_400.0).astype(np.float32) * valid,
+        "time_utc_second_of_day_cos": np.cos(2.0 * np.pi * seconds_of_day / 86_400.0).astype(np.float32) * valid,
+        "time_utc_day_of_week_sin": np.sin(2.0 * np.pi * day_of_week / 7.0).astype(np.float32) * valid,
+        "time_utc_day_of_week_cos": np.cos(2.0 * np.pi * day_of_week / 7.0).astype(np.float32) * valid,
+        "time_utc_day_of_year_sin": np.sin(2.0 * np.pi * day_of_year / 366.0).astype(np.float32) * valid,
+        "time_utc_day_of_year_cos": np.cos(2.0 * np.pi * day_of_year / 366.0).astype(np.float32) * valid,
+        "time_years_since_2000": years_since_2000,
+    }
+
+
 def _optional_frame_column(frame: Any, name: str, default: Any) -> np.ndarray:
     if name in getattr(frame, "columns", ()):
         return frame.get_column(name).to_numpy()
@@ -1490,6 +1819,7 @@ def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> Tic
     raw_flat = _concat_dict_arrays(batch.raw_event_flat for batch in nonempty)
     intraday_labels = _concat_dict_arrays(batch.intraday_labels for batch in nonempty)
     availability = _concat_dict_arrays(batch.input_availability for batch in nonempty)
+    xbrl_inputs = _concat_dict_arrays(batch.xbrl_inputs for batch in nonempty)
     profile = {
         "samples": sum(int(batch.sample_count) for batch in nonempty),
     }
@@ -1518,6 +1848,7 @@ def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> Tic
         future_intraday_bar_mask=_concat_optional_arrays([batch.future_intraday_bar_mask for batch in nonempty]),
         input_availability=availability,
         text_inputs=_concat_text_inputs(batch.text_inputs for batch in nonempty),
+        xbrl_inputs=xbrl_inputs,
         bar_inputs=_concat_bar_inputs(nonempty),
         external_context=_merge_external_context(nonempty),
         profile=profile,
@@ -1547,6 +1878,7 @@ def _slice_training_batch(batch: TickerMonthTrainingBatch, start: int, end: int)
         future_intraday_bar_mask=batch.future_intraday_bar_mask[start:end] if batch.future_intraday_bar_mask.shape[0] else batch.future_intraday_bar_mask,
         input_availability={key: value[start:end] for key, value in batch.input_availability.items()},
         text_inputs={name: {key: value[start:end] for key, value in payload.items()} for name, payload in batch.text_inputs.items()},
+        xbrl_inputs={key: value[start:end] for key, value in batch.xbrl_inputs.items()},
         bar_inputs={name: {key: _slice_batch_payload_field(value, start, end, int(batch.sample_count)) for key, value in payload.items()} for name, payload in batch.bar_inputs.items()},
         external_context=dict(batch.external_context),
         profile=profile,

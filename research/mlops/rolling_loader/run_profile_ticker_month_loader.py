@@ -46,6 +46,7 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "ticker_news_max_items": 8,
     "market_news_max_items": 16,
     "sec_filing_max_items": 4,
+    "xbrl_max_items": 512,
     "ticker_news_token_chunks": 2,
     "market_news_token_chunks": 2,
     "sec_filing_token_chunks": 8,
@@ -94,6 +95,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ticker-news-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["ticker_news_max_items"])
     parser.add_argument("--market-news-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_max_items"])
     parser.add_argument("--sec-filing-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_max_items"])
+    parser.add_argument("--xbrl-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["xbrl_max_items"])
     parser.add_argument("--ticker-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["ticker_news_token_chunks"])
     parser.add_argument("--market-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_token_chunks"])
     parser.add_argument("--sec-filing-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_token_chunks"])
@@ -150,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         ticker_news_max_items=max(0, int(args.ticker_news_max_items)),
         market_news_max_items=max(0, int(args.market_news_max_items)),
         sec_filing_max_items=max(0, int(args.sec_filing_max_items)),
+        xbrl_max_items=max(0, int(args.xbrl_max_items)),
         ticker_news_token_chunks=max(1, int(args.ticker_news_token_chunks)),
         market_news_token_chunks=max(1, int(args.market_news_token_chunks)),
         sec_filing_token_chunks=max(1, int(args.sec_filing_token_chunks)),
@@ -282,6 +285,8 @@ def _shape_summary(batch: Any) -> dict[str, Any]:
             name: {field: list(value.shape) for field, value in payload.items()}
             for name, payload in batch.text_inputs.items()
         }
+    if batch.xbrl_inputs:
+        out["xbrl_input_shapes"] = {field: list(value.shape) for field, value in batch.xbrl_inputs.items()}
     if batch.bar_inputs:
         out["bar_input_shapes"] = {
             name: {field: list(value.shape) for field, value in payload.items()}

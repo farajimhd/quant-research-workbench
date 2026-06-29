@@ -540,6 +540,7 @@ future_intraday_bars
 future_intraday_bar_mask
 input_availability
 text_inputs
+xbrl_inputs
 bar_inputs
 external_context
 profile
@@ -568,8 +569,32 @@ Default limits are:
 ticker_news_max_items: 8
 market_news_max_items: 16
 sec_filing_max_items: 4
+xbrl_max_items: 512
 text_max_tokens: 1024
 ```
+
+When `xbrl` is requested, `xbrl_inputs` contains one array per XBRL attribute:
+
+```text
+xbrl_inputs["mask"]                         [B, xbrl_max_items]
+xbrl_inputs["value"]                        [B, xbrl_max_items]
+xbrl_inputs["fiscal_year"]                  [B, xbrl_max_items]
+xbrl_inputs["period_end_days"]              [B, xbrl_max_items]
+xbrl_inputs["taxonomy_id"]                  [B, xbrl_max_items]
+xbrl_inputs["tag_id"]                       [B, xbrl_max_items]
+xbrl_inputs["unit_id"]                      [B, xbrl_max_items]
+xbrl_inputs["form_id"]                      [B, xbrl_max_items]
+xbrl_inputs["row_kind_id"]                  [B, xbrl_max_items]
+xbrl_inputs["location_id"]                  [B, xbrl_max_items]
+xbrl_inputs["mapping_confidence"]           [B, xbrl_max_items]
+xbrl_inputs["time_*"]                       [B, xbrl_max_items]
+```
+
+Selection is as-of each origin timestamp, using the latest XBRL rows with
+`timestamp_us <= origin_timestamp_us`. Missing rows are zero-filled and masked
+with `xbrl_inputs["mask"] == False`. Categorical ids are mapped from the
+monthly `global/category_references.parquet` file. Id `0` means missing or
+unknown.
 
 When daily/global bar groups are requested, `bar_inputs` contains:
 
@@ -646,6 +671,7 @@ profile_seconds.raw_stream_validate_seconds
 profile_seconds.raw_stream_matrix_seconds
 profile_seconds.raw_stream_gather_seconds
 profile_seconds.label_seconds
+profile_seconds.xbrl_seconds
 profile_seconds.context_seconds
 profile_seconds.materialize_wait_seconds
 profile_seconds.ready_concat_seconds
@@ -669,9 +695,10 @@ loader state summary
 ```
 
 `profile_seconds` breaks emitted materialization time into
-`identity_seconds`, `event_seconds`, `label_seconds`, and `context_seconds`.
+`identity_seconds`, `event_seconds`, `label_seconds`, `xbrl_seconds`, and
+`context_seconds`.
 Use it to identify whether the trainer is waiting on event-window gather,
-intraday label gather, or optional context work.
+intraday label gather, XBRL as-of materialization, or optional context work.
 
 For fraction-only benchmark sampling, the loader uses a deterministic
 vectorized per-part mask instead of hashing every origin in Python. Hash-bucket

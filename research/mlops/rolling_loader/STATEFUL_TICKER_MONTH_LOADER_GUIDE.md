@@ -279,6 +279,38 @@ events[event_row_offset].ordinal == origin_ordinal
 events[end - 1].ordinal - events[start].ordinal == event_stream_length - 1
 ```
 
+## XBRL Outputs
+
+When `data_groups` includes `xbrl`, the loader emits `batch.xbrl_inputs` as
+model-facing tensors instead of leaving XBRL only in `external_context`.
+
+```text
+xbrl_inputs["mask"]                         [B, xbrl_max_items]
+xbrl_inputs["value"]                        [B, xbrl_max_items]
+xbrl_inputs["fiscal_year"]                  [B, xbrl_max_items]
+xbrl_inputs["age_days"]                     [B, xbrl_max_items]
+xbrl_inputs["period_end_days"]              [B, xbrl_max_items]
+xbrl_inputs["taxonomy_id"]                  [B, xbrl_max_items]
+xbrl_inputs["tag_id"]                       [B, xbrl_max_items]
+xbrl_inputs["unit_id"]                      [B, xbrl_max_items]
+xbrl_inputs["form_id"]                      [B, xbrl_max_items]
+xbrl_inputs["row_kind_id"]                  [B, xbrl_max_items]
+xbrl_inputs["location_id"]                  [B, xbrl_max_items]
+xbrl_inputs["mapping_confidence"]           [B, xbrl_max_items]
+xbrl_inputs["time_*"]                       [B, xbrl_max_items]
+```
+
+Selection is as-of:
+
+```text
+xbrl.timestamp_us <= origin_timestamp_us
+```
+
+Rows are ordered newest-first for each origin. Missing rows are zero-filled and
+masked with `xbrl_inputs["mask"] == False`. Categorical ids come from the
+month-level `global/category_references.parquet`; id `0` means missing or
+unknown.
+
 These checks prevent lookahead, origin/event misalignment, and ordinal gaps.
 Origins that do not have enough cached lookback are filtered before payload
 loading. If a selected origin later fails an alignment or continuity check, the

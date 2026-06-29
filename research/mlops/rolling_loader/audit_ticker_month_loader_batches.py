@@ -33,13 +33,17 @@ from research.mlops.rolling_loader.ticker_month_dataset import (
     _part_key,
     _prepare_daily_bar_context_index,
     _prepare_text_context_index,
+    _prepare_xbrl_category_reference_index,
+    _prepare_xbrl_context_index,
     _select_completed_bar_rows,
     _select_text_item_indices,
+    _select_xbrl_item_indices,
+    _timestamp_feature_arrays,
 )
 
 
 DEFAULT_AUDIT_REPORT_PATH = DEFAULT_PROFILE_REPORT_PATH.with_name("ticker_month_loader_batch_audit.json")
-DEFAULT_AUDIT_DATA_GROUPS = "events,intraday_labels,ticker_news_tokens,market_news_tokens,sec_filing_tokens,daily_bars,global_daily_bars"
+DEFAULT_AUDIT_DATA_GROUPS = "events,intraday_labels,ticker_news_tokens,market_news_tokens,sec_filing_tokens,xbrl,daily_bars,global_daily_bars"
 
 
 @dataclass(slots=True)
@@ -94,6 +98,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ticker-news-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["ticker_news_max_items"])
     parser.add_argument("--market-news-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_max_items"])
     parser.add_argument("--sec-filing-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_max_items"])
+    parser.add_argument("--xbrl-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["xbrl_max_items"])
     parser.add_argument("--ticker-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["ticker_news_token_chunks"])
     parser.add_argument("--market-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_token_chunks"])
     parser.add_argument("--sec-filing-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_token_chunks"])
@@ -153,6 +158,7 @@ def run_audit(config: LoaderBatchAuditConfig) -> LoaderBatchAuditResult:
         "raw_stream_rows_checked": 0,
         "label_rows_checked": 0,
         "text_rows_checked": 0,
+        "xbrl_rows_checked": 0,
         "bar_rows_checked": 0,
         "context_parts_checked": 0,
         "duplicate_identities": 0,
@@ -234,6 +240,7 @@ def _loader_config_from_args(args: argparse.Namespace) -> TickerMonthLoaderConfi
         ticker_news_max_items=max(0, int(args.ticker_news_max_items)),
         market_news_max_items=max(0, int(args.market_news_max_items)),
         sec_filing_max_items=max(0, int(args.sec_filing_max_items)),
+        xbrl_max_items=max(0, int(args.xbrl_max_items)),
         ticker_news_token_chunks=max(1, int(args.ticker_news_token_chunks)),
         market_news_token_chunks=max(1, int(args.market_news_token_chunks)),
         sec_filing_token_chunks=max(1, int(args.sec_filing_token_chunks)),
@@ -276,6 +283,9 @@ def _check_batch_shapes(batch: TickerMonthTrainingBatch, issues: list[AuditIssue
         for field, values in payload.items():
             if int(values.shape[0]) != n:
                 issues.append(AuditIssue("error", "text_shape_mismatch", f"{name}.{field} row count does not match sample count.", {"batch": batch_index, "name": name, "field": field, "shape": list(values.shape), "samples": n}))
+    for field, values in batch.xbrl_inputs.items():
+        if int(values.shape[0]) != n:
+            issues.append(AuditIssue("error", "xbrl_shape_mismatch", f"xbrl_inputs.{field} row count does not match sample count.", {"batch": batch_index, "field": field, "shape": list(values.shape), "samples": n}))
     for name, payload in batch.bar_inputs.items():
         for field in ("values", "mask"):
             values = payload.get(field)
@@ -341,6 +351,8 @@ def _audit_batch_row(
         _check_intraday_labels(batch, row, part, origin_ordinal, issues, totals, batch_index=batch_index, part_key=part_key)
     if batch.text_inputs:
         _check_text_inputs(batch, row, part, origin_timestamp_us, issues, totals, batch_index=batch_index, part_key=part_key)
+    if batch.xbrl_inputs:
+        _check_xbrl_inputs(batch, row, part, origin_timestamp_us, issues, totals, batch_index=batch_index, part_key=part_key)
     if batch.bar_inputs:
         _check_bar_inputs(batch, row, part, origin_timestamp_us, loader_config, issues, totals, batch_index=batch_index, part_key=part_key)
     _check_context_files(part, origin_timestamp_us, issues, totals, batch_index=batch_index, row=row, part_key=part_key)
@@ -493,6 +505,67 @@ def _check_text_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTi
         totals["text_rows_checked"] += 1
 
 
+def _check_xbrl_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTickerMonthPart, origin_timestamp_us: int, issues: list[AuditIssue], totals: dict[str, int], *, batch_index: int, part_key: str) -> None:
+    payload = batch.xbrl_inputs
+    if "mask" not in payload:
+        issues.append(AuditIssue("error", "xbrl_mask_missing", "Batch has xbrl_inputs without mask.", {"batch": batch_index, "row": row, "source_part_key": part_key}))
+        return
+    max_items = int(payload["mask"].shape[1])
+    frame = part.context.get("xbrl")
+    category_frame = part.context.get("category_references")
+    if frame is None:
+        selected_indices = np.full((1, max_items), -1, dtype=np.int64)
+        selected_mask = np.zeros((1, max_items), dtype=np.bool_)
+        source_index = None
+    else:
+        category_index = _prepare_xbrl_category_reference_index(category_frame)
+        source_index = _prepare_xbrl_context_index(frame, category_index)
+        selected_indices, selected_mask = _select_xbrl_item_indices(source_index, np.asarray([int(origin_timestamp_us)], dtype=np.int64), max_items=max_items)
+    expected_count = int(selected_mask[0].sum())
+    actual_mask = payload["mask"][row].astype(bool)
+    if int(actual_mask.sum()) != expected_count:
+        issues.append(AuditIssue("error", "xbrl_item_count_mismatch", "XBRL mask count does not match as-of source selection.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual": int(actual_mask.sum()), "expected": expected_count}))
+    if source_index is not None and expected_count:
+        source_rows = selected_indices[0, :expected_count]
+        expected_fields = {
+            "value": source_index.value[source_rows],
+            "fiscal_year": source_index.fiscal_year[source_rows],
+            "age_days": np.maximum(0.0, (float(origin_timestamp_us) - source_index.timestamps_us[source_rows].astype(np.float64)) / 86_400_000_000.0).astype(np.float32),
+            "period_end_days": source_index.period_end_days[source_rows],
+            "taxonomy_id": source_index.taxonomy_id[source_rows],
+            "tag_id": source_index.tag_id[source_rows],
+            "unit_id": source_index.unit_id[source_rows],
+            "form_id": source_index.form_id[source_rows],
+            "row_kind_id": source_index.row_kind_id[source_rows],
+            "location_id": source_index.location_id[source_rows],
+            "mapping_confidence": source_index.mapping_confidence[source_rows],
+        }
+        expected_fields.update(
+            _timestamp_feature_arrays(
+                source_index.timestamps_us[source_rows],
+                np.full((expected_count,), int(origin_timestamp_us), dtype=np.int64),
+            )
+        )
+        if np.any(source_index.timestamps_us[source_rows] > int(origin_timestamp_us)):
+            issues.append(AuditIssue("error", "xbrl_lookahead", "XBRL tensor contains a future row.", {"batch": batch_index, "row": row, "source_part_key": part_key, "origin_timestamp_us": int(origin_timestamp_us)}))
+        for field, expected in expected_fields.items():
+            if field not in payload:
+                issues.append(AuditIssue("error", "xbrl_field_missing", f"xbrl_inputs.{field} is missing.", {"batch": batch_index, "row": row, "source_part_key": part_key}))
+                continue
+            actual = payload[field][row, :expected_count].astype(expected.dtype, copy=False)
+            if not np.array_equal(actual, expected.astype(actual.dtype, copy=False)):
+                issues.append(AuditIssue("error", "xbrl_value_mismatch", f"xbrl_inputs.{field} does not match source XBRL rows.", {"batch": batch_index, "row": row, "source_part_key": part_key, "field": field}))
+    if expected_count < max_items:
+        tail = slice(expected_count, max_items)
+        for field, values in payload.items():
+            if field == "mask":
+                if np.any(values[row, tail]):
+                    issues.append(AuditIssue("error", "xbrl_tail_padding_mismatch", "XBRL mask has true values after selected as-of items.", {"batch": batch_index, "row": row, "source_part_key": part_key, "selected": expected_count, "max_items": max_items}))
+            elif np.any(values[row, tail] != 0):
+                issues.append(AuditIssue("error", "xbrl_tail_padding_mismatch", f"xbrl_inputs.{field} has non-zero values after selected as-of items.", {"batch": batch_index, "row": row, "source_part_key": part_key, "field": field, "selected": expected_count, "max_items": max_items}))
+    totals["xbrl_rows_checked"] += 1
+
+
 def _check_bar_inputs(
     batch: TickerMonthTrainingBatch,
     row: int,
@@ -618,6 +691,9 @@ def _compare_batches(left: TickerMonthTrainingBatch, right: TickerMonthTrainingB
         for field in set(left.text_inputs[name]).union(right.text_inputs[name]):
             if field not in left.text_inputs[name] or field not in right.text_inputs[name] or not np.array_equal(left.text_inputs[name][field], right.text_inputs[name][field]):
                 issues.append(AuditIssue("error", code, message, {"field": f"text_inputs.{name}.{field}"}))
+    for field in set(left.xbrl_inputs).union(right.xbrl_inputs):
+        if field not in left.xbrl_inputs or field not in right.xbrl_inputs or not np.array_equal(left.xbrl_inputs[field], right.xbrl_inputs[field]):
+            issues.append(AuditIssue("error", code, message, {"field": f"xbrl_inputs.{field}"}))
     for name in set(left.bar_inputs).union(right.bar_inputs):
         if name not in left.bar_inputs or name not in right.bar_inputs:
             issues.append(AuditIssue("error", code, message, {"field": f"bar_inputs.{name}"}))
