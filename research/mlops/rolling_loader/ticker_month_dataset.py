@@ -27,8 +27,8 @@ from research.mlops.rolling_loader.ticker_month_cache import (
 )
 
 
-DEFAULT_EVENT_OUTPUT_MODE = "raw_windows"
-SUPPORTED_EVENT_OUTPUT_MODES = {"none", "raw_flat", "raw_windows", "encoded_uint8"}
+DEFAULT_EVENT_OUTPUT_MODE = "raw_stream"
+SUPPORTED_EVENT_OUTPUT_MODES = {"none", "raw_flat", "raw_stream", "raw_windows", "encoded_uint8"}
 DEFAULT_DATA_GROUPS = ("events", "intraday_labels")
 NUMERIC_EVENT_COLUMNS: tuple[str, ...] = tuple(column for column in (*EVENT_PAYLOAD_COLUMNS, *EVENT_TIME_FEATURE_COLUMNS) if column != "ticker")
 DEFAULT_SUPPRESSED_EVENT_COLUMNS = ("ticker_id", "ordinal", "timestamp_us")
@@ -63,6 +63,8 @@ class TickerMonthLoaderConfig:
     data_groups: tuple[str, ...] = DEFAULT_DATA_GROUPS
     event_output_mode: str = DEFAULT_EVENT_OUTPUT_MODE
     events_per_window: int = 128
+    event_stream_length: int = 1024
+    event_stream_chunk_size: int = 128
     context_chunks: int = 32
     context_stride_events: int = 64
     flat_coverage_events: int = 0
@@ -113,6 +115,7 @@ class LoadedTickerMonthPart:
     labels: Any | None = None
     context: dict[str, Any] = field(default_factory=dict)
     _event_arrays: dict[str, np.ndarray] = field(default_factory=dict, init=False, repr=False)
+    _event_matrices: dict[tuple[str, ...], np.ndarray] = field(default_factory=dict, init=False, repr=False)
     _origin_arrays: dict[str, np.ndarray] = field(default_factory=dict, init=False, repr=False)
     _label_arrays: dict[str, np.ndarray] = field(default_factory=dict, init=False, repr=False)
 
@@ -122,6 +125,14 @@ class LoadedTickerMonthPart:
         if column not in self._event_arrays:
             self._event_arrays[column] = self.events.get_column(column).to_numpy()
         return self._event_arrays[column]
+
+    def event_matrix(self, columns: Sequence[str]) -> np.ndarray:
+        if self.events is None:
+            raise RuntimeError("Part events were not loaded.")
+        key = tuple(str(column) for column in columns)
+        if key not in self._event_matrices:
+            self._event_matrices[key] = self.events.select(list(key)).to_numpy().astype(np.float32, copy=False)
+        return self._event_matrices[key]
 
     def origin_array(self, column: str) -> np.ndarray:
         if self.origins is None:
@@ -153,6 +164,8 @@ class TickerMonthTrainingBatch:
     source_part_key: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=object))
     raw_event_windows: dict[str, np.ndarray] = field(default_factory=dict)
     raw_event_flat: dict[str, np.ndarray] = field(default_factory=dict)
+    raw_event_stream: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 0), dtype=np.float32))
+    raw_event_stream_feature_names: tuple[str, ...] = ()
     raw_event_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
     headers_uint8: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, HEADER_BYTES), dtype=np.uint8))
     events_uint8: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 128, EVENT_BYTES), dtype=np.uint8))
@@ -334,6 +347,8 @@ class TickerMonthBatchMaterializer:
         self.config = normalize_loader_config(config)
         self.context_lags = tuple(index * int(self.config.context_stride_events) for index in range(int(self.config.context_chunks)))
         self.coverage_events = max(self.context_lags, default=0) + int(self.config.events_per_window)
+        if self.config.event_output_mode == "raw_stream":
+            self.coverage_events = int(self.config.event_stream_length)
         if int(self.config.flat_coverage_events) > 0:
             self.coverage_events = max(int(self.config.flat_coverage_events), int(self.coverage_events))
 
@@ -362,6 +377,8 @@ class TickerMonthBatchMaterializer:
         output_mode = str(self.config.event_output_mode)
         raw_windows: dict[str, np.ndarray] = {}
         raw_flat: dict[str, np.ndarray] = {}
+        raw_stream = np.zeros((len(refs), 0, 0), dtype=np.float32)
+        raw_stream_feature_names: tuple[str, ...] = ()
         raw_mask = np.zeros((len(refs), 0), dtype=np.bool_)
         headers = np.zeros((len(refs), 0, HEADER_BYTES), dtype=np.uint8)
         encoded_events = np.zeros((len(refs), 0, 128, EVENT_BYTES), dtype=np.uint8)
@@ -370,6 +387,9 @@ class TickerMonthBatchMaterializer:
             raw_windows = self._materialize_raw_windows(parts, refs)
         elif output_mode == "raw_flat":
             raw_flat, raw_mask = self._materialize_raw_flat(parts, refs)
+        elif output_mode == "raw_stream":
+            raw_stream, raw_stream_feature_names, raw_stream_profile = self._materialize_raw_stream(parts, refs)
+            profile.update(raw_stream_profile)
         elif output_mode == "encoded_uint8":
             headers, encoded_events = self._materialize_encoded(parts, refs)
         profile["event_seconds"] = time.perf_counter() - event_start
@@ -394,6 +414,8 @@ class TickerMonthBatchMaterializer:
             source_part_key=source_part_key,
             raw_event_windows=raw_windows,
             raw_event_flat=raw_flat,
+            raw_event_stream=raw_stream,
+            raw_event_stream_feature_names=raw_stream_feature_names,
             raw_event_mask=raw_mask,
             headers_uint8=headers,
             events_uint8=encoded_events,
@@ -423,6 +445,54 @@ class TickerMonthBatchMaterializer:
                 values[rows] = part.event_array(column)[gather_indices[part_index]]
             out[column] = values
         return out
+
+    def _materialize_raw_stream(
+        self,
+        parts: Sequence[LoadedTickerMonthPart],
+        refs: Sequence[TickerMonthSampleRef],
+    ) -> tuple[np.ndarray, tuple[str, ...], dict[str, float | int]]:
+        stage_start = time.perf_counter()
+        stream_length = int(self.config.event_stream_length)
+        columns = _validated_event_columns_for_output(parts, self.config)
+        out = np.empty((len(refs), stream_length, len(columns)), dtype=np.float32)
+        starts = _origin_event_offsets(parts, refs) - stream_length + 1
+        if np.any(starts < 0):
+            raise RuntimeError("Raw stream event coverage is out of bounds; rebuild cache with larger lookback or reduce event_stream_length.")
+        offsets = np.arange(stream_length, dtype=np.int64)
+        grouped_rows = _rows_by_part(refs)
+        profile: dict[str, float | int] = {
+            "raw_stream_validate_seconds": time.perf_counter() - stage_start,
+            "raw_stream_matrix_seconds": 0.0,
+            "raw_stream_gather_seconds": 0.0,
+            "raw_stream_rows": int(len(refs)),
+            "raw_stream_length": int(stream_length),
+            "raw_stream_feature_count": int(len(columns)),
+        }
+        for part_index, rows in grouped_rows.items():
+            part = parts[int(part_index)]
+            event_ordinals = part.event_array("ordinal").astype(np.int64, copy=False)
+            origin_rows = _origin_rows_for_refs(refs, rows)
+            origin_ordinals = part.origin_array("origin_ordinal").astype(np.int64, copy=False)[origin_rows]
+            event_offsets = part.origin_array("event_row_offset").astype(np.int64, copy=False)[origin_rows]
+            part_starts = starts[rows]
+            ends = part_starts + stream_length - 1
+            if np.any(ends >= event_ordinals.shape[0]):
+                raise RuntimeError("Raw stream exceeds loaded event rows.")
+            if not bool(np.array_equal(event_ordinals[event_offsets], origin_ordinals)):
+                raise RuntimeError(f"Raw stream origin row offsets are misaligned for {part.plan.month}:{part.plan.ticker}:part_{part.plan.part_id:05d}.")
+            matrix_start = time.perf_counter()
+            event_matrix = part.event_matrix(columns)
+            profile["raw_stream_matrix_seconds"] = float(profile["raw_stream_matrix_seconds"]) + (time.perf_counter() - matrix_start)
+            gather_start = time.perf_counter()
+            gather_indices = part_starts[:, None] + offsets[None, :]
+            window_ordinals = event_ordinals[gather_indices]
+            if not bool(np.all(window_ordinals[:, -1] == origin_ordinals)):
+                raise RuntimeError(f"Raw stream gathered window does not end at origin for {part.plan.month}:{part.plan.ticker}:part_{part.plan.part_id:05d}.")
+            if stream_length > 1 and not bool(np.all(np.diff(window_ordinals, axis=1) == 1)):
+                raise RuntimeError(f"Raw stream crosses an ordinal gap for {part.plan.month}:{part.plan.ticker}:part_{part.plan.part_id:05d}.")
+            out[rows] = event_matrix[gather_indices]
+            profile["raw_stream_gather_seconds"] = float(profile["raw_stream_gather_seconds"]) + (time.perf_counter() - gather_start)
+        return out, columns, profile
 
     def _materialize_raw_flat(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, np.ndarray], np.ndarray]:
         coverage = int(self.coverage_events)
@@ -593,7 +663,11 @@ class AsyncTickerMonthBatchLoader:
             for group_start in range(int(self.state.package_position), len(plans), group_size):
                 self.state.package_position = int(group_start)
                 group_plans = plans[group_start : group_start + group_size]
+                group_profile: dict[str, float] = {}
+                stage_start = time.perf_counter()
                 loaded_origins = list(read_pool.map(self.reader.load_origins, group_plans))
+                group_profile["origin_load_seconds"] = time.perf_counter() - stage_start
+                stage_start = time.perf_counter()
                 refs = _sample_refs_for_loaded_parts(
                     loaded_origins,
                     config=self.config,
@@ -602,7 +676,8 @@ class AsyncTickerMonthBatchLoader:
                     start_us=start_us,
                     end_us=end_us,
                 )
-                if self.config.shuffle_within_loaded_group:
+                group_profile["sample_refs_seconds"] = time.perf_counter() - stage_start
+                if self.config.shuffle_within_loaded_group and self.config.event_output_mode != "raw_stream":
                     random.Random(_stable_int_seed("origins", self.state.seed, self.state.epoch, group_start, self.dataset_plan_id)).shuffle(refs)
                 if int(self.state.origin_cursor) > 0:
                     refs = refs[int(self.state.origin_cursor) :]
@@ -613,13 +688,16 @@ class AsyncTickerMonthBatchLoader:
                     continue
                 active_part_indices = sorted({int(ref.part_index) for ref in refs})
                 part_index_map = {old_index: new_index for new_index, old_index in enumerate(active_part_indices)}
+                stage_start = time.perf_counter()
                 loaded = list(read_pool.map(self.reader.load_payload, (loaded_origins[index] for index in active_part_indices)))
+                group_profile["payload_load_seconds"] = time.perf_counter() - stage_start
                 refs = [
                     TickerMonthSampleRef(part_index=int(part_index_map[int(ref.part_index)]), origin_row=int(ref.origin_row))
                     for ref in refs
                 ]
                 group_keys = {_part_key(part.plan) for part in loaded}
                 emitted_from_group = 0
+                group_profile_attached = False
                 materialize_size = int(self.config.materialize_chunk_size) or int(self.config.batch_size)
                 with ThreadPoolExecutor(max_workers=max(1, int(self.config.materialize_workers)), thread_name_prefix="tmc-materialize") as mat_pool:
                     materialized = _materialize_bounded(
@@ -630,9 +708,15 @@ class AsyncTickerMonthBatchLoader:
                         preserve_order=bool(self.config.preserve_batch_order),
                     )
                     for chunk in materialized:
+                        chunk_ready_start = time.perf_counter()
                         if chunk.sample_count == 0:
                             continue
                         for batch in ready.add(chunk):
+                            batch.profile["ready_concat_seconds"] = float(batch.profile.get("ready_concat_seconds", 0.0)) + (time.perf_counter() - chunk_ready_start)
+                            if not group_profile_attached:
+                                for key, value in group_profile.items():
+                                    batch.profile[key] = float(batch.profile.get(key, 0.0)) + float(value)
+                                group_profile_attached = True
                             batch = self._apply_epoch_sample_cap(batch)
                             if batch.sample_count == 0:
                                 return
@@ -689,6 +773,8 @@ class AsyncTickerMonthBatchLoader:
         out["epoch_fraction"] = float(self.state.package_position) / max(float(len(self.index.parts)), 1.0)
         out["config"] = {
             "batch_size": int(self.config.batch_size),
+            "event_output_mode": str(self.config.event_output_mode),
+            "event_stream_length": int(self.config.event_stream_length),
             "materialize_chunk_size": int(self.config.materialize_chunk_size) or int(self.config.batch_size),
             "loaded_parts_per_group": int(self.config.loaded_parts_per_group),
             "sample_fraction": float(self.config.sample_fraction),
@@ -738,7 +824,7 @@ def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoade
     if mode not in SUPPORTED_EVENT_OUTPUT_MODES:
         raise ValueError(f"Unsupported event_output_mode={mode!r}; expected one of {sorted(SUPPORTED_EVENT_OUTPUT_MODES)}")
     groups = tuple(dict.fromkeys(str(group) for group in config.data_groups))
-    if mode in {"raw_flat", "raw_windows"} and "events" not in groups:
+    if mode in {"raw_flat", "raw_stream", "raw_windows"} and "events" not in groups:
         groups = (*groups, "events")
     if mode == "encoded_uint8":
         groups = (*tuple(group for group in groups if group != "encoded_events"), "events", "encoded_events")
@@ -754,6 +840,8 @@ def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoade
         data_groups=groups,
         event_output_mode=mode,
         events_per_window=max(1, int(config.events_per_window)),
+        event_stream_length=max(1, int(config.event_stream_length)),
+        event_stream_chunk_size=max(1, int(config.event_stream_chunk_size)),
         context_chunks=max(0, int(config.context_chunks)),
         context_stride_events=max(1, int(config.context_stride_events)),
         flat_coverage_events=max(0, int(config.flat_coverage_events)),
@@ -838,6 +926,9 @@ def _sample_refs_for_loaded_parts(
             mask &= ts >= int(start_us)
         if end_us is not None:
             mask &= ts < int(end_us)
+        if config.event_output_mode == "raw_stream":
+            offsets = part.origin_array("event_row_offset").astype(np.int64, copy=False)
+            mask &= offsets >= (int(config.event_stream_length) - 1)
         candidate_rows = np.flatnonzero(mask)
         if _uses_dataset_hash_filter(config):
             if _uses_fast_fraction_filter(config):
@@ -916,6 +1007,8 @@ def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> Tic
         source_part_key=np.concatenate([batch.source_part_key for batch in nonempty], axis=0),
         raw_event_windows=raw_windows,
         raw_event_flat=raw_flat,
+        raw_event_stream=_concat_optional_arrays([batch.raw_event_stream for batch in nonempty]),
+        raw_event_stream_feature_names=first.raw_event_stream_feature_names,
         raw_event_mask=_concat_optional_arrays([batch.raw_event_mask for batch in nonempty]),
         headers_uint8=_concat_optional_arrays([batch.headers_uint8 for batch in nonempty]),
         events_uint8=_concat_optional_arrays([batch.events_uint8 for batch in nonempty]),
@@ -941,6 +1034,8 @@ def _slice_training_batch(batch: TickerMonthTrainingBatch, start: int, end: int)
         source_part_key=batch.source_part_key[start:end] if batch.source_part_key.shape[0] else batch.source_part_key,
         raw_event_windows={key: value[start:end] for key, value in batch.raw_event_windows.items()},
         raw_event_flat={key: value[start:end] for key, value in batch.raw_event_flat.items()},
+        raw_event_stream=batch.raw_event_stream[start:end] if batch.raw_event_stream.shape[0] else batch.raw_event_stream,
+        raw_event_stream_feature_names=batch.raw_event_stream_feature_names,
         raw_event_mask=batch.raw_event_mask[start:end] if batch.raw_event_mask.shape[0] else batch.raw_event_mask,
         headers_uint8=batch.headers_uint8[start:end] if batch.headers_uint8.shape[0] else batch.headers_uint8,
         events_uint8=batch.events_uint8[start:end] if batch.events_uint8.shape[0] else batch.events_uint8,
@@ -1022,7 +1117,10 @@ def _materialize_bounded(
         submit_until_full_ordered()
         while pending_ordered:
             future = pending_ordered.popleft()
-            yield future.result()
+            wait_start = time.perf_counter()
+            batch = future.result()
+            batch.profile["materialize_wait_seconds"] = float(batch.profile.get("materialize_wait_seconds", 0.0)) + (time.perf_counter() - wait_start)
+            yield batch
             submit_until_full_ordered()
         return
 
@@ -1042,7 +1140,10 @@ def _materialize_bounded(
 
         done, pending = wait(pending, return_when=FIRST_COMPLETED)
         for future in done:
-            yield future.result()
+            wait_start = time.perf_counter()
+            batch = future.result()
+            batch.profile["materialize_wait_seconds"] = float(batch.profile.get("materialize_wait_seconds", 0.0)) + (time.perf_counter() - wait_start)
+            yield batch
         submit_until_full()
 
 

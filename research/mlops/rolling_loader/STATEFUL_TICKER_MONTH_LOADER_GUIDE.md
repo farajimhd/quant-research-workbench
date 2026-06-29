@@ -15,7 +15,9 @@ The loader is stateful and package-local:
 4. Build refs for every eligible origin in the loaded group.
 5. Apply period/ticker/hash/sample filters before reading large payload files.
 6. Load event, label, and context payloads only for packages with selected refs.
-7. Optionally shuffle origin refs inside the group.
+7. Optionally shuffle origin refs inside the group. In `raw_stream` mode, keep
+   each package's selected origins in ordinal order so a loaded part is consumed
+   as a continuous sliding stream.
 8. Materialize refs in bounded CPU chunks.
 9. Concatenate materialized chunks into a ready buffer.
 10. Emit final trainer batches from the ready buffer.
@@ -28,6 +30,10 @@ only. It does not drop origins. Origins are dropped only by explicit filters
 such as period, ticker, hash split, sample fraction, or `max_origins_per_epoch`.
 For sparse benchmark sets, this origin-first path avoids reading large event
 parquet files for packages that contribute no selected origins.
+
+Not every event row is a valid training origin. The origin index remains the
+source of truth for samples. Event rows are payload rows used to build the
+requested context for each origin.
 
 ## Dataset Plan
 
@@ -185,10 +191,10 @@ used for fair benchmark comparisons.
 
 ## Event Outputs
 
-Default event output is raw windows:
+Default event output is raw sliding streams:
 
 ```text
-raw_event_windows[column] -> [B, context_chunks, events_per_window]
+raw_event_stream -> [B, event_stream_length, F]
 ```
 
 By default, raw outputs suppress identity/debug columns:
@@ -207,6 +213,44 @@ Use an exact allow-list when a trainer needs specific columns:
 
 If `event_columns` is set, the suppress list is ignored.
 
+For each selected origin, the loader uses the origin row's `event_row_offset`
+to gather the continuous event stream ending at that origin:
+
+```text
+start = event_row_offset - event_stream_length + 1
+end = event_row_offset + 1
+raw_event_stream[row] = events[start:end, selected_columns]
+```
+
+The loader checks:
+
+```text
+events[event_row_offset].ordinal == origin_ordinal
+events[end - 1].ordinal - events[start].ordinal == event_stream_length - 1
+```
+
+These checks prevent lookahead, origin/event misalignment, and ordinal gaps.
+Origins that do not have enough cached lookback are filtered before payload
+loading. If a selected origin later fails an alignment or continuity check, the
+run fails because the cache is inconsistent.
+
+The older modes remain available:
+
+```text
+raw_windows
+  raw_event_windows[column] -> [B, context_chunks, events_per_window]
+
+raw_flat
+  raw_event_flat[column] -> [B, coverage_events]
+
+encoded_uint8
+  headers_uint8 [B, context_chunks, 14]
+  events_uint8  [B, context_chunks, 128, 16]
+
+none
+  no event tensor
+```
+
 ## Common Commands
 
 Profile with the workstation defaults:
@@ -221,7 +265,9 @@ The no-arg command uses this benchmark profile:
 cache_id: train_201902_201907_ticker_month
 month: 2019-02
 dataset_id: bench_small_201902_v1
-sample_fraction: 0.001
+event_output_mode: raw_stream
+event_stream_length: 1024
+sample_fraction: 1.0
 max_origins_per_epoch: 1,000,000
 batch_size: 4096
 batches: 16
@@ -276,16 +322,21 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\roll
   --cache-id train_201902_201907_ticker_month `
   --month 2019-02 `
   --data-groups events `
-  --event-output-mode raw_windows `
+  --event-output-mode raw_stream `
   --batch-size 4096
 ```
+
+The profiler records block-level timings in `profile_seconds`, including loader
+initialization, origin reads, sample-ref filtering, payload reads, identity
+materialization, raw-stream validation, event-matrix conversion, sliding gather,
+label materialization, worker wait, and ready-buffer concatenation.
 
 ## Invariants
 
 - A loaded package group is exhausted before advancing unless an explicit cap
   stops the epoch.
 - Ordered emission is the default even with concurrent materialization workers.
-- Event windows end at or before the origin.
-- Event windows are checked for ordinal continuity.
+- Event streams/windows end at or before the origin.
+- Event streams/windows are checked for ordinal continuity.
 - State checkpoints include both membership identity and current cursor.
 - Randomized runs are replayable only if the generated state is saved.

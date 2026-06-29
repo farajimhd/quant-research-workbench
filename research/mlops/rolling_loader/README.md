@@ -339,7 +339,9 @@ TickerMonthTrainingBatch
 6. Apply deterministic dataset sampling or hash buckets.
 7. Load event, label, and context payload files only for packages that have
    selected origins.
-8. Shuffle again inside the loaded group.
+8. Shuffle inside the loaded group for non-stream modes. In `raw_stream` mode,
+   keep each package's origins in ordinal order so the trainer sees continuous
+   sliding samples from the loaded part.
 9. Materialize CPU batches with a bounded worker queue.
 10. Yield batches to the trainer.
 
@@ -366,6 +368,8 @@ seed
 data_groups
 event_output_mode
 events_per_window
+event_stream_length
+event_stream_chunk_size
 context_chunks
 context_stride_events
 flat_coverage_events
@@ -419,7 +423,7 @@ ticker_news_tokens,sec_filing_tokens
 For event-only pretraining, use:
 
 ```powershell
---data-groups events --event-output-mode raw_windows
+--data-groups events --event-output-mode raw_stream
 ```
 
 For identity/context experiments with no event tensor:
@@ -430,9 +434,13 @@ For identity/context experiments with no event tensor:
 
 ### Event Output Modes
 
-The default is raw events, not encoded chunks.
+The default is raw continuous streams, not encoded chunks.
 
 ```text
+raw_stream
+  one dense float32 tensor shaped [B, event_stream_length, F]
+  each row is the continuous event sequence ending at the origin event
+
 raw_windows
   per-column arrays shaped [B, context_chunks, events_per_window]
 
@@ -450,6 +458,19 @@ none
 
 Use `encoded_uint8` only for older trainer paths that still consume the old
 market-encoder byte tensors.
+
+`raw_stream` is the preferred training path. The builder saves ordered event
+tables and an origin index. The loader reads origins from the origin index,
+not from every event row, because some events are not training origins. For each
+origin it uses `event_row_offset` to gather:
+
+```text
+events[event_row_offset - event_stream_length + 1 : event_row_offset + 1]
+```
+
+The loader validates that the last gathered event ordinal equals
+`origin_ordinal` and that the stream is ordinal-contiguous. If either check
+fails, the batch fails instead of training on misaligned data.
 
 Raw event outputs are projected at loader time, not build time. The cache keeps
 the richer reusable event table, while each trainer can choose the columns it
@@ -494,6 +515,8 @@ origin_timestamp_us
 event_output_mode
 raw_event_windows
 raw_event_flat
+raw_event_stream
+raw_event_stream_feature_names
 raw_event_mask
 headers_uint8
 events_uint8
@@ -515,12 +538,14 @@ Workstation form:
 python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\run_profile_ticker_month_loader.py
 ```
 
-The no-arg default is a small repeatable benchmark over
+The no-arg default is a repeatable sliding-stream benchmark over
 `train_201902_201907_ticker_month`, month `2019-02`, with:
 
 ```text
 dataset_id: bench_small_201902_v1
-sample_fraction: 0.001
+event_output_mode: raw_stream
+event_stream_length: 1024
+sample_fraction: 1.0
 max_origins_per_epoch: 1,000,000
 batch_size: 4096
 batches: 16
@@ -548,6 +573,26 @@ python -m research.mlops.rolling_loader.run_profile_ticker_month_loader `
 ```
 
 The profiler prints:
+
+```text
+profile_seconds.loader_init_seconds
+profile_seconds.origin_load_seconds
+profile_seconds.sample_refs_seconds
+profile_seconds.payload_load_seconds
+profile_seconds.identity_seconds
+profile_seconds.event_seconds
+profile_seconds.raw_stream_validate_seconds
+profile_seconds.raw_stream_matrix_seconds
+profile_seconds.raw_stream_gather_seconds
+profile_seconds.label_seconds
+profile_seconds.context_seconds
+profile_seconds.materialize_wait_seconds
+profile_seconds.ready_concat_seconds
+```
+
+These timings are intentionally block-level so bottlenecks can be assigned to
+SSD reads, origin filtering, stream matrix conversion, sliding-window gather,
+label materialization, worker wait, or ready-buffer concatenation.
 
 ```text
 discovered parts
@@ -613,8 +658,8 @@ Resume the same dataset plan and cursor with:
 The builder and loader must preserve these invariants:
 
 - origins are inside the active session
-- event windows end at or before the origin
-- event windows never cross ordinal gaps
+- event streams/windows end at or before the origin
+- event streams/windows never cross ordinal gaps
 - text/SEC/XBRL context is selected as-of `origin_timestamp_us`
 - labels are strictly future targets
 - optional missing context is zero/masked, not silently treated as real data
@@ -637,7 +682,8 @@ config = TickerMonthLoaderConfig(
     months=("2019-02",),
     batch_size=4096,
     data_groups=("events", "intraday_labels"),
-    event_output_mode="raw_windows",
+    event_output_mode="raw_stream",
+    event_stream_length=1024,
 )
 
 loader = AsyncTickerMonthBatchLoader(config)

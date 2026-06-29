@@ -34,10 +34,12 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "batches": 16,
     "seed": 17,
     "data_groups": "events,intraday_labels",
-    "event_output_mode": "raw_windows",
+    "event_output_mode": "raw_stream",
     "event_columns": "",
     "suppress_event_columns": "ticker_id,ordinal,timestamp_us",
     "events_per_window": 128,
+    "event_stream_length": 1024,
+    "event_stream_chunk_size": 128,
     "context_chunks": 32,
     "context_stride_events": 64,
     "flat_coverage_events": 0,
@@ -46,7 +48,7 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "materialize_workers": 16,
     "materialize_chunk_size": 512,
     "dataset_id": "bench_small_201902_v1",
-    "sample_fraction": 0.001,
+    "sample_fraction": 1.0,
     "sample_hash_modulus": 0,
     "sample_hash_buckets": "",
     "max_origins_per_epoch": 1_000_000,
@@ -66,7 +68,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--batches", type=int, default=DEFAULT_PROFILE_CONFIG["batches"])
     parser.add_argument("--seed", type=int, default=DEFAULT_PROFILE_CONFIG["seed"])
     parser.add_argument("--data-groups", default=DEFAULT_PROFILE_CONFIG["data_groups"])
-    parser.add_argument("--event-output-mode", choices=("none", "raw_flat", "raw_windows", "encoded_uint8"), default=DEFAULT_PROFILE_CONFIG["event_output_mode"])
+    parser.add_argument("--event-output-mode", choices=("none", "raw_flat", "raw_stream", "raw_windows", "encoded_uint8"), default=DEFAULT_PROFILE_CONFIG["event_output_mode"])
     parser.add_argument("--event-columns", default=DEFAULT_PROFILE_CONFIG["event_columns"], help="Comma-separated event columns to emit. Empty means all cached numeric event columns after suppression.")
     parser.add_argument(
         "--suppress-event-columns",
@@ -74,6 +76,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Comma-separated cached event columns to suppress from raw event outputs.",
     )
     parser.add_argument("--events-per-window", type=int, default=DEFAULT_PROFILE_CONFIG["events_per_window"])
+    parser.add_argument("--event-stream-length", type=int, default=DEFAULT_PROFILE_CONFIG["event_stream_length"])
+    parser.add_argument("--event-stream-chunk-size", type=int, default=DEFAULT_PROFILE_CONFIG["event_stream_chunk_size"])
     parser.add_argument("--context-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["context_chunks"])
     parser.add_argument("--context-stride-events", type=int, default=DEFAULT_PROFILE_CONFIG["context_stride_events"])
     parser.add_argument("--flat-coverage-events", type=int, default=DEFAULT_PROFILE_CONFIG["flat_coverage_events"])
@@ -118,6 +122,8 @@ def main(argv: list[str] | None = None) -> int:
         event_columns=tuple(item.strip() for item in str(args.event_columns).split(",") if item.strip()),
         suppress_event_columns=tuple(item.strip() for item in str(args.suppress_event_columns).split(",") if item.strip()),
         events_per_window=max(1, int(args.events_per_window)),
+        event_stream_length=max(1, int(args.event_stream_length)),
+        event_stream_chunk_size=max(1, int(args.event_stream_chunk_size)),
         context_chunks=max(0, int(args.context_chunks)),
         context_stride_events=max(1, int(args.context_stride_events)),
         flat_coverage_events=max(0, int(args.flat_coverage_events)),
@@ -142,16 +148,23 @@ def main(argv: list[str] | None = None) -> int:
     if not bool(args.no_report):
         print("PROFILE_REPORT " + str(args.report_path), flush=True)
     started = time.perf_counter()
+    loader_start = time.perf_counter()
     loader = AsyncTickerMonthBatchLoader(config)
+    loader_init_seconds = time.perf_counter() - loader_start
+    state_load_seconds = 0.0
     if args.load_state_path is not None:
+        state_load_start = time.perf_counter()
         with args.load_state_path.open("r", encoding="utf-8") as handle:
             loader.load_state_dict(json.load(handle))
+        state_load_seconds = time.perf_counter() - state_load_start
     discovered = len(loader.index.parts)
     print("LOADER_STATE_START " + json.dumps(loader.summary(), sort_keys=True), flush=True)
     batches = 0
     samples = 0
     materialize_seconds = 0.0
-    profile_seconds: dict[str, float] = {}
+    profile_seconds: dict[str, float] = {"loader_init_seconds": loader_init_seconds}
+    if state_load_seconds:
+        profile_seconds["state_load_seconds"] = state_load_seconds
     max_rss = current_rss_mib()
     first_shape: dict[str, Any] = {}
     for batch in loader.iter_batches():
@@ -226,6 +239,9 @@ def _shape_summary(batch: Any) -> dict[str, Any]:
         first = next(iter(batch.raw_event_flat.values()))
         out["raw_event_flat_shape"] = list(first.shape)
         out["raw_event_flat_columns"] = sorted(batch.raw_event_flat)
+    if batch.raw_event_stream.size:
+        out["raw_event_stream_shape"] = list(batch.raw_event_stream.shape)
+        out["raw_event_stream_columns"] = list(batch.raw_event_stream_feature_names)
     if batch.headers_uint8.size:
         out["headers_uint8_shape"] = list(batch.headers_uint8.shape)
         out["events_uint8_shape"] = list(batch.events_uint8.shape)
