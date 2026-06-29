@@ -23,6 +23,12 @@ from research.mlops.rolling_loader.streaming_training import (
     StreamingProfiler,
     StreamingRollingTrainingProvider,
 )
+from research.mlops.rolling_loader.ticker_month_dataset import (
+    AsyncTickerMonthBatchLoader,
+    TickerMonthCacheIndex,
+    TickerMonthLoaderConfig,
+    TickerMonthTrainingBatch,
+)
 
 __all__ = [
     "InitializedRollingReplay",
@@ -33,8 +39,12 @@ __all__ = [
     "StreamingClickHouseTrainingSource",
     "StreamingProfiler",
     "StreamingRollingTrainingProvider",
+    "AsyncTickerMonthBatchLoader",
     "RollingContextLoader",
     "RollingLoaderConfig",
     "RollingSamplePointer",
+    "TickerMonthCacheIndex",
+    "TickerMonthLoaderConfig",
+    "TickerMonthTrainingBatch",
     "initialize_clickhouse_replay",
 ]

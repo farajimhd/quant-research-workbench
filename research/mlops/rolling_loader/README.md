@@ -50,6 +50,41 @@ are ignored:
 python -m research.mlops.rolling_loader.run_build_ticker_month_cache --start-utc 2019-01-01T00:00:00Z --end-utc 2019-04-15T00:00:00Z --cache-id train_201901_201903_ticker_month
 ```
 
+Profile the loader against a built cache with:
+
+```powershell
+python -m research.mlops.rolling_loader.run_profile_ticker_month_loader --cache-id train_201902_ticker_month --month 2019-02 --batch-size 4096 --batches 8
+```
+
+The loader uses a sample plan over `(month, ticker, part, origin row)` and
+performs two-level shuffling: first across ticker/month parts, then again inside
+the currently loaded group of parts. It reads multiple ticker caches at a time,
+materializes CPU batches from the loaded group with a bounded worker queue, and
+emits batches to the trainer.
+
+Use `--data-groups` to avoid loading unneeded files for pretraining or ablation
+runs. Examples:
+
+```text
+events
+events,intraday_labels
+sec_filing_tokens
+ticker_news_tokens,sec_filing_tokens
+```
+
+Event output is controlled by `--event-output-mode`:
+
+```text
+raw_windows     [B, context_chunks, events_per_window] per numeric event column
+raw_flat        [B, coverage_events] per numeric event column
+encoded_uint8   compatibility headers_uint8/events_uint8 for the old encoder path
+none            identity/context-only batches
+```
+
+The default is `raw_windows`, not encoded chunks. `encoded_uint8` remains
+available for older trainer paths that still consume `headers_uint8` and
+`events_uint8`.
+
 The builder writes `terminal.log`, `builder_events.jsonl`,
 `builder_profile_events.jsonl`, `errors.jsonl`, and split progress JSON under
 the cache root so failed workstation runs can be reviewed without copying the
