@@ -370,6 +370,21 @@ materialize_workers
 max_batches
 event_columns
 suppress_event_columns
+dataset_id
+randomize_seed
+sample_fraction
+sample_hash_modulus
+sample_hash_buckets
+max_origins_per_epoch
+materialize_chunk_size
+drop_last_batch
+preserve_batch_order
+```
+
+For the stateful dataset-plan and checkpoint contract, see:
+
+```text
+STATEFUL_TICKER_MONTH_LOADER_GUIDE.md
 ```
 
 ### Data Groups
@@ -531,12 +546,25 @@ samples/sec
 materialization seconds
 max RSS
 first batch shape summary
+loader state summary
 ```
 
 Append JSONL summaries with:
 
 ```powershell
 --report-path D:\market-data\prepared\data_provider_profiles\ticker_month_loader_profile.jsonl
+```
+
+Save a replayable loader checkpoint with:
+
+```powershell
+--save-state-path D:\market-data\prepared\data_provider_profiles\loader_state.json
+```
+
+Resume the same dataset plan and cursor with:
+
+```powershell
+--load-state-path D:\market-data\prepared\data_provider_profiles\loader_state.json
 ```
 
 ## No-Lookahead Rules

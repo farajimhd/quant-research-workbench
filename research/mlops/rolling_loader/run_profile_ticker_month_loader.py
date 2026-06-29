@@ -47,6 +47,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--loaded-parts-per-group", type=int, default=8)
     parser.add_argument("--read-workers", type=int, default=4)
     parser.add_argument("--materialize-workers", type=int, default=4)
+    parser.add_argument("--materialize-chunk-size", type=int, default=0, help="Origins per CPU materialization task. Default 0 uses batch-size.")
+    parser.add_argument("--drop-last-batch", action="store_true", help="Drop the final partial ready batch for each loaded group.")
+    parser.add_argument("--allow-unordered-materialization", action="store_true", help="Yield completed materialization tasks as they finish. Faster but not repeatable.")
+    parser.add_argument("--dataset-id", default="", help="Stable dataset plan id used in hashing/state. Empty creates an automatic id from cache/config.")
+    parser.add_argument("--randomize-seed", action="store_true", help="Generate a random run seed and save it in loader state for replay.")
+    parser.add_argument("--sample-fraction", type=float, default=1.0, help="Deterministic hash fraction of origins to include.")
+    parser.add_argument("--sample-hash-modulus", type=int, default=0, help="Modulo for deterministic hash bucket train/validation splits.")
+    parser.add_argument("--sample-hash-buckets", default="", help="Comma-separated hash buckets to include when sample-hash-modulus is set.")
+    parser.add_argument("--max-origins-per-epoch", type=int, default=0, help="Stop after this many emitted origins in the epoch. 0 means no cap.")
+    parser.add_argument("--load-state-path", type=Path, default=None, help="Resume loader state from this JSON file.")
+    parser.add_argument("--save-state-path", type=Path, default=None, help="Write final loader state JSON to this file.")
     parser.add_argument("--include-external-context", action="store_true")
     parser.add_argument("--no-strict-audit", action="store_true")
     parser.add_argument("--report-path", type=Path, default=None)
@@ -76,15 +87,28 @@ def main(argv: list[str] | None = None) -> int:
         loaded_parts_per_group=max(1, int(args.loaded_parts_per_group)),
         read_workers=max(1, int(args.read_workers)),
         materialize_workers=max(1, int(args.materialize_workers)),
+        materialize_chunk_size=max(0, int(args.materialize_chunk_size)),
+        drop_last_batch=bool(args.drop_last_batch),
+        preserve_batch_order=not bool(args.allow_unordered_materialization),
         max_batches=max(0, int(args.batches)),
         include_external_context=bool(args.include_external_context),
         strict_audit=not bool(args.no_strict_audit),
+        dataset_id=str(args.dataset_id),
+        randomize_seed=bool(args.randomize_seed),
+        sample_fraction=max(0.0, min(1.0, float(args.sample_fraction))),
+        sample_hash_modulus=max(0, int(args.sample_hash_modulus)),
+        sample_hash_buckets=tuple(int(item.strip()) for item in str(args.sample_hash_buckets).split(",") if item.strip()),
+        max_origins_per_epoch=max(0, int(args.max_origins_per_epoch)),
     )
     print("TICKER MONTH LOADER PROFILE " + str(cache_root), flush=True)
     print(json.dumps(jsonable(asdict(config)), sort_keys=True), flush=True)
     started = time.perf_counter()
     loader = AsyncTickerMonthBatchLoader(config)
+    if args.load_state_path is not None:
+        with args.load_state_path.open("r", encoding="utf-8") as handle:
+            loader.load_state_dict(json.load(handle))
     discovered = len(loader.index.parts)
+    print("LOADER_STATE_START " + json.dumps(loader.summary(), sort_keys=True), flush=True)
     batches = 0
     samples = 0
     materialize_seconds = 0.0
@@ -124,8 +148,13 @@ def main(argv: list[str] | None = None) -> int:
         "materialize_seconds": materialize_seconds,
         "max_rss_mib": max_rss,
         "first_batch": first_shape,
+        "loader_state": loader.summary(),
     }
     print("SUMMARY " + json.dumps(summary, sort_keys=True), flush=True)
+    if args.save_state_path is not None:
+        args.save_state_path.parent.mkdir(parents=True, exist_ok=True)
+        with args.save_state_path.open("w", encoding="utf-8") as handle:
+            json.dump(loader.state_dict(), handle, sort_keys=True, indent=2)
     if args.report_path is not None:
         args.report_path.parent.mkdir(parents=True, exist_ok=True)
         with args.report_path.open("a", encoding="utf-8") as handle:

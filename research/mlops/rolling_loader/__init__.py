@@ -27,6 +27,7 @@ from research.mlops.rolling_loader.ticker_month_dataset import (
     AsyncTickerMonthBatchLoader,
     TickerMonthCacheIndex,
     TickerMonthLoaderConfig,
+    TickerMonthLoaderState,
     TickerMonthTrainingBatch,
 )
 
@@ -45,6 +46,7 @@ __all__ = [
     "RollingSamplePointer",
     "TickerMonthCacheIndex",
     "TickerMonthLoaderConfig",
+    "TickerMonthLoaderState",
     "TickerMonthTrainingBatch",
     "initialize_clickhouse_replay",
 ]

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import random
+import secrets
 import time
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
@@ -29,6 +32,7 @@ SUPPORTED_EVENT_OUTPUT_MODES = {"none", "raw_flat", "raw_windows", "encoded_uint
 DEFAULT_DATA_GROUPS = ("events", "intraday_labels")
 NUMERIC_EVENT_COLUMNS: tuple[str, ...] = tuple(column for column in (*EVENT_PAYLOAD_COLUMNS, *EVENT_TIME_FEATURE_COLUMNS) if column != "ticker")
 DEFAULT_SUPPRESSED_EVENT_COLUMNS = ("ticker_id", "ordinal", "timestamp_us")
+LOADER_STATE_VERSION = 1
 ENCODER_EVENT_DTYPE = np.dtype(
     [
         ("ordinal", "<u8"),
@@ -72,6 +76,15 @@ class TickerMonthLoaderConfig:
     strict_audit: bool = True
     event_columns: tuple[str, ...] = ()
     suppress_event_columns: tuple[str, ...] = DEFAULT_SUPPRESSED_EVENT_COLUMNS
+    dataset_id: str = ""
+    randomize_seed: bool = False
+    sample_fraction: float = 1.0
+    sample_hash_modulus: int = 0
+    sample_hash_buckets: tuple[int, ...] = ()
+    max_origins_per_epoch: int = 0
+    materialize_chunk_size: int = 0
+    drop_last_batch: bool = False
+    preserve_batch_order: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +150,74 @@ class TickerMonthTrainingBatch:
     @property
     def sample_count(self) -> int:
         return int(self.origin_ordinal.shape[0])
+
+
+@dataclass(slots=True)
+class TickerMonthLoaderState:
+    loader_state_version: int = LOADER_STATE_VERSION
+    dataset_plan_id: str = ""
+    cache_manifest_fingerprint: str = ""
+    seed: int = 0
+    epoch: int = 0
+    package_position: int = 0
+    origin_cursor: int = 0
+    emitted_batches: int = 0
+    emitted_samples: int = 0
+    seen_origins_this_epoch: int = 0
+    seen_origins_total: int = 0
+    completed_epochs: int = 0
+    total_available_origins: int = 0
+    planned_origins: int = 0
+    package_count: int = 0
+    seen_by_month: dict[str, int] = field(default_factory=dict)
+    seen_by_part: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "loader_state_version": int(self.loader_state_version),
+            "dataset_plan_id": str(self.dataset_plan_id),
+            "cache_manifest_fingerprint": str(self.cache_manifest_fingerprint),
+            "seed": int(self.seed),
+            "epoch": int(self.epoch),
+            "package_position": int(self.package_position),
+            "origin_cursor": int(self.origin_cursor),
+            "emitted_batches": int(self.emitted_batches),
+            "emitted_samples": int(self.emitted_samples),
+            "seen_origins_this_epoch": int(self.seen_origins_this_epoch),
+            "seen_origins_total": int(self.seen_origins_total),
+            "completed_epochs": int(self.completed_epochs),
+            "total_available_origins": int(self.total_available_origins),
+            "planned_origins": int(self.planned_origins),
+            "package_count": int(self.package_count),
+            "seen_by_month": dict(self.seen_by_month),
+            "seen_by_part": dict(self.seen_by_part),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "TickerMonthLoaderState":
+        state = cls()
+        for key in (
+            "loader_state_version",
+            "seed",
+            "epoch",
+            "package_position",
+            "origin_cursor",
+            "emitted_batches",
+            "emitted_samples",
+            "seen_origins_this_epoch",
+            "seen_origins_total",
+            "completed_epochs",
+            "total_available_origins",
+            "planned_origins",
+            "package_count",
+        ):
+            if key in value:
+                setattr(state, key, int(value[key] or 0))
+        state.dataset_plan_id = str(value.get("dataset_plan_id") or "")
+        state.cache_manifest_fingerprint = str(value.get("cache_manifest_fingerprint") or "")
+        state.seen_by_month = {str(k): int(v or 0) for k, v in dict(value.get("seen_by_month") or {}).items()}
+        state.seen_by_part = {str(k): int(v or 0) for k, v in dict(value.get("seen_by_part") or {}).items()}
+        return state
 
 
 class TickerMonthCacheIndex:
@@ -429,31 +510,163 @@ class AsyncTickerMonthBatchLoader:
         self.index = TickerMonthCacheIndex(self.config)
         self.reader = TickerMonthPartReader(self.config.data_groups, include_external_context=self.config.include_external_context)
         self.materializer = TickerMonthBatchMaterializer(self.config)
+        self.cache_manifest_fingerprint = _manifest_fingerprint(self.index.root_manifest)
+        self.dataset_plan_id = _dataset_plan_id(self.config, self.cache_manifest_fingerprint)
+        seed = secrets.randbits(63) if self.config.randomize_seed else int(self.config.seed)
+        self.state = TickerMonthLoaderState(
+            dataset_plan_id=self.dataset_plan_id,
+            cache_manifest_fingerprint=self.cache_manifest_fingerprint,
+            seed=int(seed),
+            epoch=0,
+            total_available_origins=sum(int(plan.origin_count) for plan in self.index.parts),
+            package_count=len(self.index.parts),
+        )
 
     def iter_batches(self) -> Iterator[TickerMonthTrainingBatch]:
-        rng = random.Random(int(self.config.seed))
-        plans = list(self.index.parts)
-        if self.config.shuffle_parts:
-            rng.shuffle(plans)
-        emitted = 0
+        if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
+            return
         start_us = _parse_timestamp_us(self.config.start_utc) if self.config.start_utc else None
         end_us = _parse_timestamp_us(self.config.end_utc) if self.config.end_utc else None
         group_size = max(1, int(self.config.loaded_parts_per_group))
+        plans = self._epoch_plans(int(self.state.epoch))
         with ThreadPoolExecutor(max_workers=max(1, int(self.config.read_workers)), thread_name_prefix="tmc-load") as read_pool:
-            for group_start in range(0, len(plans), group_size):
+            for group_start in range(int(self.state.package_position), len(plans), group_size):
+                self.state.package_position = int(group_start)
                 group_plans = plans[group_start : group_start + group_size]
                 loaded = list(read_pool.map(self.reader.load, group_plans))
-                refs = _sample_refs_for_loaded_parts(loaded, start_us=start_us, end_us=end_us)
+                refs = _sample_refs_for_loaded_parts(
+                    loaded,
+                    config=self.config,
+                    seed=int(self.state.seed),
+                    dataset_plan_id=self.dataset_plan_id,
+                    start_us=start_us,
+                    end_us=end_us,
+                )
                 if self.config.shuffle_within_loaded_group:
-                    rng.shuffle(refs)
+                    random.Random(_stable_int_seed("origins", self.state.seed, self.state.epoch, group_start, self.dataset_plan_id)).shuffle(refs)
+                if int(self.state.origin_cursor) > 0:
+                    refs = refs[int(self.state.origin_cursor) :]
+                self.state.planned_origins += len(refs)
+                emitted_from_group = 0
+                materialize_size = int(self.config.materialize_chunk_size) or int(self.config.batch_size)
+                ready = _ReadyBatchBuffer(batch_size=int(self.config.batch_size), drop_last=bool(self.config.drop_last_batch))
                 with ThreadPoolExecutor(max_workers=max(1, int(self.config.materialize_workers)), thread_name_prefix="tmc-materialize") as mat_pool:
-                    for batch in _materialize_bounded(mat_pool, self.materializer, loaded, _batched_refs(refs, int(self.config.batch_size))):
+                    materialized = _materialize_bounded(
+                        mat_pool,
+                        self.materializer,
+                        loaded,
+                        _batched_refs(refs, materialize_size),
+                        preserve_order=bool(self.config.preserve_batch_order),
+                    )
+                    for chunk in materialized:
+                        if chunk.sample_count == 0:
+                            continue
+                        for batch in ready.add(chunk):
+                            batch = self._apply_epoch_sample_cap(batch)
+                            if batch.sample_count == 0:
+                                return
+                            emitted_from_group += int(batch.sample_count)
+                            self._record_emitted_batch(batch, group_plans)
+                            yield batch
+                            if int(self.config.max_batches) > 0 and int(self.state.emitted_batches) >= int(self.config.max_batches):
+                                self.state.origin_cursor += emitted_from_group
+                                return
+                            if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
+                                self.state.origin_cursor += emitted_from_group
+                                return
+                    for batch in ready.flush():
                         if batch.sample_count == 0:
                             continue
-                        yield batch
-                        emitted += 1
-                        if int(self.config.max_batches) > 0 and emitted >= int(self.config.max_batches):
+                        batch = self._apply_epoch_sample_cap(batch)
+                        if batch.sample_count == 0:
                             return
+                        emitted_from_group += int(batch.sample_count)
+                        self._record_emitted_batch(batch, group_plans)
+                        yield batch
+                        if int(self.config.max_batches) > 0 and int(self.state.emitted_batches) >= int(self.config.max_batches):
+                            self.state.origin_cursor += emitted_from_group
+                            return
+                        if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
+                            self.state.origin_cursor += emitted_from_group
+                            return
+                self.state.origin_cursor = 0
+                self.state.package_position = int(group_start) + len(group_plans)
+                if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
+                    return
+            self.state.completed_epochs += 1
+            self.state.epoch += 1
+            self.state.package_position = 0
+            self.state.origin_cursor = 0
+            self.state.seen_origins_this_epoch = 0
+
+    def state_dict(self) -> dict[str, Any]:
+        return self.state.to_dict()
+
+    def load_state_dict(self, value: Mapping[str, Any]) -> None:
+        state = TickerMonthLoaderState.from_dict(value)
+        if state.loader_state_version != LOADER_STATE_VERSION:
+            raise ValueError(f"Unsupported loader state version: {state.loader_state_version}")
+        if state.dataset_plan_id and state.dataset_plan_id != self.dataset_plan_id:
+            raise ValueError(f"Loader state dataset_plan_id={state.dataset_plan_id!r} does not match current plan {self.dataset_plan_id!r}.")
+        if state.cache_manifest_fingerprint and state.cache_manifest_fingerprint != self.cache_manifest_fingerprint:
+            raise ValueError("Loader state cache manifest fingerprint does not match current cache manifest.")
+        state.dataset_plan_id = self.dataset_plan_id
+        state.cache_manifest_fingerprint = self.cache_manifest_fingerprint
+        state.total_available_origins = sum(int(plan.origin_count) for plan in self.index.parts)
+        state.package_count = len(self.index.parts)
+        self.state = state
+
+    def summary(self) -> dict[str, Any]:
+        out = self.state.to_dict()
+        out["epoch_fraction"] = float(self.state.package_position) / max(float(len(self.index.parts)), 1.0)
+        out["config"] = {
+            "batch_size": int(self.config.batch_size),
+            "materialize_chunk_size": int(self.config.materialize_chunk_size) or int(self.config.batch_size),
+            "loaded_parts_per_group": int(self.config.loaded_parts_per_group),
+            "sample_fraction": float(self.config.sample_fraction),
+            "sample_hash_modulus": int(self.config.sample_hash_modulus),
+            "sample_hash_buckets": list(self.config.sample_hash_buckets),
+            "max_origins_per_epoch": int(self.config.max_origins_per_epoch),
+            "randomize_seed": bool(self.config.randomize_seed),
+        }
+        return out
+
+    def _epoch_plans(self, epoch: int) -> list[TickerMonthPartPlan]:
+        plans = list(self.index.parts)
+        if self.config.shuffle_parts:
+            random.Random(_stable_int_seed("packages", self.state.seed, epoch, self.dataset_plan_id)).shuffle(plans)
+        return plans
+
+    def _record_emitted_batch(self, batch: TickerMonthTrainingBatch, group_plans: Sequence[TickerMonthPartPlan]) -> None:
+        samples = int(batch.sample_count)
+        self.state.emitted_batches += 1
+        self.state.emitted_samples += samples
+        self.state.seen_origins_this_epoch += samples
+        self.state.seen_origins_total += samples
+        tickers = np.asarray(batch.ticker)
+        ordinals = batch.origin_ordinal.astype(np.int64, copy=False)
+        for part in group_plans:
+            ticker_mask = tickers == part.ticker
+            if not bool(np.any(ticker_mask)):
+                continue
+            ordinal_mask = (ordinals >= int(part.origin_ordinal_start)) & (ordinals <= int(part.origin_ordinal_end))
+            count = int(np.count_nonzero(ticker_mask & ordinal_mask))
+            if count <= 0:
+                continue
+            self.state.seen_by_month[part.month] = int(self.state.seen_by_month.get(part.month, 0)) + count
+            key = _part_key(part)
+            self.state.seen_by_part[key] = int(self.state.seen_by_part.get(key, 0)) + count
+
+    def _apply_epoch_sample_cap(self, batch: TickerMonthTrainingBatch) -> TickerMonthTrainingBatch:
+        cap = int(self.config.max_origins_per_epoch)
+        if cap <= 0:
+            return batch
+        remaining = cap - int(self.state.seen_origins_this_epoch)
+        if remaining <= 0:
+            return _slice_training_batch(batch, 0, 0)
+        if batch.sample_count <= remaining:
+            return batch
+        return _slice_training_batch(batch, 0, remaining)
 
 
 def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoaderConfig:
@@ -490,6 +703,15 @@ def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoade
         strict_audit=bool(config.strict_audit),
         event_columns=tuple(str(column) for column in config.event_columns),
         suppress_event_columns=tuple(str(column) for column in config.suppress_event_columns),
+        dataset_id=str(config.dataset_id),
+        randomize_seed=bool(config.randomize_seed),
+        sample_fraction=min(max(float(config.sample_fraction), 0.0), 1.0),
+        sample_hash_modulus=max(0, int(config.sample_hash_modulus)),
+        sample_hash_buckets=tuple(int(bucket) for bucket in config.sample_hash_buckets),
+        max_origins_per_epoch=max(0, int(config.max_origins_per_epoch)),
+        materialize_chunk_size=max(0, int(config.materialize_chunk_size)),
+        drop_last_batch=bool(config.drop_last_batch),
+        preserve_batch_order=bool(config.preserve_batch_order),
     )
 
 
@@ -533,7 +755,15 @@ def _package_context_files(package_dir: Path) -> dict[str, str]:
     return {str(key): str(value) for key, value in files.items() if key in {"ticker_news_tokens", "sec_filing_tokens", "xbrl", "daily_bars"}}
 
 
-def _sample_refs_for_loaded_parts(loaded: Sequence[LoadedTickerMonthPart], *, start_us: int | None, end_us: int | None) -> list[TickerMonthSampleRef]:
+def _sample_refs_for_loaded_parts(
+    loaded: Sequence[LoadedTickerMonthPart],
+    *,
+    config: TickerMonthLoaderConfig,
+    seed: int,
+    dataset_plan_id: str,
+    start_us: int | None,
+    end_us: int | None,
+) -> list[TickerMonthSampleRef]:
     refs: list[TickerMonthSampleRef] = []
     for part_index, part in enumerate(loaded):
         if part.origins is None or part.origins.height == 0:
@@ -544,7 +774,15 @@ def _sample_refs_for_loaded_parts(loaded: Sequence[LoadedTickerMonthPart], *, st
             mask &= ts >= int(start_us)
         if end_us is not None:
             mask &= ts < int(end_us)
-        for row in np.flatnonzero(mask):
+        candidate_rows = np.flatnonzero(mask)
+        if _uses_dataset_hash_filter(config):
+            ordinals = part.origins.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)
+            selected: list[int] = []
+            for row in candidate_rows:
+                if _sample_selected(part.plan, int(ordinals[int(row)]), int(ts[int(row)]), config=config, seed=seed, dataset_plan_id=dataset_plan_id):
+                    selected.append(int(row))
+            candidate_rows = np.asarray(selected, dtype=np.int64)
+        for row in candidate_rows:
             refs.append(TickerMonthSampleRef(part_index=int(part_index), origin_row=int(row)))
     return refs
 
@@ -555,13 +793,147 @@ def _batched_refs(refs: Sequence[TickerMonthSampleRef], batch_size: int) -> Iter
         yield list(refs[start : start + size])
 
 
+class _ReadyBatchBuffer:
+    def __init__(self, *, batch_size: int, drop_last: bool) -> None:
+        self.batch_size = max(1, int(batch_size))
+        self.drop_last = bool(drop_last)
+        self._chunks: list[TickerMonthTrainingBatch] = []
+        self._samples = 0
+
+    def add(self, batch: TickerMonthTrainingBatch) -> Iterator[TickerMonthTrainingBatch]:
+        if batch.sample_count <= 0:
+            return
+        self._chunks.append(batch)
+        self._samples += int(batch.sample_count)
+        while self._samples >= self.batch_size:
+            combined = _concat_training_batches(self._chunks)
+            yield _slice_training_batch(combined, 0, self.batch_size)
+            remainder = _slice_training_batch(combined, self.batch_size, combined.sample_count)
+            self._chunks = [remainder] if remainder.sample_count else []
+            self._samples = int(remainder.sample_count)
+
+    def flush(self) -> Iterator[TickerMonthTrainingBatch]:
+        if self.drop_last or self._samples <= 0:
+            self._chunks = []
+            self._samples = 0
+            return
+        combined = _concat_training_batches(self._chunks)
+        self._chunks = []
+        self._samples = 0
+        yield combined
+
+
+def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> TickerMonthTrainingBatch:
+    nonempty = [batch for batch in batches if batch.sample_count > 0]
+    if not nonempty:
+        return _empty_batch("")
+    first = nonempty[0]
+    raw_windows = _concat_dict_arrays(batch.raw_event_windows for batch in nonempty)
+    raw_flat = _concat_dict_arrays(batch.raw_event_flat for batch in nonempty)
+    intraday_labels = _concat_dict_arrays(batch.intraday_labels for batch in nonempty)
+    availability = _concat_dict_arrays(batch.input_availability for batch in nonempty)
+    profile = {
+        "samples": sum(int(batch.sample_count) for batch in nonempty),
+        "materialize_seconds": sum(float(batch.profile.get("materialize_seconds", 0.0)) for batch in nonempty),
+    }
+    return TickerMonthTrainingBatch(
+        ticker=np.concatenate([batch.ticker for batch in nonempty], axis=0),
+        origin_ordinal=np.concatenate([batch.origin_ordinal for batch in nonempty], axis=0),
+        origin_timestamp_us=np.concatenate([batch.origin_timestamp_us for batch in nonempty], axis=0),
+        event_output_mode=first.event_output_mode,
+        raw_event_windows=raw_windows,
+        raw_event_flat=raw_flat,
+        raw_event_mask=_concat_optional_arrays([batch.raw_event_mask for batch in nonempty]),
+        headers_uint8=_concat_optional_arrays([batch.headers_uint8 for batch in nonempty]),
+        events_uint8=_concat_optional_arrays([batch.events_uint8 for batch in nonempty]),
+        intraday_labels=intraday_labels,
+        future_intraday_bar_horizons=first.future_intraday_bar_horizons,
+        future_intraday_bars=_concat_optional_arrays([batch.future_intraday_bars for batch in nonempty]),
+        future_intraday_bar_mask=_concat_optional_arrays([batch.future_intraday_bar_mask for batch in nonempty]),
+        input_availability=availability,
+        external_context=_merge_external_context(nonempty),
+        profile=profile,
+    )
+
+
+def _slice_training_batch(batch: TickerMonthTrainingBatch, start: int, end: int) -> TickerMonthTrainingBatch:
+    start = max(0, int(start))
+    end = max(start, min(int(end), int(batch.sample_count)))
+    profile = dict(batch.profile)
+    profile["samples"] = end - start
+    return TickerMonthTrainingBatch(
+        ticker=batch.ticker[start:end],
+        origin_ordinal=batch.origin_ordinal[start:end],
+        origin_timestamp_us=batch.origin_timestamp_us[start:end],
+        event_output_mode=batch.event_output_mode,
+        raw_event_windows={key: value[start:end] for key, value in batch.raw_event_windows.items()},
+        raw_event_flat={key: value[start:end] for key, value in batch.raw_event_flat.items()},
+        raw_event_mask=batch.raw_event_mask[start:end] if batch.raw_event_mask.shape[0] else batch.raw_event_mask,
+        headers_uint8=batch.headers_uint8[start:end] if batch.headers_uint8.shape[0] else batch.headers_uint8,
+        events_uint8=batch.events_uint8[start:end] if batch.events_uint8.shape[0] else batch.events_uint8,
+        intraday_labels={key: value[start:end] for key, value in batch.intraday_labels.items()},
+        future_intraday_bar_horizons=batch.future_intraday_bar_horizons,
+        future_intraday_bars=batch.future_intraday_bars[start:end] if batch.future_intraday_bars.shape[0] else batch.future_intraday_bars,
+        future_intraday_bar_mask=batch.future_intraday_bar_mask[start:end] if batch.future_intraday_bar_mask.shape[0] else batch.future_intraday_bar_mask,
+        input_availability={key: value[start:end] for key, value in batch.input_availability.items()},
+        external_context=dict(batch.external_context),
+        profile=profile,
+    )
+
+
+def _concat_dict_arrays(items: Sequence[Mapping[str, np.ndarray]]) -> dict[str, np.ndarray]:
+    items = list(items)
+    keys: set[str] = set()
+    for item in items:
+        keys.update(item.keys())
+    return {key: np.concatenate([item[key] for item in items if key in item], axis=0) for key in sorted(keys)}
+
+
+def _concat_optional_arrays(items: Sequence[np.ndarray]) -> np.ndarray:
+    arrays = [item for item in items if getattr(item, "shape", (0,))[0] > 0]
+    if not arrays:
+        return items[0] if items else np.asarray([])
+    return np.concatenate(arrays, axis=0)
+
+
+def _merge_external_context(batches: Sequence[TickerMonthTrainingBatch]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for batch in batches:
+        for key, value in batch.external_context.items():
+            if isinstance(value, (int, float)):
+                merged[key] = merged.get(key, 0) + value
+            else:
+                merged[key] = value
+    return merged
+
+
 def _materialize_bounded(
     executor: ThreadPoolExecutor,
     materializer: TickerMonthBatchMaterializer,
     loaded: Sequence[LoadedTickerMonthPart],
     batches: Iterator[list[TickerMonthSampleRef]],
+    *,
+    preserve_order: bool = True,
 ) -> Iterator[TickerMonthTrainingBatch]:
     max_pending = max(1, int(getattr(executor, "_max_workers", 1))) * 2
+    if preserve_order:
+        pending_ordered: deque[Future[TickerMonthTrainingBatch]] = deque()
+
+        def submit_until_full_ordered() -> None:
+            while len(pending_ordered) < max_pending:
+                try:
+                    refs = next(batches)
+                except StopIteration:
+                    return
+                pending_ordered.append(executor.submit(materializer.materialize, loaded, refs))
+
+        submit_until_full_ordered()
+        while pending_ordered:
+            future = pending_ordered.popleft()
+            yield future.result()
+            submit_until_full_ordered()
+        return
+
     pending: set[Future[TickerMonthTrainingBatch]] = set()
 
     def submit_until_full() -> None:
@@ -574,6 +946,8 @@ def _materialize_bounded(
 
     submit_until_full()
     while pending:
+        from concurrent.futures import FIRST_COMPLETED, wait
+
         done, pending = wait(pending, return_when=FIRST_COMPLETED)
         for future in done:
             yield future.result()
@@ -637,6 +1011,89 @@ def _event_column_dtype(parts: Sequence[LoadedTickerMonthPart], column: str) -> 
         if part.events is not None and column in part.events.columns:
             return np.asarray(part.event_array(column)).dtype
     return np.float32
+
+
+def _uses_dataset_hash_filter(config: TickerMonthLoaderConfig) -> bool:
+    return (
+        float(config.sample_fraction) < 1.0
+        or int(config.sample_hash_modulus) > 0
+        or bool(config.sample_hash_buckets)
+    )
+
+
+def _sample_selected(
+    plan: TickerMonthPartPlan,
+    origin_ordinal: int,
+    origin_timestamp_us: int,
+    *,
+    config: TickerMonthLoaderConfig,
+    seed: int,
+    dataset_plan_id: str,
+) -> bool:
+    sample_hash = _sample_hash64(plan, origin_ordinal, origin_timestamp_us, seed=seed, dataset_plan_id=dataset_plan_id)
+    fraction = float(config.sample_fraction)
+    if fraction <= 0.0:
+        return False
+    if fraction < 1.0:
+        threshold = int(max(0.0, min(1.0, fraction)) * float(2**64 - 1))
+        if sample_hash >= threshold:
+            return False
+    modulus = int(config.sample_hash_modulus)
+    if modulus > 0:
+        buckets = {int(bucket) % modulus for bucket in config.sample_hash_buckets}
+        if buckets and int(sample_hash % modulus) not in buckets:
+            return False
+    return True
+
+
+def _sample_hash64(plan: TickerMonthPartPlan, origin_ordinal: int, origin_timestamp_us: int, *, seed: int, dataset_plan_id: str) -> int:
+    text = "|".join(
+        (
+            str(dataset_plan_id),
+            str(seed),
+            str(plan.month),
+            str(plan.ticker),
+            str(plan.part_id),
+            str(origin_ordinal),
+            str(origin_timestamp_us),
+        )
+    )
+    digest = hashlib.blake2b(text.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False)
+
+
+def _stable_int_seed(*items: object) -> int:
+    text = "|".join(str(item) for item in items)
+    digest = hashlib.blake2b(text.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False)
+
+
+def _manifest_fingerprint(manifest: Mapping[str, Any]) -> str:
+    payload = json.dumps(manifest, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _dataset_plan_id(config: TickerMonthLoaderConfig, manifest_fingerprint: str) -> str:
+    if config.dataset_id:
+        return str(config.dataset_id)
+    payload = {
+        "cache_manifest_fingerprint": manifest_fingerprint,
+        "split": config.split,
+        "start_utc": config.start_utc,
+        "end_utc": config.end_utc,
+        "months": list(config.months),
+        "tickers": list(config.tickers),
+        "sample_fraction": float(config.sample_fraction),
+        "sample_hash_modulus": int(config.sample_hash_modulus),
+        "sample_hash_buckets": list(config.sample_hash_buckets),
+        "max_origins_per_epoch": int(config.max_origins_per_epoch),
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return f"auto_{digest[:16]}"
+
+
+def _part_key(plan: TickerMonthPartPlan) -> str:
+    return f"{plan.month}|{plan.ticker}|{int(plan.part_id)}"
 
 
 def _cached_horizons(parts: Sequence[LoadedTickerMonthPart]) -> tuple[str, ...]:
