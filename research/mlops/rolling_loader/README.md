@@ -629,6 +629,7 @@ The no-arg default is a repeatable sliding-stream benchmark over
 
 ```text
 dataset_id: bench_small_201902_v1
+data_groups: events,intraday_labels,daily_bars,global_daily_bars,ticker_news_tokens,market_news_tokens,sec_filing_tokens,xbrl
 event_output_mode: raw_stream
 event_stream_length: 1024
 sample_fraction: 1.0
@@ -639,6 +640,8 @@ loaded_parts_per_group: 8
 read_workers: 4
 materialize_workers: 16
 materialize_chunk_size: 512
+report_path: D:\market-data\prepared\data_provider_profiles\ticker_month_loader_full_xy_xbrl_profile.jsonl
+state_path: D:\market-data\prepared\data_provider_profiles\ticker_month_loader_full_xy_xbrl_state.json
 ```
 
 Module form:

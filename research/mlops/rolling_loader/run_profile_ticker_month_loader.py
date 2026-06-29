@@ -21,8 +21,8 @@ from research.mlops.rolling_loader.ticker_month_dataset import AsyncTickerMonthB
 from research.mlops.rolling_loader.streaming_training import current_rss_mib
 
 
-DEFAULT_PROFILE_REPORT_PATH = Path("D:/market-data/prepared/data_provider_profiles/ticker_month_loader_profile.jsonl")
-DEFAULT_PROFILE_STATE_PATH = Path("D:/market-data/prepared/data_provider_profiles/ticker_month_loader_state.json")
+DEFAULT_PROFILE_REPORT_PATH = Path("D:/market-data/prepared/data_provider_profiles/ticker_month_loader_full_xy_xbrl_profile.jsonl")
+DEFAULT_PROFILE_STATE_PATH = Path("D:/market-data/prepared/data_provider_profiles/ticker_month_loader_full_xy_xbrl_state.json")
 DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "cache_id": "train_201902_201907_ticker_month",
     "split": "train",
@@ -33,7 +33,7 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "batch_size": 4096,
     "batches": 16,
     "seed": 17,
-    "data_groups": "events,intraday_labels,daily_bars,global_daily_bars",
+    "data_groups": "events,intraday_labels,daily_bars,global_daily_bars,ticker_news_tokens,market_news_tokens,sec_filing_tokens,xbrl",
     "event_output_mode": "raw_stream",
     "event_columns": "",
     "suppress_event_columns": "ticker_id,ordinal,timestamp_us",
