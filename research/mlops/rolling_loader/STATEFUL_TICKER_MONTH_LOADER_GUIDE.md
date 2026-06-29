@@ -175,6 +175,13 @@ Resume with the same cache/config and `load_state_dict`.
 The loader validates that loaded state matches the current dataset plan and
 cache manifest fingerprint. A mismatch fails fast.
 
+State is advanced before each batch is yielded. This matters for training
+checkpointing: if the trainer saves loader state immediately after receiving a
+batch, resume starts after that batch. When the yielded batch exhausts the
+current loaded group, `origin_cursor` can temporarily equal the selected-origin
+count for that group. On resume, the loader slices to empty, advances
+`package_position`, and continues without repeating the exhausted group.
+
 ## Ordered Materialization
 
 By default, materialization workers run concurrently but batches are emitted in
@@ -302,6 +309,22 @@ D:\market-data\prepared\data_provider_profiles\ticker_month_loader_profile.jsonl
 ```
 
 Use `--no-report` only when a run should not write a timing record.
+
+Audit emitted batches against the SSD package files:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\audit_ticker_month_loader_batches.py `
+  --cache-id train_201902_201907_ticker_month `
+  --month 2019-02 `
+  --batch-size 1024 `
+  --batches 2 `
+  --samples-per-batch 4
+```
+
+The audit checks shape consistency, duplicate identities, origin/event
+alignment, raw-stream values, raw-stream ordinal continuity, intraday labels,
+future-bar projection, deterministic first-batch replay, and resume-from-state
+next-batch replay.
 
 Replay from a saved state:
 

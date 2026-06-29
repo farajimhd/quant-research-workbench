@@ -679,9 +679,11 @@ class AsyncTickerMonthBatchLoader:
                 group_profile["sample_refs_seconds"] = time.perf_counter() - stage_start
                 if self.config.shuffle_within_loaded_group and self.config.event_output_mode != "raw_stream":
                     random.Random(_stable_int_seed("origins", self.state.seed, self.state.epoch, group_start, self.dataset_plan_id)).shuffle(refs)
-                if int(self.state.origin_cursor) > 0:
-                    refs = refs[int(self.state.origin_cursor) :]
-                self.state.planned_origins += len(refs)
+                group_origin_base = max(0, int(self.state.origin_cursor))
+                if group_origin_base == 0:
+                    self.state.planned_origins += len(refs)
+                if group_origin_base > 0:
+                    refs = refs[group_origin_base:]
                 if not refs:
                     self.state.origin_cursor = 0
                     self.state.package_position = int(group_start) + len(group_plans)
@@ -721,13 +723,12 @@ class AsyncTickerMonthBatchLoader:
                             if batch.sample_count == 0:
                                 return
                             emitted_from_group += _count_batch_samples_for_part_keys(batch, group_keys)
+                            self.state.origin_cursor = int(group_origin_base) + int(emitted_from_group)
                             self._record_emitted_batch(batch)
                             yield batch
                             if int(self.config.max_batches) > 0 and int(self.state.emitted_batches) >= int(self.config.max_batches):
-                                self.state.origin_cursor += emitted_from_group
                                 return
                             if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
-                                self.state.origin_cursor += emitted_from_group
                                 return
                 self.state.origin_cursor = 0
                 self.state.package_position = int(group_start) + len(group_plans)

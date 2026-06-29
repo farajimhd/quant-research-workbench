@@ -27,6 +27,7 @@ the ticker/month cache and loader.
 | Ticker/month cache audit | `audit_ticker_month_cache.py` | Audits completed SSD cache packages. |
 | Ticker/month data loader | `ticker_month_dataset.py` | Reads SSD packages and materializes trainer batches. |
 | Loader profiler | `run_profile_ticker_month_loader.py` | Measures loader speed, memory, and output shapes. |
+| Loader batch audit | `audit_ticker_month_loader_batches.py` | Verifies materialized batches against SSD package files. |
 | Cache design guide | `TICKER_MONTH_SSD_CACHE_DESIGN.md` | Detailed design rationale and storage contract. |
 | Legacy stateful replay | `loader.py`, `initialize.py`, `run_training_profile.py` | Older production-style replay/profiling path. |
 
@@ -652,6 +653,51 @@ Resume the same dataset plan and cursor with:
 ```powershell
 --load-state-path D:\market-data\prepared\data_provider_profiles\loader_state.json
 ```
+
+The loader updates state before yielding each batch. A checkpoint saved
+immediately after receiving a batch resumes after that batch, not at the same
+origin again. If a batch completes a package group, `origin_cursor` may equal
+the number of selected origins in that group until the iterator is resumed; on
+resume the loader slices to empty, advances `package_position`, and continues
+without repeating samples.
+
+## Audit Loader Batches
+
+Run a focused audit of emitted loader batches against the SSD package files:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\audit_ticker_month_loader_batches.py
+```
+
+The audit checks:
+
+```text
+batch shape consistency
+duplicate sample identities
+origin identity and timestamp against origins parquet
+origin event_row_offset against events parquet
+raw_stream values against source event rows
+raw_stream ordinal continuity
+intraday labels against label parquet
+future_intraday_bars projection from labels
+deterministic first batch for same config/seed
+resume-from-state next batch against uninterrupted loading
+```
+
+Use small settings for a quick smoke audit:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\mlops\rolling_loader\audit_ticker_month_loader_batches.py `
+  --cache-id train_201902_201907_ticker_month `
+  --month 2019-02 `
+  --batch-size 1024 `
+  --batches 2 `
+  --samples-per-batch 4
+```
+
+By default the audit reads only event and label payloads. Add
+`--include-external-context` and context data groups when auditing package-level
+token/context files too.
 
 ## No-Lookahead Rules
 
