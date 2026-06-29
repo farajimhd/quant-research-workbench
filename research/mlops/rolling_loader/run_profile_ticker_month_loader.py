@@ -34,6 +34,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--data-groups", default="events,intraday_labels")
     parser.add_argument("--event-output-mode", choices=("none", "raw_flat", "raw_windows", "encoded_uint8"), default="raw_windows")
+    parser.add_argument("--event-columns", default="", help="Comma-separated event columns to emit. Empty means all cached numeric event columns after suppression.")
+    parser.add_argument(
+        "--suppress-event-columns",
+        default="ticker_id,ordinal,timestamp_us",
+        help="Comma-separated cached event columns to suppress from raw event outputs.",
+    )
     parser.add_argument("--events-per-window", type=int, default=128)
     parser.add_argument("--context-chunks", type=int, default=32)
     parser.add_argument("--context-stride-events", type=int, default=64)
@@ -61,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
         seed=int(args.seed),
         data_groups=tuple(item.strip() for item in str(args.data_groups).split(",") if item.strip()),
         event_output_mode=str(args.event_output_mode),
+        event_columns=tuple(item.strip() for item in str(args.event_columns).split(",") if item.strip()),
+        suppress_event_columns=tuple(item.strip() for item in str(args.suppress_event_columns).split(",") if item.strip()),
         events_per_window=max(1, int(args.events_per_window)),
         context_chunks=max(0, int(args.context_chunks)),
         context_stride_events=max(1, int(args.context_stride_events)),

@@ -368,6 +368,8 @@ loaded_parts_per_group
 read_workers
 materialize_workers
 max_batches
+event_columns
+suppress_event_columns
 ```
 
 ### Data Groups
@@ -428,6 +430,25 @@ none
 
 Use `encoded_uint8` only for older trainer paths that still consume the old
 market-encoder byte tensors.
+
+Raw event outputs are projected at loader time, not build time. The cache keeps
+the richer reusable event table, while each trainer can choose the columns it
+needs. By default the raw loader suppresses debug/identity fields that are
+already exposed separately:
+
+```text
+ticker_id
+ordinal
+timestamp_us
+```
+
+Use `event_columns` for an exact allow-list, or `suppress_event_columns` to
+remove a few cached columns from the default set. If `event_columns` is set, the
+allow-list is emitted exactly and the suppression list is ignored. For example:
+
+```powershell
+--event-columns event_type,price_primary_int,price_secondary_int,size_primary,size_secondary,exchange_primary,exchange_secondary,event_flags,conditions_packed,session_second
+```
 
 ### Coverage Compatibility
 

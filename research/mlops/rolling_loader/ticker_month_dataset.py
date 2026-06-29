@@ -28,6 +28,7 @@ DEFAULT_EVENT_OUTPUT_MODE = "raw_windows"
 SUPPORTED_EVENT_OUTPUT_MODES = {"none", "raw_flat", "raw_windows", "encoded_uint8"}
 DEFAULT_DATA_GROUPS = ("events", "intraday_labels")
 NUMERIC_EVENT_COLUMNS: tuple[str, ...] = tuple(column for column in (*EVENT_PAYLOAD_COLUMNS, *EVENT_TIME_FEATURE_COLUMNS) if column != "ticker")
+DEFAULT_SUPPRESSED_EVENT_COLUMNS = ("ticker_id", "ordinal", "timestamp_us")
 ENCODER_EVENT_DTYPE = np.dtype(
     [
         ("ordinal", "<u8"),
@@ -69,6 +70,8 @@ class TickerMonthLoaderConfig:
     shuffle_within_loaded_group: bool = True
     include_external_context: bool = False
     strict_audit: bool = True
+    event_columns: tuple[str, ...] = ()
+    suppress_event_columns: tuple[str, ...] = DEFAULT_SUPPRESSED_EVENT_COLUMNS
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,15 +295,17 @@ class TickerMonthBatchMaterializer:
         starts = self._window_starts(parts, refs)
         out: dict[str, np.ndarray] = {}
         offsets = np.arange(int(self.config.events_per_window), dtype=np.int64)
-        for column in NUMERIC_EVENT_COLUMNS:
-            if not _all_parts_have_event_column(parts, column):
-                continue
+        grouped_rows = _rows_by_part(refs)
+        gather_indices = {
+            part_index: starts[rows, :, None] + offsets[None, None, :]
+            for part_index, rows in grouped_rows.items()
+        }
+        for column in _validated_event_columns_for_output(parts, self.config):
             dtype = _event_column_dtype(parts, column)
             values = np.empty((len(refs), len(self.context_lags), int(self.config.events_per_window)), dtype=dtype)
-            for row, ref in enumerate(refs):
-                part = parts[int(ref.part_index)]
-                arr = part.event_array(column)
-                values[row] = arr[starts[row, :, None] + offsets[None, :]]
+            for part_index, rows in grouped_rows.items():
+                part = parts[int(part_index)]
+                values[rows] = part.event_array(column)[gather_indices[part_index]]
             out[column] = values
         return out
 
@@ -312,14 +317,17 @@ class TickerMonthBatchMaterializer:
         starts = _origin_event_offsets(parts, refs) - coverage + 1
         if np.any(starts < 0):
             raise RuntimeError("Raw flat event coverage is out of bounds; rebuild cache with larger lookback or reduce coverage.")
-        for column in NUMERIC_EVENT_COLUMNS:
-            if not _all_parts_have_event_column(parts, column):
-                continue
+        grouped_rows = _rows_by_part(refs)
+        gather_indices = {
+            part_index: starts[rows, None] + offsets[None, :]
+            for part_index, rows in grouped_rows.items()
+        }
+        for column in _validated_event_columns_for_output(parts, self.config):
             dtype = _event_column_dtype(parts, column)
             values = np.empty((len(refs), coverage), dtype=dtype)
-            for row, ref in enumerate(refs):
-                part = parts[int(ref.part_index)]
-                values[row] = part.event_array(column)[int(starts[row]) + offsets]
+            for part_index, rows in grouped_rows.items():
+                part = parts[int(part_index)]
+                values[rows] = part.event_array(column)[gather_indices[part_index]]
             out[column] = values
         return out, mask
 
@@ -361,13 +369,15 @@ class TickerMonthBatchMaterializer:
         starts = origins[:, None] - lag_array[None, :] - int(self.config.events_per_window) + 1
         if np.any(starts < 0):
             raise RuntimeError("Event window starts before loaded event rows; rebuild cache with larger lookback or reduce coverage.")
-        for row, ref in enumerate(refs):
-            part = parts[int(ref.part_index)]
+        grouped_rows = _rows_by_part(refs)
+        for part_index, rows in grouped_rows.items():
+            part = parts[int(part_index)]
             ordinals = part.event_array("ordinal").astype(np.int64, copy=False)
-            ends = starts[row] + int(self.config.events_per_window) - 1
+            part_starts = starts[rows]
+            ends = part_starts + int(self.config.events_per_window) - 1
             if np.any(ends >= ordinals.shape[0]):
                 raise RuntimeError("Event window exceeds loaded event rows.")
-            contiguous = (ordinals[ends] - ordinals[starts[row]]) == (int(self.config.events_per_window) - 1)
+            contiguous = (ordinals[ends] - ordinals[part_starts]) == (int(self.config.events_per_window) - 1)
             if not bool(contiguous.all()):
                 raise RuntimeError(f"Event window crosses an ordinal gap for {part.plan.month}:{part.plan.ticker}:part_{part.plan.part_id:05d}.")
         return starts
@@ -478,6 +488,8 @@ def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoade
         shuffle_within_loaded_group=bool(config.shuffle_within_loaded_group),
         include_external_context=bool(config.include_external_context),
         strict_audit=bool(config.strict_audit),
+        event_columns=tuple(str(column) for column in config.event_columns),
+        suppress_event_columns=tuple(str(column) for column in config.suppress_event_columns),
     )
 
 
@@ -572,21 +584,48 @@ def _identity_arrays(parts: Sequence[LoadedTickerMonthPart], refs: Sequence[Tick
     tickers = np.empty((len(refs),), dtype=object)
     ordinals = np.empty((len(refs),), dtype=np.int64)
     timestamps = np.empty((len(refs),), dtype=np.int64)
-    for row, ref in enumerate(refs):
-        part = parts[int(ref.part_index)]
-        origin = part.origins.row(int(ref.origin_row), named=True)
-        tickers[row] = str(origin["ticker"])
-        ordinals[row] = int(origin["origin_ordinal"])
-        timestamps[row] = int(origin["origin_timestamp_us"])
+    for part_index, rows in _rows_by_part(refs).items():
+        part = parts[int(part_index)]
+        origin_rows = _origin_rows_for_refs(refs, rows)
+        tickers[rows] = part.origins.get_column("ticker").to_numpy()[origin_rows]
+        ordinals[rows] = part.origins.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)[origin_rows]
+        timestamps[rows] = part.origins.get_column("origin_timestamp_us").to_numpy().astype(np.int64, copy=False)[origin_rows]
     return tickers, ordinals, timestamps
 
 
 def _origin_event_offsets(parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> np.ndarray:
     offsets = np.empty((len(refs),), dtype=np.int64)
-    for row, ref in enumerate(refs):
-        part = parts[int(ref.part_index)]
-        offsets[row] = int(part.origins.get_column("event_row_offset")[int(ref.origin_row)])
+    for part_index, rows in _rows_by_part(refs).items():
+        part = parts[int(part_index)]
+        origin_rows = _origin_rows_for_refs(refs, rows)
+        offsets[rows] = part.origins.get_column("event_row_offset").to_numpy().astype(np.int64, copy=False)[origin_rows]
     return offsets
+
+
+def _rows_by_part(refs: Sequence[TickerMonthSampleRef]) -> dict[int, np.ndarray]:
+    rows: dict[int, list[int]] = {}
+    for row, ref in enumerate(refs):
+        rows.setdefault(int(ref.part_index), []).append(int(row))
+    return {part_index: np.asarray(part_rows, dtype=np.int64) for part_index, part_rows in rows.items()}
+
+
+def _origin_rows_for_refs(refs: Sequence[TickerMonthSampleRef], rows: np.ndarray) -> np.ndarray:
+    return np.fromiter((int(refs[int(row)].origin_row) for row in rows), dtype=np.int64, count=int(rows.shape[0]))
+
+
+def _event_columns_for_output(config: TickerMonthLoaderConfig) -> tuple[str, ...]:
+    if config.event_columns:
+        return tuple(dict.fromkeys(str(column) for column in config.event_columns))
+    suppressed = {str(column) for column in config.suppress_event_columns}
+    return tuple(column for column in NUMERIC_EVENT_COLUMNS if column not in suppressed)
+
+
+def _validated_event_columns_for_output(parts: Sequence[LoadedTickerMonthPart], config: TickerMonthLoaderConfig) -> tuple[str, ...]:
+    columns = _event_columns_for_output(config)
+    missing = [column for column in columns if not _all_parts_have_event_column(parts, column)]
+    if missing and config.event_columns:
+        raise RuntimeError(f"Requested event columns are missing from one or more loaded parts: {', '.join(missing)}")
+    return tuple(column for column in columns if column not in missing)
 
 
 def _all_parts_have_event_column(parts: Sequence[LoadedTickerMonthPart], column: str) -> bool:
