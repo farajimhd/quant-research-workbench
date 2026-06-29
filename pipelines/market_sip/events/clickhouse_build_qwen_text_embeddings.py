@@ -13,6 +13,8 @@ from pipelines.market_sip.events.clickhouse_build_text_tokens import main as _te
 
 def main() -> int:
     args = sys.argv[1:]
+    if "--embedding-input-source" not in args:
+        sys.argv.extend(["--embedding-input-source", "token_tables"])
     if not any(arg in {"--build-embeddings", "--no-build-embeddings", "--profile-embeddings-only", "--summary-only"} for arg in args):
         sys.argv.append("--build-embeddings")
     return _text_token_main()

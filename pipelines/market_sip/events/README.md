@@ -181,10 +181,11 @@ with status code `130` and writes an interrupted row to the JSONL report.
 
 `clickhouse_build_text_tokens.py` pre-tokenizes news and SEC filing text for
 training. `clickhouse_build_qwen_text_embeddings.py` is the embedding-first alias
-for the same pipeline: it defaults to `--build-embeddings` and writes reusable
-float32 Qwen embeddings once per stored text chunk. This avoids repeatedly
-tokenizing or running the LLM for the same Benzinga article or SEC filing
-document while materializing rolling batches.
+for the same pipeline: it defaults to `--build-embeddings` and
+`--embedding-input-source token_tables`, so it reads existing token rows and
+writes reusable float32 Qwen embeddings once per stored text chunk. This avoids
+rewriting token tables or repeatedly tokenizing the same Benzinga article or SEC
+filing document while materializing rolling batches.
 
 The builder creates two separate tables:
 
@@ -247,8 +248,9 @@ Run on the workstation:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py --start-date 2019-01-01 --end-date 2026-12-31
 ```
 
-Run the token and embedding build together. The Qwen launcher enables
-`--build-embeddings` by default:
+Build embeddings from existing token tables. The Qwen launcher enables
+`--build-embeddings` and `--embedding-input-source token_tables` by default, so
+it writes only the embedding tables unless you override the input source:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_qwen_text_embeddings.py `
@@ -270,6 +272,16 @@ The profile writes `insert_batch` JSONL rows with `embedding_seconds`,
 `embedding_sequences_per_second`, and `embedding_tokens_per_second`. Saved
 embeddings are always float32; `--embedding-torch-dtype` only controls the model
 inference dtype used during extraction.
+
+Only rebuild tokens and embeddings together when token rows are missing or need
+to be regenerated with a different tokenizer/chunking policy:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_qwen_text_embeddings.py `
+  --start-date 2019-01-01 `
+  --end-date 2026-12-31 `
+  --embedding-input-source source_text
+```
 
 If the workstation environment does not already have HuggingFace installed:
 

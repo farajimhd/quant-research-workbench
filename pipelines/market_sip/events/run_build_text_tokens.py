@@ -23,6 +23,7 @@ DEFAULTS = {
     "end_date": "2026-12-31",
     "sources": "news,sec",
     "tokenizer_model": "Qwen/Qwen3-0.6B",
+    "embedding_input_source": "source_text",
     "embedding_model": "Qwen/Qwen3-0.6B",
     "news_max_tokens": 1024,
     "news_max_chunks": 2,
@@ -53,6 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sources", default=DEFAULTS["sources"])
     parser.add_argument("--tokenizer-model", default=DEFAULTS["tokenizer_model"])
     parser.add_argument("--build-embeddings", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--embedding-input-source", choices=("source_text", "token_tables"), default=DEFAULTS["embedding_input_source"])
     parser.add_argument("--embedding-model", default=DEFAULTS["embedding_model"])
     parser.add_argument("--embedding-device", default="auto")
     parser.add_argument("--embedding-torch-dtype", default="float32")
@@ -125,6 +127,8 @@ def main() -> int:
         args.tokenizer_model,
         "--embedding-model",
         args.embedding_model,
+        "--embedding-input-source",
+        args.embedding_input_source,
         "--embedding-device",
         args.embedding_device,
         "--embedding-torch-dtype",
