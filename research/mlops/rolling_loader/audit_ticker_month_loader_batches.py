@@ -17,8 +17,23 @@ if __package__ in {None, ""}:
             sys.path.insert(0, str(parent))
             break
 
+from research.mlops.clickhouse import default_clickhouse_password, default_clickhouse_url, default_clickhouse_user, discover_clickhouse_env_files
+from research.mlops.data.config import RollingMarketDataConfig
+from research.mlops.env import load_env_files
+from research.mlops.rolling_loader.run_build_ticker_month_cache import (
+    DEFAULTS as BUILDER_DEFAULTS,
+    OriginOrdinalPart,
+    _query_category_references,
+    _query_daily_bars,
+    _query_events_part,
+    _query_intraday_forward_labels,
+    _query_market_news,
+    _query_sec_tokens,
+    _query_ticker_news,
+    _query_xbrl,
+)
 from research.mlops.rolling_loader.run_profile_ticker_month_loader import DEFAULT_PROFILE_CONFIG, DEFAULT_PROFILE_REPORT_PATH
-from research.mlops.rolling_loader.ticker_month_cache import DEFAULT_TICKER_MONTH_CACHE_ROOT, jsonable, write_json_atomic
+from research.mlops.rolling_loader.ticker_month_cache import DEFAULT_TICKER_MONTH_CACHE_ROOT, jsonable, month_window, write_json_atomic
 from research.mlops.rolling_loader.ticker_month_dataset import (
     AsyncTickerMonthBatchLoader,
     BAR_CONTEXT_GROUPS,
@@ -70,7 +85,24 @@ class LoaderBatchAuditConfig:
     seed: int = 17
     check_determinism: bool = True
     check_resume: bool = True
+    source_clickhouse_audit: bool = True
+    source_clickhouse_samples_per_batch: int = 10
+    clickhouse_url: str = ""
+    clickhouse_user: str = ""
+    clickhouse_password: str = ""
+    clickhouse_query_retries: int = 2
+    clickhouse_query_retry_backoff_seconds: float = 2.0
     report_path: Path = DEFAULT_AUDIT_REPORT_PATH
+
+
+@dataclass(slots=True)
+class SourceClickHouseAuditContext:
+    args: argparse.Namespace
+    client_opts: dict[str, str]
+    config: RollingMarketDataConfig
+    month_min_ordinals: dict[tuple[str, str], int]
+    context_cache: dict[tuple[str, str, str], Any] = field(default_factory=dict)
+    category_cache: dict[str, Any] = field(default_factory=dict)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -116,6 +148,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sample-hash-buckets", default=DEFAULT_PROFILE_CONFIG["sample_hash_buckets"])
     parser.add_argument("--max-origins-per-epoch", type=int, default=DEFAULT_PROFILE_CONFIG["max_origins_per_epoch"])
     parser.add_argument("--samples-per-batch", type=int, default=4)
+    parser.add_argument("--source-clickhouse-samples-per-batch", type=int, default=10)
+    parser.add_argument("--skip-source-clickhouse-audit", action="store_true")
+    parser.add_argument("--clickhouse-url", default="")
+    parser.add_argument("--user", default="")
+    parser.add_argument("--password", default="")
+    parser.add_argument("--clickhouse-query-retries", type=int, default=int(BUILDER_DEFAULTS["clickhouse_query_retries"]))
+    parser.add_argument("--clickhouse-query-retry-backoff-seconds", type=float, default=float(BUILDER_DEFAULTS["clickhouse_query_retry_backoff_seconds"]))
     parser.add_argument("--include-external-context", action="store_true")
     parser.add_argument("--no-strict-audit", action="store_true")
     parser.add_argument("--no-check-determinism", action="store_true")
@@ -134,6 +173,13 @@ def main(argv: list[str] | None = None) -> int:
             seed=int(args.seed),
             check_determinism=not bool(args.no_check_determinism),
             check_resume=not bool(args.no_check_resume),
+            source_clickhouse_audit=not bool(args.skip_source_clickhouse_audit),
+            source_clickhouse_samples_per_batch=max(0, int(args.source_clickhouse_samples_per_batch)),
+            clickhouse_url=str(args.clickhouse_url or ""),
+            clickhouse_user=str(args.user or ""),
+            clickhouse_password=str(args.password or ""),
+            clickhouse_query_retries=max(0, int(args.clickhouse_query_retries)),
+            clickhouse_query_retry_backoff_seconds=max(0.0, float(args.clickhouse_query_retry_backoff_seconds)),
             report_path=Path(args.report_path),
         )
     )
@@ -146,6 +192,7 @@ def run_audit(config: LoaderBatchAuditConfig) -> LoaderBatchAuditResult:
     issues: list[AuditIssue] = []
     loader = AsyncTickerMonthBatchLoader(config.loader_config)
     part_map = {_part_key(plan): plan for plan in loader.index.parts}
+    source_context = _source_clickhouse_context(config, loader.index.root_manifest, tuple(loader.index.parts)) if config.source_clickhouse_audit and int(config.source_clickhouse_samples_per_batch) > 0 else None
     part_cache: dict[str, LoadedTickerMonthPart] = {}
     context_groups = tuple(group for group in config.loader_config.data_groups if group in TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).union({"xbrl"}))
     reader_groups = ("events", "intraday_labels", *context_groups)
@@ -162,6 +209,10 @@ def run_audit(config: LoaderBatchAuditConfig) -> LoaderBatchAuditResult:
         "bar_rows_checked": 0,
         "context_parts_checked": 0,
         "duplicate_identities": 0,
+        "source_clickhouse_samples_checked": 0,
+        "source_clickhouse_event_rows_checked": 0,
+        "source_clickhouse_label_rows_checked": 0,
+        "source_clickhouse_context_rows_checked": 0,
     }
     first_batch: TickerMonthTrainingBatch | None = None
     second_batch: TickerMonthTrainingBatch | None = None
@@ -191,6 +242,19 @@ def run_audit(config: LoaderBatchAuditConfig) -> LoaderBatchAuditResult:
                 issues=issues,
                 totals=totals,
             )
+        if source_context is not None:
+            source_rows = _sample_batch_rows(batch.sample_count, int(config.source_clickhouse_samples_per_batch), rng)
+            for row in source_rows:
+                _audit_batch_row_against_clickhouse(
+                    batch,
+                    int(row),
+                    batch_index=batch_index,
+                    part_map=part_map,
+                    source_context=source_context,
+                    loader_config=config.loader_config,
+                    issues=issues,
+                    totals=totals,
+                )
     state_after_first = None
     if config.check_determinism:
         _check_deterministic_first_batch(config.loader_config, first_batch, issues)
@@ -261,6 +325,251 @@ def _loader_config_from_args(args: argparse.Namespace) -> TickerMonthLoaderConfi
         sample_hash_buckets=tuple(int(item.strip()) for item in str(args.sample_hash_buckets).split(",") if item.strip()),
         max_origins_per_epoch=max(0, int(args.max_origins_per_epoch)),
     )
+
+
+def _source_clickhouse_context(
+    audit_config: LoaderBatchAuditConfig,
+    root_manifest: Mapping[str, Any],
+    parts: Sequence[TickerMonthPartPlan],
+) -> SourceClickHouseAuditContext:
+    load_env_files(discover_clickhouse_env_files(), verbose=False)
+    source = dict(root_manifest.get("source") or {})
+    manifest_args = dict(root_manifest.get("args") or {})
+    manifest_config = dict(root_manifest.get("config") or {})
+    query_args = argparse.Namespace(
+        database=str(source.get("database") or BUILDER_DEFAULTS["database"]),
+        events_table=str(source.get("events_table") or BUILDER_DEFAULTS["events_table"]),
+        macro_bars_table=str(source.get("macro_bars_table") or BUILDER_DEFAULTS["macro_bars_table"]),
+        sec_context_database=str(source.get("sec_context_database") or BUILDER_DEFAULTS["sec_context_database"]),
+        news_token_table=str(source.get("news_token_table") or BUILDER_DEFAULTS["news_token_table"]),
+        sec_filing_text_token_table=str(source.get("sec_filing_text_token_table") or BUILDER_DEFAULTS["sec_filing_text_token_table"]),
+        sec_xbrl_context_table=str(source.get("sec_xbrl_context_table") or BUILDER_DEFAULTS["sec_xbrl_context_table"]),
+        category_reference_table=str(source.get("category_reference_table") or BUILDER_DEFAULTS["category_reference_table"]),
+        skip_token_contexts=False,
+        skip_xbrl=False,
+        intraday_label_horizons=_manifest_horizon_string(manifest_args, manifest_config),
+        sample_stride_events=max(1, int(manifest_args.get("sample_stride_events") or manifest_config.get("sample_stride_events") or 1)),
+    )
+    market_config = RollingMarketDataConfig(
+        database=query_args.database,
+        sec_context_database=query_args.sec_context_database,
+        events_table=query_args.events_table,
+        macro_bars_table=query_args.macro_bars_table,
+        news_token_table=query_args.news_token_table,
+        sec_filing_text_token_table=query_args.sec_filing_text_token_table,
+        sec_xbrl_context_table=query_args.sec_xbrl_context_table,
+        category_reference_table=query_args.category_reference_table,
+        max_threads=max(1, int(manifest_args.get("max_threads") or BUILDER_DEFAULTS["max_threads"])),
+        max_memory_usage=str(manifest_args.get("max_memory_usage") or BUILDER_DEFAULTS["max_memory_usage"]),
+        macro_lookback_days=max(0, int(manifest_args.get("macro_lookback_days") or BUILDER_DEFAULTS["macro_lookback_days"])),
+        label_lookahead_days=max(0, int(manifest_args.get("label_lookahead_days") or BUILDER_DEFAULTS["label_lookahead_days"])),
+        news_lookback_days=max(0, int(manifest_args.get("news_lookback_days") or BUILDER_DEFAULTS["news_lookback_days"])),
+        sec_lookback_days=max(0, int(manifest_args.get("sec_lookback_days") or BUILDER_DEFAULTS["sec_lookback_days"])),
+        xbrl_lookback_days=max(0, int(manifest_args.get("xbrl_lookback_days") or BUILDER_DEFAULTS["xbrl_lookback_days"])),
+    )
+    month_min_ordinals: dict[tuple[str, str], int] = {}
+    for plan in parts:
+        key = (str(plan.month), str(plan.ticker).upper())
+        current = month_min_ordinals.get(key)
+        value = int(plan.origin_ordinal_start)
+        if current is None or value < current:
+            month_min_ordinals[key] = value
+    client_opts = {
+        "clickhouse_url": str(audit_config.clickhouse_url or default_clickhouse_url()),
+        "user": str(audit_config.clickhouse_user or default_clickhouse_user()),
+        "password": str(audit_config.clickhouse_password or default_clickhouse_password()),
+        "query_retries": str(max(0, int(audit_config.clickhouse_query_retries))),
+        "query_retry_backoff_seconds": str(max(0.0, float(audit_config.clickhouse_query_retry_backoff_seconds))),
+    }
+    return SourceClickHouseAuditContext(
+        args=query_args,
+        client_opts=client_opts,
+        config=market_config,
+        month_min_ordinals=month_min_ordinals,
+    )
+
+
+def _manifest_horizon_string(manifest_args: Mapping[str, Any], manifest_config: Mapping[str, Any]) -> str:
+    value = manifest_args.get("intraday_label_horizons")
+    if isinstance(value, str) and value.strip():
+        return value
+    names = manifest_config.get("intraday_label_horizons")
+    if isinstance(names, str):
+        return names
+    if isinstance(names, Sequence):
+        return ",".join(str(item) for item in names if str(item).strip())
+    return str(BUILDER_DEFAULTS["intraday_label_horizons"])
+
+
+def _audit_batch_row_against_clickhouse(
+    batch: TickerMonthTrainingBatch,
+    row: int,
+    *,
+    batch_index: int,
+    part_map: Mapping[str, TickerMonthPartPlan],
+    source_context: SourceClickHouseAuditContext,
+    loader_config: TickerMonthLoaderConfig,
+    issues: list[AuditIssue],
+    totals: dict[str, int],
+) -> None:
+    part_key = str(batch.source_part_key[row])
+    plan = part_map.get(part_key)
+    if plan is None:
+        issues.append(AuditIssue("error", "source_unknown_part", "Cannot source-audit a batch row with an unknown source_part_key.", {"batch": batch_index, "row": row, "source_part_key": part_key}))
+        return
+    ticker = str(batch.ticker[row]).upper()
+    origin_ordinal = int(batch.origin_ordinal[row])
+    origin_timestamp_us = int(batch.origin_timestamp_us[row])
+    if ticker != str(plan.ticker).upper():
+        issues.append(AuditIssue("error", "source_ticker_part_mismatch", "Batch ticker does not match source part ticker before ClickHouse audit.", {"batch": batch_index, "row": row, "ticker": ticker, "part_ticker": str(plan.ticker).upper(), "source_part_key": part_key}))
+        return
+    window = month_window(str(plan.month))
+    source_events = _source_events_for_sample(batch, row, source_context, window, ticker, origin_ordinal)
+    source_part = LoadedTickerMonthPart(plan=plan, events=source_events, context={})
+    _check_clickhouse_origin_and_events(batch, row, source_part, origin_ordinal, origin_timestamp_us, issues, totals, batch_index=batch_index, part_key=part_key)
+    if batch.intraday_labels:
+        source_labels = _source_labels_for_sample(source_context, window, plan, ticker, origin_ordinal)
+        source_part.labels = source_labels
+        _check_intraday_labels(batch, row, source_part, origin_ordinal, issues, totals, batch_index=batch_index, part_key=f"{part_key}|clickhouse")
+        totals["source_clickhouse_label_rows_checked"] += 1
+    if batch.text_inputs or batch.xbrl_inputs or batch.bar_inputs:
+        source_part.context = _source_context_frames_for_sample(batch, source_context, window, plan, ticker)
+        before = int(totals.get("text_rows_checked", 0)) + int(totals.get("xbrl_rows_checked", 0)) + int(totals.get("bar_rows_checked", 0))
+        if batch.text_inputs:
+            _check_text_inputs(batch, row, source_part, origin_timestamp_us, issues, totals, batch_index=batch_index, part_key=f"{part_key}|clickhouse")
+        if batch.xbrl_inputs:
+            _check_xbrl_inputs(batch, row, source_part, origin_timestamp_us, issues, totals, batch_index=batch_index, part_key=f"{part_key}|clickhouse")
+        if batch.bar_inputs:
+            _check_bar_inputs(batch, row, source_part, origin_timestamp_us, loader_config, issues, totals, batch_index=batch_index, part_key=f"{part_key}|clickhouse")
+        after = int(totals.get("text_rows_checked", 0)) + int(totals.get("xbrl_rows_checked", 0)) + int(totals.get("bar_rows_checked", 0))
+        totals["source_clickhouse_context_rows_checked"] += max(0, after - before)
+    totals["source_clickhouse_samples_checked"] += 1
+
+
+def _source_events_for_sample(
+    batch: TickerMonthTrainingBatch,
+    row: int,
+    source_context: SourceClickHouseAuditContext,
+    window: Any,
+    ticker: str,
+    origin_ordinal: int,
+) -> Any:
+    length = int(batch.raw_event_stream.shape[1]) if batch.raw_event_stream.size else 1
+    part = OriginOrdinalPart(
+        part_id=0,
+        origin_ordinal_start=int(origin_ordinal),
+        origin_ordinal_end=int(origin_ordinal),
+        fetch_ordinal_start=int(origin_ordinal) - max(0, length - 1),
+        fetch_ordinal_end=int(origin_ordinal),
+    )
+    return _query_events_part(source_context.args, source_context.client_opts, source_context.config, window, ticker, part)
+
+
+def _source_labels_for_sample(
+    source_context: SourceClickHouseAuditContext,
+    window: Any,
+    plan: TickerMonthPartPlan,
+    ticker: str,
+    origin_ordinal: int,
+) -> Any:
+    part = OriginOrdinalPart(
+        part_id=int(plan.part_id),
+        origin_ordinal_start=int(origin_ordinal),
+        origin_ordinal_end=int(origin_ordinal),
+        fetch_ordinal_start=int(origin_ordinal),
+        fetch_ordinal_end=int(origin_ordinal),
+    )
+    month_min_ordinal = int(source_context.month_min_ordinals.get((str(plan.month), str(ticker).upper()), int(origin_ordinal)))
+    return _query_intraday_forward_labels(source_context.args, source_context.client_opts, source_context.config, window, ticker, part, month_min_ordinal)
+
+
+def _source_context_frames_for_sample(
+    batch: TickerMonthTrainingBatch,
+    source_context: SourceClickHouseAuditContext,
+    window: Any,
+    plan: TickerMonthPartPlan,
+    ticker: str,
+) -> dict[str, Any]:
+    month = str(plan.month)
+    frames: dict[str, Any] = {}
+    for group, text_key in TEXT_INPUT_GROUP_TO_KEY.items():
+        if text_key in batch.text_inputs:
+            frames[group] = _cached_source_context(source_context, month, ticker, group, window)
+    if batch.xbrl_inputs:
+        frames["xbrl"] = _cached_source_context(source_context, month, ticker, "xbrl", window)
+        if month not in source_context.category_cache:
+            source_context.category_cache[month] = _query_category_references(source_context.args, source_context.client_opts, source_context.config)
+        frames["category_references"] = source_context.category_cache[month]
+    if "ticker_daily_bars" in batch.bar_inputs:
+        frames["daily_bars"] = _cached_source_context(source_context, month, ticker, "daily_bars", window)
+    if "global_daily_bars" in batch.bar_inputs:
+        frames["global_daily_bars"] = _cached_source_context(source_context, month, "__GLOBAL__", "global_daily_bars", window)
+    return frames
+
+
+def _cached_source_context(source_context: SourceClickHouseAuditContext, month: str, ticker: str, group: str, window: Any) -> Any:
+    cache_ticker = "__MARKET__" if group == "market_news_tokens" else str(ticker).upper()
+    key = (str(month), cache_ticker, str(group))
+    if key in source_context.context_cache:
+        return source_context.context_cache[key]
+    if group == "ticker_news_tokens":
+        frame = _query_ticker_news(source_context.args, source_context.client_opts, source_context.config, window, ticker)
+    elif group == "market_news_tokens":
+        frame = _query_market_news(source_context.args, source_context.client_opts, source_context.config, window)
+    elif group == "sec_filing_tokens":
+        frame = _query_sec_tokens(source_context.args, source_context.client_opts, source_context.config, window, ticker)
+    elif group == "xbrl":
+        frame = _query_xbrl(source_context.args, source_context.client_opts, source_context.config, window, ticker)
+    elif group == "daily_bars":
+        frame = _query_daily_bars(source_context.args, source_context.client_opts, source_context.config, window, symbols=(ticker,))
+    elif group == "global_daily_bars":
+        frame = _query_daily_bars(source_context.args, source_context.client_opts, source_context.config, window, symbols=tuple(source_context.config.global_symbols))
+    else:
+        raise ValueError(f"Unsupported source context group: {group}")
+    source_context.context_cache[key] = frame
+    return frame
+
+
+def _check_clickhouse_origin_and_events(
+    batch: TickerMonthTrainingBatch,
+    row: int,
+    source_part: LoadedTickerMonthPart,
+    origin_ordinal: int,
+    origin_timestamp_us: int,
+    issues: list[AuditIssue],
+    totals: dict[str, int],
+    *,
+    batch_index: int,
+    part_key: str,
+) -> None:
+    if source_part.events is None or int(source_part.events.height) <= 0:
+        issues.append(AuditIssue("error", "source_event_missing", "ClickHouse returned no source event rows for the sampled origin.", {"batch": batch_index, "row": row, "source_part_key": part_key, "origin_ordinal": int(origin_ordinal)}))
+        return
+    source_ordinals = source_part.events.get_column("ordinal").to_numpy().astype(np.int64, copy=False)
+    if int(source_ordinals[-1]) != int(origin_ordinal):
+        issues.append(AuditIssue("error", "source_origin_ordinal_mismatch", "Last ClickHouse event row is not the sampled origin.", {"batch": batch_index, "row": row, "source_part_key": part_key, "last_source_ordinal": int(source_ordinals[-1]), "origin_ordinal": int(origin_ordinal)}))
+        return
+    source_ts = int(source_part.events.get_column("timestamp_us").to_numpy().astype(np.int64, copy=False)[-1])
+    if source_ts != int(origin_timestamp_us):
+        issues.append(AuditIssue("error", "source_origin_timestamp_mismatch", "ClickHouse origin timestamp does not match batch identity.", {"batch": batch_index, "row": row, "source_part_key": part_key, "source_ts": source_ts, "origin_ts": int(origin_timestamp_us)}))
+    if batch.raw_event_stream.size:
+        expected_length = int(batch.raw_event_stream.shape[1])
+        if int(source_ordinals.shape[0]) != expected_length:
+            issues.append(AuditIssue("error", "source_event_count_mismatch", "ClickHouse event range does not contain the expected stream length.", {"batch": batch_index, "row": row, "source_part_key": part_key, "expected": expected_length, "actual": int(source_ordinals.shape[0])}))
+            return
+        expected_start = int(origin_ordinal) - expected_length + 1
+        if int(source_ordinals[0]) != expected_start:
+            issues.append(AuditIssue("error", "source_event_start_mismatch", "ClickHouse event stream starts at the wrong ordinal.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual_start": int(source_ordinals[0]), "expected_start": expected_start}))
+        if expected_length > 1 and not bool(np.all(np.diff(source_ordinals) == 1)):
+            issues.append(AuditIssue("error", "source_event_ordinal_gap", "ClickHouse source stream has a gap; the event window is not contiguous.", {"batch": batch_index, "row": row, "source_part_key": part_key, "origin_ordinal": int(origin_ordinal)}))
+        columns = tuple(batch.raw_event_stream_feature_names)
+        expected = source_part.events.select(list(columns)).to_numpy().astype(np.float32, copy=False)
+        actual = batch.raw_event_stream[row]
+        if actual.shape != expected.shape or not bool(np.allclose(actual, expected, rtol=0.0, atol=0.0, equal_nan=True)):
+            issues.append(AuditIssue("error", "source_event_value_mismatch", "Batch raw_event_stream does not match ClickHouse source rows.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual_shape": list(actual.shape), "expected_shape": list(expected.shape)}))
+        totals["source_clickhouse_event_rows_checked"] += expected_length
+    else:
+        totals["source_clickhouse_event_rows_checked"] += 1
 
 
 def _check_batch_shapes(batch: TickerMonthTrainingBatch, issues: list[AuditIssue], *, batch_index: int) -> None:
