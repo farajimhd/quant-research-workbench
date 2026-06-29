@@ -37,6 +37,15 @@ TEXT_INPUT_GROUP_TO_KEY = {
     "market_news_tokens": "market_news",
     "sec_filing_tokens": "sec_filings",
 }
+LABEL_VALUE_DTYPES: dict[str, np.dtype] = {
+    "price_primary_int": np.dtype(np.int32),
+    "price_secondary_int": np.dtype(np.int32),
+    "size_primary_sum": np.dtype(np.float32),
+    "size_secondary_sum": np.dtype(np.float32),
+    "event_count": np.dtype(np.uint64),
+    "last_event_timestamp_us": np.dtype(np.int64),
+    "available": np.dtype(np.bool_),
+}
 NUMERIC_EVENT_COLUMNS: tuple[str, ...] = tuple(column for column in (*EVENT_PAYLOAD_COLUMNS, *EVENT_TIME_FEATURE_COLUMNS) if column != "ticker")
 DEFAULT_SUPPRESSED_EVENT_COLUMNS = ("ticker_id", "ordinal", "timestamp_us")
 LOADER_STATE_VERSION = 1
@@ -182,6 +191,16 @@ class TextContextIndex:
     @property
     def item_count(self) -> int:
         return int(self.timestamps_us.shape[0])
+
+
+@dataclass(slots=True)
+class LabelContextIndex:
+    ordinals: np.ndarray
+    values: dict[str, np.ndarray]
+
+    @property
+    def row_count(self) -> int:
+        return int(self.ordinals.shape[0])
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,6 +411,8 @@ class TickerMonthBatchMaterializer:
         self._text_index_cache: dict[tuple[int, str, int, int], TextContextIndex] = {}
         self._global_text_index_cache: dict[tuple[int, str, int, int], TextContextIndex] = {}
         self._text_index_lock = threading.Lock()
+        self._label_index_cache: dict[tuple[int, int], LabelContextIndex] = {}
+        self._label_index_lock = threading.Lock()
         self.coverage_events = max(self.context_lags, default=0) + int(self.config.events_per_window)
         if self.config.event_output_mode == "raw_stream":
             self.coverage_events = int(self.config.event_stream_length)
@@ -412,6 +433,8 @@ class TickerMonthBatchMaterializer:
     def clear_text_context_cache(self) -> None:
         with self._text_index_lock:
             self._text_index_cache.clear()
+        with self._label_index_lock:
+            self._label_index_cache.clear()
 
     def materialize(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> TickerMonthTrainingBatch:
         start = time.perf_counter()
@@ -444,7 +467,8 @@ class TickerMonthBatchMaterializer:
             headers, encoded_events = self._materialize_encoded(parts, refs)
         profile["event_seconds"] = time.perf_counter() - event_start
         label_start = time.perf_counter()
-        labels, future_bars, future_mask, horizons = self._materialize_intraday_labels(parts, refs)
+        labels, future_bars, future_mask, horizons, label_profile = self._materialize_intraday_labels(parts, refs)
+        profile.update(label_profile)
         profile["label_seconds"] = time.perf_counter() - label_start
         availability = {
             "event_context_available": np.ones((len(refs),), dtype=np.bool_) if output_mode != "none" else np.zeros((len(refs),), dtype=np.bool_),
@@ -711,22 +735,19 @@ class TickerMonthBatchMaterializer:
 
     def _materialize_intraday_labels(
         self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]
-    ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, tuple[str, ...]]:
+    ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, tuple[str, ...], dict[str, float | int]]:
         if "intraday_labels" not in self.config.data_groups and "labels" not in self.config.data_groups:
-            return {}, np.zeros((len(refs), 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32), np.zeros((len(refs), 0), dtype=np.bool_), ()
+            return {}, np.zeros((len(refs), 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32), np.zeros((len(refs), 0), dtype=np.bool_), (), {}
         horizons = _cached_horizons(parts)
         horizon_count = len(horizons)
-        labels_out = {
-            "price_primary_int": np.zeros((len(refs), horizon_count), dtype=np.int32),
-            "price_secondary_int": np.zeros((len(refs), horizon_count), dtype=np.int32),
-            "size_primary_sum": np.zeros((len(refs), horizon_count), dtype=np.float32),
-            "size_secondary_sum": np.zeros((len(refs), horizon_count), dtype=np.float32),
-            "event_count": np.zeros((len(refs), horizon_count), dtype=np.uint64),
-            "last_event_timestamp_us": np.zeros((len(refs), horizon_count), dtype=np.int64),
-            "available": np.zeros((len(refs), horizon_count), dtype=np.bool_),
-        }
+        labels_out = {key: np.zeros((len(refs), horizon_count), dtype=dtype) for key, dtype in LABEL_VALUE_DTYPES.items()}
         bars = np.zeros((len(refs), horizon_count, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32)
         mask = np.zeros((len(refs), horizon_count), dtype=np.bool_)
+        profile: dict[str, float | int] = {
+            "label_index_seconds": 0.0,
+            "label_lookup_seconds": 0.0,
+            "label_gather_seconds": 0.0,
+        }
         for part_index, rows in _rows_by_part(refs).items():
             part = parts[int(part_index)]
             if part.labels is None or part.labels.height == 0:
@@ -739,13 +760,17 @@ class TickerMonthBatchMaterializer:
             origin_rows = _origin_rows_for_refs(refs, rows)
             origins = part.origin_array("origin_ordinal").astype(np.int64, copy=False)[origin_rows]
             if _labels_are_pivoted(part.labels):
-                label_ordinals = part.label_array("origin_ordinal").astype(np.int64, copy=False)
-                label_indices = np.searchsorted(label_ordinals, origins, side="left")
-                in_bounds = label_indices < label_ordinals.shape[0]
+                index_start = time.perf_counter()
+                label_index = self._label_context_index(part.labels, horizon_count)
+                profile["label_index_seconds"] = float(profile["label_index_seconds"]) + (time.perf_counter() - index_start)
+                lookup_start = time.perf_counter()
+                label_indices = np.searchsorted(label_index.ordinals, origins, side="left")
+                in_bounds = label_indices < label_index.ordinals.shape[0]
                 found = np.zeros((origins.shape[0],), dtype=np.bool_)
                 if np.any(in_bounds):
                     valid_positions = np.flatnonzero(in_bounds)
-                    found[valid_positions] = label_ordinals[label_indices[valid_positions]] == origins[valid_positions]
+                    found[valid_positions] = label_index.ordinals[label_indices[valid_positions]] == origins[valid_positions]
+                profile["label_lookup_seconds"] = float(profile["label_lookup_seconds"]) + (time.perf_counter() - lookup_start)
                 if self.config.strict_audit and not bool(found.all()):
                     missing_pos = int(np.flatnonzero(~found)[0])
                     raise RuntimeError(f"Missing intraday labels for {part.plan.month}:{part.plan.ticker}|{int(origins[missing_pos])}.")
@@ -753,8 +778,10 @@ class TickerMonthBatchMaterializer:
                     continue
                 output_rows = rows[found]
                 source_indices = label_indices[found]
+                gather_start = time.perf_counter()
                 for key, out in labels_out.items():
-                    out[output_rows] = _gather_pivoted_label_column(part.label_array(key), source_indices, horizon_count, out.dtype)
+                    out[output_rows] = label_index.values[key][source_indices]
+                profile["label_gather_seconds"] = float(profile["label_gather_seconds"]) + (time.perf_counter() - gather_start)
                 continue
             for output_row, origin in zip(rows, origins):
                 label_values = _label_values_for_origin(part.labels, int(origin), horizon_count)
@@ -772,7 +799,17 @@ class TickerMonthBatchMaterializer:
         bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("high")] = labels_out["price_primary_int"].astype(np.float32, copy=False)
         bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("low")] = labels_out["price_secondary_int"].astype(np.float32, copy=False)
         bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("volume")] = labels_out["size_primary_sum"].astype(np.float32, copy=False)
-        return labels_out, bars, mask, horizons
+        return labels_out, bars, mask, horizons, profile
+
+    def _label_context_index(self, labels: Any, horizon_count: int) -> LabelContextIndex:
+        key = (id(labels), int(horizon_count))
+        with self._label_index_lock:
+            cached = self._label_index_cache.get(key)
+            if cached is not None:
+                return cached
+            index = _prepare_label_context_index(labels, int(horizon_count))
+            self._label_index_cache[key] = index
+            return index
 
 
 class AsyncTickerMonthBatchLoader:
@@ -1744,6 +1781,67 @@ def _labels_are_pivoted(labels: Any) -> bool:
         return False
     dtype_text = str(labels.schema.get("horizon_us", "")).lower()
     return "list" in dtype_text or "array" in dtype_text
+
+
+def _prepare_label_context_index(labels: Any, expected: int) -> LabelContextIndex:
+    expected = max(0, int(expected))
+    if labels is None or int(getattr(labels, "height", 0) or 0) <= 0:
+        return _empty_label_context_index(expected)
+    ordinals = labels.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)
+    rows = np.arange(int(ordinals.shape[0]), dtype=np.int64)
+    values: dict[str, np.ndarray] = {}
+    for key, dtype in LABEL_VALUE_DTYPES.items():
+        if key in labels.columns and _labels_are_pivoted(labels):
+            values[key] = _label_column_matrix(labels, key, expected, dtype)
+        else:
+            values[key] = np.zeros((int(ordinals.shape[0]), expected), dtype=dtype)
+    if ordinals.shape[0] > 1 and not bool(np.all(ordinals[1:] >= ordinals[:-1])):
+        order = np.argsort(ordinals, kind="stable")
+        ordinals = ordinals[order]
+        values = {key: value[order] for key, value in values.items()}
+    return LabelContextIndex(ordinals=ordinals, values=values)
+
+
+def _label_column_matrix(labels: Any, key: str, expected: int, dtype: np.dtype) -> np.ndarray:
+    expected = max(0, int(expected))
+    row_count = int(getattr(labels, "height", 0) or 0)
+    out = np.zeros((row_count, expected), dtype=dtype)
+    if row_count <= 0 or expected <= 0 or key not in getattr(labels, "columns", ()):
+        return out
+    series = labels.get_column(key)
+    candidates: list[np.ndarray] = []
+    try:
+        direct = series.to_numpy()
+        if isinstance(direct, np.ndarray):
+            candidates.append(direct)
+    except Exception:
+        pass
+    dtype_text = str(getattr(series, "dtype", "")).lower()
+    if "list" in dtype_text:
+        try:
+            converted = series.list.to_array(expected).to_numpy()
+            if isinstance(converted, np.ndarray):
+                candidates.insert(0, converted)
+        except Exception:
+            pass
+    for values in candidates:
+        if values.ndim == 2 and values.shape[0] == row_count:
+            width = min(expected, int(values.shape[1]))
+            if width:
+                out[:, :width] = values[:, :width].astype(dtype, copy=False)
+            return out
+        if values.ndim == 1 and values.shape[0] == row_count and values.dtype != object and expected == 1:
+            out[:, 0] = values.astype(dtype, copy=False)
+            return out
+    return _gather_pivoted_label_column(series.to_numpy(), np.arange(row_count, dtype=np.int64), expected, dtype)
+
+
+def _empty_label_context_index(expected: int) -> LabelContextIndex:
+    expected = max(0, int(expected))
+    return LabelContextIndex(
+        ordinals=np.zeros((0,), dtype=np.int64),
+        values={key: np.zeros((0, expected), dtype=dtype) for key, dtype in LABEL_VALUE_DTYPES.items()},
+    )
 
 
 def _cell_array(value: Any) -> np.ndarray:
