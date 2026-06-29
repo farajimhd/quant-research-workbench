@@ -39,7 +39,7 @@ DEFAULTS = {
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Launcher for market text token table build.")
+    parser = argparse.ArgumentParser(description="Launcher for market Qwen text token and optional embedding table build.")
     parser.add_argument("--source-database", default=DEFAULTS["source_database"])
     parser.add_argument("--context-database", default=DEFAULTS["context_database"])
     parser.add_argument("--target-database", default=DEFAULTS["target_database"])

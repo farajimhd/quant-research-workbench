@@ -214,8 +214,8 @@ class TextEmbeddingModel:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Tokenize market text context into ClickHouse training tables. News and SEC filing text are "
-            "stored separately with source metadata plus fixed-length tokenizer outputs."
+            "Build Qwen market text context tables in ClickHouse. News and SEC filing text are stored "
+            "with source metadata, fixed-length tokenizer outputs, and optional per-chunk embeddings."
         )
     )
     parser.add_argument("--clickhouse-url", default=default_clickhouse_url_with_network_fallback())
@@ -282,7 +282,7 @@ def main() -> int:
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     print("=" * 100, flush=True)
-    print("Market SIP text token table builder", flush=True)
+    print("Market SIP Qwen text token and embedding table builder", flush=True)
     print(f"sources={sources} source_database={args.source_database} context_database={args.context_database}", flush=True)
     print(
         f"target_database={args.target_database} token_tables={args.news_token_table},{args.sec_token_table} "

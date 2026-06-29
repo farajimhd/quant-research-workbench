@@ -177,13 +177,14 @@ tables and waits for ClickHouse mutations before reinserting. This keeps reruns
 idempotent and avoids requiring `FINAL` in the hot training path. Ctrl+C exits
 with status code `130` and writes an interrupted row to the JSONL report.
 
-## Text Token Tables
+## Qwen Text Tokens And Embeddings
 
 `clickhouse_build_text_tokens.py` pre-tokenizes news and SEC filing text for
-training. It can also run the configured Qwen model once per stored text chunk
-and write reusable float32 embeddings. This avoids repeatedly tokenizing or
-running the LLM for the same Benzinga article or SEC filing document while
-materializing rolling batches.
+training. `clickhouse_build_qwen_text_embeddings.py` is the embedding-first alias
+for the same pipeline: it defaults to `--build-embeddings` and writes reusable
+float32 Qwen embeddings once per stored text chunk. This avoids repeatedly
+tokenizing or running the LLM for the same Benzinga article or SEC filing
+document while materializing rolling batches.
 
 The builder creates two separate tables:
 
@@ -246,19 +247,19 @@ Run on the workstation:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py --start-date 2019-01-01 --end-date 2026-12-31
 ```
 
-Run the token and embedding build together:
+Run the token and embedding build together. The Qwen launcher enables
+`--build-embeddings` by default:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py `
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_qwen_text_embeddings.py `
   --start-date 2019-01-01 `
-  --end-date 2026-12-31 `
-  --build-embeddings
+  --end-date 2026-12-31
 ```
 
 Profile Qwen embedding throughput without mutating ClickHouse:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py `
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_qwen_text_embeddings.py `
   --start-date 2019-02-01 `
   --end-date 2019-02-01 `
   --profile-embeddings-only `
