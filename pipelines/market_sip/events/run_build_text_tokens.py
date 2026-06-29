@@ -16,17 +16,22 @@ DEFAULTS = {
     "target_database": "market_sip_compact",
     "news_token_table": "news_text_tokens",
     "sec_token_table": "sec_filing_text_tokens",
+    "news_embedding_table": "news_text_embeddings",
+    "sec_embedding_table": "sec_filing_text_embeddings",
     "sec_text_context_table": "sec_filing_text_context",
     "start_date": "2019-01-01",
     "end_date": "2026-12-31",
     "sources": "news,sec",
     "tokenizer_model": "Qwen/Qwen3-0.6B",
+    "embedding_model": "Qwen/Qwen3-0.6B",
     "news_max_tokens": 1024,
     "news_max_chunks": 2,
     "sec_chunk_tokens": 1024,
     "sec_max_chunks": 8,
     "chunk_days": 1,
     "insert_batch_size": 2048,
+    "embedding_batch_size": 16,
+    "embedding_insert_batch_size": 64,
     "max_threads": 16,
     "max_memory_usage": "120G",
     "output_root_win": r"D:\market-data\prepared\clickhouse_sip_ingest\text_tokens",
@@ -40,11 +45,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-database", default=DEFAULTS["target_database"])
     parser.add_argument("--news-token-table", default=DEFAULTS["news_token_table"])
     parser.add_argument("--sec-token-table", default=DEFAULTS["sec_token_table"])
+    parser.add_argument("--news-embedding-table", default=DEFAULTS["news_embedding_table"])
+    parser.add_argument("--sec-embedding-table", default=DEFAULTS["sec_embedding_table"])
     parser.add_argument("--sec-text-context-table", default=DEFAULTS["sec_text_context_table"])
     parser.add_argument("--start-date", default=DEFAULTS["start_date"])
     parser.add_argument("--end-date", default=DEFAULTS["end_date"])
     parser.add_argument("--sources", default=DEFAULTS["sources"])
     parser.add_argument("--tokenizer-model", default=DEFAULTS["tokenizer_model"])
+    parser.add_argument("--build-embeddings", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--embedding-model", default=DEFAULTS["embedding_model"])
+    parser.add_argument("--embedding-device", default="auto")
+    parser.add_argument("--embedding-torch-dtype", default="float32")
+    parser.add_argument("--embedding-pooling", choices=("mean", "last_token"), default="mean")
+    parser.add_argument("--embedding-batch-size", type=int, default=DEFAULTS["embedding_batch_size"])
+    parser.add_argument("--embedding-insert-batch-size", type=int, default=DEFAULTS["embedding_insert_batch_size"])
+    parser.add_argument("--profile-embeddings-only", action="store_true")
+    parser.add_argument("--embedding-profile-source-rows", type=int, default=256)
     parser.add_argument("--max-tokens", type=int, default=0)
     parser.add_argument("--news-max-tokens", type=int, default=DEFAULTS["news_max_tokens"])
     parser.add_argument("--news-max-chunks", type=int, default=DEFAULTS["news_max_chunks"])
@@ -93,6 +109,10 @@ def main() -> int:
         args.news_token_table,
         "--sec-token-table",
         args.sec_token_table,
+        "--news-embedding-table",
+        args.news_embedding_table,
+        "--sec-embedding-table",
+        args.sec_embedding_table,
         "--sec-text-context-table",
         args.sec_text_context_table,
         "--start-date",
@@ -103,6 +123,20 @@ def main() -> int:
         args.sources,
         "--tokenizer-model",
         args.tokenizer_model,
+        "--embedding-model",
+        args.embedding_model,
+        "--embedding-device",
+        args.embedding_device,
+        "--embedding-torch-dtype",
+        args.embedding_torch_dtype,
+        "--embedding-pooling",
+        args.embedding_pooling,
+        "--embedding-batch-size",
+        str(args.embedding_batch_size),
+        "--embedding-insert-batch-size",
+        str(args.embedding_insert_batch_size),
+        "--embedding-profile-source-rows",
+        str(args.embedding_profile_source_rows),
         "--news-max-tokens",
         str(args.news_max_tokens),
         "--news-max-chunks",
@@ -144,6 +178,10 @@ def main() -> int:
         argv.extend(["--password", args.password])
     if args.max_tokens:
         argv.extend(["--max-tokens", str(args.max_tokens)])
+    if args.build_embeddings:
+        argv.append("--build-embeddings")
+    if args.profile_embeddings_only:
+        argv.append("--profile-embeddings-only")
     if args.no_local_files_only:
         argv.append("--no-local-files-only")
     if args.strict_tokenizer:

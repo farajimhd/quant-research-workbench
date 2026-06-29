@@ -36,13 +36,18 @@ DEFAULT_CONTEXT_DATABASE = "market_sip_compact"
 DEFAULT_TARGET_DATABASE = "market_sip_compact"
 DEFAULT_NEWS_TOKEN_TABLE = "news_text_tokens"
 DEFAULT_SEC_TOKEN_TABLE = "sec_filing_text_tokens"
+DEFAULT_NEWS_EMBEDDING_TABLE = "news_text_embeddings"
+DEFAULT_SEC_EMBEDDING_TABLE = "sec_filing_text_embeddings"
 DEFAULT_SEC_TEXT_CONTEXT_TABLE = "sec_filing_text_context"
 DEFAULT_OUTPUT_ROOT = DEFAULT_OUTPUT_ROOT_WIN / "text_tokens"
 DEFAULT_TOKENIZER_MODEL = "Qwen/Qwen3-0.6B"
+DEFAULT_EMBEDDING_MODEL = DEFAULT_TOKENIZER_MODEL
 DEFAULT_NEWS_MAX_TOKENS = 1024
 DEFAULT_NEWS_MAX_CHUNKS = 2
 DEFAULT_SEC_CHUNK_TOKENS = 1024
 DEFAULT_SEC_MAX_CHUNKS = 8
+DEFAULT_EMBEDDING_BATCH_SIZE = 16
+DEFAULT_EMBEDDING_INSERT_BATCH_SIZE = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +103,114 @@ class TextTokenizer:
         return fallback_tokenize_unpadded(texts)
 
 
+class TextEmbeddingModel:
+    def __init__(
+        self,
+        *,
+        model: str,
+        tokenizer_model: str,
+        local_files_only: bool,
+        device: str,
+        torch_dtype: str,
+        pooling: str,
+        ) -> None:
+        try:
+            import torch  # type: ignore
+            from transformers import AutoModel  # type: ignore
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("Embedding extraction requires torch and transformers.") from exc
+
+        self.torch = torch
+        self.model_name = str(model)
+        self.tokenizer_model = str(tokenizer_model)
+        self.pooling = str(pooling)
+        if self.pooling not in {"mean", "last_token"}:
+            raise ValueError(f"Unsupported embedding pooling {self.pooling!r}; expected mean or last_token.")
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = str(device)
+        dtype_name = str(torch_dtype).lower()
+        dtype_map = {
+            "auto": None,
+            "float32": torch.float32,
+            "fp32": torch.float32,
+            "float16": torch.float16,
+            "fp16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "bf16": torch.bfloat16,
+        }
+        if dtype_name not in dtype_map:
+            raise ValueError(f"Unsupported embedding torch dtype {torch_dtype!r}.")
+        self.torch_dtype_name = dtype_name
+        kwargs: dict[str, Any] = {
+            "trust_remote_code": True,
+            "local_files_only": bool(local_files_only),
+        }
+        if dtype_map[dtype_name] is not None:
+            kwargs["torch_dtype"] = dtype_map[dtype_name]
+        self.model = AutoModel.from_pretrained(self.model_name, **kwargs)
+        self.model.to(self.device)
+        self.model.eval()
+        self.embedding_dim = int(getattr(getattr(self.model, "config", None), "hidden_size", 0) or 0)
+
+    def encode_token_chunks(
+        self,
+        chunks: list[TokenChunk],
+        *,
+        batch_size: int,
+    ) -> tuple[list[list[float]], dict[str, float | int | str]]:
+        if not chunks:
+            return [], {
+                "embedding_model": self.model_name,
+                "embedding_dim": self.embedding_dim,
+                "embedding_sequences": 0,
+                "embedding_tokens": 0,
+                "embedding_seconds": 0.0,
+                "embedding_sequences_per_second": 0.0,
+                "embedding_tokens_per_second": 0.0,
+                "embedding_device": self.device,
+                "embedding_torch_dtype": self.torch_dtype_name,
+                "embedding_pooling": self.pooling,
+            }
+        torch = self.torch
+        outputs: list[list[float]] = []
+        total_tokens = sum(int(chunk.token_count) for chunk in chunks)
+        started = time.perf_counter()
+        batch_size = max(1, int(batch_size))
+        with torch.inference_mode():
+            for start in range(0, len(chunks), batch_size):
+                batch = chunks[start : start + batch_size]
+                input_ids = torch.tensor([chunk.input_ids for chunk in batch], dtype=torch.long, device=self.device)
+                attention_mask = torch.tensor([chunk.attention_mask for chunk in batch], dtype=torch.long, device=self.device)
+                result = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                hidden = result.last_hidden_state
+                pooled = self._pool(hidden, attention_mask)
+                outputs.extend(pooled.detach().to(dtype=torch.float32, device="cpu").tolist())
+        seconds = time.perf_counter() - started
+        return outputs, {
+            "embedding_model": self.model_name,
+            "embedding_dim": self.embedding_dim,
+            "embedding_sequences": len(chunks),
+            "embedding_tokens": total_tokens,
+            "embedding_seconds": round(seconds, 6),
+            "embedding_sequences_per_second": safe_div(len(chunks), seconds),
+            "embedding_tokens_per_second": safe_div(total_tokens, seconds),
+            "embedding_device": self.device,
+            "embedding_torch_dtype": self.torch_dtype_name,
+            "embedding_pooling": self.pooling,
+        }
+
+    def _pool(self, hidden: Any, attention_mask: Any) -> Any:
+        torch = self.torch
+        mask = attention_mask.to(dtype=hidden.dtype)
+        if self.pooling == "last_token":
+            lengths = attention_mask.sum(dim=1).clamp(min=1) - 1
+            rows = torch.arange(hidden.shape[0], device=hidden.device)
+            return hidden[rows, lengths]
+        denom = mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+        return (hidden * mask.unsqueeze(-1)).sum(dim=1) / denom
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -113,11 +226,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-database", default=DEFAULT_TARGET_DATABASE)
     parser.add_argument("--news-token-table", default=DEFAULT_NEWS_TOKEN_TABLE)
     parser.add_argument("--sec-token-table", default=DEFAULT_SEC_TOKEN_TABLE)
+    parser.add_argument("--news-embedding-table", default=DEFAULT_NEWS_EMBEDDING_TABLE)
+    parser.add_argument("--sec-embedding-table", default=DEFAULT_SEC_EMBEDDING_TABLE)
     parser.add_argument("--sec-text-context-table", default=DEFAULT_SEC_TEXT_CONTEXT_TABLE)
     parser.add_argument("--start-date", default="2019-01-01")
     parser.add_argument("--end-date", default=datetime.now(UTC).date().isoformat())
     parser.add_argument("--sources", default="news,sec", help="Comma-separated subset of news,sec.")
     parser.add_argument("--tokenizer-model", default=DEFAULT_TOKENIZER_MODEL)
+    parser.add_argument("--build-embeddings", action=argparse.BooleanOptionalAction, default=False, help="Also run the embedding model on every stored chunk and write float32 embedding tables.")
+    parser.add_argument("--embedding-model", default=DEFAULT_EMBEDDING_MODEL)
+    parser.add_argument("--embedding-device", default="auto", help="auto, cpu, cuda, cuda:0, etc.")
+    parser.add_argument("--embedding-torch-dtype", default="float32", help="auto, float32, float16, or bfloat16. Saved embeddings are always float32.")
+    parser.add_argument("--embedding-pooling", choices=("mean", "last_token"), default="mean")
+    parser.add_argument("--embedding-batch-size", type=int, default=DEFAULT_EMBEDDING_BATCH_SIZE)
+    parser.add_argument("--embedding-insert-batch-size", type=int, default=DEFAULT_EMBEDDING_INSERT_BATCH_SIZE)
+    parser.add_argument("--profile-embeddings-only", action="store_true", help="Fetch/tokenize/embed a bounded sample and write timing JSONL without schema changes or ClickHouse inserts.")
+    parser.add_argument("--embedding-profile-source-rows", type=int, default=256, help="Maximum source rows per source for --profile-embeddings-only.")
     parser.add_argument("--max-tokens", type=int, default=0, help="Deprecated alias. Use --news-max-tokens and --sec-chunk-tokens.")
     parser.add_argument("--news-max-tokens", type=int, default=DEFAULT_NEWS_MAX_TOKENS)
     parser.add_argument("--news-max-chunks", type=int, default=DEFAULT_NEWS_MAX_CHUNKS)
@@ -160,7 +284,11 @@ def main() -> int:
     print("=" * 100, flush=True)
     print("Market SIP text token table builder", flush=True)
     print(f"sources={sources} source_database={args.source_database} context_database={args.context_database}", flush=True)
-    print(f"target_database={args.target_database} tables={args.news_token_table},{args.sec_token_table}", flush=True)
+    print(
+        f"target_database={args.target_database} token_tables={args.news_token_table},{args.sec_token_table} "
+        f"embedding_tables={args.news_embedding_table},{args.sec_embedding_table}",
+        flush=True,
+    )
     print(f"date_range=[{start_date.isoformat()}, {end_date_exclusive.isoformat()}) chunk_days={args.chunk_days}", flush=True)
     if int(args.max_tokens) > 0:
         args.news_max_tokens = int(args.max_tokens)
@@ -175,6 +303,13 @@ def main() -> int:
     print(
         f"tokenizer={args.tokenizer_model} news_chunks={args.news_max_chunks}x{args.news_max_tokens} "
         f"sec_chunks={args.sec_max_chunks}x{args.sec_chunk_tokens} local_files_only={args.local_files_only}",
+        flush=True,
+    )
+    print(
+        f"build_embeddings={args.build_embeddings or args.profile_embeddings_only} embedding_model={args.embedding_model} "
+        f"pooling={args.embedding_pooling} device={args.embedding_device} torch_dtype={args.embedding_torch_dtype} "
+        f"embedding_batch_size={args.embedding_batch_size} embedding_insert_batch_size={args.embedding_insert_batch_size} "
+        f"profile_embeddings_only={args.profile_embeddings_only}",
         flush=True,
     )
     print(
@@ -217,16 +352,39 @@ def main() -> int:
         local_files_only=bool(args.local_files_only),
         strict=(not bool(args.allow_fallback_tokenizer)) or bool(args.strict_tokenizer),
     )
-    try:
-        build_tokens(
-            client,
-            tokenizer,
-            args,
-            sources=sources,
-            start_date=start_date,
-            end_date_exclusive=end_date_exclusive,
-            report_path=report_path,
+    embedding_model = None
+    if bool(args.build_embeddings) or bool(args.profile_embeddings_only):
+        embedding_model = TextEmbeddingModel(
+            model=str(args.embedding_model),
+            tokenizer_model=str(args.tokenizer_model),
+            local_files_only=bool(args.local_files_only),
+            device=str(args.embedding_device),
+            torch_dtype=str(args.embedding_torch_dtype),
+            pooling=str(args.embedding_pooling),
         )
+    try:
+        if args.profile_embeddings_only:
+            profile_embeddings(
+                client,
+                tokenizer,
+                embedding_model,
+                args,
+                sources=sources,
+                start_date=start_date,
+                end_date_exclusive=end_date_exclusive,
+                report_path=report_path,
+            )
+        else:
+            build_tokens(
+                client,
+                tokenizer,
+                embedding_model,
+                args,
+                sources=sources,
+                start_date=start_date,
+                end_date_exclusive=end_date_exclusive,
+                report_path=report_path,
+            )
     except KeyboardInterrupt:
         append_jsonl(report_path, {"operation": "build_tokens", "status": "interrupted", "elapsed_seconds": round(time.perf_counter() - started, 3)})
         print("=" * 100, flush=True)
@@ -243,6 +401,7 @@ def main() -> int:
 def build_tokens(
     client: ClickHouseHttpClient,
     tokenizer: TextTokenizer,
+    embedding_model: TextEmbeddingModel | None,
     args: argparse.Namespace,
     *,
     sources: tuple[str, ...],
@@ -253,14 +412,22 @@ def build_tokens(
     schema_sql = [f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.target_database)}"]
     if "news" in sources:
         schema_sql.append(create_news_token_table_sql(args.target_database, args.news_token_table, args.storage_policy))
+        if args.build_embeddings:
+            schema_sql.append(create_news_embedding_table_sql(args.target_database, args.news_embedding_table, args.storage_policy))
     if "sec" in sources:
         schema_sql.append(create_sec_token_table_sql(args.target_database, args.sec_token_table, args.storage_policy))
+        if args.build_embeddings:
+            schema_sql.append(create_sec_embedding_table_sql(args.target_database, args.sec_embedding_table, args.storage_policy))
     if args.drop_target_tables:
         drops = []
         if "news" in sources:
             drops.append(f"DROP TABLE IF EXISTS {quote_ident(args.target_database)}.{quote_ident(args.news_token_table)}")
+            if args.build_embeddings:
+                drops.append(f"DROP TABLE IF EXISTS {quote_ident(args.target_database)}.{quote_ident(args.news_embedding_table)}")
         if "sec" in sources:
             drops.append(f"DROP TABLE IF EXISTS {quote_ident(args.target_database)}.{quote_ident(args.sec_token_table)}")
+            if args.build_embeddings:
+                drops.append(f"DROP TABLE IF EXISTS {quote_ident(args.target_database)}.{quote_ident(args.sec_embedding_table)}")
         schema_sql = [*drops, *schema_sql]
     for index, sql in enumerate(schema_sql, 1):
         run_sql(client, f"schema_{index}", sql, report_path, dry_run=bool(args.dry_run))
@@ -282,6 +449,22 @@ def build_tokens(
                     timeout_seconds=int(args.mutation_timeout_seconds),
                     report_path=report_path,
                 )
+            if args.build_embeddings:
+                run_sql(
+                    client,
+                    "delete_news_embeddings",
+                    delete_range_sql(args.target_database, args.news_embedding_table, timestamp_column="published_at_utc", start_date=start_date, end_date_exclusive=end_date_exclusive),
+                    report_path,
+                    dry_run=bool(args.dry_run),
+                )
+                if args.wait_mutations and not args.dry_run:
+                    wait_for_mutations(
+                        client,
+                        database=args.target_database,
+                        table=args.news_embedding_table,
+                        timeout_seconds=int(args.mutation_timeout_seconds),
+                        report_path=report_path,
+                    )
         if "sec" in sources:
             run_sql(
                 client,
@@ -298,6 +481,22 @@ def build_tokens(
                     timeout_seconds=int(args.mutation_timeout_seconds),
                     report_path=report_path,
                 )
+            if args.build_embeddings:
+                run_sql(
+                    client,
+                    "delete_sec_embeddings",
+                    delete_range_sql(args.target_database, args.sec_embedding_table, timestamp_column="accepted_at_utc", start_date=start_date, end_date_exclusive=end_date_exclusive),
+                    report_path,
+                    dry_run=bool(args.dry_run),
+                )
+                if args.wait_mutations and not args.dry_run:
+                    wait_for_mutations(
+                        client,
+                        database=args.target_database,
+                        table=args.sec_embedding_table,
+                        timeout_seconds=int(args.mutation_timeout_seconds),
+                        report_path=report_path,
+                    )
 
     total_rows = {"news": 0, "sec": 0}
     total_inserted = {"news": 0, "sec": 0}
@@ -308,7 +507,7 @@ def build_tokens(
             source_batch = fetch_source_batch(client, args, source=source, chunk_start=chunk_start, chunk_end=chunk_end)
             total_rows[source] += len(source_batch.rows)
             print(f"FETCH {source} rows={len(source_batch.rows):,} seconds={source_batch.seconds:.2f}", flush=True)
-            inserted = tokenize_and_insert_source_batch(client, tokenizer, args, source_batch, report_path=report_path)
+            inserted = tokenize_and_insert_source_batch(client, tokenizer, embedding_model, args, source_batch, report_path=report_path)
             total_inserted[source] += inserted
             append_jsonl(
                 report_path,
@@ -356,6 +555,81 @@ def summarize_sources(
             end_date_exclusive=end_date_exclusive,
             report_path=report_path,
         )
+        if args.build_embeddings:
+            embedding_table = args.news_embedding_table if source == "news" else args.sec_embedding_table
+            summarize_embedding_table(
+                client,
+                args.target_database,
+                embedding_table,
+                source=source,
+                start_date=start_date,
+                end_date_exclusive=end_date_exclusive,
+                report_path=report_path,
+            )
+
+
+def profile_embeddings(
+    client: ClickHouseHttpClient,
+    tokenizer: TextTokenizer,
+    embedding_model: TextEmbeddingModel | None,
+    args: argparse.Namespace,
+    *,
+    sources: tuple[str, ...],
+    start_date: date,
+    end_date_exclusive: date,
+    report_path: Path,
+) -> None:
+    if embedding_model is None:
+        raise RuntimeError("--profile-embeddings-only requires an embedding model.")
+    original_dry_run = bool(args.dry_run)
+    original_build_embeddings = bool(args.build_embeddings)
+    args.dry_run = True
+    args.build_embeddings = True
+    remaining = {source: max(1, int(args.embedding_profile_source_rows)) for source in sources}
+    totals: dict[str, dict[str, int]] = {source: {"source_rows": 0, "token_rows": 0} for source in sources}
+    for chunk_start, chunk_end in iter_date_chunks(start_date, end_date_exclusive, days=max(1, int(args.chunk_days))):
+        if all(value <= 0 for value in remaining.values()):
+            break
+        print("=" * 100, flush=True)
+        print(f"PROFILE CHUNK [{chunk_start.isoformat()}, {chunk_end.isoformat()})", flush=True)
+        for source in sources:
+            if remaining[source] <= 0:
+                continue
+            source_batch = fetch_source_batch(client, args, source=source, chunk_start=chunk_start, chunk_end=chunk_end)
+            rows = source_batch.rows[: remaining[source]]
+            source_batch = SourceBatch(source=source, rows=rows, seconds=source_batch.seconds)
+            print(f"PROFILE FETCH {source} rows={len(rows):,} seconds={source_batch.seconds:.2f}", flush=True)
+            inserted = tokenize_and_insert_source_batch(client, tokenizer, embedding_model, args, source_batch, report_path=report_path)
+            remaining[source] -= len(rows)
+            totals[source]["source_rows"] += len(rows)
+            totals[source]["token_rows"] += inserted
+            append_jsonl(
+                report_path,
+                {
+                    "operation": "embedding_profile_chunk",
+                    "source": source,
+                    "chunk_start": chunk_start.isoformat(),
+                    "chunk_end": chunk_end.isoformat(),
+                    "source_rows": len(rows),
+                    "token_rows": inserted,
+                    "remaining_source_rows": remaining[source],
+                    "fetch_seconds": round(source_batch.seconds, 3),
+                },
+            )
+    args.dry_run = original_dry_run
+    args.build_embeddings = original_build_embeddings
+    append_jsonl(
+        report_path,
+        {
+            "operation": "embedding_profile_complete",
+            "embedding_model": embedding_model.model_name,
+            "embedding_dim": embedding_model.embedding_dim,
+            "embedding_device": embedding_model.device,
+            "embedding_torch_dtype": embedding_model.torch_dtype_name,
+            "embedding_pooling": embedding_model.pooling,
+            "totals": totals,
+        },
+    )
 
 
 def create_news_token_table_sql(database: str, table: str, storage_policy: str) -> str:
@@ -424,6 +698,91 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     was_truncated UInt8,
     input_ids Array(UInt32) CODEC(ZSTD(3)),
     attention_mask Array(UInt8) CODEC(ZSTD(3)),
+    text_hash UInt64,
+    text_char_count UInt32,
+    source_text_char_count UInt32,
+    text_prefix_truncated UInt8,
+    updated_at DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(accepted_at_utc)
+ORDER BY (ticker, timestamp_us, accession_number, text_rank, document_id, source_id, token_chunk_index)
+{mergetree_settings_sql(storage_policy)}
+"""
+
+
+def create_news_embedding_table_sql(database: str, table: str, storage_policy: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
+(
+    ticker LowCardinality(String),
+    timestamp_us UInt64 CODEC(T64, ZSTD(1)),
+    published_at_utc DateTime64(9, 'UTC') CODEC(Delta, ZSTD(1)),
+    source_id String,
+    provider LowCardinality(String),
+    provider_article_id String,
+    title String CODEC(ZSTD(3)),
+    article_url String CODEC(ZSTD(3)),
+    url_domain LowCardinality(String),
+    channels String CODEC(ZSTD(3)),
+    provider_tags String CODEC(ZSTD(3)),
+    quality_flags String CODEC(ZSTD(3)),
+    tokenizer_model LowCardinality(String),
+    embedding_model LowCardinality(String),
+    embedding_pooling LowCardinality(String),
+    embedding_dtype LowCardinality(String),
+    embedding_dim UInt16,
+    max_tokens UInt16,
+    token_chunk_index UInt8,
+    token_start UInt32,
+    token_end UInt32,
+    original_token_count UInt32,
+    token_count UInt16,
+    padding_tokens UInt16,
+    was_truncated UInt8,
+    embedding Array(Float32) CODEC(ZSTD(3)),
+    text_hash UInt64,
+    text_char_count UInt32,
+    source_text_char_count UInt32,
+    text_prefix_truncated UInt8,
+    updated_at DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(published_at_utc)
+ORDER BY (ticker, timestamp_us, source_id, token_chunk_index)
+{mergetree_settings_sql(storage_policy)}
+"""
+
+
+def create_sec_embedding_table_sql(database: str, table: str, storage_policy: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
+(
+    ticker LowCardinality(String),
+    timestamp_us UInt64 CODEC(T64, ZSTD(1)),
+    accepted_at_utc DateTime64(9, 'UTC') CODEC(Delta, ZSTD(1)),
+    source_id String,
+    cik String,
+    accession_number String,
+    form_type LowCardinality(String),
+    text_rank UInt8,
+    document_id String,
+    text_kind LowCardinality(String),
+    quality_flags String CODEC(ZSTD(3)),
+    tokenizer_model LowCardinality(String),
+    embedding_model LowCardinality(String),
+    embedding_pooling LowCardinality(String),
+    embedding_dtype LowCardinality(String),
+    embedding_dim UInt16,
+    max_tokens UInt16,
+    token_chunk_index UInt8,
+    token_start UInt32,
+    token_end UInt32,
+    original_token_count UInt32,
+    token_count UInt16,
+    padding_tokens UInt16,
+    was_truncated UInt8,
+    embedding Array(Float32) CODEC(ZSTD(3)),
     text_hash UInt64,
     text_char_count UInt32,
     source_text_char_count UInt32,
@@ -519,6 +878,7 @@ FORMAT JSONEachRow
 def tokenize_and_insert_source_batch(
     client: ClickHouseHttpClient,
     tokenizer: TextTokenizer,
+    embedding_model: TextEmbeddingModel | None,
     args: argparse.Namespace,
     source_batch: SourceBatch,
     *,
@@ -528,14 +888,21 @@ def tokenize_and_insert_source_batch(
         return 0
     table = args.news_token_table if source_batch.source == "news" else args.sec_token_table
     target = f"{quote_ident(args.target_database)}.{quote_ident(table)}"
+    embedding_table = args.news_embedding_table if source_batch.source == "news" else args.sec_embedding_table
+    embedding_target = f"{quote_ident(args.target_database)}.{quote_ident(embedding_table)}"
     inserted = 0
+    embedding_inserted = 0
     stats = empty_token_stats()
     batch_size = max(1, int(args.insert_batch_size))
     for start in range(0, len(source_batch.rows), batch_size):
+        batch_started = time.perf_counter()
         source_rows = source_batch.rows[start : start + batch_size]
         texts = [news_model_text(row) if source_batch.source == "news" else sec_model_text(row) for row in source_rows]
+        token_started = time.perf_counter()
         token_ids_by_text = tokenizer.encode_unpadded(texts)
+        token_seconds = time.perf_counter() - token_started
         insert_rows = []
+        embedding_specs: list[tuple[dict[str, Any], str, TokenChunk]] = []
         for index, row in enumerate(source_rows):
             text = texts[index]
             update_source_text_stats(stats, row)
@@ -548,6 +915,7 @@ def tokenize_and_insert_source_batch(
                 for chunk in chunks:
                     update_token_stats(stats, chunk)
                     insert_rows.append(news_token_row(args, row, text, chunk))
+                    embedding_specs.append((row, text, chunk))
             else:
                 chunks = make_sec_chunks(
                     token_ids_by_text[index],
@@ -557,26 +925,55 @@ def tokenize_and_insert_source_batch(
                 for chunk in chunks:
                     update_token_stats(stats, chunk)
                     insert_rows.append(sec_token_row(args, row, text, chunk))
+                    embedding_specs.append((row, text, chunk))
+        embedding_profile: dict[str, float | int | str] = {}
+        embedding_insert_seconds = 0.0
+        if args.build_embeddings:
+            if embedding_model is None:
+                raise RuntimeError("--build-embeddings requires an embedding model.")
+            embeddings, embedding_profile = embedding_model.encode_token_chunks(
+                [chunk for _, _, chunk in embedding_specs],
+                batch_size=int(args.embedding_batch_size),
+            )
+            embedding_rows = []
+            for spec_index, (row, text, chunk) in enumerate(embedding_specs):
+                if source_batch.source == "news":
+                    embedding_rows.append(news_embedding_row(args, row, text, chunk, embeddings[spec_index], embedding_model))
+                else:
+                    embedding_rows.append(sec_embedding_row(args, row, text, chunk, embeddings[spec_index], embedding_model))
+            embedding_inserted += len(embedding_rows)
         if not args.dry_run:
             started = time.perf_counter()
             insert_json_each_row(client, target, insert_rows)
-            seconds = time.perf_counter() - started
+            token_insert_seconds = time.perf_counter() - started
+            if args.build_embeddings:
+                started = time.perf_counter()
+                insert_json_each_row_batched(client, embedding_target, embedding_rows, batch_size=int(args.embedding_insert_batch_size))
+                embedding_insert_seconds = time.perf_counter() - started
         else:
-            seconds = 0.0
+            token_insert_seconds = 0.0
         inserted += len(insert_rows)
         append_jsonl(
             report_path,
             {
                 "operation": "insert_batch",
                 "source": source_batch.source,
+                "source_rows": len(source_rows),
                 "rows": len(insert_rows),
                 "inserted_total": inserted,
-                "seconds": round(seconds, 3),
+                "tokenize_seconds": round(token_seconds, 3),
+                "token_insert_seconds": round(token_insert_seconds, 3),
+                "embedding_rows": int(embedding_profile.get("embedding_sequences", 0) or 0),
+                "embedding_inserted_total": embedding_inserted,
+                "embedding_insert_seconds": round(embedding_insert_seconds, 3),
+                "batch_seconds": round(time.perf_counter() - batch_started, 3),
+                **embedding_profile,
                 "token_stats": summarize_token_stats(stats),
             },
         )
     print(
         f"TOKEN STATS {source_batch.source} source_rows={len(source_batch.rows):,} token_rows={inserted:,} "
+        f"embedding_rows={embedding_inserted:,} "
         f"token_truncated_sources={stats['truncated_sources']:,} text_prefix_truncated={stats['text_prefix_truncated_sources']:,} "
         f"padded_chunks={stats['padded_chunks']:,} "
         f"avg_original_tokens={safe_div(stats['original_tokens'], stats['source_rows']):.1f} "
@@ -744,10 +1141,85 @@ def sec_token_row(args: argparse.Namespace, row: dict[str, Any], text: str, chun
     }
 
 
+def news_embedding_row(args: argparse.Namespace, row: dict[str, Any], text: str, chunk: TokenChunk, embedding: list[float], model: TextEmbeddingModel) -> dict[str, Any]:
+    return {
+        "ticker": str(row.get("ticker", "") or "").upper(),
+        "timestamp_us": int(row.get("timestamp_us", 0) or 0),
+        "published_at_utc": str(row.get("published_at_utc", "") or ""),
+        "source_id": str(row.get("source_id", "") or ""),
+        "provider": str(row.get("provider", "") or ""),
+        "provider_article_id": str(row.get("provider_article_id", "") or ""),
+        "title": str(row.get("title", "") or ""),
+        "article_url": str(row.get("article_url", "") or ""),
+        "url_domain": str(row.get("url_domain", "") or ""),
+        "channels": str(row.get("channels", "") or ""),
+        "provider_tags": str(row.get("provider_tags", "") or ""),
+        "quality_flags": str(row.get("quality_flags", "") or ""),
+        "tokenizer_model": str(args.tokenizer_model),
+        "embedding_model": str(model.model_name),
+        "embedding_pooling": str(model.pooling),
+        "embedding_dtype": "float32",
+        "embedding_dim": int(len(embedding)),
+        "max_tokens": int(args.news_max_tokens),
+        "token_chunk_index": int(chunk.token_chunk_index),
+        "token_start": int(chunk.token_start),
+        "token_end": int(chunk.token_end),
+        "original_token_count": int(chunk.original_token_count),
+        "token_count": int(chunk.token_count),
+        "padding_tokens": int(chunk.padding_tokens),
+        "was_truncated": int(chunk.was_truncated),
+        "embedding": [float(value) for value in embedding],
+        "text_hash": stable_uint64(text),
+        "text_char_count": len(text),
+        "source_text_char_count": int(row.get("source_text_char_count", 0) or tokenized_source_body_chars(row)),
+        "text_prefix_truncated": int(int(row.get("source_text_char_count", 0) or 0) > tokenized_source_body_chars(row)),
+    }
+
+
+def sec_embedding_row(args: argparse.Namespace, row: dict[str, Any], text: str, chunk: TokenChunk, embedding: list[float], model: TextEmbeddingModel) -> dict[str, Any]:
+    return {
+        "ticker": str(row.get("ticker", "") or "").upper(),
+        "timestamp_us": int(row.get("timestamp_us", 0) or 0),
+        "accepted_at_utc": str(row.get("accepted_at_utc", "") or ""),
+        "source_id": str(row.get("source_id", "") or ""),
+        "cik": str(row.get("cik", "") or ""),
+        "accession_number": str(row.get("accession_number", "") or ""),
+        "form_type": str(row.get("form_type", "") or ""),
+        "text_rank": int(row.get("text_rank", 0) or 0),
+        "document_id": str(row.get("document_id", "") or ""),
+        "text_kind": str(row.get("text_kind", "") or ""),
+        "quality_flags": str(row.get("quality_flags", "") or ""),
+        "tokenizer_model": str(args.tokenizer_model),
+        "embedding_model": str(model.model_name),
+        "embedding_pooling": str(model.pooling),
+        "embedding_dtype": "float32",
+        "embedding_dim": int(len(embedding)),
+        "max_tokens": int(args.sec_chunk_tokens),
+        "token_chunk_index": int(chunk.token_chunk_index),
+        "token_start": int(chunk.token_start),
+        "token_end": int(chunk.token_end),
+        "original_token_count": int(chunk.original_token_count),
+        "token_count": int(chunk.token_count),
+        "padding_tokens": int(chunk.padding_tokens),
+        "was_truncated": int(chunk.was_truncated),
+        "embedding": [float(value) for value in embedding],
+        "text_hash": stable_uint64(text),
+        "text_char_count": len(text),
+        "source_text_char_count": int(row.get("source_text_char_count", 0) or tokenized_source_body_chars(row)),
+        "text_prefix_truncated": int(int(row.get("source_text_char_count", 0) or 0) > tokenized_source_body_chars(row)),
+    }
+
+
 def insert_json_each_row(client: ClickHouseHttpClient, table: str, rows: list[dict[str, Any]]) -> None:
     payload = "\n".join(json.dumps(row, separators=(",", ":"), ensure_ascii=False) for row in rows)
     if payload:
         client.execute(f"INSERT INTO {table} FORMAT JSONEachRow\n{payload}")
+
+
+def insert_json_each_row_batched(client: ClickHouseHttpClient, table: str, rows: list[dict[str, Any]], *, batch_size: int) -> None:
+    batch_size = max(1, int(batch_size))
+    for start in range(0, len(rows), batch_size):
+        insert_json_each_row(client, table, rows[start : start + batch_size])
 
 
 def empty_token_stats() -> dict[str, int]:
@@ -852,6 +1324,42 @@ FORMAT JSONEachRow
         f"truncated_rows={int(summary.get('truncated_rows', 0) or 0):,} "
         f"text_prefix_truncated_rows={int(summary.get('text_prefix_truncated_rows', 0) or 0):,} "
         f"avg_padding={float(summary.get('avg_padding_tokens', 0) or 0):.1f} seconds={seconds:.1f}",
+        flush=True,
+    )
+
+
+def summarize_embedding_table(client: ClickHouseHttpClient, database: str, table: str, *, source: str, start_date: date, end_date_exclusive: date, report_path: Path) -> None:
+    timestamp_column = "published_at_utc" if source == "news" else "accepted_at_utc"
+    sql = f"""
+SELECT
+    count() AS rows,
+    uniqExact(tuple(ticker, source_id)) AS source_rows,
+    uniqExact(ticker) AS tickers,
+    min({quote_ident(timestamp_column)}) AS min_timestamp,
+    max({quote_ident(timestamp_column)}) AS max_timestamp,
+    any(embedding_model) AS embedding_model,
+    any(embedding_pooling) AS embedding_pooling,
+    any(embedding_dtype) AS embedding_dtype,
+    min(embedding_dim) AS min_embedding_dim,
+    max(embedding_dim) AS max_embedding_dim,
+    avg(token_count) AS avg_token_count,
+    sumIf(was_truncated, token_chunk_index = 0) AS truncated_rows,
+    avgIf(was_truncated, token_chunk_index = 0) AS truncated_row_fraction
+FROM {quote_ident(database)}.{quote_ident(table)}
+WHERE {quote_ident(timestamp_column)} >= {date_time64_sql(start_date)}
+  AND {quote_ident(timestamp_column)} < {date_time64_sql(end_date_exclusive)}
+FORMAT JSONEachRow
+"""
+    started = time.perf_counter()
+    raw = client.execute(sql).strip()
+    seconds = time.perf_counter() - started
+    summary = json.loads(raw) if raw else {}
+    append_jsonl(report_path, {"operation": "embedding_summary", "source": source, "table": table, "seconds": round(seconds, 3), **summary})
+    print(
+        f"SUMMARY {source} table={table} embedding_rows={int(summary.get('rows', 0)):,} "
+        f"sources={int(summary.get('source_rows', 0)):,} tickers={int(summary.get('tickers', 0)):,} "
+        f"dim={summary.get('min_embedding_dim', 0)}..{summary.get('max_embedding_dim', 0)} "
+        f"model={summary.get('embedding_model', '')} seconds={seconds:.1f}",
         flush=True,
     )
 

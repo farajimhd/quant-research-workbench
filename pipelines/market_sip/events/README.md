@@ -180,8 +180,10 @@ with status code `130` and writes an interrupted row to the JSONL report.
 ## Text Token Tables
 
 `clickhouse_build_text_tokens.py` pre-tokenizes news and SEC filing text for
-training. This avoids repeatedly tokenizing the same Benzinga article or SEC
-filing document while materializing rolling batches.
+training. It can also run the configured Qwen model once per stored text chunk
+and write reusable float32 embeddings. This avoids repeatedly tokenizing or
+running the LLM for the same Benzinga article or SEC filing document while
+materializing rolling batches.
 
 The builder creates two separate tables:
 
@@ -189,6 +191,8 @@ The builder creates two separate tables:
 | --- | --- | --- | --- |
 | `news_text_tokens` | `toYYYYMM(published_at_utc)` | `(ticker, timestamp_us, source_id, token_chunk_index)` | `q_live.benzinga_news_ticker_v1` joined to `q_live.benzinga_news_normalized_v1` |
 | `sec_filing_text_tokens` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id, source_id)` | `market_sip_compact.sec_filing_text_context` |
+| `news_text_embeddings` | `toYYYYMM(published_at_utc)` | `(ticker, timestamp_us, source_id, token_chunk_index)` | one float32 Qwen embedding per news token chunk |
+| `sec_filing_text_embeddings` | `toYYYYMM(accepted_at_utc)` | `(ticker, timestamp_us, accession_number, text_rank, document_id, source_id)` | one float32 Qwen embedding per SEC token chunk |
 
 Each row stores source metadata plus fixed-length tokenizer output:
 
@@ -213,6 +217,24 @@ SEC filing text uses up to eight 1024-token rows per source text row. Both token
 tables include `token_chunk_index`, `token_start`, and `token_end`, so multiple
 chunks do not collapse under the same replacing key.
 
+Embeddings are also chunk-level, not item-level. The LLM is run independently for
+each stored chunk:
+
+- news: up to `2` embeddings per ticker/article row
+- SEC text: up to `8` embeddings per filing text row
+
+The embedding rows repeat the token metadata and store:
+
+- `embedding Array(Float32)`
+- `embedding_model`
+- `embedding_pooling`
+- `embedding_dtype = 'float32'`
+- `embedding_dim`
+
+Do not average chunks before storage. The rolling/temporal model should combine
+chunk embeddings later with chunk positional encoding, item pooling or attention,
+and modality-specific context encoders.
+
 The tokenized text starts with explicit metadata lines such as `NEWS` or
 `SEC FILING`, provider/form/ticker/timestamp fields, and then the bounded source
 body. This keeps the modality and provenance visible to the text encoder while
@@ -224,17 +246,42 @@ Run on the workstation:
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py --start-date 2019-01-01 --end-date 2026-12-31
 ```
 
+Run the token and embedding build together:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py `
+  --start-date 2019-01-01 `
+  --end-date 2026-12-31 `
+  --build-embeddings
+```
+
+Profile Qwen embedding throughput without mutating ClickHouse:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_text_tokens.py `
+  --start-date 2019-02-01 `
+  --end-date 2019-02-01 `
+  --profile-embeddings-only `
+  --embedding-profile-source-rows 256
+```
+
+The profile writes `insert_batch` JSONL rows with `embedding_seconds`,
+`embedding_sequences_per_second`, and `embedding_tokens_per_second`. Saved
+embeddings are always float32; `--embedding-torch-dtype` only controls the model
+inference dtype used during extraction.
+
 If the workstation environment does not already have HuggingFace installed:
 
 ```powershell
 python -m pip install "transformers>=4.50" "tokenizers>=0.20" "huggingface_hub>=0.25"
 ```
 
-The tokenizer files are loaded at script startup. By default the script uses the
-local HuggingFace cache; add `--no-local-files-only` on the first real run if the
-Qwen tokenizer files need to be downloaded. Tokenization is CPU/Rust-tokenizer
-work, not GPU model inference, so you do not need to stop GPU training just for
-this token table build.
+The tokenizer files are loaded at script startup. Embedding builds additionally
+load the Qwen model weights. By default the script uses the local HuggingFace
+cache; add `--no-local-files-only` on the first real token or embedding run if
+the Qwen files need to be downloaded. Token-only builds are CPU/Rust-tokenizer
+work, not GPU model inference. Embedding builds do run the model and should be
+profiled on the workstation before launching a full historical range.
 
 Smoke a small range before a full build:
 
