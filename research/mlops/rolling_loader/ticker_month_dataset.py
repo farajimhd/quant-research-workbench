@@ -24,7 +24,9 @@ from research.mlops.rolling_loader.ticker_month_cache import (
     TICKER_MONTH_CACHE_FORMAT,
     TICKER_MONTH_CACHE_VERSION,
     full_months_in_period,
+    month_dir_for,
     read_json,
+    ticker_package_dir,
 )
 
 
@@ -382,7 +384,7 @@ class TickerMonthCacheIndex:
         selected_months = set(_selected_months(self.config, self.root_manifest))
         selected_tickers = {ticker.upper() for ticker in self.config.tickers}
         plans: list[TickerMonthPartPlan] = []
-        for package_dir in sorted(split_dir.glob("month=*/ticker_hash=*/ticker=*")):
+        for package_dir in self._candidate_package_dirs(split_dir, selected_months, selected_tickers):
             if not package_dir.is_dir():
                 continue
             month = _path_value(package_dir, "month")
@@ -426,6 +428,31 @@ class TickerMonthCacheIndex:
         if not plans:
             raise RuntimeError(f"No complete ticker/month parts found under {split_dir}")
         return plans
+
+    def _candidate_package_dirs(self, split_dir: Path, selected_months: set[str], selected_tickers: set[str]) -> list[Path]:
+        root = Path(self.config.cache_root)
+        if selected_months and selected_tickers:
+            paths: list[Path] = []
+            for month in sorted(selected_months):
+                month_dir = month_dir_for(root, str(self.config.split), month)
+                for ticker in sorted(selected_tickers):
+                    paths.append(ticker_package_dir(month_dir, ticker))
+            return paths
+        if selected_months:
+            paths = []
+            for month in sorted(selected_months):
+                month_dir = month_dir_for(root, str(self.config.split), month)
+                paths.extend(sorted(month_dir.glob("ticker_hash=*/ticker=*")))
+            return paths
+        if selected_tickers:
+            paths = []
+            for month_dir in sorted(split_dir.glob("month=*")):
+                if not month_dir.is_dir():
+                    continue
+                for ticker in sorted(selected_tickers):
+                    paths.append(ticker_package_dir(month_dir, ticker))
+            return paths
+        return sorted(split_dir.glob("month=*/ticker_hash=*/ticker=*"))
 
 
 class TickerMonthPartReader:
