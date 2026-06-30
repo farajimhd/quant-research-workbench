@@ -1182,6 +1182,11 @@ def _build_ticker_month_package(
             state.stage = f"labels {part.part_id + 1}/{len(parts)}"
             labels = labels_future.result()
             state.labels_done += 1
+            labels, labels_filtered_out = _align_labels_to_origins(
+                labels,
+                origins,
+                prefix=f"{month}:{ticker}:{part_name}",
+            )
             audit_samples = _light_audit_part_in_memory(
                 events=events,
                 origins=origins,
@@ -1234,6 +1239,7 @@ def _build_ticker_month_package(
                         "intraday_forward_labels": int(labels.height),
                         "skipped_not_enough_history": int(part_skipped_history),
                         "skipped_window_gap": int(part_skipped_gap),
+                        "labels_filtered_out": int(labels_filtered_out),
                         "inline_audit_samples": int(audit_samples),
                     },
                 }
@@ -1473,6 +1479,75 @@ def _labels_are_pivoted(labels: Any) -> bool:
         return False
     dtype_text = str(labels.schema.get("horizon_us", "")).lower()
     return "list" in dtype_text or "array" in dtype_text
+
+
+def _align_labels_to_origins(labels: Any, origins: Any, *, prefix: str) -> tuple[Any, int]:
+    pl = _polars()
+    origin_count = int(getattr(origins, "height", 0) or 0)
+    label_count = int(getattr(labels, "height", 0) or 0)
+    if origin_count <= 0:
+        return labels.head(0) if label_count > 0 else labels, label_count
+    if label_count <= 0:
+        raise RuntimeError(f"{prefix} label alignment failed: labels are empty for {origin_count:,} eligible origins.")
+    required = {"origin_key", "origin_ordinal", "origin_timestamp_us"}
+    missing = sorted(required.difference(set(labels.columns)))
+    if missing:
+        raise RuntimeError(f"{prefix} label alignment failed: labels are missing columns {missing}.")
+    missing_origins = sorted({"origin_key", "origin_ordinal", "origin_timestamp_us"}.difference(set(origins.columns)))
+    if missing_origins:
+        raise RuntimeError(f"{prefix} label alignment failed: origins are missing columns {missing_origins}.")
+
+    origin_keys = origins.select(["origin_key", "origin_ordinal", "origin_timestamp_us"]).with_row_index("__origin_order")
+    if int(origin_keys.get_column("origin_key").n_unique()) != origin_count:
+        raise RuntimeError(f"{prefix} label alignment failed: duplicate origin keys in eligible origins.")
+    if int(labels.get_column("origin_key").n_unique()) != label_count:
+        duplicates = (
+            labels.group_by("origin_key")
+            .agg(pl.len().alias("__count"))
+            .filter(pl.col("__count") > 1)
+            .select("origin_key")
+            .head(5)
+            .get_column("origin_key")
+            .to_list()
+        )
+        raise RuntimeError(f"{prefix} label alignment failed: duplicate compact label rows for origin keys {duplicates}.")
+
+    label_keys = labels.select("origin_key")
+    missing_label_count = int(origin_keys.join(label_keys, on="origin_key", how="anti").height)
+    if missing_label_count:
+        examples = origin_keys.join(label_keys, on="origin_key", how="anti").select("origin_key").head(5).get_column("origin_key").to_list()
+        raise RuntimeError(f"{prefix} label alignment failed: {missing_label_count:,} eligible origins have no labels; examples={examples}.")
+
+    extra_label_count = int(label_keys.join(origin_keys.select("origin_key"), on="origin_key", how="anti").height)
+    aligned = (
+        origin_keys
+        .select(["__origin_order", "origin_key"])
+        .join(labels, on="origin_key", how="left")
+        .sort("__origin_order")
+        .drop("__origin_order")
+    )
+    if int(aligned.height) != origin_count:
+        raise RuntimeError(f"{prefix} label alignment failed: aligned labels {aligned.height:,} != origins {origin_count:,}.")
+    expected = origins.select(
+        [
+            "origin_key",
+            pl.col("origin_ordinal").alias("__expected_origin_ordinal"),
+            pl.col("origin_timestamp_us").alias("__expected_origin_timestamp_us"),
+        ]
+    )
+    mismatches = (
+        aligned
+        .select(["origin_key", "origin_ordinal", "origin_timestamp_us"])
+        .join(expected, on="origin_key", how="left")
+        .filter(
+            (pl.col("origin_ordinal") != pl.col("__expected_origin_ordinal"))
+            | (pl.col("origin_timestamp_us") != pl.col("__expected_origin_timestamp_us"))
+        )
+    )
+    if int(mismatches.height):
+        examples = mismatches.select("origin_key").head(5).get_column("origin_key").to_list()
+        raise RuntimeError(f"{prefix} label alignment failed: labels disagree with origin identity; examples={examples}.")
+    return aligned, extra_label_count
 
 
 def _label_arrays_from_row(labels: Any, row_index: int, expected: int, origin_key: str) -> dict[str, np.ndarray]:
