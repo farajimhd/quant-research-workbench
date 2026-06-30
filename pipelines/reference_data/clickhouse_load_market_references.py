@@ -27,6 +27,20 @@ from research.mlops.env import load_env_files, secret_status  # noqa: E402
 
 DEFAULT_REFERENCE_DIR = REPO_ROOT / "research" / "market_references" / "massive"
 
+GLOSSARY_REFERENCE_TABLES = [
+    ("ref_quote_conditions", "quote_conditions"),
+    ("ref_trade_conditions", "trade_conditions"),
+    ("ref_trade_corrections_nyse", "trade_corrections_nyse"),
+    ("ref_financial_status", "financial_status"),
+    ("ref_cta_security_status", "cta_security_status"),
+    ("ref_halt_reason", "halt_reason"),
+    ("ref_utp_security_status", "utp_security_status"),
+    ("ref_nbbo_indicators", "nbbo_indicators"),
+    ("ref_held_trade_indicators", "held_trade_indicators"),
+    ("ref_misc_indicators", "misc_indicators"),
+    ("ref_luld_indicators", "luld_indicators"),
+]
+
 
 @dataclass(frozen=True, slots=True)
 class ReferenceSpec:
@@ -49,12 +63,17 @@ def parse_args() -> argparse.Namespace:
 
 
 def reference_specs(reference_dir: Path) -> list[ReferenceSpec]:
-    return [
-        ReferenceSpec("ref_quote_conditions", reference_dir / "conditions_indicators_glossary.json", "quote_conditions"),
-        ReferenceSpec("ref_trade_conditions", reference_dir / "conditions_indicators_glossary.json", "trade_conditions"),
+    specs = [
+        ReferenceSpec(table, reference_dir / "conditions_indicators_glossary.json", kind)
+        for table, kind in GLOSSARY_REFERENCE_TABLES
+    ]
+    specs.extend(
+        [
         ReferenceSpec("ref_stock_exchanges", reference_dir / "stock_exchanges.json", "json_results"),
         ReferenceSpec("ref_stock_tapes", reference_dir / "stock_tapes.json", "json_results"),
-    ]
+        ]
+    )
+    return specs
 
 
 def create_reference_table_sql(database: str, table: str, storage_policy: str) -> str:
@@ -84,6 +103,7 @@ def create_condition_table_sql(database: str, table: str, storage_policy: str) -
 CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
 (
     reference_name LowCardinality(String),
+    source_row UInt16,
     modifier_int Int16,
     raw_modifier LowCardinality(String),
     dense_id UInt8,
@@ -96,7 +116,7 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     provider LowCardinality(String)
 )
 ENGINE = MergeTree
-ORDER BY (reference_name, modifier_int)
+ORDER BY (reference_name, source_row)
 {settings}
 """
 
@@ -136,6 +156,7 @@ def glossary_condition_rows(path: Path, table_name: str) -> tuple[str, list[dict
     rows = [
         {
             "reference_name": reference_name,
+            "source_row": 0,
             "modifier_int": -32768,
             "raw_modifier": "",
             "dense_id": 0,
@@ -152,6 +173,7 @@ def glossary_condition_rows(path: Path, table_name: str) -> tuple[str, list[dict
         rows.append(
             {
                 "reference_name": reference_name,
+                "source_row": int(row.get("source_row") or dense_id),
                 "modifier_int": int(row["modifier_int"]),
                 "raw_modifier": str(row.get("modifier") or ""),
                 "dense_id": dense_id,
@@ -192,6 +214,7 @@ def condition_value_sql(row: dict[str, Any]) -> str:
     return (
         "("
         f"{sql_string(row['reference_name'])}, "
+        f"{int(row['source_row'])}, "
         f"{int(row['modifier_int'])}, "
         f"{sql_string(row['raw_modifier'])}, "
         f"{int(row['dense_id'])}, "
@@ -208,12 +231,13 @@ def condition_value_sql(row: dict[str, Any]) -> str:
 
 def load_one(client: ClickHouseHttpClient, args: argparse.Namespace, spec: ReferenceSpec) -> None:
     table = f"{quote_ident(args.database)}.{quote_ident(spec.table)}"
-    if spec.kind in {"quote_conditions", "trade_conditions"}:
+    if spec.kind != "json_results":
         reference_name, rows = glossary_condition_rows(spec.path, spec.kind)
         create_sql = create_condition_table_sql(args.database, spec.table, args.storage_policy)
         columns = """
 (
     reference_name,
+    source_row,
     modifier_int,
     raw_modifier,
     dense_id,
