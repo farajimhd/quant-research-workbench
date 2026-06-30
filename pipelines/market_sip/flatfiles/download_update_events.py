@@ -1848,8 +1848,11 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
         summarize_chunks=args.bar_summarize_chunks,
         expand_boundaries=True,
         drop_table=False,
+        purge_unsupported_macro_timeframes=False,
         dry_run=args.dry_run,
     )
+    if bar_args.drop_table or getattr(bar_args, "purge_unsupported_macro_timeframes", False):
+        raise RuntimeError("Direct flatfile updates must not drop or purge macro bar tables.")
     bar_specs = parse_timeframes(args.bar_timeframes)
     ranges = timeframe_ranges(bar_args, bar_specs)
     bar_tables = bar_table_specs(bar_args)

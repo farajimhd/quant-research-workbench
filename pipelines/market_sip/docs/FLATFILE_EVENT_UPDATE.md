@@ -54,7 +54,9 @@ It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
    which matches the current training data requirement. Daily bars use the New
    York extended-hours session, 04:00 ET through 20:00 ET, so the daily close is
    the after-hours close. Weekly/yearly bars can still be requested explicitly
-   with `--bar-timeframes`, but they are not built by default here.
+   with `--bar-timeframes`, but they are not built by default here. This
+   automatic post-ingest bar step never drops or purges the macro bar table; it
+   only replaces overlapping rows for the requested timeframe/date range.
 
 The standalone bar builder, `pipelines/market_sip/events/run_build_trade_bars.py`,
 uses the same direct event-to-macro aggregation and writes
@@ -316,7 +318,8 @@ Retry and safety:
 - `--skip-bars`: update only events/continuity and skip the bar rebuild stage.
 - `--bar-replace-range` / `--no-bar-replace-range`: controls whether
   overlapping bars are deleted before reinserting the updated range. Keep the
-  default enabled for normal updates.
+  default enabled for normal updates. This is a row-level replacement for the
+  current bar range, not a table drop.
 - `--dry-run`: discover/download-plan only; no event inserts.
 - `--test-mode`: build isolated temp events/manifest/continuity tables and
   audit them against the raw quote/trade CSVs used for that run. Production
