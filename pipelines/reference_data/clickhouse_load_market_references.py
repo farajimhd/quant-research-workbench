@@ -193,19 +193,24 @@ def yes_no_to_int(value: Any) -> int:
     return 1 if str(value or "").strip().lower() == "yes" else 0
 
 
+def value_string(value: Any) -> str:
+    text = str(value or "")
+    return "'" + text.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
 def value_sql(row: dict[str, Any]) -> str:
     raw_id = "NULL" if row["raw_id"] is None else str(int(row["raw_id"]))
     return (
         "("
-        f"{sql_string(row['reference_name'])}, "
+        f"{value_string(row['reference_name'])}, "
         f"{raw_id}, "
-        f"{sql_string(row['raw_code'])}, "
+        f"{value_string(row['raw_code'])}, "
         f"{int(row['dense_id'])}, "
         f"{int(row['dense_id_bits'])}, "
-        f"{sql_string(row['dense_id_kind'])}, "
-        f"{sql_string(row['name'])}, "
-        f"{sql_string(row['description'])}, "
-        f"{sql_string(row['provider'])}"
+        f"{value_string(row['dense_id_kind'])}, "
+        f"{value_string(row['name'])}, "
+        f"{value_string(row['description'])}, "
+        f"{value_string(row['provider'])}"
         ")"
     )
 
@@ -213,18 +218,18 @@ def value_sql(row: dict[str, Any]) -> str:
 def condition_value_sql(row: dict[str, Any]) -> str:
     return (
         "("
-        f"{sql_string(row['reference_name'])}, "
+        f"{value_string(row['reference_name'])}, "
         f"{int(row['source_row'])}, "
         f"{int(row['modifier_int'])}, "
-        f"{sql_string(row['raw_modifier'])}, "
+        f"{value_string(row['raw_modifier'])}, "
         f"{int(row['dense_id'])}, "
         f"{int(row['dense_id_bits'])}, "
-        f"{sql_string(row['condition'])}, "
-        f"{sql_string(row['sip_mapping'])}, "
+        f"{value_string(row['condition'])}, "
+        f"{value_string(row['sip_mapping'])}, "
         f"{int(row['update_high_low'])}, "
         f"{int(row['update_last'])}, "
         f"{int(row['update_volume'])}, "
-        f"{sql_string(row['provider'])}"
+        f"{value_string(row['provider'])}"
         ")"
     )
 
