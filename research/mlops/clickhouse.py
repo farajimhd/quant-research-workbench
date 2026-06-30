@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -253,7 +254,10 @@ class ClickHouseHttpClient:
             raise RuntimeError(f"ClickHouse HTTP {exc.code} {exc.reason}: {body}") from exc
 
     def query_tsv(self, sql: str) -> str:
-        return self.execute(sql.rstrip(";") + " FORMAT TSV")
+        query = sql.strip().rstrip(";").rstrip()
+        if re.search(r"\bFORMAT\s+[A-Za-z0-9_]+\s*$", query, flags=re.IGNORECASE):
+            return self.execute(query)
+        return self.execute(query + "\nFORMAT TSV")
 
 def parse_kinds(text: str) -> list[str]:
     kinds = [item.strip() for item in text.split(",") if item.strip()]
