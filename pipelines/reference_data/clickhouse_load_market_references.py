@@ -42,35 +42,10 @@ GLOSSARY_REFERENCE_TABLES = [
 ]
 
 CONDITION_TOKEN_REFERENCE_TABLE = "event_condition_token_reference"
-CONDITION_TOKEN_BITS = 10
-CONDITION_TOKEN_SLOT_COUNT = 6
+CONDITION_TOKEN_BITS = 8
+CONDITION_TOKEN_SLOT_COUNT = 5
 CONDITION_TOKEN_MAX_ID = (1 << CONDITION_TOKEN_BITS) - 1
 CONDITION_TOKEN_RESERVED_HIGH_BITS = 64 - (CONDITION_TOKEN_BITS * CONDITION_TOKEN_SLOT_COUNT)
-
-CONDITION_FLAG_BITS = {
-    "has_condition": 0,
-    "has_indicator": 1,
-    "has_trade_correction": 2,
-    "has_nonzero_trade_correction": 3,
-    "has_halt_status": 4,
-    "has_luld_status": 5,
-    "has_security_status": 6,
-    "has_financial_status": 7,
-    "has_nbbo_indicator": 8,
-    "has_held_trade_indicator": 9,
-    "has_misc_indicator": 10,
-    "has_irregular_sale_condition": 11,
-    "has_out_of_sequence_condition": 12,
-    "has_extended_hours_condition": 13,
-    "has_sold_last_condition": 14,
-    "has_derivatively_priced_condition": 15,
-    "has_average_price_condition": 16,
-    "has_prior_reference_price_condition": 17,
-    "has_open_or_close_condition": 18,
-    "has_volume_only_or_non_price_forming_condition": 19,
-    "condition_token_overflow": 20,
-    "unknown_condition_token_seen": 21,
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +147,6 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     update_last UInt8,
     update_volume UInt8,
     provider LowCardinality(String),
-    flag_mask UInt32,
     is_join_canonical UInt8,
     is_unknown UInt8
 )
@@ -262,68 +236,6 @@ def yes_no_to_int(value: Any) -> int:
     return 1 if str(value or "").strip().lower() == "yes" else 0
 
 
-def flag_bit(name: str) -> int:
-    return 1 << CONDITION_FLAG_BITS[name]
-
-
-def condition_flag_mask(kind: str, row: dict[str, Any]) -> int:
-    text = str(row.get("condition") or "").strip().lower()
-    modifier = int(row.get("modifier_int") or 0)
-    mask = 0
-    if kind in {"quote_conditions", "trade_conditions"}:
-        mask |= flag_bit("has_condition")
-    elif kind == "trade_corrections_nyse":
-        mask |= flag_bit("has_trade_correction")
-        if modifier != 0:
-            mask |= flag_bit("has_nonzero_trade_correction")
-    else:
-        mask |= flag_bit("has_indicator")
-
-    if kind == "halt_reason":
-        mask |= flag_bit("has_halt_status")
-    if kind == "luld_indicators":
-        mask |= flag_bit("has_luld_status")
-    if kind in {"cta_security_status", "utp_security_status"}:
-        mask |= flag_bit("has_security_status")
-    if kind == "financial_status":
-        mask |= flag_bit("has_financial_status")
-    if kind == "nbbo_indicators":
-        mask |= flag_bit("has_nbbo_indicator")
-    if kind == "held_trade_indicators":
-        mask |= flag_bit("has_held_trade_indicator")
-    if kind == "misc_indicators":
-        mask |= flag_bit("has_misc_indicator")
-
-    if kind == "trade_conditions":
-        if "average price" in text:
-            mask |= flag_bit("has_average_price_condition")
-        if "derivatively priced" in text:
-            mask |= flag_bit("has_derivatively_priced_condition")
-        if "extended trading hours" in text or "form t" in text:
-            mask |= flag_bit("has_extended_hours_condition")
-        if "sold" in text:
-            mask |= flag_bit("has_sold_last_condition")
-        if "out of sequence" in text:
-            mask |= flag_bit("has_out_of_sequence_condition")
-        if "prior reference" in text:
-            mask |= flag_bit("has_prior_reference_price_condition")
-        if "open" in text or "closing" in text or "close" in text:
-            mask |= flag_bit("has_open_or_close_condition")
-        update_high_low = yes_no_to_int(row.get("update_high_low"))
-        update_last = yes_no_to_int(row.get("update_last"))
-        update_volume = yes_no_to_int(row.get("update_volume"))
-        if update_volume and not update_high_low and not update_last:
-            mask |= flag_bit("has_volume_only_or_non_price_forming_condition")
-        if modifier != 0:
-            mask |= flag_bit("has_irregular_sale_condition")
-    elif kind == "quote_conditions":
-        if modifier not in {0, 1}:
-            mask |= flag_bit("has_irregular_sale_condition")
-        if "open" in text or "closing" in text or "close" in text:
-            mask |= flag_bit("has_open_or_close_condition")
-    return mask
-
-
 def build_condition_token_rows(reference_dir: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = [
         {
@@ -341,7 +253,6 @@ def build_condition_token_rows(reference_dir: Path) -> list[dict[str, Any]]:
             "update_last": 0,
             "update_volume": 0,
             "provider": "internal",
-            "flag_mask": flag_bit("unknown_condition_token_seen"),
             "is_join_canonical": 1,
             "is_unknown": 1,
         }
@@ -376,7 +287,6 @@ def build_condition_token_rows(reference_dir: Path) -> list[dict[str, Any]]:
                     "update_last": yes_no_to_int(row.get("update_last")),
                     "update_volume": yes_no_to_int(row.get("update_volume")),
                     "provider": str(payload.get("provider") or "massive"),
-                    "flag_mask": condition_flag_mask(kind, row),
                     "is_join_canonical": is_canonical,
                     "is_unknown": 0,
                 }
@@ -393,9 +303,9 @@ def validate_condition_token_rows(rows: list[dict[str, Any]]) -> None:
             f"Unified condition token ids overflow {CONDITION_TOKEN_BITS} bits: "
             f"max_token_id={max_token_id} capacity={CONDITION_TOKEN_MAX_ID}"
         )
-    if CONDITION_TOKEN_RESERVED_HIGH_BITS < 4:
+    if CONDITION_TOKEN_RESERVED_HIGH_BITS < 20:
         raise ValueError(
-            f"Packed condition tokens need at least 4 reserved high bits for token count/overflow, "
+            f"Packed condition tokens need at least 20 reserved high bits for metadata, "
             f"got {CONDITION_TOKEN_RESERVED_HIGH_BITS}"
         )
     seen_ids: set[int] = set()
@@ -470,7 +380,6 @@ def condition_token_value_sql(row: dict[str, Any]) -> str:
         f"{int(row['update_last'])}, "
         f"{int(row['update_volume'])}, "
         f"{value_string(row['provider'])}, "
-        f"{int(row['flag_mask'])}, "
         f"{int(row['is_join_canonical'])}, "
         f"{int(row['is_unknown'])}"
         ")"
@@ -564,7 +473,6 @@ INSERT INTO {table}
     update_last,
     update_volume,
     provider,
-    flag_mask,
     is_join_canonical,
     is_unknown
 )
