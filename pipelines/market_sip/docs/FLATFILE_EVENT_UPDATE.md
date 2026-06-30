@@ -38,7 +38,10 @@ It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
 5. Convert raw rows directly to the current `market_sip_compact.events` schema:
    price integer plus scale flags, size fields, exchanges, packed conditions,
    event type, event date, and SIP timestamp in microseconds.
-6. Filter structurally invalid rows before they enter `events`.
+6. Filter rows that cannot be placed in the stream, such as blank ticker,
+   missing SIP timestamp, or missing sequence number. Rows with price, size, or
+   crossed-quote issues are kept, but the affected numeric event fields are set
+   to zero so condition/indicator signals such as halts are not lost.
 7. Assign ticker-local ordinals using `events_ordinal_continuity`.
 8. Write `events_build_manifest` and `events_ordinal_continuity` rows for the
    processed day.
@@ -370,6 +373,9 @@ The event rows match the unified event table contract:
 - price scale and tape are packed into `event_meta`
 - quote rows store the first four quote condition tokens plus the first quote indicator token in `condition_token_1..5`
 - trade rows store the first five trade condition tokens in `condition_token_1..5`; configured correction codes are filtered before insertion
-- structurally invalid rows are filtered before insertion
+- rows with blank ticker, missing SIP timestamp, or missing sequence number are
+  filtered before insertion
+- quote/trade rows with price, size, precision, or crossed-quote issues are
+  retained with the affected numeric fields set to zero
 
 For the detailed event schema, see `UNIFIED_EVENTS_TABLE.md`.

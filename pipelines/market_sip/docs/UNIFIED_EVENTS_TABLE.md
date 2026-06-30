@@ -71,18 +71,18 @@ validation index: 2026-01-01 -> 2099-12-31
 storage policy: CLICKHOUSE_HISTORICAL_STORAGE_POLICY
 storage partition mode: toYYYYMM(event_date)
 max_partitions_per_insert_block: 1024
-clean mode: issue_flags_zero
+row policy: structural filter plus numeric zero-sanitization
 drop trade correction codes: 7,8,10,11
 ```
 
-Events are built one source date at a time. Each day job reads all clean
-quote/trade rows for that `event_date`, merges quotes and trades per ticker,
-assigns that day's ticker-local row number, adds the prior `next_ordinal` from
-`events_ordinal_continuity`, writes rows to `events`, and records status in
-`events_build_manifest` with `ticker='__ALL__'`.
+Events are built one source date at a time. Each day job reads all structurally
+placeable, sanitized quote/trade rows for that `event_date`, merges quotes and
+trades per ticker, assigns that day's ticker-local row number, adds the prior
+`next_ordinal` from `events_ordinal_continuity`, writes rows to `events`, and
+records status in `events_build_manifest` with `ticker='__ALL__'`.
 
 After a day is written, the builder appends one continuity row per ticker that
-had events that day. This continuity step uses the same clean daily
+had events that day. This continuity step uses the same sanitized daily
 quote/trade union plus the prior continuity offset. It must not scan the growing
 `events` table by `event_date`, because `events` is ordered by `(ticker,
 ordinal)` and that date scan becomes slower as the table grows.
@@ -478,44 +478,48 @@ raw quote/trade separate column names
 `sequence_number` is still required during table construction to break ordering
 ties, but it is not required for training lookup after `ordinal` is assigned.
 
-## Filtering Rules
+## Filtering And Sanitization Rules
 
-The training table should contain clean events only.
+The event table should preserve structurally placeable quote/trade rows so
+condition and indicator signals are not lost. Rows are filtered only when they
+cannot be assigned a reliable ticker-local position in the stream.
 
 Common filters:
 
 ```sql
-issue_flags = 0
-AND ticker != ''
+ticker != ''
 AND sip_timestamp_us > 0
 AND sequence_number > 0
 ```
 
-Quote filters:
+Quote numeric sanitization:
 
 ```sql
-bid_price_int > 0
-AND ask_price_int > 0
-AND bid_size > 0
-AND ask_size > 0
-AND decoded_bid_price <= decoded_ask_price
+if bid or ask price is nonpositive, precision-clipped, or crossed:
+    bid/ask price fields = 0
+    bid/ask price-scale bits = 0
+if bid or ask size is nonpositive:
+    that size field = 0
 ```
 
-Trade filters:
+Trade numeric sanitization:
 
 ```sql
-price_int > 0
-AND size > 0
+if trade price is nonpositive or precision-clipped:
+    trade price field = 0
+    trade price-scale bit = 0
+if trade size is nonpositive:
+    trade size field = 0
 ```
 
-Do not rely on `issue_flags = 0` alone. Current `issue_flags` cover structural
-ingest/conversion issues, but they are not a full semantic validity proof.
+Historical trade correction codes configured for dropping are still excluded
+before event construction. The default dropped correction codes are `7,8,10,11`.
 
 ## Ordinal Assignment
 
 Ordinal must be assigned after:
 
-1. quote/trade source filtering,
+1. quote/trade structural filtering and numeric sanitization,
 2. quote/trade union,
 3. deterministic ordering.
 

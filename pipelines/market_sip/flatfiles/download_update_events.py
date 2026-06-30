@@ -87,7 +87,6 @@ from pipelines.market_sip.ingest.clickhouse_ingest_sip_compact_codec import (  #
     env_status_keys,
 )
 from pipelines.market_sip.validation.clickhouse_compact_schema_validate_sample import (  # noqa: E402
-    participant_delta_us,
     price_int,
     price_precision_clipped,
     scale_code,
@@ -701,52 +700,20 @@ def event_date_expr_from_us(expr: str) -> str:
 
 
 def quote_clean_predicate() -> str:
-    bid_price = "toFloat64OrZero(bid_price)"
-    ask_price = "toFloat64OrZero(ask_price)"
-    delta_us = "intDiv(toInt64OrZero(participant_timestamp) - toInt64OrZero(sip_timestamp), 1000)"
-    issue_flags = (
-        f"toUInt16(if({bid_price} <= 0, 1, 0) + "
-        f"if({ask_price} <= 0, 2, 0) + "
-        "if(toFloat64OrZero(bid_size) <= 0, 4, 0) + "
-        "if(toFloat64OrZero(ask_size) <= 0, 8, 0) + "
-        f"if({delta_us} < -2147483648 OR {delta_us} > 2147483647, 16, 0) + "
-        f"if({price_precision_clipped_sql(bid_price)}, 32, 0) + "
-        f"if({price_precision_clipped_sql(ask_price)}, 64, 0))"
-    )
-    bid_scale = scale_code_sql(bid_price)
-    ask_scale = scale_code_sql(ask_price)
     return f"""
 ticker != ''
 AND toUInt64OrZero(sip_timestamp) > 0
 AND toUInt32OrZero(sequence_number) > 0
-AND {price_int_sql(bid_price)} > 0
-AND {price_int_sql(ask_price)} > 0
-AND toFloat64OrZero(bid_size) > 0
-AND toFloat64OrZero(ask_size) > 0
-AND if({bid_scale} = 1, {price_int_sql(bid_price)} / 10000.0, {price_int_sql(bid_price)} / 100.0)
-    <= if({ask_scale} = 1, {price_int_sql(ask_price)} / 10000.0, {price_int_sql(ask_price)} / 100.0)
-AND {issue_flags} = 0
 """.strip()
 
 
 def trade_clean_predicate(args: argparse.Namespace) -> str:
-    price = "toFloat64OrZero(price)"
-    delta_us = "intDiv(toInt64OrZero(participant_timestamp) - toInt64OrZero(sip_timestamp), 1000)"
     correction_filter = flatfile_trade_correction_filter_sql(args)
-    issue_flags = (
-        f"toUInt16(if({price} <= 0, 1, 0) + "
-        "if(toFloat64OrZero(size) <= 0, 2, 0) + "
-        f"if({delta_us} < -2147483648 OR {delta_us} > 2147483647, 4, 0) + "
-        f"if({price_precision_clipped_sql(price)}, 8, 0))"
-    )
     return f"""
 ticker != ''
 AND toUInt64OrZero(sip_timestamp) > 0
 AND toUInt32OrZero(sequence_number) > 0
-AND {price_int_sql(price)} > 0
-AND toFloat64OrZero(size) > 0
 {correction_filter}
-AND {issue_flags} = 0
 """.strip()
 
 
@@ -764,11 +731,27 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
     bid_price = "toFloat64OrZero(bid_price)"
     ask_price = "toFloat64OrZero(ask_price)"
     trade_price = "toFloat64OrZero(price)"
+    bid_price_int = price_int_sql(bid_price)
+    ask_price_int = price_int_sql(ask_price)
+    trade_price_int = price_int_sql(trade_price)
     bid_scale = scale_code_sql(bid_price)
     ask_scale = scale_code_sql(ask_price)
     trade_scale = scale_code_sql(trade_price)
-    quote_flags = f"toUInt8({bid_scale} + ({ask_scale} * 2) + ({tape_code_sql('tape')} * 4))"
-    trade_flags = f"toUInt8({trade_scale} + ({tape_code_sql('tape')} * 2))"
+    bid_decoded = f"if({bid_scale} = 1, {bid_price_int} / 10000.0, {bid_price_int} / 100.0)"
+    ask_decoded = f"if({ask_scale} = 1, {ask_price_int} / 10000.0, {ask_price_int} / 100.0)"
+    quote_price_valid = (
+        f"({bid_price} > 0 AND {ask_price} > 0 "
+        f"AND {bid_price_int} > 0 AND {ask_price_int} > 0 "
+        f"AND NOT {price_precision_clipped_sql(bid_price)} "
+        f"AND NOT {price_precision_clipped_sql(ask_price)} "
+        f"AND {bid_decoded} <= {ask_decoded})"
+    )
+    trade_price_valid = f"({trade_price} > 0 AND {trade_price_int} > 0 AND NOT {price_precision_clipped_sql(trade_price)})"
+    clean_bid_scale = f"if({quote_price_valid}, {bid_scale}, 0)"
+    clean_ask_scale = f"if({quote_price_valid}, {ask_scale}, 0)"
+    clean_trade_scale = f"if({trade_price_valid}, {trade_scale}, 0)"
+    quote_flags = f"toUInt8({clean_bid_scale} + ({clean_ask_scale} * 2) + ({tape_code_sql('tape')} * 4))"
+    trade_flags = f"toUInt8({clean_trade_scale} + ({tape_code_sql('tape')} * 2))"
     return f"""
     SELECT
         q.ticker AS ticker,
@@ -793,10 +776,10 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
             ticker,
             toUInt64(intDiv(toUInt64OrZero(sip_timestamp), 1000)) AS sip_timestamp_us,
             toUInt32OrZero(sequence_number) AS sequence_number_u32,
-            {price_int_sql(bid_price)} AS bid_price_int,
-            {price_int_sql(ask_price)} AS ask_price_int,
-            toUInt32(toFloat64OrZero(bid_size)) AS bid_size_u32,
-            toUInt32(toFloat64OrZero(ask_size)) AS ask_size_u32,
+            toUInt32(if({quote_price_valid}, {bid_price_int}, 0)) AS bid_price_int,
+            toUInt32(if({quote_price_valid}, {ask_price_int}, 0)) AS ask_price_int,
+            toUInt32(if(toFloat64OrZero(bid_size) > 0, toFloat64OrZero(bid_size), 0)) AS bid_size_u32,
+            toUInt32(if(toFloat64OrZero(ask_size) > 0, toFloat64OrZero(ask_size), 0)) AS ask_size_u32,
             toUInt8OrZero(bid_exchange) AS bid_exchange_u8,
             toUInt8OrZero(ask_exchange) AS ask_exchange_u8,
             conditions,
@@ -847,8 +830,8 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
             ticker,
             toUInt64(intDiv(toUInt64OrZero(sip_timestamp), 1000)) AS sip_timestamp_us,
             toUInt32OrZero(sequence_number) AS sequence_number_u32,
-            {price_int_sql(trade_price)} AS price_int,
-            toFloat32OrZero(size) AS size_f32,
+            toUInt32(if({trade_price_valid}, {trade_price_int}, 0)) AS price_int,
+            toFloat32(if(toFloat64OrZero(size) > 0, toFloat64OrZero(size), 0)) AS size_f32,
             toUInt8OrZero(exchange) AS exchange_u8,
             conditions,
             {trade_flags} AS trade_flags,
@@ -1226,8 +1209,8 @@ SELECT
     countIf(bitAnd(event_meta, 1) NOT IN (0, 1)) AS bad_event_type_rows,
     countIf(sip_timestamp_us = 0) AS zero_timestamp_rows,
     countIf(event_date NOT IN ({allowed_dates})) AS wrong_event_date_rows,
-    countIf(bitAnd(event_meta, 1) = 0 AND (price_primary_int = 0 OR price_secondary_int = 0 OR size_primary <= 0 OR size_secondary <= 0)) AS bad_quote_rows,
-    countIf(bitAnd(event_meta, 1) = 1 AND (price_primary_int = 0 OR price_secondary_int != 0 OR size_primary <= 0 OR size_secondary != 0 OR exchange_secondary != 0)) AS bad_trade_rows,
+    countIf(bitAnd(event_meta, 1) = 0 AND ((price_primary_int = 0) != (price_secondary_int = 0) OR size_primary < 0 OR size_secondary < 0)) AS bad_quote_rows,
+    countIf(bitAnd(event_meta, 1) = 1 AND (price_secondary_int != 0 OR size_secondary != 0 OR exchange_secondary != 0 OR size_primary < 0)) AS bad_trade_rows,
     count() - uniqExact(ticker, ordinal) AS duplicate_ticker_ordinal_rows
 FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
 """,
@@ -1518,19 +1501,26 @@ def quote_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, 
     ask_size = to_decimal_or_zero(row.get("ask_size"))
     bid_size_int = int(float(bid_size)) if bid_size > 0 else 0
     ask_size_int = int(float(ask_size)) if ask_size > 0 else 0
-    delta_us, _ = participant_delta_us(row)
     if not row.get("ticker") or to_int_or_zero(row.get("sip_timestamp")) <= 0 or to_int_or_zero(row.get("sequence_number")) <= 0:
-        return None
-    if bid_int <= 0 or ask_int <= 0 or bid_size_int <= 0 or ask_size_int <= 0:
-        return None
-    if delta_us < -2147483648 or delta_us > 2147483647 or price_precision_clipped(bid) or price_precision_clipped(ask):
         return None
     bid_scale = scale_code(bid)
     ask_scale = scale_code(ask)
     bid_price = bid_int / (10000.0 if bid_scale else 100.0)
     ask_price = ask_int / (10000.0 if ask_scale else 100.0)
-    if bid_price > ask_price:
-        return None
+    quote_price_valid = (
+        bid > 0
+        and ask > 0
+        and bid_int > 0
+        and ask_int > 0
+        and not price_precision_clipped(bid)
+        and not price_precision_clipped(ask)
+        and bid_price <= ask_price
+    )
+    if not quote_price_valid:
+        bid_int = 0
+        ask_int = 0
+        bid_scale = 0
+        ask_scale = 0
     return {
         "ticker": str(row["ticker"]),
         "event_type": 0,
@@ -1552,14 +1542,13 @@ def trade_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, 
     trade_price = to_decimal_or_zero(row.get("price"))
     trade_int = price_int(trade_price)
     size = to_decimal_or_zero(row.get("size"))
-    delta_us, _ = participant_delta_us(row)
     if not row.get("ticker") or to_int_or_zero(row.get("sip_timestamp")) <= 0 or to_int_or_zero(row.get("sequence_number")) <= 0:
         return None
-    if trade_int <= 0 or size <= 0:
-        return None
-    if delta_us < -2147483648 or delta_us > 2147483647 or price_precision_clipped(trade_price):
-        return None
     trade_scale = scale_code(trade_price)
+    if trade_price <= 0 or trade_int <= 0 or price_precision_clipped(trade_price):
+        trade_int = 0
+        trade_scale = 0
+    size = size if size > 0 else 0
     return {
         "ticker": str(row["ticker"]),
         "event_type": 1,
