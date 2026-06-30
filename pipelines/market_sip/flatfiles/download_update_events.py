@@ -61,7 +61,6 @@ from pipelines.market_sip.events.clickhouse_build_trade_bars import (  # noqa: E
     DEFAULT_BARS_BY_TIME_SYMBOL_TABLE,
     DEFAULT_BARS_TABLE,
     DEFAULT_MACRO_BARS_TABLE,
-    DEFAULT_TIMEFRAMES as DEFAULT_BAR_TIMEFRAMES,
     bar_table_specs,
     build_macro_bars,
     format_timeframe_ranges,
@@ -122,6 +121,7 @@ DEFAULT_MAX_THREADS = 32
 DEFAULT_TEST_TABLE_PREFIX = "test_flatfile_event_update"
 DEFAULT_TEST_SAMPLE_SIZE = 100
 DEFAULT_TICKER_DAY_INDEX_TABLE = "events_ticker_day_index"
+DEFAULT_DIRECT_MACRO_BAR_TIMEFRAMES = ("1d",)
 
 SAFE_TEST_TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -159,7 +159,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bars-table", default=DEFAULT_BARS_TABLE)
     parser.add_argument("--bars-by-symbol-time-table", default=DEFAULT_BARS_BY_SYMBOL_TIME_TABLE)
     parser.add_argument("--bars-by-time-symbol-table", default=DEFAULT_BARS_BY_TIME_SYMBOL_TABLE)
-    parser.add_argument("--bar-timeframes", default=",".join(DEFAULT_BAR_TIMEFRAMES))
+    parser.add_argument("--bar-timeframes", default=",".join(DEFAULT_DIRECT_MACRO_BAR_TIMEFRAMES))
     parser.add_argument("--bar-chunk-days", type=int, default=7)
     parser.add_argument("--bar-staging-table", default="_staging_trade_bars")
     parser.add_argument("--bar-keep-staging-table", action="store_true")

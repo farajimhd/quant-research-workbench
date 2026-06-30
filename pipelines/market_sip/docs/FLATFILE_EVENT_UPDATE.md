@@ -49,11 +49,12 @@ It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
    latest continuity state. This table is the loader-facing discovery/index
    table; train and validation periods are selected by the loader instead of
    being baked into table names.
-10. Rebuild macro bar rows for the successfully updated date range directly from
-   `events`. The default macro timeframes are `1d,1w,1y`. Daily bars use the
-   New York extended-hours session, 04:00 ET through 20:00 ET, so the daily
-   close is the after-hours close. Weekly and yearly bars expand their own
-   delete/insert ranges to full affected week/year boundaries.
+10. Rebuild daily macro bar rows for the successfully updated date range
+   directly from `events`. The direct flatfile update default is `1d` only,
+   which matches the current training data requirement. Daily bars use the New
+   York extended-hours session, 04:00 ET through 20:00 ET, so the daily close is
+   the after-hours close. Weekly/yearly bars can still be requested explicitly
+   with `--bar-timeframes`, but they are not built by default here.
 
 The standalone bar builder, `pipelines/market_sip/events/run_build_trade_bars.py`,
 uses the same direct event-to-macro aggregation and writes
@@ -69,14 +70,16 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
 
 If the table was previously built by the old all-bars/staging path, run a
 one-time full rebuild instead. This drops and recreates the macro table, removes
-stale `1mo` rows, and rewrites `1d,1w,1y` with the current extended-hours
-session boundaries:
+stale unsupported rows, and rewrites the requested timeframe rows with the
+current extended-hours session boundaries. For the current training pipeline,
+use `--timeframes 1d`:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_trade_bars.py `
   --database market_sip_compact `
   --start-date 2019-01-01 `
   --end-date 2026-12-31 `
+  --timeframes 1d `
   --full-rebuild
 ```
 
@@ -243,7 +246,7 @@ The script prints:
 - discovered complete quote/trade day pairs
 - per-day download completion
 - day insert start and ETA
-- macro bar rebuild range and per-timeframe insert profiles
+- daily macro bar rebuild range and insert profiles
 - ClickHouse query profile lines from the shared `run_profiled` helper
 - final JSONL report path
 
@@ -274,7 +277,7 @@ ClickHouse:
 - `--macro-bars-table`: target macro bar table, default
   `macro_bars_by_time_symbol`.
 - `--bar-timeframes`: comma-separated macro bar timeframes to rebuild after
-  event insertion. Default: `1d,1w,1y`.
+  event insertion. Default for direct flatfile updates: `1d`.
 - `--manifest-table`: build manifest table, default `events_build_manifest`.
 - `--continuity-table`: ordinal continuity table, default
   `events_ordinal_continuity`.
