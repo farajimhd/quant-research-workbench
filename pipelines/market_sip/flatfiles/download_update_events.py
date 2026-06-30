@@ -1073,7 +1073,7 @@ FROM
     SELECT
         ticker,
         toUInt32({int(build_step)}) AS build_step,
-        argMax(source_date, updated_at) AS source_date,
+        toDate({sql_string(day.source_date)}) AS source_date,
         argMax(event_count, updated_at) AS event_count,
         argMax(next_ordinal, updated_at) AS next_ordinal,
         argMax(last_ordinal, updated_at) AS last_ordinal,
@@ -1303,13 +1303,13 @@ FROM
             SELECT
                 ticker,
                 build_step,
-                argMax(source_date, updated_at) AS source_date,
+                source_date,
                 argMax(event_count, updated_at) AS event_count,
                 argMax(last_ordinal, updated_at) AS last_ordinal,
                 argMax(next_ordinal, updated_at) AS next_ordinal
             FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
             WHERE source_date IN ({dates})
-            GROUP BY ticker, build_step
+            GROUP BY ticker, build_step, source_date
         )
         WHERE event_count > 0
     ) AS c
@@ -1766,7 +1766,7 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
         return "skipped"
     if status in {"failed", "started", "interrupted"} and not (args.retry_failed or args.retry_started):
         print(f"DAY SKIP {day.source_date} status={status}; pass retry flags to revisit", flush=True)
-        return "skipped"
+        return "incomplete_skipped"
     if status in {"failed", "started", "interrupted"}:
         if not args.force_day_delete:
             raise RuntimeError(f"day={day.source_date} status={status}; rerun with --force-day-delete to avoid duplicate rows")
