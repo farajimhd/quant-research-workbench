@@ -24,6 +24,44 @@ The primary data source is the ticker-month cache loader:
 research.mlops.rolling_loader.ticker_month_dataset.AsyncTickerMonthBatchLoader
 ```
 
+The cache is produced by:
+
+```text
+research.mlops.rolling_loader.run_build_ticker_month_cache
+```
+
+Current builder contract:
+
+- Work is split by month and ticker. Each ticker/month package is independently
+  reusable and contains raw compact events, eligible origins, event-window
+  indexes, pivoted intraday labels, daily bars, text embeddings, and XBRL rows.
+- The builder checks `training_category_reference` at startup. If the table is
+  missing or empty it builds stable category ids before cache construction; a
+  force flag can rebuild/append missing categories. Category ids are persisted
+  and reused across periods so model embedding ids stay stable.
+- Text context is read from precomputed embedding tables:
+  `news_text_embeddings` and `sec_filing_text_embeddings`. The builder does not
+  tokenize text or run Qwen during ticker/month cache construction.
+- XBRL category ids are joined at build time and written into `xbrl.parquet`.
+  Id `0` is reserved for missing/unknown values.
+- All absolute cached time features use UTC. The New York session conversion is
+  only used to decide active intraday origin eligibility.
+- Event history is cached as raw rows. The default cache stores lookback rows
+  before each physical part start, not before every origin. The loader may
+  request any event coverage that fits inside the cached lookback.
+- Intraday labels are stored as compact/pivoted `next_*` label arrays, one row
+  per saved eligible origin. Builder output must satisfy:
+
+```text
+origins_part_N rows == event_window_index_part_N rows == intraday_forward_labels_part_N rows
+```
+
+  Candidate labels for origins later rejected by the event-window eligibility
+  pass are filtered before write. The part manifest records
+  `labels_filtered_out`; this should match the skipped invalid origins for that
+  part. Missing labels for eligible origins, duplicate compact label rows, or
+  label identity disagreements are fatal build errors.
+
 The loader should support deterministic and non-deterministic modes:
 
 - deterministic benchmark mode: fixed `dataset_id`, seed, hash buckets, and
@@ -34,6 +72,28 @@ The loader should support deterministic and non-deterministic modes:
 The loader should emit all selected data groups but allow low-level selection
 for pretraining or ablation, such as events-only, events+labels, text-only, or
 full multimodal training.
+
+Current loader contract:
+
+- It builds a package/sample plan from completed ticker/month manifests.
+- It can filter origins by a requested training/validation period.
+- It can shuffle at the package level and within loaded package groups while
+  remaining reproducible from `dataset_id`, seed, split, hash buckets, and
+  checkpointed loader state.
+- It materializes all selected origins from a loaded package group. For the
+  normal training path it uses sliding raw event streams ending at each origin,
+  not byte-encoded event chunks.
+- It validates event streams as ordinal-contiguous and ending at the requested
+  origin. Invalid cache files should fail fast instead of silently dropping
+  samples.
+- Text and XBRL contexts are selected as-of `origin_timestamp_us`, using the
+  latest available rows/items first and zero-filling only when insufficient
+  historical context exists.
+- Label materialization first uses the part's aligned label rows; if an older
+  cache is not row-aligned, it builds a strict origin-to-label map and gathers
+  only matching rows.
+- The loader exposes `state_dict()` and `load_state_dict()` so training
+  checkpoints can resume at the same package position and origin cursor.
 
 ## Batch Contract
 
@@ -58,6 +118,10 @@ The event stream is a sliding window ending at the origin. It is not byte-encode
 by default. Event fields should include only useful model inputs, with redundant
 identity columns suppressible by loader args. Identity columns remain available
 in metadata for audit.
+
+The default event output mode is `raw_stream`. Encoded event chunks remain a
+legacy/optional path and should not be used for v3 training unless an ablation
+explicitly asks for them.
 
 Daily bar inputs:
 
@@ -101,6 +165,19 @@ Embeddings are written as `Array(Float32)` in ClickHouse. Loader/model code may
 cast them to bf16 on GPU during training. Missing items/chunks are zero-filled
 and masked false.
 
+Default context capacities for v3 are:
+
+```text
+ticker news:   latest 8 items, 2 chunks per item
+market news:   latest 16 global/news items, 2 chunks per item
+SEC filings:   latest 4 filings, 8 chunks per filing
+XBRL rows:      latest 4096 rows
+```
+
+The builder may cache a slightly larger historical context envelope so loader
+experiments can reduce these limits without rebuilding the cache. The model only
+sees the loader-selected as-of subset for each origin.
+
 XBRL inputs:
 
 ```text
@@ -129,6 +206,11 @@ intraday_labels           dict[str, [B, H]]
 
 Primary price targets should use bid and ask fields. Redundant mid-price targets
 should not be trained by default unless explicitly enabled for an ablation.
+
+Intraday labels are future-only and session bounded. They are computed from
+events on the same New York trading date as the origin and do not cross the
+20:00 ET session end. Each unavailable horizon is masked out rather than filled
+as a valid target.
 
 ## Model Architecture
 
