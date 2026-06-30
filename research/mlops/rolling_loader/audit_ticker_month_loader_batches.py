@@ -37,19 +37,24 @@ from research.mlops.rolling_loader.ticker_month_cache import DEFAULT_TICKER_MONT
 from research.mlops.rolling_loader.ticker_month_dataset import (
     AsyncTickerMonthBatchLoader,
     BAR_CONTEXT_GROUPS,
+    BAR_TIME_FEATURE_COLUMNS,
     LoadedTickerMonthPart,
+    METADATA_PAYLOAD_FIELDS,
     TEXT_INPUT_GROUP_TO_KEY,
     TEXT_CONTEXT_GROUPS,
+    TEXT_ITEM_TIME_FEATURE_COLUMNS,
     TickerMonthLoaderConfig,
     TickerMonthPartPlan,
     TickerMonthPartReader,
     TickerMonthTrainingBatch,
+    XBRL_TIME_FEATURE_COLUMNS,
     _label_values_for_origin,
     _part_key,
     _prepare_daily_bar_context_index,
     _prepare_text_context_index,
     _prepare_xbrl_category_reference_index,
     _prepare_xbrl_context_index,
+    _relative_time_feature_matrix,
     _select_completed_bar_rows,
     _select_text_item_indices,
     _select_xbrl_item_indices,
@@ -596,13 +601,17 @@ def _check_batch_shapes(batch: TickerMonthTrainingBatch, issues: list[AuditIssue
             issues.append(AuditIssue("error", "label_shape_mismatch", f"{name} row count does not match sample count.", {"batch": batch_index, "name": name, "shape": list(values.shape), "samples": n}))
     for name, payload in batch.text_inputs.items():
         for field, values in payload.items():
+            if field in METADATA_PAYLOAD_FIELDS:
+                continue
             if int(values.shape[0]) != n:
                 issues.append(AuditIssue("error", "text_shape_mismatch", f"{name}.{field} row count does not match sample count.", {"batch": batch_index, "name": name, "field": field, "shape": list(values.shape), "samples": n}))
     for field, values in batch.xbrl_inputs.items():
+        if field in METADATA_PAYLOAD_FIELDS:
+            continue
         if int(values.shape[0]) != n:
             issues.append(AuditIssue("error", "xbrl_shape_mismatch", f"xbrl_inputs.{field} row count does not match sample count.", {"batch": batch_index, "field": field, "shape": list(values.shape), "samples": n}))
     for name, payload in batch.bar_inputs.items():
-        for field in ("values", "mask"):
+        for field in ("values", "mask", "time_features"):
             values = payload.get(field)
             if values is not None and int(values.shape[0]) != n:
                 issues.append(AuditIssue("error", "bar_shape_mismatch", f"{name}.{field} row count does not match sample count.", {"batch": batch_index, "name": name, "field": field, "shape": list(values.shape), "samples": n}))
@@ -794,6 +803,13 @@ def _check_text_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTi
         actual_item_mask = payload["item_mask"][row]
         actual_chunk_mask = payload["chunk_mask"][row]
         actual_timestamps = payload["item_timestamp_us"][row]
+        actual_time_features = payload.get("item_time_features")
+        if actual_time_features is None:
+            issues.append(AuditIssue("error", "text_time_features_missing", "Text payload is missing item_time_features.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key}))
+        else:
+            names = tuple(str(value) for value in np.asarray(payload.get("item_time_feature_names", np.asarray([], dtype=object))).reshape(-1))
+            if names and names != tuple(TEXT_ITEM_TIME_FEATURE_COLUMNS):
+                issues.append(AuditIssue("error", "text_time_feature_names_mismatch", "Text time feature names are not in the expected order.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "actual": list(names), "expected": list(TEXT_ITEM_TIME_FEATURE_COLUMNS)}))
         if int(actual_item_mask.sum()) != expected_count:
             issues.append(AuditIssue("error", "text_item_count_mismatch", "Text item mask count does not match as-of source selection.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "actual": int(actual_item_mask.sum()), "expected": expected_count}))
         if np.any(actual_timestamps[actual_item_mask.astype(bool)] > int(origin_timestamp_us)):
@@ -813,9 +829,25 @@ def _check_text_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTi
                 issues.append(AuditIssue("error", "text_chunk_mask_mismatch", "Text chunk mask does not match source embedding rows.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index}))
             if not np.array_equal(payload["embeddings"][row, item_index], expected_embeddings):
                 issues.append(AuditIssue("error", "text_embedding_value_mismatch", "Text embedding tensor does not match source embedding rows.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index}))
+            if actual_time_features is not None:
+                expected_time = np.concatenate(
+                    [
+                        source_index.absolute_time_features[source_item_index],
+                        _relative_time_feature_matrix(
+                            np.asarray([expected_timestamp], dtype=np.int64),
+                            np.asarray([int(origin_timestamp_us)], dtype=np.int64),
+                        )[0],
+                    ],
+                    axis=0,
+                ).astype(np.float32, copy=False)
+                actual_time = actual_time_features[row, item_index].astype(np.float32, copy=False)
+                if actual_time.shape != expected_time.shape or not bool(np.allclose(actual_time, expected_time, rtol=1e-6, atol=1e-6, equal_nan=True)):
+                    issues.append(AuditIssue("error", "text_time_feature_mismatch", "Text item time features do not match source timestamp/origin.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "item_index": item_index}))
         if expected_count < max_items:
             if np.any(payload["embeddings"][row, expected_count:] != 0.0) or np.any(payload["chunk_mask"][row, expected_count:]):
                 issues.append(AuditIssue("error", "text_tail_padding_mismatch", "Text embedding tensor has non-zero values after selected as-of items.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "selected": expected_count, "max_items": max_items}))
+            if actual_time_features is not None and np.any(actual_time_features[row, expected_count:] != 0.0):
+                issues.append(AuditIssue("error", "text_tail_padding_mismatch", "Text time features have non-zero values after selected as-of items.", {"batch": batch_index, "row": row, "source_part_key": part_key, "text": text_key, "selected": expected_count, "max_items": max_items}))
         totals["text_rows_checked"] += 1
 
 
@@ -854,6 +886,16 @@ def _check_xbrl_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTi
             "location_id": source_index.location_id[source_rows],
             "mapping_confidence": source_index.mapping_confidence[source_rows],
         }
+        expected_fields["time_features"] = np.concatenate(
+            [
+                source_index.absolute_time_features[source_rows],
+                _relative_time_feature_matrix(
+                    source_index.timestamps_us[source_rows],
+                    np.full((expected_count,), int(origin_timestamp_us), dtype=np.int64),
+                ),
+            ],
+            axis=-1,
+        ).astype(np.float32, copy=False)
         expected_fields.update(
             _timestamp_feature_arrays(
                 source_index.timestamps_us[source_rows],
@@ -867,11 +909,16 @@ def _check_xbrl_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTi
                 issues.append(AuditIssue("error", "xbrl_field_missing", f"xbrl_inputs.{field} is missing.", {"batch": batch_index, "row": row, "source_part_key": part_key}))
                 continue
             actual = payload[field][row, :expected_count].astype(expected.dtype, copy=False)
-            if not np.array_equal(actual, expected.astype(actual.dtype, copy=False)):
+            if not bool(np.allclose(actual, expected.astype(actual.dtype, copy=False), rtol=1e-6, atol=1e-6, equal_nan=True)):
                 issues.append(AuditIssue("error", "xbrl_value_mismatch", f"xbrl_inputs.{field} does not match source XBRL rows.", {"batch": batch_index, "row": row, "source_part_key": part_key, "field": field}))
+        names = tuple(str(value) for value in np.asarray(payload.get("time_feature_names", np.asarray([], dtype=object))).reshape(-1))
+        if names and names != tuple(XBRL_TIME_FEATURE_COLUMNS):
+            issues.append(AuditIssue("error", "xbrl_time_feature_names_mismatch", "XBRL time feature names are not in the expected order.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual": list(names), "expected": list(XBRL_TIME_FEATURE_COLUMNS)}))
     if expected_count < max_items:
         tail = slice(expected_count, max_items)
         for field, values in payload.items():
+            if field in METADATA_PAYLOAD_FIELDS:
+                continue
             if field == "mask":
                 if np.any(values[row, tail]):
                     issues.append(AuditIssue("error", "xbrl_tail_padding_mismatch", "XBRL mask has true values after selected as-of items.", {"batch": batch_index, "row": row, "source_part_key": part_key, "selected": expected_count, "max_items": max_items}))
@@ -893,7 +940,8 @@ def _check_bar_inputs(
     part_key: str,
 ) -> None:
     completion_lag_ms = int(max(0.0, float(config.daily_bar_completion_lag_hours)) * 3_600_000.0)
-    cutoff_ms = np.asarray([int(origin_timestamp_us) // 1000 - completion_lag_ms], dtype=np.int64)
+    origin_ms = np.asarray([int(origin_timestamp_us) // 1000], dtype=np.int64)
+    cutoff_ms = origin_ms - completion_lag_ms
     if "ticker_daily_bars" in batch.bar_inputs:
         payload = batch.bar_inputs["ticker_daily_bars"]
         frame = part.context.get("daily_bars")
@@ -903,8 +951,8 @@ def _check_bar_inputs(
             index = _prepare_daily_bar_context_index(frame)
             symbol = str(part.plan.ticker).upper()
             offsets = np.asarray(payload.get("offsets"), dtype=np.int64)
-            expected_values, expected_mask = _expected_bar_values(index, symbol, cutoff_ms, offsets)
-            _compare_bar_payload(payload, row, expected_values[0], expected_mask[0], "ticker_daily_bars", issues, batch_index=batch_index, part_key=part_key)
+            expected_values, expected_mask, expected_time = _expected_bar_values(index, symbol, cutoff_ms, origin_ms, offsets)
+            _compare_bar_payload(payload, row, expected_values[0], expected_mask[0], expected_time[0], "ticker_daily_bars", issues, batch_index=batch_index, part_key=part_key)
             totals["bar_rows_checked"] += 1
     if "global_daily_bars" in batch.bar_inputs:
         payload = batch.bar_inputs["global_daily_bars"]
@@ -917,33 +965,55 @@ def _check_bar_inputs(
             symbols = tuple(str(symbol).upper() for symbol in np.asarray(payload.get("symbols", np.asarray([], dtype=object))).reshape(-1))
             expected_values = np.zeros_like(payload["values"][row])
             expected_mask = np.zeros_like(payload["mask"][row])
+            expected_time = np.zeros_like(payload["time_features"][row]) if "time_features" in payload else None
             for symbol_index, symbol in enumerate(symbols):
-                values, mask = _expected_bar_values(index, symbol, cutoff_ms, offsets)
+                values, mask, time_features = _expected_bar_values(index, symbol, cutoff_ms, origin_ms, offsets)
                 expected_values[symbol_index] = values[0]
                 expected_mask[symbol_index] = mask[0]
-            _compare_bar_payload(payload, row, expected_values, expected_mask, "global_daily_bars", issues, batch_index=batch_index, part_key=part_key)
+                if expected_time is not None:
+                    expected_time[symbol_index] = time_features[0]
+            _compare_bar_payload(payload, row, expected_values, expected_mask, expected_time, "global_daily_bars", issues, batch_index=batch_index, part_key=part_key)
             totals["bar_rows_checked"] += 1
 
 
-def _expected_bar_values(index: Any, symbol: str, cutoff_ms: np.ndarray, offsets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _expected_bar_values(index: Any, symbol: str, cutoff_ms: np.ndarray, origin_ms: np.ndarray, offsets: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     values = np.zeros((int(cutoff_ms.shape[0]), int(offsets.shape[0]), 9), dtype=np.float32)
     mask = np.zeros((int(cutoff_ms.shape[0]), int(offsets.shape[0])), dtype=np.bool_)
+    time_features = np.zeros((int(cutoff_ms.shape[0]), int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
     if str(symbol) not in index.bar_start_ms_by_symbol:
-        return values, mask
+        return values, mask, time_features
     rows, mask = _select_completed_bar_rows(index.bar_start_ms_by_symbol[str(symbol)], cutoff_ms, offsets)
     if bool(mask.any()):
-        values = index.values_by_symbol[str(symbol)][np.where(mask, rows, 0)]
+        safe_rows = np.where(mask, rows, 0)
+        values = index.values_by_symbol[str(symbol)][safe_rows]
         values[~mask] = 0.0
-    return values, mask
+        selected_starts = index.bar_start_ms_by_symbol[str(symbol)][safe_rows]
+        absolute_time = index.time_features_by_symbol[str(symbol)][safe_rows]
+        age_days = np.maximum(0.0, (origin_ms[:, None].astype(np.float64) - selected_starts.astype(np.float64)) / 86_400_000.0).astype(np.float32)
+        relative_time = np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)
+        time_features = np.concatenate([absolute_time, relative_time], axis=-1).astype(np.float32, copy=False)
+        time_features[~mask] = 0.0
+    return values, mask, time_features
 
 
-def _compare_bar_payload(payload: Mapping[str, np.ndarray], row: int, expected_values: np.ndarray, expected_mask: np.ndarray, name: str, issues: list[AuditIssue], *, batch_index: int, part_key: str) -> None:
+def _compare_bar_payload(payload: Mapping[str, np.ndarray], row: int, expected_values: np.ndarray, expected_mask: np.ndarray, expected_time: np.ndarray | None, name: str, issues: list[AuditIssue], *, batch_index: int, part_key: str) -> None:
     actual_values = payload["values"][row]
     actual_mask = payload["mask"][row]
     if actual_values.shape != expected_values.shape or not bool(np.allclose(actual_values, expected_values, rtol=0.0, atol=0.0, equal_nan=True)):
         issues.append(AuditIssue("error", "bar_value_mismatch", f"{name} tensor does not match source daily bars.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual_shape": list(actual_values.shape), "expected_shape": list(expected_values.shape)}))
     if actual_mask.shape != expected_mask.shape or not bool(np.array_equal(actual_mask, expected_mask)):
         issues.append(AuditIssue("error", "bar_mask_mismatch", f"{name} mask does not match source daily bars.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual_shape": list(actual_mask.shape), "expected_shape": list(expected_mask.shape)}))
+    if "time_features" not in payload:
+        issues.append(AuditIssue("error", "bar_time_features_missing", f"{name} is missing time_features.", {"batch": batch_index, "row": row, "source_part_key": part_key}))
+        return
+    names = tuple(str(value) for value in np.asarray(payload.get("time_feature_names", np.asarray([], dtype=object))).reshape(-1))
+    if names and names != tuple(BAR_TIME_FEATURE_COLUMNS):
+        issues.append(AuditIssue("error", "bar_time_feature_names_mismatch", f"{name} time feature names are not in the expected order.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual": list(names), "expected": list(BAR_TIME_FEATURE_COLUMNS)}))
+    if expected_time is None:
+        return
+    actual_time = payload["time_features"][row]
+    if actual_time.shape != expected_time.shape or not bool(np.allclose(actual_time, expected_time, rtol=1e-6, atol=1e-6, equal_nan=True)):
+        issues.append(AuditIssue("error", "bar_time_feature_mismatch", f"{name} time features do not match selected source daily bars.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual_shape": list(actual_time.shape), "expected_shape": list(expected_time.shape)}))
 
 
 def _check_deterministic_first_batch(config: TickerMonthLoaderConfig, first_batch: TickerMonthTrainingBatch | None, issues: list[AuditIssue]) -> None:

@@ -362,6 +362,7 @@ is `-1d`, `-2d`, `-7d`, `-200d`, and so on. The builder should add only compact
 absolute UTC bar-start features:
 
 ```text
+bar_start_utc_second_of_day_sin/cos
 bar_start_utc_day_of_week_sin/cos
 bar_start_utc_day_of_year_sin/cos
 bar_start_years_since_2000

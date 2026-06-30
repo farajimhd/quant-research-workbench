@@ -19,6 +19,8 @@ from research.mlops.clickhouse_events import encode_unified_event_windows
 from research.mlops.compact_events import EVENT_BYTES, HEADER_BYTES
 from research.mlops.data.contracts import FUTURE_BAR_FEATURE_KEYS
 from research.mlops.rolling_loader.ticker_month_cache import (
+    BAR_START_TIME_FEATURE_COLUMNS,
+    CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS,
     EVENT_PAYLOAD_COLUMNS,
     EVENT_TIME_FEATURE_COLUMNS,
     TICKER_MONTH_CACHE_FORMAT,
@@ -64,6 +66,16 @@ BAR_FEATURE_KEYS: tuple[str, ...] = (
 DEFAULT_TICKER_DAILY_BAR_OFFSETS = (1, 2, 3, 7, 14, 28, 40, 200)
 DEFAULT_GLOBAL_DAILY_BAR_OFFSETS = (1, 2, 7)
 DEFAULT_DAILY_BAR_COMPLETION_LAG_HOURS = 30.0
+RELATIVE_TIME_FEATURE_COLUMNS: tuple[str, ...] = (
+    "time_delta_seconds",
+    "time_delta_seconds_log1p_signed",
+    "time_age_seconds_log1p",
+)
+TEXT_ITEM_TIME_FEATURE_COLUMNS: tuple[str, ...] = (*CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS, *RELATIVE_TIME_FEATURE_COLUMNS)
+XBRL_TIME_FEATURE_COLUMNS: tuple[str, ...] = (*CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS, *RELATIVE_TIME_FEATURE_COLUMNS)
+BAR_RELATIVE_TIME_FEATURE_COLUMNS: tuple[str, ...] = ("bar_age_days", "bar_age_days_log1p")
+BAR_TIME_FEATURE_COLUMNS: tuple[str, ...] = (*BAR_START_TIME_FEATURE_COLUMNS, *BAR_RELATIVE_TIME_FEATURE_COLUMNS)
+METADATA_PAYLOAD_FIELDS = {"feature_names", "time_feature_names", "item_time_feature_names", "offsets", "symbols"}
 LABEL_VALUE_DTYPES: dict[str, np.dtype] = {
     "price_primary_int": np.dtype(np.int32),
     "price_secondary_int": np.dtype(np.int32),
@@ -218,6 +230,7 @@ class TextContextIndex:
     timestamps_us: np.ndarray
     embeddings: np.ndarray
     chunk_mask: np.ndarray
+    absolute_time_features: np.ndarray
 
     @property
     def item_count(self) -> int:
@@ -240,6 +253,7 @@ class DailyBarContextIndex:
     symbols: tuple[str, ...]
     bar_start_ms_by_symbol: dict[str, np.ndarray]
     values_by_symbol: dict[str, np.ndarray]
+    time_features_by_symbol: dict[str, np.ndarray]
 
 
 @dataclass(slots=True)
@@ -265,6 +279,7 @@ class XbrlContextIndex:
     row_kind_id: np.ndarray
     location_id: np.ndarray
     mapping_confidence: np.ndarray
+    absolute_time_features: np.ndarray
 
     @property
     def item_count(self) -> int:
@@ -749,12 +764,15 @@ class TickerMonthBatchMaterializer:
             chunk_mask = np.zeros((len(refs), max_items, max_chunks), dtype=np.bool_)
             item_mask = np.zeros((len(refs), max_items), dtype=np.bool_)
             item_timestamp_us = np.zeros((len(refs), max_items), dtype=np.int64)
+            item_time_features = np.zeros((len(refs), max_items, len(TEXT_ITEM_TIME_FEATURE_COLUMNS)), dtype=np.float32)
             if max_items <= 0:
                 out[key] = {
                     "embeddings": embeddings,
                     "chunk_mask": chunk_mask,
                     "item_mask": item_mask,
                     "item_timestamp_us": item_timestamp_us,
+                    "item_time_features": item_time_features,
+                    "item_time_feature_names": np.asarray(TEXT_ITEM_TIME_FEATURE_COLUMNS, dtype=object),
                 }
                 continue
             for part_index, rows in grouped_rows.items():
@@ -777,21 +795,29 @@ class TickerMonthBatchMaterializer:
                 gathered_embeddings = index.embeddings[safe_indices]
                 gathered_chunks = index.chunk_mask[safe_indices]
                 gathered_timestamps = index.timestamps_us[safe_indices]
+                gathered_absolute_time = index.absolute_time_features[safe_indices]
+                origins = np.broadcast_to(origin_timestamps[rows, None], gathered_timestamps.shape)
+                gathered_relative_time = _relative_time_feature_matrix(gathered_timestamps, origins)
+                gathered_time_features = np.concatenate([gathered_absolute_time, gathered_relative_time], axis=-1).astype(np.float32, copy=False)
                 invalid = ~selected_mask
                 if bool(invalid.any()):
                     gathered_embeddings[invalid] = 0.0
                     gathered_chunks[invalid] = False
                     gathered_timestamps[invalid] = 0
+                    gathered_time_features[invalid] = 0.0
                 embeddings[rows] = gathered_embeddings
                 chunk_mask[rows] = gathered_chunks
                 item_mask[rows] = selected_mask
                 item_timestamp_us[rows] = gathered_timestamps
+                item_time_features[rows] = gathered_time_features
                 profile["text_gather_seconds"] = float(profile["text_gather_seconds"]) + (time.perf_counter() - gather_start)
             out[key] = {
                 "embeddings": embeddings,
                 "chunk_mask": chunk_mask,
                 "item_mask": item_mask,
                 "item_timestamp_us": item_timestamp_us,
+                "item_time_features": item_time_features,
+                "item_time_feature_names": np.asarray(TEXT_ITEM_TIME_FEATURE_COLUMNS, dtype=object),
             }
         return out, profile
 
@@ -825,6 +851,8 @@ class TickerMonthBatchMaterializer:
             "row_kind_id": np.zeros(shape, dtype=np.uint32),
             "location_id": np.zeros(shape, dtype=np.uint32),
             "mapping_confidence": np.zeros(shape, dtype=np.float32),
+            "time_features": np.zeros((batch, max_items, len(XBRL_TIME_FEATURE_COLUMNS)), dtype=np.float32),
+            "time_feature_names": np.asarray(XBRL_TIME_FEATURE_COLUMNS, dtype=object),
         }
         profile: dict[str, float | int] = {
             "xbrl_index_seconds": 0.0,
@@ -878,8 +906,14 @@ class TickerMonthBatchMaterializer:
             selected_timestamps = index.timestamps_us[safe_indices]
             selected_timestamps[~selected_mask] = 0
             origins = np.broadcast_to(origin_timestamps[rows, None], selected_timestamps.shape)
-            for key, values in _timestamp_feature_arrays(selected_timestamps, origins).items():
+            timestamp_features = _timestamp_feature_arrays(selected_timestamps, origins)
+            for key, values in timestamp_features.items():
                 out[key][rows] = values.astype(np.float32, copy=False)
+            relative_features = _relative_time_feature_matrix(selected_timestamps, origins)
+            absolute_features = index.absolute_time_features[safe_indices]
+            time_features = np.concatenate([absolute_features, relative_features], axis=-1).astype(np.float32, copy=False)
+            time_features[~selected_mask] = 0.0
+            out["time_features"][rows] = time_features
             out["age_days"][rows] = np.maximum(
                 0.0,
                 (origin_timestamps[rows, None].astype(np.float64) - selected_timestamps.astype(np.float64)) / 86_400_000_000.0,
@@ -927,6 +961,7 @@ class TickerMonthBatchMaterializer:
             if group == "daily_bars":
                 values = np.zeros((len(refs), int(offsets.shape[0]), len(BAR_FEATURE_KEYS)), dtype=np.float32)
                 mask = np.zeros((len(refs), int(offsets.shape[0])), dtype=np.bool_)
+                time_features = np.zeros((len(refs), int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
                 for part_index, rows in grouped_rows.items():
                     part = parts[int(part_index)]
                     frame = part.context.get(group)
@@ -944,14 +979,24 @@ class TickerMonthBatchMaterializer:
                     if not bool(selected_mask.any()):
                         continue
                     gather_start = time.perf_counter()
-                    gathered = index.values_by_symbol[symbol][np.where(selected_mask, selected, 0)]
+                    safe_selected = np.where(selected_mask, selected, 0)
+                    gathered = index.values_by_symbol[symbol][safe_selected]
                     gathered[~selected_mask] = 0.0
+                    selected_starts = index.bar_start_ms_by_symbol[symbol][safe_selected]
+                    absolute_time = index.time_features_by_symbol[symbol][safe_selected]
+                    age_days = np.maximum(0.0, (origin_timestamps_ms[rows, None].astype(np.float64) - selected_starts.astype(np.float64)) / 86_400_000.0).astype(np.float32)
+                    relative_time = np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)
+                    gathered_time = np.concatenate([absolute_time, relative_time], axis=-1).astype(np.float32, copy=False)
+                    gathered_time[~selected_mask] = 0.0
                     values[rows] = gathered
                     mask[rows] = selected_mask
+                    time_features[rows] = gathered_time
                     profile["bar_gather_seconds"] = float(profile["bar_gather_seconds"]) + (time.perf_counter() - gather_start)
                 out[key] = {
                     "values": values,
                     "mask": mask,
+                    "time_features": time_features,
+                    "time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
                     "offsets": offsets.astype(np.int32, copy=False),
                     "feature_names": np.asarray(BAR_FEATURE_KEYS, dtype=object),
                 }
@@ -959,6 +1004,7 @@ class TickerMonthBatchMaterializer:
             symbols: tuple[str, ...] = ()
             values = np.zeros((len(refs), 0, int(offsets.shape[0]), len(BAR_FEATURE_KEYS)), dtype=np.float32)
             mask = np.zeros((len(refs), 0, int(offsets.shape[0])), dtype=np.bool_)
+            time_features = np.zeros((len(refs), 0, int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
             symbol_array = np.asarray([], dtype=object)
             for part_index, rows in grouped_rows.items():
                 part = parts[int(part_index)]
@@ -972,6 +1018,7 @@ class TickerMonthBatchMaterializer:
                     symbols = index.symbols
                     values = np.zeros((len(refs), len(symbols), int(offsets.shape[0]), len(BAR_FEATURE_KEYS)), dtype=np.float32)
                     mask = np.zeros((len(refs), len(symbols), int(offsets.shape[0])), dtype=np.bool_)
+                    time_features = np.zeros((len(refs), len(symbols), int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
                     symbol_array = np.asarray(symbols, dtype=object)
                 gather_start = time.perf_counter()
                 for symbol_index, symbol in enumerate(symbols):
@@ -980,14 +1027,24 @@ class TickerMonthBatchMaterializer:
                     selected, selected_mask = _select_completed_bar_rows(index.bar_start_ms_by_symbol[symbol], cutoff_ms[rows], offsets)
                     if not bool(selected_mask.any()):
                         continue
-                    gathered = index.values_by_symbol[symbol][np.where(selected_mask, selected, 0)]
+                    safe_selected = np.where(selected_mask, selected, 0)
+                    gathered = index.values_by_symbol[symbol][safe_selected]
                     gathered[~selected_mask] = 0.0
+                    selected_starts = index.bar_start_ms_by_symbol[symbol][safe_selected]
+                    absolute_time = index.time_features_by_symbol[symbol][safe_selected]
+                    age_days = np.maximum(0.0, (origin_timestamps_ms[rows, None].astype(np.float64) - selected_starts.astype(np.float64)) / 86_400_000.0).astype(np.float32)
+                    relative_time = np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)
+                    gathered_time = np.concatenate([absolute_time, relative_time], axis=-1).astype(np.float32, copy=False)
+                    gathered_time[~selected_mask] = 0.0
                     values[rows, symbol_index] = gathered
                     mask[rows, symbol_index] = selected_mask
+                    time_features[rows, symbol_index] = gathered_time
                 profile["bar_gather_seconds"] = float(profile["bar_gather_seconds"]) + (time.perf_counter() - gather_start)
             out[key] = {
                 "values": values,
                 "mask": mask,
+                "time_features": time_features,
+                "time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
                 "offsets": offsets.astype(np.int32, copy=False),
                 "symbols": symbol_array,
                 "feature_names": np.asarray(BAR_FEATURE_KEYS, dtype=object),
@@ -1459,6 +1516,7 @@ def _prepare_text_context_index(frame: Any, group: str, *, max_chunks: int, embe
     timestamps = frame.get_column("timestamp_us").to_numpy().astype(np.int64, copy=False)
     chunk_indices = frame.get_column("token_chunk_index").to_numpy()
     embedding_values = frame.get_column("embedding").to_numpy()
+    row_time_features = _cached_or_computed_time_feature_matrix(frame, CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS, timestamps)
     columns = set(frame.columns)
     source_id = _optional_frame_column(frame, "source_id", "")
     if group == "sec_filing_embeddings":
@@ -1467,6 +1525,7 @@ def _prepare_text_context_index(frame: Any, group: str, *, max_chunks: int, embe
         text_rank = _optional_frame_column(frame, "text_rank", 0)
         grouped: dict[tuple[Any, ...], list[int]] = {}
         item_timestamp: dict[tuple[Any, ...], int] = {}
+        item_time_features: dict[tuple[Any, ...], np.ndarray] = {}
         for row_index in range(height):
             key = (
                 str(accession_number[row_index] if "accession_number" in columns else ""),
@@ -1475,12 +1534,16 @@ def _prepare_text_context_index(frame: Any, group: str, *, max_chunks: int, embe
                 str(source_id[row_index] if "source_id" in columns else ""),
             )
             grouped.setdefault(key, []).append(row_index)
-            item_timestamp[key] = max(int(item_timestamp.get(key, 0)), int(timestamps[row_index]))
+            row_timestamp = int(timestamps[row_index])
+            if row_timestamp >= int(item_timestamp.get(key, 0)):
+                item_timestamp[key] = row_timestamp
+                item_time_features[key] = row_time_features[row_index]
     else:
         provider_article_id = _optional_frame_column(frame, "provider_article_id", "")
         text_hash = _optional_frame_column(frame, "text_hash", "")
         grouped = {}
         item_timestamp = {}
+        item_time_features = {}
         for row_index in range(height):
             key = (
                 str(source_id[row_index] if "source_id" in columns else ""),
@@ -1488,15 +1551,20 @@ def _prepare_text_context_index(frame: Any, group: str, *, max_chunks: int, embe
                 str(text_hash[row_index] if "text_hash" in columns else ""),
             )
             grouped.setdefault(key, []).append(row_index)
-            item_timestamp[key] = max(int(item_timestamp.get(key, 0)), int(timestamps[row_index]))
+            row_timestamp = int(timestamps[row_index])
+            if row_timestamp >= int(item_timestamp.get(key, 0)):
+                item_timestamp[key] = row_timestamp
+                item_time_features[key] = row_time_features[row_index]
     items = sorted(((int(item_timestamp[key]), key, rows) for key, rows in grouped.items()), key=lambda item: (item[0], item[1]))
     if not items:
         return _empty_text_context_index(max_chunks=max_chunks, embedding_dim=embedding_dim)
     out_timestamps = np.empty((len(items),), dtype=np.int64)
     out_embeddings = np.zeros((len(items), max_chunks, embedding_dim), dtype=np.float32)
     out_chunk_mask = np.zeros((len(items), max_chunks), dtype=np.bool_)
+    out_time_features = np.zeros((len(items), len(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)), dtype=np.float32)
     for item_index, (timestamp_us, _key, rows) in enumerate(items):
         out_timestamps[item_index] = int(timestamp_us)
+        out_time_features[item_index] = item_time_features.get(_key, _absolute_utc_time_feature_matrix(np.asarray([timestamp_us], dtype=np.int64))[0])
         rows = sorted(rows, key=lambda row: _safe_int(chunk_indices[row]))
         for row_index in rows:
             chunk_index = _safe_int(chunk_indices[row_index])
@@ -1510,7 +1578,7 @@ def _prepare_text_context_index(frame: Any, group: str, *, max_chunks: int, embe
                 raise RuntimeError(f"Text embedding context contains non-finite values for group={group!r}.")
             out_embeddings[item_index, chunk_index, :width] = embedding[:width]
             out_chunk_mask[item_index, chunk_index] = True
-    return TextContextIndex(timestamps_us=out_timestamps, embeddings=out_embeddings, chunk_mask=out_chunk_mask)
+    return TextContextIndex(timestamps_us=out_timestamps, embeddings=out_embeddings, chunk_mask=out_chunk_mask, absolute_time_features=out_time_features)
 
 
 def _select_text_item_indices(index: TextContextIndex, origin_timestamps_us: np.ndarray, *, max_items: int) -> tuple[np.ndarray, np.ndarray]:
@@ -1530,6 +1598,7 @@ def _empty_text_context_index(*, max_chunks: int, embedding_dim: int) -> TextCon
         timestamps_us=np.zeros((0,), dtype=np.int64),
         embeddings=np.zeros((0, max(1, int(max_chunks)), max(1, int(embedding_dim))), dtype=np.float32),
         chunk_mask=np.zeros((0, max(1, int(max_chunks))), dtype=np.bool_),
+        absolute_time_features=np.zeros((0, len(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)), dtype=np.float32),
     )
 
 
@@ -1560,6 +1629,7 @@ def _prepare_xbrl_context_index(frame: Any, category_index: XbrlCategoryReferenc
         return _empty_xbrl_context_index()
     height = int(frame.height)
     timestamps = _frame_column_as(frame, "timestamp_us", np.int64, 0)
+    absolute_time_features = _cached_or_computed_time_feature_matrix(frame, CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS, timestamps)
     order_keys: list[np.ndarray] = [
         _object_frame_column(frame, "period_end_date", ""),
         _object_frame_column(frame, "unit_code", ""),
@@ -1570,6 +1640,7 @@ def _prepare_xbrl_context_index(frame: Any, category_index: XbrlCategoryReferenc
     ]
     order = np.lexsort(tuple(order_keys))
     timestamps = timestamps[order]
+    absolute_time_features = absolute_time_features[order]
     value = _frame_column_as(frame, "value", np.float32, 0.0)[order]
     fiscal_year = _frame_column_as(frame, "fiscal_year", np.int16, 0)[order]
     period_end_days = _epoch_days_array(_optional_frame_column(frame, "period_end_date", ""))[order]
@@ -1594,6 +1665,7 @@ def _prepare_xbrl_context_index(frame: Any, category_index: XbrlCategoryReferenc
         row_kind_id=row_kind_id,
         location_id=location_id,
         mapping_confidence=mapping_confidence,
+        absolute_time_features=absolute_time_features.astype(np.float32, copy=False),
     )
 
 
@@ -1610,6 +1682,7 @@ def _empty_xbrl_context_index() -> XbrlContextIndex:
         row_kind_id=np.zeros((0,), dtype=np.uint32),
         location_id=np.zeros((0,), dtype=np.uint32),
         mapping_confidence=np.zeros((0,), dtype=np.float32),
+        absolute_time_features=np.zeros((0, len(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)), dtype=np.float32),
     )
 
 
@@ -1708,6 +1781,55 @@ def _timestamp_feature_arrays(timestamps_us: np.ndarray, origins_us: np.ndarray)
         "time_utc_day_of_year_cos": np.cos(2.0 * np.pi * day_of_year / 366.0).astype(np.float32) * valid,
         "time_years_since_2000": years_since_2000,
     }
+
+
+def _absolute_utc_time_feature_matrix(timestamps_us: np.ndarray) -> np.ndarray:
+    source = np.asarray(timestamps_us, dtype=np.int64)
+    valid = source > 0
+    source_dt = source.astype("datetime64[us]")
+    source_day = source_dt.astype("datetime64[D]")
+    seconds_of_day = ((source_dt - source_day).astype("timedelta64[us]").astype(np.float64) / 1_000_000.0).astype(np.float32)
+    epoch_days = (source_day - np.datetime64("1970-01-01", "D")).astype(np.int64)
+    day_of_week = ((epoch_days + 3) % 7).astype(np.float32)
+    source_year = source_day.astype("datetime64[Y]")
+    day_of_year = (source_day - source_year.astype("datetime64[D]")).astype(np.int64).astype(np.float32)
+    years_since_2000 = ((source_dt - np.datetime64("2000-01-01T00:00:00", "us")).astype("timedelta64[us]").astype(np.float64) / (365.2425 * 86_400_000_000.0)).astype(np.float32)
+    zeros = np.zeros(source.shape, dtype=np.float32)
+    seconds_of_day = np.where(valid, seconds_of_day, zeros)
+    day_of_week = np.where(valid, day_of_week, zeros)
+    day_of_year = np.where(valid, day_of_year, zeros)
+    years_since_2000 = np.where(valid, years_since_2000, zeros)
+    return np.stack(
+        [
+            np.sin(2.0 * np.pi * seconds_of_day / 86_400.0).astype(np.float32) * valid,
+            np.cos(2.0 * np.pi * seconds_of_day / 86_400.0).astype(np.float32) * valid,
+            np.sin(2.0 * np.pi * day_of_week / 7.0).astype(np.float32) * valid,
+            np.cos(2.0 * np.pi * day_of_week / 7.0).astype(np.float32) * valid,
+            np.sin(2.0 * np.pi * day_of_year / 366.0).astype(np.float32) * valid,
+            np.cos(2.0 * np.pi * day_of_year / 366.0).astype(np.float32) * valid,
+            years_since_2000,
+        ],
+        axis=-1,
+    ).astype(np.float32, copy=False)
+
+
+def _relative_time_feature_matrix(timestamps_us: np.ndarray, origins_us: np.ndarray) -> np.ndarray:
+    source = np.asarray(timestamps_us, dtype=np.int64)
+    origin = np.asarray(origins_us, dtype=np.int64)
+    source, origin = np.broadcast_arrays(source, origin)
+    valid = source > 0
+    delta_seconds = np.where(valid, source - origin, 0).astype(np.float64) / 1_000_000.0
+    delta_seconds = delta_seconds.astype(np.float32)
+    delta_log = np.sign(delta_seconds).astype(np.float32) * np.log1p(np.abs(delta_seconds).astype(np.float64)).astype(np.float32)
+    age_log = np.log1p(np.maximum(0.0, -delta_seconds.astype(np.float64))).astype(np.float32)
+    return np.stack([delta_seconds, delta_log, age_log], axis=-1).astype(np.float32, copy=False)
+
+
+def _cached_or_computed_time_feature_matrix(frame: Any, columns: Sequence[str], timestamps_us: np.ndarray) -> np.ndarray:
+    column_list = tuple(str(column) for column in columns)
+    if column_list and all(column in getattr(frame, "columns", ()) for column in column_list):
+        return frame.select(list(column_list)).to_numpy().astype(np.float32, copy=False)
+    return _absolute_utc_time_feature_matrix(timestamps_us)
 
 
 def _optional_frame_column(frame: Any, name: str, default: Any) -> np.ndarray:
@@ -1866,9 +1988,9 @@ def _slice_training_batch(batch: TickerMonthTrainingBatch, start: int, end: int)
         future_intraday_bars=batch.future_intraday_bars[start:end] if batch.future_intraday_bars.shape[0] else batch.future_intraday_bars,
         future_intraday_bar_mask=batch.future_intraday_bar_mask[start:end] if batch.future_intraday_bar_mask.shape[0] else batch.future_intraday_bar_mask,
         input_availability={key: value[start:end] for key, value in batch.input_availability.items()},
-        text_inputs={name: {key: value[start:end] for key, value in payload.items()} for name, payload in batch.text_inputs.items()},
-        xbrl_inputs={key: value[start:end] for key, value in batch.xbrl_inputs.items()},
-        bar_inputs={name: {key: _slice_batch_payload_field(value, start, end, int(batch.sample_count)) for key, value in payload.items()} for name, payload in batch.bar_inputs.items()},
+        text_inputs={name: {key: (value if key in METADATA_PAYLOAD_FIELDS else _slice_batch_payload_field(value, start, end, int(batch.sample_count))) for key, value in payload.items()} for name, payload in batch.text_inputs.items()},
+        xbrl_inputs={key: (value if key in METADATA_PAYLOAD_FIELDS else _slice_batch_payload_field(value, start, end, int(batch.sample_count))) for key, value in batch.xbrl_inputs.items()},
+        bar_inputs={name: {key: (value if key in METADATA_PAYLOAD_FIELDS else _slice_batch_payload_field(value, start, end, int(batch.sample_count))) for key, value in payload.items()} for name, payload in batch.bar_inputs.items()},
         external_context=dict(batch.external_context),
         profile=profile,
     )
@@ -1879,7 +2001,11 @@ def _concat_dict_arrays(items: Sequence[Mapping[str, np.ndarray]]) -> dict[str, 
     keys: set[str] = set()
     for item in items:
         keys.update(item.keys())
-    return {key: np.concatenate([item[key] for item in items if key in item], axis=0) for key in sorted(keys)}
+    out: dict[str, np.ndarray] = {}
+    for key in sorted(keys):
+        values = [item[key] for item in items if key in item]
+        out[key] = values[0] if key in METADATA_PAYLOAD_FIELDS else np.concatenate(values, axis=0)
+    return out
 
 
 def _concat_text_inputs(items: Sequence[Mapping[str, Mapping[str, np.ndarray]]]) -> dict[str, dict[str, np.ndarray]]:
@@ -1894,7 +2020,11 @@ def _concat_text_inputs(items: Sequence[Mapping[str, Mapping[str, np.ndarray]]])
             if name in item:
                 fields.update(item[name].keys())
         out[name] = {
-            field: np.concatenate([item[name][field] for item in items if name in item and field in item[name]], axis=0)
+            field: (
+                [item[name][field] for item in items if name in item and field in item[name]][0]
+                if field in METADATA_PAYLOAD_FIELDS
+                else np.concatenate([item[name][field] for item in items if name in item and field in item[name]], axis=0)
+            )
             for field in sorted(fields)
         }
     return out
@@ -1913,7 +2043,7 @@ def _concat_bar_inputs(batches: Sequence[TickerMonthTrainingBatch]) -> dict[str,
         payload: dict[str, np.ndarray] = {}
         for field in sorted(fields):
             values = [batch.bar_inputs[name][field] for batch in batches if name in batch.bar_inputs and field in batch.bar_inputs[name]]
-            if field in {"values", "mask"}:
+            if field in {"values", "mask", "time_features"}:
                 payload[field] = np.concatenate(values, axis=0)
             else:
                 payload[field] = values[0]
@@ -2422,7 +2552,7 @@ def _bar_offsets_for_group(config: TickerMonthLoaderConfig, group: str) -> tuple
 
 def _prepare_daily_bar_context_index(frame: Any) -> DailyBarContextIndex:
     if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
-        return DailyBarContextIndex(symbols=(), bar_start_ms_by_symbol={}, values_by_symbol={})
+        return DailyBarContextIndex(symbols=(), bar_start_ms_by_symbol={}, values_by_symbol={}, time_features_by_symbol={})
     missing = [column for column in ("sym", "bar_start_ms", *BAR_FEATURE_KEYS) if column not in getattr(frame, "columns", ())]
     if missing:
         raise RuntimeError(f"Daily bar context is missing required columns: {', '.join(missing)}")
@@ -2430,18 +2560,22 @@ def _prepare_daily_bar_context_index(frame: Any) -> DailyBarContextIndex:
     symbols = np.asarray([str(symbol).upper() for symbol in symbols_raw], dtype=object)
     starts = frame.get_column("bar_start_ms").to_numpy().astype(np.int64, copy=False)
     values = frame.select(list(BAR_FEATURE_KEYS)).to_numpy().astype(np.float32, copy=False)
+    time_features = _cached_or_computed_time_feature_matrix(frame, BAR_START_TIME_FEATURE_COLUMNS, starts.astype(np.int64, copy=False) * 1000)
     order = np.lexsort((starts, symbols))
     symbols = symbols[order]
     starts = starts[order]
     values = values[order]
+    time_features = time_features[order]
     unique_symbols = tuple(str(symbol) for symbol in np.unique(symbols))
     starts_by_symbol: dict[str, np.ndarray] = {}
     values_by_symbol: dict[str, np.ndarray] = {}
+    time_features_by_symbol: dict[str, np.ndarray] = {}
     for symbol in unique_symbols:
         rows = symbols == symbol
         starts_by_symbol[str(symbol)] = starts[rows]
         values_by_symbol[str(symbol)] = values[rows]
-    return DailyBarContextIndex(symbols=unique_symbols, bar_start_ms_by_symbol=starts_by_symbol, values_by_symbol=values_by_symbol)
+        time_features_by_symbol[str(symbol)] = time_features[rows]
+    return DailyBarContextIndex(symbols=unique_symbols, bar_start_ms_by_symbol=starts_by_symbol, values_by_symbol=values_by_symbol, time_features_by_symbol=time_features_by_symbol)
 
 
 def _select_completed_bar_rows(bar_start_ms: np.ndarray, cutoff_ms: np.ndarray, offsets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

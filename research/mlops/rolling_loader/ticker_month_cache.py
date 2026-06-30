@@ -56,6 +56,26 @@ EVENT_TIME_FEATURE_COLUMNS: tuple[str, ...] = (
     "is_afterhours",
 )
 
+CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS: tuple[str, ...] = (
+    "available_utc_second_of_day_sin",
+    "available_utc_second_of_day_cos",
+    "available_utc_day_of_week_sin",
+    "available_utc_day_of_week_cos",
+    "available_utc_day_of_year_sin",
+    "available_utc_day_of_year_cos",
+    "available_years_since_2000",
+)
+
+BAR_START_TIME_FEATURE_COLUMNS: tuple[str, ...] = (
+    "bar_start_utc_second_of_day_sin",
+    "bar_start_utc_second_of_day_cos",
+    "bar_start_utc_day_of_week_sin",
+    "bar_start_utc_day_of_week_cos",
+    "bar_start_utc_day_of_year_sin",
+    "bar_start_utc_day_of_year_cos",
+    "bar_start_years_since_2000",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class MonthWindow:

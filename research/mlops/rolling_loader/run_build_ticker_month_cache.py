@@ -41,6 +41,8 @@ from research.mlops.data.config import RollingMarketDataConfig, TimeBarHorizon
 from research.mlops.env import load_env_files
 from research.mlops.rolling_loader.streaming_training import NEWS_TOKEN_COLUMNS, SEC_TOKEN_COLUMNS, current_rss_mib, date_time64_from_us
 from research.mlops.rolling_loader.ticker_month_cache import (
+    BAR_START_TIME_FEATURE_COLUMNS,
+    CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS,
     DEFAULT_TICKER_MONTH_CACHE_ROOT,
     EVENT_PAYLOAD_COLUMNS,
     EVENT_TIME_FEATURE_COLUMNS,
@@ -130,6 +132,30 @@ NEWS_EMBEDDING_COLUMNS: tuple[str, ...] = tuple(
 SEC_EMBEDDING_COLUMNS: tuple[str, ...] = tuple(
     column for column in SEC_TOKEN_COLUMNS if column not in {"input_ids", "attention_mask"}
 ) + ("embedding_model", "embedding_pooling", "embedding_dtype", "embedding_dim", "embedding")
+
+
+def _available_time_feature_sql(timestamp_expr: str, *, prefix: str = "available") -> str:
+    ts = str(timestamp_expr)
+    return f"""
+    toFloat32(sin(2 * pi() * dateDiff('second', toStartOfDay(fromUnixTimestamp64Micro({ts}, 'UTC')), fromUnixTimestamp64Micro({ts}, 'UTC')) / 86400.0)) AS {quote_ident(prefix + "_utc_second_of_day_sin")},
+    toFloat32(cos(2 * pi() * dateDiff('second', toStartOfDay(fromUnixTimestamp64Micro({ts}, 'UTC')), fromUnixTimestamp64Micro({ts}, 'UTC')) / 86400.0)) AS {quote_ident(prefix + "_utc_second_of_day_cos")},
+    toFloat32(sin(2 * pi() * (toDayOfWeek(fromUnixTimestamp64Micro({ts}, 'UTC')) - 1) / 7.0)) AS {quote_ident(prefix + "_utc_day_of_week_sin")},
+    toFloat32(cos(2 * pi() * (toDayOfWeek(fromUnixTimestamp64Micro({ts}, 'UTC')) - 1) / 7.0)) AS {quote_ident(prefix + "_utc_day_of_week_cos")},
+    toFloat32(sin(2 * pi() * (toDayOfYear(fromUnixTimestamp64Micro({ts}, 'UTC')) - 1) / 366.0)) AS {quote_ident(prefix + "_utc_day_of_year_sin")},
+    toFloat32(cos(2 * pi() * (toDayOfYear(fromUnixTimestamp64Micro({ts}, 'UTC')) - 1) / 366.0)) AS {quote_ident(prefix + "_utc_day_of_year_cos")},
+    toFloat32(toYear(fromUnixTimestamp64Micro({ts}, 'UTC')) - 2000 + (toDayOfYear(fromUnixTimestamp64Micro({ts}, 'UTC')) - 1) / 366.0) AS {quote_ident(prefix + "_years_since_2000")}""".strip()
+
+
+def _bar_start_time_feature_sql(timestamp_expr: str) -> str:
+    ts = str(timestamp_expr)
+    return f"""
+    toFloat32(sin(2 * pi() * dateDiff('second', toStartOfDay({ts}), {ts}) / 86400.0)) AS bar_start_utc_second_of_day_sin,
+    toFloat32(cos(2 * pi() * dateDiff('second', toStartOfDay({ts}), {ts}) / 86400.0)) AS bar_start_utc_second_of_day_cos,
+    toFloat32(sin(2 * pi() * (toDayOfWeek({ts}) - 1) / 7.0)) AS bar_start_utc_day_of_week_sin,
+    toFloat32(cos(2 * pi() * (toDayOfWeek({ts}) - 1) / 7.0)) AS bar_start_utc_day_of_week_cos,
+    toFloat32(sin(2 * pi() * (toDayOfYear({ts}) - 1) / 366.0)) AS bar_start_utc_day_of_year_sin,
+    toFloat32(cos(2 * pi() * (toDayOfYear({ts}) - 1) / 366.0)) AS bar_start_utc_day_of_year_cos,
+    toFloat32(toYear({ts}) - 2000 + (toDayOfYear({ts}) - 1) / 366.0) AS bar_start_years_since_2000""".strip()
 
 
 class ActiveQueryRegistry:
@@ -802,6 +828,10 @@ def _write_global_month_package(
                 "global_daily_bars": "global_daily_bars.parquet",
                 "category_references": "category_references.parquet",
             },
+            "time_feature_columns": {
+                "market_news_embeddings": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
+                "global_daily_bars": list(BAR_START_TIME_FEATURE_COLUMNS),
+            },
             "counts": {key: int(value.height) for key, value in outputs.items()},
             "completed_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
         },
@@ -845,6 +875,8 @@ def _refresh_global_context_package(
     files.pop("market_news_tokens", None)
     files["market_news_embeddings"] = "market_news_embeddings.parquet"
     files["category_references"] = "category_references.parquet"
+    time_feature_columns = dict(manifest.get("time_feature_columns") or {})
+    time_feature_columns["market_news_embeddings"] = list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)
     manifest.update(
         {
             "format": TICKER_MONTH_CACHE_FORMAT,
@@ -854,6 +886,7 @@ def _refresh_global_context_package(
             "window": month_window_dict(window),
             "files": files,
             "counts": counts,
+            "time_feature_columns": time_feature_columns,
             "context_refresh": _context_refresh_metadata(args),
             "context_refreshed_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
         }
@@ -932,12 +965,19 @@ def _refresh_ticker_month_context_package(
     files["xbrl"] = "xbrl.parquet"
     package_config = dict(manifest.get("config") or {})
     package_config.update(_context_refresh_metadata(args))
+    package_config["context_available_time_feature_columns"] = list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)
+    package_config["bar_start_time_feature_columns"] = list(BAR_START_TIME_FEATURE_COLUMNS)
+    time_feature_columns = dict(manifest.get("time_feature_columns") or {})
+    time_feature_columns["ticker_news_embeddings"] = list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)
+    time_feature_columns["sec_filing_embeddings"] = list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)
+    time_feature_columns["xbrl"] = list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)
     manifest.update(
         {
             "status": "complete",
             "files": files,
             "counts": counts,
             "config": package_config,
+            "time_feature_columns": time_feature_columns,
             "context_refresh": _context_refresh_metadata(args),
             "context_refreshed_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
         }
@@ -1166,6 +1206,8 @@ def _build_ticker_month_package(
                 "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
                 "event_payload_columns": list(EVENT_PAYLOAD_COLUMNS),
                 "event_time_feature_columns": list(EVENT_TIME_FEATURE_COLUMNS),
+                "context_available_time_feature_columns": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
+                "bar_start_time_feature_columns": list(BAR_START_TIME_FEATURE_COLUMNS),
             },
             "counts": {
                 "parts": int(len(part_manifests)),
@@ -1185,6 +1227,12 @@ def _build_ticker_month_package(
                 "sec_filing_embeddings": "sec_filing_embeddings.parquet",
                 "xbrl": "xbrl.parquet",
                 "daily_bars": "daily_bars.parquet",
+            },
+            "time_feature_columns": {
+                "ticker_news_embeddings": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
+                "sec_filing_embeddings": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
+                "xbrl": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
+                "daily_bars": list(BAR_START_TIME_FEATURE_COLUMNS),
             },
             "parts": part_manifests,
             "completed_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
@@ -1678,6 +1726,7 @@ def _query_ticker_news(args: argparse.Namespace, client_opts: Mapping[str, str],
         return _empty_frame()
     table = f"{quote_ident(config.database)}.{quote_ident(config.news_embedding_table)}"
     columns = ",\n    ".join(quote_ident(column) for column in NEWS_EMBEDDING_COLUMNS)
+    time_columns = _available_time_feature_sql("timestamp_us", prefix="available")
     prior_items = max(0, int(getattr(args, "ticker_news_prior_items", 0) or 0))
     query = f"""
 WITH prior_items AS
@@ -1702,7 +1751,8 @@ WITH prior_items AS
     LIMIT {int(prior_items)}
 )
 SELECT
-    {columns}
+    {columns},
+    {time_columns}
 FROM {table}
 WHERE ticker = {sql_string(ticker)}
   AND timestamp_us < {int(window.last_session_end_us)}
@@ -1722,6 +1772,7 @@ def _query_market_news(args: argparse.Namespace, client_opts: Mapping[str, str],
         return _empty_frame()
     table = f"{quote_ident(config.database)}.{quote_ident(config.news_embedding_table)}"
     source_columns = ",\n        ".join(f"t.{quote_ident(column)}" for column in NEWS_EMBEDDING_COLUMNS if column != "ticker")
+    time_columns = _available_time_feature_sql("t.timestamp_us", prefix="available")
     prior_items = max(0, int(getattr(args, "market_news_prior_items", 0) or 0))
     query = f"""
 WITH prior_items AS
@@ -1746,7 +1797,8 @@ WITH prior_items AS
 )
 SELECT
     '__MARKET__' AS ticker,
-    {source_columns}
+    {source_columns},
+    {time_columns}
 FROM
 (
     SELECT *
@@ -1771,6 +1823,7 @@ def _query_sec_tokens(args: argparse.Namespace, client_opts: Mapping[str, str], 
         return _empty_frame()
     table = f"{quote_ident(config.sec_context_database)}.{quote_ident(config.sec_filing_text_embedding_table)}"
     columns = ",\n    ".join(quote_ident(column) for column in SEC_EMBEDDING_COLUMNS)
+    time_columns = _available_time_feature_sql("timestamp_us", prefix="available")
     prior_items = max(0, int(getattr(args, "sec_filing_prior_items", 0) or 0))
     query = f"""
 WITH prior_items AS
@@ -1798,7 +1851,8 @@ WITH prior_items AS
     LIMIT {int(prior_items)}
 )
 SELECT
-    {columns}
+    {columns},
+    {time_columns}
 FROM {table}
 WHERE ticker = {sql_string(ticker)}
   AND timestamp_us < {int(window.last_session_end_us)}
@@ -1816,6 +1870,7 @@ ORDER BY ticker, timestamp_us, accession_number, text_rank, document_id, source_
 def _query_xbrl(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str) -> Any:
     table = f"{quote_ident(config.sec_context_database)}.{quote_ident(config.sec_xbrl_context_table)}"
     prior_rows = max(0, int(getattr(args, "xbrl_prior_rows", 0) or 0))
+    time_columns = _available_time_feature_sql("timestamp_us", prefix="available")
     query = f"""
 WITH prior_rows AS
 (
@@ -1839,7 +1894,8 @@ WITH prior_rows AS
         location_code,
         xbrl_row_kind,
         bridge_id,
-        mapping_confidence AS mapping_confidence_score
+        mapping_confidence AS mapping_confidence_score,
+        {time_columns}
     FROM {table}
     WHERE ticker = {sql_string(ticker)}
       AND timestamp_us < {int(window.first_session_start_us)}
@@ -1866,7 +1922,8 @@ SELECT
     location_code,
     xbrl_row_kind,
     bridge_id,
-    mapping_confidence AS mapping_confidence_score
+    mapping_confidence AS mapping_confidence_score,
+    {time_columns}
 FROM {table}
 WHERE ticker = {sql_string(ticker)}
   AND timestamp_us >= {int(window.first_session_start_us)}
@@ -1887,6 +1944,7 @@ def _query_daily_bars(args: argparse.Namespace, client_opts: Mapping[str, str], 
     symbol_sql = ", ".join(sql_string(str(symbol).upper()) for symbol in symbols)
     start = window.first_date - dt.timedelta(days=max(0, int(config.macro_lookback_days)))
     end = window.next_month_date + dt.timedelta(days=max(0, int(config.label_lookahead_days)))
+    time_columns = _bar_start_time_feature_sql("bar_start")
     query = f"""
 SELECT
     upper(sym) AS sym,
@@ -1900,7 +1958,8 @@ SELECT
     dollar_volume,
     trade_count,
     quote_count,
-    vwap
+    vwap,
+    {time_columns}
 FROM {table}
 WHERE timeframe = '1d'
   AND upper(sym) IN ({symbol_sql})
