@@ -32,7 +32,7 @@ Settings are read from environment variables at process start. The gateway also 
 | `QMD_EVENT_CHANNEL_CAPACITY` | `250000` | Queue size for optional raw ClickHouse persistence. | Relevant only when `QMD_PERSIST_RAW_EVENTS=true`. |
 | `QMD_COMPACT_EVENTS_ENABLED` | `true` | Enable compact unified event conversion and websocket streaming. | Keep enabled for live ML consumers. |
 | `QMD_COMPACT_EVENT_CHANNEL_CAPACITY` | `250000` | Queue size for compact event conversion/persistence. | If downstream work cannot keep up, live ingest backpressures rather than discarding compact events. |
-| `QMD_COMPACT_EVENT_TABLE` | `live_market_events_v2` | ClickHouse table for compact live events. | Version the table name when the durable live event contract changes. |
+| `QMD_COMPACT_EVENT_TABLE` | `events` | ClickHouse table for compact live events. | Keep the live table name aligned with the historical `market_sip_compact.events` contract. |
 | `QMD_COMPACT_EVENT_CONTINUITY_TABLE` | `live_event_ordinal_continuity` | Append-only live ordinal continuity snapshots. | Used to audit and bootstrap ticker-local live ordinals. |
 | `QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER` | `512` | Recent compact events retained in memory per ticker for ML/app snapshots. | Must be at least the largest live inference context, e.g. 128. |
 | `QMD_COMPACT_EVENT_REORDER_LAG_MS` | `500` | Per-ticker persistence reorder watermark lag before assigning final DB ordinals. | Higher values improve late-arrival ordering but delay durable writes. |

@@ -17,7 +17,7 @@ Once production data is written under a version, do not change that version's fi
 
 ## Live Compact Unified Event Row
 
-Table: `live_market_events_v2`
+Table: `events`
 
 This is the durable live ML-serving event surface. It mirrors the historical
 `market_sip_compact.events` row shape closely enough that downstream encoders
@@ -60,7 +60,7 @@ sip_timestamp_us, source_sequence, event_type, arrival_sequence
 The in-memory live buffer is optimized for low-latency inference and does not
 wait for final DB ordinals. The persistence path uses a short per-ticker reorder
 buffer, assigns final ordinals in the order above, inserts
-`live_market_events_v2`, and periodically appends
+`events`, and periodically appends
 `live_event_ordinal_continuity` snapshots.
 
 Continuity table: `live_event_ordinal_continuity`
@@ -103,7 +103,7 @@ by the compact-event writer, the bar writer, and REST repair. Live streaming
 does not become covered from a single `running` row. Coverage is materialized
 as:
 
-- `compact_persisted` intervals from `live_market_events_v2` inserts.
+- `compact_persisted` intervals from `events` inserts.
 - `bars_persisted` intervals from `live_market_bars` inserts.
 - the intersection of compact and bar intervals for the same run id.
 - explicit `repair_completed` intervals after REST repair routes events through

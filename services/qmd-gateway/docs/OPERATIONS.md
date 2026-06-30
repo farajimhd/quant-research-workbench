@@ -180,7 +180,7 @@ and common US equity market holidays. Older history should be read from
 Startup maintenance is enabled by default with
 `QMD_STARTUP_MAINTENANCE_ENABLED=true`. It runs before the Massive websocket
 task starts. The gateway audits recent rows in the actual
-`q_live.live_market_events_v2` table and checks:
+`q_live.events` table and checks:
 
 - duplicate `(ticker, ordinal)` rows
 - ticker-local ordinal holes
@@ -235,7 +235,7 @@ Use replay in a separate run from live trading unless you are deliberately testi
 
 | Table | Required | Purpose |
 |---|---:|---|
-| `live_market_events_v2` | yes | Durable live compact event source for ML-serving and live replay. |
+| `events` | yes | Durable live compact event source for ML-serving and live replay. |
 | `live_massive_trades` | optional | Raw trade source for replay/debug when `QMD_PERSIST_RAW_EVENTS=true`. |
 | `live_massive_quotes` | optional | Raw quote source for replay/debug when `QMD_PERSIST_RAW_EVENTS=true`. |
 | `live_market_bars` | yes | Published bars for chart/date-slice queries. |
@@ -258,7 +258,7 @@ Before live use:
 4. `/health` returns `status: running`.
 5. `/metrics` shows rising `ingest_trades` and `ingest_quotes` during active market data.
 6. Drop counters stay at zero or remain explainable during bursts.
-7. `live_market_events_v2` receives rows or `/stream/compact-events` emits rows.
+7. `events` receives rows or `/stream/compact-events` emits rows.
 8. `live_market_bars`, `bars_by_symbol_time`, and `bars_by_time_symbol` receive closed bars.
 
 ## Failure Triage
