@@ -338,7 +338,7 @@ The bar stage is intentionally derived from `events`, not tracked as a separate
 per-day event manifest. If a run successfully inserts flatfile rows into
 `events` but fails before or during bar creation, rerun the same date range. The
 event stage will skip manifest-`ok` days, those skipped days are still passed to
-the bar stage, and overlapping bars are rebuilt in all three layouts from the
+the bar stage, and overlapping daily macro bars are rebuilt from the
 already-inserted events. Keep the default `--bar-replace-range` enabled for
 this recovery path.
 
