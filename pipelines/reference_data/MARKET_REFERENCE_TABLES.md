@@ -101,8 +101,9 @@ bits 56-63: pack version
 ```
 
 Quote rows pack the first four quote condition tokens and the first quote
-indicator token. Trade rows pack the first four trade condition tokens and the
-trade correction token decoded from `trade_flags`.
+indicator token. Trade rows pack the first five trade condition tokens.
+Historical trade correction codes are used only to filter bad/cancel/error rows
+before event construction; correction is not encoded in model-facing events.
 
 ```sql
 bitOr(
