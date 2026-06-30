@@ -154,6 +154,17 @@ def reference_cell_values(payload: str) -> dict[str, str]:
     return values
 
 
+def reference_row_values(payload: str, cell_refs: dict[str, str]) -> dict[str, list[str]]:
+    values: dict[str, list[str]] = {}
+    for match in re.finditer(r'([0-9A-Za-z]+):\["\$","tr",', payload):
+        ref = match.group(1)
+        fragment = bracketed_array(payload, match.start() + len(ref) + 1)
+        row = row_values(fragment, cell_refs)
+        if row:
+            values[ref] = row
+    return values
+
+
 def row_values(row_payload: str, cell_refs: dict[str, str]) -> list[str]:
     values: list[str] = []
     token_pattern = re.compile(r'"children":"((?:\\.|[^"\\])*)"|"\$L([0-9A-Za-z]+)"')
@@ -165,14 +176,29 @@ def row_values(row_payload: str, cell_refs: dict[str, str]) -> list[str]:
     return values
 
 
-def extract_table_rows(section: str, cell_refs: dict[str, str]) -> tuple[list[str], list[dict[str, str | int | None]]]:
-    starts = [match.start() for match in re.finditer(r'\["\$","tr",', section)]
+def extract_table_rows(
+    section: str,
+    cell_refs: dict[str, str],
+    row_refs: dict[str, list[str]],
+) -> tuple[list[str], list[dict[str, str | int | None]]]:
     raw_rows: list[list[str]] = []
     rows: list[dict[str, str | int | None]] = []
-    for start in starts:
-        row_payload = bracketed_array(section, start)
-        values = row_values(row_payload, cell_refs)
+    row_pattern = re.compile(r'\["\$","tr",|"\$L([0-9A-Za-z]+)"')
+    seen: set[tuple[str, ...]] = set()
+    for match in row_pattern.finditer(section):
+        ref = match.group(1)
+        if ref is not None:
+            values = row_refs.get(ref)
+            if not values:
+                continue
+        else:
+            row_payload = bracketed_array(section, match.start())
+            values = row_values(row_payload, cell_refs)
         if values:
+            row_key = tuple(values)
+            if row_key in seen:
+                continue
+            seen.add(row_key)
             raw_rows.append(values)
     if len(raw_rows) < 2:
         raise RuntimeError("Expected a header row and at least one data row")
@@ -213,10 +239,11 @@ def table_metadata(rows: list[dict[str, str | int | None]]) -> dict[str, int | l
 def extract_tables(text: str, source_url: str) -> dict[str, object]:
     payload = normalize_next_payload(text)
     cell_refs = reference_cell_values(payload)
+    row_refs = reference_row_values(payload, cell_refs)
     result_tables: dict[str, object] = {}
     for heading, section in extract_h1_sections(payload):
         table_key = table_key_for_heading(heading)
-        columns, rows = extract_table_rows(section, cell_refs)
+        columns, rows = extract_table_rows(section, cell_refs, row_refs)
         if not rows:
             raise RuntimeError(f"Extracted zero rows for {table_key}")
         result_tables[table_key] = {

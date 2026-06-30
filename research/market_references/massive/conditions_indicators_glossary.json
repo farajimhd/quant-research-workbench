@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-06-30T17:29:52.113598+00:00",
+  "generated_at_utc": "2026-06-30T17:44:30.470426+00:00",
   "notes": [
     "Extracted from Massive glossary page because quote, trade, status, and indicator domains are separate.",
     "dense_combo_id_bits_with_unknown is for encoding one complete condition row/table entry plus ID 0 for missing or unknown."
@@ -14,14 +14,14 @@
       ],
       "heading": "CTA Security Status",
       "metadata": {
-        "dense_combo_id_bits_with_unknown": 4,
-        "dense_combo_id_capacity": 16,
+        "dense_combo_id_bits_with_unknown": 5,
+        "dense_combo_id_capacity": 32,
         "duplicate_modifier_count": 0,
         "duplicate_modifiers": [],
-        "modifier_max": 109,
+        "modifier_max": 117,
         "modifier_min": 100,
         "modifier_signed_bits": 8,
-        "rows": 10
+        "rows": 18
       },
       "rows": [
         {
@@ -83,6 +83,54 @@
           "modifier": "109",
           "modifier_int": 109,
           "source_row": 10
+        },
+        {
+          "condition": "Market On Close Imbalance Sell",
+          "modifier": "110",
+          "modifier_int": 110,
+          "source_row": 11
+        },
+        {
+          "condition": "No Market Imbalance",
+          "modifier": "111",
+          "modifier_int": 111,
+          "source_row": 12
+        },
+        {
+          "condition": "No Market On Close Imbalance",
+          "modifier": "112",
+          "modifier_int": 112,
+          "source_row": 13
+        },
+        {
+          "condition": "Short Sale Restriction",
+          "modifier": "113",
+          "modifier_int": 113,
+          "source_row": 14
+        },
+        {
+          "condition": "Limit Up-Limit Down",
+          "modifier": "114",
+          "modifier_int": 114,
+          "source_row": 15
+        },
+        {
+          "condition": "Quotation Resumption",
+          "modifier": "115",
+          "modifier_int": 115,
+          "source_row": 16
+        },
+        {
+          "condition": "Trading Resumption",
+          "modifier": "116",
+          "modifier_int": 116,
+          "source_row": 17
+        },
+        {
+          "condition": "Volatility Trading Pause",
+          "modifier": "117",
+          "modifier_int": 117,
+          "source_row": 18
         }
       ]
     },
@@ -97,10 +145,10 @@
         "dense_combo_id_capacity": 16,
         "duplicate_modifier_count": 0,
         "duplicate_modifiers": [],
-        "modifier_max": 58,
+        "modifier_max": 61,
         "modifier_min": 50,
         "modifier_signed_bits": 7,
-        "rows": 9
+        "rows": 12
       },
       "rows": [
         {
@@ -156,6 +204,24 @@
           "modifier": "58",
           "modifier_int": 58,
           "source_row": 9
+        },
+        {
+          "condition": "Creations Suspended",
+          "modifier": "59",
+          "modifier_int": 59,
+          "source_row": 10
+        },
+        {
+          "condition": "Redemptions Suspended",
+          "modifier": "60",
+          "modifier_int": 60,
+          "source_row": 11
+        },
+        {
+          "condition": "Creations and/or Redemptions Suspended",
+          "modifier": "61",
+          "modifier_int": 61,
+          "source_row": 12
         }
       ]
     },
@@ -166,14 +232,14 @@
       ],
       "heading": "CTA Halt Reason / UTP Trade Action Reason",
       "metadata": {
-        "dense_combo_id_bits_with_unknown": 4,
-        "dense_combo_id_capacity": 16,
+        "dense_combo_id_bits_with_unknown": 6,
+        "dense_combo_id_capacity": 64,
         "duplicate_modifier_count": 0,
         "duplicate_modifiers": [],
-        "modifier_max": 158,
+        "modifier_max": 186,
         "modifier_min": 150,
         "modifier_signed_bits": 9,
-        "rows": 9
+        "rows": 37
       },
       "rows": [
         {
@@ -229,6 +295,174 @@
           "modifier": "158",
           "modifier_int": 158,
           "source_row": 9
+        },
+        {
+          "condition": "Halt: SEC Trading Suspension",
+          "modifier": "159",
+          "modifier_int": 159,
+          "source_row": 10
+        },
+        {
+          "condition": "Halt: Regulatory Concern",
+          "modifier": "160",
+          "modifier_int": 160,
+          "source_row": 11
+        },
+        {
+          "condition": "Halt: Market Operations",
+          "modifier": "161",
+          "modifier_int": 161,
+          "source_row": 12
+        },
+        {
+          "condition": "IPO Security: Not Yet Trading",
+          "modifier": "162",
+          "modifier_int": 162,
+          "source_row": 13
+        },
+        {
+          "condition": "Halt: Corporate Action",
+          "modifier": "163",
+          "modifier_int": 163,
+          "source_row": 14
+        },
+        {
+          "condition": "Quotation Not Available",
+          "modifier": "164",
+          "modifier_int": 164,
+          "source_row": 15
+        },
+        {
+          "condition": "Halt: Volatility Trading Pause",
+          "modifier": "165",
+          "modifier_int": 165,
+          "source_row": 16
+        },
+        {
+          "condition": "Halt: Volatility Trading Pause \u2013 Straddle Condition",
+          "modifier": "166",
+          "modifier_int": 166,
+          "source_row": 17
+        },
+        {
+          "condition": "Update: News and Resumption Times",
+          "modifier": "167",
+          "modifier_int": 167,
+          "source_row": 18
+        },
+        {
+          "condition": "Halt: Single Stock Trading Pause - Quotes Only",
+          "modifier": "168",
+          "modifier_int": 168,
+          "source_row": 19
+        },
+        {
+          "condition": "Resume: Qualification Issues Reviewed / Resolved",
+          "modifier": "169",
+          "modifier_int": 169,
+          "source_row": 20
+        },
+        {
+          "condition": "Resume: Filing Requirements Satisfied / Resolved",
+          "modifier": "170",
+          "modifier_int": 170,
+          "source_row": 21
+        },
+        {
+          "condition": "Resume: News Not Forthcoming",
+          "modifier": "171",
+          "modifier_int": 171,
+          "source_row": 22
+        },
+        {
+          "condition": "Resume: Qualifications - Maintenance Requirements Met",
+          "modifier": "172",
+          "modifier_int": 172,
+          "source_row": 23
+        },
+        {
+          "condition": "Resume: Qualifications - Filings Met",
+          "modifier": "173",
+          "modifier_int": 173,
+          "source_row": 24
+        },
+        {
+          "condition": "Resume: Regulatory Auth",
+          "modifier": "174",
+          "modifier_int": 174,
+          "source_row": 25
+        },
+        {
+          "condition": "New Issue Available",
+          "modifier": "175",
+          "modifier_int": 175,
+          "source_row": 26
+        },
+        {
+          "condition": "Issue Available",
+          "modifier": "176",
+          "modifier_int": 176,
+          "source_row": 27
+        },
+        {
+          "condition": "MWCB - Carry from previous day",
+          "modifier": "177",
+          "modifier_int": 177,
+          "source_row": 28
+        },
+        {
+          "condition": "MWCB - Resume",
+          "modifier": "178",
+          "modifier_int": 178,
+          "source_row": 29
+        },
+        {
+          "condition": "IPO Security: Released for quotation",
+          "modifier": "179",
+          "modifier_int": 179,
+          "source_row": 30
+        },
+        {
+          "condition": "IPO Security: Positioning window extension",
+          "modifier": "180",
+          "modifier_int": 180,
+          "source_row": 31
+        },
+        {
+          "condition": "MWCB - Level 1",
+          "modifier": "181",
+          "modifier_int": 181,
+          "source_row": 32
+        },
+        {
+          "condition": "MWCB - Level 2",
+          "modifier": "182",
+          "modifier_int": 182,
+          "source_row": 33
+        },
+        {
+          "condition": "MWCB - Level 3",
+          "modifier": "183",
+          "modifier_int": 183,
+          "source_row": 34
+        },
+        {
+          "condition": "Halt: Sub Penny Trading",
+          "modifier": "184",
+          "modifier_int": 184,
+          "source_row": 35
+        },
+        {
+          "condition": "Order Imbalance",
+          "modifier": "185",
+          "modifier_int": 185,
+          "source_row": 36
+        },
+        {
+          "condition": "LULD Trading Pause",
+          "modifier": "186",
+          "modifier_int": 186,
+          "source_row": 37
         }
       ]
     },
@@ -362,693 +596,693 @@
           "source_row": 9
         },
         {
-          "condition": "SlowDueSetSlowListBidAsk",
-          "modifier": "9",
-          "modifier_int": 9,
-          "source_row": 10
-        },
-        {
-          "condition": "ManualAskAutomatedBid",
-          "modifier": "10",
-          "modifier_int": 10,
-          "source_row": 11
-        },
-        {
-          "condition": "ManualBidAutomatedAsk",
-          "modifier": "11",
-          "modifier_int": 11,
-          "source_row": 12
-        },
-        {
-          "condition": "ManualBidAndAsk",
-          "modifier": "12",
-          "modifier_int": 12,
-          "source_row": 13
-        },
-        {
-          "condition": "Opening",
-          "modifier": "13",
-          "modifier_int": 13,
-          "source_row": 14
-        },
-        {
-          "condition": "Closing",
-          "modifier": "14",
-          "modifier_int": 14,
-          "source_row": 15
-        },
-        {
-          "condition": "Closed",
-          "modifier": "15",
-          "modifier_int": 15,
-          "source_row": 16
-        },
-        {
-          "condition": "Resume",
-          "modifier": "16",
-          "modifier_int": 16,
-          "source_row": 17
-        },
-        {
-          "condition": "FastTrading",
-          "modifier": "17",
-          "modifier_int": 17,
-          "source_row": 18
-        },
-        {
-          "condition": "TradingRangeIndication",
-          "modifier": "18",
-          "modifier_int": 18,
-          "source_row": 19
-        },
-        {
-          "condition": "MarketMakerQuotesClosed",
-          "modifier": "19",
-          "modifier_int": 19,
-          "source_row": 20
-        },
-        {
-          "condition": "NonFirm",
-          "modifier": "20",
-          "modifier_int": 20,
-          "source_row": 21
-        },
-        {
-          "condition": "NewsDissemination",
-          "modifier": "21",
-          "modifier_int": 21,
-          "source_row": 22
-        },
-        {
-          "condition": "OrderInflux",
-          "modifier": "22",
-          "modifier_int": 22,
-          "source_row": 23
-        },
-        {
-          "condition": "OrderImbalance",
-          "modifier": "23",
-          "modifier_int": 23,
-          "source_row": 24
-        },
-        {
-          "condition": "DueToRelatedSecurityNewsDissemination",
-          "modifier": "23",
-          "modifier_int": 23,
-          "source_row": 25
-        },
-        {
-          "condition": "DueToRelatedSecurityNewsPending",
-          "modifier": "25",
-          "modifier_int": 25,
-          "source_row": 26
-        },
-        {
-          "condition": "AdditionalInformation",
-          "modifier": "26",
-          "modifier_int": 26,
-          "source_row": 27
-        },
-        {
-          "condition": "NewsPending",
-          "modifier": "27",
-          "modifier_int": 27,
-          "source_row": 28
-        },
-        {
-          "condition": "AdditionalInformationDueToRelatedSecurity",
-          "modifier": "28",
-          "modifier_int": 28,
-          "source_row": 29
-        },
-        {
-          "condition": "DueToRelatedSecurity",
-          "modifier": "29",
-          "modifier_int": 29,
-          "source_row": 30
-        },
-        {
-          "condition": "InViewOfCommon",
-          "modifier": "30",
-          "modifier_int": 30,
-          "source_row": 31
-        },
-        {
-          "condition": "EquipmentChangeover",
-          "modifier": "31",
-          "modifier_int": 31,
-          "source_row": 32
-        },
-        {
-          "condition": "NoOpenNoResponse",
-          "modifier": "32",
-          "modifier_int": 32,
-          "source_row": 33
-        },
-        {
-          "condition": "SubPennyTrading",
-          "modifier": "33",
-          "modifier_int": 33,
-          "source_row": 34
-        },
-        {
-          "condition": "AutomatedBidNoOfferNoBid",
-          "modifier": "34",
-          "modifier_int": 34,
-          "source_row": 35
-        },
-        {
-          "condition": "LULDPriceBand",
-          "modifier": "35",
-          "modifier_int": 35,
-          "source_row": 36
-        },
-        {
-          "condition": "MarketWideCircuitBreakerLevel1",
-          "modifier": "36",
-          "modifier_int": 36,
-          "source_row": 37
-        },
-        {
-          "condition": "MarketWideCircuitBreakerLevel2",
-          "modifier": "37",
-          "modifier_int": 37,
-          "source_row": 38
-        },
-        {
-          "condition": "MarketWideCircuitBreakerLevel3",
-          "modifier": "38",
-          "modifier_int": 38,
-          "source_row": 39
-        },
-        {
-          "condition": "RepublishedLULDPriceBand",
-          "modifier": "39",
-          "modifier_int": 39,
-          "source_row": 40
-        },
-        {
-          "condition": "OnDemandAuction",
-          "modifier": "40",
-          "modifier_int": 40,
-          "source_row": 41
-        },
-        {
-          "condition": "CashOnlySettlement",
-          "modifier": "41",
-          "modifier_int": 41,
-          "source_row": 42
-        },
-        {
-          "condition": "NextDaySettlement",
-          "modifier": "42",
-          "modifier_int": 42,
-          "source_row": 43
-        },
-        {
-          "condition": "LULDTradingPause",
-          "modifier": "43",
-          "modifier_int": 43,
-          "source_row": 44
-        },
-        {
-          "condition": "SLowDuelRPBidAsk",
-          "modifier": "71",
-          "modifier_int": 71,
-          "source_row": 45
-        },
-        {
-          "condition": "Cancel",
-          "modifier": "80",
-          "modifier_int": 80,
-          "source_row": 46
-        },
-        {
-          "condition": "Corrected_Price",
-          "modifier": "81",
-          "modifier_int": 81,
-          "source_row": 47
-        },
-        {
-          "condition": "SIPGenerated",
-          "modifier": "82",
-          "modifier_int": 82,
-          "source_row": 48
-        },
-        {
-          "condition": "Unknown",
-          "modifier": "83",
-          "modifier_int": 83,
-          "source_row": 49
-        },
-        {
-          "condition": "Crossed_Market",
-          "modifier": "84",
-          "modifier_int": 84,
-          "source_row": 50
-        },
-        {
-          "condition": "Locked_Market",
-          "modifier": "85",
-          "modifier_int": 85,
-          "source_row": 51
-        },
-        {
-          "condition": "Depth_On_Offer_Side",
-          "modifier": "86",
-          "modifier_int": 86,
-          "source_row": 52
-        },
-        {
-          "condition": "Depth_On_Bid_Side",
-          "modifier": "87",
-          "modifier_int": 87,
-          "source_row": 53
-        },
-        {
-          "condition": "Depth_On_Bid_And_Offer",
-          "modifier": "88",
-          "modifier_int": 88,
-          "source_row": 54
-        },
-        {
-          "condition": "Pre_Opening_Indication",
-          "modifier": "89",
-          "modifier_int": 89,
-          "source_row": 55
-        },
-        {
-          "condition": "Syndicate_Bid",
-          "modifier": "90",
-          "modifier_int": 90,
-          "source_row": 56
-        },
-        {
-          "condition": "Pre_Syndicate_Bid",
-          "modifier": "91",
-          "modifier_int": 91,
-          "source_row": 57
-        },
-        {
-          "condition": "Penalty_Bid",
-          "modifier": "92",
-          "modifier_int": 92,
-          "source_row": 58
-        },
-        {
-          "condition": "Creations Suspended",
-          "modifier": "59",
-          "modifier_int": 59,
-          "source_row": 59
-        },
-        {
-          "condition": "Redemptions Suspended",
-          "modifier": "60",
-          "modifier_int": 60,
-          "source_row": 60
-        },
-        {
-          "condition": "Creations and/or Redemptions Suspended",
-          "modifier": "61",
-          "modifier_int": 61,
-          "source_row": 61
-        },
-        {
-          "condition": "Market On Close Imbalance Sell",
-          "modifier": "110",
-          "modifier_int": 110,
-          "source_row": 62
-        },
-        {
-          "condition": "No Market Imbalance",
-          "modifier": "111",
-          "modifier_int": 111,
-          "source_row": 63
-        },
-        {
-          "condition": "No Market On Close Imbalance",
-          "modifier": "112",
-          "modifier_int": 112,
-          "source_row": 64
-        },
-        {
-          "condition": "Short Sale Restriction",
-          "modifier": "113",
-          "modifier_int": 113,
-          "source_row": 65
-        },
-        {
-          "condition": "Limit Up-Limit Down",
-          "modifier": "114",
-          "modifier_int": 114,
-          "source_row": 66
-        },
-        {
-          "condition": "Quotation Resumption",
-          "modifier": "115",
-          "modifier_int": 115,
-          "source_row": 67
-        },
-        {
-          "condition": "Trading Resumption",
-          "modifier": "116",
-          "modifier_int": 116,
-          "source_row": 68
-        },
-        {
-          "condition": "Volatility Trading Pause",
-          "modifier": "117",
-          "modifier_int": 117,
-          "source_row": 69
-        },
-        {
-          "condition": "Halt: SEC Trading Suspension",
-          "modifier": "159",
-          "modifier_int": 159,
-          "source_row": 70
-        },
-        {
-          "condition": "Halt: Regulatory Concern",
-          "modifier": "160",
-          "modifier_int": 160,
-          "source_row": 71
-        },
-        {
-          "condition": "Halt: Market Operations",
-          "modifier": "161",
-          "modifier_int": 161,
-          "source_row": 72
-        },
-        {
-          "condition": "IPO Security: Not Yet Trading",
-          "modifier": "162",
-          "modifier_int": 162,
-          "source_row": 73
-        },
-        {
-          "condition": "Halt: Corporate Action",
-          "modifier": "163",
-          "modifier_int": 163,
-          "source_row": 74
-        },
-        {
-          "condition": "Quotation Not Available",
-          "modifier": "164",
-          "modifier_int": 164,
-          "source_row": 75
-        },
-        {
-          "condition": "Halt: Volatility Trading Pause",
-          "modifier": "165",
-          "modifier_int": 165,
-          "source_row": 76
-        },
-        {
-          "condition": "Halt: Volatility Trading Pause \u2013 Straddle Condition",
-          "modifier": "166",
-          "modifier_int": 166,
-          "source_row": 77
-        },
-        {
-          "condition": "Update: News and Resumption Times",
-          "modifier": "167",
-          "modifier_int": 167,
-          "source_row": 78
-        },
-        {
-          "condition": "Halt: Single Stock Trading Pause - Quotes Only",
-          "modifier": "168",
-          "modifier_int": 168,
-          "source_row": 79
-        },
-        {
-          "condition": "Resume: Qualification Issues Reviewed / Resolved",
-          "modifier": "169",
-          "modifier_int": 169,
-          "source_row": 80
-        },
-        {
-          "condition": "Resume: Filing Requirements Satisfied / Resolved",
-          "modifier": "170",
-          "modifier_int": 170,
-          "source_row": 81
-        },
-        {
-          "condition": "Resume: News Not Forthcoming",
-          "modifier": "171",
-          "modifier_int": 171,
-          "source_row": 82
-        },
-        {
-          "condition": "Resume: Qualifications - Maintenance Requirements Met",
-          "modifier": "172",
-          "modifier_int": 172,
-          "source_row": 83
-        },
-        {
-          "condition": "Resume: Qualifications - Filings Met",
-          "modifier": "173",
-          "modifier_int": 173,
-          "source_row": 84
-        },
-        {
-          "condition": "Resume: Regulatory Auth",
-          "modifier": "174",
-          "modifier_int": 174,
-          "source_row": 85
-        },
-        {
-          "condition": "New Issue Available",
-          "modifier": "175",
-          "modifier_int": 175,
-          "source_row": 86
-        },
-        {
-          "condition": "Issue Available",
-          "modifier": "176",
-          "modifier_int": 176,
-          "source_row": 87
-        },
-        {
-          "condition": "MWCB - Carry from previous day",
-          "modifier": "177",
-          "modifier_int": 177,
-          "source_row": 88
-        },
-        {
-          "condition": "MWCB - Resume",
-          "modifier": "178",
-          "modifier_int": 178,
-          "source_row": 89
-        },
-        {
-          "condition": "IPO Security: Released for quotation",
-          "modifier": "179",
-          "modifier_int": 179,
-          "source_row": 90
-        },
-        {
-          "condition": "IPO Security: Positioning window extension",
-          "modifier": "180",
-          "modifier_int": 180,
-          "source_row": 91
-        },
-        {
-          "condition": "MWCB - Level 1",
-          "modifier": "181",
-          "modifier_int": 181,
-          "source_row": 92
-        },
-        {
-          "condition": "MWCB - Level 2",
-          "modifier": "182",
-          "modifier_int": 182,
-          "source_row": 93
-        },
-        {
-          "condition": "MWCB - Level 3",
-          "modifier": "183",
-          "modifier_int": 183,
-          "source_row": 94
-        },
-        {
-          "condition": "Halt: Sub Penny Trading",
-          "modifier": "184",
-          "modifier_int": 184,
-          "source_row": 95
-        },
-        {
-          "condition": "Order Imbalance",
-          "modifier": "185",
-          "modifier_int": 185,
-          "source_row": 96
-        },
-        {
-          "condition": "LULD Trading Pause",
-          "modifier": "186",
-          "modifier_int": 186,
-          "source_row": 97
-        },
-        {
-          "condition": "CTA_NOT_DUE_TO_RELATED_SECURITY",
-          "modifier": "901",
-          "modifier_int": 901,
-          "source_row": 98
-        },
-        {
-          "condition": "CTA_DUE_TO_RELATED_SECURITY",
-          "modifier": "902",
-          "modifier_int": 902,
-          "source_row": 99
-        },
-        {
-          "condition": "CTA_NOT_IN_VIEW_OF_COMMON",
-          "modifier": "903",
-          "modifier_int": 903,
-          "source_row": 100
-        },
-        {
-          "condition": "CTA_IN_VIEW_OF_COMMON",
-          "modifier": "904",
-          "modifier_int": 904,
-          "source_row": 101
-        },
-        {
-          "condition": "CTA_PRICE_INDICATOR",
-          "modifier": "905",
-          "modifier_int": 905,
-          "source_row": 102
-        },
-        {
-          "condition": "CTA_NEW_PRICE_INDICATOR",
-          "modifier": "906",
-          "modifier_int": 906,
-          "source_row": 103
-        },
-        {
-          "condition": "CTA_CORRECTED_PRICE_INDICATION",
-          "modifier": "907",
-          "modifier_int": 907,
-          "source_row": 104
-        },
-        {
           "condition": "Bid Price Above Upper Limit",
           "modifier": "11",
           "modifier_int": 11,
-          "source_row": 105
+          "source_row": 10
         },
         {
           "condition": "Ask Price Below Lower Limit",
           "modifier": "12",
           "modifier_int": 12,
-          "source_row": 106
+          "source_row": 11
         },
         {
           "condition": "Bid Ask Outside",
           "modifier": "13",
           "modifier_int": 13,
-          "source_row": 107
+          "source_row": 12
         },
         {
           "condition": "Opening Update",
           "modifier": "14",
           "modifier_int": 14,
-          "source_row": 108
+          "source_row": 13
         },
         {
           "condition": "Intraday Update",
           "modifier": "15",
           "modifier_int": 15,
-          "source_row": 109
+          "source_row": 14
         },
         {
           "condition": "Restated Value",
           "modifier": "16",
           "modifier_int": 16,
-          "source_row": 110
+          "source_row": 15
         },
         {
           "condition": "Suspended Halt Pause",
           "modifier": "17",
           "modifier_int": 17,
-          "source_row": 111
+          "source_row": 16
         },
         {
           "condition": "Reopening Update",
           "modifier": "18",
           "modifier_int": 18,
-          "source_row": 112
+          "source_row": 17
         },
         {
           "condition": "Outside Price Band Rule Hours",
           "modifier": "19",
           "modifier_int": 19,
-          "source_row": 113
+          "source_row": 18
         },
         {
           "condition": "Auction Extension",
           "modifier": "20",
           "modifier_int": 20,
-          "source_row": 114
+          "source_row": 19
         },
         {
           "condition": "Price Band",
           "modifier": "21",
           "modifier_int": 21,
-          "source_row": 115
+          "source_row": 20
         },
         {
           "condition": "Republished LULD Price Band",
           "modifier": "22",
           "modifier_int": 22,
-          "source_row": 116
+          "source_row": 21
         },
         {
           "condition": "NBB Limit State Entered",
           "modifier": "23",
           "modifier_int": 23,
-          "source_row": 117
+          "source_row": 22
         },
         {
           "condition": "NBB Limit State Exited",
           "modifier": "24",
           "modifier_int": 24,
-          "source_row": 118
+          "source_row": 23
         },
         {
           "condition": "NBO Limit State Entered",
           "modifier": "25",
           "modifier_int": 25,
-          "source_row": 119
+          "source_row": 24
         },
         {
           "condition": "NBO Limit State Exited",
           "modifier": "26",
           "modifier_int": 26,
-          "source_row": 120
+          "source_row": 25
         },
         {
           "condition": "NBB NBO Limit State Entered",
           "modifier": "27",
           "modifier_int": 27,
-          "source_row": 121
+          "source_row": 26
         },
         {
           "condition": "NBB NBO Limit State Exited",
           "modifier": "28",
           "modifier_int": 28,
-          "source_row": 122
+          "source_row": 27
         },
         {
           "condition": "NBB Limit State Entered NBO Limit State Exited",
           "modifier": "29",
           "modifier_int": 29,
-          "source_row": 123
+          "source_row": 28
         },
         {
           "condition": "NBB Limit State Exited NBO Limit State Entered",
           "modifier": "30",
           "modifier_int": 30,
+          "source_row": 29
+        },
+        {
+          "condition": "SlowDueSetSlowListBidAsk",
+          "modifier": "9",
+          "modifier_int": 9,
+          "source_row": 30
+        },
+        {
+          "condition": "ManualAskAutomatedBid",
+          "modifier": "10",
+          "modifier_int": 10,
+          "source_row": 31
+        },
+        {
+          "condition": "ManualBidAutomatedAsk",
+          "modifier": "11",
+          "modifier_int": 11,
+          "source_row": 32
+        },
+        {
+          "condition": "ManualBidAndAsk",
+          "modifier": "12",
+          "modifier_int": 12,
+          "source_row": 33
+        },
+        {
+          "condition": "Opening",
+          "modifier": "13",
+          "modifier_int": 13,
+          "source_row": 34
+        },
+        {
+          "condition": "Closing",
+          "modifier": "14",
+          "modifier_int": 14,
+          "source_row": 35
+        },
+        {
+          "condition": "Closed",
+          "modifier": "15",
+          "modifier_int": 15,
+          "source_row": 36
+        },
+        {
+          "condition": "Resume",
+          "modifier": "16",
+          "modifier_int": 16,
+          "source_row": 37
+        },
+        {
+          "condition": "FastTrading",
+          "modifier": "17",
+          "modifier_int": 17,
+          "source_row": 38
+        },
+        {
+          "condition": "TradingRangeIndication",
+          "modifier": "18",
+          "modifier_int": 18,
+          "source_row": 39
+        },
+        {
+          "condition": "MarketMakerQuotesClosed",
+          "modifier": "19",
+          "modifier_int": 19,
+          "source_row": 40
+        },
+        {
+          "condition": "NonFirm",
+          "modifier": "20",
+          "modifier_int": 20,
+          "source_row": 41
+        },
+        {
+          "condition": "NewsDissemination",
+          "modifier": "21",
+          "modifier_int": 21,
+          "source_row": 42
+        },
+        {
+          "condition": "OrderInflux",
+          "modifier": "22",
+          "modifier_int": 22,
+          "source_row": 43
+        },
+        {
+          "condition": "OrderImbalance",
+          "modifier": "23",
+          "modifier_int": 23,
+          "source_row": 44
+        },
+        {
+          "condition": "DueToRelatedSecurityNewsDissemination",
+          "modifier": "23",
+          "modifier_int": 23,
+          "source_row": 45
+        },
+        {
+          "condition": "DueToRelatedSecurityNewsPending",
+          "modifier": "25",
+          "modifier_int": 25,
+          "source_row": 46
+        },
+        {
+          "condition": "AdditionalInformation",
+          "modifier": "26",
+          "modifier_int": 26,
+          "source_row": 47
+        },
+        {
+          "condition": "NewsPending",
+          "modifier": "27",
+          "modifier_int": 27,
+          "source_row": 48
+        },
+        {
+          "condition": "AdditionalInformationDueToRelatedSecurity",
+          "modifier": "28",
+          "modifier_int": 28,
+          "source_row": 49
+        },
+        {
+          "condition": "DueToRelatedSecurity",
+          "modifier": "29",
+          "modifier_int": 29,
+          "source_row": 50
+        },
+        {
+          "condition": "InViewOfCommon",
+          "modifier": "30",
+          "modifier_int": 30,
+          "source_row": 51
+        },
+        {
+          "condition": "EquipmentChangeover",
+          "modifier": "31",
+          "modifier_int": 31,
+          "source_row": 52
+        },
+        {
+          "condition": "NoOpenNoResponse",
+          "modifier": "32",
+          "modifier_int": 32,
+          "source_row": 53
+        },
+        {
+          "condition": "SubPennyTrading",
+          "modifier": "33",
+          "modifier_int": 33,
+          "source_row": 54
+        },
+        {
+          "condition": "AutomatedBidNoOfferNoBid",
+          "modifier": "34",
+          "modifier_int": 34,
+          "source_row": 55
+        },
+        {
+          "condition": "LULDPriceBand",
+          "modifier": "35",
+          "modifier_int": 35,
+          "source_row": 56
+        },
+        {
+          "condition": "MarketWideCircuitBreakerLevel1",
+          "modifier": "36",
+          "modifier_int": 36,
+          "source_row": 57
+        },
+        {
+          "condition": "MarketWideCircuitBreakerLevel2",
+          "modifier": "37",
+          "modifier_int": 37,
+          "source_row": 58
+        },
+        {
+          "condition": "MarketWideCircuitBreakerLevel3",
+          "modifier": "38",
+          "modifier_int": 38,
+          "source_row": 59
+        },
+        {
+          "condition": "RepublishedLULDPriceBand",
+          "modifier": "39",
+          "modifier_int": 39,
+          "source_row": 60
+        },
+        {
+          "condition": "OnDemandAuction",
+          "modifier": "40",
+          "modifier_int": 40,
+          "source_row": 61
+        },
+        {
+          "condition": "CashOnlySettlement",
+          "modifier": "41",
+          "modifier_int": 41,
+          "source_row": 62
+        },
+        {
+          "condition": "NextDaySettlement",
+          "modifier": "42",
+          "modifier_int": 42,
+          "source_row": 63
+        },
+        {
+          "condition": "LULDTradingPause",
+          "modifier": "43",
+          "modifier_int": 43,
+          "source_row": 64
+        },
+        {
+          "condition": "SLowDuelRPBidAsk",
+          "modifier": "71",
+          "modifier_int": 71,
+          "source_row": 65
+        },
+        {
+          "condition": "Cancel",
+          "modifier": "80",
+          "modifier_int": 80,
+          "source_row": 66
+        },
+        {
+          "condition": "Corrected_Price",
+          "modifier": "81",
+          "modifier_int": 81,
+          "source_row": 67
+        },
+        {
+          "condition": "SIPGenerated",
+          "modifier": "82",
+          "modifier_int": 82,
+          "source_row": 68
+        },
+        {
+          "condition": "Unknown",
+          "modifier": "83",
+          "modifier_int": 83,
+          "source_row": 69
+        },
+        {
+          "condition": "Crossed_Market",
+          "modifier": "84",
+          "modifier_int": 84,
+          "source_row": 70
+        },
+        {
+          "condition": "Locked_Market",
+          "modifier": "85",
+          "modifier_int": 85,
+          "source_row": 71
+        },
+        {
+          "condition": "Depth_On_Offer_Side",
+          "modifier": "86",
+          "modifier_int": 86,
+          "source_row": 72
+        },
+        {
+          "condition": "Depth_On_Bid_Side",
+          "modifier": "87",
+          "modifier_int": 87,
+          "source_row": 73
+        },
+        {
+          "condition": "Depth_On_Bid_And_Offer",
+          "modifier": "88",
+          "modifier_int": 88,
+          "source_row": 74
+        },
+        {
+          "condition": "Pre_Opening_Indication",
+          "modifier": "89",
+          "modifier_int": 89,
+          "source_row": 75
+        },
+        {
+          "condition": "Syndicate_Bid",
+          "modifier": "90",
+          "modifier_int": 90,
+          "source_row": 76
+        },
+        {
+          "condition": "Pre_Syndicate_Bid",
+          "modifier": "91",
+          "modifier_int": 91,
+          "source_row": 77
+        },
+        {
+          "condition": "Penalty_Bid",
+          "modifier": "92",
+          "modifier_int": 92,
+          "source_row": 78
+        },
+        {
+          "condition": "Creations Suspended",
+          "modifier": "59",
+          "modifier_int": 59,
+          "source_row": 79
+        },
+        {
+          "condition": "Redemptions Suspended",
+          "modifier": "60",
+          "modifier_int": 60,
+          "source_row": 80
+        },
+        {
+          "condition": "Creations and/or Redemptions Suspended",
+          "modifier": "61",
+          "modifier_int": 61,
+          "source_row": 81
+        },
+        {
+          "condition": "Market On Close Imbalance Sell",
+          "modifier": "110",
+          "modifier_int": 110,
+          "source_row": 82
+        },
+        {
+          "condition": "No Market Imbalance",
+          "modifier": "111",
+          "modifier_int": 111,
+          "source_row": 83
+        },
+        {
+          "condition": "No Market On Close Imbalance",
+          "modifier": "112",
+          "modifier_int": 112,
+          "source_row": 84
+        },
+        {
+          "condition": "Short Sale Restriction",
+          "modifier": "113",
+          "modifier_int": 113,
+          "source_row": 85
+        },
+        {
+          "condition": "Limit Up-Limit Down",
+          "modifier": "114",
+          "modifier_int": 114,
+          "source_row": 86
+        },
+        {
+          "condition": "Quotation Resumption",
+          "modifier": "115",
+          "modifier_int": 115,
+          "source_row": 87
+        },
+        {
+          "condition": "Trading Resumption",
+          "modifier": "116",
+          "modifier_int": 116,
+          "source_row": 88
+        },
+        {
+          "condition": "Volatility Trading Pause",
+          "modifier": "117",
+          "modifier_int": 117,
+          "source_row": 89
+        },
+        {
+          "condition": "Halt: SEC Trading Suspension",
+          "modifier": "159",
+          "modifier_int": 159,
+          "source_row": 90
+        },
+        {
+          "condition": "Halt: Regulatory Concern",
+          "modifier": "160",
+          "modifier_int": 160,
+          "source_row": 91
+        },
+        {
+          "condition": "Halt: Market Operations",
+          "modifier": "161",
+          "modifier_int": 161,
+          "source_row": 92
+        },
+        {
+          "condition": "IPO Security: Not Yet Trading",
+          "modifier": "162",
+          "modifier_int": 162,
+          "source_row": 93
+        },
+        {
+          "condition": "Halt: Corporate Action",
+          "modifier": "163",
+          "modifier_int": 163,
+          "source_row": 94
+        },
+        {
+          "condition": "Quotation Not Available",
+          "modifier": "164",
+          "modifier_int": 164,
+          "source_row": 95
+        },
+        {
+          "condition": "Halt: Volatility Trading Pause",
+          "modifier": "165",
+          "modifier_int": 165,
+          "source_row": 96
+        },
+        {
+          "condition": "Halt: Volatility Trading Pause \u2013 Straddle Condition",
+          "modifier": "166",
+          "modifier_int": 166,
+          "source_row": 97
+        },
+        {
+          "condition": "Update: News and Resumption Times",
+          "modifier": "167",
+          "modifier_int": 167,
+          "source_row": 98
+        },
+        {
+          "condition": "Halt: Single Stock Trading Pause - Quotes Only",
+          "modifier": "168",
+          "modifier_int": 168,
+          "source_row": 99
+        },
+        {
+          "condition": "Resume: Qualification Issues Reviewed / Resolved",
+          "modifier": "169",
+          "modifier_int": 169,
+          "source_row": 100
+        },
+        {
+          "condition": "Resume: Filing Requirements Satisfied / Resolved",
+          "modifier": "170",
+          "modifier_int": 170,
+          "source_row": 101
+        },
+        {
+          "condition": "Resume: News Not Forthcoming",
+          "modifier": "171",
+          "modifier_int": 171,
+          "source_row": 102
+        },
+        {
+          "condition": "Resume: Qualifications - Maintenance Requirements Met",
+          "modifier": "172",
+          "modifier_int": 172,
+          "source_row": 103
+        },
+        {
+          "condition": "Resume: Qualifications - Filings Met",
+          "modifier": "173",
+          "modifier_int": 173,
+          "source_row": 104
+        },
+        {
+          "condition": "Resume: Regulatory Auth",
+          "modifier": "174",
+          "modifier_int": 174,
+          "source_row": 105
+        },
+        {
+          "condition": "New Issue Available",
+          "modifier": "175",
+          "modifier_int": 175,
+          "source_row": 106
+        },
+        {
+          "condition": "Issue Available",
+          "modifier": "176",
+          "modifier_int": 176,
+          "source_row": 107
+        },
+        {
+          "condition": "MWCB - Carry from previous day",
+          "modifier": "177",
+          "modifier_int": 177,
+          "source_row": 108
+        },
+        {
+          "condition": "MWCB - Resume",
+          "modifier": "178",
+          "modifier_int": 178,
+          "source_row": 109
+        },
+        {
+          "condition": "IPO Security: Released for quotation",
+          "modifier": "179",
+          "modifier_int": 179,
+          "source_row": 110
+        },
+        {
+          "condition": "IPO Security: Positioning window extension",
+          "modifier": "180",
+          "modifier_int": 180,
+          "source_row": 111
+        },
+        {
+          "condition": "MWCB - Level 1",
+          "modifier": "181",
+          "modifier_int": 181,
+          "source_row": 112
+        },
+        {
+          "condition": "MWCB - Level 2",
+          "modifier": "182",
+          "modifier_int": 182,
+          "source_row": 113
+        },
+        {
+          "condition": "MWCB - Level 3",
+          "modifier": "183",
+          "modifier_int": 183,
+          "source_row": 114
+        },
+        {
+          "condition": "Halt: Sub Penny Trading",
+          "modifier": "184",
+          "modifier_int": 184,
+          "source_row": 115
+        },
+        {
+          "condition": "Order Imbalance",
+          "modifier": "185",
+          "modifier_int": 185,
+          "source_row": 116
+        },
+        {
+          "condition": "LULD Trading Pause",
+          "modifier": "186",
+          "modifier_int": 186,
+          "source_row": 117
+        },
+        {
+          "condition": "CTA_NOT_DUE_TO_RELATED_SECURITY",
+          "modifier": "901",
+          "modifier_int": 901,
+          "source_row": 118
+        },
+        {
+          "condition": "CTA_DUE_TO_RELATED_SECURITY",
+          "modifier": "902",
+          "modifier_int": 902,
+          "source_row": 119
+        },
+        {
+          "condition": "CTA_NOT_IN_VIEW_OF_COMMON",
+          "modifier": "903",
+          "modifier_int": 903,
+          "source_row": 120
+        },
+        {
+          "condition": "CTA_IN_VIEW_OF_COMMON",
+          "modifier": "904",
+          "modifier_int": 904,
+          "source_row": 121
+        },
+        {
+          "condition": "CTA_PRICE_INDICATOR",
+          "modifier": "905",
+          "modifier_int": 905,
+          "source_row": 122
+        },
+        {
+          "condition": "CTA_NEW_PRICE_INDICATOR",
+          "modifier": "906",
+          "modifier_int": 906,
+          "source_row": 123
+        },
+        {
+          "condition": "CTA_CORRECTED_PRICE_INDICATION",
+          "modifier": "907",
+          "modifier_int": 907,
           "source_row": 124
         }
       ]
@@ -1060,14 +1294,14 @@
       ],
       "heading": "Misc Indicators",
       "metadata": {
-        "dense_combo_id_bits_with_unknown": 4,
-        "dense_combo_id_capacity": 16,
+        "dense_combo_id_bits_with_unknown": 5,
+        "dense_combo_id_capacity": 32,
         "duplicate_modifier_count": 0,
         "duplicate_modifiers": [],
-        "modifier_max": 509,
+        "modifier_max": 907,
         "modifier_min": 501,
-        "modifier_signed_bits": 10,
-        "rows": 9
+        "modifier_signed_bits": 11,
+        "rows": 16
       },
       "rows": [
         {
@@ -1123,6 +1357,48 @@
           "modifier": "509",
           "modifier_int": 509,
           "source_row": 9
+        },
+        {
+          "condition": "CTA_NOT_DUE_TO_RELATED_SECURITY",
+          "modifier": "901",
+          "modifier_int": 901,
+          "source_row": 10
+        },
+        {
+          "condition": "CTA_DUE_TO_RELATED_SECURITY",
+          "modifier": "902",
+          "modifier_int": 902,
+          "source_row": 11
+        },
+        {
+          "condition": "CTA_NOT_IN_VIEW_OF_COMMON",
+          "modifier": "903",
+          "modifier_int": 903,
+          "source_row": 12
+        },
+        {
+          "condition": "CTA_IN_VIEW_OF_COMMON",
+          "modifier": "904",
+          "modifier_int": 904,
+          "source_row": 13
+        },
+        {
+          "condition": "CTA_PRICE_INDICATOR",
+          "modifier": "905",
+          "modifier_int": 905,
+          "source_row": 14
+        },
+        {
+          "condition": "CTA_NEW_PRICE_INDICATOR",
+          "modifier": "906",
+          "modifier_int": 906,
+          "source_row": 15
+        },
+        {
+          "condition": "CTA_CORRECTED_PRICE_INDICATION",
+          "modifier": "907",
+          "modifier_int": 907,
+          "source_row": 16
         }
       ]
     },
@@ -1182,14 +1458,16 @@
       ],
       "heading": "Quote Conditions",
       "metadata": {
-        "dense_combo_id_bits_with_unknown": 4,
-        "dense_combo_id_capacity": 16,
-        "duplicate_modifier_count": 0,
-        "duplicate_modifiers": [],
-        "modifier_max": 8,
+        "dense_combo_id_bits_with_unknown": 6,
+        "dense_combo_id_capacity": 64,
+        "duplicate_modifier_count": 1,
+        "duplicate_modifiers": [
+          23
+        ],
+        "modifier_max": 92,
         "modifier_min": -1,
-        "modifier_signed_bits": 5,
-        "rows": 10
+        "modifier_signed_bits": 8,
+        "rows": 59
       },
       "rows": [
         {
@@ -1251,6 +1529,300 @@
           "modifier": "8",
           "modifier_int": 8,
           "source_row": 10
+        },
+        {
+          "condition": "SlowDueSetSlowListBidAsk",
+          "modifier": "9",
+          "modifier_int": 9,
+          "source_row": 11
+        },
+        {
+          "condition": "ManualAskAutomatedBid",
+          "modifier": "10",
+          "modifier_int": 10,
+          "source_row": 12
+        },
+        {
+          "condition": "ManualBidAutomatedAsk",
+          "modifier": "11",
+          "modifier_int": 11,
+          "source_row": 13
+        },
+        {
+          "condition": "ManualBidAndAsk",
+          "modifier": "12",
+          "modifier_int": 12,
+          "source_row": 14
+        },
+        {
+          "condition": "Opening",
+          "modifier": "13",
+          "modifier_int": 13,
+          "source_row": 15
+        },
+        {
+          "condition": "Closing",
+          "modifier": "14",
+          "modifier_int": 14,
+          "source_row": 16
+        },
+        {
+          "condition": "Closed",
+          "modifier": "15",
+          "modifier_int": 15,
+          "source_row": 17
+        },
+        {
+          "condition": "Resume",
+          "modifier": "16",
+          "modifier_int": 16,
+          "source_row": 18
+        },
+        {
+          "condition": "FastTrading",
+          "modifier": "17",
+          "modifier_int": 17,
+          "source_row": 19
+        },
+        {
+          "condition": "TradingRangeIndication",
+          "modifier": "18",
+          "modifier_int": 18,
+          "source_row": 20
+        },
+        {
+          "condition": "MarketMakerQuotesClosed",
+          "modifier": "19",
+          "modifier_int": 19,
+          "source_row": 21
+        },
+        {
+          "condition": "NonFirm",
+          "modifier": "20",
+          "modifier_int": 20,
+          "source_row": 22
+        },
+        {
+          "condition": "NewsDissemination",
+          "modifier": "21",
+          "modifier_int": 21,
+          "source_row": 23
+        },
+        {
+          "condition": "OrderInflux",
+          "modifier": "22",
+          "modifier_int": 22,
+          "source_row": 24
+        },
+        {
+          "condition": "OrderImbalance",
+          "modifier": "23",
+          "modifier_int": 23,
+          "source_row": 25
+        },
+        {
+          "condition": "DueToRelatedSecurityNewsDissemination",
+          "modifier": "23",
+          "modifier_int": 23,
+          "source_row": 26
+        },
+        {
+          "condition": "DueToRelatedSecurityNewsPending",
+          "modifier": "25",
+          "modifier_int": 25,
+          "source_row": 27
+        },
+        {
+          "condition": "AdditionalInformation",
+          "modifier": "26",
+          "modifier_int": 26,
+          "source_row": 28
+        },
+        {
+          "condition": "NewsPending",
+          "modifier": "27",
+          "modifier_int": 27,
+          "source_row": 29
+        },
+        {
+          "condition": "AdditionalInformationDueToRelatedSecurity",
+          "modifier": "28",
+          "modifier_int": 28,
+          "source_row": 30
+        },
+        {
+          "condition": "DueToRelatedSecurity",
+          "modifier": "29",
+          "modifier_int": 29,
+          "source_row": 31
+        },
+        {
+          "condition": "InViewOfCommon",
+          "modifier": "30",
+          "modifier_int": 30,
+          "source_row": 32
+        },
+        {
+          "condition": "EquipmentChangeover",
+          "modifier": "31",
+          "modifier_int": 31,
+          "source_row": 33
+        },
+        {
+          "condition": "NoOpenNoResponse",
+          "modifier": "32",
+          "modifier_int": 32,
+          "source_row": 34
+        },
+        {
+          "condition": "SubPennyTrading",
+          "modifier": "33",
+          "modifier_int": 33,
+          "source_row": 35
+        },
+        {
+          "condition": "AutomatedBidNoOfferNoBid",
+          "modifier": "34",
+          "modifier_int": 34,
+          "source_row": 36
+        },
+        {
+          "condition": "LULDPriceBand",
+          "modifier": "35",
+          "modifier_int": 35,
+          "source_row": 37
+        },
+        {
+          "condition": "MarketWideCircuitBreakerLevel1",
+          "modifier": "36",
+          "modifier_int": 36,
+          "source_row": 38
+        },
+        {
+          "condition": "MarketWideCircuitBreakerLevel2",
+          "modifier": "37",
+          "modifier_int": 37,
+          "source_row": 39
+        },
+        {
+          "condition": "MarketWideCircuitBreakerLevel3",
+          "modifier": "38",
+          "modifier_int": 38,
+          "source_row": 40
+        },
+        {
+          "condition": "RepublishedLULDPriceBand",
+          "modifier": "39",
+          "modifier_int": 39,
+          "source_row": 41
+        },
+        {
+          "condition": "OnDemandAuction",
+          "modifier": "40",
+          "modifier_int": 40,
+          "source_row": 42
+        },
+        {
+          "condition": "CashOnlySettlement",
+          "modifier": "41",
+          "modifier_int": 41,
+          "source_row": 43
+        },
+        {
+          "condition": "NextDaySettlement",
+          "modifier": "42",
+          "modifier_int": 42,
+          "source_row": 44
+        },
+        {
+          "condition": "LULDTradingPause",
+          "modifier": "43",
+          "modifier_int": 43,
+          "source_row": 45
+        },
+        {
+          "condition": "SLowDuelRPBidAsk",
+          "modifier": "71",
+          "modifier_int": 71,
+          "source_row": 46
+        },
+        {
+          "condition": "Cancel",
+          "modifier": "80",
+          "modifier_int": 80,
+          "source_row": 47
+        },
+        {
+          "condition": "Corrected_Price",
+          "modifier": "81",
+          "modifier_int": 81,
+          "source_row": 48
+        },
+        {
+          "condition": "SIPGenerated",
+          "modifier": "82",
+          "modifier_int": 82,
+          "source_row": 49
+        },
+        {
+          "condition": "Unknown",
+          "modifier": "83",
+          "modifier_int": 83,
+          "source_row": 50
+        },
+        {
+          "condition": "Crossed_Market",
+          "modifier": "84",
+          "modifier_int": 84,
+          "source_row": 51
+        },
+        {
+          "condition": "Locked_Market",
+          "modifier": "85",
+          "modifier_int": 85,
+          "source_row": 52
+        },
+        {
+          "condition": "Depth_On_Offer_Side",
+          "modifier": "86",
+          "modifier_int": 86,
+          "source_row": 53
+        },
+        {
+          "condition": "Depth_On_Bid_Side",
+          "modifier": "87",
+          "modifier_int": 87,
+          "source_row": 54
+        },
+        {
+          "condition": "Depth_On_Bid_And_Offer",
+          "modifier": "88",
+          "modifier_int": 88,
+          "source_row": 55
+        },
+        {
+          "condition": "Pre_Opening_Indication",
+          "modifier": "89",
+          "modifier_int": 89,
+          "source_row": 56
+        },
+        {
+          "condition": "Syndicate_Bid",
+          "modifier": "90",
+          "modifier_int": 90,
+          "source_row": 57
+        },
+        {
+          "condition": "Pre_Syndicate_Bid",
+          "modifier": "91",
+          "modifier_int": 91,
+          "source_row": 58
+        },
+        {
+          "condition": "Penalty_Bid",
+          "modifier": "92",
+          "modifier_int": 92,
+          "source_row": 59
         }
       ]
     },
