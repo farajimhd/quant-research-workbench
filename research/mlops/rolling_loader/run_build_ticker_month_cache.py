@@ -557,7 +557,8 @@ def main(argv: list[str] | None = None) -> int:
         write_json_atomic(cache_root / "manifest.json", manifest)
         stats.message(f"cache_root={cache_root}")
         stats.message(f"months={','.join(months)}")
-        stats.workers = {idx: PackageState(worker_id=idx) for idx in range(max(1, int(args.workers)))}
+        worker_slots = max(1, int(args.workers), int(args.max_inflight_packages))
+        stats.workers = {idx: PackageState(worker_id=idx) for idx in range(worker_slots)}
         lanes = LaneExecutors(args, stats)
         dashboard = TickerMonthDashboard(enabled=not args.no_rich, live=not args.plain_status, refresh_seconds=args.refresh_seconds, stats=stats)
 
@@ -609,7 +610,7 @@ def main(argv: list[str] | None = None) -> int:
                         ticker = next(ticker_iter)
                     except StopIteration:
                         return
-                    worker_id = next_worker % max(1, int(args.workers))
+                    worker_id = next_worker % max(1, len(stats.workers))
                     next_worker += 1
                     future = package_executor.submit(
                         _build_ticker_month_package,
