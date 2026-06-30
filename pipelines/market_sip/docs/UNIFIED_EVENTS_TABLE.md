@@ -197,8 +197,9 @@ CREATE TABLE market_sip_compact.events
     -- Clean unified event position after quote/trade merge/filtering.
     ordinal UInt64,
 
-    -- 0 = quote, 1 = trade.
-    event_type UInt8,
+    -- bit 0 event type, bit 1 primary price scale, bit 2 secondary price scale,
+    -- bits 3-5 tape, bits 6-7 reserved.
+    event_meta UInt8,
 
     -- Needed for within-chunk timing features.
     sip_timestamp_us UInt64,
@@ -221,8 +222,12 @@ CREATE TABLE market_sip_compact.events
     exchange_primary UInt8,
     exchange_secondary UInt8,
 
-    -- Packed condition/indicator token ids plus metadata.
-    condition_tokens_packed UInt64,
+    -- Explicit condition/indicator token ids. Unknown or absent tokens are 0.
+    condition_token_1 UInt8,
+    condition_token_2 UInt8,
+    condition_token_3 UInt8,
+    condition_token_4 UInt8,
+    condition_token_5 UInt8,
 
     -- Useful for maintenance, auditing, and date-range deletion.
     event_date Date
@@ -299,17 +304,36 @@ beginning of a ticker's event stream, the loader left-pads the missing events
 with the all-zero/empty event representation.
 
 The build scripts validate this schema after table creation. If a table with
-legacy `event_flags` or `conditions_packed` columns already exists, the run
+legacy `event_type`, `event_flags`, `conditions_packed`, or `condition_tokens_packed` columns already exists, the run
 fails and requires a fresh table or `--rebuild`.
 
-## Condition Token Word
+## Event Metadata And Condition Tokens
 
-The unified event row stores condition-like metadata and price metadata in one
-`UInt64` field:
+The unified event row stores event type, price-scale flags, and tape in one
+byte:
 
 ```text
-condition_tokens_packed UInt64
+event_meta UInt8
+bit 0      event type: 0 quote, 1 trade
+bit 1      primary price scale: 0 cents, 1 ten-thousandths
+bit 2      secondary price scale: 0 cents, 1 ten-thousandths
+bits 3-5   tape
+bits 6-7   reserved
 ```
+
+Condition/indicator ids are stored as explicit bytes:
+
+```text
+condition_token_1 UInt8
+condition_token_2 UInt8
+condition_token_3 UInt8
+condition_token_4 UInt8
+condition_token_5 UInt8
+```
+
+Unknown or absent tokens are `0`. Overflow and unknown-token counts are audit
+metrics emitted by build logs; they are not persisted as per-row model
+features.
 
 Bit layout:
 
@@ -362,11 +386,11 @@ scale = 1 -> price_int / 10000
 Decode examples:
 
 ```sql
-if(bitAnd(bitShiftRight(condition_tokens_packed, 45), 1) = 1,
+if(bitAnd(bitShiftRight(event_meta, 1), 1) = 1,
    price_primary_int / 10000.0,
    price_primary_int / 100.0) AS price_primary,
 
-if(bitAnd(bitShiftRight(condition_tokens_packed, 46), 1) = 1,
+if(bitAnd(bitShiftRight(event_meta, 2), 1) = 1,
    price_secondary_int / 10000.0,
    price_secondary_int / 100.0) AS price_secondary
 ```
@@ -390,8 +414,8 @@ excluded before event construction. The default dropped correction codes are
 ```
 
 Raw quote/trade condition strings are not stored in `events`; validation against
-flatfiles must reconstruct `condition_tokens_packed` through the same reference
-table and builder expressions.
+flatfiles must reconstruct `event_meta` and `condition_token_1..5` through the
+same reference table and builder expressions.
 
 ## Field Mapping
 
@@ -399,7 +423,7 @@ Quote source row to unified event:
 
 ```text
 ticker              -> ticker
-event_type          -> 0
+event_meta          -> event type 0 plus ask/bid scale and tape bits
 sip_timestamp_us    -> sip_timestamp_us
 price_primary_int   -> ask_price_int
 price_secondary_int -> bid_price_int
@@ -407,7 +431,7 @@ size_primary        -> ask_size
 size_secondary      -> bid_size
 exchange_primary    -> ask_exchange
 exchange_secondary  -> bid_exchange
-condition_tokens_packed -> quote condition/indicator tokens plus scale/tape metadata
+condition_token_1..5 -> first four quote conditions plus first quote indicator
 event_date          -> event_date
 ```
 
@@ -415,7 +439,7 @@ Trade source row to unified event:
 
 ```text
 ticker              -> ticker
-event_type          -> 1
+event_meta          -> event type 1 plus trade scale and tape bits
 sip_timestamp_us    -> sip_timestamp_us
 price_primary_int   -> price_int
 price_secondary_int -> 0
@@ -423,7 +447,7 @@ size_primary        -> size
 size_secondary      -> 0
 exchange_primary    -> exchange
 exchange_secondary  -> 0
-condition_tokens_packed -> trade condition tokens plus scale/tape metadata
+condition_token_1..5 -> first five trade conditions
 event_date          -> event_date
 ```
 
@@ -534,7 +558,7 @@ For one sample:
 
 ```sql
 SELECT
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -542,7 +566,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM market_sip_compact.events
 PREWHERE ticker = <ticker>
   AND ordinal >= <origin_ordinal - events_per_chunk + 1>

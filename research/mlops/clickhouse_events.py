@@ -43,7 +43,7 @@ EVENT_ROW_DTYPE = np.dtype(
     [
         ("span_id", "<u4"),
         ("ordinal", "<u8"),
-        ("event_type", "u1"),
+        ("event_meta", "u1"),
         ("sip_timestamp_us", "<u8"),
         ("price_primary_int", "<u4"),
         ("price_secondary_int", "<u4"),
@@ -51,7 +51,11 @@ EVENT_ROW_DTYPE = np.dtype(
         ("size_secondary", "<f4"),
         ("exchange_primary", "u1"),
         ("exchange_secondary", "u1"),
-        ("condition_tokens_packed", "<u8"),
+        ("condition_token_1", "u1"),
+        ("condition_token_2", "u1"),
+        ("condition_token_3", "u1"),
+        ("condition_token_4", "u1"),
+        ("condition_token_5", "u1"),
     ]
 )
 
@@ -447,7 +451,7 @@ def span_query(config: ClickHouseEventsDataConfig, spans: list[EventSpan]) -> st
 SELECT
     toUInt32({span.span_id}) AS span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -455,7 +459,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM {table}
 PREWHERE ticker = {sql_string(span.ticker)}
   AND ordinal >= {max(0, span.low_ordinal - 1)}
@@ -467,7 +475,7 @@ PREWHERE ticker = {sql_string(span.ticker)}
 SELECT
     span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -475,7 +483,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM
 (
 {" UNION ALL ".join(parts)}
@@ -592,7 +604,7 @@ def add_sample_label_row(
     origin_ordinal = int(rows["ordinal"][origin_offset])
     past_start = max(0, int(origin_offset) - max(1, int(past_span_events)) + 1)
     past_rows = rows[past_start : origin_offset + 1]
-    event_types = past_rows["event_type"].astype(np.uint8, copy=False)
+    event_types = (past_rows["event_meta"].astype(np.uint8, copy=False) & 0x01).astype(np.uint8, copy=False)
     quote_positions = np.flatnonzero(event_types == QUOTE_EVENT_TYPE)
     trade_positions = np.flatnonzero(event_types == TRADE_EVENT_TYPE)
     append_label_value(columns, "ticker", ticker)
@@ -667,7 +679,7 @@ def latest_event_in_window_with_previous_chunk_fallback(
     current_start = max(0, int(window_start))
     current_end = min(int(rows.shape[0]), int(window_end))
     current_rows = rows[current_start:current_end]
-    current_types = current_rows["event_type"].astype(np.uint8, copy=False)
+    current_types = (current_rows["event_meta"].astype(np.uint8, copy=False) & 0x01).astype(np.uint8, copy=False)
     current_positions = np.flatnonzero(current_types == int(event_type))
     if current_positions.size:
         return current_rows[int(current_positions[-1])]
@@ -676,7 +688,7 @@ def latest_event_in_window_with_previous_chunk_fallback(
     previous_rows = rows[previous_start:current_start]
     if not previous_rows.shape[0]:
         return None
-    previous_types = previous_rows["event_type"].astype(np.uint8, copy=False)
+    previous_types = (previous_rows["event_meta"].astype(np.uint8, copy=False) & 0x01).astype(np.uint8, copy=False)
     previous_positions = np.flatnonzero(previous_types == int(event_type))
     if previous_positions.size:
         return previous_rows[int(previous_positions[-1])]
@@ -695,7 +707,7 @@ def add_future_horizon_labels(
 ) -> None:
     prefix = f"future_{horizon}"
     append_label_value(columns, f"{prefix}_elapsed_us", max(0, int(future_rows["sip_timestamp_us"][-1]) - origin_sip_us) if future_rows.shape[0] else 0)
-    event_types = future_rows["event_type"].astype(np.uint8, copy=False) if future_rows.shape[0] else np.empty((0,), dtype=np.uint8)
+    event_types = (future_rows["event_meta"].astype(np.uint8, copy=False) & 0x01).astype(np.uint8, copy=False) if future_rows.shape[0] else np.empty((0,), dtype=np.uint8)
     quote_positions = np.flatnonzero(event_types == QUOTE_EVENT_TYPE)
     trade_positions = np.flatnonzero(event_types == TRADE_EVENT_TYPE)
     append_label_value(columns, f"{prefix}_quote_count", int(quote_positions.size))
@@ -867,7 +879,7 @@ def finalize_label_columns(columns: dict[str, list[np.ndarray | list[str]]]) -> 
 def encode_unified_event_window(rows: np.ndarray, *, previous_sip_us: int | None = None) -> tuple[np.ndarray, np.ndarray] | str:
     if rows.shape[0] != DEFAULT_CONTEXT_EVENTS:
         return "invalid_window_size"
-    event_types = rows["event_type"].astype(np.uint8, copy=False)
+    event_types = (rows["event_meta"].astype(np.uint8, copy=False) & 0x01).astype(np.uint8, copy=False)
     quote_positions = np.flatnonzero(event_types == QUOTE_EVENT_TYPE)
     if quote_positions.size == 0:
         return "no_quote_anchor"
@@ -941,7 +953,10 @@ def encode_unified_event_window(rows: np.ndarray, *, previous_sip_us: int | None
     events[:, 9] = (((size_primary > 0.0) & (size_primary < 100.0)).astype(np.uint8) | (((size_secondary > 0.0) & (size_secondary < 100.0)).astype(np.uint8) << 1) | ((tape & 0x07) << 2)).astype(np.uint8)
     events[:, 10] = rows["exchange_primary"] & 0x1F
     events[:, 11] = rows["exchange_secondary"] & 0x1F
-    events[:, 12:16] = np.ascontiguousarray(rows["condition_tokens_packed"].astype("<u8", copy=False)).view(np.uint8).reshape(-1, 8)[:, :4]
+    events[:, 12] = rows["condition_token_1"]
+    events[:, 13] = rows["condition_token_2"]
+    events[:, 14] = rows["condition_token_3"]
+    events[:, 15] = rows["condition_token_4"]
     return header, events
 
 
@@ -973,7 +988,7 @@ def encode_unified_event_windows(
     if count == 0:
         return headers, events, valid, reasons
 
-    event_types = windows["event_type"].astype(np.uint8, copy=False)
+    event_types = (windows["event_meta"].astype(np.uint8, copy=False) & 0x01).astype(np.uint8, copy=False)
     quote_mask = event_types == QUOTE_EVENT_TYPE
     trade_mask = event_types == TRADE_EVENT_TYPE
     row_index = np.arange(count)
@@ -1057,9 +1072,10 @@ def encode_unified_event_windows(
     ).astype(np.uint8)
     events[:, :, 10] = windows["exchange_primary"] & 0x1F
     events[:, :, 11] = windows["exchange_secondary"] & 0x1F
-    events[:, :, 12:16] = np.ascontiguousarray(windows["condition_tokens_packed"].astype("<u8", copy=False)).view(np.uint8).reshape(
-        count, DEFAULT_CONTEXT_EVENTS, 8
-    )[:, :, :4]
+    events[:, :, 12] = windows["condition_token_1"]
+    events[:, :, 13] = windows["condition_token_2"]
+    events[:, :, 14] = windows["condition_token_3"]
+    events[:, :, 15] = windows["condition_token_4"]
     reasons[valid] = ""
     return headers, events, valid, reasons
 
@@ -1075,7 +1091,7 @@ def validate_unified_event_windows(windows: np.ndarray) -> np.ndarray:
     if count == 0:
         return valid
 
-    event_types = windows["event_type"].astype(np.uint8, copy=False)
+    event_types = (windows["event_meta"].astype(np.uint8, copy=False) & 0x01).astype(np.uint8, copy=False)
     quote_mask = event_types == QUOTE_EVENT_TYPE
     trade_mask = event_types == TRADE_EVENT_TYPE
     row_index = np.arange(count)
@@ -1130,15 +1146,15 @@ def _put_uint_le_columns(buffer: np.ndarray, offset: int, values: np.ndarray, wi
 
 
 def condition_primary_price_scale(rows: np.ndarray | np.void) -> np.ndarray | np.integer:
-    return (rows["condition_tokens_packed"] >> 45) & 1
+    return (rows["event_meta"] >> 1) & 1
 
 
 def condition_secondary_price_scale(rows: np.ndarray | np.void) -> np.ndarray | np.integer:
-    return (rows["condition_tokens_packed"] >> 46) & 1
+    return (rows["event_meta"] >> 2) & 1
 
 
 def condition_tape_code(rows: np.ndarray | np.void) -> np.ndarray | np.integer:
-    return (rows["condition_tokens_packed"] >> 47) & 0x07
+    return (rows["event_meta"] >> 3) & 0x07
 
 
 def decode_price_array(price_int: np.ndarray, scale: np.ndarray) -> np.ndarray:

@@ -45,7 +45,6 @@ CONDITION_TOKEN_REFERENCE_TABLE = "event_condition_token_reference"
 CONDITION_TOKEN_BITS = 8
 CONDITION_TOKEN_SLOT_COUNT = 5
 CONDITION_TOKEN_MAX_ID = (1 << CONDITION_TOKEN_BITS) - 1
-CONDITION_TOKEN_RESERVED_HIGH_BITS = 64 - (CONDITION_TOKEN_BITS * CONDITION_TOKEN_SLOT_COUNT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,11 +301,6 @@ def validate_condition_token_rows(rows: list[dict[str, Any]]) -> None:
         raise ValueError(
             f"Unified condition token ids overflow {CONDITION_TOKEN_BITS} bits: "
             f"max_token_id={max_token_id} capacity={CONDITION_TOKEN_MAX_ID}"
-        )
-    if CONDITION_TOKEN_RESERVED_HIGH_BITS < 20:
-        raise ValueError(
-            f"Packed condition tokens need at least 20 reserved high bits for metadata, "
-            f"got {CONDITION_TOKEN_RESERVED_HIGH_BITS}"
         )
     seen_ids: set[int] = set()
     canonical_keys: set[tuple[str, int]] = set()

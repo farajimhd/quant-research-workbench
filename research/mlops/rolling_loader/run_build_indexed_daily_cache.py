@@ -773,7 +773,7 @@ def _session_dependency_events_query(
 SELECT
     e.ticker,
     e.ordinal,
-    e.event_type,
+    e.event_meta,
     e.sip_timestamp_us,
     e.price_primary_int,
     e.price_secondary_int,
@@ -781,13 +781,17 @@ SELECT
     e.size_secondary,
     e.exchange_primary,
     e.exchange_secondary,
-    e.condition_tokens_packed
+    e.condition_token_1,
+    e.condition_token_2,
+    e.condition_token_3,
+    e.condition_token_4,
+    e.condition_token_5
 FROM
 (
     SELECT
         ticker,
         ordinal,
-        event_type,
+        event_meta,
         sip_timestamp_us,
         price_primary_int,
         price_secondary_int,
@@ -795,7 +799,11 @@ FROM
         size_secondary,
         exchange_primary,
         exchange_secondary,
-        condition_tokens_packed
+        condition_token_1,
+        condition_token_2,
+        condition_token_3,
+        condition_token_4,
+        condition_token_5
     FROM {table}
     PREWHERE event_date >= toDate({sql_string(dep_start_date.isoformat())})
       AND event_date < toDate({sql_string(dep_end_date.isoformat())})

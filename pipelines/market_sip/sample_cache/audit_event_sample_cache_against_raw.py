@@ -46,11 +46,12 @@ from research.mlops.event_sample_cache import (  # noqa: E402
 from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noqa: E402
     DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE,
     condition_code_expr,
+    condition_token_expr,
     condition_token_reference_subquery,
     indicator_code_expr,
     indicator_token_reference_subquery,
-    quote_condition_pack_expr,
-    trade_condition_pack_expr,
+    quote_event_meta_expr,
+    trade_event_meta_expr,
 )
 
 
@@ -350,7 +351,7 @@ def fetch_events_window(
 SELECT
     toUInt32(0) AS span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -358,7 +359,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM {table}
 PREWHERE ticker = {sql_string(ticker)}
   AND ordinal >= {start_ordinal}
@@ -454,7 +459,7 @@ def raw_unified_query(config: ClickHouseEventsDataConfig, args: argparse.Namespa
 SELECT
     toUInt32(0) AS span_id,
     toUInt64(0) AS ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -462,11 +467,15 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM
 (
     SELECT
-        toUInt8(0) AS event_type,
+        {quote_event_meta_expr()} AS event_meta,
         q.sip_timestamp_us AS sip_timestamp_us,
         q.sequence_number AS sequence_number,
         q.ask_price_int AS price_primary_int,
@@ -475,7 +484,11 @@ FROM
         toFloat32(q.bid_size) AS size_secondary,
         q.ask_exchange AS exchange_primary,
         q.bid_exchange AS exchange_secondary,
-        {quote_condition_pack_expr()} AS condition_tokens_packed
+        {condition_token_expr("qc1")} AS condition_token_1,
+        {condition_token_expr("qc2")} AS condition_token_2,
+        {condition_token_expr("qc3")} AS condition_token_3,
+        {condition_token_expr("qc4")} AS condition_token_4,
+        {condition_token_expr("qi1")} AS condition_token_5
     FROM
     (
         SELECT
@@ -505,7 +518,7 @@ FROM
     UNION ALL
 
     SELECT
-        toUInt8(1) AS event_type,
+        {trade_event_meta_expr()} AS event_meta,
         t.sip_timestamp_us AS sip_timestamp_us,
         t.sequence_number AS sequence_number,
         t.price_int AS price_primary_int,
@@ -514,7 +527,11 @@ FROM
         toFloat32(0) AS size_secondary,
         t.exchange AS exchange_primary,
         toUInt8(0) AS exchange_secondary,
-        {trade_condition_pack_expr()} AS condition_tokens_packed
+        {condition_token_expr("tc1")} AS condition_token_1,
+        {condition_token_expr("tc2")} AS condition_token_2,
+        {condition_token_expr("tc3")} AS condition_token_3,
+        {condition_token_expr("tc4")} AS condition_token_4,
+        {condition_token_expr("tc5")} AS condition_token_5
     FROM
     (
         SELECT
@@ -541,7 +558,7 @@ FROM
     LEFT JOIN {condition_token_reference_subquery(ref_args, "trade_conditions")} AS tc5 ON tc5.modifier_int = t.condition_code_5
     WHERE {trade_clean_predicate(args)}
 )
-ORDER BY sip_timestamp_us, sequence_number, event_type
+ORDER BY sip_timestamp_us, sequence_number, bitAnd(event_meta, 1)
 {query_settings(config)}
 FORMAT RowBinary
 """
@@ -554,7 +571,7 @@ def decode_event_rows(payload: bytes) -> np.ndarray:
 
 
 COMPARE_FIELDS = (
-    "event_type",
+    "event_meta",
     "sip_timestamp_us",
     "price_primary_int",
     "price_secondary_int",
@@ -562,16 +579,20 @@ COMPARE_FIELDS = (
     "size_secondary",
     "exchange_primary",
     "exchange_secondary",
-    "condition_tokens_packed",
+    "condition_token_1",
+    "condition_token_2",
+    "condition_token_3",
+    "condition_token_4",
+    "condition_token_5",
 )
 
 
 def find_event_subsequence(raw_rows: np.ndarray, event_rows: np.ndarray) -> int:
     if raw_rows.shape[0] < event_rows.shape[0]:
         return -1
-    first_type = event_rows["event_type"][0]
+    first_type = event_rows["event_meta"][0] & 0x01
     first_ts = event_rows["sip_timestamp_us"][0]
-    candidates = np.flatnonzero((raw_rows["event_type"] == first_type) & (raw_rows["sip_timestamp_us"] == first_ts))
+    candidates = np.flatnonzero(((raw_rows["event_meta"] & 0x01) == first_type) & (raw_rows["sip_timestamp_us"] == first_ts))
     for start in candidates:
         end = int(start) + event_rows.shape[0]
         if end > raw_rows.shape[0]:

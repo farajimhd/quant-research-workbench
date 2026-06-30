@@ -43,18 +43,26 @@ class CompactEvent:
 
     ticker: str
     sip_timestamp_us: int
-    event_type: int
+    event_meta: int
     price_primary_int: int
     price_secondary_int: int
     size_primary: float
     size_secondary: float
     exchange_primary: int
     exchange_secondary: int
-    condition_tokens_packed: int
+    condition_token_1: int
+    condition_token_2: int
+    condition_token_3: int
+    condition_token_4: int
+    condition_token_5: int
     source_sequence: int = 0
     arrival_sequence: int = 0
     ordinal: int | None = None
     issue_flags: int = 0
+
+    @property
+    def event_type(self) -> int:
+        return int(self.event_meta) & 0x01
 
     @property
     def sort_key(self) -> tuple[int, int, int, int]:

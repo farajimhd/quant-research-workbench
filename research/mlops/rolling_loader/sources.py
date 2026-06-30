@@ -244,7 +244,7 @@ WITH
 SELECT
     toUInt32(indexOf(request_tickers, ticker) - 1) AS span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -252,7 +252,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
 WHERE ticker IN request_tickers
   AND ordinal >= arrayElement(request_first_ordinals, indexOf(request_tickers, ticker))
@@ -435,7 +439,7 @@ WITH
 SELECT
     toUInt32(indexOf(request_tickers, ticker) - 1) AS span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -443,7 +447,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
 {prewhere_sql}
 ORDER BY ticker, ordinal
@@ -486,7 +494,7 @@ FORMAT RowBinary
 SELECT
     toUInt32(arrayEnumerate([{ticker_sql}])[indexOf([{ticker_sql}], ticker)] - 1) AS span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -494,7 +502,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
 WHERE ticker IN ({ticker_sql})
   AND event_date = toDate({sql_string(date)})
@@ -530,7 +542,7 @@ WITH
 SELECT
     toUInt32(indexOf(request_tickers, ticker) - 1) AS span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -538,7 +550,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
 WHERE ticker IN request_tickers
   AND ordinal > arrayElement(request_cursors, indexOf(request_tickers, ticker))
@@ -604,7 +620,7 @@ WITH
 SELECT
     toUInt32(indexOf(request_tickers, ticker) - 1) AS span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -612,7 +628,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
 PREWHERE ticker IN request_tickers
   AND event_date >= {start_date_sql}
@@ -788,7 +808,7 @@ WITH window_rows AS
     SELECT
         ticker,
         ordinal,
-        event_type,
+        event_meta,
         sip_timestamp_us,
         price_primary_int,
         price_secondary_int,
@@ -796,7 +816,11 @@ WITH window_rows AS
         size_secondary,
         exchange_primary,
         exchange_secondary,
-        condition_tokens_packed
+        condition_token_1,
+        condition_token_2,
+        condition_token_3,
+        condition_token_4,
+        condition_token_5
     FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
     PREWHERE event_date >= {start_date_sql}
       AND event_date <= {end_date_sql}
@@ -816,7 +840,7 @@ window_tickers AS
 SELECT
     toUInt32(indexOf(request_tickers, ticker) - 1) AS span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -824,7 +848,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM window_rows
 CROSS JOIN window_tickers
 ORDER BY sip_timestamp_us, ticker, ordinal
@@ -890,7 +918,7 @@ stream_rows AS
     SELECT
         ticker,
         ordinal,
-        event_type,
+        event_meta,
         sip_timestamp_us,
         price_primary_int,
         price_secondary_int,
@@ -898,7 +926,11 @@ stream_rows AS
         size_secondary,
         exchange_primary,
         exchange_secondary,
-        condition_tokens_packed
+        condition_token_1,
+        condition_token_2,
+        condition_token_3,
+        condition_token_4,
+        condition_token_5
     FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
     PREWHERE event_date >= {start_date_sql}
       AND event_date < {end_date_sql}
@@ -926,7 +958,7 @@ WITH
 SELECT
     toUInt32(indexOf(request_tickers, ticker) - 1) AS span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -934,7 +966,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM stream_rows
 ORDER BY sip_timestamp_us, ticker, ordinal
 SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}

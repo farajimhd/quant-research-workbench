@@ -45,7 +45,7 @@ class ClickHouseTickerEventSource:
 SELECT
     toUInt32(0) AS span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -53,7 +53,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM {table}
 PREWHERE ticker = {sql_string(self.ticker.upper())}
 WHERE sip_timestamp_us >= {int(self.start_us)}

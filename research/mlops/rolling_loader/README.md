@@ -117,7 +117,7 @@ size_primary
 size_secondary
 exchange_primary
 exchange_secondary
-condition_tokens_packed
+condition_token_1 ... condition_token_5
 ```
 
 Cache-time event features:
@@ -614,7 +614,7 @@ remove a few cached columns from the default set. If `event_columns` is set, the
 allow-list is emitted exactly and the suppression list is ignored. For example:
 
 ```powershell
---event-columns event_type,price_primary_int,price_secondary_int,size_primary,size_secondary,exchange_primary,exchange_secondary,condition_tokens_packed,session_second
+--event-columns event_meta,price_primary_int,price_secondary_int,size_primary,size_secondary,exchange_primary,exchange_secondary,condition_token_1,condition_token_2,condition_token_3,condition_token_4,condition_token_5,session_second
 ```
 
 ### Coverage Compatibility

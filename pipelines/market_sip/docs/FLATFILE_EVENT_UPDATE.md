@@ -320,13 +320,13 @@ concurrently but inserts days in chronological order.
 
 The event rows match the unified event table contract:
 
-- quote rows use `event_type = 0`
-- trade rows use `event_type = 1`
+- quote rows use `bitAnd(event_meta, 1) = 0`
+- trade rows use `bitAnd(event_meta, 1) = 1`
 - quote primary price is ask, secondary price is bid
 - trade primary price is trade price, secondary price is zero
-- price scale, tape, condition pack kind, and pack version are packed into `condition_tokens_packed`
-- quote rows pack quote condition tokens plus the first quote indicator token
-- trade rows pack trade condition tokens only; configured correction codes are filtered before insertion
+- price scale and tape are packed into `event_meta`
+- quote rows store the first four quote condition tokens plus the first quote indicator token in `condition_token_1..5`
+- trade rows store the first five trade condition tokens in `condition_token_1..5`; configured correction codes are filtered before insertion
 - structurally invalid rows are filtered before insertion
 
 For the detailed event schema, see `UNIFIED_EVENTS_TABLE.md`.

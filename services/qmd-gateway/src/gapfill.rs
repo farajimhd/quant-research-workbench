@@ -1395,7 +1395,7 @@ impl GapFillService {
                     ordinal,
                     sip_timestamp_us,
                     source_sequence,
-                    event_type,
+                    bitAnd(event_meta, 1) AS event_type,
                     arrival_sequence
                 FROM {table}
                 WHERE event_date >= toDate('{start_date}')

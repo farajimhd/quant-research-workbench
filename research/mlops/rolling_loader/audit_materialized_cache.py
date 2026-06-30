@@ -48,7 +48,7 @@ from research.mlops.rolling_loader.materialized_cache import (
 
 EVENT_COLUMNS: tuple[str, ...] = (
     "ordinal",
-    "event_type",
+    "event_meta",
     "sip_timestamp_us",
     "price_primary_int",
     "price_secondary_int",
@@ -56,7 +56,11 @@ EVENT_COLUMNS: tuple[str, ...] = (
     "size_secondary",
     "exchange_primary",
     "exchange_secondary",
-    "condition_tokens_packed",
+    "condition_token_1",
+    "condition_token_2",
+    "condition_token_3",
+    "condition_token_4",
+    "condition_token_5",
 )
 
 

@@ -52,7 +52,7 @@ ROW_BINARY_DTYPE = np.dtype(
     [
         ("span_id", "<u4"),
         ("ordinal", "<u8"),
-        ("event_type", "u1"),
+        ("event_meta", "u1"),
         ("sip_timestamp_us", "<u8"),
         ("price_primary_int", "<u4"),
         ("price_secondary_int", "<u4"),
@@ -60,7 +60,11 @@ ROW_BINARY_DTYPE = np.dtype(
         ("size_secondary", "<f4"),
         ("exchange_primary", "u1"),
         ("exchange_secondary", "u1"),
-        ("condition_tokens_packed", "<u8"),
+        ("condition_token_1", "u1"),
+        ("condition_token_2", "u1"),
+        ("condition_token_3", "u1"),
+        ("condition_token_4", "u1"),
+        ("condition_token_5", "u1"),
     ]
 )
 
@@ -334,7 +338,7 @@ def span_query(args: argparse.Namespace, spans: list[Span]) -> str:
 SELECT
     toUInt32({int(span.span_id)}) AS span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -342,7 +346,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM {table}
 PREWHERE ticker = {sql_string(span.ticker)}
   AND ordinal >= {int(span.low_ordinal)}
@@ -353,7 +361,7 @@ PREWHERE ticker = {sql_string(span.ticker)}
 SELECT
     span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -361,7 +369,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM
 (
 {" UNION ALL ".join(select_parts)}

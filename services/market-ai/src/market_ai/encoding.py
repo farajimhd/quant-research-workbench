@@ -29,7 +29,7 @@ class HistoricalWindowEncoder:
         for index, event in enumerate(events):
             rows[index]["span_id"] = 0
             rows[index]["ordinal"] = 0 if event.ordinal is None else int(event.ordinal)
-            rows[index]["event_type"] = int(event.event_type)
+            rows[index]["event_meta"] = int(event.event_meta)
             rows[index]["sip_timestamp_us"] = int(event.sip_timestamp_us)
             rows[index]["price_primary_int"] = int(event.price_primary_int)
             rows[index]["price_secondary_int"] = int(event.price_secondary_int)
@@ -37,7 +37,11 @@ class HistoricalWindowEncoder:
             rows[index]["size_secondary"] = float(event.size_secondary)
             rows[index]["exchange_primary"] = int(event.exchange_primary)
             rows[index]["exchange_secondary"] = int(event.exchange_secondary)
-            rows[index]["condition_tokens_packed"] = int(event.condition_tokens_packed)
+            rows[index]["condition_token_1"] = int(event.condition_token_1)
+            rows[index]["condition_token_2"] = int(event.condition_token_2)
+            rows[index]["condition_token_3"] = int(event.condition_token_3)
+            rows[index]["condition_token_4"] = int(event.condition_token_4)
+            rows[index]["condition_token_5"] = int(event.condition_token_5)
         encoded = self._encode_unified_event_window(rows, previous_sip_us=previous_sip_us)
         if isinstance(encoded, str):
             raise ValueError(f"Could not encode compact event window: {encoded}")
@@ -64,5 +68,5 @@ class SyntheticWindowEncoder:
             encoded[index, 1] = int(event.sip_timestamp_us) & 0xFF
             encoded[index, 2] = int(event.price_primary_int) & 0xFF
             encoded[index, 3] = int(event.price_secondary_int) & 0xFF
-            encoded[index, 4] = int(event.condition_tokens_packed) & 0xFF
+            encoded[index, 4] = int(event.condition_token_1) & 0xFF
         return header, encoded

@@ -12,14 +12,18 @@ def event_from_row(row: np.void, *, ticker: str) -> CompactEvent:
     return CompactEvent(
         ticker=ticker.upper(),
         sip_timestamp_us=int(row["sip_timestamp_us"]),
-        event_type=int(row["event_type"]),
+        event_meta=int(row["event_meta"]),
         price_primary_int=int(row["price_primary_int"]),
         price_secondary_int=int(row["price_secondary_int"]),
         size_primary=float(row["size_primary"]),
         size_secondary=float(row["size_secondary"]),
         exchange_primary=int(row["exchange_primary"]),
         exchange_secondary=int(row["exchange_secondary"]),
-        condition_tokens_packed=int(row["condition_tokens_packed"]),
+        condition_token_1=int(row["condition_token_1"]),
+        condition_token_2=int(row["condition_token_2"]),
+        condition_token_3=int(row["condition_token_3"]),
+        condition_token_4=int(row["condition_token_4"]),
+        condition_token_5=int(row["condition_token_5"]),
         ordinal=int(row["ordinal"]) if "ordinal" in row.dtype.names else None,
     )
 
@@ -46,7 +50,7 @@ def events_to_rows(events: Iterable[CompactEvent]) -> np.ndarray:
     for idx, event in enumerate(event_tuple):
         rows[idx]["span_id"] = 0
         rows[idx]["ordinal"] = 0 if event.ordinal is None else int(event.ordinal)
-        rows[idx]["event_type"] = int(event.event_type)
+        rows[idx]["event_meta"] = int(event.event_meta)
         rows[idx]["sip_timestamp_us"] = int(event.sip_timestamp_us)
         rows[idx]["price_primary_int"] = int(event.price_primary_int)
         rows[idx]["price_secondary_int"] = int(event.price_secondary_int)
@@ -54,7 +58,11 @@ def events_to_rows(events: Iterable[CompactEvent]) -> np.ndarray:
         rows[idx]["size_secondary"] = float(event.size_secondary)
         rows[idx]["exchange_primary"] = int(event.exchange_primary)
         rows[idx]["exchange_secondary"] = int(event.exchange_secondary)
-        rows[idx]["condition_tokens_packed"] = int(event.condition_tokens_packed)
+        rows[idx]["condition_token_1"] = int(event.condition_token_1)
+        rows[idx]["condition_token_2"] = int(event.condition_token_2)
+        rows[idx]["condition_token_3"] = int(event.condition_token_3)
+        rows[idx]["condition_token_4"] = int(event.condition_token_4)
+        rows[idx]["condition_token_5"] = int(event.condition_token_5)
     return rows
 
 
@@ -66,7 +74,7 @@ def maybe_polars_sort_rows(rows: np.ndarray) -> np.ndarray:
     """
 
     def numpy_sort() -> np.ndarray:
-        order = np.lexsort((rows["event_type"], rows["ordinal"], rows["sip_timestamp_us"]))
+        order = np.lexsort((rows["event_meta"] & 0x01, rows["ordinal"], rows["sip_timestamp_us"]))
         return rows[order].copy()
 
     try:
@@ -76,7 +84,12 @@ def maybe_polars_sort_rows(rows: np.ndarray) -> np.ndarray:
 
     try:
         data = {name: rows[name] for name in rows.dtype.names or ()}
-        frame = pl.DataFrame(data).sort(["sip_timestamp_us", "ordinal", "event_type"])
+        frame = (
+            pl.DataFrame(data)
+            .with_columns((pl.col("event_meta") & 1).alias("_event_type"))
+            .sort(["sip_timestamp_us", "ordinal", "_event_type"])
+            .drop("_event_type")
+        )
         out = np.zeros((len(frame),), dtype=rows.dtype)
         for name in rows.dtype.names or ():
             out[name] = frame[name].to_numpy()

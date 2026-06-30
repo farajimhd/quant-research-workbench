@@ -1317,9 +1317,9 @@ def insert_macro_bars_sql(args: argparse.Namespace, spec: TimeframeSpec) -> str:
     src = f"{db}.{quote_ident(args.events_table)}"
     dst = f"{db}.{quote_ident(args.macro_bars_table)}"
     period_start_expr, bar_start_expr, bar_end_expr = macro_period_expressions(spec)
-    trade_price = "if(bitAnd(bitShiftRight(condition_tokens_packed, 45), 1) = 1, toFloat64(price_primary_int) / 10000.0, toFloat64(price_primary_int) / 100.0)"
+    trade_price = "if(bitAnd(bitShiftRight(event_meta, 1), 1) = 1, toFloat64(price_primary_int) / 10000.0, toFloat64(price_primary_int) / 100.0)"
     ask_price = trade_price
-    bid_price = "if(bitAnd(bitShiftRight(condition_tokens_packed, 46), 1) = 1, toFloat64(price_secondary_int) / 10000.0, toFloat64(price_secondary_int) / 100.0)"
+    bid_price = "if(bitAnd(bitShiftRight(event_meta, 2), 1) = 1, toFloat64(price_secondary_int) / 10000.0, toFloat64(price_secondary_int) / 100.0)"
     return f"""
 INSERT INTO {dst}
 WITH
@@ -1328,7 +1328,7 @@ source AS
     SELECT
         ticker AS sym,
         ordinal,
-        event_type,
+        bitAnd(event_meta, 1) AS event_type,
         sip_timestamp_us,
         fromUnixTimestamp64Micro(toInt64(sip_timestamp_us), 'UTC') AS event_dt,
         toTimeZone(event_dt, 'America/New_York') AS event_et,
@@ -1390,9 +1390,9 @@ def insert_live_market_bars_sql(args: argparse.Namespace, spec: TimeframeSpec) -
     db = quote_ident(args.database)
     src = f"{db}.{quote_ident(args.events_table)}"
     dst = f"{db}.{quote_ident(args.bars_table)}"
-    trade_price = "if(bitAnd(bitShiftRight(condition_tokens_packed, 45), 1) = 1, toFloat64(price_primary_int) / 10000.0, toFloat64(price_primary_int) / 100.0)"
+    trade_price = "if(bitAnd(bitShiftRight(event_meta, 1), 1) = 1, toFloat64(price_primary_int) / 10000.0, toFloat64(price_primary_int) / 100.0)"
     ask_price = trade_price
-    bid_price = "if(bitAnd(bitShiftRight(condition_tokens_packed, 46), 1) = 1, toFloat64(price_secondary_int) / 10000.0, toFloat64(price_secondary_int) / 100.0)"
+    bid_price = "if(bitAnd(bitShiftRight(event_meta, 2), 1) = 1, toFloat64(price_secondary_int) / 10000.0, toFloat64(price_secondary_int) / 100.0)"
     seconds_expr = f"greatest(1.0, toFloat64(dateDiff('second', bar_start, bar_end)))" if spec.seconds <= 0 else f"toFloat64({spec.seconds})"
     return f"""
 INSERT INTO {dst}
@@ -1402,7 +1402,7 @@ source AS
     SELECT
         ticker AS sym,
         ordinal,
-        event_type,
+        bitAnd(event_meta, 1) AS event_type,
         sip_timestamp_us,
         fromUnixTimestamp64Micro(toInt64(sip_timestamp_us), 'UTC') AS event_dt,
         {trade_price} AS trade_price,

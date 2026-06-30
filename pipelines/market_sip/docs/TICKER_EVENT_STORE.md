@@ -3,9 +3,9 @@
 This pipeline builds reusable compact quote/trade event rows for masked event models without materializing overlapping chunks.
 
 Note: this document describes the older parquet event-store layout. The current
-ClickHouse unified event table design uses `condition_tokens_packed UInt64` for
-condition, indicator, scale, tape, kind, and version metadata. Trade corrections
-are filtered before event construction, not packed as model input. See
+ClickHouse unified event table design uses `event_meta UInt8` plus five explicit
+`condition_token_* UInt8` columns. Trade corrections are filtered before event construction,
+not packed as model input. See
 `UNIFIED_EVENTS_TABLE.md` for the current training-event schema.
 
 ## Layout

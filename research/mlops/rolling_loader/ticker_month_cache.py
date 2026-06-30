@@ -29,7 +29,7 @@ EVENT_PAYLOAD_COLUMNS: tuple[str, ...] = (
     "ticker_id",
     "ticker",
     "ordinal",
-    "event_type",
+    "event_meta",
     "timestamp_us",
     "price_primary_int",
     "price_secondary_int",
@@ -37,7 +37,11 @@ EVENT_PAYLOAD_COLUMNS: tuple[str, ...] = (
     "size_secondary",
     "exchange_primary",
     "exchange_secondary",
-    "condition_tokens_packed",
+    "condition_token_1",
+    "condition_token_2",
+    "condition_token_3",
+    "condition_token_4",
+    "condition_token_5",
 )
 
 EVENT_TIME_FEATURE_COLUMNS: tuple[str, ...] = (

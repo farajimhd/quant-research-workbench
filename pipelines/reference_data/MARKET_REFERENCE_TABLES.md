@@ -100,16 +100,15 @@ bits 50-51: pack kind
 bits 56-63: pack version
 ```
 
-Quote rows pack the first four quote condition tokens and the first quote
-indicator token. Trade rows pack the first five trade condition tokens.
+Quote rows store the first four quote condition tokens and the first quote
+indicator token in `condition_token_1..5`. Trade rows store the first five
+trade condition tokens in the same columns.
 Historical trade correction codes are used only to filter bad/cancel/error rows
 before event construction; correction is not encoded in model-facing events.
 
 ```sql
-bitOr(
-    toUInt64(coalesce(token_1.token_id, 0)),
-    bitShiftLeft(toUInt64(coalesce(token_2.token_id, 0)), 8)
-) AS condition_tokens_packed
+toUInt8(coalesce(token_1.token_id, 0)) AS condition_token_1,
+toUInt8(coalesce(token_2.token_id, 0)) AS condition_token_2
 ```
 
 Exchange mapping example:

@@ -480,7 +480,7 @@ FORMAT JSONEachRow
 def _source_compare_columns() -> dict[str, str]:
     return {
         "ordinal": "ordinal",
-        "event_type": "event_type",
+        "event_meta": "event_meta",
         "timestamp_us": "sip_timestamp_us",
         "price_primary_int": "price_primary_int",
         "price_secondary_int": "price_secondary_int",
@@ -488,7 +488,11 @@ def _source_compare_columns() -> dict[str, str]:
         "size_secondary": "size_secondary",
         "exchange_primary": "exchange_primary",
         "exchange_secondary": "exchange_secondary",
-        "condition_tokens_packed": "condition_tokens_packed",
+        "condition_token_1": "condition_token_1",
+        "condition_token_2": "condition_token_2",
+        "condition_token_3": "condition_token_3",
+        "condition_token_4": "condition_token_4",
+        "condition_token_5": "condition_token_5",
     }
 
 

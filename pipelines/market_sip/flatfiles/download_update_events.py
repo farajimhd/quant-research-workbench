@@ -35,18 +35,9 @@ from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noq
     DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE,
     DEFAULT_MANIFEST_TABLE,
     DEFAULT_DROP_TRADE_CORRECTION_CODES,
-    CONDITION_PACK_KIND_SHIFT,
-    CONDITION_PACK_VERSION,
-    CONDITION_PACK_VERSION_SHIFT,
-    CONDITION_PRIMARY_PRICE_SCALE_SHIFT,
-    CONDITION_SECONDARY_PRICE_SCALE_SHIFT,
-    CONDITION_TAPE_SHIFT,
-    CONDITION_TOKEN_BITS,
-    CONDITION_TOKEN_COUNT_SHIFT,
-    CONDITION_TOKEN_OVERFLOW_SHIFT,
     CONDITION_TOKEN_SLOTS,
-    CONDITION_UNKNOWN_TOKEN_SHIFT,
     condition_code_expr,
+    condition_token_expr,
     create_continuity_table_sql,
     create_events_table_sql,
     create_manifest_table_sql,
@@ -59,8 +50,8 @@ from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noq
     mutation_settings,
     parse_trade_correction_codes,
     query_settings,
-    quote_condition_pack_expr,
-    trade_condition_pack_expr,
+    quote_event_meta_expr,
+    trade_event_meta_expr,
     validate_events_table_schema,
 )
 from pipelines.market_sip.events.clickhouse_build_trade_bars import (  # noqa: E402
@@ -777,7 +768,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
     return f"""
     SELECT
         q.ticker AS ticker,
-        toUInt8(0) AS event_type,
+        {quote_event_meta_expr()} AS event_meta,
         q.sip_timestamp_us AS sip_timestamp_us,
         q.sequence_number_u32 AS sequence_number,
         q.ask_price_int AS price_primary_int,
@@ -786,7 +777,11 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
         toFloat32(q.bid_size_u32) AS size_secondary,
         q.ask_exchange_u8 AS exchange_primary,
         q.bid_exchange_u8 AS exchange_secondary,
-        {quote_condition_pack_expr()} AS condition_tokens_packed,
+        {condition_token_expr("qc1")} AS condition_token_1,
+        {condition_token_expr("qc2")} AS condition_token_2,
+        {condition_token_expr("qc3")} AS condition_token_3,
+        {condition_token_expr("qc4")} AS condition_token_4,
+        {condition_token_expr("qi1")} AS condition_token_5,
         q.event_date AS event_date
     FROM
     (
@@ -827,7 +822,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
 
     SELECT
         t.ticker AS ticker,
-        toUInt8(1) AS event_type,
+        {trade_event_meta_expr()} AS event_meta,
         t.sip_timestamp_us AS sip_timestamp_us,
         t.sequence_number_u32 AS sequence_number,
         t.price_int AS price_primary_int,
@@ -836,7 +831,11 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
         toFloat32(0) AS size_secondary,
         t.exchange_u8 AS exchange_primary,
         toUInt8(0) AS exchange_secondary,
-        {trade_condition_pack_expr()} AS condition_tokens_packed,
+        {condition_token_expr("tc1")} AS condition_token_1,
+        {condition_token_expr("tc2")} AS condition_token_2,
+        {condition_token_expr("tc3")} AS condition_token_3,
+        {condition_token_expr("tc4")} AS condition_token_4,
+        {condition_token_expr("tc5")} AS condition_token_5,
         t.event_date AS event_date
     FROM
     (
@@ -880,7 +879,7 @@ INSERT INTO {db}.{table}
 (
     ticker,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -888,14 +887,18 @@ INSERT INTO {db}.{table}
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed,
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5,
     event_date
 )
 SELECT
     e.ticker,
     coalesce(c.ordinal_offset, toUInt64(0))
-        + toUInt64(row_number() OVER (PARTITION BY e.ticker ORDER BY e.sip_timestamp_us, e.sequence_number, e.event_type) - 1) AS ordinal,
-    e.event_type,
+        + toUInt64(row_number() OVER (PARTITION BY e.ticker ORDER BY e.sip_timestamp_us, e.sequence_number, bitAnd(e.event_meta, 1)) - 1) AS ordinal,
+    e.event_meta,
     e.sip_timestamp_us,
     e.price_primary_int,
     e.price_secondary_int,
@@ -903,7 +906,11 @@ SELECT
     e.size_secondary,
     e.exchange_primary,
     e.exchange_secondary,
-    e.condition_tokens_packed,
+    e.condition_token_1,
+    e.condition_token_2,
+    e.condition_token_3,
+    e.condition_token_4,
+    e.condition_token_5,
     e.event_date
 FROM
 (
@@ -1082,11 +1089,11 @@ def query_audit_counts(client: ClickHouseHttpClient, args: argparse.Namespace, d
 SELECT
     count() AS rows,
     countIf(ticker = '') AS blank_ticker_rows,
-    countIf(event_type NOT IN (0, 1)) AS bad_event_type_rows,
+    countIf(bitAnd(event_meta, 1) NOT IN (0, 1)) AS bad_event_type_rows,
     countIf(sip_timestamp_us = 0) AS zero_timestamp_rows,
     countIf(event_date NOT IN ({allowed_dates})) AS wrong_event_date_rows,
-    countIf(event_type = 0 AND (price_primary_int = 0 OR price_secondary_int = 0 OR size_primary <= 0 OR size_secondary <= 0)) AS bad_quote_rows,
-    countIf(event_type = 1 AND (price_primary_int = 0 OR price_secondary_int != 0 OR size_primary <= 0 OR size_secondary != 0 OR exchange_secondary != 0)) AS bad_trade_rows,
+    countIf(bitAnd(event_meta, 1) = 0 AND (price_primary_int = 0 OR price_secondary_int = 0 OR size_primary <= 0 OR size_secondary <= 0)) AS bad_quote_rows,
+    countIf(bitAnd(event_meta, 1) = 1 AND (price_primary_int = 0 OR price_secondary_int != 0 OR size_primary <= 0 OR size_secondary != 0 OR exchange_secondary != 0)) AS bad_trade_rows,
     count() - uniqExact(ticker, ordinal) AS duplicate_ticker_ordinal_rows
 FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
 """,
@@ -1151,7 +1158,8 @@ def query_sample_events(client: ClickHouseHttpClient, args: argparse.Namespace, 
 SELECT
     ticker,
     ordinal,
-    event_type,
+    bitAnd(event_meta, 1) AS event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -1159,11 +1167,15 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed,
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5,
     event_date
 FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
-WHERE event_type = toUInt8({int(event_type)})
-ORDER BY cityHash64(ticker, ordinal, sip_timestamp_us, event_type)
+WHERE bitAnd(event_meta, 1) = toUInt8({int(event_type)})
+ORDER BY cityHash64(ticker, ordinal, sip_timestamp_us, bitAnd(event_meta, 1))
 LIMIT {max(1, int(args.test_sample_size))}
 FORMAT JSONEachRow
 """
@@ -1221,72 +1233,42 @@ def nonempty_codes(raw_value: Any) -> list[int]:
     return [to_int_or_zero(part) for part in str(raw_value or "").split(",") if str(part or "") != ""]
 
 
-def pack_condition_tokens(
-    *,
-    token_ids: list[int],
-    raw_token_count: int,
-    primary_price_scale: int,
-    secondary_price_scale: int,
-    tape: int,
-    pack_kind: int,
-    unknown_token_seen: bool,
-) -> int:
-    packed = 0
-    for slot in range(CONDITION_TOKEN_SLOTS):
-        token_id = int(token_ids[slot]) if slot < len(token_ids) else 0
-        packed |= (token_id & 0xFF) << (slot * CONDITION_TOKEN_BITS)
-    packed |= min(int(raw_token_count), CONDITION_TOKEN_SLOTS) << CONDITION_TOKEN_COUNT_SHIFT
-    packed |= int(raw_token_count > CONDITION_TOKEN_SLOTS) << CONDITION_TOKEN_OVERFLOW_SHIFT
-    packed |= int(bool(unknown_token_seen)) << CONDITION_UNKNOWN_TOKEN_SHIFT
-    packed |= (int(primary_price_scale) & 1) << CONDITION_PRIMARY_PRICE_SCALE_SHIFT
-    packed |= (int(secondary_price_scale) & 1) << CONDITION_SECONDARY_PRICE_SCALE_SHIFT
-    packed |= (int(tape) & 0x07) << CONDITION_TAPE_SHIFT
-    packed |= (int(pack_kind) & 0x03) << CONDITION_PACK_KIND_SHIFT
-    packed |= (CONDITION_PACK_VERSION & 0xFF) << CONDITION_PACK_VERSION_SHIFT
-    return packed
+def event_meta(event_type: int, primary_price_scale: int, secondary_price_scale: int, tape: int) -> int:
+    return (
+        (int(event_type) & 1)
+        | ((int(primary_price_scale) & 1) << 1)
+        | ((int(secondary_price_scale) & 1) << 2)
+        | ((int(tape) & 0x07) << 3)
+    )
 
 
-def quote_condition_tokens_packed(row: dict[str, Any], token_maps: dict[str, dict[int, int]], ask_scale: int, bid_scale: int) -> int:
+def token_columns(token_ids: list[int]) -> dict[str, int]:
+    return {
+        f"condition_token_{slot + 1}": int(token_ids[slot]) & 0xFF if slot < len(token_ids) else 0
+        for slot in range(CONDITION_TOKEN_SLOTS)
+    }
+
+
+def quote_condition_tokens(row: dict[str, Any], token_maps: dict[str, dict[int, int]]) -> dict[str, int]:
     condition_codes_ = nonempty_codes(row.get("conditions"))
     indicator_codes = nonempty_codes(row.get("indicators"))
     token_ids: list[int] = []
-    unknown = False
     for code in condition_codes_[:4]:
         token_id = token_maps["quote_conditions"].get(code, 0)
-        unknown = unknown or token_id == 0
         token_ids.append(token_id)
     for code in indicator_codes[: max(0, CONDITION_TOKEN_SLOTS - len(token_ids))]:
         token_id = token_maps["quote_indicators"].get(code, 0)
-        unknown = unknown or token_id == 0
         token_ids.append(token_id)
-    return pack_condition_tokens(
-        token_ids=token_ids,
-        raw_token_count=len(condition_codes_) + len(indicator_codes),
-        primary_price_scale=ask_scale,
-        secondary_price_scale=bid_scale,
-        tape=tape_code(row.get("tape")),
-        pack_kind=1,
-        unknown_token_seen=unknown,
-    )
+    return token_columns(token_ids)
 
 
-def trade_condition_tokens_packed(row: dict[str, Any], token_maps: dict[str, dict[int, int]], trade_scale: int) -> int:
+def trade_condition_tokens(row: dict[str, Any], token_maps: dict[str, dict[int, int]]) -> dict[str, int]:
     condition_codes_ = nonempty_codes(row.get("conditions"))
     token_ids: list[int] = []
-    unknown = False
     for code in condition_codes_[:CONDITION_TOKEN_SLOTS]:
         token_id = token_maps["trade_conditions"].get(code, 0)
-        unknown = unknown or token_id == 0
         token_ids.append(token_id)
-    return pack_condition_tokens(
-        token_ids=token_ids,
-        raw_token_count=len(condition_codes_),
-        primary_price_scale=trade_scale,
-        secondary_price_scale=0,
-        tape=tape_code(row.get("tape")),
-        pack_kind=2,
-        unknown_token_seen=unknown,
-    )
+    return token_columns(token_ids)
 
 
 def event_key(row: dict[str, Any]) -> tuple[str, int, int, int]:
@@ -1304,12 +1286,17 @@ def sampled_raw_lookup_keys(events: list[dict[str, Any]]) -> set[tuple[str, int,
 def event_values_match(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
     int_fields = [
         "event_type",
+        "event_meta",
         "sip_timestamp_us",
         "price_primary_int",
         "price_secondary_int",
         "exchange_primary",
         "exchange_secondary",
-        "condition_tokens_packed",
+        "condition_token_1",
+        "condition_token_2",
+        "condition_token_3",
+        "condition_token_4",
+        "condition_token_5",
     ]
     for field in int_fields:
         if int(expected[field]) != int(actual[field]):
@@ -1345,6 +1332,7 @@ def quote_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, 
     return {
         "ticker": str(row["ticker"]),
         "event_type": 0,
+        "event_meta": event_meta(0, ask_scale, bid_scale, tape_code(row.get("tape"))),
         "sip_timestamp_us": to_int_or_zero(row.get("sip_timestamp")) // 1000,
         "sequence_number": to_int_or_zero(row.get("sequence_number")),
         "price_primary_int": ask_int,
@@ -1353,7 +1341,7 @@ def quote_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, 
         "size_secondary": float32_value(bid_size_int),
         "exchange_primary": to_int_or_zero(row.get("ask_exchange")),
         "exchange_secondary": to_int_or_zero(row.get("bid_exchange")),
-        "condition_tokens_packed": quote_condition_tokens_packed(row, token_maps, ask_scale, bid_scale),
+        **quote_condition_tokens(row, token_maps),
         "event_date": datetime.fromtimestamp((to_int_or_zero(row.get("sip_timestamp")) // 1000) / 1_000_000, tz=timezone.utc).date().isoformat(),
     }
 
@@ -1373,6 +1361,7 @@ def trade_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, 
     return {
         "ticker": str(row["ticker"]),
         "event_type": 1,
+        "event_meta": event_meta(1, trade_scale, 0, tape_code(row.get("tape"))),
         "sip_timestamp_us": to_int_or_zero(row.get("sip_timestamp")) // 1000,
         "sequence_number": to_int_or_zero(row.get("sequence_number")),
         "price_primary_int": trade_int,
@@ -1381,7 +1370,7 @@ def trade_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, 
         "size_secondary": 0.0,
         "exchange_primary": to_int_or_zero(row.get("exchange")),
         "exchange_secondary": 0,
-        "condition_tokens_packed": trade_condition_tokens_packed(row, token_maps, trade_scale),
+        **trade_condition_tokens(row, token_maps),
         "event_date": datetime.fromtimestamp((to_int_or_zero(row.get("sip_timestamp")) // 1000) / 1_000_000, tz=timezone.utc).date().isoformat(),
     }
 

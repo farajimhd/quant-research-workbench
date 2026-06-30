@@ -429,7 +429,7 @@ def date_block_query(config: TickerBlockDataConfig, tickers: tuple[str, ...], *,
 SELECT
     toUInt32({index}) AS span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -437,7 +437,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM {table}
 PREWHERE event_date = toDate({sql_string(event_date)})
   AND ticker = {sql_string(ticker)}
@@ -448,7 +452,7 @@ PREWHERE event_date = toDate({sql_string(event_date)})
 SELECT
     span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -456,7 +460,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM
 (
 {" UNION ALL ".join(parts)}
@@ -559,7 +567,7 @@ def assemble_polars_event_table(rows_by_ticker: dict[str, np.ndarray]):
                 {
                     "ticker": [ticker] * int(rows.shape[0]),
                     "ordinal": rows["ordinal"],
-                    "event_type": rows["event_type"],
+                    "event_meta": rows["event_meta"],
                     "sip_timestamp_us": rows["sip_timestamp_us"],
                     "price_primary_int": rows["price_primary_int"],
                     "price_secondary_int": rows["price_secondary_int"],
@@ -567,7 +575,11 @@ def assemble_polars_event_table(rows_by_ticker: dict[str, np.ndarray]):
                     "size_secondary": rows["size_secondary"],
                     "exchange_primary": rows["exchange_primary"],
                     "exchange_secondary": rows["exchange_secondary"],
-                    "condition_tokens_packed": rows["condition_tokens_packed"],
+                    "condition_token_1": rows["condition_token_1"],
+                    "condition_token_2": rows["condition_token_2"],
+                    "condition_token_3": rows["condition_token_3"],
+                    "condition_token_4": rows["condition_token_4"],
+                    "condition_token_5": rows["condition_token_5"],
                 }
             )
         )
@@ -782,7 +794,7 @@ def _future_time_bar_label_state(
 
 
 def _build_future_time_bar_label_state(rows: np.ndarray) -> FutureTimeBarLabelState:
-    trade_mask = rows["event_type"].astype(np.uint8, copy=False) == TRADE_EVENT_TYPE
+    trade_mask = (rows["event_meta"].astype(np.uint8, copy=False) & 0x01) == TRADE_EVENT_TYPE
     trade_rows = rows[trade_mask]
     trade_ts = trade_rows["sip_timestamp_us"].astype(np.int64, copy=False)
     trade_price = _decode_trade_price(trade_rows)
@@ -904,9 +916,9 @@ def make_synthetic_event_rows(count: int, low_ordinal: int) -> np.ndarray:
     ordinal = np.arange(int(low_ordinal), int(low_ordinal) + int(count), dtype=np.uint64)
     rows["ordinal"] = ordinal
     rows["sip_timestamp_us"] = 1_700_000_000_000_000 + ordinal.astype(np.uint64) * 1_000
-    rows["event_type"] = QUOTE_EVENT_TYPE
+    rows["event_meta"] = QUOTE_EVENT_TYPE
     trade_mask = (ordinal % 5) == 0
-    rows["event_type"][trade_mask] = TRADE_EVENT_TYPE
+    rows["event_meta"][trade_mask] = TRADE_EVENT_TYPE
     base_price = 10_000 + (ordinal % 200).astype(np.uint32)
     rows["price_primary_int"] = base_price
     rows["price_secondary_int"] = base_price - 1
@@ -914,5 +926,6 @@ def make_synthetic_event_rows(count: int, low_ordinal: int) -> np.ndarray:
     rows["size_secondary"] = 100.0
     rows["exchange_primary"] = 1
     rows["exchange_secondary"] = 1
-    rows["condition_tokens_packed"] = (1 << 56) | (1 << 50) | (2 << 40)
+    rows["condition_token_1"] = 1
+    rows["condition_token_2"] = 2
     return rows

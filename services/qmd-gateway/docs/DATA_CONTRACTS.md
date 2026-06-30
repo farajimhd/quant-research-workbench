@@ -39,7 +39,7 @@ primary model-serving contract.
 | `arrival_sequence` | Gateway-local monotonically increasing sequence. Used only as a deterministic tie-breaker for equal timestamp/sequence rows. |
 | `ticker` | Uppercase ticker. |
 | `ordinal` | Durable ticker-local event ordinal assigned only on sorted ClickHouse persistence flush. In-memory live stream rows may carry `0` before persistence. |
-| `event_type` | `0 = quote`, `1 = trade`. |
+| `event_meta` | Compact row metadata: bit 0 event type (`0 = quote`, `1 = trade`), bit 1 primary price scale, bit 2 secondary price scale, bits 3-5 tape, bits 6-7 reserved. |
 | `sip_timestamp_us` | SIP timestamp in UTC microseconds. Massive websocket timestamps are millisecond precision, so live rows currently land on millisecond boundaries. |
 | `price_primary_int` | Quote: ask price integer. Trade: trade price integer. |
 | `price_secondary_int` | Quote: bid price integer. Trade: `0`. |
@@ -47,7 +47,7 @@ primary model-serving contract.
 | `size_secondary` | Quote: bid size. Trade: `0`. |
 | `exchange_primary` | Quote: ask exchange. Trade: trade exchange. |
 | `exchange_secondary` | Quote: bid exchange. Trade: `0`. |
-| `condition_tokens_packed` | Five 8-bit condition/indicator token slots plus token count, overflow, unknown-token, price-scale, tape, pack-kind, and pack-version metadata. Mirrors `market_sip_compact.events`. |
+| `condition_token_1` ... `condition_token_5` | Five explicit 8-bit condition/indicator token slots. Unknown or absent tokens are `0`; overflow/unknown counts are audit metrics, not persisted model features. |
 | `source_sequence` | Massive sequence number from the original quote/trade event. |
 | `issue_flags` | Reserved for future issue classification. Current compact writer drops structurally invalid events before emit/insert, so persisted rows use `0`. |
 

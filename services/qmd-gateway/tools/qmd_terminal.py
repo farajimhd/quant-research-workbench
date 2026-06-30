@@ -466,7 +466,7 @@ def render_recent_events(state: PollState, watch: list[str]) -> Any:
     for ticker in watch:
         rows = state.samples.get(ticker, [])
         for row in rows[-3:]:
-            event_type = "Q" if int(as_float(row.get("event_type"))) == 0 else "T"
+            event_type = "Q" if (int(as_float(row.get("event_meta"))) & 1) == 0 else "T"
             event_dt = us_to_dt(row.get("sip_timestamp_us"))
             table.add_row(
                 clock(event_dt.astimezone(EASTERN)) if event_dt else "-",

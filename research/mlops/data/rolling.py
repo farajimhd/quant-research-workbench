@@ -556,14 +556,18 @@ class RollingMarketSampleEngine:
                         CompactEvent(
                             ticker=event.ticker,
                             sip_timestamp_us=event.sip_timestamp_us,
-                            event_type=event.event_type,
+                            event_meta=event.event_meta,
                             price_primary_int=event.price_primary_int,
                             price_secondary_int=event.price_secondary_int,
                             size_primary=event.size_primary,
                             size_secondary=event.size_secondary,
                             exchange_primary=event.exchange_primary,
                             exchange_secondary=event.exchange_secondary,
-                            condition_tokens_packed=event.condition_tokens_packed,
+                            condition_token_1=event.condition_token_1,
+                            condition_token_2=event.condition_token_2,
+                            condition_token_3=event.condition_token_3,
+                            condition_token_4=event.condition_token_4,
+                            condition_token_5=event.condition_token_5,
                             source_sequence=event.source_sequence,
                             arrival_sequence=event.arrival_sequence,
                             ordinal=next_ordinal,
@@ -2088,7 +2092,7 @@ def _day_events_query(config: RollingMarketDataConfig, tickers: tuple[str, ...],
 SELECT
     toUInt32({index}) AS span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -2096,7 +2100,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM {table}
 PREWHERE event_date = toDate({sql_string(event_date)})
   AND ticker = {sql_string(ticker)}
@@ -2106,7 +2114,7 @@ PREWHERE event_date = toDate({sql_string(event_date)})
 SELECT
     span_id,
     ordinal,
-    event_type,
+    event_meta,
     sip_timestamp_us,
     price_primary_int,
     price_secondary_int,
@@ -2114,7 +2122,11 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    condition_tokens_packed
+    condition_token_1,
+    condition_token_2,
+    condition_token_3,
+    condition_token_4,
+    condition_token_5
 FROM
 (
 {" UNION ALL ".join(parts)}
@@ -2273,7 +2285,7 @@ def _is_materializable_chunk_origin(rows: np.ndarray, origin_offset: int, contex
 def _event_window_rejection_reason(rows: np.ndarray) -> str | None:
     if rows.shape[0] != DEFAULT_CONTEXT_EVENTS:
         return "invalid_window_size"
-    event_types = rows["event_type"].astype(np.uint8, copy=False)
+    event_types = (rows["event_meta"].astype(np.uint8, copy=False) & 0x01).astype(np.uint8, copy=False)
     quote_mask = event_types == QUOTE_EVENT_TYPE
     quote_positions = np.flatnonzero(quote_mask)
     if quote_positions.size == 0:
@@ -2958,8 +2970,9 @@ def _today_asof_bar_from_events(rows: np.ndarray) -> np.ndarray:
     out = np.zeros((len(BAR_FEATURE_KEYS),), dtype=np.float32)
     if rows.size == 0:
         return out
-    quotes = rows[rows["event_type"] == QUOTE_EVENT_TYPE]
-    trades = rows[rows["event_type"] == TRADE_EVENT_TYPE]
+    event_types = rows["event_meta"] & 0x01
+    quotes = rows[event_types == QUOTE_EVENT_TYPE]
+    trades = rows[event_types == TRADE_EVENT_TYPE]
     quote_count = float(quotes.size)
     if trades.size:
         prices = _decode_primary_price(trades)
@@ -3134,7 +3147,7 @@ def _build_today_asof_day_state(rows: np.ndarray, *, timestamps: np.ndarray, day
             prefix_low=empty_f64,
         )
     segment = rows[start:end]
-    event_types = segment["event_type"].astype(np.uint8, copy=False)
+    event_types = (segment["event_meta"].astype(np.uint8, copy=False) & 0x01).astype(np.uint8, copy=False)
     trade_positions = np.flatnonzero(event_types == TRADE_EVENT_TYPE).astype(np.int64, copy=False)
     quote_positions = np.flatnonzero(event_types == QUOTE_EVENT_TYPE).astype(np.int64, copy=False)
     if trade_positions.size:
@@ -3246,8 +3259,9 @@ def _session_features_from_prefix(rows: np.ndarray) -> dict[str, float]:
     if rows.size == 0:
         return _empty_session_features()
     out = _empty_session_features()
-    quotes = rows[rows["event_type"] == QUOTE_EVENT_TYPE]
-    trades = rows[rows["event_type"] == TRADE_EVENT_TYPE]
+    event_types = rows["event_meta"] & 0x01
+    quotes = rows[event_types == QUOTE_EVENT_TYPE]
+    trades = rows[event_types == TRADE_EVENT_TYPE]
     if quotes.size:
         last = quotes[-1:]
         ask = _decode_primary_price(last)[0]
@@ -3294,7 +3308,7 @@ def _session_feature_arrays_from_offsets(rows: np.ndarray, origin_offsets: np.nd
     valid_positions = np.flatnonzero(in_bounds)
     day_us = 86_400_000_000
     day_ids = timestamps[origins[in_bounds]] // day_us
-    event_types = rows["event_type"].astype(np.uint8, copy=False)
+    event_types = (rows["event_meta"].astype(np.uint8, copy=False) & 0x01).astype(np.uint8, copy=False)
     for day_id in np.unique(day_ids):
         day_mask = day_ids == day_id
         target_positions = valid_positions[day_mask]

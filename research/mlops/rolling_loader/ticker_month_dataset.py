@@ -100,7 +100,7 @@ LOADER_STATE_VERSION = 1
 ENCODER_EVENT_DTYPE = np.dtype(
     [
         ("ordinal", "<u8"),
-        ("event_type", "u1"),
+        ("event_meta", "u1"),
         ("sip_timestamp_us", "<u8"),
         ("price_primary_int", "<u4"),
         ("price_secondary_int", "<u4"),
@@ -108,7 +108,11 @@ ENCODER_EVENT_DTYPE = np.dtype(
         ("size_secondary", "<f4"),
         ("exchange_primary", "u1"),
         ("exchange_secondary", "u1"),
-        ("condition_tokens_packed", "<u8"),
+        ("condition_token_1", "u1"),
+        ("condition_token_2", "u1"),
+        ("condition_token_3", "u1"),
+        ("condition_token_4", "u1"),
+        ("condition_token_5", "u1"),
     ]
 )
 
@@ -1097,7 +1101,7 @@ class TickerMonthBatchMaterializer:
                 start = int(starts[row, context_index])
                 idx = start + offsets
                 windows[flat]["ordinal"] = part.event_array("ordinal")[idx].astype(np.uint64, copy=False)
-                windows[flat]["event_type"] = part.event_array("event_type")[idx].astype(np.uint8, copy=False)
+                windows[flat]["event_meta"] = part.event_array("event_meta")[idx].astype(np.uint8, copy=False)
                 windows[flat]["sip_timestamp_us"] = part.event_array("timestamp_us")[idx].astype(np.uint64, copy=False)
                 windows[flat]["price_primary_int"] = part.event_array("price_primary_int")[idx].astype(np.uint32, copy=False)
                 windows[flat]["price_secondary_int"] = part.event_array("price_secondary_int")[idx].astype(np.uint32, copy=False)
@@ -1105,7 +1109,11 @@ class TickerMonthBatchMaterializer:
                 windows[flat]["size_secondary"] = part.event_array("size_secondary")[idx].astype(np.float32, copy=False)
                 windows[flat]["exchange_primary"] = part.event_array("exchange_primary")[idx].astype(np.uint8, copy=False)
                 windows[flat]["exchange_secondary"] = part.event_array("exchange_secondary")[idx].astype(np.uint8, copy=False)
-                windows[flat]["condition_tokens_packed"] = part.event_array("condition_tokens_packed")[idx].astype(np.uint64, copy=False)
+                windows[flat]["condition_token_1"] = part.event_array("condition_token_1")[idx].astype(np.uint8, copy=False)
+                windows[flat]["condition_token_2"] = part.event_array("condition_token_2")[idx].astype(np.uint8, copy=False)
+                windows[flat]["condition_token_3"] = part.event_array("condition_token_3")[idx].astype(np.uint8, copy=False)
+                windows[flat]["condition_token_4"] = part.event_array("condition_token_4")[idx].astype(np.uint8, copy=False)
+                windows[flat]["condition_token_5"] = part.event_array("condition_token_5")[idx].astype(np.uint8, copy=False)
                 if start > 0:
                     previous[flat] = int(part.event_array("timestamp_us")[start - 1])
                 flat += 1

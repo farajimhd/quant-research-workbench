@@ -51,14 +51,18 @@ def make_synthetic_events(count: int = 1024, *, ticker: str = "TEST") -> tuple[C
             CompactEvent(
                 ticker=ticker,
                 sip_timestamp_us=1_700_000_000_000_000 + idx * 1000,
-                event_type=0,
+                event_meta=0,
                 price_primary_int=ask_cents,
                 price_secondary_int=bid_cents,
                 size_primary=100.0 + (idx % 10),
                 size_secondary=100.0,
                 exchange_primary=1,
                 exchange_secondary=1,
-                condition_tokens_packed=(1 << 56) | (1 << 50) | (2 << 40),
+                condition_token_1=1,
+                condition_token_2=2,
+                condition_token_3=0,
+                condition_token_4=0,
+                condition_token_5=0,
                 ordinal=idx,
             )
         )
@@ -98,7 +102,7 @@ def smoke_vectorized_event_encoder_parity() -> None:
         assert np.array_equal(headers[index], scalar_header)
         assert np.array_equal(events[index], scalar_events)
     invalid = windows[:1].copy()
-    invalid["event_type"] = TRADE_EVENT_TYPE
+    invalid["event_meta"] = TRADE_EVENT_TYPE
     _headers, _events, invalid_valid, invalid_reasons = encode_unified_event_windows(invalid, previous_sip_us=previous[:1])
     scalar_invalid = encode_unified_event_window(invalid[0], previous_sip_us=None)
     assert scalar_invalid == "no_quote_anchor"
@@ -221,7 +225,7 @@ def smoke_ticker_blocks() -> None:
 
 def smoke_intraday_future_labels_stop_at_eastern_session_end() -> None:
     rows = make_synthetic_event_rows(4, low_ordinal=0)
-    rows["event_type"] = TRADE_EVENT_TYPE
+    rows["event_meta"] = TRADE_EVENT_TYPE
     rows["sip_timestamp_us"] = np.asarray(
         [
             _utc_us("2019-02-02T00:59:00Z"),  # 19:59 EST, origin.
@@ -233,7 +237,8 @@ def smoke_intraday_future_labels_stop_at_eastern_session_end() -> None:
     )
     rows["price_primary_int"] = np.asarray([10_000, 10_100, 10_200, 99_900], dtype=np.uint32)
     rows["size_primary"] = np.asarray([1.0, 10.0, 20.0, 200.0], dtype=np.float32)
-    rows["condition_tokens_packed"] = (1 << 56) | (2 << 50) | (2 << 40)
+    rows["condition_token_1"] = 1
+    rows["condition_token_2"] = 2
     labels = build_future_time_bar_labels(
         rows=rows,
         origin_offsets=np.asarray([0], dtype=np.int64),
@@ -345,8 +350,8 @@ def smoke_rolling_ready_index_filters_unencodable_windows() -> None:
     )
     engine = RollingMarketSampleEngine(config)
     rows = make_synthetic_event_rows(384, low_ordinal=0)
-    rows[: config.events_per_chunk]["event_type"] = TRADE_EVENT_TYPE
-    rows[config.events_per_chunk]["event_type"] = QUOTE_EVENT_TYPE
+    rows[: config.events_per_chunk]["event_meta"] = TRADE_EVENT_TYPE
+    rows[config.events_per_chunk]["event_meta"] = QUOTE_EVENT_TYPE
     engine.append_rows_by_ticker({"ENC": rows})
 
     samples = engine.build_ready_indices(max_samples=4)
