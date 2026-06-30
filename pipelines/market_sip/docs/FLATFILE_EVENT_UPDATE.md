@@ -19,6 +19,8 @@ The pipeline writes:
 - day build status rows in `market_sip_compact.events_build_manifest`
 - per-ticker ordinal carry-forward rows in
   `market_sip_compact.events_ordinal_continuity`
+- loader-facing per-ticker/day event index rows in
+  `market_sip_compact.events_ticker_day_index`
 - macro bar rows in `market_sip_compact.macro_bars_by_time_symbol`
 
 It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
@@ -40,7 +42,11 @@ It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
 7. Assign ticker-local ordinals using `events_ordinal_continuity`.
 8. Write `events_build_manifest` and `events_ordinal_continuity` rows for the
    processed day.
-9. Rebuild macro bar rows for the successfully updated date range directly from
+9. Rebuild the neutral ticker/day event index for that source day from the
+   latest continuity state. This table is the loader-facing discovery/index
+   table; train and validation periods are selected by the loader instead of
+   being baked into table names.
+10. Rebuild macro bar rows for the successfully updated date range directly from
    `events`. The default macro timeframes are `1d,1w,1y`. Daily bars use the
    New York extended-hours session, 04:00 ET through 20:00 ET, so the daily
    close is the after-hours close. Weekly and yearly bars expand their own
@@ -80,6 +86,40 @@ only when a partial boundary bar is intentional.
 Downloads can run concurrently. Event insertion is intentionally chronological:
 each day depends on the previous continuity state, so concurrent day inserts
 would corrupt ordinals.
+
+## Loader-Facing Event Index
+
+The direct flatfile ingest writes one neutral event index table:
+
+```text
+market_sip_compact.events_ticker_day_index
+```
+
+It contains one row per ticker per source day:
+
+```text
+ticker
+source_date
+event_count
+first_ordinal
+last_ordinal
+next_ordinal
+first_sip_timestamp_us
+last_sip_timestamp_us
+build_step
+built_at
+```
+
+`source_date` is the Massive flatfile session date. Timestamps remain UTC
+microseconds. `first_ordinal`, `last_ordinal`, and `next_ordinal` are
+ticker-local ordinal boundaries after quote/trade merge and filtering. The
+index is derived from `events_ordinal_continuity`, so it is small, cheap to
+rebuild, and does not duplicate event rows.
+
+New rolling loaders should use this table instead of split-specific tables such
+as `train_2019_to_2025` or `validation_2026`. A loader can define its own train,
+validation, benchmark, or cache period by filtering `source_date`, then aggregate
+per ticker/month or any other period it needs.
 
 ## Prerequisites
 
@@ -133,6 +173,7 @@ Temp table names use this pattern:
 - `{test_prefix}_{run_id}_events`
 - `{test_prefix}_{run_id}_manifest`
 - `{test_prefix}_{run_id}_continuity`
+- `{test_prefix}_{run_id}_ticker_day_index`
 - `{test_prefix}_{run_id}_macro_bars_by_time_symbol`
 
 The production `events`, `events_build_manifest`,
@@ -147,6 +188,8 @@ After the temp insert, the script audits:
   `(ticker, ordinal)` rows
 - continuity integrity: temp event counts must match temp continuity counts per
   ticker/day
+- ticker/day index integrity: temp index rows must match continuity event counts
+  and ordinal boundaries per ticker/day
 - raw-source integrity: deterministic samples from the temp `events` table are
   matched back to the exact quote/trade `.csv.gz` files used for the test run.
   The validator scans those raw CSVs, converts candidate rows in memory with the

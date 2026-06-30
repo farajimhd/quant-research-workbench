@@ -47,6 +47,7 @@ from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noq
     indicator_token_reference_subquery,
     insert_day_manifest,
     latest_day_status,
+    mergetree_settings,
     mutation_settings,
     parse_trade_correction_codes,
     query_settings,
@@ -120,6 +121,7 @@ DEFAULT_DOWNLOAD_WORKERS = 8
 DEFAULT_MAX_THREADS = 32
 DEFAULT_TEST_TABLE_PREFIX = "test_flatfile_event_update"
 DEFAULT_TEST_SAMPLE_SIZE = 100
+DEFAULT_TICKER_DAY_INDEX_TABLE = "events_ticker_day_index"
 
 SAFE_TEST_TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -152,6 +154,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--condition-token-reference-table", default=DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE)
     parser.add_argument("--manifest-table", default=DEFAULT_MANIFEST_TABLE)
     parser.add_argument("--continuity-table", default=DEFAULT_CONTINUITY_TABLE)
+    parser.add_argument("--ticker-day-index-table", default=DEFAULT_TICKER_DAY_INDEX_TABLE)
     parser.add_argument("--macro-bars-table", default=DEFAULT_MACRO_BARS_TABLE)
     parser.add_argument("--bars-table", default=DEFAULT_BARS_TABLE)
     parser.add_argument("--bars-by-symbol-time-table", default=DEFAULT_BARS_BY_SYMBOL_TIME_TABLE)
@@ -980,6 +983,81 @@ DELETE WHERE source_date = toDate({sql_string(day.source_date)})
 """
 
 
+def create_ticker_day_index_table_sql(args: argparse.Namespace) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.ticker_day_index_table)}
+(
+    ticker LowCardinality(String),
+    source_date Date,
+    event_count UInt64,
+    first_ordinal UInt64,
+    last_ordinal UInt64,
+    next_ordinal UInt64,
+    first_sip_timestamp_us UInt64,
+    last_sip_timestamp_us UInt64,
+    build_step UInt32,
+    built_at DateTime DEFAULT now()
+)
+ENGINE = ReplacingMergeTree(built_at)
+PARTITION BY toYYYYMM(source_date)
+ORDER BY (source_date, ticker)
+{mergetree_settings(args.storage_policy)}
+"""
+
+
+def delete_day_ticker_index_sql(args: argparse.Namespace, day: DayFiles) -> str:
+    return f"""
+ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.ticker_day_index_table)}
+DELETE WHERE source_date = toDate({sql_string(day.source_date)})
+{mutation_settings(args)}
+"""
+
+
+def insert_day_ticker_index_sql(args: argparse.Namespace, day: DayFiles, build_step: int) -> str:
+    return f"""
+INSERT INTO {quote_ident(args.database)}.{quote_ident(args.ticker_day_index_table)}
+(
+    ticker,
+    source_date,
+    event_count,
+    first_ordinal,
+    last_ordinal,
+    next_ordinal,
+    first_sip_timestamp_us,
+    last_sip_timestamp_us,
+    build_step
+)
+SELECT
+    ticker,
+    source_date,
+    event_count,
+    last_ordinal - event_count + 1 AS first_ordinal,
+    last_ordinal,
+    next_ordinal,
+    first_sip_timestamp_us,
+    last_sip_timestamp_us,
+    build_step
+FROM
+(
+    SELECT
+        ticker,
+        toUInt32({int(build_step)}) AS build_step,
+        argMax(source_date, updated_at) AS source_date,
+        argMax(event_count, updated_at) AS event_count,
+        argMax(next_ordinal, updated_at) AS next_ordinal,
+        argMax(last_ordinal, updated_at) AS last_ordinal,
+        argMax(first_sip_timestamp_us, updated_at) AS first_sip_timestamp_us,
+        argMax(last_sip_timestamp_us, updated_at) AS last_sip_timestamp_us
+    FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+    WHERE build_step = toUInt32({int(build_step)})
+      AND source_date = toDate({sql_string(day.source_date)})
+    GROUP BY ticker
+)
+WHERE event_count > 0
+{query_settings(args)}
+"""
+
+
 def build_step_for_date(value: str) -> int:
     return date.fromisoformat(value).toordinal()
 
@@ -996,6 +1074,7 @@ def ensure_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> Non
     validate_events_table_schema(client, args)
     client.execute(create_manifest_table_sql(args))
     client.execute(create_continuity_table_sql(args))
+    client.execute(create_ticker_day_index_table_sql(args))
 
 
 def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
@@ -1006,6 +1085,7 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
         DEFAULT_EVENTS_TABLE,
         DEFAULT_MANIFEST_TABLE,
         DEFAULT_CONTINUITY_TABLE,
+        DEFAULT_TICKER_DAY_INDEX_TABLE,
         DEFAULT_MACRO_BARS_TABLE,
         DEFAULT_BARS_TABLE,
         DEFAULT_BARS_BY_SYMBOL_TIME_TABLE,
@@ -1019,6 +1099,7 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
     args.events_table = f"{prefix}_{run_id}_events"
     args.manifest_table = f"{prefix}_{run_id}_manifest"
     args.continuity_table = f"{prefix}_{run_id}_continuity"
+    args.ticker_day_index_table = f"{prefix}_{run_id}_ticker_day_index"
     args.macro_bars_table = f"{prefix}_{run_id}_macro_bars_by_time_symbol"
     args.bars_table = f"{prefix}_{run_id}_bars"
     args.bars_by_symbol_time_table = f"{prefix}_{run_id}_bars_by_symbol_time"
@@ -1027,6 +1108,7 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
         args.events_table,
         args.manifest_table,
         args.continuity_table,
+        args.ticker_day_index_table,
         args.macro_bars_table,
         args.bars_table,
         args.bars_by_symbol_time_table,
@@ -1036,6 +1118,7 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
             DEFAULT_EVENTS_TABLE,
             DEFAULT_MANIFEST_TABLE,
             DEFAULT_CONTINUITY_TABLE,
+            DEFAULT_TICKER_DAY_INDEX_TABLE,
             DEFAULT_MACRO_BARS_TABLE,
             DEFAULT_BARS_TABLE,
             DEFAULT_BARS_BY_SYMBOL_TIME_TABLE,
@@ -1055,6 +1138,7 @@ def drop_test_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> 
         args.events_table,
         args.manifest_table,
         args.continuity_table,
+        args.ticker_day_index_table,
         args.macro_bars_table,
         args.bars_table,
         args.bars_by_symbol_time_table,
@@ -1148,6 +1232,74 @@ FROM
     ) AS c ON c.ticker = r.ticker AND c.source_date = r.source_date
 )
 WHERE raw_rows != continuity_rows
+""",
+    )
+    return int(float(row[0] or 0)) if row else 0
+
+
+def query_ticker_day_index_mismatches(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles]) -> int:
+    dates = ", ".join(sql_string(day.source_date) for day in days)
+    row = first_tsv_row(
+        client,
+        f"""
+SELECT count()
+FROM
+(
+    SELECT
+        coalesce(c.ticker, i.ticker) AS ticker,
+        coalesce(c.source_date, i.source_date) AS source_date,
+        c.event_count AS continuity_event_count,
+        i.event_count AS index_event_count,
+        c.first_ordinal AS continuity_first_ordinal,
+        i.first_ordinal AS index_first_ordinal,
+        c.last_ordinal AS continuity_last_ordinal,
+        i.last_ordinal AS index_last_ordinal,
+        c.next_ordinal AS continuity_next_ordinal,
+        i.next_ordinal AS index_next_ordinal
+    FROM
+    (
+        SELECT
+            ticker,
+            source_date,
+            event_count,
+            last_ordinal - event_count + 1 AS first_ordinal,
+            last_ordinal,
+            next_ordinal
+        FROM
+        (
+            SELECT
+                ticker,
+                build_step,
+                argMax(source_date, updated_at) AS source_date,
+                argMax(event_count, updated_at) AS event_count,
+                argMax(last_ordinal, updated_at) AS last_ordinal,
+                argMax(next_ordinal, updated_at) AS next_ordinal
+            FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+            WHERE source_date IN ({dates})
+            GROUP BY ticker, build_step
+        )
+        WHERE event_count > 0
+    ) AS c
+    FULL OUTER JOIN
+    (
+        SELECT
+            ticker,
+            source_date,
+            argMax(event_count, built_at) AS event_count,
+            argMax(first_ordinal, built_at) AS first_ordinal,
+            argMax(last_ordinal, built_at) AS last_ordinal,
+            argMax(next_ordinal, built_at) AS next_ordinal
+        FROM {quote_ident(args.database)}.{quote_ident(args.ticker_day_index_table)}
+        WHERE source_date IN ({dates})
+        GROUP BY ticker, source_date
+    ) AS i ON i.ticker = c.ticker AND i.source_date = c.source_date
+)
+WHERE continuity_event_count != index_event_count
+   OR continuity_first_ordinal != index_first_ordinal
+   OR continuity_last_ordinal != index_last_ordinal
+   OR continuity_next_ordinal != index_next_ordinal
+   OR isNull(continuity_event_count)
+   OR isNull(index_event_count)
 """,
     )
     return int(float(row[0] or 0)) if row else 0
@@ -1494,6 +1646,7 @@ def audit_test_events(client: ClickHouseHttpClient, args: argparse.Namespace, da
         raise RuntimeError("Test-mode audit has no completed source days to validate.")
     counts = query_audit_counts(client, args, days)
     continuity_mismatches = query_continuity_mismatches(client, args, days)
+    ticker_day_index_mismatches = query_ticker_day_index_mismatches(client, args, days)
     raw_csv_validation = validate_events_against_raw_csv(client, args, days)
     audit = {
         "type": "test_audit",
@@ -1501,9 +1654,11 @@ def audit_test_events(client: ClickHouseHttpClient, args: argparse.Namespace, da
         "events_table": args.events_table,
         "manifest_table": args.manifest_table,
         "continuity_table": args.continuity_table,
+        "ticker_day_index_table": args.ticker_day_index_table,
         "source_dates": [day.source_date for day in days],
         "counts": counts,
         "continuity_mismatches": continuity_mismatches,
+        "ticker_day_index_mismatches": ticker_day_index_mismatches,
         "raw_csv_validation": raw_csv_validation,
     }
     failures = {
@@ -1515,6 +1670,8 @@ def audit_test_events(client: ClickHouseHttpClient, args: argparse.Namespace, da
         failures["rows"] = counts.get("rows", 0)
     if continuity_mismatches:
         failures["continuity_mismatches"] = continuity_mismatches
+    if ticker_day_index_mismatches:
+        failures["ticker_day_index_mismatches"] = ticker_day_index_mismatches
     for kind, validation in raw_csv_validation.items():
         if validation["sample_rows"] <= 0 or validation["mismatch_rows"]:
             failures[f"{kind}_raw_csv_match"] = validation
@@ -1534,10 +1691,38 @@ def audit_test_events(client: ClickHouseHttpClient, args: argparse.Namespace, da
     print("=" * 100, flush=True)
 
 
+def rebuild_day_ticker_index(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    day: DayFiles,
+    build_step: int,
+    report_path: Path,
+    *,
+    reason: str,
+) -> QueryProfile:
+    run_profiled(client, f"delete_ticker_day_index_{day.source_date}", delete_day_ticker_index_sql(args, day))
+    profile = run_profiled(
+        client,
+        f"insert_ticker_day_index_{day.source_date}",
+        insert_day_ticker_index_sql(args, day, build_step),
+    )
+    append_jsonl(
+        report_path,
+        {
+            "type": "ticker_day_index",
+            "source_date": day.source_date,
+            "reason": reason,
+            "profile": asdict(profile),
+        },
+    )
+    return profile
+
+
 def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles, run_id: str, report_path: Path) -> str:
     job = DayJob(source_date=day.source_date, build_step=build_step_for_date(day.source_date))
     status = latest_day_status(client, args, job)
     if status == "ok":
+        rebuild_day_ticker_index(client, args, day, job.build_step, report_path, reason="manifest_ok")
         print(f"DAY SKIP {day.source_date} status=ok", flush=True)
         return "skipped"
     if status in {"failed", "started", "interrupted"} and not (args.retry_failed or args.retry_started):
@@ -1548,6 +1733,7 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
             raise RuntimeError(f"day={day.source_date} status={status}; rerun with --force-day-delete to avoid duplicate rows")
         run_profiled(client, f"delete_events_day_{day.source_date}", delete_day_sql(args, job))
         run_profiled(client, f"delete_continuity_day_{day.source_date}", delete_day_continuity_sql(args, day))
+        run_profiled(client, f"delete_ticker_day_index_{day.source_date}", delete_day_ticker_index_sql(args, day))
 
     insert_day_manifest(client, args, job, status="started", run_id=run_id)
     try:
@@ -1557,6 +1743,7 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
             f"insert_events_continuity_from_flatfiles_{day.source_date}",
             insert_direct_day_continuity_sql(args, day, job.build_step),
         )
+        index_profile = rebuild_day_ticker_index(client, args, day, job.build_step, report_path, reason="events_inserted")
         insert_day_manifest(client, args, job, status="ok", run_id=run_id, profile=profile)
         append_jsonl(
             report_path,
@@ -1566,11 +1753,12 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
                 "status": "ok",
                 "event_profile": asdict(profile),
                 "continuity_profile": asdict(continuity_profile),
+                "ticker_day_index_profile": asdict(index_profile),
             },
         )
         print(
             f"DAY OK {day.source_date} events_seconds={profile.wall_seconds:.1f} "
-            f"written_rows={format_optional_int(profile.written_rows)}",
+            f"written_rows={format_optional_int(profile.written_rows)} index_seconds={index_profile.wall_seconds:.1f}",
             flush=True,
         )
         return "ok"
@@ -1659,12 +1847,14 @@ def main() -> None:
     print("=" * 100, flush=True)
     print("Massive SIP flatfile download + direct event update", flush=True)
     print(f"database={args.database} events_table={args.events_table}", flush=True)
+    print(f"ticker_day_index_table={args.ticker_day_index_table}", flush=True)
     print(f"bar_tables={format_bar_tables(bar_tables)}", flush=True)
     print(f"test_mode={args.test_mode}", flush=True)
     if args.test_mode:
         print(
             f"test_tables manifest={args.manifest_table} continuity={args.continuity_table} "
-            f"macro_bars={format_bar_tables(bar_tables)} raw_csv_sample_size={args.test_sample_size}",
+            f"ticker_day_index={args.ticker_day_index_table} macro_bars={format_bar_tables(bar_tables)} "
+            f"raw_csv_sample_size={args.test_sample_size}",
             flush=True,
         )
     print(f"date_range={args.start_date} -> {args.end_date}", flush=True)
@@ -1689,7 +1879,10 @@ def main() -> None:
     total_download_bytes = sum(int(day.quote_job.remote_size or 0) + int(day.trade_job.remote_size or 0) for day in days)
     with UpdateProgressReporter(args, total_days=len(days), total_files=len(days) * 2, total_bytes=total_download_bytes) as reporter:
         reporter.log(f"report={report_path}")
-        reporter.log(f"database={args.database} events_table={args.events_table} bars={format_bar_tables(bar_tables)} test_mode={args.test_mode}")
+        reporter.log(
+            f"database={args.database} events_table={args.events_table} "
+            f"ticker_day_index={args.ticker_day_index_table} bars={format_bar_tables(bar_tables)} test_mode={args.test_mode}"
+        )
         if args.test_mode:
             reporter.set_stage("prepare test tables")
             reporter.log("dropping same-run temp tables before isolated build")
