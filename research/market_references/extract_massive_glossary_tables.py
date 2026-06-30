@@ -176,23 +176,31 @@ def row_values(row_payload: str, cell_refs: dict[str, str]) -> list[str]:
     return values
 
 
+def extract_table_node(section: str) -> str:
+    start = section.find('["$","table"')
+    if start < 0:
+        raise RuntimeError("Could not find table node in glossary section")
+    return bracketed_array(section, start)
+
+
 def extract_table_rows(
     section: str,
     cell_refs: dict[str, str],
     row_refs: dict[str, list[str]],
 ) -> tuple[list[str], list[dict[str, str | int | None]]]:
+    table_node = extract_table_node(section)
     raw_rows: list[list[str]] = []
     rows: list[dict[str, str | int | None]] = []
     row_pattern = re.compile(r'\["\$","tr",|"\$L([0-9A-Za-z]+)"')
     seen: set[tuple[str, ...]] = set()
-    for match in row_pattern.finditer(section):
+    for match in row_pattern.finditer(table_node):
         ref = match.group(1)
         if ref is not None:
             values = row_refs.get(ref)
             if not values:
                 continue
         else:
-            row_payload = bracketed_array(section, match.start())
+            row_payload = bracketed_array(table_node, match.start())
             values = row_values(row_payload, cell_refs)
         if values:
             row_key = tuple(values)
