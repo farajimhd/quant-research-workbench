@@ -162,7 +162,12 @@ model can derive the relation when needed.
 Every event has `timestamp_us`. During cache construction the builder must
 derive cache-time event time features once for every stored event row.
 
-These features include absolute calendar/session features that do not depend on
+All absolute time features in the SSD cache use one timezone: UTC. Session
+membership and session-progress features are the only exception; they are
+derived from the same UTC timestamp after converting to the configured exchange
+timezone for the market session rule.
+
+Event features include absolute calendar/session features that do not depend on
 which origin later references the event:
 
 ```text
@@ -186,14 +191,49 @@ can appear in windows for many different origins. At training-time
 materialization, the loader computes only the origin-relative deltas:
 
 ```text
-origin_timestamp_us - event_timestamp_us
-delta_seconds
-delta_seconds_log1p_signed
-age_seconds_log1p
+time_delta_seconds              source_timestamp_us - origin_timestamp_us
+time_delta_seconds_log1p_signed signed log1p(abs(delta_seconds))
+time_age_seconds_log1p          log1p(max(0, origin_timestamp_us - source_timestamp_us))
 ```
 
 This keeps timestamp handling consistent without repeating calendar/session
 work for every sample.
+
+## Context Time Features
+
+Every context row with an availability timestamp should carry builder-computed
+absolute UTC time features aligned row-by-row with the cached data:
+
+```text
+available_utc_second_of_day_sin/cos
+available_utc_day_of_week_sin/cos
+available_utc_day_of_year_sin/cos
+available_years_since_2000
+```
+
+The source availability timestamp is:
+
+```text
+news embeddings:      published_at_utc -> timestamp_us
+SEC text embeddings:  accepted_at_utc -> timestamp_us
+XBRL rows:            accepted/availability timestamp_us
+```
+
+The builder does not compute origin-relative age for these rows. The same news
+item, SEC filing, or XBRL fact can be selected by many later origins, so age is
+materialized by the loader per batch using the selected origin timestamp. The
+loader should emit relative context time features alongside the cached absolute
+features:
+
+```text
+time_delta_seconds
+time_delta_seconds_log1p_signed
+time_age_seconds_log1p
+```
+
+For text embeddings, the time tensor is item-level and aligned with
+`[B, max_items]`, not chunk-level. Each chunk of the same article or filing
+shares the item timestamp and item time features.
 
 ## Event Windows
 
@@ -289,6 +329,11 @@ As-of selection must obey:
 context_timestamp_us <= origin_timestamp_us
 ```
 
+The persisted embedding and XBRL parquet files should include the absolute UTC
+availability-time features from the context-time policy. These columns are part
+of the cached source row, so they remain aligned with the embedding vector or
+XBRL value row after sorting, filtering, and as-of selection.
+
 ## Daily, Macro, And Global Bars
 
 Only daily bars are loaded from the bar tables for this path. Do not load
@@ -309,6 +354,29 @@ lookback and forward label horizons, not the full historical bar stream.
 
 Global daily bars are cheap and can be stored once per month/global package for
 the required symbol set and date span.
+
+Daily bars keep `bar_start_ms` and compact bar-start time features. Do not add
+both start and end timestamp features by default; for daily bars the interval
+duration is fixed and the offset axis already tells the model whether the row
+is `-1d`, `-2d`, `-7d`, `-200d`, and so on. The builder should add only compact
+absolute UTC bar-start features:
+
+```text
+bar_start_utc_day_of_week_sin/cos
+bar_start_utc_day_of_year_sin/cos
+bar_start_years_since_2000
+```
+
+At materialization time, the loader should emit a separate bar time-feature
+tensor aligned with the selected bar rows:
+
+```text
+bar_age_days
+bar_age_days_log1p
+```
+
+The model should also receive or learn the completed-bar offset index; offset
+semantics are more important than duplicating daily-bar start/end timestamps.
 
 ## Intraday Forward Labels
 
@@ -392,10 +460,11 @@ At materialization time, the loader:
 1. Selects origins from `(ticker_id, ordinal)` identities.
 2. Resolves event windows by ordinal range.
 3. Reads raw compact event columns and cached event time features.
-4. Computes origin-relative time deltas.
+4. Computes origin-relative time deltas for events, text, XBRL, and bars.
 5. Resolves text embeddings, XBRL, daily, global, and precomputed intraday
    forward label rows by as-of, forward, or `origin_key` rules.
-6. Builds model-facing tensors for the requested batch.
+6. Emits modality payload tensors plus aligned time-feature tensors and masks.
+7. Builds model-facing tensors for the requested batch.
 
 An optional small rolling RAM or temporary SSD queue can hold ready batches
 during training, but it is not the permanent cache artifact.

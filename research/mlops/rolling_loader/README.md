@@ -139,6 +139,37 @@ Origin-relative features are not stored because the same event can be reused by
 many origins. The loader computes origin-relative deltas at materialization
 time when a trainer actually asks for them.
 
+### Time Feature Policy
+
+All cached absolute time features use UTC. The only New York conversion is for
+market-session membership and session-progress fields derived from event
+timestamps.
+
+The builder computes origin-independent absolute time features once and stores
+them aligned with each source row:
+
+```text
+events:        utc_* calendar features plus session fields
+news:          available_utc_* from published_at_utc / timestamp_us
+SEC text:      available_utc_* from accepted_at_utc / timestamp_us
+XBRL:          available_utc_* from timestamp_us
+daily bars:    bar_start_utc_* from bar_start_ms
+```
+
+The loader computes origin-relative fields because age depends on the selected
+origin:
+
+```text
+time_delta_seconds              source_timestamp_us - origin_timestamp_us
+time_delta_seconds_log1p_signed signed log1p(abs(delta_seconds))
+time_age_seconds_log1p          log1p(max(0, origin_timestamp_us - source_timestamp_us))
+bar_age_days                    origin date/time minus selected bar start
+bar_age_days_log1p              log1p(bar_age_days)
+```
+
+For text embeddings, time features are item-level. All chunks from the same
+article or filing share the same item timestamp and item time features.
+
 ### Event Lookback
 
 The builder separates cached history from the default training window index.
@@ -602,6 +633,8 @@ text_inputs["sec_filings"]["embeddings"]     [B, sec_filing_max_items, sec_filin
 text_inputs[*]["chunk_mask"]                 [B, max_items, token_chunks]
 text_inputs[*]["item_mask"]                  [B, max_items]
 text_inputs[*]["item_timestamp_us"]          [B, max_items]
+text_inputs[*]["item_time_features"]         [B, max_items, text_time_features]
+text_inputs[*]["item_time_feature_names"]    names for item_time_features
 ```
 
 Selection is as-of each origin timestamp. The loader takes the latest embedded
@@ -632,13 +665,16 @@ xbrl_inputs["row_kind_id"]                  [B, xbrl_max_items]
 xbrl_inputs["location_id"]                  [B, xbrl_max_items]
 xbrl_inputs["mapping_confidence"]           [B, xbrl_max_items]
 xbrl_inputs["time_*"]                       [B, xbrl_max_items]
+xbrl_inputs["time_features"]                [B, xbrl_max_items, xbrl_time_features]
+xbrl_inputs["time_feature_names"]           names for time_features
 ```
 
 Selection is as-of each origin timestamp, using the latest XBRL rows with
 `timestamp_us <= origin_timestamp_us`. Missing rows are zero-filled and masked
 with `xbrl_inputs["mask"] == False`. Categorical ids are mapped from the
 monthly `global/category_references.parquet` file. Id `0` means missing or
-unknown.
+unknown. Existing scalar `time_*` fields may remain for compatibility, but new
+model code should prefer the consolidated `time_features` tensor.
 
 When daily/global bar groups are requested, `bar_inputs` contains:
 
@@ -647,6 +683,9 @@ bar_inputs["ticker_daily_bars"]["values"]    [B, ticker_daily_bar_offsets, 9]
 bar_inputs["ticker_daily_bars"]["mask"]      [B, ticker_daily_bar_offsets]
 bar_inputs["global_daily_bars"]["values"]    [B, global_symbols, global_daily_bar_offsets, 9]
 bar_inputs["global_daily_bars"]["mask"]      [B, global_symbols, global_daily_bar_offsets]
+bar_inputs["ticker_daily_bars"]["time_features"] [B, ticker_daily_bar_offsets, bar_time_features]
+bar_inputs["global_daily_bars"]["time_features"] [B, global_symbols, global_daily_bar_offsets, bar_time_features]
+bar_inputs[*]["time_feature_names"]          names for time_features
 bar_inputs[*]["offsets"]                     completed daily-bar row offsets
 bar_inputs[*]["feature_names"]               open, high, low, close, volume, dollar_volume, trade_count, quote_count, vwap
 ```

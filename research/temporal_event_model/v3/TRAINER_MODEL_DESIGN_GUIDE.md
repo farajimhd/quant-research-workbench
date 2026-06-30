@@ -64,8 +64,10 @@ Daily bar inputs:
 ```text
 ticker_daily_bars       [B, ticker_offsets, bar_features]
 ticker_daily_bar_mask   [B, ticker_offsets]
+ticker_daily_bar_time_features [B, ticker_offsets, bar_time_features]
 global_daily_bars       [B, global_symbols, global_offsets, bar_features]
 global_daily_bar_mask   [B, global_symbols, global_offsets]
+global_daily_bar_time_features [B, global_symbols, global_offsets, bar_time_features]
 ```
 
 Text embedding inputs should use precomputed Qwen embeddings, not token ids, for
@@ -75,14 +77,17 @@ v3 training:
 ticker_news_embeddings  [B, 8, 2, 1024]
 ticker_news_item_mask   [B, 8]
 ticker_news_chunk_mask  [B, 8, 2]
+ticker_news_item_time_features [B, 8, text_time_features]
 
 market_news_embeddings  [B, 16, 2, 1024]
 market_news_item_mask   [B, 16]
 market_news_chunk_mask  [B, 16, 2]
+market_news_item_time_features [B, 16, text_time_features]
 
 sec_filing_embeddings   [B, 4, 8, 1024]
 sec_filing_item_mask    [B, 4]
 sec_filing_chunk_mask   [B, 4, 8]
+sec_filing_item_time_features [B, 4, text_time_features]
 ```
 
 The stored embedding source is:
@@ -101,7 +106,7 @@ XBRL inputs:
 ```text
 xbrl_value              [B, 4096]
 xbrl_mask               [B, 4096]
-xbrl_time_delta         [B, 4096]
+xbrl_time_features      [B, 4096, xbrl_time_features]
 xbrl_category_ids       field-specific [B, 4096]
 xbrl_confidence         [B, 4096]
 ```
@@ -121,6 +126,56 @@ should not be trained by default unless explicitly enabled for an ablation.
 
 The v3 model is a set of independent encoders plus a fusion transformer and
 horizon heads.
+
+### Time Encoding Contract
+
+Time should be represented consistently across modalities, but not interpreted
+as the same semantic object everywhere. The model should use a hybrid time
+design:
+
+```text
+raw time features
+  -> shared TimeEncoder
+  -> modality-specific TimeAdapter
+  -> add to that modality's content token
+```
+
+The shared encoder learns common calendar geometry:
+
+```text
+UTC second/day/week/year cycles
+years_since_2000
+signed source-minus-origin delta
+log age to origin
+```
+
+The modality adapter lets the model reinterpret the same age differently for
+different data. For example, old SEC filings and old XBRL facts can remain
+useful long after old breaking news has decayed.
+
+Recommended modules:
+
+```text
+CalendarTimeEncoder   small shared MLP/Fourier projection, output 32-64 dims
+RelativeAgeEncoder    shared log-age/delta projection, output 16-32 dims
+ModalityTimeAdapter   small per-modality linear/MLP to d_model
+```
+
+Each modality token should be constructed as:
+
+```text
+token = content_projection(x)
+      + modality_time_adapter(shared_time_embedding)
+      + position_or_rank_embedding
+      + modality_embedding
+```
+
+Do not use one global sequence-level time encoder that mixes all modality times
+before the modality encoders. Event timestamps, text publish times, SEC accepted
+times, XBRL period/availability times, daily-bar offsets, and label horizons
+have different semantics. Also do not rely only on raw time-feature
+concatenation inside each modality; that makes the time representation
+inconsistent and harder to cache.
 
 ### Event Encoder
 
@@ -151,6 +206,8 @@ Design:
 
 - separate ticker and global bar encoders
 - MLP projection for bar features
+- add shared time encoding through a bar-specific adapter
+- add learned completed-bar offset embeddings, e.g. `-1d`, `-2d`, `-7d`
 - small transformer or attention pooling over offsets/symbols
 - output ticker-bar and global-bar modality tokens
 
@@ -165,7 +222,7 @@ Qwen chunk embeddings + item/chunk masks + timestamps + metadata category ids
 Design:
 
 - project `1024 -> d_model`
-- add modality, item-position, chunk-position, and age/time features
+- add modality, item-position, chunk-position, and adapted time embeddings
 - pool chunks into item embeddings using masked attention or gated pooling
 - pool items into one modality token per group:
   - ticker news
@@ -186,6 +243,7 @@ Design:
 
 - numeric projection for value, period/time features, confidence
 - category embeddings for taxonomy, tag, unit, form, row kind, and location
+- use separate time embeddings for accepted/availability time and period-end age
 - gated pooling or Perceiver-style latent cross-attention
 - avoid full 4096-row self-attention by default
 - output one XBRL modality token
