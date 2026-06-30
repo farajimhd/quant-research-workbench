@@ -28,7 +28,16 @@ from research.mlops.env import discover_env_files, load_env_files, secret_status
 
 DEFAULT_OUTPUT_ROOT = Path("D:/market-data/prepared/clickhouse_sip_ingest/category_references")
 
-XBRL_FIELDS = ("taxonomy", "tag", "unit_code", "form_type", "xbrl_row_kind", "location_code")
+XBRL_FIELDS = (
+    "taxonomy",
+    "tag",
+    "unit_code",
+    "form_type",
+    "xbrl_row_kind",
+    "location_code",
+    "fiscal_period",
+    "calendar_period_code",
+)
 SEC_TEXT_FIELDS = ("form_type", "text_kind", "quality_flags")
 NEWS_FIELDS = ("provider", "url_domain", "channels", "provider_tags", "quality_flags")
 MULTI_VALUE_FIELDS = {
@@ -60,6 +69,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--password", default="")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--print-only", action="store_true")
+    parser.add_argument(
+        "--rebuild-from-scratch",
+        action="store_true",
+        help="Truncate the reference table before assigning ids. Use only for the initial full reference build.",
+    )
     return parser.parse_args()
 
 
@@ -89,11 +103,10 @@ def main() -> int:
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
     print("=" * 100, flush=True)
 
-    statements = [
-        (create_reference_table_sql(args.database, args.reference_table, storage_policy), False),
-        (f"TRUNCATE TABLE {quote_ident(args.database)}.{quote_ident(args.reference_table)}", False),
-        (insert_reference_sql(args), True),
-    ]
+    statements = [(create_reference_table_sql(args.database, args.reference_table, storage_policy), False)]
+    if args.rebuild_from_scratch:
+        statements.append((f"TRUNCATE TABLE {quote_ident(args.database)}.{quote_ident(args.reference_table)}", False))
+    statements.append((insert_reference_sql(args), True))
     for statement, use_settings in statements:
         print(statement.strip() + ";", flush=True)
         if args.print_only or args.dry_run:
@@ -144,8 +157,9 @@ ORDER BY (domain, field_name, category_value)
 
 def insert_reference_sql(args: argparse.Namespace) -> str:
     candidates = "\nUNION ALL\n".join(candidate_selects(args))
+    reference_table = f"{quote_ident(args.database)}.{quote_ident(args.reference_table)}"
     return f"""
-INSERT INTO {quote_ident(args.database)}.{quote_ident(args.reference_table)}
+INSERT INTO {reference_table}
 (
     domain,
     source_table,
@@ -156,30 +170,91 @@ INSERT INTO {quote_ident(args.database)}.{quote_ident(args.reference_table)}
     source_rows,
     updated_at
 )
-SELECT
-    domain,
-    source_table,
-    field_name,
-    category_value,
-    category_id,
-    category_id - 1 AS one_hot_index,
-    source_rows,
-    now64(3, 'UTC') AS updated_at
-FROM
+WITH
+candidates AS
 (
     SELECT
         domain,
-        source_table,
+        any(source_table) AS source_table,
         field_name,
         category_value,
-        row_number() OVER (PARTITION BY domain, field_name ORDER BY category_value) AS category_id,
-        source_rows
+        sum(source_rows) AS source_rows
     FROM
     (
         {candidates}
     )
     WHERE category_value != ''
+    GROUP BY
+        domain,
+        field_name,
+        category_value
+),
+latest AS
+(
+    SELECT
+        domain,
+        field_name,
+        category_value,
+        argMax(category_id, updated_at) AS category_id
+    FROM {reference_table}
+    GROUP BY
+        domain,
+        field_name,
+        category_value
+),
+max_ids AS
+(
+    SELECT
+        domain,
+        field_name,
+        max(category_id) AS max_category_id
+    FROM latest
+    GROUP BY
+        domain,
+        field_name
+),
+new_ids AS
+(
+    SELECT
+        n.domain AS domain,
+        n.field_name AS field_name,
+        n.category_value AS category_value,
+        ifNull(m.max_category_id, 0) + row_number() OVER (PARTITION BY n.domain, n.field_name ORDER BY n.category_value) AS category_id
+    FROM
+    (
+        SELECT
+            c.domain AS domain,
+            c.field_name AS field_name,
+            c.category_value AS category_value
+        FROM candidates AS c
+        LEFT JOIN latest AS l
+            ON l.domain = c.domain
+           AND l.field_name = c.field_name
+           AND l.category_value = c.category_value
+        WHERE ifNull(l.category_id, 0) = 0
+    ) AS n
+    LEFT JOIN max_ids AS m
+        ON m.domain = n.domain
+       AND m.field_name = n.field_name
 )
+SELECT
+    c.domain AS domain,
+    c.source_table AS source_table,
+    c.field_name AS field_name,
+    c.category_value AS category_value,
+    if(ifNull(l.category_id, 0) > 0, l.category_id, n.category_id) AS category_id,
+    if(ifNull(l.category_id, 0) > 0, l.category_id, n.category_id) - 1 AS one_hot_index,
+    c.source_rows AS source_rows,
+    now64(3, 'UTC') AS updated_at
+FROM candidates AS c
+LEFT JOIN latest AS l
+    ON l.domain = c.domain
+   AND l.field_name = c.field_name
+   AND l.category_value = c.category_value
+LEFT JOIN new_ids AS n
+    ON n.domain = c.domain
+   AND n.field_name = c.field_name
+   AND n.category_value = c.category_value
 """
 
 

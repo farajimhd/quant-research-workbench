@@ -170,6 +170,28 @@ bar_age_days_log1p              log1p(bar_age_days)
 For text embeddings, time features are item-level. All chunks from the same
 article or filing share the same item timestamp and item time features.
 
+### Category Id Policy
+
+Categorical ids are persistent reference-table ids, not batch-local or
+cache-local ids. Id `0` is reserved for missing or unknown values.
+
+The reference table is built by:
+
+```powershell
+python -m pipelines.market_sip.events.run_build_training_category_reference
+```
+
+Use `--rebuild-from-scratch` only for the initial full reference build. Normal
+runs preserve existing `(domain, field_name, category_value) -> category_id`
+mappings and append ids only for new values. This keeps ids fixed across cache
+builds and training runs.
+
+For new ticker-month caches, XBRL category ids are joined from the reference
+table at build time and stored in each ticker `xbrl.parquet`. This includes
+`fiscal_period_id` and `calendar_period_id`, plus taxonomy/tag/unit/form/row
+kind/location ids. The monthly `global/category_references.parquet` snapshot is
+still saved for auditability and backward compatibility with older caches.
+
 ### Event Lookback
 
 The builder separates cached history from the default training window index.
@@ -675,10 +697,12 @@ xbrl_inputs["period_end_time_feature_names"] names for period_end_time_features
 
 Selection is as-of each origin timestamp, using the latest XBRL rows with
 `timestamp_us <= origin_timestamp_us`. Missing rows are zero-filled and masked
-with `xbrl_inputs["mask"] == False`. Categorical ids are mapped from the
-monthly `global/category_references.parquet` file. Id `0` means missing or
-unknown. Existing scalar `time_*` fields may remain for compatibility, but new
-model code should prefer the consolidated `time_features` tensor.
+with `xbrl_inputs["mask"] == False`. New caches read categorical ids directly
+from ID columns stored in `xbrl.parquet`; older caches fall back to mapping
+string fields through monthly `global/category_references.parquet`. Id `0`
+means missing or unknown. Existing scalar `time_*` fields may remain for
+compatibility, but new model code should prefer the consolidated
+`time_features` tensor.
 
 XBRL has two temporal meanings and they must stay separate:
 

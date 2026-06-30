@@ -1869,65 +1869,105 @@ ORDER BY ticker, timestamp_us, accession_number, text_rank, document_id, source_
 
 def _query_xbrl(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str) -> Any:
     table = f"{quote_ident(config.sec_context_database)}.{quote_ident(config.sec_xbrl_context_table)}"
+    reference_table = f"{quote_ident(config.sec_context_database)}.{quote_ident(config.category_reference_table)}"
     prior_rows = max(0, int(getattr(args, "xbrl_prior_rows", 0) or 0))
     time_columns = _available_time_feature_sql("timestamp_us", prefix="available")
-    query = f"""
-WITH prior_rows AS
+    category_reference_cte = f"""
+refs AS
 (
     SELECT
-        ticker,
-        timestamp_us,
-        source_id,
-        cik,
-        issuer_id,
-        taxonomy,
-        tag,
-        unit_code,
-        fiscal_year,
-        fiscal_period,
-        form_type,
-        accepted_at_source,
-        accession_number,
-        period_end_date,
-        value,
-        calendar_period_code,
-        location_code,
-        xbrl_row_kind,
-        bridge_id,
-        mapping_confidence AS mapping_confidence_score,
+        field_name,
+        category_value,
+        argMax(category_id, updated_at) AS category_id
+    FROM {reference_table}
+    WHERE domain = 'xbrl'
+    GROUP BY
+        field_name,
+        category_value
+)
+"""
+    category_joins = """
+    LEFT JOIN refs AS taxonomy_ref ON taxonomy_ref.field_name = 'taxonomy' AND taxonomy_ref.category_value = trim(BOTH ' ' FROM toString(x.taxonomy))
+    LEFT JOIN refs AS tag_ref ON tag_ref.field_name = 'tag' AND tag_ref.category_value = trim(BOTH ' ' FROM toString(x.tag))
+    LEFT JOIN refs AS unit_ref ON unit_ref.field_name = 'unit_code' AND unit_ref.category_value = trim(BOTH ' ' FROM toString(x.unit_code))
+    LEFT JOIN refs AS form_ref ON form_ref.field_name = 'form_type' AND form_ref.category_value = trim(BOTH ' ' FROM toString(x.form_type))
+    LEFT JOIN refs AS row_kind_ref ON row_kind_ref.field_name = 'xbrl_row_kind' AND row_kind_ref.category_value = trim(BOTH ' ' FROM toString(x.xbrl_row_kind))
+    LEFT JOIN refs AS location_ref ON location_ref.field_name = 'location_code' AND location_ref.category_value = trim(BOTH ' ' FROM toString(x.location_code))
+    LEFT JOIN refs AS fiscal_period_ref ON fiscal_period_ref.field_name = 'fiscal_period' AND fiscal_period_ref.category_value = trim(BOTH ' ' FROM toString(x.fiscal_period))
+    LEFT JOIN refs AS calendar_period_ref ON calendar_period_ref.field_name = 'calendar_period_code' AND calendar_period_ref.category_value = trim(BOTH ' ' FROM toString(x.calendar_period_code))
+"""
+    category_columns = """
+        toUInt32(ifNull(taxonomy_ref.category_id, 0)) AS taxonomy_id,
+        toUInt32(ifNull(tag_ref.category_id, 0)) AS tag_id,
+        toUInt32(ifNull(unit_ref.category_id, 0)) AS unit_id,
+        toUInt32(ifNull(form_ref.category_id, 0)) AS form_id,
+        toUInt32(ifNull(row_kind_ref.category_id, 0)) AS row_kind_id,
+        toUInt32(ifNull(location_ref.category_id, 0)) AS location_id,
+        toUInt32(ifNull(fiscal_period_ref.category_id, 0)) AS fiscal_period_id,
+        toUInt32(ifNull(calendar_period_ref.category_id, 0)) AS calendar_period_id,
+"""
+    query = f"""
+WITH {category_reference_cte},
+prior_rows AS
+(
+    SELECT
+        x.ticker,
+        x.timestamp_us,
+        x.source_id,
+        x.cik,
+        x.issuer_id,
+        x.taxonomy,
+        x.tag,
+        x.unit_code,
+        x.fiscal_year,
+        x.fiscal_period,
+        x.form_type,
+        x.accepted_at_source,
+        x.accession_number,
+        x.period_end_date,
+        x.value,
+        x.calendar_period_code,
+        x.location_code,
+        x.xbrl_row_kind,
+        x.bridge_id,
+        x.mapping_confidence AS mapping_confidence_score,
+        {category_columns}
         {time_columns}
-    FROM {table}
-    WHERE ticker = {sql_string(ticker)}
-      AND timestamp_us < {int(window.first_session_start_us)}
-    ORDER BY ticker, timestamp_us DESC, xbrl_row_kind DESC, taxonomy DESC, tag DESC, unit_code DESC, period_end_date DESC
+    FROM {table} AS x
+    {category_joins}
+    WHERE x.ticker = {sql_string(ticker)}
+      AND x.timestamp_us < {int(window.first_session_start_us)}
+    ORDER BY x.ticker, x.timestamp_us DESC, x.xbrl_row_kind DESC, x.taxonomy DESC, x.tag DESC, x.unit_code DESC, x.period_end_date DESC
     LIMIT {int(prior_rows)}
 )
 SELECT
-    ticker,
-    timestamp_us,
-    source_id,
-    cik,
-    issuer_id,
-    taxonomy,
-    tag,
-    unit_code,
-    fiscal_year,
-    fiscal_period,
-    form_type,
-    accepted_at_source,
-    accession_number,
-    period_end_date,
-    value,
-    calendar_period_code,
-    location_code,
-    xbrl_row_kind,
-    bridge_id,
-    mapping_confidence AS mapping_confidence_score,
+    x.ticker,
+    x.timestamp_us,
+    x.source_id,
+    x.cik,
+    x.issuer_id,
+    x.taxonomy,
+    x.tag,
+    x.unit_code,
+    x.fiscal_year,
+    x.fiscal_period,
+    x.form_type,
+    x.accepted_at_source,
+    x.accession_number,
+    x.period_end_date,
+    x.value,
+    x.calendar_period_code,
+    x.location_code,
+    x.xbrl_row_kind,
+    x.bridge_id,
+    x.mapping_confidence AS mapping_confidence_score,
+    {category_columns}
     {time_columns}
-FROM {table}
-WHERE ticker = {sql_string(ticker)}
-  AND timestamp_us >= {int(window.first_session_start_us)}
-  AND timestamp_us < {int(window.last_session_end_us)}
+FROM {table} AS x
+{category_joins}
+WHERE x.ticker = {sql_string(ticker)}
+  AND x.timestamp_us >= {int(window.first_session_start_us)}
+  AND x.timestamp_us < {int(window.last_session_end_us)}
 UNION ALL
 SELECT *
 FROM prior_rows

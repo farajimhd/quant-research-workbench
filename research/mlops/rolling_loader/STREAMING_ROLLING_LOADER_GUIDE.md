@@ -646,7 +646,9 @@ load or tokenize raw text.
 
 XBRL inputs are structured attribute arrays under `xbrl_inputs`, with shape
 `[B, xbrl_max_items]` per attribute. Category values should use dense ids from
-`training_category_reference`, with `0` reserved for missing or unknown.
+`training_category_reference`, with `0` reserved for missing or unknown. Those
+ids are persistent reference-table ids: existing values are never renumbered,
+and normal reference-table refreshes append ids only for new values.
 
 ### Labels
 

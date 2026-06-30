@@ -254,6 +254,12 @@ when the fact was known       timestamp_us / availability time features
 what period the fact reports  period_end_date / period time features
 ```
 
+The categorical ids are persistent `training_category_reference` ids. The
+builder joins that table while writing XBRL context and stores the resulting
+`*_id` columns in `xbrl.parquet`. Id `0` is reserved for missing or unknown
+values. Existing `(domain, field_name, category_value)` mappings must never be
+renumbered; only new category values receive new ids.
+
 ## Event Windows
 
 The event window is still controlled by the configured coverage parameters:

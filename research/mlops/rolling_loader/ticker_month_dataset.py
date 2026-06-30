@@ -1669,14 +1669,14 @@ def _prepare_xbrl_context_index(frame: Any, category_index: XbrlCategoryReferenc
     fiscal_year = _frame_column_as(frame, "fiscal_year", np.int16, 0)[order]
     period_end_days = _epoch_days_array(_optional_frame_column(frame, "period_end_date", ""))[order]
     period_end_time_features = _period_end_absolute_time_feature_matrix(period_end_days)
-    fiscal_period_id = _map_category_ids(_optional_frame_column(frame, "fiscal_period", ""), "fiscal_period", category_index)[order]
-    calendar_period_id = _map_category_ids(_optional_frame_column(frame, "calendar_period_code", ""), "calendar_period_code", category_index)[order]
-    taxonomy_id = _map_category_ids(_optional_frame_column(frame, "taxonomy", ""), "taxonomy", category_index)[order]
-    tag_id = _map_category_ids(_optional_frame_column(frame, "tag", ""), "tag", category_index)[order]
-    unit_id = _map_category_ids(_optional_frame_column(frame, "unit_code", ""), "unit_code", category_index)[order]
-    form_id = _map_category_ids(_optional_frame_column(frame, "form_type", ""), "form_type", category_index)[order]
-    row_kind_id = _map_category_ids(_optional_frame_column(frame, "xbrl_row_kind", ""), "xbrl_row_kind", category_index)[order]
-    location_id = _map_category_ids(_optional_frame_column(frame, "location_code", ""), "location_code", category_index)[order]
+    fiscal_period_id = _category_id_column_or_map(frame, "fiscal_period_id", "fiscal_period", "fiscal_period", category_index)[order]
+    calendar_period_id = _category_id_column_or_map(frame, "calendar_period_id", "calendar_period_code", "calendar_period_code", category_index)[order]
+    taxonomy_id = _category_id_column_or_map(frame, "taxonomy_id", "taxonomy", "taxonomy", category_index)[order]
+    tag_id = _category_id_column_or_map(frame, "tag_id", "tag", "tag", category_index)[order]
+    unit_id = _category_id_column_or_map(frame, "unit_id", "unit_code", "unit_code", category_index)[order]
+    form_id = _category_id_column_or_map(frame, "form_id", "form_type", "form_type", category_index)[order]
+    row_kind_id = _category_id_column_or_map(frame, "row_kind_id", "xbrl_row_kind", "xbrl_row_kind", category_index)[order]
+    location_id = _category_id_column_or_map(frame, "location_id", "location_code", "location_code", category_index)[order]
     mapping_confidence = _frame_column_as(frame, "mapping_confidence_score", np.float32, 0.0)[order]
     if int(timestamps.shape[0]) != height:
         raise RuntimeError("XBRL index row count changed while preparing context.")
@@ -1739,6 +1739,18 @@ def _map_category_ids(values: np.ndarray, field_name: str, category_index: XbrlC
     for idx, value in enumerate(values):
         out[idx] = np.uint32(mapping.get((str(field_name), str(value)), 0))
     return out
+
+
+def _category_id_column_or_map(
+    frame: Any,
+    id_column: str,
+    value_column: str,
+    field_name: str,
+    category_index: XbrlCategoryReferenceIndex,
+) -> np.ndarray:
+    if id_column in getattr(frame, "columns", ()):
+        return _frame_column_as(frame, id_column, np.uint32, 0)
+    return _map_category_ids(_optional_frame_column(frame, value_column, ""), field_name, category_index)
 
 
 def _frame_column_as(frame: Any, name: str, dtype: Any, default: Any) -> np.ndarray:

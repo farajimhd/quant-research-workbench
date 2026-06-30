@@ -306,9 +306,11 @@ xbrl.timestamp_us <= origin_timestamp_us
 ```
 
 Rows are ordered newest-first for each origin. Missing rows are zero-filled and
-masked with `xbrl_inputs["mask"] == False`. Categorical ids come from the
-month-level `global/category_references.parquet`; id `0` means missing or
-unknown.
+masked with `xbrl_inputs["mask"] == False`. For new caches, categorical ids are
+stored directly in each ticker `xbrl.parquet` after joining the persistent
+`training_category_reference` table at build time. Older caches fall back to the
+month-level `global/category_references.parquet`. Id `0` means missing or
+unknown, and nonzero ids must be stable across cache builds.
 
 These checks prevent lookahead, origin/event misalignment, and ordinal gaps.
 Origins that do not have enough cached lookback are filtered before payload
