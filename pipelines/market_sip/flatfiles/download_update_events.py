@@ -49,6 +49,7 @@ from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noq
     latest_day_status,
     mergetree_settings,
     mutation_settings,
+    ensure_continuity_table_columns,
     parse_trade_correction_codes,
     query_settings,
     quote_event_meta_expr,
@@ -1005,6 +1006,53 @@ ORDER BY (source_date, ticker)
 """
 
 
+def validate_ticker_day_index_table_schema(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+    expected = {
+        "ticker": "LowCardinality(String)",
+        "source_date": "Date",
+        "event_count": "UInt64",
+        "first_ordinal": "UInt64",
+        "last_ordinal": "UInt64",
+        "next_ordinal": "UInt64",
+        "first_sip_timestamp_us": "UInt64",
+        "last_sip_timestamp_us": "UInt64",
+        "build_step": "UInt32",
+        "built_at": "DateTime",
+    }
+    rows = client.query_tsv(
+        f"""
+SELECT name, type
+FROM system.columns
+WHERE database = {sql_string(args.database)}
+  AND table = {sql_string(args.ticker_day_index_table)}
+FORMAT TSV
+"""
+    )
+    actual: dict[str, str] = {}
+    for line in rows.splitlines():
+        if not line.strip():
+            continue
+        name, col_type = line.split("\t", 1)
+        actual[name] = col_type
+    missing = [name for name in expected if name not in actual]
+    wrong_type = [
+        f"{name}: expected {expected_type}, got {actual[name]}"
+        for name, expected_type in expected.items()
+        if name in actual and actual[name] != expected_type
+    ]
+    if missing or wrong_type:
+        details = []
+        if missing:
+            details.append(f"missing={missing}")
+        if wrong_type:
+            details.append(f"wrong_type={wrong_type}")
+        raise RuntimeError(
+            f"{args.database}.{args.ticker_day_index_table} is not the expected event ticker/day index schema; "
+            + "; ".join(details)
+            + ". Drop the stale index table or pass --ticker-day-index-table to use a fresh table."
+        )
+
+
 def delete_day_ticker_index_sql(args: argparse.Namespace, day: DayFiles) -> str:
     return f"""
 ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.ticker_day_index_table)}
@@ -1074,7 +1122,9 @@ def ensure_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> Non
     validate_events_table_schema(client, args)
     client.execute(create_manifest_table_sql(args))
     client.execute(create_continuity_table_sql(args))
+    ensure_continuity_table_columns(client, args)
     client.execute(create_ticker_day_index_table_sql(args))
+    validate_ticker_day_index_table_schema(client, args)
 
 
 def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
