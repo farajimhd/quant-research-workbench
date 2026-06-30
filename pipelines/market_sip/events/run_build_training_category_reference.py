@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--password", default="")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--print-only", action="store_true")
+    parser.add_argument("--rebuild-from-scratch", action="store_true")
     return parser.parse_args()
 
 
@@ -73,6 +74,8 @@ def main() -> int:
         argv.extend(["--password", args.password])
     if args.dry_run:
         argv.append("--dry-run")
+    if args.rebuild_from_scratch:
+        argv.append("--rebuild-from-scratch")
 
     print("Equivalent command:", flush=True)
     print(" ".join(argv), flush=True)

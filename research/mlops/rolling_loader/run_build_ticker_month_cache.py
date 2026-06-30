@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 from urllib import request as url_request
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import numpy as np
 
@@ -29,6 +29,7 @@ if __package__ in {None, ""}:
             break
 
 from research.mlops.clickhouse import (
+    default_storage_policy,
     default_clickhouse_password,
     default_clickhouse_url,
     default_clickhouse_user,
@@ -68,6 +69,11 @@ from research.mlops.rolling_loader.ticker_month_cache import (
     ticker_package_dir,
     timestamp_us_to_utc,
     write_json_atomic,
+)
+from pipelines.market_sip.events.clickhouse_build_training_category_reference import (
+    create_reference_table_sql,
+    insert_reference_sql,
+    query_settings as category_reference_query_settings,
 )
 
 
@@ -443,6 +449,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sec-filing-text-embedding-table", default=DEFAULTS["sec_filing_text_embedding_table"])
     parser.add_argument("--sec-xbrl-context-table", default=DEFAULTS["sec_xbrl_context_table"])
     parser.add_argument("--category-reference-table", default=DEFAULTS["category_reference_table"])
+    parser.add_argument("--force-category-reference-build", action="store_true", help="Run the append-only category reference builder at startup even when the table already exists.")
+    parser.add_argument("--skip-category-reference-check", action="store_true", help="Skip the startup category reference existence/empty-table check.")
     parser.add_argument("--cache-root", type=Path, default=Path(DEFAULTS["cache_root"]))
     parser.add_argument("--cache-id", default="")
     parser.add_argument("--split", default=DEFAULTS["split"])
@@ -577,6 +585,7 @@ def main(argv: list[str] | None = None) -> int:
         dashboard.start()
         heartbeat = ProgressHeartbeat(cache_root=cache_root, stats=stats, dashboard=dashboard, refresh_seconds=args.refresh_seconds)
         heartbeat.start()
+        ensure_category_reference_table(args=args, client_opts=client_opts, config=config, stats=stats)
         for month in months:
             if stop_event.is_set():
                 break
@@ -737,6 +746,74 @@ def _client_options(args: argparse.Namespace) -> dict[str, str]:
         "query_retries": str(max(0, int(args.clickhouse_query_retries))),
         "query_retry_backoff_seconds": str(max(0.0, float(args.clickhouse_query_retry_backoff_seconds))),
     }
+
+
+def ensure_category_reference_table(
+    *,
+    args: argparse.Namespace,
+    client_opts: Mapping[str, str],
+    config: RollingMarketDataConfig,
+    stats: BuildStats,
+) -> None:
+    if bool(getattr(args, "skip_category_reference_check", False)):
+        stats.message("category_reference: startup check skipped")
+        stats.log_event("category_reference_check_skipped")
+        return
+    started = time.perf_counter()
+    exists, rows = _category_reference_table_status(client_opts=client_opts, config=config)
+    force = bool(getattr(args, "force_category_reference_build", False))
+    if exists and rows > 0 and not force:
+        stats.message(f"category_reference: ready table={config.sec_context_database}.{config.category_reference_table} rows={rows:,}")
+        stats.log_event("category_reference_ready", table=config.category_reference_table, rows=rows, elapsed_seconds=time.perf_counter() - started)
+        return
+
+    reason = "forced" if force else ("empty" if exists else "missing")
+    stats.message(f"category_reference: {reason}; running append-only builder")
+    stats.log_event("category_reference_build_started", table=config.category_reference_table, exists=exists, rows=rows, reason=reason)
+    category_args = argparse.Namespace(
+        database=config.sec_context_database,
+        xbrl_table=config.sec_xbrl_context_table,
+        news_token_table=config.news_token_table,
+        sec_token_table=config.sec_filing_text_token_table,
+        reference_table=config.category_reference_table,
+        max_threads=max(1, int(config.max_threads)),
+        max_memory_usage=str(config.max_memory_usage),
+    )
+    storage_policy = default_storage_policy()
+    create_sql = create_reference_table_sql(config.sec_context_database, config.category_reference_table, storage_policy)
+    insert_sql = insert_reference_sql(category_args).rstrip(";") + category_reference_query_settings(category_args)
+    _execute_clickhouse_sql(client_opts=client_opts, sql=create_sql, label="category_reference_create")
+    _execute_clickhouse_sql(client_opts=client_opts, sql=insert_sql, label="category_reference_insert")
+    final_exists, final_rows = _category_reference_table_status(client_opts=client_opts, config=config)
+    if not final_exists or final_rows <= 0:
+        raise RuntimeError(f"Category reference table build did not produce rows: {config.sec_context_database}.{config.category_reference_table}")
+    stats.message(f"category_reference: built table={config.sec_context_database}.{config.category_reference_table} rows={final_rows:,}")
+    stats.log_event("category_reference_build_done", table=config.category_reference_table, rows=final_rows, elapsed_seconds=time.perf_counter() - started)
+
+
+def _category_reference_table_status(*, client_opts: Mapping[str, str], config: RollingMarketDataConfig) -> tuple[bool, int]:
+    exists_sql = f"""
+SELECT count()
+FROM system.tables
+WHERE database = {sql_string(config.sec_context_database)}
+  AND name = {sql_string(config.category_reference_table)}
+FORMAT TSV
+"""
+    exists_text = _execute_clickhouse_sql(client_opts=client_opts, sql=exists_sql, label="category_reference_exists")
+    exists = _parse_clickhouse_count(exists_text) > 0
+    if not exists:
+        return False, 0
+    count_sql = f"SELECT count() FROM {quote_ident(config.sec_context_database)}.{quote_ident(config.category_reference_table)} FORMAT TSV"
+    rows_text = _execute_clickhouse_sql(client_opts=client_opts, sql=count_sql, label="category_reference_count")
+    return True, _parse_clickhouse_count(rows_text)
+
+
+def _parse_clickhouse_count(text: str) -> int:
+    first = next((line.strip() for line in str(text).splitlines() if line.strip()), "0")
+    try:
+        return int(first)
+    except ValueError as exc:
+        raise RuntimeError(f"Could not parse ClickHouse count result: {text!r}") from exc
 
 
 def _resolve_tickers_for_month(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any) -> list[str]:
@@ -2268,6 +2345,24 @@ def _execute_clickhouse_cancel(*, client_opts: Mapping[str, str], sql: str, time
         req.add_header("X-ClickHouse-Key", password)
     with url_request.urlopen(req, timeout=max(1.0, float(timeout_seconds))) as response:
         return response.read().decode("utf-8", errors="replace")
+
+
+def _execute_clickhouse_sql(*, client_opts: Mapping[str, str], sql: str, label: str, timeout_seconds: float | None = None) -> str:
+    query_id = f"rolling_ticker_month_{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex}"
+    ACTIVE_QUERIES.register(query_id, label=label)
+    url = str(client_opts["clickhouse_url"]).rstrip("/") + "/?" + urlencode({"query_id": query_id})
+    req = url_request.Request(url, data=sql.rstrip(";").encode("utf-8"), method="POST")
+    user = str(client_opts.get("user") or "default")
+    password = str(client_opts.get("password") or "")
+    if user:
+        req.add_header("X-ClickHouse-User", user)
+    if password:
+        req.add_header("X-ClickHouse-Key", password)
+    try:
+        with url_request.urlopen(req, timeout=timeout_seconds) as response:
+            return response.read().decode("utf-8", errors="replace")
+    finally:
+        ACTIVE_QUERIES.unregister(query_id)
 
 
 def _settings_sql(config: RollingMarketDataConfig, *, extra: Mapping[str, Any] | None = None) -> str:

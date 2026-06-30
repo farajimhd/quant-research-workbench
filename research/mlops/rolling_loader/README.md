@@ -192,6 +192,20 @@ table at build time and stored in each ticker `xbrl.parquet`. This includes
 kind/location ids. The monthly `global/category_references.parquet` snapshot is
 still saved for auditability and backward compatibility with older caches.
 
+The ticker-month cache builder checks this table at startup. If the table is
+missing or empty, it runs the append-only category reference builder before
+fetching month data. To refresh the table even when it already exists, pass:
+
+```powershell
+--force-category-reference-build
+```
+
+To bypass this startup check for an isolated/debug run, pass:
+
+```powershell
+--skip-category-reference-check
+```
+
 ### Event Lookback
 
 The builder separates cached history from the default training window index.
