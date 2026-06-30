@@ -201,7 +201,6 @@ impl TickerReorderBuffer {
 pub struct CompactEventReferences {
     quote_conditions: HashMap<i16, u8>,
     trade_conditions: HashMap<i16, u8>,
-    trade_corrections: HashMap<i16, u8>,
     quote_indicators: HashMap<i16, u8>,
 }
 
@@ -236,7 +235,6 @@ impl CompactEventReferences {
     fn from_glossary_payload(payload: &Value) -> Result<Self, String> {
         let mut quote_conditions = HashMap::new();
         let mut trade_conditions = HashMap::new();
-        let mut trade_corrections = HashMap::new();
         let mut quote_indicators: HashMap<i16, u8> = HashMap::new();
         let mut seen_join_keys: HashSet<(String, i16)> = HashSet::new();
         let mut token_id: u16 = 1;
@@ -272,9 +270,7 @@ impl CompactEventReferences {
                         "trade_conditions" => {
                             trade_conditions.insert(modifier, token);
                         }
-                        "trade_corrections_nyse" => {
-                            trade_corrections.insert(modifier, token);
-                        }
+                        "trade_corrections_nyse" => {}
                         _ => {
                             quote_indicators
                                 .entry(modifier)
@@ -289,7 +285,6 @@ impl CompactEventReferences {
         Ok(Self {
             quote_conditions,
             trade_conditions,
-            trade_corrections,
             quote_indicators,
         })
     }
@@ -303,13 +298,6 @@ impl CompactEventReferences {
 
     fn trade_condition_id(&self, value: u16) -> u8 {
         self.trade_conditions
-            .get(&(value as i16))
-            .copied()
-            .unwrap_or(0)
-    }
-
-    fn trade_correction_id(&self, value: u16) -> u8 {
-        self.trade_corrections
             .get(&(value as i16))
             .copied()
             .unwrap_or(0)
@@ -1086,7 +1074,6 @@ fn compact_trade_event(
         arrival_sequence: 0,
         condition_tokens_packed: pack_trade_condition_tokens(
             &trade.conditions,
-            None,
             references,
             price_scale,
             trade.tape,
@@ -1166,27 +1153,22 @@ fn pack_quote_condition_tokens(
 
 fn pack_trade_condition_tokens(
     conditions: &[u16],
-    correction: Option<u16>,
     references: &CompactEventReferences,
     price_scale: u8,
     tape: u8,
 ) -> u64 {
     let mut tokens = [0u8; CONDITION_TOKEN_SLOTS];
     let mut present = [false; CONDITION_TOKEN_SLOTS];
-    for slot in 0..4 {
+    for slot in 0..CONDITION_TOKEN_SLOTS {
         if let Some(value) = conditions.get(slot) {
             tokens[slot] = references.trade_condition_id(*value);
             present[slot] = true;
         }
     }
-    if let Some(value) = correction {
-        tokens[4] = references.trade_correction_id(value);
-        present[4] = true;
-    }
     pack_condition_tokens(
         tokens,
         present,
-        conditions.len().saturating_add(usize::from(correction.is_some())),
+        conditions.len(),
         price_scale,
         0,
         tape,

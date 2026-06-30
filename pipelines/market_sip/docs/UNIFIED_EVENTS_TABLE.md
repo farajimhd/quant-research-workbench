@@ -68,10 +68,11 @@ source range: 2019-01-01 -> 2099-12-31
 build unit: one source event_date at a time
 train index: 2019-01-01 -> 2025-12-31
 validation index: 2026-01-01 -> 2099-12-31
-storage policy: CLICKHOUSE_LIVE_STORAGE_POLICY
+storage policy: CLICKHOUSE_HISTORICAL_STORAGE_POLICY
 storage partition mode: toYYYYMM(event_date)
 max_partitions_per_insert_block: 1024
 clean mode: issue_flags_zero
+drop trade correction codes: 7,8,10,11
 ```
 
 Events are built one source date at a time. Each day job reads all clean
@@ -171,11 +172,12 @@ the day is rebuilt.
 Use the ClickHouse storage policy from:
 
 ```text
-CLICKHOUSE_LIVE_STORAGE_POLICY
+CLICKHOUSE_HISTORICAL_STORAGE_POLICY
 ```
 
-The current reason is practical: the existing compact raw tables use a different
-SSD policy, and the unified training table needs separate free SSD capacity.
+Historical training data must not share the live QMD SSD policy. QMD live
+tables use `CLICKHOUSE_LIVE_STORAGE_POLICY`; historical `market_sip_compact`
+tables use `CLICKHOUSE_HISTORICAL_STORAGE_POLICY`.
 
 ## Final Table
 
@@ -219,7 +221,7 @@ CREATE TABLE market_sip_compact.events
     exchange_primary UInt8,
     exchange_secondary UInt8,
 
-    -- Packed condition/indicator/correction token ids plus metadata.
+    -- Packed condition/indicator token ids plus metadata.
     condition_tokens_packed UInt64,
 
     -- Useful for maintenance, auditing, and date-range deletion.
@@ -228,7 +230,7 @@ CREATE TABLE market_sip_compact.events
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(event_date)
 ORDER BY (ticker, ordinal)
-SETTINGS storage_policy = '<CLICKHOUSE_LIVE_STORAGE_POLICY>';
+SETTINGS storage_policy = '<CLICKHOUSE_HISTORICAL_STORAGE_POLICY>';
 ```
 
 ## Split Index Tables
@@ -335,8 +337,10 @@ market_sip_compact.event_condition_token_reference
 ```
 
 Token ID `0` means absent or unknown. The reference table assigns stable IDs to
-quote conditions, trade conditions, trade corrections, and quote indicators. The
-builder joins only rows where `is_join_canonical = 1`, so repeated glossary
+quote conditions, trade conditions, trade corrections, and quote indicators, but
+the event table only packs fields available in production-time live data. Trade
+corrections are used for filtering historical rows, not as model input tokens.
+The builder joins only rows where `is_join_canonical = 1`, so repeated glossary
 codes cannot multiply event rows.
 
 `condition_pack_kind`:
@@ -344,7 +348,7 @@ codes cannot multiply event rows.
 ```text
 0 = no condition payload
 1 = quote conditions + quote indicators
-2 = trade conditions + trade correction
+2 = trade conditions
 3 = reserved
 ```
 
@@ -371,9 +375,19 @@ Quote rows pack the first four quote condition tokens and the first quote
 indicator token. `token_overflow` is set when more raw quote
 conditions/indicators exist than the five available slots.
 
-Trade rows pack the first four trade condition tokens and the trade correction
-token decoded from `trade_flags`. `token_overflow` is set when raw trade
-conditions plus the correction exceed five slots.
+Trade rows pack the first five trade condition tokens. `token_overflow` is set
+when raw trade conditions exceed five slots.
+
+Historical trade rows whose correction code is configured for dropping are
+excluded before event construction. The default dropped correction codes are
+`7,8,10,11`:
+
+```text
+07 = original trade later marked erroneous
+08 = original trade later cancelled
+10 = cancel record
+11 = error record
+```
 
 Raw quote/trade condition strings are not stored in `events`; validation against
 flatfiles must reconstruct `condition_tokens_packed` through the same reference
@@ -409,7 +423,7 @@ size_primary        -> size
 size_secondary      -> 0
 exchange_primary    -> exchange
 exchange_secondary  -> 0
-condition_tokens_packed -> trade condition/correction tokens plus scale/tape metadata
+condition_tokens_packed -> trade condition tokens plus scale/tape metadata
 event_date          -> event_date
 ```
 

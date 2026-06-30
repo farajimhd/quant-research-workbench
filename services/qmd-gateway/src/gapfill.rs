@@ -1307,7 +1307,7 @@ impl GapFillService {
                     "mode": mode,
                     "reason": interval.reason,
                     "persistence_contract": [
-                        "q_live.live_market_events_v1",
+                        self.config.compact_event_table.as_str(),
                         "q_live.live_event_ordinal_continuity",
                         "q_live.live_market_bars"
                     ],

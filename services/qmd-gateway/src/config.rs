@@ -169,7 +169,7 @@ impl GatewayConfig {
                 "QMD_COMPACT_EVENT_REORDER_MAX_EVENTS_PER_TICKER",
                 4_096,
             ),
-            compact_event_table: env_string("QMD_COMPACT_EVENT_TABLE", "live_market_events_v1"),
+            compact_event_table: env_string("QMD_COMPACT_EVENT_TABLE", "live_market_events_v2"),
             compact_events_enabled: env_bool("QMD_COMPACT_EVENTS_ENABLED", true),
             event_channel_capacity: env_usize("QMD_EVENT_CHANNEL_CAPACITY", 250_000),
             flush_interval_ms: env_u64("QMD_CLICKHOUSE_FLUSH_INTERVAL_MS", 5_000),

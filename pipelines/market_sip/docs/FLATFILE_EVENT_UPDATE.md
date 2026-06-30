@@ -92,7 +92,7 @@ The script needs:
 - `BUCKET`
 - `FLATFILES_ROOT`, or pass `--flatfiles-root-win`
 - ClickHouse URL/user/password variables used by the market SIP pipelines
-- `CLICKHOUSE_LIVE_STORAGE_POLICY` or explicit `--storage-policy`
+- `CLICKHOUSE_HISTORICAL_STORAGE_POLICY` or explicit `--storage-policy`
 
 ClickHouse must be able to read the local flatfile path through its configured
 `user_files_path` or mounted file root. The script maps:
@@ -233,6 +233,8 @@ ClickHouse:
 - `--continuity-table`: ordinal continuity table, default
   `events_ordinal_continuity`.
 - `--storage-policy`: MergeTree storage policy for created tables.
+- `--drop-trade-correction-codes`: comma-separated trade correction codes to
+  exclude from event-table inserts. Default: `7,8,10,11`.
 - `--max-threads`: ClickHouse query threads used for event insertion.
 - `--max-memory-usage`: ClickHouse query memory cap, for example `400G`.
 - `--partition-mode`: event table partitioning, default `month`.
@@ -324,7 +326,7 @@ The event rows match the unified event table contract:
 - trade primary price is trade price, secondary price is zero
 - price scale, tape, condition pack kind, and pack version are packed into `condition_tokens_packed`
 - quote rows pack quote condition tokens plus the first quote indicator token
-- trade rows pack trade condition tokens plus the trade correction token
+- trade rows pack trade condition tokens only; configured correction codes are filtered before insertion
 - structurally invalid rows are filtered before insertion
 
 For the detailed event schema, see `UNIFIED_EVENTS_TABLE.md`.

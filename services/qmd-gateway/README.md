@@ -77,7 +77,7 @@ Environment variables:
 - `QMD_EVENT_CHANNEL_CAPACITY`, default `250000`
 - `QMD_COMPACT_EVENTS_ENABLED`, default `true`
 - `QMD_PERSIST_COMPACT_EVENTS`, default `true`
-- `QMD_COMPACT_EVENT_TABLE`, default `live_market_events_v1`
+- `QMD_COMPACT_EVENT_TABLE`, default `live_market_events_v2`
 - `QMD_COMPACT_EVENT_CONTINUITY_TABLE`, default `live_event_ordinal_continuity`
 - `QMD_COMPACT_EVENT_CHANNEL_CAPACITY`, default `250000`
 - `QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER`, default `512`
@@ -129,7 +129,7 @@ Environment variables:
 
 The service writes to:
 
-- `live_market_events_v1`
+- `live_market_events_v2`
 - `live_event_ordinal_continuity`
 - `live_massive_trades`, only when `QMD_PERSIST_RAW_EVENTS=true`
 - `live_massive_quotes`, only when `QMD_PERSIST_RAW_EVENTS=true`
@@ -162,7 +162,7 @@ The QMD maintenance source of truth for historical event availability is
 `market_sip_compact.events` plus `market_sip_compact.events_ordinal_continuity`.
 The runner intentionally does not copy historical rows directly into `q_live`.
 Recent `q_live` event gaps must be repaired through the QMD replay/fanout path
-so `live_market_events_v1`, `live_event_ordinal_continuity`, and the three bar
+so `live_market_events_v2`, `live_event_ordinal_continuity`, and the three bar
 layouts remain consistent. The runner records QMD source coverage, live
 coverage, row counts, and the `/snapshot/maintenance` API state in
 `q_live.service_maintenance_task_v1`.
@@ -399,11 +399,11 @@ repair. During streaming hours, it starts the websocket immediately and repairs
 only tickers discovered from newly persisted live compact events. If a clean
 slate has gaps but no live ticker has arrived yet, QMD reports
 `awaiting_live_symbols` and leaves the gap open. Outside streaming hours, it
-uses the latest symbols from `q_live.live_market_events_v1`; if q_live has no
+uses the latest symbols from `q_live.live_market_events_v2`; if q_live has no
 symbols, it falls back to the latest symbol set in the read-only
 `market_sip_compact.events` table. q_live gap detection does not infer missing
 data from
-`min/max/count` in `live_market_events_v1`; it subtracts confirmed intervals in
+`min/max/count` in `live_market_events_v2`; it subtracts confirmed intervals in
 `qmd_live_event_coverage_v1` from required 04:00-20:00 ET market-session
 windows. Streaming intervals are confirmed only where `compact_persisted` and
 `bars_persisted` rows overlap for the same run. REST repair rows are confirmed
@@ -421,7 +421,7 @@ Deeper historical event history should be read from the read-only
 up to the prior day.
 
 At startup, when `QMD_STARTUP_MAINTENANCE_ENABLED=true`, the gateway audits the
-recent `q_live.live_market_events_v1` rows directly for structural event-table
+recent `q_live.live_market_events_v2` rows directly for structural event-table
 problems. The audit reports duplicate ticker ordinals, ordinal holes, and
 out-of-order ticker-local rows. Time coverage is then read from
 `qmd_live_event_coverage_v1`, not inferred from event-table min/max timestamps.

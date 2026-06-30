@@ -39,7 +39,7 @@ The gateway outputs market-data primitives. The app backend combines those primi
 | `bars.rs` | Live bar aggregation | Market events | `BarRow`, `live_market_bars`, `bars_by_symbol_time`, `bars_by_time_symbol` | Historical chart storage |
 | `indicators.rs` | Streaming tick and bar indicators | Market events, closed bars | Tick snapshots, `IndicatorRow` | Wide research feature generation |
 | `scanner.rs` | Massive-only scanner primitives | Closed bars | Primitive snapshot/stream | Broker/reference-aware signals |
-| `compact_event.rs` | Live compact event contract, live ring buffers, sorted persistence ordinals | Market events | `/stream/compact-events`, `/snapshot/compact-events/{ticker}`, `live_market_events_v1` | Encoder chunk construction |
+| `compact_event.rs` | Live compact event contract, live ring buffers, sorted persistence ordinals | Market events | `/stream/compact-events`, `/snapshot/compact-events/{ticker}`, `live_market_events_v2` | Encoder chunk construction |
 | `clickhouse.rs` | Optional raw Massive persistence | Market events | `live_massive_trades`, `live_massive_quotes` | Primary ML surface |
 | `gapfill.rs` | Startup live coverage audit, Massive REST tail repair, historical flatfile planning | Live compact event rows, Massive REST, historical continuity rows | Same event fan-out as websocket, gap-fill audit rows, coarse coverage manifest | Deep historical row generation |
 | `replay.rs` | Raw-data replay | ClickHouse raw rows | Same in-memory pipeline as live | Re-persist raw events |
@@ -81,7 +81,7 @@ persistence path:
     -> per-ticker reorder buffer
     -> sort by sip_timestamp_us, source_sequence, event_type, arrival_sequence
     -> assign final ticker-local ordinal
-    -> batch insert q_live.live_market_events_v1
+    -> batch insert q_live.live_market_events_v2
     -> append q_live.live_event_ordinal_continuity snapshots
 ```
 
@@ -141,7 +141,7 @@ Default durable writes:
 
 | Table | Written By | Default | Purpose |
 |---|---|---:|---|
-| `live_market_events_v1` | `compact_event.rs` | yes | Live ML-serving event stream/table |
+| `live_market_events_v2` | `compact_event.rs` | yes | Live ML-serving event stream/table |
 | `live_event_ordinal_continuity` | `compact_event.rs` | yes | Append-only live ticker ordinal snapshots |
 | `live_massive_trades` | `clickhouse.rs` | no | Optional raw trade replay/debug source |
 | `live_massive_quotes` | `clickhouse.rs` | no | Optional raw quote replay/debug source |
@@ -152,7 +152,7 @@ Default durable writes:
 | `qmd_live_event_coverage_v1` | `compact_event.rs`, `bars.rs`, `gapfill.rs` | yes | Recent q_live coverage manifest for compact events and bars |
 | `qmd_flatfile_event_coverage_v1` | `gapfill.rs` | yes | Historical flatfile coverage manifest |
 
-Startup maintenance audits recent `q_live.live_market_events_v1` rows for
+Startup maintenance audits recent `q_live.live_market_events_v2` rows for
 structural ordinal issues before websocket ingest begins. It does not infer
 missing time coverage from min/max timestamps. Recent time gaps are detected
 from `qmd_live_event_coverage_v1`. Live streaming writes one compact-event

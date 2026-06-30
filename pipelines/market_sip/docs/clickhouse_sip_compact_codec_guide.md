@@ -128,7 +128,7 @@ Trade flags:
 
 - bit 0: trade price scale, `0 = cents`, `1 = 1e-4`
 - bits 1-2: tape code, stored as `raw_tape - 1`
-- bits 3-6: correction code, clamped to `0..15`
+- bits 3-6: reserved. Historical correction codes are used for filtering during ingest and are not retained in clean compact trade rows.
 
 Decode quote prices:
 
@@ -207,7 +207,7 @@ strings. They are mapped through the unified dense token reference table and
 packed into one `UInt64`:
 
 ```text
-bits  0-39: five 8-bit condition/indicator/correction token slots
+bits  0-39: five 8-bit condition/indicator token slots
 bits 40-44: token count, overflow, and unknown-token flags
 bits 45-49: primary scale, secondary scale, and tape code
 bits 50-51: condition pack kind
@@ -221,9 +221,10 @@ market_sip_compact.event_condition_token_reference
 ```
 
 Quote event rows use quote condition tokens plus the first quote indicator.
-Trade event rows use trade condition tokens plus the trade correction decoded
-from `trade_flags`. The builder joins through canonical source-domain mappings
-so repeated glossary modifier codes do not multiply event rows.
+Trade event rows use trade condition tokens only. Historical trade correction
+codes are filtered before event construction and are not packed into model
+inputs. The builder joins through canonical source-domain mappings so repeated
+glossary modifier codes do not multiply event rows.
 
 ## Issue Flags
 
@@ -285,7 +286,6 @@ SELECT
     size,
     exchange,
     bitAnd(bitShiftRight(trade_flags, 1), 3) + 1 AS tape,
-    bitAnd(bitShiftRight(trade_flags, 3), 15) AS correction,
     conditions,
     issue_flags
 FROM market_sip_compact.trades

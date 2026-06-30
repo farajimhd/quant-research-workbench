@@ -34,6 +34,7 @@ from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noq
     DEFAULT_EVENTS_TABLE,
     DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE,
     DEFAULT_MANIFEST_TABLE,
+    DEFAULT_DROP_TRADE_CORRECTION_CODES,
     CONDITION_PACK_KIND_SHIFT,
     CONDITION_PACK_VERSION,
     CONDITION_PACK_VERSION_SHIFT,
@@ -51,12 +52,12 @@ from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noq
     create_manifest_table_sql,
     delete_day_sql,
     condition_token_reference_subquery,
-    correction_code_expr,
     indicator_code_expr,
     indicator_token_reference_subquery,
     insert_day_manifest,
     latest_day_status,
     mutation_settings,
+    parse_trade_correction_codes,
     query_settings,
     quote_condition_pack_expr,
     trade_condition_pack_expr,
@@ -174,7 +175,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-date", default=DEFAULT_END_DATE)
     parser.add_argument("--flatfiles-root-win", default=str(DEFAULT_FLATFILES_ROOT_WIN))
     parser.add_argument("--flatfiles-root-ch", default=default_clickhouse_file_root())
-    parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or default_storage_policy())
+    parser.add_argument("--storage-policy", default=default_storage_policy())
+    parser.add_argument(
+        "--drop-trade-correction-codes",
+        default=DEFAULT_DROP_TRADE_CORRECTION_CODES,
+        help="Comma-separated flatfile trade correction codes to exclude from event-table inserts.",
+    )
     parser.add_argument("--partition-mode", choices=("month", "ticker_hash", "none"), default="month")
     parser.add_argument("--partition-buckets", type=int, default=256)
     parser.add_argument("--download-workers", type=int, default=DEFAULT_DOWNLOAD_WORKERS)
@@ -728,9 +734,10 @@ AND {issue_flags} = 0
 """.strip()
 
 
-def trade_clean_predicate() -> str:
+def trade_clean_predicate(args: argparse.Namespace) -> str:
     price = "toFloat64OrZero(price)"
     delta_us = "intDiv(toInt64OrZero(participant_timestamp) - toInt64OrZero(sip_timestamp), 1000)"
+    correction_filter = flatfile_trade_correction_filter_sql(args)
     issue_flags = (
         f"toUInt16(if({price} <= 0, 1, 0) + "
         "if(toFloat64OrZero(size) <= 0, 2, 0) + "
@@ -743,8 +750,17 @@ AND toUInt64OrZero(sip_timestamp) > 0
 AND toUInt32OrZero(sequence_number) > 0
 AND {price_int_sql(price)} > 0
 AND toFloat64OrZero(size) > 0
+{correction_filter}
 AND {issue_flags} = 0
 """.strip()
+
+
+def flatfile_trade_correction_filter_sql(args: argparse.Namespace) -> str:
+    codes = parse_trade_correction_codes(getattr(args, "drop_trade_correction_codes", ""))
+    if not codes:
+        return ""
+    values = ", ".join(str(code) for code in codes)
+    return f"\nAND toUInt8(greatest(0, least(15, toInt16OrZero(correction)))) NOT IN ({values})"
 
 
 def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
@@ -757,7 +773,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
     ask_scale = scale_code_sql(ask_price)
     trade_scale = scale_code_sql(trade_price)
     quote_flags = f"toUInt8({bid_scale} + ({ask_scale} * 2) + ({tape_code_sql('tape')} * 4))"
-    trade_flags = f"toUInt8({trade_scale} + ({tape_code_sql('tape')} * 2) + (toUInt8(greatest(0, least(15, toInt16OrZero(correction)))) * 8))"
+    trade_flags = f"toUInt8({trade_scale} + ({tape_code_sql('tape')} * 2))"
     return f"""
     SELECT
         q.ticker AS ticker,
@@ -838,19 +854,20 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
             {condition_code_expr(2)} AS condition_code_2,
             {condition_code_expr(3)} AS condition_code_3,
             {condition_code_expr(4)} AS condition_code_4,
+            {condition_code_expr(5)} AS condition_code_5,
             arrayElement(splitByChar(',', conditions), 1) AS condition_raw_1,
             arrayElement(splitByChar(',', conditions), 2) AS condition_raw_2,
             arrayElement(splitByChar(',', conditions), 3) AS condition_raw_3,
             arrayElement(splitByChar(',', conditions), 4) AS condition_raw_4,
-            {correction_code_expr()} AS correction_code
+            arrayElement(splitByChar(',', conditions), 5) AS condition_raw_5
         FROM file({sql_string(trade_path)}, 'CSVWithNames', {sql_string(TRADE_SCHEMA_STRING)})
-        WHERE {trade_clean_predicate()}
+        WHERE {trade_clean_predicate(args)}
     ) AS t
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc1 ON tc1.modifier_int = t.condition_code_1
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc2 ON tc2.modifier_int = t.condition_code_2
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc3 ON tc3.modifier_int = t.condition_code_3
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc4 ON tc4.modifier_int = t.condition_code_4
-    LEFT JOIN {condition_token_reference_subquery(args, "trade_corrections_nyse")} AS trc ON trc.modifier_int = t.correction_code
+    LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc5 ON tc5.modifier_int = t.condition_code_5
 """
 
 
@@ -1255,19 +1272,15 @@ def quote_condition_tokens_packed(row: dict[str, Any], token_maps: dict[str, dic
 
 def trade_condition_tokens_packed(row: dict[str, Any], token_maps: dict[str, dict[int, int]], trade_scale: int) -> int:
     condition_codes_ = nonempty_codes(row.get("conditions"))
-    correction_code = max(0, min(15, to_int_or_zero(row.get("correction"))))
     token_ids: list[int] = []
     unknown = False
-    for code in condition_codes_[:4]:
+    for code in condition_codes_[:CONDITION_TOKEN_SLOTS]:
         token_id = token_maps["trade_conditions"].get(code, 0)
         unknown = unknown or token_id == 0
         token_ids.append(token_id)
-    correction_token = token_maps["trade_corrections_nyse"].get(correction_code, 0)
-    unknown = unknown or correction_token == 0
-    token_ids.append(correction_token)
     return pack_condition_tokens(
         token_ids=token_ids,
-        raw_token_count=len(condition_codes_) + 1,
+        raw_token_count=len(condition_codes_),
         primary_price_scale=trade_scale,
         secondary_price_scale=0,
         tape=tape_code(row.get("tape")),

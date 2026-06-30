@@ -58,6 +58,7 @@ DEFAULT_TRADE_DATE = "2026-05-15"
 DEFAULT_START_DATE = "2026-05-15"
 DEFAULT_END_DATE = "2026-06-03"
 DEFAULT_MAX_FILES_PER_KIND = 15
+DEFAULT_DROP_TRADE_CORRECTION_CODES = (7, 8, 10, 11)
 EVENT_DATE_TIMEZONE = "UTC"
 
 
@@ -315,7 +316,8 @@ def insert_trade_sql(database: str, table: str, source_path: str) -> str:
     price_scale = scale_code_sql(price)
     delta_us = "intDiv(toInt64OrZero(participant_timestamp) - toInt64OrZero(sip_timestamp), 1000)"
     correction_code = "toUInt8(greatest(0, least(15, toInt16OrZero(correction))))"
-    flags = f"toUInt8({price_scale} + ({tape_code_sql('tape')} * 2) + ({correction_code} * 8))"
+    correction_filter = ", ".join(str(code) for code in DEFAULT_DROP_TRADE_CORRECTION_CODES)
+    flags = f"toUInt8({price_scale} + ({tape_code_sql('tape')} * 2))"
     issue_flags = (
         f"toUInt16(if({price} <= 0, 1, 0) + "
         "if(toFloat64OrZero(size) <= 0, 2, 0) + "
@@ -348,6 +350,7 @@ SELECT
     {flags},
     {issue_flags}
 FROM file({sql_string(source_path)}, 'CSVWithNames', {sql_string(TRADE_SCHEMA_STRING)})
+WHERE {correction_code} NOT IN ({correction_filter})
 """
 
 

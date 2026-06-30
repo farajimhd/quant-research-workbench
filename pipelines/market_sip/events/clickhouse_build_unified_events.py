@@ -48,6 +48,7 @@ DEFAULT_PARTITION_MODE = "month"
 DEFAULT_EVENTS_PER_CHUNK = 128
 DEFAULT_MAX_PARTITIONS_PER_INSERT_BLOCK = 1024
 DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE = "event_condition_token_reference"
+DEFAULT_DROP_TRADE_CORRECTION_CODES = "7,8,10,11"
 CONDITION_PACK_VERSION = 1
 CONDITION_TOKEN_BITS = 8
 CONDITION_TOKEN_SLOTS = 5
@@ -115,7 +116,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit-tickers", type=int, default=0)
     parser.add_argument("--day-offset", type=int, default=0)
     parser.add_argument("--limit-days", type=int, default=0)
-    parser.add_argument("--storage-policy", default=default_live_storage_policy())
+    parser.add_argument("--storage-policy", default=default_historical_storage_policy())
+    parser.add_argument(
+        "--drop-trade-correction-codes",
+        default=DEFAULT_DROP_TRADE_CORRECTION_CODES,
+        help="Comma-separated historical trade correction codes to exclude from training events. Default drops erroneous/cancel/cancel-record/error-record rows.",
+    )
     parser.add_argument("--max-memory-usage", default="400G")
     parser.add_argument("--max-threads", type=int, default=32)
     parser.add_argument("--max-partitions-per-insert-block", type=int, default=DEFAULT_MAX_PARTITIONS_PER_INSERT_BLOCK)
@@ -133,8 +139,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def default_live_storage_policy() -> str:
-    return os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or default_storage_policy()
+def default_historical_storage_policy() -> str:
+    return default_storage_policy()
 
 
 def query_settings(args: argparse.Namespace) -> str:
@@ -538,10 +544,6 @@ def indicator_code_expr(slot: int) -> str:
     return f"toInt16OrZero(arrayElement(splitByChar(',', indicators), {slot}))"
 
 
-def correction_code_expr() -> str:
-    return "toInt16(bitAnd(bitShiftRight(trade_flags, 3), 15))"
-
-
 def token_count_expr(*arrays: str) -> str:
     parts = [f"length(arrayFilter(x -> x != '', splitByChar(',', {array})))" for array in arrays]
     return " + ".join(parts) if parts else "0"
@@ -567,18 +569,18 @@ def quote_condition_pack_expr() -> str:
 
 def trade_condition_pack_expr() -> str:
     return condition_tokens_pack_expr(
-        token_ids=["tc1.token_id", "tc2.token_id", "tc3.token_id", "tc4.token_id", "trc.token_id"],
+        token_ids=["tc1.token_id", "tc2.token_id", "tc3.token_id", "tc4.token_id", "tc5.token_id"],
         present_exprs=[
             "t.condition_raw_1 != ''",
             "t.condition_raw_2 != ''",
             "t.condition_raw_3 != ''",
             "t.condition_raw_4 != ''",
-            "1",
+            "t.condition_raw_5 != ''",
         ],
-        raw_token_count_expr=f"({token_count_expr('t.conditions')} + 1)",
+        raw_token_count_expr=token_count_expr("t.conditions"),
         primary_price_scale_expr="bitAnd(t.trade_flags, 1)",
         secondary_price_scale_expr="0",
-        tape_expr="bitAnd(bitShiftRight(t.trade_flags, 1), 7)",
+        tape_expr="bitAnd(bitShiftRight(t.trade_flags, 1), 3)",
         pack_kind=2,
     )
 
@@ -672,16 +674,39 @@ AND if(bitAnd(q.quote_flags, 1) = 1, q.bid_price_int / 10000.0, q.bid_price_int 
 
 
 def trade_clean_predicate(args: argparse.Namespace) -> str:
-    base = """
+    correction_filter = trade_correction_filter_sql(args)
+    base = f"""
 t.ticker != ''
 AND t.sip_timestamp_us > 0
 AND t.sequence_number > 0
 AND t.price_int > 0
 AND t.size > 0
+{correction_filter}
 """.strip()
     if args.clean_mode == "issue_flags_zero":
         base += "\nAND t.issue_flags = 0"
     return base
+
+
+def parse_trade_correction_codes(value: str) -> list[int]:
+    codes: list[int] = []
+    for part in str(value or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        code = int(part)
+        if code < 0 or code > 15:
+            raise ValueError(f"Trade correction code must be in [0, 15], got {code}")
+        codes.append(code)
+    return sorted(set(codes))
+
+
+def trade_correction_filter_sql(args: argparse.Namespace) -> str:
+    codes = parse_trade_correction_codes(getattr(args, "drop_trade_correction_codes", ""))
+    if not codes:
+        return ""
+    values = ", ".join(str(code) for code in codes)
+    return f"\nAND bitAnd(bitShiftRight(t.trade_flags, 3), 15) NOT IN ({values})"
 
 
 def ticker_filter_sql(args: argparse.Namespace, alias: str) -> str:
@@ -763,11 +788,12 @@ def event_union_day_sql(args: argparse.Namespace, job: DayJob) -> str:
             {condition_code_expr(2)} AS condition_code_2,
             {condition_code_expr(3)} AS condition_code_3,
             {condition_code_expr(4)} AS condition_code_4,
+            {condition_code_expr(5)} AS condition_code_5,
             arrayElement(splitByChar(',', conditions), 1) AS condition_raw_1,
             arrayElement(splitByChar(',', conditions), 2) AS condition_raw_2,
             arrayElement(splitByChar(',', conditions), 3) AS condition_raw_3,
             arrayElement(splitByChar(',', conditions), 4) AS condition_raw_4,
-            {correction_code_expr()} AS correction_code
+            arrayElement(splitByChar(',', conditions), 5) AS condition_raw_5
         FROM {db}.{trade_table}
         WHERE event_date = toDate({sql_string(job.source_date)})
           {trade_ticker_filter}
@@ -776,7 +802,7 @@ def event_union_day_sql(args: argparse.Namespace, job: DayJob) -> str:
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc2 ON tc2.modifier_int = t.condition_code_2
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc3 ON tc3.modifier_int = t.condition_code_3
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc4 ON tc4.modifier_int = t.condition_code_4
-    LEFT JOIN {condition_token_reference_subquery(args, "trade_corrections_nyse")} AS trc ON trc.modifier_int = t.correction_code
+    LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc5 ON tc5.modifier_int = t.condition_code_5
     WHERE {trade_clean_predicate(args)}
 """
 
@@ -850,11 +876,12 @@ def event_union_sql(args: argparse.Namespace, job: TickerJob) -> str:
             {condition_code_expr(2)} AS condition_code_2,
             {condition_code_expr(3)} AS condition_code_3,
             {condition_code_expr(4)} AS condition_code_4,
+            {condition_code_expr(5)} AS condition_code_5,
             arrayElement(splitByChar(',', conditions), 1) AS condition_raw_1,
             arrayElement(splitByChar(',', conditions), 2) AS condition_raw_2,
             arrayElement(splitByChar(',', conditions), 3) AS condition_raw_3,
             arrayElement(splitByChar(',', conditions), 4) AS condition_raw_4,
-            {correction_code_expr()} AS correction_code
+            arrayElement(splitByChar(',', conditions), 5) AS condition_raw_5
         FROM {db}.{trade_table}
         WHERE event_date BETWEEN toDate({sql_string(args.source_start_date)}) AND toDate({sql_string(args.source_end_date)})
           AND {ticker_filter}
@@ -863,7 +890,7 @@ def event_union_sql(args: argparse.Namespace, job: TickerJob) -> str:
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc2 ON tc2.modifier_int = t.condition_code_2
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc3 ON tc3.modifier_int = t.condition_code_3
     LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc4 ON tc4.modifier_int = t.condition_code_4
-    LEFT JOIN {condition_token_reference_subquery(args, "trade_corrections_nyse")} AS trc ON trc.modifier_int = t.correction_code
+    LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc5 ON tc5.modifier_int = t.condition_code_5
     WHERE {trade_clean_predicate(args)}
 """
 
@@ -1584,7 +1611,7 @@ def main() -> None:
     print(f"settings={query_settings(args).strip() or '<none>'}", flush=True)
     print(f"clean_mode={args.clean_mode} events_per_chunk={args.events_per_chunk}", flush=True)
     print(f"build_events={not args.no_build_events} build_index={not args.no_build_index} rebuild={args.rebuild} dry_run={args.dry_run}", flush=True)
-    print(f"secret_status={secret_status(env_status_keys() + ['CLICKHOUSE_LIVE_STORAGE_POLICY'])}", flush=True)
+    print(f"secret_status={secret_status(env_status_keys() + ['CLICKHOUSE_HISTORICAL_STORAGE_POLICY'])}", flush=True)
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)
     print(f"report={report_path}", flush=True)
     print("=" * 96, flush=True)

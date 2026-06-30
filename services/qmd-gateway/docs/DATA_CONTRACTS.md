@@ -17,7 +17,7 @@ Once production data is written under a version, do not change that version's fi
 
 ## Live Compact Unified Event Row
 
-Table: `live_market_events_v1`
+Table: `live_market_events_v2`
 
 This is the durable live ML-serving event surface. It mirrors the historical
 `market_sip_compact.events` row shape closely enough that downstream encoders
@@ -47,7 +47,7 @@ primary model-serving contract.
 | `size_secondary` | Quote: bid size. Trade: `0`. |
 | `exchange_primary` | Quote: ask exchange. Trade: trade exchange. |
 | `exchange_secondary` | Quote: bid exchange. Trade: `0`. |
-| `condition_tokens_packed` | Five 8-bit condition/indicator/correction token slots plus token count, overflow, unknown-token, price-scale, tape, pack-kind, and pack-version metadata. Mirrors `market_sip_compact.events`. |
+| `condition_tokens_packed` | Five 8-bit condition/indicator token slots plus token count, overflow, unknown-token, price-scale, tape, pack-kind, and pack-version metadata. Mirrors `market_sip_compact.events`. |
 | `source_sequence` | Massive sequence number from the original quote/trade event. |
 | `issue_flags` | Reserved for future issue classification. Current compact writer drops structurally invalid events before emit/insert, so persisted rows use `0`. |
 
@@ -60,7 +60,7 @@ sip_timestamp_us, source_sequence, event_type, arrival_sequence
 The in-memory live buffer is optimized for low-latency inference and does not
 wait for final DB ordinals. The persistence path uses a short per-ticker reorder
 buffer, assigns final ordinals in the order above, inserts
-`live_market_events_v1`, and periodically appends
+`live_market_events_v2`, and periodically appends
 `live_event_ordinal_continuity` snapshots.
 
 Continuity table: `live_event_ordinal_continuity`
@@ -103,7 +103,7 @@ by the compact-event writer, the bar writer, and REST repair. Live streaming
 does not become covered from a single `running` row. Coverage is materialized
 as:
 
-- `compact_persisted` intervals from `live_market_events_v1` inserts.
+- `compact_persisted` intervals from `live_market_events_v2` inserts.
 - `bars_persisted` intervals from `live_market_bars` inserts.
 - the intersection of compact and bar intervals for the same run id.
 - explicit `repair_completed` intervals after REST repair routes events through

@@ -47,7 +47,6 @@ from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noq
     DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE,
     condition_code_expr,
     condition_token_reference_subquery,
-    correction_code_expr,
     indicator_code_expr,
     indicator_token_reference_subquery,
     quote_condition_pack_expr,
@@ -524,11 +523,12 @@ FROM
             arrayElement(splitByChar(',', conditions), 2) AS condition_raw_2,
             arrayElement(splitByChar(',', conditions), 3) AS condition_raw_3,
             arrayElement(splitByChar(',', conditions), 4) AS condition_raw_4,
+            arrayElement(splitByChar(',', conditions), 5) AS condition_raw_5,
             {condition_code_expr(1)} AS condition_code_1,
             {condition_code_expr(2)} AS condition_code_2,
             {condition_code_expr(3)} AS condition_code_3,
             {condition_code_expr(4)} AS condition_code_4,
-            {correction_code_expr()} AS correction_code
+            {condition_code_expr(5)} AS condition_code_5
         FROM {db}.{trade_table}
         PREWHERE ticker = {sql_string(ticker)}
           AND sip_timestamp_us >= {int(start_us)}
@@ -538,7 +538,7 @@ FROM
     LEFT JOIN {condition_token_reference_subquery(ref_args, "trade_conditions")} AS tc2 ON tc2.modifier_int = t.condition_code_2
     LEFT JOIN {condition_token_reference_subquery(ref_args, "trade_conditions")} AS tc3 ON tc3.modifier_int = t.condition_code_3
     LEFT JOIN {condition_token_reference_subquery(ref_args, "trade_conditions")} AS tc4 ON tc4.modifier_int = t.condition_code_4
-    LEFT JOIN {condition_token_reference_subquery(ref_args, "trade_corrections_nyse")} AS trc ON trc.modifier_int = t.correction_code
+    LEFT JOIN {condition_token_reference_subquery(ref_args, "trade_conditions")} AS tc5 ON tc5.modifier_int = t.condition_code_5
     WHERE {trade_clean_predicate(args)}
 )
 ORDER BY sip_timestamp_us, sequence_number, event_type
