@@ -107,8 +107,16 @@ XBRL inputs:
 xbrl_value              [B, 4096]
 xbrl_mask               [B, 4096]
 xbrl_time_features      [B, 4096, xbrl_time_features]
+xbrl_period_end_time_features [B, 4096, xbrl_period_time_features]
 xbrl_category_ids       field-specific [B, 4096]
 xbrl_confidence         [B, 4096]
+```
+
+XBRL time is split into two channels:
+
+```text
+availability time: source timestamp_us, used for as-of/no-lookahead selection
+period time:       period_end_date/fiscal period, describes the accounting period
 ```
 
 Labels:

@@ -47,6 +47,7 @@ from research.mlops.rolling_loader.ticker_month_dataset import (
     TickerMonthPartPlan,
     TickerMonthPartReader,
     TickerMonthTrainingBatch,
+    XBRL_PERIOD_END_TIME_FEATURE_COLUMNS,
     XBRL_TIME_FEATURE_COLUMNS,
     _label_values_for_origin,
     _part_key,
@@ -878,6 +879,8 @@ def _check_xbrl_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTi
             "fiscal_year": source_index.fiscal_year[source_rows],
             "age_days": np.maximum(0.0, (float(origin_timestamp_us) - source_index.timestamps_us[source_rows].astype(np.float64)) / 86_400_000_000.0).astype(np.float32),
             "period_end_days": source_index.period_end_days[source_rows],
+            "fiscal_period_id": source_index.fiscal_period_id[source_rows],
+            "calendar_period_id": source_index.calendar_period_id[source_rows],
             "taxonomy_id": source_index.taxonomy_id[source_rows],
             "tag_id": source_index.tag_id[source_rows],
             "unit_id": source_index.unit_id[source_rows],
@@ -893,6 +896,15 @@ def _check_xbrl_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTi
                     source_index.timestamps_us[source_rows],
                     np.full((expected_count,), int(origin_timestamp_us), dtype=np.int64),
                 ),
+            ],
+            axis=-1,
+        ).astype(np.float32, copy=False)
+        origin_days = float(origin_timestamp_us) / 86_400_000_000.0
+        period_age_days = np.maximum(0.0, origin_days - source_index.period_end_days[source_rows].astype(np.float64)).astype(np.float32)
+        expected_fields["period_end_time_features"] = np.concatenate(
+            [
+                source_index.period_end_time_features[source_rows],
+                np.stack([period_age_days, np.log1p(period_age_days.astype(np.float64)).astype(np.float32)], axis=-1),
             ],
             axis=-1,
         ).astype(np.float32, copy=False)
@@ -914,6 +926,9 @@ def _check_xbrl_inputs(batch: TickerMonthTrainingBatch, row: int, part: LoadedTi
         names = tuple(str(value) for value in np.asarray(payload.get("time_feature_names", np.asarray([], dtype=object))).reshape(-1))
         if names and names != tuple(XBRL_TIME_FEATURE_COLUMNS):
             issues.append(AuditIssue("error", "xbrl_time_feature_names_mismatch", "XBRL time feature names are not in the expected order.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual": list(names), "expected": list(XBRL_TIME_FEATURE_COLUMNS)}))
+        period_names = tuple(str(value) for value in np.asarray(payload.get("period_end_time_feature_names", np.asarray([], dtype=object))).reshape(-1))
+        if period_names and period_names != tuple(XBRL_PERIOD_END_TIME_FEATURE_COLUMNS):
+            issues.append(AuditIssue("error", "xbrl_period_time_feature_names_mismatch", "XBRL period-end time feature names are not in the expected order.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual": list(period_names), "expected": list(XBRL_PERIOD_END_TIME_FEATURE_COLUMNS)}))
     if expected_count < max_items:
         tail = slice(expected_count, max_items)
         for field, values in payload.items():

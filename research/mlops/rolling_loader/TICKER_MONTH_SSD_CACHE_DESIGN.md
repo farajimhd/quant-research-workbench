@@ -216,7 +216,7 @@ The source availability timestamp is:
 ```text
 news embeddings:      published_at_utc -> timestamp_us
 SEC text embeddings:  accepted_at_utc -> timestamp_us
-XBRL rows:            accepted/availability timestamp_us
+XBRL rows:            source accepted/availability timestamp_us
 ```
 
 The builder does not compute origin-relative age for these rows. The same news
@@ -234,6 +234,25 @@ time_age_seconds_log1p
 For text embeddings, the time tensor is item-level and aligned with
 `[B, max_items]`, not chunk-level. Each chunk of the same article or filing
 shares the item timestamp and item time features.
+
+XBRL rows also carry accounting-period time fields. These are not availability
+times and must not be used for no-lookahead selection:
+
+```text
+period_end_date       explicit accounting period end date
+fiscal_year           numeric reporting year
+fiscal_period         reporting period category
+calendar_period_code  calendar period category
+```
+
+The loader should emit a separate period-end time tensor from
+`period_end_date`, plus categorical ids for `fiscal_period` and
+`calendar_period_code`. This gives the model both:
+
+```text
+when the fact was known       timestamp_us / availability time features
+what period the fact reports  period_end_date / period time features
+```
 
 ## Event Windows
 

@@ -73,9 +73,18 @@ RELATIVE_TIME_FEATURE_COLUMNS: tuple[str, ...] = (
 )
 TEXT_ITEM_TIME_FEATURE_COLUMNS: tuple[str, ...] = (*CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS, *RELATIVE_TIME_FEATURE_COLUMNS)
 XBRL_TIME_FEATURE_COLUMNS: tuple[str, ...] = (*CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS, *RELATIVE_TIME_FEATURE_COLUMNS)
+XBRL_PERIOD_END_TIME_FEATURE_COLUMNS: tuple[str, ...] = (
+    "period_end_utc_day_of_week_sin",
+    "period_end_utc_day_of_week_cos",
+    "period_end_utc_day_of_year_sin",
+    "period_end_utc_day_of_year_cos",
+    "period_end_years_since_2000",
+    "period_end_age_days",
+    "period_end_age_days_log1p",
+)
 BAR_RELATIVE_TIME_FEATURE_COLUMNS: tuple[str, ...] = ("bar_age_days", "bar_age_days_log1p")
 BAR_TIME_FEATURE_COLUMNS: tuple[str, ...] = (*BAR_START_TIME_FEATURE_COLUMNS, *BAR_RELATIVE_TIME_FEATURE_COLUMNS)
-METADATA_PAYLOAD_FIELDS = {"feature_names", "time_feature_names", "item_time_feature_names", "offsets", "symbols"}
+METADATA_PAYLOAD_FIELDS = {"feature_names", "time_feature_names", "item_time_feature_names", "period_end_time_feature_names", "offsets", "symbols"}
 LABEL_VALUE_DTYPES: dict[str, np.dtype] = {
     "price_primary_int": np.dtype(np.int32),
     "price_secondary_int": np.dtype(np.int32),
@@ -272,6 +281,8 @@ class XbrlContextIndex:
     value: np.ndarray
     fiscal_year: np.ndarray
     period_end_days: np.ndarray
+    fiscal_period_id: np.ndarray
+    calendar_period_id: np.ndarray
     taxonomy_id: np.ndarray
     tag_id: np.ndarray
     unit_id: np.ndarray
@@ -280,6 +291,7 @@ class XbrlContextIndex:
     location_id: np.ndarray
     mapping_confidence: np.ndarray
     absolute_time_features: np.ndarray
+    period_end_time_features: np.ndarray
 
     @property
     def item_count(self) -> int:
@@ -844,6 +856,8 @@ class TickerMonthBatchMaterializer:
             "fiscal_year": np.zeros(shape, dtype=np.int16),
             "age_days": np.zeros(shape, dtype=np.float32),
             "period_end_days": np.zeros(shape, dtype=np.int32),
+            "fiscal_period_id": np.zeros(shape, dtype=np.uint32),
+            "calendar_period_id": np.zeros(shape, dtype=np.uint32),
             "taxonomy_id": np.zeros(shape, dtype=np.uint32),
             "tag_id": np.zeros(shape, dtype=np.uint32),
             "unit_id": np.zeros(shape, dtype=np.uint32),
@@ -853,6 +867,8 @@ class TickerMonthBatchMaterializer:
             "mapping_confidence": np.zeros(shape, dtype=np.float32),
             "time_features": np.zeros((batch, max_items, len(XBRL_TIME_FEATURE_COLUMNS)), dtype=np.float32),
             "time_feature_names": np.asarray(XBRL_TIME_FEATURE_COLUMNS, dtype=object),
+            "period_end_time_features": np.zeros((batch, max_items, len(XBRL_PERIOD_END_TIME_FEATURE_COLUMNS)), dtype=np.float32),
+            "period_end_time_feature_names": np.asarray(XBRL_PERIOD_END_TIME_FEATURE_COLUMNS, dtype=object),
         }
         profile: dict[str, float | int] = {
             "xbrl_index_seconds": 0.0,
@@ -898,7 +914,7 @@ class TickerMonthBatchMaterializer:
             gather_start = time.perf_counter()
             safe_indices = np.where(selected_mask, selected_indices, 0)
             out["mask"][rows] = selected_mask
-            for key in ("value", "fiscal_year", "period_end_days", "taxonomy_id", "tag_id", "unit_id", "form_id", "row_kind_id", "location_id", "mapping_confidence"):
+            for key in ("value", "fiscal_year", "period_end_days", "fiscal_period_id", "calendar_period_id", "taxonomy_id", "tag_id", "unit_id", "form_id", "row_kind_id", "location_id", "mapping_confidence"):
                 values = getattr(index, key)[safe_indices]
                 values = values.astype(out[key].dtype, copy=False)
                 values[~selected_mask] = 0
@@ -914,6 +930,14 @@ class TickerMonthBatchMaterializer:
             time_features = np.concatenate([absolute_features, relative_features], axis=-1).astype(np.float32, copy=False)
             time_features[~selected_mask] = 0.0
             out["time_features"][rows] = time_features
+            period_absolute = index.period_end_time_features[safe_indices]
+            origin_days = origin_timestamps[rows, None].astype(np.float64) / 86_400_000_000.0
+            period_days = index.period_end_days[safe_indices].astype(np.float64)
+            period_age_days = np.maximum(0.0, origin_days - period_days).astype(np.float32)
+            period_relative = np.stack([period_age_days, np.log1p(period_age_days.astype(np.float64)).astype(np.float32)], axis=-1)
+            period_features = np.concatenate([period_absolute, period_relative], axis=-1).astype(np.float32, copy=False)
+            period_features[~selected_mask] = 0.0
+            out["period_end_time_features"][rows] = period_features
             out["age_days"][rows] = np.maximum(
                 0.0,
                 (origin_timestamps[rows, None].astype(np.float64) - selected_timestamps.astype(np.float64)) / 86_400_000_000.0,
@@ -1644,6 +1668,9 @@ def _prepare_xbrl_context_index(frame: Any, category_index: XbrlCategoryReferenc
     value = _frame_column_as(frame, "value", np.float32, 0.0)[order]
     fiscal_year = _frame_column_as(frame, "fiscal_year", np.int16, 0)[order]
     period_end_days = _epoch_days_array(_optional_frame_column(frame, "period_end_date", ""))[order]
+    period_end_time_features = _period_end_absolute_time_feature_matrix(period_end_days)
+    fiscal_period_id = _map_category_ids(_optional_frame_column(frame, "fiscal_period", ""), "fiscal_period", category_index)[order]
+    calendar_period_id = _map_category_ids(_optional_frame_column(frame, "calendar_period_code", ""), "calendar_period_code", category_index)[order]
     taxonomy_id = _map_category_ids(_optional_frame_column(frame, "taxonomy", ""), "taxonomy", category_index)[order]
     tag_id = _map_category_ids(_optional_frame_column(frame, "tag", ""), "tag", category_index)[order]
     unit_id = _map_category_ids(_optional_frame_column(frame, "unit_code", ""), "unit_code", category_index)[order]
@@ -1658,6 +1685,8 @@ def _prepare_xbrl_context_index(frame: Any, category_index: XbrlCategoryReferenc
         value=value,
         fiscal_year=fiscal_year,
         period_end_days=period_end_days,
+        fiscal_period_id=fiscal_period_id,
+        calendar_period_id=calendar_period_id,
         taxonomy_id=taxonomy_id,
         tag_id=tag_id,
         unit_id=unit_id,
@@ -1666,6 +1695,7 @@ def _prepare_xbrl_context_index(frame: Any, category_index: XbrlCategoryReferenc
         location_id=location_id,
         mapping_confidence=mapping_confidence,
         absolute_time_features=absolute_time_features.astype(np.float32, copy=False),
+        period_end_time_features=period_end_time_features.astype(np.float32, copy=False),
     )
 
 
@@ -1675,6 +1705,8 @@ def _empty_xbrl_context_index() -> XbrlContextIndex:
         value=np.zeros((0,), dtype=np.float32),
         fiscal_year=np.zeros((0,), dtype=np.int16),
         period_end_days=np.zeros((0,), dtype=np.int32),
+        fiscal_period_id=np.zeros((0,), dtype=np.uint32),
+        calendar_period_id=np.zeros((0,), dtype=np.uint32),
         taxonomy_id=np.zeros((0,), dtype=np.uint32),
         tag_id=np.zeros((0,), dtype=np.uint32),
         unit_id=np.zeros((0,), dtype=np.uint32),
@@ -1683,6 +1715,7 @@ def _empty_xbrl_context_index() -> XbrlContextIndex:
         location_id=np.zeros((0,), dtype=np.uint32),
         mapping_confidence=np.zeros((0,), dtype=np.float32),
         absolute_time_features=np.zeros((0, len(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)), dtype=np.float32),
+        period_end_time_features=np.zeros((0, len(XBRL_PERIOD_END_TIME_FEATURE_COLUMNS) - 2), dtype=np.float32),
     )
 
 
@@ -1823,6 +1856,31 @@ def _relative_time_feature_matrix(timestamps_us: np.ndarray, origins_us: np.ndar
     delta_log = np.sign(delta_seconds).astype(np.float32) * np.log1p(np.abs(delta_seconds).astype(np.float64)).astype(np.float32)
     age_log = np.log1p(np.maximum(0.0, -delta_seconds.astype(np.float64))).astype(np.float32)
     return np.stack([delta_seconds, delta_log, age_log], axis=-1).astype(np.float32, copy=False)
+
+
+def _period_end_absolute_time_feature_matrix(period_end_days: np.ndarray) -> np.ndarray:
+    days = np.asarray(period_end_days, dtype=np.int64)
+    valid = days > 0
+    source_day = np.datetime64("1970-01-01", "D") + days.astype("timedelta64[D]")
+    epoch_days = (source_day - np.datetime64("1970-01-01", "D")).astype(np.int64)
+    day_of_week = ((epoch_days + 3) % 7).astype(np.float32)
+    source_year = source_day.astype("datetime64[Y]")
+    day_of_year = (source_day - source_year.astype("datetime64[D]")).astype(np.int64).astype(np.float32)
+    years_since_2000 = ((source_day - np.datetime64("2000-01-01", "D")).astype("timedelta64[D]").astype(np.float64) / 365.2425).astype(np.float32)
+    zeros = np.zeros(days.shape, dtype=np.float32)
+    day_of_week = np.where(valid, day_of_week, zeros)
+    day_of_year = np.where(valid, day_of_year, zeros)
+    years_since_2000 = np.where(valid, years_since_2000, zeros)
+    return np.stack(
+        [
+            np.sin(2.0 * np.pi * day_of_week / 7.0).astype(np.float32) * valid,
+            np.cos(2.0 * np.pi * day_of_week / 7.0).astype(np.float32) * valid,
+            np.sin(2.0 * np.pi * day_of_year / 366.0).astype(np.float32) * valid,
+            np.cos(2.0 * np.pi * day_of_year / 366.0).astype(np.float32) * valid,
+            years_since_2000,
+        ],
+        axis=-1,
+    ).astype(np.float32, copy=False)
 
 
 def _cached_or_computed_time_feature_matrix(frame: Any, columns: Sequence[str], timestamps_us: np.ndarray) -> np.ndarray:

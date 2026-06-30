@@ -657,6 +657,8 @@ xbrl_inputs["mask"]                         [B, xbrl_max_items]
 xbrl_inputs["value"]                        [B, xbrl_max_items]
 xbrl_inputs["fiscal_year"]                  [B, xbrl_max_items]
 xbrl_inputs["period_end_days"]              [B, xbrl_max_items]
+xbrl_inputs["fiscal_period_id"]             [B, xbrl_max_items]
+xbrl_inputs["calendar_period_id"]           [B, xbrl_max_items]
 xbrl_inputs["taxonomy_id"]                  [B, xbrl_max_items]
 xbrl_inputs["tag_id"]                       [B, xbrl_max_items]
 xbrl_inputs["unit_id"]                      [B, xbrl_max_items]
@@ -667,6 +669,8 @@ xbrl_inputs["mapping_confidence"]           [B, xbrl_max_items]
 xbrl_inputs["time_*"]                       [B, xbrl_max_items]
 xbrl_inputs["time_features"]                [B, xbrl_max_items, xbrl_time_features]
 xbrl_inputs["time_feature_names"]           names for time_features
+xbrl_inputs["period_end_time_features"]     [B, xbrl_max_items, xbrl_period_time_features]
+xbrl_inputs["period_end_time_feature_names"] names for period_end_time_features
 ```
 
 Selection is as-of each origin timestamp, using the latest XBRL rows with
@@ -675,6 +679,17 @@ with `xbrl_inputs["mask"] == False`. Categorical ids are mapped from the
 monthly `global/category_references.parquet` file. Id `0` means missing or
 unknown. Existing scalar `time_*` fields may remain for compatibility, but new
 model code should prefer the consolidated `time_features` tensor.
+
+XBRL has two temporal meanings and they must stay separate:
+
+```text
+timestamp_us / time_features          when the fact became available from the source
+period_end_date / period_end_features what accounting period the fact describes
+```
+
+No-lookahead selection uses only `timestamp_us`. `period_end_date`,
+`fiscal_period`, and `calendar_period_code` are descriptive context and are not
+used to decide whether the fact was available.
 
 When daily/global bar groups are requested, `bar_inputs` contains:
 
