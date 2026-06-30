@@ -12,6 +12,7 @@ DEFAULTS = {
     "storage_policy": "",
     "rebuild": True,
     "drop_deprecated": True,
+    "token_reference_table": "event_condition_token_reference",
 }
 
 
@@ -20,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--database", default=DEFAULTS["database"])
     parser.add_argument("--reference-dir", default=DEFAULTS["reference_dir"])
     parser.add_argument("--storage-policy", default=DEFAULTS["storage_policy"])
+    parser.add_argument("--token-reference-table", default=DEFAULTS["token_reference_table"])
     parser.add_argument("--no-rebuild", action="store_true")
     parser.add_argument("--no-drop-deprecated", action="store_true")
     return parser.parse_args()
@@ -36,6 +38,8 @@ def main() -> None:
         args.database,
         "--reference-dir",
         args.reference_dir,
+        "--token-reference-table",
+        args.token_reference_table,
     ]
     if args.storage_policy:
         command.extend(["--storage-policy", args.storage_policy])
