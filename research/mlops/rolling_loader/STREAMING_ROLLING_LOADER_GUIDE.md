@@ -100,8 +100,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM market_sip_compact.events
 PREWHERE event_date >= toDate({block_start})
   AND event_date < toDate({block_end})

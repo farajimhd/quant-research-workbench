@@ -18,6 +18,8 @@ from research.mlops.clickhouse_events import (
     DEFAULT_CONTEXT_EVENTS,
     EVENT_ROW_DTYPE,
     PersistentClickHouseBytesClient,
+    condition_primary_price_scale,
+    condition_secondary_price_scale,
     decode_price_array,
     encode_unified_event_windows,
     validate_unified_event_windows,
@@ -561,8 +563,7 @@ class RollingMarketSampleEngine:
                             size_secondary=event.size_secondary,
                             exchange_primary=event.exchange_primary,
                             exchange_secondary=event.exchange_secondary,
-                            event_flags=event.event_flags,
-                            conditions_packed=event.conditions_packed,
+                            condition_tokens_packed=event.condition_tokens_packed,
                             source_sequence=event.source_sequence,
                             arrival_sequence=event.arrival_sequence,
                             ordinal=next_ordinal,
@@ -2095,8 +2096,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM {table}
 PREWHERE event_date = toDate({sql_string(event_date)})
   AND ticker = {sql_string(ticker)}
@@ -2114,8 +2114,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM
 (
 {" UNION ALL ".join(parts)}
@@ -2280,8 +2279,8 @@ def _event_window_rejection_reason(rows: np.ndarray) -> str | None:
     if quote_positions.size == 0:
         return "no_quote_anchor"
     anchor_idx = int(quote_positions[-1])
-    primary_prices = decode_price_array(rows["price_primary_int"], rows["event_flags"] & 1)
-    secondary_prices = decode_price_array(rows["price_secondary_int"], (rows["event_flags"] >> 1) & 1)
+    primary_prices = decode_price_array(rows["price_primary_int"], condition_primary_price_scale(rows))
+    secondary_prices = decode_price_array(rows["price_secondary_int"], condition_secondary_price_scale(rows))
     anchor_ask = float(primary_prices[anchor_idx])
     anchor_bid = float(secondary_prices[anchor_idx])
     if anchor_ask <= 0.0 or anchor_bid <= 0.0 or anchor_ask < anchor_bid:
@@ -3374,13 +3373,13 @@ def _empty_session_features() -> dict[str, float]:
 
 
 def _decode_primary_price(rows: np.ndarray) -> np.ndarray:
-    scale = rows["event_flags"].astype(np.uint8, copy=False) & 1
+    scale = condition_primary_price_scale(rows).astype(np.uint8, copy=False)
     denominator = np.where(scale == 1, 10000.0, 100.0)
     return rows["price_primary_int"].astype(np.float64, copy=False) / denominator
 
 
 def _decode_secondary_price(rows: np.ndarray) -> np.ndarray:
-    scale = (rows["event_flags"].astype(np.uint8, copy=False) >> 1) & 1
+    scale = condition_secondary_price_scale(rows).astype(np.uint8, copy=False)
     denominator = np.where(scale == 1, 10000.0, 100.0)
     return rows["price_secondary_int"].astype(np.float64, copy=False) / denominator
 

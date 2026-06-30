@@ -60,8 +60,7 @@ ROW_BINARY_DTYPE = np.dtype(
         ("size_secondary", "<f4"),
         ("exchange_primary", "u1"),
         ("exchange_secondary", "u1"),
-        ("event_flags", "u1"),
-        ("conditions_packed", "<u4"),
+        ("condition_tokens_packed", "<u8"),
     ]
 )
 
@@ -343,8 +342,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM {table}
 PREWHERE ticker = {sql_string(span.ticker)}
   AND ordinal >= {int(span.low_ordinal)}
@@ -363,8 +361,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM
 (
 {" UNION ALL ".join(select_parts)}

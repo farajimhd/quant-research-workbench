@@ -56,8 +56,7 @@ EVENT_COLUMNS: tuple[str, ...] = (
     "size_secondary",
     "exchange_primary",
     "exchange_secondary",
-    "event_flags",
-    "conditions_packed",
+    "condition_tokens_packed",
 )
 
 

@@ -13,16 +13,25 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::{interval, Duration, Instant};
 
-pub const LIVE_COMPACT_EVENT_SCHEMA_VERSION: u16 = 1;
+pub const LIVE_COMPACT_EVENT_SCHEMA_VERSION: u16 = 2;
 pub const QUOTE_EVENT_TYPE: u8 = 0;
 pub const TRADE_EVENT_TYPE: u8 = 1;
+const CONDITION_PACK_VERSION: u8 = 1;
+const CONDITION_TOKEN_SLOTS: usize = 5;
+const CONDITION_TOKEN_COUNT_SHIFT: u32 = 40;
+const CONDITION_TOKEN_OVERFLOW_SHIFT: u32 = 43;
+const CONDITION_UNKNOWN_TOKEN_SHIFT: u32 = 44;
+const CONDITION_PRIMARY_PRICE_SCALE_SHIFT: u32 = 45;
+const CONDITION_SECONDARY_PRICE_SCALE_SHIFT: u32 = 46;
+const CONDITION_TAPE_SHIFT: u32 = 47;
+const CONDITION_PACK_KIND_SHIFT: u32 = 50;
+const CONDITION_PACK_VERSION_SHIFT: u32 = 56;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct LiveCompactEvent {
     pub arrival_sequence: u64,
-    pub conditions_packed: u32,
+    pub condition_tokens_packed: u64,
     pub event_date: String,
-    pub event_flags: u8,
     pub event_type: u8,
     pub exchange_primary: u8,
     pub exchange_secondary: u8,
@@ -192,6 +201,8 @@ impl TickerReorderBuffer {
 pub struct CompactEventReferences {
     quote_conditions: HashMap<i16, u8>,
     trade_conditions: HashMap<i16, u8>,
+    trade_corrections: HashMap<i16, u8>,
+    quote_indicators: HashMap<i16, u8>,
 }
 
 #[derive(Clone)]
@@ -219,9 +230,67 @@ impl CompactEventReferences {
                 path.display()
             )
         })?;
+        Self::from_glossary_payload(&payload)
+    }
+
+    fn from_glossary_payload(payload: &Value) -> Result<Self, String> {
+        let mut quote_conditions = HashMap::new();
+        let mut trade_conditions = HashMap::new();
+        let mut trade_corrections = HashMap::new();
+        let mut quote_indicators: HashMap<i16, u8> = HashMap::new();
+        let mut seen_join_keys: HashSet<(String, i16)> = HashSet::new();
+        let mut token_id: u16 = 1;
+        for kind in [
+            "quote_conditions",
+            "trade_conditions",
+            "trade_corrections_nyse",
+            "financial_status",
+            "cta_security_status",
+            "halt_reason",
+            "utp_security_status",
+            "nbbo_indicators",
+            "held_trade_indicators",
+            "misc_indicators",
+            "luld_indicators",
+        ] {
+            let rows = glossary_rows(payload, kind)?;
+            for row in rows {
+                let Some(modifier) = row.get("modifier_int").and_then(Value::as_i64) else {
+                    token_id = token_id.saturating_add(1);
+                    continue;
+                };
+                let modifier = modifier as i16;
+                if token_id > u8::MAX as u16 {
+                    return Err(format!("unified compact-event token id overflow: {token_id}"));
+                }
+                let token = token_id as u8;
+                if seen_join_keys.insert((kind.to_string(), modifier)) {
+                    match kind {
+                        "quote_conditions" => {
+                            quote_conditions.insert(modifier, token);
+                        }
+                        "trade_conditions" => {
+                            trade_conditions.insert(modifier, token);
+                        }
+                        "trade_corrections_nyse" => {
+                            trade_corrections.insert(modifier, token);
+                        }
+                        _ => {
+                            quote_indicators
+                                .entry(modifier)
+                                .and_modify(|current| *current = (*current).min(token))
+                                .or_insert(token);
+                        }
+                    }
+                }
+                token_id = token_id.saturating_add(1);
+            }
+        }
         Ok(Self {
-            quote_conditions: load_condition_table(&payload, "quote_conditions")?,
-            trade_conditions: load_condition_table(&payload, "trade_conditions")?,
+            quote_conditions,
+            trade_conditions,
+            trade_corrections,
+            quote_indicators,
         })
     }
 
@@ -234,6 +303,20 @@ impl CompactEventReferences {
 
     fn trade_condition_id(&self, value: u16) -> u8 {
         self.trade_conditions
+            .get(&(value as i16))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn trade_correction_id(&self, value: u16) -> u8 {
+        self.trade_corrections
+            .get(&(value as i16))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn quote_indicator_id(&self, value: u16) -> u8 {
+        self.quote_indicators
             .get(&(value as i16))
             .copied()
             .unwrap_or(0)
@@ -510,8 +593,7 @@ impl CompactEventClickHouseWriter {
                     "size_secondary": event.size_secondary,
                     "exchange_primary": event.exchange_primary,
                     "exchange_secondary": event.exchange_secondary,
-                    "event_flags": event.event_flags,
-                    "conditions_packed": event.conditions_packed,
+                    "condition_tokens_packed": event.condition_tokens_packed,
                     "source_sequence": event.source_sequence,
                     "issue_flags": event.issue_flags,
                 })
@@ -661,8 +743,7 @@ impl CompactEventClickHouseWriter {
                 size_secondary Float32 CODEC(ZSTD(1)),
                 exchange_primary UInt8,
                 exchange_secondary UInt8,
-                event_flags UInt8,
-                conditions_packed UInt32 CODEC(T64, ZSTD(1)),
+                condition_tokens_packed UInt64 CODEC(T64, ZSTD(1)),
                 source_sequence UInt64 CODEC(T64, ZSTD(1)),
                 issue_flags UInt16
             )
@@ -957,9 +1038,15 @@ fn compact_quote_event(
         scaled_price(quote.bid_price).ok_or(CompactEventRejectReason::BadPriceScale)?;
     Ok(LiveCompactEvent {
         arrival_sequence: 0,
-        conditions_packed: pack_quote_conditions(&quote.conditions, references),
+        condition_tokens_packed: pack_quote_condition_tokens(
+            &quote.conditions,
+            &quote.indicators,
+            references,
+            ask_scale,
+            bid_scale,
+            quote.tape,
+        ),
         event_date: quote.ts.date_naive().to_string(),
-        event_flags: (ask_scale & 1) | ((bid_scale & 1) << 1) | ((quote.tape & 0x07) << 2),
         event_type: QUOTE_EVENT_TYPE,
         exchange_primary: quote.ask_exchange.min(u8::MAX as u16) as u8,
         exchange_secondary: quote.bid_exchange.min(u8::MAX as u16) as u8,
@@ -997,9 +1084,14 @@ fn compact_trade_event(
         scaled_price(trade.price).ok_or(CompactEventRejectReason::BadPriceScale)?;
     Ok(LiveCompactEvent {
         arrival_sequence: 0,
-        conditions_packed: pack_trade_conditions(&trade.conditions, references),
+        condition_tokens_packed: pack_trade_condition_tokens(
+            &trade.conditions,
+            None,
+            references,
+            price_scale,
+            trade.tape,
+        ),
         event_date: trade.ts.date_naive().to_string(),
-        event_flags: (price_scale & 1) | ((trade.tape & 0x07) << 2),
         event_type: TRADE_EVENT_TYPE,
         exchange_primary: trade.exchange.min(u8::MAX as u16) as u8,
         exchange_secondary: 0,
@@ -1017,45 +1109,116 @@ fn compact_trade_event(
     })
 }
 
-fn load_condition_table(payload: &Value, table: &str) -> Result<HashMap<i16, u8>, String> {
+fn glossary_rows(payload: &Value, table: &str) -> Result<Vec<Value>, String> {
     let rows = payload
         .get("tables")
         .and_then(|tables| tables.get(table))
         .and_then(|table| table.get("rows"))
         .and_then(Value::as_array)
         .ok_or_else(|| format!("missing {table} rows in Massive condition glossary"))?;
-    let mut out = HashMap::new();
-    for (index, row) in rows.iter().enumerate() {
-        let Some(modifier) = row.get("modifier_int").and_then(Value::as_i64) else {
-            continue;
-        };
-        let dense_id = (index + 1).min(u8::MAX as usize) as u8;
-        out.insert(modifier as i16, dense_id);
-    }
+    let mut out = rows.clone();
+    out.sort_by(|left, right| {
+        let left_key = (
+            left.get("source_row").and_then(Value::as_i64).unwrap_or(0),
+            left.get("modifier_int").and_then(Value::as_i64).unwrap_or(0),
+            left.get("condition").and_then(Value::as_str).unwrap_or(""),
+        );
+        let right_key = (
+            right.get("source_row").and_then(Value::as_i64).unwrap_or(0),
+            right.get("modifier_int").and_then(Value::as_i64).unwrap_or(0),
+            right.get("condition").and_then(Value::as_str).unwrap_or(""),
+        );
+        left_key.cmp(&right_key)
+    });
     Ok(out)
 }
 
-fn pack_quote_conditions(conditions: &[u16], references: &CompactEventReferences) -> u32 {
-    let mut packed = 0u32;
+fn pack_quote_condition_tokens(
+    conditions: &[u16],
+    indicators: &[u16],
+    references: &CompactEventReferences,
+    ask_scale: u8,
+    bid_scale: u8,
+    tape: u8,
+) -> u64 {
+    let mut tokens = [0u8; CONDITION_TOKEN_SLOTS];
+    let mut present = [false; CONDITION_TOKEN_SLOTS];
     for slot in 0..4 {
-        let dense_id = conditions
-            .get(slot)
-            .map(|value| references.quote_condition_id(*value))
-            .unwrap_or(0);
-        packed |= u32::from(dense_id) << (slot * 8);
+        if let Some(value) = conditions.get(slot) {
+            tokens[slot] = references.quote_condition_id(*value);
+            present[slot] = true;
+        }
     }
-    packed
+    if let Some(value) = indicators.first() {
+        tokens[4] = references.quote_indicator_id(*value);
+        present[4] = true;
+    }
+    pack_condition_tokens(
+        tokens,
+        present,
+        conditions.len().saturating_add(indicators.len()),
+        ask_scale,
+        bid_scale,
+        tape,
+        1,
+    )
 }
 
-fn pack_trade_conditions(conditions: &[u16], references: &CompactEventReferences) -> u32 {
-    let mut packed = 0u32;
-    for slot in 0..5 {
-        let dense_id = conditions
-            .get(slot)
-            .map(|value| references.trade_condition_id(*value) & 0x3F)
-            .unwrap_or(0);
-        packed |= u32::from(dense_id) << (slot * 6);
+fn pack_trade_condition_tokens(
+    conditions: &[u16],
+    correction: Option<u16>,
+    references: &CompactEventReferences,
+    price_scale: u8,
+    tape: u8,
+) -> u64 {
+    let mut tokens = [0u8; CONDITION_TOKEN_SLOTS];
+    let mut present = [false; CONDITION_TOKEN_SLOTS];
+    for slot in 0..4 {
+        if let Some(value) = conditions.get(slot) {
+            tokens[slot] = references.trade_condition_id(*value);
+            present[slot] = true;
+        }
     }
+    if let Some(value) = correction {
+        tokens[4] = references.trade_correction_id(value);
+        present[4] = true;
+    }
+    pack_condition_tokens(
+        tokens,
+        present,
+        conditions.len().saturating_add(usize::from(correction.is_some())),
+        price_scale,
+        0,
+        tape,
+        2,
+    )
+}
+
+fn pack_condition_tokens(
+    tokens: [u8; CONDITION_TOKEN_SLOTS],
+    present: [bool; CONDITION_TOKEN_SLOTS],
+    raw_token_count: usize,
+    primary_scale: u8,
+    secondary_scale: u8,
+    tape: u8,
+    pack_kind: u8,
+) -> u64 {
+    let mut packed = 0u64;
+    for (slot, token) in tokens.iter().enumerate() {
+        packed |= u64::from(*token) << (slot * 8);
+    }
+    let unknown = present
+        .iter()
+        .zip(tokens.iter())
+        .any(|(is_present, token)| *is_present && *token == 0);
+    packed |= (raw_token_count.min(CONDITION_TOKEN_SLOTS) as u64) << CONDITION_TOKEN_COUNT_SHIFT;
+    packed |= u64::from(raw_token_count > CONDITION_TOKEN_SLOTS) << CONDITION_TOKEN_OVERFLOW_SHIFT;
+    packed |= u64::from(unknown) << CONDITION_UNKNOWN_TOKEN_SHIFT;
+    packed |= u64::from(primary_scale & 1) << CONDITION_PRIMARY_PRICE_SCALE_SHIFT;
+    packed |= u64::from(secondary_scale & 1) << CONDITION_SECONDARY_PRICE_SCALE_SHIFT;
+    packed |= u64::from(tape & 0x07) << CONDITION_TAPE_SHIFT;
+    packed |= u64::from(pack_kind & 0x03) << CONDITION_PACK_KIND_SHIFT;
+    packed |= u64::from(CONDITION_PACK_VERSION) << CONDITION_PACK_VERSION_SHIFT;
     packed
 }
 

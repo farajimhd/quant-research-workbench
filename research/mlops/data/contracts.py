@@ -50,8 +50,7 @@ class CompactEvent:
     size_secondary: float
     exchange_primary: int
     exchange_secondary: int
-    event_flags: int
-    conditions_packed: int
+    condition_tokens_packed: int
     source_sequence: int = 0
     arrival_sequence: int = 0
     ordinal: int | None = None

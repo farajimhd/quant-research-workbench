@@ -16,6 +16,7 @@ from research.mlops.clickhouse_events import (
     EVENT_ROW_DTYPE,
     EventSpan,
     PersistentClickHouseBytesClient,
+    condition_primary_price_scale,
     encode_unified_event_window,
     fetch_spans,
 )
@@ -436,8 +437,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM {table}
 PREWHERE event_date = toDate({sql_string(event_date)})
   AND ticker = {sql_string(ticker)}
@@ -456,8 +456,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM
 (
 {" UNION ALL ".join(parts)}
@@ -568,8 +567,7 @@ def assemble_polars_event_table(rows_by_ticker: dict[str, np.ndarray]):
                     "size_secondary": rows["size_secondary"],
                     "exchange_primary": rows["exchange_primary"],
                     "exchange_secondary": rows["exchange_secondary"],
-                    "event_flags": rows["event_flags"],
-                    "conditions_packed": rows["conditions_packed"],
+                    "condition_tokens_packed": rows["condition_tokens_packed"],
                 }
             )
         )
@@ -831,7 +829,7 @@ class _RangeMinMax:
 
 
 def _decode_trade_price(rows: np.ndarray) -> np.ndarray:
-    scale = rows["event_flags"].astype(np.uint8, copy=False) & 1
+    scale = condition_primary_price_scale(rows).astype(np.uint8, copy=False)
     denominator = np.where(scale == 1, 10000.0, 100.0)
     return rows["price_primary_int"].astype(np.float64, copy=False) / denominator
 
@@ -916,6 +914,5 @@ def make_synthetic_event_rows(count: int, low_ordinal: int) -> np.ndarray:
     rows["size_secondary"] = 100.0
     rows["exchange_primary"] = 1
     rows["exchange_secondary"] = 1
-    rows["event_flags"] = 0x04
-    rows["conditions_packed"] = 0
+    rows["condition_tokens_packed"] = (1 << 56) | (1 << 50) | (2 << 40)
     return rows

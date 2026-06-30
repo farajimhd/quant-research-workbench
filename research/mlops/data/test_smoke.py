@@ -58,8 +58,7 @@ def make_synthetic_events(count: int = 1024, *, ticker: str = "TEST") -> tuple[C
                 size_secondary=100.0,
                 exchange_primary=1,
                 exchange_secondary=1,
-                event_flags=0x04,
-                conditions_packed=0,
+                condition_tokens_packed=(1 << 56) | (1 << 50) | (2 << 40),
                 ordinal=idx,
             )
         )
@@ -234,7 +233,7 @@ def smoke_intraday_future_labels_stop_at_eastern_session_end() -> None:
     )
     rows["price_primary_int"] = np.asarray([10_000, 10_100, 10_200, 99_900], dtype=np.uint32)
     rows["size_primary"] = np.asarray([1.0, 10.0, 20.0, 200.0], dtype=np.float32)
-    rows["event_flags"] = 0
+    rows["condition_tokens_packed"] = (1 << 56) | (2 << 50) | (2 << 40)
     labels = build_future_time_bar_labels(
         rows=rows,
         origin_offsets=np.asarray([0], dtype=np.int64),

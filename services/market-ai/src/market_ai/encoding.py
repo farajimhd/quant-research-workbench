@@ -37,8 +37,7 @@ class HistoricalWindowEncoder:
             rows[index]["size_secondary"] = float(event.size_secondary)
             rows[index]["exchange_primary"] = int(event.exchange_primary)
             rows[index]["exchange_secondary"] = int(event.exchange_secondary)
-            rows[index]["event_flags"] = int(event.event_flags)
-            rows[index]["conditions_packed"] = int(event.conditions_packed)
+            rows[index]["condition_tokens_packed"] = int(event.condition_tokens_packed)
         encoded = self._encode_unified_event_window(rows, previous_sip_us=previous_sip_us)
         if isinstance(encoded, str):
             raise ValueError(f"Could not encode compact event window: {encoded}")
@@ -65,5 +64,5 @@ class SyntheticWindowEncoder:
             encoded[index, 1] = int(event.sip_timestamp_us) & 0xFF
             encoded[index, 2] = int(event.price_primary_int) & 0xFF
             encoded[index, 3] = int(event.price_secondary_int) & 0xFF
-            encoded[index, 4] = int(event.event_flags) & 0xFF
+            encoded[index, 4] = int(event.condition_tokens_packed) & 0xFF
         return header, encoded

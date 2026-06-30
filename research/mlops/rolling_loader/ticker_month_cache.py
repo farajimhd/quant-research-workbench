@@ -37,8 +37,7 @@ EVENT_PAYLOAD_COLUMNS: tuple[str, ...] = (
     "size_secondary",
     "exchange_primary",
     "exchange_secondary",
-    "event_flags",
-    "conditions_packed",
+    "condition_tokens_packed",
 )
 
 EVENT_TIME_FEATURE_COLUMNS: tuple[str, ...] = (

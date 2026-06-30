@@ -51,8 +51,7 @@ EVENT_ROW_DTYPE = np.dtype(
         ("size_secondary", "<f4"),
         ("exchange_primary", "u1"),
         ("exchange_secondary", "u1"),
-        ("event_flags", "u1"),
-        ("conditions_packed", "<u4"),
+        ("condition_tokens_packed", "<u8"),
     ]
 )
 
@@ -456,8 +455,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM {table}
 PREWHERE ticker = {sql_string(span.ticker)}
   AND ordinal >= {max(0, span.low_ordinal - 1)}
@@ -477,8 +475,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM
 (
 {" UNION ALL ".join(parts)}
@@ -718,10 +715,10 @@ def add_future_horizon_labels(
     if quote_positions.size or last_quote is not None:
         quote_rows = future_rows[quote_positions] if quote_positions.size else np.empty((0,), dtype=future_rows.dtype)
         high_price_int = int(last_quote["price_primary_int"]) if last_quote is not None else 0
-        high_price_scale = int(last_quote["event_flags"]) & 1 if last_quote is not None else 0
+        high_price_scale = int(condition_primary_price_scale(last_quote)) if last_quote is not None else 0
         high_elapsed_us = 0
         low_price_int = int(last_quote["price_secondary_int"]) if last_quote is not None else 0
-        low_price_scale = (int(last_quote["event_flags"]) >> 1) & 1 if last_quote is not None else 0
+        low_price_scale = int(condition_secondary_price_scale(last_quote)) if last_quote is not None else 0
         low_elapsed_us = 0
         ask_prices = quote_rows["price_primary_int"].astype(np.uint64, copy=False)
         bid_prices = quote_rows["price_secondary_int"].astype(np.uint64, copy=False)
@@ -730,14 +727,14 @@ def add_future_horizon_labels(
             high_quote = quote_rows[high_pos]
             if last_quote is None or int(high_quote["price_primary_int"]) > high_price_int:
                 high_price_int = int(high_quote["price_primary_int"])
-                high_price_scale = int(high_quote["event_flags"]) & 1
+                high_price_scale = int(condition_primary_price_scale(high_quote))
                 high_elapsed_us = max(0, int(high_quote["sip_timestamp_us"]) - origin_sip_us)
         if bid_prices.size:
             low_pos = int(np.argmin(bid_prices))
             low_quote = quote_rows[low_pos]
             if last_quote is None or int(low_quote["price_secondary_int"]) < low_price_int:
                 low_price_int = int(low_quote["price_secondary_int"])
-                low_price_scale = (int(low_quote["event_flags"]) >> 1) & 1
+                low_price_scale = int(condition_secondary_price_scale(low_quote))
                 low_elapsed_us = max(0, int(low_quote["sip_timestamp_us"]) - origin_sip_us)
         add_price_label(
             columns,
@@ -768,14 +765,14 @@ def add_future_horizon_labels(
             columns,
             f"{prefix}_max_trade",
             price_int=int(max_trade["price_primary_int"]),
-            scale=int(max_trade["event_flags"]) & 1,
+            scale=int(condition_primary_price_scale(max_trade)),
             elapsed_us=max(0, int(max_trade["sip_timestamp_us"]) - origin_sip_us),
         )
         add_price_label(
             columns,
             f"{prefix}_min_trade",
             price_int=int(min_trade["price_primary_int"]),
-            scale=int(min_trade["event_flags"]) & 1,
+            scale=int(condition_primary_price_scale(min_trade)),
             elapsed_us=max(0, int(min_trade["sip_timestamp_us"]) - origin_sip_us),
         )
     else:
@@ -795,10 +792,10 @@ def add_quote_state(columns: dict[str, list[object]], prefix: str, quote: np.voi
         return
     append_label_value(columns, f"{prefix}_has_quote", 1)
     append_label_value(columns, f"{prefix}_ask_price_int", int(quote["price_primary_int"]))
-    append_label_value(columns, f"{prefix}_ask_price_scale", int(quote["event_flags"]) & 1)
+    append_label_value(columns, f"{prefix}_ask_price_scale", int(condition_primary_price_scale(quote)))
     append_label_value(columns, f"{prefix}_ask_size", float(quote["size_primary"]))
     append_label_value(columns, f"{prefix}_bid_price_int", int(quote["price_secondary_int"]))
-    append_label_value(columns, f"{prefix}_bid_price_scale", (int(quote["event_flags"]) >> 1) & 1)
+    append_label_value(columns, f"{prefix}_bid_price_scale", int(condition_secondary_price_scale(quote)))
     append_label_value(columns, f"{prefix}_bid_size", float(quote["size_secondary"]))
 
 
@@ -811,7 +808,7 @@ def add_trade_state(columns: dict[str, list[object]], prefix: str, trade: np.voi
         return
     append_label_value(columns, f"{prefix}_has_trade", 1)
     append_label_value(columns, f"{prefix}_price_int", int(trade["price_primary_int"]))
-    append_label_value(columns, f"{prefix}_price_scale", int(trade["event_flags"]) & 1)
+    append_label_value(columns, f"{prefix}_price_scale", int(condition_primary_price_scale(trade)))
     append_label_value(columns, f"{prefix}_size", float(trade["size_primary"]))
 
 
@@ -875,8 +872,8 @@ def encode_unified_event_window(rows: np.ndarray, *, previous_sip_us: int | None
     if quote_positions.size == 0:
         return "no_quote_anchor"
     anchor_idx = int(quote_positions[-1])
-    primary_prices = decode_price_array(rows["price_primary_int"], rows["event_flags"] & 1)
-    secondary_prices = decode_price_array(rows["price_secondary_int"], (rows["event_flags"] >> 1) & 1)
+    primary_prices = decode_price_array(rows["price_primary_int"], condition_primary_price_scale(rows))
+    secondary_prices = decode_price_array(rows["price_secondary_int"], condition_secondary_price_scale(rows))
     anchor_ask = float(primary_prices[anchor_idx])
     anchor_bid = float(secondary_prices[anchor_idx])
     if anchor_ask <= 0.0 or anchor_bid <= 0.0 or anchor_ask < anchor_bid:
@@ -940,11 +937,11 @@ def encode_unified_event_window(rows: np.ndarray, *, previous_sip_us: int | None
     size_secondary = rows["size_secondary"].astype(np.float64, copy=False)
     events[:, 7] = size_bucket_array(size_primary)
     events[:, 8] = size_bucket_array(size_secondary)
-    tape = (rows["event_flags"] >> 2) & 0x07
+    tape = condition_tape_code(rows)
     events[:, 9] = (((size_primary > 0.0) & (size_primary < 100.0)).astype(np.uint8) | (((size_secondary > 0.0) & (size_secondary < 100.0)).astype(np.uint8) << 1) | ((tape & 0x07) << 2)).astype(np.uint8)
     events[:, 10] = rows["exchange_primary"] & 0x1F
     events[:, 11] = rows["exchange_secondary"] & 0x1F
-    events[:, 12:16] = np.ascontiguousarray(rows["conditions_packed"].astype("<u4", copy=False)).view(np.uint8).reshape(-1, 4)
+    events[:, 12:16] = np.ascontiguousarray(rows["condition_tokens_packed"].astype("<u8", copy=False)).view(np.uint8).reshape(-1, 8)[:, :4]
     return header, events
 
 
@@ -986,8 +983,8 @@ def encode_unified_event_windows(
     reversed_quote = quote_mask[:, ::-1]
     anchor_idx = DEFAULT_CONTEXT_EVENTS - 1 - np.argmax(reversed_quote, axis=1)
 
-    primary_prices = decode_price_array(windows["price_primary_int"], windows["event_flags"] & 1)
-    secondary_prices = decode_price_array(windows["price_secondary_int"], (windows["event_flags"] >> 1) & 1)
+    primary_prices = decode_price_array(windows["price_primary_int"], condition_primary_price_scale(windows))
+    secondary_prices = decode_price_array(windows["price_secondary_int"], condition_secondary_price_scale(windows))
     anchor_ask = primary_prices[row_index, anchor_idx]
     anchor_bid = secondary_prices[row_index, anchor_idx]
     invalid_anchor = (anchor_ask <= 0.0) | (anchor_bid <= 0.0) | (anchor_ask < anchor_bid)
@@ -1052,7 +1049,7 @@ def encode_unified_event_windows(
     size_secondary = windows["size_secondary"].astype(np.float64, copy=False)
     events[:, :, 7] = size_bucket_array(size_primary)
     events[:, :, 8] = size_bucket_array(size_secondary)
-    tape = (windows["event_flags"] >> 2) & 0x07
+    tape = condition_tape_code(windows)
     events[:, :, 9] = (
         ((size_primary > 0.0) & (size_primary < 100.0)).astype(np.uint8)
         | (((size_secondary > 0.0) & (size_secondary < 100.0)).astype(np.uint8) << 1)
@@ -1060,9 +1057,9 @@ def encode_unified_event_windows(
     ).astype(np.uint8)
     events[:, :, 10] = windows["exchange_primary"] & 0x1F
     events[:, :, 11] = windows["exchange_secondary"] & 0x1F
-    events[:, :, 12:16] = np.ascontiguousarray(windows["conditions_packed"].astype("<u4", copy=False)).view(np.uint8).reshape(
-        count, DEFAULT_CONTEXT_EVENTS, 4
-    )
+    events[:, :, 12:16] = np.ascontiguousarray(windows["condition_tokens_packed"].astype("<u8", copy=False)).view(np.uint8).reshape(
+        count, DEFAULT_CONTEXT_EVENTS, 8
+    )[:, :, :4]
     reasons[valid] = ""
     return headers, events, valid, reasons
 
@@ -1088,8 +1085,8 @@ def validate_unified_event_windows(windows: np.ndarray) -> np.ndarray:
     reversed_quote = quote_mask[:, ::-1]
     anchor_idx = DEFAULT_CONTEXT_EVENTS - 1 - np.argmax(reversed_quote, axis=1)
 
-    primary_prices = decode_price_array(windows["price_primary_int"], windows["event_flags"] & 1)
-    secondary_prices = decode_price_array(windows["price_secondary_int"], (windows["event_flags"] >> 1) & 1)
+    primary_prices = decode_price_array(windows["price_primary_int"], condition_primary_price_scale(windows))
+    secondary_prices = decode_price_array(windows["price_secondary_int"], condition_secondary_price_scale(windows))
     anchor_ask = primary_prices[row_index, anchor_idx]
     anchor_bid = secondary_prices[row_index, anchor_idx]
     valid &= ~((anchor_ask <= 0.0) | (anchor_bid <= 0.0) | (anchor_ask < anchor_bid))
@@ -1130,6 +1127,18 @@ def _put_uint_le_columns(buffer: np.ndarray, offset: int, values: np.ndarray, wi
     unsigned = np.asarray(values, dtype=np.int64) & ((1 << (8 * int(width))) - 1)
     for byte_index in range(int(width)):
         buffer[:, int(offset) + byte_index] = ((unsigned >> (8 * byte_index)) & 0xFF).astype(np.uint8)
+
+
+def condition_primary_price_scale(rows: np.ndarray | np.void) -> np.ndarray | np.integer:
+    return (rows["condition_tokens_packed"] >> 45) & 1
+
+
+def condition_secondary_price_scale(rows: np.ndarray | np.void) -> np.ndarray | np.integer:
+    return (rows["condition_tokens_packed"] >> 46) & 1
+
+
+def condition_tape_code(rows: np.ndarray | np.void) -> np.ndarray | np.integer:
+    return (rows["condition_tokens_packed"] >> 47) & 0x07
 
 
 def decode_price_array(price_int: np.ndarray, scale: np.ndarray) -> np.ndarray:

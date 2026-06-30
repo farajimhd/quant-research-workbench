@@ -43,6 +43,16 @@ from research.mlops.event_sample_cache import (  # noqa: E402
     encode_sample_records,
     resolve_event_sample_cache_root,
 )
+from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noqa: E402
+    DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE,
+    condition_code_expr,
+    condition_token_reference_subquery,
+    correction_code_expr,
+    indicator_code_expr,
+    indicator_token_reference_subquery,
+    quote_condition_pack_expr,
+    trade_condition_pack_expr,
+)
 
 
 @dataclass(slots=True)
@@ -83,6 +93,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--events-table", default="events")
     parser.add_argument("--quote-table", default="quotes")
     parser.add_argument("--trade-table", default="trades")
+    parser.add_argument("--condition-token-reference-table", default=DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE)
     parser.add_argument("--clean-mode", choices=("strict", "issue_flags_zero"), default="issue_flags_zero")
     parser.add_argument("--max-threads", type=int, default=8)
     parser.add_argument("--max-memory-usage", default="80G")
@@ -348,8 +359,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM {table}
 PREWHERE ticker = {sql_string(ticker)}
   AND ordinal >= {start_ordinal}
@@ -406,39 +416,6 @@ def fetch_raw_unified_rows(
     return decode_event_rows(client.execute_bytes(sql))
 
 
-def condition_code_expr(slot: int) -> str:
-    return f"toInt16OrZero(arrayElement(splitByChar(',', conditions), {slot}))"
-
-
-def quote_condition_pack_expr() -> str:
-    return """
-bitOr(
-    bitOr(toUInt32(coalesce(qc1.dense_id, 0)), bitShiftLeft(toUInt32(coalesce(qc2.dense_id, 0)), 8)),
-    bitOr(bitShiftLeft(toUInt32(coalesce(qc3.dense_id, 0)), 16), bitShiftLeft(toUInt32(coalesce(qc4.dense_id, 0)), 24))
-)
-""".strip()
-
-
-def trade_condition_pack_expr() -> str:
-    return """
-bitOr(
-    bitOr(toUInt32(coalesce(tc1.dense_id, 0)), bitShiftLeft(toUInt32(coalesce(tc2.dense_id, 0)), 6)),
-    bitOr(
-        bitOr(bitShiftLeft(toUInt32(coalesce(tc3.dense_id, 0)), 12), bitShiftLeft(toUInt32(coalesce(tc4.dense_id, 0)), 18)),
-        bitShiftLeft(toUInt32(coalesce(tc5.dense_id, 0)), 24)
-    )
-)
-""".strip()
-
-
-def condition_reference_subquery(args: argparse.Namespace, table: str) -> str:
-    return (
-        f"(SELECT modifier_int, min(dense_id) AS dense_id "
-        f"FROM {quote_ident(args.database)}.{quote_ident(table)} "
-        "GROUP BY modifier_int)"
-    )
-
-
 def quote_clean_predicate(args: argparse.Namespace) -> str:
     base = """
 q.ticker != ''
@@ -473,7 +450,7 @@ def raw_unified_query(config: ClickHouseEventsDataConfig, args: argparse.Namespa
     db = quote_ident(config.database)
     quote_table = quote_ident(args.quote_table)
     trade_table = quote_ident(args.trade_table)
-    ref_args = argparse.Namespace(database=config.database)
+    ref_args = argparse.Namespace(database=config.database, condition_token_reference_table=args.condition_token_reference_table)
     return f"""
 SELECT
     toUInt32(0) AS span_id,
@@ -486,8 +463,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM
 (
     SELECT
@@ -500,30 +476,31 @@ FROM
         toFloat32(q.bid_size) AS size_secondary,
         q.ask_exchange AS exchange_primary,
         q.bid_exchange AS exchange_secondary,
-        toUInt8(
-            bitOr(
-                bitOr(bitAnd(bitShiftRight(q.quote_flags, 1), 1), bitShiftLeft(bitAnd(q.quote_flags, 1), 1)),
-                bitShiftLeft(bitAnd(bitShiftRight(q.quote_flags, 2), 7), 2)
-            )
-        ) AS event_flags,
-        {quote_condition_pack_expr()} AS conditions_packed
+        {quote_condition_pack_expr()} AS condition_tokens_packed
     FROM
     (
         SELECT
             *,
+            arrayElement(splitByChar(',', conditions), 1) AS condition_raw_1,
+            arrayElement(splitByChar(',', conditions), 2) AS condition_raw_2,
+            arrayElement(splitByChar(',', conditions), 3) AS condition_raw_3,
+            arrayElement(splitByChar(',', conditions), 4) AS condition_raw_4,
+            arrayElement(splitByChar(',', indicators), 1) AS indicator_raw_1,
             {condition_code_expr(1)} AS condition_code_1,
             {condition_code_expr(2)} AS condition_code_2,
             {condition_code_expr(3)} AS condition_code_3,
-            {condition_code_expr(4)} AS condition_code_4
+            {condition_code_expr(4)} AS condition_code_4,
+            {indicator_code_expr(1)} AS indicator_code_1
         FROM {db}.{quote_table}
         PREWHERE ticker = {sql_string(ticker)}
           AND sip_timestamp_us >= {int(start_us)}
           AND sip_timestamp_us <= {int(end_us)}
     ) AS q
-    LEFT JOIN {condition_reference_subquery(ref_args, "ref_quote_conditions")} AS qc1 ON qc1.modifier_int = q.condition_code_1
-    LEFT JOIN {condition_reference_subquery(ref_args, "ref_quote_conditions")} AS qc2 ON qc2.modifier_int = q.condition_code_2
-    LEFT JOIN {condition_reference_subquery(ref_args, "ref_quote_conditions")} AS qc3 ON qc3.modifier_int = q.condition_code_3
-    LEFT JOIN {condition_reference_subquery(ref_args, "ref_quote_conditions")} AS qc4 ON qc4.modifier_int = q.condition_code_4
+    LEFT JOIN {condition_token_reference_subquery(ref_args, "quote_conditions")} AS qc1 ON qc1.modifier_int = q.condition_code_1
+    LEFT JOIN {condition_token_reference_subquery(ref_args, "quote_conditions")} AS qc2 ON qc2.modifier_int = q.condition_code_2
+    LEFT JOIN {condition_token_reference_subquery(ref_args, "quote_conditions")} AS qc3 ON qc3.modifier_int = q.condition_code_3
+    LEFT JOIN {condition_token_reference_subquery(ref_args, "quote_conditions")} AS qc4 ON qc4.modifier_int = q.condition_code_4
+    LEFT JOIN {indicator_token_reference_subquery(ref_args)} AS qi1 ON qi1.modifier_int = q.indicator_code_1
     WHERE {quote_clean_predicate(args)}
 
     UNION ALL
@@ -538,32 +515,30 @@ FROM
         toFloat32(0) AS size_secondary,
         t.exchange AS exchange_primary,
         toUInt8(0) AS exchange_secondary,
-        toUInt8(
-            bitOr(
-                bitAnd(t.trade_flags, 1),
-                bitShiftLeft(bitAnd(bitShiftRight(t.trade_flags, 1), 7), 2)
-            )
-        ) AS event_flags,
-        {trade_condition_pack_expr()} AS conditions_packed
+        {trade_condition_pack_expr()} AS condition_tokens_packed
     FROM
     (
         SELECT
             *,
+            arrayElement(splitByChar(',', conditions), 1) AS condition_raw_1,
+            arrayElement(splitByChar(',', conditions), 2) AS condition_raw_2,
+            arrayElement(splitByChar(',', conditions), 3) AS condition_raw_3,
+            arrayElement(splitByChar(',', conditions), 4) AS condition_raw_4,
             {condition_code_expr(1)} AS condition_code_1,
             {condition_code_expr(2)} AS condition_code_2,
             {condition_code_expr(3)} AS condition_code_3,
             {condition_code_expr(4)} AS condition_code_4,
-            {condition_code_expr(5)} AS condition_code_5
+            {correction_code_expr()} AS correction_code
         FROM {db}.{trade_table}
         PREWHERE ticker = {sql_string(ticker)}
           AND sip_timestamp_us >= {int(start_us)}
           AND sip_timestamp_us <= {int(end_us)}
     ) AS t
-    LEFT JOIN {condition_reference_subquery(ref_args, "ref_trade_conditions")} AS tc1 ON tc1.modifier_int = t.condition_code_1
-    LEFT JOIN {condition_reference_subquery(ref_args, "ref_trade_conditions")} AS tc2 ON tc2.modifier_int = t.condition_code_2
-    LEFT JOIN {condition_reference_subquery(ref_args, "ref_trade_conditions")} AS tc3 ON tc3.modifier_int = t.condition_code_3
-    LEFT JOIN {condition_reference_subquery(ref_args, "ref_trade_conditions")} AS tc4 ON tc4.modifier_int = t.condition_code_4
-    LEFT JOIN {condition_reference_subquery(ref_args, "ref_trade_conditions")} AS tc5 ON tc5.modifier_int = t.condition_code_5
+    LEFT JOIN {condition_token_reference_subquery(ref_args, "trade_conditions")} AS tc1 ON tc1.modifier_int = t.condition_code_1
+    LEFT JOIN {condition_token_reference_subquery(ref_args, "trade_conditions")} AS tc2 ON tc2.modifier_int = t.condition_code_2
+    LEFT JOIN {condition_token_reference_subquery(ref_args, "trade_conditions")} AS tc3 ON tc3.modifier_int = t.condition_code_3
+    LEFT JOIN {condition_token_reference_subquery(ref_args, "trade_conditions")} AS tc4 ON tc4.modifier_int = t.condition_code_4
+    LEFT JOIN {condition_token_reference_subquery(ref_args, "trade_corrections_nyse")} AS trc ON trc.modifier_int = t.correction_code
     WHERE {trade_clean_predicate(args)}
 )
 ORDER BY sip_timestamp_us, sequence_number, event_type
@@ -587,8 +562,7 @@ COMPARE_FIELDS = (
     "size_secondary",
     "exchange_primary",
     "exchange_secondary",
-    "event_flags",
-    "conditions_packed",
+    "condition_tokens_packed",
 )
 
 
@@ -659,7 +633,7 @@ def decode_sample_for_humans(header: np.ndarray, events: np.ndarray) -> tuple[di
             "size_secondary_bucket": int(event[8]),
             "exchange_primary": int(event[10]),
             "exchange_secondary": int(event[11]),
-            "conditions_packed_bytes": [int(value) for value in event[12:16]],
+            "condition_token_bytes": [int(value) for value in event[12:16]],
         }
         if event_type == 0:
             ask_ticks = ask_anchor_ticks + price_delta_1

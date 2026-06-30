@@ -32,18 +32,35 @@ from pipelines.market_sip.benchmarks.clickhouse_compact_schema_codec_benchmark i
 from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noqa: E402
     DEFAULT_CONTINUITY_TABLE,
     DEFAULT_EVENTS_TABLE,
+    DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE,
     DEFAULT_MANIFEST_TABLE,
+    CONDITION_PACK_KIND_SHIFT,
+    CONDITION_PACK_VERSION,
+    CONDITION_PACK_VERSION_SHIFT,
+    CONDITION_PRIMARY_PRICE_SCALE_SHIFT,
+    CONDITION_SECONDARY_PRICE_SCALE_SHIFT,
+    CONDITION_TAPE_SHIFT,
+    CONDITION_TOKEN_BITS,
+    CONDITION_TOKEN_COUNT_SHIFT,
+    CONDITION_TOKEN_OVERFLOW_SHIFT,
+    CONDITION_TOKEN_SLOTS,
+    CONDITION_UNKNOWN_TOKEN_SHIFT,
     condition_code_expr,
     create_continuity_table_sql,
     create_events_table_sql,
     create_manifest_table_sql,
     delete_day_sql,
+    condition_token_reference_subquery,
+    correction_code_expr,
+    indicator_code_expr,
+    indicator_token_reference_subquery,
     insert_day_manifest,
     latest_day_status,
     mutation_settings,
     query_settings,
     quote_condition_pack_expr,
     trade_condition_pack_expr,
+    validate_events_table_schema,
 )
 from pipelines.market_sip.events.clickhouse_build_trade_bars import (  # noqa: E402
     DEFAULT_BARS_BY_SYMBOL_TIME_TABLE,
@@ -140,6 +157,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--password", default=default_clickhouse_password())
     parser.add_argument("--database", default=DEFAULT_DATABASE)
     parser.add_argument("--events-table", default=DEFAULT_EVENTS_TABLE)
+    parser.add_argument("--condition-token-reference-table", default=DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE)
     parser.add_argument("--manifest-table", default=DEFAULT_MANIFEST_TABLE)
     parser.add_argument("--continuity-table", default=DEFAULT_CONTINUITY_TABLE)
     parser.add_argument("--macro-bars-table", default=DEFAULT_MACRO_BARS_TABLE)
@@ -752,13 +770,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
         toFloat32(q.bid_size_u32) AS size_secondary,
         q.ask_exchange_u8 AS exchange_primary,
         q.bid_exchange_u8 AS exchange_secondary,
-        toUInt8(
-            bitOr(
-                bitOr(bitAnd(bitShiftRight(q.quote_flags, 1), 1), bitShiftLeft(bitAnd(q.quote_flags, 1), 1)),
-                bitShiftLeft(bitAnd(bitShiftRight(q.quote_flags, 2), 7), 2)
-            )
-        ) AS event_flags,
-        {quote_condition_pack_expr()} AS conditions_packed,
+        {quote_condition_pack_expr()} AS condition_tokens_packed,
         q.event_date AS event_date
     FROM
     (
@@ -779,14 +791,21 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
             {condition_code_expr(1)} AS condition_code_1,
             {condition_code_expr(2)} AS condition_code_2,
             {condition_code_expr(3)} AS condition_code_3,
-            {condition_code_expr(4)} AS condition_code_4
+            {condition_code_expr(4)} AS condition_code_4,
+            arrayElement(splitByChar(',', conditions), 1) AS condition_raw_1,
+            arrayElement(splitByChar(',', conditions), 2) AS condition_raw_2,
+            arrayElement(splitByChar(',', conditions), 3) AS condition_raw_3,
+            arrayElement(splitByChar(',', conditions), 4) AS condition_raw_4,
+            {indicator_code_expr(1)} AS indicator_code_1,
+            arrayElement(splitByChar(',', indicators), 1) AS indicator_raw_1
         FROM file({sql_string(quote_path)}, 'CSVWithNames', {sql_string(QUOTE_SCHEMA_STRING)})
         WHERE {quote_clean_predicate()}
     ) AS q
-    LEFT JOIN {condition_reference_subquery(args, "ref_quote_conditions")} AS qc1 ON qc1.modifier_int = q.condition_code_1
-    LEFT JOIN {condition_reference_subquery(args, "ref_quote_conditions")} AS qc2 ON qc2.modifier_int = q.condition_code_2
-    LEFT JOIN {condition_reference_subquery(args, "ref_quote_conditions")} AS qc3 ON qc3.modifier_int = q.condition_code_3
-    LEFT JOIN {condition_reference_subquery(args, "ref_quote_conditions")} AS qc4 ON qc4.modifier_int = q.condition_code_4
+    LEFT JOIN {condition_token_reference_subquery(args, "quote_conditions")} AS qc1 ON qc1.modifier_int = q.condition_code_1
+    LEFT JOIN {condition_token_reference_subquery(args, "quote_conditions")} AS qc2 ON qc2.modifier_int = q.condition_code_2
+    LEFT JOIN {condition_token_reference_subquery(args, "quote_conditions")} AS qc3 ON qc3.modifier_int = q.condition_code_3
+    LEFT JOIN {condition_token_reference_subquery(args, "quote_conditions")} AS qc4 ON qc4.modifier_int = q.condition_code_4
+    LEFT JOIN {indicator_token_reference_subquery(args)} AS qi1 ON qi1.modifier_int = q.indicator_code_1
 
     UNION ALL
 
@@ -801,13 +820,7 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
         toFloat32(0) AS size_secondary,
         t.exchange_u8 AS exchange_primary,
         toUInt8(0) AS exchange_secondary,
-        toUInt8(
-            bitOr(
-                bitAnd(t.trade_flags, 1),
-                bitShiftLeft(bitAnd(bitShiftRight(t.trade_flags, 1), 7), 2)
-            )
-        ) AS event_flags,
-        {trade_condition_pack_expr()} AS conditions_packed,
+        {trade_condition_pack_expr()} AS condition_tokens_packed,
         t.event_date AS event_date
     FROM
     (
@@ -825,24 +838,20 @@ def raw_event_union_sql(args: argparse.Namespace, day: DayFiles) -> str:
             {condition_code_expr(2)} AS condition_code_2,
             {condition_code_expr(3)} AS condition_code_3,
             {condition_code_expr(4)} AS condition_code_4,
-            {condition_code_expr(5)} AS condition_code_5
+            arrayElement(splitByChar(',', conditions), 1) AS condition_raw_1,
+            arrayElement(splitByChar(',', conditions), 2) AS condition_raw_2,
+            arrayElement(splitByChar(',', conditions), 3) AS condition_raw_3,
+            arrayElement(splitByChar(',', conditions), 4) AS condition_raw_4,
+            {correction_code_expr()} AS correction_code
         FROM file({sql_string(trade_path)}, 'CSVWithNames', {sql_string(TRADE_SCHEMA_STRING)})
         WHERE {trade_clean_predicate()}
     ) AS t
-    LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc1 ON tc1.modifier_int = t.condition_code_1
-    LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc2 ON tc2.modifier_int = t.condition_code_2
-    LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc3 ON tc3.modifier_int = t.condition_code_3
-    LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc4 ON tc4.modifier_int = t.condition_code_4
-    LEFT JOIN {condition_reference_subquery(args, "ref_trade_conditions")} AS tc5 ON tc5.modifier_int = t.condition_code_5
+    LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc1 ON tc1.modifier_int = t.condition_code_1
+    LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc2 ON tc2.modifier_int = t.condition_code_2
+    LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc3 ON tc3.modifier_int = t.condition_code_3
+    LEFT JOIN {condition_token_reference_subquery(args, "trade_conditions")} AS tc4 ON tc4.modifier_int = t.condition_code_4
+    LEFT JOIN {condition_token_reference_subquery(args, "trade_corrections_nyse")} AS trc ON trc.modifier_int = t.correction_code
 """
-
-
-def condition_reference_subquery(args: argparse.Namespace, table: str) -> str:
-    return (
-        f"(SELECT modifier_int, min(dense_id) AS dense_id "
-        f"FROM {quote_ident(args.database)}.{quote_ident(table)} "
-        "GROUP BY modifier_int)"
-    )
 
 
 def insert_direct_day_sql(args: argparse.Namespace, day: DayFiles, build_step: int) -> str:
@@ -862,8 +871,7 @@ INSERT INTO {db}.{table}
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed,
+    condition_tokens_packed,
     event_date
 )
 SELECT
@@ -878,8 +886,7 @@ SELECT
     e.size_secondary,
     e.exchange_primary,
     e.exchange_secondary,
-    e.event_flags,
-    e.conditions_packed,
+    e.condition_tokens_packed,
     e.event_date
 FROM
 (
@@ -962,6 +969,7 @@ def append_jsonl(path: Path, row: dict[str, Any]) -> None:
 def ensure_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
     client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.database)}")
     client.execute(create_events_table_sql(args))
+    validate_events_table_schema(client, args)
     client.execute(create_manifest_table_sql(args))
     client.execute(create_continuity_table_sql(args))
 
@@ -1134,8 +1142,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed,
+    condition_tokens_packed,
     event_date
 FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
 WHERE event_type = toUInt8({int(event_type)})
@@ -1150,21 +1157,28 @@ FORMAT JSONEachRow
     return rows
 
 
-def load_condition_dense_map(client: ClickHouseHttpClient, args: argparse.Namespace, table: str) -> dict[int, int]:
+def load_condition_token_maps(client: ClickHouseHttpClient, args: argparse.Namespace) -> dict[str, dict[int, int]]:
     rows = client.query_tsv(
         f"""
-SELECT modifier_int, min(dense_id)
-FROM {quote_ident(args.database)}.{quote_ident(table)}
-GROUP BY modifier_int
+SELECT source_family, modifier_int, min(token_id)
+FROM {quote_ident(args.database)}.{quote_ident(args.condition_token_reference_table)}
+WHERE is_join_canonical = 1
+GROUP BY source_family, modifier_int
 """
     ).strip().splitlines()
-    dense: dict[int, int] = {}
+    maps: dict[str, dict[int, int]] = defaultdict(dict)
     for line in rows:
         if not line.strip():
             continue
-        modifier, dense_id = line.split("\t")
-        dense[int(modifier or 0)] = int(dense_id or 0)
-    return dense
+        family, modifier, token_id = line.split("\t")
+        maps[family][int(modifier or 0)] = int(token_id or 0)
+    indicator: dict[int, int] = {}
+    for family, values in maps.items():
+        if family not in {"unknown", "quote_conditions", "trade_conditions", "trade_corrections_nyse"}:
+            for modifier, token_id in values.items():
+                indicator.setdefault(modifier, token_id)
+    maps["quote_indicators"] = indicator
+    return maps
 
 
 def collect_lazy(frame: Any):
@@ -1186,14 +1200,80 @@ def condition_codes(raw_conditions: Any, slots: int) -> list[int]:
     return values
 
 
-def pack_quote_conditions(raw_conditions: Any, dense_map: dict[int, int]) -> int:
-    codes = [dense_map.get(code, 0) for code in condition_codes(raw_conditions, 4)]
-    return int(codes[0]) | (int(codes[1]) << 8) | (int(codes[2]) << 16) | (int(codes[3]) << 24)
+def nonempty_codes(raw_value: Any) -> list[int]:
+    return [to_int_or_zero(part) for part in str(raw_value or "").split(",") if str(part or "") != ""]
 
 
-def pack_trade_conditions(raw_conditions: Any, dense_map: dict[int, int]) -> int:
-    codes = [dense_map.get(code, 0) for code in condition_codes(raw_conditions, 5)]
-    return int(codes[0]) | (int(codes[1]) << 6) | (int(codes[2]) << 12) | (int(codes[3]) << 18) | (int(codes[4]) << 24)
+def pack_condition_tokens(
+    *,
+    token_ids: list[int],
+    raw_token_count: int,
+    primary_price_scale: int,
+    secondary_price_scale: int,
+    tape: int,
+    pack_kind: int,
+    unknown_token_seen: bool,
+) -> int:
+    packed = 0
+    for slot in range(CONDITION_TOKEN_SLOTS):
+        token_id = int(token_ids[slot]) if slot < len(token_ids) else 0
+        packed |= (token_id & 0xFF) << (slot * CONDITION_TOKEN_BITS)
+    packed |= min(int(raw_token_count), CONDITION_TOKEN_SLOTS) << CONDITION_TOKEN_COUNT_SHIFT
+    packed |= int(raw_token_count > CONDITION_TOKEN_SLOTS) << CONDITION_TOKEN_OVERFLOW_SHIFT
+    packed |= int(bool(unknown_token_seen)) << CONDITION_UNKNOWN_TOKEN_SHIFT
+    packed |= (int(primary_price_scale) & 1) << CONDITION_PRIMARY_PRICE_SCALE_SHIFT
+    packed |= (int(secondary_price_scale) & 1) << CONDITION_SECONDARY_PRICE_SCALE_SHIFT
+    packed |= (int(tape) & 0x07) << CONDITION_TAPE_SHIFT
+    packed |= (int(pack_kind) & 0x03) << CONDITION_PACK_KIND_SHIFT
+    packed |= (CONDITION_PACK_VERSION & 0xFF) << CONDITION_PACK_VERSION_SHIFT
+    return packed
+
+
+def quote_condition_tokens_packed(row: dict[str, Any], token_maps: dict[str, dict[int, int]], ask_scale: int, bid_scale: int) -> int:
+    condition_codes_ = nonempty_codes(row.get("conditions"))
+    indicator_codes = nonempty_codes(row.get("indicators"))
+    token_ids: list[int] = []
+    unknown = False
+    for code in condition_codes_[:4]:
+        token_id = token_maps["quote_conditions"].get(code, 0)
+        unknown = unknown or token_id == 0
+        token_ids.append(token_id)
+    for code in indicator_codes[: max(0, CONDITION_TOKEN_SLOTS - len(token_ids))]:
+        token_id = token_maps["quote_indicators"].get(code, 0)
+        unknown = unknown or token_id == 0
+        token_ids.append(token_id)
+    return pack_condition_tokens(
+        token_ids=token_ids,
+        raw_token_count=len(condition_codes_) + len(indicator_codes),
+        primary_price_scale=ask_scale,
+        secondary_price_scale=bid_scale,
+        tape=tape_code(row.get("tape")),
+        pack_kind=1,
+        unknown_token_seen=unknown,
+    )
+
+
+def trade_condition_tokens_packed(row: dict[str, Any], token_maps: dict[str, dict[int, int]], trade_scale: int) -> int:
+    condition_codes_ = nonempty_codes(row.get("conditions"))
+    correction_code = max(0, min(15, to_int_or_zero(row.get("correction"))))
+    token_ids: list[int] = []
+    unknown = False
+    for code in condition_codes_[:4]:
+        token_id = token_maps["trade_conditions"].get(code, 0)
+        unknown = unknown or token_id == 0
+        token_ids.append(token_id)
+    correction_token = token_maps["trade_corrections_nyse"].get(correction_code, 0)
+    unknown = unknown or correction_token == 0
+    token_ids.append(correction_token)
+    return pack_condition_tokens(
+        token_ids=token_ids,
+        raw_token_count=len(condition_codes_) + 1,
+        primary_price_scale=trade_scale,
+        secondary_price_scale=0,
+        tape=tape_code(row.get("tape")),
+        pack_kind=2,
+        unknown_token_seen=unknown,
+    )
 
 
 def event_key(row: dict[str, Any]) -> tuple[str, int, int, int]:
@@ -1216,8 +1296,7 @@ def event_values_match(expected: dict[str, Any], actual: dict[str, Any]) -> bool
         "price_secondary_int",
         "exchange_primary",
         "exchange_secondary",
-        "event_flags",
-        "conditions_packed",
+        "condition_tokens_packed",
     ]
     for field in int_fields:
         if int(expected[field]) != int(actual[field]):
@@ -1228,7 +1307,7 @@ def event_values_match(expected: dict[str, Any], actual: dict[str, Any]) -> bool
     return str(expected["ticker"]) == str(actual["ticker"]) and str(expected["event_date"]) == str(actual["event_date"])
 
 
-def quote_raw_row_to_event(row: dict[str, Any], dense_map: dict[int, int]) -> dict[str, Any] | None:
+def quote_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, int]]) -> dict[str, Any] | None:
     bid = to_decimal_or_zero(row.get("bid_price"))
     ask = to_decimal_or_zero(row.get("ask_price"))
     bid_int = price_int(bid)
@@ -1261,13 +1340,12 @@ def quote_raw_row_to_event(row: dict[str, Any], dense_map: dict[int, int]) -> di
         "size_secondary": float32_value(bid_size_int),
         "exchange_primary": to_int_or_zero(row.get("ask_exchange")),
         "exchange_secondary": to_int_or_zero(row.get("bid_exchange")),
-        "event_flags": int(ask_scale | (bid_scale << 1) | (tape_code(row.get("tape")) << 2)),
-        "conditions_packed": pack_quote_conditions(row.get("conditions"), dense_map),
+        "condition_tokens_packed": quote_condition_tokens_packed(row, token_maps, ask_scale, bid_scale),
         "event_date": datetime.fromtimestamp((to_int_or_zero(row.get("sip_timestamp")) // 1000) / 1_000_000, tz=timezone.utc).date().isoformat(),
     }
 
 
-def trade_raw_row_to_event(row: dict[str, Any], dense_map: dict[int, int]) -> dict[str, Any] | None:
+def trade_raw_row_to_event(row: dict[str, Any], token_maps: dict[str, dict[int, int]]) -> dict[str, Any] | None:
     trade_price = to_decimal_or_zero(row.get("price"))
     trade_int = price_int(trade_price)
     size = to_decimal_or_zero(row.get("size"))
@@ -1279,7 +1357,6 @@ def trade_raw_row_to_event(row: dict[str, Any], dense_map: dict[int, int]) -> di
     if delta_us < -2147483648 or delta_us > 2147483647 or price_precision_clipped(trade_price):
         return None
     trade_scale = scale_code(trade_price)
-    trade_flags = int(trade_scale | (tape_code(row.get("tape")) << 1) | (max(0, min(15, to_int_or_zero(row.get("correction")))) << 3))
     return {
         "ticker": str(row["ticker"]),
         "event_type": 1,
@@ -1291,13 +1368,17 @@ def trade_raw_row_to_event(row: dict[str, Any], dense_map: dict[int, int]) -> di
         "size_secondary": 0.0,
         "exchange_primary": to_int_or_zero(row.get("exchange")),
         "exchange_secondary": 0,
-        "event_flags": int((trade_flags & 1) | (((trade_flags >> 1) & 7) << 2)),
-        "conditions_packed": pack_trade_conditions(row.get("conditions"), dense_map),
+        "condition_tokens_packed": trade_condition_tokens_packed(row, token_maps, trade_scale),
         "event_date": datetime.fromtimestamp((to_int_or_zero(row.get("sip_timestamp")) // 1000) / 1_000_000, tz=timezone.utc).date().isoformat(),
     }
 
 
-def read_raw_event_candidates(path: Path, kind: str, sampled_events: list[dict[str, Any]], dense_map: dict[int, int]) -> list[dict[str, Any]]:
+def read_raw_event_candidates(
+    path: Path,
+    kind: str,
+    sampled_events: list[dict[str, Any]],
+    token_maps: dict[str, dict[int, int]],
+) -> list[dict[str, Any]]:
     if not sampled_events:
         return []
     try:
@@ -1317,6 +1398,7 @@ def read_raw_event_candidates(path: Path, kind: str, sampled_events: list[dict[s
             "bid_price",
             "bid_size",
             "conditions",
+            "indicators",
             "participant_timestamp",
             "sequence_number",
             "sip_timestamp",
@@ -1346,7 +1428,7 @@ def read_raw_event_candidates(path: Path, kind: str, sampled_events: list[dict[s
     converted: list[dict[str, Any]] = []
     converter = quote_raw_row_to_event if kind == "quotes" else trade_raw_row_to_event
     for row in rows:
-        event = converter(row, dense_map)
+        event = converter(row, token_maps)
         if event is not None:
             converted.append(event)
     sampled_keys = sampled_raw_lookup_keys(sampled_events)
@@ -1358,8 +1440,7 @@ def validate_events_against_raw_csv(
     args: argparse.Namespace,
     days: list[DayFiles],
 ) -> dict[str, dict[str, Any]]:
-    quote_dense = load_condition_dense_map(client, args, "ref_quote_conditions")
-    trade_dense = load_condition_dense_map(client, args, "ref_trade_conditions")
+    token_maps = load_condition_token_maps(client, args)
     sample_by_kind = {
         "quotes": query_sample_events(client, args, days, 0),
         "trades": query_sample_events(client, args, days, 1),
@@ -1371,8 +1452,7 @@ def validate_events_against_raw_csv(
         for source_date in sorted(days_by_date):
             day = days_by_date[source_date]
             path = Path(day.quote_job.destination if kind == "quotes" else day.trade_job.destination)
-            dense_map = quote_dense if kind == "quotes" else trade_dense
-            for event in read_raw_event_candidates(path, kind, sampled_events, dense_map):
+            for event in read_raw_event_candidates(path, kind, sampled_events, token_maps):
                 expected_by_key[(event["ticker"], event["sip_timestamp_us"], event["sequence_number"])].append(event)
         mismatches: list[dict[str, Any]] = []
         matched = 0

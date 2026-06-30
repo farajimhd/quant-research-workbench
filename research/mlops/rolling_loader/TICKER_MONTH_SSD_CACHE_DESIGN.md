@@ -149,8 +149,7 @@ size_primary          float32
 size_secondary        float32
 exchange_primary      uint8
 exchange_secondary    uint8
-event_flags           uint8
-conditions_packed     uint32
+condition_tokens_packed uint64
 ```
 
 Only useful market-event columns should be kept. Redundant derived price

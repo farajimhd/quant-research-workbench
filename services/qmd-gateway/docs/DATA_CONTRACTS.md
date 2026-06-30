@@ -6,7 +6,7 @@ This file documents the values produced by `qmd-gateway`. A **formula** is the e
 
 | Contract | Version Field | Current Version | Rule |
 |---|---|---:|---|
-| Live compact unified events | `schema_version` | `1` | Increment when the live unified event table semantics change. |
+| Live compact unified events | `schema_version` | `2` | Increment when the live unified event table semantics change. |
 | Raw Massive trades | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Raw Massive quotes | `schema_version` | `1` | Increment when durable raw table semantics change. |
 | Bars | `schema_version` | `2` | Increment when bar fields or formulas change. |
@@ -47,8 +47,7 @@ primary model-serving contract.
 | `size_secondary` | Quote: bid size. Trade: `0`. |
 | `exchange_primary` | Quote: ask exchange. Trade: trade exchange. |
 | `exchange_secondary` | Quote: bid exchange. Trade: `0`. |
-| `event_flags` | bit0 primary price scale, bit1 secondary price scale, bits2-4 tape code. |
-| `conditions_packed` | Quote: four 8-bit dense quote condition ids. Trade: five 6-bit dense trade condition ids. |
+| `condition_tokens_packed` | Five 8-bit condition/indicator/correction token slots plus token count, overflow, unknown-token, price-scale, tape, pack-kind, and pack-version metadata. Mirrors `market_sip_compact.events`. |
 | `source_sequence` | Massive sequence number from the original quote/trade event. |
 | `issue_flags` | Reserved for future issue classification. Current compact writer drops structurally invalid events before emit/insert, so persisted rows use `0`. |
 

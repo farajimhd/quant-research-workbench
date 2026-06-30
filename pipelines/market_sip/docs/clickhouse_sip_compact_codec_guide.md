@@ -203,25 +203,27 @@ Trade `conditions` are stored as `LowCardinality(String)`.
 This keeps ingestion simple and preserves the raw condition combinations. Dense categorical IDs are created later for model-specific training representations.
 
 For the unified training event table, condition strings are not kept as raw
-strings. They are mapped through separate quote/trade reference tables and packed
-into one `UInt32`:
+strings. They are mapped through the unified dense token reference table and
+packed into one `UInt64`:
 
 ```text
-quote event: 4 quote-condition dense IDs, 8 bits each
-trade event: 5 trade-condition dense IDs, 6 bits each, bits 30-31 reserved
+bits  0-39: five 8-bit condition/indicator/correction token slots
+bits 40-44: token count, overflow, and unknown-token flags
+bits 45-49: primary scale, secondary scale, and tape code
+bits 50-51: condition pack kind
+bits 56-63: pack version
 ```
 
-The condition domains are intentionally separate:
+The token reference preserves the source domain:
 
 ```text
-market_sip_compact.ref_quote_conditions
-market_sip_compact.ref_trade_conditions
+market_sip_compact.event_condition_token_reference
 ```
 
-The event row's `event_type` determines how to decode `conditions_packed`. The
-unified event builder joins through a unique `modifier_int -> dense_id` map using
-`min(dense_id)` per modifier. This avoids row multiplication from repeated quote
-glossary modifier codes.
+Quote event rows use quote condition tokens plus the first quote indicator.
+Trade event rows use trade condition tokens plus the trade correction decoded
+from `trade_flags`. The builder joins through canonical source-domain mappings
+so repeated glossary modifier codes do not multiply event rows.
 
 ## Issue Flags
 

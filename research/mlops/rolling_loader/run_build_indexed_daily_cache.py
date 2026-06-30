@@ -781,8 +781,7 @@ SELECT
     e.size_secondary,
     e.exchange_primary,
     e.exchange_secondary,
-    e.event_flags,
-    e.conditions_packed
+    e.condition_tokens_packed
 FROM
 (
     SELECT
@@ -796,8 +795,7 @@ FROM
         size_secondary,
         exchange_primary,
         exchange_secondary,
-        event_flags,
-        conditions_packed
+        condition_tokens_packed
     FROM {table}
     PREWHERE event_date >= toDate({sql_string(dep_start_date.isoformat())})
       AND event_date < toDate({sql_string(dep_end_date.isoformat())})

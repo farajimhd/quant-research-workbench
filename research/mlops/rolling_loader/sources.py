@@ -252,8 +252,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
 WHERE ticker IN request_tickers
   AND ordinal >= arrayElement(request_first_ordinals, indexOf(request_tickers, ticker))
@@ -444,8 +443,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
 {prewhere_sql}
 ORDER BY ticker, ordinal
@@ -496,8 +494,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
 WHERE ticker IN ({ticker_sql})
   AND event_date = toDate({sql_string(date)})
@@ -541,8 +538,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
 WHERE ticker IN request_tickers
   AND ordinal > arrayElement(request_cursors, indexOf(request_tickers, ticker))
@@ -616,8 +612,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
 PREWHERE ticker IN request_tickers
   AND event_date >= {start_date_sql}
@@ -801,8 +796,7 @@ WITH window_rows AS
         size_secondary,
         exchange_primary,
         exchange_secondary,
-        event_flags,
-        conditions_packed
+        condition_tokens_packed
     FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
     PREWHERE event_date >= {start_date_sql}
       AND event_date <= {end_date_sql}
@@ -830,8 +824,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM window_rows
 CROSS JOIN window_tickers
 ORDER BY sip_timestamp_us, ticker, ordinal
@@ -905,8 +898,7 @@ stream_rows AS
         size_secondary,
         exchange_primary,
         exchange_secondary,
-        event_flags,
-        conditions_packed
+        condition_tokens_packed
     FROM {quote_ident(self.config.database)}.{quote_ident(self.config.events_table)}
     PREWHERE event_date >= {start_date_sql}
       AND event_date < {end_date_sql}
@@ -942,8 +934,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM stream_rows
 ORDER BY sip_timestamp_us, ticker, ordinal
 SETTINGS max_threads = {int(self.config.max_threads)}, max_memory_usage = {self._memory_bytes(self.config.max_memory_usage)}

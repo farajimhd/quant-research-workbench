@@ -488,8 +488,7 @@ def _source_compare_columns() -> dict[str, str]:
         "size_secondary": "size_secondary",
         "exchange_primary": "exchange_primary",
         "exchange_secondary": "exchange_secondary",
-        "event_flags": "event_flags",
-        "conditions_packed": "conditions_packed",
+        "condition_tokens_packed": "condition_tokens_packed",
     }
 
 

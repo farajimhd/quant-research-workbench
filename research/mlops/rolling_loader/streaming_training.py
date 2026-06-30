@@ -35,8 +35,7 @@ EVENT_COLUMNS: tuple[str, ...] = (
     "size_secondary",
     "exchange_primary",
     "exchange_secondary",
-    "event_flags",
-    "conditions_packed",
+    "condition_tokens_packed",
 )
 
 NEWS_TOKEN_COLUMNS: tuple[str, ...] = (
@@ -260,8 +259,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM {table}
 PREWHERE event_date >= toDate({sql_string(start_date.isoformat())})
   AND event_date < toDate({sql_string(end_date.isoformat())})

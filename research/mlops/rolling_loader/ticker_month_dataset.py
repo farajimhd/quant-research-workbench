@@ -108,8 +108,7 @@ ENCODER_EVENT_DTYPE = np.dtype(
         ("size_secondary", "<f4"),
         ("exchange_primary", "u1"),
         ("exchange_secondary", "u1"),
-        ("event_flags", "u1"),
-        ("conditions_packed", "<u4"),
+        ("condition_tokens_packed", "<u8"),
     ]
 )
 
@@ -1106,8 +1105,7 @@ class TickerMonthBatchMaterializer:
                 windows[flat]["size_secondary"] = part.event_array("size_secondary")[idx].astype(np.float32, copy=False)
                 windows[flat]["exchange_primary"] = part.event_array("exchange_primary")[idx].astype(np.uint8, copy=False)
                 windows[flat]["exchange_secondary"] = part.event_array("exchange_secondary")[idx].astype(np.uint8, copy=False)
-                windows[flat]["event_flags"] = part.event_array("event_flags")[idx].astype(np.uint8, copy=False)
-                windows[flat]["conditions_packed"] = part.event_array("conditions_packed")[idx].astype(np.uint32, copy=False)
+                windows[flat]["condition_tokens_packed"] = part.event_array("condition_tokens_packed")[idx].astype(np.uint64, copy=False)
                 if start > 0:
                     previous[flat] = int(part.event_array("timestamp_us")[start - 1])
                 flat += 1

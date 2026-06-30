@@ -215,7 +215,7 @@ timestamp_us
 Use an exact allow-list when a trainer needs specific columns:
 
 ```powershell
---event-columns event_type,price_primary_int,price_secondary_int,size_primary,size_secondary,exchange_primary,exchange_secondary,event_flags,conditions_packed,session_second
+--event-columns event_type,price_primary_int,price_secondary_int,size_primary,size_secondary,exchange_primary,exchange_secondary,condition_tokens_packed,session_second
 ```
 
 If `event_columns` is set, the suppress list is ignored.

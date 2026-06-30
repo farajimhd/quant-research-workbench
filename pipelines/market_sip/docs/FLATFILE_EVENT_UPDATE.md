@@ -322,9 +322,9 @@ The event rows match the unified event table contract:
 - trade rows use `event_type = 1`
 - quote primary price is ask, secondary price is bid
 - trade primary price is trade price, secondary price is zero
-- price scale bits are packed into `event_flags`
-- quote conditions use quote condition dense IDs
-- trade conditions use trade condition dense IDs
+- price scale, tape, condition pack kind, and pack version are packed into `condition_tokens_packed`
+- quote rows pack quote condition tokens plus the first quote indicator token
+- trade rows pack trade condition tokens plus the trade correction token
 - structurally invalid rows are filtered before insertion
 
 For the detailed event schema, see `UNIFIED_EVENTS_TABLE.md`.

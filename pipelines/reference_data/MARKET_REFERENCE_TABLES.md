@@ -83,31 +83,32 @@ modifier codes across SIP mappings, while the raw quote flatfile only stores the
 modifier code. Trade condition modifiers are currently unique, but using the
 same unique-map pattern is still safe and consistent.
 
-The final unified event table stores condition IDs as one packed `UInt32`, not as
-separate condition columns. The packing depends on event type:
+The final unified event table stores condition-like metadata as one packed
+`UInt64`, not as separate condition columns. The token IDs come from:
 
 ```text
-quote event: 4 slots x 8 bits = 32 bits
-trade event: 5 slots x 6 bits = 30 bits, with bits 30-31 reserved
+market_sip_compact.event_condition_token_reference
 ```
 
-Quote condition packing example:
+The layout is:
 
-```sql
-toUInt32(coalesce(qc1.dense_id, 0))
-| bitShiftLeft(toUInt32(coalesce(qc2.dense_id, 0)), 8)
-| bitShiftLeft(toUInt32(coalesce(qc3.dense_id, 0)), 16)
-| bitShiftLeft(toUInt32(coalesce(qc4.dense_id, 0)), 24) AS conditions_packed
+```text
+bits  0-39: five 8-bit token slots
+bits 40-44: token count, overflow, unknown-token flags
+bits 45-49: primary scale, secondary scale, tape code
+bits 50-51: pack kind
+bits 56-63: pack version
 ```
 
-Trade condition packing example:
+Quote rows pack the first four quote condition tokens and the first quote
+indicator token. Trade rows pack the first four trade condition tokens and the
+trade correction token decoded from `trade_flags`.
 
 ```sql
-toUInt32(coalesce(tc1.dense_id, 0))
-| bitShiftLeft(toUInt32(coalesce(tc2.dense_id, 0)), 6)
-| bitShiftLeft(toUInt32(coalesce(tc3.dense_id, 0)), 12)
-| bitShiftLeft(toUInt32(coalesce(tc4.dense_id, 0)), 18)
-| bitShiftLeft(toUInt32(coalesce(tc5.dense_id, 0)), 24) AS conditions_packed
+bitOr(
+    toUInt64(coalesce(token_1.token_id, 0)),
+    bitShiftLeft(toUInt64(coalesce(token_2.token_id, 0)), 8)
+) AS condition_tokens_packed
 ```
 
 Exchange mapping example:

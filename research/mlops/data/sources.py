@@ -53,8 +53,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM {table}
 PREWHERE ticker = {sql_string(self.ticker.upper())}
 WHERE sip_timestamp_us >= {int(self.start_us)}

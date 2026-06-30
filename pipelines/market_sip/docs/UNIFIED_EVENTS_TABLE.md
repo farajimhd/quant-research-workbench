@@ -219,14 +219,8 @@ CREATE TABLE market_sip_compact.events
     exchange_primary UInt8,
     exchange_secondary UInt8,
 
-    -- bit0: primary price scale
-    -- bit1: secondary price scale
-    -- bits2-4: tape code if retained
-    -- bits5-7: reserved
-    event_flags UInt8,
-
-    -- Packed dense condition ids. Interpretation depends on event_type.
-    conditions_packed UInt32,
+    -- Packed condition/indicator/correction token ids plus metadata.
+    condition_tokens_packed UInt64,
 
     -- Useful for maintenance, auditing, and date-range deletion.
     event_date Date
@@ -302,132 +296,88 @@ If fewer than `context_events` rows are returned because the origin is near the
 beginning of a ticker's event stream, the loader left-pads the missing events
 with the all-zero/empty event representation.
 
-## Price Encoding
+The build scripts validate this schema after table creation. If a table with
+legacy `event_flags` or `conditions_packed` columns already exists, the run
+fails and requires a fresh table or `--rebuild`.
 
-Raw compact quote/trade tables store prices as integer plus scale code.
+## Condition Token Word
 
-Scale meaning:
+The unified event row stores condition-like metadata and price metadata in one
+`UInt64` field:
+
+```text
+condition_tokens_packed UInt64
+```
+
+Bit layout:
+
+```text
+bits  0-7    token_0
+bits  8-15   token_1
+bits 16-23   token_2
+bits 24-31   token_3
+bits 32-39   token_4
+bits 40-42   token_count, capped at 5
+bit  43      token_overflow, raw token count was greater than 5
+bit  44      unknown_token_seen, a non-empty raw code did not join to the token reference
+bit  45      primary_price_scale
+bit  46      secondary_price_scale
+bits 47-49   tape_code
+bits 50-51   condition_pack_kind
+bits 52-55   reserved
+bits 56-63   pack_version, currently 1
+```
+
+Token IDs come from the unified dense token reference:
+
+```text
+market_sip_compact.event_condition_token_reference
+```
+
+Token ID `0` means absent or unknown. The reference table assigns stable IDs to
+quote conditions, trade conditions, trade corrections, and quote indicators. The
+builder joins only rows where `is_join_canonical = 1`, so repeated glossary
+codes cannot multiply event rows.
+
+`condition_pack_kind`:
+
+```text
+0 = no condition payload
+1 = quote conditions + quote indicators
+2 = trade conditions + trade correction
+3 = reserved
+```
+
+Price scale bits keep the raw compact source scale:
 
 ```text
 scale = 0 -> price_int / 100
 scale = 1 -> price_int / 10000
 ```
 
-Because the unified event table has two price slots, each row needs two scale
-bits in `event_flags`.
-
-```text
-event_flags bit0 = primary price scale
-event_flags bit1 = secondary price scale
-```
-
-Quote mapping:
-
-```text
-event_type = 0
-price_primary_int   = ask_price_int
-price_secondary_int = bid_price_int
-event_flags bit0    = ask scale from quote_flags bit1
-event_flags bit1    = bid scale from quote_flags bit0
-```
-
-Trade mapping:
-
-```text
-event_type = 1
-price_primary_int   = price_int
-price_secondary_int = 0
-event_flags bit0    = trade scale from trade_flags bit0
-event_flags bit1    = 0
-```
-
 Decode examples:
 
 ```sql
-if(bitAnd(event_flags, 1) = 1,
+if(bitAnd(bitShiftRight(condition_tokens_packed, 45), 1) = 1,
    price_primary_int / 10000.0,
    price_primary_int / 100.0) AS price_primary,
 
-if(bitAnd(bitShiftRight(event_flags, 1), 1) = 1,
+if(bitAnd(bitShiftRight(condition_tokens_packed, 46), 1) = 1,
    price_secondary_int / 10000.0,
    price_secondary_int / 100.0) AS price_secondary
 ```
 
-## Tape And Correction
+Quote rows pack the first four quote condition tokens and the first quote
+indicator token. `token_overflow` is set when more raw quote
+conditions/indicators exist than the five available slots.
 
-If tape is retained, store it in `event_flags` bits 2-4:
+Trade rows pack the first four trade condition tokens and the trade correction
+token decoded from `trade_flags`. `token_overflow` is set when raw trade
+conditions plus the correction exceed five slots.
 
-```text
-event_flags bits2-4 = tape code
-```
-
-Current compact source encoding:
-
-```text
-quote_flags bits2+ = tape code
-trade_flags bits1+ = tape code
-```
-
-Trade correction is not included in the first final schema because the table is
-intended to be compact and aligned with the event provider representation. If a
-future experiment needs correction, use one reserved flag bit range or add a
-separate compact field.
-
-## Condition Encoding
-
-Raw compact quote/trade tables keep condition combinations as
-`LowCardinality(String)`. The unified event table does not keep those raw
-strings. It maps each condition code through the appropriate reference table and
-packs the dense IDs into one `UInt32`.
-
-Quote rows use quote-condition dense IDs from:
-
-```text
-market_sip_compact.ref_quote_conditions
-```
-
-Quote packing uses four 8-bit slots:
-
-```text
-bits 0-7    quote condition 1 dense_id
-bits 8-15   quote condition 2 dense_id
-bits 16-23  quote condition 3 dense_id
-bits 24-31  quote condition 4 dense_id
-```
-
-Trade rows use trade-condition dense IDs from:
-
-```text
-market_sip_compact.ref_trade_conditions
-```
-
-Trade packing uses five 6-bit slots:
-
-```text
-bits 0-5    trade condition 1 dense_id
-bits 6-11   trade condition 2 dense_id
-bits 12-17  trade condition 3 dense_id
-bits 18-23  trade condition 4 dense_id
-bits 24-29  trade condition 5 dense_id
-bits 30-31  reserved
-```
-
-Dense ID `0` means absent or unknown in every slot. The model/data provider must
-interpret `conditions_packed` by `event_type`: quote rows are 4x8-bit fields;
-trade rows are 5x6-bit fields. This lets trades preserve the fifth condition
-without widening the row and keeps quote conditions aligned to byte boundaries.
-
-When joining condition references, use a unique modifier map:
-
-```sql
-SELECT modifier_int, min(dense_id) AS dense_id
-FROM market_sip_compact.ref_quote_conditions
-GROUP BY modifier_int
-```
-
-The quote glossary has repeated modifier codes across SIP mappings, while the
-raw flatfile condition field only contains the modifier code. The builder uses
-the lowest dense ID per modifier as the deterministic representation.
+Raw quote/trade condition strings are not stored in `events`; validation against
+flatfiles must reconstruct `condition_tokens_packed` through the same reference
+table and builder expressions.
 
 ## Field Mapping
 
@@ -443,7 +393,7 @@ size_primary        -> ask_size
 size_secondary      -> bid_size
 exchange_primary    -> ask_exchange
 exchange_secondary  -> bid_exchange
-conditions_packed   -> 4x8-bit packed dense ids from quote conditions
+condition_tokens_packed -> quote condition/indicator tokens plus scale/tape metadata
 event_date          -> event_date
 ```
 
@@ -459,20 +409,19 @@ size_primary        -> size
 size_secondary      -> 0
 exchange_primary    -> exchange
 exchange_secondary  -> 0
-conditions_packed   -> 5x6-bit packed dense ids from trade conditions
+condition_tokens_packed -> trade condition/correction tokens plus scale/tape metadata
 event_date          -> event_date
 ```
 
-Quote and trade condition dense IDs must come from separate reference tables:
+Condition token IDs must come from the unified reference table:
 
 ```text
-market_sip_compact.ref_quote_conditions
-market_sip_compact.ref_trade_conditions
+market_sip_compact.event_condition_token_reference
 ```
 
-The generic stock conditions API table is not sufficient here because Massive's
-quote condition modifiers and trade condition modifiers are different glossary
-tables with different domains.
+The older individual reference tables still describe the source domains, but
+the event table uses the single dense-token table so every token slot is an
+8-bit ID with one decoding path.
 
 ## Dropped Fields
 
@@ -579,8 +528,7 @@ SELECT
     size_secondary,
     exchange_primary,
     exchange_secondary,
-    event_flags,
-    conditions_packed
+    condition_tokens_packed
 FROM market_sip_compact.events
 PREWHERE ticker = <ticker>
   AND ordinal >= <origin_ordinal - events_per_chunk + 1>
@@ -603,7 +551,5 @@ The first production build should decide:
 ```text
 events table name
 partition mode, currently suggested as month
-whether tape stays in event_flags bits2-4
-whether trade correction is dropped or packed
 whether events_issues is built immediately or in a later audit pass
 ```

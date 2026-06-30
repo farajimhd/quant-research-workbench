@@ -19,8 +19,7 @@ def event_from_row(row: np.void, *, ticker: str) -> CompactEvent:
         size_secondary=float(row["size_secondary"]),
         exchange_primary=int(row["exchange_primary"]),
         exchange_secondary=int(row["exchange_secondary"]),
-        event_flags=int(row["event_flags"]),
-        conditions_packed=int(row["conditions_packed"]),
+        condition_tokens_packed=int(row["condition_tokens_packed"]),
         ordinal=int(row["ordinal"]) if "ordinal" in row.dtype.names else None,
     )
 
@@ -55,8 +54,7 @@ def events_to_rows(events: Iterable[CompactEvent]) -> np.ndarray:
         rows[idx]["size_secondary"] = float(event.size_secondary)
         rows[idx]["exchange_primary"] = int(event.exchange_primary)
         rows[idx]["exchange_secondary"] = int(event.exchange_secondary)
-        rows[idx]["event_flags"] = int(event.event_flags)
-        rows[idx]["conditions_packed"] = int(event.conditions_packed)
+        rows[idx]["condition_tokens_packed"] = int(event.condition_tokens_packed)
     return rows
 
 
