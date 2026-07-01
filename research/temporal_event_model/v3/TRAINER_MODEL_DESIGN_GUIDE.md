@@ -230,9 +230,11 @@ available, while labels still forecast future effective events.
 ## Atomic Model I/O Representation
 
 The loader keeps source-aligned tensors for audit. The v3 model should not feed
-every raw field exactly as stored. A versioned model data adapter should convert
-loader tensors into the atomic model inputs below, while preserving identity
-fields outside the model for audit and checkpoint logs.
+every raw field exactly as stored. A versioned model data adapter should expose
+raw typed loader tensors and unpack packed categorical ids into the atomic model
+inputs below, while preserving identity fields outside the model for audit and
+checkpoint logs. Decoding, normalization, clipping, `log1p`, bps/tick conversion,
+and standardization are input-layer preprocessing choices, not loader outputs.
 
 ### Atomic Model Inputs
 
@@ -272,9 +274,10 @@ Event raw storage and adapter chain:
 
 ```text
 raw_event_stream                [B, 1024, F]
-  -> v3 model data adapter      unpack/decode/normalize typed fields
+  -> v3 model data adapter      unpack categorical ids and expose raw typed fields
   -> categorical id tensors     [B, 1024] per categorical atom
-  -> numeric/time tensors       [B, 1024] or [B, 1024, T_*]
+  -> raw numeric/time tensors   [B, 1024] or [B, 1024, T_*]
+  -> input preprocessing layers decode/normalize if enabled
   -> embeddings/projections     [B, 1024, d_atom] per atom/group
   -> event token projection     [B, 1024, d_model]
   -> event encoder              [B, 1024, d_model]
@@ -287,16 +290,16 @@ features shaped `[B, 1024]`, or dense vector features shaped `[B, 1024, T_*]`.
 
 Event-atom connection details:
 
-| Event atom | Raw source in `raw_event_stream [B, 1024, F]` | Storage location | Adapter output before learned layer | Learned layer output | Final event-token connection |
+| Event atom | Raw source in `raw_event_stream [B, 1024, F]` | Storage location | Raw/adapter output before input layer | Input-layer preprocessing and learned output | Final event-token connection |
 | --- | --- | --- | --- | --- | --- |
 | `event_type_id` | `event_meta` | bit 0 | `uint8 [B, 1024]`, vocab size 2 | embedding `[B, 1024, d_event_type]` | concatenate into event token input, then linear projection |
 | `event_primary_price_scale_id` | `event_meta` | bit 1 | `uint8 [B, 1024]`, vocab size 2 | embedding `[B, 1024, d_price_scale]` | concatenate into event token input; also controls primary price decode |
 | `event_secondary_price_scale_id` | `event_meta` | bit 2 | `uint8 [B, 1024]`, vocab size 2 | embedding `[B, 1024, d_price_scale]` | concatenate into event token input; also controls secondary price decode |
 | `event_tape_id` | `event_meta` | bits 3-5 | `uint8 [B, 1024]`, vocab size 8 | embedding `[B, 1024, d_tape]` | concatenate into event token input, then linear projection |
-| `event_primary_price_bps` | `price_primary_int` plus primary scale id | full integer column plus scale bit | `float32 [B, 1024]` | numeric projection `[B, 1024, d_price]` | concatenate into event token input, then linear projection |
-| `event_secondary_price_bps` | `price_secondary_int` plus secondary scale id | full integer column plus scale bit | `float32 [B, 1024]` | numeric projection `[B, 1024, d_price]` | concatenate into event token input, then linear projection |
-| `event_primary_size_log1p` | `size_primary` | full float column | `float32 [B, 1024]` | numeric projection `[B, 1024, d_size]` | concatenate into event token input, then linear projection |
-| `event_secondary_size_log1p` | `size_secondary` | full float column | `float32 [B, 1024]` | numeric projection `[B, 1024, d_size]` | concatenate into event token input, then linear projection |
+| `price_primary_int` | `price_primary_int` plus primary scale id | full integer column plus scale bit | `uint32/float32 [B, 1024]` raw packed price plus scale id | input layer may decode to float price and normalize to bps/ticks; numeric projection `[B, 1024, d_price]` | concatenate into event token input, then linear projection |
+| `price_secondary_int` | `price_secondary_int` plus secondary scale id | full integer column plus scale bit | `uint32/float32 [B, 1024]` raw packed price plus scale id | input layer may decode to float price and normalize to bps/ticks; numeric projection `[B, 1024, d_price]` | concatenate into event token input, then linear projection |
+| `size_primary` | `size_primary` | full float column | `float32 [B, 1024]` raw event size | input layer may apply `log1p`, clipping, or standardization; numeric projection `[B, 1024, d_size]` | concatenate into event token input, then linear projection |
+| `size_secondary` | `size_secondary` | full float column | `float32 [B, 1024]` raw event size | input layer may apply `log1p`, clipping, or standardization; numeric projection `[B, 1024, d_size]` | concatenate into event token input, then linear projection |
 | `event_exchange_primary_id` | `exchange_primary` | full byte column | `uint8 [B, 1024]`, exchange vocabulary | embedding `[B, 1024, d_exchange]` | concatenate into event token input, then linear projection |
 | `event_exchange_secondary_id` | `exchange_secondary` | full byte column | `uint8 [B, 1024]`, exchange vocabulary | embedding `[B, 1024, d_exchange]` | concatenate into event token input, then linear projection |
 | `event_condition_token_1_id` | `condition_token_1` | full byte column | `uint8 [B, 1024]`, condition vocabulary | embedding `[B, 1024, d_condition]` | mask-aware pooled with other condition slots into one condition feature |
@@ -317,8 +320,8 @@ event_token_input =
     event_type_emb,
     price_scale_embs,
     tape_emb,
-    decoded_price_projection,
-    size_projection,
+    price_input_projection,
+    size_input_projection,
     exchange_embs,
     condition_slot_projection,
     event_time_projection
@@ -329,16 +332,16 @@ event_token_input =
 
 This yields `float32/bf16 [B, 1024, d_model]` before the event encoder.
 
-| Model input atom | Adapter source/operation | Adapter output tensor fed to layer | Adapter output representation | Encoder path |
+| Model input atom | Loader/adaptor source | Tensor entering input layer | Loader/adaptor representation | Input-layer responsibility |
 | --- | --- | --- | --- | --- |
 | `event_type_id` | unpack `raw_event_stream.event_meta` bit 0 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=quote`, `1=trade` | event categorical embedding |
 | `event_primary_price_scale_id` | unpack `raw_event_stream.event_meta` bit 1 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=/100`, `1=/10000` | event categorical embedding and decode helper |
 | `event_secondary_price_scale_id` | unpack `raw_event_stream.event_meta` bit 2 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=/100`, `1=/10000` | event categorical embedding and decode helper |
 | `event_tape_id` | unpack `raw_event_stream.event_meta` bits 3-5 | `uint8 [B, 1024]` | one scalar category per event; values `0..7` | event categorical embedding |
-| `event_primary_price_bps` | decode `raw_event_stream.price_primary_int` with primary scale id | `float32 [B, 1024]` | decoded price converted to bps/ticks relative to origin reference price | event numeric projection |
-| `event_secondary_price_bps` | decode `raw_event_stream.price_secondary_int` with secondary scale id | `float32 [B, 1024]` | decoded price converted to bps/ticks relative to origin reference price; zero/masked for trade secondary price | event numeric projection |
-| `event_primary_size_log1p` | transform `raw_event_stream.size_primary` | `float32 [B, 1024]` | `log1p(max(size_primary, 0))`, optionally clipped/standardized | event numeric projection |
-| `event_secondary_size_log1p` | transform `raw_event_stream.size_secondary` | `float32 [B, 1024]` | `log1p(max(size_secondary, 0))`, optionally clipped/standardized | event numeric projection |
+| `price_primary_int` | read `raw_event_stream.price_primary_int` plus primary scale id | `uint32/float32 [B, 1024]` | raw packed quote ask or trade price; scale is not applied by the loader | input layer decides whether to decode to float price and normalize to bps/ticks before numeric projection |
+| `price_secondary_int` | read `raw_event_stream.price_secondary_int` plus secondary scale id | `uint32/float32 [B, 1024]` | raw packed quote bid price or zero for trade; scale is not applied by the loader | input layer decides whether to decode to float price and normalize to bps/ticks before numeric projection; trade secondary should be masked/zeroed |
+| `size_primary` | read `raw_event_stream.size_primary` | `float32 [B, 1024]` | raw quote ask size or trade size from loader | input layer decides whether to use raw size, `log1p`, clipping, or standardization before numeric projection |
+| `size_secondary` | read `raw_event_stream.size_secondary` | `float32 [B, 1024]` | raw quote bid size or zero for trade from loader | input layer decides whether to use raw size, `log1p`, clipping, or standardization before numeric projection; trade secondary should be masked/zeroed |
 | `event_exchange_primary_id` | read `raw_event_stream.exchange_primary` | `uint8 [B, 1024]` | one scalar exchange category per event; byte value 0 means missing/unknown where applicable | event categorical embedding |
 | `event_exchange_secondary_id` | read `raw_event_stream.exchange_secondary` | `uint8 [B, 1024]` | one scalar exchange category per event; byte value 0 means missing/unknown where applicable | event categorical embedding |
 | `event_condition_token_1_id` | read `raw_event_stream.condition_token_1` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | event condition-token embedding |
@@ -458,9 +461,11 @@ Research basis:
 
 Default implementation choice:
 
-- Event encoder: decode/normalize event numeric fields, embed categorical fields,
-  run local temporal mixing plus transformer/attention pooling, emit 8-32 event
-  latent tokens.
+- Event input layers: unpack categorical ids, optionally decode/normalize raw
+  event numeric fields, embed/project all event atoms, and emit
+  `[B, 1024, d_model]` event tokens.
+- Event encoder: consume event tokens, run local temporal mixing plus
+  transformer/attention pooling, and emit 8-32 event latent tokens.
 - Bar encoder: process ticker and global completed bars separately, emit 1-4
   ticker-bar tokens and 1-8 global-bar tokens.
 - Text encoders: project Qwen embeddings, pool chunks into items, then pool
