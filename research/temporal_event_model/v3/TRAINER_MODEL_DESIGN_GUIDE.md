@@ -315,7 +315,7 @@ The final event token is built by combining the learned outputs above:
 
 ```text
 event_token_input =
-  LinearProject(
+  EventInputMLP(
     concat(
     event_type_emb,
     price_scale_embs,
@@ -329,6 +329,23 @@ event_token_input =
   )
   + position_emb
 ```
+
+`EventInputMLP` is the default event input projection, not a plain linear layer.
+It should be a small nonlinear block such as:
+
+```text
+Linear(concat_dim -> d_model)
+LayerNorm
+GELU or SiLU
+Dropout
+Linear(d_model -> d_model)
+```
+
+A single `Linear(concat_dim -> d_model)` projection is only an ablation
+baseline. The nonlinear default is useful because one event token mixes event
+type, side-specific price fields, sizes, exchanges, condition tokens, and time
+features; these feature interactions should be available before the temporal
+event encoder.
 
 This yields `float32/bf16 [B, 1024, d_model]` before the event encoder.
 
@@ -462,8 +479,8 @@ Research basis:
 Default implementation choice:
 
 - Event input layers: unpack categorical ids, optionally decode/normalize raw
-  event numeric fields, embed/project all event atoms, and emit
-  `[B, 1024, d_model]` event tokens.
+  event numeric fields, embed/project all event atoms, combine them with a
+  nonlinear `EventInputMLP`, and emit `[B, 1024, d_model]` event tokens.
 - Event encoder: consume event tokens, run local temporal mixing plus
   transformer/attention pooling, and emit 8-32 event latent tokens.
 - Bar encoder: process ticker and global completed bars separately, emit 1-4
@@ -855,6 +872,50 @@ Spread/liquidity-aware metrics:
 - `sign_accuracy_by_spread_bucket`
 - `mae_by_event_count_bucket`
 - `mae_by_session_bucket`
+
+Diagnostic cohort metrics:
+
+The trainer should support cheap boolean cohort flags for slicing every major
+loss/metric. These flags are metric metadata, not model inputs. As-of/input
+cohorts can be computed from `x` and used for normal validation reporting.
+Future-label-derived cohorts can be useful for debugging difficult regimes, but
+they must be used only after loss calculation for metric aggregation and must
+never be fed to the model, sample plan, loss weights, or sampler.
+
+| Cohort flag | Source | Definition sketch | Metric value |
+| --- | --- | --- | --- |
+| `cohort_liquid_asof` | `raw_event_stream`, ticker daily bars | high recent event count or trade/quote count in the as-of context; threshold from train split quantiles | separates liquid vs illiquid names without lookahead |
+| `cohort_wide_spread_asof` | last valid quote in `raw_event_stream` | last valid ask-bid spread in bps above configured/quantile threshold | shows whether price heads fail on costly/wide-spread regimes |
+| `cohort_high_vol_asof` | as-of event prices or recent daily bars | realized price range/return volatility in context above train split threshold | separates calm vs volatile contexts |
+| `cohort_afterhours_origin` | `origin_timestamp_us` session features | origin in premarket/after-hours vs regular session | checks session-specific degradation |
+| `cohort_news_context_available` | text masks | ticker or market news context mask has at least one valid item | compares text-context vs no-text samples |
+| `cohort_sec_context_available` | SEC text mask | SEC filing context mask has at least one valid item | checks SEC-path value and sparse-context behavior |
+| `cohort_xbrl_context_available` | XBRL mask | XBRL mask has at least one valid row | checks fundamental-context availability effects |
+| `cohort_future_large_move` | price labels only | absolute future bid/ask or trade move exceeds threshold for a horizon | outcome-conditioned diagnostic for tail-move performance only |
+| `cohort_future_event_rich` | future bar labels only | future horizon event count above threshold | outcome-conditioned diagnostic for active future windows only |
+| `cohort_future_news_or_sec` | arrival labels only | ticker-news or SEC-arrival flag positive in horizon | outcome-conditioned diagnostic for event-arrival regimes only |
+| `cohort_future_halt_luld` | condition labels only | halt/pause or LULD flag positive in horizon | sparse safety diagnostic; report only when enough positives exist |
+
+For each major regression or classification metric, emit aggregate and cohort
+forms when the cohort has enough samples:
+
+```text
+val/mae_bid_bps
+val/mae_bid_bps/cohort_liquid_asof/true
+val/mae_bid_bps/cohort_liquid_asof/false
+val/sign_accuracy_ask/cohort_wide_spread_asof/true
+val/event_state_auc/cohort_future_halt_luld/true
+```
+
+Minimum reporting rules:
+
+- Do not report AUC/F1 for a cohort unless it has both positive and negative
+  labels.
+- Do not report any cohort metric below a configured minimum sample count.
+- Compute cohort thresholds from the training split or fixed config, then reuse
+  those thresholds for validation/test to keep comparisons stable.
+- Store cohort counts beside metrics so apparent improvements are not confused
+  with small-sample noise.
 
 Intraday label metrics:
 
