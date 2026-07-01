@@ -238,10 +238,14 @@ fields outside the model for audit and checkpoint logs.
 
 Shape symbols used in the atomic input/output tables:
 
+The event sequence length is written as the numeric value `1024`, matching the
+current v3 loader default `event_stream_length`. If an experiment changes that
+loader setting, update the table shapes to the new numeric value in the model
+guide/config instead of reusing a symbolic length.
+
 | Symbol | Meaning |
 | --- | --- |
 | `B` | Batch size emitted by the loader/trainer step. |
-| `L` | Event sequence length consumed by the event encoder for each sample. For raw-window mode this is the selected flattened event stream length after the loader applies coverage/window settings. |
 | `O` | Number of completed daily-bar offsets requested for ticker/global bar context. |
 | `S` | Number of configured global symbols in global daily-bar context. |
 | `H` | Number of intraday future horizons in `future_intraday_bar_horizons`. |
@@ -262,24 +266,24 @@ Shape symbols used in the atomic input/output tables:
 
 | Model input atom | Loader source | Shape before embedding/projection | Required representation | Encoder path |
 | --- | --- | --- | --- | --- |
-| `event_type_id` | `bitAnd(event_meta, 1)` | `[B, L]` | categorical id, `0=quote`, `1=trade` | event categorical embedding |
-| `event_primary_price_scale_id` | `bitAnd(event_meta, 2) != 0` | `[B, L]` | categorical id, `0=/100`, `1=/10000` | event categorical embedding and decode helper |
-| `event_secondary_price_scale_id` | `bitAnd(event_meta, 4) != 0` | `[B, L]` | categorical id, `0=/100`, `1=/10000` | event categorical embedding and decode helper |
-| `event_tape_id` | `bitAnd(bitShiftRight(event_meta, 3), 7)` | `[B, L]` | categorical id, bits 3-5 of `event_meta` | event categorical embedding |
-| `event_primary_price_bps` | `price_primary_int` + primary scale bit | `[B, L]` | decoded float price, converted to bps/ticks relative to origin reference price | event numeric projection |
-| `event_secondary_price_bps` | `price_secondary_int` + secondary scale bit | `[B, L]` | decoded float price, converted to bps/ticks relative to origin reference price; zero/masked for trade secondary price | event numeric projection |
-| `event_primary_size_log1p` | `size_primary` | `[B, L]` | `log1p(max(size_primary, 0))`, optionally clipped/standardized | event numeric projection |
-| `event_secondary_size_log1p` | `size_secondary` | `[B, L]` | `log1p(max(size_secondary, 0))`, optionally clipped/standardized | event numeric projection |
-| `event_exchange_primary_id` | `exchange_primary` | `[B, L]` | categorical id; byte value 0 means missing/unknown where applicable | event categorical embedding |
-| `event_exchange_secondary_id` | `exchange_secondary` | `[B, L]` | categorical id; byte value 0 means missing/unknown where applicable | event categorical embedding |
-| `event_condition_token_1_id` | `condition_token_1` | `[B, L]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
-| `event_condition_token_2_id` | `condition_token_2` | `[B, L]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
-| `event_condition_token_3_id` | `condition_token_3` | `[B, L]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
-| `event_condition_token_4_id` | `condition_token_4` | `[B, L]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
-| `event_condition_token_5_id` | `condition_token_5` | `[B, L]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
-| `event_time_features` | event UTC/session time columns | `[B, L, T_event]` | float32 time components through shared time encoder plus event adapter | event time adapter |
-| `event_position_id` | event row rank in sliding stream | `[B, L]` | relative sequence position, newest event has a stable convention | event position embedding |
-| `event_mask` | `raw_event_mask` | `[B, L]` | bool mask | event attention mask |
+| `event_type_id` | `bitAnd(event_meta, 1)` | `[B, 1024]` | categorical id, `0=quote`, `1=trade` | event categorical embedding |
+| `event_primary_price_scale_id` | `bitAnd(event_meta, 2) != 0` | `[B, 1024]` | categorical id, `0=/100`, `1=/10000` | event categorical embedding and decode helper |
+| `event_secondary_price_scale_id` | `bitAnd(event_meta, 4) != 0` | `[B, 1024]` | categorical id, `0=/100`, `1=/10000` | event categorical embedding and decode helper |
+| `event_tape_id` | `bitAnd(bitShiftRight(event_meta, 3), 7)` | `[B, 1024]` | categorical id, bits 3-5 of `event_meta` | event categorical embedding |
+| `event_primary_price_bps` | `price_primary_int` + primary scale bit | `[B, 1024]` | decoded float price, converted to bps/ticks relative to origin reference price | event numeric projection |
+| `event_secondary_price_bps` | `price_secondary_int` + secondary scale bit | `[B, 1024]` | decoded float price, converted to bps/ticks relative to origin reference price; zero/masked for trade secondary price | event numeric projection |
+| `event_primary_size_log1p` | `size_primary` | `[B, 1024]` | `log1p(max(size_primary, 0))`, optionally clipped/standardized | event numeric projection |
+| `event_secondary_size_log1p` | `size_secondary` | `[B, 1024]` | `log1p(max(size_secondary, 0))`, optionally clipped/standardized | event numeric projection |
+| `event_exchange_primary_id` | `exchange_primary` | `[B, 1024]` | categorical id; byte value 0 means missing/unknown where applicable | event categorical embedding |
+| `event_exchange_secondary_id` | `exchange_secondary` | `[B, 1024]` | categorical id; byte value 0 means missing/unknown where applicable | event categorical embedding |
+| `event_condition_token_1_id` | `condition_token_1` | `[B, 1024]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
+| `event_condition_token_2_id` | `condition_token_2` | `[B, 1024]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
+| `event_condition_token_3_id` | `condition_token_3` | `[B, 1024]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
+| `event_condition_token_4_id` | `condition_token_4` | `[B, 1024]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
+| `event_condition_token_5_id` | `condition_token_5` | `[B, 1024]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
+| `event_time_features` | event UTC/session time columns | `[B, 1024, T_event]` | float32 time components through shared time encoder plus event adapter | event time adapter |
+| `event_position_id` | event row rank in sliding stream | `[B, 1024]` | relative sequence position, newest event has a stable convention | event position embedding |
+| `event_mask` | `raw_event_mask` | `[B, 1024]` | bool mask | event attention mask |
 | `ticker_daily_trade_bar_numeric` | `bar_inputs["ticker_daily_bars"]["trade_values"]` | `[B, O, 6]` | trade OHLC, size sum, and count fields; prices normalized to origin reference or recent close; size/count fields in `log1p` | ticker bar encoder |
 | `ticker_daily_quote_bid_bar_numeric` | `bar_inputs["ticker_daily_bars"]["quote_bid_values"]` | `[B, O, 9]` | bid OHLC plus bid size state fields; prices normalized to origin reference or recent close | ticker bar encoder |
 | `ticker_daily_quote_ask_bar_numeric` | `bar_inputs["ticker_daily_bars"]["quote_ask_values"]` | `[B, O, 9]` | ask OHLC plus ask size state fields; prices normalized to origin reference or recent close | ticker bar encoder |
