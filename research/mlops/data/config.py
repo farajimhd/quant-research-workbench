@@ -178,6 +178,7 @@ class RollingMarketDataConfig:
     q_live_database: str = "q_live"
     sec_context_database: str = "market_sip_compact"
     events_table: str = "events"
+    condition_token_reference_table: str = "event_condition_token_reference"
     macro_bars_table: str = "macro_bars_by_time_symbol"
     sec_filing_text_context_table: str = "sec_filing_text_context"
     news_token_table: str = "news_text_tokens"

@@ -81,6 +81,7 @@ DEFAULTS: dict[str, Any] = {
     "database": "market_sip_compact",
     "sec_context_database": "market_sip_compact",
     "events_table": "events",
+    "condition_token_reference_table": "event_condition_token_reference",
     "macro_bars_table": "macro_bars_by_time_symbol",
     "news_token_table": "news_text_tokens",
     "sec_filing_text_token_table": "sec_filing_text_tokens",
@@ -131,6 +132,58 @@ DEFAULTS: dict[str, Any] = {
 
 SESSION_START_SECOND = 4 * 60 * 60
 SESSION_END_SECOND = 20 * 60 * 60
+
+FUTURE_CONDITION_GROUPS: tuple[tuple[str, tuple[tuple[str, tuple[int, ...]], ...]], ...] = (
+    (
+        "condition_halt_pause_count",
+        (
+            ("cta_security_status", (102, 114, 117)),
+            ("halt_reason", (153, 154, 155, 156, 157, 158, 159, 160, 161, 163, 165, 166, 168, 184, 186)),
+            ("quote_conditions", (43,)),
+            ("luld_indicators", (17,)),
+        ),
+    ),
+    (
+        "condition_resume_count",
+        (
+            ("cta_security_status", (103,)),
+            ("halt_reason", (169, 170, 171, 172, 173, 174, 178)),
+            ("quote_conditions", (16,)),
+        ),
+    ),
+    (
+        "condition_news_pending_count",
+        (
+            ("halt_reason", (151,)),
+            ("quote_conditions", (25, 27)),
+        ),
+    ),
+    (
+        "condition_news_dissemination_count",
+        (
+            ("halt_reason", (152, 167)),
+            ("quote_conditions", (21, 23)),
+        ),
+    ),
+    (
+        "condition_luld_limit_state_count",
+        (
+            ("cta_security_status", (114,)),
+            ("halt_reason", (153, 165, 166, 186)),
+            ("quote_conditions", (35, 39, 43)),
+            ("luld_indicators", (11, 12, 22, 23, 24, 25, 26, 27, 28, 29, 30)),
+        ),
+    ),
+    (
+        "condition_opening_delay_count",
+        (
+            ("cta_security_status", (101, 104)),
+        ),
+    ),
+)
+FUTURE_CONDITION_LABEL_KEYS: tuple[str, ...] = tuple(name for name, _ in FUTURE_CONDITION_GROUPS)
+CONDITION_INDICATOR_SOURCE_FAMILIES: frozenset[str] = frozenset({"cta_security_status", "halt_reason", "luld_indicators"})
+CONDITION_DIRECT_SOURCE_FAMILIES: frozenset[str] = frozenset({"quote_conditions", "trade_conditions", "trade_corrections_nyse", "unknown"})
 
 NEWS_EMBEDDING_COLUMNS: tuple[str, ...] = tuple(
     column for column in NEWS_TOKEN_COLUMNS if column not in {"input_ids", "attention_mask"}
@@ -442,6 +495,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database", default=DEFAULTS["database"])
     parser.add_argument("--sec-context-database", default=DEFAULTS["sec_context_database"])
     parser.add_argument("--events-table", default=DEFAULTS["events_table"])
+    parser.add_argument("--condition-token-reference-table", default=DEFAULTS["condition_token_reference_table"])
     parser.add_argument("--macro-bars-table", default=DEFAULTS["macro_bars_table"])
     parser.add_argument("--news-token-table", default=DEFAULTS["news_token_table"])
     parser.add_argument("--sec-filing-text-token-table", default=DEFAULTS["sec_filing_text_token_table"])
@@ -1288,6 +1342,7 @@ def _build_ticker_month_package(
                 "default_event_window_index": True,
                 "max_origin_events_per_part": int(args.max_origin_events_per_part),
                 "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
+                "future_condition_label_keys": list(FUTURE_CONDITION_LABEL_KEYS),
                 "event_payload_columns": list(EVENT_PAYLOAD_COLUMNS),
                 "event_time_feature_columns": list(EVENT_TIME_FEATURE_COLUMNS),
                 "context_available_time_feature_columns": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
@@ -1561,6 +1616,9 @@ def _label_arrays_from_row(labels: Any, row_index: int, expected: int, origin_ke
         "last_event_timestamp_us": _cell_array(row.get("last_event_timestamp_us"), np.int64),
         "available": _cell_array(row.get("available"), np.uint8),
     }
+    for key in FUTURE_CONDITION_LABEL_KEYS:
+        if key in labels.columns:
+            arrays[key] = _cell_array(row.get(key), np.uint16)
     for key, value in arrays.items():
         if int(expected) and int(value.shape[0]) != int(expected):
             raise RuntimeError(f"{origin_key} compact label field {key} has {value.shape[0]:,} values, expected {int(expected):,}.")
@@ -1688,6 +1746,69 @@ def _query_intraday_forward_labels(
     return _query_intraday_forward_labels_asof(args, client_opts, config, window, ticker, horizons, part, month_min_ordinal)
 
 
+def _condition_token_array_aliases_sql(config: RollingMarketDataConfig) -> str:
+    table = f"{quote_ident(config.database)}.{quote_ident(config.condition_token_reference_table)}"
+    aliases: list[str] = []
+    for label_key, groups in FUTURE_CONDITION_GROUPS:
+        predicates = []
+        for source_family, modifiers in groups:
+            modifier_sql = ", ".join(str(int(value)) for value in modifiers)
+            if source_family in CONDITION_INDICATOR_SOURCE_FAMILIES:
+                excluded = ", ".join(sql_string(value) for value in sorted(CONDITION_DIRECT_SOURCE_FAMILIES))
+                predicates.append(f"(source_family NOT IN ({excluded}) AND modifier_int IN ({modifier_sql}))")
+            else:
+                predicates.append(f"(source_family = {sql_string(source_family)} AND modifier_int IN ({modifier_sql}))")
+        aliases.append(
+            f"""(
+        SELECT groupArray(toUInt8(token_id))
+        FROM {table}
+        WHERE is_join_canonical = 1
+          AND ({" OR ".join(predicates)})
+    ) AS {quote_ident(label_key + "_tokens")}"""
+        )
+    return ",\n    ".join(aliases)
+
+
+def _future_condition_event_select_sql() -> str:
+    token_array = "arrayFilter(t -> t != 0, [condition_token_1, condition_token_2, condition_token_3, condition_token_4, condition_token_5])"
+    return ",\n                ".join(
+        f"toUInt8(arrayExists(t -> has({quote_ident(label_key + '_tokens')}, t), {token_array})) AS {quote_ident(label_key + '_event')}"
+        for label_key in FUTURE_CONDITION_LABEL_KEYS
+    )
+
+
+def _future_condition_cumulative_select_sql() -> str:
+    return ",\n            ".join(
+        f"sum(toUInt64({quote_ident(label_key + '_event')})) OVER event_window AS {quote_ident('cum_' + label_key)}"
+        for label_key in FUTURE_CONDITION_LABEL_KEYS
+    )
+
+
+def _future_condition_count_select_sql() -> str:
+    return ",\n                ".join(
+        f"greatest(toInt64(ifNull(target.{quote_ident('cum_' + label_key)}, 0)) - toInt64(ifNull(base.{quote_ident('cum_' + label_key)}, 0)), 0) AS {quote_ident(label_key)}"
+        for label_key in FUTURE_CONDITION_LABEL_KEYS
+    )
+
+
+def _future_condition_label_select_sql() -> str:
+    return ",\n            ".join(
+        f"toUInt16(least({quote_ident(label_key)}, 65535)) AS {quote_ident(label_key)}"
+        for label_key in FUTURE_CONDITION_LABEL_KEYS
+    )
+
+
+def _future_condition_array_select_sql(start_index: int) -> str:
+    return ",\n    ".join(
+        f"arrayMap(x -> tupleElement(x, {int(start_index) + offset}), label_items) AS {quote_ident(label_key)}"
+        for offset, label_key in enumerate(FUTURE_CONDITION_LABEL_KEYS)
+    )
+
+
+def _future_condition_tuple_items_sql() -> str:
+    return ",\n            ".join(quote_ident(label_key) for label_key in FUTURE_CONDITION_LABEL_KEYS)
+
+
 def _query_intraday_forward_labels_asof(
     args: argparse.Namespace,
     client_opts: Mapping[str, str],
@@ -1700,11 +1821,19 @@ def _query_intraday_forward_labels_asof(
 ) -> Any:
     table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
     horizon_tuples = ",\n        ".join(f"tuple({sql_string(horizon.name)}, toUInt64({int(horizon.microseconds)}))" for horizon in horizons)
+    condition_token_aliases = _condition_token_array_aliases_sql(config)
+    condition_event_select = _future_condition_event_select_sql()
+    condition_cumulative_select = _future_condition_cumulative_select_sql()
+    condition_count_select = _future_condition_count_select_sql()
+    condition_label_select = _future_condition_label_select_sql()
+    condition_array_select = _future_condition_array_select_sql(10)
+    condition_tuple_items = _future_condition_tuple_items_sql()
     # One set query per ticker/month/part. It resolves every horizon through cumulative ASOF lookups
     # instead of repeatedly range-joining future events for every horizon.
     query = f"""
 WITH
     [{horizon_tuples}] AS horizons,
+    {condition_token_aliases},
     origins AS
     (
         SELECT
@@ -1757,7 +1886,8 @@ WITH
             price_secondary_int,
             count() OVER event_window AS cum_count,
             sum(toFloat64(size_primary)) OVER event_window AS cum_size_primary,
-            sum(toFloat64(size_secondary)) OVER event_window AS cum_size_secondary
+            sum(toFloat64(size_secondary)) OVER event_window AS cum_size_secondary,
+            {condition_cumulative_select}
         FROM
         (
             SELECT
@@ -1768,6 +1898,7 @@ WITH
                 price_secondary_int,
                 size_primary,
                 size_secondary,
+                {condition_event_select},
                 toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
                 toDate(ts_local) AS local_date,
                 dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second
@@ -1800,7 +1931,8 @@ WITH
             toFloat32(greatest(size_secondary_sum, 0.0)) AS size_secondary_sum,
             toUInt64(event_count) AS event_count,
             toInt64(if(event_count > 0, target_timestamp_us, 0)) AS last_event_timestamp_us,
-            toUInt8((local_second * 1000000 + horizon_us) <= 72000000000 AND event_count > 0) AS available
+            toUInt8((local_second * 1000000 + horizon_us) <= 72000000000 AND event_count > 0) AS available,
+            {condition_label_select}
         FROM
         (
             SELECT
@@ -1817,7 +1949,8 @@ WITH
                 target.sip_timestamp_us AS target_timestamp_us,
                 greatest(toInt64(ifNull(target.cum_count, 0)) - toInt64(ifNull(base.cum_count, 0)), 0) AS event_count,
                 ifNull(target.cum_size_primary, 0.0) - ifNull(base.cum_size_primary, 0.0) AS size_primary_sum,
-                ifNull(target.cum_size_secondary, 0.0) - ifNull(base.cum_size_secondary, 0.0) AS size_secondary_sum
+                ifNull(target.cum_size_secondary, 0.0) - ifNull(base.cum_size_secondary, 0.0) AS size_secondary_sum,
+                {condition_count_select}
             FROM origin_horizons AS o
             ASOF LEFT JOIN cumulative_events AS target
                 ON target.ticker = o.ticker
@@ -1843,7 +1976,8 @@ SELECT
     arrayMap(x -> tupleElement(x, 6), label_items) AS size_secondary_sum,
     arrayMap(x -> tupleElement(x, 7), label_items) AS event_count,
     arrayMap(x -> tupleElement(x, 8), label_items) AS last_event_timestamp_us,
-    arrayMap(x -> tupleElement(x, 9), label_items) AS available
+    arrayMap(x -> tupleElement(x, 9), label_items) AS available,
+    {condition_array_select}
 FROM
 (
     SELECT
@@ -1861,7 +1995,8 @@ FROM
             size_secondary_sum,
             event_count,
             last_event_timestamp_us,
-            available
+            available,
+            {condition_tuple_items}
         ))) AS label_items
     FROM label_rows
     GROUP BY

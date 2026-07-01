@@ -93,6 +93,12 @@ LABEL_VALUE_DTYPES: dict[str, np.dtype] = {
     "event_count": np.dtype(np.uint64),
     "last_event_timestamp_us": np.dtype(np.int64),
     "available": np.dtype(np.bool_),
+    "condition_halt_pause_count": np.dtype(np.uint16),
+    "condition_resume_count": np.dtype(np.uint16),
+    "condition_news_pending_count": np.dtype(np.uint16),
+    "condition_news_dissemination_count": np.dtype(np.uint16),
+    "condition_luld_limit_state_count": np.dtype(np.uint16),
+    "condition_opening_delay_count": np.dtype(np.uint16),
 }
 NUMERIC_EVENT_COLUMNS: tuple[str, ...] = tuple(column for column in (*EVENT_PAYLOAD_COLUMNS, *EVENT_TIME_FEATURE_COLUMNS) if column != "ticker")
 DEFAULT_SUPPRESSED_EVENT_COLUMNS = ("ticker_id", "ordinal", "timestamp_us")
@@ -2463,17 +2469,23 @@ def _label_values_for_origin(labels: Any, origin_ordinal: int, expected: int) ->
         "event_count",
         "last_event_timestamp_us",
         "available",
+        "condition_halt_pause_count",
+        "condition_resume_count",
+        "condition_news_pending_count",
+        "condition_news_dissemination_count",
+        "condition_luld_limit_state_count",
+        "condition_opening_delay_count",
     )
     if _labels_are_pivoted(labels):
         if right - left != 1:
             return None
         row = labels.row(left, named=True)
-        values = {key: _cell_array(row.get(key)) for key in keys}
+        values = {key: _cell_array(row.get(key)) if key in labels.columns else np.zeros((expected,), dtype=LABEL_VALUE_DTYPES.get(key, np.float32)) for key in keys}
     else:
         frame = labels.slice(left, right - left)
         if expected and frame.height != expected:
             return None
-        values = {key: frame.get_column(key).to_numpy() for key in keys}
+        values = {key: frame.get_column(key).to_numpy() if key in frame.columns else np.zeros((expected,), dtype=LABEL_VALUE_DTYPES.get(key, np.float32)) for key in keys}
     if expected and any(int(value.shape[0]) != int(expected) for value in values.values()):
         return None
     return values

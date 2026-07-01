@@ -235,9 +235,30 @@ On disk, `intraday_forward_labels_part_*.parquet` stores one row per origin.
 Each horizon-dependent field is a list column ordered by `horizon_us`, for
 example `horizon`, `horizon_us`, `price_primary_int`, `price_secondary_int`,
 `size_primary_sum`, `size_secondary_sum`, `event_count`,
-`last_event_timestamp_us`, and `available`. This keeps the ClickHouse result
-and parquet file proportional to origin count instead of
+`last_event_timestamp_us`, `available`, and the future condition count labels
+listed below. This keeps the ClickHouse result and parquet file proportional to
+origin count instead of
 `origin_count * horizon_count`.
+
+Future condition labels are separate multi-label count targets in
+`intraday_labels`, not fields inside `future_intraday_bars`. They are generated
+from the packed event condition-token columns by resolving the current
+`event_condition_token_reference` table at build time. The default labels are:
+
+```text
+condition_halt_pause_count
+condition_resume_count
+condition_news_pending_count
+condition_news_dissemination_count
+condition_luld_limit_state_count
+condition_opening_delay_count
+```
+
+Only conditions with direct trading value are included: halts or volatility
+pauses, resumptions, news-pending/news-dissemination states, LULD or limit-state
+events, and opening-delay/no-open states. Routine sale/quote condition metadata
+is still available in raw event windows but is not forecast as a separate target
+by default.
 
 The current default horizons are:
 

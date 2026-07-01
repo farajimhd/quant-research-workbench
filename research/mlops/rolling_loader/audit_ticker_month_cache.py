@@ -244,14 +244,25 @@ def _check_labels(origins: Any, labels: Any, manifest: Mapping[str, Any], issues
         expected = len(manifest.get("config", {}).get("intraday_label_horizons") or ())
         if expected <= 0:
             expected = None
-        for key in ("horizon_us", "price_primary_int", "price_secondary_int", "size_primary_sum", "size_secondary_sum", "event_count", "last_event_timestamp_us", "available"):
+        base_compact_label_keys = (
+            "horizon_us",
+            "price_primary_int",
+            "price_secondary_int",
+            "size_primary_sum",
+            "size_secondary_sum",
+            "event_count",
+            "last_event_timestamp_us",
+            "available",
+        )
+        compact_label_keys = (*base_compact_label_keys, *(manifest.get("config", {}).get("future_condition_label_keys") or ()))
+        for key in compact_label_keys:
             if key not in labels.columns:
                 issues.append(AuditIssue("error", "label_column_missing", "Compact intraday label column is missing.", {"package": str(package_dir), "column": key}))
                 return
         sample_count = min(8, int(labels.height))
         for idx in random.sample(range(int(labels.height)), sample_count):
             row = labels.row(idx, named=True)
-            for key in ("horizon_us", "available", "event_count", "last_event_timestamp_us"):
+            for key in compact_label_keys:
                 value_count = len(_cell_list(row.get(key)))
                 if expected is not None and value_count != expected:
                     issues.append(AuditIssue("error", "compact_label_width", "Compact intraday label width does not match configured horizons.", {"package": str(package_dir), "row": idx, "column": key, "values": value_count, "expected": expected}))

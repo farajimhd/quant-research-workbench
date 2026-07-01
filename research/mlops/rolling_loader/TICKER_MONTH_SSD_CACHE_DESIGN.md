@@ -454,7 +454,22 @@ size_secondary_sum[]
 event_count[]
 last_event_timestamp_us[]
 available[]
+condition_halt_pause_count[]
+condition_resume_count[]
+condition_news_pending_count[]
+condition_news_dissemination_count[]
+condition_luld_limit_state_count[]
+condition_opening_delay_count[]
 ```
+
+The condition targets are count arrays per horizon. A downstream trainer can use
+them either as counts or as binary event flags by applying `count > 0`. The
+builder resolves their dense token ids from `event_condition_token_reference`
+using source family and Massive modifier code, so the saved targets are stable
+across token-reference rebuilds. They intentionally cover only high-value
+forecastable trading states: halts or pauses, resumptions, news-pending and
+news-dissemination states, LULD or limit-state activity, and opening-delay or
+no-open states.
 
 Session boundaries are hard validity boundaries:
 

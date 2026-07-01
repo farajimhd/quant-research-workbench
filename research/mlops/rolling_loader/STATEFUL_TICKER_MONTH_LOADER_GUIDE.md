@@ -403,6 +403,23 @@ alignment, raw-stream values, raw-stream ordinal continuity, intraday labels,
 future-bar projection, embedding as-of selection, embedding values and masks,
 deterministic first-batch replay, and resume-from-state next-batch replay.
 
+For caches built with condition-token-aware labels, `batch.intraday_labels`
+also includes these per-horizon count arrays:
+
+```text
+condition_halt_pause_count
+condition_resume_count
+condition_news_pending_count
+condition_news_dissemination_count
+condition_luld_limit_state_count
+condition_opening_delay_count
+```
+
+They are not projected into `future_intraday_bars`; that tensor remains the
+price/size/event-count future-bar projection. Training code should consume the
+condition counts directly from `intraday_labels` and can derive binary halt,
+resume, news, LULD, or opening-delay targets with `count > 0`.
+
 Replay from a saved state:
 
 ```powershell
