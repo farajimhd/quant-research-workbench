@@ -719,7 +719,11 @@ def main(argv: list[str] | None = None) -> int:
                     clickhouse_user=client_opts["user"],
                     clickhouse_password=client_opts["password"],
                     database=args.database,
+                    sec_context_database=args.sec_context_database,
                     events_table=args.events_table,
+                    condition_token_reference_table=args.condition_token_reference_table,
+                    news_embedding_table=args.news_embedding_table,
+                    sec_filing_text_embedding_table=args.sec_filing_text_embedding_table,
                     max_threads=max(1, int(args.max_threads)),
                     max_memory_usage=str(args.max_memory_usage),
                 )
@@ -1786,15 +1790,15 @@ def _future_condition_count_select_sql() -> str:
 
 def _future_condition_label_select_sql() -> str:
     return ",\n            ".join(
-        f"toUInt8({quote_ident(label_key)} > 0) AS {quote_ident(label_key)}"
+        f"toUInt8((local_session_us + horizon_us) <= 72000000000 AND {quote_ident(label_key)} > 0) AS {quote_ident(label_key)}"
         for label_key in FUTURE_CONDITION_LABEL_KEYS
     )
 
 
 def _future_external_label_select_sql() -> str:
     return """
-            toUInt8(ticker_news_count > 0) AS ticker_news_arrival_flag,
-            toUInt8(sec_filing_count > 0) AS sec_filing_arrival_flag
+            toUInt8((local_session_us + horizon_us) <= 72000000000 AND ticker_news_count > 0) AS ticker_news_arrival_flag,
+            toUInt8((local_session_us + horizon_us) <= 72000000000 AND sec_filing_count > 0) AS sec_filing_arrival_flag
 """.strip()
 
 
@@ -1854,7 +1858,8 @@ WITH
             sip_timestamp_us AS origin_timestamp_us,
             concat(upper(ticker), '|', toString(ordinal)) AS origin_key,
             toDate(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) AS origin_local_date,
-            dateDiff('second', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) AS local_second
+            dateDiff('second', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) AS local_second,
+            dateDiff('microsecond', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) AS local_session_us
         FROM {table}
         PREWHERE ticker = {sql_string(ticker)}
           AND ordinal >= {int(part.origin_ordinal_start)}
@@ -1879,6 +1884,7 @@ WITH
             origin_timestamp_us,
             origin_local_date,
             local_second,
+            local_session_us,
             tupleElement(horizon_tuple, 1) AS horizon,
             tupleElement(horizon_tuple, 2) AS horizon_us,
             origin_timestamp_us + tupleElement(horizon_tuple, 2) AS target_timestamp_us
@@ -2012,7 +2018,7 @@ WITH
             toFloat32(greatest(size_secondary_sum, 0.0)) AS size_secondary_sum,
             toUInt64(event_count) AS event_count,
             toInt64(if(event_count > 0, target_timestamp_us, 0)) AS last_event_timestamp_us,
-            toUInt8((local_second * 1000000 + horizon_us) <= 72000000000 AND event_count > 0) AS available,
+            toUInt8((local_session_us + horizon_us) <= 72000000000 AND event_count > 0) AS available,
             {condition_label_select},
             {external_label_select}
         FROM
@@ -2023,7 +2029,7 @@ WITH
                 o.ticker AS ticker,
                 o.origin_ordinal AS origin_ordinal,
                 o.origin_timestamp_us AS origin_timestamp_us,
-                o.local_second AS local_second,
+                o.local_session_us AS local_session_us,
                 o.horizon AS horizon,
                 o.horizon_us AS horizon_us,
                 target.price_primary_int AS target_price_primary_int,

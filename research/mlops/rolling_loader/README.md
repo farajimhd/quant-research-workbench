@@ -875,6 +875,19 @@ Keep the SSD-package audit but skip ClickHouse source queries:
 --skip-audit-source-clickhouse
 ```
 
+The package-level cache audit validates future labels in three layers:
+
+```text
+deterministic fixture test for horizon/session-boundary behavior and final flag names
+parquet-only invariants for compact label width, sorted horizons, binary flags, and no cross-session flags
+sampled independent ClickHouse source checks for price/size/event labels, condition flags, ticker-news arrivals, and SEC-filing arrivals
+```
+
+The source-label checks intentionally use simple future-window filters instead
+of the optimized cumulative/ASOF builder query. This keeps the audit independent
+enough to catch label lookahead, horizon-boundary, condition-token, and
+external-arrival alignment bugs.
+
 Tune the post-profile audit size:
 
 ```powershell
