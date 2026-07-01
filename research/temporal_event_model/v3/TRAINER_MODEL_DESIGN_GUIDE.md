@@ -221,10 +221,152 @@ Corporate-action inputs are separate X/context features selected by
 availability time so declared future dividends can be seen only after they are
 available, while labels still forecast future effective events.
 
+## Atomic Model I/O Representation
+
+The loader keeps source-aligned tensors for audit. The v3 model should not feed
+every raw field exactly as stored. A versioned model data adapter should convert
+loader tensors into the atomic model inputs below, while preserving identity
+fields outside the model for audit and checkpoint logs.
+
+### Atomic Model Inputs
+
+| Model input atom | Loader source | Shape before embedding/projection | Required representation | Encoder path |
+| --- | --- | --- | --- | --- |
+| `event_type_id` | `bitAnd(event_meta, 1)` | `[B, L]` | categorical id, `0=quote`, `1=trade` | event categorical embedding |
+| `event_primary_price_scale_id` | `bitAnd(event_meta, 2) != 0` | `[B, L]` | categorical id, `0=/100`, `1=/10000` | event categorical embedding and decode helper |
+| `event_secondary_price_scale_id` | `bitAnd(event_meta, 4) != 0` | `[B, L]` | categorical id, `0=/100`, `1=/10000` | event categorical embedding and decode helper |
+| `event_tape_id` | `bitAnd(bitShiftRight(event_meta, 3), 7)` | `[B, L]` | categorical id, bits 3-5 of `event_meta` | event categorical embedding |
+| `event_primary_price_bps` | `price_primary_int` + primary scale bit | `[B, L]` | decoded float price, converted to bps/ticks relative to origin reference price | event numeric projection |
+| `event_secondary_price_bps` | `price_secondary_int` + secondary scale bit | `[B, L]` | decoded float price, converted to bps/ticks relative to origin reference price; zero/masked for trade secondary price | event numeric projection |
+| `event_primary_size_log1p` | `size_primary` | `[B, L]` | `log1p(max(size_primary, 0))`, optionally clipped/standardized | event numeric projection |
+| `event_secondary_size_log1p` | `size_secondary` | `[B, L]` | `log1p(max(size_secondary, 0))`, optionally clipped/standardized | event numeric projection |
+| `event_exchange_primary_id` | `exchange_primary` | `[B, L]` | categorical id; byte value 0 means missing/unknown where applicable | event categorical embedding |
+| `event_exchange_secondary_id` | `exchange_secondary` | `[B, L]` | categorical id; byte value 0 means missing/unknown where applicable | event categorical embedding |
+| `event_condition_token_1_id` | `condition_token_1` | `[B, L]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
+| `event_condition_token_2_id` | `condition_token_2` | `[B, L]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
+| `event_condition_token_3_id` | `condition_token_3` | `[B, L]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
+| `event_condition_token_4_id` | `condition_token_4` | `[B, L]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
+| `event_condition_token_5_id` | `condition_token_5` | `[B, L]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
+| `event_time_features` | event UTC/session time columns | `[B, L, T_event]` | float32 time components through shared time encoder plus event adapter | event time adapter |
+| `event_position_id` | event row rank in sliding stream | `[B, L]` | relative sequence position, newest event has a stable convention | event position embedding |
+| `event_mask` | `raw_event_mask` | `[B, L]` | bool mask | event attention mask |
+| `ticker_daily_bar_numeric` | `bar_inputs["ticker_daily_bars"]["values"]` | `[B, O, 9]` | prices normalized to origin reference or recent close; volume/count fields in `log1p`; optional z-score | ticker bar encoder |
+| `ticker_daily_bar_offset_id` | ticker bar offsets | `[O]` broadcast to `[B, O]` | learned completed-bar offset id | ticker bar encoder |
+| `ticker_daily_bar_time_features` | ticker bar time features | `[B, O, T_bar]` | shared time encoder plus bar adapter | ticker bar encoder |
+| `ticker_daily_bar_mask` | ticker bar mask | `[B, O]` | bool mask | ticker bar attention mask |
+| `global_daily_bar_numeric` | `bar_inputs["global_daily_bars"]["values"]` | `[B, S, O, 9]` | same numeric transforms as ticker daily bars | global bar encoder |
+| `global_daily_bar_symbol_id` | global symbol list | `[S]` broadcast to `[B, S, O]` | learned symbol embedding | global bar encoder |
+| `global_daily_bar_offset_id` | global bar offsets | `[O]` broadcast to `[B, S, O]` | learned completed-bar offset id | global bar encoder |
+| `global_daily_bar_time_features` | global bar time features | `[B, S, O, T_bar]` | shared time encoder plus bar adapter | global bar encoder |
+| `global_daily_bar_mask` | global bar mask | `[B, S, O]` | bool mask | global bar attention mask |
+| `ticker_news_embedding` | `text_inputs["ticker_news"].embeddings` | `[B, 8, 2, 1024]` | precomputed Qwen embedding projected to `d_model`; Qwen remains offline/frozen | ticker-news encoder |
+| `market_news_embedding` | `text_inputs["market_news"].embeddings` | `[B, 16, 2, 1024]` | precomputed Qwen embedding projected to `d_model`; market news means all news | market-news encoder |
+| `sec_filing_embedding` | `text_inputs["sec_filings"].embeddings` | `[B, 4, 8, 1024]` | precomputed Qwen embedding projected to `d_model` | SEC text encoder |
+| `text_item_time_features` | text item time features | per text group `[B, I, T_text]` | availability/publish/accepted time through shared time encoder plus text adapter | text encoders |
+| `text_item_mask` | text item mask | per text group `[B, I]` | bool mask | text item pooling mask |
+| `text_chunk_mask` | text chunk mask | per text group `[B, I, C]` | bool mask | text chunk pooling mask |
+| `xbrl_value_signed_log` | `xbrl_inputs["value"]` | `[B, 4096]` | signed `log1p(abs(value))`, optionally normalized by tag/unit statistics | XBRL numeric projection |
+| `xbrl_fiscal_year` | `xbrl_inputs["fiscal_year"]` | `[B, 4096]` | numeric or small categorical embedding | XBRL encoder |
+| `xbrl_period_end_days` | `xbrl_inputs["period_end_days"]` | `[B, 4096]` | numeric age plus period-end time embedding | XBRL encoder |
+| `xbrl_category_ids` | XBRL category id fields | field-specific `[B, 4096]` | learned categorical embeddings; id `0=missing/unknown` | XBRL categorical projection |
+| `xbrl_mapping_confidence` | `xbrl_inputs["mapping_confidence"]` | `[B, 4096]` | float32 numeric feature | XBRL numeric projection |
+| `xbrl_time_features` | XBRL availability time features | `[B, 4096, T_xbrl]` | shared time encoder plus XBRL availability adapter | XBRL encoder |
+| `xbrl_period_end_time_features` | XBRL period-end time features | `[B, 4096, T_period]` | separate shared time encoding plus XBRL period adapter | XBRL encoder |
+| `xbrl_mask` | `xbrl_inputs["mask"]` | `[B, 4096]` | bool mask | XBRL set mask |
+| `corporate_action_category_ids` | action/dividend/currency/frequency ids | field-specific `[B, 128]` | learned categorical embeddings; id `0=missing/unknown` | corporate-action encoder |
+| `corporate_action_numeric` | corporate numeric feature tensor | `[B, 128, F_ca]` | split factors, log factors, cash amount, and indicator flags as float32 | corporate-action encoder |
+| `corporate_action_available_time_features` | corporate available time features | `[B, 128, T_ca]` | shared time encoder plus corporate availability adapter | corporate-action encoder |
+| `corporate_action_effective_time_features` | corporate effective time features | `[B, 128, T_ca_eff]` | shared time encoder plus corporate effective-time adapter | corporate-action encoder |
+| `corporate_action_mask` | corporate action mask | `[B, 128]` | bool mask | corporate-action set mask |
+| `modality_available_mask` | `input_availability` | `[B, M]` | bool mask plus optional learned missing-modality token | fusion transformer |
+
+### Atomic Model Outputs
+
+Use query tokens for every supervised horizon. Intraday query tokens are keyed
+by `future_intraday_bar_horizons`; corporate-action query tokens are keyed by
+`corporate_action_label_days`.
+
+| Model output atom | Target source | Output shape | Target transform | Loss |
+| --- | --- | --- | --- | --- |
+| `ask_delta_bps` | `intraday_labels.price_primary_int` | `[B, H]` | decoded future ask/primary price to bps/ticks vs origin reference | masked Huber/MAE |
+| `bid_delta_bps` | `intraday_labels.price_secondary_int` | `[B, H]` | decoded future bid/secondary price to bps/ticks vs origin reference | masked Huber/MAE |
+| `primary_size_log1p` | `intraday_labels.size_primary_sum` | `[B, H]` | `log1p(max(size_primary_sum, 0))` | masked Huber/MAE |
+| `secondary_size_log1p` | `intraday_labels.size_secondary_sum` | `[B, H]` | `log1p(max(size_secondary_sum, 0))` | masked Huber/MAE |
+| `event_count_log1p` | `intraday_labels.event_count` | `[B, H]` | `log1p(event_count)` or Poisson target | masked Huber/Poisson |
+| `halt_pause_logit` | `condition_halt_pause_flag` | `[B, H]` | bool target | masked BCE-with-logits |
+| `resume_logit` | `condition_resume_flag` | `[B, H]` | bool target | masked BCE-with-logits |
+| `news_risk_logit` | `condition_news_risk_flag` | `[B, H]` | bool target | masked BCE-with-logits |
+| `luld_limit_state_logit` | `condition_luld_limit_state_flag` | `[B, H]` | bool target | masked BCE-with-logits |
+| `ticker_news_arrival_logit` | `ticker_news_arrival_flag` | `[B, H]` | bool target | masked BCE-with-logits |
+| `sec_filing_arrival_logit` | `sec_filing_arrival_flag` | `[B, H]` | bool target | masked BCE-with-logits |
+| `future_split_logit` | `future_split_flag` | `[B, D]` | bool target | daily BCE-with-logits |
+| `future_reverse_split_logit` | `future_reverse_split_flag` | `[B, D]` | bool target | daily BCE-with-logits |
+| `future_forward_split_logit` | `future_forward_split_flag` | `[B, D]` | bool target | daily BCE-with-logits |
+| `future_dividend_ex_logit` | `future_dividend_ex_flag` | `[B, D]` | bool target | daily BCE-with-logits |
+| `future_special_dividend_ex_logit` | `future_special_dividend_ex_flag` | `[B, D]` | bool target | daily BCE-with-logits |
+| `future_any_corporate_action_logit` | `future_any_corporate_action_flag` | `[B, D]` | bool target | daily BCE-with-logits |
+
+Do not train redundant mid-price labels by default. If an experiment wants a
+mid or spread target, it should be derived explicitly in the model adapter and
+registered as an ablation head with its own loss weight.
+
 ## Model Architecture
 
 The v3 model is a set of independent encoders plus a fusion transformer and
 horizon heads.
+
+### Research-Backed Architecture Choice
+
+The recommended v3 architecture is:
+
+```text
+loader tensors
+  -> atomic model data adapter
+  -> modality-specific encoders
+  -> fixed-size modality latent tokens
+  -> bottleneck/cross-attention fusion transformer
+  -> intraday and daily horizon query tokens
+  -> typed multi-task heads
+```
+
+This is the most practical design for our data because each modality has a
+different structure: ordered event streams, completed daily-bar sequences,
+sets of text embeddings, sets of XBRL facts, sparse corporate-action rows, and
+typed future labels. A single concatenated transformer over every raw element is
+not the default because it is harder to cache, more expensive for large XBRL/text
+sets, and less explicit about missing modalities.
+
+Research basis:
+
+| Source | Relevant result | v3 design implication |
+| --- | --- | --- |
+| [Perceiver IO](https://arxiv.org/abs/2107.14795) | Uses latent arrays and output queries to handle arbitrary input/output structures with better scaling than full self-attention over every input. | Use cross-attention from each large modality into a small number of latent tokens, then use horizon query tokens for outputs. |
+| [Attention Bottlenecks for Multimodal Fusion](https://arxiv.org/abs/2107.00135) | Fusion bottleneck tokens improve multimodal fusion efficiency and force modalities to share compact useful information. | Fuse event/bar/text/XBRL/corporate-action tokens through a small bottleneck rather than unrestricted pairwise attention across every raw item. |
+| [Set Transformer](https://arxiv.org/abs/1810.00825) | Attention over sets supports permutation-invariant/equivariant processing and can reduce cost with inducing points. | Use set/pooling or Perceiver-style attention for news items, XBRL rows, and corporate-action rows where row order is by recency but not a physical sequence like events. |
+| [Temporal Fusion Transformer](https://arxiv.org/abs/1912.09363) | Multi-horizon forecasting benefits from variable selection, gating, static/context conditioning, and interpretable attention. | Use horizon-specific query tokens, modality gates, and typed heads instead of one undifferentiated output vector. |
+| [FT-Transformer](https://arxiv.org/abs/2106.11959) and [TabTransformer](https://arxiv.org/abs/2012.06678) | Tabular models work well when categorical fields are embedded and numerical fields are projected separately before transformer mixing. | Treat event categories, XBRL ids, and corporate-action ids as embeddings; do not concatenate raw ids as numeric values. |
+| [PatchTST](https://arxiv.org/abs/2211.14730) | Long time-series transformers benefit from local patching to reduce attention cost while retaining local semantics. | If 1024-event attention is too expensive, patch local event blocks before the event transformer rather than reducing coverage. |
+| [DeepLOB](https://arxiv.org/abs/1808.03668) | Market microstructure models benefit from local temporal filters plus longer temporal dependency modeling. | Event encoder should preserve local event ordering and can use TCN/conv front-end before transformer attention. |
+| [Flamingo](https://arxiv.org/abs/2204.14198) | Strong multimodal systems bridge pretrained modality encoders with trainable cross-attention while keeping expensive pretrained encoders frozen. | Keep Qwen embedding extraction offline/frozen; train only projection, pooling, fusion, and heads. |
+
+Default implementation choice:
+
+- Event encoder: decode/normalize event numeric fields, embed categorical fields,
+  run local temporal mixing plus transformer/attention pooling, emit 8-32 event
+  latent tokens.
+- Bar encoder: process ticker and global completed bars separately, emit 1-4
+  ticker-bar tokens and 1-8 global-bar tokens.
+- Text encoders: project Qwen embeddings, pool chunks into items, then pool
+  items into one or a few tokens per text group.
+- XBRL encoder: use category/numeric/time projections plus Perceiver or Set
+  Transformer inducing tokens; emit 4-16 XBRL tokens without full 4096-row
+  self-attention by default.
+- Corporate-action encoder: lightweight Set/Perceiver pooling; emit 1-4 tokens.
+- Fusion: concatenate modality tokens, missing-modality masks, learned bottleneck
+  tokens, and horizon query tokens. Run a compact fusion transformer. Decode
+  only from query tokens.
+- Production caching: cache modality encoder outputs keyed by the modality cache
+  state. Recompute fusion/head outputs more often than expensive encoders.
 
 ### Time Encoding Contract
 
@@ -406,15 +548,24 @@ normalization, mask, and loss for each output.
 Regression label groups:
 
 ```text
-future_intraday_bars        float32 [B, H, 5]
-  feature order             open, close, high, low, volume
-  mask                      future_intraday_bar_mask [B, H]
+intraday_labels.price_primary_int   float32 [B, H]
+  target head                       ask_delta_bps or primary_price_delta_bps
+  mask                              intraday_labels.available [B, H]
+
+intraday_labels.price_secondary_int float32 [B, H]
+  target head                       bid_delta_bps or secondary_price_delta_bps
+  mask                              intraday_labels.available [B, H]
 
 intraday_labels.event_count         uint64  [B, H]
 intraday_labels.size_primary_sum    float32 [B, H]
 intraday_labels.size_secondary_sum  float32 [B, H]
   mask                              intraday_labels.available [B, H]
 ```
+
+`future_intraday_bars [B,H,5]` remains a loader compatibility projection with
+feature order `open, close, high, low, volume`. For v3 loss, do not train three
+duplicate primary-price losses from `open/close/high`. Use one primary/ask price
+target and one secondary/bid price target, plus explicit size/count heads.
 
 `H` is `len(future_intraday_bar_horizons)`. Price-like targets arrive from the
 loader as decoded `float32` price levels; the ticker-month builder has already
@@ -501,12 +652,13 @@ weight sum.
 
 Price loss:
 
-- target shape: `future_intraday_bars [B, H, 5]`
-- prediction shape: `[B, H, 5]` in the same normalized units
-- mask: `future_intraday_bar_mask [B, H]`, broadcast to `[B, H, 5]`
-- default loss: Huber in normalized bps/tick space for price fields and
-  `log1p` space for volume
-- optional weights: `price_feature_weight [5]` and `price_horizon_weight [H]`
+- target shapes: `price_primary_int [B, H]` and `price_secondary_int [B, H]`
+- prediction shapes: `ask_delta_bps [B, H]` and `bid_delta_bps [B, H]`
+- mask: `intraday_labels.available [B, H]`
+- default loss: Huber in normalized bps/tick space
+- optional weights: `price_side_weight [2]` and `price_horizon_weight [H]`
+- `future_intraday_bars` can be used to access the same labels, but v3 should
+  not count duplicate `open/close/high` projections as separate losses
 
 Event-count and size losses:
 
