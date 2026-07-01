@@ -139,6 +139,9 @@ METADATA_PAYLOAD_FIELDS = {
     "symbols",
 }
 LABEL_VALUE_DTYPES: dict[str, np.dtype] = {
+    "label_resolution_us": np.dtype(np.uint64),
+    "label_grid_start_timestamp_us": np.dtype(np.int64),
+    "label_grid_end_timestamp_us": np.dtype(np.int64),
     "price_primary_int": np.dtype(np.float32),
     "price_secondary_int": np.dtype(np.float32),
     "size_primary_sum": np.dtype(np.float32),

@@ -288,6 +288,9 @@ def _check_labels(origins: Any, labels: Any, manifest: Mapping[str, Any], issues
             expected = None
         base_compact_label_keys = (
             "horizon_us",
+            "label_resolution_us",
+            "label_grid_start_timestamp_us",
+            "label_grid_end_timestamp_us",
             "price_primary_int",
             "price_secondary_int",
             "size_primary_sum",
@@ -324,6 +327,8 @@ def _check_labels(origins: Any, labels: Any, manifest: Mapping[str, Any], issues
             available = _cell_array(row.get("available"), np.uint8)
             event_count = _cell_array(row.get("event_count"), np.uint64)
             last_ts = _cell_array(row.get("last_event_timestamp_us"), np.int64)
+            grid_start_ts = _cell_array(row.get("label_grid_start_timestamp_us"), np.int64)
+            grid_end_ts = _cell_array(row.get("label_grid_end_timestamp_us"), np.int64)
             origin_ts = int(row.get("origin_timestamp_us") or 0)
             if available.size and bool(np.any((available != 0) & (available != 1))):
                 issues.append(AuditIssue("error", "available_not_binary", "Compact label available values are not binary.", {"package": str(package_dir), "row": idx}))
@@ -333,18 +338,21 @@ def _check_labels(origins: Any, labels: Any, manifest: Mapping[str, Any], issues
                 if bool(np.any(event_count[valid] <= 0)):
                     issues.append(AuditIssue("error", "available_event_count_zero", "Available labels contain zero event_count.", {"package": str(package_dir), "row": idx}))
                     return
-                if bool(np.any(last_ts[valid] <= origin_ts)):
-                    issues.append(AuditIssue("error", "label_not_forward", "Available labels are not strictly forward-looking.", {"package": str(package_dir), "row": idx, "origin_timestamp_us": origin_ts}))
+                if grid_start_ts.size == valid.size and bool(np.any(last_ts[valid] < grid_start_ts[valid])):
+                    issues.append(AuditIssue("error", "label_before_grid_start", "Available labels occur before the grid-aligned label window.", {"package": str(package_dir), "row": idx, "origin_timestamp_us": origin_ts}))
                     return
-                if bool(np.any(last_ts[valid] > origin_ts + horizon_us[valid])):
+                if grid_end_ts.size == valid.size and bool(np.any(last_ts[valid] >= grid_end_ts[valid])):
                     issues.append(AuditIssue("error", "label_horizon_overrun", "Available labels exceed their horizon.", {"package": str(package_dir), "row": idx, "origin_timestamp_us": origin_ts}))
+                    return
+                if grid_start_ts.size == valid.size and bool(np.any(grid_start_ts[valid] <= origin_ts)):
+                    issues.append(AuditIssue("error", "label_grid_not_forward", "Grid-aligned label window does not start after origin.", {"package": str(package_dir), "row": idx, "origin_timestamp_us": origin_ts}))
                     return
             for key in flag_keys:
                 flags = _cell_array(row.get(key), np.uint8)
                 if flags.size and bool(np.any((flags != 0) & (flags != 1))):
                     issues.append(AuditIssue("error", "future_flag_not_binary", "Future event flag values are not binary.", {"package": str(package_dir), "row": idx, "column": key}))
                     return
-                invalid_session = np.asarray([not _horizon_inside_session(origin_ts, int(value)) for value in horizon_us], dtype=np.bool_)
+                invalid_session = _grid_end_outside_session(grid_end_ts, origin_ts, horizon_us)
                 if invalid_session.size and flags.size == invalid_session.size and bool(np.any(flags[invalid_session] != 0)):
                     issues.append(AuditIssue("error", "future_flag_crosses_session", "Future event flag is set for a horizon that crosses the NY session end.", {"package": str(package_dir), "row": idx, "column": key}))
                     return
@@ -355,7 +363,7 @@ def _check_labels(origins: Any, labels: Any, manifest: Mapping[str, Any], issues
                 if flags.size and bool(np.any((flags != 0) & (flags != 1))):
                     issues.append(AuditIssue("error", "future_bar_available_not_binary", "Future bar family availability values are not binary.", {"package": str(package_dir), "row": idx, "column": key}))
                     return
-                invalid_session = np.asarray([not _horizon_inside_session(origin_ts, int(value)) for value in horizon_us], dtype=np.bool_)
+                invalid_session = _grid_end_outside_session(grid_end_ts, origin_ts, horizon_us)
                 if invalid_session.size and flags.size == invalid_session.size and bool(np.any(flags[invalid_session] != 0)):
                     issues.append(AuditIssue("error", "future_bar_crosses_session", "Future bar family is available for a horizon that crosses the NY session end.", {"package": str(package_dir), "row": idx, "column": key}))
                     return
@@ -388,6 +396,20 @@ def _horizon_inside_session(origin_timestamp_us: int, horizon_us: int) -> bool:
     local = dt.datetime.fromtimestamp(int(origin_timestamp_us) / 1_000_000.0, tz=dt.timezone.utc).astimezone(ZoneInfo(SESSION_TIMEZONE))
     local_us = ((local.hour * 3600 + local.minute * 60 + local.second) * 1_000_000) + local.microsecond
     return int(local_us) + int(horizon_us) <= SESSION_END_SECOND * 1_000_000
+
+
+def _grid_end_outside_session(grid_end_timestamps_us: np.ndarray, origin_timestamp_us: int, horizon_us: np.ndarray) -> np.ndarray:
+    if grid_end_timestamps_us.size:
+        out: list[bool] = []
+        for timestamp_us in grid_end_timestamps_us:
+            if int(timestamp_us) <= 0:
+                out.append(True)
+                continue
+            local = dt.datetime.fromtimestamp(int(timestamp_us) / 1_000_000.0, tz=dt.timezone.utc).astimezone(ZoneInfo(SESSION_TIMEZONE))
+            local_us = ((local.hour * 3600 + local.minute * 60 + local.second) * 1_000_000) + local.microsecond
+            out.append(int(local_us) > SESSION_END_SECOND * 1_000_000)
+        return np.asarray(out, dtype=np.bool_)
+    return np.asarray([not _horizon_inside_session(origin_timestamp_us, int(value)) for value in horizon_us], dtype=np.bool_)
 
 
 def _source_check_origin(origins: Any, manifest: Mapping[str, Any], config: TickerMonthAuditConfig, client_opts: Mapping[str, str], issues: list[AuditIssue], package_dir: Path) -> None:
@@ -444,6 +466,8 @@ def _source_check_labels(
         origin_timestamp_us = int(row.get("origin_timestamp_us") or 0)
         origin_key = str(row.get("origin_key") or f"{ticker}|{row.get('origin_ordinal')}")
         horizons = _cell_array(row.get("horizon_us"), np.int64)
+        grid_starts = _cell_array(row.get("label_grid_start_timestamp_us"), np.int64)
+        grid_ends = _cell_array(row.get("label_grid_end_timestamp_us"), np.int64)
         if horizons.size <= 0:
             continue
         cached = _label_arrays_for_row(row)
@@ -453,6 +477,8 @@ def _source_check_labels(
                     ticker=ticker,
                     origin_timestamp_us=origin_timestamp_us,
                     horizon_us=int(horizons[int(horizon_index)]),
+                    grid_start_timestamp_us=int(grid_starts[int(horizon_index)]) if grid_starts.size > int(horizon_index) else None,
+                    grid_end_timestamp_us=int(grid_ends[int(horizon_index)]) if grid_ends.size > int(horizon_index) else None,
                     config=config,
                     client_opts=client_opts,
                 )
@@ -526,32 +552,51 @@ def _query_source_label_for_horizon(
     ticker: str,
     origin_timestamp_us: int,
     horizon_us: int,
+    grid_start_timestamp_us: int | None,
+    grid_end_timestamp_us: int | None,
     config: TickerMonthAuditConfig,
     client_opts: Mapping[str, str],
 ) -> Mapping[str, Any]:
-    query = _source_label_query_sql(ticker=ticker, origin_timestamp_us=origin_timestamp_us, horizon_us=horizon_us, config=config)
+    query = _source_label_query_sql(
+        ticker=ticker,
+        origin_timestamp_us=origin_timestamp_us,
+        horizon_us=horizon_us,
+        grid_start_timestamp_us=grid_start_timestamp_us,
+        grid_end_timestamp_us=grid_end_timestamp_us,
+        config=config,
+    )
     frame = query_polars(client_opts, query)
     if int(frame.height) != 1:
         raise RuntimeError(f"Independent source label query returned {int(frame.height)} rows.")
     return frame.row(0, named=True)
 
 
-def _source_label_query_sql(*, ticker: str, origin_timestamp_us: int, horizon_us: int, config: TickerMonthAuditConfig) -> str:
+def _source_label_query_sql(
+    *,
+    ticker: str,
+    origin_timestamp_us: int,
+    horizon_us: int,
+    grid_start_timestamp_us: int | None,
+    grid_end_timestamp_us: int | None,
+    config: TickerMonthAuditConfig,
+) -> str:
     event_table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
     news_table = f"{quote_ident(config.database)}.{quote_ident(config.news_embedding_table)}"
     sec_table = f"{quote_ident(config.sec_context_database)}.{quote_ident(config.sec_filing_text_embedding_table)}"
-    end_timestamp_us = int(origin_timestamp_us) + int(horizon_us)
+    start_timestamp_us = int(grid_start_timestamp_us) if grid_start_timestamp_us is not None and int(grid_start_timestamp_us) > 0 else int(origin_timestamp_us) + 1
+    end_timestamp_us = int(grid_end_timestamp_us) if grid_end_timestamp_us is not None and int(grid_end_timestamp_us) > 0 else int(origin_timestamp_us) + int(horizon_us) + 1
     return f"""
 WITH
     toDate(toTimeZone(fromUnixTimestamp64Micro({int(origin_timestamp_us)}, 'UTC'), {sql_string(SESSION_TIMEZONE)})) AS origin_local_date,
     dateDiff('microsecond', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro({int(origin_timestamp_us)}, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro({int(origin_timestamp_us)}, 'UTC'), {sql_string(SESSION_TIMEZONE)})) AS origin_local_us,
-    toUInt8((origin_local_us + {int(horizon_us)}) <= {SESSION_END_SECOND * 1_000_000}) AS session_valid,
+    dateDiff('microsecond', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro({int(end_timestamp_us)}, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro({int(end_timestamp_us)}, 'UTC'), {sql_string(SESSION_TIMEZONE)})) AS grid_end_local_us,
+    toUInt8(grid_end_local_us <= {SESSION_END_SECOND * 1_000_000}) AS session_valid,
     {_condition_token_array_aliases_sql(config)}
 SELECT
-    toFloat32(if(event_count > 0, last_price_primary, 0.0)) AS price_primary_int,
-    toFloat32(if(event_count > 0, last_price_secondary, 0.0)) AS price_secondary_int,
-    toFloat32(greatest(size_primary_sum, 0.0)) AS size_primary_sum,
-    toFloat32(greatest(size_secondary_sum, 0.0)) AS size_secondary_sum,
+    toFloat32(quote_ask_close) AS price_primary_int,
+    toFloat32(quote_bid_close) AS price_secondary_int,
+    toFloat32(greatest(quote_ask_size_open + quote_ask_size_close, 0.0)) AS size_primary_sum,
+    toFloat32(greatest(quote_bid_size_open + quote_bid_size_close, 0.0)) AS size_secondary_sum,
     toUInt64(event_count) AS event_count,
     toInt64(if(event_count > 0, last_event_timestamp_us, 0)) AS last_event_timestamp_us,
     toUInt8(session_valid AND event_count > 0) AS available,
@@ -560,8 +605,8 @@ SELECT
         SELECT count()
         FROM {news_table}
         WHERE ticker = {sql_string(ticker)}
-          AND timestamp_us > {int(origin_timestamp_us)}
-          AND timestamp_us <= {int(end_timestamp_us)}
+          AND timestamp_us >= {int(start_timestamp_us)}
+          AND timestamp_us < {int(end_timestamp_us)}
           AND toDate(toTimeZone(fromUnixTimestamp64Micro(timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) = origin_local_date
           AND dateDiff('second', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) < {SESSION_END_SECOND}
     ) > 0) AS ticker_news_arrival_flag,
@@ -569,26 +614,36 @@ SELECT
         SELECT count()
         FROM {sec_table}
         WHERE ticker = {sql_string(ticker)}
-          AND timestamp_us > {int(origin_timestamp_us)}
-          AND timestamp_us <= {int(end_timestamp_us)}
+          AND timestamp_us >= {int(start_timestamp_us)}
+          AND timestamp_us < {int(end_timestamp_us)}
           AND toDate(toTimeZone(fromUnixTimestamp64Micro(timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) = origin_local_date
           AND dateDiff('second', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) < {SESSION_END_SECOND}
     ) > 0) AS sec_filing_arrival_flag
 FROM
 (
     SELECT
-        count() AS event_count,
-        sum(toFloat64(size_primary)) AS size_primary_sum,
-        sum(toFloat64(size_secondary)) AS size_secondary_sum,
-        argMax(price_primary, tuple(sip_timestamp_us, ordinal)) AS last_price_primary,
-        argMax(price_secondary, tuple(sip_timestamp_us, ordinal)) AS last_price_secondary,
+        greatest(
+            countIf(event_type = 1 AND price_primary > 0 AND size_primary > 0),
+            countIf(event_type = 0 AND price_secondary > 0 AND size_secondary > 0),
+            countIf(event_type = 0 AND price_primary > 0 AND size_primary > 0)
+        ) AS event_count,
+        argMaxIf(price_primary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_close,
+        argMaxIf(price_secondary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_close,
+        argMinIf(size_primary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_size_open,
+        argMaxIf(size_primary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_size_close,
+        argMinIf(size_secondary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_size_open,
+        argMaxIf(size_secondary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_size_close,
         max(sip_timestamp_us) AS last_event_timestamp_us,
+        countIf(event_type = 1 AND price_primary > 0 AND size_primary > 0) AS trade_event_count,
+        countIf(event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_event_count,
+        countIf(event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_event_count,
         {_condition_flag_inner_select_sql()}
     FROM
     (
         SELECT
             ordinal,
             sip_timestamp_us,
+            bitAnd(event_meta, 1) AS event_type,
             toFloat32(if(price_primary_int > 0, price_primary_int / if(bitAnd(event_meta, 2) = 2, 10000.0, 100.0), 0.0)) AS price_primary,
             toFloat32(if(price_secondary_int > 0, price_secondary_int / if(bitAnd(event_meta, 4) = 4, 10000.0, 100.0), 0.0)) AS price_secondary,
             size_primary,
@@ -596,8 +651,8 @@ FROM
             arrayFilter(t -> t != 0, [condition_token_1, condition_token_2, condition_token_3, condition_token_4, condition_token_5]) AS condition_tokens
         FROM {event_table}
         PREWHERE ticker = {sql_string(ticker)}
-          AND sip_timestamp_us > {int(origin_timestamp_us)}
-          AND sip_timestamp_us <= {int(end_timestamp_us)}
+          AND sip_timestamp_us >= {int(start_timestamp_us)}
+          AND sip_timestamp_us < {int(end_timestamp_us)}
         WHERE toDate(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) = origin_local_date
           AND dateDiff('second', toStartOfDay(toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})), toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)})) < {SESSION_END_SECOND}
     )

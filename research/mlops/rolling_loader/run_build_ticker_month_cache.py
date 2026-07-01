@@ -134,13 +134,16 @@ DEFAULTS: dict[str, Any] = {
     "corporate_action_items": 128,
     "corporate_action_lookback_days": 3650,
     "corporate_action_label_days": "1,2,3,7,28",
-    "intraday_label_horizons": "100ms,250ms,500ms,750ms,1s,5s,10s,30s,60s,120s,180s,300s,600s,1200s,1800s,3600s,7200s,3h,4h,5h",
+    "intraday_label_horizons": "100ms,200ms,300ms,400ms,500ms,1s,2s,3s,5s,10s,15s,30s,60s,120s,180s,300s,600s,900s,1200s,1800s,3600s,7200s,3h,4h,5h,eod",
     "refresh_seconds": 1.0,
     "profile_slow_seconds": 10.0,
 }
 
 SESSION_START_SECOND = 4 * 60 * 60
 SESSION_END_SECOND = 20 * 60 * 60
+SESSION_LENGTH_US = (SESSION_END_SECOND - SESSION_START_SECOND) * 1_000_000
+SESSION_END_US = SESSION_END_SECOND * 1_000_000
+INTRADAY_LABEL_GRID_RESOLUTIONS_US: tuple[int, ...] = (100_000, 1_000_000, 5_000_000, 30_000_000, 60_000_000)
 
 FUTURE_CONDITION_GROUPS: tuple[tuple[str, tuple[tuple[str, tuple[int, ...]], ...]], ...] = (
     (
@@ -1414,6 +1417,15 @@ def _build_ticker_month_package(
                 "default_event_window_index": True,
                 "max_origin_events_per_part": int(args.max_origin_events_per_part),
                 "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
+                "intraday_label_semantics": "grid_aligned_next_bucket",
+                "intraday_label_grid_resolutions_us": list(INTRADAY_LABEL_GRID_RESOLUTIONS_US),
+                "intraday_label_grid_policy": {
+                    "100000": "horizon_us <= 60000000",
+                    "1000000": "60000000 < horizon_us <= 900000000",
+                    "5000000": "900000000 < horizon_us <= 3600000000",
+                    "30000000": "3600000000 < horizon_us <= 10800000000",
+                    "60000000": "horizon_us > 10800000000 or eod",
+                },
                 "future_bar_families": list(BAR_FAMILY_KEYS),
                 "future_bar_feature_keys": {family: list(BAR_FAMILY_FEATURE_KEYS[family]) for family in BAR_FAMILY_KEYS},
                 "future_bar_label_keys": list(FUTURE_BAR_LABEL_KEYS),
@@ -1593,6 +1605,7 @@ def _light_audit_part_in_memory(
                 label_event_counts = values["event_count"]
                 last_ts = values["last_event_timestamp_us"].astype(np.int64, copy=False)
                 horizon_us = values["horizon_us"].astype(np.int64, copy=False)
+                grid_end_ts = values.get("label_grid_end_timestamp_us", origin_timestamp_us + horizon_us).astype(np.int64, copy=False)
             else:
                 if right - left != int(horizon_count):
                     raise RuntimeError(f"{prefix} inline audit failed: {origin_key} has {right - left:,} labels, expected {int(horizon_count):,}.")
@@ -1603,13 +1616,18 @@ def _light_audit_part_in_memory(
                 label_event_counts = label_slice.get_column("event_count").to_numpy()
                 last_ts = label_slice.get_column("last_event_timestamp_us").to_numpy().astype(np.int64, copy=False)
                 horizon_us = label_slice.get_column("horizon_us").to_numpy().astype(np.int64, copy=False)
+                grid_end_ts = (
+                    label_slice.get_column("label_grid_end_timestamp_us").to_numpy().astype(np.int64, copy=False)
+                    if "label_grid_end_timestamp_us" in label_slice.columns
+                    else origin_timestamp_us + horizon_us
+                )
             valid = available.astype(bool)
             if valid.any():
                 if np.any(label_event_counts[valid] <= 0):
                     raise RuntimeError(f"{prefix} inline audit failed: available label has zero event_count for {origin_key}.")
                 if np.any(last_ts[valid] <= origin_timestamp_us):
                     raise RuntimeError(f"{prefix} inline audit failed: available label is not forward-looking for {origin_key}.")
-                if np.any(last_ts[valid] > origin_timestamp_us + horizon_us[valid]):
+                if np.any(last_ts[valid] >= grid_end_ts[valid]):
                     raise RuntimeError(f"{prefix} inline audit failed: label exceeds its horizon for {origin_key}.")
         checked += 1
     return checked
@@ -1697,6 +1715,9 @@ def _label_arrays_from_row(labels: Any, row_index: int, expected: int, origin_ke
         raise RuntimeError(f"label row is not aligned to sampled origin {origin_key}.")
     arrays = {
         "horizon_us": _cell_array(row.get("horizon_us"), np.int64),
+        "label_resolution_us": _cell_array(row.get("label_resolution_us"), np.uint64),
+        "label_grid_start_timestamp_us": _cell_array(row.get("label_grid_start_timestamp_us"), np.int64),
+        "label_grid_end_timestamp_us": _cell_array(row.get("label_grid_end_timestamp_us"), np.int64),
         "event_count": _cell_array(row.get("event_count"), np.uint64),
         "last_event_timestamp_us": _cell_array(row.get("last_event_timestamp_us"), np.int64),
         "available": _cell_array(row.get("available"), np.uint8),
@@ -1831,6 +1852,54 @@ def _query_intraday_forward_labels(
     return _query_intraday_forward_labels_asof(args, client_opts, config, window, ticker, horizons, part, month_min_ordinal)
 
 
+def _is_eod_horizon(horizon: TimeBarHorizon) -> bool:
+    return str(horizon.name).strip().lower() in {"eod", "end_of_day", "end-of-day"}
+
+
+def _intraday_label_resolution_us(horizon: TimeBarHorizon) -> int:
+    horizon_us = int(horizon.microseconds)
+    if _is_eod_horizon(horizon):
+        return 60_000_000
+    if horizon_us <= 0:
+        raise ValueError(f"Intraday label horizon {horizon.name!r} must be positive.")
+    if horizon_us <= 60_000_000:
+        resolution = 100_000
+    elif horizon_us <= 900_000_000:
+        resolution = 1_000_000
+    elif horizon_us <= 3_600_000_000:
+        resolution = 5_000_000
+    elif horizon_us <= 10_800_000_000:
+        resolution = 30_000_000
+    else:
+        resolution = 60_000_000
+    if horizon_us % resolution != 0:
+        raise ValueError(
+            f"Intraday label horizon {horizon.name!r} ({horizon_us:,}us) is not divisible by its grid "
+            f"resolution {resolution:,}us. Use grid-aligned horizons."
+        )
+    return resolution
+
+
+def _intraday_label_horizon_specs(horizons: Iterable[TimeBarHorizon]) -> tuple[tuple[str, int, int, int, int], ...]:
+    specs: list[tuple[str, int, int, int, int]] = []
+    seen: set[str] = set()
+    for horizon in horizons:
+        name = str(horizon.name).strip()
+        if not name:
+            continue
+        lower = name.lower()
+        if lower in seen:
+            continue
+        seen.add(lower)
+        is_eod = 1 if _is_eod_horizon(horizon) else 0
+        horizon_us = SESSION_LENGTH_US if is_eod else int(horizon.microseconds)
+        resolution_us = _intraday_label_resolution_us(TimeBarHorizon(name=name, microseconds=horizon_us))
+        bucket_count = 0 if is_eod else int(horizon_us // resolution_us)
+        specs.append((name, int(horizon_us), int(resolution_us), int(bucket_count), int(is_eod)))
+    specs.sort(key=lambda item: (item[1], item[0]))
+    return tuple(specs)
+
+
 def _condition_token_array_aliases_sql(config: RollingMarketDataConfig) -> str:
     table = f"{quote_ident(config.database)}.{quote_ident(config.condition_token_reference_table)}"
     aliases: list[str] = []
@@ -1878,15 +1947,15 @@ def _future_condition_count_select_sql() -> str:
 
 def _future_condition_label_select_sql() -> str:
     return ",\n            ".join(
-        f"toUInt8((local_session_us + horizon_us) <= 72000000000 AND {quote_ident(label_key)} > 0) AS {quote_ident(label_key)}"
+        f"toUInt8(grid_end_session_us <= {SESSION_END_US} AND {quote_ident(label_key)} > 0) AS {quote_ident(label_key)}"
         for label_key in FUTURE_CONDITION_LABEL_KEYS
     )
 
 
 def _future_external_label_select_sql() -> str:
-    return """
-            toUInt8((local_session_us + horizon_us) <= 72000000000 AND ticker_news_count > 0) AS ticker_news_arrival_flag,
-            toUInt8((local_session_us + horizon_us) <= 72000000000 AND sec_filing_count > 0) AS sec_filing_arrival_flag
+    return f"""
+            toUInt8(grid_end_session_us <= {SESSION_END_US} AND ticker_news_count > 0) AS ticker_news_arrival_flag,
+            toUInt8(grid_end_session_us <= {SESSION_END_US} AND sec_filing_count > 0) AS sec_filing_arrival_flag
 """.strip()
 
 
@@ -1930,7 +1999,20 @@ def _query_intraday_forward_labels_asof(
     month_min_ordinal: int,
 ) -> Any:
     table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
-    horizon_tuples = ",\n        ".join(f"tuple({sql_string(horizon.name)}, toUInt64({int(horizon.microseconds)}))" for horizon in horizons)
+    horizon_specs = _intraday_label_horizon_specs(horizons)
+    if not horizon_specs:
+        return _empty_frame()
+    horizon_tuples = ",\n        ".join(
+        "tuple("
+        f"{sql_string(name)}, "
+        f"toUInt64({int(horizon_us)}), "
+        f"toUInt64({int(resolution_us)}), "
+        f"toUInt64({int(bucket_count)}), "
+        f"toUInt8({int(is_eod)})"
+        ")"
+        for name, horizon_us, resolution_us, bucket_count, is_eod in horizon_specs
+    )
+    label_resolutions = ", ".join(f"toUInt64({int(value)})" for value in sorted({spec[2] for spec in horizon_specs}))
     condition_token_aliases = _condition_token_array_aliases_sql(config)
     condition_event_select = _future_condition_event_select_sql()
     condition_cumulative_select = _future_condition_cumulative_select_sql()
@@ -1938,7 +2020,7 @@ def _query_intraday_forward_labels_asof(
     condition_label_select = _future_condition_label_select_sql()
     external_count_select = _future_external_count_select_sql()
     external_label_select = _future_external_label_select_sql()
-    bar_array_start_index = 10
+    bar_array_start_index = 13
     event_flag_array_start_index = bar_array_start_index + len(FUTURE_BAR_LABEL_KEYS)
     future_bar_array_select = _future_bar_array_select_sql(bar_array_start_index)
     event_flag_array_select = _future_event_flag_array_select_sql(event_flag_array_start_index)
@@ -1951,6 +2033,7 @@ def _query_intraday_forward_labels_asof(
     query = f"""
 WITH
     [{horizon_tuples}] AS horizons,
+    [{label_resolutions}] AS label_resolutions,
     {condition_token_aliases},
     origins AS
     (
@@ -1988,12 +2071,46 @@ WITH
             origin_local_date,
             local_second,
             local_session_us,
+            origin_timestamp_us - local_session_us AS local_midnight_timestamp_us,
             tupleElement(horizon_tuple, 1) AS horizon,
             tupleElement(horizon_tuple, 2) AS horizon_us,
-            origin_timestamp_us + tupleElement(horizon_tuple, 2) AS target_timestamp_us
+            tupleElement(horizon_tuple, 3) AS label_resolution_us,
+            tupleElement(horizon_tuple, 4) AS label_bucket_count,
+            tupleElement(horizon_tuple, 5) AS label_is_eod,
+            intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) AS origin_bucket,
+            intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + 1 AS first_future_bucket,
+            if(
+                tupleElement(horizon_tuple, 5) = 1,
+                intDiv(toUInt64({SESSION_END_US} - 1), tupleElement(horizon_tuple, 3)),
+                intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + tupleElement(horizon_tuple, 4)
+            ) AS last_future_bucket,
+            (intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + 1) * tupleElement(horizon_tuple, 3) AS grid_start_session_us,
+            (
+                if(
+                    tupleElement(horizon_tuple, 5) = 1,
+                    intDiv(toUInt64({SESSION_END_US} - 1), tupleElement(horizon_tuple, 3)),
+                    intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + tupleElement(horizon_tuple, 4)
+                ) + 1
+            ) * tupleElement(horizon_tuple, 3) AS grid_end_session_us,
+            origin_timestamp_us - local_session_us + (intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + 1) * tupleElement(horizon_tuple, 3) AS grid_start_timestamp_us,
+            origin_timestamp_us - local_session_us + (
+                if(
+                    tupleElement(horizon_tuple, 5) = 1,
+                    intDiv(toUInt64({SESSION_END_US} - 1), tupleElement(horizon_tuple, 3)),
+                    intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + tupleElement(horizon_tuple, 4)
+                ) + 1
+            ) * tupleElement(horizon_tuple, 3) AS grid_end_timestamp_us,
+            origin_timestamp_us - local_session_us + (
+                if(
+                    tupleElement(horizon_tuple, 5) = 1,
+                    intDiv(toUInt64({SESSION_END_US} - 1), tupleElement(horizon_tuple, 3)),
+                    intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + tupleElement(horizon_tuple, 4)
+                ) + 1
+            ) * tupleElement(horizon_tuple, 3) - 1 AS grid_target_lookup_timestamp_us,
+            origin_timestamp_us - local_session_us + (intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + 1) * tupleElement(horizon_tuple, 3) - 1 AS grid_base_lookup_timestamp_us
         FROM origins
         ARRAY JOIN horizons AS horizon_tuple
-        ORDER BY ticker, origin_local_date, target_timestamp_us, origin_ordinal, horizon_us
+        ORDER BY ticker, origin_local_date, grid_end_timestamp_us, origin_ordinal, horizon_us
     ),
     cumulative_events AS
     (
@@ -2049,7 +2166,8 @@ WITH
             toFloat64(size_secondary) AS size_secondary,
             toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
             toDate(ts_local) AS local_date,
-            dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second
+            dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
+            dateDiff('microsecond', toStartOfDay(ts_local), ts_local) AS local_session_us
         FROM {table}
         PREWHERE ticker = {sql_string(ticker)}
           AND event_date >= toDate({sql_string(window.first_date.isoformat())})
@@ -2060,46 +2178,114 @@ WITH
           AND toDate(ts_local) < toDate({sql_string(window.next_month_date.isoformat())})
           AND local_second < 72000
     ),
+    label_family_events AS
+    (
+        SELECT
+            ticker,
+            local_date,
+            local_session_us,
+            sip_timestamp_us,
+            ordinal,
+            'trade' AS bar_family,
+            price_primary AS price,
+            size_primary AS size
+        FROM label_events
+        WHERE event_type = 1 AND price_primary > 0 AND size_primary > 0
+        UNION ALL
+        SELECT
+            ticker,
+            local_date,
+            local_session_us,
+            sip_timestamp_us,
+            ordinal,
+            'quote_bid' AS bar_family,
+            price_secondary AS price,
+            size_secondary AS size
+        FROM label_events
+        WHERE event_type = 0 AND price_secondary > 0 AND size_secondary > 0
+        UNION ALL
+        SELECT
+            ticker,
+            local_date,
+            local_session_us,
+            sip_timestamp_us,
+            ordinal,
+            'quote_ask' AS bar_family,
+            price_primary AS price,
+            size_primary AS size
+        FROM label_events
+        WHERE event_type = 0 AND price_primary > 0 AND size_primary > 0
+    ),
+    base_bars AS
+    (
+        SELECT
+            ticker,
+            local_date,
+            label_resolution_us AS label_resolution_us,
+            intDiv(toUInt64(local_session_us), label_resolution_us) AS bucket_index,
+            bar_family,
+            argMin(price, tuple(sip_timestamp_us, ordinal)) AS open,
+            argMax(price, tuple(sip_timestamp_us, ordinal)) AS close,
+            max(price) AS high,
+            min(price) AS low,
+            sum(size) AS size_sum,
+            argMin(size, tuple(sip_timestamp_us, ordinal)) AS size_open,
+            argMax(size, tuple(sip_timestamp_us, ordinal)) AS size_close,
+            max(size) AS size_high,
+            min(size) AS size_low,
+            count() AS event_count,
+            min(sip_timestamp_us) AS first_event_timestamp_us,
+            max(sip_timestamp_us) AS last_event_timestamp_us
+        FROM label_family_events
+        ARRAY JOIN label_resolutions AS label_resolution_us
+        GROUP BY
+            ticker,
+            local_date,
+            label_resolution_us,
+            bucket_index,
+            bar_family
+    ),
     future_bars AS
     (
         SELECT
             o.origin_key AS origin_key,
             o.horizon AS horizon,
             o.horizon_us AS horizon_us,
-            argMinIf(e.price_primary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_open,
-            argMaxIf(e.price_primary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_close,
-            maxIf(e.price_primary, e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_high,
-            minIf(e.price_primary, e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_low,
-            sumIf(e.size_primary, e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_size_sum,
-            countIf(e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_event_count,
-            argMinIf(e.price_secondary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_open,
-            argMaxIf(e.price_secondary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_close,
-            maxIf(e.price_secondary, e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_high,
-            minIf(e.price_secondary, e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_low,
-            argMinIf(e.size_secondary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_size_open,
-            argMaxIf(e.size_secondary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_size_close,
-            maxIf(e.size_secondary, e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_size_high,
-            minIf(e.size_secondary, e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_size_low,
-            countIf(e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_event_count,
-            argMinIf(e.price_primary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_open,
-            argMaxIf(e.price_primary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_close,
-            maxIf(e.price_primary, e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_high,
-            minIf(e.price_primary, e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_low,
-            argMinIf(e.size_primary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_size_open,
-            argMaxIf(e.size_primary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_size_close,
-            maxIf(e.size_primary, e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_size_high,
-            minIf(e.size_primary, e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_size_low,
-            countIf(e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_event_count,
-            maxIf(e.sip_timestamp_us, e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_last_event_timestamp_us,
-            maxIf(e.sip_timestamp_us, e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_last_event_timestamp_us,
-            maxIf(e.sip_timestamp_us, e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_last_event_timestamp_us
+            argMinIf(b.open, b.bucket_index, b.bar_family = 'trade') AS trade_open,
+            argMaxIf(b.close, b.bucket_index, b.bar_family = 'trade') AS trade_close,
+            maxIf(b.high, b.bar_family = 'trade') AS trade_high,
+            minIf(b.low, b.bar_family = 'trade') AS trade_low,
+            sumIf(b.size_sum, b.bar_family = 'trade') AS trade_size_sum,
+            sumIf(b.event_count, b.bar_family = 'trade') AS trade_event_count,
+            argMinIf(b.open, b.bucket_index, b.bar_family = 'quote_bid') AS quote_bid_open,
+            argMaxIf(b.close, b.bucket_index, b.bar_family = 'quote_bid') AS quote_bid_close,
+            maxIf(b.high, b.bar_family = 'quote_bid') AS quote_bid_high,
+            minIf(b.low, b.bar_family = 'quote_bid') AS quote_bid_low,
+            argMinIf(b.size_open, b.bucket_index, b.bar_family = 'quote_bid') AS quote_bid_size_open,
+            argMaxIf(b.size_close, b.bucket_index, b.bar_family = 'quote_bid') AS quote_bid_size_close,
+            maxIf(b.size_high, b.bar_family = 'quote_bid') AS quote_bid_size_high,
+            minIf(b.size_low, b.bar_family = 'quote_bid') AS quote_bid_size_low,
+            sumIf(b.event_count, b.bar_family = 'quote_bid') AS quote_bid_event_count,
+            argMinIf(b.open, b.bucket_index, b.bar_family = 'quote_ask') AS quote_ask_open,
+            argMaxIf(b.close, b.bucket_index, b.bar_family = 'quote_ask') AS quote_ask_close,
+            maxIf(b.high, b.bar_family = 'quote_ask') AS quote_ask_high,
+            minIf(b.low, b.bar_family = 'quote_ask') AS quote_ask_low,
+            argMinIf(b.size_open, b.bucket_index, b.bar_family = 'quote_ask') AS quote_ask_size_open,
+            argMaxIf(b.size_close, b.bucket_index, b.bar_family = 'quote_ask') AS quote_ask_size_close,
+            maxIf(b.size_high, b.bar_family = 'quote_ask') AS quote_ask_size_high,
+            minIf(b.size_low, b.bar_family = 'quote_ask') AS quote_ask_size_low,
+            sumIf(b.event_count, b.bar_family = 'quote_ask') AS quote_ask_event_count,
+            maxIf(b.last_event_timestamp_us, b.bar_family = 'trade') AS trade_last_event_timestamp_us,
+            maxIf(b.last_event_timestamp_us, b.bar_family = 'quote_bid') AS quote_bid_last_event_timestamp_us,
+            maxIf(b.last_event_timestamp_us, b.bar_family = 'quote_ask') AS quote_ask_last_event_timestamp_us
         FROM origin_horizons AS o
-        INNER JOIN label_events AS e
-            ON e.ticker = o.ticker
-           AND e.local_date = o.origin_local_date
-        WHERE e.sip_timestamp_us > o.origin_timestamp_us
-          AND e.sip_timestamp_us <= o.target_timestamp_us
-          AND (o.local_session_us + o.horizon_us) <= 72000000000
+        INNER JOIN base_bars AS b
+            ON b.ticker = o.ticker
+           AND b.local_date = o.origin_local_date
+           AND b.label_resolution_us = o.label_resolution_us
+        WHERE b.bucket_index >= o.first_future_bucket
+          AND b.bucket_index <= o.last_future_bucket
+          AND o.grid_end_session_us <= {SESSION_END_US}
         GROUP BY
             o.origin_key,
             o.horizon,
@@ -2185,6 +2371,9 @@ WITH
             origin_timestamp_us,
             horizon,
             horizon_us,
+            label_resolution_us,
+            label_grid_start_timestamp_us,
+            label_grid_end_timestamp_us,
             toFloat32(quote_ask_close) AS price_primary_int,
             toFloat32(quote_bid_close) AS price_secondary_int,
             toFloat32(greatest(quote_ask_size_open + quote_ask_size_close, 0.0)) AS size_primary_sum,
@@ -2233,6 +2422,10 @@ WITH
                 o.origin_ordinal AS origin_ordinal,
                 o.origin_timestamp_us AS origin_timestamp_us,
                 o.local_session_us AS local_session_us,
+                o.grid_end_session_us AS grid_end_session_us,
+                o.label_resolution_us AS label_resolution_us,
+                o.grid_start_timestamp_us AS label_grid_start_timestamp_us,
+                o.grid_end_timestamp_us AS label_grid_end_timestamp_us,
                 o.horizon AS horizon,
                 o.horizon_us AS horizon_us,
                 ifNull(b.trade_open, 0.0) AS trade_open,
@@ -2268,30 +2461,30 @@ WITH
             ASOF LEFT JOIN cumulative_events AS target
                 ON target.ticker = o.ticker
                AND target.local_date = o.origin_local_date
-               AND o.target_timestamp_us >= target.sip_timestamp_us
+               AND o.grid_target_lookup_timestamp_us >= target.sip_timestamp_us
             ASOF LEFT JOIN cumulative_events AS base
                 ON base.ticker = o.ticker
                AND base.local_date = o.origin_local_date
-               AND o.origin_timestamp_us >= base.sip_timestamp_us
+               AND o.grid_base_lookup_timestamp_us >= base.sip_timestamp_us
             LEFT JOIN future_bars AS b
                 ON b.origin_key = o.origin_key
                AND b.horizon_us = o.horizon_us
             ASOF LEFT JOIN ticker_news_arrivals AS news_target
                 ON news_target.ticker = o.ticker
                AND news_target.local_date = o.origin_local_date
-               AND o.target_timestamp_us >= news_target.timestamp_us
+               AND o.grid_target_lookup_timestamp_us >= news_target.timestamp_us
             ASOF LEFT JOIN ticker_news_arrivals AS news_base
                 ON news_base.ticker = o.ticker
                AND news_base.local_date = o.origin_local_date
-               AND o.origin_timestamp_us >= news_base.timestamp_us
+               AND o.grid_base_lookup_timestamp_us >= news_base.timestamp_us
             ASOF LEFT JOIN sec_filing_arrivals AS sec_target
                 ON sec_target.ticker = o.ticker
                AND sec_target.local_date = o.origin_local_date
-               AND o.target_timestamp_us >= sec_target.timestamp_us
+               AND o.grid_target_lookup_timestamp_us >= sec_target.timestamp_us
             ASOF LEFT JOIN sec_filing_arrivals AS sec_base
                 ON sec_base.ticker = o.ticker
                AND sec_base.local_date = o.origin_local_date
-               AND o.origin_timestamp_us >= sec_base.timestamp_us
+               AND o.grid_base_lookup_timestamp_us >= sec_base.timestamp_us
         )
     )
 SELECT
@@ -2302,13 +2495,16 @@ SELECT
     origin_timestamp_us,
     arrayMap(x -> tupleElement(x, 1), label_items) AS horizon,
     arrayMap(x -> tupleElement(x, 2), label_items) AS horizon_us,
-    arrayMap(x -> tupleElement(x, 3), label_items) AS price_primary_int,
-    arrayMap(x -> tupleElement(x, 4), label_items) AS price_secondary_int,
-    arrayMap(x -> tupleElement(x, 5), label_items) AS size_primary_sum,
-    arrayMap(x -> tupleElement(x, 6), label_items) AS size_secondary_sum,
-    arrayMap(x -> tupleElement(x, 7), label_items) AS event_count,
-    arrayMap(x -> tupleElement(x, 8), label_items) AS last_event_timestamp_us,
-    arrayMap(x -> tupleElement(x, 9), label_items) AS available,
+    arrayMap(x -> tupleElement(x, 3), label_items) AS label_resolution_us,
+    arrayMap(x -> tupleElement(x, 4), label_items) AS label_grid_start_timestamp_us,
+    arrayMap(x -> tupleElement(x, 5), label_items) AS label_grid_end_timestamp_us,
+    arrayMap(x -> tupleElement(x, 6), label_items) AS price_primary_int,
+    arrayMap(x -> tupleElement(x, 7), label_items) AS price_secondary_int,
+    arrayMap(x -> tupleElement(x, 8), label_items) AS size_primary_sum,
+    arrayMap(x -> tupleElement(x, 9), label_items) AS size_secondary_sum,
+    arrayMap(x -> tupleElement(x, 10), label_items) AS event_count,
+    arrayMap(x -> tupleElement(x, 11), label_items) AS last_event_timestamp_us,
+    arrayMap(x -> tupleElement(x, 12), label_items) AS available,
     {future_bar_array_select},
     {event_flag_array_select}
 FROM
@@ -2322,6 +2518,9 @@ FROM
         arraySort(x -> tupleElement(x, 2), groupArray(tuple(
             horizon,
             horizon_us,
+            label_resolution_us,
+            label_grid_start_timestamp_us,
+            label_grid_end_timestamp_us,
             price_primary_int,
             price_secondary_int,
             size_primary_sum,

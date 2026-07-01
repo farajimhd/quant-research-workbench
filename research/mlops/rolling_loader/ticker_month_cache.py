@@ -24,6 +24,7 @@ DEFAULT_TICKER_MONTH_CACHE_ROOT = DEFAULT_MATERIALIZED_CACHE_ROOT.parent / "roll
 SESSION_TIMEZONE = "America/New_York"
 SESSION_START = dt.time(4, 0, 0)
 SESSION_END = dt.time(20, 0, 0)
+SESSION_LENGTH_US = 16 * 60 * 60 * 1_000_000
 _WRITE_JSON_LOCK = threading.Lock()
 
 EVENT_PAYLOAD_COLUMNS: tuple[str, ...] = (
@@ -376,6 +377,8 @@ def parse_day_horizons(value: str | Iterable[int]) -> tuple[int, ...]:
 
 def parse_duration_us(value: str) -> int:
     text = str(value).strip().lower()
+    if text in {"eod", "end_of_day", "end-of-day"}:
+        return SESSION_LENGTH_US
     if text.endswith("ms"):
         return int(float(text[:-2]) * 1_000)
     if text.endswith("us"):
@@ -438,6 +441,15 @@ def month_manifest_payload(*, args: Any, cache_id: str, cache_root: Path, loaded
             "context_available_time_feature_columns": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
             "context_effective_time_feature_columns": list(CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS),
             "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
+            "intraday_label_semantics": "grid_aligned_next_bucket",
+            "intraday_label_grid_resolutions_us": [100_000, 1_000_000, 5_000_000, 30_000_000, 60_000_000],
+            "intraday_label_grid_policy": {
+                "100000": "horizon_us <= 60000000",
+                "1000000": "60000000 < horizon_us <= 900000000",
+                "5000000": "900000000 < horizon_us <= 3600000000",
+                "30000000": "3600000000 < horizon_us <= 10800000000",
+                "60000000": "horizon_us > 10800000000 or eod",
+            },
             "bar_families": list(BAR_FAMILY_KEYS),
             "bar_family_feature_keys": {family: list(BAR_FAMILY_FEATURE_KEYS[family]) for family in BAR_FAMILY_KEYS},
             "future_bar_label_keys": [

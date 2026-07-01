@@ -586,6 +586,13 @@ levels must still be converted to normalized deltas before loss calculation,
 preferably in bps or ticks relative to the origin/as-of bid, ask, or mid. Size
 and count targets should be trained in a positive, scale-stable space such as
 `log1p`.
+
+Intraday future labels are grid-aligned, not exact origin-relative windows. The
+builder skips the origin's current partial bucket and emits
+`label_resolution_us`, `label_grid_start_timestamp_us`, and
+`label_grid_end_timestamp_us` in `intraday_labels`. The model should not consume
+raw grid timestamps by default, but audits and diagnostic plots should use them
+to explain the effective target window.
 `last_event_timestamp_us [B, H]` is diagnostic timing metadata and should not be
 part of the default supervised objective unless explicitly enabled.
 

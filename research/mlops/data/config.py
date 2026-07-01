@@ -81,12 +81,16 @@ class TimeBarHorizon:
 
 DEFAULT_SHORT_TIME_BAR_HORIZONS: tuple[TimeBarHorizon, ...] = (
     TimeBarHorizon("100ms", 100_000),
-    TimeBarHorizon("250ms", 250_000),
+    TimeBarHorizon("200ms", 200_000),
+    TimeBarHorizon("300ms", 300_000),
+    TimeBarHorizon("400ms", 400_000),
     TimeBarHorizon("500ms", 500_000),
-    TimeBarHorizon("750ms", 750_000),
     TimeBarHorizon("1s", 1_000_000),
+    TimeBarHorizon("2s", 2_000_000),
+    TimeBarHorizon("3s", 3_000_000),
     TimeBarHorizon("5s", 5_000_000),
     TimeBarHorizon("10s", 10_000_000),
+    TimeBarHorizon("15s", 15_000_000),
     TimeBarHorizon("30s", 30_000_000),
     TimeBarHorizon("60s", 60_000_000),
 )
@@ -94,12 +98,16 @@ DEFAULT_SHORT_TIME_BAR_HORIZONS: tuple[TimeBarHorizon, ...] = (
 
 DEFAULT_INTRADAY_LABEL_HORIZONS: tuple[TimeBarHorizon, ...] = (
     TimeBarHorizon("100ms", 100_000),
-    TimeBarHorizon("250ms", 250_000),
+    TimeBarHorizon("200ms", 200_000),
+    TimeBarHorizon("300ms", 300_000),
+    TimeBarHorizon("400ms", 400_000),
     TimeBarHorizon("500ms", 500_000),
-    TimeBarHorizon("750ms", 750_000),
     TimeBarHorizon("1s", 1_000_000),
+    TimeBarHorizon("2s", 2_000_000),
+    TimeBarHorizon("3s", 3_000_000),
     TimeBarHorizon("5s", 5_000_000),
     TimeBarHorizon("10s", 10_000_000),
+    TimeBarHorizon("15s", 15_000_000),
     TimeBarHorizon("30s", 30_000_000),
     TimeBarHorizon("60s", 60_000_000),
     TimeBarHorizon("120s", 120_000_000),
@@ -113,6 +121,7 @@ DEFAULT_INTRADAY_LABEL_HORIZONS: tuple[TimeBarHorizon, ...] = (
     TimeBarHorizon("3h", 10_800_000_000),
     TimeBarHorizon("4h", 14_400_000_000),
     TimeBarHorizon("5h", 18_000_000_000),
+    TimeBarHorizon("eod", 57_600_000_000),
 )
 
 

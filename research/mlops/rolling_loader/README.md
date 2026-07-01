@@ -229,13 +229,25 @@ cache must be rebuilt with a larger value.
 
 ### Labels
 
-Intraday labels are stored as origin-relative `next_*` labels. The cache does
-not store dense intraday bar grids and does not store `current_*` intraday
-labels.
+Intraday labels are stored as grid-aligned `next_*` labels. The builder skips
+the origin's current partial bucket and starts every label at the next bucket in
+the selected base resolution. This bounds timestamp approximation error by the
+base resolution while avoiding per-origin raw-event scans. The cache does not
+store dense intraday bar grids and does not store `current_*` intraday labels.
 
 On disk, `intraday_forward_labels_part_*.parquet` stores one row per origin.
 Each horizon-dependent field is a list column ordered by `horizon_us`. The
 canonical future bar fields are family-specific:
+
+Grid metadata list columns are emitted with the same horizon order:
+
+```text
+label_resolution_us
+label_grid_start_timestamp_us
+label_grid_end_timestamp_us
+```
+
+The grid window is `[label_grid_start_timestamp_us, label_grid_end_timestamp_us)`.
 
 | Family | Price fields | Size/count fields |
 | --- | --- | --- |
@@ -284,9 +296,24 @@ event windows but are not forecast as separate targets by default.
 The current default horizons are:
 
 ```text
-100ms,250ms,500ms,750ms,1s,5s,10s,30s,60s,120s,180s,300s,
-600s,1200s,1800s,3600s,7200s,3h,4h,5h
+100ms,200ms,300ms,400ms,500ms,1s,2s,3s,5s,10s,15s,30s,
+60s,120s,180s,300s,600s,900s,1200s,1800s,3600s,7200s,
+3h,4h,5h,eod
 ```
+
+The current grid policy is:
+
+| Horizon | Base resolution | Max bucket count at upper bound |
+| --- | ---: | ---: |
+| `<=60s` | `100ms` | `600` |
+| `60s..900s` | `1s` | `900` |
+| `900s..3600s` | `5s` | `720` |
+| `3600s..10800s` | `30s` | `360` |
+| `>10800s` and `eod` | `1m` | `300` for 5h |
+
+Custom numeric horizons must be divisible by their selected base resolution.
+`eod` runs from the next selected bucket through the 20:00 ET extended-session
+close.
 
 Daily macro/future labels are based on daily bars and should be computed from
 daily-bar sequences, not from independent weekly/monthly/yearly bars.
@@ -532,14 +559,17 @@ reference tables that were built before the ticker/month cache builder runs.
 
 | Y dimension | Source field/window | Cache/storage representation | Loader representation | Loss/mask rule |
 | --- | --- | --- | --- | --- |
-| `future_bar_values["trade"].open/close/high/low` | Future trade events in `(origin, origin + horizon]` inside same session | decoded float32 list columns `trade_open`, `trade_close`, `trade_high`, `trade_low` | `[B, H, 4]` float32 slice | Convert to normalized trade-price deltas; mask with `future_bar_masks["trade"]`. |
-| `future_bar_values["trade"].size_sum` | Future trade events in horizon | float32 list column `trade_size_sum` | `[B, H]` float32 slice | Train with `log1p`/scale normalization; mask with `future_bar_masks["trade"]`. |
+| `intraday_labels.label_resolution_us` | Builder horizon routing policy | uint64 list column | `[B, H]` uint64 | Metadata only; defines target grid resolution. |
+| `intraday_labels.label_grid_start_timestamp_us` | Next full grid bucket after origin | int64 UTC microsecond list column | `[B, H]` int64 | Metadata/audit only; label window start is inclusive. |
+| `intraday_labels.label_grid_end_timestamp_us` | End of final selected future grid bucket | int64 UTC microsecond list column | `[B, H]` int64 | Metadata/audit only; label window end is exclusive. |
+| `future_bar_values["trade"].open/close/high/low` | Future trade events in `[label_grid_start_timestamp_us, label_grid_end_timestamp_us)` inside same session | decoded float32 list columns `trade_open`, `trade_close`, `trade_high`, `trade_low` | `[B, H, 4]` float32 slice | Convert to normalized trade-price deltas; mask with `future_bar_masks["trade"]`. |
+| `future_bar_values["trade"].size_sum` | Future trade events in the grid window | float32 list column `trade_size_sum` | `[B, H]` float32 slice | Train with `log1p`/scale normalization; mask with `future_bar_masks["trade"]`. |
 | `future_bar_values["trade"].event_count` | Future trade events in horizon | uint64 list column `trade_event_count` | `[B, H]` float32 slice | Count loss; mask with `future_bar_masks["trade"]`. |
-| `future_bar_values["quote_bid"].open/close/high/low` | Future quote bid stream in horizon | decoded float32 list columns `quote_bid_open`, `quote_bid_close`, `quote_bid_high`, `quote_bid_low` | `[B, H, 4]` float32 slice | Convert to normalized bid-price deltas; mask with `future_bar_masks["quote_bid"]`. |
-| `future_bar_values["quote_bid"].size_open/size_close/size_high/size_low` | Future quote bid sizes in horizon | float32 list columns `quote_bid_size_*` | `[B, H, 4]` float32 slice | Train with `log1p`/scale normalization; mask with `future_bar_masks["quote_bid"]`. |
+| `future_bar_values["quote_bid"].open/close/high/low` | Future quote bid stream in the grid window | decoded float32 list columns `quote_bid_open`, `quote_bid_close`, `quote_bid_high`, `quote_bid_low` | `[B, H, 4]` float32 slice | Convert to normalized bid-price deltas; mask with `future_bar_masks["quote_bid"]`. |
+| `future_bar_values["quote_bid"].size_open/size_close/size_high/size_low` | Future quote bid sizes in the grid window | float32 list columns `quote_bid_size_*` | `[B, H, 4]` float32 slice | Train with `log1p`/scale normalization; mask with `future_bar_masks["quote_bid"]`. |
 | `future_bar_values["quote_bid"].event_count` | Future quote events in horizon | uint64 list column `quote_bid_event_count` | `[B, H]` float32 slice | Count loss; mask with `future_bar_masks["quote_bid"]`. |
-| `future_bar_values["quote_ask"].open/close/high/low` | Future quote ask stream in horizon | decoded float32 list columns `quote_ask_open`, `quote_ask_close`, `quote_ask_high`, `quote_ask_low` | `[B, H, 4]` float32 slice | Convert to normalized ask-price deltas; mask with `future_bar_masks["quote_ask"]`. |
-| `future_bar_values["quote_ask"].size_open/size_close/size_high/size_low` | Future quote ask sizes in horizon | float32 list columns `quote_ask_size_*` | `[B, H, 4]` float32 slice | Train with `log1p`/scale normalization; mask with `future_bar_masks["quote_ask"]`. |
+| `future_bar_values["quote_ask"].open/close/high/low` | Future quote ask stream in the grid window | decoded float32 list columns `quote_ask_open`, `quote_ask_close`, `quote_ask_high`, `quote_ask_low` | `[B, H, 4]` float32 slice | Convert to normalized ask-price deltas; mask with `future_bar_masks["quote_ask"]`. |
+| `future_bar_values["quote_ask"].size_open/size_close/size_high/size_low` | Future quote ask sizes in the grid window | float32 list columns `quote_ask_size_*` | `[B, H, 4]` float32 slice | Train with `log1p`/scale normalization; mask with `future_bar_masks["quote_ask"]`. |
 | `future_bar_values["quote_ask"].event_count` | Future quote events in horizon | uint64 list column `quote_ask_event_count` | `[B, H]` float32 slice | Count loss; mask with `future_bar_masks["quote_ask"]`. |
 | `intraday_labels.last_event_timestamp_us` | Last future event timestamp in any family horizon | int64 list column | `[B, H]` int64 | Compatibility/diagnostic by default; zero when unavailable. |
 | `intraday_labels.available` | Any future family exists and horizon stays inside session | bool list column | `[B, H]` bool | Compatibility mask; family masks are preferred for bar losses. |

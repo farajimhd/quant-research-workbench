@@ -408,30 +408,49 @@ semantics are more important than duplicating daily-bar start/end timestamps.
 
 ## Intraday Forward Labels
 
-Dense intraday bar grids are not stored by default. At small horizons such as
-`100ms`, a full session grid can become large and sparse while training only
-uses labels attached to event origins.
+Dense intraday bar grids are not persisted as separate cache files. The builder
+does build temporary ClickHouse base bars inside each label query so labels can
+be computed from compact grids instead of per-origin raw-event range scans.
 
-The builder should ask ClickHouse to compute origin-relative forward labels
-set-wise for each ticker/month package. This is not a per-origin query. It is
-one bounded query per ticker/month, or per ticker/month/horizon group, that
-joins origins to later events in the same session.
+The builder computes grid-aligned forward labels set-wise for each
+ticker/month/part package. This is not a per-origin query. It is one bounded
+query per ticker/month/part that:
+
+1. Builds sparse family bars at only the base resolutions required by the
+   configured horizons.
+2. Skips the origin's current partial bucket.
+3. Aggregates full future buckets through the requested horizon or `eod`.
 
 For each origin and horizon:
 
 ```text
-window_start_us = origin_timestamp_us
-window_end_us = origin_timestamp_us + horizon_us
+label_resolution_us = selected by horizon
+first_future_bucket = floor(origin_local_session_us / label_resolution_us) + 1
+last_future_bucket = first_future_bucket + horizon_bucket_count - 1
+label_grid_start_timestamp_us = session_midnight_us + first_future_bucket * label_resolution_us
+label_grid_end_timestamp_us = session_midnight_us + (last_future_bucket + 1) * label_resolution_us
 ```
 
-The label aggregates events that satisfy:
+The label aggregates events that satisfy the equivalent grid window:
 
 ```text
 event_ticker_id = origin_ticker_id
-event_timestamp_us > origin_timestamp_us
-event_timestamp_us <= origin_timestamp_us + horizon_us
+event_timestamp_us >= label_grid_start_timestamp_us
+event_timestamp_us < label_grid_end_timestamp_us
 event_session = origin_session
 ```
+
+This deliberately bounds timing approximation error by the selected base
+resolution and removes the expensive origin/horizon/raw-event range join. The
+default base-resolution policy is:
+
+| Horizon | Base resolution |
+| --- | ---: |
+| `<=60s` | `100ms` |
+| `60s..900s` | `1s` |
+| `900s..3600s` | `5s` |
+| `3600s..10800s` | `30s` |
+| `>10800s` and `eod` | `1m` |
 
 There are no `current_*` intraday labels. Current fixed-grid bars are ambiguous
 for event origins because they can include after-origin events inside the same
@@ -450,6 +469,9 @@ origin_ordinal
 origin_timestamp_us
 horizon[]
 horizon_us[]
+label_resolution_us[]
+label_grid_start_timestamp_us[]
+label_grid_end_timestamp_us[]
 price_primary_int[]
 price_secondary_int[]
 size_primary_sum[]
@@ -519,7 +541,7 @@ arrives inside the future horizon.
 Session boundaries are hard validity boundaries:
 
 ```text
-origin_timestamp_us + horizon_us <= session_end_us
+label_grid_end_timestamp_us <= session_end_us
 ```
 
 If the forward window crosses the 20:00 America/New_York session end, that
@@ -742,7 +764,7 @@ The standalone audit and end-of-build audit should verify:
 - ordinal windows are continuous or explicitly invalidated
 - event time features match timestamp-derived formulas
 - all context as-of rows obey `context_timestamp_us <= origin_timestamp_us`
-- intraday forward labels are origin-relative, session-bounded, and do not cross
+- intraday forward labels are grid-aligned, session-bounded, and do not cross
   into the next day
 - daily future labels use only forward label targets, never context features
 - optional missing text/SEC/XBRL inputs are zero-filled and masked

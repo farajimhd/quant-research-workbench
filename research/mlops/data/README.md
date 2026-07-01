@@ -643,13 +643,20 @@ future_plus_28d_trade_size_sum
 
 ### Intraday Future Labels
 
-Intraday labels are computed from the current in-memory event queue after the
-origin. Default horizons are:
+Intraday labels are computed as grid-aligned future windows after the origin.
+The origin's current partial bucket is skipped; labels start at the next bucket
+for the selected base resolution. Default horizons are:
 
 ```text
-100ms, 250ms, 500ms, 750ms, 1s, 5s, 10s, 30s, 60s, 120s,
-180s, 300s, 600s, 1200s, 1800s, 3600s, 7200s, 3h, 4h, 5h
+100ms, 200ms, 300ms, 400ms, 500ms, 1s, 2s, 3s, 5s, 10s, 15s, 30s,
+60s, 120s, 180s, 300s, 600s, 900s, 1200s, 1800s, 3600s, 7200s,
+3h, 4h, 5h, eod
 ```
+
+The base resolution policy is `100ms` through `60s`, `1s` through `900s`, `5s`
+through `3600s`, `30s` through `10800s`, and `1m` beyond that or for `eod`.
+The cache emits `label_resolution_us`, `label_grid_start_timestamp_us`, and
+`label_grid_end_timestamp_us` alongside each horizon.
 
 The canonical structured target is family-aware:
 
