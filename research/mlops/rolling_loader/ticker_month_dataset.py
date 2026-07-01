@@ -123,8 +123,8 @@ METADATA_PAYLOAD_FIELDS = {
     "symbols",
 }
 LABEL_VALUE_DTYPES: dict[str, np.dtype] = {
-    "price_primary_int": np.dtype(np.int32),
-    "price_secondary_int": np.dtype(np.int32),
+    "price_primary_int": np.dtype(np.float32),
+    "price_secondary_int": np.dtype(np.float32),
     "size_primary_sum": np.dtype(np.float32),
     "size_secondary_sum": np.dtype(np.float32),
     "event_count": np.dtype(np.uint64),

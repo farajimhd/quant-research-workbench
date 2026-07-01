@@ -28,8 +28,8 @@ class TickerMonthLabelAuditFixtureTest(unittest.TestCase):
 
     def test_compare_source_label_accepts_exact_fixture(self) -> None:
         cached = {
-            "price_primary_int": np.asarray([101, 102], dtype=np.int32),
-            "price_secondary_int": np.asarray([99, 100], dtype=np.int32),
+            "price_primary_int": np.asarray([101.125, 102.25], dtype=np.float32),
+            "price_secondary_int": np.asarray([99.125, 100.25], dtype=np.float32),
             "size_primary_sum": np.asarray([1.5, 2.5], dtype=np.float32),
             "size_secondary_sum": np.asarray([0.5, 0.75], dtype=np.float32),
             "event_count": np.asarray([3, 4], dtype=np.uint64),
@@ -65,6 +65,10 @@ class TickerMonthLabelAuditFixtureTest(unittest.TestCase):
             self.assertIn(field, query)
         self.assertNotIn("condition_halt_pause_count", query)
         self.assertNotIn("opening_delay", query)
+        self.assertIn("bitAnd(event_meta, 2)", query)
+        self.assertIn("bitAnd(event_meta, 4)", query)
+        self.assertIn("last_price_primary", query)
+        self.assertIn("last_price_secondary", query)
 
 
 if __name__ == "__main__":

@@ -466,8 +466,8 @@ def _sample_horizon_indexes(width: int, samples: int, rng: random.Random) -> lis
 
 def _label_arrays_for_row(row: Mapping[str, Any]) -> dict[str, np.ndarray]:
     arrays = {
-        "price_primary_int": _cell_array(row.get("price_primary_int"), np.int32),
-        "price_secondary_int": _cell_array(row.get("price_secondary_int"), np.int32),
+        "price_primary_int": _cell_array(row.get("price_primary_int"), np.float32),
+        "price_secondary_int": _cell_array(row.get("price_secondary_int"), np.float32),
         "size_primary_sum": _cell_array(row.get("size_primary_sum"), np.float32),
         "size_secondary_sum": _cell_array(row.get("size_secondary_sum"), np.float32),
         "event_count": _cell_array(row.get("event_count"), np.uint64),
@@ -489,7 +489,8 @@ def _compare_source_label(
     package_dir: Path,
     origin_key: str,
 ) -> None:
-    int_fields = ("price_primary_int", "price_secondary_int", "event_count", "last_event_timestamp_us", "available", *FUTURE_EVENT_FLAG_LABEL_KEYS)
+    float_fields = ("price_primary_int", "price_secondary_int", "size_primary_sum", "size_secondary_sum")
+    int_fields = ("event_count", "last_event_timestamp_us", "available", *FUTURE_EVENT_FLAG_LABEL_KEYS)
     for key in int_fields:
         if key not in cached or int(cached[key].shape[0]) <= int(horizon_index):
             issues.append(AuditIssue("error", "source_label_cached_field_missing", "Cached label field is missing or too short.", {"package": str(package_dir), "origin_key": origin_key, "horizon_index": int(horizon_index), "field": key}))
@@ -498,7 +499,7 @@ def _compare_source_label(
         exp = int(expected.get(key, 0) or 0)
         if actual != exp:
             issues.append(AuditIssue("error", "source_label_mismatch", "Cached future label does not match independent ClickHouse source recomputation.", {"package": str(package_dir), "origin_key": origin_key, "horizon_index": int(horizon_index), "field": key, "cached": actual, "expected": exp}))
-    for key in ("size_primary_sum", "size_secondary_sum"):
+    for key in float_fields:
         if key not in cached or int(cached[key].shape[0]) <= int(horizon_index):
             issues.append(AuditIssue("error", "source_label_cached_field_missing", "Cached label field is missing or too short.", {"package": str(package_dir), "origin_key": origin_key, "horizon_index": int(horizon_index), "field": key}))
             continue
@@ -535,8 +536,8 @@ WITH
     toUInt8((origin_local_us + {int(horizon_us)}) <= {SESSION_END_SECOND * 1_000_000}) AS session_valid,
     {_condition_token_array_aliases_sql(config)}
 SELECT
-    toInt32(if(event_count > 0, last_price_primary_int, 0)) AS price_primary_int,
-    toInt32(if(event_count > 0, last_price_secondary_int, 0)) AS price_secondary_int,
+    toFloat32(if(event_count > 0, last_price_primary, 0.0)) AS price_primary_int,
+    toFloat32(if(event_count > 0, last_price_secondary, 0.0)) AS price_secondary_int,
     toFloat32(greatest(size_primary_sum, 0.0)) AS size_primary_sum,
     toFloat32(greatest(size_secondary_sum, 0.0)) AS size_secondary_sum,
     toUInt64(event_count) AS event_count,
@@ -567,8 +568,8 @@ FROM
         count() AS event_count,
         sum(toFloat64(size_primary)) AS size_primary_sum,
         sum(toFloat64(size_secondary)) AS size_secondary_sum,
-        argMax(price_primary_int, tuple(sip_timestamp_us, ordinal)) AS last_price_primary_int,
-        argMax(price_secondary_int, tuple(sip_timestamp_us, ordinal)) AS last_price_secondary_int,
+        argMax(price_primary, tuple(sip_timestamp_us, ordinal)) AS last_price_primary,
+        argMax(price_secondary, tuple(sip_timestamp_us, ordinal)) AS last_price_secondary,
         max(sip_timestamp_us) AS last_event_timestamp_us,
         {_condition_flag_inner_select_sql()}
     FROM
@@ -576,8 +577,8 @@ FROM
         SELECT
             ordinal,
             sip_timestamp_us,
-            price_primary_int,
-            price_secondary_int,
+            toFloat32(if(price_primary_int > 0, price_primary_int / if(bitAnd(event_meta, 2) = 2, 10000.0, 100.0), 0.0)) AS price_primary,
+            toFloat32(if(price_secondary_int > 0, price_secondary_int / if(bitAnd(event_meta, 4) = 4, 10000.0, 100.0), 0.0)) AS price_secondary,
             size_primary,
             size_secondary,
             arrayFilter(t -> t != 0, [condition_token_1, condition_token_2, condition_token_3, condition_token_4, condition_token_5]) AS condition_tokens

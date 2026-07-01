@@ -416,10 +416,13 @@ intraday_labels.size_secondary_sum  float32 [B, H]
   mask                              intraday_labels.available [B, H]
 ```
 
-`H` is `len(future_intraday_bar_horizons)`. Price-like targets must be converted
-from raw integer prices to normalized deltas before loss calculation, preferably
-in bps or ticks relative to the origin/as-of bid, ask, or mid. Volume and size
-targets should be trained in a positive, scale-stable space such as `log1p`.
+`H` is `len(future_intraday_bar_horizons)`. Price-like targets arrive from the
+loader as decoded `float32` price levels; the ticker-month builder has already
+applied the scale bits packed in the target event's `event_meta`. These decoded
+levels must still be converted to normalized deltas before loss calculation,
+preferably in bps or ticks relative to the origin/as-of bid, ask, or mid. Volume
+and size targets should be trained in a positive, scale-stable space such as
+`log1p`.
 `last_event_timestamp_us [B, H]` is diagnostic timing metadata and should not be
 part of the default supervised objective unless explicitly enabled.
 

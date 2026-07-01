@@ -242,6 +242,13 @@ labels listed below. This keeps the ClickHouse result and parquet file
 proportional to origin count instead of
 `origin_count * horizon_count`.
 
+The `price_primary_int` and `price_secondary_int` label names are retained for
+cache compatibility, but their label values are decoded `float32` price levels.
+The builder applies the scale bits packed in each target event's `event_meta`
+before writing these label arrays. Raw packed event-window prices remain stored
+as integer event columns because the event codec needs the original compact
+representation.
+
 Future event labels are separate binary targets in `intraday_labels`, not fields
 inside `future_intraday_bars`. Condition flags are generated from the packed
 event condition-token columns by resolving the current
