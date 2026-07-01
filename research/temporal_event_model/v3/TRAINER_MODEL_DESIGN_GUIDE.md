@@ -400,39 +400,58 @@ loader. A training run can disable a group by setting its loss weight to zero or
 by omitting the data group from the loader, but the default full-supervised v3
 objective should consume all available labels in the batch.
 
-Price/bar outputs:
+Prediction heads are grouped by target type so the trainer can use the right
+normalization, mask, and loss for each output.
+
+Regression label groups:
 
 ```text
-future bid delta by horizon
-future ask delta by horizon
-future event count by intraday horizon
-future primary/secondary size by intraday horizon
+future_intraday_bars        float32 [B, H, 5]
+  feature order             open, close, high, low, volume
+  mask                      future_intraday_bar_mask [B, H]
+
+intraday_labels.event_count         uint64  [B, H]
+intraday_labels.size_primary_sum    float32 [B, H]
+intraday_labels.size_secondary_sum  float32 [B, H]
+  mask                              intraday_labels.available [B, H]
 ```
 
-Targets should be normalized relative to the origin/as-of price, preferably in
-bps or ticks, not raw price integer units.
+`H` is `len(future_intraday_bar_horizons)`. Price-like targets must be converted
+from raw integer prices to normalized deltas before loss calculation, preferably
+in bps or ticks relative to the origin/as-of bid, ask, or mid. Volume and size
+targets should be trained in a positive, scale-stable space such as `log1p`.
+`last_event_timestamp_us [B, H]` is diagnostic timing metadata and should not be
+part of the default supervised objective unless explicitly enabled.
 
-Future event-state and external-arrival outputs:
+Classification label groups:
 
 ```text
-condition_halt_pause_flag
-condition_resume_flag
-condition_news_risk_flag
-condition_luld_limit_state_flag
-ticker_news_arrival_flag
-sec_filing_arrival_flag
+Intraday event-state flags, bool [B, H]:
+  condition_halt_pause_flag
+  condition_resume_flag
+  condition_news_risk_flag
+  condition_luld_limit_state_flag
+  mask: intraday_labels.available [B, H]
+
+Intraday external-arrival flags, bool [B, H]:
+  ticker_news_arrival_flag
+  sec_filing_arrival_flag
+  mask: intraday_labels.available [B, H]
+
+Corporate-action daily flags, bool [B, D]:
+  future_split_flag
+  future_reverse_split_flag
+  future_forward_split_flag
+  future_dividend_ex_flag
+  future_special_dividend_ex_flag
+  future_any_corporate_action_flag
+  default D horizons: +1d, +2d, +3d, +7d, +28d
 ```
 
-Corporate-action outputs:
-
-```text
-future_split_flag
-future_reverse_split_flag
-future_forward_split_flag
-future_dividend_ex_flag
-future_special_dividend_ex_flag
-future_any_corporate_action_flag
-```
+Classification heads must output logits, not probabilities. Corporate-action
+labels are dense for emitted origins; if a future loader version adds an
+explicit `corporate_action_label_mask`, the trainer must use it. Until then, the
+corporate-action mask is true wherever the label group is present in the batch.
 
 Optional diagnostic heads:
 
@@ -447,48 +466,77 @@ gradient.
 
 The v3 trainer should calculate loss over all labels available in the emitted
 batch, not only the price targets. Availability is controlled by masks and
-presence of label groups, not by a hard-coded list in the trainer. The total
-loss is the weighted sum of task losses:
+presence of label groups, not by a hard-coded list in the trainer.
+
+All task losses use a masked mean:
 
 ```text
-total_loss =
+masked_mean(value, mask) = sum(value * mask) / max(sum(mask), 1)
+```
+
+The total loss is the active-weight-normalized weighted sum of task losses:
+
+```text
+weighted_loss_sum =
     price_weight             * price_loss
   + event_count_weight       * event_count_loss
   + event_size_weight        * event_size_loss
   + event_state_weight       * event_state_bce
   + external_arrival_weight  * external_arrival_bce
   + corporate_action_weight  * corporate_action_bce
+
+active_weight_sum = sum(weights for tasks with at least one valid target)
+
+total_loss = weighted_loss_sum / max(active_weight_sum, eps)
 ```
 
 All terms are mask-aware. If a label group is absent from the batch, or if all
 targets for a task are masked unavailable, that task contributes zero loss and
-reports zero valid count for the step.
+reports zero valid count for the step. The trainer should still log raw losses,
+weighted losses, valid counts, positive rates for binary labels, and the active
+weight sum.
 
 Price loss:
 
-- Huber or MAE in normalized bps/tick space
-- per-horizon mask
-- optional horizon weights
-- no loss contribution when a horizon is unavailable
+- target shape: `future_intraday_bars [B, H, 5]`
+- prediction shape: `[B, H, 5]` in the same normalized units
+- mask: `future_intraday_bar_mask [B, H]`, broadcast to `[B, H, 5]`
+- default loss: Huber in normalized bps/tick space for price fields and
+  `log1p` space for volume
+- optional weights: `price_feature_weight [5]` and `price_horizon_weight [H]`
 
 Event-count and size losses:
 
-- event count: masked Poisson, log-MAE, or Huber on log1p count
-- size sums: masked Huber on log1p size
+- target shapes: `event_count [B, H]`, `size_primary_sum [B, H]`,
+  `size_secondary_sum [B, H]`
+- mask: `intraday_labels.available [B, H]`
+- event count: Poisson NLL, log-MAE, or Huber on `log1p(count)`
+- size sums: Huber on `log1p(size)`
+- count and size predictions must be non-negative after the head transform,
+  for example with `softplus`, unless the loss is applied in log space
 
 Binary event-state and arrival losses:
 
-- masked BCE-with-logits for halt/pause, resume, news-risk, and LULD flags
-- masked BCE-with-logits for ticker-news and SEC-filing arrival flags
-- class-positive weights should be configurable because these targets are sparse
+- target shape: one bool tensor `[B, H]` per flag
+- logit shape: one float tensor `[B, H]` per flag
+- mask: `intraday_labels.available [B, H]`
+- loss: masked BCE-with-logits
+- event-state group: halt/pause, resume, news-risk, and LULD flags
+- external-arrival group: ticker-news and SEC-filing arrival flags
+- per-label positive weights should be configurable and capped because these
+  targets are sparse
 
 Corporate-action losses:
 
-- masked BCE-with-logits over daily horizons `+1d,+2d,+3d,+7d,+28d`
-- separate metrics and optional weights for split, reverse split, forward split,
-  dividend ex-date, special dividend ex-date, and any corporate action
-- class-positive weights should be configurable because split/special-dividend
-  targets are very sparse
+- target shape: one bool tensor `[B, D]` per corporate-action flag
+- logit shape: one float tensor `[B, D]` per corporate-action flag
+- default daily horizons: `+1d,+2d,+3d,+7d,+28d`
+- loss: masked BCE-with-logits
+- flags: split, reverse split, forward split, dividend ex-date, special dividend
+  ex-date, and any corporate action
+- per-label positive weights should be configurable and capped because
+  split/special-dividend targets are very sparse
+- optional weights: `corporate_action_day_weight [D]`
 
 Label availability calibration remains optional and should not be enabled by
 default unless there is a clear diagnostic need.
