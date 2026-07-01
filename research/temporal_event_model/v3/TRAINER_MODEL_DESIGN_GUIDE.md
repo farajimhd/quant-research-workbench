@@ -830,48 +830,55 @@ default unless there is a clear diagnostic need.
 
 ## Metrics
 
-Metrics should be emitted to Rich terminal, JSONL, and W&B.
+Metrics should be emitted to Rich terminal, JSONL, and W&B, but not every
+metric should be calculated every optimizer step. Loss is the high-frequency
+signal. Expensive metrics are aggregated from buffered predictions at a slower
+cadence so training does not stall on validation-style analysis.
 
-Core training metrics:
+Default metric cadence:
 
-- `train/loss`
-- `train/primary_loss`
-- `train/aux_loss`
-- `train/learning_rate`
-- `train/grad_norm`
-- `train/samples_seen_total`
-- `train/samples_per_second`
-- `train/step_seconds`
-- `train/loader_wait_seconds`
-- `train/gpu_step_seconds`
-- `train/gpu_memory_allocated_gib`
-- `train/gpu_memory_reserved_gib`
+| Cadence | Default | Purpose | Metric families |
+| --- | ---: | --- | --- |
+| Step | every optimizer step | smooth training loop and detect immediate failures | total loss, weighted task losses, learning rate, step timing |
+| Fast train summary | every 25 steps | cheap diagnostics from already-computed batch tensors | valid fractions, positive rates, availability fractions, throughput |
+| Train metric window | every 250 steps | regression/classification metrics from a rolling prediction buffer | MAE, RMSE, sign accuracy, BCE/AUC where valid |
+| Validation | every 2,000 steps or epoch end | deterministic validation loader metrics | same grouped metrics as train window with `val/` prefix |
+| Full audit metrics | manual or end of run | expensive cohort and rare-label diagnostics | all cohorts, sparse corporate-action and halt/LULD slices |
 
-Label-derived price metrics, overall and per horizon:
+W&B grouping rules:
 
-- `mae_bid_bps`
-- `mae_ask_bps`
-- `rmse_bid_bps`
-- `rmse_ask_bps`
-- `median_abs_error_bid_bps`
-- `median_abs_error_ask_bps`
-- `sign_accuracy_bid`
-- `sign_accuracy_ask`
-- `directional_accuracy_any_move`
-- `valid_fraction`
-- `target_mean_bps`
-- `target_std_bps`
-- `prediction_mean_bps`
-- `prediction_std_bps`
-- `bias_bps`
+- Use one W&B panel per metric group below.
+- Keep each panel below 12-18 scalar series. If a group would exceed that, split
+  by horizon family, modality, or label type.
+- Log JSONL with the full metric dictionary. W&B receives the curated grouped
+  keys so the dashboard remains readable.
+- Rich terminal shows only the latest high-signal subset: total loss, active
+  task losses, validation headline metrics, throughput, loader wait, and data
+  availability.
+- Per-horizon metrics should use compact horizon labels such as `h_100ms`,
+  `h_1s`, `h_1m`, `d_1`, and `d_28`. Do not put every horizon for every target
+  in one W&B panel.
 
-Spread/liquidity-aware metrics:
+### W&B Metric Panels
 
-- `mae_bid_bps_by_spread_bucket`
-- `mae_ask_bps_by_spread_bucket`
-- `sign_accuracy_by_spread_bucket`
-- `mae_by_event_count_bucket`
-- `mae_by_session_bucket`
+| Panel | Keys | Cadence | Notes |
+| --- | --- | --- | --- |
+| `loss/core` | `train/loss`, `train/loss_ema`, `train/active_weight_sum`, `train/grad_norm`, `train/learning_rate`, `train/loss_scale`, `train/skipped_step`, `train/nan_guard_triggered` | step | Keep this as the first dashboard panel. |
+| `loss/task` | `train/loss_price`, `train/loss_event_count`, `train/loss_event_size`, `train/loss_event_state`, `train/loss_external_arrival`, `train/loss_corporate_action`, plus matching weighted losses when enabled | step | If weighted and raw losses exceed 18 series, split into `loss/task_raw` and `loss/task_weighted`. |
+| `train/speed` | `train/samples_per_second`, `train/tokens_or_events_per_second`, `train/step_seconds`, `train/gpu_step_seconds`, `train/loader_wait_seconds`, `train/materialize_seconds`, `train/host_to_device_seconds`, `train/backward_seconds`, `train/optimizer_seconds` | fast train summary | All timing values should be moving averages. |
+| `train/memory` | `train/gpu_memory_allocated_gib`, `train/gpu_memory_reserved_gib`, `train/gpu_memory_peak_gib`, `train/cpu_rss_gib`, `train/loader_rss_gib`, `train/pinned_memory_gib` | fast train summary | Record memory after synchronization only at summary cadence. |
+| `data/loader_state` | `loader/epoch`, `loader/package_position`, `loader/origin_cursor`, `loader/emitted_batches`, `loader/emitted_samples`, `loader/seen_origins_total`, `loader/seen_origins_this_epoch`, `loader/replay_seed`, `loader/cache_manifest_changed` | fast train summary | String identifiers stay in JSONL/run manifest, not W&B scalar panels. |
+| `data/availability` | `data/event_window_valid_fraction`, `data/daily_bars_available_fraction`, `data/global_bars_available_fraction`, `data/ticker_news_available_fraction`, `data/market_news_available_fraction`, `data/sec_filings_available_fraction`, `data/xbrl_available_fraction`, `data/corporate_action_available_fraction`, `data/label_available_fraction` | fast train summary | Use masks from the emitted batch, not post-hoc DB checks. |
+| `labels/distribution` | `labels/price_target_mean_bps`, `labels/price_target_std_bps`, `labels/price_target_abs_p95_bps`, `labels/event_count_mean`, `labels/event_count_p95`, `labels/event_state_positive_rate`, `labels/news_arrival_positive_rate`, `labels/sec_arrival_positive_rate`, `labels/corporate_action_positive_rate` | fast train summary | These are target diagnostics, not model quality metrics. |
+| `train/price_intraday` | `train/price_mae_bid_bps/<h>`, `train/price_mae_ask_bps/<h>`, `train/price_rmse_bid_bps/<h>`, `train/price_rmse_ask_bps/<h>`, `train/price_sign_acc_bid/<h>`, `train/price_sign_acc_ask/<h>` | train metric window | Split into separate panels for short, medium, and long intraday horizons if needed. |
+| `val/price_intraday` | same as `train/price_intraday` with `val/` prefix | validation | This is usually the main model-quality panel. |
+| `train/bar_activity` | `train/event_count_mae/<h>`, `train/event_count_log_mae/<h>`, `train/size_primary_log_mae/<h>`, `train/size_secondary_log_mae/<h>`, `train/label_valid_fraction/<h>` | train metric window | Keep count/size metrics separate from price metrics. |
+| `val/bar_activity` | same as `train/bar_activity` with `val/` prefix | validation | Compare against train for overfit and sparse-horizon drift. |
+| `train/event_state` | `train/halt_bce/<h>`, `train/halt_auc/<h>`, `train/luld_bce/<h>`, `train/luld_auc/<h>`, `train/news_arrival_bce/<h>`, `train/news_arrival_auc/<h>`, `train/sec_arrival_bce/<h>`, `train/sec_arrival_auc/<h>` | train metric window | AUC is logged only when positives and negatives are both present. |
+| `val/event_state` | same as `train/event_state` with `val/` prefix | validation | Rare labels should also report valid count in JSONL. |
+| `val/corporate_actions_daily` | `val/future_split_bce/<d>`, `val/future_reverse_split_bce/<d>`, `val/future_forward_split_bce/<d>`, `val/future_dividend_ex_bce/<d>`, `val/future_special_dividend_ex_bce/<d>`, `val/future_any_corporate_action_bce/<d>`, optional AUC keys when valid | validation | Daily horizons only, matched to the configured daily label horizons up to `+28d`. |
+| `val/cohorts_price` | selected headline price metrics for `cohort_liquid_asof`, `cohort_wide_spread_asof`, `cohort_high_vol_asof`, and `cohort_afterhours_origin` | validation or full audit | Keep to one or two headline metrics per cohort to avoid panel overload. |
+| `val/cohorts_context` | selected headline metrics for `cohort_news_context_available`, `cohort_sec_context_available`, `cohort_xbrl_context_available` | validation or full audit | Used to verify whether sparse modalities help. |
 
 Diagnostic cohort metrics:
 
@@ -917,59 +924,10 @@ Minimum reporting rules:
 - Store cohort counts beside metrics so apparent improvements are not confused
   with small-sample noise.
 
-Intraday label metrics:
-
-- `future_event_count_mae`
-- `future_event_count_log_mae`
-- `future_size_primary_log_mae`
-- `future_size_secondary_log_mae`
-- `event_state_bce`
-- `event_state_auc` when enough positives/negatives exist
-- `event_state_positive_rate`
-- `event_state_valid_fraction`
-- `external_arrival_bce`
-- `external_arrival_auc` when enough positives/negatives exist
-- `external_arrival_positive_rate`
-- `label_available_fraction`
-- `last_event_timestamp_gap_seconds`
-
-Corporate-action label metrics:
-
-- `corporate_action_bce`
-- `corporate_action_auc` when enough positives/negatives exist
-- `corporate_action_positive_rate`
-- `corporate_action_valid_fraction`
-- `future_split_flag_bce`
-- `future_reverse_split_flag_bce`
-- `future_forward_split_flag_bce`
-- `future_dividend_ex_flag_bce`
-- `future_special_dividend_ex_flag_bce`
-- `future_any_corporate_action_flag_bce`
-
-Input availability metrics:
-
-- `ticker_news_available_fraction`
-- `market_news_available_fraction`
-- `sec_filings_available_fraction`
-- `xbrl_available_fraction`
-- `ticker_bars_available_fraction`
-- `global_bars_available_fraction`
-- `event_window_valid_fraction`
-
-State/data accounting metrics:
-
-- `loader/epoch`
-- `loader/package_position`
-- `loader/origin_cursor`
-- `loader/emitted_batches`
-- `loader/emitted_samples`
-- `loader/seen_origins_total`
-- `loader/seen_origins_this_epoch`
-- `loader/cache_manifest_fingerprint`
-- `loader/dataset_plan_id`
-
 Validation metrics should mirror training metrics with `val/` prefixes and
-should be computed on deterministic validation loader state.
+should be computed on deterministic validation loader state. The validation
+loader state and sample plan must be checkpointed so repeated experiments can
+compare identical validation batches.
 
 ## Stateful Trainer Contract
 
