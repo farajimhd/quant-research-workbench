@@ -111,7 +111,7 @@ Core event columns:
 ticker_id
 ticker
 ordinal
-event_type
+event_meta
 timestamp_us
 price_primary_int
 price_secondary_int
@@ -366,21 +366,24 @@ reference tables that were built before the ticker/month cache builder runs.
 | `ticker_id` | Persistent ticker id | `origins_part_*.parquet`, integer | batch identity array | Identity only by default. |
 | `origin_ordinal` | Origin event ordinal | `origins_part_*.parquet`, integer | batch identity array | Defines sample identity with ticker. |
 | `origin_timestamp_us` | Origin event UTC timestamp | `origins_part_*.parquet`, int64 microseconds | batch identity array | Defines as-of time. |
-| `event_type` | Quote/trade source row kind | raw event row, uint8 | raw event window column | `0=quote`, `1=trade`. |
-| `event_meta` | Event codec metadata | raw event row, uint8 | raw event window column | Contains event type, price scale bits, tape bits. |
+| `event_type` | Quote/trade source row kind | not a separate cached column; packed in `event_meta` | derived from `bitAnd(event_meta, 1)` when needed | `event_meta` bit 0: `0=quote`, `1=trade`. |
+| `event_meta` | Event codec metadata | raw event row, uint8 packed byte | raw event window column | Bits: 0 event type, 1 primary price scale, 2 secondary price scale, 3-5 tape, 6-7 reserved. |
+| `primary_price_scale` | Price precision selected at ingest | not a separate cached column; packed in `event_meta` | derived from `bitAnd(event_meta, 2) != 0` when decoding | `event_meta` bit 1: `0=/100`, `1=/10000`. |
+| `secondary_price_scale` | Price precision selected at ingest | not a separate cached column; packed in `event_meta` | derived from `bitAnd(event_meta, 4) != 0` when decoding | `event_meta` bit 2: `0=/100`, `1=/10000`. |
+| `tape` | Source tape code | not a separate cached column; packed in `event_meta` | derived from `bitAnd(bitShiftRight(event_meta, 3), 7)` when needed | `event_meta` bits 3-5 store tape code; bits 6-7 reserved. |
 | `ordinal` | Event ordinal | raw event row, uint64 | raw event window column unless suppressed | Used for continuity audit. |
 | `timestamp_us` | Event SIP timestamp | raw event row, int64 microseconds | raw event window column unless suppressed | UTC. |
-| `price_primary_int` | Quote ask price or trade price | raw event row, uint32 packed price | raw event window column | Decode with primary scale bit in `event_meta` only if model needs float price. |
-| `price_secondary_int` | Quote bid price or zero for trade | raw event row, uint32 packed price | raw event window column | Decode with secondary scale bit in `event_meta` only if model needs float price. |
+| `price_primary_int` | Quote ask price or trade price | raw event row, uint32 packed price | raw event window column | Scale byte location: `event_meta` bit 1; `0=/100`, `1=/10000`. |
+| `price_secondary_int` | Quote bid price or zero for trade | raw event row, uint32 packed price | raw event window column | Scale byte location: `event_meta` bit 2; `0=/100`, `1=/10000`. |
 | `size_primary` | Quote ask size or trade size | raw event row, float32 | raw event window column | No scale bit; raw event units. |
 | `size_secondary` | Quote bid size or zero for trade | raw event row, float32 | raw event window column | No scale bit; raw event units. |
-| `exchange_primary` | Ask exchange or trade exchange | raw event row, uint8 | raw event window column | Categorical id from source exchange code. |
-| `exchange_secondary` | Bid exchange or zero for trade | raw event row, uint8 | raw event window column | Categorical id from source exchange code. |
-| `condition_token_1` | First condition/indicator token slot | raw event row, uint8 | raw event window column | `0` means missing/unknown. |
-| `condition_token_2` | Second condition/indicator token slot | raw event row, uint8 | raw event window column | `0` means missing/unknown. |
-| `condition_token_3` | Third condition/indicator token slot | raw event row, uint8 | raw event window column | `0` means missing/unknown. |
-| `condition_token_4` | Fourth condition/indicator token slot | raw event row, uint8 | raw event window column | `0` means missing/unknown. |
-| `condition_token_5` | Fifth condition/indicator token slot | raw event row, uint8 | raw event window column | `0` means missing/unknown. |
+| `exchange_primary` | Ask exchange or trade exchange | raw event row, uint8 full-byte code | raw event window column | Byte bits 0-7 store the exchange code; not sub-bit packed. |
+| `exchange_secondary` | Bid exchange or zero for trade | raw event row, uint8 full-byte code | raw event window column | Byte bits 0-7 store the exchange code; not sub-bit packed. |
+| `condition_token_1` | First condition/indicator token slot | raw event row, uint8 full-byte dense token id | raw event window column | Byte bits 0-7 store one dense token id; `0` means missing/unknown. |
+| `condition_token_2` | Second condition/indicator token slot | raw event row, uint8 full-byte dense token id | raw event window column | Byte bits 0-7 store one dense token id; `0` means missing/unknown. |
+| `condition_token_3` | Third condition/indicator token slot | raw event row, uint8 full-byte dense token id | raw event window column | Byte bits 0-7 store one dense token id; `0` means missing/unknown. |
+| `condition_token_4` | Fourth condition/indicator token slot | raw event row, uint8 full-byte dense token id | raw event window column | Byte bits 0-7 store one dense token id; `0` means missing/unknown. |
+| `condition_token_5` | Fifth condition/indicator token slot | raw event row, uint8 full-byte dense token id | raw event window column | Byte bits 0-7 store one dense token id; `0` means missing/unknown. |
 | `utc_second_of_day_sin` | Event timestamp | raw event row, float32 | raw event window column when requested | UTC absolute time feature. |
 | `utc_second_of_day_cos` | Event timestamp | raw event row, float32 | raw event window column when requested | UTC absolute time feature. |
 | `utc_day_of_week_sin` | Event timestamp | raw event row, float32 | raw event window column when requested | UTC absolute time feature. |
