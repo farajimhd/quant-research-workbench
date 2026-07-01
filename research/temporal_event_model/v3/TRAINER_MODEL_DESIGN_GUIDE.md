@@ -240,11 +240,12 @@ Shape symbols used in the atomic input/output tables:
 
 The event sequence length is written as the numeric value `1024`, matching the
 current v3 loader default `event_stream_length`. In event rows, `1024` is the
-number of events in the sequence, not the bit width of a field. Packed source
-bits are unpacked by the model data adapter into one scalar category per event
-before categorical embeddings. If an experiment changes the loader setting,
-update the table shapes to the new numeric value in the model guide/config
-instead of reusing a symbolic length.
+number of events in the context sequence, not the bit width of a field. Packed
+source bits are extraction rules, not tensor axes. For example, `event_meta` bit
+0 is unpacked into one scalar `event_type_id` per event. That scalar id is then
+embedded to a learned vector before it is fused into the per-event token. If an
+experiment changes the loader setting, update the table shapes to the new
+numeric value in the model guide/config instead of reusing a symbolic length.
 
 | Symbol | Meaning |
 | --- | --- |
@@ -267,7 +268,68 @@ instead of reusing a symbolic length.
 | `F_ca` | Number of corporate-action numeric feature dimensions. |
 | `d_model` | Model hidden width after each modality-specific projection. |
 
-| Model input atom | Adapter source/operation | Model input tensor | Model input representation | Encoder path |
+Event raw storage and adapter chain:
+
+```text
+raw_event_stream                [B, 1024, F]
+  -> v3 model data adapter      unpack/decode/normalize typed fields
+  -> categorical id tensors     [B, 1024] per categorical atom
+  -> numeric/time tensors       [B, 1024] or [B, 1024, T_*]
+  -> embeddings/projections     [B, 1024, d_atom] per atom/group
+  -> event token projection     [B, 1024, d_model]
+  -> event encoder              [B, 1024, d_model]
+```
+
+For packed event fields, the bit location stays only in the adapter source
+definition. The model does not receive a tensor shaped `[B, 1024, bit_0]`.
+It receives either scalar category ids shaped `[B, 1024]`, dense numeric
+features shaped `[B, 1024]`, or dense vector features shaped `[B, 1024, T_*]`.
+
+Event-atom connection details:
+
+| Event atom | Raw source in `raw_event_stream [B, 1024, F]` | Storage location | Adapter output before learned layer | Learned layer output | Final event-token connection |
+| --- | --- | --- | --- | --- | --- |
+| `event_type_id` | `event_meta` | bit 0 | `uint8 [B, 1024]`, vocab size 2 | embedding `[B, 1024, d_event_type]` | concatenate into event token input, then linear projection |
+| `event_primary_price_scale_id` | `event_meta` | bit 1 | `uint8 [B, 1024]`, vocab size 2 | embedding `[B, 1024, d_price_scale]` | concatenate into event token input; also controls primary price decode |
+| `event_secondary_price_scale_id` | `event_meta` | bit 2 | `uint8 [B, 1024]`, vocab size 2 | embedding `[B, 1024, d_price_scale]` | concatenate into event token input; also controls secondary price decode |
+| `event_tape_id` | `event_meta` | bits 3-5 | `uint8 [B, 1024]`, vocab size 8 | embedding `[B, 1024, d_tape]` | concatenate into event token input, then linear projection |
+| `event_primary_price_bps` | `price_primary_int` plus primary scale id | full integer column plus scale bit | `float32 [B, 1024]` | numeric projection `[B, 1024, d_price]` | concatenate into event token input, then linear projection |
+| `event_secondary_price_bps` | `price_secondary_int` plus secondary scale id | full integer column plus scale bit | `float32 [B, 1024]` | numeric projection `[B, 1024, d_price]` | concatenate into event token input, then linear projection |
+| `event_primary_size_log1p` | `size_primary` | full float column | `float32 [B, 1024]` | numeric projection `[B, 1024, d_size]` | concatenate into event token input, then linear projection |
+| `event_secondary_size_log1p` | `size_secondary` | full float column | `float32 [B, 1024]` | numeric projection `[B, 1024, d_size]` | concatenate into event token input, then linear projection |
+| `event_exchange_primary_id` | `exchange_primary` | full byte column | `uint8 [B, 1024]`, exchange vocabulary | embedding `[B, 1024, d_exchange]` | concatenate into event token input, then linear projection |
+| `event_exchange_secondary_id` | `exchange_secondary` | full byte column | `uint8 [B, 1024]`, exchange vocabulary | embedding `[B, 1024, d_exchange]` | concatenate into event token input, then linear projection |
+| `event_condition_token_1_id` | `condition_token_1` | full byte column | `uint8 [B, 1024]`, condition vocabulary | embedding `[B, 1024, d_condition]` | mask-aware pooled with other condition slots into one condition feature |
+| `event_condition_token_2_id` | `condition_token_2` | full byte column | `uint8 [B, 1024]`, condition vocabulary | embedding `[B, 1024, d_condition]` | mask-aware pooled with other condition slots into one condition feature |
+| `event_condition_token_3_id` | `condition_token_3` | full byte column | `uint8 [B, 1024]`, condition vocabulary | embedding `[B, 1024, d_condition]` | mask-aware pooled with other condition slots into one condition feature |
+| `event_condition_token_4_id` | `condition_token_4` | full byte column | `uint8 [B, 1024]`, condition vocabulary | embedding `[B, 1024, d_condition]` | mask-aware pooled with other condition slots into one condition feature |
+| `event_condition_token_5_id` | `condition_token_5` | full byte column | `uint8 [B, 1024]`, condition vocabulary | embedding `[B, 1024, d_condition]` | mask-aware pooled with other condition slots into one condition feature |
+| `event_time_features` | UTC/session time feature columns | full float columns | `float32 [B, 1024, T_event]` | time adapter `[B, 1024, d_time]` | concatenate into event token input, then linear projection |
+| `event_position_id` | derived from context order | not stored | `int64 [B, 1024]` | embedding `[B, 1024, d_position]` | add to event token |
+| `event_mask` | derived from valid context rows | not stored | `bool [B, 1024]` | no embedding | attention mask for event encoder |
+
+The final event token is built by combining the learned outputs above:
+
+```text
+event_token_input =
+  LinearProject(
+    concat(
+    event_type_emb,
+    price_scale_embs,
+    tape_emb,
+    decoded_price_projection,
+    size_projection,
+    exchange_embs,
+    condition_slot_projection,
+    event_time_projection
+    )
+  )
+  + position_emb
+```
+
+This yields `float32/bf16 [B, 1024, d_model]` before the event encoder.
+
+| Model input atom | Adapter source/operation | Adapter output tensor fed to layer | Adapter output representation | Encoder path |
 | --- | --- | --- | --- | --- |
 | `event_type_id` | unpack `raw_event_stream.event_meta` bit 0 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=quote`, `1=trade` | event categorical embedding |
 | `event_primary_price_scale_id` | unpack `raw_event_stream.event_meta` bit 1 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=/100`, `1=/10000` | event categorical embedding and decode helper |
