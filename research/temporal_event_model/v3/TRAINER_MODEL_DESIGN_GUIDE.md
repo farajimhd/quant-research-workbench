@@ -239,9 +239,12 @@ fields outside the model for audit and checkpoint logs.
 Shape symbols used in the atomic input/output tables:
 
 The event sequence length is written as the numeric value `1024`, matching the
-current v3 loader default `event_stream_length`. If an experiment changes that
-loader setting, update the table shapes to the new numeric value in the model
-guide/config instead of reusing a symbolic length.
+current v3 loader default `event_stream_length`. In event rows, `1024` is the
+number of events in the sequence, not the bit width of a field. Packed source
+bits are unpacked by the model data adapter into one scalar category per event
+before categorical embeddings. If an experiment changes the loader setting,
+update the table shapes to the new numeric value in the model guide/config
+instead of reusing a symbolic length.
 
 | Symbol | Meaning |
 | --- | --- |
@@ -264,59 +267,59 @@ guide/config instead of reusing a symbolic length.
 | `F_ca` | Number of corporate-action numeric feature dimensions. |
 | `d_model` | Model hidden width after each modality-specific projection. |
 
-| Model input atom | Loader source | Shape before embedding/projection | Required representation | Encoder path |
+| Model input atom | Adapter source/operation | Model input tensor | Model input representation | Encoder path |
 | --- | --- | --- | --- | --- |
-| `event_type_id` | `bitAnd(event_meta, 1)` | `[B, 1024]` | categorical id, `0=quote`, `1=trade` | event categorical embedding |
-| `event_primary_price_scale_id` | `bitAnd(event_meta, 2) != 0` | `[B, 1024]` | categorical id, `0=/100`, `1=/10000` | event categorical embedding and decode helper |
-| `event_secondary_price_scale_id` | `bitAnd(event_meta, 4) != 0` | `[B, 1024]` | categorical id, `0=/100`, `1=/10000` | event categorical embedding and decode helper |
-| `event_tape_id` | `bitAnd(bitShiftRight(event_meta, 3), 7)` | `[B, 1024]` | categorical id, bits 3-5 of `event_meta` | event categorical embedding |
-| `event_primary_price_bps` | `price_primary_int` + primary scale bit | `[B, 1024]` | decoded float price, converted to bps/ticks relative to origin reference price | event numeric projection |
-| `event_secondary_price_bps` | `price_secondary_int` + secondary scale bit | `[B, 1024]` | decoded float price, converted to bps/ticks relative to origin reference price; zero/masked for trade secondary price | event numeric projection |
-| `event_primary_size_log1p` | `size_primary` | `[B, 1024]` | `log1p(max(size_primary, 0))`, optionally clipped/standardized | event numeric projection |
-| `event_secondary_size_log1p` | `size_secondary` | `[B, 1024]` | `log1p(max(size_secondary, 0))`, optionally clipped/standardized | event numeric projection |
-| `event_exchange_primary_id` | `exchange_primary` | `[B, 1024]` | categorical id; byte value 0 means missing/unknown where applicable | event categorical embedding |
-| `event_exchange_secondary_id` | `exchange_secondary` | `[B, 1024]` | categorical id; byte value 0 means missing/unknown where applicable | event categorical embedding |
-| `event_condition_token_1_id` | `condition_token_1` | `[B, 1024]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
-| `event_condition_token_2_id` | `condition_token_2` | `[B, 1024]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
-| `event_condition_token_3_id` | `condition_token_3` | `[B, 1024]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
-| `event_condition_token_4_id` | `condition_token_4` | `[B, 1024]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
-| `event_condition_token_5_id` | `condition_token_5` | `[B, 1024]` | dense token id; byte bits 0-7 store one token, `0=missing/unknown` | event condition-token embedding |
-| `event_time_features` | event UTC/session time columns | `[B, 1024, T_event]` | float32 time components through shared time encoder plus event adapter | event time adapter |
-| `event_position_id` | event row rank in sliding stream | `[B, 1024]` | relative sequence position, newest event has a stable convention | event position embedding |
-| `event_mask` | `raw_event_mask` | `[B, 1024]` | bool mask | event attention mask |
-| `ticker_daily_trade_bar_numeric` | `bar_inputs["ticker_daily_bars"]["trade_values"]` | `[B, O, 6]` | trade OHLC, size sum, and count fields; prices normalized to origin reference or recent close; size/count fields in `log1p` | ticker bar encoder |
-| `ticker_daily_quote_bid_bar_numeric` | `bar_inputs["ticker_daily_bars"]["quote_bid_values"]` | `[B, O, 9]` | bid OHLC plus bid size state fields; prices normalized to origin reference or recent close | ticker bar encoder |
-| `ticker_daily_quote_ask_bar_numeric` | `bar_inputs["ticker_daily_bars"]["quote_ask_values"]` | `[B, O, 9]` | ask OHLC plus ask size state fields; prices normalized to origin reference or recent close | ticker bar encoder |
-| `ticker_daily_bar_offset_id` | ticker bar offsets | `[O]` broadcast to `[B, O]` | learned completed-bar offset id | ticker bar encoder |
-| `ticker_daily_bar_time_features` | ticker bar time features | `[B, O, T_bar]` | shared time encoder plus bar adapter | ticker bar encoder |
-| `ticker_daily_bar_family_masks` | `trade_mask`, `quote_bid_mask`, `quote_ask_mask` | each `[B, O]` | bool masks per bar family | ticker bar attention mask |
-| `global_daily_trade_bar_numeric` | `bar_inputs["global_daily_bars"]["trade_values"]` | `[B, S, O, 6]` | same numeric transforms as ticker trade bars | global bar encoder |
-| `global_daily_quote_bid_bar_numeric` | `bar_inputs["global_daily_bars"]["quote_bid_values"]` | `[B, S, O, 9]` | same numeric transforms as ticker bid bars | global bar encoder |
-| `global_daily_quote_ask_bar_numeric` | `bar_inputs["global_daily_bars"]["quote_ask_values"]` | `[B, S, O, 9]` | same numeric transforms as ticker ask bars | global bar encoder |
-| `global_daily_bar_symbol_id` | global symbol list | `[S]` broadcast to `[B, S, O]` | learned symbol embedding | global bar encoder |
-| `global_daily_bar_offset_id` | global bar offsets | `[O]` broadcast to `[B, S, O]` | learned completed-bar offset id | global bar encoder |
-| `global_daily_bar_time_features` | global bar time features | `[B, S, O, T_bar]` | shared time encoder plus bar adapter | global bar encoder |
-| `global_daily_bar_family_masks` | `trade_mask`, `quote_bid_mask`, `quote_ask_mask` | each `[B, S, O]` | bool masks per bar family | global bar attention mask |
-| `ticker_news_embedding` | `text_inputs["ticker_news"].embeddings` | `[B, 8, 2, 1024]` | precomputed Qwen embedding projected to `d_model`; Qwen remains offline/frozen | ticker-news encoder |
-| `market_news_embedding` | `text_inputs["market_news"].embeddings` | `[B, 16, 2, 1024]` | precomputed Qwen embedding projected to `d_model`; market news means all news | market-news encoder |
-| `sec_filing_embedding` | `text_inputs["sec_filings"].embeddings` | `[B, 4, 8, 1024]` | precomputed Qwen embedding projected to `d_model` | SEC text encoder |
-| `text_item_time_features` | text item time features | per text group `[B, I, T_text]` | availability/publish/accepted time through shared time encoder plus text adapter | text encoders |
-| `text_item_mask` | text item mask | per text group `[B, I]` | bool mask | text item pooling mask |
-| `text_chunk_mask` | text chunk mask | per text group `[B, I, C]` | bool mask | text chunk pooling mask |
-| `xbrl_value_signed_log` | `xbrl_inputs["value"]` | `[B, 4096]` | signed `log1p(abs(value))`, optionally normalized by tag/unit statistics | XBRL numeric projection |
-| `xbrl_fiscal_year` | `xbrl_inputs["fiscal_year"]` | `[B, 4096]` | numeric or small categorical embedding | XBRL encoder |
-| `xbrl_period_end_days` | `xbrl_inputs["period_end_days"]` | `[B, 4096]` | numeric age plus period-end time embedding | XBRL encoder |
-| `xbrl_category_ids` | XBRL category id fields | field-specific `[B, 4096]` | learned categorical embeddings; id `0=missing/unknown` | XBRL categorical projection |
-| `xbrl_mapping_confidence` | `xbrl_inputs["mapping_confidence"]` | `[B, 4096]` | float32 numeric feature | XBRL numeric projection |
-| `xbrl_time_features` | XBRL availability time features | `[B, 4096, T_xbrl]` | shared time encoder plus XBRL availability adapter | XBRL encoder |
-| `xbrl_period_end_time_features` | XBRL period-end time features | `[B, 4096, T_period]` | separate shared time encoding plus XBRL period adapter | XBRL encoder |
-| `xbrl_mask` | `xbrl_inputs["mask"]` | `[B, 4096]` | bool mask | XBRL set mask |
-| `corporate_action_category_ids` | action/dividend/currency/frequency ids | field-specific `[B, 128]` | learned categorical embeddings; id `0=missing/unknown` | corporate-action encoder |
-| `corporate_action_numeric` | corporate numeric feature tensor | `[B, 128, F_ca]` | split factors, log factors, cash amount, and indicator flags as float32 | corporate-action encoder |
-| `corporate_action_available_time_features` | corporate available time features | `[B, 128, T_ca]` | shared time encoder plus corporate availability adapter | corporate-action encoder |
-| `corporate_action_effective_time_features` | corporate effective time features | `[B, 128, T_ca_eff]` | shared time encoder plus corporate effective-time adapter | corporate-action encoder |
-| `corporate_action_mask` | corporate action mask | `[B, 128]` | bool mask | corporate-action set mask |
-| `modality_available_mask` | `input_availability` | `[B, M]` | bool mask plus optional learned missing-modality token | fusion transformer |
+| `event_type_id` | unpack `raw_event_stream.event_meta` bit 0 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=quote`, `1=trade` | event categorical embedding |
+| `event_primary_price_scale_id` | unpack `raw_event_stream.event_meta` bit 1 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=/100`, `1=/10000` | event categorical embedding and decode helper |
+| `event_secondary_price_scale_id` | unpack `raw_event_stream.event_meta` bit 2 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=/100`, `1=/10000` | event categorical embedding and decode helper |
+| `event_tape_id` | unpack `raw_event_stream.event_meta` bits 3-5 | `uint8 [B, 1024]` | one scalar category per event; values `0..7` | event categorical embedding |
+| `event_primary_price_bps` | decode `raw_event_stream.price_primary_int` with primary scale id | `float32 [B, 1024]` | decoded price converted to bps/ticks relative to origin reference price | event numeric projection |
+| `event_secondary_price_bps` | decode `raw_event_stream.price_secondary_int` with secondary scale id | `float32 [B, 1024]` | decoded price converted to bps/ticks relative to origin reference price; zero/masked for trade secondary price | event numeric projection |
+| `event_primary_size_log1p` | transform `raw_event_stream.size_primary` | `float32 [B, 1024]` | `log1p(max(size_primary, 0))`, optionally clipped/standardized | event numeric projection |
+| `event_secondary_size_log1p` | transform `raw_event_stream.size_secondary` | `float32 [B, 1024]` | `log1p(max(size_secondary, 0))`, optionally clipped/standardized | event numeric projection |
+| `event_exchange_primary_id` | read `raw_event_stream.exchange_primary` | `uint8 [B, 1024]` | one scalar exchange category per event; byte value 0 means missing/unknown where applicable | event categorical embedding |
+| `event_exchange_secondary_id` | read `raw_event_stream.exchange_secondary` | `uint8 [B, 1024]` | one scalar exchange category per event; byte value 0 means missing/unknown where applicable | event categorical embedding |
+| `event_condition_token_1_id` | read `raw_event_stream.condition_token_1` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | event condition-token embedding |
+| `event_condition_token_2_id` | read `raw_event_stream.condition_token_2` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | event condition-token embedding |
+| `event_condition_token_3_id` | read `raw_event_stream.condition_token_3` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | event condition-token embedding |
+| `event_condition_token_4_id` | read `raw_event_stream.condition_token_4` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | event condition-token embedding |
+| `event_condition_token_5_id` | read `raw_event_stream.condition_token_5` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | event condition-token embedding |
+| `event_time_features` | select event UTC/session time columns | `float32 [B, 1024, T_event]` | one dense time-feature vector per event through shared time encoder plus event adapter | event time adapter |
+| `event_position_id` | derive row rank in sliding event stream | `int64 [B, 1024]` | one relative sequence-position id per event; newest event has a stable convention | event position embedding |
+| `event_mask` | derive from `raw_event_mask` | `bool [B, 1024]` | true for valid events, false for padded/missing positions | event attention mask |
+| `ticker_daily_trade_bar_numeric` | transform `bar_inputs["ticker_daily_bars"]["trade_values"]` | `float32 [B, O, 6]` | trade OHLC, size sum, and count fields; prices normalized to origin reference or recent close; size/count fields in `log1p` | ticker bar encoder |
+| `ticker_daily_quote_bid_bar_numeric` | transform `bar_inputs["ticker_daily_bars"]["quote_bid_values"]` | `float32 [B, O, 9]` | bid OHLC plus bid size state fields; prices normalized to origin reference or recent close | ticker bar encoder |
+| `ticker_daily_quote_ask_bar_numeric` | transform `bar_inputs["ticker_daily_bars"]["quote_ask_values"]` | `float32 [B, O, 9]` | ask OHLC plus ask size state fields; prices normalized to origin reference or recent close | ticker bar encoder |
+| `ticker_daily_bar_offset_id` | broadcast configured ticker bar offsets | `int64 [B, O]` | one completed-bar offset category per ticker daily bar | ticker bar encoder |
+| `ticker_daily_bar_time_features` | select ticker bar time features | `float32 [B, O, T_bar]` | one dense time-feature vector per ticker daily bar | ticker bar encoder |
+| `ticker_daily_bar_family_masks` | read `trade_mask`, `quote_bid_mask`, `quote_ask_mask` | each `bool [B, O]` | true for available completed bars in each bar family | ticker bar attention mask |
+| `global_daily_trade_bar_numeric` | transform `bar_inputs["global_daily_bars"]["trade_values"]` | `float32 [B, S, O, 6]` | same numeric transforms as ticker trade bars | global bar encoder |
+| `global_daily_quote_bid_bar_numeric` | transform `bar_inputs["global_daily_bars"]["quote_bid_values"]` | `float32 [B, S, O, 9]` | same numeric transforms as ticker bid bars | global bar encoder |
+| `global_daily_quote_ask_bar_numeric` | transform `bar_inputs["global_daily_bars"]["quote_ask_values"]` | `float32 [B, S, O, 9]` | same numeric transforms as ticker ask bars | global bar encoder |
+| `global_daily_bar_symbol_id` | broadcast configured global symbol ids | `int64 [B, S, O]` | one learned global-symbol category per global daily bar | global bar encoder |
+| `global_daily_bar_offset_id` | broadcast configured global bar offsets | `int64 [B, S, O]` | one completed-bar offset category per global daily bar | global bar encoder |
+| `global_daily_bar_time_features` | select global bar time features | `float32 [B, S, O, T_bar]` | one dense time-feature vector per global daily bar | global bar encoder |
+| `global_daily_bar_family_masks` | read `trade_mask`, `quote_bid_mask`, `quote_ask_mask` | each `bool [B, S, O]` | true for available completed bars in each bar family | global bar attention mask |
+| `ticker_news_embedding` | read `text_inputs["ticker_news"].embeddings` | `bf16/float32 [B, 8, 2, 1024]` | precomputed Qwen embedding projected to `d_model`; Qwen remains offline/frozen | ticker-news encoder |
+| `market_news_embedding` | read `text_inputs["market_news"].embeddings` | `bf16/float32 [B, 16, 2, 1024]` | precomputed Qwen embedding projected to `d_model`; market news means all news | market-news encoder |
+| `sec_filing_embedding` | read `text_inputs["sec_filings"].embeddings` | `bf16/float32 [B, 4, 8, 1024]` | precomputed Qwen embedding projected to `d_model` | SEC text encoder |
+| `text_item_time_features` | select text item time features | per text group `float32 [B, I, T_text]` | availability/publish/accepted time through shared time encoder plus text adapter | text encoders |
+| `text_item_mask` | read text item mask | per text group `bool [B, I]` | true for available text items | text item pooling mask |
+| `text_chunk_mask` | read text chunk mask | per text group `bool [B, I, C]` | true for available text chunks | text chunk pooling mask |
+| `xbrl_value_signed_log` | transform `xbrl_inputs["value"]` | `float32 [B, 4096]` | signed `log1p(abs(value))`, optionally normalized by tag/unit statistics | XBRL numeric projection |
+| `xbrl_fiscal_year` | read/transform `xbrl_inputs["fiscal_year"]` | `int16/float32 [B, 4096]` | numeric year feature or small categorical id, as chosen by the v3 adapter config | XBRL encoder |
+| `xbrl_period_end_days` | transform `xbrl_inputs["period_end_days"]` | `float32 [B, 4096]` | numeric age plus period-end time embedding | XBRL encoder |
+| `xbrl_category_ids` | read XBRL category id fields | field-specific `int64 [B, 4096]` | learned categorical embeddings; id `0=missing/unknown` | XBRL categorical projection |
+| `xbrl_mapping_confidence` | read `xbrl_inputs["mapping_confidence"]` | `float32 [B, 4096]` | confidence score feature | XBRL numeric projection |
+| `xbrl_time_features` | select XBRL availability time features | `float32 [B, 4096, T_xbrl]` | shared time encoder plus XBRL availability adapter | XBRL encoder |
+| `xbrl_period_end_time_features` | select XBRL period-end time features | `float32 [B, 4096, T_period]` | separate shared time encoding plus XBRL period adapter | XBRL encoder |
+| `xbrl_mask` | read `xbrl_inputs["mask"]` | `bool [B, 4096]` | true for available XBRL rows | XBRL set mask |
+| `corporate_action_category_ids` | read action/dividend/currency/frequency ids | field-specific `int64 [B, 128]` | learned categorical embeddings; id `0=missing/unknown` | corporate-action encoder |
+| `corporate_action_numeric` | transform corporate numeric feature tensor | `float32 [B, 128, F_ca]` | split factors, log factors, cash amount, and indicator flags | corporate-action encoder |
+| `corporate_action_available_time_features` | select corporate available time features | `float32 [B, 128, T_ca]` | shared time encoder plus corporate availability adapter | corporate-action encoder |
+| `corporate_action_effective_time_features` | select corporate effective time features | `float32 [B, 128, T_ca_eff]` | shared time encoder plus corporate effective-time adapter | corporate-action encoder |
+| `corporate_action_mask` | read corporate action mask | `bool [B, 128]` | true for available corporate-action rows | corporate-action set mask |
+| `modality_available_mask` | read `input_availability` | `bool [B, M]` | true when a modality is available; may also select a learned missing-modality token | fusion transformer |
 
 ### Atomic Model Outputs
 
