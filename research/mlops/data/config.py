@@ -223,7 +223,7 @@ class RollingMarketDataConfig:
     xbrl_max_items: int = 4096
     corporate_action_lookback_days: int = 3650
     corporate_action_max_items: int = 128
-    corporate_action_label_days: tuple[int, ...] = (1, 2, 3, 5, 10, 20, 40)
+    corporate_action_label_days: tuple[int, ...] = (1, 2, 3, 7, 28)
     intraday_label_horizons: tuple[TimeBarHorizon, ...] = field(default_factory=lambda: DEFAULT_INTRADAY_LABEL_HORIZONS)
     text_tokenizer_model: str = "Qwen/Qwen3-0.6B"
     text_max_tokens: int = 1024

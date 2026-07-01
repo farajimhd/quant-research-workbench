@@ -49,7 +49,7 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "sec_filing_max_items": 4,
     "xbrl_max_items": 4096,
     "corporate_action_max_items": 128,
-    "corporate_action_label_days": "1,2,3,5,10,20,40",
+    "corporate_action_label_days": "1,2,3,7,28",
     "ticker_news_token_chunks": 2,
     "market_news_token_chunks": 2,
     "sec_filing_token_chunks": 8,

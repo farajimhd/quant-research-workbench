@@ -531,7 +531,8 @@ future_special_dividend_ex_flag[]
 future_any_corporate_action_flag[]
 ```
 
-The default daily horizons are `1,2,3,5,10,20,40` days. The builder computes
+The default daily horizons are `1,2,3,7,28` days, matching the forward daily
+price-label horizons through `plus_28d` and excluding `current_day_full`. The builder computes
 these flags vectorized from sorted sparse effective timestamps, so every saved
 origin remains row-aligned with its corporate-action labels.
 

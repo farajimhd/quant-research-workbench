@@ -132,7 +132,7 @@ DEFAULTS: dict[str, Any] = {
     "xbrl_prior_rows": 4096,
     "corporate_action_items": 128,
     "corporate_action_lookback_days": 3650,
-    "corporate_action_label_days": "1,2,3,5,10,20,40",
+    "corporate_action_label_days": "1,2,3,7,28",
     "intraday_label_horizons": "100ms,250ms,500ms,750ms,1s,5s,10s,30s,60s,120s,180s,300s,600s,1200s,1800s,3600s,7200s,3h,4h,5h",
     "refresh_seconds": 1.0,
     "profile_slow_seconds": 10.0,

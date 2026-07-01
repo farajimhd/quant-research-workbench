@@ -191,7 +191,7 @@ class TickerMonthLoaderConfig:
     sec_filing_max_items: int = 4
     xbrl_max_items: int = 4096
     corporate_action_max_items: int = 128
-    corporate_action_label_days: tuple[int, ...] = (1, 2, 3, 5, 10, 20, 40)
+    corporate_action_label_days: tuple[int, ...] = (1, 2, 3, 7, 28)
     ticker_news_token_chunks: int = 2
     market_news_token_chunks: int = 2
     sec_filing_token_chunks: int = 8

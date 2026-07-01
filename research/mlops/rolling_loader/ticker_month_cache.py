@@ -317,7 +317,7 @@ def build_config_from_args(args: Any) -> RollingMarketDataConfig:
         sec_max_items=max(0, int(args.sec_filing_items)),
         xbrl_max_items=max(0, int(args.xbrl_items)),
         corporate_action_max_items=max(0, int(getattr(args, "corporate_action_items", 128))),
-        corporate_action_label_days=tuple(parse_day_horizons(getattr(args, "corporate_action_label_days", "1,2,3,5,10,20,40"))),
+        corporate_action_label_days=tuple(parse_day_horizons(getattr(args, "corporate_action_label_days", "1,2,3,7,28"))),
         intraday_label_horizons=tuple(parse_horizons(args.intraday_label_horizons)),
     )
 

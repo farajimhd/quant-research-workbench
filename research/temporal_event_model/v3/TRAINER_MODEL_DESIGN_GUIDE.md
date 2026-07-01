@@ -213,10 +213,10 @@ events on the same New York trading date as the origin and do not cross the
 20:00 ET session end. Each unavailable horizon is masked out rather than filled
 as a valid target.
 
-Corporate-action labels are daily future labels, not intraday bars. They use
-daily horizons such as `+1d,+2d,+3d,+5d,+10d,+20d,+40d` and include split,
-reverse split, forward split, dividend ex-date, special dividend ex-date, and
-any-corporate-action flags. These labels are computed from effective dates.
+Corporate-action labels are daily future labels, not intraday bars. They match
+the forward daily price-label horizons through `plus_28d`: `+1d,+2d,+3d,+7d,+28d`.
+They include split, reverse split, forward split, dividend ex-date, special
+dividend ex-date, and any-corporate-action flags. These labels are computed from effective dates.
 Corporate-action inputs are separate X/context features selected by
 availability time so declared future dividends can be seen only after they are
 available, while labels still forecast future effective events.

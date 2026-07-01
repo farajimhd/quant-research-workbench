@@ -280,7 +280,7 @@ builder writes `corporate_action_daily_labels_part_*.parquet`, one row per
 origin, with list columns ordered by `horizon_days`. Defaults are:
 
 ```text
-1d,2d,3d,5d,10d,20d,40d
+1d,2d,3d,7d,28d
 ```
 
 The emitted binary label fields are:
@@ -837,9 +837,11 @@ bar_inputs[*]["offsets"]                     completed daily-bar row offsets
 bar_inputs[*]["feature_names"]               open, high, low, close, volume, dollar_volume, trade_count, quote_count, vwap
 ```
 
-The default ticker offsets are `1,2,3,7,14,28,40,200`. The default global
-offsets are `1,2,7`. Bars are selected with a completion lag before they become
-eligible, so a full current-day daily bar is not used for an intraday origin.
+The default ticker context offsets are `1,2,3,7,14,28,40,200`. The default
+global context offsets are `1,2,7`. These are X/context lookback offsets, not
+daily price-label horizons. Bars are selected with a completion lag before they
+become eligible, so a full current-day daily bar is not used for an intraday
+origin.
 
 Pivoted intraday label files are expected to have one row per saved origin.
 The loader first checks whether label rows are already origin-row aligned. If
