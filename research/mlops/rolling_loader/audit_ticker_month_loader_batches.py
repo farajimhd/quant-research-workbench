@@ -757,6 +757,8 @@ def _check_intraday_labels(batch: TickerMonthTrainingBatch, row: int, part: Load
             issues.append(AuditIssue("error", "label_value_mismatch", f"Batch intraday label {key} does not match source labels.", {"batch": batch_index, "row": row, "source_part_key": part_key, "origin_ordinal": int(origin_ordinal), "label": key}))
     if batch.future_intraday_bars.size:
         _check_future_bar_projection(batch, row, values, issues, batch_index=batch_index, part_key=part_key, origin_ordinal=origin_ordinal)
+    if batch.future_bar_values:
+        _check_future_bar_families(batch, row, values, issues, batch_index=batch_index, part_key=part_key, origin_ordinal=origin_ordinal)
     totals["label_rows_checked"] += 1
 
 
@@ -765,13 +767,40 @@ def _check_future_bar_projection(batch: TickerMonthTrainingBatch, row: int, labe
     if bars.shape[0] <= 0 or bars.shape[1] < 5:
         return
     expected = np.zeros_like(bars)
-    expected[:, 0] = labels["price_primary_int"].astype(np.float32, copy=False)
-    expected[:, 1] = labels["price_primary_int"].astype(np.float32, copy=False)
-    expected[:, 2] = labels["price_primary_int"].astype(np.float32, copy=False)
-    expected[:, 3] = labels["price_secondary_int"].astype(np.float32, copy=False)
-    expected[:, 4] = labels["size_primary_sum"].astype(np.float32, copy=False)
+    if "trade" in batch.future_bar_values:
+        trade = batch.future_bar_values["trade"][row]
+        names = [str(value) for value in batch.future_bar_feature_names.get("trade", np.asarray([], dtype=object))]
+        for output_index, name in enumerate(("open", "close", "high", "low", "size_sum")):
+            if output_index < expected.shape[1] and name in names:
+                expected[:, output_index] = trade[:, names.index(name)].astype(np.float32, copy=False)
+    else:
+        expected[:, 0] = labels["price_primary_int"].astype(np.float32, copy=False)
+        expected[:, 1] = labels["price_primary_int"].astype(np.float32, copy=False)
+        expected[:, 2] = labels["price_primary_int"].astype(np.float32, copy=False)
+        expected[:, 3] = labels["price_secondary_int"].astype(np.float32, copy=False)
+        expected[:, 4] = labels["size_primary_sum"].astype(np.float32, copy=False)
     if not bool(np.allclose(expected, bars, rtol=0.0, atol=0.0, equal_nan=True)):
         issues.append(AuditIssue("error", "future_bar_projection_mismatch", "future_intraday_bars do not match label projection.", {"batch": batch_index, "source_part_key": part_key, "origin_ordinal": int(origin_ordinal)}))
+
+
+def _check_future_bar_families(batch: TickerMonthTrainingBatch, row: int, labels: Mapping[str, np.ndarray], issues: list[AuditIssue], *, batch_index: int, part_key: str, origin_ordinal: int) -> None:
+    for family, values in batch.future_bar_values.items():
+        actual = values[row]
+        names = [str(value) for value in batch.future_bar_feature_names.get(family, np.asarray([], dtype=object))]
+        expected = np.zeros_like(actual)
+        for field_index, field_name in enumerate(names):
+            key = f"{family}_{field_name}"
+            if key in labels:
+                expected[:, field_index] = labels[key].astype(np.float32, copy=False)
+        if actual.shape != expected.shape or not bool(np.allclose(expected, actual, rtol=0.0, atol=0.0, equal_nan=True)):
+            issues.append(AuditIssue("error", "future_bar_family_mismatch", "Future bar family tensor does not match source label columns.", {"batch": batch_index, "source_part_key": part_key, "origin_ordinal": int(origin_ordinal), "family": str(family)}))
+            return
+        mask = batch.future_bar_masks.get(family)
+        if mask is not None:
+            key = f"{family}_available"
+            if key in labels and not bool(np.array_equal(mask[row], labels[key].astype(np.bool_, copy=False))):
+                issues.append(AuditIssue("error", "future_bar_family_mask_mismatch", "Future bar family mask does not match source availability labels.", {"batch": batch_index, "source_part_key": part_key, "origin_ordinal": int(origin_ordinal), "family": str(family)}))
+                return
 
 
 def _check_context_files(part: LoadedTickerMonthPart, origin_timestamp_us: int, issues: list[AuditIssue], totals: dict[str, int], *, batch_index: int, row: int, part_key: str) -> None:

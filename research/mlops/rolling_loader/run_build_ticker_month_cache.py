@@ -39,6 +39,7 @@ from research.mlops.clickhouse import (
     sql_string,
 )
 from research.mlops.data.config import RollingMarketDataConfig, TimeBarHorizon
+from research.mlops.data.contracts import BAR_FAMILY_FEATURE_KEYS, BAR_FAMILY_KEYS
 from research.mlops.env import load_env_files
 from research.mlops.rolling_loader.streaming_training import NEWS_TOKEN_COLUMNS, SEC_TOKEN_COLUMNS, current_rss_mib, date_time64_from_us
 from research.mlops.rolling_loader.ticker_month_cache import (
@@ -181,6 +182,11 @@ FUTURE_CONDITION_GROUPS: tuple[tuple[str, tuple[tuple[str, tuple[int, ...]], ...
 FUTURE_CONDITION_LABEL_KEYS: tuple[str, ...] = tuple(name for name, _ in FUTURE_CONDITION_GROUPS)
 FUTURE_EXTERNAL_ARRIVAL_LABEL_KEYS: tuple[str, ...] = ("ticker_news_arrival_flag", "sec_filing_arrival_flag")
 FUTURE_EVENT_FLAG_LABEL_KEYS: tuple[str, ...] = (*FUTURE_CONDITION_LABEL_KEYS, *FUTURE_EXTERNAL_ARRIVAL_LABEL_KEYS)
+FUTURE_BAR_LABEL_KEYS: tuple[str, ...] = tuple(
+    f"{family}_{field}"
+    for family in BAR_FAMILY_KEYS
+    for field in BAR_FAMILY_FEATURE_KEYS[family]
+) + tuple(f"{family}_available" for family in BAR_FAMILY_KEYS) + tuple(f"{family}_last_event_timestamp_us" for family in BAR_FAMILY_KEYS)
 CORPORATE_ACTION_DAILY_LABEL_KEYS: tuple[str, ...] = (
     "future_split_flag",
     "future_reverse_split_flag",
@@ -1408,6 +1414,9 @@ def _build_ticker_month_package(
                 "default_event_window_index": True,
                 "max_origin_events_per_part": int(args.max_origin_events_per_part),
                 "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
+                "future_bar_families": list(BAR_FAMILY_KEYS),
+                "future_bar_feature_keys": {family: list(BAR_FAMILY_FEATURE_KEYS[family]) for family in BAR_FAMILY_KEYS},
+                "future_bar_label_keys": list(FUTURE_BAR_LABEL_KEYS),
                 "future_condition_label_keys": list(FUTURE_CONDITION_LABEL_KEYS),
                 "future_external_arrival_label_keys": list(FUTURE_EXTERNAL_ARRIVAL_LABEL_KEYS),
                 "future_event_flag_label_keys": list(FUTURE_EVENT_FLAG_LABEL_KEYS),
@@ -1895,8 +1904,19 @@ def _future_event_flag_array_select_sql(start_index: int) -> str:
     )
 
 
+def _future_bar_array_select_sql(start_index: int) -> str:
+    return ",\n    ".join(
+        f"arrayMap(x -> tupleElement(x, {int(start_index) + offset}), label_items) AS {quote_ident(label_key)}"
+        for offset, label_key in enumerate(FUTURE_BAR_LABEL_KEYS)
+    )
+
+
 def _future_event_flag_tuple_items_sql() -> str:
     return ",\n            ".join(quote_ident(label_key) for label_key in FUTURE_EVENT_FLAG_LABEL_KEYS)
+
+
+def _future_bar_tuple_items_sql() -> str:
+    return ",\n            ".join(quote_ident(label_key) for label_key in FUTURE_BAR_LABEL_KEYS)
 
 
 def _query_intraday_forward_labels_asof(
@@ -1918,8 +1938,12 @@ def _query_intraday_forward_labels_asof(
     condition_label_select = _future_condition_label_select_sql()
     external_count_select = _future_external_count_select_sql()
     external_label_select = _future_external_label_select_sql()
-    event_flag_array_select = _future_event_flag_array_select_sql(10)
+    bar_array_start_index = 10
+    event_flag_array_start_index = bar_array_start_index + len(FUTURE_BAR_LABEL_KEYS)
+    future_bar_array_select = _future_bar_array_select_sql(bar_array_start_index)
+    event_flag_array_select = _future_event_flag_array_select_sql(event_flag_array_start_index)
     event_flag_tuple_items = _future_event_flag_tuple_items_sql()
+    future_bar_tuple_items = _future_bar_tuple_items_sql()
     news_table = f"{quote_ident(config.database)}.{quote_ident(config.news_embedding_table)}"
     sec_table = f"{quote_ident(config.sec_context_database)}.{quote_ident(config.sec_filing_text_embedding_table)}"
     # One set query per ticker/month/part. It resolves every horizon through cumulative ASOF lookups
@@ -2012,6 +2036,75 @@ WITH
         WINDOW event_window AS (PARTITION BY ticker, local_date ORDER BY sip_timestamp_us, ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
         ORDER BY ticker, local_date, sip_timestamp_us, ordinal
     ),
+    label_events AS
+    (
+        SELECT
+            ticker,
+            ordinal,
+            sip_timestamp_us,
+            bitAnd(event_meta, 1) AS event_type,
+            toFloat32(if(price_primary_int > 0, price_primary_int / if(bitAnd(event_meta, 2) = 2, 10000.0, 100.0), 0.0)) AS price_primary,
+            toFloat32(if(price_secondary_int > 0, price_secondary_int / if(bitAnd(event_meta, 4) = 4, 10000.0, 100.0), 0.0)) AS price_secondary,
+            toFloat64(size_primary) AS size_primary,
+            toFloat64(size_secondary) AS size_secondary,
+            toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
+            toDate(ts_local) AS local_date,
+            dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second
+        FROM {table}
+        PREWHERE ticker = {sql_string(ticker)}
+          AND event_date >= toDate({sql_string(window.first_date.isoformat())})
+          AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
+        WHERE sip_timestamp_us >= {int(window.first_session_start_us)}
+          AND sip_timestamp_us <= {int(window.last_session_end_us)}
+          AND toDate(ts_local) >= toDate({sql_string(window.first_date.isoformat())})
+          AND toDate(ts_local) < toDate({sql_string(window.next_month_date.isoformat())})
+          AND local_second < 72000
+    ),
+    future_bars AS
+    (
+        SELECT
+            o.origin_key AS origin_key,
+            o.horizon AS horizon,
+            o.horizon_us AS horizon_us,
+            argMinIf(e.price_primary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_open,
+            argMaxIf(e.price_primary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_close,
+            maxIf(e.price_primary, e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_high,
+            minIf(e.price_primary, e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_low,
+            sumIf(e.size_primary, e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_size_sum,
+            countIf(e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_event_count,
+            argMinIf(e.price_secondary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_open,
+            argMaxIf(e.price_secondary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_close,
+            maxIf(e.price_secondary, e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_high,
+            minIf(e.price_secondary, e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_low,
+            argMinIf(e.size_secondary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_size_open,
+            argMaxIf(e.size_secondary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_size_close,
+            maxIf(e.size_secondary, e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_size_high,
+            minIf(e.size_secondary, e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_size_low,
+            countIf(e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_event_count,
+            argMinIf(e.price_primary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_open,
+            argMaxIf(e.price_primary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_close,
+            maxIf(e.price_primary, e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_high,
+            minIf(e.price_primary, e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_low,
+            argMinIf(e.size_primary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_size_open,
+            argMaxIf(e.size_primary, tuple(e.sip_timestamp_us, e.ordinal), e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_size_close,
+            maxIf(e.size_primary, e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_size_high,
+            minIf(e.size_primary, e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_size_low,
+            countIf(e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_event_count,
+            maxIf(e.sip_timestamp_us, e.event_type = 1 AND e.price_primary > 0 AND e.size_primary > 0) AS trade_last_event_timestamp_us,
+            maxIf(e.sip_timestamp_us, e.event_type = 0 AND e.price_secondary > 0 AND e.size_secondary > 0) AS quote_bid_last_event_timestamp_us,
+            maxIf(e.sip_timestamp_us, e.event_type = 0 AND e.price_primary > 0 AND e.size_primary > 0) AS quote_ask_last_event_timestamp_us
+        FROM origin_horizons AS o
+        INNER JOIN label_events AS e
+            ON e.ticker = o.ticker
+           AND e.local_date = o.origin_local_date
+        WHERE e.sip_timestamp_us > o.origin_timestamp_us
+          AND e.sip_timestamp_us <= o.target_timestamp_us
+          AND (o.local_session_us + o.horizon_us) <= 72000000000
+        GROUP BY
+            o.origin_key,
+            o.horizon,
+            o.horizon_us
+    ),
     ticker_news_arrivals AS
     (
         SELECT
@@ -2092,13 +2185,43 @@ WITH
             origin_timestamp_us,
             horizon,
             horizon_us,
-            toFloat32(if(event_count > 0, target_price_primary, 0.0)) AS price_primary_int,
-            toFloat32(if(event_count > 0, target_price_secondary, 0.0)) AS price_secondary_int,
-            toFloat32(greatest(size_primary_sum, 0.0)) AS size_primary_sum,
-            toFloat32(greatest(size_secondary_sum, 0.0)) AS size_secondary_sum,
-            toUInt64(event_count) AS event_count,
-            toInt64(if(event_count > 0, target_timestamp_us, 0)) AS last_event_timestamp_us,
-            toUInt8((local_session_us + horizon_us) <= 72000000000 AND event_count > 0) AS available,
+            toFloat32(quote_ask_close) AS price_primary_int,
+            toFloat32(quote_bid_close) AS price_secondary_int,
+            toFloat32(greatest(quote_ask_size_open + quote_ask_size_close, 0.0)) AS size_primary_sum,
+            toFloat32(greatest(quote_bid_size_open + quote_bid_size_close, 0.0)) AS size_secondary_sum,
+            toUInt64(greatest(trade_event_count, quote_bid_event_count, quote_ask_event_count)) AS event_count,
+            toInt64(greatest(trade_last_event_timestamp_us, quote_bid_last_event_timestamp_us, quote_ask_last_event_timestamp_us)) AS last_event_timestamp_us,
+            toUInt8(trade_event_count > 0 OR quote_bid_event_count > 0 OR quote_ask_event_count > 0) AS available,
+            toFloat32(trade_open) AS trade_open,
+            toFloat32(trade_close) AS trade_close,
+            toFloat32(trade_high) AS trade_high,
+            toFloat32(trade_low) AS trade_low,
+            toFloat32(trade_size_sum) AS trade_size_sum,
+            toUInt64(trade_event_count) AS trade_event_count,
+            toFloat32(quote_bid_open) AS quote_bid_open,
+            toFloat32(quote_bid_close) AS quote_bid_close,
+            toFloat32(quote_bid_high) AS quote_bid_high,
+            toFloat32(quote_bid_low) AS quote_bid_low,
+            toFloat32(quote_bid_size_open) AS quote_bid_size_open,
+            toFloat32(quote_bid_size_close) AS quote_bid_size_close,
+            toFloat32(quote_bid_size_high) AS quote_bid_size_high,
+            toFloat32(quote_bid_size_low) AS quote_bid_size_low,
+            toUInt64(quote_bid_event_count) AS quote_bid_event_count,
+            toFloat32(quote_ask_open) AS quote_ask_open,
+            toFloat32(quote_ask_close) AS quote_ask_close,
+            toFloat32(quote_ask_high) AS quote_ask_high,
+            toFloat32(quote_ask_low) AS quote_ask_low,
+            toFloat32(quote_ask_size_open) AS quote_ask_size_open,
+            toFloat32(quote_ask_size_close) AS quote_ask_size_close,
+            toFloat32(quote_ask_size_high) AS quote_ask_size_high,
+            toFloat32(quote_ask_size_low) AS quote_ask_size_low,
+            toUInt64(quote_ask_event_count) AS quote_ask_event_count,
+            toUInt8(trade_event_count > 0) AS trade_available,
+            toUInt8(quote_bid_event_count > 0) AS quote_bid_available,
+            toUInt8(quote_ask_event_count > 0) AS quote_ask_available,
+            toInt64(trade_last_event_timestamp_us) AS trade_last_event_timestamp_us,
+            toInt64(quote_bid_last_event_timestamp_us) AS quote_bid_last_event_timestamp_us,
+            toInt64(quote_ask_last_event_timestamp_us) AS quote_ask_last_event_timestamp_us,
             {condition_label_select},
             {external_label_select}
         FROM
@@ -2112,12 +2235,33 @@ WITH
                 o.local_session_us AS local_session_us,
                 o.horizon AS horizon,
                 o.horizon_us AS horizon_us,
-                target.price_primary AS target_price_primary,
-                target.price_secondary AS target_price_secondary,
-                target.sip_timestamp_us AS target_timestamp_us,
-                greatest(toInt64(ifNull(target.cum_count, 0)) - toInt64(ifNull(base.cum_count, 0)), 0) AS event_count,
-                ifNull(target.cum_size_primary, 0.0) - ifNull(base.cum_size_primary, 0.0) AS size_primary_sum,
-                ifNull(target.cum_size_secondary, 0.0) - ifNull(base.cum_size_secondary, 0.0) AS size_secondary_sum,
+                ifNull(b.trade_open, 0.0) AS trade_open,
+                ifNull(b.trade_close, 0.0) AS trade_close,
+                ifNull(b.trade_high, 0.0) AS trade_high,
+                ifNull(b.trade_low, 0.0) AS trade_low,
+                ifNull(b.trade_size_sum, 0.0) AS trade_size_sum,
+                ifNull(b.trade_event_count, 0) AS trade_event_count,
+                ifNull(b.quote_bid_open, 0.0) AS quote_bid_open,
+                ifNull(b.quote_bid_close, 0.0) AS quote_bid_close,
+                ifNull(b.quote_bid_high, 0.0) AS quote_bid_high,
+                ifNull(b.quote_bid_low, 0.0) AS quote_bid_low,
+                ifNull(b.quote_bid_size_open, 0.0) AS quote_bid_size_open,
+                ifNull(b.quote_bid_size_close, 0.0) AS quote_bid_size_close,
+                ifNull(b.quote_bid_size_high, 0.0) AS quote_bid_size_high,
+                ifNull(b.quote_bid_size_low, 0.0) AS quote_bid_size_low,
+                ifNull(b.quote_bid_event_count, 0) AS quote_bid_event_count,
+                ifNull(b.quote_ask_open, 0.0) AS quote_ask_open,
+                ifNull(b.quote_ask_close, 0.0) AS quote_ask_close,
+                ifNull(b.quote_ask_high, 0.0) AS quote_ask_high,
+                ifNull(b.quote_ask_low, 0.0) AS quote_ask_low,
+                ifNull(b.quote_ask_size_open, 0.0) AS quote_ask_size_open,
+                ifNull(b.quote_ask_size_close, 0.0) AS quote_ask_size_close,
+                ifNull(b.quote_ask_size_high, 0.0) AS quote_ask_size_high,
+                ifNull(b.quote_ask_size_low, 0.0) AS quote_ask_size_low,
+                ifNull(b.quote_ask_event_count, 0) AS quote_ask_event_count,
+                ifNull(b.trade_last_event_timestamp_us, 0) AS trade_last_event_timestamp_us,
+                ifNull(b.quote_bid_last_event_timestamp_us, 0) AS quote_bid_last_event_timestamp_us,
+                ifNull(b.quote_ask_last_event_timestamp_us, 0) AS quote_ask_last_event_timestamp_us,
                 {condition_count_select},
                 {external_count_select}
             FROM origin_horizons AS o
@@ -2129,6 +2273,9 @@ WITH
                 ON base.ticker = o.ticker
                AND base.local_date = o.origin_local_date
                AND o.origin_timestamp_us >= base.sip_timestamp_us
+            LEFT JOIN future_bars AS b
+                ON b.origin_key = o.origin_key
+               AND b.horizon_us = o.horizon_us
             ASOF LEFT JOIN ticker_news_arrivals AS news_target
                 ON news_target.ticker = o.ticker
                AND news_target.local_date = o.origin_local_date
@@ -2162,6 +2309,7 @@ SELECT
     arrayMap(x -> tupleElement(x, 7), label_items) AS event_count,
     arrayMap(x -> tupleElement(x, 8), label_items) AS last_event_timestamp_us,
     arrayMap(x -> tupleElement(x, 9), label_items) AS available,
+    {future_bar_array_select},
     {event_flag_array_select}
 FROM
 (
@@ -2181,6 +2329,7 @@ FROM
             event_count,
             last_event_timestamp_us,
             available,
+            {future_bar_tuple_items},
             {event_flag_tuple_items}
         ))) AS label_items
     FROM label_rows
@@ -2465,16 +2614,18 @@ def _query_daily_bars(args: argparse.Namespace, client_opts: Mapping[str, str], 
 SELECT
     upper(sym) AS sym,
     timeframe,
+    toString(bar_family) AS bar_family,
     toUnixTimestamp64Milli(bar_start) AS bar_start_ms,
     open,
+    close,
     high,
     low,
-    close,
-    volume,
-    dollar_volume,
-    trade_count,
-    quote_count,
-    vwap,
+    size_sum,
+    size_open,
+    size_close,
+    size_high,
+    size_low,
+    event_count,
     {time_columns}
 FROM {table}
 WHERE timeframe = '1d'

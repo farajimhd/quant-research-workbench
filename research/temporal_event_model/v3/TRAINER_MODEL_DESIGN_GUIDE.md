@@ -199,14 +199,20 @@ period time:       period_end_date/fiscal period, describes the accounting perio
 Labels:
 
 ```text
-future_intraday_bars      [B, H, label_features]
-future_intraday_bar_mask  [B, H]
+future_bar_values["trade"]      [B, H, 6]
+future_bar_masks["trade"]       [B, H]
+future_bar_values["quote_bid"]  [B, H, 9]
+future_bar_masks["quote_bid"]   [B, H]
+future_bar_values["quote_ask"]  [B, H, 9]
+future_bar_masks["quote_ask"]   [B, H]
 intraday_labels           dict[str, [B, H]]
 corporate_action_labels   dict[str, [B, D]]
 ```
 
-Primary price targets should use bid and ask fields. Redundant mid-price targets
-should not be trained by default unless explicitly enabled for an ablation.
+`future_intraday_bars [B,H,5]` remains a trade-family compatibility projection.
+Primary price targets should use family-specific trade, bid, and ask fields.
+Redundant mid-price targets should not be trained by default unless explicitly
+enabled for an ablation.
 
 Intraday labels are future-only and session bounded. They are computed from
 events on the same New York trading date as the origin and do not cross the
@@ -250,15 +256,19 @@ fields outside the model for audit and checkpoint logs.
 | `event_time_features` | event UTC/session time columns | `[B, L, T_event]` | float32 time components through shared time encoder plus event adapter | event time adapter |
 | `event_position_id` | event row rank in sliding stream | `[B, L]` | relative sequence position, newest event has a stable convention | event position embedding |
 | `event_mask` | `raw_event_mask` | `[B, L]` | bool mask | event attention mask |
-| `ticker_daily_bar_numeric` | `bar_inputs["ticker_daily_bars"]["values"]` | `[B, O, 9]` | prices normalized to origin reference or recent close; volume/count fields in `log1p`; optional z-score | ticker bar encoder |
+| `ticker_daily_trade_bar_numeric` | `bar_inputs["ticker_daily_bars"]["trade_values"]` | `[B, O, 6]` | trade OHLC, size sum, and count fields; prices normalized to origin reference or recent close; size/count fields in `log1p` | ticker bar encoder |
+| `ticker_daily_quote_bid_bar_numeric` | `bar_inputs["ticker_daily_bars"]["quote_bid_values"]` | `[B, O, 9]` | bid OHLC plus bid size state fields; prices normalized to origin reference or recent close | ticker bar encoder |
+| `ticker_daily_quote_ask_bar_numeric` | `bar_inputs["ticker_daily_bars"]["quote_ask_values"]` | `[B, O, 9]` | ask OHLC plus ask size state fields; prices normalized to origin reference or recent close | ticker bar encoder |
 | `ticker_daily_bar_offset_id` | ticker bar offsets | `[O]` broadcast to `[B, O]` | learned completed-bar offset id | ticker bar encoder |
 | `ticker_daily_bar_time_features` | ticker bar time features | `[B, O, T_bar]` | shared time encoder plus bar adapter | ticker bar encoder |
-| `ticker_daily_bar_mask` | ticker bar mask | `[B, O]` | bool mask | ticker bar attention mask |
-| `global_daily_bar_numeric` | `bar_inputs["global_daily_bars"]["values"]` | `[B, S, O, 9]` | same numeric transforms as ticker daily bars | global bar encoder |
+| `ticker_daily_bar_family_masks` | `trade_mask`, `quote_bid_mask`, `quote_ask_mask` | each `[B, O]` | bool masks per bar family | ticker bar attention mask |
+| `global_daily_trade_bar_numeric` | `bar_inputs["global_daily_bars"]["trade_values"]` | `[B, S, O, 6]` | same numeric transforms as ticker trade bars | global bar encoder |
+| `global_daily_quote_bid_bar_numeric` | `bar_inputs["global_daily_bars"]["quote_bid_values"]` | `[B, S, O, 9]` | same numeric transforms as ticker bid bars | global bar encoder |
+| `global_daily_quote_ask_bar_numeric` | `bar_inputs["global_daily_bars"]["quote_ask_values"]` | `[B, S, O, 9]` | same numeric transforms as ticker ask bars | global bar encoder |
 | `global_daily_bar_symbol_id` | global symbol list | `[S]` broadcast to `[B, S, O]` | learned symbol embedding | global bar encoder |
 | `global_daily_bar_offset_id` | global bar offsets | `[O]` broadcast to `[B, S, O]` | learned completed-bar offset id | global bar encoder |
 | `global_daily_bar_time_features` | global bar time features | `[B, S, O, T_bar]` | shared time encoder plus bar adapter | global bar encoder |
-| `global_daily_bar_mask` | global bar mask | `[B, S, O]` | bool mask | global bar attention mask |
+| `global_daily_bar_family_masks` | `trade_mask`, `quote_bid_mask`, `quote_ask_mask` | each `[B, S, O]` | bool masks per bar family | global bar attention mask |
 | `ticker_news_embedding` | `text_inputs["ticker_news"].embeddings` | `[B, 8, 2, 1024]` | precomputed Qwen embedding projected to `d_model`; Qwen remains offline/frozen | ticker-news encoder |
 | `market_news_embedding` | `text_inputs["market_news"].embeddings` | `[B, 16, 2, 1024]` | precomputed Qwen embedding projected to `d_model`; market news means all news | market-news encoder |
 | `sec_filing_embedding` | `text_inputs["sec_filings"].embeddings` | `[B, 4, 8, 1024]` | precomputed Qwen embedding projected to `d_model` | SEC text encoder |
@@ -288,11 +298,15 @@ by `future_intraday_bar_horizons`; corporate-action query tokens are keyed by
 
 | Model output atom | Target source | Output shape | Target transform | Loss |
 | --- | --- | --- | --- | --- |
-| `ask_delta_bps` | `intraday_labels.price_primary_int` | `[B, H]` | decoded future ask/primary price to bps/ticks vs origin reference | masked Huber/MAE |
-| `bid_delta_bps` | `intraday_labels.price_secondary_int` | `[B, H]` | decoded future bid/secondary price to bps/ticks vs origin reference | masked Huber/MAE |
-| `primary_size_log1p` | `intraday_labels.size_primary_sum` | `[B, H]` | `log1p(max(size_primary_sum, 0))` | masked Huber/MAE |
-| `secondary_size_log1p` | `intraday_labels.size_secondary_sum` | `[B, H]` | `log1p(max(size_secondary_sum, 0))` | masked Huber/MAE |
-| `event_count_log1p` | `intraday_labels.event_count` | `[B, H]` | `log1p(event_count)` or Poisson target | masked Huber/Poisson |
+| `trade_bar_delta_bps` | `future_bar_values["trade"][..., open/close/high/low]` | `[B, H, 4]` | decoded future trade OHLC to bps/ticks vs origin reference | masked Huber/MAE |
+| `trade_size_log1p` | `future_bar_values["trade"][..., size_sum]` | `[B, H]` | `log1p(max(size_sum, 0))` | masked Huber/MAE |
+| `trade_event_count_log1p` | `future_bar_values["trade"][..., event_count]` | `[B, H]` | `log1p(event_count)` or Poisson target | masked Huber/Poisson |
+| `quote_bid_bar_delta_bps` | `future_bar_values["quote_bid"][..., open/close/high/low]` | `[B, H, 4]` | decoded future bid OHLC to bps/ticks vs origin reference | masked Huber/MAE |
+| `quote_bid_size_log1p` | `future_bar_values["quote_bid"][..., size_open/size_close/size_high/size_low]` | `[B, H, 4]` | `log1p(max(size, 0))` | masked Huber/MAE |
+| `quote_bid_event_count_log1p` | `future_bar_values["quote_bid"][..., event_count]` | `[B, H]` | `log1p(event_count)` or Poisson target | masked Huber/Poisson |
+| `quote_ask_bar_delta_bps` | `future_bar_values["quote_ask"][..., open/close/high/low]` | `[B, H, 4]` | decoded future ask OHLC to bps/ticks vs origin reference | masked Huber/MAE |
+| `quote_ask_size_log1p` | `future_bar_values["quote_ask"][..., size_open/size_close/size_high/size_low]` | `[B, H, 4]` | `log1p(max(size, 0))` | masked Huber/MAE |
+| `quote_ask_event_count_log1p` | `future_bar_values["quote_ask"][..., event_count]` | `[B, H]` | `log1p(event_count)` or Poisson target | masked Huber/Poisson |
 | `halt_pause_logit` | `condition_halt_pause_flag` | `[B, H]` | bool target | masked BCE-with-logits |
 | `resume_logit` | `condition_resume_flag` | `[B, H]` | bool target | masked BCE-with-logits |
 | `news_risk_logit` | `condition_news_risk_flag` | `[B, H]` | bool target | masked BCE-with-logits |
@@ -548,31 +562,29 @@ normalization, mask, and loss for each output.
 Regression label groups:
 
 ```text
-intraday_labels.price_primary_int   float32 [B, H]
-  target head                       ask_delta_bps or primary_price_delta_bps
-  mask                              intraday_labels.available [B, H]
+future_bar_values["trade"]          float32 [B, H, 6]
+  fields                            open, close, high, low, size_sum, event_count
+  mask                              future_bar_masks["trade"] [B, H]
 
-intraday_labels.price_secondary_int float32 [B, H]
-  target head                       bid_delta_bps or secondary_price_delta_bps
-  mask                              intraday_labels.available [B, H]
+future_bar_values["quote_bid"]      float32 [B, H, 9]
+  fields                            open, close, high, low, size_open, size_close, size_high, size_low, event_count
+  mask                              future_bar_masks["quote_bid"] [B, H]
 
-intraday_labels.event_count         uint64  [B, H]
-intraday_labels.size_primary_sum    float32 [B, H]
-intraday_labels.size_secondary_sum  float32 [B, H]
-  mask                              intraday_labels.available [B, H]
+future_bar_values["quote_ask"]      float32 [B, H, 9]
+  fields                            open, close, high, low, size_open, size_close, size_high, size_low, event_count
+  mask                              future_bar_masks["quote_ask"] [B, H]
 ```
 
 `future_intraday_bars [B,H,5]` remains a loader compatibility projection with
-feature order `open, close, high, low, volume`. For v3 loss, do not train three
-duplicate primary-price losses from `open/close/high`. Use one primary/ask price
-target and one secondary/bid price target, plus explicit size/count heads.
+feature order `open, close, high, low, volume`, now projected from the `trade`
+family. It is not the canonical v3 target contract.
 
 `H` is `len(future_intraday_bar_horizons)`. Price-like targets arrive from the
 loader as decoded `float32` price levels; the ticker-month builder has already
-applied the scale bits packed in the target event's `event_meta`. These decoded
+applied the scale bits packed in each source event's `event_meta`. These decoded
 levels must still be converted to normalized deltas before loss calculation,
-preferably in bps or ticks relative to the origin/as-of bid, ask, or mid. Volume
-and size targets should be trained in a positive, scale-stable space such as
+preferably in bps or ticks relative to the origin/as-of bid, ask, or mid. Size
+and count targets should be trained in a positive, scale-stable space such as
 `log1p`.
 `last_event_timestamp_us [B, H]` is diagnostic timing metadata and should not be
 part of the default supervised objective unless explicitly enabled.
@@ -650,21 +662,19 @@ reports zero valid count for the step. The trainer should still log raw losses,
 weighted losses, valid counts, positive rates for binary labels, and the active
 weight sum.
 
-Price loss:
+Bar price loss:
 
-- target shapes: `price_primary_int [B, H]` and `price_secondary_int [B, H]`
-- prediction shapes: `ask_delta_bps [B, H]` and `bid_delta_bps [B, H]`
-- mask: `intraday_labels.available [B, H]`
+- target shapes: trade `[B, H, 4]`, quote_bid `[B, H, 4]`, quote_ask `[B, H, 4]`
+- prediction shapes: same family/field shapes in normalized bps/tick space
+- masks: `future_bar_masks[family] [B, H]`
 - default loss: Huber in normalized bps/tick space
-- optional weights: `price_side_weight [2]` and `price_horizon_weight [H]`
-- `future_intraday_bars` can be used to access the same labels, but v3 should
-  not count duplicate `open/close/high` projections as separate losses
+- optional weights: `bar_family_weight [3]`, `bar_price_field_weight [4]`, and `price_horizon_weight [H]`
+- `future_intraday_bars` is compatibility output and should not add a duplicate loss
 
 Event-count and size losses:
 
-- target shapes: `event_count [B, H]`, `size_primary_sum [B, H]`,
-  `size_secondary_sum [B, H]`
-- mask: `intraday_labels.available [B, H]`
+- target shapes: trade size/count from `[B, H, 6]`; quote bid/ask size state and count from `[B, H, 9]`
+- masks: `future_bar_masks[family] [B, H]`
 - event count: Poisson NLL, log-MAE, or Huber on `log1p(count)`
 - size sums: Huber on `log1p(size)`
 - count and size predictions must be non-negative after the head transform,

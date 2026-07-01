@@ -457,6 +457,36 @@ size_secondary_sum[]
 event_count[]
 last_event_timestamp_us[]
 available[]
+trade_open[]
+trade_close[]
+trade_high[]
+trade_low[]
+trade_size_sum[]
+trade_event_count[]
+quote_bid_open[]
+quote_bid_close[]
+quote_bid_high[]
+quote_bid_low[]
+quote_bid_size_open[]
+quote_bid_size_close[]
+quote_bid_size_high[]
+quote_bid_size_low[]
+quote_bid_event_count[]
+quote_ask_open[]
+quote_ask_close[]
+quote_ask_high[]
+quote_ask_low[]
+quote_ask_size_open[]
+quote_ask_size_close[]
+quote_ask_size_high[]
+quote_ask_size_low[]
+quote_ask_event_count[]
+trade_available[]
+quote_bid_available[]
+quote_ask_available[]
+trade_last_event_timestamp_us[]
+quote_bid_last_event_timestamp_us[]
+quote_ask_last_event_timestamp_us[]
 condition_halt_pause_flag[]
 condition_resume_flag[]
 condition_news_risk_flag[]
@@ -464,6 +494,18 @@ condition_luld_limit_state_flag[]
 ticker_news_arrival_flag[]
 sec_filing_arrival_flag[]
 ```
+
+The canonical future bar labels are the family-specific arrays. Legacy
+`price_primary_int`, `price_secondary_int`, `size_primary_sum`,
+`size_secondary_sum`, `event_count`, `last_event_timestamp_us`, and `available`
+remain compatibility projections and should not be the primary v3 target
+contract. Bar families are:
+
+| Family | Semantics |
+| --- | --- |
+| `trade_*` | Future trade events only, with trade OHLC, trade size sum, trade event count, and trade availability. |
+| `quote_bid_*` | Future quote events only, using bid price/size fields. |
+| `quote_ask_*` | Future quote events only, using ask price/size fields. |
 
 The event-state and external-arrival targets are binary arrays per horizon. The
 builder resolves condition dense token ids from `event_condition_token_reference`

@@ -27,6 +27,31 @@ FUTURE_BAR_FEATURE_KEYS: tuple[str, ...] = (
     "low",
     "volume",
 )
+BAR_FAMILY_KEYS: tuple[str, ...] = ("trade", "quote_bid", "quote_ask")
+TRADE_BAR_FEATURE_KEYS: tuple[str, ...] = (
+    "open",
+    "close",
+    "high",
+    "low",
+    "size_sum",
+    "event_count",
+)
+QUOTE_BAR_FEATURE_KEYS: tuple[str, ...] = (
+    "open",
+    "close",
+    "high",
+    "low",
+    "size_open",
+    "size_close",
+    "size_high",
+    "size_low",
+    "event_count",
+)
+BAR_FAMILY_FEATURE_KEYS: dict[str, tuple[str, ...]] = {
+    "trade": TRADE_BAR_FEATURE_KEYS,
+    "quote_bid": QUOTE_BAR_FEATURE_KEYS,
+    "quote_ask": QUOTE_BAR_FEATURE_KEYS,
+}
 
 
 class Modality(str, Enum):

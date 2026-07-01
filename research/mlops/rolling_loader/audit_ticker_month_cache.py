@@ -303,7 +303,8 @@ def _check_labels(origins: Any, labels: Any, manifest: Mapping[str, Any], issues
                 *(manifest.get("config", {}).get("future_external_arrival_label_keys") or ()),
             )
         )
-        compact_label_keys = (*base_compact_label_keys, *flag_keys)
+        future_bar_keys = tuple(manifest.get("config", {}).get("future_bar_label_keys") or ())
+        compact_label_keys = (*base_compact_label_keys, *future_bar_keys, *flag_keys)
         for key in compact_label_keys:
             if key not in labels.columns:
                 issues.append(AuditIssue("error", "label_column_missing", "Compact intraday label column is missing.", {"package": str(package_dir), "column": key}))
@@ -346,6 +347,17 @@ def _check_labels(origins: Any, labels: Any, manifest: Mapping[str, Any], issues
                 invalid_session = np.asarray([not _horizon_inside_session(origin_ts, int(value)) for value in horizon_us], dtype=np.bool_)
                 if invalid_session.size and flags.size == invalid_session.size and bool(np.any(flags[invalid_session] != 0)):
                     issues.append(AuditIssue("error", "future_flag_crosses_session", "Future event flag is set for a horizon that crosses the NY session end.", {"package": str(package_dir), "row": idx, "column": key}))
+                    return
+            for key in ("trade_available", "quote_bid_available", "quote_ask_available"):
+                if key not in labels.columns:
+                    continue
+                flags = _cell_array(row.get(key), np.uint8)
+                if flags.size and bool(np.any((flags != 0) & (flags != 1))):
+                    issues.append(AuditIssue("error", "future_bar_available_not_binary", "Future bar family availability values are not binary.", {"package": str(package_dir), "row": idx, "column": key}))
+                    return
+                invalid_session = np.asarray([not _horizon_inside_session(origin_ts, int(value)) for value in horizon_us], dtype=np.bool_)
+                if invalid_session.size and flags.size == invalid_session.size and bool(np.any(flags[invalid_session] != 0)):
+                    issues.append(AuditIssue("error", "future_bar_crosses_session", "Future bar family is available for a horizon that crosses the NY session end.", {"package": str(package_dir), "row": idx, "column": key}))
                     return
 
 

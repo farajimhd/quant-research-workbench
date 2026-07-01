@@ -17,7 +17,7 @@ import numpy as np
 
 from research.mlops.clickhouse_events import encode_unified_event_windows
 from research.mlops.compact_events import EVENT_BYTES, HEADER_BYTES
-from research.mlops.data.contracts import FUTURE_BAR_FEATURE_KEYS
+from research.mlops.data.contracts import BAR_FAMILY_FEATURE_KEYS, BAR_FAMILY_KEYS, FUTURE_BAR_FEATURE_KEYS
 from research.mlops.rolling_loader.ticker_month_cache import (
     BAR_START_TIME_FEATURE_COLUMNS,
     CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS,
@@ -57,15 +57,31 @@ BAR_INPUT_GROUP_TO_KEY = {
 }
 BAR_FEATURE_KEYS: tuple[str, ...] = (
     "open",
+    "close",
     "high",
     "low",
-    "close",
-    "volume",
-    "dollar_volume",
-    "trade_count",
-    "quote_count",
-    "vwap",
+    "size_sum",
+    "size_open",
+    "size_close",
+    "size_high",
+    "size_low",
+    "event_count",
 )
+TRADE_BAR_FEATURE_KEYS: tuple[str, ...] = BAR_FAMILY_FEATURE_KEYS["trade"]
+QUOTE_BAR_FEATURE_KEYS: tuple[str, ...] = BAR_FAMILY_FEATURE_KEYS["quote_bid"]
+BAR_SOURCE_FEATURE_KEYS: dict[str, tuple[str, ...]] = dict(BAR_FAMILY_FEATURE_KEYS)
+BAR_SOURCE_FEATURE_INDEX: dict[str, int] = {name: index for index, name in enumerate(BAR_FEATURE_KEYS)}
+BAR_SOURCE_FEATURE_COLUMNS: dict[str, tuple[int, ...]] = {
+    family: tuple(BAR_SOURCE_FEATURE_INDEX[name] for name in fields)
+    for family, fields in BAR_SOURCE_FEATURE_KEYS.items()
+}
+FUTURE_BAR_VALUE_DTYPES: dict[str, np.dtype] = {
+    f"{family}_{field}": np.dtype(np.float32)
+    for family, fields in BAR_SOURCE_FEATURE_KEYS.items()
+    for field in fields
+}
+FUTURE_BAR_VALUE_DTYPES.update({f"{family}_available": np.dtype(np.bool_) for family in BAR_FAMILY_KEYS})
+FUTURE_BAR_VALUE_DTYPES.update({f"{family}_last_event_timestamp_us": np.dtype(np.int64) for family in BAR_FAMILY_KEYS})
 DEFAULT_TICKER_DAILY_BAR_OFFSETS = (1, 2, 3, 7, 14, 28, 40, 200)
 DEFAULT_GLOBAL_DAILY_BAR_OFFSETS = (1, 2, 7)
 DEFAULT_DAILY_BAR_COMPLETION_LAG_HOURS = 30.0
@@ -137,6 +153,7 @@ LABEL_VALUE_DTYPES: dict[str, np.dtype] = {
     "ticker_news_arrival_flag": np.dtype(np.bool_),
     "sec_filing_arrival_flag": np.dtype(np.bool_),
 }
+LABEL_VALUE_DTYPES.update(FUTURE_BAR_VALUE_DTYPES)
 NUMERIC_EVENT_COLUMNS: tuple[str, ...] = tuple(column for column in (*EVENT_PAYLOAD_COLUMNS, *EVENT_TIME_FEATURE_COLUMNS) if column != "ticker")
 DEFAULT_SUPPRESSED_EVENT_COLUMNS = ("ticker_id", "ordinal", "timestamp_us")
 LOADER_STATE_VERSION = 1
@@ -308,9 +325,10 @@ class LabelContextIndex:
 @dataclass(slots=True)
 class DailyBarContextIndex:
     symbols: tuple[str, ...]
-    bar_start_ms_by_symbol: dict[str, np.ndarray]
-    values_by_symbol: dict[str, np.ndarray]
-    time_features_by_symbol: dict[str, np.ndarray]
+    families: tuple[str, ...]
+    bar_start_ms_by_family_symbol: dict[str, dict[str, np.ndarray]]
+    values_by_family_symbol: dict[str, dict[str, np.ndarray]]
+    time_features_by_family_symbol: dict[str, dict[str, np.ndarray]]
 
 
 @dataclass(slots=True)
@@ -391,6 +409,9 @@ class TickerMonthTrainingBatch:
     corporate_action_labels: dict[str, np.ndarray] = field(default_factory=dict)
     corporate_action_label_days: tuple[int, ...] = ()
     future_intraday_bar_horizons: tuple[str, ...] = ()
+    future_bar_values: dict[str, np.ndarray] = field(default_factory=dict)
+    future_bar_masks: dict[str, np.ndarray] = field(default_factory=dict)
+    future_bar_feature_names: dict[str, np.ndarray] = field(default_factory=dict)
     future_intraday_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32))
     future_intraday_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
     input_availability: dict[str, np.ndarray] = field(default_factory=dict)
@@ -684,7 +705,7 @@ class TickerMonthBatchMaterializer:
             headers, encoded_events = self._materialize_encoded(parts, refs)
         profile["event_seconds"] = time.perf_counter() - event_start
         label_start = time.perf_counter()
-        labels, future_bars, future_mask, horizons, label_profile = self._materialize_intraday_labels(parts, refs)
+        labels, future_bar_values, future_bar_masks, future_bar_feature_names, future_bars, future_mask, horizons, label_profile = self._materialize_intraday_labels(parts, refs)
         profile.update(label_profile)
         profile["label_seconds"] = time.perf_counter() - label_start
         corporate_label_start = time.perf_counter()
@@ -751,6 +772,9 @@ class TickerMonthBatchMaterializer:
             corporate_action_labels=corporate_labels,
             corporate_action_label_days=corporate_label_days,
             future_intraday_bar_horizons=horizons,
+            future_bar_values=future_bar_values,
+            future_bar_masks=future_bar_masks,
+            future_bar_feature_names=future_bar_feature_names,
             future_intraday_bars=future_bars,
             future_intraday_bar_mask=future_mask,
             input_availability=availability,
@@ -1200,6 +1224,18 @@ class TickerMonthBatchMaterializer:
                 values = np.zeros((len(refs), int(offsets.shape[0]), len(BAR_FEATURE_KEYS)), dtype=np.float32)
                 mask = np.zeros((len(refs), int(offsets.shape[0])), dtype=np.bool_)
                 time_features = np.zeros((len(refs), int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
+                family_values = {
+                    family: np.zeros((len(refs), int(offsets.shape[0]), len(BAR_SOURCE_FEATURE_KEYS[family])), dtype=np.float32)
+                    for family in BAR_FAMILY_KEYS
+                }
+                family_masks = {
+                    family: np.zeros((len(refs), int(offsets.shape[0])), dtype=np.bool_)
+                    for family in BAR_FAMILY_KEYS
+                }
+                family_time_features = {
+                    family: np.zeros((len(refs), int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
+                    for family in BAR_FAMILY_KEYS
+                }
                 for part_index, rows in grouped_rows.items():
                     part = parts[int(part_index)]
                     frame = part.context.get(group)
@@ -1209,28 +1245,34 @@ class TickerMonthBatchMaterializer:
                     index = self._daily_bar_context_index(frame)
                     profile["bar_index_seconds"] = float(profile["bar_index_seconds"]) + (time.perf_counter() - index_start)
                     symbol = str(part.plan.ticker).upper()
-                    if symbol not in index.bar_start_ms_by_symbol:
-                        continue
-                    select_start = time.perf_counter()
-                    selected, selected_mask = _select_completed_bar_rows(index.bar_start_ms_by_symbol[symbol], cutoff_ms[rows], offsets)
-                    profile["bar_select_seconds"] = float(profile["bar_select_seconds"]) + (time.perf_counter() - select_start)
-                    if not bool(selected_mask.any()):
-                        continue
-                    gather_start = time.perf_counter()
-                    safe_selected = np.where(selected_mask, selected, 0)
-                    gathered = index.values_by_symbol[symbol][safe_selected]
-                    gathered[~selected_mask] = 0.0
-                    selected_starts = index.bar_start_ms_by_symbol[symbol][safe_selected]
-                    absolute_time = index.time_features_by_symbol[symbol][safe_selected]
-                    age_days = np.maximum(0.0, (origin_timestamps_ms[rows, None].astype(np.float64) - selected_starts.astype(np.float64)) / 86_400_000.0).astype(np.float32)
-                    relative_time = np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)
-                    gathered_time = np.concatenate([absolute_time, relative_time], axis=-1).astype(np.float32, copy=False)
-                    gathered_time[~selected_mask] = 0.0
-                    values[rows] = gathered
-                    mask[rows] = selected_mask
-                    time_features[rows] = gathered_time
-                    profile["bar_gather_seconds"] = float(profile["bar_gather_seconds"]) + (time.perf_counter() - gather_start)
-                out[key] = {
+                    for family in BAR_FAMILY_KEYS:
+                        starts_by_symbol = index.bar_start_ms_by_family_symbol.get(family, {})
+                        if symbol not in starts_by_symbol:
+                            continue
+                        select_start = time.perf_counter()
+                        selected, selected_mask = _select_completed_bar_rows(starts_by_symbol[symbol], cutoff_ms[rows], offsets)
+                        profile["bar_select_seconds"] = float(profile["bar_select_seconds"]) + (time.perf_counter() - select_start)
+                        if not bool(selected_mask.any()):
+                            continue
+                        gather_start = time.perf_counter()
+                        safe_selected = np.where(selected_mask, selected, 0)
+                        gathered = index.values_by_family_symbol[family][symbol][safe_selected]
+                        gathered[~selected_mask] = 0.0
+                        selected_starts = starts_by_symbol[symbol][safe_selected]
+                        absolute_time = index.time_features_by_family_symbol[family][symbol][safe_selected]
+                        age_days = np.maximum(0.0, (origin_timestamps_ms[rows, None].astype(np.float64) - selected_starts.astype(np.float64)) / 86_400_000.0).astype(np.float32)
+                        relative_time = np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)
+                        gathered_time = np.concatenate([absolute_time, relative_time], axis=-1).astype(np.float32, copy=False)
+                        gathered_time[~selected_mask] = 0.0
+                        family_values[family][rows] = gathered[:, :, BAR_SOURCE_FEATURE_COLUMNS[family]]
+                        family_masks[family][rows] = selected_mask
+                        family_time_features[family][rows] = gathered_time
+                        if family == "trade":
+                            values[rows] = gathered
+                            mask[rows] = selected_mask
+                            time_features[rows] = gathered_time
+                        profile["bar_gather_seconds"] = float(profile["bar_gather_seconds"]) + (time.perf_counter() - gather_start)
+                payload = {
                     "values": values,
                     "mask": mask,
                     "time_features": time_features,
@@ -1238,11 +1280,20 @@ class TickerMonthBatchMaterializer:
                     "offsets": offsets.astype(np.int32, copy=False),
                     "feature_names": np.asarray(BAR_FEATURE_KEYS, dtype=object),
                 }
+                for family in BAR_FAMILY_KEYS:
+                    payload[f"{family}_values"] = family_values[family]
+                    payload[f"{family}_mask"] = family_masks[family]
+                    payload[f"{family}_time_features"] = family_time_features[family]
+                    payload[f"{family}_feature_names"] = np.asarray(BAR_SOURCE_FEATURE_KEYS[family], dtype=object)
+                out[key] = payload
                 continue
             symbols: tuple[str, ...] = ()
             values = np.zeros((len(refs), 0, int(offsets.shape[0]), len(BAR_FEATURE_KEYS)), dtype=np.float32)
             mask = np.zeros((len(refs), 0, int(offsets.shape[0])), dtype=np.bool_)
             time_features = np.zeros((len(refs), 0, int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
+            family_values: dict[str, np.ndarray] = {}
+            family_masks: dict[str, np.ndarray] = {}
+            family_time_features: dict[str, np.ndarray] = {}
             symbol_array = np.asarray([], dtype=object)
             for part_index, rows in grouped_rows.items():
                 part = parts[int(part_index)]
@@ -1257,28 +1308,46 @@ class TickerMonthBatchMaterializer:
                     values = np.zeros((len(refs), len(symbols), int(offsets.shape[0]), len(BAR_FEATURE_KEYS)), dtype=np.float32)
                     mask = np.zeros((len(refs), len(symbols), int(offsets.shape[0])), dtype=np.bool_)
                     time_features = np.zeros((len(refs), len(symbols), int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
+                    family_values = {
+                        family: np.zeros((len(refs), len(symbols), int(offsets.shape[0]), len(BAR_SOURCE_FEATURE_KEYS[family])), dtype=np.float32)
+                        for family in BAR_FAMILY_KEYS
+                    }
+                    family_masks = {
+                        family: np.zeros((len(refs), len(symbols), int(offsets.shape[0])), dtype=np.bool_)
+                        for family in BAR_FAMILY_KEYS
+                    }
+                    family_time_features = {
+                        family: np.zeros((len(refs), len(symbols), int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
+                        for family in BAR_FAMILY_KEYS
+                    }
                     symbol_array = np.asarray(symbols, dtype=object)
                 gather_start = time.perf_counter()
                 for symbol_index, symbol in enumerate(symbols):
-                    if symbol not in index.bar_start_ms_by_symbol:
-                        continue
-                    selected, selected_mask = _select_completed_bar_rows(index.bar_start_ms_by_symbol[symbol], cutoff_ms[rows], offsets)
-                    if not bool(selected_mask.any()):
-                        continue
-                    safe_selected = np.where(selected_mask, selected, 0)
-                    gathered = index.values_by_symbol[symbol][safe_selected]
-                    gathered[~selected_mask] = 0.0
-                    selected_starts = index.bar_start_ms_by_symbol[symbol][safe_selected]
-                    absolute_time = index.time_features_by_symbol[symbol][safe_selected]
-                    age_days = np.maximum(0.0, (origin_timestamps_ms[rows, None].astype(np.float64) - selected_starts.astype(np.float64)) / 86_400_000.0).astype(np.float32)
-                    relative_time = np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)
-                    gathered_time = np.concatenate([absolute_time, relative_time], axis=-1).astype(np.float32, copy=False)
-                    gathered_time[~selected_mask] = 0.0
-                    values[rows, symbol_index] = gathered
-                    mask[rows, symbol_index] = selected_mask
-                    time_features[rows, symbol_index] = gathered_time
+                    for family in BAR_FAMILY_KEYS:
+                        starts_by_symbol = index.bar_start_ms_by_family_symbol.get(family, {})
+                        if symbol not in starts_by_symbol:
+                            continue
+                        selected, selected_mask = _select_completed_bar_rows(starts_by_symbol[symbol], cutoff_ms[rows], offsets)
+                        if not bool(selected_mask.any()):
+                            continue
+                        safe_selected = np.where(selected_mask, selected, 0)
+                        gathered = index.values_by_family_symbol[family][symbol][safe_selected]
+                        gathered[~selected_mask] = 0.0
+                        selected_starts = starts_by_symbol[symbol][safe_selected]
+                        absolute_time = index.time_features_by_family_symbol[family][symbol][safe_selected]
+                        age_days = np.maximum(0.0, (origin_timestamps_ms[rows, None].astype(np.float64) - selected_starts.astype(np.float64)) / 86_400_000.0).astype(np.float32)
+                        relative_time = np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)
+                        gathered_time = np.concatenate([absolute_time, relative_time], axis=-1).astype(np.float32, copy=False)
+                        gathered_time[~selected_mask] = 0.0
+                        family_values[family][rows, symbol_index] = gathered[:, :, BAR_SOURCE_FEATURE_COLUMNS[family]]
+                        family_masks[family][rows, symbol_index] = selected_mask
+                        family_time_features[family][rows, symbol_index] = gathered_time
+                        if family == "trade":
+                            values[rows, symbol_index] = gathered
+                            mask[rows, symbol_index] = selected_mask
+                            time_features[rows, symbol_index] = gathered_time
                 profile["bar_gather_seconds"] = float(profile["bar_gather_seconds"]) + (time.perf_counter() - gather_start)
-            out[key] = {
+            payload = {
                 "values": values,
                 "mask": mask,
                 "time_features": time_features,
@@ -1287,6 +1356,16 @@ class TickerMonthBatchMaterializer:
                 "symbols": symbol_array,
                 "feature_names": np.asarray(BAR_FEATURE_KEYS, dtype=object),
             }
+            for family in BAR_FAMILY_KEYS:
+                empty_family_values = np.zeros(
+                    (len(refs), len(symbols), int(offsets.shape[0]), len(BAR_SOURCE_FEATURE_KEYS[family])),
+                    dtype=np.float32,
+                )
+                payload[f"{family}_values"] = family_values.get(family, empty_family_values)
+                payload[f"{family}_mask"] = family_masks.get(family, np.zeros_like(mask))
+                payload[f"{family}_time_features"] = family_time_features.get(family, np.zeros_like(time_features))
+                payload[f"{family}_feature_names"] = np.asarray(BAR_SOURCE_FEATURE_KEYS[family], dtype=object)
+            out[key] = payload
         return out, profile
 
     def _daily_bar_context_index(self, frame: Any) -> DailyBarContextIndex:
@@ -1355,12 +1434,24 @@ class TickerMonthBatchMaterializer:
 
     def _materialize_intraday_labels(
         self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]
-    ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, tuple[str, ...], dict[str, float | int]]:
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], np.ndarray, np.ndarray, tuple[str, ...], dict[str, float | int]]:
         if "intraday_labels" not in self.config.data_groups and "labels" not in self.config.data_groups:
-            return {}, np.zeros((len(refs), 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32), np.zeros((len(refs), 0), dtype=np.bool_), (), {}
+            return {}, {}, {}, {}, np.zeros((len(refs), 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32), np.zeros((len(refs), 0), dtype=np.bool_), (), {}
         horizons = _cached_horizons(parts)
         horizon_count = len(horizons)
         labels_out = {key: np.zeros((len(refs), horizon_count), dtype=dtype) for key, dtype in LABEL_VALUE_DTYPES.items()}
+        family_values = {
+            family: np.zeros((len(refs), horizon_count, len(fields)), dtype=np.float32)
+            for family, fields in BAR_SOURCE_FEATURE_KEYS.items()
+        }
+        family_masks = {
+            family: np.zeros((len(refs), horizon_count), dtype=np.bool_)
+            for family in BAR_SOURCE_FEATURE_KEYS
+        }
+        family_feature_names = {
+            family: np.asarray(fields, dtype=object)
+            for family, fields in BAR_SOURCE_FEATURE_KEYS.items()
+        }
         bars = np.zeros((len(refs), horizon_count, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32)
         mask = np.zeros((len(refs), horizon_count), dtype=np.bool_)
         profile: dict[str, float | int] = {
@@ -1413,12 +1504,27 @@ class TickerMonthBatchMaterializer:
                     labels_out[key][int(output_row), : values.shape[0]] = values.astype(labels_out[key].dtype, copy=False)
         available = labels_out["available"].astype(bool, copy=False)
         mask[:, : available.shape[1]] = available
-        bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("open")] = labels_out["price_primary_int"].astype(np.float32, copy=False)
-        bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("close")] = labels_out["price_primary_int"].astype(np.float32, copy=False)
-        bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("high")] = labels_out["price_primary_int"].astype(np.float32, copy=False)
-        bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("low")] = labels_out["price_secondary_int"].astype(np.float32, copy=False)
-        bars[:, :, FUTURE_BAR_FEATURE_KEYS.index("volume")] = labels_out["size_primary_sum"].astype(np.float32, copy=False)
-        return labels_out, bars, mask, horizons, profile
+        for family, fields in BAR_SOURCE_FEATURE_KEYS.items():
+            values = family_values[family]
+            for field_index, field_name in enumerate(fields):
+                key = f"{family}_{field_name}"
+                if key in labels_out:
+                    values[:, :, field_index] = labels_out[key].astype(np.float32, copy=False)
+            available_key = f"{family}_available"
+            if available_key in labels_out:
+                family_masks[family][:, :] = labels_out[available_key].astype(bool, copy=False)
+
+        # Compatibility projection for older consumers. New code should use future_bar_values.
+        trade = family_values.get("trade")
+        trade_mask = family_masks.get("trade")
+        if trade is not None:
+            trade_fields = list(BAR_SOURCE_FEATURE_KEYS["trade"])
+            for output_field, source_field in (("open", "open"), ("close", "close"), ("high", "high"), ("low", "low"), ("volume", "size_sum")):
+                if output_field in FUTURE_BAR_FEATURE_KEYS and source_field in trade_fields:
+                    bars[:, :, FUTURE_BAR_FEATURE_KEYS.index(output_field)] = trade[:, :, trade_fields.index(source_field)]
+            if trade_mask is not None:
+                mask[:, :] = trade_mask
+        return labels_out, family_values, family_masks, family_feature_names, bars, mask, horizons, profile
 
     def _label_context_index(self, part: LoadedTickerMonthPart, horizon_count: int) -> LabelContextIndex:
         key = (id(part.origins), id(part.labels), int(horizon_count))
@@ -2309,6 +2415,9 @@ def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> Tic
         corporate_action_labels=corporate_action_labels,
         corporate_action_label_days=first.corporate_action_label_days,
         future_intraday_bar_horizons=first.future_intraday_bar_horizons,
+        future_bar_values=_concat_dict_arrays(batch.future_bar_values for batch in nonempty),
+        future_bar_masks=_concat_dict_arrays(batch.future_bar_masks for batch in nonempty),
+        future_bar_feature_names=first.future_bar_feature_names,
         future_intraday_bars=_concat_optional_arrays([batch.future_intraday_bars for batch in nonempty]),
         future_intraday_bar_mask=_concat_optional_arrays([batch.future_intraday_bar_mask for batch in nonempty]),
         input_availability=availability,
@@ -2342,6 +2451,9 @@ def _slice_training_batch(batch: TickerMonthTrainingBatch, start: int, end: int)
         corporate_action_labels={key: value[start:end] for key, value in batch.corporate_action_labels.items()},
         corporate_action_label_days=batch.corporate_action_label_days,
         future_intraday_bar_horizons=batch.future_intraday_bar_horizons,
+        future_bar_values={key: value[start:end] for key, value in batch.future_bar_values.items()},
+        future_bar_masks={key: value[start:end] for key, value in batch.future_bar_masks.items()},
+        future_bar_feature_names=batch.future_bar_feature_names,
         future_intraday_bars=batch.future_intraday_bars[start:end] if batch.future_intraday_bars.shape[0] else batch.future_intraday_bars,
         future_intraday_bar_mask=batch.future_intraday_bar_mask[start:end] if batch.future_intraday_bar_mask.shape[0] else batch.future_intraday_bar_mask,
         input_availability={key: value[start:end] for key, value in batch.input_availability.items()},
@@ -2401,7 +2513,7 @@ def _concat_bar_inputs(batches: Sequence[TickerMonthTrainingBatch]) -> dict[str,
         payload: dict[str, np.ndarray] = {}
         for field in sorted(fields):
             values = [batch.bar_inputs[name][field] for batch in batches if name in batch.bar_inputs and field in batch.bar_inputs[name]]
-            if field in {"values", "mask", "time_features"}:
+            if field in {"values", "mask", "time_features"} or field.endswith("_values") or field.endswith("_mask") or field.endswith("_time_features"):
                 payload[field] = np.concatenate(values, axis=0)
             else:
                 payload[field] = values[0]
@@ -2752,21 +2864,7 @@ def _label_values_for_origin(labels: Any, origin_ordinal: int, expected: int) ->
     right = int(np.searchsorted(ordinals, int(origin_ordinal), side="right"))
     if right <= left:
         return None
-    keys = (
-        "price_primary_int",
-        "price_secondary_int",
-        "size_primary_sum",
-        "size_secondary_sum",
-        "event_count",
-        "last_event_timestamp_us",
-        "available",
-        "condition_halt_pause_flag",
-        "condition_resume_flag",
-        "condition_news_risk_flag",
-        "condition_luld_limit_state_flag",
-        "ticker_news_arrival_flag",
-        "sec_filing_arrival_flag",
-    )
+    keys = tuple(LABEL_VALUE_DTYPES)
     if _labels_are_pivoted(labels):
         if right - left != 1:
             return None
@@ -2931,30 +3029,49 @@ def _bar_offsets_for_group(config: TickerMonthLoaderConfig, group: str) -> tuple
 
 def _prepare_daily_bar_context_index(frame: Any) -> DailyBarContextIndex:
     if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
-        return DailyBarContextIndex(symbols=(), bar_start_ms_by_symbol={}, values_by_symbol={}, time_features_by_symbol={})
+        return DailyBarContextIndex(symbols=(), families=(), bar_start_ms_by_family_symbol={}, values_by_family_symbol={}, time_features_by_family_symbol={})
     missing = [column for column in ("sym", "bar_start_ms", *BAR_FEATURE_KEYS) if column not in getattr(frame, "columns", ())]
     if missing:
         raise RuntimeError(f"Daily bar context is missing required columns: {', '.join(missing)}")
     symbols_raw = frame.get_column("sym").to_numpy()
     symbols = np.asarray([str(symbol).upper() for symbol in symbols_raw], dtype=object)
+    if "bar_family" in getattr(frame, "columns", ()):
+        families_raw = frame.get_column("bar_family").to_numpy()
+        families = np.asarray([str(value) for value in families_raw], dtype=object)
+    else:
+        families = np.full((int(frame.height),), "trade", dtype=object)
     starts = frame.get_column("bar_start_ms").to_numpy().astype(np.int64, copy=False)
     values = frame.select(list(BAR_FEATURE_KEYS)).to_numpy().astype(np.float32, copy=False)
     time_features = _cached_or_computed_time_feature_matrix(frame, BAR_START_TIME_FEATURE_COLUMNS, starts.astype(np.int64, copy=False) * 1000)
-    order = np.lexsort((starts, symbols))
+    order = np.lexsort((starts, symbols, families))
+    families = families[order]
     symbols = symbols[order]
     starts = starts[order]
     values = values[order]
     time_features = time_features[order]
     unique_symbols = tuple(str(symbol) for symbol in np.unique(symbols))
-    starts_by_symbol: dict[str, np.ndarray] = {}
-    values_by_symbol: dict[str, np.ndarray] = {}
-    time_features_by_symbol: dict[str, np.ndarray] = {}
-    for symbol in unique_symbols:
-        rows = symbols == symbol
-        starts_by_symbol[str(symbol)] = starts[rows]
-        values_by_symbol[str(symbol)] = values[rows]
-        time_features_by_symbol[str(symbol)] = time_features[rows]
-    return DailyBarContextIndex(symbols=unique_symbols, bar_start_ms_by_symbol=starts_by_symbol, values_by_symbol=values_by_symbol, time_features_by_symbol=time_features_by_symbol)
+    unique_families = tuple(str(family) for family in np.unique(families))
+    starts_by_family_symbol: dict[str, dict[str, np.ndarray]] = {}
+    values_by_family_symbol: dict[str, dict[str, np.ndarray]] = {}
+    time_by_family_symbol: dict[str, dict[str, np.ndarray]] = {}
+    for family in unique_families:
+        starts_by_family_symbol[family] = {}
+        values_by_family_symbol[family] = {}
+        time_by_family_symbol[family] = {}
+        family_rows = families == family
+        family_symbols = symbols[family_rows]
+        for symbol in tuple(str(value) for value in np.unique(family_symbols)):
+            rows = family_rows & (symbols == symbol)
+            starts_by_family_symbol[family][symbol] = starts[rows]
+            values_by_family_symbol[family][symbol] = values[rows]
+            time_by_family_symbol[family][symbol] = time_features[rows]
+    return DailyBarContextIndex(
+        symbols=unique_symbols,
+        families=unique_families,
+        bar_start_ms_by_family_symbol=starts_by_family_symbol,
+        values_by_family_symbol=values_by_family_symbol,
+        time_features_by_family_symbol=time_by_family_symbol,
+    )
 
 
 def _select_completed_bar_rows(bar_start_ms: np.ndarray, cutoff_ms: np.ndarray, offsets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

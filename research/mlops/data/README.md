@@ -95,10 +95,12 @@ Complete default training-batch shape summary:
 | market chunks | `headers_uint8` | `[B, 27, 14]` |
 | market chunks | `events_uint8` | `[B, 27, 128, 16]` |
 | market chunk time | `chunk_time_features[*]` | `[B, 27]` |
-| canonical bar fields | `bar_feature_keys` | 9 field names |
-| ticker macro bars | `ticker_macro_bars` | `[B, macro_timeframes, 9]` |
+| canonical bar families | `bar_family_keys` | `trade`, `quote_bid`, `quote_ask` |
+| trade bar fields | `bar_family_feature_keys["trade"]` | `open, close, high, low, size_sum, event_count` |
+| quote bar fields | `bar_family_feature_keys["quote_bid"]`, `["quote_ask"]` | `open, close, high, low, size_open, size_close, size_high, size_low, event_count` |
+| ticker trade bars | `ticker_macro_bars["trade"]` or `bar_inputs["ticker_daily_bars"]["trade_values"]` | `[B, macro_timeframes, 6]` or loader `[B, offsets, 6]` |
 | ticker macro bar mask | `ticker_macro_bar_mask` | `[B, macro_timeframes]` |
-| global market bars | `global_market_bars` | `[B, global_symbols, macro_timeframes, 9]` |
+| global market bar families | `global_market_bars[*]` or `bar_inputs["global_daily_bars"]["*_values"]` | family-aware symbol/time grids |
 | global market bar mask | `global_market_bar_mask` | `[B, global_symbols, macro_timeframes]` |
 | legacy ticker macro/session dict | `macro_features[*]` | `[B]` |
 | legacy global dict | `global_features[*]` | `[B]` |
@@ -107,8 +109,8 @@ Complete default training-batch shape summary:
 | market news tokens | `text_inputs["market_news"]["input_ids"]` | `[B, 64, 2, 1024]` |
 | SEC text tokens | `text_inputs["sec_filings"]["input_ids"]` | `[B, 16, 8, 1024]` |
 | XBRL fundamentals | `xbrl_inputs[*]` | `[B, 4096]` |
-| future macro bars | `future_macro_bars` | `[B, label_timeframes, 5]` |
-| future intraday bars | `future_intraday_bars` | `[B, intraday_label_horizons, 5]` |
+| future bar labels | `future_bar_values[*]` | trade `[B, H, 6]`, bid/ask `[B, H, 9]` |
+| future intraday compatibility bars | `future_intraday_bars` | `[B, intraday_label_horizons, 5]` |
 | legacy future labels dict | `labels[*]` | usually `[B]` |
 
 `input_availability` distinguishes a real zero value from a missing optional
@@ -231,18 +233,20 @@ through `ticker_macro_bars`, not through ad-hoc flattened feature names.
 ticker_macro_bars[B, macro_timeframe_index, bar_field_index]
 ticker_macro_bar_mask[B, macro_timeframe_index]
 macro_bar_timeframes = config.macro_timeframes
-bar_feature_keys = (
-    open, high, low, close, volume,
-    dollar_volume, trade_count, quote_count, vwap
+bar_family_keys = (trade, quote_bid, quote_ask)
+trade_bar_feature_keys = (open, close, high, low, size_sum, event_count)
+quote_bar_feature_keys = (
+    open, close, high, low,
+    size_open, size_close, size_high, size_low,
+    event_count
 )
 ```
 
-Every bar-like model input must use this same 9-field order so a single bar
-encoder can consume ticker macro bars and global market bars. Future bars are
-targets, not context inputs, and use the smaller 5-field OHLCV abstraction
-described in the labels section. The mask is true when a context bar exists
-as-of the sample origin. Missing bars are zeros and should be ignored by the bar
-encoder or downstream mask logic.
+Every bar-like model input must preserve the family boundary instead of mixing
+trade, bid, and ask fields into one derived bar. A bar encoder may share weights
+across families, but the source family is explicit and separately masked. The
+mask is true when a context bar exists as-of the sample origin. Missing bars are
+zeros and should be ignored by the bar encoder or downstream mask logic.
 
 `macro_features` remains as a legacy compatibility dictionary. It also includes
 current-day as-of session state. New model code should prefer
@@ -271,11 +275,12 @@ Canonical bar fields:
 | `high` | High price of the latest completed/as-of bar. |
 | `low` | Low price of the latest completed/as-of bar. |
 | `close` | Close price of the latest completed/as-of bar. |
-| `volume` | Trade volume. |
-| `dollar_volume` | Dollar volume when available. |
-| `trade_count` | Number of trades in the bar. |
-| `quote_count` | Number of quote events in the bar. |
-| `vwap` | Volume-weighted average price. |
+| `size_sum` | Trade size sum for the trade family. |
+| `size_open` | First visible bid/ask size for a quote family. |
+| `size_close` | Last visible bid/ask size for a quote family. |
+| `size_high` | Maximum visible bid/ask size for a quote family. |
+| `size_low` | Minimum visible bid/ask size for a quote family. |
+| `event_count` | Number of source-family events in the bar. |
 
 Legacy flattened macro keys:
 
@@ -288,7 +293,7 @@ today_asof_volume
 past_1d_close
 past_2d_high
 past_7d_low
-past_28d_vwap
+past_28d_trade_size_sum
 past_200d_volume
 ```
 
@@ -318,14 +323,16 @@ materialized because they are deterministic from bid and ask.
 ### Global Features
 
 `global_market_bars` provides broad market context for configured market
-symbols. It uses the exact same 9-field bar layout as ticker macro bars:
+symbols. It uses the same family-aware layout as ticker bars:
 
 ```text
-global_market_bars[B, global_symbol_index, macro_timeframe_index, bar_field_index]
-global_market_bar_mask[B, global_symbol_index, macro_timeframe_index]
+global_market_bars["trade"][B, global_symbol_index, macro_timeframe_index, 6]
+global_market_bars["quote_bid"][B, global_symbol_index, macro_timeframe_index, 9]
+global_market_bars["quote_ask"][B, global_symbol_index, macro_timeframe_index, 9]
+global_market_bar_masks[family][B, global_symbol_index, macro_timeframe_index]
 global_bar_symbols = config.global_symbols
 global_bar_timeframes = config.macro_timeframes
-bar_feature_keys = same 9 keys used by ticker_macro_bars
+bar_feature_keys = family-specific keys used by ticker bars
 ```
 
 `global_features` remains as a legacy flattened compatibility dictionary.
@@ -348,7 +355,7 @@ Legacy flattened keys are prefixed by symbol:
 ```text
 SPY_1d_close
 SPY_1d_volume
-SPY_past_7d_vwap
+SPY_past_7d_trade_size_sum
 QQQ_today_asof_close
 IWM_past_2d_volume
 DIA_past_1d_high
@@ -358,7 +365,7 @@ Example interpretation:
 
 ```text
 SPY_today_asof_close = SPY close so far in the current session
-SPY_past_7d_vwap = SPY VWAP aggregated from the prior 7 completed daily bars
+SPY_past_7d_trade_size_sum = SPY trade size sum aggregated from the prior 7 completed daily bars
 ```
 
 These features let the downstream model see market regime without relying on
@@ -597,23 +604,27 @@ tags, and other source metadata.
 Future labels are separate from features. They are never included in any feature
 group.
 
-### Macro Future Labels
+### Daily Future Labels
 
-Macro future labels should be derived from `1d` bars only. The current-day
-future bar means the full session through after-hours close, not the 4PM regular
-market close. Future daily windows should be:
+Daily future labels are used only for labels whose natural cadence is daily,
+such as corporate actions. Intraday trading targets use future event bars and
+condition/arrival flags over intraday horizons. If a version explicitly enables
+future daily price bars, they must use the same `trade`, `quote_bid`, and
+`quote_ask` family schema as X bars and should be derived from `1d` bars only.
+The current-day future bar means the full session through after-hours close, not
+the 4PM regular market close. Future daily windows should be:
 
 ```text
 current_day_full, +1d, +2d, +3d, +7d, +28d
 ```
 
-The structured target is:
+The optional structured daily price target is:
 
 ```text
-future_macro_bars[B, label_timeframe_index, future_bar_field_index]
-future_macro_bar_mask[B, label_timeframe_index]
+future_daily_bar_values[family][B, label_timeframe_index, family_bar_field_index]
+future_daily_bar_masks[family][B, label_timeframe_index]
 future_macro_bar_timeframes = config.label_timeframes
-future_bar_feature_keys = (open, close, high, low, volume)
+future_bar_feature_keys = family-specific trade/bid/ask bar keys
 ```
 
 Legacy flattened keys use the prefix `future_`:
@@ -623,11 +634,11 @@ future_current_day_full_open
 future_current_day_full_high
 future_current_day_full_low
 future_current_day_full_close
-future_current_day_full_volume
+future_current_day_full_trade_size_sum
 future_plus_1d_close
 future_plus_2d_high
 future_plus_7d_low
-future_plus_28d_vwap
+future_plus_28d_trade_size_sum
 ```
 
 ### Intraday Future Labels
@@ -640,26 +651,31 @@ origin. Default horizons are:
 180s, 300s, 600s, 1200s, 1800s, 3600s, 7200s, 3h, 4h, 5h
 ```
 
-The structured target is:
+The canonical structured target is family-aware:
 
 ```text
-future_intraday_bars[B, intraday_horizon_index, future_bar_field_index]
-future_intraday_bar_mask[B, intraday_horizon_index]
+future_bar_values["trade"][B, intraday_horizon_index, trade_bar_field_index]
+future_bar_masks["trade"][B, intraday_horizon_index]
+future_bar_values["quote_bid"][B, intraday_horizon_index, quote_bar_field_index]
+future_bar_masks["quote_bid"][B, intraday_horizon_index]
+future_bar_values["quote_ask"][B, intraday_horizon_index, quote_bar_field_index]
+future_bar_masks["quote_ask"][B, intraday_horizon_index]
 future_intraday_bar_horizons = config.intraday_label_horizons
-future_bar_feature_keys = (open, close, high, low, volume)
+trade_bar_feature_keys = (open, close, high, low, size_sum, event_count)
+quote_bar_feature_keys = (open, close, high, low, size_open, size_close, size_high, size_low, event_count)
 ```
 
-For intraday bars, `future_intraday_bar_mask` replaces the old `has_trade` field
-as the model-facing validity signal. The legacy `labels` dictionary still keeps
-`future_intraday_bar_*_has_trade` for compatibility and audit output.
+`future_intraday_bars [B,H,5]` is retained only as a trade-family compatibility
+projection with `open, close, high, low, volume=size_sum`. New models should use
+`future_bar_values` and family masks directly.
 
 Example:
 
 ```text
 future_intraday_bar_1s_high
 future_intraday_bar_1s_low
-future_intraday_bar_300s_volume
-future_intraday_bar_3600s_trade_count
+future_trade_bar_300s_size_sum
+future_quote_bid_bar_3600s_event_count
 ```
 
 ### No-Lookahead Boundary

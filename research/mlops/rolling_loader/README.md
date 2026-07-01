@@ -234,27 +234,33 @@ not store dense intraday bar grids and does not store `current_*` intraday
 labels.
 
 On disk, `intraday_forward_labels_part_*.parquet` stores one row per origin.
-Each horizon-dependent field is a list column ordered by `horizon_us`, for
-example `horizon`, `horizon_us`, `price_primary_int`, `price_secondary_int`,
+Each horizon-dependent field is a list column ordered by `horizon_us`. The
+canonical future bar fields are family-specific:
+
+| Family | Price fields | Size/count fields |
+| --- | --- | --- |
+| `trade` | `trade_open`, `trade_close`, `trade_high`, `trade_low` | `trade_size_sum`, `trade_event_count`, `trade_available`, `trade_last_event_timestamp_us` |
+| `quote_bid` | `quote_bid_open`, `quote_bid_close`, `quote_bid_high`, `quote_bid_low` | `quote_bid_size_open`, `quote_bid_size_close`, `quote_bid_size_high`, `quote_bid_size_low`, `quote_bid_event_count`, `quote_bid_available`, `quote_bid_last_event_timestamp_us` |
+| `quote_ask` | `quote_ask_open`, `quote_ask_close`, `quote_ask_high`, `quote_ask_low` | `quote_ask_size_open`, `quote_ask_size_close`, `quote_ask_size_high`, `quote_ask_size_low`, `quote_ask_event_count`, `quote_ask_available`, `quote_ask_last_event_timestamp_us` |
+
+Legacy list columns `price_primary_int`, `price_secondary_int`,
 `size_primary_sum`, `size_secondary_sum`, `event_count`,
-`last_event_timestamp_us`, `available`, and the future event-state/arrival flag
-labels listed below. This keeps the ClickHouse result and parquet file
+`last_event_timestamp_us`, and `available` are retained as compatibility
+projections only. This keeps the ClickHouse result and parquet file
 proportional to origin count instead of
 `origin_count * horizon_count`.
 
-The `price_primary_int` and `price_secondary_int` label names are retained for
-cache compatibility, but their label values are decoded `float32` price levels.
-The builder applies the scale bits packed in each target event's `event_meta`
-before writing these label arrays. Raw packed event-window prices remain stored
-as integer event columns because the event codec needs the original compact
-representation.
+All future bar prices are decoded `float32` price levels. The builder applies
+the scale bits packed in each event's `event_meta` before writing label arrays.
+Raw packed event-window prices remain stored as integer event columns because
+the event path needs the original compact representation.
 
 Future event labels are separate binary targets in `intraday_labels`, not fields
-inside `future_intraday_bars`. Condition flags are generated from the packed
+inside compatibility `future_intraday_bars`. Condition flags are generated from the packed
 event condition-token columns by resolving the current
 `event_condition_token_reference` table at build time. External arrival flags
 use the context availability timestamp from the news and SEC embedding tables.
-The default labels are:
+These labels use intraday horizons. The default labels are:
 
 ```text
 condition_halt_pause_flag
@@ -264,6 +270,9 @@ condition_luld_limit_state_flag
 ticker_news_arrival_flag
 sec_filing_arrival_flag
 ```
+
+Daily horizons are reserved for labels whose meaningful cadence is not updated
+inside the trading session, such as split/dividend/corporate-action labels.
 
 Only conditions with direct trading value are included: halts or volatility
 pauses, resumptions, news-risk states, and LULD or limit-state events. Ticker
@@ -397,27 +406,22 @@ reference tables that were built before the ticker/month cache builder runs.
 | `is_premarket` | Event timestamp converted to New York session | raw event row, bool/uint8 | raw event window column when requested | Market-session flag. |
 | `is_afterhours` | Event timestamp converted to New York session | raw event row, bool/uint8 | raw event window column when requested | Market-session flag. |
 | `raw_event_mask` | Event-window selection | not stored; derived by loader | `[B, event_stream_length]` or window mask | False for padded/missing positions. |
-| `ticker_daily_bars.values.open` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., open]` | Completed bars only. |
-| `ticker_daily_bars.values.high` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., high]` | Completed bars only. |
-| `ticker_daily_bars.values.low` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., low]` | Completed bars only. |
-| `ticker_daily_bars.values.close` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., close]` | Completed bars only. |
-| `ticker_daily_bars.values.volume` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., volume]` | Completed bars only. |
-| `ticker_daily_bars.values.dollar_volume` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., dollar_volume]` | Completed bars only. |
-| `ticker_daily_bars.values.trade_count` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., trade_count]` | Completed bars only. |
-| `ticker_daily_bars.values.quote_count` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., quote_count]` | Completed bars only. |
-| `ticker_daily_bars.values.vwap` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., vwap]` | Completed bars only. |
-| `ticker_daily_bars.mask` | Bar availability | not stored; derived by loader | `[B, offsets]` | False when requested offset is unavailable. |
-| `ticker_daily_bars.time_features` | Bar start timestamp and origin timestamp | computed/cached time features | `[B, offsets, bar_time_features]` | Zero where bar mask is false. |
-| `global_daily_bars.values.open` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., open]` | Same as ticker bars, with symbol dimension. |
-| `global_daily_bars.values.high` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., high]` | Same as ticker bars, with symbol dimension. |
-| `global_daily_bars.values.low` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., low]` | Same as ticker bars, with symbol dimension. |
-| `global_daily_bars.values.close` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., close]` | Same as ticker bars, with symbol dimension. |
-| `global_daily_bars.values.volume` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., volume]` | Same as ticker bars, with symbol dimension. |
-| `global_daily_bars.values.dollar_volume` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., dollar_volume]` | Same as ticker bars, with symbol dimension. |
-| `global_daily_bars.values.trade_count` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., trade_count]` | Same as ticker bars, with symbol dimension. |
-| `global_daily_bars.values.quote_count` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., quote_count]` | Same as ticker bars, with symbol dimension. |
-| `global_daily_bars.values.vwap` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., vwap]` | Same as ticker bars, with symbol dimension. |
-| `global_daily_bars.mask` | Global bar availability | not stored; derived by loader | `[B, symbols, offsets]` | False when requested symbol/offset is unavailable. |
+| `ticker_daily_bars.trade_values.open` | Daily trade bar table rows | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["trade_values"][..., open]` | Completed trade bars only; compatibility alias `values` points to trade. |
+| `ticker_daily_bars.trade_values.close` | Daily trade bar table rows | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["trade_values"][..., close]` | Completed trade bars only. |
+| `ticker_daily_bars.trade_values.high` | Daily trade bar table rows | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["trade_values"][..., high]` | Completed trade bars only. |
+| `ticker_daily_bars.trade_values.low` | Daily trade bar table rows | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["trade_values"][..., low]` | Completed trade bars only. |
+| `ticker_daily_bars.trade_values.size_sum` | Daily trade bar table rows | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["trade_values"][..., size_sum]` | Trade size sum; no dollar-volume/VWAP field is stored by default. |
+| `ticker_daily_bars.trade_values.event_count` | Daily trade bar table rows | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["trade_values"][..., event_count]` | Trade-event count. |
+| `ticker_daily_bars.quote_bid_values.open/close/high/low` | Daily quote bid bar rows | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["quote_bid_values"][..., price_field]` | Bid OHLC from quote events only. |
+| `ticker_daily_bars.quote_bid_values.size_open/size_close/size_high/size_low` | Daily quote bid bar rows | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["quote_bid_values"][..., size_field]` | Bid size state fields from quote events only. |
+| `ticker_daily_bars.quote_bid_values.event_count` | Daily quote bid bar rows | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["quote_bid_values"][..., event_count]` | Quote-event count for bid family. |
+| `ticker_daily_bars.quote_ask_values.open/close/high/low` | Daily quote ask bar rows | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["quote_ask_values"][..., price_field]` | Ask OHLC from quote events only. |
+| `ticker_daily_bars.quote_ask_values.size_open/size_close/size_high/size_low` | Daily quote ask bar rows | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["quote_ask_values"][..., size_field]` | Ask size state fields from quote events only. |
+| `ticker_daily_bars.quote_ask_values.event_count` | Daily quote ask bar rows | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["quote_ask_values"][..., event_count]` | Quote-event count for ask family. |
+| `ticker_daily_bars.*_mask` | Bar family availability | not stored; derived by loader | `[B, offsets]` | False when requested family/offset is unavailable. |
+| `ticker_daily_bars.*_time_features` | Bar start timestamp and origin timestamp | computed/cached time features | `[B, offsets, bar_time_features]` | Zero where the matching family mask is false. |
+| `global_daily_bars.*_values` | Global daily bar family rows | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["{family}_values"][..., field]` | Same family schema as ticker bars, with symbol dimension. |
+| `global_daily_bars.*_mask` | Global bar family availability | not stored; derived by loader | `[B, symbols, offsets]` | False when requested symbol/family/offset is unavailable. |
 | `text_inputs["ticker_news"].embeddings` | Ticker news Qwen embedding table | `ticker_news_embeddings.parquet`, float32 tensor | `[B, ticker_news_max_items, chunks, text_embedding_dim]` | Zero where item/chunk mask is false. |
 | `text_inputs["ticker_news"].chunk_mask` | Ticker news chunk availability | derived from chunk rows | `[B, ticker_news_max_items, chunks]` | True only for real embedded chunks. |
 | `text_inputs["ticker_news"].item_mask` | Ticker news item availability | derived from as-of item selection | `[B, ticker_news_max_items]` | True only for selected historical items. |
@@ -528,25 +532,25 @@ reference tables that were built before the ticker/month cache builder runs.
 
 | Y dimension | Source field/window | Cache/storage representation | Loader representation | Loss/mask rule |
 | --- | --- | --- | --- | --- |
-| `intraday_labels.price_primary_int` | Last target event primary price at or before horizon end | decoded float32 list column; name kept for compatibility | `[B, H]` float32 | Convert to normalized delta before price loss; mask with `available`. |
-| `intraday_labels.price_secondary_int` | Last target event secondary price at or before horizon end | decoded float32 list column; name kept for compatibility | `[B, H]` float32 | Convert to normalized delta before price loss; mask with `available`. |
-| `intraday_labels.size_primary_sum` | Sum of primary sizes in future horizon interval | float32 list column | `[B, H]` float32 | Train with `log1p`/scale normalization; mask with `available`. |
-| `intraday_labels.size_secondary_sum` | Sum of secondary sizes in future horizon interval | float32 list column | `[B, H]` float32 | Train with `log1p`/scale normalization; mask with `available`. |
-| `intraday_labels.event_count` | Count of events in future horizon interval | uint64 list column | `[B, H]` uint64 | Count loss; mask with `available`. |
-| `intraday_labels.last_event_timestamp_us` | Last target event timestamp in horizon | int64 list column | `[B, H]` int64 | Diagnostic by default; zero when unavailable. |
-| `intraday_labels.available` | Future event exists and horizon stays inside session | bool list column | `[B, H]` bool | Primary intraday label mask. |
+| `future_bar_values["trade"].open/close/high/low` | Future trade events in `(origin, origin + horizon]` inside same session | decoded float32 list columns `trade_open`, `trade_close`, `trade_high`, `trade_low` | `[B, H, 4]` float32 slice | Convert to normalized trade-price deltas; mask with `future_bar_masks["trade"]`. |
+| `future_bar_values["trade"].size_sum` | Future trade events in horizon | float32 list column `trade_size_sum` | `[B, H]` float32 slice | Train with `log1p`/scale normalization; mask with `future_bar_masks["trade"]`. |
+| `future_bar_values["trade"].event_count` | Future trade events in horizon | uint64 list column `trade_event_count` | `[B, H]` float32 slice | Count loss; mask with `future_bar_masks["trade"]`. |
+| `future_bar_values["quote_bid"].open/close/high/low` | Future quote bid stream in horizon | decoded float32 list columns `quote_bid_open`, `quote_bid_close`, `quote_bid_high`, `quote_bid_low` | `[B, H, 4]` float32 slice | Convert to normalized bid-price deltas; mask with `future_bar_masks["quote_bid"]`. |
+| `future_bar_values["quote_bid"].size_open/size_close/size_high/size_low` | Future quote bid sizes in horizon | float32 list columns `quote_bid_size_*` | `[B, H, 4]` float32 slice | Train with `log1p`/scale normalization; mask with `future_bar_masks["quote_bid"]`. |
+| `future_bar_values["quote_bid"].event_count` | Future quote events in horizon | uint64 list column `quote_bid_event_count` | `[B, H]` float32 slice | Count loss; mask with `future_bar_masks["quote_bid"]`. |
+| `future_bar_values["quote_ask"].open/close/high/low` | Future quote ask stream in horizon | decoded float32 list columns `quote_ask_open`, `quote_ask_close`, `quote_ask_high`, `quote_ask_low` | `[B, H, 4]` float32 slice | Convert to normalized ask-price deltas; mask with `future_bar_masks["quote_ask"]`. |
+| `future_bar_values["quote_ask"].size_open/size_close/size_high/size_low` | Future quote ask sizes in horizon | float32 list columns `quote_ask_size_*` | `[B, H, 4]` float32 slice | Train with `log1p`/scale normalization; mask with `future_bar_masks["quote_ask"]`. |
+| `future_bar_values["quote_ask"].event_count` | Future quote events in horizon | uint64 list column `quote_ask_event_count` | `[B, H]` float32 slice | Count loss; mask with `future_bar_masks["quote_ask"]`. |
+| `intraday_labels.last_event_timestamp_us` | Last future event timestamp in any family horizon | int64 list column | `[B, H]` int64 | Compatibility/diagnostic by default; zero when unavailable. |
+| `intraday_labels.available` | Any future family exists and horizon stays inside session | bool list column | `[B, H]` bool | Compatibility mask; family masks are preferred for bar losses. |
 | `intraday_labels.condition_halt_pause_flag` | Any selected halt/pause token in future horizon | bool list column | `[B, H]` bool | BCE-with-logits; mask with `available`. |
 | `intraday_labels.condition_resume_flag` | Any selected resume token in future horizon | bool list column | `[B, H]` bool | BCE-with-logits; mask with `available`. |
 | `intraday_labels.condition_news_risk_flag` | Any selected news-risk token in future horizon | bool list column | `[B, H]` bool | BCE-with-logits; mask with `available`. |
 | `intraday_labels.condition_luld_limit_state_flag` | Any selected LULD/limit-state token in future horizon | bool list column | `[B, H]` bool | BCE-with-logits; mask with `available`. |
 | `intraday_labels.ticker_news_arrival_flag` | Any ticker news item arrives in future horizon | bool list column | `[B, H]` bool | BCE-with-logits; mask with `available`. |
 | `intraday_labels.sec_filing_arrival_flag` | Any SEC filing item arrives in future horizon | bool list column | `[B, H]` bool | BCE-with-logits; mask with `available`. |
-| `future_intraday_bars.open` | Loader projection from primary future price | not stored separately | `future_intraday_bars[..., open]` | Same decoded float as primary price; train as normalized delta. |
-| `future_intraday_bars.close` | Loader projection from primary future price | not stored separately | `future_intraday_bars[..., close]` | Same decoded float as primary price; train as normalized delta. |
-| `future_intraday_bars.high` | Loader projection from primary future price | not stored separately | `future_intraday_bars[..., high]` | Same decoded float as primary price; train as normalized delta. |
-| `future_intraday_bars.low` | Loader projection from secondary future price | not stored separately | `future_intraday_bars[..., low]` | Same decoded float as secondary price; train as normalized delta. |
-| `future_intraday_bars.volume` | Loader projection from primary size sum | not stored separately | `future_intraday_bars[..., volume]` | Same value as `size_primary_sum`; train with size normalization. |
-| `future_intraday_bar_mask` | Intraday label availability | not stored separately | `[B, H]` bool | Same as `intraday_labels.available`. |
+| `future_intraday_bars.open/close/high/low/volume` | Loader compatibility projection from the trade family | not stored separately | `future_intraday_bars [B,H,5]` | Kept for older callers; v3 should train on `future_bar_values` instead. |
+| `future_intraday_bar_mask` | Trade-family availability compatibility mask | not stored separately | `[B, H]` bool | Same as `future_bar_masks["trade"]`. |
 | `corporate_action_labels.future_split_flag` | Split effective date in future daily horizon | bool list column ordered by `horizon_days` | `[B, D]` bool | BCE-with-logits over daily horizons. |
 | `corporate_action_labels.future_reverse_split_flag` | Reverse split effective date in future daily horizon | bool list column ordered by `horizon_days` | `[B, D]` bool | BCE-with-logits over daily horizons. |
 | `corporate_action_labels.future_forward_split_flag` | Forward split effective date in future daily horizon | bool list column ordered by `horizon_days` | `[B, D]` bool | BCE-with-logits over daily horizons. |
@@ -579,14 +583,13 @@ reference tables that were built before the ticker/month cache builder runs.
 
 | Label group | Source | Builder/cache representation | Loader output | Loss/model handling |
 | --- | --- | --- | --- | --- |
-| Intraday future price levels | Future target events in `events` for the same ticker and same New York session day | `intraday_forward_labels_part_*.parquet` list columns `price_primary_int` and `price_secondary_int`; names are kept for compatibility, but values are decoded `float32` price levels using target event `event_meta` scale bits | `intraday_labels["price_primary_int"] [B,H]`, `intraday_labels["price_secondary_int"] [B,H]`, and projection into `future_intraday_bars [B,H,5]` | Trainer converts decoded price levels to normalized deltas, usually bps/ticks versus origin/as-of bid, ask, or mid, before regression loss. |
-| Intraday future size sums | Future events in `(origin_timestamp_us, origin_timestamp_us + horizon_us]` | List columns `size_primary_sum`, `size_secondary_sum` computed as cumulative target minus cumulative base | `intraday_labels["size_primary_sum"] [B,H]`, `intraday_labels["size_secondary_sum"] [B,H]`; primary sum also projects to `future_intraday_bars[..., volume]` | Train in a scale-stable space such as `log1p(size)` with `available` mask. |
-| Intraday future event count | Same future event interval as size sums | `event_count` list column | `intraday_labels["event_count"] [B,H]` | Count regression/classification target; use Poisson/log-count/Huber style loss with `available` mask. |
-| Intraday future last event timestamp | Last target event in the future horizon interval | `last_event_timestamp_us` list column; zero if unavailable | `intraday_labels["last_event_timestamp_us"] [B,H]` | Diagnostic timing metadata by default, not part of the primary supervised objective unless explicitly enabled. |
-| Intraday label availability | Session boundary and presence of future event in horizon | `available` list column; false when horizon crosses the 20:00 New York session end or no target event exists | `intraday_labels["available"] [B,H]` and `future_intraday_bar_mask [B,H]` | Broadcast as the mask for intraday price, size, count, and binary event-state losses. |
+| Intraday future trade bars | Future trade events in `events` for the same ticker and same New York session day | `intraday_forward_labels_part_*.parquet` list columns `trade_open`, `trade_close`, `trade_high`, `trade_low`, `trade_size_sum`, `trade_event_count`, `trade_available` | `future_bar_values["trade"] [B,H,6]`, `future_bar_masks["trade"] [B,H]`, plus compatibility `future_intraday_bars` | Trainer converts decoded trade prices to normalized deltas and sizes/counts to scale-stable targets. |
+| Intraday future quote bid bars | Future quote events in the same horizon | List columns `quote_bid_open`, `quote_bid_close`, `quote_bid_high`, `quote_bid_low`, `quote_bid_size_open`, `quote_bid_size_close`, `quote_bid_size_high`, `quote_bid_size_low`, `quote_bid_event_count`, `quote_bid_available` | `future_bar_values["quote_bid"] [B,H,9]`, `future_bar_masks["quote_bid"] [B,H]` | Bid-side price, size, and count losses use the bid family mask. |
+| Intraday future quote ask bars | Future quote events in the same horizon | List columns `quote_ask_open`, `quote_ask_close`, `quote_ask_high`, `quote_ask_low`, `quote_ask_size_open`, `quote_ask_size_close`, `quote_ask_size_high`, `quote_ask_size_low`, `quote_ask_event_count`, `quote_ask_available` | `future_bar_values["quote_ask"] [B,H,9]`, `future_bar_masks["quote_ask"] [B,H]` | Ask-side price, size, and count losses use the ask family mask. |
+| Intraday label availability | Session boundary and presence of any future family event in horizon | `available` compatibility list column; false when horizon crosses the 20:00 New York session end or no event exists | `intraday_labels["available"] [B,H]` | Compatibility mask. Prefer family masks for family bar losses. |
 | Intraday future event-state flags | Future event condition tokens resolved from `event_condition_token_reference` | Binary list columns for halt/pause, resume, news-risk, and LULD/limit-state flags | `intraday_labels["condition_*_flag"] [B,H]` | BCE-with-logits classification heads, masked by `available`; positive weights should be configurable because events are sparse. |
 | Future news/SEC arrival flags | Ticker news and SEC embedding/context tables using availability timestamps | Binary list columns `ticker_news_arrival_flag`, `sec_filing_arrival_flag` for whether at least one item arrives in the future horizon | `intraday_labels["ticker_news_arrival_flag"] [B,H]`, `intraday_labels["sec_filing_arrival_flag"] [B,H]` | BCE-with-logits event-risk heads, masked by `available`. Counts are intentionally not emitted by default. |
-| Future intraday bar projection | Intraday label columns | Not stored separately; derived by loader from intraday labels | `future_intraday_bars [B,H,5]` with order `open, close, high, low, volume`; current projection uses primary price for open/close/high, secondary price for low, and primary size sum for volume | Convenience tensor for bar-style heads. Use `future_intraday_bar_mask`. |
+| Future intraday bar projection | Trade-family intraday label columns | Not stored separately; derived by loader from `future_bar_values["trade"]` | `future_intraday_bars [B,H,5]` with order `open, close, high, low, volume` | Compatibility tensor only. New v3 heads should use `future_bar_values`. |
 | Corporate-action daily labels | Corporate-action reference tables and effective dates | `corporate_action_daily_labels_part_*.parquet` list columns ordered by `horizon_days` | `corporate_action_labels[field] [B,D]` and `corporate_action_label_days` | Daily BCE-with-logits heads for split, reverse split, forward split, dividend ex-date, special dividend ex-date, and any corporate action. |
 
 The cache deliberately separates source-preserving storage from model-specific
@@ -1077,16 +1080,28 @@ used to decide whether the fact was available.
 When daily/global bar groups are requested, `bar_inputs` contains:
 
 ```text
-bar_inputs["ticker_daily_bars"]["values"]    [B, ticker_daily_bar_offsets, 9]
-bar_inputs["ticker_daily_bars"]["mask"]      [B, ticker_daily_bar_offsets]
-bar_inputs["global_daily_bars"]["values"]    [B, global_symbols, global_daily_bar_offsets, 9]
-bar_inputs["global_daily_bars"]["mask"]      [B, global_symbols, global_daily_bar_offsets]
+bar_inputs["ticker_daily_bars"]["trade_values"]     [B, ticker_daily_bar_offsets, 6]
+bar_inputs["ticker_daily_bars"]["quote_bid_values"] [B, ticker_daily_bar_offsets, 9]
+bar_inputs["ticker_daily_bars"]["quote_ask_values"] [B, ticker_daily_bar_offsets, 9]
+bar_inputs["ticker_daily_bars"]["trade_mask"]       [B, ticker_daily_bar_offsets]
+bar_inputs["ticker_daily_bars"]["quote_bid_mask"]   [B, ticker_daily_bar_offsets]
+bar_inputs["ticker_daily_bars"]["quote_ask_mask"]   [B, ticker_daily_bar_offsets]
+bar_inputs["global_daily_bars"]["trade_values"]     [B, global_symbols, global_daily_bar_offsets, 6]
+bar_inputs["global_daily_bars"]["quote_bid_values"] [B, global_symbols, global_daily_bar_offsets, 9]
+bar_inputs["global_daily_bars"]["quote_ask_values"] [B, global_symbols, global_daily_bar_offsets, 9]
+bar_inputs["global_daily_bars"]["trade_mask"]       [B, global_symbols, global_daily_bar_offsets]
+bar_inputs["global_daily_bars"]["quote_bid_mask"]   [B, global_symbols, global_daily_bar_offsets]
+bar_inputs["global_daily_bars"]["quote_ask_mask"]   [B, global_symbols, global_daily_bar_offsets]
 bar_inputs["ticker_daily_bars"]["time_features"] [B, ticker_daily_bar_offsets, bar_time_features]
 bar_inputs["global_daily_bars"]["time_features"] [B, global_symbols, global_daily_bar_offsets, bar_time_features]
 bar_inputs[*]["time_feature_names"]          names for time_features
 bar_inputs[*]["offsets"]                     completed daily-bar row offsets
-bar_inputs[*]["feature_names"]               open, high, low, close, volume, dollar_volume, trade_count, quote_count, vwap
+bar_inputs[*]["feature_names"]               compatibility union: open, close, high, low, size_sum, size_open, size_close, size_high, size_low, event_count
+bar_inputs[*]["{family}_feature_names"]      canonical family-specific feature names
 ```
+
+`bar_inputs[*]["values"]` and `bar_inputs[*]["mask"]` remain compatibility
+aliases for the `trade` family using the 10-column union layout.
 
 The default ticker context offsets are `1,2,3,7,14,28,40,200`. The default
 global context offsets are `1,2,7`. These are X/context lookback offsets, not

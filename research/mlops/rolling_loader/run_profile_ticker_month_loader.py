@@ -348,6 +348,10 @@ def _shape_summary(batch: Any) -> dict[str, Any]:
         out["events_uint8_shape"] = list(batch.events_uint8.shape)
     if batch.intraday_labels:
         out["intraday_label_shapes"] = {key: list(value.shape) for key, value in batch.intraday_labels.items()}
+    if getattr(batch, "future_bar_values", None):
+        out["future_bar_value_shapes"] = {key: list(value.shape) for key, value in batch.future_bar_values.items()}
+        out["future_bar_mask_shapes"] = {key: list(value.shape) for key, value in batch.future_bar_masks.items()}
+        out["future_bar_feature_names"] = {key: [str(item) for item in value] for key, value in batch.future_bar_feature_names.items()}
     if batch.corporate_action_labels:
         out["corporate_action_label_shapes"] = {key: list(value.shape) for key, value in batch.corporate_action_labels.items()}
         out["corporate_action_label_days"] = list(batch.corporate_action_label_days)

@@ -14,11 +14,12 @@ from zoneinfo import ZoneInfo
 import numpy as np
 
 from research.mlops.data.config import RollingMarketDataConfig, TimeBarHorizon
+from research.mlops.data.contracts import BAR_FAMILY_FEATURE_KEYS, BAR_FAMILY_KEYS
 from research.mlops.rolling_loader.materialized_cache import DEFAULT_MATERIALIZED_CACHE_ROOT
 
 
 TICKER_MONTH_CACHE_FORMAT = "rolling_ticker_month_ssd_cache"
-TICKER_MONTH_CACHE_VERSION = 1
+TICKER_MONTH_CACHE_VERSION = 2
 DEFAULT_TICKER_MONTH_CACHE_ROOT = DEFAULT_MATERIALIZED_CACHE_ROOT.parent / "rolling_ticker_month_cache"
 SESSION_TIMEZONE = "America/New_York"
 SESSION_START = dt.time(4, 0, 0)
@@ -437,6 +438,13 @@ def month_manifest_payload(*, args: Any, cache_id: str, cache_root: Path, loaded
             "context_available_time_feature_columns": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
             "context_effective_time_feature_columns": list(CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS),
             "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
+            "bar_families": list(BAR_FAMILY_KEYS),
+            "bar_family_feature_keys": {family: list(BAR_FAMILY_FEATURE_KEYS[family]) for family in BAR_FAMILY_KEYS},
+            "future_bar_label_keys": [
+                *(f"{family}_{field}" for family in BAR_FAMILY_KEYS for field in BAR_FAMILY_FEATURE_KEYS[family]),
+                *(f"{family}_available" for family in BAR_FAMILY_KEYS),
+                *(f"{family}_last_event_timestamp_us" for family in BAR_FAMILY_KEYS),
+            ],
             "future_condition_label_keys": [
                 "condition_halt_pause_flag",
                 "condition_resume_flag",

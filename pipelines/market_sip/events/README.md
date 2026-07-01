@@ -14,7 +14,7 @@ The macro table is intentionally small:
 
 | Table | Partition | Order key | Primary use |
 | --- | --- | --- | --- |
-| `macro_bars_by_time_symbol` | `toYYYYMM(bar_start)` | `(timeframe, bar_start, sym)` | macrostructure and future-label joins |
+| `macro_bars_by_time_symbol` | `toYYYYMM(bar_start)` | `(timeframe, bar_start, sym, bar_family)` | macrostructure and future-label joins |
 
 The default timeframes are:
 
@@ -22,11 +22,21 @@ The default timeframes are:
 1d,1w,1y
 ```
 
-The builder uses trade events for OHLCV/dollar volume/VWAP and quote events for
-`quote_count`. Daily bars are grouped by the New York extended-hours session:
+The builder emits three non-mixed bar families for each `(session_date,
+timeframe, sym)`:
+
+| `bar_family` | Event source | Price fields | Size fields |
+| --- | --- | --- | --- |
+| `trade` | trade events only | trade `open`, `close`, `high`, `low` | `size_sum`, `event_count` |
+| `quote_bid` | quote events only | bid `open`, `close`, `high`, `low` | bid `size_open`, `size_close`, `size_high`, `size_low`, `event_count` |
+| `quote_ask` | quote events only | ask `open`, `close`, `high`, `low` | ask `size_open`, `size_close`, `size_high`, `size_low`, `event_count` |
+
+The table intentionally does not store derived mid/spread/VWAP/dollar-volume
+fields by default. Those can be derived downstream from the family bars when an
+experiment asks for them. Daily bars are grouped by the New York extended-hours session:
 04:00 ET inclusive through 20:00 ET exclusive. This means the daily `close` is
-the last valid trade before the after-hours close, not the 16:00 regular-market
-close.
+the last valid event in that family before the after-hours close, not the 16:00
+regular-market close.
 
 Run on the workstation:
 
@@ -35,8 +45,8 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_si
 ```
 
 If `macro_bars_by_time_symbol` was previously populated by the old all-bars
-path, rebuild it once from scratch so stale UTC-midnight daily bars and stale
-`1mo` rows are removed:
+or old trade-only path, rebuild it once from scratch so stale UTC-midnight daily
+bars, stale `1mo` rows, and the old no-`bar_family` schema are removed:
 
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\market_sip\events\run_build_trade_bars.py `

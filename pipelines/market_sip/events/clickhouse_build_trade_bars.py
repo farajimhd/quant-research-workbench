@@ -415,6 +415,7 @@ def build_macro_bars(
     if reporter is not None:
         reporter.set_stage("create/verify macro bars table")
     client.execute(create_macro_bar_table_sql(args.database, table_spec.table, args.storage_policy, layout=table_spec))
+    validate_macro_bar_table_schema(client, args.database, table_spec.table)
     if reporter is not None:
         reporter.finish_stage(f"ensured {args.database}.{table_spec.table}")
 
@@ -1038,7 +1039,7 @@ def macro_bar_table_spec(args: argparse.Namespace) -> BarTableSpec:
         layout="macro_time_symbol",
         table=args.macro_bars_table,
         partition_sql="PARTITION BY toYYYYMM(bar_start)",
-        order_by_sql="ORDER BY (timeframe, bar_start, sym)",
+        order_by_sql="ORDER BY (timeframe, bar_start, sym, bar_family)",
     )
 
 
@@ -1123,23 +1124,56 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
     session_date Date,
     timeframe LowCardinality(String),
     sym LowCardinality(String),
+    bar_family LowCardinality(String),
     bar_start DateTime64(3, 'UTC'),
     bar_end DateTime64(3, 'UTC'),
     open Float64,
+    close Float64,
     high Float64,
     low Float64,
-    close Float64,
-    volume Float64,
-    dollar_volume Float64,
-    trade_count UInt64,
-    quote_count UInt64,
-    vwap Float64
+    size_sum Float64,
+    size_open Float64,
+    size_close Float64,
+    size_high Float64,
+    size_low Float64,
+    event_count UInt64
 )
 ENGINE = ReplacingMergeTree
 {partition_sql}
 {order_by_sql}
 {mergetree_settings_sql(storage_policy)}
 """
+
+
+def validate_macro_bar_table_schema(client: ClickHouseHttpClient, database: str, table: str) -> None:
+    required = {
+        "bar_family",
+        "open",
+        "close",
+        "high",
+        "low",
+        "size_sum",
+        "size_open",
+        "size_close",
+        "size_high",
+        "size_low",
+        "event_count",
+    }
+    rows = client.query_tsv(
+        f"""
+SELECT name
+FROM system.columns
+WHERE database = {sql_string(database)}
+  AND table = {sql_string(table)}
+"""
+    ).strip()
+    columns = {line.strip() for line in rows.splitlines() if line.strip()}
+    missing = sorted(required - columns)
+    if missing:
+        raise RuntimeError(
+            f"{database}.{table} has the old macro-bar schema; missing columns {missing}. "
+            "Drop/recreate the table or run the macro bar builder with --drop-table before rebuilding."
+        )
 
 
 def create_bar_table_sql(database: str, table: str, storage_policy: str, *, layout: BarTableSpec | None = None) -> str:
@@ -1322,6 +1356,24 @@ def insert_macro_bars_sql(args: argparse.Namespace, spec: TimeframeSpec) -> str:
     bid_price = "if(bitAnd(bitShiftRight(event_meta, 2), 1) = 1, toFloat64(price_secondary_int) / 10000.0, toFloat64(price_secondary_int) / 100.0)"
     return f"""
 INSERT INTO {dst}
+(
+    session_date,
+    timeframe,
+    sym,
+    bar_family,
+    bar_start,
+    bar_end,
+    open,
+    close,
+    high,
+    low,
+    size_sum,
+    size_open,
+    size_close,
+    size_high,
+    size_low,
+    event_count
+)
 WITH
 source AS
 (
@@ -1337,7 +1389,9 @@ source AS
         {trade_price} AS trade_price,
         toFloat64(size_primary) AS trade_size,
         {ask_price} AS ask_price,
-        {bid_price} AS bid_price
+        {bid_price} AS bid_price,
+        toFloat64(size_primary) AS ask_size,
+        toFloat64(size_secondary) AS bid_size
     FROM {src}
     WHERE event_date >= toDate({sql_string(args.start_date)})
       AND event_date <= toDate({sql_string(args.end_date)}) + INTERVAL 1 DAY
@@ -1364,25 +1418,68 @@ bucketed AS
         event_type = 1 AND trade_price > 0 AND trade_size > 0 AS valid_trade,
         event_type = 0 AND bid_price > 0 AND ask_price > 0 AS valid_quote
     FROM session_events
+),
+family_events AS
+(
+    SELECT
+        period_start_date,
+        sym,
+        bar_start,
+        bar_end,
+        sip_timestamp_us,
+        ordinal,
+        'trade' AS bar_family,
+        trade_price AS price,
+        trade_size AS size
+    FROM bucketed
+    WHERE valid_trade
+    UNION ALL
+    SELECT
+        period_start_date,
+        sym,
+        bar_start,
+        bar_end,
+        sip_timestamp_us,
+        ordinal,
+        'quote_bid' AS bar_family,
+        bid_price AS price,
+        bid_size AS size
+    FROM bucketed
+    WHERE valid_quote AND bid_size > 0
+    UNION ALL
+    SELECT
+        period_start_date,
+        sym,
+        bar_start,
+        bar_end,
+        sip_timestamp_us,
+        ordinal,
+        'quote_ask' AS bar_family,
+        ask_price AS price,
+        ask_size AS size
+    FROM bucketed
+    WHERE valid_quote AND ask_size > 0
 )
 SELECT
     period_start_date AS session_date,
     {sql_string(spec.name)} AS timeframe,
     sym,
+    bar_family,
     bar_start,
     bar_end,
-    argMinIf(trade_price, tuple(sip_timestamp_us, ordinal), valid_trade) AS open,
-    maxIf(trade_price, valid_trade) AS high,
-    minIf(trade_price, valid_trade) AS low,
-    argMaxIf(trade_price, tuple(sip_timestamp_us, ordinal), valid_trade) AS close,
-    sumIf(trade_size, valid_trade) AS volume,
-    sumIf(trade_price * trade_size, valid_trade) AS dollar_volume,
-    countIf(valid_trade) AS trade_count,
-    countIf(valid_quote) AS quote_count,
-    if(volume > 0, dollar_volume / volume, 0.0) AS vwap
-FROM bucketed
-GROUP BY period_start_date, sym, bar_start, bar_end
-HAVING trade_count > 0 OR quote_count > 0
+    argMin(price, tuple(sip_timestamp_us, ordinal)) AS open,
+    argMax(price, tuple(sip_timestamp_us, ordinal)) AS close,
+    max(price) AS high,
+    min(price) AS low,
+    sum(size) AS size_sum,
+    argMin(size, tuple(sip_timestamp_us, ordinal)) AS size_open,
+    argMax(size, tuple(sip_timestamp_us, ordinal)) AS size_close,
+    max(size) AS size_high,
+    min(size) AS size_low,
+    count() AS event_count
+FROM family_events
+GROUP BY period_start_date, sym, bar_family, bar_start, bar_end
+HAVING event_count > 0
 """
 
 
@@ -1629,6 +1726,42 @@ FROM history
 
 
 def summarize_table(client: ClickHouseHttpClient, database: str, table: str, timeframe: str, start_date: str, end_date: str) -> dict[str, int | float | str]:
+    family_schema = client.query_tsv(
+        f"""
+SELECT count()
+FROM system.columns
+WHERE database = {sql_string(database)}
+  AND table = {sql_string(table)}
+  AND name = 'bar_family'
+"""
+    ).strip()
+    if int(family_schema or 0) > 0:
+        rows = client.query_tsv(
+            f"""
+SELECT
+    count(),
+    uniqExact(sym),
+    if(count() = 0, '', toString(min(bar_start))),
+    if(count() = 0, '', toString(max(bar_start))),
+    if(count() = 0, 0, sumIf(size_sum, bar_family = 'trade')),
+    if(count() = 0, 0, sumIf(event_count, bar_family = 'trade')),
+    if(count() = 0, 0, sumIf(event_count, bar_family IN ('quote_bid', 'quote_ask')))
+FROM {quote_ident(database)}.{quote_ident(table)}
+WHERE timeframe = {sql_string(timeframe)}
+  AND bar_start < (toDateTime64(toDate({sql_string(end_date)}) + INTERVAL 1 DAY, 3, 'UTC'))
+  AND bar_end > toDateTime64(toDate({sql_string(start_date)}), 3, 'UTC')
+"""
+        ).strip()
+        parts = rows.split("\t") if rows else ["0", "0", "", "", "0", "0", "0"]
+        return {
+            "rows": int(parts[0] or 0),
+            "tickers": int(parts[1] or 0),
+            "min_bar_start": parts[2],
+            "max_bar_start": parts[3],
+            "volume": float(parts[4] or 0.0),
+            "trade_count": int(float(parts[5] or 0)),
+            "quote_count": int(float(parts[6] or 0)),
+        }
     rows = client.query_tsv(
         f"""
 SELECT
