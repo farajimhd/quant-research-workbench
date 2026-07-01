@@ -435,7 +435,8 @@ by `future_intraday_bar_horizons`; corporate-action query tokens are keyed by
 
 Do not train redundant mid-price labels by default. If an experiment wants a
 mid or spread target, it should be derived explicitly in the model adapter and
-registered as an ablation head with its own loss weight.
+registered as an ablation head with an explicit diagnostic-only/default-off
+setting.
 
 ## Model Architecture
 
@@ -667,9 +668,9 @@ Design:
 ### Prediction Heads
 
 The model should expose prediction heads for every label group emitted by the
-loader. A training run can disable a group by setting its loss weight to zero or
-by omitting the data group from the loader, but the default full-supervised v3
-objective should consume all available labels in the batch.
+loader. A training run can disable a group by omitting the data group from the
+loader or by marking the head as diagnostic-only, but the default
+full-supervised v3 objective should consume all available labels in the batch.
 
 Prediction heads are grouped by target type so the trainer can use the right
 normalization, mask, and loss for each output.
@@ -746,9 +747,11 @@ Optional diagnostic heads:
 - label availability calibration
 - spread or liquidity regime classification
 
-Every head must have an explicit loss weight and metric prefix. Zero weight
-means the head can be computed for diagnostics without contributing to the
-gradient.
+Every head must have an explicit metric prefix and a diagnostic-only switch.
+Manual per-head loss weights are off by default because prior AMP/bf16 training
+showed that weighted objectives can destabilize optimization. If a future
+ablation enables weights, it must record the full weighting config and compare
+against the unweighted baseline.
 
 ## Loss
 
@@ -762,27 +765,26 @@ All task losses use a masked mean:
 masked_mean(value, mask) = sum(value * mask) / max(sum(mask), 1)
 ```
 
-The total loss is the active-weight-normalized weighted sum of task losses:
+The default total loss is an unweighted average over active task losses:
 
 ```text
-weighted_loss_sum =
-    price_weight             * price_loss
-  + event_count_weight       * event_count_loss
-  + event_size_weight        * event_size_loss
-  + event_state_weight       * event_state_bce
-  + external_arrival_weight  * external_arrival_bce
-  + corporate_action_weight  * corporate_action_bce
+active_task_losses =
+    price_loss
+  + event_count_loss
+  + event_size_loss
+  + event_state_bce
+  + external_arrival_bce
+  + corporate_action_bce
 
-active_weight_sum = sum(weights for tasks with at least one valid target)
+active_task_count = count(tasks with at least one valid target)
 
-total_loss = weighted_loss_sum / max(active_weight_sum, eps)
+total_loss = active_task_losses / max(active_task_count, 1)
 ```
 
 All terms are mask-aware. If a label group is absent from the batch, or if all
 targets for a task are masked unavailable, that task contributes zero loss and
 reports zero valid count for the step. The trainer should still log raw losses,
-weighted losses, valid counts, positive rates for binary labels, and the active
-weight sum.
+valid counts, positive rates for binary labels, and the active task count.
 
 Bar price loss:
 
@@ -790,7 +792,7 @@ Bar price loss:
 - prediction shapes: same family/field shapes in normalized bps/tick space
 - masks: `future_bar_masks[family] [B, H]`
 - default loss: Huber in normalized bps/tick space
-- optional weights: `bar_family_weight [3]`, `bar_price_field_weight [4]`, and `price_horizon_weight [H]`
+- no default family, field, or horizon weights
 - `future_intraday_bars` is compatibility output and should not add a duplicate loss
 
 Event-count and size losses:
@@ -810,8 +812,8 @@ Binary event-state and arrival losses:
 - loss: masked BCE-with-logits
 - event-state group: halt/pause, resume, news-risk, and LULD flags
 - external-arrival group: ticker-news and SEC-filing arrival flags
-- per-label positive weights should be configurable and capped because these
-  targets are sparse
+- no default positive-class weighting; sparse-label imbalance should first be
+  handled through metrics, threshold analysis, and optional ablation runs
 
 Corporate-action losses:
 
@@ -821,9 +823,8 @@ Corporate-action losses:
 - loss: masked BCE-with-logits
 - flags: split, reverse split, forward split, dividend ex-date, special dividend
   ex-date, and any corporate action
-- per-label positive weights should be configurable and capped because
-  split/special-dividend targets are very sparse
-- optional weights: `corporate_action_day_weight [D]`
+- no default positive-class or day-horizon weighting; sparse-label weighting is
+  an explicit ablation only
 
 Label availability calibration remains optional and should not be enabled by
 default unless there is a clear diagnostic need.
@@ -839,7 +840,7 @@ Default metric cadence:
 
 | Cadence | Default | Purpose | Metric families |
 | --- | ---: | --- | --- |
-| Step | every optimizer step | smooth training loop and detect immediate failures | total loss, weighted task losses, learning rate, step timing |
+| Step | every optimizer step | smooth training loop and detect immediate failures | total loss, raw task losses, learning rate, step timing |
 | Fast train summary | every 25 steps | cheap diagnostics from already-computed batch tensors | valid fractions, positive rates, availability fractions, throughput |
 | Train metric window | every 250 steps | regression/classification metrics from a rolling prediction buffer | MAE, RMSE, sign accuracy, BCE/AUC where valid |
 | Validation | every 2,000 steps or epoch end | deterministic validation loader metrics | same grouped metrics as train window with `val/` prefix |
@@ -863,8 +864,8 @@ W&B grouping rules:
 
 | Panel | Keys | Cadence | Notes |
 | --- | --- | --- | --- |
-| `loss/core` | `train/loss`, `train/loss_ema`, `train/active_weight_sum`, `train/grad_norm`, `train/learning_rate`, `train/loss_scale`, `train/skipped_step`, `train/nan_guard_triggered` | step | Keep this as the first dashboard panel. |
-| `loss/task` | `train/loss_price`, `train/loss_event_count`, `train/loss_event_size`, `train/loss_event_state`, `train/loss_external_arrival`, `train/loss_corporate_action`, plus matching weighted losses when enabled | step | If weighted and raw losses exceed 18 series, split into `loss/task_raw` and `loss/task_weighted`. |
+| `loss/core` | `train/loss`, `train/loss_ema`, `train/active_task_count`, `train/grad_norm`, `train/learning_rate`, `train/loss_scale`, `train/skipped_step`, `train/nan_guard_triggered` | step | Keep this as the first dashboard panel. |
+| `loss/task` | `train/loss_price`, `train/loss_event_count`, `train/loss_event_size`, `train/loss_event_state`, `train/loss_external_arrival`, `train/loss_corporate_action` | step | Raw task losses only by default. Loss weighting metrics belong only in explicit ablation runs. |
 | `train/speed` | `train/samples_per_second`, `train/tokens_or_events_per_second`, `train/step_seconds`, `train/gpu_step_seconds`, `train/loader_wait_seconds`, `train/materialize_seconds`, `train/host_to_device_seconds`, `train/backward_seconds`, `train/optimizer_seconds` | fast train summary | All timing values should be moving averages. |
 | `train/memory` | `train/gpu_memory_allocated_gib`, `train/gpu_memory_reserved_gib`, `train/gpu_memory_peak_gib`, `train/cpu_rss_gib`, `train/loader_rss_gib`, `train/pinned_memory_gib` | fast train summary | Record memory after synchronization only at summary cadence. |
 | `data/loader_state` | `loader/epoch`, `loader/package_position`, `loader/origin_cursor`, `loader/emitted_batches`, `loader/emitted_samples`, `loader/seen_origins_total`, `loader/seen_origins_this_epoch`, `loader/replay_seed`, `loader/cache_manifest_changed` | fast train summary | String identifiers stay in JSONL/run manifest, not W&B scalar panels. |
@@ -887,7 +888,7 @@ loss/metric. These flags are metric metadata, not model inputs. As-of/input
 cohorts can be computed from `x` and used for normal validation reporting.
 Future-label-derived cohorts can be useful for debugging difficult regimes, but
 they must be used only after loss calculation for metric aggregation and must
-never be fed to the model, sample plan, loss weights, or sampler.
+never be fed to the model, sample plan, loss weighting, or sampler.
 
 | Cohort flag | Source | Definition sketch | Metric value |
 | --- | --- | --- | --- |
