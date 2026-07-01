@@ -236,6 +236,30 @@ fields outside the model for audit and checkpoint logs.
 
 ### Atomic Model Inputs
 
+Shape symbols used in the atomic input/output tables:
+
+| Symbol | Meaning |
+| --- | --- |
+| `B` | Batch size emitted by the loader/trainer step. |
+| `L` | Event sequence length consumed by the event encoder for each sample. For raw-window mode this is the selected flattened event stream length after the loader applies coverage/window settings. |
+| `O` | Number of completed daily-bar offsets requested for ticker/global bar context. |
+| `S` | Number of configured global symbols in global daily-bar context. |
+| `H` | Number of intraday future horizons in `future_intraday_bar_horizons`. |
+| `D` | Number of daily corporate-action label horizons in `corporate_action_label_days`. |
+| `F` | Number of raw event fields in loader-level event tensors before the model adapter splits them into atomic event inputs. |
+| `I` | Number of as-of external-context items selected for a text group; the value is group-specific, for example ticker news, market news, or SEC filings. |
+| `C` | Number of text chunks per external-context item; the value is group-specific. |
+| `M` | Number of modality availability flags passed to the fusion path. |
+| `T_event` | Number of event timestamp/session time features. |
+| `T_bar` | Number of daily-bar time features. |
+| `T_text` | Number of text item time features. |
+| `T_xbrl` | Number of XBRL availability-time features. |
+| `T_period` | Number of XBRL period-end time features. |
+| `T_ca` | Number of corporate-action availability-time features. |
+| `T_ca_eff` | Number of corporate-action effective-time features. |
+| `F_ca` | Number of corporate-action numeric feature dimensions. |
+| `d_model` | Model hidden width after each modality-specific projection. |
+
 | Model input atom | Loader source | Shape before embedding/projection | Required representation | Encoder path |
 | --- | --- | --- | --- | --- |
 | `event_type_id` | `bitAnd(event_meta, 1)` | `[B, L]` | categorical id, `0=quote`, `1=trade` | event categorical embedding |
