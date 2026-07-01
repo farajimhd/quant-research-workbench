@@ -202,6 +202,7 @@ Labels:
 future_intraday_bars      [B, H, label_features]
 future_intraday_bar_mask  [B, H]
 intraday_labels           dict[str, [B, H]]
+corporate_action_labels   dict[str, [B, D]]
 ```
 
 Primary price targets should use bid and ask fields. Redundant mid-price targets
@@ -211,6 +212,14 @@ Intraday labels are future-only and session bounded. They are computed from
 events on the same New York trading date as the origin and do not cross the
 20:00 ET session end. Each unavailable horizon is masked out rather than filled
 as a valid target.
+
+Corporate-action labels are daily future labels, not intraday bars. They use
+daily horizons such as `+1d,+2d,+3d,+5d,+10d,+20d,+40d` and include split,
+reverse split, forward split, dividend ex-date, special dividend ex-date, and
+any-corporate-action flags. These labels are computed from effective dates.
+Corporate-action inputs are separate X/context features selected by
+availability time so declared future dividends can be seen only after they are
+available, while labels still forecast future effective events.
 
 ## Model Architecture
 
@@ -262,8 +271,9 @@ token = content_projection(x)
 
 Do not use one global sequence-level time encoder that mixes all modality times
 before the modality encoders. Event timestamps, text publish times, SEC accepted
-times, XBRL period/availability times, daily-bar offsets, and label horizons
-have different semantics. Also do not rely only on raw time-feature
+times, XBRL period/availability times, corporate-action availability/effective
+times, daily-bar offsets, and label horizons have different semantics. Also do
+not rely only on raw time-feature
 concatenation inside each modality; that makes the time representation
 inconsistent and harder to cache.
 
@@ -338,6 +348,28 @@ Design:
 - avoid full 4096-row self-attention by default
 - output one XBRL modality token
 
+### Corporate Action Encoder
+
+Input:
+
+```text
+up to 128 corporate-action rows per sample
+```
+
+Design:
+
+- category embeddings for action type, dividend type, currency, and frequency
+- numeric projection for split factors, log factors, cash amount, and indicator bits
+- use availability-time embeddings for as-of/source timing
+- use effective-time embeddings for the economic event date
+- gated pooling or compact cross-attention over the sparse action rows
+- output one corporate-action modality token
+
+This encoder should be lightweight. Corporate actions are sparse and the model
+mainly needs to know whether a known upcoming or recent split/dividend context
+changes the event dynamics and whether future daily corporate-action labels are
+likely.
+
 ### Fusion Transformer
 
 Input modality tokens:
@@ -350,6 +382,7 @@ ticker_news
 market_news
 sec_filings
 xbrl
+corporate_actions
 ```
 
 Design:

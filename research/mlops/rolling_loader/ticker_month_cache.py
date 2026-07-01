@@ -79,6 +79,16 @@ BAR_START_TIME_FEATURE_COLUMNS: tuple[str, ...] = (
     "bar_start_years_since_2000",
 )
 
+CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS: tuple[str, ...] = (
+    "effective_utc_second_of_day_sin",
+    "effective_utc_second_of_day_cos",
+    "effective_utc_day_of_week_sin",
+    "effective_utc_day_of_week_cos",
+    "effective_utc_day_of_year_sin",
+    "effective_utc_day_of_year_cos",
+    "effective_years_since_2000",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class MonthWindow:
@@ -273,6 +283,7 @@ def replace_complete_dir(tmp_dir: Path, final_dir: Path, *, resume: bool) -> Non
 def build_config_from_args(args: Any) -> RollingMarketDataConfig:
     return RollingMarketDataConfig(
         database=args.database,
+        q_live_database=getattr(args, "q_live_database", "q_live"),
         sec_context_database=args.sec_context_database,
         events_table=args.events_table,
         condition_token_reference_table=getattr(args, "condition_token_reference_table", "event_condition_token_reference"),
@@ -283,6 +294,8 @@ def build_config_from_args(args: Any) -> RollingMarketDataConfig:
         sec_filing_text_embedding_table=getattr(args, "sec_filing_text_embedding_table", "sec_filing_text_embeddings"),
         sec_xbrl_context_table=args.sec_xbrl_context_table,
         category_reference_table=args.category_reference_table,
+        stock_split_table=getattr(args, "stock_split_table", "market_stock_split_v1"),
+        cash_dividend_table=getattr(args, "cash_dividend_table", "market_cash_dividend_v1"),
         events_per_chunk=max(1, int(args.events_per_chunk)),
         short_context_chunks=max(0, int(args.short_context_chunks)),
         short_context_stride_chunks=max(1, int(args.short_context_stride_chunks)),
@@ -298,20 +311,25 @@ def build_config_from_args(args: Any) -> RollingMarketDataConfig:
         news_lookback_days=max(0, int(args.news_lookback_days)),
         sec_lookback_days=max(0, int(args.sec_lookback_days)),
         xbrl_lookback_days=max(0, int(args.xbrl_lookback_days)),
+        corporate_action_lookback_days=max(0, int(getattr(args, "corporate_action_lookback_days", 3650))),
         news_max_items=max(0, int(args.ticker_news_items)),
         market_news_max_items=max(0, int(args.market_news_items)),
         sec_max_items=max(0, int(args.sec_filing_items)),
         xbrl_max_items=max(0, int(args.xbrl_items)),
+        corporate_action_max_items=max(0, int(getattr(args, "corporate_action_items", 128))),
+        corporate_action_label_days=tuple(parse_day_horizons(getattr(args, "corporate_action_label_days", "1,2,3,5,10,20,40"))),
         intraday_label_horizons=tuple(parse_horizons(args.intraday_label_horizons)),
     )
 
 
 def _enabled_contexts(args: Any) -> tuple[str, ...]:
-    if bool(getattr(args, "skip_token_contexts", False)):
-        return ()
-    contexts = ["ticker_news", "market_news", "sec_filings"]
+    contexts: list[str] = []
+    if not bool(getattr(args, "skip_token_contexts", False)):
+        contexts.extend(["ticker_news", "market_news", "sec_filings"])
     if not bool(getattr(args, "skip_xbrl", False)):
         contexts.append("xbrl")
+    if not bool(getattr(args, "skip_corporate_actions", False)):
+        contexts.append("corporate_actions")
     return tuple(contexts)
 
 
@@ -336,6 +354,23 @@ def parse_horizons(value: str | Iterable[TimeBarHorizon]) -> tuple[TimeBarHorizo
             continue
         out.append(TimeBarHorizon(name=name, microseconds=parse_duration_us(name)))
     return tuple(out)
+
+
+def parse_day_horizons(value: str | Iterable[int]) -> tuple[int, ...]:
+    if isinstance(value, str):
+        raw_values = (item.strip().lower() for item in value.split(","))
+    else:
+        raw_values = (str(item).strip().lower() for item in value)
+    days: set[int] = set()
+    for item in raw_values:
+        if not item:
+            continue
+        if item.endswith("d"):
+            item = item[:-1]
+        parsed = int(float(item))
+        if parsed > 0:
+            days.add(parsed)
+    return tuple(sorted(days))
 
 
 def parse_duration_us(value: str) -> int:
@@ -379,6 +414,9 @@ def month_manifest_payload(*, args: Any, cache_id: str, cache_root: Path, loaded
             "sec_filing_text_embedding_table": getattr(args, "sec_filing_text_embedding_table", "sec_filing_text_embeddings"),
             "sec_xbrl_context_table": args.sec_xbrl_context_table,
             "category_reference_table": args.category_reference_table,
+            "q_live_database": getattr(args, "q_live_database", "q_live"),
+            "stock_split_table": getattr(args, "stock_split_table", "market_stock_split_v1"),
+            "cash_dividend_table": getattr(args, "cash_dividend_table", "market_cash_dividend_v1"),
         },
         "config": {
             "events_per_chunk": int(args.events_per_chunk),
@@ -391,8 +429,13 @@ def month_manifest_payload(*, args: Any, cache_id: str, cache_root: Path, loaded
             "sec_filing_prior_items": int(getattr(args, "sec_filing_prior_items", 0)),
             "xbrl_prior_rows": int(getattr(args, "xbrl_prior_rows", 0)),
             "xbrl_items": int(getattr(args, "xbrl_items", 0)),
+            "corporate_action_items": int(getattr(args, "corporate_action_items", 0)),
+            "corporate_action_lookback_days": int(getattr(args, "corporate_action_lookback_days", 0)),
+            "corporate_action_label_days": list(parse_day_horizons(getattr(args, "corporate_action_label_days", ""))),
             "event_payload_columns": list(EVENT_PAYLOAD_COLUMNS),
             "event_time_feature_columns": list(EVENT_TIME_FEATURE_COLUMNS),
+            "context_available_time_feature_columns": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
+            "context_effective_time_feature_columns": list(CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS),
             "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
             "future_condition_label_keys": [
                 "condition_halt_pause_flag",

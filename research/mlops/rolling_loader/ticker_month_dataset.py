@@ -21,6 +21,7 @@ from research.mlops.data.contracts import FUTURE_BAR_FEATURE_KEYS
 from research.mlops.rolling_loader.ticker_month_cache import (
     BAR_START_TIME_FEATURE_COLUMNS,
     CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS,
+    CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS,
     EVENT_PAYLOAD_COLUMNS,
     EVENT_TIME_FEATURE_COLUMNS,
     TICKER_MONTH_CACHE_FORMAT,
@@ -47,6 +48,8 @@ TEXT_INPUT_GROUP_TO_KEY = {
     "sec_filing_embeddings": "sec_filings",
 }
 XBRL_CONTEXT_GROUPS = {"xbrl"}
+CORPORATE_ACTION_CONTEXT_GROUPS = {"corporate_actions"}
+CORPORATE_ACTION_LABEL_GROUPS = {"corporate_action_labels", "corporate_action_daily_labels"}
 BAR_CONTEXT_GROUPS = {"daily_bars", "global_daily_bars"}
 BAR_INPUT_GROUP_TO_KEY = {
     "daily_bars": "ticker_daily_bars",
@@ -82,9 +85,43 @@ XBRL_PERIOD_END_TIME_FEATURE_COLUMNS: tuple[str, ...] = (
     "period_end_age_days",
     "period_end_age_days_log1p",
 )
+CORPORATE_ACTION_NUMERIC_FEATURE_KEYS: tuple[str, ...] = (
+    "split_from",
+    "split_to",
+    "share_factor",
+    "price_factor",
+    "log_share_factor",
+    "log_price_factor",
+    "cash_amount",
+    "log1p_cash_amount",
+    "is_split",
+    "is_forward_split",
+    "is_reverse_split",
+    "is_dividend",
+    "is_special_dividend",
+)
+CORPORATE_ACTION_TIME_FEATURE_COLUMNS: tuple[str, ...] = (*CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS, *RELATIVE_TIME_FEATURE_COLUMNS)
+CORPORATE_ACTION_EFFECTIVE_TIME_FEATURE_COLUMNS: tuple[str, ...] = (*CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS, *RELATIVE_TIME_FEATURE_COLUMNS)
+CORPORATE_ACTION_LABEL_DTYPES: dict[str, np.dtype] = {
+    "future_split_flag": np.dtype(np.bool_),
+    "future_reverse_split_flag": np.dtype(np.bool_),
+    "future_forward_split_flag": np.dtype(np.bool_),
+    "future_dividend_ex_flag": np.dtype(np.bool_),
+    "future_special_dividend_ex_flag": np.dtype(np.bool_),
+    "future_any_corporate_action_flag": np.dtype(np.bool_),
+}
 BAR_RELATIVE_TIME_FEATURE_COLUMNS: tuple[str, ...] = ("bar_age_days", "bar_age_days_log1p")
 BAR_TIME_FEATURE_COLUMNS: tuple[str, ...] = (*BAR_START_TIME_FEATURE_COLUMNS, *BAR_RELATIVE_TIME_FEATURE_COLUMNS)
-METADATA_PAYLOAD_FIELDS = {"feature_names", "time_feature_names", "item_time_feature_names", "period_end_time_feature_names", "offsets", "symbols"}
+METADATA_PAYLOAD_FIELDS = {
+    "feature_names",
+    "numeric_feature_names",
+    "time_feature_names",
+    "item_time_feature_names",
+    "period_end_time_feature_names",
+    "effective_time_feature_names",
+    "offsets",
+    "symbols",
+}
 LABEL_VALUE_DTYPES: dict[str, np.dtype] = {
     "price_primary_int": np.dtype(np.int32),
     "price_secondary_int": np.dtype(np.int32),
@@ -153,6 +190,8 @@ class TickerMonthLoaderConfig:
     market_news_max_items: int = 16
     sec_filing_max_items: int = 4
     xbrl_max_items: int = 4096
+    corporate_action_max_items: int = 128
+    corporate_action_label_days: tuple[int, ...] = (1, 2, 3, 5, 10, 20, 40)
     ticker_news_token_chunks: int = 2
     market_news_token_chunks: int = 2
     sec_filing_token_chunks: int = 8
@@ -307,6 +346,27 @@ class XbrlContextIndex:
         return int(self.timestamps_us.shape[0])
 
 
+@dataclass(slots=True)
+class CorporateActionContextIndex:
+    available_timestamps_us: np.ndarray
+    effective_timestamps_us: np.ndarray
+    action_type_id: np.ndarray
+    dividend_type_id: np.ndarray
+    currency_id: np.ndarray
+    frequency_id: np.ndarray
+    numeric_features: np.ndarray
+    available_time_features: np.ndarray
+    effective_time_features: np.ndarray
+    effective_epoch_day: np.ndarray
+    declaration_epoch_day: np.ndarray
+    pay_epoch_day: np.ndarray
+    record_epoch_day: np.ndarray
+
+    @property
+    def item_count(self) -> int:
+        return int(self.available_timestamps_us.shape[0])
+
+
 @dataclass(frozen=True, slots=True)
 class TickerMonthSampleRef:
     part_index: int
@@ -328,12 +388,15 @@ class TickerMonthTrainingBatch:
     headers_uint8: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, HEADER_BYTES), dtype=np.uint8))
     events_uint8: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 128, EVENT_BYTES), dtype=np.uint8))
     intraday_labels: dict[str, np.ndarray] = field(default_factory=dict)
+    corporate_action_labels: dict[str, np.ndarray] = field(default_factory=dict)
+    corporate_action_label_days: tuple[int, ...] = ()
     future_intraday_bar_horizons: tuple[str, ...] = ()
     future_intraday_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32))
     future_intraday_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
     input_availability: dict[str, np.ndarray] = field(default_factory=dict)
     text_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
     xbrl_inputs: dict[str, np.ndarray] = field(default_factory=dict)
+    corporate_action_inputs: dict[str, np.ndarray] = field(default_factory=dict)
     bar_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
     external_context: dict[str, Any] = field(default_factory=dict)
     profile: dict[str, float | int] = field(default_factory=dict)
@@ -516,13 +579,16 @@ class TickerMonthPartReader:
         plan = loaded.plan
         need_events = bool({"events", "event_windows", "encoded_events"}.intersection(self.data_groups))
         need_labels = "intraday_labels" in self.data_groups or "labels" in self.data_groups
+        need_corporate_labels = bool(CORPORATE_ACTION_LABEL_GROUPS.intersection(self.data_groups))
         if need_events:
             loaded.events = pl.read_parquet(plan.package_dir / plan.files["events"])
         if need_events and "event_window_index" in plan.files:
             loaded.windows = pl.read_parquet(plan.package_dir / plan.files["event_window_index"])
         if need_labels:
             loaded.labels = pl.read_parquet(plan.package_dir / plan.files["intraday_forward_labels"])
-        if self.include_external_context or bool(TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).union(XBRL_CONTEXT_GROUPS).intersection(self.data_groups)):
+        if need_corporate_labels and "corporate_action_daily_labels" in plan.files:
+            loaded.context["corporate_action_daily_labels"] = pl.read_parquet(plan.package_dir / plan.files["corporate_action_daily_labels"])
+        if self.include_external_context or bool(TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).union(XBRL_CONTEXT_GROUPS).union(CORPORATE_ACTION_CONTEXT_GROUPS).intersection(self.data_groups)):
             for key, filename in _package_context_files(plan.package_dir).items():
                 if key in self.data_groups:
                     loaded.context[key] = pl.read_parquet(plan.package_dir / filename)
@@ -562,6 +628,8 @@ class TickerMonthBatchMaterializer:
         self._xbrl_index_lock = threading.Lock()
         self._xbrl_category_cache: dict[int, XbrlCategoryReferenceIndex] = {}
         self._xbrl_category_lock = threading.Lock()
+        self._corporate_action_index_cache: dict[tuple[int, int], CorporateActionContextIndex] = {}
+        self._corporate_action_index_lock = threading.Lock()
         self.coverage_events = max(self.context_lags, default=0) + int(self.config.events_per_window)
         if self.config.event_output_mode == "raw_stream":
             self.coverage_events = int(self.config.event_stream_length)
@@ -619,10 +687,17 @@ class TickerMonthBatchMaterializer:
         labels, future_bars, future_mask, horizons, label_profile = self._materialize_intraday_labels(parts, refs)
         profile.update(label_profile)
         profile["label_seconds"] = time.perf_counter() - label_start
+        corporate_label_start = time.perf_counter()
+        corporate_labels, corporate_label_days, corporate_label_profile = self._materialize_corporate_action_labels(parts, refs)
+        profile.update(corporate_label_profile)
+        profile["corporate_action_label_seconds"] = time.perf_counter() - corporate_label_start
         availability = {
             "event_context_available": np.ones((len(refs),), dtype=np.bool_) if output_mode != "none" else np.zeros((len(refs),), dtype=np.bool_),
             "intraday_labels_available": future_mask.any(axis=1) if future_mask.size else np.zeros((len(refs),), dtype=np.bool_),
         }
+        if corporate_labels:
+            any_corporate = corporate_labels.get("future_any_corporate_action_flag")
+            availability["corporate_action_labels_available"] = any_corporate.any(axis=1) if any_corporate is not None and any_corporate.size else np.zeros((len(refs),), dtype=np.bool_)
         text_start = time.perf_counter()
         text_inputs, text_profile = self._materialize_text_inputs(parts, refs)
         for key, value in text_inputs.items():
@@ -646,6 +721,13 @@ class TickerMonthBatchMaterializer:
                 availability[f"{key}_available"] = bar_mask.reshape((len(refs), -1)).any(axis=1)
         profile.update(bar_profile)
         profile["bar_seconds"] = time.perf_counter() - bar_start
+        corporate_start = time.perf_counter()
+        corporate_inputs, corporate_profile = self._materialize_corporate_action_inputs(parts, refs)
+        corporate_mask = corporate_inputs.get("mask")
+        if corporate_mask is not None:
+            availability["corporate_actions_available"] = corporate_mask.reshape((len(refs), -1)).any(axis=1)
+        profile.update(corporate_profile)
+        profile["corporate_action_seconds"] = time.perf_counter() - corporate_start
         external_context = {}
         context_start = time.perf_counter()
         if self.config.include_external_context:
@@ -666,12 +748,15 @@ class TickerMonthBatchMaterializer:
             headers_uint8=headers,
             events_uint8=encoded_events,
             intraday_labels=labels,
+            corporate_action_labels=corporate_labels,
+            corporate_action_label_days=corporate_label_days,
             future_intraday_bar_horizons=horizons,
             future_intraday_bars=future_bars,
             future_intraday_bar_mask=future_mask,
             input_availability=availability,
             text_inputs=text_inputs,
             xbrl_inputs=xbrl_inputs,
+            corporate_action_inputs=corporate_inputs,
             bar_inputs=bar_inputs,
             external_context=external_context,
             profile=profile,
@@ -973,6 +1058,126 @@ class TickerMonthBatchMaterializer:
             index = _prepare_xbrl_category_reference_index(frame)
             self._xbrl_category_cache[key] = index
             return index
+
+    def _materialize_corporate_action_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, np.ndarray], dict[str, float | int]]:
+        if "corporate_actions" not in self.config.data_groups:
+            return {}, {}
+        max_items = max(0, int(self.config.corporate_action_max_items))
+        batch = int(len(refs))
+        shape = (batch, max_items)
+        out: dict[str, np.ndarray] = {
+            "mask": np.zeros(shape, dtype=np.bool_),
+            "action_type_id": np.zeros(shape, dtype=np.uint32),
+            "dividend_type_id": np.zeros(shape, dtype=np.uint32),
+            "currency_id": np.zeros(shape, dtype=np.uint32),
+            "frequency_id": np.zeros(shape, dtype=np.uint32),
+            "available_timestamp_us": np.zeros(shape, dtype=np.int64),
+            "effective_timestamp_us": np.zeros(shape, dtype=np.int64),
+            "effective_epoch_day": np.zeros(shape, dtype=np.int32),
+            "declaration_epoch_day": np.zeros(shape, dtype=np.int32),
+            "pay_epoch_day": np.zeros(shape, dtype=np.int32),
+            "record_epoch_day": np.zeros(shape, dtype=np.int32),
+            "numeric_features": np.zeros((batch, max_items, len(CORPORATE_ACTION_NUMERIC_FEATURE_KEYS)), dtype=np.float32),
+            "numeric_feature_names": np.asarray(CORPORATE_ACTION_NUMERIC_FEATURE_KEYS, dtype=object),
+            "time_features": np.zeros((batch, max_items, len(CORPORATE_ACTION_TIME_FEATURE_COLUMNS)), dtype=np.float32),
+            "time_feature_names": np.asarray(CORPORATE_ACTION_TIME_FEATURE_COLUMNS, dtype=object),
+            "effective_time_features": np.zeros((batch, max_items, len(CORPORATE_ACTION_EFFECTIVE_TIME_FEATURE_COLUMNS)), dtype=np.float32),
+            "effective_time_feature_names": np.asarray(CORPORATE_ACTION_EFFECTIVE_TIME_FEATURE_COLUMNS, dtype=object),
+        }
+        profile: dict[str, float | int] = {
+            "corporate_action_index_seconds": 0.0,
+            "corporate_action_select_seconds": 0.0,
+            "corporate_action_gather_seconds": 0.0,
+            "corporate_action_rows": int(batch),
+            "corporate_action_max_items": int(max_items),
+        }
+        if max_items <= 0 or batch <= 0:
+            return out, profile
+        origin_timestamps = _identity_arrays(parts, refs)[2]
+        for part_index, rows in _rows_by_part(refs).items():
+            part = parts[int(part_index)]
+            frame = part.context.get("corporate_actions")
+            if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+                continue
+            index_start = time.perf_counter()
+            index = self._corporate_action_context_index(frame, max_items=max_items)
+            profile["corporate_action_index_seconds"] = float(profile["corporate_action_index_seconds"]) + (time.perf_counter() - index_start)
+            if index.item_count <= 0:
+                continue
+            select_start = time.perf_counter()
+            selected_indices, selected_mask = _select_corporate_action_item_indices(index, origin_timestamps[rows], max_items=max_items)
+            profile["corporate_action_select_seconds"] = float(profile["corporate_action_select_seconds"]) + (time.perf_counter() - select_start)
+            if not bool(selected_mask.any()):
+                continue
+            gather_start = time.perf_counter()
+            safe_indices = np.where(selected_mask, selected_indices, 0)
+            out["mask"][rows] = selected_mask
+            for key in ("action_type_id", "dividend_type_id", "currency_id", "frequency_id", "effective_epoch_day", "declaration_epoch_day", "pay_epoch_day", "record_epoch_day"):
+                values = getattr(index, key)[safe_indices].astype(out[key].dtype, copy=False)
+                values[~selected_mask] = 0
+                out[key][rows] = values
+            available_timestamps = index.available_timestamps_us[safe_indices]
+            effective_timestamps = index.effective_timestamps_us[safe_indices]
+            available_timestamps[~selected_mask] = 0
+            effective_timestamps[~selected_mask] = 0
+            out["available_timestamp_us"][rows] = available_timestamps
+            out["effective_timestamp_us"][rows] = effective_timestamps
+            numeric = index.numeric_features[safe_indices]
+            numeric[~selected_mask] = 0.0
+            out["numeric_features"][rows] = numeric
+            origins = np.broadcast_to(origin_timestamps[rows, None], available_timestamps.shape)
+            available_features = np.concatenate([index.available_time_features[safe_indices], _relative_time_feature_matrix(available_timestamps, origins)], axis=-1).astype(np.float32, copy=False)
+            effective_features = np.concatenate([index.effective_time_features[safe_indices], _relative_time_feature_matrix(effective_timestamps, origins)], axis=-1).astype(np.float32, copy=False)
+            available_features[~selected_mask] = 0.0
+            effective_features[~selected_mask] = 0.0
+            out["time_features"][rows] = available_features
+            out["effective_time_features"][rows] = effective_features
+            profile["corporate_action_gather_seconds"] = float(profile["corporate_action_gather_seconds"]) + (time.perf_counter() - gather_start)
+        return out, profile
+
+    def _corporate_action_context_index(self, frame: Any, *, max_items: int) -> CorporateActionContextIndex:
+        key = (id(frame), int(max_items))
+        with self._corporate_action_index_lock:
+            cached = self._corporate_action_index_cache.get(key)
+            if cached is not None:
+                return cached
+            index = _prepare_corporate_action_context_index(frame)
+            self._corporate_action_index_cache[key] = index
+            return index
+
+    def _materialize_corporate_action_labels(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, np.ndarray], tuple[int, ...], dict[str, float | int]]:
+        if not CORPORATE_ACTION_LABEL_GROUPS.intersection(set(self.config.data_groups)):
+            return {}, (), {}
+        days = _cached_corporate_action_label_days(parts)
+        if not days:
+            days = tuple(int(day) for day in self.config.corporate_action_label_days)
+        horizon_count = len(days)
+        out = {key: np.zeros((len(refs), horizon_count), dtype=dtype) for key, dtype in CORPORATE_ACTION_LABEL_DTYPES.items()}
+        profile: dict[str, float | int] = {
+            "corporate_action_label_lookup_seconds": 0.0,
+            "corporate_action_label_gather_seconds": 0.0,
+        }
+        if horizon_count <= 0:
+            return out, days, profile
+        for part_index, rows in _rows_by_part(refs).items():
+            part = parts[int(part_index)]
+            labels = part.context.get("corporate_action_daily_labels")
+            if labels is None or int(getattr(labels, "height", 0) or 0) <= 0:
+                if self.config.strict_audit:
+                    raise RuntimeError(f"Missing corporate action labels for {part.plan.month}:{part.plan.ticker}:part_{part.plan.part_id:05d}.")
+                continue
+            origin_rows = _origin_rows_for_refs(refs, rows)
+            lookup_start = time.perf_counter()
+            max_origin_row = int(origin_rows.max()) if int(origin_rows.shape[0]) else -1
+            if int(labels.height) < max_origin_row + 1:
+                raise RuntimeError(f"Origin/corporate-action-label row count mismatch for {part.plan.month}:{part.plan.ticker}:part_{part.plan.part_id:05d}.")
+            source_indices = origin_rows.astype(np.int64, copy=False)
+            profile["corporate_action_label_lookup_seconds"] = float(profile["corporate_action_label_lookup_seconds"]) + (time.perf_counter() - lookup_start)
+            gather_start = time.perf_counter()
+            for key, dtype in CORPORATE_ACTION_LABEL_DTYPES.items():
+                out[key][rows] = _label_column_matrix_for_rows(labels, key, source_indices, horizon_count, dtype)
+            profile["corporate_action_label_gather_seconds"] = float(profile["corporate_action_label_gather_seconds"]) + (time.perf_counter() - gather_start)
+        return out, days, profile
 
     def _materialize_bar_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
         requested = [group for group in ("daily_bars", "global_daily_bars") if group in self.config.data_groups]
@@ -1454,6 +1659,8 @@ def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoade
         market_news_max_items=max(0, int(config.market_news_max_items)),
         sec_filing_max_items=max(0, int(config.sec_filing_max_items)),
         xbrl_max_items=max(0, int(config.xbrl_max_items)),
+        corporate_action_max_items=max(0, int(config.corporate_action_max_items)),
+        corporate_action_label_days=tuple(max(1, int(value)) for value in config.corporate_action_label_days),
         ticker_news_token_chunks=max(1, int(config.ticker_news_token_chunks)),
         market_news_token_chunks=max(1, int(config.market_news_token_chunks)),
         sec_filing_token_chunks=max(1, int(config.sec_filing_token_chunks)),
@@ -1523,7 +1730,7 @@ def _package_context_files(package_dir: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     for key, value in files.items():
         normalized = TEXT_CONTEXT_GROUP_ALIASES.get(str(key), str(key))
-        if normalized in {"ticker_news_embeddings", "sec_filing_embeddings", "xbrl", "daily_bars"}:
+        if normalized in {"ticker_news_embeddings", "sec_filing_embeddings", "xbrl", "daily_bars", "corporate_actions"}:
             out[normalized] = str(value)
     return out
 
@@ -1729,6 +1936,67 @@ def _empty_xbrl_context_index() -> XbrlContextIndex:
         absolute_time_features=np.zeros((0, len(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)), dtype=np.float32),
         period_end_time_features=np.zeros((0, len(XBRL_PERIOD_END_TIME_FEATURE_COLUMNS) - 2), dtype=np.float32),
     )
+
+
+def _prepare_corporate_action_context_index(frame: Any) -> CorporateActionContextIndex:
+    if frame is None or int(getattr(frame, "height", 0) or 0) <= 0 or "available_timestamp_us" not in getattr(frame, "columns", ()):
+        return _empty_corporate_action_context_index()
+    available = _frame_column_as(frame, "available_timestamp_us", np.int64, 0)
+    effective = _frame_column_as(frame, "effective_timestamp_us", np.int64, 0)
+    order = np.lexsort((effective, available))
+    available = available[order]
+    effective = effective[order]
+    available_time = _cached_or_computed_time_feature_matrix(frame, CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS, _frame_column_as(frame, "available_timestamp_us", np.int64, 0))[order]
+    effective_time = _cached_or_computed_time_feature_matrix(frame, CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS, _frame_column_as(frame, "effective_timestamp_us", np.int64, 0))[order]
+    numeric_columns = []
+    for key in CORPORATE_ACTION_NUMERIC_FEATURE_KEYS:
+        numeric_columns.append(_frame_column_as(frame, key, np.float32, 0.0)[order])
+    numeric = np.stack(numeric_columns, axis=-1).astype(np.float32, copy=False) if numeric_columns else np.zeros((int(available.shape[0]), 0), dtype=np.float32)
+    return CorporateActionContextIndex(
+        available_timestamps_us=available,
+        effective_timestamps_us=effective,
+        action_type_id=_frame_column_as(frame, "action_type_id", np.uint32, 0)[order],
+        dividend_type_id=_frame_column_as(frame, "dividend_type_id", np.uint32, 0)[order],
+        currency_id=_frame_column_as(frame, "currency_id", np.uint32, 0)[order],
+        frequency_id=_frame_column_as(frame, "frequency_id", np.uint32, 0)[order],
+        numeric_features=numeric,
+        available_time_features=available_time.astype(np.float32, copy=False),
+        effective_time_features=effective_time.astype(np.float32, copy=False),
+        effective_epoch_day=_frame_column_as(frame, "effective_epoch_day", np.int32, 0)[order],
+        declaration_epoch_day=_frame_column_as(frame, "declaration_epoch_day", np.int32, 0)[order],
+        pay_epoch_day=_frame_column_as(frame, "pay_epoch_day", np.int32, 0)[order],
+        record_epoch_day=_frame_column_as(frame, "record_epoch_day", np.int32, 0)[order],
+    )
+
+
+def _empty_corporate_action_context_index() -> CorporateActionContextIndex:
+    return CorporateActionContextIndex(
+        available_timestamps_us=np.zeros((0,), dtype=np.int64),
+        effective_timestamps_us=np.zeros((0,), dtype=np.int64),
+        action_type_id=np.zeros((0,), dtype=np.uint32),
+        dividend_type_id=np.zeros((0,), dtype=np.uint32),
+        currency_id=np.zeros((0,), dtype=np.uint32),
+        frequency_id=np.zeros((0,), dtype=np.uint32),
+        numeric_features=np.zeros((0, len(CORPORATE_ACTION_NUMERIC_FEATURE_KEYS)), dtype=np.float32),
+        available_time_features=np.zeros((0, len(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)), dtype=np.float32),
+        effective_time_features=np.zeros((0, len(CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS)), dtype=np.float32),
+        effective_epoch_day=np.zeros((0,), dtype=np.int32),
+        declaration_epoch_day=np.zeros((0,), dtype=np.int32),
+        pay_epoch_day=np.zeros((0,), dtype=np.int32),
+        record_epoch_day=np.zeros((0,), dtype=np.int32),
+    )
+
+
+def _select_corporate_action_item_indices(index: CorporateActionContextIndex, origin_timestamps_us: np.ndarray, *, max_items: int) -> tuple[np.ndarray, np.ndarray]:
+    origins = np.asarray(origin_timestamps_us, dtype=np.int64)
+    max_items = max(0, int(max_items))
+    if max_items <= 0 or index.item_count <= 0 or origins.shape[0] <= 0:
+        return np.full((int(origins.shape[0]), max_items), -1, dtype=np.int64), np.zeros((int(origins.shape[0]), max_items), dtype=np.bool_)
+    rightmost = np.searchsorted(index.available_timestamps_us, origins, side="right") - 1
+    offsets = np.arange(max_items, dtype=np.int64)
+    indices = rightmost[:, None] - offsets[None, :]
+    valid = indices >= 0
+    return np.where(valid, indices, -1).astype(np.int64, copy=False), valid
 
 
 def _select_xbrl_item_indices(index: XbrlContextIndex, origin_timestamps_us: np.ndarray, *, max_items: int) -> tuple[np.ndarray, np.ndarray]:
@@ -2011,8 +2279,10 @@ def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> Tic
     raw_windows = _concat_dict_arrays(batch.raw_event_windows for batch in nonempty)
     raw_flat = _concat_dict_arrays(batch.raw_event_flat for batch in nonempty)
     intraday_labels = _concat_dict_arrays(batch.intraday_labels for batch in nonempty)
+    corporate_action_labels = _concat_dict_arrays(batch.corporate_action_labels for batch in nonempty)
     availability = _concat_dict_arrays(batch.input_availability for batch in nonempty)
     xbrl_inputs = _concat_dict_arrays(batch.xbrl_inputs for batch in nonempty)
+    corporate_action_inputs = _concat_dict_arrays(batch.corporate_action_inputs for batch in nonempty)
     profile = {
         "samples": sum(int(batch.sample_count) for batch in nonempty),
     }
@@ -2036,12 +2306,15 @@ def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> Tic
         headers_uint8=_concat_optional_arrays([batch.headers_uint8 for batch in nonempty]),
         events_uint8=_concat_optional_arrays([batch.events_uint8 for batch in nonempty]),
         intraday_labels=intraday_labels,
+        corporate_action_labels=corporate_action_labels,
+        corporate_action_label_days=first.corporate_action_label_days,
         future_intraday_bar_horizons=first.future_intraday_bar_horizons,
         future_intraday_bars=_concat_optional_arrays([batch.future_intraday_bars for batch in nonempty]),
         future_intraday_bar_mask=_concat_optional_arrays([batch.future_intraday_bar_mask for batch in nonempty]),
         input_availability=availability,
         text_inputs=_concat_text_inputs(batch.text_inputs for batch in nonempty),
         xbrl_inputs=xbrl_inputs,
+        corporate_action_inputs=corporate_action_inputs,
         bar_inputs=_concat_bar_inputs(nonempty),
         external_context=_merge_external_context(nonempty),
         profile=profile,
@@ -2066,12 +2339,15 @@ def _slice_training_batch(batch: TickerMonthTrainingBatch, start: int, end: int)
         headers_uint8=batch.headers_uint8[start:end] if batch.headers_uint8.shape[0] else batch.headers_uint8,
         events_uint8=batch.events_uint8[start:end] if batch.events_uint8.shape[0] else batch.events_uint8,
         intraday_labels={key: value[start:end] for key, value in batch.intraday_labels.items()},
+        corporate_action_labels={key: value[start:end] for key, value in batch.corporate_action_labels.items()},
+        corporate_action_label_days=batch.corporate_action_label_days,
         future_intraday_bar_horizons=batch.future_intraday_bar_horizons,
         future_intraday_bars=batch.future_intraday_bars[start:end] if batch.future_intraday_bars.shape[0] else batch.future_intraday_bars,
         future_intraday_bar_mask=batch.future_intraday_bar_mask[start:end] if batch.future_intraday_bar_mask.shape[0] else batch.future_intraday_bar_mask,
         input_availability={key: value[start:end] for key, value in batch.input_availability.items()},
         text_inputs={name: {key: (value if key in METADATA_PAYLOAD_FIELDS else _slice_batch_payload_field(value, start, end, int(batch.sample_count))) for key, value in payload.items()} for name, payload in batch.text_inputs.items()},
         xbrl_inputs={key: (value if key in METADATA_PAYLOAD_FIELDS else _slice_batch_payload_field(value, start, end, int(batch.sample_count))) for key, value in batch.xbrl_inputs.items()},
+        corporate_action_inputs={key: (value if key in METADATA_PAYLOAD_FIELDS else _slice_batch_payload_field(value, start, end, int(batch.sample_count))) for key, value in batch.corporate_action_inputs.items()},
         bar_inputs={name: {key: (value if key in METADATA_PAYLOAD_FIELDS else _slice_batch_payload_field(value, start, end, int(batch.sample_count))) for key, value in payload.items()} for name, payload in batch.bar_inputs.items()},
         external_context=dict(batch.external_context),
         profile=profile,
@@ -2436,6 +2712,21 @@ def _cached_horizons(parts: Sequence[LoadedTickerMonthPart]) -> tuple[str, ...]:
         horizons = part.plan.config.get("intraday_label_horizons") or ()
         if horizons:
             return tuple(str(item) for item in horizons)
+    return ()
+
+
+def _cached_corporate_action_label_days(parts: Sequence[LoadedTickerMonthPart]) -> tuple[int, ...]:
+    for part in parts:
+        values = part.plan.config.get("corporate_action_label_days") or ()
+        if values:
+            return tuple(int(value) for value in values)
+    for part in parts:
+        labels = part.context.get("corporate_action_daily_labels")
+        if labels is None or int(getattr(labels, "height", 0) or 0) <= 0 or "horizon_days" not in getattr(labels, "columns", ()):
+            continue
+        row = labels.row(0, named=True)
+        raw = row.get("horizon_days") or ()
+        return tuple(int(value) for value in raw)
     return ()
 
 

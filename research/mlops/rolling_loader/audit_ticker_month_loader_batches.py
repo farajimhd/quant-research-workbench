@@ -64,7 +64,7 @@ from research.mlops.rolling_loader.ticker_month_dataset import (
 
 
 DEFAULT_AUDIT_REPORT_PATH = DEFAULT_PROFILE_REPORT_PATH.with_name("ticker_month_loader_batch_audit.json")
-DEFAULT_AUDIT_DATA_GROUPS = "events,intraday_labels,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl,daily_bars,global_daily_bars"
+DEFAULT_AUDIT_DATA_GROUPS = "events,intraday_labels,corporate_action_labels,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl,corporate_actions,daily_bars,global_daily_bars"
 
 
 @dataclass(slots=True)
@@ -137,6 +137,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--market-news-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_max_items"])
     parser.add_argument("--sec-filing-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_max_items"])
     parser.add_argument("--xbrl-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["xbrl_max_items"])
+    parser.add_argument("--corporate-action-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["corporate_action_max_items"])
+    parser.add_argument("--corporate-action-label-days", default=DEFAULT_PROFILE_CONFIG["corporate_action_label_days"])
     parser.add_argument("--ticker-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["ticker_news_token_chunks"])
     parser.add_argument("--market-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_token_chunks"])
     parser.add_argument("--sec-filing-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_token_chunks"])
@@ -201,7 +203,7 @@ def run_audit(config: LoaderBatchAuditConfig) -> LoaderBatchAuditResult:
     part_map = {_part_key(plan): plan for plan in loader.index.parts}
     source_context = _source_clickhouse_context(config, loader.index.root_manifest, tuple(loader.index.parts)) if config.source_clickhouse_audit and int(config.source_clickhouse_samples_per_batch) > 0 else None
     part_cache: dict[str, LoadedTickerMonthPart] = {}
-    context_groups = tuple(group for group in config.loader_config.data_groups if group in TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).union({"xbrl"}))
+    context_groups = tuple(group for group in config.loader_config.data_groups if group in TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).union({"xbrl", "corporate_actions"}))
     reader_groups = ("events", "intraday_labels", *context_groups)
     reader = TickerMonthPartReader(reader_groups, include_external_context=bool(config.loader_config.include_external_context or context_groups))
     rng = np.random.default_rng(int(config.seed))
@@ -312,6 +314,8 @@ def _loader_config_from_args(args: argparse.Namespace) -> TickerMonthLoaderConfi
         market_news_max_items=max(0, int(args.market_news_max_items)),
         sec_filing_max_items=max(0, int(args.sec_filing_max_items)),
         xbrl_max_items=max(0, int(args.xbrl_max_items)),
+        corporate_action_max_items=max(0, int(args.corporate_action_max_items)),
+        corporate_action_label_days=tuple(int(item.strip().rstrip("dD")) for item in str(args.corporate_action_label_days).split(",") if item.strip()),
         ticker_news_token_chunks=max(1, int(args.ticker_news_token_chunks)),
         market_news_token_chunks=max(1, int(args.market_news_token_chunks)),
         sec_filing_token_chunks=max(1, int(args.sec_filing_token_chunks)),

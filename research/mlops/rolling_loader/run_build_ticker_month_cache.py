@@ -44,6 +44,7 @@ from research.mlops.rolling_loader.streaming_training import NEWS_TOKEN_COLUMNS,
 from research.mlops.rolling_loader.ticker_month_cache import (
     BAR_START_TIME_FEATURE_COLUMNS,
     CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS,
+    CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS,
     DEFAULT_TICKER_MONTH_CACHE_ROOT,
     EVENT_PAYLOAD_COLUMNS,
     EVENT_TIME_FEATURE_COLUMNS,
@@ -62,6 +63,7 @@ from research.mlops.rolling_loader.ticker_month_cache import (
     month_window,
     month_window_dict,
     parse_horizons,
+    parse_day_horizons,
     parse_lags,
     replace_complete_dir,
     required_event_lookback_rows,
@@ -89,6 +91,9 @@ DEFAULTS: dict[str, Any] = {
     "sec_filing_text_embedding_table": "sec_filing_text_embeddings",
     "sec_xbrl_context_table": "sec_xbrl_context",
     "category_reference_table": "training_category_reference",
+    "q_live_database": "q_live",
+    "stock_split_table": "market_stock_split_v1",
+    "cash_dividend_table": "market_cash_dividend_v1",
     "cache_root": str(DEFAULT_TICKER_MONTH_CACHE_ROOT),
     "split": "train",
     "workers": 64,
@@ -125,6 +130,9 @@ DEFAULTS: dict[str, Any] = {
     "sec_filing_prior_items": 32,
     "xbrl_items": 4096,
     "xbrl_prior_rows": 4096,
+    "corporate_action_items": 128,
+    "corporate_action_lookback_days": 3650,
+    "corporate_action_label_days": "1,2,3,5,10,20,40",
     "intraday_label_horizons": "100ms,250ms,500ms,750ms,1s,5s,10s,30s,60s,120s,180s,300s,600s,1200s,1800s,3600s,7200s,3h,4h,5h",
     "refresh_seconds": 1.0,
     "profile_slow_seconds": 10.0,
@@ -173,6 +181,15 @@ FUTURE_CONDITION_GROUPS: tuple[tuple[str, tuple[tuple[str, tuple[int, ...]], ...
 FUTURE_CONDITION_LABEL_KEYS: tuple[str, ...] = tuple(name for name, _ in FUTURE_CONDITION_GROUPS)
 FUTURE_EXTERNAL_ARRIVAL_LABEL_KEYS: tuple[str, ...] = ("ticker_news_arrival_flag", "sec_filing_arrival_flag")
 FUTURE_EVENT_FLAG_LABEL_KEYS: tuple[str, ...] = (*FUTURE_CONDITION_LABEL_KEYS, *FUTURE_EXTERNAL_ARRIVAL_LABEL_KEYS)
+CORPORATE_ACTION_DAILY_LABEL_KEYS: tuple[str, ...] = (
+    "future_split_flag",
+    "future_reverse_split_flag",
+    "future_forward_split_flag",
+    "future_dividend_ex_flag",
+    "future_special_dividend_ex_flag",
+    "future_any_corporate_action_flag",
+)
+SPECIAL_DIVIDEND_TYPES: frozenset[str] = frozenset({"special", "irregular", "supplemental", "extra", "non-recurring", "non recurring"})
 CONDITION_INDICATOR_SOURCE_FAMILIES: frozenset[str] = frozenset({"cta_security_status", "halt_reason", "luld_indicators"})
 CONDITION_DIRECT_SOURCE_FAMILIES: frozenset[str] = frozenset({"quote_conditions", "trade_conditions", "trade_corrections_nyse", "unknown"})
 
@@ -494,6 +511,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sec-filing-text-embedding-table", default=DEFAULTS["sec_filing_text_embedding_table"])
     parser.add_argument("--sec-xbrl-context-table", default=DEFAULTS["sec_xbrl_context_table"])
     parser.add_argument("--category-reference-table", default=DEFAULTS["category_reference_table"])
+    parser.add_argument("--q-live-database", default=DEFAULTS["q_live_database"])
+    parser.add_argument("--stock-split-table", default=DEFAULTS["stock_split_table"])
+    parser.add_argument("--cash-dividend-table", default=DEFAULTS["cash_dividend_table"])
     parser.add_argument("--force-category-reference-build", action="store_true", help="Run the append-only category reference builder at startup even when the table already exists.")
     parser.add_argument("--skip-category-reference-check", action="store_true", help="Skip the startup category reference existence/empty-table check.")
     parser.add_argument("--cache-root", type=Path, default=Path(DEFAULTS["cache_root"]))
@@ -535,6 +555,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--market-news-items", type=int, default=DEFAULTS["market_news_items"])
     parser.add_argument("--sec-filing-items", type=int, default=DEFAULTS["sec_filing_items"])
     parser.add_argument("--xbrl-items", type=int, default=DEFAULTS["xbrl_items"])
+    parser.add_argument("--corporate-action-items", type=int, default=DEFAULTS["corporate_action_items"])
+    parser.add_argument("--corporate-action-lookback-days", type=int, default=DEFAULTS["corporate_action_lookback_days"])
+    parser.add_argument("--corporate-action-label-days", default=DEFAULTS["corporate_action_label_days"])
     parser.add_argument("--ticker-news-prior-items", type=int, default=DEFAULTS["ticker_news_prior_items"], help="Logical ticker-news items saved before month start for as-of context.")
     parser.add_argument("--market-news-prior-items", type=int, default=DEFAULTS["market_news_prior_items"], help="Logical global news items saved before month start for as-of market context.")
     parser.add_argument("--sec-filing-prior-items", type=int, default=DEFAULTS["sec_filing_prior_items"], help="Logical SEC filing text items saved before month start for as-of context.")
@@ -542,6 +565,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--intraday-label-horizons", default=DEFAULTS["intraday_label_horizons"])
     parser.add_argument("--skip-token-contexts", action="store_true", help="Skip text embedding context fetches. Name kept for compatibility with older token-cache builds.")
     parser.add_argument("--skip-xbrl", action="store_true")
+    parser.add_argument("--skip-corporate-actions", action="store_true")
     parser.add_argument("--refresh-context-only", action="store_true", help="Refresh only text embedding, XBRL, and XBRL category context files for existing ticker/month packages.")
     parser.add_argument("--skip-final-audit", action="store_true")
     parser.add_argument("--audit-source-checks", action=argparse.BooleanOptionalAction, default=True)
@@ -811,20 +835,24 @@ def ensure_category_reference_table(
         return
     started = time.perf_counter()
     exists, rows = _category_reference_table_status(client_opts=client_opts, config=config)
+    corporate_rows = _category_reference_domain_rows(client_opts=client_opts, config=config, domain="corporate_actions") if exists else 0
     force = bool(getattr(args, "force_category_reference_build", False))
-    if exists and rows > 0 and not force:
+    if exists and rows > 0 and corporate_rows > 0 and not force:
         stats.message(f"category_reference: ready table={config.sec_context_database}.{config.category_reference_table} rows={rows:,}")
-        stats.log_event("category_reference_ready", table=config.category_reference_table, rows=rows, elapsed_seconds=time.perf_counter() - started)
+        stats.log_event("category_reference_ready", table=config.category_reference_table, rows=rows, corporate_rows=corporate_rows, elapsed_seconds=time.perf_counter() - started)
         return
 
-    reason = "forced" if force else ("empty" if exists else "missing")
+    reason = "forced" if force else ("missing_corporate_actions" if exists and rows > 0 else ("empty" if exists else "missing"))
     stats.message(f"category_reference: {reason}; running append-only builder")
     stats.log_event("category_reference_build_started", table=config.category_reference_table, exists=exists, rows=rows, reason=reason)
     category_args = argparse.Namespace(
         database=config.sec_context_database,
+        reference_database=config.q_live_database,
         xbrl_table=config.sec_xbrl_context_table,
         news_token_table=config.news_token_table,
         sec_token_table=config.sec_filing_text_token_table,
+        stock_split_table=config.stock_split_table,
+        cash_dividend_table=config.cash_dividend_table,
         reference_table=config.category_reference_table,
         max_threads=max(1, int(config.max_threads)),
         max_memory_usage=str(config.max_memory_usage),
@@ -856,6 +884,16 @@ FORMAT TSV
     count_sql = f"SELECT count() FROM {quote_ident(config.sec_context_database)}.{quote_ident(config.category_reference_table)} FORMAT TSV"
     rows_text = _execute_clickhouse_sql(client_opts=client_opts, sql=count_sql, label="category_reference_count")
     return True, _parse_clickhouse_count(rows_text)
+
+
+def _category_reference_domain_rows(*, client_opts: Mapping[str, str], config: RollingMarketDataConfig, domain: str) -> int:
+    count_sql = f"""
+SELECT count()
+FROM {quote_ident(config.sec_context_database)}.{quote_ident(config.category_reference_table)}
+WHERE domain = {sql_string(domain)}
+FORMAT TSV
+"""
+    return _parse_clickhouse_count(_execute_clickhouse_sql(client_opts=client_opts, sql=count_sql, label=f"category_reference_{domain}_count"))
 
 
 def _parse_clickhouse_count(text: str) -> int:
@@ -1055,12 +1093,13 @@ def _refresh_ticker_month_context_package(
     futures: dict[str, Future[Any]] = {
         "ticker_news": lanes.submit("context", f"{month}:{ticker}:refresh_ticker_news", lambda: _query_ticker_news(args, client_opts, config, window, ticker)),
         "sec_filings": lanes.submit("context", f"{month}:{ticker}:refresh_sec", lambda: _query_sec_tokens(args, client_opts, config, window, ticker)),
+        "corporate_actions": lanes.submit("context", f"{month}:{ticker}:refresh_corporate_actions", lambda: _query_corporate_actions(args, client_opts, config, window, ticker) if not args.skip_corporate_actions else _empty_frame()),
     }
     if not args.skip_xbrl:
         futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:refresh_xbrl", lambda: _query_xbrl(args, client_opts, config, window, ticker))
     else:
         futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:refresh_xbrl_empty", lambda: _empty_frame())
-    state.context_total = 3
+    state.context_total = 4
     outputs = {}
     for name, future in futures.items():
         outputs[name] = future.result()
@@ -1072,6 +1111,7 @@ def _refresh_ticker_month_context_package(
         "ticker_news_embeddings": lanes.submit("write", f"{month}:{ticker}:refresh_write_news", lambda: _write_parquet(outputs["ticker_news"], package_dir / "ticker_news_embeddings.parquet")),
         "sec_filing_embeddings": lanes.submit("write", f"{month}:{ticker}:refresh_write_sec", lambda: _write_parquet(outputs["sec_filings"], package_dir / "sec_filing_embeddings.parquet")),
         "xbrl": lanes.submit("write", f"{month}:{ticker}:refresh_write_xbrl", lambda: _write_parquet(outputs["xbrl"], package_dir / "xbrl.parquet")),
+        "corporate_actions": lanes.submit("write", f"{month}:{ticker}:refresh_write_corporate_actions", lambda: _write_parquet(outputs["corporate_actions"], package_dir / "corporate_actions.parquet")),
     }
     state.write_total = len(writes)
     write_results = {}
@@ -1084,20 +1124,27 @@ def _refresh_ticker_month_context_package(
     counts["ticker_news_embeddings"] = int(outputs["ticker_news"].height)
     counts["sec_filing_embeddings"] = int(outputs["sec_filings"].height)
     counts["xbrl"] = int(outputs["xbrl"].height)
+    counts["corporate_actions"] = int(outputs["corporate_actions"].height)
     files = dict(manifest.get("files") or {})
     files.pop("ticker_news_tokens", None)
     files.pop("sec_filing_tokens", None)
     files["ticker_news_embeddings"] = "ticker_news_embeddings.parquet"
     files["sec_filing_embeddings"] = "sec_filing_embeddings.parquet"
     files["xbrl"] = "xbrl.parquet"
+    files["corporate_actions"] = "corporate_actions.parquet"
     package_config = dict(manifest.get("config") or {})
     package_config.update(_context_refresh_metadata(args))
     package_config["context_available_time_feature_columns"] = list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)
+    package_config["context_effective_time_feature_columns"] = list(CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS)
     package_config["bar_start_time_feature_columns"] = list(BAR_START_TIME_FEATURE_COLUMNS)
     time_feature_columns = dict(manifest.get("time_feature_columns") or {})
     time_feature_columns["ticker_news_embeddings"] = list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)
     time_feature_columns["sec_filing_embeddings"] = list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)
     time_feature_columns["xbrl"] = list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)
+    time_feature_columns["corporate_actions"] = {
+        "available": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
+        "effective": list(CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS),
+    }
     manifest.update(
         {
             "status": "complete",
@@ -1133,6 +1180,9 @@ def _context_refresh_metadata(args: argparse.Namespace) -> dict[str, Any]:
         "sec_filing_prior_items": max(0, int(args.sec_filing_prior_items)),
         "xbrl_prior_rows": max(0, int(args.xbrl_prior_rows)),
         "xbrl_items": max(0, int(args.xbrl_items)),
+        "corporate_action_items": max(0, int(args.corporate_action_items)),
+        "corporate_action_lookback_days": max(0, int(args.corporate_action_lookback_days)),
+        "corporate_action_label_days": list(parse_day_horizons(args.corporate_action_label_days)),
         "context_fetch_mode": "month_plus_latest_prior_embedding_items",
         "news_embedding_table": str(args.news_embedding_table),
         "sec_filing_text_embedding_table": str(args.sec_filing_text_embedding_table),
@@ -1177,23 +1227,29 @@ def _build_ticker_month_package(
             "sec_filings": lanes.submit("context", f"{month}:{ticker}:sec", lambda: _query_sec_tokens(args, client_opts, config, window, ticker)),
             "daily_bars": lanes.submit("context", f"{month}:{ticker}:daily", lambda: _query_daily_bars(args, client_opts, config, window, symbols=(ticker,))),
         }
+        if not args.skip_corporate_actions:
+            futures["corporate_actions"] = lanes.submit("context", f"{month}:{ticker}:corporate_actions", lambda: _query_corporate_actions(args, client_opts, config, window, ticker))
+        else:
+            futures["corporate_actions"] = lanes.submit("context", f"{month}:{ticker}:corporate_actions_empty", lambda: _empty_frame())
         if not args.skip_xbrl:
             futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:xbrl", lambda: _query_xbrl(args, client_opts, config, window, ticker))
         else:
             futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:xbrl_empty", lambda: _empty_frame())
-        state.context_total = 4 if not args.skip_xbrl else 3
+        state.context_total = 5 - int(bool(args.skip_xbrl)) - int(bool(args.skip_corporate_actions))
         state.events_total = len(parts)
         state.labels_total = len(parts)
         state.cpu_total = len(parts)
-        state.write_total = len(parts) * 5 + state.context_total
+        state.write_total = len(parts) * 6 + state.context_total
         total_events = 0
         total_origins = 0
         total_windows = 0
         total_labels = 0
+        total_corporate_labels = 0
         skipped_history = 0
         skipped_gap = 0
         part_manifests: list[dict[str, Any]] = []
         month_min_ordinal = int(origin_bounds[0]) if origin_bounds else 0
+        corporate_actions: Any | None = None
         for part in parts:
             if stop_event.is_set():
                 raise KeyboardInterrupt
@@ -1237,6 +1293,13 @@ def _build_ticker_month_package(
                 origins,
                 prefix=f"{month}:{ticker}:{part_name}",
             )
+            if corporate_actions is None:
+                corporate_actions = futures["corporate_actions"].result()
+            corporate_labels = _build_corporate_action_daily_labels(
+                origins,
+                corporate_actions,
+                parse_day_horizons(args.corporate_action_label_days),
+            )
             audit_samples = _light_audit_part_in_memory(
                 events=events,
                 origins=origins,
@@ -1257,6 +1320,7 @@ def _build_ticker_month_package(
                 "event_window_index": f"event_window_index_{part_name}.parquet",
                 "ranges": f"ranges_{part_name}.parquet",
                 "intraday_forward_labels": f"intraday_forward_labels_{part_name}.parquet",
+                "corporate_action_daily_labels": f"corporate_action_daily_labels_{part_name}.parquet",
             }
             writes = {
                 "events": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_events", lambda events=events, path=tmp_dir / part_files["events"]: _write_parquet(events, path)),
@@ -1264,6 +1328,7 @@ def _build_ticker_month_package(
                 "windows": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_windows", lambda windows=windows, path=tmp_dir / part_files["event_window_index"]: _write_parquet(windows, path)),
                 "ranges": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_ranges", lambda ranges=ranges, path=tmp_dir / part_files["ranges"]: _write_parquet(ranges, path)),
                 "labels": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_labels", lambda labels=labels, path=tmp_dir / part_files["intraday_forward_labels"]: _write_parquet(labels, path)),
+                "corporate_labels": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_corporate_labels", lambda labels=corporate_labels, path=tmp_dir / part_files["corporate_action_daily_labels"]: _write_parquet(labels, path)),
             }
             for future in writes.values():
                 future.result()
@@ -1272,6 +1337,7 @@ def _build_ticker_month_package(
             total_origins += int(origins.height)
             total_windows += int(windows.height)
             total_labels += int(labels.height)
+            total_corporate_labels += int(corporate_labels.height)
             skipped_history += int(part_skipped_history)
             skipped_gap += int(part_skipped_gap)
             part_manifests.append(
@@ -1287,6 +1353,7 @@ def _build_ticker_month_package(
                         "origins": int(origins.height),
                         "event_windows": int(windows.height),
                         "intraday_forward_labels": int(labels.height),
+                        "corporate_action_daily_labels": int(corporate_labels.height),
                         "skipped_not_enough_history": int(part_skipped_history),
                         "skipped_window_gap": int(part_skipped_gap),
                         "labels_filtered_out": int(labels_filtered_out),
@@ -1294,11 +1361,12 @@ def _build_ticker_month_package(
                     },
                 }
             )
-        state.context_done = sum(1 for key in ("ticker_news", "sec_filings", "daily_bars", "xbrl") if futures[key].done())
+        state.context_done = sum(1 for key in ("ticker_news", "sec_filings", "daily_bars", "xbrl", "corporate_actions") if futures[key].done())
         ticker_news = futures["ticker_news"].result()
         sec_filings = futures["sec_filings"].result()
         daily_bars = futures["daily_bars"].result()
         xbrl = futures["xbrl"].result()
+        corporate_actions = futures["corporate_actions"].result()
         state.context_done = state.context_total
         if stop_event.is_set():
             raise KeyboardInterrupt
@@ -1308,6 +1376,7 @@ def _build_ticker_month_package(
             "sec_filings": lanes.submit("write", f"{month}:{ticker}:write_sec", lambda: _write_parquet(sec_filings, tmp_dir / "sec_filing_embeddings.parquet")),
             "xbrl": lanes.submit("write", f"{month}:{ticker}:write_xbrl", lambda: _write_parquet(xbrl, tmp_dir / "xbrl.parquet")),
             "daily_bars": lanes.submit("write", f"{month}:{ticker}:write_daily", lambda: _write_parquet(daily_bars, tmp_dir / "daily_bars.parquet")),
+            "corporate_actions": lanes.submit("write", f"{month}:{ticker}:write_corporate_actions", lambda: _write_parquet(corporate_actions, tmp_dir / "corporate_actions.parquet")),
         }
         for future in context_writes.values():
             future.result()
@@ -1331,6 +1400,8 @@ def _build_ticker_month_package(
                 "sec_filing_prior_items": int(args.sec_filing_prior_items),
                 "xbrl_prior_rows": int(args.xbrl_prior_rows),
                 "xbrl_items": int(args.xbrl_items),
+                "corporate_action_items": int(args.corporate_action_items),
+                "corporate_action_label_days": list(parse_day_horizons(args.corporate_action_label_days)),
                 "required_event_lookback_rows": int(default_required_lookback),
                 "default_required_event_lookback_rows": int(default_required_lookback),
                 "max_cached_event_lookback_rows": int(max_cached_event_lookback),
@@ -1343,6 +1414,7 @@ def _build_ticker_month_package(
                 "event_payload_columns": list(EVENT_PAYLOAD_COLUMNS),
                 "event_time_feature_columns": list(EVENT_TIME_FEATURE_COLUMNS),
                 "context_available_time_feature_columns": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
+                "context_effective_time_feature_columns": list(CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS),
                 "bar_start_time_feature_columns": list(BAR_START_TIME_FEATURE_COLUMNS),
             },
             "counts": {
@@ -1351,10 +1423,12 @@ def _build_ticker_month_package(
                 "origins": int(total_origins),
                 "event_windows": int(total_windows),
                 "intraday_forward_labels": int(total_labels),
+                "corporate_action_daily_labels": int(total_corporate_labels),
                 "ticker_news_embeddings": int(ticker_news.height),
                 "sec_filing_embeddings": int(sec_filings.height),
                 "xbrl": int(xbrl.height),
                 "daily_bars": int(daily_bars.height),
+                "corporate_actions": int(corporate_actions.height),
                 "skipped_not_enough_history": int(skipped_history),
                 "skipped_window_gap": int(skipped_gap),
             },
@@ -1363,12 +1437,17 @@ def _build_ticker_month_package(
                 "sec_filing_embeddings": "sec_filing_embeddings.parquet",
                 "xbrl": "xbrl.parquet",
                 "daily_bars": "daily_bars.parquet",
+                "corporate_actions": "corporate_actions.parquet",
             },
             "time_feature_columns": {
                 "ticker_news_embeddings": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
                 "sec_filing_embeddings": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
                 "xbrl": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
                 "daily_bars": list(BAR_START_TIME_FEATURE_COLUMNS),
+                "corporate_actions": {
+                    "available": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
+                    "effective": list(CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS),
+                },
             },
             "parts": part_manifests,
             "completed_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
@@ -2405,6 +2484,161 @@ ORDER BY sym, timeframe, bar_start
 {_settings_sql(config)}
 """
     return query_polars(client_opts, query)
+
+
+def _query_corporate_actions(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str) -> Any:
+    if bool(getattr(args, "skip_corporate_actions", False)):
+        return _empty_frame()
+    split_table = f"{quote_ident(config.q_live_database)}.{quote_ident(config.stock_split_table)}"
+    dividend_table = f"{quote_ident(config.q_live_database)}.{quote_ident(config.cash_dividend_table)}"
+    reference_table = f"{quote_ident(config.sec_context_database)}.{quote_ident(config.category_reference_table)}"
+    start = window.first_date - dt.timedelta(days=max(0, int(config.corporate_action_lookback_days)))
+    label_days = parse_day_horizons(args.corporate_action_label_days)
+    end = window.next_month_date + dt.timedelta(days=max(label_days, default=0) + 1)
+    available_columns = _available_time_feature_sql("available_timestamp_us", prefix="available")
+    effective_columns = _available_time_feature_sql("effective_timestamp_us", prefix="effective")
+    query = f"""
+WITH
+refs AS
+(
+    SELECT
+        field_name,
+        category_value,
+        argMax(category_id, updated_at) AS category_id
+    FROM {reference_table}
+    WHERE domain = 'corporate_actions'
+    GROUP BY
+        field_name,
+        category_value
+),
+actions AS
+(
+    SELECT
+        upper(provider_ticker) AS ticker,
+        toString(stock_split_id) AS corporate_action_id,
+        'split' AS action_type,
+        '' AS dividend_type,
+        '' AS currency_code,
+        '' AS frequency,
+        toDate(execution_date) AS effective_date,
+        toDate(execution_date) AS available_date,
+        toUnixTimestamp64Micro(toTimeZone(toDateTime64(concat(toString(toDate(execution_date)), ' 04:00:00'), 6, 'America/New_York'), 'UTC')) AS effective_timestamp_us,
+        toUnixTimestamp64Micro(toTimeZone(toDateTime64(concat(toString(toDate(execution_date)), ' 04:00:00'), 6, 'America/New_York'), 'UTC')) AS available_timestamp_us,
+        toFloat32(ifNull(split_from, 0)) AS split_from,
+        toFloat32(ifNull(split_to, 0)) AS split_to,
+        toFloat32(0) AS cash_amount,
+        toInt32(0) AS declaration_epoch_day,
+        toInt32(toRelativeDayNum(toDate(execution_date)) - toRelativeDayNum(toDate('1970-01-01'))) AS effective_epoch_day,
+        toInt32(0) AS pay_epoch_day,
+        toInt32(0) AS record_epoch_day
+    FROM {split_table}
+    WHERE upper(provider_ticker) = {sql_string(ticker.upper())}
+      AND execution_date >= toDate({sql_string(start.isoformat())})
+      AND execution_date < toDate({sql_string(end.isoformat())})
+    UNION ALL
+    SELECT
+        upper(provider_ticker) AS ticker,
+        toString(cash_dividend_id) AS corporate_action_id,
+        'dividend' AS action_type,
+        toString(dividend_type) AS dividend_type,
+        toString(currency_code) AS currency_code,
+        toString(frequency) AS frequency,
+        toDate(ex_dividend_date) AS effective_date,
+        if(isNull(declaration_date), toDate(ex_dividend_date), addDays(toDate(declaration_date), 1)) AS available_date,
+        toUnixTimestamp64Micro(toTimeZone(toDateTime64(concat(toString(toDate(ex_dividend_date)), ' 04:00:00'), 6, 'America/New_York'), 'UTC')) AS effective_timestamp_us,
+        toUnixTimestamp64Micro(toTimeZone(toDateTime64(concat(toString(if(isNull(declaration_date), toDate(ex_dividend_date), addDays(toDate(declaration_date), 1))), ' 04:00:00'), 6, 'America/New_York'), 'UTC')) AS available_timestamp_us,
+        toFloat32(0) AS split_from,
+        toFloat32(0) AS split_to,
+        toFloat32(ifNull(cash_amount, 0)) AS cash_amount,
+        toInt32(if(isNull(declaration_date), 0, toRelativeDayNum(toDate(declaration_date)) - toRelativeDayNum(toDate('1970-01-01')))) AS declaration_epoch_day,
+        toInt32(toRelativeDayNum(toDate(ex_dividend_date)) - toRelativeDayNum(toDate('1970-01-01'))) AS effective_epoch_day,
+        toInt32(if(isNull(pay_date), 0, toRelativeDayNum(toDate(pay_date)) - toRelativeDayNum(toDate('1970-01-01')))) AS pay_epoch_day,
+        toInt32(if(isNull(record_date), 0, toRelativeDayNum(toDate(record_date)) - toRelativeDayNum(toDate('1970-01-01')))) AS record_epoch_day
+    FROM {dividend_table}
+    WHERE upper(provider_ticker) = {sql_string(ticker.upper())}
+      AND NOT isNull(ex_dividend_date)
+      AND ex_dividend_date >= toDate({sql_string(start.isoformat())})
+      AND ex_dividend_date < toDate({sql_string(end.isoformat())})
+)
+SELECT
+    a.*,
+    toUInt32(ifNull(action_ref.category_id, 0)) AS action_type_id,
+    toUInt32(ifNull(dividend_type_ref.category_id, 0)) AS dividend_type_id,
+    toUInt32(ifNull(currency_ref.category_id, 0)) AS currency_id,
+    toUInt32(ifNull(frequency_ref.category_id, 0)) AS frequency_id,
+    toFloat32(if(split_from > 0 AND split_to > 0, split_to / split_from, 0)) AS share_factor,
+    toFloat32(if(split_from > 0 AND split_to > 0, split_from / split_to, 0)) AS price_factor,
+    toFloat32(if(split_from > 0 AND split_to > 0, log(split_to / split_from), 0)) AS log_share_factor,
+    toFloat32(if(split_from > 0 AND split_to > 0, log(split_from / split_to), 0)) AS log_price_factor,
+    toFloat32(log1p(greatest(cash_amount, 0))) AS log1p_cash_amount,
+    toUInt8(action_type = 'split') AS is_split,
+    toUInt8(action_type = 'split' AND split_to > split_from AND split_from > 0) AS is_forward_split,
+    toUInt8(action_type = 'split' AND split_to < split_from AND split_to > 0) AS is_reverse_split,
+    toUInt8(action_type = 'dividend') AS is_dividend,
+    toUInt8(action_type = 'dividend' AND lowerUTF8(dividend_type) IN ({", ".join(sql_string(value) for value in sorted(SPECIAL_DIVIDEND_TYPES))})) AS is_special_dividend,
+    {available_columns},
+    {effective_columns}
+FROM actions AS a
+LEFT JOIN refs AS action_ref ON action_ref.field_name = 'action_type' AND action_ref.category_value = a.action_type
+LEFT JOIN refs AS dividend_type_ref ON dividend_type_ref.field_name = 'dividend_type' AND dividend_type_ref.category_value = a.dividend_type
+LEFT JOIN refs AS currency_ref ON currency_ref.field_name = 'currency_code' AND currency_ref.category_value = a.currency_code
+LEFT JOIN refs AS frequency_ref ON frequency_ref.field_name = 'frequency' AND frequency_ref.category_value = a.frequency
+ORDER BY ticker, available_timestamp_us, effective_timestamp_us, action_type, corporate_action_id
+{_settings_sql(config)}
+"""
+    return query_polars(client_opts, query)
+
+
+def _build_corporate_action_daily_labels(origins: Any, actions: Any, horizon_days: tuple[int, ...]) -> Any:
+    pl = _polars()
+    row_count = int(getattr(origins, "height", 0) or 0)
+    days = tuple(int(day) for day in horizon_days if int(day) > 0)
+    if row_count <= 0:
+        return pl.DataFrame(
+            {
+                "origin_ordinal": pl.Series([], dtype=pl.Int64),
+                "origin_timestamp_us": pl.Series([], dtype=pl.Int64),
+                "horizon_days": pl.Series([], dtype=pl.List(pl.Int32)),
+                **{key: pl.Series([], dtype=pl.List(pl.Boolean)) for key in CORPORATE_ACTION_DAILY_LABEL_KEYS},
+            }
+        )
+    origin_ordinals = origins.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)
+    origin_timestamps = origins.get_column("origin_timestamp_us").to_numpy().astype(np.int64, copy=False)
+    horizons = np.asarray(days, dtype=np.int64)
+    flags = {key: np.zeros((row_count, int(horizons.shape[0])), dtype=np.bool_) for key in CORPORATE_ACTION_DAILY_LABEL_KEYS}
+    if horizons.size and actions is not None and int(getattr(actions, "height", 0) or 0) > 0:
+        effective = actions.get_column("effective_timestamp_us").to_numpy().astype(np.int64, copy=False)
+        columns = set(actions.columns)
+        masks = {
+            "future_split_flag": _action_mask(actions, "is_split", effective),
+            "future_reverse_split_flag": _action_mask(actions, "is_reverse_split", effective),
+            "future_forward_split_flag": _action_mask(actions, "is_forward_split", effective),
+            "future_dividend_ex_flag": _action_mask(actions, "is_dividend", effective),
+            "future_special_dividend_ex_flag": _action_mask(actions, "is_special_dividend", effective),
+            "future_any_corporate_action_flag": np.ones((effective.shape[0],), dtype=np.bool_),
+        }
+        horizon_ends = origin_timestamps[:, None] + horizons[None, :] * 86_400_000_000
+        for key, action_mask in masks.items():
+            timestamps = np.sort(effective[action_mask & (effective > 0)])
+            if timestamps.size == 0:
+                continue
+            left = np.searchsorted(timestamps, origin_timestamps, side="right")
+            right = np.searchsorted(timestamps, horizon_ends, side="right")
+            flags[key] = right > left[:, None]
+    payload: dict[str, Any] = {
+        "origin_ordinal": origin_ordinals,
+        "origin_timestamp_us": origin_timestamps,
+        "horizon_days": [list(int(day) for day in days) for _ in range(row_count)],
+    }
+    for key in CORPORATE_ACTION_DAILY_LABEL_KEYS:
+        payload[key] = flags[key].tolist()
+    return pl.DataFrame(payload)
+
+
+def _action_mask(actions: Any, column: str, effective_timestamps: np.ndarray) -> np.ndarray:
+    if column not in getattr(actions, "columns", ()):
+        return np.zeros((int(effective_timestamps.shape[0]),), dtype=np.bool_)
+    return actions.get_column(column).to_numpy().astype(np.bool_, copy=False)
 
 
 def _query_category_references(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig) -> Any:

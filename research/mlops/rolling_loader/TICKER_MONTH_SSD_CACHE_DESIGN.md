@@ -78,6 +78,7 @@ cache_root/
           event_window_index_part_00000.parquet
           ranges_part_00000.parquet
           intraday_forward_labels_part_00000.parquet
+          corporate_action_daily_labels_part_00000.parquet
           events_part_00001.parquet
           origins_part_00001.parquet
           event_window_index_part_00001.parquet
@@ -87,6 +88,7 @@ cache_root/
           ticker_news_embeddings.parquet
           sec_filing_embeddings.parquet
           xbrl.parquet
+          corporate_actions.parquet
           audit_summary.json
 ```
 
@@ -110,7 +112,8 @@ The package manifest owns the part list:
         "origins": "origins_part_00000.parquet",
         "event_window_index": "event_window_index_part_00000.parquet",
         "ranges": "ranges_part_00000.parquet",
-        "intraday_forward_labels": "intraday_forward_labels_part_00000.parquet"
+        "intraday_forward_labels": "intraday_forward_labels_part_00000.parquet",
+        "corporate_action_daily_labels": "corporate_action_daily_labels_part_00000.parquet"
       }
     }
   ]
@@ -484,6 +487,54 @@ from the next trading day.
 Full dense intraday bars may be emitted only under an explicit debug/profiling
 option. They are not part of the default permanent cache.
 
+### Corporate Action Context And Labels
+
+Corporate-action data is stored separately from events and intraday labels.
+`corporate_actions.parquet` is a sparse ticker/month context file sourced from
+q_live split and dividend reference tables. Each row has an availability
+timestamp and an effective timestamp:
+
+```text
+available_timestamp_us <= origin_timestamp_us  controls X/no-lookahead context
+effective_timestamp_us > origin_timestamp_us   controls Y/future labels
+```
+
+Split rows use the split execution date as both availability and effective
+time, because the current split table does not expose a separate announcement
+timestamp. Dividend rows use declaration date plus one New York session start as
+availability when present, otherwise ex-dividend date; ex-dividend date is the
+effective time.
+
+The context file stores stable category ids from
+`training_category_reference(domain='corporate_actions')` for:
+
+```text
+action_type
+dividend_type
+currency_code
+frequency
+```
+
+It also stores split factors, log factors, cash amount, log cash amount,
+indicator bits, and UTC time features for both availability and effective time.
+
+Corporate-action labels are daily future targets and are not part of intraday
+price bars. `corporate_action_daily_labels_part_*.parquet` stores one row per
+origin with list columns ordered by `horizon_days`:
+
+```text
+future_split_flag[]
+future_reverse_split_flag[]
+future_forward_split_flag[]
+future_dividend_ex_flag[]
+future_special_dividend_ex_flag[]
+future_any_corporate_action_flag[]
+```
+
+The default daily horizons are `1,2,3,5,10,20,40` days. The builder computes
+these flags vectorized from sorted sparse effective timestamps, so every saved
+origin remains row-aligned with its corporate-action labels.
+
 ## Training-Time Materialization
 
 Training loads package cache files and materializes batches on CPU. The GPU
@@ -500,9 +551,10 @@ At materialization time, the loader:
 1. Selects origins from `(ticker_id, ordinal)` identities.
 2. Resolves event windows by ordinal range.
 3. Reads raw compact event columns and cached event time features.
-4. Computes origin-relative time deltas for events, text, XBRL, and bars.
-5. Resolves text embeddings, XBRL, daily, global, and precomputed intraday
-   forward label rows by as-of, forward, or `origin_key` rules.
+4. Computes origin-relative time deltas for events, text, XBRL, corporate
+   actions, and bars.
+5. Resolves text embeddings, XBRL, corporate actions, daily, global, and
+   precomputed forward label rows by as-of, forward, or `origin_key` rules.
 6. Emits modality payload tensors plus aligned time-feature tensors and masks.
 7. Builds model-facing tensors for the requested batch.
 

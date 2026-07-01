@@ -65,10 +65,12 @@ cache_root/
           event_window_index_part_00000.parquet
           ranges_part_00000.parquet
           intraday_forward_labels_part_00000.parquet
+          corporate_action_daily_labels_part_00000.parquet
           daily_bars.parquet
           ticker_news_embeddings.parquet
           sec_filing_embeddings.parquet
           xbrl.parquet
+          corporate_actions.parquet
 ```
 
 Very liquid tickers can be physically split into multiple ordinal-bounded
@@ -273,6 +275,31 @@ The current default horizons are:
 Daily macro/future labels are based on daily bars and should be computed from
 daily-bar sequences, not from independent weekly/monthly/yearly bars.
 
+Corporate-action labels are daily future targets, not intraday labels. The
+builder writes `corporate_action_daily_labels_part_*.parquet`, one row per
+origin, with list columns ordered by `horizon_days`. Defaults are:
+
+```text
+1d,2d,3d,5d,10d,20d,40d
+```
+
+The emitted binary label fields are:
+
+```text
+future_split_flag
+future_reverse_split_flag
+future_forward_split_flag
+future_dividend_ex_flag
+future_special_dividend_ex_flag
+future_any_corporate_action_flag
+```
+
+They are computed from q_live corporate-action reference tables using action
+effective dates. Split context is conservative because the split table provides
+execution date but no separate announcement timestamp; it becomes available at
+the split effective session start. Dividend context uses declaration date when
+present, otherwise ex-dividend date. Labels always look forward from the origin.
+
 ### Context Files
 
 The builder reads precomputed Qwen embedding context tables. It does not query
@@ -285,6 +312,7 @@ ticker_news_embeddings
 sec_filing_embeddings
 xbrl
 daily_bars
+corporate_actions
 ```
 
 Global context is stored once per month under `global/` where available.
@@ -299,6 +327,7 @@ ticker_news_prior_items: 64 logical article items per ticker
 market_news_prior_items: 512 logical global news items
 sec_filing_prior_items: 32 logical SEC text items per ticker
 xbrl_prior_rows: 4096 XBRL fact rows per ticker
+corporate_action_items: 128 corporate action rows per ticker at loader time
 ```
 
 Market news means all news from the embedding table, deduplicated by
@@ -559,6 +588,8 @@ sec_filing_embeddings
 xbrl
 daily_bars
 global_daily_bars
+corporate_actions
+corporate_action_labels
 ```
 
 Examples:
@@ -567,7 +598,7 @@ Examples:
 events
 events,intraday_labels
 ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings
-events,intraday_labels,daily_bars,global_daily_bars
+events,intraday_labels,corporate_action_labels,daily_bars,global_daily_bars
 ```
 
 For event-only pretraining, use:
@@ -671,11 +702,14 @@ raw_event_mask
 headers_uint8
 events_uint8
 intraday_labels
+corporate_action_labels
+corporate_action_label_days
 future_intraday_bars
 future_intraday_bar_mask
 input_availability
 text_inputs
 xbrl_inputs
+corporate_action_inputs
 bar_inputs
 external_context
 profile
@@ -748,6 +782,43 @@ timestamp_us / time_features          when the fact became available from the so
 period_end_date / period_end_features what accounting period the fact describes
 ```
 
+When `corporate_actions` is requested, `corporate_action_inputs` contains the
+latest as-of corporate-action rows with `available_timestamp_us <=
+origin_timestamp_us`:
+
+```text
+corporate_action_inputs["mask"]                    [B, corporate_action_max_items]
+corporate_action_inputs["action_type_id"]          [B, corporate_action_max_items]
+corporate_action_inputs["dividend_type_id"]        [B, corporate_action_max_items]
+corporate_action_inputs["currency_id"]             [B, corporate_action_max_items]
+corporate_action_inputs["frequency_id"]            [B, corporate_action_max_items]
+corporate_action_inputs["numeric_features"]        [B, corporate_action_max_items, corporate_action_numeric_features]
+corporate_action_inputs["available_timestamp_us"]  [B, corporate_action_max_items]
+corporate_action_inputs["effective_timestamp_us"]  [B, corporate_action_max_items]
+corporate_action_inputs["time_features"]           [B, corporate_action_max_items, corporate_action_time_features]
+corporate_action_inputs["effective_time_features"] [B, corporate_action_max_items, corporate_action_effective_time_features]
+```
+
+`action_type_id`, `dividend_type_id`, `currency_id`, and `frequency_id` come
+from the append-only `training_category_reference` table under domain
+`corporate_actions`; id `0` means missing or unknown. Numeric features include
+split factors, log split factors, cash amount, log cash amount, and action-type
+indicator bits. Available time controls no-lookahead selection. Effective time
+describes when the split or ex-dividend event applies.
+
+When `corporate_action_labels` is requested, `corporate_action_labels` contains:
+
+```text
+future_split_flag
+future_reverse_split_flag
+future_forward_split_flag
+future_dividend_ex_flag
+future_special_dividend_ex_flag
+future_any_corporate_action_flag
+```
+
+Each field is shaped `[B, D]`, where `D == len(corporate_action_label_days)`.
+
 No-lookahead selection uses only `timestamp_us`. `period_end_date`,
 `fiscal_period`, and `calendar_period_code` are descriptive context and are not
 used to decide whether the fact was available.
@@ -788,7 +859,7 @@ The no-arg default is a repeatable sliding-stream benchmark over
 
 ```text
 dataset_id: bench_small_201902_v1
-data_groups: events,intraday_labels,daily_bars,global_daily_bars,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl
+data_groups: events,intraday_labels,corporate_action_labels,daily_bars,global_daily_bars,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl,corporate_actions
 event_output_mode: raw_stream
 event_stream_length: 1024
 sample_fraction: 1.0

@@ -187,6 +187,8 @@ class RollingMarketDataConfig:
     sec_filing_text_embedding_table: str = "sec_filing_text_embeddings"
     sec_xbrl_context_table: str = "sec_xbrl_context"
     category_reference_table: str = "training_category_reference"
+    stock_split_table: str = "market_stock_split_v1"
+    cash_dividend_table: str = "market_cash_dividend_v1"
     index_table: str = "train_2019_to_2025"
     events_per_chunk: int = 128
     header_bytes: int = 14
@@ -219,6 +221,9 @@ class RollingMarketDataConfig:
     sec_max_quality_flags: int = 8
     xbrl_lookback_days: int = 730
     xbrl_max_items: int = 4096
+    corporate_action_lookback_days: int = 3650
+    corporate_action_max_items: int = 128
+    corporate_action_label_days: tuple[int, ...] = (1, 2, 3, 5, 10, 20, 40)
     intraday_label_horizons: tuple[TimeBarHorizon, ...] = field(default_factory=lambda: DEFAULT_INTRADAY_LABEL_HORIZONS)
     text_tokenizer_model: str = "Qwen/Qwen3-0.6B"
     text_max_tokens: int = 1024

@@ -38,6 +38,8 @@ XBRL_FIELDS = (
     "fiscal_period",
     "calendar_period_code",
 )
+
+CORPORATE_ACTION_FIELDS = ("action_type", "dividend_type", "currency_code", "frequency")
 SEC_TEXT_FIELDS = ("form_type", "text_kind", "quality_flags")
 NEWS_FIELDS = ("provider", "url_domain", "channels", "provider_tags", "quality_flags")
 MULTI_VALUE_FIELDS = {
@@ -56,9 +58,12 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--database", default="market_sip_compact")
+    parser.add_argument("--reference-database", default="q_live")
     parser.add_argument("--xbrl-table", default="sec_xbrl_context")
     parser.add_argument("--news-token-table", default="news_text_tokens")
     parser.add_argument("--sec-token-table", default="sec_filing_text_tokens")
+    parser.add_argument("--stock-split-table", default="market_stock_split_v1")
+    parser.add_argument("--cash-dividend-table", default="market_cash_dividend_v1")
     parser.add_argument("--reference-table", default="training_category_reference")
     parser.add_argument("--storage-policy", default="")
     parser.add_argument("--max-threads", type=int, default=16)
@@ -272,7 +277,65 @@ def candidate_selects(args: argparse.Namespace) -> list[str]:
             selects.append(multi_value_select(args.database, args.news_token_table, domain="news", source_table=args.news_token_table, field=field))
         else:
             selects.append(single_value_select(args.database, args.news_token_table, domain="news", source_table=args.news_token_table, field=field))
+    selects.extend(corporate_action_selects(args))
     return selects
+
+
+def corporate_action_selects(args: argparse.Namespace) -> list[str]:
+    database = quote_ident(args.reference_database)
+    split_table = f"{database}.{quote_ident(args.stock_split_table)}"
+    dividend_table = f"{database}.{quote_ident(args.cash_dividend_table)}"
+    return [
+        f"""
+SELECT
+    'corporate_actions' AS domain,
+    'corporate_actions' AS source_table,
+    'action_type' AS field_name,
+    category_value,
+    count() AS source_rows
+FROM
+(
+    SELECT 'split' AS category_value FROM {split_table}
+    UNION ALL
+    SELECT 'dividend' AS category_value FROM {dividend_table}
+)
+GROUP BY category_value
+HAVING category_value != ''
+""".strip(),
+        f"""
+SELECT
+    'corporate_actions' AS domain,
+    {sql_string(args.cash_dividend_table)} AS source_table,
+    'dividend_type' AS field_name,
+    trim(BOTH ' ' FROM toString(dividend_type)) AS category_value,
+    count() AS source_rows
+FROM {dividend_table}
+GROUP BY category_value
+HAVING category_value != ''
+""".strip(),
+        f"""
+SELECT
+    'corporate_actions' AS domain,
+    {sql_string(args.cash_dividend_table)} AS source_table,
+    'currency_code' AS field_name,
+    trim(BOTH ' ' FROM toString(currency_code)) AS category_value,
+    count() AS source_rows
+FROM {dividend_table}
+GROUP BY category_value
+HAVING category_value != ''
+""".strip(),
+        f"""
+SELECT
+    'corporate_actions' AS domain,
+    {sql_string(args.cash_dividend_table)} AS source_table,
+    'frequency' AS field_name,
+    trim(BOTH ' ' FROM toString(frequency)) AS category_value,
+    count() AS source_rows
+FROM {dividend_table}
+GROUP BY category_value
+HAVING category_value != ''
+""".strip(),
+    ]
 
 
 def single_value_select(database: str, table: str, *, domain: str, source_table: str, field: str) -> str:

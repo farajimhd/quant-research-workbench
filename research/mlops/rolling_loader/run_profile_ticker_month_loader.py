@@ -34,7 +34,7 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "batch_size": 4096,
     "batches": 16,
     "seed": 17,
-    "data_groups": "events,intraday_labels,daily_bars,global_daily_bars,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl",
+    "data_groups": "events,intraday_labels,corporate_action_labels,daily_bars,global_daily_bars,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl,corporate_actions",
     "event_output_mode": "raw_stream",
     "event_columns": "",
     "suppress_event_columns": "ticker_id,ordinal,timestamp_us",
@@ -48,6 +48,8 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "market_news_max_items": 16,
     "sec_filing_max_items": 4,
     "xbrl_max_items": 4096,
+    "corporate_action_max_items": 128,
+    "corporate_action_label_days": "1,2,3,5,10,20,40",
     "ticker_news_token_chunks": 2,
     "market_news_token_chunks": 2,
     "sec_filing_token_chunks": 8,
@@ -98,6 +100,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--market-news-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_max_items"])
     parser.add_argument("--sec-filing-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_max_items"])
     parser.add_argument("--xbrl-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["xbrl_max_items"])
+    parser.add_argument("--corporate-action-max-items", type=int, default=DEFAULT_PROFILE_CONFIG["corporate_action_max_items"])
+    parser.add_argument("--corporate-action-label-days", default=DEFAULT_PROFILE_CONFIG["corporate_action_label_days"])
     parser.add_argument("--ticker-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["ticker_news_token_chunks"])
     parser.add_argument("--market-news-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["market_news_token_chunks"])
     parser.add_argument("--sec-filing-token-chunks", type=int, default=DEFAULT_PROFILE_CONFIG["sec_filing_token_chunks"])
@@ -169,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
         market_news_max_items=max(0, int(args.market_news_max_items)),
         sec_filing_max_items=max(0, int(args.sec_filing_max_items)),
         xbrl_max_items=max(0, int(args.xbrl_max_items)),
+        corporate_action_max_items=max(0, int(args.corporate_action_max_items)),
+        corporate_action_label_days=tuple(int(item.strip().rstrip("dD")) for item in str(args.corporate_action_label_days).split(",") if item.strip()),
         ticker_news_token_chunks=max(1, int(args.ticker_news_token_chunks)),
         market_news_token_chunks=max(1, int(args.market_news_token_chunks)),
         sec_filing_token_chunks=max(1, int(args.sec_filing_token_chunks)),
@@ -342,6 +348,9 @@ def _shape_summary(batch: Any) -> dict[str, Any]:
         out["events_uint8_shape"] = list(batch.events_uint8.shape)
     if batch.intraday_labels:
         out["intraday_label_shapes"] = {key: list(value.shape) for key, value in batch.intraday_labels.items()}
+    if batch.corporate_action_labels:
+        out["corporate_action_label_shapes"] = {key: list(value.shape) for key, value in batch.corporate_action_labels.items()}
+        out["corporate_action_label_days"] = list(batch.corporate_action_label_days)
     if batch.text_inputs:
         out["text_input_shapes"] = {
             name: {field: list(value.shape) for field, value in payload.items()}
@@ -349,6 +358,8 @@ def _shape_summary(batch: Any) -> dict[str, Any]:
         }
     if batch.xbrl_inputs:
         out["xbrl_input_shapes"] = {field: list(value.shape) for field, value in batch.xbrl_inputs.items()}
+    if batch.corporate_action_inputs:
+        out["corporate_action_input_shapes"] = {field: list(value.shape) for field, value in batch.corporate_action_inputs.items()}
     if batch.bar_inputs:
         out["bar_input_shapes"] = {
             name: {field: list(value.shape) for field, value in payload.items()}
