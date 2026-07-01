@@ -254,7 +254,14 @@ def _check_labels(origins: Any, labels: Any, manifest: Mapping[str, Any], issues
             "last_event_timestamp_us",
             "available",
         )
-        compact_label_keys = (*base_compact_label_keys, *(manifest.get("config", {}).get("future_condition_label_keys") or ()))
+        flag_keys = (
+            manifest.get("config", {}).get("future_event_flag_label_keys")
+            or (
+                *(manifest.get("config", {}).get("future_condition_label_keys") or ()),
+                *(manifest.get("config", {}).get("future_external_arrival_label_keys") or ()),
+            )
+        )
+        compact_label_keys = (*base_compact_label_keys, *flag_keys)
         for key in compact_label_keys:
             if key not in labels.columns:
                 issues.append(AuditIssue("error", "label_column_missing", "Compact intraday label column is missing.", {"package": str(package_dir), "column": key}))

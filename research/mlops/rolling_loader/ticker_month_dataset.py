@@ -93,12 +93,12 @@ LABEL_VALUE_DTYPES: dict[str, np.dtype] = {
     "event_count": np.dtype(np.uint64),
     "last_event_timestamp_us": np.dtype(np.int64),
     "available": np.dtype(np.bool_),
-    "condition_halt_pause_count": np.dtype(np.uint16),
-    "condition_resume_count": np.dtype(np.uint16),
-    "condition_news_pending_count": np.dtype(np.uint16),
-    "condition_news_dissemination_count": np.dtype(np.uint16),
-    "condition_luld_limit_state_count": np.dtype(np.uint16),
-    "condition_opening_delay_count": np.dtype(np.uint16),
+    "condition_halt_pause_flag": np.dtype(np.bool_),
+    "condition_resume_flag": np.dtype(np.bool_),
+    "condition_news_risk_flag": np.dtype(np.bool_),
+    "condition_luld_limit_state_flag": np.dtype(np.bool_),
+    "ticker_news_arrival_flag": np.dtype(np.bool_),
+    "sec_filing_arrival_flag": np.dtype(np.bool_),
 }
 NUMERIC_EVENT_COLUMNS: tuple[str, ...] = tuple(column for column in (*EVENT_PAYLOAD_COLUMNS, *EVENT_TIME_FEATURE_COLUMNS) if column != "ticker")
 DEFAULT_SUPPRESSED_EVENT_COLUMNS = ("ticker_id", "ordinal", "timestamp_us")
@@ -2469,12 +2469,12 @@ def _label_values_for_origin(labels: Any, origin_ordinal: int, expected: int) ->
         "event_count",
         "last_event_timestamp_us",
         "available",
-        "condition_halt_pause_count",
-        "condition_resume_count",
-        "condition_news_pending_count",
-        "condition_news_dissemination_count",
-        "condition_luld_limit_state_count",
-        "condition_opening_delay_count",
+        "condition_halt_pause_flag",
+        "condition_resume_flag",
+        "condition_news_risk_flag",
+        "condition_luld_limit_state_flag",
+        "ticker_news_arrival_flag",
+        "sec_filing_arrival_flag",
     )
     if _labels_are_pivoted(labels):
         if right - left != 1:

@@ -135,7 +135,7 @@ SESSION_END_SECOND = 20 * 60 * 60
 
 FUTURE_CONDITION_GROUPS: tuple[tuple[str, tuple[tuple[str, tuple[int, ...]], ...]], ...] = (
     (
-        "condition_halt_pause_count",
+        "condition_halt_pause_flag",
         (
             ("cta_security_status", (102, 114, 117)),
             ("halt_reason", (153, 154, 155, 156, 157, 158, 159, 160, 161, 163, 165, 166, 168, 184, 186)),
@@ -144,7 +144,7 @@ FUTURE_CONDITION_GROUPS: tuple[tuple[str, tuple[tuple[str, tuple[int, ...]], ...
         ),
     ),
     (
-        "condition_resume_count",
+        "condition_resume_flag",
         (
             ("cta_security_status", (103,)),
             ("halt_reason", (169, 170, 171, 172, 173, 174, 178)),
@@ -152,21 +152,16 @@ FUTURE_CONDITION_GROUPS: tuple[tuple[str, tuple[tuple[str, tuple[int, ...]], ...
         ),
     ),
     (
-        "condition_news_pending_count",
+        "condition_news_risk_flag",
         (
             ("halt_reason", (151,)),
             ("quote_conditions", (25, 27)),
-        ),
-    ),
-    (
-        "condition_news_dissemination_count",
-        (
             ("halt_reason", (152, 167)),
             ("quote_conditions", (21, 23)),
         ),
     ),
     (
-        "condition_luld_limit_state_count",
+        "condition_luld_limit_state_flag",
         (
             ("cta_security_status", (114,)),
             ("halt_reason", (153, 165, 166, 186)),
@@ -174,14 +169,10 @@ FUTURE_CONDITION_GROUPS: tuple[tuple[str, tuple[tuple[str, tuple[int, ...]], ...
             ("luld_indicators", (11, 12, 22, 23, 24, 25, 26, 27, 28, 29, 30)),
         ),
     ),
-    (
-        "condition_opening_delay_count",
-        (
-            ("cta_security_status", (101, 104)),
-        ),
-    ),
 )
 FUTURE_CONDITION_LABEL_KEYS: tuple[str, ...] = tuple(name for name, _ in FUTURE_CONDITION_GROUPS)
+FUTURE_EXTERNAL_ARRIVAL_LABEL_KEYS: tuple[str, ...] = ("ticker_news_arrival_flag", "sec_filing_arrival_flag")
+FUTURE_EVENT_FLAG_LABEL_KEYS: tuple[str, ...] = (*FUTURE_CONDITION_LABEL_KEYS, *FUTURE_EXTERNAL_ARRIVAL_LABEL_KEYS)
 CONDITION_INDICATOR_SOURCE_FAMILIES: frozenset[str] = frozenset({"cta_security_status", "halt_reason", "luld_indicators"})
 CONDITION_DIRECT_SOURCE_FAMILIES: frozenset[str] = frozenset({"quote_conditions", "trade_conditions", "trade_corrections_nyse", "unknown"})
 
@@ -1343,6 +1334,8 @@ def _build_ticker_month_package(
                 "max_origin_events_per_part": int(args.max_origin_events_per_part),
                 "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
                 "future_condition_label_keys": list(FUTURE_CONDITION_LABEL_KEYS),
+                "future_external_arrival_label_keys": list(FUTURE_EXTERNAL_ARRIVAL_LABEL_KEYS),
+                "future_event_flag_label_keys": list(FUTURE_EVENT_FLAG_LABEL_KEYS),
                 "event_payload_columns": list(EVENT_PAYLOAD_COLUMNS),
                 "event_time_feature_columns": list(EVENT_TIME_FEATURE_COLUMNS),
                 "context_available_time_feature_columns": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
@@ -1616,9 +1609,9 @@ def _label_arrays_from_row(labels: Any, row_index: int, expected: int, origin_ke
         "last_event_timestamp_us": _cell_array(row.get("last_event_timestamp_us"), np.int64),
         "available": _cell_array(row.get("available"), np.uint8),
     }
-    for key in FUTURE_CONDITION_LABEL_KEYS:
+    for key in FUTURE_EVENT_FLAG_LABEL_KEYS:
         if key in labels.columns:
-            arrays[key] = _cell_array(row.get(key), np.uint16)
+            arrays[key] = _cell_array(row.get(key), np.uint8)
     for key, value in arrays.items():
         if int(expected) and int(value.shape[0]) != int(expected):
             raise RuntimeError(f"{origin_key} compact label field {key} has {value.shape[0]:,} values, expected {int(expected):,}.")
@@ -1793,20 +1786,34 @@ def _future_condition_count_select_sql() -> str:
 
 def _future_condition_label_select_sql() -> str:
     return ",\n            ".join(
-        f"toUInt16(least({quote_ident(label_key)}, 65535)) AS {quote_ident(label_key)}"
+        f"toUInt8({quote_ident(label_key)} > 0) AS {quote_ident(label_key)}"
         for label_key in FUTURE_CONDITION_LABEL_KEYS
     )
 
 
-def _future_condition_array_select_sql(start_index: int) -> str:
+def _future_external_label_select_sql() -> str:
+    return """
+            toUInt8(ticker_news_count > 0) AS ticker_news_arrival_flag,
+            toUInt8(sec_filing_count > 0) AS sec_filing_arrival_flag
+""".strip()
+
+
+def _future_external_count_select_sql() -> str:
+    return """
+                greatest(toInt64(ifNull(news_target.cum_ticker_news_arrivals, 0)) - toInt64(ifNull(news_base.cum_ticker_news_arrivals, 0)), 0) AS ticker_news_count,
+                greatest(toInt64(ifNull(sec_target.cum_sec_filing_arrivals, 0)) - toInt64(ifNull(sec_base.cum_sec_filing_arrivals, 0)), 0) AS sec_filing_count
+""".strip()
+
+
+def _future_event_flag_array_select_sql(start_index: int) -> str:
     return ",\n    ".join(
         f"arrayMap(x -> tupleElement(x, {int(start_index) + offset}), label_items) AS {quote_ident(label_key)}"
-        for offset, label_key in enumerate(FUTURE_CONDITION_LABEL_KEYS)
+        for offset, label_key in enumerate(FUTURE_EVENT_FLAG_LABEL_KEYS)
     )
 
 
-def _future_condition_tuple_items_sql() -> str:
-    return ",\n            ".join(quote_ident(label_key) for label_key in FUTURE_CONDITION_LABEL_KEYS)
+def _future_event_flag_tuple_items_sql() -> str:
+    return ",\n            ".join(quote_ident(label_key) for label_key in FUTURE_EVENT_FLAG_LABEL_KEYS)
 
 
 def _query_intraday_forward_labels_asof(
@@ -1826,8 +1833,12 @@ def _query_intraday_forward_labels_asof(
     condition_cumulative_select = _future_condition_cumulative_select_sql()
     condition_count_select = _future_condition_count_select_sql()
     condition_label_select = _future_condition_label_select_sql()
-    condition_array_select = _future_condition_array_select_sql(10)
-    condition_tuple_items = _future_condition_tuple_items_sql()
+    external_count_select = _future_external_count_select_sql()
+    external_label_select = _future_external_label_select_sql()
+    event_flag_array_select = _future_event_flag_array_select_sql(10)
+    event_flag_tuple_items = _future_event_flag_tuple_items_sql()
+    news_table = f"{quote_ident(config.database)}.{quote_ident(config.news_embedding_table)}"
+    sec_table = f"{quote_ident(config.sec_context_database)}.{quote_ident(config.sec_filing_text_embedding_table)}"
     # One set query per ticker/month/part. It resolves every horizon through cumulative ASOF lookups
     # instead of repeatedly range-joining future events for every horizon.
     query = f"""
@@ -1915,6 +1926,76 @@ WITH
         WINDOW event_window AS (PARTITION BY ticker, local_date ORDER BY sip_timestamp_us, ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
         ORDER BY ticker, local_date, sip_timestamp_us, ordinal
     ),
+    ticker_news_arrivals AS
+    (
+        SELECT
+            ticker,
+            local_date,
+            timestamp_us,
+            count() OVER arrival_window AS cum_ticker_news_arrivals
+        FROM
+        (
+            SELECT
+                upper(ticker) AS ticker,
+                timestamp_us,
+                toTimeZone(fromUnixTimestamp64Micro(timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
+                toDate(ts_local) AS local_date,
+                dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second
+            FROM {news_table}
+            PREWHERE ticker = {sql_string(ticker)}
+              AND timestamp_us >= {int(window.first_session_start_us)}
+              AND timestamp_us <= {int(window.last_session_end_us)}
+            WHERE published_at_utc <= fromUnixTimestamp64Micro(timestamp_us, 'UTC')
+              AND toDate(ts_local) >= toDate({sql_string(window.first_date.isoformat())})
+              AND toDate(ts_local) < toDate({sql_string(window.next_month_date.isoformat())})
+              AND local_second < 72000
+            GROUP BY
+                ticker,
+                timestamp_us,
+                ts_local,
+                local_date,
+                local_second,
+                source_id,
+                provider_article_id,
+                text_hash
+        )
+        WINDOW arrival_window AS (PARTITION BY ticker, local_date ORDER BY timestamp_us ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+        ORDER BY ticker, local_date, timestamp_us
+    ),
+    sec_filing_arrivals AS
+    (
+        SELECT
+            ticker,
+            local_date,
+            timestamp_us,
+            count() OVER arrival_window AS cum_sec_filing_arrivals
+        FROM
+        (
+            SELECT
+                upper(ticker) AS ticker,
+                timestamp_us,
+                toTimeZone(fromUnixTimestamp64Micro(timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
+                toDate(ts_local) AS local_date,
+                dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second
+            FROM {sec_table}
+            PREWHERE ticker = {sql_string(ticker)}
+              AND timestamp_us >= {int(window.first_session_start_us)}
+              AND timestamp_us <= {int(window.last_session_end_us)}
+            WHERE accepted_at_utc <= fromUnixTimestamp64Micro(timestamp_us, 'UTC')
+              AND toDate(ts_local) >= toDate({sql_string(window.first_date.isoformat())})
+              AND toDate(ts_local) < toDate({sql_string(window.next_month_date.isoformat())})
+              AND local_second < 72000
+            GROUP BY
+                ticker,
+                timestamp_us,
+                ts_local,
+                local_date,
+                local_second,
+                accession_number
+        )
+        WINDOW arrival_window AS (PARTITION BY ticker, local_date ORDER BY timestamp_us ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+        ORDER BY ticker, local_date, timestamp_us
+    ),
     label_rows AS
     (
         SELECT
@@ -1932,7 +2013,8 @@ WITH
             toUInt64(event_count) AS event_count,
             toInt64(if(event_count > 0, target_timestamp_us, 0)) AS last_event_timestamp_us,
             toUInt8((local_second * 1000000 + horizon_us) <= 72000000000 AND event_count > 0) AS available,
-            {condition_label_select}
+            {condition_label_select},
+            {external_label_select}
         FROM
         (
             SELECT
@@ -1950,7 +2032,8 @@ WITH
                 greatest(toInt64(ifNull(target.cum_count, 0)) - toInt64(ifNull(base.cum_count, 0)), 0) AS event_count,
                 ifNull(target.cum_size_primary, 0.0) - ifNull(base.cum_size_primary, 0.0) AS size_primary_sum,
                 ifNull(target.cum_size_secondary, 0.0) - ifNull(base.cum_size_secondary, 0.0) AS size_secondary_sum,
-                {condition_count_select}
+                {condition_count_select},
+                {external_count_select}
             FROM origin_horizons AS o
             ASOF LEFT JOIN cumulative_events AS target
                 ON target.ticker = o.ticker
@@ -1960,6 +2043,22 @@ WITH
                 ON base.ticker = o.ticker
                AND base.local_date = o.origin_local_date
                AND o.origin_timestamp_us >= base.sip_timestamp_us
+            ASOF LEFT JOIN ticker_news_arrivals AS news_target
+                ON news_target.ticker = o.ticker
+               AND news_target.local_date = o.origin_local_date
+               AND o.target_timestamp_us >= news_target.timestamp_us
+            ASOF LEFT JOIN ticker_news_arrivals AS news_base
+                ON news_base.ticker = o.ticker
+               AND news_base.local_date = o.origin_local_date
+               AND o.origin_timestamp_us >= news_base.timestamp_us
+            ASOF LEFT JOIN sec_filing_arrivals AS sec_target
+                ON sec_target.ticker = o.ticker
+               AND sec_target.local_date = o.origin_local_date
+               AND o.target_timestamp_us >= sec_target.timestamp_us
+            ASOF LEFT JOIN sec_filing_arrivals AS sec_base
+                ON sec_base.ticker = o.ticker
+               AND sec_base.local_date = o.origin_local_date
+               AND o.origin_timestamp_us >= sec_base.timestamp_us
         )
     )
 SELECT
@@ -1977,7 +2076,7 @@ SELECT
     arrayMap(x -> tupleElement(x, 7), label_items) AS event_count,
     arrayMap(x -> tupleElement(x, 8), label_items) AS last_event_timestamp_us,
     arrayMap(x -> tupleElement(x, 9), label_items) AS available,
-    {condition_array_select}
+    {event_flag_array_select}
 FROM
 (
     SELECT
@@ -1996,7 +2095,7 @@ FROM
             event_count,
             last_event_timestamp_us,
             available,
-            {condition_tuple_items}
+            {event_flag_tuple_items}
         ))) AS label_items
     FROM label_rows
     GROUP BY

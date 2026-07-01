@@ -454,22 +454,22 @@ size_secondary_sum[]
 event_count[]
 last_event_timestamp_us[]
 available[]
-condition_halt_pause_count[]
-condition_resume_count[]
-condition_news_pending_count[]
-condition_news_dissemination_count[]
-condition_luld_limit_state_count[]
-condition_opening_delay_count[]
+condition_halt_pause_flag[]
+condition_resume_flag[]
+condition_news_risk_flag[]
+condition_luld_limit_state_flag[]
+ticker_news_arrival_flag[]
+sec_filing_arrival_flag[]
 ```
 
-The condition targets are count arrays per horizon. A downstream trainer can use
-them either as counts or as binary event flags by applying `count > 0`. The
-builder resolves their dense token ids from `event_condition_token_reference`
+The event-state and external-arrival targets are binary arrays per horizon. The
+builder resolves condition dense token ids from `event_condition_token_reference`
 using source family and Massive modifier code, so the saved targets are stable
 across token-reference rebuilds. They intentionally cover only high-value
-forecastable trading states: halts or pauses, resumptions, news-pending and
-news-dissemination states, LULD or limit-state activity, and opening-delay or
-no-open states.
+forecastable trading states: halts or pauses, resumptions, news-risk states, and
+LULD or limit-state activity. News and SEC filing arrival flags are computed from
+their embedding-table availability timestamps and are on when at least one item
+arrives inside the future horizon.
 
 Session boundaries are hard validity boundaries:
 
