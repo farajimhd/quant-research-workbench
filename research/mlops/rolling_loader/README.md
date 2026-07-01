@@ -351,6 +351,53 @@ At load time, daily bar context is emitted only when requested in
 full current-day daily bar as context because that would include future
 information for intraday origins.
 
+## Data Lifecycle
+
+This section describes the full value lifecycle from source data to trainer
+batch. Market-event data starts from SIP quote/trade flatfiles. External
+context starts from normalized ClickHouse context tables, embedding tables, and
+reference tables that were built before the ticker/month cache builder runs.
+
+### X Input Lifecycle
+
+| Data piece | Source | Builder/cache representation | Loader output | Model/trainer handling |
+| --- | --- | --- | --- | --- |
+| Sample identity | Event origin from `market_sip_compact.events` | `origins_part_*.parquet` with `ticker_id`, `ticker`, `origin_ordinal`, `origin_timestamp_us`, origin session fields, and source part identity | `ticker`, `ticker_id`, `origin_ordinal`, `origin_timestamp_us`, `source_part_key`, row/source indexes | Used for audit, checkpoint accounting, reproducible shuffling, and joining labels/context. Not a default model feature unless explicitly requested. |
+| Raw quote/trade events | SIP quote/trade flatfiles ingested into `events` | `events_part_*.parquet`; quote rows use primary=ask and secondary=bid; trade rows use primary=trade and secondary=0 | Raw event windows when `event_output_mode=raw_windows`: `[B, C, W]` structured arrays/columns | Event encoder consumes the selected columns. Suppressed columns such as ticker id, ordinal, or timestamp can be dropped from model input while still remaining available for audit. |
+| Event prices | Flatfile bid/ask/trade price | Stored as compact integer prices: `price_primary_int`, `price_secondary_int`; scale bits are packed in `event_meta` | Raw event windows keep the integer prices plus `event_meta` | Event encoder can learn from compact representation or decode internally if configured. Future price labels are decoded separately by the builder; do not assume event-window prices are float price levels. |
+| Event sizes | Flatfile bid size, ask size, trade size | Stored as `float32` `size_primary` and `size_secondary`; quote primary=ask size, quote secondary=bid size, trade primary=trade size, trade secondary=0 | Raw event windows include `size_primary`, `size_secondary` | No event-codec scale bit exists for size. Apply model-side normalization such as `log1p`, clipping, or standardization if needed. |
+| Event type, exchanges, conditions | Flatfile quote/trade row, exchange fields, conditions, indicators | `event_type`, `exchange_primary`, `exchange_secondary`, and dense condition-token columns `condition_token_1..5` from `event_condition_token_reference` | Raw event windows include these categorical/token fields | Encoded with categorical/token embeddings. Unknown/missing condition token is `0`. |
+| Event absolute time features | Event `timestamp_us` | UTC cyclic calendar features plus session fields are stored next to each event | Included as event columns when requested and not suppressed | Used by event encoder as ordinary numeric features. Origin-relative event age is computed by the loader only when the requested event mode needs it. |
+| Event-window index | Origin ordinal and configured coverage parameters | `event_window_index_part_*.parquet` plus cached event lookback rows | Loader selects contiguous windows by origin and requested coverage | Integrity check requires ordinal-contiguous windows. Coverage can be changed at loader time only within cached lookback capacity. |
+| Daily ticker bars | Daily bar ClickHouse table built after event ingestion | `daily_bars.parquet` contains only completed historical daily bars needed by cache parameters | `daily_bar_inputs` / bar context arrays when `daily_bars` is requested | Used by bar encoder. Loader does not expose an incomplete current-day daily bar as context. |
+| Global daily bars | Global/macro daily bar ClickHouse tables | `global/global_daily_bars.parquet` | Global bar context arrays when `global_daily_bars` is requested | Used by global/bar encoder. These are cheap and stored once per month. |
+| Ticker news embeddings | Precomputed Qwen embedding table for ticker-linked news | `ticker_news_embeddings.parquet` with month rows plus latest prior items; item timestamps and time features are stored | `text_inputs["ticker_news"]` with embeddings, item/chunk masks, timestamps, and time features | Text encoder consumes embeddings directly. Missing history is zero padded and masked. No raw text or Qwen inference happens in the loader. |
+| Market news embeddings | Precomputed Qwen embedding table for all market news | `global/market_news_embeddings.parquet` with ticker `__MARKET__`; month rows plus latest prior items | `text_inputs["market_news"]` with embeddings, masks, timestamps, and time features | Same embedding path as ticker news. Market news means all news, not only rows without tickers. |
+| SEC filing embeddings | Precomputed Qwen embedding table for SEC filing text chunks | `sec_filing_embeddings.parquet` with month rows plus latest prior filing items | `text_inputs["sec_filings"]` with embeddings, masks, timestamps, and time features | Text encoder consumes embeddings. Missing history is masked and zero padded. |
+| XBRL facts | Normalized SEC/XBRL tables joined with category reference ids | `xbrl.parquet` with latest prior fact rows plus month rows; categorical ids are fixed reference-table ids | `xbrl_inputs` arrays: value/numeric fields, category ids, masks, available-time features, and period-end time features | XBRL encoder consumes numeric facts, categorical embeddings, and masks. Id `0` means missing/unknown. |
+| Corporate-action context | `q_live` corporate-action reference tables | `corporate_actions.parquet` with available/effective timestamps, action ids, numeric fields, and time features | `corporate_action_inputs` arrays with masks, ids, numeric features, available/effective timestamps, and time features | Corporate-action encoder consumes as-of context only where `available_timestamp_us <= origin_timestamp_us`. |
+| Availability masks | Derived from context row availability and padding | Empty or short context is represented by fewer rows plus metadata | Loader emits explicit masks for text, XBRL, corporate actions, bars, and labels | Model must use masks so zero padding is not interpreted as real data. |
+
+### Y Label Lifecycle
+
+| Label group | Source | Builder/cache representation | Loader output | Loss/model handling |
+| --- | --- | --- | --- | --- |
+| Intraday future price levels | Future target events in `events` for the same ticker and same New York session day | `intraday_forward_labels_part_*.parquet` list columns `price_primary_int` and `price_secondary_int`; names are kept for compatibility, but values are decoded `float32` price levels using target event `event_meta` scale bits | `intraday_labels["price_primary_int"] [B,H]`, `intraday_labels["price_secondary_int"] [B,H]`, and projection into `future_intraday_bars [B,H,5]` | Trainer converts decoded price levels to normalized deltas, usually bps/ticks versus origin/as-of bid, ask, or mid, before regression loss. |
+| Intraday future size sums | Future events in `(origin_timestamp_us, origin_timestamp_us + horizon_us]` | List columns `size_primary_sum`, `size_secondary_sum` computed as cumulative target minus cumulative base | `intraday_labels["size_primary_sum"] [B,H]`, `intraday_labels["size_secondary_sum"] [B,H]`; primary sum also projects to `future_intraday_bars[..., volume]` | Train in a scale-stable space such as `log1p(size)` with `available` mask. |
+| Intraday future event count | Same future event interval as size sums | `event_count` list column | `intraday_labels["event_count"] [B,H]` | Count regression/classification target; use Poisson/log-count/Huber style loss with `available` mask. |
+| Intraday future last event timestamp | Last target event in the future horizon interval | `last_event_timestamp_us` list column; zero if unavailable | `intraday_labels["last_event_timestamp_us"] [B,H]` | Diagnostic timing metadata by default, not part of the primary supervised objective unless explicitly enabled. |
+| Intraday label availability | Session boundary and presence of future event in horizon | `available` list column; false when horizon crosses the 20:00 New York session end or no target event exists | `intraday_labels["available"] [B,H]` and `future_intraday_bar_mask [B,H]` | Broadcast as the mask for intraday price, size, count, and binary event-state losses. |
+| Intraday future event-state flags | Future event condition tokens resolved from `event_condition_token_reference` | Binary list columns for halt/pause, resume, news-risk, and LULD/limit-state flags | `intraday_labels["condition_*_flag"] [B,H]` | BCE-with-logits classification heads, masked by `available`; positive weights should be configurable because events are sparse. |
+| Future news/SEC arrival flags | Ticker news and SEC embedding/context tables using availability timestamps | Binary list columns `ticker_news_arrival_flag`, `sec_filing_arrival_flag` for whether at least one item arrives in the future horizon | `intraday_labels["ticker_news_arrival_flag"] [B,H]`, `intraday_labels["sec_filing_arrival_flag"] [B,H]` | BCE-with-logits event-risk heads, masked by `available`. Counts are intentionally not emitted by default. |
+| Future intraday bar projection | Intraday label columns | Not stored separately; derived by loader from intraday labels | `future_intraday_bars [B,H,5]` with order `open, close, high, low, volume`; current projection uses primary price for open/close/high, secondary price for low, and primary size sum for volume | Convenience tensor for bar-style heads. Use `future_intraday_bar_mask`. |
+| Corporate-action daily labels | Corporate-action reference tables and effective dates | `corporate_action_daily_labels_part_*.parquet` list columns ordered by `horizon_days` | `corporate_action_labels[field] [B,D]` and `corporate_action_label_days` | Daily BCE-with-logits heads for split, reverse split, forward split, dividend ex-date, special dividend ex-date, and any corporate action. |
+
+The cache deliberately separates source-preserving storage from model-specific
+normalization. Builder and loader outputs should remain auditable against
+ClickHouse and source files; model-side transforms such as price-delta
+conversion, `log1p(size)`, clipping, or standardization belong in the trainer or
+versioned model data adapter.
+
 ## Build Cache
 
 Workstation form:
