@@ -358,6 +358,200 @@ batch. Market-event data starts from SIP quote/trade flatfiles. External
 context starts from normalized ClickHouse context tables, embedding tables, and
 reference tables that were built before the ticker/month cache builder runs.
 
+### Atomic X Dimension Lifecycle
+
+| X dimension | Source field | Cache/storage representation | Loader representation | Scale/mask rule |
+| --- | --- | --- | --- | --- |
+| `ticker` | Event ticker symbol | `origins_part_*.parquet`, string | batch identity array | Identity only by default. |
+| `ticker_id` | Persistent ticker id | `origins_part_*.parquet`, integer | batch identity array | Identity only by default. |
+| `origin_ordinal` | Origin event ordinal | `origins_part_*.parquet`, integer | batch identity array | Defines sample identity with ticker. |
+| `origin_timestamp_us` | Origin event UTC timestamp | `origins_part_*.parquet`, int64 microseconds | batch identity array | Defines as-of time. |
+| `event_type` | Quote/trade source row kind | raw event row, uint8 | raw event window column | `0=quote`, `1=trade`. |
+| `event_meta` | Event codec metadata | raw event row, uint8 | raw event window column | Contains event type, price scale bits, tape bits. |
+| `ordinal` | Event ordinal | raw event row, uint64 | raw event window column unless suppressed | Used for continuity audit. |
+| `timestamp_us` | Event SIP timestamp | raw event row, int64 microseconds | raw event window column unless suppressed | UTC. |
+| `price_primary_int` | Quote ask price or trade price | raw event row, uint32 packed price | raw event window column | Decode with primary scale bit in `event_meta` only if model needs float price. |
+| `price_secondary_int` | Quote bid price or zero for trade | raw event row, uint32 packed price | raw event window column | Decode with secondary scale bit in `event_meta` only if model needs float price. |
+| `size_primary` | Quote ask size or trade size | raw event row, float32 | raw event window column | No scale bit; raw event units. |
+| `size_secondary` | Quote bid size or zero for trade | raw event row, float32 | raw event window column | No scale bit; raw event units. |
+| `exchange_primary` | Ask exchange or trade exchange | raw event row, uint8 | raw event window column | Categorical id from source exchange code. |
+| `exchange_secondary` | Bid exchange or zero for trade | raw event row, uint8 | raw event window column | Categorical id from source exchange code. |
+| `condition_token_1` | First condition/indicator token slot | raw event row, uint8 | raw event window column | `0` means missing/unknown. |
+| `condition_token_2` | Second condition/indicator token slot | raw event row, uint8 | raw event window column | `0` means missing/unknown. |
+| `condition_token_3` | Third condition/indicator token slot | raw event row, uint8 | raw event window column | `0` means missing/unknown. |
+| `condition_token_4` | Fourth condition/indicator token slot | raw event row, uint8 | raw event window column | `0` means missing/unknown. |
+| `condition_token_5` | Fifth condition/indicator token slot | raw event row, uint8 | raw event window column | `0` means missing/unknown. |
+| `utc_second_of_day_sin` | Event timestamp | raw event row, float32 | raw event window column when requested | UTC absolute time feature. |
+| `utc_second_of_day_cos` | Event timestamp | raw event row, float32 | raw event window column when requested | UTC absolute time feature. |
+| `utc_day_of_week_sin` | Event timestamp | raw event row, float32 | raw event window column when requested | UTC absolute time feature. |
+| `utc_day_of_week_cos` | Event timestamp | raw event row, float32 | raw event window column when requested | UTC absolute time feature. |
+| `utc_day_of_year_sin` | Event timestamp | raw event row, float32 | raw event window column when requested | UTC absolute time feature. |
+| `utc_day_of_year_cos` | Event timestamp | raw event row, float32 | raw event window column when requested | UTC absolute time feature. |
+| `years_since_2000` | Event timestamp | raw event row, float32 | raw event window column when requested | UTC absolute time feature. |
+| `session_second` | Event timestamp converted to New York session | raw event row, float32/int | raw event window column when requested | Session feature, not UTC calendar feature. |
+| `session_progress` | Event timestamp converted to New York session | raw event row, float32 | raw event window column when requested | Session progress from 04:00 to 20:00 ET. |
+| `is_regular_hours` | Event timestamp converted to New York session | raw event row, bool/uint8 | raw event window column when requested | Market-session flag. |
+| `is_premarket` | Event timestamp converted to New York session | raw event row, bool/uint8 | raw event window column when requested | Market-session flag. |
+| `is_afterhours` | Event timestamp converted to New York session | raw event row, bool/uint8 | raw event window column when requested | Market-session flag. |
+| `raw_event_mask` | Event-window selection | not stored; derived by loader | `[B, event_stream_length]` or window mask | False for padded/missing positions. |
+| `ticker_daily_bars.values.open` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., open]` | Completed bars only. |
+| `ticker_daily_bars.values.high` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., high]` | Completed bars only. |
+| `ticker_daily_bars.values.low` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., low]` | Completed bars only. |
+| `ticker_daily_bars.values.close` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., close]` | Completed bars only. |
+| `ticker_daily_bars.values.volume` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., volume]` | Completed bars only. |
+| `ticker_daily_bars.values.dollar_volume` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., dollar_volume]` | Completed bars only. |
+| `ticker_daily_bars.values.trade_count` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., trade_count]` | Completed bars only. |
+| `ticker_daily_bars.values.quote_count` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., quote_count]` | Completed bars only. |
+| `ticker_daily_bars.values.vwap` | Daily bar table | `daily_bars.parquet`, float32 | `bar_inputs["ticker_daily_bars"]["values"][..., vwap]` | Completed bars only. |
+| `ticker_daily_bars.mask` | Bar availability | not stored; derived by loader | `[B, offsets]` | False when requested offset is unavailable. |
+| `ticker_daily_bars.time_features` | Bar start timestamp and origin timestamp | computed/cached time features | `[B, offsets, bar_time_features]` | Zero where bar mask is false. |
+| `global_daily_bars.values.open` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., open]` | Same as ticker bars, with symbol dimension. |
+| `global_daily_bars.values.high` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., high]` | Same as ticker bars, with symbol dimension. |
+| `global_daily_bars.values.low` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., low]` | Same as ticker bars, with symbol dimension. |
+| `global_daily_bars.values.close` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., close]` | Same as ticker bars, with symbol dimension. |
+| `global_daily_bars.values.volume` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., volume]` | Same as ticker bars, with symbol dimension. |
+| `global_daily_bars.values.dollar_volume` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., dollar_volume]` | Same as ticker bars, with symbol dimension. |
+| `global_daily_bars.values.trade_count` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., trade_count]` | Same as ticker bars, with symbol dimension. |
+| `global_daily_bars.values.quote_count` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., quote_count]` | Same as ticker bars, with symbol dimension. |
+| `global_daily_bars.values.vwap` | Global daily bar tables | `global/global_daily_bars.parquet`, float32 | `bar_inputs["global_daily_bars"]["values"][..., vwap]` | Same as ticker bars, with symbol dimension. |
+| `global_daily_bars.mask` | Global bar availability | not stored; derived by loader | `[B, symbols, offsets]` | False when requested symbol/offset is unavailable. |
+| `text_inputs["ticker_news"].embeddings` | Ticker news Qwen embedding table | `ticker_news_embeddings.parquet`, float32 tensor | `[B, ticker_news_max_items, chunks, text_embedding_dim]` | Zero where item/chunk mask is false. |
+| `text_inputs["ticker_news"].chunk_mask` | Ticker news chunk availability | derived from chunk rows | `[B, ticker_news_max_items, chunks]` | True only for real embedded chunks. |
+| `text_inputs["ticker_news"].item_mask` | Ticker news item availability | derived from as-of item selection | `[B, ticker_news_max_items]` | True only for selected historical items. |
+| `text_inputs["ticker_news"].item_timestamp_us` | Ticker news publish/availability time | embedding parquet timestamp | `[B, ticker_news_max_items]` | Zero where item mask is false. |
+| `text_inputs["ticker_news"].item_time_features` | Ticker news item timestamp and origin timestamp | absolute UTC plus relative features | `[B, ticker_news_max_items, text_time_features]` | Zero where item mask is false. |
+| `text_inputs["market_news"].embeddings` | Market news Qwen embedding table | `global/market_news_embeddings.parquet`, float32 tensor | `[B, market_news_max_items, chunks, text_embedding_dim]` | Zero where item/chunk mask is false. |
+| `text_inputs["market_news"].chunk_mask` | Market news chunk availability | derived from chunk rows | `[B, market_news_max_items, chunks]` | True only for real embedded chunks. |
+| `text_inputs["market_news"].item_mask` | Market news item availability | derived from as-of item selection | `[B, market_news_max_items]` | True only for selected historical items. |
+| `text_inputs["market_news"].item_timestamp_us` | Market news publish/availability time | embedding parquet timestamp | `[B, market_news_max_items]` | Zero where item mask is false. |
+| `text_inputs["market_news"].item_time_features` | Market news item timestamp and origin timestamp | absolute UTC plus relative features | `[B, market_news_max_items, text_time_features]` | Zero where item mask is false. |
+| `text_inputs["sec_filings"].embeddings` | SEC filing Qwen embedding table | `sec_filing_embeddings.parquet`, float32 tensor | `[B, sec_filing_max_items, chunks, text_embedding_dim]` | Zero where item/chunk mask is false. |
+| `text_inputs["sec_filings"].chunk_mask` | SEC filing chunk availability | derived from chunk rows | `[B, sec_filing_max_items, chunks]` | True only for real embedded chunks. |
+| `text_inputs["sec_filings"].item_mask` | SEC filing item availability | derived from as-of item selection | `[B, sec_filing_max_items]` | True only for selected historical items. |
+| `text_inputs["sec_filings"].item_timestamp_us` | SEC filing accepted/availability time | embedding parquet timestamp | `[B, sec_filing_max_items]` | Zero where item mask is false. |
+| `text_inputs["sec_filings"].item_time_features` | SEC filing item timestamp and origin timestamp | absolute UTC plus relative features | `[B, sec_filing_max_items, text_time_features]` | Zero where item mask is false. |
+| `xbrl_inputs.mask` | XBRL row availability | derived from as-of row selection | `[B, xbrl_max_items]` | Controls all XBRL fields. |
+| `xbrl_inputs.value` | XBRL fact value | `xbrl.parquet`, float32 | `[B, xbrl_max_items]` | Zero where mask is false. |
+| `xbrl_inputs.fiscal_year` | XBRL fiscal year | `xbrl.parquet`, int16 | `[B, xbrl_max_items]` | Zero where mask is false. |
+| `xbrl_inputs.age_days` | XBRL availability timestamp vs origin | derived by loader | `[B, xbrl_max_items]` | Zero where mask is false. |
+| `xbrl_inputs.period_end_days` | XBRL period end date | `xbrl.parquet`, int32 epoch day | `[B, xbrl_max_items]` | Zero where mask is false. |
+| `xbrl_inputs.fiscal_period_id` | Reference category id | `xbrl.parquet`, uint32 | `[B, xbrl_max_items]` | `0` means missing/unknown. |
+| `xbrl_inputs.calendar_period_id` | Reference category id | `xbrl.parquet`, uint32 | `[B, xbrl_max_items]` | `0` means missing/unknown. |
+| `xbrl_inputs.taxonomy_id` | Reference category id | `xbrl.parquet`, uint32 | `[B, xbrl_max_items]` | `0` means missing/unknown. |
+| `xbrl_inputs.tag_id` | Reference category id | `xbrl.parquet`, uint32 | `[B, xbrl_max_items]` | `0` means missing/unknown. |
+| `xbrl_inputs.unit_id` | Reference category id | `xbrl.parquet`, uint32 | `[B, xbrl_max_items]` | `0` means missing/unknown. |
+| `xbrl_inputs.form_id` | Reference category id | `xbrl.parquet`, uint32 | `[B, xbrl_max_items]` | `0` means missing/unknown. |
+| `xbrl_inputs.row_kind_id` | Reference category id | `xbrl.parquet`, uint32 | `[B, xbrl_max_items]` | `0` means missing/unknown. |
+| `xbrl_inputs.location_id` | Reference category id | `xbrl.parquet`, uint32 | `[B, xbrl_max_items]` | `0` means missing/unknown. |
+| `xbrl_inputs.mapping_confidence` | XBRL mapping confidence | `xbrl.parquet`, float32 | `[B, xbrl_max_items]` | Zero where mask is false. |
+| `xbrl_inputs.time_features` | XBRL availability timestamp and origin timestamp | absolute UTC plus relative features | `[B, xbrl_max_items, xbrl_time_features]` | Zero where mask is false. |
+| `xbrl_inputs.period_end_time_features` | XBRL period end date and origin timestamp | absolute period-end plus relative age features | `[B, xbrl_max_items, xbrl_period_time_features]` | Zero where mask is false. |
+| `corporate_action_inputs.mask` | Corporate-action row availability | derived from as-of row selection | `[B, corporate_action_max_items]` | Controls all corporate-action context fields. |
+| `corporate_action_inputs.action_type_id` | Corporate-action type | `corporate_actions.parquet`, uint32 | `[B, corporate_action_max_items]` | `0` means missing/unknown. |
+| `corporate_action_inputs.dividend_type_id` | Dividend type | `corporate_actions.parquet`, uint32 | `[B, corporate_action_max_items]` | `0` means missing/unknown. |
+| `corporate_action_inputs.currency_id` | Dividend currency | `corporate_actions.parquet`, uint32 | `[B, corporate_action_max_items]` | `0` means missing/unknown. |
+| `corporate_action_inputs.frequency_id` | Dividend frequency | `corporate_actions.parquet`, uint32 | `[B, corporate_action_max_items]` | `0` means missing/unknown. |
+| `corporate_action_inputs.available_timestamp_us` | Context availability time | `corporate_actions.parquet`, int64 | `[B, corporate_action_max_items]` | Must be `<= origin_timestamp_us`; zero where mask is false. |
+| `corporate_action_inputs.effective_timestamp_us` | Action effective time | `corporate_actions.parquet`, int64 | `[B, corporate_action_max_items]` | Zero where mask is false. |
+| `corporate_action_inputs.effective_epoch_day` | Action effective date | `corporate_actions.parquet`, int32 | `[B, corporate_action_max_items]` | Zero where mask is false. |
+| `corporate_action_inputs.declaration_epoch_day` | Declaration date | `corporate_actions.parquet`, int32 | `[B, corporate_action_max_items]` | Zero when absent or masked. |
+| `corporate_action_inputs.pay_epoch_day` | Dividend pay date | `corporate_actions.parquet`, int32 | `[B, corporate_action_max_items]` | Zero when absent or masked. |
+| `corporate_action_inputs.record_epoch_day` | Dividend record date | `corporate_actions.parquet`, int32 | `[B, corporate_action_max_items]` | Zero when absent or masked. |
+| `corporate_action_inputs.numeric_features.split_from` | Corporate-action numeric field | `numeric_features`, float32 | `[..., split_from]` | Zero where mask is false. |
+| `corporate_action_inputs.numeric_features.split_to` | Corporate-action numeric field | `numeric_features`, float32 | `[..., split_to]` | Zero where mask is false. |
+| `corporate_action_inputs.numeric_features.share_factor` | Corporate-action numeric field | `numeric_features`, float32 | `[..., share_factor]` | Zero where mask is false. |
+| `corporate_action_inputs.numeric_features.price_factor` | Corporate-action numeric field | `numeric_features`, float32 | `[..., price_factor]` | Zero where mask is false. |
+| `corporate_action_inputs.numeric_features.log_share_factor` | Derived numeric field | `numeric_features`, float32 | `[..., log_share_factor]` | Zero where mask is false. |
+| `corporate_action_inputs.numeric_features.log_price_factor` | Derived numeric field | `numeric_features`, float32 | `[..., log_price_factor]` | Zero where mask is false. |
+| `corporate_action_inputs.numeric_features.cash_amount` | Dividend cash amount | `numeric_features`, float32 | `[..., cash_amount]` | Zero where mask is false. |
+| `corporate_action_inputs.numeric_features.log1p_cash_amount` | Derived dividend cash amount | `numeric_features`, float32 | `[..., log1p_cash_amount]` | Zero where mask is false. |
+| `corporate_action_inputs.numeric_features.is_split` | Derived action flag | `numeric_features`, float32 | `[..., is_split]` | Zero where mask is false. |
+| `corporate_action_inputs.numeric_features.is_forward_split` | Derived action flag | `numeric_features`, float32 | `[..., is_forward_split]` | Zero where mask is false. |
+| `corporate_action_inputs.numeric_features.is_reverse_split` | Derived action flag | `numeric_features`, float32 | `[..., is_reverse_split]` | Zero where mask is false. |
+| `corporate_action_inputs.numeric_features.is_dividend` | Derived action flag | `numeric_features`, float32 | `[..., is_dividend]` | Zero where mask is false. |
+| `corporate_action_inputs.numeric_features.is_special_dividend` | Derived action flag | `numeric_features`, float32 | `[..., is_special_dividend]` | Zero where mask is false. |
+| `corporate_action_inputs.time_features` | Available timestamp and origin timestamp | absolute UTC plus relative features | `[B, corporate_action_max_items, corporate_action_time_features]` | Zero where mask is false. |
+| `corporate_action_inputs.effective_time_features` | Effective timestamp and origin timestamp | absolute UTC plus relative features | `[B, corporate_action_max_items, corporate_action_effective_time_features]` | Zero where mask is false. |
+| `input_availability.event_context_available` | Event output mode | derived by loader | `[B]` bool | True when event output mode is not `none`. |
+| `input_availability.intraday_labels_available` | Intraday label mask | derived by loader | `[B]` bool | True when any intraday horizon is available. |
+| `input_availability.corporate_action_labels_available` | Corporate-action label arrays | derived by loader | `[B]` bool | True when any future corporate-action flag is true. |
+| `input_availability.ticker_news_available` | Ticker news chunk mask | derived by loader | `[B]` bool | True when any ticker news chunk is valid. |
+| `input_availability.market_news_available` | Market news chunk mask | derived by loader | `[B]` bool | True when any market news chunk is valid. |
+| `input_availability.sec_filings_available` | SEC filing chunk mask | derived by loader | `[B]` bool | True when any SEC filing chunk is valid. |
+| `input_availability.xbrl_available` | XBRL mask | derived by loader | `[B]` bool | True when any XBRL row is valid. |
+| `input_availability.ticker_daily_bars_available` | Ticker daily bar mask | derived by loader | `[B]` bool | True when any ticker daily bar is valid. |
+| `input_availability.global_daily_bars_available` | Global daily bar mask | derived by loader | `[B]` bool | True when any global daily bar is valid. |
+| `input_availability.corporate_actions_available` | Corporate-action context mask | derived by loader | `[B]` bool | True when any corporate-action context row is valid. |
+
+### Atomic Time Feature Components
+
+| Time feature dimension | Appears in | Source timestamp | Representation | Mask rule |
+| --- | --- | --- | --- | --- |
+| `available_utc_second_of_day_sin` | text, XBRL, corporate-action available time | item/fact/action availability timestamp | float32 cyclic UTC feature | Zero when parent item mask is false. |
+| `available_utc_second_of_day_cos` | text, XBRL, corporate-action available time | item/fact/action availability timestamp | float32 cyclic UTC feature | Zero when parent item mask is false. |
+| `available_utc_day_of_week_sin` | text, XBRL, corporate-action available time | item/fact/action availability timestamp | float32 cyclic UTC feature | Zero when parent item mask is false. |
+| `available_utc_day_of_week_cos` | text, XBRL, corporate-action available time | item/fact/action availability timestamp | float32 cyclic UTC feature | Zero when parent item mask is false. |
+| `available_utc_day_of_year_sin` | text, XBRL, corporate-action available time | item/fact/action availability timestamp | float32 cyclic UTC feature | Zero when parent item mask is false. |
+| `available_utc_day_of_year_cos` | text, XBRL, corporate-action available time | item/fact/action availability timestamp | float32 cyclic UTC feature | Zero when parent item mask is false. |
+| `available_years_since_2000` | text, XBRL, corporate-action available time | item/fact/action availability timestamp | float32 years since 2000 | Zero when parent item mask is false. |
+| `effective_utc_second_of_day_sin` | corporate-action effective time | action effective timestamp | float32 cyclic UTC feature | Zero when corporate-action mask is false. |
+| `effective_utc_second_of_day_cos` | corporate-action effective time | action effective timestamp | float32 cyclic UTC feature | Zero when corporate-action mask is false. |
+| `effective_utc_day_of_week_sin` | corporate-action effective time | action effective timestamp | float32 cyclic UTC feature | Zero when corporate-action mask is false. |
+| `effective_utc_day_of_week_cos` | corporate-action effective time | action effective timestamp | float32 cyclic UTC feature | Zero when corporate-action mask is false. |
+| `effective_utc_day_of_year_sin` | corporate-action effective time | action effective timestamp | float32 cyclic UTC feature | Zero when corporate-action mask is false. |
+| `effective_utc_day_of_year_cos` | corporate-action effective time | action effective timestamp | float32 cyclic UTC feature | Zero when corporate-action mask is false. |
+| `effective_years_since_2000` | corporate-action effective time | action effective timestamp | float32 years since 2000 | Zero when corporate-action mask is false. |
+| `bar_start_utc_second_of_day_sin` | ticker/global daily bar time features | bar start timestamp | float32 cyclic UTC feature | Zero when bar mask is false. |
+| `bar_start_utc_second_of_day_cos` | ticker/global daily bar time features | bar start timestamp | float32 cyclic UTC feature | Zero when bar mask is false. |
+| `bar_start_utc_day_of_week_sin` | ticker/global daily bar time features | bar start timestamp | float32 cyclic UTC feature | Zero when bar mask is false. |
+| `bar_start_utc_day_of_week_cos` | ticker/global daily bar time features | bar start timestamp | float32 cyclic UTC feature | Zero when bar mask is false. |
+| `bar_start_utc_day_of_year_sin` | ticker/global daily bar time features | bar start timestamp | float32 cyclic UTC feature | Zero when bar mask is false. |
+| `bar_start_utc_day_of_year_cos` | ticker/global daily bar time features | bar start timestamp | float32 cyclic UTC feature | Zero when bar mask is false. |
+| `bar_start_years_since_2000` | ticker/global daily bar time features | bar start timestamp | float32 years since 2000 | Zero when bar mask is false. |
+| `bar_age_days` | ticker/global daily bar time features | origin timestamp minus bar start | float32 nonnegative day age | Zero when bar mask is false. |
+| `bar_age_days_log1p` | ticker/global daily bar time features | origin timestamp minus bar start | float32 `log1p(bar_age_days)` | Zero when bar mask is false. |
+| `time_delta_seconds` | text, XBRL, corporate-action available/effective time | source timestamp minus origin timestamp | float32 signed seconds | Zero when parent item mask is false. |
+| `time_delta_seconds_log1p_signed` | text, XBRL, corporate-action available/effective time | source timestamp minus origin timestamp | float32 signed `log1p(abs(delta))` | Zero when parent item mask is false. |
+| `time_age_seconds_log1p` | text, XBRL, corporate-action available/effective time | origin timestamp minus source timestamp | float32 `log1p(max(0, age))` | Zero when parent item mask is false. |
+| `period_end_utc_day_of_week_sin` | XBRL period-end time features | XBRL period end date | float32 cyclic UTC feature | Zero when XBRL mask is false. |
+| `period_end_utc_day_of_week_cos` | XBRL period-end time features | XBRL period end date | float32 cyclic UTC feature | Zero when XBRL mask is false. |
+| `period_end_utc_day_of_year_sin` | XBRL period-end time features | XBRL period end date | float32 cyclic UTC feature | Zero when XBRL mask is false. |
+| `period_end_utc_day_of_year_cos` | XBRL period-end time features | XBRL period end date | float32 cyclic UTC feature | Zero when XBRL mask is false. |
+| `period_end_years_since_2000` | XBRL period-end time features | XBRL period end date | float32 years since 2000 | Zero when XBRL mask is false. |
+| `period_end_age_days` | XBRL period-end time features | origin timestamp minus period end date | float32 nonnegative day age | Zero when XBRL mask is false. |
+| `period_end_age_days_log1p` | XBRL period-end time features | origin timestamp minus period end date | float32 `log1p(period_end_age_days)` | Zero when XBRL mask is false. |
+
+### Atomic Y Dimension Lifecycle
+
+| Y dimension | Source field/window | Cache/storage representation | Loader representation | Loss/mask rule |
+| --- | --- | --- | --- | --- |
+| `intraday_labels.price_primary_int` | Last target event primary price at or before horizon end | decoded float32 list column; name kept for compatibility | `[B, H]` float32 | Convert to normalized delta before price loss; mask with `available`. |
+| `intraday_labels.price_secondary_int` | Last target event secondary price at or before horizon end | decoded float32 list column; name kept for compatibility | `[B, H]` float32 | Convert to normalized delta before price loss; mask with `available`. |
+| `intraday_labels.size_primary_sum` | Sum of primary sizes in future horizon interval | float32 list column | `[B, H]` float32 | Train with `log1p`/scale normalization; mask with `available`. |
+| `intraday_labels.size_secondary_sum` | Sum of secondary sizes in future horizon interval | float32 list column | `[B, H]` float32 | Train with `log1p`/scale normalization; mask with `available`. |
+| `intraday_labels.event_count` | Count of events in future horizon interval | uint64 list column | `[B, H]` uint64 | Count loss; mask with `available`. |
+| `intraday_labels.last_event_timestamp_us` | Last target event timestamp in horizon | int64 list column | `[B, H]` int64 | Diagnostic by default; zero when unavailable. |
+| `intraday_labels.available` | Future event exists and horizon stays inside session | bool list column | `[B, H]` bool | Primary intraday label mask. |
+| `intraday_labels.condition_halt_pause_flag` | Any selected halt/pause token in future horizon | bool list column | `[B, H]` bool | BCE-with-logits; mask with `available`. |
+| `intraday_labels.condition_resume_flag` | Any selected resume token in future horizon | bool list column | `[B, H]` bool | BCE-with-logits; mask with `available`. |
+| `intraday_labels.condition_news_risk_flag` | Any selected news-risk token in future horizon | bool list column | `[B, H]` bool | BCE-with-logits; mask with `available`. |
+| `intraday_labels.condition_luld_limit_state_flag` | Any selected LULD/limit-state token in future horizon | bool list column | `[B, H]` bool | BCE-with-logits; mask with `available`. |
+| `intraday_labels.ticker_news_arrival_flag` | Any ticker news item arrives in future horizon | bool list column | `[B, H]` bool | BCE-with-logits; mask with `available`. |
+| `intraday_labels.sec_filing_arrival_flag` | Any SEC filing item arrives in future horizon | bool list column | `[B, H]` bool | BCE-with-logits; mask with `available`. |
+| `future_intraday_bars.open` | Loader projection from primary future price | not stored separately | `future_intraday_bars[..., open]` | Same decoded float as primary price; train as normalized delta. |
+| `future_intraday_bars.close` | Loader projection from primary future price | not stored separately | `future_intraday_bars[..., close]` | Same decoded float as primary price; train as normalized delta. |
+| `future_intraday_bars.high` | Loader projection from primary future price | not stored separately | `future_intraday_bars[..., high]` | Same decoded float as primary price; train as normalized delta. |
+| `future_intraday_bars.low` | Loader projection from secondary future price | not stored separately | `future_intraday_bars[..., low]` | Same decoded float as secondary price; train as normalized delta. |
+| `future_intraday_bars.volume` | Loader projection from primary size sum | not stored separately | `future_intraday_bars[..., volume]` | Same value as `size_primary_sum`; train with size normalization. |
+| `future_intraday_bar_mask` | Intraday label availability | not stored separately | `[B, H]` bool | Same as `intraday_labels.available`. |
+| `corporate_action_labels.future_split_flag` | Split effective date in future daily horizon | bool list column ordered by `horizon_days` | `[B, D]` bool | BCE-with-logits over daily horizons. |
+| `corporate_action_labels.future_reverse_split_flag` | Reverse split effective date in future daily horizon | bool list column ordered by `horizon_days` | `[B, D]` bool | BCE-with-logits over daily horizons. |
+| `corporate_action_labels.future_forward_split_flag` | Forward split effective date in future daily horizon | bool list column ordered by `horizon_days` | `[B, D]` bool | BCE-with-logits over daily horizons. |
+| `corporate_action_labels.future_dividend_ex_flag` | Dividend ex-date in future daily horizon | bool list column ordered by `horizon_days` | `[B, D]` bool | BCE-with-logits over daily horizons. |
+| `corporate_action_labels.future_special_dividend_ex_flag` | Special dividend ex-date in future daily horizon | bool list column ordered by `horizon_days` | `[B, D]` bool | BCE-with-logits over daily horizons. |
+| `corporate_action_labels.future_any_corporate_action_flag` | Any supported corporate action in future daily horizon | bool list column ordered by `horizon_days` | `[B, D]` bool | BCE-with-logits over daily horizons. |
+| `corporate_action_label_days` | Builder configuration | package metadata/list column order | tuple of day horizons | Defines `D`; default `1,2,3,7,28`. |
+
 ### X Input Lifecycle
 
 | Data piece | Source | Builder/cache representation | Loader output | Model/trainer handling |
