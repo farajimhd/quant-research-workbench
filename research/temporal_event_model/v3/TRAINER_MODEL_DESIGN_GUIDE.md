@@ -290,26 +290,26 @@ features shaped `[B, 1024]`, or dense vector features shaped `[B, 1024, T_*]`.
 
 Event-atom connection details:
 
-| Event atom | Raw source in `raw_event_stream [B, 1024, F]` | Storage location | Raw/adapter output before input layer | Input-layer preprocessing and learned output | Final event-token connection |
+| Event atom | Loader x input | Storage location | Tensor entering input layer | Transformation/preprocessing | Learned output and connection |
 | --- | --- | --- | --- | --- | --- |
-| `event_type_id` | `event_meta` | bit 0 | `uint8 [B, 1024]`, vocab size 2 | embedding `[B, 1024, d_event_type]` | concatenate into event token input, then linear projection |
-| `event_primary_price_scale_id` | `event_meta` | bit 1 | `uint8 [B, 1024]`, vocab size 2 | embedding `[B, 1024, d_price_scale]` | concatenate into event token input; also controls primary price decode |
-| `event_secondary_price_scale_id` | `event_meta` | bit 2 | `uint8 [B, 1024]`, vocab size 2 | embedding `[B, 1024, d_price_scale]` | concatenate into event token input; also controls secondary price decode |
-| `event_tape_id` | `event_meta` | bits 3-5 | `uint8 [B, 1024]`, vocab size 8 | embedding `[B, 1024, d_tape]` | concatenate into event token input, then linear projection |
-| `price_primary_int` | `price_primary_int` plus primary scale id | full integer column plus scale bit | `uint32/float32 [B, 1024]` raw packed price plus scale id | input layer may decode to float price and normalize to bps/ticks; numeric projection `[B, 1024, d_price]` | concatenate into event token input, then linear projection |
-| `price_secondary_int` | `price_secondary_int` plus secondary scale id | full integer column plus scale bit | `uint32/float32 [B, 1024]` raw packed price plus scale id | input layer may decode to float price and normalize to bps/ticks; numeric projection `[B, 1024, d_price]` | concatenate into event token input, then linear projection |
-| `size_primary` | `size_primary` | full float column | `float32 [B, 1024]` raw event size | input layer may apply `log1p`, clipping, or standardization; numeric projection `[B, 1024, d_size]` | concatenate into event token input, then linear projection |
-| `size_secondary` | `size_secondary` | full float column | `float32 [B, 1024]` raw event size | input layer may apply `log1p`, clipping, or standardization; numeric projection `[B, 1024, d_size]` | concatenate into event token input, then linear projection |
-| `event_exchange_primary_id` | `exchange_primary` | full byte column | `uint8 [B, 1024]`, exchange vocabulary | embedding `[B, 1024, d_exchange]` | concatenate into event token input, then linear projection |
-| `event_exchange_secondary_id` | `exchange_secondary` | full byte column | `uint8 [B, 1024]`, exchange vocabulary | embedding `[B, 1024, d_exchange]` | concatenate into event token input, then linear projection |
-| `event_condition_token_1_id` | `condition_token_1` | full byte column | `uint8 [B, 1024]`, condition vocabulary | embedding `[B, 1024, d_condition]` | mask-aware pooled with other condition slots into one condition feature |
-| `event_condition_token_2_id` | `condition_token_2` | full byte column | `uint8 [B, 1024]`, condition vocabulary | embedding `[B, 1024, d_condition]` | mask-aware pooled with other condition slots into one condition feature |
-| `event_condition_token_3_id` | `condition_token_3` | full byte column | `uint8 [B, 1024]`, condition vocabulary | embedding `[B, 1024, d_condition]` | mask-aware pooled with other condition slots into one condition feature |
-| `event_condition_token_4_id` | `condition_token_4` | full byte column | `uint8 [B, 1024]`, condition vocabulary | embedding `[B, 1024, d_condition]` | mask-aware pooled with other condition slots into one condition feature |
-| `event_condition_token_5_id` | `condition_token_5` | full byte column | `uint8 [B, 1024]`, condition vocabulary | embedding `[B, 1024, d_condition]` | mask-aware pooled with other condition slots into one condition feature |
-| `event_time_features` | UTC/session time feature columns | full float columns | `float32 [B, 1024, T_event]` | time adapter `[B, 1024, d_time]` | concatenate into event token input, then linear projection |
-| `event_position_id` | derived from context order | not stored | `int64 [B, 1024]` | embedding `[B, 1024, d_position]` | add to event token |
-| `event_mask` | derived from valid context rows | not stored | `bool [B, 1024]` | no embedding | attention mask for event encoder |
+| `event_type_id` | `event_meta` | bit 0 | `uint8 [B, 1024]`, vocab size 2 | unpack only | embedding `[B, 1024, d_event_type]`; concatenate into event token input |
+| `event_primary_price_scale_id` | `event_meta` | bit 1 | `uint8 [B, 1024]`, vocab size 2 | unpack only; also used by price preprocessing | embedding `[B, 1024, d_price_scale]`; concatenate into event token input |
+| `event_secondary_price_scale_id` | `event_meta` | bit 2 | `uint8 [B, 1024]`, vocab size 2 | unpack only; also used by price preprocessing | embedding `[B, 1024, d_price_scale]`; concatenate into event token input |
+| `event_tape_id` | `event_meta` | bits 3-5 | `uint8 [B, 1024]`, vocab size 8 | unpack only | embedding `[B, 1024, d_tape]`; concatenate into event token input |
+| `price_primary_int` | `price_primary_int` plus primary scale id | full integer column plus scale bit | `uint32/float32 [B, 1024]` raw packed price plus scale id | optional decode to float price, then optional origin-relative bps/tick normalization | numeric projection `[B, 1024, d_price]`; concatenate into event token input |
+| `price_secondary_int` | `price_secondary_int` plus secondary scale id | full integer column plus scale bit | `uint32/float32 [B, 1024]` raw packed price plus scale id | optional decode to float price, optional origin-relative bps/tick normalization, mask/zero trade secondary | numeric projection `[B, 1024, d_price]`; concatenate into event token input |
+| `size_primary` | `size_primary` | full float column | `float32 [B, 1024]` raw event size | optional `log1p`, clipping, and/or standardization | numeric projection `[B, 1024, d_size]`; concatenate into event token input |
+| `size_secondary` | `size_secondary` | full float column | `float32 [B, 1024]` raw event size | optional `log1p`, clipping, and/or standardization; mask/zero trade secondary | numeric projection `[B, 1024, d_size]`; concatenate into event token input |
+| `event_exchange_primary_id` | `exchange_primary` | full byte column | `uint8 [B, 1024]`, exchange vocabulary | none beyond missing/unknown id handling | embedding `[B, 1024, d_exchange]`; concatenate into event token input |
+| `event_exchange_secondary_id` | `exchange_secondary` | full byte column | `uint8 [B, 1024]`, exchange vocabulary | none beyond missing/unknown id handling; mask/zero trade secondary if configured | embedding `[B, 1024, d_exchange]`; concatenate into event token input |
+| `event_condition_token_1_id` | `condition_token_1` | full byte column | `uint8 [B, 1024]`, condition vocabulary | none beyond missing/unknown id handling | embedding `[B, 1024, d_condition]`; mask-aware pooled with other condition slots |
+| `event_condition_token_2_id` | `condition_token_2` | full byte column | `uint8 [B, 1024]`, condition vocabulary | none beyond missing/unknown id handling | embedding `[B, 1024, d_condition]`; mask-aware pooled with other condition slots |
+| `event_condition_token_3_id` | `condition_token_3` | full byte column | `uint8 [B, 1024]`, condition vocabulary | none beyond missing/unknown id handling | embedding `[B, 1024, d_condition]`; mask-aware pooled with other condition slots |
+| `event_condition_token_4_id` | `condition_token_4` | full byte column | `uint8 [B, 1024]`, condition vocabulary | none beyond missing/unknown id handling | embedding `[B, 1024, d_condition]`; mask-aware pooled with other condition slots |
+| `event_condition_token_5_id` | `condition_token_5` | full byte column | `uint8 [B, 1024]`, condition vocabulary | none beyond missing/unknown id handling | embedding `[B, 1024, d_condition]`; mask-aware pooled with other condition slots |
+| `event_time_features` | UTC/session time feature columns | full float columns | `float32 [B, 1024, T_event]` | none; already generated by builder/loader using the agreed time-feature contract | time adapter `[B, 1024, d_time]`; concatenate into event token input |
+| `event_position_id` | derived from context order | not stored | `int64 [B, 1024]` | derive monotonically from event context position | embedding `[B, 1024, d_position]`; add to event token |
+| `event_mask` | derived from valid context rows | not stored | `bool [B, 1024]` | none | attention mask for event encoder |
 
 The final event token is built by combining the learned outputs above:
 
@@ -332,59 +332,59 @@ event_token_input =
 
 This yields `float32/bf16 [B, 1024, d_model]` before the event encoder.
 
-| Model input atom | Loader/adaptor source | Tensor entering input layer | Loader/adaptor representation | Input-layer responsibility |
-| --- | --- | --- | --- | --- |
-| `event_type_id` | unpack `raw_event_stream.event_meta` bit 0 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=quote`, `1=trade` | event categorical embedding |
-| `event_primary_price_scale_id` | unpack `raw_event_stream.event_meta` bit 1 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=/100`, `1=/10000` | event categorical embedding and decode helper |
-| `event_secondary_price_scale_id` | unpack `raw_event_stream.event_meta` bit 2 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=/100`, `1=/10000` | event categorical embedding and decode helper |
-| `event_tape_id` | unpack `raw_event_stream.event_meta` bits 3-5 | `uint8 [B, 1024]` | one scalar category per event; values `0..7` | event categorical embedding |
-| `price_primary_int` | read `raw_event_stream.price_primary_int` plus primary scale id | `uint32/float32 [B, 1024]` | raw packed quote ask or trade price; scale is not applied by the loader | input layer decides whether to decode to float price and normalize to bps/ticks before numeric projection |
-| `price_secondary_int` | read `raw_event_stream.price_secondary_int` plus secondary scale id | `uint32/float32 [B, 1024]` | raw packed quote bid price or zero for trade; scale is not applied by the loader | input layer decides whether to decode to float price and normalize to bps/ticks before numeric projection; trade secondary should be masked/zeroed |
-| `size_primary` | read `raw_event_stream.size_primary` | `float32 [B, 1024]` | raw quote ask size or trade size from loader | input layer decides whether to use raw size, `log1p`, clipping, or standardization before numeric projection |
-| `size_secondary` | read `raw_event_stream.size_secondary` | `float32 [B, 1024]` | raw quote bid size or zero for trade from loader | input layer decides whether to use raw size, `log1p`, clipping, or standardization before numeric projection; trade secondary should be masked/zeroed |
-| `event_exchange_primary_id` | read `raw_event_stream.exchange_primary` | `uint8 [B, 1024]` | one scalar exchange category per event; byte value 0 means missing/unknown where applicable | event categorical embedding |
-| `event_exchange_secondary_id` | read `raw_event_stream.exchange_secondary` | `uint8 [B, 1024]` | one scalar exchange category per event; byte value 0 means missing/unknown where applicable | event categorical embedding |
-| `event_condition_token_1_id` | read `raw_event_stream.condition_token_1` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | event condition-token embedding |
-| `event_condition_token_2_id` | read `raw_event_stream.condition_token_2` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | event condition-token embedding |
-| `event_condition_token_3_id` | read `raw_event_stream.condition_token_3` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | event condition-token embedding |
-| `event_condition_token_4_id` | read `raw_event_stream.condition_token_4` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | event condition-token embedding |
-| `event_condition_token_5_id` | read `raw_event_stream.condition_token_5` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | event condition-token embedding |
-| `event_time_features` | select event UTC/session time columns | `float32 [B, 1024, T_event]` | one dense time-feature vector per event through shared time encoder plus event adapter | event time adapter |
-| `event_position_id` | derive row rank in sliding event stream | `int64 [B, 1024]` | one relative sequence-position id per event; newest event has a stable convention | event position embedding |
-| `event_mask` | derive from `raw_event_mask` | `bool [B, 1024]` | true for valid events, false for padded/missing positions | event attention mask |
-| `ticker_daily_trade_bar_numeric` | transform `bar_inputs["ticker_daily_bars"]["trade_values"]` | `float32 [B, O, 6]` | trade OHLC, size sum, and count fields; prices normalized to origin reference or recent close; size/count fields in `log1p` | ticker bar encoder |
-| `ticker_daily_quote_bid_bar_numeric` | transform `bar_inputs["ticker_daily_bars"]["quote_bid_values"]` | `float32 [B, O, 9]` | bid OHLC plus bid size state fields; prices normalized to origin reference or recent close | ticker bar encoder |
-| `ticker_daily_quote_ask_bar_numeric` | transform `bar_inputs["ticker_daily_bars"]["quote_ask_values"]` | `float32 [B, O, 9]` | ask OHLC plus ask size state fields; prices normalized to origin reference or recent close | ticker bar encoder |
-| `ticker_daily_bar_offset_id` | broadcast configured ticker bar offsets | `int64 [B, O]` | one completed-bar offset category per ticker daily bar | ticker bar encoder |
-| `ticker_daily_bar_time_features` | select ticker bar time features | `float32 [B, O, T_bar]` | one dense time-feature vector per ticker daily bar | ticker bar encoder |
-| `ticker_daily_bar_family_masks` | read `trade_mask`, `quote_bid_mask`, `quote_ask_mask` | each `bool [B, O]` | true for available completed bars in each bar family | ticker bar attention mask |
-| `global_daily_trade_bar_numeric` | transform `bar_inputs["global_daily_bars"]["trade_values"]` | `float32 [B, S, O, 6]` | same numeric transforms as ticker trade bars | global bar encoder |
-| `global_daily_quote_bid_bar_numeric` | transform `bar_inputs["global_daily_bars"]["quote_bid_values"]` | `float32 [B, S, O, 9]` | same numeric transforms as ticker bid bars | global bar encoder |
-| `global_daily_quote_ask_bar_numeric` | transform `bar_inputs["global_daily_bars"]["quote_ask_values"]` | `float32 [B, S, O, 9]` | same numeric transforms as ticker ask bars | global bar encoder |
-| `global_daily_bar_symbol_id` | broadcast configured global symbol ids | `int64 [B, S, O]` | one learned global-symbol category per global daily bar | global bar encoder |
-| `global_daily_bar_offset_id` | broadcast configured global bar offsets | `int64 [B, S, O]` | one completed-bar offset category per global daily bar | global bar encoder |
-| `global_daily_bar_time_features` | select global bar time features | `float32 [B, S, O, T_bar]` | one dense time-feature vector per global daily bar | global bar encoder |
-| `global_daily_bar_family_masks` | read `trade_mask`, `quote_bid_mask`, `quote_ask_mask` | each `bool [B, S, O]` | true for available completed bars in each bar family | global bar attention mask |
-| `ticker_news_embedding` | read `text_inputs["ticker_news"].embeddings` | `bf16/float32 [B, 8, 2, 1024]` | precomputed Qwen embedding projected to `d_model`; Qwen remains offline/frozen | ticker-news encoder |
-| `market_news_embedding` | read `text_inputs["market_news"].embeddings` | `bf16/float32 [B, 16, 2, 1024]` | precomputed Qwen embedding projected to `d_model`; market news means all news | market-news encoder |
-| `sec_filing_embedding` | read `text_inputs["sec_filings"].embeddings` | `bf16/float32 [B, 4, 8, 1024]` | precomputed Qwen embedding projected to `d_model` | SEC text encoder |
-| `text_item_time_features` | select text item time features | per text group `float32 [B, I, T_text]` | availability/publish/accepted time through shared time encoder plus text adapter | text encoders |
-| `text_item_mask` | read text item mask | per text group `bool [B, I]` | true for available text items | text item pooling mask |
-| `text_chunk_mask` | read text chunk mask | per text group `bool [B, I, C]` | true for available text chunks | text chunk pooling mask |
-| `xbrl_value_signed_log` | transform `xbrl_inputs["value"]` | `float32 [B, 4096]` | signed `log1p(abs(value))`, optionally normalized by tag/unit statistics | XBRL numeric projection |
-| `xbrl_fiscal_year` | read/transform `xbrl_inputs["fiscal_year"]` | `int16/float32 [B, 4096]` | numeric year feature or small categorical id, as chosen by the v3 adapter config | XBRL encoder |
-| `xbrl_period_end_days` | transform `xbrl_inputs["period_end_days"]` | `float32 [B, 4096]` | numeric age plus period-end time embedding | XBRL encoder |
-| `xbrl_category_ids` | read XBRL category id fields | field-specific `int64 [B, 4096]` | learned categorical embeddings; id `0=missing/unknown` | XBRL categorical projection |
-| `xbrl_mapping_confidence` | read `xbrl_inputs["mapping_confidence"]` | `float32 [B, 4096]` | confidence score feature | XBRL numeric projection |
-| `xbrl_time_features` | select XBRL availability time features | `float32 [B, 4096, T_xbrl]` | shared time encoder plus XBRL availability adapter | XBRL encoder |
-| `xbrl_period_end_time_features` | select XBRL period-end time features | `float32 [B, 4096, T_period]` | separate shared time encoding plus XBRL period adapter | XBRL encoder |
-| `xbrl_mask` | read `xbrl_inputs["mask"]` | `bool [B, 4096]` | true for available XBRL rows | XBRL set mask |
-| `corporate_action_category_ids` | read action/dividend/currency/frequency ids | field-specific `int64 [B, 128]` | learned categorical embeddings; id `0=missing/unknown` | corporate-action encoder |
-| `corporate_action_numeric` | transform corporate numeric feature tensor | `float32 [B, 128, F_ca]` | split factors, log factors, cash amount, and indicator flags | corporate-action encoder |
-| `corporate_action_available_time_features` | select corporate available time features | `float32 [B, 128, T_ca]` | shared time encoder plus corporate availability adapter | corporate-action encoder |
-| `corporate_action_effective_time_features` | select corporate effective time features | `float32 [B, 128, T_ca_eff]` | shared time encoder plus corporate effective-time adapter | corporate-action encoder |
-| `corporate_action_mask` | read corporate action mask | `bool [B, 128]` | true for available corporate-action rows | corporate-action set mask |
-| `modality_available_mask` | read `input_availability` | `bool [B, M]` | true when a modality is available; may also select a learned missing-modality token | fusion transformer |
+| Model input atom | Loader x input | Tensor entering input layer | Loader x representation | Transformation/preprocessing | Learned layer / encoder path |
+| --- | --- | --- | --- | --- | --- |
+| `event_type_id` | `raw_event_stream.event_meta` bit 0 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=quote`, `1=trade` | unpack only | event categorical embedding |
+| `event_primary_price_scale_id` | `raw_event_stream.event_meta` bit 1 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=/100`, `1=/10000` | unpack only; controls optional primary price decode | event categorical embedding and decode helper |
+| `event_secondary_price_scale_id` | `raw_event_stream.event_meta` bit 2 | `uint8 [B, 1024]` | one scalar category per event; vocab size 2: `0=/100`, `1=/10000` | unpack only; controls optional secondary price decode | event categorical embedding and decode helper |
+| `event_tape_id` | `raw_event_stream.event_meta` bits 3-5 | `uint8 [B, 1024]` | one scalar category per event; values `0..7` | unpack only | event categorical embedding |
+| `price_primary_int` | `raw_event_stream.price_primary_int` plus primary scale id | `uint32/float32 [B, 1024]` | raw packed quote ask or trade price; scale is not applied by the loader | optional decode to float price and optional origin-relative bps/tick normalization | event numeric projection |
+| `price_secondary_int` | `raw_event_stream.price_secondary_int` plus secondary scale id | `uint32/float32 [B, 1024]` | raw packed quote bid price or zero for trade; scale is not applied by the loader | optional decode to float price, optional origin-relative bps/tick normalization, mask/zero trade secondary | event numeric projection |
+| `size_primary` | `raw_event_stream.size_primary` | `float32 [B, 1024]` | raw quote ask size or trade size from loader | optional `log1p`, clipping, and/or standardization | event numeric projection |
+| `size_secondary` | `raw_event_stream.size_secondary` | `float32 [B, 1024]` | raw quote bid size or zero for trade from loader | optional `log1p`, clipping, and/or standardization; mask/zero trade secondary | event numeric projection |
+| `event_exchange_primary_id` | `raw_event_stream.exchange_primary` | `uint8 [B, 1024]` | one scalar exchange category per event; byte value 0 means missing/unknown where applicable | none beyond missing/unknown id handling | event categorical embedding |
+| `event_exchange_secondary_id` | `raw_event_stream.exchange_secondary` | `uint8 [B, 1024]` | one scalar exchange category per event; byte value 0 means missing/unknown where applicable | none beyond missing/unknown id handling; optional mask/zero for trade secondary | event categorical embedding |
+| `event_condition_token_1_id` | `raw_event_stream.condition_token_1` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | none beyond missing/unknown id handling | event condition-token embedding |
+| `event_condition_token_2_id` | `raw_event_stream.condition_token_2` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | none beyond missing/unknown id handling | event condition-token embedding |
+| `event_condition_token_3_id` | `raw_event_stream.condition_token_3` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | none beyond missing/unknown id handling | event condition-token embedding |
+| `event_condition_token_4_id` | `raw_event_stream.condition_token_4` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | none beyond missing/unknown id handling | event condition-token embedding |
+| `event_condition_token_5_id` | `raw_event_stream.condition_token_5` | `uint8 [B, 1024]` | one scalar dense condition/indicator token per event; `0=missing/unknown` | none beyond missing/unknown id handling | event condition-token embedding |
+| `event_time_features` | raw event UTC/session time feature columns | `float32 [B, 1024, T_event]` | dense time-feature vector per event generated by builder/loader | none; already follows the time-feature contract | event time adapter |
+| `event_position_id` | derived from context order | `int64 [B, 1024]` | relative event-context position id | derive monotonically from event context position | event position embedding |
+| `event_mask` | `raw_event_mask` | `bool [B, 1024]` | true for valid events, false for padded/missing positions | none | event attention mask |
+| `ticker_daily_trade_values` | `bar_inputs["ticker_daily_bars"]["trade_values"]` | `float32 [B, O, 6]` | raw completed trade OHLC, size sum, and count fields from loader | optional price normalization to origin/recent close; optional `log1p`/standardization for size/count | ticker bar encoder |
+| `ticker_daily_quote_bid_values` | `bar_inputs["ticker_daily_bars"]["quote_bid_values"]` | `float32 [B, O, 9]` | raw completed bid OHLC plus bid size state fields from loader | optional price normalization to origin/recent close; optional size transforms | ticker bar encoder |
+| `ticker_daily_quote_ask_values` | `bar_inputs["ticker_daily_bars"]["quote_ask_values"]` | `float32 [B, O, 9]` | raw completed ask OHLC plus ask size state fields from loader | optional price normalization to origin/recent close; optional size transforms | ticker bar encoder |
+| `ticker_daily_bar_offset_id` | configured ticker bar offsets | `int64 [B, O]` | one completed-bar offset category per ticker daily bar | broadcast configured offsets | ticker bar offset embedding |
+| `ticker_daily_bar_time_features` | ticker bar time features | `float32 [B, O, T_bar]` | dense time-feature vector per ticker daily bar from loader | none; already follows the time-feature contract | ticker bar time adapter |
+| `ticker_daily_bar_family_masks` | `trade_mask`, `quote_bid_mask`, `quote_ask_mask` | each `bool [B, O]` | true for available completed bars in each bar family | none | ticker bar attention mask |
+| `global_daily_trade_values` | `bar_inputs["global_daily_bars"]["trade_values"]` | `float32 [B, S, O, 6]` | raw completed global trade bars from loader | optional price normalization and size/count transforms | global bar encoder |
+| `global_daily_quote_bid_values` | `bar_inputs["global_daily_bars"]["quote_bid_values"]` | `float32 [B, S, O, 9]` | raw completed global bid bars from loader | optional price normalization and size transforms | global bar encoder |
+| `global_daily_quote_ask_values` | `bar_inputs["global_daily_bars"]["quote_ask_values"]` | `float32 [B, S, O, 9]` | raw completed global ask bars from loader | optional price normalization and size transforms | global bar encoder |
+| `global_daily_bar_symbol_id` | configured global symbol ids | `int64 [B, S, O]` | one global-symbol category per global daily bar | broadcast configured symbol ids | global symbol embedding |
+| `global_daily_bar_offset_id` | configured global bar offsets | `int64 [B, S, O]` | one completed-bar offset category per global daily bar | broadcast configured offsets | global bar offset embedding |
+| `global_daily_bar_time_features` | global bar time features | `float32 [B, S, O, T_bar]` | dense time-feature vector per global daily bar from loader | none; already follows the time-feature contract | global bar time adapter |
+| `global_daily_bar_family_masks` | `trade_mask`, `quote_bid_mask`, `quote_ask_mask` | each `bool [B, S, O]` | true for available completed bars in each bar family | none | global bar attention mask |
+| `ticker_news_embedding` | `text_inputs["ticker_news"].embeddings` | `bf16/float32 [B, 8, 2, 1024]` | precomputed Qwen embeddings from loader | optional cast to trainer dtype; no LLM inference in trainer | ticker-news projection and encoder |
+| `market_news_embedding` | `text_inputs["market_news"].embeddings` | `bf16/float32 [B, 16, 2, 1024]` | precomputed Qwen embeddings from loader; market news means all news | optional cast to trainer dtype; no LLM inference in trainer | market-news projection and encoder |
+| `sec_filing_embedding` | `text_inputs["sec_filings"].embeddings` | `bf16/float32 [B, 4, 8, 1024]` | precomputed Qwen embeddings from loader | optional cast to trainer dtype; no LLM inference in trainer | SEC text projection and encoder |
+| `text_item_time_features` | text item time features | per text group `float32 [B, I, T_text]` | availability/publish/accepted time features from loader | none; already follows the time-feature contract | text time adapter |
+| `text_item_mask` | text item mask | per text group `bool [B, I]` | true for available text items | none | text item pooling mask |
+| `text_chunk_mask` | text chunk mask | per text group `bool [B, I, C]` | true for available text chunks | none | text chunk pooling mask |
+| `xbrl_value` | `xbrl_inputs["value"]` | `float32 [B, 4096]` | raw XBRL numeric value from loader | optional signed `log1p(abs(value))`, clipping, and/or tag/unit normalization | XBRL numeric projection |
+| `xbrl_fiscal_year` | `xbrl_inputs["fiscal_year"]` | `int16/float32 [B, 4096]` | fiscal year from loader | optional numeric standardization or category conversion by v3 adapter config | XBRL encoder |
+| `xbrl_period_end_days` | `xbrl_inputs["period_end_days"]` | `float32 [B, 4096]` | raw period-end age/distance field from loader | optional clipping/log-age transform | XBRL numeric/time projection |
+| `xbrl_category_ids` | XBRL category id fields | field-specific `int64 [B, 4096]` | persisted category ids; id `0=missing/unknown` | none beyond missing/unknown id handling | XBRL categorical embeddings |
+| `xbrl_mapping_confidence` | `xbrl_inputs["mapping_confidence"]` | `float32 [B, 4096]` | raw confidence score from loader | optional clipping to valid range | XBRL numeric projection |
+| `xbrl_time_features` | XBRL availability time features | `float32 [B, 4096, T_xbrl]` | availability time features from loader | none; already follows the time-feature contract | XBRL availability time adapter |
+| `xbrl_period_end_time_features` | XBRL period-end time features | `float32 [B, 4096, T_period]` | period-end time features from loader | none; already follows the time-feature contract | XBRL period time adapter |
+| `xbrl_mask` | `xbrl_inputs["mask"]` | `bool [B, 4096]` | true for available XBRL rows | none | XBRL set mask |
+| `corporate_action_category_ids` | action/dividend/currency/frequency ids | field-specific `int64 [B, 128]` | persisted category ids; id `0=missing/unknown` | none beyond missing/unknown id handling | corporate-action categorical embeddings |
+| `corporate_action_numeric` | corporate numeric feature tensor | `float32 [B, 128, F_ca]` | raw split factors, log factors, cash amount, and indicator flags from loader | optional clipping/standardization for numeric fields only | corporate-action numeric projection |
+| `corporate_action_available_time_features` | corporate available time features | `float32 [B, 128, T_ca]` | availability time features from loader | none; already follows the time-feature contract | corporate-action availability time adapter |
+| `corporate_action_effective_time_features` | corporate effective time features | `float32 [B, 128, T_ca_eff]` | effective time features from loader | none; already follows the time-feature contract | corporate-action effective time adapter |
+| `corporate_action_mask` | corporate action mask | `bool [B, 128]` | true for available corporate-action rows | none | corporate-action set mask |
+| `modality_available_mask` | `input_availability` | `bool [B, M]` | true when a modality is available | none | fusion transformer mask or missing-modality token selector |
 
 ### Atomic Model Outputs
 
