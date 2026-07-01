@@ -1757,6 +1757,49 @@ def rebuild_day_ticker_index(
     return profile
 
 
+def day_continuity_summary(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles, build_step: int) -> tuple[int, int]:
+    row = first_tsv_row(
+        client,
+        f"""
+SELECT count(), coalesce(sum(event_count), toUInt64(0))
+FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+WHERE build_step = toUInt32({int(build_step)})
+  AND source_date = toDate({sql_string(day.source_date)})
+""",
+    )
+    if not row:
+        return 0, 0
+    return int(float(row[0] or 0)), int(float(row[1] or 0))
+
+
+def validate_day_continuity_after_insert(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    day: DayFiles,
+    build_step: int,
+    expected_event_rows: int | None,
+    report_path: Path,
+) -> None:
+    ticker_rows, continuity_events = day_continuity_summary(client, args, day, build_step)
+    audit = {
+        "type": "day_continuity_check",
+        "source_date": day.source_date,
+        "build_step": build_step,
+        "ticker_rows": ticker_rows,
+        "continuity_events": continuity_events,
+        "expected_event_rows": expected_event_rows,
+        "status": "ok",
+    }
+    if expected_event_rows is not None and continuity_events != expected_event_rows:
+        audit["status"] = "failed"
+        append_jsonl(report_path, audit)
+        raise RuntimeError(
+            f"day={day.source_date} continuity event_count sum {continuity_events:,} "
+            f"does not match inserted event rows {expected_event_rows:,}; refusing to build ticker/day index."
+        )
+    append_jsonl(report_path, audit)
+
+
 def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles, run_id: str, report_path: Path) -> str:
     job = DayJob(source_date=day.source_date, build_step=build_step_for_date(day.source_date))
     status = latest_day_status(client, args, job)
@@ -1771,8 +1814,12 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
         if not args.force_day_delete:
             raise RuntimeError(f"day={day.source_date} status={status}; rerun with --force-day-delete to avoid duplicate rows")
         run_profiled(client, f"delete_events_day_{day.source_date}", delete_day_sql(args, job))
-        run_profiled(client, f"delete_continuity_day_{day.source_date}", delete_day_continuity_sql(args, day))
-        run_profiled(client, f"delete_ticker_day_index_{day.source_date}", delete_day_ticker_index_sql(args, day))
+
+    # Continuity and ticker/day index are derived per-day metadata. Always purge
+    # them before a fresh day insert so absent tickers from stale attempts cannot
+    # survive and be copied into the loader-facing index.
+    run_profiled(client, f"delete_continuity_day_{day.source_date}", delete_day_continuity_sql(args, day))
+    run_profiled(client, f"delete_ticker_day_index_{day.source_date}", delete_day_ticker_index_sql(args, day))
 
     insert_day_manifest(client, args, job, status="started", run_id=run_id)
     try:
@@ -1782,6 +1829,7 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
             f"insert_events_continuity_from_flatfiles_{day.source_date}",
             insert_direct_day_continuity_sql(args, day, job.build_step),
         )
+        validate_day_continuity_after_insert(client, args, day, job.build_step, profile.written_rows, report_path)
         index_profile = rebuild_day_ticker_index(client, args, day, job.build_step, report_path, reason="events_inserted")
         insert_day_manifest(client, args, job, status="ok", run_id=run_id, profile=profile)
         append_jsonl(
