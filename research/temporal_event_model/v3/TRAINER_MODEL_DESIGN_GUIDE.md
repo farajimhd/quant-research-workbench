@@ -395,45 +395,103 @@ Design:
 
 ### Prediction Heads
 
-Primary output:
+The model should expose prediction heads for every label group emitted by the
+loader. A training run can disable a group by setting its loss weight to zero or
+by omitting the data group from the loader, but the default full-supervised v3
+objective should consume all available labels in the batch.
+
+Price/bar outputs:
 
 ```text
 future bid delta by horizon
 future ask delta by horizon
+future event count by intraday horizon
+future primary/secondary size by intraday horizon
 ```
 
 Targets should be normalized relative to the origin/as-of price, preferably in
 bps or ticks, not raw price integer units.
 
-Optional auxiliary heads:
+Future event-state and external-arrival outputs:
 
-- future event count per horizon
-- future primary/secondary size sums
+```text
+condition_halt_pause_flag
+condition_resume_flag
+condition_news_risk_flag
+condition_luld_limit_state_flag
+ticker_news_arrival_flag
+sec_filing_arrival_flag
+```
+
+Corporate-action outputs:
+
+```text
+future_split_flag
+future_reverse_split_flag
+future_forward_split_flag
+future_dividend_ex_flag
+future_special_dividend_ex_flag
+future_any_corporate_action_flag
+```
+
+Optional diagnostic heads:
+
 - label availability calibration
 - spread or liquidity regime classification
 
-Auxiliary heads should be explicitly weighted and easy to disable.
+Every head must have an explicit loss weight and metric prefix. Zero weight
+means the head can be computed for diagnostics without contributing to the
+gradient.
 
 ## Loss
 
-Use mask-aware multi-horizon losses:
+The v3 trainer should calculate loss over all labels available in the emitted
+batch, not only the price targets. Availability is controlled by masks and
+presence of label groups, not by a hard-coded list in the trainer. The total
+loss is the weighted sum of task losses:
 
 ```text
-primary_loss = masked_huber_or_mae(pred_bid_ask_delta, target_bid_ask_delta, label_mask)
+total_loss =
+    price_weight             * price_loss
+  + event_count_weight       * event_count_loss
+  + event_size_weight        * event_size_loss
+  + event_state_weight       * event_state_bce
+  + external_arrival_weight  * external_arrival_bce
+  + corporate_action_weight  * corporate_action_bce
 ```
 
-The default objective should emphasize stable price movement prediction:
+All terms are mask-aware. If a label group is absent from the batch, or if all
+targets for a task are masked unavailable, that task contributes zero loss and
+reports zero valid count for the step.
+
+Price loss:
 
 - Huber or MAE in normalized bps/tick space
 - per-horizon mask
 - optional horizon weights
 - no loss contribution when a horizon is unavailable
 
-Auxiliary losses:
+Event-count and size losses:
 
 - event count: masked Poisson, log-MAE, or Huber on log1p count
 - size sums: masked Huber on log1p size
-- availability: BCE only if useful for diagnostics
+
+Binary event-state and arrival losses:
+
+- masked BCE-with-logits for halt/pause, resume, news-risk, and LULD flags
+- masked BCE-with-logits for ticker-news and SEC-filing arrival flags
+- class-positive weights should be configurable because these targets are sparse
+
+Corporate-action losses:
+
+- masked BCE-with-logits over daily horizons `+1d,+2d,+3d,+7d,+28d`
+- separate metrics and optional weights for split, reverse split, forward split,
+  dividend ex-date, special dividend ex-date, and any corporate action
+- class-positive weights should be configurable because split/special-dividend
+  targets are very sparse
+
+Label availability calibration remains optional and should not be enabled by
+default unless there is a clear diagnostic need.
 
 ## Metrics
 
@@ -486,8 +544,28 @@ Intraday label metrics:
 - `future_event_count_log_mae`
 - `future_size_primary_log_mae`
 - `future_size_secondary_log_mae`
+- `event_state_bce`
+- `event_state_auc` when enough positives/negatives exist
+- `event_state_positive_rate`
+- `event_state_valid_fraction`
+- `external_arrival_bce`
+- `external_arrival_auc` when enough positives/negatives exist
+- `external_arrival_positive_rate`
 - `label_available_fraction`
 - `last_event_timestamp_gap_seconds`
+
+Corporate-action label metrics:
+
+- `corporate_action_bce`
+- `corporate_action_auc` when enough positives/negatives exist
+- `corporate_action_positive_rate`
+- `corporate_action_valid_fraction`
+- `future_split_flag_bce`
+- `future_reverse_split_flag_bce`
+- `future_forward_split_flag_bce`
+- `future_dividend_ex_flag_bce`
+- `future_special_dividend_ex_flag_bce`
+- `future_any_corporate_action_flag_bce`
 
 Input availability metrics:
 
@@ -664,12 +742,15 @@ Before a real training run:
 7. Daily bar features use only bars available as of the origin.
 8. Future daily labels use only forward bars.
 9. Label masks are false when a target horizon is unavailable.
-10. Checkpoint resume reproduces the exact next batch.
-11. Deterministic dataset mode reproduces the same 1M-sample benchmark set.
-12. Validation loader is deterministic and independent of train-loader position.
-13. Model artifact files are created before training starts.
-14. W&B and JSONL metrics contain the same key scalar metrics.
-15. Audit can query a small set of sampled identities against ClickHouse and
+10. The default training objective computes masked losses for every label group
+    present in the batch, including price/bar, event-state, external-arrival,
+    and corporate-action labels.
+11. Checkpoint resume reproduces the exact next batch.
+12. Deterministic dataset mode reproduces the same 1M-sample benchmark set.
+13. Validation loader is deterministic and independent of train-loader position.
+14. Model artifact files are created before training starts.
+15. W&B and JSONL metrics contain the same key scalar metrics.
+16. Audit can query a small set of sampled identities against ClickHouse and
     verify event rows, labels, bars, text embeddings, and XBRL context.
 
 ## Open Implementation Notes
