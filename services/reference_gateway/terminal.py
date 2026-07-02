@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from rich import box
-from rich.columns import Columns
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
@@ -49,13 +49,14 @@ class ReferenceTerminalSession:
         self.live = Live(
             render_reference_dashboard(record),
             console=self.console,
-            auto_refresh=False,
+            auto_refresh=True,
             transient=False,
             screen=screen,
             vertical_overflow="crop",
-            refresh_per_second=4,
+            refresh_per_second=2,
         )
         self.started = False
+        self.last_update_at = 0.0
 
     def start(self) -> None:
         if self.started:
@@ -65,10 +66,15 @@ class ReferenceTerminalSession:
 
     def update(self) -> None:
         if self.started:
-            self.live.update(render_reference_dashboard(self.record), refresh=True)
+            self.live.update(render_reference_dashboard(self.record), refresh=False)
+            now = time.monotonic()
+            if now - self.last_update_at >= 0.5:
+                self.live.refresh()
+                self.last_update_at = now
 
     def stop(self) -> None:
         if self.started:
+            self.live.refresh()
             self.live.stop()
             self.started = False
 
@@ -79,29 +85,37 @@ def render_reference_run(record: ReferenceRunRecord, *, console: Console | None 
 
 
 def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
-    _, terminal_height = shutil.get_terminal_size((120, 40))
+    terminal_width, terminal_height = shutil.get_terminal_size((140, 44))
     compact = terminal_height < 34
+    narrow = terminal_width < 190
     if compact:
         return Group(
             header_panel(record),
             current_operation_panel(record),
-            summary_panel(record),
-            maintenance_panel(record),
+            overview_panel(record),
+            source_sync_panel(record, compact=True),
+            guardrail_maintenance_panel(record, compact=True),
             audit_aggregate_panel(record, limit=3),
-            audit_findings_panel(record, limit=5),
+        )
+    if narrow:
+        return Group(
+            header_panel(record),
+            current_operation_panel(record),
+            overview_panel(record),
+            source_sync_panel(record, compact=True),
+            guardrail_maintenance_panel(record, compact=True),
+            operations_panel(record.operations, limit=8),
+            audit_aggregate_panel(record, limit=4),
         )
     return Group(
         header_panel(record),
         current_operation_panel(record),
-        Columns([dependencies_panel(record), summary_panel(record)], equal=True, expand=True),
-        Columns(
-            [source_sync_panel(record), integrity_panel(record), maintenance_panel(record)],
-            equal=True,
-            expand=True,
-        ),
-        operations_panel(record.operations),
+        overview_panel(record),
+        source_sync_panel(record, compact=False),
+        guardrail_maintenance_panel(record, compact=False),
+        operations_panel(record.operations, limit=10),
         audit_aggregate_panel(record, limit=4),
-        audit_findings_panel(record, limit=10),
+        audit_findings_panel(record, limit=6),
     )
 
 
@@ -152,98 +166,87 @@ def current_operation_panel(record: ReferenceRunRecord) -> Panel:
     return Panel(table, title="Current Operation", box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
-def dependencies_panel(record: ReferenceRunRecord) -> Panel:
-    checks = dependency_operations(record.operations)
-    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
-    table.add_column("Check", style="cyan", no_wrap=True, width=22)
-    table.add_column("Status", no_wrap=True, width=12)
-    table.add_column("Sec", justify="right", no_wrap=True, width=8)
-    table.add_column("Detail", overflow="fold", ratio=1)
-    if not checks:
-        table.add_row("preflight", style_status("waiting"), "-", "Dependency preflight has not reported yet.")
-        status = "waiting"
-    else:
-        status = checks[-1].status
-        for op in checks:
-            table.add_row(
-                short_name(op.name),
-                style_status(op.status),
-                f"{op.seconds:.2f}" if op.seconds is not None else "-",
-                op.detail or "-",
-            )
-    return Panel(table, title=f"Dependencies [{status_label(status)}]", box=box.ROUNDED, border_style=status_color(status), padding=(0, 1))
-
-
-def summary_panel(record: ReferenceRunRecord) -> Panel:
+def overview_panel(record: ReferenceRunRecord) -> Panel:
     audit = record.audit
     errors, warnings = audit_failures(record)
     source = latest_operation(record.operations, "Source sync")
     issue_write = latest_operation(record.operations, "Write source-sync issues")
     block = latest_operation(record.operations, "Immediate tradability block")
     alert_write = latest_operation(record.operations, "Write reference alerts")
+    preflight = dependency_operations(record.operations)
+    preflight_op = preflight[-1] if preflight else None
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
-    table.add_column("Metric", style="cyan", no_wrap=True, width=22)
-    table.add_column("Value", justify="right", no_wrap=True, width=16)
+    table.add_column("Area", style="cyan", no_wrap=True, width=22)
+    table.add_column("Status", no_wrap=True, width=14)
+    table.add_column("Rows / Sec", justify="right", no_wrap=True, width=14)
     table.add_column("Detail", overflow="fold", ratio=1)
-    table.add_row("Run status", style_status(record.final_status), f"{record.wall_seconds:.2f}s" if record.wall_seconds else "running")
-    table.add_row("Audit status", style_status(audit.status if audit else "not_started"), audit.checked_at_utc if audit else "-")
-    table.add_row("Audit failures", fmt(len(errors)), f"warnings {fmt(len(warnings))}")
-    table.add_row("Source candidates", fmt(source.rows if source else None), source.detail if source else "not reported")
-    table.add_row("Issue writes", fmt(issue_write.rows if issue_write else None), issue_write.detail if issue_write else "not reported")
-    table.add_row("Alert writes", fmt(alert_write.rows if alert_write else None), alert_write.detail if alert_write else "not reported")
-    table.add_row("Tradability blocks", fmt(block.rows if block else None), block.detail if block else "not reported")
-    table.add_row("Write policy", "allowed" if record.write_policy.writes_allowed else "blocked", record.write_policy.reason)
-    return Panel(table, title="Runtime Summary", box=box.ROUNDED, border_style=status_color(record.final_status), padding=(0, 1))
+    table.add_row(
+        "Preflight",
+        style_status(preflight_op.status if preflight_op else "waiting"),
+        f"{preflight_op.seconds:.2f}s" if preflight_op and preflight_op.seconds is not None else "-",
+        truncate(preflight_op.detail if preflight_op else "Dependency preflight has not reported yet.", 180),
+    )
+    table.add_row("Run", style_status(record.final_status), f"{record.wall_seconds:.2f}s" if record.wall_seconds else "-", "Gateway process state.")
+    table.add_row("Audit", style_status(audit.status if audit else "not_started"), fmt(len(errors) + len(warnings)), audit.checked_at_utc if audit else "Audit has not run yet.")
+    table.add_row("Source sync", style_status(source.status if source else "waiting"), fmt(source.rows if source else None), truncate(source.detail if source else "not reported", 180))
+    table.add_row("Issue writes", style_status(issue_write.status if issue_write else "waiting"), fmt(issue_write.rows if issue_write else None), truncate(issue_write.detail if issue_write else "not reported", 180))
+    table.add_row("Alert writes", style_status(alert_write.status if alert_write else "waiting"), fmt(alert_write.rows if alert_write else None), truncate(alert_write.detail if alert_write else "not reported", 180))
+    table.add_row("Tradability blocks", style_status(block.status if block else "waiting"), fmt(block.rows if block else None), truncate(block.detail if block else "not reported", 180))
+    table.add_row("Write policy", style_status("allowed" if record.write_policy.writes_allowed else "blocked"), "-", truncate(write_policy_text(record.write_policy), 180))
+    ops = [preflight_op, source, issue_write, block, alert_write]
+    return Panel(table, title="Runtime Overview", box=box.ROUNDED, border_style=panel_status_color(ops), padding=(0, 1))
 
 
-def source_sync_panel(record: ReferenceRunRecord) -> Panel:
-    source = latest_operation(record.operations, "Source sync")
-    issue_write = latest_operation(record.operations, "Write source-sync issues")
-    graph = latest_operation(record.operations, "Write canonical graph")
-    graph_issue = latest_operation(record.operations, "Write graph issues")
-    table = compact_ops_table(item_width=36)
-    source_ops = [op for op in record.operations if op.name.startswith("Source: ")]
-    if source_ops:
-        for op in source_ops:
-            add_compact_op(table, op.name.replace("Source: ", ""), op)
-    else:
-        add_compact_op(table, "Source sync", source)
-    add_compact_op(table, "Issue rows", issue_write)
-    add_compact_op(table, "Graph write", graph)
-    add_compact_op(table, "Graph issues", graph_issue)
-    return Panel(table, title="Source Sync", box=box.ROUNDED, border_style=panel_status_color([*source_ops, source, issue_write, graph, graph_issue]), padding=(0, 1))
-
-
-def integrity_panel(record: ReferenceRunRecord) -> Panel:
+def guardrail_maintenance_panel(record: ReferenceRunRecord, *, compact: bool = False) -> Panel:
     audit = latest_operation(record.operations, "Post-write reference audit") or latest_operation(record.operations, "Reference audit")
-    resolve_ops = [op for op in record.operations if op.name == "Resolve issues"]
-    block_ops = [op for op in record.operations if op.name == "Immediate tradability block"]
-    errors, warnings = audit_failures(record)
-    table = compact_ops_table()
-    add_compact_op(table, "Audit", audit)
-    add_compact_op(table, "Resolve", resolve_ops[-1] if resolve_ops else None)
-    add_compact_op(table, "Block", block_ops[-1] if block_ops else None)
-    table.add_row("Error checks", style_status("failed" if errors else "ok"), fmt(len(errors)), ", ".join(check.name for check in errors[:3]) or "-")
-    table.add_row("Warning checks", style_status("warning" if warnings else "ok"), fmt(len(warnings)), ", ".join(check.name for check in warnings[:3]) or "-")
-    return Panel(table, title="Integrity Guardrail", box=box.ROUNDED, border_style=status_color("failed" if errors else "warning" if warnings else "ok"), padding=(0, 1))
-
-
-def maintenance_panel(record: ReferenceRunRecord) -> Panel:
+    resolve = latest_operation(record.operations, "Resolve issues")
+    block = latest_operation(record.operations, "Immediate tradability block")
     schema = latest_operation(record.operations, "Market publication schema")
     rebuild = latest_operation(record.operations, "Rebuild tradable publications")
     gap_fill = latest_operation(record.operations, "Market publication gap fill")
     policy = latest_operation(record.operations, "Promotion write policy")
-    table = compact_ops_table(item_width=26)
-    table.add_row("Mode", style_status(record.config.maintenance_mode), "-", write_policy_text(record.write_policy))
-    add_compact_op(table, "Policy", policy)
-    add_compact_op(table, "Schema", schema)
-    add_compact_op(table, "Rebuild", rebuild)
-    add_compact_op(table, "Gap fill", gap_fill)
-    ops = [op for op in [policy, schema, rebuild, gap_fill] if op is not None]
-    return Panel(table, title="Maintenance", box=box.ROUNDED, border_style=panel_status_color(ops), padding=(0, 1))
+    errors, warnings = audit_failures(record)
+    detail_limit = 120 if compact else 220
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Group", style="cyan", no_wrap=True, width=18)
+    table.add_column("Item", style="cyan", no_wrap=True, width=24)
+    table.add_column("Status", no_wrap=True, width=14)
+    table.add_column("Rows", justify="right", no_wrap=True, width=10)
+    table.add_column("Detail", overflow="fold", ratio=1)
+
+    add_grouped_op(table, "Integrity", "Audit", audit, detail_limit=detail_limit)
+    add_grouped_op(table, "Integrity", "Resolve", resolve, detail_limit=detail_limit)
+    add_grouped_op(table, "Integrity", "Block", block, detail_limit=detail_limit)
+    table.add_row("Integrity", "Error checks", style_status("failed" if errors else "ok"), fmt(len(errors)), ", ".join(check.name for check in errors[:3]) or "-")
+    table.add_row("Integrity", "Warning checks", style_status("warning" if warnings else "ok"), fmt(len(warnings)), ", ".join(check.name for check in warnings[:3]) or "-")
+    table.add_row("Maintenance", "Mode", style_status(record.config.maintenance_mode), "-", truncate(write_policy_text(record.write_policy), detail_limit))
+    add_grouped_op(table, "Maintenance", "Policy", policy, detail_limit=detail_limit)
+    add_grouped_op(table, "Maintenance", "Schema", schema, detail_limit=detail_limit)
+    add_grouped_op(table, "Maintenance", "Rebuild", rebuild, detail_limit=detail_limit)
+    add_grouped_op(table, "Maintenance", "Gap fill", gap_fill, detail_limit=detail_limit)
+    ops = [audit, resolve, block, schema, rebuild, gap_fill, policy]
+    return Panel(table, title="Integrity And Maintenance", box=box.ROUNDED, border_style=panel_status_color(ops), padding=(0, 1))
 
 
-def operations_panel(operations: list[OperationRecord]) -> Panel:
+def source_sync_panel(record: ReferenceRunRecord, *, compact: bool = False) -> Panel:
+    source = latest_operation(record.operations, "Source sync")
+    issue_write = latest_operation(record.operations, "Write source-sync issues")
+    graph = latest_operation(record.operations, "Write canonical graph")
+    graph_issue = latest_operation(record.operations, "Write graph issues")
+    table = compact_ops_table(item_width=28 if compact else 38)
+    source_ops = [op for op in record.operations if op.name.startswith("Source: ")]
+    if source_ops:
+        for op in source_ops:
+            add_compact_op(table, op.name.replace("Source: ", ""), op, detail_limit=120 if compact else 220)
+    else:
+        add_compact_op(table, "Source sync", source)
+    add_compact_op(table, "Issue rows", issue_write, detail_limit=120 if compact else 220)
+    add_compact_op(table, "Graph write", graph, detail_limit=120 if compact else 220)
+    add_compact_op(table, "Graph issues", graph_issue, detail_limit=120 if compact else 220)
+    return Panel(table, title="Source Sync", box=box.ROUNDED, border_style=panel_status_color([*source_ops, source, issue_write, graph, graph_issue]), padding=(0, 1))
+
+
+def operations_panel(operations: list[OperationRecord], *, limit: int = 10) -> Panel:
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
     table.add_column("Step", style="cyan", no_wrap=True, width=30)
     table.add_column("Status", no_wrap=True, width=14)
@@ -252,13 +255,16 @@ def operations_panel(operations: list[OperationRecord]) -> Panel:
     table.add_column("Detail", overflow="fold", ratio=1)
     if not operations:
         table.add_row("startup", style_status("running"), "-", "-", "No operations recorded yet.")
-    for op in operations:
+    hidden = max(0, len(operations) - limit)
+    if hidden:
+        table.add_row("[dim]earlier steps[/dim]", "-", fmt(hidden), "-", "Older operation rows are hidden to keep the terminal stable.")
+    for op in operations[-limit:]:
         table.add_row(
             op.name,
             style_status(op.status),
             fmt(op.rows) if op.rows is not None else "-",
             f"{op.seconds:.2f}" if op.seconds is not None else "-",
-            op.detail or "-",
+            truncate(op.detail or "-", 220),
         )
     return Panel(table, title="Operations", box=box.ROUNDED, padding=(0, 1))
 
@@ -410,10 +416,6 @@ def truncate(value: str, limit: int) -> str:
     return text[: max(0, limit - 3)] + "..."
 
 
-def short_name(value: str) -> str:
-    return str(value or "-").replace("Dependency ", "")
-
-
 def last_operation(record: ReferenceRunRecord) -> OperationRecord | None:
     return record.operations[-1] if record.operations else None
 
@@ -438,7 +440,7 @@ def compact_ops_table(*, item_width: int = 16) -> Table:
     return table
 
 
-def add_compact_op(table: Table, label: str, op: OperationRecord | None) -> None:
+def add_compact_op(table: Table, label: str, op: OperationRecord | None, *, detail_limit: int = 140) -> None:
     if op is None:
         table.add_row(label, style_status("waiting"), "-", "not reported")
         return
@@ -446,7 +448,20 @@ def add_compact_op(table: Table, label: str, op: OperationRecord | None) -> None
         label,
         style_status(op.status),
         fmt(op.rows) if op.rows is not None else "-",
-        op.detail or "-",
+        truncate(op.detail or "-", detail_limit),
+    )
+
+
+def add_grouped_op(table: Table, group: str, label: str, op: OperationRecord | None, *, detail_limit: int = 140) -> None:
+    if op is None:
+        table.add_row(group, label, style_status("waiting"), "-", "not reported")
+        return
+    table.add_row(
+        group,
+        label,
+        style_status(op.status),
+        fmt(op.rows) if op.rows is not None else "-",
+        truncate(op.detail or "-", detail_limit),
     )
 
 
