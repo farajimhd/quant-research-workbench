@@ -505,6 +505,9 @@ def _write_config(paths: RunPaths, config: ExperimentConfig) -> None:
 def _input_contract(config: ModelConfig) -> dict[str, Any]:
     return {
         "raw_event_stream": [None, config.event_stream_length, config.event_feature_count],
+        "ticker_intraday_bars": {family: [None, config.intraday_horizons, dim] for family, dim in {"trade": 6, "quote_bid": 9, "quote_ask": 9}.items()},
+        "ticker_daily_bars": {family: [None, config.ticker_bar_offsets, dim] for family, dim in {"trade": 6, "quote_bid": 9, "quote_ask": 9}.items()},
+        "global_daily_bars": {family: [None, config.global_symbols, config.global_bar_offsets, dim] for family, dim in {"trade": 6, "quote_bid": 9, "quote_ask": 9}.items()},
         "ticker_news_embeddings": [None, config.ticker_news_items, config.ticker_news_chunks, config.text_embedding_dim],
         "market_news_embeddings": [None, config.market_news_items, config.market_news_chunks, config.text_embedding_dim],
         "sec_filing_embeddings": [None, config.sec_filing_items, config.sec_filing_chunks, config.text_embedding_dim],

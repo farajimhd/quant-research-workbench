@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+import polars as pl
 
 if __package__ in {None, ""}:
     here = Path(__file__).resolve()
@@ -26,6 +27,7 @@ from research.mlops.rolling_loader.run_build_ticker_month_cache import (
     _query_category_references,
     _query_daily_bars,
     _query_events_part,
+    _query_intraday_context_bars,
     _query_intraday_forward_labels,
     _query_market_news,
     _query_sec_tokens,
@@ -37,6 +39,9 @@ from research.mlops.rolling_loader.ticker_month_cache import DEFAULT_TICKER_MONT
 from research.mlops.rolling_loader.ticker_month_dataset import (
     AsyncTickerMonthBatchLoader,
     BAR_CONTEXT_GROUPS,
+    BAR_FAMILY_KEYS,
+    BAR_FEATURE_KEYS,
+    BAR_SOURCE_FEATURE_KEYS,
     BAR_TIME_FEATURE_COLUMNS,
     LoadedTickerMonthPart,
     METADATA_PAYLOAD_FIELDS,
@@ -49,9 +54,12 @@ from research.mlops.rolling_loader.ticker_month_dataset import (
     TickerMonthTrainingBatch,
     XBRL_PERIOD_END_TIME_FEATURE_COLUMNS,
     XBRL_TIME_FEATURE_COLUMNS,
+    _absolute_utc_time_feature_matrix,
+    _label_column_matrix_for_rows,
     _label_values_for_origin,
     _part_key,
     _prepare_daily_bar_context_index,
+    _prepare_label_context_index,
     _prepare_text_context_index,
     _prepare_xbrl_category_reference_index,
     _prepare_xbrl_context_index,
@@ -64,7 +72,7 @@ from research.mlops.rolling_loader.ticker_month_dataset import (
 
 
 DEFAULT_AUDIT_REPORT_PATH = DEFAULT_PROFILE_REPORT_PATH.with_name("ticker_month_loader_batch_audit.json")
-DEFAULT_AUDIT_DATA_GROUPS = "events,intraday_labels,corporate_action_labels,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl,corporate_actions,daily_bars,global_daily_bars"
+DEFAULT_AUDIT_DATA_GROUPS = "events,intraday_labels,corporate_action_labels,intraday_bars,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl,corporate_actions,daily_bars,global_daily_bars"
 
 
 @dataclass(slots=True)
@@ -203,7 +211,7 @@ def run_audit(config: LoaderBatchAuditConfig) -> LoaderBatchAuditResult:
     part_map = {_part_key(plan): plan for plan in loader.index.parts}
     source_context = _source_clickhouse_context(config, loader.index.root_manifest, tuple(loader.index.parts)) if config.source_clickhouse_audit and int(config.source_clickhouse_samples_per_batch) > 0 else None
     part_cache: dict[str, LoadedTickerMonthPart] = {}
-    context_groups = tuple(group for group in config.loader_config.data_groups if group in TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).union({"xbrl", "corporate_actions"}))
+    context_groups = tuple(group for group in config.loader_config.data_groups if group in TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).union({"intraday_bars", "xbrl", "corporate_actions"}))
     reader_groups = ("events", "intraday_labels", *context_groups)
     reader = TickerMonthPartReader(reader_groups, include_external_context=bool(config.loader_config.include_external_context or context_groups))
     rng = np.random.default_rng(int(config.seed))
@@ -360,6 +368,7 @@ def _source_clickhouse_context(
         skip_token_contexts=False,
         skip_xbrl=False,
         intraday_label_horizons=_manifest_horizon_string(manifest_args, manifest_config),
+        intraday_context_horizons=_manifest_intraday_context_horizon_string(manifest_args, manifest_config),
         sample_stride_events=max(1, int(manifest_args.get("sample_stride_events") or manifest_config.get("sample_stride_events") or 1)),
         ticker_news_prior_items=max(0, int(manifest_args.get("ticker_news_prior_items") or manifest_config.get("ticker_news_prior_items") or BUILDER_DEFAULTS.get("ticker_news_prior_items", 64))),
         market_news_prior_items=max(0, int(manifest_args.get("market_news_prior_items") or manifest_config.get("market_news_prior_items") or BUILDER_DEFAULTS.get("market_news_prior_items", 512))),
@@ -417,6 +426,18 @@ def _manifest_horizon_string(manifest_args: Mapping[str, Any], manifest_config: 
     return str(BUILDER_DEFAULTS["intraday_label_horizons"])
 
 
+def _manifest_intraday_context_horizon_string(manifest_args: Mapping[str, Any], manifest_config: Mapping[str, Any]) -> str:
+    value = manifest_args.get("intraday_context_horizons")
+    if isinstance(value, str) and value.strip():
+        return value
+    names = manifest_config.get("intraday_context_horizons")
+    if isinstance(names, str):
+        return names
+    if isinstance(names, Sequence):
+        return ",".join(str(item) for item in names if str(item).strip())
+    return str(BUILDER_DEFAULTS.get("intraday_context_horizons") or BUILDER_DEFAULTS["intraday_label_horizons"])
+
+
 def _audit_batch_row_against_clickhouse(
     batch: TickerMonthTrainingBatch,
     row: int,
@@ -449,14 +470,16 @@ def _audit_batch_row_against_clickhouse(
         _check_intraday_labels(batch, row, source_part, origin_ordinal, issues, totals, batch_index=batch_index, part_key=f"{part_key}|clickhouse")
         totals["source_clickhouse_label_rows_checked"] += 1
     if batch.text_inputs or batch.xbrl_inputs or batch.bar_inputs:
-        source_part.context = _source_context_frames_for_sample(batch, source_context, window, plan, ticker)
+        source_part.context = _source_context_frames_for_sample(batch, source_context, window, plan, ticker, origin_ordinal)
+        if "ticker_intraday_bars" in batch.bar_inputs:
+            source_part.origins = pl.DataFrame({"origin_ordinal": [int(origin_ordinal)]})
         before = int(totals.get("text_rows_checked", 0)) + int(totals.get("xbrl_rows_checked", 0)) + int(totals.get("bar_rows_checked", 0))
         if batch.text_inputs:
             _check_text_inputs(batch, row, source_part, origin_timestamp_us, issues, totals, batch_index=batch_index, part_key=f"{part_key}|clickhouse")
         if batch.xbrl_inputs:
             _check_xbrl_inputs(batch, row, source_part, origin_timestamp_us, issues, totals, batch_index=batch_index, part_key=f"{part_key}|clickhouse")
         if batch.bar_inputs:
-            _check_bar_inputs(batch, row, source_part, origin_timestamp_us, loader_config, issues, totals, batch_index=batch_index, part_key=f"{part_key}|clickhouse")
+            _check_bar_inputs(batch, row, source_part, origin_ordinal, origin_timestamp_us, loader_config, issues, totals, batch_index=batch_index, part_key=f"{part_key}|clickhouse")
         after = int(totals.get("text_rows_checked", 0)) + int(totals.get("xbrl_rows_checked", 0)) + int(totals.get("bar_rows_checked", 0))
         totals["source_clickhouse_context_rows_checked"] += max(0, after - before)
     totals["source_clickhouse_samples_checked"] += 1
@@ -505,6 +528,7 @@ def _source_context_frames_for_sample(
     window: Any,
     plan: TickerMonthPartPlan,
     ticker: str,
+    origin_ordinal: int,
 ) -> dict[str, Any]:
     month = str(plan.month)
     frames: dict[str, Any] = {}
@@ -520,12 +544,15 @@ def _source_context_frames_for_sample(
         frames["daily_bars"] = _cached_source_context(source_context, month, ticker, "daily_bars", window)
     if "global_daily_bars" in batch.bar_inputs:
         frames["global_daily_bars"] = _cached_source_context(source_context, month, "__GLOBAL__", "global_daily_bars", window)
+    if "ticker_intraday_bars" in batch.bar_inputs:
+        frames["intraday_bars"] = _cached_source_context(source_context, month, ticker, "intraday_bars", window, origin_ordinal=origin_ordinal)
     return frames
 
 
-def _cached_source_context(source_context: SourceClickHouseAuditContext, month: str, ticker: str, group: str, window: Any) -> Any:
+def _cached_source_context(source_context: SourceClickHouseAuditContext, month: str, ticker: str, group: str, window: Any, *, origin_ordinal: int | None = None) -> Any:
     cache_ticker = "__MARKET__" if group == "market_news_embeddings" else str(ticker).upper()
-    key = (str(month), cache_ticker, str(group))
+    ordinal_key = int(origin_ordinal) if group == "intraday_bars" and origin_ordinal is not None else None
+    key = (str(month), cache_ticker, str(group), ordinal_key)
     if key in source_context.context_cache:
         return source_context.context_cache[key]
     if group == "ticker_news_embeddings":
@@ -540,6 +567,18 @@ def _cached_source_context(source_context: SourceClickHouseAuditContext, month: 
         frame = _query_daily_bars(source_context.args, source_context.client_opts, source_context.config, window, symbols=(ticker,))
     elif group == "global_daily_bars":
         frame = _query_daily_bars(source_context.args, source_context.client_opts, source_context.config, window, symbols=tuple(source_context.config.global_symbols))
+    elif group == "intraday_bars":
+        if origin_ordinal is None:
+            raise ValueError("origin_ordinal is required for intraday bar source audit.")
+        part = OriginOrdinalPart(
+            part_id=0,
+            origin_ordinal_start=int(origin_ordinal),
+            origin_ordinal_end=int(origin_ordinal),
+            fetch_ordinal_start=int(origin_ordinal),
+            fetch_ordinal_end=int(origin_ordinal),
+        )
+        month_min_ordinal = int(source_context.month_min_ordinals.get((str(month), str(ticker).upper()), int(origin_ordinal)))
+        frame = _query_intraday_context_bars(source_context.args, source_context.client_opts, source_context.config, window, ticker, part, month_min_ordinal)
     else:
         raise ValueError(f"Unsupported source context group: {group}")
     source_context.context_cache[key] = frame
@@ -683,7 +722,7 @@ def _audit_batch_row(
     if batch.xbrl_inputs:
         _check_xbrl_inputs(batch, row, part, origin_timestamp_us, issues, totals, batch_index=batch_index, part_key=part_key)
     if batch.bar_inputs:
-        _check_bar_inputs(batch, row, part, origin_timestamp_us, loader_config, issues, totals, batch_index=batch_index, part_key=part_key)
+        _check_bar_inputs(batch, row, part, origin_ordinal, origin_timestamp_us, loader_config, issues, totals, batch_index=batch_index, part_key=part_key)
     _check_context_files(part, origin_timestamp_us, issues, totals, batch_index=batch_index, row=row, part_key=part_key)
     totals["samples_checked"] += 1
 
@@ -979,6 +1018,7 @@ def _check_bar_inputs(
     batch: TickerMonthTrainingBatch,
     row: int,
     part: LoadedTickerMonthPart,
+    origin_ordinal: int,
     origin_timestamp_us: int,
     config: TickerMonthLoaderConfig,
     issues: list[AuditIssue],
@@ -1022,6 +1062,101 @@ def _check_bar_inputs(
                     expected_time[symbol_index] = time_features[0]
             _compare_bar_payload(payload, row, expected_values, expected_mask, expected_time, "global_daily_bars", issues, batch_index=batch_index, part_key=part_key)
             totals["bar_rows_checked"] += 1
+    if "ticker_intraday_bars" in batch.bar_inputs:
+        _check_intraday_bar_inputs(batch, row, part, origin_ordinal, origin_timestamp_us, issues, totals, batch_index=batch_index, part_key=part_key)
+
+
+def _check_intraday_bar_inputs(
+    batch: TickerMonthTrainingBatch,
+    row: int,
+    part: LoadedTickerMonthPart,
+    origin_ordinal: int,
+    origin_timestamp_us: int,
+    issues: list[AuditIssue],
+    totals: dict[str, int],
+    *,
+    batch_index: int,
+    part_key: str,
+) -> None:
+    payload = batch.bar_inputs["ticker_intraday_bars"]
+    frame = part.context.get("intraday_bars")
+    if frame is None:
+        issues.append(AuditIssue("error", "ticker_intraday_bars_not_loaded", "Batch has ticker intraday bars but source intraday_bars was not loaded.", {"batch": batch_index, "row": row, "source_part_key": part_key}))
+        return
+    if part.origins is None:
+        issues.append(AuditIssue("error", "ticker_intraday_bars_origin_missing", "Cannot audit intraday bars without source origins.", {"batch": batch_index, "row": row, "source_part_key": part_key}))
+        return
+    horizons = tuple(str(value) for value in np.asarray(payload.get("horizons", np.asarray([], dtype=object))).reshape(-1))
+    horizon_count = len(horizons)
+    if horizon_count <= 0:
+        issues.append(AuditIssue("error", "ticker_intraday_bars_horizon_missing", "Intraday bar payload has no horizon metadata.", {"batch": batch_index, "row": row, "source_part_key": part_key}))
+        return
+    try:
+        label_index = _prepare_label_context_index(part.origins, frame, horizon_count, strict=True, part_key=part_key)
+    except Exception as exc:
+        issues.append(AuditIssue("error", "ticker_intraday_bars_index_error", "Intraday bar context cannot be aligned to origins.", {"batch": batch_index, "row": row, "source_part_key": part_key, "error": str(exc)}))
+        return
+    origin_ordinals = part.origins.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)
+    origin_pos = int(np.searchsorted(origin_ordinals, int(origin_ordinal), side="left"))
+    if origin_pos >= int(origin_ordinals.shape[0]) or int(origin_ordinals[origin_pos]) != int(origin_ordinal):
+        issues.append(AuditIssue("error", "ticker_intraday_bars_origin_not_found", "Intraday bar source origin does not contain sampled ordinal.", {"batch": batch_index, "row": row, "source_part_key": part_key, "origin_ordinal": int(origin_ordinal)}))
+        return
+    if bool(label_index.missing_mask[origin_pos]):
+        issues.append(AuditIssue("error", "ticker_intraday_bars_row_missing", "Intraday bar context row is missing for sampled origin.", {"batch": batch_index, "row": row, "source_part_key": part_key, "origin_ordinal": int(origin_ordinal)}))
+        return
+    source_rows = np.asarray([int(label_index.label_rows[origin_pos])], dtype=np.int64)
+    start_ts = _label_column_matrix_for_rows(frame, "context_grid_start_timestamp_us", source_rows, horizon_count, np.dtype(np.int64))[0]
+    available = _label_column_matrix_for_rows(frame, "available", source_rows, horizon_count, np.dtype(np.bool_))[0]
+    absolute_time = _absolute_utc_time_feature_matrix(start_ts.reshape(-1)).reshape((horizon_count, -1))
+    age_days = np.maximum(0.0, (float(origin_timestamp_us) - start_ts.astype(np.float64)) / 86_400_000_000.0).astype(np.float32)
+    expected_time = np.concatenate([absolute_time, np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)], axis=-1).astype(np.float32, copy=False)
+    expected_time[~available] = 0.0
+    trade_expected_values = np.zeros((horizon_count, len(BAR_FEATURE_KEYS)), dtype=np.float32)
+    for family in BAR_FAMILY_KEYS:
+        fields = BAR_SOURCE_FEATURE_KEYS[family]
+        expected_values = np.zeros((horizon_count, len(fields)), dtype=np.float32)
+        for field_index, field_name in enumerate(fields):
+            expected_values[:, field_index] = _label_column_matrix_for_rows(frame, f"{family}_{field_name}", source_rows, horizon_count, np.dtype(np.float32))[0]
+        expected_mask = _label_column_matrix_for_rows(frame, f"{family}_available", source_rows, horizon_count, np.dtype(np.bool_))[0]
+        _compare_intraday_family_payload(payload, row, family, expected_values, expected_mask, expected_time, issues, batch_index=batch_index, part_key=part_key)
+        if family == "trade":
+            for output_field, source_field in (("open", "open"), ("close", "close"), ("high", "high"), ("low", "low"), ("size_sum", "size_sum"), ("event_count", "event_count")):
+                if output_field in BAR_FEATURE_KEYS and source_field in fields:
+                    trade_expected_values[:, BAR_FEATURE_KEYS.index(output_field)] = expected_values[:, fields.index(source_field)]
+    _compare_bar_payload(payload, row, trade_expected_values, available, expected_time, "ticker_intraday_bars", issues, batch_index=batch_index, part_key=part_key)
+    totals["intraday_bar_rows_checked"] += 1
+
+
+def _compare_intraday_family_payload(
+    payload: Mapping[str, np.ndarray],
+    row: int,
+    family: str,
+    expected_values: np.ndarray,
+    expected_mask: np.ndarray,
+    expected_time: np.ndarray,
+    issues: list[AuditIssue],
+    *,
+    batch_index: int,
+    part_key: str,
+) -> None:
+    values_key = f"{family}_values"
+    mask_key = f"{family}_mask"
+    time_key = f"{family}_time_features"
+    if values_key not in payload or mask_key not in payload:
+        issues.append(AuditIssue("error", "intraday_family_payload_missing", f"ticker_intraday_bars is missing {family} tensors.", {"batch": batch_index, "row": row, "source_part_key": part_key, "family": family}))
+        return
+    actual_values = payload[values_key][row]
+    actual_mask = payload[mask_key][row]
+    if actual_values.shape != expected_values.shape or not bool(np.allclose(actual_values, expected_values, rtol=0.0, atol=0.0, equal_nan=True)):
+        issues.append(AuditIssue("error", "intraday_family_value_mismatch", f"ticker_intraday_bars.{family}_values do not match source context bars.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual_shape": list(actual_values.shape), "expected_shape": list(expected_values.shape)}))
+    if actual_mask.shape != expected_mask.shape or not bool(np.array_equal(actual_mask, expected_mask)):
+        issues.append(AuditIssue("error", "intraday_family_mask_mismatch", f"ticker_intraday_bars.{family}_mask does not match source context bars.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual_shape": list(actual_mask.shape), "expected_shape": list(expected_mask.shape)}))
+    if time_key in payload:
+        expected_family_time = expected_time.copy()
+        expected_family_time[~expected_mask] = 0.0
+        actual_time = payload[time_key][row]
+        if actual_time.shape != expected_family_time.shape or not bool(np.allclose(actual_time, expected_family_time, rtol=1e-6, atol=1e-6, equal_nan=True)):
+            issues.append(AuditIssue("error", "intraday_family_time_mismatch", f"ticker_intraday_bars.{family}_time_features do not match source context bars.", {"batch": batch_index, "row": row, "source_part_key": part_key, "actual_shape": list(actual_time.shape), "expected_shape": list(expected_family_time.shape)}))
 
 
 def _expected_bar_values(index: Any, symbol: str, cutoff_ms: np.ndarray, origin_ms: np.ndarray, offsets: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

@@ -441,6 +441,8 @@ def month_manifest_payload(*, args: Any, cache_id: str, cache_root: Path, loaded
             "context_available_time_feature_columns": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
             "context_effective_time_feature_columns": list(CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS),
             "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
+            "intraday_context_horizons": [h.name for h in parse_horizons(getattr(args, "intraday_context_horizons", args.intraday_label_horizons))],
+            "intraday_context_semantics": "grid_aligned_completed_buckets_clipped_to_session_start",
             "intraday_label_semantics": "grid_aligned_next_bucket",
             "intraday_label_grid_resolutions_us": [100_000, 1_000_000, 5_000_000, 30_000_000, 60_000_000],
             "intraday_label_grid_policy": {

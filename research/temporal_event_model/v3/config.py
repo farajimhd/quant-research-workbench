@@ -11,6 +11,7 @@ DEFAULT_DATA_GROUPS = (
     "events",
     "intraday_labels",
     "corporate_action_labels",
+    "intraday_bars",
     "daily_bars",
     "global_daily_bars",
     "ticker_news_embeddings",

@@ -34,7 +34,7 @@ DEFAULT_PROFILE_CONFIG: dict[str, Any] = {
     "batch_size": 4096,
     "batches": 16,
     "seed": 17,
-    "data_groups": "events,intraday_labels,corporate_action_labels,daily_bars,global_daily_bars,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl,corporate_actions",
+    "data_groups": "events,intraday_labels,corporate_action_labels,intraday_bars,daily_bars,global_daily_bars,ticker_news_embeddings,market_news_embeddings,sec_filing_embeddings,xbrl,corporate_actions",
     "event_output_mode": "raw_stream",
     "event_columns": "",
     "suppress_event_columns": "ticker_id,ordinal,timestamp_us",

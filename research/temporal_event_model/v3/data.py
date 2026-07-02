@@ -84,6 +84,7 @@ def make_dummy_temporal_batch(
         "sec_filings": _dummy_text(b, config.sec_filing_items, config.sec_filing_chunks, config.text_embedding_dim, device),
     }
     bar_inputs = {
+        "ticker_intraday_bars": _dummy_bars(b, config.intraday_horizons, config.bar_feature_count, config.bar_time_feature_count, device),
         "ticker_daily_bars": _dummy_bars(b, config.ticker_bar_offsets, config.bar_feature_count, config.bar_time_feature_count, device),
         "global_daily_bars": _dummy_global_bars(b, config.global_symbols, config.global_bar_offsets, config.bar_feature_count, config.bar_time_feature_count, device),
     }

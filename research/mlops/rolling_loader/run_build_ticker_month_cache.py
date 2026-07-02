@@ -135,6 +135,7 @@ DEFAULTS: dict[str, Any] = {
     "corporate_action_lookback_days": 3650,
     "corporate_action_label_days": "1,2,3,7,28",
     "intraday_label_horizons": "100ms,200ms,300ms,400ms,500ms,1s,2s,3s,5s,10s,15s,30s,60s,120s,180s,300s,600s,900s,1200s,1800s,3600s,7200s,3h,4h,5h,eod",
+    "intraday_context_horizons": "100ms,200ms,300ms,400ms,500ms,1s,2s,3s,5s,10s,15s,30s,60s,120s,180s,300s,600s,900s,1200s,1800s,3600s,7200s,3h,4h,5h,eod",
     "refresh_seconds": 1.0,
     "profile_slow_seconds": 10.0,
 }
@@ -572,6 +573,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sec-filing-prior-items", type=int, default=DEFAULTS["sec_filing_prior_items"], help="Logical SEC filing text items saved before month start for as-of context.")
     parser.add_argument("--xbrl-prior-rows", type=int, default=DEFAULTS["xbrl_prior_rows"], help="XBRL fact rows saved before month start for as-of context.")
     parser.add_argument("--intraday-label-horizons", default=DEFAULTS["intraday_label_horizons"])
+    parser.add_argument("--intraday-context-horizons", default=DEFAULTS["intraday_context_horizons"])
     parser.add_argument("--skip-token-contexts", action="store_true", help="Skip text embedding context fetches. Name kept for compatibility with older token-cache builds.")
     parser.add_argument("--skip-xbrl", action="store_true")
     parser.add_argument("--skip-corporate-actions", action="store_true")
@@ -1246,13 +1248,14 @@ def _build_ticker_month_package(
             futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:xbrl_empty", lambda: _empty_frame())
         state.context_total = 5 - int(bool(args.skip_xbrl)) - int(bool(args.skip_corporate_actions))
         state.events_total = len(parts)
-        state.labels_total = len(parts)
+        state.labels_total = len(parts) * 2
         state.cpu_total = len(parts)
-        state.write_total = len(parts) * 6 + state.context_total
+        state.write_total = len(parts) * 7 + state.context_total
         total_events = 0
         total_origins = 0
         total_windows = 0
         total_labels = 0
+        total_intraday_context_bars = 0
         total_corporate_labels = 0
         skipped_history = 0
         skipped_gap = 0
@@ -1274,6 +1277,11 @@ def _build_ticker_month_package(
                 "label",
                 f"{month}:{ticker}:{part_name}:intraday_labels",
                 lambda part=part: _query_intraday_forward_labels(args, client_opts, config, window, ticker, part, month_min_ordinal),
+            )
+            intraday_context_future = lanes.submit(
+                "label",
+                f"{month}:{ticker}:{part_name}:intraday_context",
+                lambda part=part: _query_intraday_context_bars(args, client_opts, config, window, ticker, part, month_min_ordinal),
             )
             events = events_future.result()
             state.events_done += 1
@@ -1302,6 +1310,13 @@ def _build_ticker_month_package(
                 origins,
                 prefix=f"{month}:{ticker}:{part_name}",
             )
+            intraday_context = intraday_context_future.result()
+            state.labels_done += 1
+            intraday_context, intraday_context_filtered_out = _align_labels_to_origins(
+                intraday_context,
+                origins,
+                prefix=f"{month}:{ticker}:{part_name}:intraday_context",
+            )
             if corporate_actions is None:
                 corporate_actions = futures["corporate_actions"].result()
             corporate_labels = _build_corporate_action_daily_labels(
@@ -1329,6 +1344,7 @@ def _build_ticker_month_package(
                 "event_window_index": f"event_window_index_{part_name}.parquet",
                 "ranges": f"ranges_{part_name}.parquet",
                 "intraday_forward_labels": f"intraday_forward_labels_{part_name}.parquet",
+                "intraday_context_bars": f"intraday_context_bars_{part_name}.parquet",
                 "corporate_action_daily_labels": f"corporate_action_daily_labels_{part_name}.parquet",
             }
             writes = {
@@ -1337,6 +1353,7 @@ def _build_ticker_month_package(
                 "windows": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_windows", lambda windows=windows, path=tmp_dir / part_files["event_window_index"]: _write_parquet(windows, path)),
                 "ranges": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_ranges", lambda ranges=ranges, path=tmp_dir / part_files["ranges"]: _write_parquet(ranges, path)),
                 "labels": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_labels", lambda labels=labels, path=tmp_dir / part_files["intraday_forward_labels"]: _write_parquet(labels, path)),
+                "intraday_context": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_intraday_context", lambda bars=intraday_context, path=tmp_dir / part_files["intraday_context_bars"]: _write_parquet(bars, path)),
                 "corporate_labels": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_corporate_labels", lambda labels=corporate_labels, path=tmp_dir / part_files["corporate_action_daily_labels"]: _write_parquet(labels, path)),
             }
             for future in writes.values():
@@ -1346,6 +1363,7 @@ def _build_ticker_month_package(
             total_origins += int(origins.height)
             total_windows += int(windows.height)
             total_labels += int(labels.height)
+            total_intraday_context_bars += int(intraday_context.height)
             total_corporate_labels += int(corporate_labels.height)
             skipped_history += int(part_skipped_history)
             skipped_gap += int(part_skipped_gap)
@@ -1362,10 +1380,12 @@ def _build_ticker_month_package(
                         "origins": int(origins.height),
                         "event_windows": int(windows.height),
                         "intraday_forward_labels": int(labels.height),
+                        "intraday_context_bars": int(intraday_context.height),
                         "corporate_action_daily_labels": int(corporate_labels.height),
                         "skipped_not_enough_history": int(part_skipped_history),
                         "skipped_window_gap": int(part_skipped_gap),
                         "labels_filtered_out": int(labels_filtered_out),
+                        "intraday_context_filtered_out": int(intraday_context_filtered_out),
                         "inline_audit_samples": int(audit_samples),
                     },
                 }
@@ -1417,6 +1437,8 @@ def _build_ticker_month_package(
                 "default_event_window_index": True,
                 "max_origin_events_per_part": int(args.max_origin_events_per_part),
                 "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
+                "intraday_context_horizons": [h.name for h in parse_horizons(args.intraday_context_horizons)],
+                "intraday_context_semantics": "grid_aligned_completed_buckets_clipped_to_session_start",
                 "intraday_label_semantics": "grid_aligned_next_bucket",
                 "intraday_label_grid_resolutions_us": list(INTRADAY_LABEL_GRID_RESOLUTIONS_US),
                 "intraday_label_grid_policy": {
@@ -1444,6 +1466,7 @@ def _build_ticker_month_package(
                 "origins": int(total_origins),
                 "event_windows": int(total_windows),
                 "intraday_forward_labels": int(total_labels),
+                "intraday_context_bars": int(total_intraday_context_bars),
                 "corporate_action_daily_labels": int(total_corporate_labels),
                 "ticker_news_embeddings": int(ticker_news.height),
                 "sec_filing_embeddings": int(sec_filings.height),
@@ -1852,6 +1875,21 @@ def _query_intraday_forward_labels(
     return _query_intraday_forward_labels_asof(args, client_opts, config, window, ticker, horizons, part, month_min_ordinal)
 
 
+def _query_intraday_context_bars(
+    args: argparse.Namespace,
+    client_opts: Mapping[str, str],
+    config: RollingMarketDataConfig,
+    window: Any,
+    ticker: str,
+    part: OriginOrdinalPart,
+    month_min_ordinal: int,
+) -> Any:
+    horizons = parse_horizons(args.intraday_context_horizons)
+    if not horizons:
+        return _empty_frame()
+    return _query_intraday_context_bars_asof(args, client_opts, config, window, ticker, horizons, part, month_min_ordinal)
+
+
 def _is_eod_horizon(horizon: TimeBarHorizon) -> bool:
     return str(horizon.name).strip().lower() in {"eod", "end_of_day", "end-of-day"}
 
@@ -1986,6 +2024,299 @@ def _future_event_flag_tuple_items_sql() -> str:
 
 def _future_bar_tuple_items_sql() -> str:
     return ",\n            ".join(quote_ident(label_key) for label_key in FUTURE_BAR_LABEL_KEYS)
+
+
+def _query_intraday_context_bars_asof(
+    args: argparse.Namespace,
+    client_opts: Mapping[str, str],
+    config: RollingMarketDataConfig,
+    window: Any,
+    ticker: str,
+    horizons: list[TimeBarHorizon],
+    part: OriginOrdinalPart,
+    month_min_ordinal: int,
+) -> Any:
+    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    horizon_specs = _intraday_label_horizon_specs(horizons)
+    if not horizon_specs:
+        return _empty_frame()
+    horizon_tuples = ",\n        ".join(
+        "tuple("
+        f"{sql_string(name)}, "
+        f"toUInt64({int(horizon_us)}), "
+        f"toUInt64({int(resolution_us)}), "
+        f"toUInt64({int(bucket_count)}), "
+        f"toUInt8({int(is_eod)})"
+        ")"
+        for name, horizon_us, resolution_us, bucket_count, is_eod in horizon_specs
+    )
+    label_resolutions = ", ".join(f"toUInt64({int(value)})" for value in sorted({spec[2] for spec in horizon_specs}))
+    bar_array_start_index = 7
+    future_bar_array_select = _future_bar_array_select_sql(bar_array_start_index)
+    future_bar_tuple_items = _future_bar_tuple_items_sql()
+    query = f"""
+WITH
+    [{horizon_tuples}] AS horizons,
+    [{label_resolutions}] AS label_resolutions,
+    origins AS
+    (
+        SELECT
+            upper(ticker) AS ticker,
+            cityHash64(ticker) AS ticker_id,
+            ordinal AS origin_ordinal,
+            sip_timestamp_us AS origin_timestamp_us,
+            concat(upper(ticker), '|', toString(ordinal)) AS origin_key,
+            toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS origin_local_ts,
+            toDate(origin_local_ts) AS origin_local_date,
+            dateDiff('microsecond', toStartOfDay(origin_local_ts), origin_local_ts) AS local_session_us
+        FROM {table}
+        PREWHERE ticker = {sql_string(ticker)}
+          AND ordinal >= {int(part.origin_ordinal_start)}
+          AND ordinal <= {int(part.origin_ordinal_end)}
+          AND event_date >= toDate({sql_string(window.first_date.isoformat())})
+          AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
+        WHERE modulo(ordinal - {int(month_min_ordinal)}, {max(1, int(args.sample_stride_events))}) = 0
+          AND sip_timestamp_us >= {int(window.first_session_start_us)}
+          AND sip_timestamp_us < {int(window.last_session_end_us)}
+          AND toDate(origin_local_ts) >= toDate({sql_string(window.first_date.isoformat())})
+          AND toDate(origin_local_ts) < toDate({sql_string(window.next_month_date.isoformat())})
+          AND dateDiff('second', toStartOfDay(origin_local_ts), origin_local_ts) >= {SESSION_START_SECOND}
+          AND dateDiff('second', toStartOfDay(origin_local_ts), origin_local_ts) < {SESSION_END_SECOND}
+    ),
+    origin_horizons AS
+    (
+        SELECT
+            origin_key,
+            ticker_id,
+            ticker,
+            origin_ordinal,
+            origin_timestamp_us,
+            origin_local_date,
+            origin_timestamp_us - local_session_us AS local_midnight_timestamp_us,
+            tupleElement(horizon_tuple, 1) AS horizon,
+            tupleElement(horizon_tuple, 2) AS horizon_us,
+            tupleElement(horizon_tuple, 3) AS label_resolution_us,
+            tupleElement(horizon_tuple, 4) AS label_bucket_count,
+            tupleElement(horizon_tuple, 5) AS label_is_eod,
+            toInt64(intDiv(toUInt64({SESSION_START_SECOND * 1_000_000}), tupleElement(horizon_tuple, 3))) AS session_start_bucket,
+            toInt64(intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3))) - 1 AS last_context_bucket,
+            if(
+                tupleElement(horizon_tuple, 5) = 1,
+                toInt64(intDiv(toUInt64({SESSION_START_SECOND * 1_000_000}), tupleElement(horizon_tuple, 3))),
+                greatest(
+                    toInt64(intDiv(toUInt64({SESSION_START_SECOND * 1_000_000}), tupleElement(horizon_tuple, 3))),
+                    toInt64(intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3))) - toInt64(tupleElement(horizon_tuple, 4))
+                )
+            ) AS first_context_bucket,
+            local_midnight_timestamp_us + first_context_bucket * toInt64(tupleElement(horizon_tuple, 3)) AS context_grid_start_timestamp_us,
+            local_midnight_timestamp_us + (last_context_bucket + 1) * toInt64(tupleElement(horizon_tuple, 3)) AS context_grid_end_timestamp_us
+        FROM origins
+        ARRAY JOIN horizons AS horizon_tuple
+        ORDER BY ticker, origin_local_date, context_grid_end_timestamp_us, origin_ordinal, horizon_us
+    ),
+    label_events AS
+    (
+        SELECT
+            ticker,
+            ordinal,
+            sip_timestamp_us,
+            bitAnd(event_meta, 1) AS event_type,
+            toFloat32(if(price_primary_int > 0, price_primary_int / if(bitAnd(event_meta, 2) = 2, 10000.0, 100.0), 0.0)) AS price_primary,
+            toFloat32(if(price_secondary_int > 0, price_secondary_int / if(bitAnd(event_meta, 4) = 4, 10000.0, 100.0), 0.0)) AS price_secondary,
+            toFloat64(size_primary) AS size_primary,
+            toFloat64(size_secondary) AS size_secondary,
+            toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
+            toDate(ts_local) AS local_date,
+            dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
+            dateDiff('microsecond', toStartOfDay(ts_local), ts_local) AS local_session_us
+        FROM {table}
+        PREWHERE ticker = {sql_string(ticker)}
+          AND event_date >= toDate({sql_string(window.first_date.isoformat())})
+          AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
+        WHERE sip_timestamp_us >= {int(window.first_session_start_us)}
+          AND sip_timestamp_us <= {int(window.last_session_end_us)}
+          AND toDate(ts_local) >= toDate({sql_string(window.first_date.isoformat())})
+          AND toDate(ts_local) < toDate({sql_string(window.next_month_date.isoformat())})
+          AND local_second >= {SESSION_START_SECOND}
+          AND local_second < {SESSION_END_SECOND}
+    ),
+    label_family_events AS
+    (
+        SELECT ticker, local_date, local_session_us, sip_timestamp_us, ordinal, 'trade' AS bar_family, price_primary AS price, size_primary AS size
+        FROM label_events
+        WHERE event_type = 1 AND price_primary > 0 AND size_primary > 0
+        UNION ALL
+        SELECT ticker, local_date, local_session_us, sip_timestamp_us, ordinal, 'quote_bid' AS bar_family, price_secondary AS price, size_secondary AS size
+        FROM label_events
+        WHERE event_type = 0 AND price_secondary > 0 AND size_secondary > 0
+        UNION ALL
+        SELECT ticker, local_date, local_session_us, sip_timestamp_us, ordinal, 'quote_ask' AS bar_family, price_primary AS price, size_primary AS size
+        FROM label_events
+        WHERE event_type = 0 AND price_primary > 0 AND size_primary > 0
+    ),
+    base_bars AS
+    (
+        SELECT
+            ticker,
+            local_date,
+            label_resolution_us,
+            toInt64(intDiv(toUInt64(local_session_us), label_resolution_us)) AS bucket_index,
+            bar_family,
+            argMin(price, tuple(sip_timestamp_us, ordinal)) AS open,
+            argMax(price, tuple(sip_timestamp_us, ordinal)) AS close,
+            max(price) AS high,
+            min(price) AS low,
+            sum(size) AS size_sum,
+            argMin(size, tuple(sip_timestamp_us, ordinal)) AS size_open,
+            argMax(size, tuple(sip_timestamp_us, ordinal)) AS size_close,
+            max(size) AS size_high,
+            min(size) AS size_low,
+            count() AS event_count,
+            max(sip_timestamp_us) AS last_event_timestamp_us
+        FROM label_family_events
+        ARRAY JOIN label_resolutions AS label_resolution_us
+        GROUP BY ticker, local_date, label_resolution_us, bucket_index, bar_family
+    ),
+    context_bars AS
+    (
+        SELECT
+            o.origin_key AS origin_key,
+            o.horizon AS horizon,
+            o.horizon_us AS horizon_us,
+            o.label_resolution_us AS label_resolution_us,
+            o.context_grid_start_timestamp_us AS context_grid_start_timestamp_us,
+            o.context_grid_end_timestamp_us AS context_grid_end_timestamp_us,
+            argMinIf(b.open, b.bucket_index, b.bar_family = 'trade' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS trade_open,
+            argMaxIf(b.close, b.bucket_index, b.bar_family = 'trade' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS trade_close,
+            maxIf(b.high, b.bar_family = 'trade' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS trade_high,
+            minIf(b.low, b.bar_family = 'trade' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS trade_low,
+            sumIf(b.size_sum, b.bar_family = 'trade' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS trade_size_sum,
+            sumIf(b.event_count, b.bar_family = 'trade' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS trade_event_count,
+            argMinIf(b.open, b.bucket_index, b.bar_family = 'quote_bid' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_bid_open,
+            argMaxIf(b.close, b.bucket_index, b.bar_family = 'quote_bid' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_bid_close,
+            maxIf(b.high, b.bar_family = 'quote_bid' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_bid_high,
+            minIf(b.low, b.bar_family = 'quote_bid' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_bid_low,
+            argMinIf(b.size_open, b.bucket_index, b.bar_family = 'quote_bid' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_bid_size_open,
+            argMaxIf(b.size_close, b.bucket_index, b.bar_family = 'quote_bid' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_bid_size_close,
+            maxIf(b.size_high, b.bar_family = 'quote_bid' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_bid_size_high,
+            minIf(b.size_low, b.bar_family = 'quote_bid' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_bid_size_low,
+            sumIf(b.event_count, b.bar_family = 'quote_bid' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_bid_event_count,
+            argMinIf(b.open, b.bucket_index, b.bar_family = 'quote_ask' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_ask_open,
+            argMaxIf(b.close, b.bucket_index, b.bar_family = 'quote_ask' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_ask_close,
+            maxIf(b.high, b.bar_family = 'quote_ask' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_ask_high,
+            minIf(b.low, b.bar_family = 'quote_ask' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_ask_low,
+            argMinIf(b.size_open, b.bucket_index, b.bar_family = 'quote_ask' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_ask_size_open,
+            argMaxIf(b.size_close, b.bucket_index, b.bar_family = 'quote_ask' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_ask_size_close,
+            maxIf(b.size_high, b.bar_family = 'quote_ask' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_ask_size_high,
+            minIf(b.size_low, b.bar_family = 'quote_ask' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_ask_size_low,
+            sumIf(b.event_count, b.bar_family = 'quote_ask' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_ask_event_count,
+            maxIf(b.last_event_timestamp_us, b.bar_family = 'trade' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS trade_last_event_timestamp_us,
+            maxIf(b.last_event_timestamp_us, b.bar_family = 'quote_bid' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_bid_last_event_timestamp_us,
+            maxIf(b.last_event_timestamp_us, b.bar_family = 'quote_ask' AND b.bucket_index >= o.first_context_bucket AND b.bucket_index <= o.last_context_bucket) AS quote_ask_last_event_timestamp_us
+        FROM origin_horizons AS o
+        LEFT JOIN base_bars AS b
+            ON b.ticker = o.ticker
+           AND b.local_date = o.origin_local_date
+           AND b.label_resolution_us = o.label_resolution_us
+        GROUP BY
+            o.origin_key,
+            o.horizon,
+            o.horizon_us,
+            o.label_resolution_us,
+            o.context_grid_start_timestamp_us,
+            o.context_grid_end_timestamp_us
+    ),
+    context_rows AS
+    (
+        SELECT
+            o.origin_key,
+            o.ticker_id,
+            o.ticker,
+            o.origin_ordinal,
+            o.origin_timestamp_us,
+            o.horizon,
+            o.horizon_us,
+            o.label_resolution_us,
+            o.context_grid_start_timestamp_us,
+            o.context_grid_end_timestamp_us,
+            toFloat32(ifNull(b.trade_open, 0.0)) AS trade_open,
+            toFloat32(ifNull(b.trade_close, 0.0)) AS trade_close,
+            toFloat32(ifNull(b.trade_high, 0.0)) AS trade_high,
+            toFloat32(ifNull(b.trade_low, 0.0)) AS trade_low,
+            toFloat32(ifNull(b.trade_size_sum, 0.0)) AS trade_size_sum,
+            toUInt64(ifNull(b.trade_event_count, 0)) AS trade_event_count,
+            toFloat32(ifNull(b.quote_bid_open, 0.0)) AS quote_bid_open,
+            toFloat32(ifNull(b.quote_bid_close, 0.0)) AS quote_bid_close,
+            toFloat32(ifNull(b.quote_bid_high, 0.0)) AS quote_bid_high,
+            toFloat32(ifNull(b.quote_bid_low, 0.0)) AS quote_bid_low,
+            toFloat32(ifNull(b.quote_bid_size_open, 0.0)) AS quote_bid_size_open,
+            toFloat32(ifNull(b.quote_bid_size_close, 0.0)) AS quote_bid_size_close,
+            toFloat32(ifNull(b.quote_bid_size_high, 0.0)) AS quote_bid_size_high,
+            toFloat32(ifNull(b.quote_bid_size_low, 0.0)) AS quote_bid_size_low,
+            toUInt64(ifNull(b.quote_bid_event_count, 0)) AS quote_bid_event_count,
+            toFloat32(ifNull(b.quote_ask_open, 0.0)) AS quote_ask_open,
+            toFloat32(ifNull(b.quote_ask_close, 0.0)) AS quote_ask_close,
+            toFloat32(ifNull(b.quote_ask_high, 0.0)) AS quote_ask_high,
+            toFloat32(ifNull(b.quote_ask_low, 0.0)) AS quote_ask_low,
+            toFloat32(ifNull(b.quote_ask_size_open, 0.0)) AS quote_ask_size_open,
+            toFloat32(ifNull(b.quote_ask_size_close, 0.0)) AS quote_ask_size_close,
+            toFloat32(ifNull(b.quote_ask_size_high, 0.0)) AS quote_ask_size_high,
+            toFloat32(ifNull(b.quote_ask_size_low, 0.0)) AS quote_ask_size_low,
+            toUInt64(ifNull(b.quote_ask_event_count, 0)) AS quote_ask_event_count,
+            toUInt8(ifNull(b.trade_event_count, 0) > 0) AS trade_available,
+            toUInt8(ifNull(b.quote_bid_event_count, 0) > 0) AS quote_bid_available,
+            toUInt8(ifNull(b.quote_ask_event_count, 0) > 0) AS quote_ask_available,
+            toInt64(ifNull(b.trade_last_event_timestamp_us, 0)) AS trade_last_event_timestamp_us,
+            toInt64(ifNull(b.quote_bid_last_event_timestamp_us, 0)) AS quote_bid_last_event_timestamp_us,
+            toInt64(ifNull(b.quote_ask_last_event_timestamp_us, 0)) AS quote_ask_last_event_timestamp_us,
+            toUInt8(ifNull(b.trade_event_count, 0) > 0 OR ifNull(b.quote_bid_event_count, 0) > 0 OR ifNull(b.quote_ask_event_count, 0) > 0) AS available
+        FROM origin_horizons AS o
+        LEFT JOIN context_bars AS b
+            ON b.origin_key = o.origin_key
+           AND b.horizon_us = o.horizon_us
+    )
+SELECT
+    origin_key,
+    ticker_id,
+    ticker,
+    origin_ordinal,
+    origin_timestamp_us,
+    arrayMap(x -> tupleElement(x, 1), context_items) AS horizon,
+    arrayMap(x -> tupleElement(x, 2), context_items) AS horizon_us,
+    arrayMap(x -> tupleElement(x, 3), context_items) AS label_resolution_us,
+    arrayMap(x -> tupleElement(x, 4), context_items) AS context_grid_start_timestamp_us,
+    arrayMap(x -> tupleElement(x, 5), context_items) AS context_grid_end_timestamp_us,
+    arrayMap(x -> tupleElement(x, 6), context_items) AS available,
+    {future_bar_array_select}
+FROM
+(
+    SELECT
+        origin_key,
+        ticker_id,
+        ticker,
+        origin_ordinal,
+        origin_timestamp_us,
+        arraySort(x -> tupleElement(x, 2), groupArray(tuple(
+            horizon,
+            horizon_us,
+            label_resolution_us,
+            context_grid_start_timestamp_us,
+            context_grid_end_timestamp_us,
+            available,
+            {future_bar_tuple_items}
+        ))) AS context_items
+    FROM context_rows
+    GROUP BY
+        origin_key,
+        ticker_id,
+        ticker,
+        origin_ordinal,
+        origin_timestamp_us
+)
+ORDER BY origin_ordinal
+{_settings_sql(config)}
+"""
+    return query_polars(client_opts, query)
 
 
 def _query_intraday_forward_labels_asof(

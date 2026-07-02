@@ -52,6 +52,9 @@ utc/session time features
 
 Labels are grouped by task:
 
+- `bar_inputs["ticker_intraday_bars"]`: backward same-session intraday context
+  bars for `trade`, `quote_bid`, and `quote_ask`, aligned to the same horizon
+  list as intraday labels but clipped backward to the session start.
 - `future_bar_values`: separate `trade`, `quote_bid`, and `quote_ask` regression heads.
 - `intraday_labels`: halt/resume/news-risk/LULD and future news/SEC arrival flags.
 - `corporate_action_labels`: daily corporate-action classification horizons.

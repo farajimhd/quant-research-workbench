@@ -51,9 +51,11 @@ XBRL_CONTEXT_GROUPS = {"xbrl"}
 CORPORATE_ACTION_CONTEXT_GROUPS = {"corporate_actions"}
 CORPORATE_ACTION_LABEL_GROUPS = {"corporate_action_labels", "corporate_action_daily_labels"}
 BAR_CONTEXT_GROUPS = {"daily_bars", "global_daily_bars"}
+INTRADAY_BAR_CONTEXT_GROUPS = {"intraday_bars"}
 BAR_INPUT_GROUP_TO_KEY = {
     "daily_bars": "ticker_daily_bars",
     "global_daily_bars": "global_daily_bars",
+    "intraday_bars": "ticker_intraday_bars",
 }
 BAR_FEATURE_KEYS: tuple[str, ...] = (
     "open",
@@ -603,6 +605,7 @@ class TickerMonthPartReader:
         plan = loaded.plan
         need_events = bool({"events", "event_windows", "encoded_events"}.intersection(self.data_groups))
         need_labels = "intraday_labels" in self.data_groups or "labels" in self.data_groups
+        need_intraday_bars = "intraday_bars" in self.data_groups
         need_corporate_labels = bool(CORPORATE_ACTION_LABEL_GROUPS.intersection(self.data_groups))
         if need_events:
             loaded.events = pl.read_parquet(plan.package_dir / plan.files["events"])
@@ -610,9 +613,11 @@ class TickerMonthPartReader:
             loaded.windows = pl.read_parquet(plan.package_dir / plan.files["event_window_index"])
         if need_labels:
             loaded.labels = pl.read_parquet(plan.package_dir / plan.files["intraday_forward_labels"])
+        if need_intraday_bars and "intraday_context_bars" in plan.files:
+            loaded.context["intraday_bars"] = pl.read_parquet(plan.package_dir / plan.files["intraday_context_bars"])
         if need_corporate_labels and "corporate_action_daily_labels" in plan.files:
             loaded.context["corporate_action_daily_labels"] = pl.read_parquet(plan.package_dir / plan.files["corporate_action_daily_labels"])
-        if self.include_external_context or bool(TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).union(XBRL_CONTEXT_GROUPS).union(CORPORATE_ACTION_CONTEXT_GROUPS).intersection(self.data_groups)):
+        if self.include_external_context or bool(TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).union(INTRADAY_BAR_CONTEXT_GROUPS).union(XBRL_CONTEXT_GROUPS).union(CORPORATE_ACTION_CONTEXT_GROUPS).intersection(self.data_groups)):
             for key, filename in _package_context_files(plan.package_dir).items():
                 if key in self.data_groups:
                     loaded.context[key] = pl.read_parquet(plan.package_dir / filename)
@@ -739,11 +744,14 @@ class TickerMonthBatchMaterializer:
         profile["xbrl_seconds"] = time.perf_counter() - xbrl_start
         bar_start = time.perf_counter()
         bar_inputs, bar_profile = self._materialize_bar_inputs(parts, refs)
+        intraday_bar_inputs, intraday_bar_profile = self._materialize_intraday_bar_inputs(parts, refs)
+        bar_inputs.update(intraday_bar_inputs)
         for key, value in bar_inputs.items():
             bar_mask = value.get("mask")
             if bar_mask is not None:
                 availability[f"{key}_available"] = bar_mask.reshape((len(refs), -1)).any(axis=1)
         profile.update(bar_profile)
+        profile.update(intraday_bar_profile)
         profile["bar_seconds"] = time.perf_counter() - bar_start
         corporate_start = time.perf_counter()
         corporate_inputs, corporate_profile = self._materialize_corporate_action_inputs(parts, refs)
@@ -1170,6 +1178,103 @@ class TickerMonthBatchMaterializer:
                 return cached
             index = _prepare_corporate_action_context_index(frame)
             self._corporate_action_index_cache[key] = index
+            return index
+
+    def _materialize_intraday_bar_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
+        if "intraday_bars" not in self.config.data_groups:
+            return {}, {}
+        horizons = _cached_intraday_context_horizons(parts)
+        horizon_count = len(horizons)
+        batch = int(len(refs))
+        key = BAR_INPUT_GROUP_TO_KEY["intraday_bars"]
+        values = np.zeros((batch, horizon_count, len(BAR_FEATURE_KEYS)), dtype=np.float32)
+        mask = np.zeros((batch, horizon_count), dtype=np.bool_)
+        time_features = np.zeros((batch, horizon_count, len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
+        family_values = {
+            family: np.zeros((batch, horizon_count, len(BAR_SOURCE_FEATURE_KEYS[family])), dtype=np.float32)
+            for family in BAR_FAMILY_KEYS
+        }
+        family_masks = {
+            family: np.zeros((batch, horizon_count), dtype=np.bool_)
+            for family in BAR_FAMILY_KEYS
+        }
+        family_time_features = {
+            family: np.zeros((batch, horizon_count, len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
+            for family in BAR_FAMILY_KEYS
+        }
+        profile: dict[str, float | int] = {
+            "intraday_bar_lookup_seconds": 0.0,
+            "intraday_bar_gather_seconds": 0.0,
+        }
+        if horizon_count <= 0 or batch <= 0:
+            return {key: _intraday_bar_payload(values, mask, time_features, family_values, family_masks, family_time_features, horizons)}, profile
+        origin_timestamps = _identity_arrays(parts, refs)[2]
+        for part_index, rows in _rows_by_part(refs).items():
+            part = parts[int(part_index)]
+            frame = part.context.get("intraday_bars")
+            if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+                if self.config.strict_audit:
+                    raise RuntimeError(f"Missing intraday context bars for {part.plan.month}:{part.plan.ticker}:part_{part.plan.part_id:05d}.")
+                continue
+            origin_rows = _origin_rows_for_refs(refs, rows)
+            lookup_start = time.perf_counter()
+            label_index = self._label_context_index_for_frame(part, frame, horizon_count)
+            max_origin_row = int(origin_rows.max()) if int(origin_rows.shape[0]) else -1
+            if label_index.row_count < max_origin_row + 1:
+                raise RuntimeError(f"Origin/intraday-bar index length mismatch for {part.plan.month}:{part.plan.ticker}:part_{part.plan.part_id:05d}.")
+            missing = label_index.missing_mask[origin_rows]
+            found = ~missing
+            profile["intraday_bar_lookup_seconds"] = float(profile["intraday_bar_lookup_seconds"]) + (time.perf_counter() - lookup_start)
+            if self.config.strict_audit and not bool(found.all()):
+                missing_pos = int(np.flatnonzero(~found)[0])
+                origin = int(part.origin_array("origin_ordinal")[int(origin_rows[missing_pos])])
+                raise RuntimeError(f"Missing intraday context bars for {part.plan.month}:{part.plan.ticker}|{origin}.")
+            if not np.any(found):
+                continue
+            output_rows = rows[found]
+            source_indices = label_index.label_rows[origin_rows[found]]
+            gather_start = time.perf_counter()
+            start_ts = _label_column_matrix_for_rows(frame, "context_grid_start_timestamp_us", source_indices, horizon_count, np.dtype(np.int64))
+            selected_mask = _label_column_matrix_for_rows(frame, "available", source_indices, horizon_count, np.dtype(np.bool_))
+            absolute_time = _absolute_utc_time_feature_matrix(start_ts.reshape(-1)).reshape((int(output_rows.shape[0]), horizon_count, -1))
+            age_days = np.maximum(0.0, (origin_timestamps[output_rows, None].astype(np.float64) - start_ts.astype(np.float64)) / 86_400_000_000.0).astype(np.float32)
+            relative_time = np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)
+            gathered_time = np.concatenate([absolute_time, relative_time], axis=-1).astype(np.float32, copy=False)
+            gathered_time[~selected_mask] = 0.0
+            time_features[output_rows] = gathered_time
+            mask[output_rows] = selected_mask
+            for family in BAR_FAMILY_KEYS:
+                fields = BAR_SOURCE_FEATURE_KEYS[family]
+                for field_index, field_name in enumerate(fields):
+                    family_values[family][output_rows, :, field_index] = _label_column_matrix_for_rows(
+                        frame,
+                        f"{family}_{field_name}",
+                        source_indices,
+                        horizon_count,
+                        np.dtype(np.float32),
+                    )
+                family_mask = _label_column_matrix_for_rows(frame, f"{family}_available", source_indices, horizon_count, np.dtype(np.bool_))
+                family_masks[family][output_rows] = family_mask
+                family_time = gathered_time.copy()
+                family_time[~family_mask] = 0.0
+                family_time_features[family][output_rows] = family_time
+                if family == "trade":
+                    trade_fields = list(fields)
+                    for output_field, source_field in (("open", "open"), ("close", "close"), ("high", "high"), ("low", "low"), ("size_sum", "size_sum"), ("event_count", "event_count")):
+                        if output_field in BAR_FEATURE_KEYS and source_field in trade_fields:
+                            values[output_rows, :, BAR_FEATURE_KEYS.index(output_field)] = family_values[family][output_rows, :, trade_fields.index(source_field)]
+            profile["intraday_bar_gather_seconds"] = float(profile["intraday_bar_gather_seconds"]) + (time.perf_counter() - gather_start)
+        payload = _intraday_bar_payload(values, mask, time_features, family_values, family_masks, family_time_features, horizons)
+        return {key: payload}, profile
+
+    def _label_context_index_for_frame(self, part: LoadedTickerMonthPart, frame: Any, horizon_count: int) -> LabelContextIndex:
+        key = (id(part.origins), id(frame), int(horizon_count))
+        with self._label_index_lock:
+            cached = self._label_index_cache.get(key)
+            if cached is not None:
+                return cached
+            index = _prepare_label_context_index(part.origins, frame, int(horizon_count), strict=bool(self.config.strict_audit), part_key=_part_key(part.plan))
+            self._label_index_cache[key] = index
             return index
 
     def _materialize_corporate_action_labels(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, np.ndarray], tuple[int, ...], dict[str, float | int]]:
@@ -2828,6 +2933,45 @@ def _cached_horizons(parts: Sequence[LoadedTickerMonthPart]) -> tuple[str, ...]:
         if horizons:
             return tuple(str(item) for item in horizons)
     return ()
+
+
+def _cached_intraday_context_horizons(parts: Sequence[LoadedTickerMonthPart]) -> tuple[str, ...]:
+    for part in parts:
+        horizons = part.plan.config.get("intraday_context_horizons") or ()
+        if horizons:
+            return tuple(str(item) for item in horizons)
+    for part in parts:
+        frame = part.context.get("intraday_bars")
+        if frame is None or int(getattr(frame, "height", 0) or 0) <= 0 or "horizon" not in getattr(frame, "columns", ()):
+            continue
+        row = frame.row(0, named=True)
+        return tuple(str(item) for item in (row.get("horizon") or ()))
+    return ()
+
+
+def _intraday_bar_payload(
+    values: np.ndarray,
+    mask: np.ndarray,
+    time_features: np.ndarray,
+    family_values: dict[str, np.ndarray],
+    family_masks: dict[str, np.ndarray],
+    family_time_features: dict[str, np.ndarray],
+    horizons: tuple[str, ...],
+) -> dict[str, np.ndarray]:
+    payload: dict[str, np.ndarray] = {
+        "values": values,
+        "mask": mask,
+        "time_features": time_features,
+        "time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
+        "horizons": np.asarray(horizons, dtype=object),
+        "feature_names": np.asarray(BAR_FEATURE_KEYS, dtype=object),
+    }
+    for family in BAR_FAMILY_KEYS:
+        payload[f"{family}_values"] = family_values[family]
+        payload[f"{family}_mask"] = family_masks[family]
+        payload[f"{family}_time_features"] = family_time_features[family]
+        payload[f"{family}_feature_names"] = np.asarray(BAR_SOURCE_FEATURE_KEYS[family], dtype=object)
+    return payload
 
 
 def _cached_corporate_action_label_days(parts: Sequence[LoadedTickerMonthPart]) -> tuple[int, ...]:

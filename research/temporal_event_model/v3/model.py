@@ -31,12 +31,13 @@ class TemporalEventModelV3(nn.Module):
         self.config = config
         d = int(config.d_model)
         self.event_encoder = EventEncoder(config)
+        self.intraday_bar_encoder = BarContextEncoder(config)
         self.ticker_bar_encoder = BarContextEncoder(config)
         self.global_bar_encoder = BarContextEncoder(config)
         self.text_encoder = TextContextEncoder(config)
         self.xbrl_encoder = XbrlEncoder(config)
         self.corporate_action_encoder = CorporateActionEncoder(config)
-        self.modality_embedding = nn.Parameter(torch.zeros(8, d))
+        self.modality_embedding = nn.Parameter(torch.zeros(9, d))
         fusion_layer = nn.TransformerEncoderLayer(
             d_model=d,
             nhead=int(config.fusion_heads),
@@ -67,6 +68,7 @@ class TemporalEventModelV3(nn.Module):
         device = event_token.device
         tokens = [
             event_token,
+            self.intraday_bar_encoder(x.get("bar_inputs", {}).get("ticker_intraday_bars", {})),
             self.ticker_bar_encoder(x.get("bar_inputs", {}).get("ticker_daily_bars", {})),
             self.global_bar_encoder(x.get("bar_inputs", {}).get("global_daily_bars", {})),
             self.text_encoder(x.get("text_inputs", {}).get("ticker_news", {}), group="ticker_news"),
@@ -98,9 +100,13 @@ class TemporalEventModelV3(nn.Module):
         return self.event_encoder(x)
 
     @torch.inference_mode()
-    def encode_bars(self, x: Mapping[str, Any]) -> tuple[torch.Tensor, torch.Tensor]:
+    def encode_bars(self, x: Mapping[str, Any]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         bars = x.get("bar_inputs", {})
-        return self.ticker_bar_encoder(bars.get("ticker_daily_bars", {})), self.global_bar_encoder(bars.get("global_daily_bars", {}))
+        return (
+            self.intraday_bar_encoder(bars.get("ticker_intraday_bars", {})),
+            self.ticker_bar_encoder(bars.get("ticker_daily_bars", {})),
+            self.global_bar_encoder(bars.get("global_daily_bars", {})),
+        )
 
     @torch.inference_mode()
     def encode_text(self, x: Mapping[str, Any]) -> dict[str, torch.Tensor]:
@@ -388,6 +394,7 @@ def _init_weights(module: nn.Module) -> None:
 def build_model_mermaid() -> str:
     return """flowchart LR
   B["Ticker-month batch"] --> E["Event encoder"]
+  B --> IB["Ticker intraday bar encoder"]
   B --> TB["Ticker daily-bar encoder"]
   B --> GB["Global daily-bar encoder"]
   B --> TN["Ticker-news embedding encoder"]
@@ -396,6 +403,7 @@ def build_model_mermaid() -> str:
   B --> X["XBRL set encoder"]
   B --> CA["Corporate-action set encoder"]
   E --> F["Fusion transformer"]
+  IB --> F
   TB --> F
   GB --> F
   TN --> F
