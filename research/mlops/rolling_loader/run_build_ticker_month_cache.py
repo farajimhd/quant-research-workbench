@@ -800,6 +800,7 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGINT, previous_sigint)
         if stats.interrupted or stats.stop_requested:
             cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
+        remaining_active_queries = ACTIVE_QUERIES.snapshot() if (stats.interrupted or stats.stop_requested) else {}
         if package_executor is not None:
             package_executor.shutdown(wait=False, cancel_futures=True)
         if lanes is not None:
@@ -813,6 +814,17 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout = original_stdout
         sys.stderr = original_stderr
         log_handle.close()
+        if remaining_active_queries:
+            exit_code = 130 if stats.interrupted else 1
+            try:
+                original_stderr.write(
+                    f"\nForcing process exit with {len(remaining_active_queries)} ClickHouse "
+                    f"quer{'y' if len(remaining_active_queries) == 1 else 'ies'} still unwinding.\n"
+                )
+                original_stderr.flush()
+            except Exception:
+                pass
+            os._exit(exit_code)
 
 
 def _resolve_months(args: argparse.Namespace) -> tuple[str, ...]:
@@ -2090,10 +2102,10 @@ WITH
             ticker_id,
             ticker,
             origin_ordinal,
-            origin_timestamp_us,
+            toUInt64(origin_timestamp_us) AS origin_timestamp_us,
             origin_local_date,
             local_session_us,
-            origin_timestamp_us - local_session_us AS local_midnight_timestamp_us,
+            toInt64(origin_timestamp_us) - toInt64(local_session_us) AS local_midnight_timestamp_us,
             tupleElement(horizon_tuple, 1) AS horizon,
             tupleElement(horizon_tuple, 2) AS horizon_us,
             tupleElement(horizon_tuple, 3) AS label_resolution_us,
@@ -2109,12 +2121,12 @@ WITH
                     toInt64(intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3))) - toInt64(tupleElement(horizon_tuple, 4))
                 )
             ) AS first_context_bucket,
-            local_midnight_timestamp_us + first_context_bucket * toInt64(tupleElement(horizon_tuple, 3)) AS context_grid_start_timestamp_us,
-            if(
+            toUInt64(local_midnight_timestamp_us + first_context_bucket * toInt64(tupleElement(horizon_tuple, 3))) AS context_grid_start_timestamp_us,
+            toUInt64(if(
                 last_context_bucket < session_start_bucket,
-                origin_timestamp_us,
+                toInt64(origin_timestamp_us),
                 local_midnight_timestamp_us + (last_context_bucket + 1) * toInt64(tupleElement(horizon_tuple, 3))
-            ) AS context_grid_end_timestamp_us
+            )) AS context_grid_end_timestamp_us
         FROM origins
         ARRAY JOIN horizons AS horizon_tuple
         ORDER BY ticker, origin_local_date, context_grid_end_timestamp_us, origin_ordinal, horizon_us
