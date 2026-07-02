@@ -105,7 +105,7 @@ def main() -> None:
     run_started = time.perf_counter()
     logger = RuntimeLogger.from_env()
     record = ReferenceRunRecord(config=config, write_policy=write_policy)
-    terminal = ReferenceTerminalSession(record) if rich_output else None
+    terminal = ReferenceTerminalSession(record, screen=config.terminal_screen_enabled) if rich_output else None
     if terminal is not None:
         terminal.start()
         atexit.register(terminal.stop)

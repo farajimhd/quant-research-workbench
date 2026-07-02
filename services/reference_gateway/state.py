@@ -72,7 +72,7 @@ def collect_source_states(client: ClickHouseHttpClient, *, database: str) -> lis
         coverage = coverage_text(row.get("min_start"), row.get("max_end"), row.get("windows"))
         detail = f"latest={latest_status or '-'}"
         if rows_failed:
-            detail += f"; failed_rows={rows_failed:,}"
+            detail += f"; historical_failed_attempts={rows_failed:,}"
         states.append(ReferenceSourceState(label, status, coverage, rows_written, targets, f"{note}; {detail}"))
 
     for planned_table in sorted(PLANNED_PUBLICATION_TABLES):
@@ -176,12 +176,14 @@ def table_exists(client: ClickHouseHttpClient, database: str, table_name: str) -
 
 def coverage_status(latest_status: str, coverage_end: date | None, today: date, rows_failed: int) -> str:
     lowered = latest_status.lower()
-    if rows_failed or lowered in {"failed", "error"}:
+    if lowered in {"failed", "error"}:
         return "failed"
     if lowered in {"source_not_historical", "source_not_yet_available"}:
         return "planned"
     if coverage_end is None:
         return "missing"
+    if rows_failed:
+        return "warning"
     if coverage_end < today:
         return "stale"
     return "ok"

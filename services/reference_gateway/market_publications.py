@@ -379,11 +379,29 @@ def insert_publication_coverage(
         "rows_failed": max(0, int(rows_failed)),
         "started_at_utc": dt64(started_at_utc),
         "finished_at_utc": dt64(finished_at_utc) if finished_at_utc else None,
-        "details_json": json.dumps(details, sort_keys=True, separators=(",", ":"), default=str),
+        "details_json": json.dumps(sanitize_publication_details(details), sort_keys=True, separators=(",", ":"), default=str),
         "source_run_id": source_run_id,
         "inserted_at": dt64(now),
     }
     client.execute(f"INSERT INTO {table(database, 'market_reference_publication_coverage_v1')} FORMAT JSONEachRow\n{json.dumps(row, separators=(',', ':'))}")
+
+
+def sanitize_publication_details(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): sanitize_publication_details(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_publication_details(item) for item in value]
+    if isinstance(value, tuple):
+        return [sanitize_publication_details(item) for item in value]
+    if isinstance(value, str):
+        return redact_secret_text(value)
+    return value
+
+
+def redact_secret_text(value: str) -> str:
+    text = str(value)
+    text = re.sub(r"([?&](?:apiKey|api_key|token|apikey)=)[^&'\"\s)]+", r"\1redacted", text, flags=re.IGNORECASE)
+    return re.sub(r"((?:apiKey|api_key|token|apikey)['\"]?\s*[:=]\s*['\"]?)[^'\"&\s,)]+", r"\1redacted", text, flags=re.IGNORECASE)
 
 
 def merge_date_intervals(intervals: list[tuple[date, date]]) -> list[tuple[date, date]]:

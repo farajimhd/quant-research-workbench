@@ -76,7 +76,9 @@ MASSIVE_SOURCE_SPECS = {
         "coverage_kind": "massive_ipos",
         "source_object": "ipos",
         "target_table": "market_ipo_v1",
-        "sort": "listing_date.asc",
+        "sort": "listing_date",
+        "order": "asc",
+        "limit": "1000",
     },
 }
 IMPLEMENTED_SOURCES = {
@@ -318,13 +320,22 @@ def run_date_source(
                 rows_written = 0
                 rows_failed = 0
                 status = "covered_empty"
-                details = {"message": str(exc), "target_table": "market_short_volume_v1", "missing_file": True}
+                details = {"message": safe_exception_text(exc), "target_table": "market_short_volume_v1", "missing_file": True}
             except Exception as exc:  # noqa: BLE001
                 rows = []
                 rows_written = 0
-                rows_failed = 1
-                status = "failed"
-                details = {"error": repr(exc), "target_table": "market_short_volume_v1"}
+                if is_source_not_yet_available(coverage_kind, day, exc):
+                    rows_failed = 0
+                    status = "source_not_yet_available"
+                    details = {
+                        "message": safe_exception_text(exc),
+                        "target_table": "market_short_volume_v1",
+                        "reason": "provider_file_not_published_yet",
+                    }
+                else:
+                    rows_failed = 1
+                    status = "failed"
+                    details = {"error": safe_exception_text(exc), "target_table": "market_short_volume_v1"}
             finished = datetime.now(UTC)
             result = SourceResult(
                 source=source_object,
@@ -698,7 +709,7 @@ def run_massive_date_source(
             written = 0
             failed = 1
             status = "failed"
-            details = {"error": repr(exc), "target_table": spec["target_table"], "source": source}
+            details = {"error": safe_exception_text(exc), "target_table": spec["target_table"], "source": source}
         finished = datetime.now(UTC)
         result = SourceResult(source, coverage_kind, gap.start_date, gap.end_date, len(provider_rows), written, failed, status, details)
         results.append(result)
@@ -735,10 +746,12 @@ def fetch_massive_date_rows(args: argparse.Namespace, spec: dict[str, str], star
     params = {
         f"{date_field}.gte": start_date.isoformat(),
         f"{date_field}.lt": end_date.isoformat(),
-        "limit": "5000",
+        "limit": str(spec.get("limit") or "5000"),
         "sort": spec["sort"],
         "apiKey": api_key,
     }
+    if spec.get("order"):
+        params["order"] = str(spec["order"])
     url = "https://api.massive.com" + spec["endpoint"] + "?" + parse.urlencode(params)
     rows, pages, saturated = fetch_massive_paginated(args, url, api_key)
     digest = sha256_bytes(json.dumps(rows, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"))
@@ -1350,6 +1363,15 @@ def safe_url(url: str) -> str:
 def safe_exception_text(exc: Exception) -> str:
     text = repr(exc)
     return re.sub(r"([?&](?:apiKey|api_key|token)=)[^&'\"\s)]+", r"\1redacted", text, flags=re.IGNORECASE)
+
+
+def is_source_not_yet_available(coverage_kind: str, day: date, exc: Exception) -> bool:
+    if not coverage_kind.startswith("finra_short_volume:"):
+        return False
+    text = safe_exception_text(exc).lower()
+    if "http 403" not in text and "access denied" not in text:
+        return False
+    return day >= datetime.now(UTC).date()
 
 
 def default_user_agent() -> str:

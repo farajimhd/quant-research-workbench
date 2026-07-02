@@ -52,11 +52,10 @@ class ReferenceTerminalSession:
         self.live = Live(
             render_reference_dashboard(record),
             console=self.console,
-            auto_refresh=True,
+            auto_refresh=False,
             transient=False,
             screen=screen,
             vertical_overflow="crop",
-            refresh_per_second=2,
         )
         self.started = False
         self.last_update_at = 0.0
@@ -69,10 +68,9 @@ class ReferenceTerminalSession:
 
     def update(self) -> None:
         if self.started:
-            self.live.update(render_reference_dashboard(self.record), refresh=False)
             now = time.monotonic()
             if now - self.last_update_at >= 0.5:
-                self.live.refresh()
+                self.live.update(render_reference_dashboard(self.record), refresh=True)
                 self.last_update_at = now
 
     def stop(self) -> None:
@@ -91,6 +89,7 @@ def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
     terminal_width, terminal_height = shutil.get_terminal_size((140, 44))
     compact = terminal_height < 34
     narrow = terminal_width < 190
+    roomy = terminal_width >= 190 and terminal_height >= 62
     if compact:
         return Group(
             header_panel(record),
@@ -98,18 +97,18 @@ def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
             overview_panel(record),
             source_sync_panel(record, compact=True),
             source_coverage_panel(record, limit=8),
-            reference_tables_panel(record, limit=6),
+            reference_tables_panel(record, limit=6, detail_rows=False),
             guardrail_maintenance_panel(record, compact=True),
             audit_aggregate_panel(record, limit=3),
         )
-    if narrow:
+    if narrow or not roomy:
         return Group(
             header_panel(record),
             current_operation_panel(record),
             overview_panel(record),
             source_sync_panel(record, compact=True),
             source_coverage_panel(record, limit=12),
-            reference_tables_panel(record, limit=9),
+            reference_tables_panel(record, limit=9, detail_rows=False),
             guardrail_maintenance_panel(record, compact=True),
             operations_panel(record.operations, limit=8),
             audit_aggregate_panel(record, limit=4),
@@ -120,7 +119,7 @@ def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
         overview_panel(record),
         source_sync_panel(record, compact=False),
         source_coverage_panel(record, limit=20),
-        reference_tables_panel(record, limit=12),
+        reference_tables_panel(record, limit=12, detail_rows=True),
         guardrail_maintenance_panel(record, compact=False),
         operations_panel(record.operations, limit=10),
         audit_aggregate_panel(record, limit=4),
@@ -281,20 +280,38 @@ def source_coverage_panel(record: ReferenceRunRecord, *, limit: int) -> Panel:
     return Panel(table, title="Source Coverage", box=box.ROUNDED, border_style=source_state_color(record.source_states), padding=(0, 1))
 
 
-def reference_tables_panel(record: ReferenceRunRecord, *, limit: int) -> Panel:
+def reference_tables_panel(record: ReferenceRunRecord, *, limit: int, detail_rows: bool) -> Panel:
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
     table.add_column("Group", style="cyan", no_wrap=True, width=28)
     table.add_column("Group Status", no_wrap=True, width=12)
     table.add_column("Tables", justify="right", no_wrap=True, width=8)
-    table.add_column("Table", overflow="fold", ratio=1)
-    table.add_column("Table Status", no_wrap=True, width=12)
-    table.add_column("Table Rows", justify="right", no_wrap=True, width=12)
-    table.add_column("Latest Update", no_wrap=True, width=20)
+    if detail_rows:
+        table.add_column("Table", overflow="fold", ratio=1)
+        table.add_column("Table Status", no_wrap=True, width=12)
+        table.add_column("Table Rows", justify="right", no_wrap=True, width=12)
+        table.add_column("Latest Update", no_wrap=True, width=20)
+    else:
+        table.add_column("Rows", justify="right", no_wrap=True, width=13)
+        table.add_column("Latest Update", no_wrap=True, width=20)
+        table.add_column("Contents", overflow="fold", ratio=1)
     states = record.table_states[:limit]
     if not states:
-        table.add_row("reference tables", style_status("waiting"), "-", "-", "-", "-", "Table state has not been inspected yet.")
+        if detail_rows:
+            table.add_row("reference tables", style_status("waiting"), "-", "-", "-", "-", "Table state has not been inspected yet.")
+        else:
+            table.add_row("reference tables", style_status("waiting"), "-", "-", "-", "Table state has not been inspected yet.")
     for state in states:
         details = state.details or ()
+        if not detail_rows:
+            table.add_row(
+                state.group_id,
+                style_status(state.status),
+                f"{state.tables_present}/{state.tables_total}",
+                fmt(state.rows),
+                compact_datetime(state.latest_update),
+                table_detail_summary(details),
+            )
+            continue
         if not details:
             table.add_row(
                 state.group_id,
@@ -318,7 +335,10 @@ def reference_tables_panel(record: ReferenceRunRecord, *, limit: int) -> Panel:
             )
     hidden = max(0, len(record.table_states) - limit)
     if hidden:
-        table.add_row("[dim]more[/dim]", "-", fmt(hidden), "-", "-", "-", "Additional table groups hidden in compact terminal view.")
+        if detail_rows:
+            table.add_row("[dim]more[/dim]", "-", fmt(hidden), "-", "-", "-", "Additional table groups hidden in compact terminal view.")
+        else:
+            table.add_row("[dim]more[/dim]", "-", fmt(hidden), "-", "-", "Additional table groups hidden in compact terminal view.")
     return Panel(table, title="Reference Table State", box=box.ROUNDED, border_style=table_state_color(record.table_states), padding=(0, 1))
 
 
@@ -485,6 +505,18 @@ def compact_datetime(value: str) -> str:
     if not text or text == "-":
         return "-"
     return text.replace("T", " ")[:19]
+
+
+def table_detail_summary(details: tuple[Any, ...]) -> str:
+    if not details:
+        return "-"
+    visible = []
+    for detail in details[:8]:
+        visible.append(f"{detail.table_name}:{fmt(detail.rows)}")
+    hidden = len(details) - len(visible)
+    if hidden > 0:
+        visible.append(f"+{hidden} more")
+    return "; ".join(visible)
 
 
 def fmt(value: Any) -> str:

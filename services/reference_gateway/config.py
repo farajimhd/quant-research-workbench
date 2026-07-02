@@ -67,6 +67,7 @@ class ReferenceGatewayConfig:
     market_publication_gap_fill_enabled: bool
     market_publication_gap_fill_days: int
     terminal_rich_enabled: bool
+    terminal_screen_enabled: bool
     terminal_refresh_seconds: float
 
     @classmethod
@@ -145,6 +146,7 @@ class ReferenceGatewayConfig:
             market_publication_gap_fill_enabled=not maintenance_skip,
             market_publication_gap_fill_days=env_int("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_DAYS", 14),
             terminal_rich_enabled=env_bool_auto("REFERENCE_GATEWAY_TERMINAL_RICH_ENABLED", sys.stdout.isatty()),
+            terminal_screen_enabled=env_bool("REFERENCE_GATEWAY_TERMINAL_SCREEN_ENABLED", True),
             terminal_refresh_seconds=env_float("REFERENCE_GATEWAY_TERMINAL_REFRESH_SECONDS", 1.0),
         )
 
@@ -208,6 +210,7 @@ class ReferenceGatewayConfig:
             },
             "terminal": {
                 "rich_enabled": self.terminal_rich_enabled,
+                "screen_enabled": self.terminal_screen_enabled,
                 "refresh_seconds": self.terminal_refresh_seconds,
             },
         }
