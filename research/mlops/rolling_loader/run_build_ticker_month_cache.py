@@ -1075,8 +1075,8 @@ def _query_intraday_condition_events(args: argparse.Namespace, client_opts: Mapp
     table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
     condition_token_aliases = _condition_token_array_aliases_sql(config)
     condition_event_select = _future_condition_event_select_sql()
-    condition_columns = ",\n    ".join(quote_ident(key) for key in FUTURE_CONDITION_LABEL_KEYS)
-    condition_filter = " OR ".join(f"{quote_ident(key)} > 0" for key in FUTURE_CONDITION_LABEL_KEYS)
+    condition_columns = ",\n    ".join(f"{quote_ident(key + '_event')} AS {quote_ident(key)}" for key in FUTURE_CONDITION_LABEL_KEYS)
+    condition_filter = " OR ".join(f"{quote_ident(key + '_event')} > 0" for key in FUTURE_CONDITION_LABEL_KEYS)
     query = f"""
 WITH
     {condition_token_aliases}
