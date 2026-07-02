@@ -272,6 +272,10 @@ ACTIVE_QUERIES = ActiveQueryRegistry()
 QUERY_CONTEXT = threading.local()
 
 
+def _clickhouse_query_id_prefix() -> str:
+    return f"rolling_ticker_month_{os.getpid()}_"
+
+
 class TeeStream:
     def __init__(self, primary: Any, log_handle: Any) -> None:
         self.primary = primary
@@ -665,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception as exc:
                     stats.log_event("interrupt_dashboard_refresh_failed", error=repr(exc))
             cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
+            cancel_process_clickhouse_queries(client_opts=client_opts, stats=stats, reason="ctrl_c")
             raise KeyboardInterrupt
 
         signal.signal(signal.SIGINT, request_stop)
@@ -807,6 +812,7 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGINT, previous_sigint)
         if stats.interrupted or stats.stop_requested:
             cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
+            cancel_process_clickhouse_queries(client_opts=client_opts, stats=stats, reason="final_cleanup")
         remaining_active_queries = ACTIVE_QUERIES.snapshot() if (stats.interrupted or stats.stop_requested) else {}
         if package_executor is not None:
             package_executor.shutdown(wait=False, cancel_futures=True)
@@ -3756,7 +3762,7 @@ def query_polars(client_opts: Mapping[str, str], query: str) -> Any:
     attempt = 0
     while True:
         retry_sleep = 0.0
-        query_id = f"rolling_ticker_month_{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex}"
+        query_id = f"{_clickhouse_query_id_prefix()}{threading.get_ident()}_{uuid.uuid4().hex}"
         ACTIVE_QUERIES.register(query_id, label=str(getattr(QUERY_CONTEXT, "label", "")))
         client = clickhouse_connect.get_client(
             host=parsed.hostname or "localhost",
@@ -3832,6 +3838,26 @@ def cancel_active_clickhouse_queries(*, client_opts: Mapping[str, str], stats: B
     return len(ids)
 
 
+def cancel_process_clickhouse_queries(*, client_opts: Mapping[str, str], stats: BuildStats | None = None, reason: str = "") -> int:
+    prefix_like = _clickhouse_query_id_prefix() + "%"
+    try:
+        text = _execute_clickhouse_cancel(
+            client_opts=client_opts,
+            sql=f"KILL QUERY WHERE query_id LIKE {sql_string(prefix_like)} SYNC",
+            timeout_seconds=10.0,
+        )
+    except Exception as exc:
+        if stats is not None:
+            stats.log_event("clickhouse_process_cancel_error", reason=reason, prefix=prefix_like, error=repr(exc))
+        return 0
+    cancelled = sum(1 for line in text.splitlines() if line.strip().startswith("finished\t"))
+    if stats is not None:
+        stats.log_event("clickhouse_process_cancel_done", reason=reason, prefix=prefix_like, cancelled=cancelled)
+        if cancelled:
+            stats.message(f"{reason or 'shutdown'}: cancelled {cancelled} ClickHouse quer{'y' if cancelled == 1 else 'ies'} by process prefix")
+    return cancelled
+
+
 def _cancel_active_work_with_grace(
     *,
     client_opts: Mapping[str, str],
@@ -3844,13 +3870,15 @@ def _cancel_active_work_with_grace(
     deadline = time.perf_counter() + max(1.0, float(grace_seconds))
     attempt = 0
     while True:
+        prefix_cancelled = cancel_process_clickhouse_queries(client_opts=client_opts, stats=stats, reason=reason)
         active = ACTIVE_QUERIES.snapshot()
-        if not active:
+        if not active and prefix_cancelled <= 0:
             stats.log_event("shutdown_active_queries_clear", reason=reason, attempts=attempt)
             break
         attempt += 1
-        stats.message(f"{reason}: cancelling {len(active)} active ClickHouse quer{'y' if len(active) == 1 else 'ies'}")
-        cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
+        if active:
+            stats.message(f"{reason}: cancelling {len(active)} active ClickHouse quer{'y' if len(active) == 1 else 'ies'}")
+            cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
         try:
             _refresh(stats, dashboard, cache_root, force=True)
         except Exception as exc:
@@ -3877,7 +3905,7 @@ def _execute_clickhouse_cancel(*, client_opts: Mapping[str, str], sql: str, time
 
 
 def _execute_clickhouse_sql(*, client_opts: Mapping[str, str], sql: str, label: str, timeout_seconds: float | None = None) -> str:
-    query_id = f"rolling_ticker_month_{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex}"
+    query_id = f"{_clickhouse_query_id_prefix()}{threading.get_ident()}_{uuid.uuid4().hex}"
     ACTIVE_QUERIES.register(query_id, label=label)
     url = str(client_opts["clickhouse_url"]).rstrip("/") + "/?" + urlencode({"query_id": query_id})
     req = url_request.Request(url, data=sql.rstrip(";").encode("utf-8"), method="POST")
