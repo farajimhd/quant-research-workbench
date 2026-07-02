@@ -66,6 +66,9 @@ ClickHouse persistence uses one compact table by default:
 service disables ClickHouse writes for that run and continues writing JSONL.
 The terminal intentionally shows compact event summaries instead of raw payload
 dictionaries; use JSONL or ClickHouse when you need the full payload.
+Routine `/tickle` keepalives are live terminal telemetry only. They are written
+to JSONL and ClickHouse only when keepalive status changes, such as `idle -> ok`,
+`ok -> failed`, or `failed -> ok`.
 
 ## Commands
 

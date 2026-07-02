@@ -261,20 +261,23 @@ class IbkrGatewaySupervisor:
             "event": event,
             **sanitize(payload),
         }
-        self.update_terminal_state(row)
-        self.event_log.write(row)
-        self.terminal_state.clickhouse_status = self.event_log.clickhouse_status
-        self.terminal_state.clickhouse_error = self.event_log.clickhouse_error
+        persist_event = self.should_persist_event(row)
+        self.update_terminal_state(row, record_event=persist_event)
+        if persist_event:
+            self.event_log.write(row)
+            self.terminal_state.clickhouse_status = self.event_log.clickhouse_status
+            self.terminal_state.clickhouse_error = self.event_log.clickhouse_error
         if self.terminal is not None:
             self.terminal.update()
-        else:
+        elif persist_event:
             print(plain_event_line(row), flush=True)
 
-    def update_terminal_state(self, row: dict[str, Any]) -> None:
+    def update_terminal_state(self, row: dict[str, Any], *, record_event: bool) -> None:
         state = self.terminal_state
         event = str(row.get("event") or "")
         state.updated_at_utc = datetime.now(UTC)
-        state.recent_events.append(row)
+        if record_event:
+            state.recent_events.append(row)
         state.auth_failures = self.auth_failures
         state.reauth_attempts = self.reauth_attempts
         state.login_attempts = self.login_attempts
@@ -342,6 +345,11 @@ class IbkrGatewaySupervisor:
         if "failed" in event:
             state.last_error = str(row.get("error") or row.get("message") or event)
 
+    def should_persist_event(self, row: dict[str, Any]) -> bool:
+        if row.get("event") != "tickle":
+            return True
+        return self.terminal_state.keepalive_status != tickle_status(row)
+
     def public_result(self, result: HttpResult) -> dict[str, Any]:
         payload = result.payload
         if isinstance(payload, dict):
@@ -357,6 +365,11 @@ def sanitize(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     return value
+
+
+def tickle_status(row: dict[str, Any]) -> str:
+    result = row.get("result") if isinstance(row.get("result"), dict) else {}
+    return "ok" if result.get("ok") else "failed"
 
 
 def plain_event_line(row: dict[str, Any]) -> str:
