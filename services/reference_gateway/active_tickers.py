@@ -5,7 +5,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident
 from services.reference_gateway.config import ReferenceGatewayConfig
@@ -48,8 +48,13 @@ class ActiveTickerPlan:
         return asdict(self)
 
 
-def run_active_ticker_plan(config: ReferenceGatewayConfig) -> ActiveTickerPlan:
+def run_active_ticker_plan(
+    config: ReferenceGatewayConfig,
+    *,
+    on_progress: Callable[[str, int | None], None] | None = None,
+) -> ActiveTickerPlan:
     started = time.perf_counter()
+    emit_progress(on_progress, "Fetching Massive active US stock ticker list.", None)
     massive = MassiveReferenceClient(
         base_url=config.massive_base_url,
         api_key=_massive_api_key(),
@@ -57,16 +62,23 @@ def run_active_ticker_plan(config: ReferenceGatewayConfig) -> ActiveTickerPlan:
         max_pages=config.active_ticker_max_pages,
     )
     provider = massive.fetch_active_us_stock_tickers()
+    emit_progress(on_progress, f"Massive returned {len(provider.tickers):,} active ticker row(s) across {provider.pages:,} page(s).", len(provider.tickers))
+    emit_progress(on_progress, "Loading current canonical active symbols from ClickHouse.", None)
     current = load_current_active_symbols(config)
     known = {row["ticker"].upper() for row in current}
     missing = [normalize_massive_ticker(row) for row in provider.tickers]
     missing = [row for row in missing if row.get("ticker") and row["ticker"].upper() not in known]
     candidate_rows = missing[: config.active_ticker_new_candidate_limit]
+    emit_progress(
+        on_progress,
+        f"Found {len(missing):,} provider ticker(s) not in canonical symbols; resolving first {len(candidate_rows):,}.",
+        len(missing),
+    )
     ibkr = IbkrReferenceClient(base_url=config.ibkr_base_url)
     candidates: list[MissingTickerCandidate] = []
     overview_fetched = 0
     ibkr_searched = 0
-    for row in candidate_rows:
+    for index, row in enumerate(candidate_rows, start=1):
         ticker = row["ticker"]
         overview: dict[str, Any] = {}
         ibkr_rows: list[dict[str, Any]] = []
@@ -81,6 +93,12 @@ def run_active_ticker_plan(config: ReferenceGatewayConfig) -> ActiveTickerPlan:
                 ibkr_searched += 1
             except Exception as exc:  # noqa: BLE001
                 ibkr_rows = [{"error": repr(exc)}]
+        if index == 1 or index == len(candidate_rows) or index % 10 == 0:
+            emit_progress(
+                on_progress,
+                f"Resolved {index:,}/{len(candidate_rows):,} new ticker candidate(s); latest={ticker}.",
+                index,
+            )
         candidates.append(
             MissingTickerCandidate(
                 ticker=ticker,
@@ -112,6 +130,11 @@ def run_active_ticker_plan(config: ReferenceGatewayConfig) -> ActiveTickerPlan:
         candidates=candidates,
         wall_seconds=time.perf_counter() - started,
     )
+
+
+def emit_progress(callback: Callable[[str, int | None], None] | None, message: str, rows: int | None) -> None:
+    if callback is not None:
+        callback(message, rows)
 
 
 def write_active_ticker_plan(plan: ActiveTickerPlan, root: Path) -> Path:

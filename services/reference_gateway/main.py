@@ -268,7 +268,12 @@ def main() -> None:
         emit(f"report={report_path}")
     if should_sync_sources:
         started = time.perf_counter()
-        plan = run_active_ticker_plan(config)
+        add_operation("Source sync", "running", "Starting Massive active ticker reconciliation.", seconds=0.0)
+
+        def source_sync_progress(message: str, rows: int | None) -> None:
+            update_latest_operation("Source sync", "running", truncate_detail(message), rows=rows, seconds=time.perf_counter() - started)
+
+        plan = run_active_ticker_plan(config, on_progress=source_sync_progress)
         plan_path = write_active_ticker_plan(plan, config.report_root_win)
         logger.event(
             "source_sync_completed",
