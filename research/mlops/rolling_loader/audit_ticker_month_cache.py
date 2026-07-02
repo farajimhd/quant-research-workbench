@@ -31,6 +31,40 @@ from research.mlops.rolling_loader.run_build_ticker_month_cache import (
 
 SESSION_TIMEZONE = "America/New_York"
 SESSION_END_SECOND = 20 * 60 * 60
+INTRADAY_BAR_FAMILY_LABEL_KEYS: tuple[str, ...] = (
+    "trade_open",
+    "trade_close",
+    "trade_high",
+    "trade_low",
+    "trade_size_sum",
+    "trade_event_count",
+    "quote_bid_open",
+    "quote_bid_close",
+    "quote_bid_high",
+    "quote_bid_low",
+    "quote_bid_size_open",
+    "quote_bid_size_close",
+    "quote_bid_size_high",
+    "quote_bid_size_low",
+    "quote_bid_event_count",
+    "quote_ask_open",
+    "quote_ask_close",
+    "quote_ask_high",
+    "quote_ask_low",
+    "quote_ask_size_open",
+    "quote_ask_size_close",
+    "quote_ask_size_high",
+    "quote_ask_size_low",
+    "quote_ask_event_count",
+    "trade_available",
+    "quote_bid_available",
+    "quote_ask_available",
+    "trade_last_event_timestamp_us",
+    "quote_bid_last_event_timestamp_us",
+    "quote_ask_last_event_timestamp_us",
+)
+INTRADAY_BAR_FLOAT_KEYS: tuple[str, ...] = tuple(key for key in INTRADAY_BAR_FAMILY_LABEL_KEYS if not key.endswith("_event_count") and not key.endswith("_available") and not key.endswith("_timestamp_us"))
+INTRADAY_BAR_INT_KEYS: tuple[str, ...] = tuple(key for key in INTRADAY_BAR_FAMILY_LABEL_KEYS if key not in INTRADAY_BAR_FLOAT_KEYS)
 from research.mlops.rolling_loader.ticker_month_cache import (
     TICKER_MONTH_CACHE_FORMAT,
     TICKER_MONTH_CACHE_VERSION,
@@ -147,6 +181,7 @@ def run_audit(config: TickerMonthAuditConfig) -> AuditResult:
         "events": 0,
         "origins": 0,
         "labels": 0,
+        "intraday_context_bars": 0,
         "source_origins_checked": 0,
         "source_label_horizons_checked": 0,
     }
@@ -189,7 +224,7 @@ def _audit_package(package_dir: Path, issues: list[AuditIssue], totals: dict[str
     for part in part_specs:
         part_id = int(part.get("part_id") or 0)
         part_files = part.get("files") or {}
-        for key in ("events", "origins", "event_window_index", "ranges", "intraday_forward_labels"):
+        for key in ("events", "origins", "event_window_index", "ranges", "intraday_forward_labels", "intraday_context_bars"):
             rel = part_files.get(key)
             if not rel or not (package_dir / str(rel)).exists():
                 issues.append(AuditIssue("error", "missing_file", f"Missing part file {key}.", {"package": str(package_dir), "part_id": part_id, "file": rel}))
@@ -197,6 +232,7 @@ def _audit_package(package_dir: Path, issues: list[AuditIssue], totals: dict[str
             events = pl.read_parquet(package_dir / str(part_files.get("events", "events.parquet")))
             origins = pl.read_parquet(package_dir / str(part_files.get("origins", "origins.parquet")))
             labels = pl.read_parquet(package_dir / str(part_files.get("intraday_forward_labels", "intraday_forward_labels.parquet")))
+            intraday_context = pl.read_parquet(package_dir / str(part_files.get("intraday_context_bars", "intraday_context_bars.parquet")))
             windows = pl.read_parquet(package_dir / str(part_files.get("event_window_index", "event_window_index.parquet")))
         except Exception as exc:
             issues.append(AuditIssue("error", "read_failed", f"Failed to read parquet: {exc!r}", {"package": str(package_dir), "part_id": part_id}))
@@ -204,10 +240,12 @@ def _audit_package(package_dir: Path, issues: list[AuditIssue], totals: dict[str
         totals["events"] += int(events.height)
         totals["origins"] += int(origins.height)
         totals["labels"] += int(labels.height)
+        totals["intraday_context_bars"] += int(intraday_context.height)
         _check_part_origin_bounds(origins, part, issues, package_dir)
         _check_event_order(events, issues, package_dir)
         _check_windows(events, origins, windows, manifest, issues, package_dir)
         _check_labels(origins, labels, manifest, issues, package_dir)
+        _check_intraday_context_bars(origins, intraday_context, manifest, issues, package_dir)
         if config.source_checks and origins.height:
             _source_check_origin(origins, manifest, config, client_opts, issues, package_dir)
             _source_check_labels(origins, labels, manifest, config, client_opts, issues, totals, package_dir)
@@ -369,6 +407,94 @@ def _check_labels(origins: Any, labels: Any, manifest: Mapping[str, Any], issues
                     return
 
 
+def _check_intraday_context_bars(origins: Any, bars: Any, manifest: Mapping[str, Any], issues: list[AuditIssue], package_dir: Path) -> None:
+    if not origins.height:
+        return
+    if not bars.height:
+        issues.append(AuditIssue("warning", "intraday_context_empty", "No intraday context bars for package with origins.", {"package": str(package_dir)}))
+        return
+    origin_count = int(origins.height)
+    context_origins = int(bars.select("origin_key").unique().height) if "origin_key" in bars.columns else 0
+    if context_origins != origin_count:
+        issues.append(
+            AuditIssue(
+                "error",
+                "intraday_context_origin_coverage",
+                "Intraday context bars must contain exactly one row per origin.",
+                {"package": str(package_dir), "origins": origin_count, "context_origins": context_origins, "rows": int(bars.height)},
+            )
+        )
+        return
+    if "origin_key" in bars.columns and int(bars.select("origin_key").unique().height) != int(bars.height):
+        issues.append(AuditIssue("error", "intraday_context_origin_duplicate", "Intraday context bars contain duplicate origin keys.", {"package": str(package_dir), "rows": int(bars.height), "unique_origin_keys": context_origins}))
+        return
+    expected = len(manifest.get("config", {}).get("intraday_context_horizons") or ())
+    if expected <= 0:
+        expected = None
+    compact_context_keys = (
+        "horizon_us",
+        "label_resolution_us",
+        "context_grid_start_timestamp_us",
+        "context_grid_end_timestamp_us",
+        "available",
+        *INTRADAY_BAR_FAMILY_LABEL_KEYS,
+    )
+    for key in compact_context_keys:
+        if key not in bars.columns:
+            issues.append(AuditIssue("error", "intraday_context_column_missing", "Intraday context bar column is missing.", {"package": str(package_dir), "column": key}))
+            return
+    sample_count = min(8, int(bars.height))
+    for idx in random.sample(range(int(bars.height)), sample_count):
+        row = bars.row(idx, named=True)
+        for key in compact_context_keys:
+            value_count = len(_cell_list(row.get(key)))
+            if expected is not None and value_count != expected:
+                issues.append(AuditIssue("error", "intraday_context_width", "Intraday context width does not match configured horizons.", {"package": str(package_dir), "row": idx, "column": key, "values": value_count, "expected": expected}))
+                return
+        horizon_us = _cell_array(row.get("horizon_us"), np.int64)
+        if horizon_us.size > 1 and bool(np.any(horizon_us[1:] <= horizon_us[:-1])):
+            issues.append(AuditIssue("error", "intraday_context_horizon_order", "Intraday context horizons are not strictly increasing.", {"package": str(package_dir), "row": idx}))
+            return
+        origin_ts = int(row.get("origin_timestamp_us") or 0)
+        grid_start_ts = _cell_array(row.get("context_grid_start_timestamp_us"), np.int64)
+        grid_end_ts = _cell_array(row.get("context_grid_end_timestamp_us"), np.int64)
+        available = _cell_array(row.get("available"), np.uint8)
+        if available.size and bool(np.any((available != 0) & (available != 1))):
+            issues.append(AuditIssue("error", "intraday_context_available_not_binary", "Intraday context available values are not binary.", {"package": str(package_dir), "row": idx}))
+            return
+        if grid_start_ts.size and bool(np.any(grid_start_ts > origin_ts)):
+            issues.append(AuditIssue("error", "intraday_context_lookahead_start", "Intraday context starts after origin.", {"package": str(package_dir), "row": idx, "origin_timestamp_us": origin_ts}))
+            return
+        if grid_end_ts.size and bool(np.any(grid_end_ts > origin_ts)):
+            issues.append(AuditIssue("error", "intraday_context_lookahead_end", "Intraday context ends after origin.", {"package": str(package_dir), "row": idx, "origin_timestamp_us": origin_ts}))
+            return
+        family_flags: list[np.ndarray] = []
+        for family in ("trade", "quote_bid", "quote_ask"):
+            flag = _cell_array(row.get(f"{family}_available"), np.uint8)
+            count = _cell_array(row.get(f"{family}_event_count"), np.uint64)
+            last_ts = _cell_array(row.get(f"{family}_last_event_timestamp_us"), np.int64)
+            if flag.size and bool(np.any((flag != 0) & (flag != 1))):
+                issues.append(AuditIssue("error", "intraday_context_family_available_not_binary", "Intraday context family availability values are not binary.", {"package": str(package_dir), "row": idx, "family": family}))
+                return
+            family_flags.append(flag)
+            valid = flag.astype(bool, copy=False)
+            if valid.any():
+                if count.size == valid.size and bool(np.any(count[valid] <= 0)):
+                    issues.append(AuditIssue("error", "intraday_context_available_count_zero", "Available intraday context family has zero event_count.", {"package": str(package_dir), "row": idx, "family": family}))
+                    return
+                if last_ts.size == valid.size and bool(np.any(last_ts[valid] > origin_ts)):
+                    issues.append(AuditIssue("error", "intraday_context_family_lookahead", "Intraday context family last event is after origin.", {"package": str(package_dir), "row": idx, "family": family, "origin_timestamp_us": origin_ts}))
+                    return
+                if grid_start_ts.size == valid.size and last_ts.size == valid.size and bool(np.any(last_ts[valid] < grid_start_ts[valid])):
+                    issues.append(AuditIssue("error", "intraday_context_before_window", "Intraday context family last event is before context window.", {"package": str(package_dir), "row": idx, "family": family}))
+                    return
+        if family_flags and all(flag.size == available.size for flag in family_flags):
+            expected_available = np.logical_or.reduce([flag.astype(bool, copy=False) for flag in family_flags]).astype(np.uint8)
+            if not np.array_equal(available, expected_available):
+                issues.append(AuditIssue("error", "intraday_context_available_mismatch", "Intraday context available is not the OR of family availability masks.", {"package": str(package_dir), "row": idx}))
+                return
+
+
 def _labels_are_pivoted(labels: Any) -> bool:
     if labels is None or int(getattr(labels, "height", 0) or 0) <= 0 or "horizon_us" not in labels.columns:
         return False
@@ -515,6 +641,12 @@ def _label_arrays_for_row(row: Mapping[str, Any]) -> dict[str, np.ndarray]:
     for key in FUTURE_EVENT_FLAG_LABEL_KEYS:
         if key in row:
             arrays[key] = _cell_array(row.get(key), np.uint8)
+    for key in INTRADAY_BAR_FLOAT_KEYS:
+        if key in row:
+            arrays[key] = _cell_array(row.get(key), np.float32)
+    for key in INTRADAY_BAR_INT_KEYS:
+        if key in row:
+            arrays[key] = _cell_array(row.get(key), np.int64)
     return arrays
 
 
@@ -527,8 +659,8 @@ def _compare_source_label(
     package_dir: Path,
     origin_key: str,
 ) -> None:
-    float_fields = ("price_primary_int", "price_secondary_int", "size_primary_sum", "size_secondary_sum")
-    int_fields = ("event_count", "last_event_timestamp_us", "available", *FUTURE_EVENT_FLAG_LABEL_KEYS)
+    float_fields = ("price_primary_int", "price_secondary_int", "size_primary_sum", "size_secondary_sum", *INTRADAY_BAR_FLOAT_KEYS)
+    int_fields = ("event_count", "last_event_timestamp_us", "available", *FUTURE_EVENT_FLAG_LABEL_KEYS, *INTRADAY_BAR_INT_KEYS)
     for key in int_fields:
         if key not in cached or int(cached[key].shape[0]) <= int(horizon_index):
             issues.append(AuditIssue("error", "source_label_cached_field_missing", "Cached label field is missing or too short.", {"package": str(package_dir), "origin_key": origin_key, "horizon_index": int(horizon_index), "field": key}))
@@ -600,6 +732,36 @@ SELECT
     toUInt64(event_count) AS event_count,
     toInt64(if(event_count > 0, last_event_timestamp_us, 0)) AS last_event_timestamp_us,
     toUInt8(session_valid AND event_count > 0) AS available,
+    toFloat32(if(session_valid, ifNull(trade_open, 0.0), 0.0)) AS trade_open,
+    toFloat32(if(session_valid, ifNull(trade_close, 0.0), 0.0)) AS trade_close,
+    toFloat32(if(session_valid, ifNull(trade_high, 0.0), 0.0)) AS trade_high,
+    toFloat32(if(session_valid, ifNull(trade_low, 0.0), 0.0)) AS trade_low,
+    toFloat32(if(session_valid, ifNull(trade_size_sum, 0.0), 0.0)) AS trade_size_sum,
+    toUInt64(if(session_valid, ifNull(trade_event_count, 0), 0)) AS trade_event_count,
+    toFloat32(if(session_valid, ifNull(quote_bid_open, 0.0), 0.0)) AS quote_bid_open,
+    toFloat32(if(session_valid, ifNull(quote_bid_close, 0.0), 0.0)) AS quote_bid_close,
+    toFloat32(if(session_valid, ifNull(quote_bid_high, 0.0), 0.0)) AS quote_bid_high,
+    toFloat32(if(session_valid, ifNull(quote_bid_low, 0.0), 0.0)) AS quote_bid_low,
+    toFloat32(if(session_valid, ifNull(quote_bid_size_open, 0.0), 0.0)) AS quote_bid_size_open,
+    toFloat32(if(session_valid, ifNull(quote_bid_size_close, 0.0), 0.0)) AS quote_bid_size_close,
+    toFloat32(if(session_valid, ifNull(quote_bid_size_high, 0.0), 0.0)) AS quote_bid_size_high,
+    toFloat32(if(session_valid, ifNull(quote_bid_size_low, 0.0), 0.0)) AS quote_bid_size_low,
+    toUInt64(if(session_valid, ifNull(quote_bid_event_count, 0), 0)) AS quote_bid_event_count,
+    toFloat32(if(session_valid, ifNull(quote_ask_open, 0.0), 0.0)) AS quote_ask_open,
+    toFloat32(if(session_valid, ifNull(quote_ask_close, 0.0), 0.0)) AS quote_ask_close,
+    toFloat32(if(session_valid, ifNull(quote_ask_high, 0.0), 0.0)) AS quote_ask_high,
+    toFloat32(if(session_valid, ifNull(quote_ask_low, 0.0), 0.0)) AS quote_ask_low,
+    toFloat32(if(session_valid, ifNull(quote_ask_size_open, 0.0), 0.0)) AS quote_ask_size_open,
+    toFloat32(if(session_valid, ifNull(quote_ask_size_close, 0.0), 0.0)) AS quote_ask_size_close,
+    toFloat32(if(session_valid, ifNull(quote_ask_size_high, 0.0), 0.0)) AS quote_ask_size_high,
+    toFloat32(if(session_valid, ifNull(quote_ask_size_low, 0.0), 0.0)) AS quote_ask_size_low,
+    toUInt64(if(session_valid, ifNull(quote_ask_event_count, 0), 0)) AS quote_ask_event_count,
+    toUInt8(session_valid AND trade_event_count > 0) AS trade_available,
+    toUInt8(session_valid AND quote_bid_event_count > 0) AS quote_bid_available,
+    toUInt8(session_valid AND quote_ask_event_count > 0) AS quote_ask_available,
+    toInt64(if(session_valid AND trade_event_count > 0, trade_last_event_timestamp_us, 0)) AS trade_last_event_timestamp_us,
+    toInt64(if(session_valid AND quote_bid_event_count > 0, quote_bid_last_event_timestamp_us, 0)) AS quote_bid_last_event_timestamp_us,
+    toInt64(if(session_valid AND quote_ask_event_count > 0, quote_ask_last_event_timestamp_us, 0)) AS quote_ask_last_event_timestamp_us,
     {_condition_flag_outer_select_sql()},
     toUInt8(session_valid AND (
         SELECT count()
@@ -634,9 +796,31 @@ FROM
         argMinIf(size_secondary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_size_open,
         argMaxIf(size_secondary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_size_close,
         max(sip_timestamp_us) AS last_event_timestamp_us,
+        argMinIf(price_primary, tuple(sip_timestamp_us, ordinal), event_type = 1 AND price_primary > 0 AND size_primary > 0) AS trade_open,
+        argMaxIf(price_primary, tuple(sip_timestamp_us, ordinal), event_type = 1 AND price_primary > 0 AND size_primary > 0) AS trade_close,
+        maxIf(price_primary, event_type = 1 AND price_primary > 0 AND size_primary > 0) AS trade_high,
+        minIf(price_primary, event_type = 1 AND price_primary > 0 AND size_primary > 0) AS trade_low,
+        sumIf(toFloat64(size_primary), event_type = 1 AND price_primary > 0 AND size_primary > 0) AS trade_size_sum,
         countIf(event_type = 1 AND price_primary > 0 AND size_primary > 0) AS trade_event_count,
+        argMinIf(price_secondary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_open,
+        argMaxIf(price_secondary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_close,
+        maxIf(price_secondary, event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_high,
+        minIf(price_secondary, event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_low,
+        maxIf(size_secondary, event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_size_high,
+        minIf(size_secondary, event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_size_low,
         countIf(event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_event_count,
+        argMinIf(price_primary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_open,
+        argMaxIf(price_primary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_close,
+        maxIf(price_primary, event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_high,
+        minIf(price_primary, event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_low,
+        argMinIf(size_primary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_size_open,
+        argMaxIf(size_primary, tuple(sip_timestamp_us, ordinal), event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_size_close,
+        maxIf(size_primary, event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_size_high,
+        minIf(size_primary, event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_size_low,
         countIf(event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_event_count,
+        maxIf(sip_timestamp_us, event_type = 1 AND price_primary > 0 AND size_primary > 0) AS trade_last_event_timestamp_us,
+        maxIf(sip_timestamp_us, event_type = 0 AND price_secondary > 0 AND size_secondary > 0) AS quote_bid_last_event_timestamp_us,
+        maxIf(sip_timestamp_us, event_type = 0 AND price_primary > 0 AND size_primary > 0) AS quote_ask_last_event_timestamp_us,
         {_condition_flag_inner_select_sql()}
     FROM
     (
