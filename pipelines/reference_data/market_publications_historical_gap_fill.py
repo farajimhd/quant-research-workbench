@@ -1294,11 +1294,11 @@ def fetch_bytes(args: argparse.Namespace, url: str) -> bytes:
             time.sleep(sleep_seconds)
         except (TimeoutError, error.URLError) as exc:
             if attempt >= attempts:
-                raise RuntimeError(f"{safe_url(url)} request failed after {attempts} attempts: {repr(exc)}") from exc
+                raise RuntimeError(f"{safe_url(url)} request failed after {attempts} attempts: {safe_exception_text(exc)}") from exc
             sleep_seconds = retry_sleep_seconds(args, None, attempt)
             print(
                 f"request_retry url={safe_url(url)} status=transport_error "
-                f"attempt={attempt}/{attempts} sleep={sleep_seconds:.1f}s error={repr(exc)}",
+                f"attempt={attempt}/{attempts} sleep={sleep_seconds:.1f}s error={safe_exception_text(exc)}",
                 flush=True,
             )
             time.sleep(sleep_seconds)
@@ -1344,7 +1344,7 @@ def safe_url(url: str) -> str:
 
 def safe_exception_text(exc: Exception) -> str:
     text = repr(exc)
-    return re.sub(r"([?&](?:apiKey|api_key|token)=)[^&'\"\\s)]+", r"\1redacted", text, flags=re.IGNORECASE)
+    return re.sub(r"([?&](?:apiKey|api_key|token)=)[^&'\"\s)]+", r"\1redacted", text, flags=re.IGNORECASE)
 
 
 def default_user_agent() -> str:
