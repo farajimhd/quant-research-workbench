@@ -2016,16 +2016,16 @@ def _future_external_count_select_sql() -> str:
 """.strip()
 
 
-def _future_event_flag_array_select_sql(start_index: int) -> str:
+def _future_event_flag_array_select_sql(start_index: int, *, array_name: str = "label_items") -> str:
     return ",\n    ".join(
-        f"arrayMap(x -> tupleElement(x, {int(start_index) + offset}), label_items) AS {quote_ident(label_key)}"
+        f"arrayMap(x -> tupleElement(x, {int(start_index) + offset}), {array_name}) AS {quote_ident(label_key)}"
         for offset, label_key in enumerate(FUTURE_EVENT_FLAG_LABEL_KEYS)
     )
 
 
-def _future_bar_array_select_sql(start_index: int) -> str:
+def _future_bar_array_select_sql(start_index: int, *, array_name: str = "label_items") -> str:
     return ",\n    ".join(
-        f"arrayMap(x -> tupleElement(x, {int(start_index) + offset}), label_items) AS {quote_ident(label_key)}"
+        f"arrayMap(x -> tupleElement(x, {int(start_index) + offset}), {array_name}) AS {quote_ident(label_key)}"
         for offset, label_key in enumerate(FUTURE_BAR_LABEL_KEYS)
     )
 
@@ -2064,7 +2064,7 @@ def _query_intraday_context_bars_asof(
     )
     label_resolutions = ", ".join(f"toUInt64({int(value)})" for value in sorted({spec[2] for spec in horizon_specs}))
     bar_array_start_index = 7
-    future_bar_array_select = _future_bar_array_select_sql(bar_array_start_index)
+    future_bar_array_select = _future_bar_array_select_sql(bar_array_start_index, array_name="context_items")
     future_bar_tuple_items = _future_bar_tuple_items_sql()
     query = f"""
 WITH
@@ -2290,16 +2290,16 @@ WITH
     context_rows AS
     (
         SELECT
-            o.origin_key,
-            o.ticker_id,
-            o.ticker,
-            o.origin_ordinal,
-            o.origin_timestamp_us,
-            o.horizon,
-            o.horizon_us,
-            o.label_resolution_us,
-            o.context_grid_start_timestamp_us,
-            o.context_grid_end_timestamp_us,
+            o.origin_key AS origin_key,
+            o.ticker_id AS ticker_id,
+            o.ticker AS ticker,
+            o.origin_ordinal AS origin_ordinal,
+            o.origin_timestamp_us AS origin_timestamp_us,
+            o.horizon AS horizon,
+            o.horizon_us AS horizon_us,
+            o.label_resolution_us AS label_resolution_us,
+            o.context_grid_start_timestamp_us AS context_grid_start_timestamp_us,
+            o.context_grid_end_timestamp_us AS context_grid_end_timestamp_us,
             toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.trade_open, b.trade_open), 0.0)) AS trade_open,
             toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.trade_close, b.trade_close), 0.0)) AS trade_close,
             toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.trade_high, b.trade_high), 0.0)) AS trade_high,
