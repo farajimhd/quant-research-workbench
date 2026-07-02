@@ -2931,6 +2931,20 @@ WITH
         ARRAY JOIN horizons AS horizon_tuple
         ORDER BY ticker, origin_local_date, grid_end_timestamp_us, origin_ordinal, horizon_us
     ),
+    label_windows AS
+    (
+        SELECT DISTINCT
+            ticker,
+            origin_local_date,
+            horizon,
+            horizon_us,
+            label_resolution_us,
+            first_future_bucket,
+            last_future_bucket,
+            grid_end_session_us
+        FROM origin_horizons
+        WHERE grid_end_session_us <= {SESSION_END_US}
+    ),
     cumulative_events AS
     (
         SELECT
@@ -3001,9 +3015,13 @@ WITH
     future_bars AS
     (
         SELECT
-            o.origin_key AS origin_key,
+            o.ticker AS ticker,
+            o.origin_local_date AS origin_local_date,
             o.horizon AS horizon,
             o.horizon_us AS horizon_us,
+            o.label_resolution_us AS label_resolution_us,
+            o.first_future_bucket AS first_future_bucket,
+            o.last_future_bucket AS last_future_bucket,
             argMinIf(b.open, b.bucket_index, b.bar_family = 'trade') AS trade_open,
             argMaxIf(b.close, b.bucket_index, b.bar_family = 'trade') AS trade_close,
             maxIf(b.high, b.bar_family = 'trade') AS trade_high,
@@ -3031,7 +3049,7 @@ WITH
             maxIf(b.last_event_timestamp_us, b.bar_family = 'trade') AS trade_last_event_timestamp_us,
             maxIf(b.last_event_timestamp_us, b.bar_family = 'quote_bid') AS quote_bid_last_event_timestamp_us,
             maxIf(b.last_event_timestamp_us, b.bar_family = 'quote_ask') AS quote_ask_last_event_timestamp_us
-        FROM origin_horizons AS o
+        FROM label_windows AS o
         INNER JOIN base_bars AS b
             ON b.ticker = o.ticker
            AND b.local_date = o.origin_local_date
@@ -3040,11 +3058,14 @@ WITH
            AND b.bucket_index <= o.last_future_bucket
         WHERE b.bucket_index >= o.first_future_bucket
           AND b.bucket_index <= o.last_future_bucket
-          AND o.grid_end_session_us <= {SESSION_END_US}
         GROUP BY
-            o.origin_key,
+            o.ticker,
+            o.origin_local_date,
             o.horizon,
-            o.horizon_us
+            o.horizon_us,
+            o.label_resolution_us,
+            o.first_future_bucket,
+            o.last_future_bucket
     ),
     ticker_news_arrivals AS
     (
@@ -3222,7 +3243,11 @@ WITH
                AND base.local_date = o.origin_local_date
                AND o.grid_base_lookup_timestamp_us >= base.sip_timestamp_us
             LEFT JOIN future_bars AS b
-                ON b.origin_key = o.origin_key
+                ON b.ticker = o.ticker
+               AND b.origin_local_date = o.origin_local_date
+               AND b.label_resolution_us = o.label_resolution_us
+               AND b.first_future_bucket = o.first_future_bucket
+               AND b.last_future_bucket = o.last_future_bucket
                AND b.horizon_us = o.horizon_us
             ASOF LEFT JOIN ticker_news_arrivals AS news_target
                 ON news_target.ticker = o.ticker
