@@ -77,18 +77,18 @@ cache_root/
           origins_part_00000.parquet
           event_window_index_part_00000.parquet
           ranges_part_00000.parquet
-          intraday_forward_labels_part_00000.parquet
           corporate_action_daily_labels_part_00000.parquet
           events_part_00001.parquet
           origins_part_00001.parquet
           event_window_index_part_00001.parquet
           ranges_part_00001.parquet
-          intraday_forward_labels_part_00001.parquet
           daily_bars.parquet
           ticker_news_embeddings.parquet
           sec_filing_embeddings.parquet
           xbrl.parquet
           corporate_actions.parquet
+          intraday_base_bars.parquet
+          intraday_condition_events.parquet
           audit_summary.json
 ```
 
@@ -112,7 +112,6 @@ The package manifest owns the part list:
         "origins": "origins_part_00000.parquet",
         "event_window_index": "event_window_index_part_00000.parquet",
         "ranges": "ranges_part_00000.parquet",
-        "intraday_forward_labels": "intraday_forward_labels_part_00000.parquet",
         "corporate_action_daily_labels": "corporate_action_daily_labels_part_00000.parquet"
       }
     }
@@ -466,13 +465,22 @@ default base-resolution policy is:
 
 There are no `current_*` intraday labels. Current fixed-grid bars are ambiguous
 for event origins because they can include after-origin events inside the same
-bar bucket. The persisted label table contains only `next_*` targets.
+bar bucket. The label semantics contain only `next_*` targets.
 
-Persisted `intraday_forward_labels_part_*.parquet` files store one row per
-origin. Horizon-dependent fields are list columns sorted by `horizon_us`; this
-avoids transferring and writing one physical row per origin per horizon.
+The default cache does not persist `intraday_forward_labels_part_*.parquet`.
+It stores compact `intraday_base_bars.parquet` and
+`intraday_condition_events.parquet` once per ticker/month. The loader combines
+those compact sources with origin rows to emit the same `intraday_labels` and
+`future_bar_values` tensors for a requested batch. This avoids the fundamental
+`origins x horizons` build-time expansion for liquid tickers.
 
-Example persisted columns:
+`--materialize-intraday-forward-labels` is an opt-in debug/parity mode. In that
+mode, persisted `intraday_forward_labels_part_*.parquet` files store one row
+per origin. Horizon-dependent fields are list columns sorted by `horizon_us`;
+this avoids transferring and writing one physical row per origin per horizon,
+but it is still much larger and slower than compact-label mode.
+
+Example materialized/per-origin columns:
 
 ```text
 origin_key

@@ -207,7 +207,7 @@ def _audit_package(package_dir: Path, issues: list[AuditIssue], totals: dict[str
     if not manifest:
         return
     files = manifest.get("files") or {}
-    context_required = ("ticker_news_embeddings", "sec_filing_embeddings", "xbrl", "daily_bars")
+    context_required = ("ticker_news_embeddings", "sec_filing_embeddings", "xbrl", "daily_bars", "intraday_base_bars", "intraday_condition_events")
     for key in context_required:
         rel = files.get(key)
         if not rel or not (package_dir / str(rel)).exists():
@@ -224,15 +224,17 @@ def _audit_package(package_dir: Path, issues: list[AuditIssue], totals: dict[str
     for part in part_specs:
         part_id = int(part.get("part_id") or 0)
         part_files = part.get("files") or {}
-        for key in ("events", "origins", "event_window_index", "ranges", "intraday_forward_labels", "intraday_context_bars"):
+        for key in ("events", "origins", "event_window_index", "ranges", "corporate_action_daily_labels"):
             rel = part_files.get(key)
             if not rel or not (package_dir / str(rel)).exists():
                 issues.append(AuditIssue("error", "missing_file", f"Missing part file {key}.", {"package": str(package_dir), "part_id": part_id, "file": rel}))
         try:
             events = pl.read_parquet(package_dir / str(part_files.get("events", "events.parquet")))
             origins = pl.read_parquet(package_dir / str(part_files.get("origins", "origins.parquet")))
-            labels = pl.read_parquet(package_dir / str(part_files.get("intraday_forward_labels", "intraday_forward_labels.parquet")))
-            intraday_context = pl.read_parquet(package_dir / str(part_files.get("intraday_context_bars", "intraday_context_bars.parquet")))
+            labels_rel = part_files.get("intraday_forward_labels")
+            labels = pl.read_parquet(package_dir / str(labels_rel)) if labels_rel else pl.DataFrame()
+            context_rel = part_files.get("intraday_context_bars")
+            intraday_context = pl.read_parquet(package_dir / str(context_rel)) if context_rel else pl.DataFrame()
             windows = pl.read_parquet(package_dir / str(part_files.get("event_window_index", "event_window_index.parquet")))
         except Exception as exc:
             issues.append(AuditIssue("error", "read_failed", f"Failed to read parquet: {exc!r}", {"package": str(package_dir), "part_id": part_id}))
@@ -245,10 +247,12 @@ def _audit_package(package_dir: Path, issues: list[AuditIssue], totals: dict[str
         _check_event_order(events, issues, package_dir)
         _check_windows(events, origins, windows, manifest, issues, package_dir)
         _check_labels(origins, labels, manifest, issues, package_dir)
-        _check_intraday_context_bars(origins, intraday_context, manifest, issues, package_dir)
+        if part_files.get("intraday_context_bars"):
+            _check_intraday_context_bars(origins, intraday_context, manifest, issues, package_dir)
         if config.source_checks and origins.height:
             _source_check_origin(origins, manifest, config, client_opts, issues, package_dir)
-            _source_check_labels(origins, labels, manifest, config, client_opts, issues, totals, package_dir)
+            if int(getattr(labels, "height", 0) or 0) > 0:
+                _source_check_labels(origins, labels, manifest, config, client_opts, issues, totals, package_dir)
 
 
 def _package_part_specs(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -311,7 +315,8 @@ def _check_labels(origins: Any, labels: Any, manifest: Mapping[str, Any], issues
     if not origins.height:
         return
     if not labels.height:
-        issues.append(AuditIssue("warning", "labels_empty", "No intraday forward labels for package with origins.", {"package": str(package_dir)}))
+        if bool((manifest.get("config") or {}).get("intraday_forward_labels_materialized")):
+            issues.append(AuditIssue("warning", "labels_empty", "No intraday forward labels for package with origins.", {"package": str(package_dir)}))
         return
     origin_count = int(origins.height)
     labeled_origins = int(labels.select("origin_key").unique().height) if "origin_key" in labels.columns else 0

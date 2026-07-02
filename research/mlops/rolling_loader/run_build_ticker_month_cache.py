@@ -587,6 +587,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-xbrl", action="store_true")
     parser.add_argument("--skip-corporate-actions", action="store_true")
     parser.add_argument("--materialize-intraday-context-bars", action="store_true", help="Write redundant per-origin backward intraday context bars. Default is off; compact intraday_base_bars.parquet is written instead.")
+    parser.add_argument("--materialize-intraday-forward-labels", action="store_true", help="Write redundant per-origin intraday forward labels. Default is off; the loader materializes labels from compact intraday base bars.")
     parser.add_argument("--refresh-context-only", action="store_true", help="Refresh only text embedding, XBRL, and XBRL category context files for existing ticker/month packages.")
     parser.add_argument("--skip-final-audit", action="store_true")
     parser.add_argument("--audit-source-checks", action=argparse.BooleanOptionalAction, default=True)
@@ -1070,6 +1071,55 @@ ORDER BY
     return query_polars(client_opts, query)
 
 
+def _query_intraday_condition_events(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str) -> Any:
+    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    condition_token_aliases = _condition_token_array_aliases_sql(config)
+    condition_event_select = _future_condition_event_select_sql()
+    condition_columns = ",\n    ".join(quote_ident(key) for key in FUTURE_CONDITION_LABEL_KEYS)
+    condition_filter = " OR ".join(f"{quote_ident(key)} > 0" for key in FUTURE_CONDITION_LABEL_KEYS)
+    query = f"""
+WITH
+    {condition_token_aliases}
+SELECT
+    upper(ticker) AS ticker,
+    sip_timestamp_us AS timestamp_us,
+    ordinal,
+    toDate(ts_local) AS local_date,
+    toUInt64(local_session_us) AS local_session_us,
+    {condition_columns}
+FROM
+(
+    SELECT
+        ticker,
+        ordinal,
+        sip_timestamp_us,
+        condition_token_1,
+        condition_token_2,
+        condition_token_3,
+        condition_token_4,
+        condition_token_5,
+        toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
+        dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
+        dateDiff('microsecond', toStartOfDay(ts_local), ts_local) AS local_session_us,
+        {condition_event_select}
+    FROM {table}
+    PREWHERE ticker = {sql_string(ticker)}
+      AND event_date >= toDate({sql_string(window.first_date.isoformat())})
+      AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
+    WHERE sip_timestamp_us >= {int(window.first_session_start_us)}
+      AND sip_timestamp_us < {int(window.last_session_end_us)}
+      AND toDate(ts_local) >= toDate({sql_string(window.first_date.isoformat())})
+      AND toDate(ts_local) < toDate({sql_string(window.next_month_date.isoformat())})
+      AND local_second >= {SESSION_START_SECOND}
+      AND local_second < {SESSION_END_SECOND}
+)
+WHERE {condition_filter}
+ORDER BY ticker, local_date, timestamp_us, ordinal
+{_settings_sql(config)}
+"""
+    return query_polars(client_opts, query)
+
+
 def _insert_intraday_base_bars_ticker_sql(
     *,
     args: argparse.Namespace,
@@ -1541,6 +1591,7 @@ def _build_ticker_month_package(
     state.start_package(month=month, ticker=ticker)
     package_dir = ticker_package_dir(month_dir_for(cache_root, args.split, month), ticker)
     materialize_intraday_context = bool(getattr(args, "materialize_intraday_context_bars", False))
+    materialize_intraday_forward_labels = bool(getattr(args, "materialize_intraday_forward_labels", False))
     if args.refresh_context_only:
         return _refresh_ticker_month_context_package(args, client_opts, config, cache_root, month, window, ticker, worker_id, stats, lanes, stop_event)
     if package_dir.exists() and args.resume:
@@ -1591,11 +1642,12 @@ def _build_ticker_month_package(
             futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:xbrl", lambda: _query_xbrl(args, client_opts, config, window, ticker))
         else:
             futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:xbrl_empty", lambda: _empty_frame())
-        state.context_total = 6 - int(bool(args.skip_xbrl)) - int(bool(args.skip_corporate_actions))
+        state.context_total = 7 - int(bool(args.skip_xbrl)) - int(bool(args.skip_corporate_actions))
         state.events_total = len(parts)
-        state.labels_total = len(parts) * (2 if materialize_intraday_context else 1)
+        state.labels_total = (len(parts) if materialize_intraday_forward_labels else 0) + (len(parts) if materialize_intraday_context else 0)
         state.cpu_total = len(parts)
-        state.write_total = len(parts) * (7 if materialize_intraday_context else 6) + state.context_total
+        part_write_count = 5 + int(materialize_intraday_forward_labels) + int(materialize_intraday_context)
+        state.write_total = len(parts) * part_write_count + state.context_total
         total_events = 0
         total_origins = 0
         total_windows = 0
@@ -1612,6 +1664,11 @@ def _build_ticker_month_package(
             f"{month}:{ticker}:intraday_base_bars_file",
             lambda: _query_intraday_base_bars_for_ticker(args, client_opts, config, window, ticker),
         )
+        intraday_condition_events_future = lanes.submit(
+            "context",
+            f"{month}:{ticker}:intraday_condition_events",
+            lambda: _query_intraday_condition_events(args, client_opts, config, window, ticker),
+        )
         for part in parts:
             if stop_event.is_set():
                 raise KeyboardInterrupt
@@ -1627,7 +1684,7 @@ def _build_ticker_month_package(
                 "label",
                 f"{month}:{ticker}:{part_name}:intraday_labels",
                 lambda part=part: _query_intraday_forward_labels(args, client_opts, config, window, ticker, part, month_min_ordinal),
-            )
+            ) if materialize_intraday_forward_labels else None
             intraday_context_future: Future[Any] | None = None
             if materialize_intraday_context:
                 intraday_context_future = lanes.submit(
@@ -1655,13 +1712,17 @@ def _build_ticker_month_package(
             origins, windows, ranges, part_skipped_history, part_skipped_gap = cpu_future.result()
             state.cpu_done += 1
             state.stage = f"labels {part.part_id + 1}/{len(parts)}"
-            labels = labels_future.result()
-            state.labels_done += 1
-            labels, labels_filtered_out = _align_labels_to_origins(
-                labels,
-                origins,
-                prefix=f"{month}:{ticker}:{part_name}",
-            )
+            labels_filtered_out = 0
+            if labels_future is not None:
+                labels = labels_future.result()
+                state.labels_done += 1
+                labels, labels_filtered_out = _align_labels_to_origins(
+                    labels,
+                    origins,
+                    prefix=f"{month}:{ticker}:{part_name}",
+                )
+            else:
+                labels = _empty_frame()
             intraday_context_filtered_out = 0
             intraday_context = _empty_frame()
             if intraday_context_future is not None:
@@ -1698,9 +1759,10 @@ def _build_ticker_month_package(
                 "origins": f"origins_{part_name}.parquet",
                 "event_window_index": f"event_window_index_{part_name}.parquet",
                 "ranges": f"ranges_{part_name}.parquet",
-                "intraday_forward_labels": f"intraday_forward_labels_{part_name}.parquet",
                 "corporate_action_daily_labels": f"corporate_action_daily_labels_{part_name}.parquet",
             }
+            if materialize_intraday_forward_labels:
+                part_files["intraday_forward_labels"] = f"intraday_forward_labels_{part_name}.parquet"
             if materialize_intraday_context:
                 part_files["intraday_context_bars"] = f"intraday_context_bars_{part_name}.parquet"
             writes = {
@@ -1708,9 +1770,10 @@ def _build_ticker_month_package(
                 "origins": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_origins", lambda origins=origins, path=tmp_dir / part_files["origins"]: _write_parquet(origins, path)),
                 "windows": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_windows", lambda windows=windows, path=tmp_dir / part_files["event_window_index"]: _write_parquet(windows, path)),
                 "ranges": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_ranges", lambda ranges=ranges, path=tmp_dir / part_files["ranges"]: _write_parquet(ranges, path)),
-                "labels": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_labels", lambda labels=labels, path=tmp_dir / part_files["intraday_forward_labels"]: _write_parquet(labels, path)),
                 "corporate_labels": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_corporate_labels", lambda labels=corporate_labels, path=tmp_dir / part_files["corporate_action_daily_labels"]: _write_parquet(labels, path)),
             }
+            if materialize_intraday_forward_labels:
+                writes["labels"] = lanes.submit("write", f"{month}:{ticker}:{part_name}:write_labels", lambda labels=labels, path=tmp_dir / part_files["intraday_forward_labels"]: _write_parquet(labels, path))
             if materialize_intraday_context:
                 writes["intraday_context"] = lanes.submit("write", f"{month}:{ticker}:{part_name}:write_intraday_context", lambda bars=intraday_context, path=tmp_dir / part_files["intraday_context_bars"]: _write_parquet(bars, path))
             for future in writes.values():
@@ -1750,12 +1813,14 @@ def _build_ticker_month_package(
                 }
             )
         state.context_done = sum(1 for key in ("ticker_news", "sec_filings", "daily_bars", "xbrl", "corporate_actions") if futures[key].done())
+        state.context_done += int(intraday_base_bars_future.done()) + int(intraday_condition_events_future.done())
         ticker_news = futures["ticker_news"].result()
         sec_filings = futures["sec_filings"].result()
         daily_bars = futures["daily_bars"].result()
         xbrl = futures["xbrl"].result()
         corporate_actions = futures["corporate_actions"].result()
         intraday_base_bars = intraday_base_bars_future.result()
+        intraday_condition_events = intraday_condition_events_future.result()
         state.context_done = state.context_total
         if stop_event.is_set():
             raise KeyboardInterrupt
@@ -1767,6 +1832,7 @@ def _build_ticker_month_package(
             "daily_bars": lanes.submit("write", f"{month}:{ticker}:write_daily", lambda: _write_parquet(daily_bars, tmp_dir / "daily_bars.parquet")),
             "corporate_actions": lanes.submit("write", f"{month}:{ticker}:write_corporate_actions", lambda: _write_parquet(corporate_actions, tmp_dir / "corporate_actions.parquet")),
             "intraday_base_bars": lanes.submit("write", f"{month}:{ticker}:write_intraday_base_bars", lambda: _write_parquet(intraday_base_bars, tmp_dir / "intraday_base_bars.parquet")),
+            "intraday_condition_events": lanes.submit("write", f"{month}:{ticker}:write_intraday_condition_events", lambda: _write_parquet(intraday_condition_events, tmp_dir / "intraday_condition_events.parquet")),
         }
         for future in context_writes.values():
             future.result()
@@ -1800,9 +1866,12 @@ def _build_ticker_month_package(
                 "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
                 "intraday_context_horizons": [h.name for h in parse_horizons(args.intraday_context_horizons)],
                 "intraday_context_materialized": bool(materialize_intraday_context),
+                "intraday_forward_labels_materialized": bool(materialize_intraday_forward_labels),
                 "intraday_context_semantics": "completed_grid_buckets_clipped_to_session_start_with_first_bucket_origin_fallback",
                 "intraday_base_bars_file": "intraday_base_bars.parquet",
                 "intraday_base_bars_semantics": "compact per-ticker month sparse bars reused to materialize backward intraday context without origin-level redundancy",
+                "intraday_condition_events_file": "intraday_condition_events.parquet",
+                "intraday_label_materialization": "loader_from_compact_base_bars" if not materialize_intraday_forward_labels else "builder_materialized_per_origin",
                 "intraday_label_semantics": "grid_aligned_next_bucket",
                 "intraday_label_grid_resolutions_us": list(INTRADAY_LABEL_GRID_RESOLUTIONS_US),
                 "intraday_label_grid_policy": {
@@ -1832,6 +1901,7 @@ def _build_ticker_month_package(
                 "intraday_forward_labels": int(total_labels),
                 "intraday_context_bars": int(total_intraday_context_bars),
                 "intraday_base_bars": int(intraday_base_bars.height),
+                "intraday_condition_events": int(intraday_condition_events.height),
                 "corporate_action_daily_labels": int(total_corporate_labels),
                 "ticker_news_embeddings": int(ticker_news.height),
                 "sec_filing_embeddings": int(sec_filings.height),
@@ -1848,6 +1918,7 @@ def _build_ticker_month_package(
                 "daily_bars": "daily_bars.parquet",
                 "corporate_actions": "corporate_actions.parquet",
                 "intraday_base_bars": "intraday_base_bars.parquet",
+                "intraday_condition_events": "intraday_condition_events.parquet",
             },
             "time_feature_columns": {
                 "ticker_news_embeddings": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
@@ -2009,9 +2080,7 @@ def _light_audit_part_in_memory(
     origin_count = int(origins.height)
     sample_indexes = _deterministic_sample_indexes(origin_count, min(samples, origin_count), month=month, ticker=ticker, part_id=part.part_id)
     label_ordinals = None
-    if int(horizon_count) > 0:
-        if int(labels.height) <= 0:
-            raise RuntimeError(f"{prefix} inline audit failed: labels are empty for {origin_count:,} origins.")
+    if int(horizon_count) > 0 and int(getattr(labels, "height", 0) or 0) > 0:
         label_ordinals = labels.get_column("origin_ordinal").to_numpy().astype(np.int64, copy=False)
     checked = 0
     lag0_index = list(context_lags).index(0) if 0 in context_lags else None
@@ -2244,6 +2313,8 @@ SELECT
     toFloat32(sin(2 * pi() * (utc_doy - 1) / 366.0)) AS utc_day_of_year_sin,
     toFloat32(cos(2 * pi() * (utc_doy - 1) / 366.0)) AS utc_day_of_year_cos,
     toFloat32(toYear(ts_utc) - 2000 + (utc_doy - 1) / 366.0) AS years_since_2000,
+    toDate(ts_local) AS local_date,
+    toUInt64(dateDiff('microsecond', toStartOfDay(ts_local), ts_local)) AS local_session_us,
     toUInt32(local_second) AS session_second,
     toFloat32(greatest(0, least(57600, local_second - 14400)) / 57600.0) AS session_progress,
     toUInt8(local_second >= 34200 AND local_second < 57600) AS is_regular_hours,
@@ -3836,6 +3907,8 @@ def _build_origins_and_windows(
         if "session_second" not in part.columns:
             raise RuntimeError("Event frame is missing session_second; cannot build no-lookahead session-aligned origins.")
         session_seconds = part.get_column("session_second").to_numpy().astype(np.int64, copy=False)
+        local_session_us = part.get_column("local_session_us").to_numpy().astype(np.int64, copy=False)
+        local_dates = part.get_column("local_date").to_list()
         row_offsets = part.get_column("row_offset").to_numpy().astype(np.int64, copy=False)
         ticker_ids = part.get_column("ticker_id").to_numpy()
         positions = np.flatnonzero(
@@ -3884,6 +3957,8 @@ def _build_origins_and_windows(
                     "ticker_id": ticker_ids[final_positions],
                     "origin_ordinal": origin_ordinals,
                     "origin_timestamp_us": timestamps[final_positions],
+                    "origin_local_date": [value.isoformat() if hasattr(value, "isoformat") else str(value) for value in np.asarray(local_dates, dtype=object)[final_positions]],
+                    "origin_local_session_us": local_session_us[final_positions],
                     "event_row_offset": row_offsets[final_positions],
                 }
             )
@@ -4110,7 +4185,19 @@ def _empty_events_frame() -> Any:
 
 
 def _empty_origins() -> Any:
-    return _polars().DataFrame({"origin_id": [], "origin_key": [], "ticker": [], "ticker_id": [], "origin_ordinal": [], "origin_timestamp_us": [], "event_row_offset": []})
+    return _polars().DataFrame(
+        {
+            "origin_id": [],
+            "origin_key": [],
+            "ticker": [],
+            "ticker_id": [],
+            "origin_ordinal": [],
+            "origin_timestamp_us": [],
+            "origin_local_date": [],
+            "origin_local_session_us": [],
+            "event_row_offset": [],
+        }
+    )
 
 
 def _empty_windows(context_lags: tuple[int, ...]) -> Any:

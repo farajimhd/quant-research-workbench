@@ -87,6 +87,11 @@ FUTURE_BAR_VALUE_DTYPES.update({f"{family}_last_event_timestamp_us": np.dtype(np
 DEFAULT_TICKER_DAILY_BAR_OFFSETS = (1, 2, 3, 7, 14, 28, 40, 200)
 DEFAULT_GLOBAL_DAILY_BAR_OFFSETS = (1, 2, 7)
 DEFAULT_DAILY_BAR_COMPLETION_LAG_HOURS = 30.0
+SESSION_START_SECOND = 4 * 60 * 60
+SESSION_END_SECOND = 20 * 60 * 60
+SESSION_END_US = SESSION_END_SECOND * 1_000_000
+SESSION_LENGTH_US = (SESSION_END_SECOND - SESSION_START_SECOND) * 1_000_000
+INTRADAY_LABEL_GRID_RESOLUTIONS_US: tuple[int, ...] = (100_000, 1_000_000, 5_000_000, 30_000_000, 60_000_000)
 RELATIVE_TIME_FEATURE_COLUMNS: tuple[str, ...] = (
     "time_delta_seconds",
     "time_delta_seconds_log1p_signed",
@@ -325,6 +330,32 @@ class LabelContextIndex:
     @property
     def row_count(self) -> int:
         return int(self.ordinals.shape[0])
+
+
+@dataclass(slots=True)
+class IntradayBarFamilyIndex:
+    buckets: np.ndarray
+    open: np.ndarray
+    close: np.ndarray
+    high: np.ndarray
+    low: np.ndarray
+    size_sum: np.ndarray
+    size_open: np.ndarray
+    size_close: np.ndarray
+    size_high: np.ndarray
+    size_low: np.ndarray
+    event_count: np.ndarray
+    last_event_timestamp_us: np.ndarray
+    cum_size_sum: np.ndarray
+    cum_event_count: np.ndarray
+
+
+@dataclass(slots=True)
+class IntradayCompactLabelIndex:
+    bars: dict[tuple[str, int, str], IntradayBarFamilyIndex]
+    condition_events: dict[tuple[str, str], tuple[np.ndarray, dict[str, np.ndarray]]]
+    ticker_news_by_date: dict[str, np.ndarray]
+    sec_filing_by_date: dict[str, np.ndarray]
 
 
 @dataclass(slots=True)
@@ -611,8 +642,14 @@ class TickerMonthPartReader:
             loaded.events = pl.read_parquet(plan.package_dir / plan.files["events"])
         if need_events and "event_window_index" in plan.files:
             loaded.windows = pl.read_parquet(plan.package_dir / plan.files["event_window_index"])
-        if need_labels:
+        if need_labels and "intraday_forward_labels" in plan.files:
             loaded.labels = pl.read_parquet(plan.package_dir / plan.files["intraday_forward_labels"])
+        if need_labels:
+            compact_files = _package_context_files(plan.package_dir)
+            for key in ("intraday_base_bars", "intraday_condition_events", "ticker_news_embeddings", "sec_filing_embeddings"):
+                filename = compact_files.get(key)
+                if filename and key not in loaded.context:
+                    loaded.context[key] = pl.read_parquet(plan.package_dir / filename)
         if need_intraday_bars and "intraday_context_bars" in plan.files:
             loaded.context["intraday_bars"] = pl.read_parquet(plan.package_dir / plan.files["intraday_context_bars"])
         if need_corporate_labels and "corporate_action_daily_labels" in plan.files:
@@ -651,6 +688,8 @@ class TickerMonthBatchMaterializer:
         self._text_index_lock = threading.Lock()
         self._label_index_cache: dict[tuple[int, int, int], LabelContextIndex] = {}
         self._label_index_lock = threading.Lock()
+        self._intraday_compact_label_cache: dict[int, IntradayCompactLabelIndex] = {}
+        self._intraday_compact_label_lock = threading.Lock()
         self._bar_index_cache: dict[int, DailyBarContextIndex] = {}
         self._bar_index_lock = threading.Lock()
         self._xbrl_index_cache: dict[tuple[int, int], XbrlContextIndex] = {}
@@ -1570,11 +1609,9 @@ class TickerMonthBatchMaterializer:
         for part_index, rows in _rows_by_part(refs).items():
             part = parts[int(part_index)]
             if part.labels is None or part.labels.height == 0:
-                if self.config.strict_audit:
-                    first_row = int(rows[0]) if rows.shape[0] else 0
-                    ref = refs[first_row]
-                    origin = int(part.origin_array("origin_ordinal")[int(ref.origin_row)])
-                    raise RuntimeError(f"Missing intraday labels for {part.plan.month}:{part.plan.ticker}|{origin}.")
+                compact_start = time.perf_counter()
+                self._materialize_intraday_labels_from_compact(part, refs, rows, horizon_count, labels_out)
+                profile["label_compact_seconds"] = float(profile.get("label_compact_seconds", 0.0)) + (time.perf_counter() - compact_start)
                 continue
             origin_rows = _origin_rows_for_refs(refs, rows)
             origins = part.origin_array("origin_ordinal").astype(np.int64, copy=False)[origin_rows]
@@ -1633,6 +1670,208 @@ class TickerMonthBatchMaterializer:
             if trade_mask is not None:
                 mask[:, :] = trade_mask
         return labels_out, family_values, family_masks, family_feature_names, bars, mask, horizons, profile
+
+    def _materialize_intraday_labels_from_compact(
+        self,
+        part: LoadedTickerMonthPart,
+        refs: Sequence[TickerMonthSampleRef],
+        rows: np.ndarray,
+        horizon_count: int,
+        labels_out: dict[str, np.ndarray],
+    ) -> None:
+        if horizon_count <= 0 or rows.shape[0] <= 0:
+            return
+        if "intraday_base_bars" not in part.context:
+            if self.config.strict_audit:
+                raise RuntimeError(f"Missing intraday_base_bars compact label source for {_part_key(part.plan)}.")
+            return
+        specs = _intraday_horizon_specs(_cached_horizons([part]))
+        if len(specs) != int(horizon_count):
+            raise RuntimeError(f"Intraday horizon count mismatch for {_part_key(part.plan)}.")
+        origin_rows = _origin_rows_for_refs(refs, rows)
+        origins = part.origins
+        if origins is None:
+            raise RuntimeError(f"Missing origins for {_part_key(part.plan)}.")
+        missing_columns = {"origin_timestamp_us", "origin_local_date", "origin_local_session_us"}.difference(set(origins.columns))
+        if missing_columns:
+            raise RuntimeError(f"Compact intraday label materialization requires origin columns {sorted(missing_columns)} for {_part_key(part.plan)}. Rebuild the cache.")
+        origin_timestamps = part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[origin_rows]
+        local_dates = np.asarray(origins.get_column("origin_local_date").to_numpy(), dtype=object)[origin_rows]
+        local_dates = np.asarray([str(value)[:10] for value in local_dates], dtype=object)
+        local_session_us = part.origin_array("origin_local_session_us").astype(np.int64, copy=False)[origin_rows]
+        local_midnight_us = origin_timestamps - local_session_us
+        compact_index = self._intraday_compact_label_index(part)
+        out_rows = rows.astype(np.int64, copy=False)
+        for horizon_index, (horizon, horizon_us, resolution_us, bucket_count, is_eod) in enumerate(specs):
+            origin_bucket = local_session_us // int(resolution_us)
+            first_bucket = origin_bucket + 1
+            if is_eod:
+                last_bucket = np.full_like(first_bucket, (SESSION_END_US - 1) // int(resolution_us))
+            else:
+                last_bucket = origin_bucket + int(bucket_count)
+            grid_start_session_us = first_bucket * int(resolution_us)
+            grid_end_session_us = (last_bucket + 1) * int(resolution_us)
+            valid = grid_end_session_us <= SESSION_END_US
+            grid_start_ts = local_midnight_us + grid_start_session_us
+            grid_end_ts = local_midnight_us + grid_end_session_us
+            labels_out["label_resolution_us"][out_rows, horizon_index] = np.uint64(resolution_us)
+            labels_out["label_grid_start_timestamp_us"][out_rows, horizon_index] = grid_start_ts.astype(np.int64, copy=False)
+            labels_out["label_grid_end_timestamp_us"][out_rows, horizon_index] = grid_end_ts.astype(np.int64, copy=False)
+            labels_out["available"][out_rows, horizon_index] = False
+            for family in BAR_FAMILY_KEYS:
+                self._fill_compact_bar_family(
+                    compact_index,
+                    family=family,
+                    dates=local_dates,
+                    first_bucket=first_bucket,
+                    last_bucket=last_bucket,
+                    valid=valid,
+                    output_rows=out_rows,
+                    horizon_index=horizon_index,
+                    resolution_us=int(resolution_us),
+                    labels_out=labels_out,
+                )
+            quote_ask_close = labels_out["quote_ask_close"][out_rows, horizon_index]
+            quote_bid_close = labels_out["quote_bid_close"][out_rows, horizon_index]
+            labels_out["price_primary_int"][out_rows, horizon_index] = quote_ask_close
+            labels_out["price_secondary_int"][out_rows, horizon_index] = quote_bid_close
+            labels_out["size_primary_sum"][out_rows, horizon_index] = (
+                labels_out["quote_ask_size_open"][out_rows, horizon_index] + labels_out["quote_ask_size_close"][out_rows, horizon_index]
+            ).astype(np.float32, copy=False)
+            labels_out["size_secondary_sum"][out_rows, horizon_index] = (
+                labels_out["quote_bid_size_open"][out_rows, horizon_index] + labels_out["quote_bid_size_close"][out_rows, horizon_index]
+            ).astype(np.float32, copy=False)
+            event_count = np.maximum.reduce(
+                [
+                    labels_out["trade_event_count"][out_rows, horizon_index].astype(np.uint64, copy=False),
+                    labels_out["quote_bid_event_count"][out_rows, horizon_index].astype(np.uint64, copy=False),
+                    labels_out["quote_ask_event_count"][out_rows, horizon_index].astype(np.uint64, copy=False),
+                ]
+            )
+            labels_out["event_count"][out_rows, horizon_index] = event_count
+            last_ts = np.maximum.reduce(
+                [
+                    labels_out["trade_last_event_timestamp_us"][out_rows, horizon_index].astype(np.int64, copy=False),
+                    labels_out["quote_bid_last_event_timestamp_us"][out_rows, horizon_index].astype(np.int64, copy=False),
+                    labels_out["quote_ask_last_event_timestamp_us"][out_rows, horizon_index].astype(np.int64, copy=False),
+                ]
+            )
+            labels_out["last_event_timestamp_us"][out_rows, horizon_index] = last_ts
+            labels_out["available"][out_rows, horizon_index] = valid & (event_count > 0)
+            self._fill_compact_event_flags(
+                compact_index,
+                dates=local_dates,
+                grid_start_ts=grid_start_ts,
+                grid_end_ts=grid_end_ts,
+                valid=valid,
+                output_rows=out_rows,
+                horizon_index=horizon_index,
+                labels_out=labels_out,
+            )
+
+    def _fill_compact_bar_family(
+        self,
+        index: IntradayCompactLabelIndex,
+        *,
+        family: str,
+        dates: np.ndarray,
+        first_bucket: np.ndarray,
+        last_bucket: np.ndarray,
+        valid: np.ndarray,
+        output_rows: np.ndarray,
+        horizon_index: int,
+        resolution_us: int,
+        labels_out: dict[str, np.ndarray],
+    ) -> None:
+        for date_value in sorted({str(value) for value in dates}):
+            date_mask = (dates == date_value) & valid
+            if not bool(date_mask.any()):
+                continue
+            bars = index.bars.get((date_value, int(resolution_us), str(family)))
+            if bars is None or bars.buckets.size == 0:
+                continue
+            local_positions = np.flatnonzero(date_mask)
+            left = np.searchsorted(bars.buckets, first_bucket[local_positions], side="left")
+            right = np.searchsorted(bars.buckets, last_bucket[local_positions], side="right")
+            has = right > left
+            if not bool(has.any()):
+                continue
+            positions = local_positions[has]
+            left = left[has]
+            right = right[has]
+            rows = output_rows[positions]
+            labels_out[f"{family}_open"][rows, horizon_index] = bars.open[left].astype(np.float32, copy=False)
+            labels_out[f"{family}_close"][rows, horizon_index] = bars.close[right - 1].astype(np.float32, copy=False)
+            labels_out[f"{family}_last_event_timestamp_us"][rows, horizon_index] = bars.last_event_timestamp_us[right - 1].astype(np.int64, copy=False)
+            labels_out[f"{family}_event_count"][rows, horizon_index] = (bars.cum_event_count[right] - bars.cum_event_count[left]).astype(np.uint64, copy=False)
+            if family == "trade":
+                labels_out["trade_size_sum"][rows, horizon_index] = (bars.cum_size_sum[right] - bars.cum_size_sum[left]).astype(np.float32, copy=False)
+            else:
+                labels_out[f"{family}_size_open"][rows, horizon_index] = bars.size_open[left].astype(np.float32, copy=False)
+                labels_out[f"{family}_size_close"][rows, horizon_index] = bars.size_close[right - 1].astype(np.float32, copy=False)
+            for out_pos, lval, rval in zip(rows, left, right):
+                sl = slice(int(lval), int(rval))
+                labels_out[f"{family}_high"][int(out_pos), horizon_index] = np.float32(np.max(bars.high[sl]))
+                labels_out[f"{family}_low"][int(out_pos), horizon_index] = np.float32(np.min(bars.low[sl]))
+                if family != "trade":
+                    labels_out[f"{family}_size_high"][int(out_pos), horizon_index] = np.float32(np.max(bars.size_high[sl]))
+                    labels_out[f"{family}_size_low"][int(out_pos), horizon_index] = np.float32(np.min(bars.size_low[sl]))
+            labels_out[f"{family}_available"][rows, horizon_index] = True
+
+    def _fill_compact_event_flags(
+        self,
+        index: IntradayCompactLabelIndex,
+        *,
+        dates: np.ndarray,
+        grid_start_ts: np.ndarray,
+        grid_end_ts: np.ndarray,
+        valid: np.ndarray,
+        output_rows: np.ndarray,
+        horizon_index: int,
+        labels_out: dict[str, np.ndarray],
+    ) -> None:
+        for date_value in sorted({str(value) for value in dates}):
+            date_mask = (dates == date_value) & valid
+            if not bool(date_mask.any()):
+                continue
+            positions = np.flatnonzero(date_mask)
+            rows = output_rows[positions]
+            for key in ("ticker_news_arrival_flag", "sec_filing_arrival_flag"):
+                source = index.ticker_news_by_date if key == "ticker_news_arrival_flag" else index.sec_filing_by_date
+                timestamps = source.get(date_value)
+                if timestamps is None or timestamps.size == 0:
+                    continue
+                left = np.searchsorted(timestamps, grid_start_ts[positions], side="left")
+                right = np.searchsorted(timestamps, grid_end_ts[positions], side="left")
+                labels_out[key][rows, horizon_index] = right > left
+            timestamps_flags = index.condition_events.get((date_value, "flags"))
+            if timestamps_flags is None:
+                continue
+            timestamps, flags = timestamps_flags
+            if timestamps.size == 0:
+                continue
+            left = np.searchsorted(timestamps, grid_start_ts[positions], side="left")
+            right = np.searchsorted(timestamps, grid_end_ts[positions], side="left")
+            has_any = right > left
+            if not bool(has_any.any()):
+                continue
+            for key in ("condition_halt_pause_flag", "condition_resume_flag", "condition_news_risk_flag", "condition_luld_limit_state_flag"):
+                values = flags.get(key)
+                if values is None:
+                    continue
+                for row, lval, rval, present in zip(rows, left, right, has_any):
+                    if present:
+                        labels_out[key][int(row), horizon_index] = bool(np.any(values[int(lval) : int(rval)]))
+
+    def _intraday_compact_label_index(self, part: LoadedTickerMonthPart) -> IntradayCompactLabelIndex:
+        key = id(part.context.get("intraday_base_bars"))
+        with self._intraday_compact_label_lock:
+            cached = self._intraday_compact_label_cache.get(key)
+            if cached is not None:
+                return cached
+            index = _prepare_intraday_compact_label_index(part)
+            self._intraday_compact_label_cache[key] = index
+            return index
 
     def _label_context_index(self, part: LoadedTickerMonthPart, horizon_count: int) -> LabelContextIndex:
         key = (id(part.origins), id(part.labels), int(horizon_count))
@@ -1944,7 +2183,7 @@ def _package_context_files(package_dir: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     for key, value in files.items():
         normalized = TEXT_CONTEXT_GROUP_ALIASES.get(str(key), str(key))
-        if normalized in {"ticker_news_embeddings", "sec_filing_embeddings", "xbrl", "daily_bars", "corporate_actions"}:
+        if normalized in {"ticker_news_embeddings", "sec_filing_embeddings", "xbrl", "daily_bars", "corporate_actions", "intraday_base_bars", "intraday_condition_events"}:
             out[normalized] = str(value)
     return out
 
@@ -2935,6 +3174,57 @@ def _cached_horizons(parts: Sequence[LoadedTickerMonthPart]) -> tuple[str, ...]:
     return ()
 
 
+def _duration_us(name: str) -> int:
+    text = str(name).strip().lower()
+    if text in {"eod", "end_of_day", "end-of-day"}:
+        return SESSION_LENGTH_US
+    units = (
+        ("ms", 1_000),
+        ("us", 1),
+        ("s", 1_000_000),
+        ("m", 60_000_000),
+        ("h", 3_600_000_000),
+    )
+    for suffix, scale in units:
+        if text.endswith(suffix):
+            return int(float(text[: -len(suffix)]) * scale)
+    raise ValueError(f"Invalid intraday horizon {name!r}.")
+
+
+def _intraday_label_resolution_us(horizon_name: str, horizon_us: int) -> int:
+    if str(horizon_name).strip().lower() in {"eod", "end_of_day", "end-of-day"}:
+        return 60_000_000
+    if horizon_us <= 60_000_000:
+        return 100_000
+    if horizon_us <= 900_000_000:
+        return 1_000_000
+    if horizon_us <= 3_600_000_000:
+        return 5_000_000
+    if horizon_us <= 10_800_000_000:
+        return 30_000_000
+    return 60_000_000
+
+
+def _intraday_horizon_specs(horizons: Sequence[str]) -> tuple[tuple[str, int, int, int, bool], ...]:
+    specs: list[tuple[str, int, int, int, bool]] = []
+    seen: set[str] = set()
+    for raw in horizons:
+        name = str(raw).strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        is_eod = key in {"eod", "end_of_day", "end-of-day"}
+        horizon_us = SESSION_LENGTH_US if is_eod else _duration_us(name)
+        resolution_us = _intraday_label_resolution_us(name, horizon_us)
+        if not is_eod and horizon_us % resolution_us:
+            raise ValueError(f"Intraday horizon {name!r} is not aligned to {resolution_us:,}us grid.")
+        specs.append((name, int(horizon_us), int(resolution_us), 0 if is_eod else int(horizon_us // resolution_us), bool(is_eod)))
+    return tuple(sorted(specs, key=lambda item: (item[1], item[0])))
+
+
 def _cached_intraday_context_horizons(parts: Sequence[LoadedTickerMonthPart]) -> tuple[str, ...]:
     for part in parts:
         horizons = part.plan.config.get("intraday_context_horizons") or ()
@@ -3076,6 +3366,92 @@ def _prepare_label_context_index(origins: Any, labels: Any, expected: int, *, st
         first_missing = int(np.flatnonzero(missing)[0])
         raise RuntimeError(f"Missing intraday labels for {part_key}|{int(origin_ordinals[first_missing])}.")
     return LabelContextIndex(ordinals=origin_ordinals, label_rows=label_rows, missing_mask=missing)
+
+
+def _prepare_intraday_compact_label_index(part: LoadedTickerMonthPart) -> IntradayCompactLabelIndex:
+    frame = part.context.get("intraday_base_bars")
+    bars: dict[tuple[str, int, str], IntradayBarFamilyIndex] = {}
+    if frame is not None and int(getattr(frame, "height", 0) or 0) > 0:
+        required = {"local_date", "label_resolution_us", "bucket_index", "bar_family", "open", "close", "high", "low", "event_count", "last_event_timestamp_us"}
+        missing = sorted(required.difference(set(getattr(frame, "columns", ()))))
+        if missing:
+            raise RuntimeError(f"Compact intraday base bars are missing columns {missing} for {_part_key(part.plan)}.")
+        for key, group in frame.sort(["local_date", "label_resolution_us", "bar_family", "bucket_index"]).partition_by(
+            ["local_date", "label_resolution_us", "bar_family"],
+            as_dict=True,
+            maintain_order=True,
+        ).items():
+            local_date, resolution_us, family = key
+            bucket = group.get_column("bucket_index").to_numpy().astype(np.int64, copy=False)
+            event_count = group.get_column("event_count").to_numpy().astype(np.uint64, copy=False)
+            size_sum = _optional_numeric_column(group, "size_sum", np.float32)
+            bars[(str(local_date)[:10], int(resolution_us), str(family))] = IntradayBarFamilyIndex(
+                buckets=bucket,
+                open=group.get_column("open").to_numpy().astype(np.float32, copy=False),
+                close=group.get_column("close").to_numpy().astype(np.float32, copy=False),
+                high=group.get_column("high").to_numpy().astype(np.float32, copy=False),
+                low=group.get_column("low").to_numpy().astype(np.float32, copy=False),
+                size_sum=size_sum,
+                size_open=_optional_numeric_column(group, "size_open", np.float32),
+                size_close=_optional_numeric_column(group, "size_close", np.float32),
+                size_high=_optional_numeric_column(group, "size_high", np.float32),
+                size_low=_optional_numeric_column(group, "size_low", np.float32),
+                event_count=event_count,
+                last_event_timestamp_us=group.get_column("last_event_timestamp_us").to_numpy().astype(np.int64, copy=False),
+                cum_size_sum=np.concatenate([np.zeros((1,), dtype=np.float64), np.cumsum(size_sum.astype(np.float64, copy=False))]),
+                cum_event_count=np.concatenate([np.zeros((1,), dtype=np.uint64), np.cumsum(event_count.astype(np.uint64, copy=False))]),
+            )
+    condition_events: dict[tuple[str, str], tuple[np.ndarray, dict[str, np.ndarray]]] = {}
+    condition_frame = part.context.get("intraday_condition_events")
+    if condition_frame is not None and int(getattr(condition_frame, "height", 0) or 0) > 0 and "timestamp_us" in condition_frame.columns:
+        for key, group in condition_frame.sort(["local_date", "timestamp_us"]).partition_by(["local_date"], as_dict=True, maintain_order=True).items():
+            local_date = key[0] if isinstance(key, tuple) else key
+            flags = {
+                name: group.get_column(name).to_numpy().astype(np.bool_, copy=False)
+                for name in ("condition_halt_pause_flag", "condition_resume_flag", "condition_news_risk_flag", "condition_luld_limit_state_flag")
+                if name in group.columns
+            }
+            condition_events[(str(local_date)[:10], "flags")] = (
+                group.get_column("timestamp_us").to_numpy().astype(np.int64, copy=False),
+                flags,
+            )
+    return IntradayCompactLabelIndex(
+        bars=bars,
+        condition_events=condition_events,
+        ticker_news_by_date=_arrival_timestamps_by_local_date(part.context.get("ticker_news_embeddings")),
+        sec_filing_by_date=_arrival_timestamps_by_local_date(part.context.get("sec_filing_embeddings")),
+    )
+
+
+def _optional_numeric_column(frame: Any, column: str, dtype: Any) -> np.ndarray:
+    if column not in getattr(frame, "columns", ()):
+        return np.zeros((int(getattr(frame, "height", 0) or 0),), dtype=dtype)
+    return frame.get_column(column).to_numpy().astype(dtype, copy=False)
+
+
+def _arrival_timestamps_by_local_date(frame: Any) -> dict[str, np.ndarray]:
+    if frame is None or int(getattr(frame, "height", 0) or 0) <= 0 or "timestamp_us" not in getattr(frame, "columns", ()):
+        return {}
+    pl = _polars()
+    if "local_date" in frame.columns:
+        source = frame.select(["local_date", "timestamp_us"]).unique().sort(["local_date", "timestamp_us"])
+    else:
+        source = (
+            frame
+            .select(
+                [
+                    pl.from_epoch(pl.col("timestamp_us"), time_unit="us").dt.convert_time_zone("America/New_York").dt.date().alias("local_date"),
+                    "timestamp_us",
+                ]
+            )
+            .unique()
+            .sort(["local_date", "timestamp_us"])
+        )
+    out: dict[str, np.ndarray] = {}
+    for key, group in source.partition_by(["local_date"], as_dict=True, maintain_order=True).items():
+        local_date = key[0] if isinstance(key, tuple) else key
+        out[str(local_date)[:10]] = group.get_column("timestamp_us").to_numpy().astype(np.int64, copy=False)
+    return out
 
 
 def _label_column_matrix(labels: Any, key: str, expected: int, dtype: np.dtype) -> np.ndarray:

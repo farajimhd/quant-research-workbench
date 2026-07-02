@@ -41,8 +41,9 @@ The fastest natural unit is therefore:
 one ticker, one month
 ```
 
-Each package stores raw compact events, origins, reusable index files, labels,
-and context files. It does **not** store encoded event chunks and does
+Each package stores raw compact events, origins, reusable index files, compact
+intraday label sources, daily corporate-action labels, and context files. It
+does **not** store encoded event chunks and does
 **not** store fully materialized training batches.
 
 ### Layout
@@ -64,7 +65,6 @@ cache_root/
           origins_part_00000.parquet
           event_window_index_part_00000.parquet
           ranges_part_00000.parquet
-          intraday_forward_labels_part_00000.parquet
           corporate_action_daily_labels_part_00000.parquet
           daily_bars.parquet
           ticker_news_embeddings.parquet
@@ -72,6 +72,7 @@ cache_root/
           xbrl.parquet
           corporate_actions.parquet
           intraday_base_bars.parquet
+          intraday_condition_events.parquet
 ```
 
 Very liquid tickers can be physically split into multiple ordinal-bounded
@@ -245,9 +246,18 @@ not front-load every ticker for a whole day/month because the 100ms grid can be
 hundreds of millions of rows per active market day. This replaces the older
 behavior where each part query rebuilt the same bars from raw events.
 
-On disk, `intraday_forward_labels_part_*.parquet` stores one row per origin.
-Each horizon-dependent field is a list column ordered by `horizon_us`. The
-canonical future bar fields are family-specific:
+By default, the cache does not write redundant
+`intraday_forward_labels_part_*.parquet` files. It writes compact
+`intraday_base_bars.parquet` and `intraday_condition_events.parquet` once per
+ticker/month, then the loader materializes `intraday_labels` for the requested
+batch from those compact sources. This keeps monthly builds linear in source
+data size instead of multiplying work by `origins x horizons`.
+
+For debugging or parity checks, `--materialize-intraday-forward-labels` writes
+the older per-origin label files. In that mode,
+`intraday_forward_labels_part_*.parquet` stores one row per origin and each
+horizon-dependent field is a list column ordered by `horizon_us`. The canonical
+future bar fields are family-specific:
 
 Grid metadata list columns are emitted with the same horizon order:
 
