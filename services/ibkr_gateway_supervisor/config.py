@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -38,7 +39,14 @@ class IbkrGatewayConfig:
     notification_smtp_port: int
     notification_smtp_user: str
     notification_smtp_password_present: bool
+    terminal_rich_enabled: bool
+    terminal_screen_enabled: bool
+    terminal_refresh_seconds: float
     log_root: Path
+    event_log_jsonl_enabled: bool
+    clickhouse_log_enabled: bool
+    clickhouse_database: str
+    clickhouse_table: str
 
     @classmethod
     def from_env(cls, *, account_key: str = "paper") -> "IbkrGatewayConfig":
@@ -76,7 +84,14 @@ class IbkrGatewayConfig:
             notification_smtp_port=env_int("IBKR_GATEWAY_ALERT_SMTP_PORT", env_int("ALERT_SMTP_PORT", 587)),
             notification_smtp_user=env_string("IBKR_GATEWAY_ALERT_SMTP_USER", env_string("ALERT_SMTP_USER", "")),
             notification_smtp_password_present=bool(env_string("IBKR_GATEWAY_ALERT_SMTP_PASSWORD", env_string("ALERT_SMTP_PASSWORD", ""))),
+            terminal_rich_enabled=env_bool_auto("IBKR_GATEWAY_TERMINAL_RICH_ENABLED", sys.stdout.isatty()),
+            terminal_screen_enabled=env_bool("IBKR_GATEWAY_TERMINAL_SCREEN_ENABLED", True),
+            terminal_refresh_seconds=env_float("IBKR_GATEWAY_TERMINAL_REFRESH_SECONDS", 1.0),
             log_root=Path(env_string("IBKR_GATEWAY_LOG_ROOT", "tmp/ibkr_gateway_supervisor")).expanduser(),
+            event_log_jsonl_enabled=env_bool("IBKR_GATEWAY_EVENT_LOG_JSONL_ENABLED", True),
+            clickhouse_log_enabled=env_bool("IBKR_GATEWAY_CLICKHOUSE_LOG_ENABLED", True),
+            clickhouse_database=env_string("IBKR_GATEWAY_CLICKHOUSE_DATABASE", "q_live"),
+            clickhouse_table=env_string("IBKR_GATEWAY_CLICKHOUSE_TABLE", "ibkr_gateway_supervisor_event_v1"),
         )
 
     def public_dict(self) -> dict[str, object]:
@@ -127,6 +142,15 @@ def env_float(name: str, default: float) -> float:
 
 def env_bool(name: str, default: bool) -> bool:
     text = os.environ.get(name, "").strip().lower()
+    if not text:
+        return default
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+def env_bool_auto(name: str, default: bool) -> bool:
+    text = os.environ.get(name, "").strip().lower()
+    if text == "auto":
+        return sys.stdout.isatty()
     if not text:
         return default
     return text in {"1", "true", "yes", "y", "on"}

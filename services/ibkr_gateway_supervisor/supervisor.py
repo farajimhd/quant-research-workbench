@@ -12,8 +12,10 @@ from typing import Any
 
 from services.ibkr_gateway_supervisor.client import IbkrClientPortalClient, HttpResult, account_ids, can_reauthenticate, is_authenticated
 from services.ibkr_gateway_supervisor.config import IbkrGatewayConfig
+from services.ibkr_gateway_supervisor.event_log import SupervisorEventLog
 from services.ibkr_gateway_supervisor.login import run_playwright_login
 from services.ibkr_gateway_supervisor.notifications import Notifier
+from services.ibkr_gateway_supervisor.terminal import SupervisorTerminal, SupervisorTerminalState
 
 
 class IbkrGatewaySupervisor:
@@ -21,6 +23,9 @@ class IbkrGatewaySupervisor:
         self.config = config
         self.client = IbkrClientPortalClient(base_url=config.base_url, timeout_seconds=config.request_timeout_seconds)
         self.notifier = Notifier(config)
+        self.event_log = SupervisorEventLog(config)
+        self.terminal_state = SupervisorTerminalState(event_log_path=str(self.event_log.event_log_path))
+        self.terminal = SupervisorTerminal(config, self.terminal_state) if config.terminal_rich_enabled else None
         self.process: subprocess.Popen[str] | None = None
         self.started_process = False
         self.gateway_listener_pid: int | None = None
@@ -35,7 +40,7 @@ class IbkrGatewaySupervisor:
         try:
             self.ensure_gateway()
             status = self.client.auth_status()
-            self.emit("auth_status", result=self.public_result(status))
+            self.emit("auth_status", result=self.public_result(status), authenticated=status.ok and is_authenticated(status.payload))
             if status.ok and is_authenticated(status.payload):
                 accounts = self.client.accounts()
                 ids = account_ids(accounts.payload)
@@ -60,8 +65,10 @@ class IbkrGatewaySupervisor:
     def run_forever(self) -> None:
         self.install_signal_handlers()
         self.config.log_root.mkdir(parents=True, exist_ok=True)
-        self.emit("supervisor_started", config=self.config.public_dict())
+        if self.terminal is not None:
+            self.terminal.start()
         try:
+            self.emit("supervisor_started", config=self.config.public_dict(), message="IBKR supervisor started.")
             self.ensure_gateway()
             self.handle_auth_status()
             next_status = 0.0
@@ -77,10 +84,14 @@ class IbkrGatewaySupervisor:
                 time.sleep(1.0)
         finally:
             self.stop_started_process()
-            self.emit("supervisor_stopped")
+            self.emit("supervisor_stopped", message="IBKR supervisor stopped.")
+            if self.terminal is not None:
+                self.terminal.stop()
 
     def ensure_gateway(self) -> None:
         if self.client.is_gateway_reachable():
+            self.gateway_listener_pid = listener_pid_for_base_url(self.config.base_url)
+            self.emit("gateway_reachable", root_url=self.client.root_url, listener_pid=self.gateway_listener_pid, already_running=True)
             return
         if not self.config.launch_gateway:
             raise RuntimeError(f"IBKR Client Portal Gateway is not reachable at {self.client.root_url}")
@@ -106,7 +117,7 @@ class IbkrGatewaySupervisor:
         while time.monotonic() < deadline:
             if self.client.is_gateway_reachable():
                 self.gateway_listener_pid = listener_pid_for_base_url(self.config.base_url)
-                self.emit("gateway_reachable", root_url=self.client.root_url)
+                self.emit("gateway_reachable", root_url=self.client.root_url, listener_pid=self.gateway_listener_pid)
                 return
             if self.process.poll() is not None:
                 tail = tail_text(process_log_path)
@@ -131,7 +142,7 @@ class IbkrGatewaySupervisor:
 
     def handle_auth_status(self) -> None:
         status = self.client.auth_status()
-        self.emit("auth_status", result=self.public_result(status))
+        self.emit("auth_status", result=self.public_result(status), authenticated=status.ok and is_authenticated(status.payload))
         if status.ok and is_authenticated(status.payload):
             self.authenticated = True
             self.auth_failures = 0
@@ -146,7 +157,7 @@ class IbkrGatewaySupervisor:
             self.emit("reauthenticate", attempt=self.reauth_attempts, result=self.public_result(reauth))
             if reauth.ok:
                 followup = self.client.auth_status()
-                self.emit("auth_status_after_reauthenticate", result=self.public_result(followup))
+                self.emit("auth_status_after_reauthenticate", result=self.public_result(followup), authenticated=followup.ok and is_authenticated(followup.payload))
                 if followup.ok and is_authenticated(followup.payload):
                     self.authenticated = True
                     self.auth_failures = 0
@@ -195,7 +206,7 @@ class IbkrGatewaySupervisor:
                 )
             return False
         status = self.client.auth_status()
-        self.emit("auth_status_after_auto_login", result=self.public_result(status))
+        self.emit("auth_status_after_auto_login", result=self.public_result(status), authenticated=status.ok and is_authenticated(status.payload))
         self.authenticated = bool(authenticated and status.ok and is_authenticated(status.payload))
         if self.authenticated:
             self.emit("auto_login_completed", attempt=self.login_attempts, account_key=self.config.account_key)
@@ -245,14 +256,76 @@ class IbkrGatewaySupervisor:
             "event": event,
             **sanitize(payload),
         }
-        print(json.dumps(row, sort_keys=True, default=str), flush=True)
-        try:
-            self.config.log_root.mkdir(parents=True, exist_ok=True)
-            path = self.config.log_root / f"ibkr_gateway_supervisor_{datetime.now(UTC).strftime('%Y%m%d')}.jsonl"
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
-        except Exception:
-            pass
+        self.update_terminal_state(row)
+        self.event_log.write(row)
+        self.terminal_state.clickhouse_status = self.event_log.clickhouse_status
+        self.terminal_state.clickhouse_error = self.event_log.clickhouse_error
+        if self.terminal is not None:
+            self.terminal.update()
+        else:
+            print(json.dumps(row, sort_keys=True, default=str), flush=True)
+
+    def update_terminal_state(self, row: dict[str, Any]) -> None:
+        state = self.terminal_state
+        event = str(row.get("event") or "")
+        state.updated_at_utc = datetime.now(UTC)
+        state.recent_events.append(row)
+        state.auth_failures = self.auth_failures
+        state.reauth_attempts = self.reauth_attempts
+        state.login_attempts = self.login_attempts
+        if event == "supervisor_started":
+            state.current_operation = "Starting IBKR Client Portal Gateway supervisor"
+        elif event == "gateway_process_started":
+            state.gateway_status = "starting"
+            state.gateway_pid = int(row.get("pid") or 0) or None
+            state.current_operation = "Starting local IBKR Client Portal Gateway"
+        elif event == "gateway_reachable":
+            state.gateway_status = "ready"
+            state.listener_pid = int(row.get("listener_pid") or 0) or None
+            state.current_operation = "Gateway is reachable"
+        elif event in {"auth_status", "auth_status_after_reauthenticate", "auth_status_after_auto_login"}:
+            result = row.get("result") if isinstance(row.get("result"), dict) else {}
+            state.status_code = int(result.get("status_code") or 0)
+            state.auth_status = "authenticated" if row.get("authenticated") else "unauthenticated"
+            state.current_operation = "Authenticated" if row.get("authenticated") else "Waiting for authenticated session"
+        elif event == "reauthenticate":
+            state.current_operation = "Attempting IBKR session reauthentication"
+        elif event == "auto_login_started":
+            state.login_status = "running"
+            state.current_operation = "Running Playwright login automation"
+        elif event == "auto_login_completed":
+            state.login_status = "ok"
+            state.auth_status = "authenticated"
+            state.current_operation = "Automatic login completed"
+        elif event == "auto_login_failed":
+            state.login_status = "failed"
+            state.last_error = str(row.get("error") or "Automatic login failed")
+            state.alerts.append(state.last_error)
+        elif event == "auto_login_waiting":
+            state.login_status = "waiting"
+            state.current_operation = "Waiting before next automatic login attempt"
+        elif event == "fresh_login_required":
+            state.auth_status = "unauthenticated"
+            state.current_operation = "Fresh login required"
+        elif event == "accounts":
+            state.account_status = "ready" if row.get("configured_account_present") else "missing"
+        elif event == "tickle":
+            result = row.get("result") if isinstance(row.get("result"), dict) else {}
+            if result.get("ok"):
+                state.keepalive_status = "ok"
+                state.tickle_count += 1
+            else:
+                state.keepalive_status = "failed"
+                state.last_error = str(result.get("error") or "Tickle failed")
+                state.alerts.append(state.last_error)
+        elif event in {"gateway_process_stopping", "gateway_listener_stopping"}:
+            state.gateway_status = "stopping"
+            state.current_operation = "Stopping supervisor-started gateway process"
+        elif event == "supervisor_stopped":
+            state.gateway_status = "stopped"
+            state.current_operation = "Supervisor stopped"
+        if "failed" in event:
+            state.last_error = str(row.get("error") or row.get("message") or event)
 
     def public_result(self, result: HttpResult) -> dict[str, Any]:
         payload = result.payload

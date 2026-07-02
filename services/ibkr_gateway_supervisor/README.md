@@ -40,7 +40,29 @@ IBKR_GATEWAY_ALERT_SMTP_HOST=smtp.example.com
 IBKR_GATEWAY_ALERT_SMTP_PORT=587
 IBKR_GATEWAY_ALERT_SMTP_USER=alerts@example.com
 IBKR_GATEWAY_ALERT_SMTP_PASSWORD=...
+IBKR_GATEWAY_TERMINAL_RICH_ENABLED=auto
+IBKR_GATEWAY_TERMINAL_SCREEN_ENABLED=true
+IBKR_GATEWAY_TERMINAL_REFRESH_SECONDS=1
+IBKR_GATEWAY_EVENT_LOG_JSONL_ENABLED=true
+IBKR_GATEWAY_CLICKHOUSE_LOG_ENABLED=true
+IBKR_GATEWAY_CLICKHOUSE_DATABASE=q_live
+IBKR_GATEWAY_CLICKHOUSE_TABLE=ibkr_gateway_supervisor_event_v1
 ```
+
+## Terminal and logs
+
+When stdout is interactive, the daemon shows a Rich terminal dashboard with:
+
+- gateway, authentication, login, account, and keepalive status
+- retry and tickle counters
+- recent alerts and events
+- JSONL and ClickHouse persistence status
+
+Every supervisor event is appended to a per-run JSONL file under
+`tmp/ibkr_gateway_supervisor/<run_id>/ibkr_gateway_supervisor_events.jsonl`.
+ClickHouse persistence uses one compact table by default:
+`q_live.ibkr_gateway_supervisor_event_v1`. If ClickHouse is unavailable, the
+service disables ClickHouse writes for that run and continues writing JSONL.
 
 ## Commands
 
