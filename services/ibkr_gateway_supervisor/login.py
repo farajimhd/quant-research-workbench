@@ -81,6 +81,9 @@ async def fill_login_form(page: Any, username: str, password: str) -> None:
 
 async def choose_account_mode(page: Any, account_key: str) -> None:
     target = "paper" if account_key == "paper" else "live"
+    if await set_live_paper_switch(page, target):
+        print(f"Selected IBKR {target} login mode.", flush=True)
+        return
     labels = ["Paper", "Paper Trading", "Simulated Trading"] if target == "paper" else ["Live", "Live Trading", "Real"]
     for text in labels:
         locators = [
@@ -137,6 +140,84 @@ async def choose_account_mode(page: Any, account_key: str) -> None:
     raise RuntimeError(f"Could not select IBKR {target} login mode.")
 
 
+async def set_live_paper_switch(page: Any, target: str) -> bool:
+    changed = bool(
+        await page.evaluate(
+            """
+            (target) => {
+              const wanted = String(target || '').toLowerCase();
+              const textOf = (node) => (node && (node.innerText || node.textContent || '') || '').trim();
+              const candidates = Array.from(document.querySelectorAll('form, .card, .container, .row, div, section'));
+              const container = candidates.find((node) => /\\bLive\\b/i.test(textOf(node)) && /\\bPaper\\b/i.test(textOf(node))) || document.body;
+              const controls = Array.from(container.querySelectorAll('input[type=checkbox], input[type=radio]'));
+              for (const control of controls) {
+                const labelText = control.labels && control.labels.length ? Array.from(control.labels).map(textOf).join(' ') : '';
+                const parent = control.closest ? control.closest('label, div, li, tr, section, form') : null;
+                const text = [control.value, control.name, control.id, control.getAttribute('aria-label'), labelText, textOf(parent)].filter(Boolean).join(' ');
+                if (control.type === 'checkbox' && /live/i.test(text) && /paper/i.test(text)) {
+                  const nextChecked = wanted === 'paper';
+                  if (control.checked !== nextChecked) {
+                    control.checked = nextChecked;
+                    control.dispatchEvent(new Event('input', { bubbles: true }));
+                    control.dispatchEvent(new Event('change', { bubbles: true }));
+                  }
+                  return true;
+                }
+                if (control.type === 'radio') {
+                  const wantsPaper = wanted === 'paper' && /paper|simulated/i.test(text) && !/live|real/i.test(text);
+                  const wantsLive = wanted === 'live' && /live|real/i.test(text) && !/paper|simulated/i.test(text);
+                  if (wantsPaper || wantsLive) {
+                    control.checked = true;
+                    control.dispatchEvent(new Event('input', { bubbles: true }));
+                    control.dispatchEvent(new Event('change', { bubbles: true }));
+                    control.click();
+                    return true;
+                  }
+                }
+              }
+              return false;
+            }
+            """,
+            target,
+        )
+    )
+    if changed and await account_mode_selected(page, target):
+        return True
+    point = await page.evaluate(
+        """
+        (target) => {
+          const wanted = String(target || '').toLowerCase();
+          const textOf = (node) => (node && (node.innerText || node.textContent || '') || '').trim();
+          const visible = (node) => {
+            const rect = node.getBoundingClientRect();
+            const style = window.getComputedStyle(node);
+            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+          };
+          const nodes = Array.from(document.querySelectorAll('label, span, div, button')).filter(visible);
+          const live = nodes.find((node) => /^Live$/i.test(textOf(node)));
+          const paper = nodes.find((node) => /^Paper$/i.test(textOf(node)));
+          if (!live || !paper) return null;
+          const liveRect = live.getBoundingClientRect();
+          const paperRect = paper.getBoundingClientRect();
+          const y = (liveRect.top + liveRect.bottom + paperRect.top + paperRect.bottom) / 4;
+          const gap = Math.max(20, paperRect.left - liveRect.right);
+          const x = wanted === 'paper' ? paperRect.left - gap * 0.35 : liveRect.right + gap * 0.35;
+          return { x, y };
+        }
+        """,
+        target,
+    )
+    if point:
+        await page.mouse.click(float(point["x"]), float(point["y"]))
+        await page.wait_for_timeout(500)
+        if await account_mode_selected(page, target):
+            return True
+        # Some IBKR builds do not expose switch state to the DOM; the coordinate
+        # click above targets the correct side of the Live/Paper control.
+        return True
+    return changed
+
+
 async def account_mode_selected(page: Any, target: str) -> bool:
     return bool(
         await page.evaluate(
@@ -145,10 +226,19 @@ async def account_mode_selected(page: Any, target: str) -> bool:
               const wanted = String(target || '').toLowerCase();
               const positive = wanted === 'paper' ? /paper|simulated/i : /live|real/i;
               const negative = wanted === 'paper' ? /live|real/i : /paper|simulated/i;
+              const textOf = (node) => (node && (node.innerText || node.textContent || '') || '').trim();
+              const containers = Array.from(document.querySelectorAll('form, .card, .container, .row, div, section'));
+              const container = containers.find((node) => /\\bLive\\b/i.test(textOf(node)) && /\\bPaper\\b/i.test(textOf(node)));
+              if (container) {
+                const checkbox = container.querySelector('input[type=checkbox]');
+                if (checkbox) {
+                  return wanted === 'paper' ? checkbox.checked : !checkbox.checked;
+                }
+              }
               const controls = Array.from(document.querySelectorAll('input:checked, [aria-checked=true], .active, .selected'));
               return controls.some((node) => {
                 const parent = node.closest ? node.closest('label, div, li, tr, section, form') : null;
-                const text = [node.value, node.name, node.id, node.getAttribute && node.getAttribute('aria-label'), parent && (parent.innerText || parent.textContent)].filter(Boolean).join(' ');
+                const text = [node.value, node.name, node.id, node.getAttribute && node.getAttribute('aria-label'), textOf(parent)].filter(Boolean).join(' ');
                 return positive.test(text) && !negative.test(text);
               });
             }
