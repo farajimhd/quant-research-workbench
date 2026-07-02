@@ -1224,9 +1224,14 @@ def load_symbol_refs(client: ClickHouseHttpClient, database: str) -> dict[str, S
         ifNull(l.ibkr_conid, '') AS ibkr_conid
     FROM {qtable(database, 'id_symbol_v1')} s FINAL
     INNER JOIN {qtable(database, 'id_listing_v1')} l FINAL ON l.listing_id = s.listing_id
+    INNER JOIN {qtable(database, 'id_security_v1')} sec FINAL ON sec.security_id = l.security_id
+    INNER JOIN {qtable(database, 'ref_exchange_v1')} ex FINAL ON ex.exchange_code = l.exchange_code
     WHERE s.status = 'active'
       AND s.primary_symbol_flag = 1
       AND l.listing_status = 'active'
+      AND upper(ifNull(l.currency_code, '')) = 'USD'
+      AND upper(ifNull(ex.iso_country_code, '')) = 'US'
+      AND upper(sec.product_type) IN ('STK', 'STOCK', 'STOCKS')
     FORMAT JSONEachRow
     """
     text = client.execute(sql).strip()
