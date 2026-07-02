@@ -16,6 +16,7 @@ from rich.table import Table
 from services.reference_gateway.audit import ReferenceAuditReport
 from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.policy import ReferenceWritePolicy
+from services.reference_gateway.state import ReferenceSourceState, ReferenceTableState
 
 
 EASTERN = ZoneInfo("America/New_York")
@@ -36,6 +37,8 @@ class ReferenceRunRecord:
     config: ReferenceGatewayConfig
     write_policy: ReferenceWritePolicy
     operations: list[OperationRecord] = field(default_factory=list)
+    source_states: list[ReferenceSourceState] = field(default_factory=list)
+    table_states: list[ReferenceTableState] = field(default_factory=list)
     audit: ReferenceAuditReport | None = None
     report_path: str = ""
     final_status: str = "running"
@@ -94,6 +97,8 @@ def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
             current_operation_panel(record),
             overview_panel(record),
             source_sync_panel(record, compact=True),
+            source_coverage_panel(record, limit=8),
+            reference_tables_panel(record, limit=6),
             guardrail_maintenance_panel(record, compact=True),
             audit_aggregate_panel(record, limit=3),
         )
@@ -103,6 +108,8 @@ def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
             current_operation_panel(record),
             overview_panel(record),
             source_sync_panel(record, compact=True),
+            source_coverage_panel(record, limit=12),
+            reference_tables_panel(record, limit=9),
             guardrail_maintenance_panel(record, compact=True),
             operations_panel(record.operations, limit=8),
             audit_aggregate_panel(record, limit=4),
@@ -112,6 +119,8 @@ def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
         current_operation_panel(record),
         overview_panel(record),
         source_sync_panel(record, compact=False),
+        source_coverage_panel(record, limit=20),
+        reference_tables_panel(record, limit=12),
         guardrail_maintenance_panel(record, compact=False),
         operations_panel(record.operations, limit=10),
         audit_aggregate_panel(record, limit=4),
@@ -246,6 +255,73 @@ def source_sync_panel(record: ReferenceRunRecord, *, compact: bool = False) -> P
     return Panel(table, title="Source Sync", box=box.ROUNDED, border_style=panel_status_color([*source_ops, source, issue_write, graph, graph_issue]), padding=(0, 1))
 
 
+def source_coverage_panel(record: ReferenceRunRecord, *, limit: int) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Source", style="cyan", no_wrap=True, width=28)
+    table.add_column("Status", no_wrap=True, width=12)
+    table.add_column("Coverage / Last", no_wrap=True, width=25)
+    table.add_column("Rows", justify="right", no_wrap=True, width=12)
+    table.add_column("Targets", overflow="fold", ratio=1)
+    table.add_column("Notes", overflow="fold", ratio=1)
+    states = record.source_states[:limit]
+    if not states:
+        table.add_row("coverage", style_status("waiting"), "-", "-", "-", "Source coverage has not been inspected yet.")
+    for state in states:
+        table.add_row(
+            state.source,
+            style_status(state.status),
+            state.coverage,
+            fmt(state.rows) if state.rows is not None else "-",
+            truncate(state.targets, 120),
+            truncate(state.note, 120),
+        )
+    hidden = max(0, len(record.source_states) - limit)
+    if hidden:
+        table.add_row("[dim]more[/dim]", "-", "-", fmt(hidden), "-", "Additional source rows hidden in compact terminal view.")
+    return Panel(table, title="Source Coverage", box=box.ROUNDED, border_style=source_state_color(record.source_states), padding=(0, 1))
+
+
+def reference_tables_panel(record: ReferenceRunRecord, *, limit: int) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Group", style="cyan", no_wrap=True, width=28)
+    table.add_column("Group Status", no_wrap=True, width=12)
+    table.add_column("Tables", justify="right", no_wrap=True, width=8)
+    table.add_column("Table", overflow="fold", ratio=1)
+    table.add_column("Table Status", no_wrap=True, width=12)
+    table.add_column("Table Rows", justify="right", no_wrap=True, width=12)
+    table.add_column("Latest Update", no_wrap=True, width=20)
+    states = record.table_states[:limit]
+    if not states:
+        table.add_row("reference tables", style_status("waiting"), "-", "-", "-", "-", "Table state has not been inspected yet.")
+    for state in states:
+        details = state.details or ()
+        if not details:
+            table.add_row(
+                state.group_id,
+                style_status(state.status),
+                f"{state.tables_present}/{state.tables_total}",
+                "-",
+                "-",
+                fmt(state.rows),
+                compact_datetime(state.latest_update),
+            )
+            continue
+        for index, detail in enumerate(details):
+            table.add_row(
+                state.group_id if index == 0 else "",
+                style_status(state.status) if index == 0 else "",
+                f"{state.tables_present}/{state.tables_total}" if index == 0 else "",
+                detail.table_name,
+                style_status(detail.status),
+                fmt(detail.rows),
+                compact_datetime(detail.latest_update),
+            )
+    hidden = max(0, len(record.table_states) - limit)
+    if hidden:
+        table.add_row("[dim]more[/dim]", "-", fmt(hidden), "-", "-", "-", "Additional table groups hidden in compact terminal view.")
+    return Panel(table, title="Reference Table State", box=box.ROUNDED, border_style=table_state_color(record.table_states), padding=(0, 1))
+
+
 def operations_panel(operations: list[OperationRecord], *, limit: int = 10) -> Panel:
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
     table.add_column("Step", style="cyan", no_wrap=True, width=30)
@@ -375,8 +451,10 @@ def status_color(value: str) -> str:
         return "green"
     if lowered in {"failed", "error", "blocked"}:
         return "red"
-    if lowered in {"warning", "warn", "skipped", "source_not_yet_available", "deferred", "skip"}:
+    if lowered in {"warning", "warn", "skipped", "source_not_yet_available", "deferred", "skip", "stale", "missing"}:
         return "yellow"
+    if lowered in {"planned", "empty", "partial"}:
+        return "cyan"
     return "cyan"
 
 
@@ -400,6 +478,13 @@ def write_policy_text(policy: ReferenceWritePolicy) -> str:
 
 def clock(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def compact_datetime(value: str) -> str:
+    text = str(value or "").strip()
+    if not text or text == "-":
+        return "-"
+    return text.replace("T", " ")[:19]
 
 
 def fmt(value: Any) -> str:
@@ -472,6 +557,28 @@ def panel_status_color(operations: list[OperationRecord | None]) -> str:
     if any(status in {"warning", "warn", "skipped", "deferred"} for status in statuses):
         return "yellow"
     if statuses and all(status in {"ok", "completed", "done", "pass", "success"} for status in statuses):
+        return "green"
+    return "cyan"
+
+
+def source_state_color(states: list[ReferenceSourceState]) -> str:
+    statuses = {state.status.lower() for state in states}
+    if "failed" in statuses:
+        return "red"
+    if statuses & {"stale", "missing", "warning"}:
+        return "yellow"
+    if statuses and statuses <= {"ok", "planned"}:
+        return "green"
+    return "cyan"
+
+
+def table_state_color(states: list[ReferenceTableState]) -> str:
+    statuses = {state.status.lower() for state in states}
+    if "missing" in statuses:
+        return "red"
+    if statuses & {"warning", "stale"}:
+        return "yellow"
+    if statuses and statuses <= {"ok", "empty", "partial"}:
         return "green"
     return "cyan"
 

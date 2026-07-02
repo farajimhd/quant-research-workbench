@@ -34,6 +34,7 @@ from services.reference_gateway.preflight import run_preflight
 from services.reference_gateway.publication_maintenance import run_recent_publication_gap_fill
 from services.reference_gateway.publication_rebuild import rebuild_tradable_publications
 from services.reference_gateway.runtime_log import RuntimeLogger
+from services.reference_gateway.state import collect_reference_state
 from services.reference_gateway.table_groups import table_group_markdown
 from services.reference_gateway.terminal import OperationRecord, ReferenceRunRecord, ReferenceTerminalSession
 from services.reference_gateway.tradable_blocker import block_latest_universe_for_open_issues
@@ -148,6 +149,26 @@ def main() -> None:
         logger.event("alerts_written", reason=reason, attempted=result.attempted, written=result.written, table=result.table)
         emit("reference_alert_write=" + json.dumps(asdict(result), sort_keys=True))
 
+    def refresh_reference_state(reason: str) -> None:
+        try:
+            from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
+
+            client = ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password())
+            source_states, table_states = collect_reference_state(client, database=config.clickhouse_write_database)
+            record.source_states = source_states
+            record.table_states = table_states
+            logger.event(
+                "reference_state_collected",
+                reason=reason,
+                source_states=len(source_states),
+                table_states=len(table_states),
+                source_failed=sum(1 for state in source_states if state.status == "failed"),
+                table_missing=sum(1 for state in table_states if state.status == "missing"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.event("reference_state_failed", reason=reason, error=repr(exc))
+        refresh_terminal()
+
     def refresh_terminal() -> None:
         if terminal is not None:
             terminal.update()
@@ -222,6 +243,7 @@ def main() -> None:
             refresh_terminal()
             stop_terminal()
             sys.exit(2)
+        refresh_reference_state("after_preflight")
     else:
         add_operation("Dependency preflight", "skipped", "REFERENCE_GATEWAY_PREFLIGHT_ENABLED_FALSE")
     if config.execute and not write_policy.writes_allowed:
@@ -243,6 +265,7 @@ def main() -> None:
             storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
         )
         add_operation("Reference fact schema", "completed", f"write={config.clickhouse_write_database}", seconds=time.perf_counter() - started)
+        refresh_reference_state("after_fact_schema")
     if config.execute and config.market_publication_gap_fill_enabled:
         from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
 
@@ -264,6 +287,7 @@ def main() -> None:
             f"read_database={config.clickhouse_read_database} "
             f"write_database={config.clickhouse_write_database}"
         )
+        refresh_reference_state("after_market_publication_schema")
     if config.execute and config.resolve_stale_issues:
         started = time.perf_counter()
         resolution = resolve_stale_active_ticker_issues(config)
@@ -334,6 +358,7 @@ def main() -> None:
         )
         if plan_path:
             emit(f"source_sync_report={plan_path}")
+        refresh_reference_state("after_source_sync")
         if config.execute:
             issue_write = None
             graph_write = None
@@ -416,6 +441,7 @@ def main() -> None:
                     emit(f"post_issue_report={report_path}")
             elif changed_rows > 0 and config.rebuild_tradable_on_execute:
                 add_operation("Post-issue tradable rebuild", "skipped", write_policy.reason)
+            refresh_reference_state("after_source_sync_writes")
     if (
         config.execute
         and config.market_publication_gap_fill_enabled
@@ -460,6 +486,7 @@ def main() -> None:
             seconds=time.perf_counter() - started,
         )
         emit("market_publication_gap_fill=" + json.dumps(asdict(maintenance), sort_keys=True))
+        refresh_reference_state("after_market_publication_gap_fill")
         write_alert_batch(
             build_publication_maintenance_alert(
                 "completed" if maintenance.returncode == 0 else "failed",
@@ -471,6 +498,7 @@ def main() -> None:
     elif config.execute and config.test_write_mode and config.market_publication_gap_fill_enabled:
         add_operation("Market publication gap fill", "skipped", "temp_mode_requires_maintenance_force")
         emit("market_publication_gap_fill=skipped reason=temp_mode_requires_maintenance_force")
+    refresh_reference_state("final")
     record.final_status = report.status
     record.wall_seconds = time.perf_counter() - run_started
     logger.event("run_finished", status=record.final_status, wall_seconds=record.wall_seconds, report_path=record.report_path)
