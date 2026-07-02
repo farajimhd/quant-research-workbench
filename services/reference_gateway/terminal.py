@@ -201,12 +201,17 @@ def source_sync_panel(record: ReferenceRunRecord) -> Panel:
     issue_write = latest_operation(record.operations, "Write source-sync issues")
     graph = latest_operation(record.operations, "Write canonical graph")
     graph_issue = latest_operation(record.operations, "Write graph issues")
-    table = compact_ops_table()
-    add_compact_op(table, "Source sync", source)
+    table = compact_ops_table(item_width=26)
+    source_ops = [op for op in record.operations if op.name.startswith("Source: ")]
+    if source_ops:
+        for op in source_ops:
+            add_compact_op(table, op.name.replace("Source: ", ""), op)
+    else:
+        add_compact_op(table, "Source sync", source)
     add_compact_op(table, "Issue rows", issue_write)
     add_compact_op(table, "Graph write", graph)
     add_compact_op(table, "Graph issues", graph_issue)
-    return Panel(table, title="Source Sync", box=box.ROUNDED, border_style=panel_status_color([source, issue_write, graph, graph_issue]), padding=(0, 1))
+    return Panel(table, title="Source Sync", box=box.ROUNDED, border_style=panel_status_color([*source_ops, source, issue_write, graph, graph_issue]), padding=(0, 1))
 
 
 def integrity_panel(record: ReferenceRunRecord) -> Panel:
@@ -228,13 +233,18 @@ def maintenance_panel(record: ReferenceRunRecord) -> Panel:
     rebuild = latest_operation(record.operations, "Rebuild tradable publications")
     gap_fill = latest_operation(record.operations, "Market publication gap fill")
     policy = latest_operation(record.operations, "Promotion write policy")
-    table = compact_ops_table()
+    publication_ops = [op for op in record.operations if op.name.startswith("Publication: ")]
+    table = compact_ops_table(item_width=26)
     table.add_row("Mode", style_status(record.config.maintenance_mode), "-", write_policy_text(record.write_policy))
     add_compact_op(table, "Policy", policy)
     add_compact_op(table, "Schema", schema)
     add_compact_op(table, "Rebuild", rebuild)
-    add_compact_op(table, "Gap fill", gap_fill)
-    ops = [op for op in [policy, schema, rebuild, gap_fill] if op is not None]
+    if publication_ops:
+        for op in publication_ops:
+            add_compact_op(table, op.name.replace("Publication: ", ""), op)
+    else:
+        add_compact_op(table, "Gap fill", gap_fill)
+    ops = [op for op in [policy, schema, rebuild, gap_fill, *publication_ops] if op is not None]
     return Panel(table, title="Maintenance", box=box.ROUNDED, border_style=panel_status_color(ops), padding=(0, 1))
 
 
@@ -424,9 +434,9 @@ def dependency_operations(operations: list[OperationRecord]) -> list[OperationRe
     return [op for op in operations if "preflight" in op.name.lower() or "dependency" in op.name.lower()]
 
 
-def compact_ops_table() -> Table:
+def compact_ops_table(*, item_width: int = 16) -> Table:
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
-    table.add_column("Item", style="cyan", no_wrap=True, width=16)
+    table.add_column("Item", style="cyan", no_wrap=True, width=item_width)
     table.add_column("Status", no_wrap=True, width=12)
     table.add_column("Rows", justify="right", no_wrap=True, width=10)
     table.add_column("Detail", overflow="fold", ratio=1)

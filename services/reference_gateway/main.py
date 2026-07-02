@@ -40,6 +40,25 @@ from services.reference_gateway.tradable_blocker import block_latest_universe_fo
 from services.reference_gateway.tradability import tradability_rule_markdown
 
 
+SOURCE_SYNC_OPERATION_NAMES = {
+    "massive_active_tickers": "Source: Massive active tickers",
+    "canonical_symbols": "Source: q_live canonical symbols",
+    "massive_overview": "Source: Massive overview",
+    "ibkr_conids": "Source: IBKR conids",
+    "ticker_reconciliation": "Source: ticker reconciliation",
+}
+
+PUBLICATION_OPERATION_NAMES = {
+    "finra_short_volume:CNMS": "Publication: FINRA short volume",
+    "sec_fails_to_deliver": "Publication: SEC fails to deliver",
+    "massive_splits": "Publication: Massive splits",
+    "massive_dividends": "Publication: Massive dividends",
+    "massive_ipos": "Publication: Massive IPOs",
+    "massive_ticker_details": "Publication: Massive ticker details",
+    "ibkr_borrow_availability": "Publication: IBKR borrow",
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -111,6 +130,12 @@ def main() -> None:
             record.operations.append(OperationRecord(name=name, status=status, detail=detail, rows=rows, seconds=seconds))
         logger.event("operation_progress", name=name, status=status, detail=detail, rows=rows, seconds=seconds)
         refresh_terminal()
+
+    def ensure_operation(name: str, status: str, detail: str = "", rows: int | None = None, seconds: float | None = None) -> None:
+        if any(op.name == name for op in record.operations):
+            update_latest_operation(name, status, detail, rows=rows, seconds=seconds)
+            return
+        add_operation(name, status, detail, rows=rows, seconds=seconds)
 
     def write_alert_batch(alerts: list[ReferenceAlert], reason: str) -> None:
         if not config.execute:
@@ -269,9 +294,14 @@ def main() -> None:
     if should_sync_sources:
         started = time.perf_counter()
         add_operation("Source sync", "running", "Starting Massive active ticker reconciliation.", seconds=0.0)
+        for operation_name in SOURCE_SYNC_OPERATION_NAMES.values():
+            ensure_operation(operation_name, "waiting", "not started", seconds=0.0)
 
-        def source_sync_progress(message: str, rows: int | None) -> None:
-            update_latest_operation("Source sync", "running", truncate_detail(message), rows=rows, seconds=time.perf_counter() - started)
+        def source_sync_progress(source: str, status: str, message: str, rows: int | None) -> None:
+            elapsed = time.perf_counter() - started
+            operation_name = SOURCE_SYNC_OPERATION_NAMES.get(source, "Source: " + source.replace("_", " "))
+            update_latest_operation(operation_name, status, truncate_detail(message), rows=rows, seconds=elapsed)
+            update_latest_operation("Source sync", "running", truncate_detail(message), rows=rows, seconds=elapsed)
 
         plan = run_active_ticker_plan(config, on_progress=source_sync_progress)
         plan_path = write_active_ticker_plan(plan, config.report_root_win)
@@ -398,8 +428,19 @@ def main() -> None:
             f"Starting source sync for recent publication window; days={config.market_publication_gap_fill_days}",
             seconds=0.0,
         )
+        for operation_name in PUBLICATION_OPERATION_NAMES.values():
+            ensure_operation(operation_name, "waiting", "not started", seconds=0.0)
 
         def publication_progress(line: str) -> None:
+            publication_source = publication_source_from_line(line)
+            if publication_source:
+                update_latest_operation(
+                    PUBLICATION_OPERATION_NAMES.get(publication_source, "Publication: " + publication_source.replace("_", " ")),
+                    publication_status_from_line(line),
+                    truncate_detail(line),
+                    rows=publication_rows_from_line(line),
+                    seconds=time.perf_counter() - started,
+                )
             update_latest_operation(
                 "Market publication gap fill",
                 "running",
@@ -408,6 +449,10 @@ def main() -> None:
             )
 
         maintenance = run_recent_publication_gap_fill(config, on_progress=publication_progress)
+        for operation_name in PUBLICATION_OPERATION_NAMES.values():
+            latest = next((op for op in reversed(record.operations) if op.name == operation_name), None)
+            if latest is not None and latest.status == "waiting":
+                update_latest_operation(operation_name, "skipped", "No uncovered recent window reported for this source.", seconds=time.perf_counter() - started)
         update_latest_operation(
             "Market publication gap fill",
             "completed" if maintenance.returncode == 0 else "failed",
@@ -493,6 +538,40 @@ def last_nonempty_line(value: str) -> str:
         if text:
             return truncate_detail(text, 300)
     return "no subprocess output"
+
+
+def publication_source_from_line(line: str) -> str:
+    first = str(line or "").strip().split(" ", 1)[0]
+    return first if first in PUBLICATION_OPERATION_NAMES else ""
+
+
+def publication_status_from_line(line: str) -> str:
+    text = str(line or "").lower()
+    if " status=failed" in text or (" rows_failed=" in text and " rows_failed=0" not in text):
+        return "failed"
+    if " status=source_not_yet_available" in text or " status=source_not_historical" in text:
+        return "skipped"
+    if " status=covered_empty" in text or " status=non_publication_day" in text:
+        return "completed"
+    if " status=completed" in text or " status=success" in text:
+        return "completed"
+    if "status=" in text:
+        return "completed"
+    return "running"
+
+
+def publication_rows_from_line(line: str) -> int | None:
+    import re
+
+    match = re.search(r"\bwritten=([0-9,]+)", line)
+    if not match:
+        match = re.search(r"\brows=([0-9,]+)", line)
+    if not match:
+        return None
+    try:
+        return int(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
 
 
 if __name__ == "__main__":

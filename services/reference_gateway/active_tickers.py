@@ -12,6 +12,9 @@ from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.providers import IbkrReferenceClient, MassiveReferenceClient
 
 
+SourceProgressCallback = Callable[[str, str, str, int | None], None]
+
+
 @dataclass(frozen=True, slots=True)
 class MissingTickerCandidate:
     ticker: str
@@ -51,10 +54,10 @@ class ActiveTickerPlan:
 def run_active_ticker_plan(
     config: ReferenceGatewayConfig,
     *,
-    on_progress: Callable[[str, int | None], None] | None = None,
+    on_progress: SourceProgressCallback | None = None,
 ) -> ActiveTickerPlan:
     started = time.perf_counter()
-    emit_progress(on_progress, "Fetching Massive active US stock ticker list.", None)
+    emit_progress(on_progress, "massive_active_tickers", "running", "Fetching Massive active US stock ticker list.", None)
     massive = MassiveReferenceClient(
         base_url=config.massive_base_url,
         api_key=_massive_api_key(),
@@ -62,17 +65,33 @@ def run_active_ticker_plan(
         max_pages=config.active_ticker_max_pages,
     )
     provider = massive.fetch_active_us_stock_tickers()
-    emit_progress(on_progress, f"Massive returned {len(provider.tickers):,} active ticker row(s) across {provider.pages:,} page(s).", len(provider.tickers))
-    emit_progress(on_progress, "Loading current canonical active symbols from ClickHouse.", None)
+    emit_progress(
+        on_progress,
+        "massive_active_tickers",
+        "completed",
+        f"Massive returned {len(provider.tickers):,} active ticker row(s) across {provider.pages:,} page(s).",
+        len(provider.tickers),
+    )
+    emit_progress(on_progress, "canonical_symbols", "running", "Loading current canonical active symbols from ClickHouse.", None)
     current = load_current_active_symbols(config)
+    emit_progress(on_progress, "canonical_symbols", "completed", f"Loaded {len(current):,} canonical active symbol row(s).", len(current))
     known = {row["ticker"].upper() for row in current}
     missing = [normalize_massive_ticker(row) for row in provider.tickers]
     missing = [row for row in missing if row.get("ticker") and row["ticker"].upper() not in known]
     candidate_rows = missing[: config.active_ticker_new_candidate_limit]
     emit_progress(
         on_progress,
+        "massive_overview",
+        "running" if candidate_rows else "completed",
         f"Found {len(missing):,} provider ticker(s) not in canonical symbols; resolving first {len(candidate_rows):,}.",
-        len(missing),
+        0,
+    )
+    emit_progress(
+        on_progress,
+        "ibkr_conids",
+        "running" if candidate_rows else "completed",
+        f"IBKR conid lookup queued for {len(candidate_rows):,} new ticker candidate(s).",
+        0,
     )
     ibkr = IbkrReferenceClient(base_url=config.ibkr_base_url)
     candidates: list[MissingTickerCandidate] = []
@@ -82,12 +101,14 @@ def run_active_ticker_plan(
         ticker = row["ticker"]
         overview: dict[str, Any] = {}
         ibkr_rows: list[dict[str, Any]] = []
+        emit_progress(on_progress, "massive_overview", "running", f"Fetching Massive overview for {ticker} ({index:,}/{len(candidate_rows):,}).", overview_fetched)
         try:
             overview = compact_overview(massive.fetch_ticker_overview(ticker))
             overview_fetched += 1
         except Exception as exc:  # noqa: BLE001
             overview = {"error": repr(exc)}
         if ibkr is not None:
+            emit_progress(on_progress, "ibkr_conids", "running", f"Searching IBKR stock contracts for {ticker} ({index:,}/{len(candidate_rows):,}).", ibkr_searched)
             try:
                 ibkr_rows = compact_ibkr_candidates(ibkr.search_stock_contracts(ticker), ticker)
                 ibkr_searched += 1
@@ -96,6 +117,22 @@ def run_active_ticker_plan(
         if index == 1 or index == len(candidate_rows) or index % 10 == 0:
             emit_progress(
                 on_progress,
+                "massive_overview",
+                "running",
+                f"Fetched {overview_fetched:,}/{len(candidate_rows):,} Massive overview row(s); latest={ticker}.",
+                overview_fetched,
+            )
+            emit_progress(
+                on_progress,
+                "ibkr_conids",
+                "running",
+                f"Searched {ibkr_searched:,}/{len(candidate_rows):,} IBKR conid candidate(s); latest={ticker}.",
+                ibkr_searched,
+            )
+            emit_progress(
+                on_progress,
+                "ticker_reconciliation",
+                "running",
                 f"Resolved {index:,}/{len(candidate_rows):,} new ticker candidate(s); latest={ticker}.",
                 index,
             )
@@ -117,6 +154,9 @@ def run_active_ticker_plan(
                 proposed_action=proposed_action(overview, ibkr_rows),
             )
         )
+    emit_progress(on_progress, "massive_overview", "completed", f"Fetched {overview_fetched:,} Massive overview row(s).", overview_fetched)
+    emit_progress(on_progress, "ibkr_conids", "completed", f"Searched {ibkr_searched:,} IBKR stock contract candidate(s).", ibkr_searched)
+    emit_progress(on_progress, "ticker_reconciliation", "completed", f"Built {len(candidates):,} missing-ticker candidate record(s).", len(candidates))
     return ActiveTickerPlan(
         checked_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         provider_rows=len(provider.tickers),
@@ -132,9 +172,9 @@ def run_active_ticker_plan(
     )
 
 
-def emit_progress(callback: Callable[[str, int | None], None] | None, message: str, rows: int | None) -> None:
+def emit_progress(callback: SourceProgressCallback | None, source: str, status: str, message: str, rows: int | None) -> None:
     if callback is not None:
-        callback(message, rows)
+        callback(source, status, message, rows)
 
 
 def write_active_ticker_plan(plan: ActiveTickerPlan, root: Path) -> Path:
