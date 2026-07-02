@@ -4,8 +4,13 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import date, timedelta
+from pathlib import Path
+from typing import Callable
 
 from services.reference_gateway.config import ReferenceGatewayConfig
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,7 +25,11 @@ class PublicationMaintenanceResult:
     stderr_tail: str
 
 
-def run_recent_publication_gap_fill(config: ReferenceGatewayConfig) -> PublicationMaintenanceResult:
+def run_recent_publication_gap_fill(
+    config: ReferenceGatewayConfig,
+    *,
+    on_progress: Callable[[str], None] | None = None,
+) -> PublicationMaintenanceResult:
     if not config.market_publication_gap_fill_enabled:
         return PublicationMaintenanceResult(False, None, "", "", "disabled", [], "", "")
     end_date = date.today() + timedelta(days=1)
@@ -45,16 +54,34 @@ def run_recent_publication_gap_fill(config: ReferenceGatewayConfig) -> Publicati
         "--resume-from-coverage",
         "--execute",
     ]
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    lines: list[str] = []
+    process = subprocess.Popen(  # noqa: S603
+        command,
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    for raw_line in process.stdout:
+        line = raw_line.rstrip()
+        if not line:
+            continue
+        lines.append(line)
+        if on_progress is not None:
+            on_progress(line)
+    returncode = process.wait()
+    stdout = "\n".join(lines)
     return PublicationMaintenanceResult(
         attempted=True,
-        returncode=completed.returncode,
+        returncode=returncode,
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
         reason="recent_reference_publication_gap_fill",
         command=command,
-        stdout_tail=tail(completed.stdout),
-        stderr_tail=tail(completed.stderr),
+        stdout_tail=tail(stdout),
+        stderr_tail="",
     )
 
 

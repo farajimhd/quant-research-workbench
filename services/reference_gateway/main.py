@@ -99,6 +99,19 @@ def main() -> None:
         logger.event("operation", name=name, status=status, detail=detail, rows=rows, seconds=seconds)
         refresh_terminal()
 
+    def update_latest_operation(name: str, status: str, detail: str = "", rows: int | None = None, seconds: float | None = None) -> None:
+        for op in reversed(record.operations):
+            if op.name == name:
+                op.status = status
+                op.detail = detail
+                op.rows = rows
+                op.seconds = seconds
+                break
+        else:
+            record.operations.append(OperationRecord(name=name, status=status, detail=detail, rows=rows, seconds=seconds))
+        logger.event("operation_progress", name=name, status=status, detail=detail, rows=rows, seconds=seconds)
+        refresh_terminal()
+
     def write_alert_batch(alerts: list[ReferenceAlert], reason: str) -> None:
         if not config.execute:
             return
@@ -374,11 +387,26 @@ def main() -> None:
         and (not config.test_write_mode or config.maintenance_mode == "force")
     ):
         started = time.perf_counter()
-        maintenance = run_recent_publication_gap_fill(config)
         add_operation(
             "Market publication gap fill",
+            "running",
+            f"Starting source sync for recent publication window; days={config.market_publication_gap_fill_days}",
+            seconds=0.0,
+        )
+
+        def publication_progress(line: str) -> None:
+            update_latest_operation(
+                "Market publication gap fill",
+                "running",
+                truncate_detail(line),
+                seconds=time.perf_counter() - started,
+            )
+
+        maintenance = run_recent_publication_gap_fill(config, on_progress=publication_progress)
+        update_latest_operation(
+            "Market publication gap fill",
             "completed" if maintenance.returncode == 0 else "failed",
-            f"{maintenance.start_date}->{maintenance.end_date}; {maintenance.reason}",
+            f"{maintenance.start_date}->{maintenance.end_date}; {maintenance.reason}; {last_nonempty_line(maintenance.stdout_tail)}",
             seconds=time.perf_counter() - started,
         )
         emit("market_publication_gap_fill=" + json.dumps(asdict(maintenance), sort_keys=True))
@@ -445,6 +473,21 @@ def audit_log_summary(report: object, *, report_path: str, post_write: bool = Fa
         ],
         "report_path": report_path,
     }
+
+
+def truncate_detail(value: str, limit: int = 500) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "..."
+
+
+def last_nonempty_line(value: str) -> str:
+    for line in reversed(str(value or "").splitlines()):
+        text = line.strip()
+        if text:
+            return truncate_detail(text, 300)
+    return "no subprocess output"
 
 
 if __name__ == "__main__":
