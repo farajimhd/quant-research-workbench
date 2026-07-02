@@ -586,6 +586,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-token-contexts", action="store_true", help="Skip text embedding context fetches. Name kept for compatibility with older token-cache builds.")
     parser.add_argument("--skip-xbrl", action="store_true")
     parser.add_argument("--skip-corporate-actions", action="store_true")
+    parser.add_argument("--materialize-intraday-context-bars", action="store_true", help="Write redundant per-origin backward intraday context bars. Default is off; compact intraday_base_bars.parquet is written instead.")
     parser.add_argument("--refresh-context-only", action="store_true", help="Refresh only text embedding, XBRL, and XBRL category context files for existing ticker/month packages.")
     parser.add_argument("--skip-final-audit", action="store_true")
     parser.add_argument("--audit-source-checks", action=argparse.BooleanOptionalAction, default=True)
@@ -1028,6 +1029,47 @@ FORMAT TSV
     return _parse_clickhouse_count(_execute_clickhouse_sql(client_opts=client_opts, sql=sql, label=f"intraday_base_bars_count_{window.month}_{ticker}"))
 
 
+def _query_intraday_base_bars_for_ticker(
+    args: argparse.Namespace,
+    client_opts: Mapping[str, str],
+    config: RollingMarketDataConfig,
+    window: Any,
+    ticker: str,
+) -> Any:
+    table = f"{quote_ident(config.database)}.{quote_ident(str(args.intraday_base_bars_table))}"
+    query = f"""
+SELECT
+    local_date,
+    ticker,
+    label_resolution_us,
+    bucket_index,
+    bar_family,
+    open,
+    close,
+    high,
+    low,
+    size_sum,
+    size_open,
+    size_close,
+    size_high,
+    size_low,
+    event_count,
+    first_event_timestamp_us,
+    last_event_timestamp_us
+FROM {table}
+PREWHERE ticker = {sql_string(ticker.upper())}
+  AND local_date >= toDate({sql_string(window.first_date.isoformat())})
+  AND local_date < toDate({sql_string(window.next_month_date.isoformat())})
+ORDER BY
+    local_date,
+    label_resolution_us,
+    bucket_index,
+    bar_family
+{_settings_sql(config)}
+"""
+    return query_polars(client_opts, query)
+
+
 def _insert_intraday_base_bars_ticker_sql(
     *,
     args: argparse.Namespace,
@@ -1210,6 +1252,27 @@ def _resolve_refresh_tickers(args: argparse.Namespace, cache_root: Path, month: 
     month_dir = month_dir_for(cache_root, args.split, month)
     tickers = sorted({path.name.split("=", 1)[1].upper() for path in month_dir.glob("ticker_hash=*/ticker=*") if path.is_dir() and path.name.startswith("ticker=")})
     return tickers[: int(args.ticker_limit)] if int(args.ticker_limit) > 0 else tickers
+
+
+def _ticker_month_package_matches_builder_mode(package_dir: Path, *, materialize_intraday_context: bool) -> bool:
+    manifest_path = package_dir / "manifest.json"
+    if not manifest_path.exists():
+        return False
+    try:
+        manifest = read_json(manifest_path)
+    except Exception:
+        return False
+    if str(manifest.get("status") or "") != "complete":
+        return False
+    files = manifest.get("files") or {}
+    if str(files.get("intraday_base_bars") or "") != "intraday_base_bars.parquet":
+        return False
+    if not (package_dir / "intraday_base_bars.parquet").exists():
+        return False
+    parts = manifest.get("parts") or []
+    if materialize_intraday_context:
+        return all("intraday_context_bars" in (part.get("files") or {}) for part in parts)
+    return all("intraday_context_bars" not in (part.get("files") or {}) for part in parts)
 
 
 def _write_global_month_package(
@@ -1477,13 +1540,18 @@ def _build_ticker_month_package(
     state = stats.workers[worker_id]
     state.start_package(month=month, ticker=ticker)
     package_dir = ticker_package_dir(month_dir_for(cache_root, args.split, month), ticker)
+    materialize_intraday_context = bool(getattr(args, "materialize_intraday_context_bars", False))
     if args.refresh_context_only:
         return _refresh_ticker_month_context_package(args, client_opts, config, cache_root, month, window, ticker, worker_id, stats, lanes, stop_event)
     if package_dir.exists() and args.resume:
-        state.status = "done"
-        state.stage = "exists"
-        state.message = "already exists"
-        return TickerMonthResult(month=month, ticker=ticker, package_dir=package_dir, status="exists", byte_count=directory_size(package_dir))
+        if _ticker_month_package_matches_builder_mode(package_dir, materialize_intraday_context=materialize_intraday_context):
+            state.status = "done"
+            state.stage = "exists"
+            state.message = "already exists"
+            return TickerMonthResult(month=month, ticker=ticker, package_dir=package_dir, status="exists", byte_count=directory_size(package_dir))
+        state.stage = "stale"
+        state.message = "stale package schema; rebuilding"
+        shutil.rmtree(package_dir)
     tmp_dir = package_dir.with_name(package_dir.name + ".tmp")
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
@@ -1523,11 +1591,11 @@ def _build_ticker_month_package(
             futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:xbrl", lambda: _query_xbrl(args, client_opts, config, window, ticker))
         else:
             futures["xbrl"] = lanes.submit("context", f"{month}:{ticker}:xbrl_empty", lambda: _empty_frame())
-        state.context_total = 5 - int(bool(args.skip_xbrl)) - int(bool(args.skip_corporate_actions))
+        state.context_total = 6 - int(bool(args.skip_xbrl)) - int(bool(args.skip_corporate_actions))
         state.events_total = len(parts)
-        state.labels_total = len(parts) * 2
+        state.labels_total = len(parts) * (2 if materialize_intraday_context else 1)
         state.cpu_total = len(parts)
-        state.write_total = len(parts) * 7 + state.context_total
+        state.write_total = len(parts) * (7 if materialize_intraday_context else 6) + state.context_total
         total_events = 0
         total_origins = 0
         total_windows = 0
@@ -1539,6 +1607,11 @@ def _build_ticker_month_package(
         part_manifests: list[dict[str, Any]] = []
         month_min_ordinal = int(origin_bounds[0]) if origin_bounds else 0
         corporate_actions: Any | None = None
+        intraday_base_bars_future = lanes.submit(
+            "context",
+            f"{month}:{ticker}:intraday_base_bars_file",
+            lambda: _query_intraday_base_bars_for_ticker(args, client_opts, config, window, ticker),
+        )
         for part in parts:
             if stop_event.is_set():
                 raise KeyboardInterrupt
@@ -1555,11 +1628,13 @@ def _build_ticker_month_package(
                 f"{month}:{ticker}:{part_name}:intraday_labels",
                 lambda part=part: _query_intraday_forward_labels(args, client_opts, config, window, ticker, part, month_min_ordinal),
             )
-            intraday_context_future = lanes.submit(
-                "label",
-                f"{month}:{ticker}:{part_name}:intraday_context",
-                lambda part=part: _query_intraday_context_bars(args, client_opts, config, window, ticker, part, month_min_ordinal),
-            )
+            intraday_context_future: Future[Any] | None = None
+            if materialize_intraday_context:
+                intraday_context_future = lanes.submit(
+                    "label",
+                    f"{month}:{ticker}:{part_name}:intraday_context",
+                    lambda part=part: _query_intraday_context_bars(args, client_opts, config, window, ticker, part, month_min_ordinal),
+                )
             events = events_future.result()
             state.events_done += 1
             state.stage = f"cpu {part.part_id + 1}/{len(parts)}"
@@ -1587,13 +1662,16 @@ def _build_ticker_month_package(
                 origins,
                 prefix=f"{month}:{ticker}:{part_name}",
             )
-            intraday_context = intraday_context_future.result()
-            state.labels_done += 1
-            intraday_context, intraday_context_filtered_out = _align_labels_to_origins(
-                intraday_context,
-                origins,
-                prefix=f"{month}:{ticker}:{part_name}:intraday_context",
-            )
+            intraday_context_filtered_out = 0
+            intraday_context = _empty_frame()
+            if intraday_context_future is not None:
+                intraday_context = intraday_context_future.result()
+                state.labels_done += 1
+                intraday_context, intraday_context_filtered_out = _align_labels_to_origins(
+                    intraday_context,
+                    origins,
+                    prefix=f"{month}:{ticker}:{part_name}:intraday_context",
+                )
             if corporate_actions is None:
                 corporate_actions = futures["corporate_actions"].result()
             corporate_labels = _build_corporate_action_daily_labels(
@@ -1621,18 +1699,20 @@ def _build_ticker_month_package(
                 "event_window_index": f"event_window_index_{part_name}.parquet",
                 "ranges": f"ranges_{part_name}.parquet",
                 "intraday_forward_labels": f"intraday_forward_labels_{part_name}.parquet",
-                "intraday_context_bars": f"intraday_context_bars_{part_name}.parquet",
                 "corporate_action_daily_labels": f"corporate_action_daily_labels_{part_name}.parquet",
             }
+            if materialize_intraday_context:
+                part_files["intraday_context_bars"] = f"intraday_context_bars_{part_name}.parquet"
             writes = {
                 "events": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_events", lambda events=events, path=tmp_dir / part_files["events"]: _write_parquet(events, path)),
                 "origins": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_origins", lambda origins=origins, path=tmp_dir / part_files["origins"]: _write_parquet(origins, path)),
                 "windows": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_windows", lambda windows=windows, path=tmp_dir / part_files["event_window_index"]: _write_parquet(windows, path)),
                 "ranges": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_ranges", lambda ranges=ranges, path=tmp_dir / part_files["ranges"]: _write_parquet(ranges, path)),
                 "labels": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_labels", lambda labels=labels, path=tmp_dir / part_files["intraday_forward_labels"]: _write_parquet(labels, path)),
-                "intraday_context": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_intraday_context", lambda bars=intraday_context, path=tmp_dir / part_files["intraday_context_bars"]: _write_parquet(bars, path)),
                 "corporate_labels": lanes.submit("write", f"{month}:{ticker}:{part_name}:write_corporate_labels", lambda labels=corporate_labels, path=tmp_dir / part_files["corporate_action_daily_labels"]: _write_parquet(labels, path)),
             }
+            if materialize_intraday_context:
+                writes["intraday_context"] = lanes.submit("write", f"{month}:{ticker}:{part_name}:write_intraday_context", lambda bars=intraday_context, path=tmp_dir / part_files["intraday_context_bars"]: _write_parquet(bars, path))
             for future in writes.values():
                 future.result()
                 state.write_done += 1
@@ -1675,6 +1755,7 @@ def _build_ticker_month_package(
         daily_bars = futures["daily_bars"].result()
         xbrl = futures["xbrl"].result()
         corporate_actions = futures["corporate_actions"].result()
+        intraday_base_bars = intraday_base_bars_future.result()
         state.context_done = state.context_total
         if stop_event.is_set():
             raise KeyboardInterrupt
@@ -1685,6 +1766,7 @@ def _build_ticker_month_package(
             "xbrl": lanes.submit("write", f"{month}:{ticker}:write_xbrl", lambda: _write_parquet(xbrl, tmp_dir / "xbrl.parquet")),
             "daily_bars": lanes.submit("write", f"{month}:{ticker}:write_daily", lambda: _write_parquet(daily_bars, tmp_dir / "daily_bars.parquet")),
             "corporate_actions": lanes.submit("write", f"{month}:{ticker}:write_corporate_actions", lambda: _write_parquet(corporate_actions, tmp_dir / "corporate_actions.parquet")),
+            "intraday_base_bars": lanes.submit("write", f"{month}:{ticker}:write_intraday_base_bars", lambda: _write_parquet(intraday_base_bars, tmp_dir / "intraday_base_bars.parquet")),
         }
         for future in context_writes.values():
             future.result()
@@ -1717,7 +1799,10 @@ def _build_ticker_month_package(
                 "max_origin_events_per_part": int(args.max_origin_events_per_part),
                 "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
                 "intraday_context_horizons": [h.name for h in parse_horizons(args.intraday_context_horizons)],
+                "intraday_context_materialized": bool(materialize_intraday_context),
                 "intraday_context_semantics": "completed_grid_buckets_clipped_to_session_start_with_first_bucket_origin_fallback",
+                "intraday_base_bars_file": "intraday_base_bars.parquet",
+                "intraday_base_bars_semantics": "compact per-ticker month sparse bars reused to materialize backward intraday context without origin-level redundancy",
                 "intraday_label_semantics": "grid_aligned_next_bucket",
                 "intraday_label_grid_resolutions_us": list(INTRADAY_LABEL_GRID_RESOLUTIONS_US),
                 "intraday_label_grid_policy": {
@@ -1746,6 +1831,7 @@ def _build_ticker_month_package(
                 "event_windows": int(total_windows),
                 "intraday_forward_labels": int(total_labels),
                 "intraday_context_bars": int(total_intraday_context_bars),
+                "intraday_base_bars": int(intraday_base_bars.height),
                 "corporate_action_daily_labels": int(total_corporate_labels),
                 "ticker_news_embeddings": int(ticker_news.height),
                 "sec_filing_embeddings": int(sec_filings.height),
@@ -1761,6 +1847,7 @@ def _build_ticker_month_package(
                 "xbrl": "xbrl.parquet",
                 "daily_bars": "daily_bars.parquet",
                 "corporate_actions": "corporate_actions.parquet",
+                "intraday_base_bars": "intraday_base_bars.parquet",
             },
             "time_feature_columns": {
                 "ticker_news_embeddings": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
