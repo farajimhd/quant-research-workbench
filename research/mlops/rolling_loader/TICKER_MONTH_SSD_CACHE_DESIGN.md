@@ -412,9 +412,11 @@ Dense intraday bar grids are not persisted as separate SSD cache files. The
 builder maintains a shared ClickHouse intermediate table,
 `intraday_base_bars_by_time_ticker` by default, with one row per
 `(local_date, ticker, label_resolution_us, bucket_index, bar_family)`. Missing
-local-session days are populated once for the selected month, then every
-ticker/month/part label and intraday-context query reuses the same table. This
-keeps the cache format origin-relative while avoiding repeated raw-event bar
+local-session days are populated per ticker-month package, then every part for
+that ticker/month reuses the same table. The builder does not prebuild the
+full-market grid for a day/month because the 100ms resolution can create
+hundreds of millions of intermediate rows for one active market day. This keeps
+the cache format origin-relative while avoiding repeated raw-event bar
 aggregation inside each part query.
 
 The builder computes grid-aligned forward labels set-wise for each

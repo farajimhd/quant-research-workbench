@@ -677,6 +677,8 @@ def main(argv: list[str] | None = None) -> int:
         heartbeat = ProgressHeartbeat(cache_root=cache_root, stats=stats, dashboard=dashboard, refresh_seconds=args.refresh_seconds)
         heartbeat.start()
         ensure_category_reference_table(args=args, client_opts=client_opts, config=config, stats=stats)
+        if not args.refresh_context_only and not args.skip_intraday_base_bar_build:
+            ensure_intraday_base_bars_table(args=args, client_opts=client_opts, config=config)
         for month in months:
             if stop_event.is_set():
                 break
@@ -684,8 +686,6 @@ def main(argv: list[str] | None = None) -> int:
             month_dir = month_dir_for(cache_root, args.split, month)
             month_dir.mkdir(parents=True, exist_ok=True)
             window = month_window(month)
-            if not args.refresh_context_only:
-                ensure_intraday_base_bars(args=args, client_opts=client_opts, config=config, window=window, stats=stats, stop_event=stop_event)
             month_tickers = _resolve_refresh_tickers(args, cache_root, month) if args.refresh_context_only else _resolve_tickers_for_month(args, client_opts, config, window)
             stats.packages_total += len(month_tickers)
             stats.message(f"{month}: tickers={len(month_tickers):,}" + (" context-refresh-only" if args.refresh_context_only else ""))
@@ -905,27 +905,32 @@ def ensure_category_reference_table(
     stats.log_event("category_reference_build_done", table=config.category_reference_table, rows=final_rows, elapsed_seconds=time.perf_counter() - started)
 
 
-def ensure_intraday_base_bars(
+def ensure_intraday_base_bars_table(*, args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig) -> None:
+    table = str(args.intraday_base_bars_table)
+    _execute_clickhouse_sql(
+        client_opts=client_opts,
+        sql=_create_intraday_base_bars_table_sql(config.database, table, default_storage_policy()),
+        label="intraday_base_bars_create",
+    )
+
+
+def ensure_intraday_base_bars_for_ticker(
     *,
     args: argparse.Namespace,
     client_opts: Mapping[str, str],
     config: RollingMarketDataConfig,
     window: Any,
+    ticker: str,
     stats: BuildStats,
     stop_event: threading.Event,
 ) -> None:
     if bool(getattr(args, "skip_intraday_base_bar_build", False)):
         stats.message(f"intraday_base_bars: build skipped table={config.database}.{args.intraday_base_bars_table}")
-        stats.log_event("intraday_base_bars_build_skipped", table=args.intraday_base_bars_table, month=window.month)
+        stats.log_event("intraday_base_bars_build_skipped", table=args.intraday_base_bars_table, month=window.month, ticker=ticker)
         return
     started = time.perf_counter()
     table = str(args.intraday_base_bars_table)
-    _execute_clickhouse_sql(
-        client_opts=client_opts,
-        sql=_create_intraday_base_bars_table_sql(config.database, table, default_storage_policy()),
-        label=f"intraday_base_bars_create_{window.month}",
-    )
-    existing_dates = _intraday_base_bar_existing_dates(client_opts=client_opts, config=config, table=table, window=window)
+    existing_dates = _intraday_base_bar_existing_dates(client_opts=client_opts, config=config, table=table, window=window, ticker=ticker)
     all_dates: list[dt.date] = []
     current = window.first_date
     while current < window.next_month_date:
@@ -933,34 +938,30 @@ def ensure_intraday_base_bars(
         current += dt.timedelta(days=1)
     missing_dates = [day for day in all_dates if day.isoformat() not in existing_dates]
     stats.message(
-        f"intraday_base_bars: {window.month} ready_days={len(all_dates) - len(missing_dates):,} "
-        f"missing_days={len(missing_dates):,} table={config.database}.{table}"
+        f"intraday_base_bars: {window.month}:{ticker} ready_days={len(all_dates) - len(missing_dates):,} "
+        f"missing_days={len(missing_dates):,}"
     )
     stats.log_event(
-        "intraday_base_bars_month_start",
+        "intraday_base_bars_ticker_start",
         month=window.month,
+        ticker=ticker,
         table=table,
         total_days=len(all_dates),
         missing_days=len(missing_dates),
     )
-    for index, day in enumerate(missing_dates, start=1):
+    if missing_dates:
         if stop_event.is_set():
             raise KeyboardInterrupt
-        day_started = time.perf_counter()
-        stats.phase = f"intraday_base_bars {window.month} {day.isoformat()}"
-        stats.message(f"intraday_base_bars: building {day.isoformat()} ({index:,}/{len(missing_dates):,})")
+        stats.message(f"intraday_base_bars: building {window.month}:{ticker} missing_days={len(missing_dates):,}")
         _execute_clickhouse_sql(
             client_opts=client_opts,
-            sql=_insert_intraday_base_bars_day_sql(args=args, config=config, local_date=day),
-            label=f"intraday_base_bars_insert_{day.isoformat()}",
+            sql=_insert_intraday_base_bars_ticker_sql(args=args, config=config, window=window, ticker=ticker, missing_dates=missing_dates),
+            label=f"intraday_base_bars_insert_{window.month}_{ticker}",
         )
-        row_count = _intraday_base_bar_day_rows(client_opts=client_opts, config=config, table=table, local_date=day)
-        elapsed = time.perf_counter() - day_started
-        stats.profile_event("intraday_base_bars_day_done", month=window.month, local_date=day.isoformat(), rows=row_count, seconds=elapsed)
-        stats.log_event("intraday_base_bars_day_done", month=window.month, local_date=day.isoformat(), rows=row_count, seconds=elapsed)
-    stats.phase = f"month {window.month}"
-    stats.message(f"intraday_base_bars: {window.month} ready elapsed_min={(time.perf_counter() - started) / 60.0:.1f}")
-    stats.log_event("intraday_base_bars_month_done", month=window.month, table=table, seconds=time.perf_counter() - started)
+    row_count = _intraday_base_bar_ticker_rows(client_opts=client_opts, config=config, table=table, window=window, ticker=ticker)
+    elapsed = time.perf_counter() - started
+    stats.profile_event("intraday_base_bars_ticker_done", month=window.month, ticker=ticker, rows=row_count, missing_days=len(missing_dates), seconds=elapsed)
+    stats.log_event("intraday_base_bars_ticker_done", month=window.month, ticker=ticker, rows=row_count, missing_days=len(missing_dates), seconds=elapsed)
 
 
 def _create_intraday_base_bars_table_sql(database: str, table: str, storage_policy: str) -> str:
@@ -1001,34 +1002,49 @@ def _mergetree_settings_sql(storage_policy: str) -> str:
     return "SETTINGS " + ", ".join(settings)
 
 
-def _intraday_base_bar_existing_dates(*, client_opts: Mapping[str, str], config: RollingMarketDataConfig, table: str, window: Any) -> set[str]:
+def _intraday_base_bar_existing_dates(*, client_opts: Mapping[str, str], config: RollingMarketDataConfig, table: str, window: Any, ticker: str) -> set[str]:
     sql = f"""
 SELECT toString(local_date)
 FROM {quote_ident(config.database)}.{quote_ident(table)}
-WHERE local_date >= toDate({sql_string(window.first_date.isoformat())})
+WHERE ticker = {sql_string(ticker.upper())}
+  AND local_date >= toDate({sql_string(window.first_date.isoformat())})
   AND local_date < toDate({sql_string(window.next_month_date.isoformat())})
 GROUP BY local_date
 FORMAT TSV
 """
-    text = _execute_clickhouse_sql(client_opts=client_opts, sql=sql, label=f"intraday_base_bars_existing_{window.month}")
+    text = _execute_clickhouse_sql(client_opts=client_opts, sql=sql, label=f"intraday_base_bars_existing_{window.month}_{ticker}")
     return {line.strip() for line in text.splitlines() if line.strip()}
 
 
-def _intraday_base_bar_day_rows(*, client_opts: Mapping[str, str], config: RollingMarketDataConfig, table: str, local_date: dt.date) -> int:
+def _intraday_base_bar_ticker_rows(*, client_opts: Mapping[str, str], config: RollingMarketDataConfig, table: str, window: Any, ticker: str) -> int:
     sql = f"""
 SELECT count()
 FROM {quote_ident(config.database)}.{quote_ident(table)}
-WHERE local_date = toDate({sql_string(local_date.isoformat())})
+WHERE ticker = {sql_string(ticker.upper())}
+  AND local_date >= toDate({sql_string(window.first_date.isoformat())})
+  AND local_date < toDate({sql_string(window.next_month_date.isoformat())})
 FORMAT TSV
 """
-    return _parse_clickhouse_count(_execute_clickhouse_sql(client_opts=client_opts, sql=sql, label=f"intraday_base_bars_count_{local_date.isoformat()}"))
+    return _parse_clickhouse_count(_execute_clickhouse_sql(client_opts=client_opts, sql=sql, label=f"intraday_base_bars_count_{window.month}_{ticker}"))
 
 
-def _insert_intraday_base_bars_day_sql(*, args: argparse.Namespace, config: RollingMarketDataConfig, local_date: dt.date) -> str:
+def _insert_intraday_base_bars_ticker_sql(
+    *,
+    args: argparse.Namespace,
+    config: RollingMarketDataConfig,
+    window: Any,
+    ticker: str,
+    missing_dates: Iterable[dt.date],
+) -> str:
     source_table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
     target_table = f"{quote_ident(config.database)}.{quote_ident(str(args.intraday_base_bars_table))}"
     resolutions = ", ".join(f"toUInt64({value})" for value in INTRADAY_LABEL_GRID_RESOLUTIONS_US)
-    next_date = local_date + dt.timedelta(days=1)
+    dates = sorted({day for day in missing_dates})
+    if not dates:
+        raise ValueError("missing_dates must not be empty")
+    first_date = min(dates)
+    last_event_date = max(dates) + dt.timedelta(days=1)
+    local_date_filter = ", ".join(f"toDate({sql_string(day.isoformat())})" for day in dates)
     return f"""
 INSERT INTO {target_table}
 (
@@ -1070,13 +1086,13 @@ SELECT
     min(toUInt64(sip_timestamp_us)) AS first_event_timestamp_us,
     max(toUInt64(sip_timestamp_us)) AS last_event_timestamp_us,
     now() AS built_at
-FROM
-(
-    SELECT
-        ticker,
-        local_date,
-        local_session_us,
-        sip_timestamp_us,
+    FROM
+    (
+        SELECT
+            upper(event_ticker) AS ticker,
+            local_date,
+            local_session_us,
+            sip_timestamp_us,
         ordinal,
         tupleElement(family_tuple, 1) AS bar_family,
         tupleElement(family_tuple, 2) AS price,
@@ -1085,7 +1101,7 @@ FROM
     FROM
     (
         SELECT
-            upper(ticker) AS ticker,
+            ticker AS event_ticker,
             ordinal,
             sip_timestamp_us,
             bitAnd(event_meta, 1) AS event_type,
@@ -1098,9 +1114,10 @@ FROM
             dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
             dateDiff('microsecond', toStartOfDay(ts_local), ts_local) AS local_session_us
         FROM {source_table}
-        PREWHERE event_date >= toDate({sql_string(local_date.isoformat())})
-          AND event_date <= toDate({sql_string(next_date.isoformat())})
-        WHERE toDate(ts_local) = toDate({sql_string(local_date.isoformat())})
+        PREWHERE ticker = {sql_string(ticker.upper())}
+          AND event_date >= toDate({sql_string(first_date.isoformat())})
+          AND event_date <= toDate({sql_string(last_event_date.isoformat())})
+        WHERE local_date IN ({local_date_filter})
           AND local_second >= {SESSION_START_SECOND}
           AND local_second < {SESSION_END_SECOND}
     )
@@ -1477,6 +1494,22 @@ def _build_ticker_month_package(
         origin_bounds = _query_origin_bounds(args, client_opts, config, window, ticker)
         parts = _origin_ordinal_parts(origin_bounds, fetch_lookback_rows=max_cached_event_lookback, max_origin_events_per_part=args.max_origin_events_per_part)
         parts = _attach_fetch_event_date_bounds(client_opts, config, ticker, parts)
+        if origin_bounds and not bool(getattr(args, "skip_intraday_base_bar_build", False)):
+            state.stage = "base bars"
+            state.message = "intraday base bars"
+            lanes.submit(
+                "label",
+                f"{month}:{ticker}:intraday_base_bars",
+                lambda: ensure_intraday_base_bars_for_ticker(
+                    args=args,
+                    client_opts=client_opts,
+                    config=config,
+                    window=window,
+                    ticker=ticker,
+                    stats=stats,
+                    stop_event=stop_event,
+                ),
+            ).result()
         futures: dict[str, Future[Any]] = {
             "ticker_news": lanes.submit("context", f"{month}:{ticker}:ticker_news", lambda: _query_ticker_news(args, client_opts, config, window, ticker)),
             "sec_filings": lanes.submit("context", f"{month}:{ticker}:sec", lambda: _query_sec_tokens(args, client_opts, config, window, ticker)),

@@ -238,9 +238,11 @@ The SSD cache does not store dense intraday bar grids and does not store
 `current_*` intraday labels. During a build, the script maintains a shared
 ClickHouse intermediate table, `intraday_base_bars_by_time_ticker` by default,
 with one row per `(local_date, ticker, resolution, bucket, bar_family)`. Missing
-local-session days are built once, then all ticker/month/part label and
-backward-context queries reuse those bars. This replaces the older behavior
-where each part query rebuilt the same bars from raw events.
+local-session days are built per ticker-month package, then all parts for that
+ticker/month reuse those bars for labels and backward context. The builder does
+not front-load every ticker for a whole day/month because the 100ms grid can be
+hundreds of millions of rows per active market day. This replaces the older
+behavior where each part query rebuilt the same bars from raw events.
 
 On disk, `intraday_forward_labels_part_*.parquet` stores one row per origin.
 Each horizon-dependent field is a list column ordered by `horizon_us`. The
