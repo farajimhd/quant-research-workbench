@@ -26,6 +26,9 @@ class IbkrGatewayConfig:
     request_timeout_seconds: float
     max_auth_failures: int
     max_reauth_attempts: int
+    auto_login: bool
+    max_login_attempts: int
+    login_retry_seconds: float
     login_timeout_seconds: float
     login_headless: bool
     launch_gateway: bool
@@ -61,6 +64,9 @@ class IbkrGatewayConfig:
             request_timeout_seconds=env_float("IBKR_GATEWAY_REQUEST_TIMEOUT_SECONDS", 8.0),
             max_auth_failures=max(1, env_int("IBKR_GATEWAY_MAX_AUTH_FAILURES", 3)),
             max_reauth_attempts=max(1, env_int("IBKR_GATEWAY_MAX_REAUTH_ATTEMPTS", 3)),
+            auto_login=env_bool("IBKR_GATEWAY_AUTO_LOGIN", True),
+            max_login_attempts=max(1, env_int("IBKR_GATEWAY_MAX_LOGIN_ATTEMPTS", 3)),
+            login_retry_seconds=env_float("IBKR_GATEWAY_LOGIN_RETRY_SECONDS", 60.0),
             login_timeout_seconds=env_float("IBKR_GATEWAY_LOGIN_TIMEOUT_SECONDS", 180.0),
             login_headless=env_bool("IBKR_GATEWAY_LOGIN_HEADLESS", False),
             launch_gateway=env_bool("IBKR_GATEWAY_LAUNCH", True),

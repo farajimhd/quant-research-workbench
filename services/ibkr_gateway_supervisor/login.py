@@ -32,7 +32,7 @@ async def run_playwright_login(config: IbkrGatewayConfig) -> bool:
         page = await context.new_page()
         await page.goto(config.login_url, wait_until="domcontentloaded", timeout=int(config.login_timeout_seconds * 1000))
         await fill_login_form(page, config.username, password)
-        await choose_paper_mode(page)
+        await choose_account_mode(page, config.account_key)
         await submit_login(page)
         print("Submitted IBKR login form. Waiting for authenticated Client Portal session.", flush=True)
         deadline = time.monotonic() + config.login_timeout_seconds
@@ -79,36 +79,82 @@ async def fill_login_form(page: Any, username: str, password: str) -> None:
     await password_locator.fill(password)
 
 
-async def choose_paper_mode(page: Any) -> None:
-    candidates = [
-        page.get_by_label("Paper"),
-        page.get_by_text("Paper", exact=False),
-        page.get_by_label("Paper Trading"),
-        page.get_by_text("Paper Trading", exact=False),
-    ]
-    for locator in candidates:
-        try:
-            if await locator.count() > 0:
-                await locator.first.click(timeout=1_500)
-                return
-        except Exception:  # noqa: BLE001
-            continue
-    await page.evaluate(
+async def choose_account_mode(page: Any, account_key: str) -> None:
+    target = "paper" if account_key == "paper" else "live"
+    labels = ["Paper", "Paper Trading", "Simulated Trading"] if target == "paper" else ["Live", "Live Trading", "Real"]
+    for text in labels:
+        locators = [
+            page.get_by_label(text, exact=False),
+            page.get_by_role("radio", name=text, exact=False),
+            page.get_by_role("checkbox", name=text, exact=False),
+            page.get_by_text(text, exact=False),
+        ]
+        for locator in locators:
+            try:
+                if await locator.count() > 0:
+                    await locator.first.click(timeout=1_500)
+                    if await account_mode_selected(page, target):
+                        print(f"Selected IBKR {target} login mode.", flush=True)
+                        return
+            except Exception:  # noqa: BLE001
+                continue
+    selected = await page.evaluate(
         """
-        () => {
-          const labels = Array.from(document.querySelectorAll('label'));
-          const label = labels.find((item) => /paper/i.test(item.innerText || item.textContent || ''));
-          if (label) {
-            const id = label.getAttribute('for');
-            const input = id ? document.getElementById(id) : label.querySelector('input');
-            if (input) { input.click(); return; }
-            label.click(); return;
+        (target) => {
+          const wanted = String(target || '').toLowerCase();
+          const negative = wanted === 'paper' ? /live|real/i : /paper|simulated/i;
+          const positive = wanted === 'paper' ? /paper|simulated/i : /live|real/i;
+          const visibleText = (node) => {
+            if (!node) return '';
+            const label = node.labels && node.labels.length ? Array.from(node.labels).map((item) => item.innerText || item.textContent || '').join(' ') : '';
+            const parent = node.closest ? node.closest('label, div, li, tr, section, form') : null;
+            return [node.value, node.name, node.id, node.getAttribute && node.getAttribute('aria-label'), label, parent && (parent.innerText || parent.textContent)].filter(Boolean).join(' ');
+          };
+          const controls = Array.from(document.querySelectorAll('input[type=radio], input[type=checkbox], button, [role=radio], [role=switch], [role=checkbox]'));
+          for (const control of controls) {
+            const text = visibleText(control);
+            if (positive.test(text) && !negative.test(text)) {
+              control.click();
+              return true;
+            }
           }
-          const radios = Array.from(document.querySelectorAll('input[type=radio]'));
-          const paperRadio = radios.find((radio) => /paper/i.test((radio.value || '') + ' ' + (radio.name || '') + ' ' + (radio.id || '')));
-          if (paperRadio) { paperRadio.click(); }
+          const labels = Array.from(document.querySelectorAll('label, button, div, span'));
+          for (const label of labels) {
+            const text = label.innerText || label.textContent || '';
+            if (positive.test(text) && !negative.test(text)) {
+              label.click();
+              return true;
+            }
+          }
+          return false;
         }
-        """
+        """,
+        target,
+    )
+    if selected:
+        print(f"Selected IBKR {target} login mode.", flush=True)
+        return
+    raise RuntimeError(f"Could not select IBKR {target} login mode.")
+
+
+async def account_mode_selected(page: Any, target: str) -> bool:
+    return bool(
+        await page.evaluate(
+            """
+            (target) => {
+              const wanted = String(target || '').toLowerCase();
+              const positive = wanted === 'paper' ? /paper|simulated/i : /live|real/i;
+              const negative = wanted === 'paper' ? /live|real/i : /paper|simulated/i;
+              const controls = Array.from(document.querySelectorAll('input:checked, [aria-checked=true], .active, .selected'));
+              return controls.some((node) => {
+                const parent = node.closest ? node.closest('label, div, li, tr, section, form') : null;
+                const text = [node.value, node.name, node.id, node.getAttribute && node.getAttribute('aria-label'), parent && (parent.innerText || parent.textContent)].filter(Boolean).join(' ');
+                return positive.test(text) && !negative.test(text);
+              });
+            }
+            """,
+            target,
+        )
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import signal
@@ -11,6 +12,7 @@ from typing import Any
 
 from services.ibkr_gateway_supervisor.client import IbkrClientPortalClient, HttpResult, account_ids, can_reauthenticate, is_authenticated
 from services.ibkr_gateway_supervisor.config import IbkrGatewayConfig
+from services.ibkr_gateway_supervisor.login import run_playwright_login
 from services.ibkr_gateway_supervisor.notifications import Notifier
 
 
@@ -24,6 +26,9 @@ class IbkrGatewaySupervisor:
         self.gateway_listener_pid: int | None = None
         self.auth_failures = 0
         self.reauth_attempts = 0
+        self.login_attempts = 0
+        self.last_login_attempt_monotonic = 0.0
+        self.authenticated = False
         self._stop = False
 
     def check_once(self) -> int:
@@ -58,6 +63,7 @@ class IbkrGatewaySupervisor:
         self.emit("supervisor_started", config=self.config.public_dict())
         try:
             self.ensure_gateway()
+            self.handle_auth_status()
             next_status = 0.0
             next_tickle = 0.0
             while not self._stop:
@@ -65,7 +71,7 @@ class IbkrGatewaySupervisor:
                 if now >= next_status:
                     self.handle_auth_status()
                     next_status = now + self.config.status_seconds
-                if now >= next_tickle:
+                if self.authenticated and now >= next_tickle:
                     self.handle_tickle()
                     next_tickle = now + self.config.tickle_seconds
                 time.sleep(1.0)
@@ -127,22 +133,78 @@ class IbkrGatewaySupervisor:
         status = self.client.auth_status()
         self.emit("auth_status", result=self.public_result(status))
         if status.ok and is_authenticated(status.payload):
+            self.authenticated = True
             self.auth_failures = 0
             self.reauth_attempts = 0
+            self.login_attempts = 0
             return
+        self.authenticated = False
         self.auth_failures += 1
         if status.ok and can_reauthenticate(status.payload) and self.reauth_attempts < self.config.max_reauth_attempts:
             self.reauth_attempts += 1
             reauth = self.client.reauthenticate()
             self.emit("reauthenticate", attempt=self.reauth_attempts, result=self.public_result(reauth))
+            if reauth.ok:
+                followup = self.client.auth_status()
+                self.emit("auth_status_after_reauthenticate", result=self.public_result(followup))
+                if followup.ok and is_authenticated(followup.payload):
+                    self.authenticated = True
+                    self.auth_failures = 0
+                    self.reauth_attempts = 0
+                    return
+            self.attempt_auto_login("reauthenticate_failed")
+            return
+        if self.attempt_auto_login("fresh_login_required"):
             return
         if self.auth_failures >= self.config.max_auth_failures:
             self.notifier.notify_once(
                 "ibkr_login_required",
-                "IBKR Client Portal login required",
-                "The IBKR Client Portal Gateway is reachable, but the session is not authenticated. "
-                f"Run the Playwright login helper for account={self.config.account_key}. Last status={self.public_result(status)}",
+                "IBKR Client Portal login failed",
+                "The IBKR Client Portal Gateway is reachable, but automatic login did not authenticate the session. "
+                f"account={self.config.account_key} attempts={self.login_attempts} last_status={self.public_result(status)}",
             )
+
+    def attempt_auto_login(self, reason: str) -> bool:
+        if not self.config.auto_login:
+            self.emit("auto_login_skipped", reason=reason, auto_login=False)
+            return False
+        now = time.monotonic()
+        if self.login_attempts >= self.config.max_login_attempts:
+            self.emit("auto_login_skipped", reason=reason, attempts=self.login_attempts, max_attempts=self.config.max_login_attempts)
+            return False
+        if self.last_login_attempt_monotonic and now - self.last_login_attempt_monotonic < self.config.login_retry_seconds:
+            self.emit(
+                "auto_login_waiting",
+                reason=reason,
+                attempts=self.login_attempts,
+                retry_seconds=self.config.login_retry_seconds,
+            )
+            return False
+        self.login_attempts += 1
+        self.last_login_attempt_monotonic = now
+        self.emit("auto_login_started", reason=reason, attempt=self.login_attempts, account_key=self.config.account_key)
+        try:
+            authenticated = asyncio.run(run_playwright_login(self.config))
+        except Exception as exc:  # noqa: BLE001
+            self.emit("auto_login_failed", attempt=self.login_attempts, error=f"{type(exc).__name__}: {exc}")
+            if self.login_attempts >= self.config.max_login_attempts:
+                self.notifier.notify_once(
+                    "ibkr_auto_login_failed",
+                    "IBKR Client Portal automatic login failed",
+                    f"account={self.config.account_key} attempts={self.login_attempts} error={type(exc).__name__}: {exc}",
+                )
+            return False
+        status = self.client.auth_status()
+        self.emit("auth_status_after_auto_login", result=self.public_result(status))
+        self.authenticated = bool(authenticated and status.ok and is_authenticated(status.payload))
+        if self.authenticated:
+            self.emit("auto_login_completed", attempt=self.login_attempts, account_key=self.config.account_key)
+            self.auth_failures = 0
+            self.reauth_attempts = 0
+            self.login_attempts = 0
+            return True
+        self.emit("auto_login_unverified", attempt=self.login_attempts, account_key=self.config.account_key)
+        return False
 
     def handle_tickle(self) -> None:
         tickle = self.client.tickle()
