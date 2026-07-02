@@ -351,6 +351,8 @@ class OriginOrdinalPart:
     origin_ordinal_end: int
     fetch_ordinal_start: int
     fetch_ordinal_end: int
+    fetch_event_date_start: str = ""
+    fetch_event_date_end: str = ""
 
 
 @dataclass(slots=True)
@@ -1245,6 +1247,7 @@ def _build_ticker_month_package(
         max_cached_event_lookback = max(int(default_required_lookback), max(0, int(args.max_cached_event_lookback_rows)))
         origin_bounds = _query_origin_bounds(args, client_opts, config, window, ticker)
         parts = _origin_ordinal_parts(origin_bounds, fetch_lookback_rows=max_cached_event_lookback, max_origin_events_per_part=args.max_origin_events_per_part)
+        parts = _attach_fetch_event_date_bounds(client_opts, config, ticker, parts)
         futures: dict[str, Future[Any]] = {
             "ticker_news": lanes.submit("context", f"{month}:{ticker}:ticker_news", lambda: _query_ticker_news(args, client_opts, config, window, ticker)),
             "sec_filings": lanes.submit("context", f"{month}:{ticker}:sec", lambda: _query_sec_tokens(args, client_opts, config, window, ticker)),
@@ -1386,6 +1389,8 @@ def _build_ticker_month_package(
                     "origin_ordinal_end": int(part.origin_ordinal_end),
                     "fetch_ordinal_start": int(part.fetch_ordinal_start),
                     "fetch_ordinal_end": int(part.fetch_ordinal_end),
+                    "fetch_event_date_start": str(part.fetch_event_date_start),
+                    "fetch_event_date_end": str(part.fetch_event_date_end),
                     "files": part_files,
                     "counts": {
                         "events": int(events.height),
@@ -1559,6 +1564,67 @@ def _origin_ordinal_parts(bounds: tuple[int, int] | None, *, fetch_lookback_rows
         )
         start = end + 1
     return parts
+
+
+def _attach_fetch_event_date_bounds(
+    client_opts: Mapping[str, str],
+    config: RollingMarketDataConfig,
+    ticker: str,
+    parts: list[OriginOrdinalPart],
+) -> list[OriginOrdinalPart]:
+    if not parts:
+        return []
+    min_fetch_ordinal = min(int(part.fetch_ordinal_start) for part in parts)
+    max_fetch_ordinal = max(int(part.fetch_ordinal_end) for part in parts)
+    index_table = f"{quote_ident(config.database)}.{quote_ident('events_ticker_day_index')}"
+    query = f"""
+SELECT
+    source_date,
+    first_ordinal,
+    last_ordinal
+FROM {index_table}
+PREWHERE ticker = {sql_string(ticker)}
+WHERE first_ordinal <= {int(max_fetch_ordinal)}
+  AND last_ordinal >= {int(min_fetch_ordinal)}
+ORDER BY source_date
+{_settings_sql(config)}
+"""
+    frame = query_polars(client_opts, query)
+    if not int(getattr(frame, "height", 0) or 0):
+        raise RuntimeError(
+            f"{ticker} no events_ticker_day_index rows overlap ordinal fetch range "
+            f"{min_fetch_ordinal:,}-{max_fetch_ordinal:,}."
+        )
+    index_rows: list[tuple[str, int, int]] = []
+    for row in frame.iter_rows(named=True):
+        source_date = row["source_date"]
+        source_date_text = source_date.isoformat() if hasattr(source_date, "isoformat") else str(source_date)
+        index_rows.append((source_date_text[:10], int(row["first_ordinal"]), int(row["last_ordinal"])))
+    bounded_parts: list[OriginOrdinalPart] = []
+    for part in parts:
+        overlap_dates = [
+            source_date
+            for source_date, first_ordinal, last_ordinal in index_rows
+            if int(first_ordinal) <= int(part.fetch_ordinal_end)
+            and int(last_ordinal) >= int(part.fetch_ordinal_start)
+        ]
+        if not overlap_dates:
+            raise RuntimeError(
+                f"{ticker} part_{part.part_id:05d} no events_ticker_day_index rows overlap "
+                f"ordinal fetch range {part.fetch_ordinal_start:,}-{part.fetch_ordinal_end:,}."
+            )
+        bounded_parts.append(
+            OriginOrdinalPart(
+                part_id=part.part_id,
+                origin_ordinal_start=part.origin_ordinal_start,
+                origin_ordinal_end=part.origin_ordinal_end,
+                fetch_ordinal_start=part.fetch_ordinal_start,
+                fetch_ordinal_end=part.fetch_ordinal_end,
+                fetch_event_date_start=min(overlap_dates),
+                fetch_event_date_end=max(overlap_dates),
+            )
+        )
+    return bounded_parts
 
 
 def _light_audit_part_in_memory(
@@ -1794,6 +1860,8 @@ def _deterministic_sample_indexes(count: int, samples: int, *, month: str, ticke
 
 
 def _query_events_part(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str, part: OriginOrdinalPart) -> Any:
+    if not part.fetch_event_date_start or not part.fetch_event_date_end:
+        raise RuntimeError(f"{ticker} part_{part.part_id:05d} is missing fetch event_date bounds.")
     table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
     query = f"""
 WITH
@@ -1836,7 +1904,8 @@ FROM {table}
 PREWHERE ticker = {sql_string(ticker)}
   AND ordinal >= {int(part.fetch_ordinal_start)}
   AND ordinal <= {int(part.fetch_ordinal_end)}
-  AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
+  AND event_date >= toDate({sql_string(part.fetch_event_date_start)})
+  AND event_date <= toDate({sql_string(part.fetch_event_date_end)})
 ORDER BY ticker, ordinal
 {_settings_sql(config)}
 """
