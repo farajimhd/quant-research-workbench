@@ -455,6 +455,7 @@ class UpdateProgressReporter:
         self.notices: deque[tuple[str, str]] = deque(maxlen=12)
         self.logs: deque[str] = deque(maxlen=max(5, int(args.progress_log_lines)))
         self.download_started_at: float | None = None
+        self.download_phase_started_at: float | None = None
         self.download_worker_count = max(1, int(getattr(args, "download_workers", 1) or 1))
         self.download_total_files = max(0, int(total_files))
         self.download_status_counts: dict[str, int] = {}
@@ -487,7 +488,7 @@ class UpdateProgressReporter:
                 self._text_cls = Text
                 self._layout = Layout(name="root")
                 self._layout.split_column(
-                    Layout(self._summary_panel(), name="summary", size=8),
+                    Layout(self._summary_panel(), name="summary", size=10),
                     Layout(self._download_panel(), name="download", size=max(10, min(26, self.download_worker_count + 5))),
                     Layout(self._task_panel(), name="tasks", size=10),
                     Layout(self._notice_panel(), name="notices", size=6),
@@ -529,6 +530,7 @@ class UpdateProgressReporter:
 
     def configure_download_workers(self, worker_count: int) -> None:
         self.download_worker_count = max(1, int(worker_count))
+        self.download_phase_started_at = time.time()
         for worker_id in range(self.download_worker_count):
             self.worker_states.setdefault(worker_id, self._empty_worker_state(worker_id))
         if self._rich and self._layout is not None:
@@ -641,8 +643,9 @@ class UpdateProgressReporter:
         for _ in range(4):
             table.add_column(ratio=1)
         table.add_row("stage", str(self.stage), "elapsed", self._format_duration(elapsed))
-        table.add_row("days", f"{self.completed_days:,}/{self.total_days:,}", "day eta", day_eta)
-        table.add_row("downloads checked", f"{self.completed_files:,}/{self.download_total_files:,}", "download eta", download_eta)
+        table.add_row("days", f"{self.completed_days:,}/{self.total_days:,}", "days/min", f"{self._day_completion_rate_per_minute():.2f}")
+        table.add_row("day eta", day_eta, "elapsed", self._format_duration(elapsed))
+        table.add_row("downloads checked", f"{self.completed_files:,}/{self.download_total_files:,}", "dl eta", download_eta)
         table.add_row("run transfer", self._format_bytes(self._run_transfer_bytes()), "speed", f"{self._format_bytes(transfer_speed)}/s")
         return self._panel_cls(table, title="Flatfile Event Update", border_style="cyan")
 
@@ -741,6 +744,10 @@ class UpdateProgressReporter:
         started_at = self.download_started_at or self.started_at
         elapsed = max(1e-6, time.time() - started_at)
         return self._run_transfer_bytes() / elapsed
+
+    def _day_completion_rate_per_minute(self) -> float:
+        elapsed_minutes = max(1e-6, (time.time() - self.started_at) / 60.0)
+        return float(self.completed_days) / elapsed_minutes
 
     def _speed_cell(self, state: dict[str, Any]) -> str:
         written = int(state.get("written") or state.get("bytes_written") or 0)
