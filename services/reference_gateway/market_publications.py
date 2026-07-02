@@ -26,28 +26,33 @@ PUBLICATION_SOURCE_KINDS: tuple[str, ...] = (
 IMPLEMENTED_PUBLICATION_COVERAGE_KINDS: tuple[str, ...] = (
     "finra_short_volume:CNMS",
     "sec_fails_to_deliver",
+    "massive_splits",
+    "massive_dividends",
+    "massive_ipos",
+    "massive_ticker_details",
+    "ibkr_borrow_availability",
 )
 
 IMPLEMENTED_PUBLICATION_TABLES: frozenset[str] = frozenset(
     {
+        "market_security_market_snapshot_v1",
+        "market_security_float_v1",
         "market_short_volume_v1",
+        "market_stock_split_v1",
+        "market_cash_dividend_v1",
+        "market_ipo_v1",
         "market_fails_to_deliver_v1",
+        "market_security_borrow_v1",
         "market_reference_publication_coverage_v1",
     }
 )
 
 PLANNED_PUBLICATION_TABLES: frozenset[str] = frozenset(
     {
-        "market_security_market_snapshot_v1",
-        "market_security_float_v1",
         "market_short_interest_v1",
-        "market_stock_split_v1",
-        "market_cash_dividend_v1",
-        "market_ipo_v1",
         "market_presentation_asset_v1",
         "massive_flatfile_source_file_v1",
         "market_reg_sho_threshold_v1",
-        "market_security_borrow_v1",
         "market_security_country_v1",
     }
 )

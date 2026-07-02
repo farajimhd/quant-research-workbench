@@ -61,16 +61,16 @@ MAINTENANCE_RUN_TABLE = "service_maintenance_run_v1"
 REFERENCE_IMPLEMENTED_PUBLICATION_SPECS: tuple[tuple[str, str, str], ...] = (
     ("finra_short_volume:CNMS", "finra", "daily FINRA consolidated NMS short-volume publication"),
     ("sec_fails_to_deliver", "sec", "SEC fails-to-deliver publication"),
+    ("massive_splits", "massive", "Massive stock split publication"),
+    ("massive_dividends", "massive", "Massive cash dividend publication"),
+    ("massive_ipos", "massive", "Massive IPO publication"),
+    ("massive_ticker_details", "massive", "Massive current ticker detail snapshot and share-supply publication"),
+    ("ibkr_borrow_availability", "ibkr", "IBKR point-in-time borrow availability"),
 )
 
 REFERENCE_PLANNED_PUBLICATION_SPECS: tuple[tuple[str, str, str], ...] = (
     ("finra_short_interest", "finra", "FINRA exchange-published short-interest source"),
     ("reg_sho_threshold", "exchange_or_sec", "Reg SHO threshold-list source"),
-    ("ibkr_borrow_availability", "ibkr", "IBKR point-in-time borrow availability"),
-    ("massive_market_snapshot", "massive", "Massive daily market snapshot publication"),
-    ("massive_splits", "massive", "Massive stock split publication"),
-    ("massive_dividends", "massive", "Massive cash dividend publication"),
-    ("massive_ipos", "massive", "Massive IPO publication"),
     ("massive_presentation_assets", "massive", "Massive presentation assets"),
     ("sec_country_assertions", "sec", "SEC/XBRL-derived country assertions"),
 )
@@ -719,7 +719,8 @@ def reference_gap_fill_command(ctx: MaintenanceContext, start: date, end: date, 
         "--write-database",
         write_database,
         "--sources",
-        os.environ.get("REFERENCE_MAINTENANCE_PUBLICATION_SOURCES") or "finra_short_volume,sec_fails_to_deliver",
+        os.environ.get("REFERENCE_MAINTENANCE_PUBLICATION_SOURCES")
+        or "finra_short_volume,sec_fails_to_deliver,massive_splits,massive_dividends,massive_ipos,massive_ticker_details,ibkr_borrow_availability",
         "--finra-venues",
         os.environ.get("REFERENCE_MAINTENANCE_FINRA_VENUES") or "CNMS",
         "--output-root-win",

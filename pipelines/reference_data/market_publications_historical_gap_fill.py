@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import ssl
 import sys
 import time
 import zipfile
@@ -52,7 +53,41 @@ SEC_FTD_FILE_URL = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{y
 DEFAULT_USER_AGENT = "quant-reference-gateway/1.0 contact: local-research"
 RETRY_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
 SEC_RATE_LIMIT_TEXT = "Request Rate Threshold Exceeded"
-IMPLEMENTED_SOURCES = {"finra_short_volume", "sec_fails_to_deliver"}
+MASSIVE_SOURCE_SPECS = {
+    "massive_splits": {
+        "endpoint": "/stocks/v1/splits",
+        "date_field": "execution_date",
+        "coverage_kind": "massive_splits",
+        "source_object": "splits",
+        "target_table": "market_stock_split_v1",
+        "sort": "execution_date.asc",
+    },
+    "massive_dividends": {
+        "endpoint": "/stocks/v1/dividends",
+        "date_field": "ex_dividend_date",
+        "coverage_kind": "massive_dividends",
+        "source_object": "dividends",
+        "target_table": "market_cash_dividend_v1",
+        "sort": "ex_dividend_date.asc",
+    },
+    "massive_ipos": {
+        "endpoint": "/vX/reference/ipos",
+        "date_field": "listing_date",
+        "coverage_kind": "massive_ipos",
+        "source_object": "ipos",
+        "target_table": "market_ipo_v1",
+        "sort": "listing_date.asc",
+    },
+}
+IMPLEMENTED_SOURCES = {
+    "finra_short_volume",
+    "sec_fails_to_deliver",
+    "massive_splits",
+    "massive_dividends",
+    "massive_ipos",
+    "massive_ticker_details",
+    "ibkr_borrow_availability",
+}
 WORKSTATION_COMPUTER_NAME = "DESKTOP-SAAI85T"
 WORKSTATION_DATA_ROOT_WIN = Path("D:/market-data")
 WORKSTATION_SHARE_DATA_ROOT_WIN = Path(r"\\DESKTOP-SAAI85T\Workstation-D\market-data")
@@ -64,6 +99,7 @@ class SymbolRef:
     listing_id: str
     security_id: str
     ticker: str
+    ibkr_conid: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +133,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--password", default=default_clickhouse_password())
     parser.add_argument("--storage-policy", default=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "")
     parser.add_argument("--output-root-win", default=os.environ.get("REFERENCE_PUBLICATION_OUTPUT_ROOT_WIN") or str(default_output_root()))
-    parser.add_argument("--sources", default="finra_short_volume,sec_fails_to_deliver", help="Comma separated: finra_short_volume,sec_fails_to_deliver.")
+    parser.add_argument(
+        "--sources",
+        default="finra_short_volume,sec_fails_to_deliver,massive_splits,massive_dividends,massive_ipos,massive_ticker_details,ibkr_borrow_availability",
+        help=(
+            "Comma separated source list. Implemented: finra_short_volume, sec_fails_to_deliver, "
+            "massive_splits, massive_dividends, massive_ipos, massive_ticker_details, ibkr_borrow_availability."
+        ),
+    )
     parser.add_argument("--finra-venues", default="CNMS", help="Comma separated FINRA short-volume source files. Default CNMS consolidated NMS.")
     parser.add_argument("--resume-from-coverage", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--execute", action="store_true", help="Write rows and coverage. Without this, only reports planned gaps.")
@@ -185,6 +228,13 @@ def main() -> None:
             )
     if "sec_fails_to_deliver" in sources:
         results.extend(run_sec_ftd(client, args, run_id, start_date, end_date, symbols))
+    for source in ("massive_splits", "massive_dividends", "massive_ipos"):
+        if source in sources:
+            results.extend(run_massive_date_source(client, args, run_id, source, start_date, end_date, symbols))
+    if "massive_ticker_details" in sources:
+        results.extend(run_massive_ticker_details(client, args, run_id, start_date, end_date, symbols))
+    if "ibkr_borrow_availability" in sources:
+        results.extend(run_ibkr_borrow_availability(client, args, run_id, start_date, end_date, symbols))
     write_summary(run_root, args, run_id, results)
     print_summary(results, run_root)
 
@@ -606,13 +656,542 @@ def fetch_sec_ftd_file(
     return rows, {"url": item["url"], "sha256": digest, "target_table": "market_fails_to_deliver_v1"}
 
 
+def run_massive_date_source(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    run_id: str,
+    source: str,
+    start_date: date,
+    end_date: date,
+    symbols: dict[str, SymbolRef],
+) -> list[SourceResult]:
+    spec = MASSIVE_SOURCE_SPECS[source]
+    coverage_kind = str(spec["coverage_kind"])
+    gaps = find_publication_gaps(
+        client,
+        database=args.write_database,
+        coverage_kind=coverage_kind,
+        source_system="massive",
+        start_date=start_date,
+        end_date=end_date,
+    ) if args.resume_from_coverage else [PublicationDateGap(start_date, end_date)]  # type: ignore[list-item]
+    results: list[SourceResult] = []
+    for gap in gaps:
+        started = datetime.now(UTC)
+        try:
+            provider_rows, details = fetch_massive_date_rows(args, spec, gap.start_date, gap.end_date)
+            rows = normalize_massive_rows(source, provider_rows, details, symbols)
+            stamp_rows(rows, run_id)
+            written = insert_rows(client, args.write_database, str(spec["target_table"]), rows, args.batch_size) if args.execute else 0
+            status = "completed" if rows else "covered_empty"
+            failed = 0
+        except Exception as exc:  # noqa: BLE001
+            rows = []
+            provider_rows = []
+            written = 0
+            failed = 1
+            status = "failed"
+            details = {"error": repr(exc), "target_table": spec["target_table"], "source": source}
+        finished = datetime.now(UTC)
+        result = SourceResult(source, coverage_kind, gap.start_date, gap.end_date, len(provider_rows), written, failed, status, details)
+        results.append(result)
+        print(
+            f"{coverage_kind} {gap.start_date.isoformat()}->{gap.end_date.isoformat()} "
+            f"status={status} provider_rows={len(provider_rows):,} written={written:,}",
+            flush=True,
+        )
+        if args.execute:
+            insert_publication_coverage(
+                client,
+                database=args.write_database,
+                coverage_id=f"{run_id}:{coverage_kind}:{gap.start_date.isoformat()}:{gap.end_date.isoformat()}",
+                coverage_kind=coverage_kind,
+                source_system="massive",
+                source_object=str(spec["source_object"]),
+                start_date=gap.start_date,
+                end_date=gap.end_date,
+                status=status,
+                rows_read=len(provider_rows),
+                rows_written=written,
+                rows_failed=failed,
+                started_at_utc=started,
+                finished_at_utc=finished,
+                details=details,
+                source_run_id=run_id,
+            )
+    return results
+
+
+def fetch_massive_date_rows(args: argparse.Namespace, spec: dict[str, str], start_date: date, end_date: date) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    api_key = massive_api_key()
+    date_field = spec["date_field"]
+    params = {
+        f"{date_field}.gte": start_date.isoformat(),
+        f"{date_field}.lt": end_date.isoformat(),
+        "limit": "5000",
+        "sort": spec["sort"],
+        "apiKey": api_key,
+    }
+    url = "https://api.massive.com" + spec["endpoint"] + "?" + parse.urlencode(params)
+    rows, pages, saturated = fetch_massive_paginated(args, url, api_key)
+    digest = sha256_bytes(json.dumps(rows, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"))
+    return rows, {
+        "url": safe_url(url),
+        "sha256": digest,
+        "pages": pages,
+        "saturated": saturated,
+        "target_table": spec["target_table"],
+    }
+
+
+def normalize_massive_rows(
+    source: str,
+    provider_rows: list[dict[str, Any]],
+    details: dict[str, Any],
+    symbols: dict[str, SymbolRef],
+) -> list[dict[str, Any]]:
+    if source == "massive_splits":
+        return [normalize_massive_split(row, details, symbols) for row in provider_rows if parse_optional_date(row.get("execution_date")) is not None]
+    if source == "massive_dividends":
+        return [normalize_massive_dividend(row, details, symbols) for row in provider_rows if parse_optional_date(row.get("ex_dividend_date")) is not None]
+    if source == "massive_ipos":
+        return [normalize_massive_ipo(row, details, symbols) for row in provider_rows if parse_optional_date(row.get("listing_date")) is not None]
+    raise ValueError(f"unsupported massive source: {source}")
+
+
+def normalize_massive_split(row: dict[str, Any], details: dict[str, Any], symbols: dict[str, SymbolRef]) -> dict[str, Any]:
+    ticker = str(row.get("ticker") or "").strip().upper()
+    execution_date = parse_optional_date(row.get("execution_date"))
+    ref = symbols.get(ticker)
+    provider_id = str(row.get("id") or "")
+    event_key = provider_id or f"{ticker}:{execution_date}:{row.get('split_from')}:{row.get('split_to')}"
+    return {
+        "stock_split_id": stable_id("massive_split", event_key),
+        "symbol_id": ref.symbol_id if ref else "",
+        "listing_id": ref.listing_id if ref else "",
+        "security_id": ref.security_id if ref else "",
+        "source_system": "massive",
+        "provider_ticker": ticker,
+        "execution_date": execution_date.isoformat() if execution_date else None,
+        "split_from": parse_float(row.get("split_from")) or 0.0,
+        "split_to": parse_float(row.get("split_to")) or 0.0,
+        "source_event_key": event_key,
+        "source_evidence_ref": details.get("url", ""),
+        "source_run_id": "",
+        "source_content_sha256": row_sha256(row),
+        "inserted_at": clickhouse_now64(),
+    }
+
+
+def normalize_massive_dividend(row: dict[str, Any], details: dict[str, Any], symbols: dict[str, SymbolRef]) -> dict[str, Any]:
+    ticker = str(row.get("ticker") or "").strip().upper()
+    ex_date = parse_optional_date(row.get("ex_dividend_date"))
+    ref = symbols.get(ticker)
+    provider_id = str(row.get("id") or "")
+    event_key = provider_id or f"{ticker}:{ex_date}:{row.get('cash_amount')}:{row.get('currency')}"
+    return {
+        "cash_dividend_id": stable_id("massive_dividend", event_key),
+        "symbol_id": ref.symbol_id if ref else "",
+        "listing_id": ref.listing_id if ref else "",
+        "security_id": ref.security_id if ref else "",
+        "source_system": "massive",
+        "provider_ticker": ticker,
+        "cash_amount": parse_float(row.get("cash_amount")),
+        "currency_code": string_or_none(row.get("currency") or row.get("currency_code")),
+        "declaration_date": date_string_or_none(row.get("declaration_date")),
+        "dividend_type": string_or_none(row.get("distribution_type")),
+        "ex_dividend_date": ex_date.isoformat() if ex_date else None,
+        "frequency": string_or_none(row.get("frequency")),
+        "pay_date": date_string_or_none(row.get("pay_date")),
+        "record_date": date_string_or_none(row.get("record_date")),
+        "source_event_key": event_key,
+        "source_evidence_ref": details.get("url", ""),
+        "source_run_id": "",
+        "source_content_sha256": row_sha256(row),
+        "inserted_at": clickhouse_now64(),
+    }
+
+
+def normalize_massive_ipo(row: dict[str, Any], details: dict[str, Any], symbols: dict[str, SymbolRef]) -> dict[str, Any]:
+    ticker = str(row.get("ticker") or "").strip().upper()
+    listing_date = parse_optional_date(row.get("listing_date"))
+    ref = symbols.get(ticker)
+    event_key = str(row.get("id") or "") or f"{ticker}:{listing_date}:{row.get('issuer_name')}:{row.get('last_updated')}"
+    return {
+        "ipo_event_id": stable_id("massive_ipo", event_key),
+        "symbol_id": ref.symbol_id if ref else "",
+        "listing_id": ref.listing_id if ref else "",
+        "security_id": ref.security_id if ref else "",
+        "source_system": "massive",
+        "provider_ticker": ticker,
+        "issuer_name": string_or_none(row.get("issuer_name")),
+        "announced_date": date_string_or_none(row.get("announced_date")),
+        "listing_date": listing_date.isoformat() if listing_date else None,
+        "issue_start_date": date_string_or_none(row.get("issue_start_date")),
+        "issue_end_date": date_string_or_none(row.get("issue_end_date")),
+        "last_updated_date": date_string_or_none(row.get("last_updated")),
+        "ipo_status": string_or_none(row.get("ipo_status")),
+        "currency_code": string_or_none(row.get("currency_code")),
+        "final_issue_price": parse_float(row.get("final_issue_price")),
+        "highest_offer_price": parse_float(row.get("highest_offer_price")),
+        "lowest_offer_price": parse_float(row.get("lowest_offer_price")),
+        "min_shares_offered": parse_float(row.get("min_shares_offered")),
+        "max_shares_offered": parse_float(row.get("max_shares_offered")),
+        "total_offer_size": parse_float(row.get("total_offer_size")),
+        "shares_outstanding": parse_float(row.get("shares_outstanding")),
+        "primary_exchange": string_or_none(row.get("primary_exchange")),
+        "security_type": string_or_none(row.get("security_type")),
+        "security_description": string_or_none(row.get("security_description")),
+        "us_code": string_or_none(row.get("us_code")),
+        "isin": string_or_none(row.get("isin")),
+        "source_event_key": event_key,
+        "source_evidence_ref": details.get("url", ""),
+        "source_run_id": "",
+        "source_content_sha256": row_sha256(row),
+        "inserted_at": clickhouse_now64(),
+    }
+
+
+def run_massive_ticker_details(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    run_id: str,
+    start_date: date,
+    end_date: date,
+    symbols: dict[str, SymbolRef],
+) -> list[SourceResult]:
+    # Ticker details is a current-state endpoint. It can refresh today's snapshot,
+    # but it cannot reconstruct historical daily snapshots for old gaps.
+    today = datetime.now(UTC).date()
+    target_start = max(start_date, today)
+    target_end = min(end_date, today + timedelta(days=1))
+    if target_start >= target_end:
+        return [
+            SourceResult(
+                "massive_ticker_details",
+                "massive_ticker_details",
+                start_date,
+                end_date,
+                0,
+                0,
+                0,
+                "source_not_historical",
+                {"message": "Massive ticker details is current-state only; historical snapshots require archived source rows."},
+            )
+        ]
+    gaps = find_publication_gaps(
+        client,
+        database=args.write_database,
+        coverage_kind="massive_ticker_details",
+        source_system="massive",
+        start_date=target_start,
+        end_date=target_end,
+    ) if args.resume_from_coverage else [PublicationDateGap(target_start, target_end)]  # type: ignore[list-item]
+    if not gaps:
+        return []
+    started = datetime.now(UTC)
+    snapshot_rows: list[dict[str, Any]] = []
+    float_rows: list[dict[str, Any]] = []
+    failed = 0
+    observed_at = datetime.now(UTC)
+    for index, ref in enumerate(symbols.values(), start=1):
+        try:
+            overview = fetch_massive_ticker_overview(args, ref.ticker)
+            if not overview:
+                continue
+            snapshot, float_row = normalize_massive_ticker_detail(overview, ref, observed_at)
+            snapshot_rows.append(snapshot)
+            if float_row is not None:
+                float_rows.append(float_row)
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            print(f"massive_ticker_details ticker={ref.ticker} status=failed error={repr(exc)}", flush=True)
+        if index % 500 == 0:
+            print(f"massive_ticker_details progress={index:,}/{len(symbols):,} snapshot_rows={len(snapshot_rows):,} float_rows={len(float_rows):,} failed={failed:,}", flush=True)
+    stamp_rows(snapshot_rows, run_id)
+    stamp_rows(float_rows, run_id)
+    snapshot_written = insert_rows(client, args.write_database, "market_security_market_snapshot_v1", snapshot_rows, args.batch_size) if args.execute else 0
+    float_written = insert_rows(client, args.write_database, "market_security_float_v1", float_rows, args.batch_size) if args.execute else 0
+    written = snapshot_written + float_written
+    status = "completed" if snapshot_rows or float_rows else "covered_empty"
+    finished = datetime.now(UTC)
+    details = {
+        "target_tables": ["market_security_market_snapshot_v1", "market_security_float_v1"],
+        "snapshot_rows": len(snapshot_rows),
+        "float_rows": len(float_rows),
+        "snapshot_written": snapshot_written,
+        "float_written": float_written,
+        "failed_tickers": failed,
+        "observed_at_utc": observed_at.isoformat().replace("+00:00", "Z"),
+    }
+    results = [SourceResult("massive_ticker_details", "massive_ticker_details", target_start, target_end, len(symbols), written, failed, status, details)]
+    print(f"massive_ticker_details {target_start.isoformat()} status={status} symbols={len(symbols):,} written={written:,} failed={failed:,}", flush=True)
+    if args.execute:
+        insert_publication_coverage(
+            client,
+            database=args.write_database,
+            coverage_id=f"{run_id}:massive_ticker_details:{target_start.isoformat()}:{target_end.isoformat()}",
+            coverage_kind="massive_ticker_details",
+            source_system="massive",
+            source_object="ticker_details",
+            start_date=target_start,
+            end_date=target_end,
+            status=status,
+            rows_read=len(symbols),
+            rows_written=written,
+            rows_failed=failed,
+            started_at_utc=started,
+            finished_at_utc=finished,
+            details=details,
+            source_run_id=run_id,
+        )
+    return results
+
+
+def fetch_massive_ticker_overview(args: argparse.Namespace, ticker: str) -> dict[str, Any]:
+    url = "https://api.massive.com/v3/reference/tickers/" + parse.quote(ticker, safe="") + "?" + parse.urlencode({"apiKey": massive_api_key()})
+    payload = json.loads(fetch_bytes(args, url).decode("utf-8", errors="replace"))
+    result = payload.get("results") if isinstance(payload, dict) else None
+    return result if isinstance(result, dict) else {}
+
+
+def normalize_massive_ticker_detail(overview: dict[str, Any], ref: SymbolRef, observed_at: datetime) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    ticker = ref.ticker
+    evidence = f"massive:/v3/reference/tickers/{ticker}"
+    content_hash = row_sha256(overview)
+    as_of = parse_optional_date(overview.get("last_updated_utc")) or observed_at.date()
+    snapshot_key = f"{ticker}:{observed_at.isoformat()}:{overview.get('market_cap')}:{overview.get('weighted_shares_outstanding')}:{overview.get('share_class_shares_outstanding')}"
+    snapshot = {
+        "security_market_snapshot_id": stable_id("massive_snapshot", snapshot_key),
+        "security_id": ref.security_id,
+        "listing_id": ref.listing_id,
+        "symbol_id": ref.symbol_id,
+        "source_system": "massive",
+        "provider_ticker": ticker,
+        "as_of_date": as_of.isoformat(),
+        "observed_at_utc": observed_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+        "market_cap": parse_float(overview.get("market_cap")),
+        "round_lot": parse_int(overview.get("round_lot")),
+        "share_class_shares_outstanding": parse_int(overview.get("share_class_shares_outstanding")),
+        "weighted_shares_outstanding": parse_int(overview.get("weighted_shares_outstanding")),
+        "snapshot_evidence_ref": evidence,
+        "source_run_id": "",
+        "source_content_sha256": content_hash,
+        "inserted_at": clickhouse_now64(),
+    }
+    shares = parse_int(overview.get("share_class_shares_outstanding") or overview.get("weighted_shares_outstanding"))
+    if shares is None:
+        return snapshot, None
+    float_key = f"{ticker}:{as_of.isoformat()}:{shares}:massive_ticker_details"
+    float_row = {
+        "security_float_id": stable_id("massive_share_supply", float_key),
+        "symbol_id": ref.symbol_id,
+        "listing_id": ref.listing_id,
+        "security_id": ref.security_id,
+        "source_system": "massive",
+        "provider_ticker": ticker,
+        "effective_date": as_of.isoformat(),
+        "free_float": None,
+        "free_float_percent": None,
+        "shares_outstanding": shares,
+        "float_source_tag": "massive_ticker_details_shares_outstanding",
+        "source_event_key": float_key,
+        "source_evidence_ref": evidence,
+        "source_run_id": "",
+        "source_content_sha256": content_hash,
+        "inserted_at": clickhouse_now64(),
+    }
+    return snapshot, float_row
+
+
+def fetch_massive_paginated(args: argparse.Namespace, first_url: str, api_key: str) -> tuple[list[dict[str, Any]], int, bool]:
+    rows: list[dict[str, Any]] = []
+    pages = 0
+    next_url: str | None = first_url
+    while next_url:
+        payload = json.loads(fetch_bytes(args, next_url).decode("utf-8", errors="replace"))
+        pages += 1
+        for item in payload.get("results") or []:
+            if isinstance(item, dict):
+                rows.append(item)
+        raw_next = payload.get("next_url")
+        next_url = append_api_key(str(raw_next), api_key) if raw_next else None
+    return rows, pages, False
+
+
+def append_api_key(url: str, api_key: str) -> str:
+    if not url:
+        return ""
+    return url if "apiKey=" in url else url + ("&" if "?" in url else "?") + parse.urlencode({"apiKey": api_key})
+
+
+def run_ibkr_borrow_availability(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    run_id: str,
+    start_date: date,
+    end_date: date,
+    symbols: dict[str, SymbolRef],
+) -> list[SourceResult]:
+    today = datetime.now(UTC).date()
+    target_start = max(start_date, today)
+    target_end = min(end_date, today + timedelta(days=1))
+    if target_start >= target_end:
+        return [
+            SourceResult(
+                "ibkr_borrow_availability",
+                "ibkr_borrow_availability",
+                start_date,
+                end_date,
+                0,
+                0,
+                0,
+                "source_not_historical",
+                {"message": "IBKR borrow availability is point-in-time only; historical rows require prior persisted snapshots."},
+            )
+        ]
+    gaps = find_publication_gaps(
+        client,
+        database=args.write_database,
+        coverage_kind="ibkr_borrow_availability",
+        source_system="ibkr",
+        start_date=target_start,
+        end_date=target_end,
+    ) if args.resume_from_coverage else [PublicationDateGap(target_start, target_end)]  # type: ignore[list-item]
+    if not gaps:
+        return []
+    refs = [ref for ref in symbols.values() if ref.ibkr_conid.strip().isdigit()]
+    if not refs:
+        return [SourceResult("ibkr_borrow_availability", "ibkr_borrow_availability", target_start, target_end, 0, 0, 0, "covered_empty", {"reason": "no_ibkr_conids"})]
+    started = datetime.now(UTC)
+    observed_at = datetime.now(UTC)
+    rows: list[dict[str, Any]] = []
+    failed = 0
+    try:
+        ibkr_prepare_marketdata_session(args)
+        for start in range(0, len(refs), 100):
+            batch = refs[start : start + 100]
+            by_conid = {ref.ibkr_conid: ref for ref in batch}
+            try:
+                payload = ibkr_marketdata_snapshot(args, sorted(by_conid))
+                for item in payload:
+                    conid = str(item.get("conid") or item.get("conidEx") or "").split("@", 1)[0]
+                    ref = by_conid.get(conid)
+                    if ref is None:
+                        continue
+                    rows.append(normalize_ibkr_borrow_row(item, ref, observed_at))
+            except Exception as exc:  # noqa: BLE001
+                failed += len(batch)
+                print(f"ibkr_borrow_availability batch_start={start:,} status=failed error={repr(exc)}", flush=True)
+            if start and start % 5_000 == 0:
+                print(f"ibkr_borrow_availability progress={start:,}/{len(refs):,} rows={len(rows):,} failed={failed:,}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        failed = max(failed, len(refs))
+        details = {"error": repr(exc), "target_table": "market_security_borrow_v1"}
+        rows = []
+    else:
+        details = {
+            "target_table": "market_security_borrow_v1",
+            "observed_at_utc": observed_at.isoformat().replace("+00:00", "Z"),
+            "eligible_conids": len(refs),
+            "field_ids": ["7636", "7637", "7644"],
+        }
+    stamp_rows(rows, run_id)
+    written = insert_rows(client, args.write_database, "market_security_borrow_v1", rows, args.batch_size) if args.execute else 0
+    status = "completed" if rows else "covered_empty" if failed == 0 else "failed"
+    finished = datetime.now(UTC)
+    result = SourceResult("ibkr_borrow_availability", "ibkr_borrow_availability", target_start, target_end, len(refs), written, failed, status, details)
+    print(f"ibkr_borrow_availability {target_start.isoformat()} status={status} eligible={len(refs):,} written={written:,} failed={failed:,}", flush=True)
+    if args.execute:
+        insert_publication_coverage(
+            client,
+            database=args.write_database,
+            coverage_id=f"{run_id}:ibkr_borrow_availability:{target_start.isoformat()}:{target_end.isoformat()}",
+            coverage_kind="ibkr_borrow_availability",
+            source_system="ibkr",
+            source_object="marketdata_snapshot_fields_7636_7637_7644",
+            start_date=target_start,
+            end_date=target_end,
+            status=status,
+            rows_read=len(refs),
+            rows_written=written,
+            rows_failed=failed,
+            started_at_utc=started,
+            finished_at_utc=finished,
+            details=details,
+            source_run_id=run_id,
+        )
+    return [result]
+
+
+def ibkr_prepare_marketdata_session(args: argparse.Namespace) -> None:
+    base_url = ibkr_base_url()
+    fetch_ibkr_json(args, base_url + "/iserver/accounts")
+
+
+def ibkr_marketdata_snapshot(args: argparse.Namespace, conids: list[str]) -> list[dict[str, Any]]:
+    url = ibkr_base_url() + "/iserver/marketdata/snapshot?" + parse.urlencode(
+        {
+            "conids": ",".join(conids),
+            "fields": "7636,7637,7644",
+        }
+    )
+    payload = fetch_ibkr_json(args, url)
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict) and isinstance(payload.get("results"), list):
+        return [item for item in payload["results"] if isinstance(item, dict)]
+    return []
+
+
+def fetch_ibkr_json(args: argparse.Namespace, url: str) -> Any:
+    headers = {"Accept": "application/json", "User-Agent": "quant-reference-gateway-ibkr/1.0"}
+    req = request.Request(url, headers=headers)
+    context = ssl._create_unverified_context() if url.startswith("https://") else None
+    if args.request_min_interval_seconds > 0:
+        time.sleep(args.request_min_interval_seconds)
+    with request.urlopen(req, timeout=args.request_timeout_seconds, context=context) as response:  # noqa: S310
+        text = response.read().decode("utf-8", errors="replace")
+    return json.loads(text) if text.strip() else {}
+
+
+def normalize_ibkr_borrow_row(item: dict[str, Any], ref: SymbolRef, observed_at: datetime) -> dict[str, Any]:
+    shortable_shares = parse_int(item.get("7636"))
+    fee_rate = parse_percent_float(item.get("7637"))
+    raw_status = string_or_none(item.get("7644"))
+    borrow_status = raw_status or ("shortable" if shortable_shares and shortable_shares > 0 else "unknown")
+    event_key = f"{ref.ibkr_conid}:{observed_at.isoformat()}:{shortable_shares}:{fee_rate}:{borrow_status}"
+    return {
+        "borrow_id": stable_id("ibkr_borrow", event_key),
+        "symbol_id": ref.symbol_id,
+        "listing_id": ref.listing_id,
+        "security_id": ref.security_id,
+        "source_system": "ibkr",
+        "broker": "ibkr",
+        "provider_ticker": ref.ticker,
+        "ibkr_conid": ref.ibkr_conid,
+        "observed_at_utc": observed_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+        "borrow_status": borrow_status,
+        "shortable_shares": shortable_shares,
+        "lender_count": None,
+        "indicative_borrow_rate": fee_rate,
+        "fee_rate": fee_rate,
+        "source_event_key": event_key,
+        "source_evidence_ref": "ibkr:/iserver/marketdata/snapshot?fields=7636,7637,7644",
+        "source_run_id": "",
+        "source_content_sha256": row_sha256(item),
+        "inserted_at": clickhouse_now64(),
+    }
+
+
 def load_symbol_refs(client: ClickHouseHttpClient, database: str) -> dict[str, SymbolRef]:
     sql = f"""
     SELECT
         upper(s.ticker) AS ticker,
         s.symbol_id AS symbol_id,
         l.listing_id AS listing_id,
-        l.security_id AS security_id
+        l.security_id AS security_id,
+        ifNull(l.ibkr_conid, '') AS ibkr_conid
     FROM {qtable(database, 'id_symbol_v1')} s FINAL
     INNER JOIN {qtable(database, 'id_listing_v1')} l FINAL ON l.listing_id = s.listing_id
     WHERE s.status = 'active'
@@ -626,7 +1205,13 @@ def load_symbol_refs(client: ClickHouseHttpClient, database: str) -> dict[str, S
         if not line.strip():
             continue
         row = json.loads(line)
-        refs[str(row["ticker"]).upper()] = SymbolRef(str(row["symbol_id"]), str(row["listing_id"]), str(row["security_id"]), str(row["ticker"]).upper())
+        refs[str(row["ticker"]).upper()] = SymbolRef(
+            str(row["symbol_id"]),
+            str(row["listing_id"]),
+            str(row["security_id"]),
+            str(row["ticker"]).upper(),
+            str(row.get("ibkr_conid") or ""),
+        )
     return refs
 
 
@@ -765,12 +1350,56 @@ def parse_float(value: Any) -> float | None:
     return float(text)
 
 
+def parse_percent_float(value: Any) -> float | None:
+    text = str(value or "").strip().replace(",", "")
+    if not text or text == ".":
+        return None
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    return float(text)
+
+
 def stable_id(prefix: str, key: str) -> str:
     return f"{prefix}:{hashlib.sha256(key.encode('utf-8')).hexdigest()[:32]}"
 
 
 def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def row_sha256(row: dict[str, Any]) -> str:
+    return sha256_bytes(json.dumps(row, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"))
+
+
+def massive_api_key() -> str:
+    key = os.environ.get("MASSIVE_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("MASSIVE_API_KEY is required for Massive publication source sync")
+    return key
+
+
+def ibkr_base_url() -> str:
+    return os.environ.get("IBKR_CPAPI_BASE_URL", "https://localhost:5000/v1/api").rstrip("/")
+
+
+def parse_optional_date(value: Any) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def date_string_or_none(value: Any) -> str | None:
+    parsed = parse_optional_date(value)
+    return parsed.isoformat() if parsed else None
+
+
+def string_or_none(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
 
 
 def parse_csv(value: str) -> list[str]:
@@ -904,6 +1533,23 @@ def schema_missing_results(args: argparse.Namespace, sources: list[str], start_d
                     },
                 )
             )
+        elif source in {"massive_splits", "massive_dividends", "massive_ipos", "massive_ticker_details", "ibkr_borrow_availability"}:
+            results.append(
+                SourceResult(
+                    source=source,
+                    coverage_kind=source,
+                    start_date=start_date,
+                    end_date=end_date,
+                    rows_read=0,
+                    rows_written=0,
+                    rows_failed=0,
+                    status="schema_missing",
+                    details={
+                        "message": "Dry-run did not create tables. Run with --execute or initialize schema first.",
+                        "write_database": args.write_database,
+                    },
+                )
+            )
     return results
 
 
@@ -926,7 +1572,14 @@ def print_header(args: argparse.Namespace, run_id: str, run_root: Path, loaded_e
     print(f"start_date={args.start_date} end_date={args.end_date} sources={args.sources}", flush=True)
     print(f"run_root={run_root} symbols={symbols:,}", flush=True)
     print("loaded_env_files=" + json.dumps([str(path) for path in loaded_env]), flush=True)
-    print("secret_status=" + json.dumps(secret_status(["REAL_LIVE_CLICKHOUSE_WRITE_URL", "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD", "MASSIVE_API_KEY"]), sort_keys=True), flush=True)
+    print(
+        "secret_status="
+        + json.dumps(
+            secret_status(["REAL_LIVE_CLICKHOUSE_WRITE_URL", "REAL_LIVE_CLICKHOUSE_WRITE_PASSWORD", "MASSIVE_API_KEY", "IBKR_CPAPI_BASE_URL"]),
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     print("=" * 96, flush=True)
 
 

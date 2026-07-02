@@ -205,31 +205,27 @@ def main() -> None:
             storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
         )
         add_operation("Reference fact schema", "completed", f"write={config.clickhouse_write_database}", seconds=time.perf_counter() - started)
-    if config.execute and config.maintenance_mode != "skip":
-        if not write_policy.writes_allowed:
-            add_operation("Market publication schema", "skipped", write_policy.reason)
-            emit("market_publication_schema=blocked reason=" + write_policy.reason)
-        else:
-            from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
+    if config.execute and config.market_publication_gap_fill_enabled:
+        from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
 
-            started = time.perf_counter()
-            ensure_market_publication_schema(
-                ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
-                database=config.clickhouse_write_database,
-                read_database=config.clickhouse_read_database,
-                storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
-            )
-            add_operation(
-                "Market publication schema",
-                "completed",
-                f"read={config.clickhouse_read_database} write={config.clickhouse_write_database}",
-                seconds=time.perf_counter() - started,
-            )
-            emit(
-                "market_publication_schema=ensured "
-                f"read_database={config.clickhouse_read_database} "
-                f"write_database={config.clickhouse_write_database}"
-            )
+        started = time.perf_counter()
+        ensure_market_publication_schema(
+            ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
+            database=config.clickhouse_write_database,
+            read_database=config.clickhouse_read_database,
+            storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
+        )
+        add_operation(
+            "Market publication schema",
+            "completed",
+            f"read={config.clickhouse_read_database} write={config.clickhouse_write_database}",
+            seconds=time.perf_counter() - started,
+        )
+        emit(
+            "market_publication_schema=ensured "
+            f"read_database={config.clickhouse_read_database} "
+            f"write_database={config.clickhouse_write_database}"
+        )
     if config.execute and config.resolve_stale_issues:
         started = time.perf_counter()
         resolution = resolve_stale_active_ticker_issues(config)
@@ -374,7 +370,6 @@ def main() -> None:
                 add_operation("Post-issue tradable rebuild", "skipped", write_policy.reason)
     if (
         config.execute
-        and write_policy.writes_allowed
         and config.market_publication_gap_fill_enabled
         and (not config.test_write_mode or config.maintenance_mode == "force")
     ):

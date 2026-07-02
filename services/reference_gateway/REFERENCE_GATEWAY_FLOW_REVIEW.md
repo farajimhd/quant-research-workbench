@@ -809,6 +809,32 @@ Source sync should not blindly overwrite canonical rows. If a provider
 conflicts with current canonical data, the gateway writes an issue and keeps
 the affected candidate non-tradable until the conflict is resolved.
 
+### Current Startup Source-Sync Coverage
+
+Startup source sync now calls the coverage-driven market-publication loader for
+the implemented provider sources below. These jobs write source tables first;
+canonical fact-table initial fill is a separate Stage 7 task.
+
+Implemented startup-backed source rows:
+
+- FINRA consolidated short volume into `market_short_volume_v1`.
+- SEC fails-to-deliver files into `market_fails_to_deliver_v1`.
+- Massive stock splits into `market_stock_split_v1`.
+- Massive cash dividends into `market_cash_dividend_v1`.
+- Massive IPO records into `market_ipo_v1`.
+- Massive ticker details into `market_security_market_snapshot_v1` and
+  share-supply rows in `market_security_float_v1`.
+- IBKR point-in-time borrow/shortability fields into
+  `market_security_borrow_v1`.
+
+Still deferred because the authoritative provider contract or parser needs a
+separate implementation:
+
+- FINRA/exchange short interest ongoing sync.
+- Reg SHO threshold-list sync.
+- Massive presentation asset refresh.
+- SEC-derived country assertions.
+
 ### Stage 5 Rules
 
 - Source sync is always enabled for operational runs.
