@@ -356,6 +356,7 @@ def run_download_phase(
         for worker_id, chunk in enumerate(chunks)
         if chunk
     ]
+    reporter.configure_download_workers(len(workers))
     day_file_results: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     completed_workers: set[int] = set()
     interrupted = False
@@ -445,10 +446,18 @@ class UpdateProgressReporter:
         self.success_days = 0
         self.failed_days = 0
         self.completed_files = 0
-        self.completed_bytes = 0
+        self.completed_transfer_bytes = 0
+        self.completed_checked_bytes = 0
         self.file_states: dict[str, dict[str, Any]] = {}
+        self.worker_states: dict[int, dict[str, Any]] = {}
         self.day_status: dict[str, str] = {}
+        self.task_states: dict[str, dict[str, Any]] = {}
+        self.notices: deque[tuple[str, str]] = deque(maxlen=12)
         self.logs: deque[str] = deque(maxlen=max(5, int(args.progress_log_lines)))
+        self.download_started_at: float | None = None
+        self.download_worker_count = max(1, int(getattr(args, "download_workers", 1) or 1))
+        self.download_total_files = max(0, int(total_files))
+        self.download_status_counts: dict[str, int] = {}
         self._rich = False
         self._live: Any = None
         self._layout: Any = None
@@ -478,9 +487,10 @@ class UpdateProgressReporter:
                 self._text_cls = Text
                 self._layout = Layout(name="root")
                 self._layout.split_column(
-                    Layout(self._summary_panel(), name="summary", size=7),
-                    Layout(self._download_panel(), name="download", size=12),
-                    Layout(self._day_panel(), name="days", size=8),
+                    Layout(self._summary_panel(), name="summary", size=8),
+                    Layout(self._download_panel(), name="download", size=max(10, min(26, self.download_worker_count + 5))),
+                    Layout(self._task_panel(), name="tasks", size=10),
+                    Layout(self._notice_panel(), name="notices", size=6),
                     Layout(self._log_panel(), name="logs", ratio=1),
                 )
                 self._live = Live(
@@ -512,17 +522,55 @@ class UpdateProgressReporter:
         self.stage = stage
         self.log(f"stage={stage}")
 
+    def notice(self, message: str, *, style: str = "yellow") -> None:
+        line = f"{datetime.now().strftime('%H:%M:%S')} {message}"
+        self.notices.append((line, style))
+        self.log(message)
+
+    def configure_download_workers(self, worker_count: int) -> None:
+        self.download_worker_count = max(1, int(worker_count))
+        for worker_id in range(self.download_worker_count):
+            self.worker_states.setdefault(worker_id, self._empty_worker_state(worker_id))
+        if self._rich and self._layout is not None:
+            self._layout["download"].size = max(10, min(26, self.download_worker_count + 5))
+            self._refresh(force=True)
+
     def handle_download_event(self, event: dict[str, Any]) -> None:
         label = str(event.get("job_label") or f"{event.get('kind')}:{event.get('session_date')}")
+        worker_id = int(event.get("worker_id") or 0)
+        worker_state = self.worker_states.setdefault(worker_id, self._empty_worker_state(worker_id))
+        if event.get("type") in {"progress", "result"}:
+            worker_state.update(
+                {
+                    "worker_id": worker_id,
+                    "job": label,
+                    "status": str(event.get("status") or worker_state.get("status") or "running"),
+                    "expected": int(event.get("bytes_expected") or worker_state.get("expected") or 0),
+                    "written": int(event.get("bytes_written") or worker_state.get("written") or 0),
+                    "started_at": float(event.get("started_at") or worker_state.get("started_at") or time.time()),
+                    "updated_at": time.time(),
+                }
+            )
         state = self.file_states.setdefault(label, {})
         previous_type = state.get("type")
         previous_status = state.get("status")
         state.update(event)
+        if event.get("status") == "downloading" and self.download_started_at is None:
+            self.download_started_at = time.time()
         if event.get("type") == "result" and previous_type != "result":
             self.completed_files += 1
             expected = int(event.get("bytes_expected") or 0)
             written = int(event.get("bytes_written") or 0)
-            self.completed_bytes += expected if event.get("status") in {"downloaded", "skipped_complete", "would_download"} else min(expected, written)
+            status = str(event.get("status") or "")
+            self.download_status_counts[status] = self.download_status_counts.get(status, 0) + 1
+            self.completed_checked_bytes += expected if status in {"downloaded", "skipped_complete", "would_download"} else min(expected, written)
+            if status in {"downloaded", "would_download"}:
+                self.completed_transfer_bytes += written
+            elif status not in {"skipped_complete"}:
+                self.completed_transfer_bytes += min(expected, written) if expected else written
+            worker_state["status"] = status
+            worker_state["written"] = written
+            worker_state["expected"] = expected
             if event.get("status") not in {"downloaded", "skipped_complete", "would_download"}:
                 self.log(f"download file failed {label} status={event.get('status')} exception={event.get('exception')}")
         elif event.get("status") != previous_status and event.get("status") in {"checking", "downloading"}:
@@ -547,6 +595,27 @@ class UpdateProgressReporter:
         self.log(f"day {status} {day}")
         self._refresh(force=True)
 
+    def task_start(self, key: str, label: str, *, day: str = "", stage: str = "") -> None:
+        self.task_states[key] = {
+            "label": label,
+            "day": day,
+            "stage": stage or label,
+            "status": "running",
+            "started_at": time.time(),
+            "seconds": 0.0,
+            "rows": "",
+            "detail": "",
+        }
+        self._refresh(force=True)
+
+    def task_done(self, key: str, status: str, *, seconds: float | None = None, rows: int | None = None, detail: str = "") -> None:
+        state = self.task_states.setdefault(key, {"label": key, "day": "", "stage": key, "started_at": time.time()})
+        state["status"] = status
+        state["seconds"] = float(seconds if seconds is not None else time.time() - float(state.get("started_at") or time.time()))
+        state["rows"] = "" if rows is None else f"{int(rows):,}"
+        state["detail"] = detail
+        self._refresh(force=True)
+
     def _refresh(self, *, force: bool = False) -> None:
         if not self._rich or self._layout is None:
             return
@@ -557,77 +626,177 @@ class UpdateProgressReporter:
         self._last_refresh_at = now
         self._layout["summary"].update(self._summary_panel())
         self._layout["download"].update(self._download_panel())
-        self._layout["days"].update(self._day_panel())
+        self._layout["tasks"].update(self._task_panel())
+        self._layout["notices"].update(self._notice_panel())
         self._layout["logs"].update(self._log_panel())
 
     def _summary_panel(self) -> Any:
         elapsed = max(1e-6, time.time() - self.started_at)
         day_rate = self.completed_days / elapsed if self.completed_days else 0.0
-        eta = self._format_duration((self.total_days - self.completed_days) / day_rate) if day_rate > 0 else "-"
-        byte_speed = self._covered_download_bytes() / elapsed
+        day_eta = self._format_duration((self.total_days - self.completed_days) / day_rate) if day_rate > 0 else "-"
+        transfer_speed = self._run_transfer_speed()
+        active_remaining = self._active_download_remaining_bytes()
+        download_eta = self._format_duration(active_remaining / transfer_speed) if transfer_speed > 0 and active_remaining > 0 else "-"
         table = self._table_cls.grid(expand=True)
-        table.add_column(justify="right", width=18)
-        table.add_column(justify="left")
-        table.add_column(justify="right", width=18)
-        table.add_column(justify="left")
-        table.add_row("stage", self.stage, "elapsed", self._format_duration(elapsed))
-        table.add_row("days", f"{self.completed_days:,}/{self.total_days:,}", "finish eta", eta)
-        table.add_row("downloaded", f"{self._format_bytes(self._covered_download_bytes())}/{self._format_bytes(self.total_bytes)}", "speed", f"{self._format_bytes(byte_speed)}/s")
+        for _ in range(4):
+            table.add_column(ratio=1)
+        table.add_row("stage", str(self.stage), "elapsed", self._format_duration(elapsed))
+        table.add_row("days", f"{self.completed_days:,}/{self.total_days:,}", "day eta", day_eta)
+        table.add_row("downloads checked", f"{self.completed_files:,}/{self.download_total_files:,}", "download eta", download_eta)
+        table.add_row("run transfer", self._format_bytes(self._run_transfer_bytes()), "speed", f"{self._format_bytes(transfer_speed)}/s")
         return self._panel_cls(table, title="Flatfile Event Update", border_style="cyan")
 
     def _download_panel(self) -> Any:
         table = self._table_cls(expand=True, show_header=True, header_style="bold", box=None, pad_edge=False)
-        table.add_column("File", ratio=2, overflow="ellipsis")
-        table.add_column("Progress", ratio=3, overflow="ellipsis")
-        table.add_column("Speed", width=12)
-        table.add_column("Status", width=14)
-        active_or_recent = sorted(
-            self.file_states.items(),
-            key=lambda item: (0 if item[1].get("type") != "result" else 1, str(item[0])),
-        )[:8]
-        if not active_or_recent:
-            table.add_row("-", "-", "-", "waiting")
-        for label, state in active_or_recent:
-            expected = int(state.get("bytes_expected") or 0)
-            written = int(state.get("bytes_written") or 0)
+        table.add_column("W", width=3, no_wrap=True)
+        table.add_column("File", ratio=2, min_width=18, overflow="ellipsis", no_wrap=True)
+        table.add_column("Progress", ratio=3, min_width=24, overflow="ellipsis", no_wrap=True)
+        table.add_column("Speed", width=11, no_wrap=True)
+        table.add_column("ETA", width=8, no_wrap=True)
+        table.add_column("State", width=13, overflow="ellipsis", no_wrap=True)
+        checked_pct = self.completed_files / self.download_total_files if self.download_total_files else 0.0
+        summary = (
+            f"{self._mini_bar(checked_pct, 12)} {checked_pct:5.1%} "
+            f"files {self.completed_files:,}/{self.download_total_files:,} "
+            f"checked {self._format_bytes(self.completed_checked_bytes)}/{self._format_bytes(self.total_bytes)} "
+            f"run {self._format_bytes(self._run_transfer_bytes())}"
+        )
+        table.add_row("all", "summary", summary, f"{self._format_bytes(self._run_transfer_speed())}/s", "-", self._status_counts_cell())
+        for worker_id in range(self.download_worker_count):
+            state = self.worker_states.get(worker_id, self._empty_worker_state(worker_id))
+            expected = int(state.get("expected") or 0)
+            written = int(state.get("written") or 0)
             pct = written / expected if expected else 0.0
             table.add_row(
-                label,
-                f"{self._mini_bar(pct, 24)} {pct:5.1%} {self._format_bytes(written)}/{self._format_bytes(expected)}",
+                f"{worker_id:02d}",
+                str(state.get("job") or "-"),
+                f"{self._mini_bar(pct, 12)} {pct:5.1%} {self._format_bytes(written)}/{self._format_bytes(expected)}",
                 self._speed_cell(state),
-                str(state.get("status") or "pending"),
+                self._eta_cell(state),
+                self._download_state_cell(str(state.get("status") or "pending")),
             )
-        return self._panel_cls(table, title=f"Downloads files={self.completed_files:,}/{self.total_files:,}", border_style="green")
+        return self._panel_cls(table, title="Downloads", border_style="green")
 
-    def _day_panel(self) -> Any:
+    def _task_panel(self) -> Any:
         table = self._table_cls(expand=True, show_header=True, header_style="bold", box=None, pad_edge=False)
-        table.add_column("Metric", justify="right", width=18)
-        table.add_column("Value", justify="left")
+        table.add_column("Kind", width=12, no_wrap=True)
+        table.add_column("Day", width=10, no_wrap=True)
+        table.add_column("Status", width=11, no_wrap=True)
+        table.add_column("Rows", width=12, justify="right", no_wrap=True)
+        table.add_column("Seconds", width=9, justify="right", no_wrap=True)
+        table.add_column("Detail", ratio=2, overflow="ellipsis")
         day_pct = self.completed_days / self.total_days if self.total_days else 0.0
-        table.add_row("progress", f"{self._mini_bar(day_pct, 32)} {day_pct:5.1%}")
-        table.add_row("ok", f"{self.success_days:,}")
-        table.add_row("failed", f"{self.failed_days:,}")
-        running = [day for day, status in self.day_status.items() if status == "running"]
-        table.add_row("current", ", ".join(running[-3:]) if running else "-")
-        return self._panel_cls(table, title="Event Inserts and Audit", border_style="magenta")
+        table.add_row("summary", "-", f"{day_pct:5.1%}", f"ok {self.success_days:,}", f"fail {self.failed_days:,}", f"{self._mini_bar(day_pct, 12)} days {self.completed_days:,}/{self.total_days:,}")
+        rows = sorted(self.task_states.values(), key=lambda row: float(row.get("started_at") or 0.0), reverse=True)[:8]
+        if not rows:
+            table.add_row("-", "-", "waiting", "", "", "No insert/audit/bar task started yet.")
+        for row in rows:
+            seconds = float(row.get("seconds") or (time.time() - float(row.get("started_at") or time.time()) if row.get("status") == "running" else 0.0))
+            table.add_row(
+                str(row.get("stage") or row.get("label") or "-")[:12],
+                str(row.get("day") or "-"),
+                str(row.get("status") or "-"),
+                str(row.get("rows") or ""),
+                f"{seconds:.1f}",
+                str(row.get("detail") or row.get("label") or ""),
+            )
+        return self._panel_cls(table, title="Event Inserts, Audit, Index and Macro Bars", border_style="magenta")
+
+    def _notice_panel(self) -> Any:
+        if not self.notices:
+            text = self._text_cls("No persistent notices.")
+        else:
+            text = self._text_cls()
+            for line, style in self.notices:
+                text.append(line + "\n", style=style)
+        return self._panel_cls(text, title="Important Notices", border_style="yellow")
 
     def _log_panel(self) -> Any:
         text = self._text_cls("\n".join(self.logs) if self.logs else "No messages yet.")
         return self._panel_cls(text, title="Messages", border_style="white")
 
     def _covered_download_bytes(self) -> int:
-        active = 0
-        for state in self.file_states.values():
-            if state.get("type") != "result":
-                active += int(state.get("bytes_written") or 0)
-        return min(self.total_bytes, self.completed_bytes + active)
+        return min(self.total_bytes, self.completed_checked_bytes + self._active_download_bytes())
+
+    def _run_transfer_bytes(self) -> int:
+        return max(0, int(self.completed_transfer_bytes) + self._active_download_bytes())
+
+    def _active_download_bytes(self) -> int:
+        total = 0
+        for state in self.worker_states.values():
+            if str(state.get("status") or "") == "downloading":
+                total += int(state.get("written") or 0)
+        return total
+
+    def _active_download_remaining_bytes(self) -> int:
+        total = 0
+        for state in self.worker_states.values():
+            if str(state.get("status") or "") == "downloading":
+                expected = int(state.get("expected") or 0)
+                written = int(state.get("written") or 0)
+                total += max(0, expected - written)
+        return total
+
+    def _run_transfer_speed(self) -> float:
+        started_at = self.download_started_at or self.started_at
+        elapsed = max(1e-6, time.time() - started_at)
+        return self._run_transfer_bytes() / elapsed
 
     def _speed_cell(self, state: dict[str, Any]) -> str:
-        written = int(state.get("bytes_written") or 0)
+        written = int(state.get("written") or state.get("bytes_written") or 0)
         started_at = float(state.get("started_at") or 0.0)
         if not written or not started_at:
             return "-"
         return f"{self._format_bytes(written / max(1e-6, time.time() - started_at))}/s"
+
+    def _eta_cell(self, state: dict[str, Any]) -> str:
+        expected = int(state.get("expected") or state.get("bytes_expected") or 0)
+        written = int(state.get("written") or state.get("bytes_written") or 0)
+        started_at = float(state.get("started_at") or 0.0)
+        if expected <= 0 or written <= 0 or written >= expected or not started_at:
+            return "-"
+        elapsed = max(1e-6, time.time() - started_at)
+        rate = written / elapsed
+        return self._format_duration((expected - written) / rate) if rate > 0 else "-"
+
+    def _status_counts_cell(self) -> str:
+        if not self.download_status_counts:
+            return "waiting"
+        names = {
+            "downloaded": "dl",
+            "skipped_complete": "skip",
+            "would_download": "dry",
+            "failed": "err",
+            "failed_size_mismatch": "size",
+            "missing_remote": "miss",
+            "incomplete_existing": "part",
+        }
+        return " ".join(f"{names.get(status, status[:5])}={count:,}" for status, count in sorted(self.download_status_counts.items()))
+
+    def _download_state_cell(self, status: str) -> str:
+        return {
+            "idle": "-",
+            "checking": "CHK",
+            "downloading": "DL",
+            "downloaded": "OK",
+            "skipped_complete": "SKIP",
+            "would_download": "DRY",
+            "failed": "ERR",
+            "failed_size_mismatch": "SIZE",
+            "missing_remote": "MISS",
+            "incomplete_existing": "PART",
+        }.get(status, status[:8])
+
+    def _empty_worker_state(self, worker_id: int) -> dict[str, Any]:
+        return {
+            "worker_id": int(worker_id),
+            "job": "",
+            "status": "idle",
+            "expected": 0,
+            "written": 0,
+            "started_at": 0.0,
+            "updated_at": 0.0,
+        }
 
     def _mini_bar(self, fraction: float, width: int) -> str:
         filled = int(round(max(0.0, min(1.0, float(fraction))) * width))
@@ -1800,11 +1969,39 @@ def validate_day_continuity_after_insert(
     append_jsonl(report_path, audit)
 
 
-def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles, run_id: str, report_path: Path) -> str:
+def _run_profiled_with_reporter(
+    client: ClickHouseHttpClient,
+    label: str,
+    sql: str,
+    reporter: UpdateProgressReporter | None,
+    *,
+    day: str,
+    stage: str,
+    detail: str = "",
+) -> QueryProfile:
+    key = f"{day}:{stage}:{label}"
+    if reporter is not None:
+        reporter.task_start(key, label, day=day, stage=stage)
+    try:
+        profile = run_profiled(client, label, sql)
+    except Exception as exc:
+        if reporter is not None:
+            reporter.task_done(key, "failed", detail=repr(exc))
+        raise
+    if reporter is not None:
+        reporter.task_done(key, "ok", seconds=float(profile.wall_seconds), rows=profile.written_rows, detail=detail or f"query_id={profile.query_id}")
+    return profile
+
+
+def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles, run_id: str, report_path: Path, reporter: UpdateProgressReporter | None = None) -> str:
     job = DayJob(source_date=day.source_date, build_step=build_step_for_date(day.source_date))
     status = latest_day_status(client, args, job)
     if status == "ok":
+        if reporter is not None:
+            reporter.task_start(f"{day.source_date}:index:manifest_ok", "rebuild ticker/day index", day=day.source_date, stage="index")
         rebuild_day_ticker_index(client, args, day, job.build_step, report_path, reason="manifest_ok")
+        if reporter is not None:
+            reporter.task_done(f"{day.source_date}:index:manifest_ok", "ok", detail="manifest was already ok")
         print(f"DAY SKIP {day.source_date} status=ok", flush=True)
         return "skipped"
     if status in {"failed", "started", "interrupted"} and not (args.retry_failed or args.retry_started):
@@ -1813,24 +2010,39 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
     if status in {"failed", "started", "interrupted"}:
         if not args.force_day_delete:
             raise RuntimeError(f"day={day.source_date} status={status}; rerun with --force-day-delete to avoid duplicate rows")
-        run_profiled(client, f"delete_events_day_{day.source_date}", delete_day_sql(args, job))
+        if reporter is not None:
+            reporter.notice(f"Deleting existing event rows for {day.source_date} because status={status} and --force-day-delete is set.", style="bold yellow")
+        _run_profiled_with_reporter(client, f"delete_events_day_{day.source_date}", delete_day_sql(args, job), reporter, day=day.source_date, stage="delete", detail="event rows")
 
     # Continuity and ticker/day index are derived per-day metadata. Always purge
     # them before a fresh day insert so absent tickers from stale attempts cannot
     # survive and be copied into the loader-facing index.
-    run_profiled(client, f"delete_continuity_day_{day.source_date}", delete_day_continuity_sql(args, day))
-    run_profiled(client, f"delete_ticker_day_index_{day.source_date}", delete_day_ticker_index_sql(args, day))
+    if reporter is not None:
+        reporter.notice(f"Refreshing derived continuity and ticker/day index rows for {day.source_date}.", style="yellow")
+    _run_profiled_with_reporter(client, f"delete_continuity_day_{day.source_date}", delete_day_continuity_sql(args, day), reporter, day=day.source_date, stage="delete", detail="continuity rows")
+    _run_profiled_with_reporter(client, f"delete_ticker_day_index_{day.source_date}", delete_day_ticker_index_sql(args, day), reporter, day=day.source_date, stage="delete", detail="ticker/day index rows")
 
     insert_day_manifest(client, args, job, status="started", run_id=run_id)
     try:
-        profile = run_profiled(client, f"insert_events_from_flatfiles_{day.source_date}", insert_direct_day_sql(args, day, job.build_step))
-        continuity_profile = run_profiled(
+        profile = _run_profiled_with_reporter(client, f"insert_events_from_flatfiles_{day.source_date}", insert_direct_day_sql(args, day, job.build_step), reporter, day=day.source_date, stage="events", detail="flatfile events")
+        continuity_profile = _run_profiled_with_reporter(
             client,
             f"insert_events_continuity_from_flatfiles_{day.source_date}",
             insert_direct_day_continuity_sql(args, day, job.build_step),
+            reporter,
+            day=day.source_date,
+            stage="continuity",
+            detail="ticker continuity",
         )
+        if reporter is not None:
+            reporter.task_start(f"{day.source_date}:audit:continuity", "validate continuity counts", day=day.source_date, stage="audit")
         validate_day_continuity_after_insert(client, args, day, job.build_step, profile.written_rows, report_path)
+        if reporter is not None:
+            reporter.task_done(f"{day.source_date}:audit:continuity", "ok", rows=profile.written_rows, detail="continuity sum matches event rows")
+            reporter.task_start(f"{day.source_date}:index:events_inserted", "rebuild ticker/day index", day=day.source_date, stage="index")
         index_profile = rebuild_day_ticker_index(client, args, day, job.build_step, report_path, reason="events_inserted")
+        if reporter is not None:
+            reporter.task_done(f"{day.source_date}:index:events_inserted", "ok", seconds=float(index_profile.wall_seconds), rows=index_profile.written_rows, detail="events inserted")
         insert_day_manifest(client, args, job, status="ok", run_id=run_id, profile=profile)
         append_jsonl(
             report_path,
@@ -1860,11 +2072,15 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
         raise
 
 
-def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles], report_path: Path) -> None:
+def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles], report_path: Path, reporter: UpdateProgressReporter | None = None) -> None:
     if args.skip_bars:
+        if reporter is not None:
+            reporter.notice("Macro bar creation skipped because --skip-bars was set.", style="yellow")
         print("BAR SKIP --skip-bars was set", flush=True)
         return
     if not days:
+        if reporter is not None:
+            reporter.notice("Macro bar creation skipped because no successfully updated days were available.", style="yellow")
         print("BAR SKIP no successfully updated days", flush=True)
         return
     parse_timeframes(args.bar_timeframes)
@@ -1904,6 +2120,13 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
     bar_specs = parse_timeframes(args.bar_timeframes)
     ranges = timeframe_ranges(bar_args, bar_specs)
     bar_tables = bar_table_specs(bar_args)
+    if reporter is not None:
+        if bar_args.replace_range:
+            reporter.notice(
+                f"Macro bar replace_range is enabled; overlapping rows will be rebuilt for requested days {min_day}->{max_day}.",
+                style="bold yellow",
+            )
+        reporter.task_start("macro_bars:build", "build macro bars", day=f"{min_day}->{max_day}", stage="macro")
     print("=" * 100, flush=True)
     print(
         f"MACRO BAR UPDATE tables={format_bar_tables(bar_tables)} timeframes={bar_args.timeframes} "
@@ -1911,7 +2134,15 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
         flush=True,
     )
     print("=" * 100, flush=True)
-    results = build_macro_bars(client, bar_args, report_path=report_path)
+    started_at = time.time()
+    try:
+        results = build_macro_bars(client, bar_args, report_path=report_path)
+    except Exception as exc:
+        if reporter is not None:
+            reporter.task_done("macro_bars:build", "failed", seconds=time.time() - started_at, detail=repr(exc))
+        raise
+    if reporter is not None:
+        reporter.task_done("macro_bars:build", "ok", seconds=time.time() - started_at, rows=len(results), detail=f"timeframes={bar_args.timeframes}")
     append_jsonl(
         report_path,
         {
@@ -1975,9 +2206,10 @@ def main() -> None:
         )
         if args.test_mode:
             reporter.set_stage("prepare test tables")
-            reporter.log("dropping same-run temp tables before isolated build")
+            reporter.notice("Dropping same-run temp tables before isolated test build.", style="bold yellow")
             drop_test_tables(client, args)
         reporter.set_stage("ensure tables")
+        reporter.notice("Ensuring event, manifest, continuity, ticker/day index, and macro bar tables exist.", style="cyan")
         ensure_tables(client, args)
 
         progress_queue: mp.Queue = mp.Queue()
@@ -2003,7 +2235,7 @@ def main() -> None:
             if args.dry_run:
                 reporter.handle_day_done(day.source_date, "dry_run")
                 continue
-            result_status = run_day(client, args, day, run_id, report_path)
+            result_status = run_day(client, args, day, run_id, report_path, reporter=reporter)
             reporter.handle_day_done(day.source_date, result_status)
             if result_status in {"ok", "skipped"}:
                 bar_days.append(day)
@@ -2013,10 +2245,11 @@ def main() -> None:
             audited_days = [day for day in sorted(days, key=lambda item: item.source_date) if download_results.get(day.source_date, {}).get("ok")]
             audit_test_events(client, args, audited_days, report_path)
         reporter.set_stage("build bars")
-        build_updated_bars(client, args, bar_days, report_path)
+        build_updated_bars(client, args, bar_days, report_path, reporter=reporter)
         if args.test_mode and not args.dry_run:
             if not args.test_keep_tables:
                 reporter.set_stage("drop test tables")
+                reporter.notice("Dropping isolated test tables after successful test-mode audit.", style="bold yellow")
                 drop_test_tables(client, args)
 
     print(f"DONE report={report_path}", flush=True)
