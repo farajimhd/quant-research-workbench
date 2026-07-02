@@ -102,6 +102,13 @@ class SymbolRef:
     ibkr_conid: str = ""
 
 
+class MassiveTickerNotFound(Exception):
+    def __init__(self, ticker: str, url: str) -> None:
+        super().__init__(f"Massive ticker detail not found for {ticker}: {url}")
+        self.ticker = ticker
+        self.url = url
+
+
 @dataclass(frozen=True, slots=True)
 class SourceResult:
     source: str
@@ -893,21 +900,35 @@ def run_massive_ticker_details(
     snapshot_rows: list[dict[str, Any]] = []
     float_rows: list[dict[str, Any]] = []
     failed = 0
+    not_found = 0
     observed_at = datetime.now(UTC)
+    print(
+        "massive_ticker_details api_key_diagnostic="
+        + json.dumps(massive_api_key_diagnostic(), sort_keys=True),
+        flush=True,
+    )
     for index, ref in enumerate(symbols.values(), start=1):
         try:
             overview = fetch_massive_ticker_overview(args, ref.ticker)
             if not overview:
+                not_found += 1
                 continue
             snapshot, float_row = normalize_massive_ticker_detail(overview, ref, observed_at)
             snapshot_rows.append(snapshot)
             if float_row is not None:
                 float_rows.append(float_row)
+        except MassiveTickerNotFound:
+            not_found += 1
         except Exception as exc:  # noqa: BLE001
             failed += 1
-            print(f"massive_ticker_details ticker={ref.ticker} status=failed error={repr(exc)}", flush=True)
+            print(f"massive_ticker_details ticker={ref.ticker} status=failed error={safe_exception_text(exc)}", flush=True)
         if index % 500 == 0:
-            print(f"massive_ticker_details progress={index:,}/{len(symbols):,} snapshot_rows={len(snapshot_rows):,} float_rows={len(float_rows):,} failed={failed:,}", flush=True)
+            print(
+                f"massive_ticker_details progress={index:,}/{len(symbols):,} "
+                f"snapshot_rows={len(snapshot_rows):,} float_rows={len(float_rows):,} "
+                f"not_found={not_found:,} failed={failed:,}",
+                flush=True,
+            )
     stamp_rows(snapshot_rows, run_id)
     stamp_rows(float_rows, run_id)
     snapshot_written = insert_rows(client, args.write_database, "market_security_market_snapshot_v1", snapshot_rows, args.batch_size) if args.execute else 0
@@ -921,11 +942,17 @@ def run_massive_ticker_details(
         "float_rows": len(float_rows),
         "snapshot_written": snapshot_written,
         "float_written": float_written,
+        "not_found_tickers": not_found,
         "failed_tickers": failed,
         "observed_at_utc": observed_at.isoformat().replace("+00:00", "Z"),
+        "api_key_diagnostic": massive_api_key_diagnostic(),
     }
     results = [SourceResult("massive_ticker_details", "massive_ticker_details", target_start, target_end, len(symbols), written, failed, status, details)]
-    print(f"massive_ticker_details {target_start.isoformat()} status={status} symbols={len(symbols):,} written={written:,} failed={failed:,}", flush=True)
+    print(
+        f"massive_ticker_details {target_start.isoformat()} status={status} "
+        f"symbols={len(symbols):,} written={written:,} not_found={not_found:,} failed={failed:,}",
+        flush=True,
+    )
     if args.execute:
         insert_publication_coverage(
             client,
@@ -950,7 +977,10 @@ def run_massive_ticker_details(
 
 def fetch_massive_ticker_overview(args: argparse.Namespace, ticker: str) -> dict[str, Any]:
     url = "https://api.massive.com/v3/reference/tickers/" + parse.quote(ticker, safe="") + "?" + parse.urlencode({"apiKey": massive_api_key()})
-    payload = json.loads(fetch_bytes(args, url).decode("utf-8", errors="replace"))
+    try:
+        payload = json.loads(fetch_bytes(args, url).decode("utf-8", errors="replace"))
+    except FileNotFoundError as exc:
+        raise MassiveTickerNotFound(ticker, safe_url(url)) from exc
     result = payload.get("results") if isinstance(payload, dict) else None
     return result if isinstance(result, dict) else {}
 
@@ -1252,9 +1282,9 @@ def fetch_bytes(args: argparse.Namespace, url: str) -> bytes:
             body = exc.read().decode("utf-8", errors="replace")
             last_body = body[:500]
             if exc.code == 404:
-                raise FileNotFoundError(f"{url} returned HTTP 404") from exc
+                raise FileNotFoundError(f"{safe_url(url)} returned HTTP 404") from exc
             if not should_retry_http_error(exc, body) or attempt >= attempts:
-                raise RuntimeError(f"{url} returned HTTP {exc.code}: {last_body}") from exc
+                raise RuntimeError(f"{safe_url(url)} returned HTTP {exc.code}: {last_body}") from exc
             sleep_seconds = retry_sleep_seconds(args, exc, attempt)
             print(
                 f"request_retry url={safe_url(url)} status={exc.code} "
@@ -1264,7 +1294,7 @@ def fetch_bytes(args: argparse.Namespace, url: str) -> bytes:
             time.sleep(sleep_seconds)
         except (TimeoutError, error.URLError) as exc:
             if attempt >= attempts:
-                raise RuntimeError(f"{url} request failed after {attempts} attempts: {repr(exc)}") from exc
+                raise RuntimeError(f"{safe_url(url)} request failed after {attempts} attempts: {repr(exc)}") from exc
             sleep_seconds = retry_sleep_seconds(args, None, attempt)
             print(
                 f"request_retry url={safe_url(url)} status=transport_error "
@@ -1272,7 +1302,7 @@ def fetch_bytes(args: argparse.Namespace, url: str) -> bytes:
                 flush=True,
             )
             time.sleep(sleep_seconds)
-    raise RuntimeError(f"{url} request failed: {last_body}")
+    raise RuntimeError(f"{safe_url(url)} request failed: {last_body}")
 
 
 def should_retry_http_error(exc: error.HTTPError, body: str) -> bool:
@@ -1310,6 +1340,11 @@ def safe_url(url: str) -> str:
     params = parse.parse_qsl(parsed.query, keep_blank_values=True)
     redacted = [(key, "redacted" if key.lower() in {"apikey", "api_key", "token"} else value) for key, value in params]
     return parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parse.urlencode(redacted), parsed.fragment))
+
+
+def safe_exception_text(exc: Exception) -> str:
+    text = repr(exc)
+    return re.sub(r"([?&](?:apiKey|api_key|token)=)[^&'\"\\s)]+", r"\1redacted", text, flags=re.IGNORECASE)
 
 
 def default_user_agent() -> str:
@@ -1376,6 +1411,17 @@ def massive_api_key() -> str:
     if not key:
         raise RuntimeError("MASSIVE_API_KEY is required for Massive publication source sync")
     return key
+
+
+def massive_api_key_diagnostic() -> dict[str, Any]:
+    key = os.environ.get("MASSIVE_API_KEY", "").strip()
+    if not key:
+        return {"present": False, "length": 0, "sha256_prefix": ""}
+    return {
+        "present": True,
+        "length": len(key),
+        "sha256_prefix": hashlib.sha256(key.encode("utf-8")).hexdigest()[:12],
+    }
 
 
 def ibkr_base_url() -> str:
@@ -1580,6 +1626,7 @@ def print_header(args: argparse.Namespace, run_id: str, run_root: Path, loaded_e
         ),
         flush=True,
     )
+    print("massive_api_key_diagnostic=" + json.dumps(massive_api_key_diagnostic(), sort_keys=True), flush=True)
     print("=" * 96, flush=True)
 
 
