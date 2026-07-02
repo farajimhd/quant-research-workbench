@@ -363,15 +363,24 @@ Global context is stored once per month under `global/` where available.
 Text and XBRL context is saved as `month rows + latest prior context`. The
 prior context is count-based, not just day-lookback based, so early-month
 origins still see the latest backward information available in ClickHouse.
-Defaults:
+Builder capacity and loader consumption are intentionally separate:
 
-```text
-ticker_news_prior_items: 64 logical article items per ticker
-market_news_prior_items: 512 logical global news items
-sec_filing_prior_items: 32 logical SEC text items per ticker
-xbrl_prior_rows: 4096 XBRL fact rows per ticker
-corporate_action_items: 128 corporate action rows per ticker at loader time
-```
+| Context | Builder parameter | Builder default | What is saved | Loader parameter | Loader default |
+| --- | --- | ---: | --- | --- | ---: |
+| Raw events | `--max-cached-event-lookback-rows` | `8192` | Extra raw event rows before each physical part so the first origins in the part can build backward context. | `event_stream_length` | `1024` |
+| Ticker news | `--ticker-news-prior-items` | `64` | Latest prior logical ticker-news items before the month start, plus all items inside the month. | `ticker_news_max_items` | `8` |
+| Market news | `--market-news-prior-items` | `512` | Latest prior logical market-news items before the month start, plus all items inside the month. | `market_news_max_items` | `16` |
+| SEC filing text | `--sec-filing-prior-items` | `32` | Latest prior logical SEC filing items before the month start, plus all items inside the month. | `sec_filing_max_items` | `4` |
+| XBRL facts | `--xbrl-prior-rows` | `4096` | Latest prior XBRL fact rows before the month start, plus all rows inside the month. | `xbrl_max_items` | `4096` |
+| Daily ticker/global bars | `--macro-lookback-days`, `--label-lookahead-days` | `400`, `400` | Completed daily bars before the month and daily bars needed for forward labels after the month. | daily bar offsets / label horizons | see loader config |
+| Corporate actions | `--corporate-action-lookback-days`, `--corporate-action-items` | `3650`, `128` | Historical available corporate actions and future effective actions needed for labels. | `corporate_action_max_items` | `128` |
+
+For news and SEC, `items` means logical article or filing items, not embedding
+chunk rows. The builder selects item identities first, then writes all chunk
+rows for each selected item. The loader may request fewer items than the saved
+capacity without rebuilding the cache. If a loader experiment needs more than
+the saved builder capacity, rebuild or refresh the cache with larger prior
+values.
 
 Market news means all news from the embedding table, deduplicated by
 article/chunk identity, then stored under `global/market_news_embeddings.parquet`
@@ -713,6 +722,10 @@ ticker news prior items            64
 market news prior items           512
 SEC filing prior items             32
 XBRL prior rows                  4096
+macro lookback days               400
+label lookahead days              400
+corporate action lookback days   3650
+corporate action items            128
 ```
 
 Large liquid tickers are split by ordinal into physical parts. The default part

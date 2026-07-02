@@ -84,6 +84,30 @@ at creation time, but repeatable later by loading the saved state:
 --load-state-path D:\runs\loader_state.json
 ```
 
+## Builder Prior Context Capacity
+
+The ticker/month cache builder saves more history than the default loader
+usually consumes. Each package contains rows inside the requested month plus
+bounded prior context before the month or physical part start. This lets loader
+experiments change smaller `*_max_items` values without rebuilding, as long as
+the requested count is no larger than the saved builder capacity.
+
+| Context | Builder parameter | Builder default | Saved capacity | Loader parameter | Loader default |
+| --- | --- | ---: | --- | --- | ---: |
+| Raw events | `--max-cached-event-lookback-rows` | `8192` | Extra event rows before each physical part's first origin. | `event_stream_length` | `1024` |
+| Ticker news | `--ticker-news-prior-items` | `64` | Latest prior logical ticker-news items before month start, plus month items. | `ticker_news_max_items` | `8` |
+| Market news | `--market-news-prior-items` | `512` | Latest prior logical market-news items before month start, plus month items. | `market_news_max_items` | `16` |
+| SEC filing text | `--sec-filing-prior-items` | `32` | Latest prior logical SEC filing items before month start, plus month items. | `sec_filing_max_items` | `4` |
+| XBRL facts | `--xbrl-prior-rows` | `4096` | Latest prior XBRL fact rows before month start, plus month rows. | `xbrl_max_items` | `4096` |
+| Daily ticker/global bars | `--macro-lookback-days`, `--label-lookahead-days` | `400`, `400` | Completed prior daily bars and forward daily bars needed for labels. | daily bar offsets / label horizons | config-defined |
+| Corporate actions | `--corporate-action-lookback-days`, `--corporate-action-items` | `3650`, `128` | Historical available actions plus future effective actions needed for labels. | `corporate_action_max_items` | `128` |
+
+For text, `items` means logical article or filing items. It does not mean token
+or embedding chunks. The builder writes all chunk rows for the selected item
+identities, and the loader later materializes the latest as-of items for each
+origin. Padding should mean ClickHouse lacked enough historical rows/items for
+that origin, not that the builder clipped the cache too tightly.
+
 ## Train/Validation Splits
 
 Use hash buckets to create stable, non-overlapping sets without saving billions
