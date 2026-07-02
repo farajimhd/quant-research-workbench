@@ -2475,22 +2475,22 @@ WITH
                     intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + tupleElement(horizon_tuple, 4)
                 ) + 1
             ) * tupleElement(horizon_tuple, 3) AS grid_end_session_us,
-            origin_timestamp_us - local_session_us + (intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + 1) * tupleElement(horizon_tuple, 3) AS grid_start_timestamp_us,
-            origin_timestamp_us - local_session_us + (
+            toUInt64(origin_timestamp_us - toUInt64(local_session_us) + (intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + 1) * tupleElement(horizon_tuple, 3)) AS grid_start_timestamp_us,
+            toUInt64(origin_timestamp_us - toUInt64(local_session_us) + (
                 if(
                     tupleElement(horizon_tuple, 5) = 1,
                     intDiv(toUInt64({SESSION_END_US} - 1), tupleElement(horizon_tuple, 3)),
                     intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + tupleElement(horizon_tuple, 4)
                 ) + 1
-            ) * tupleElement(horizon_tuple, 3) AS grid_end_timestamp_us,
-            origin_timestamp_us - local_session_us + (
+            ) * tupleElement(horizon_tuple, 3)) AS grid_end_timestamp_us,
+            toUInt64(origin_timestamp_us - toUInt64(local_session_us) + (
                 if(
                     tupleElement(horizon_tuple, 5) = 1,
                     intDiv(toUInt64({SESSION_END_US} - 1), tupleElement(horizon_tuple, 3)),
                     intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + tupleElement(horizon_tuple, 4)
                 ) + 1
-            ) * tupleElement(horizon_tuple, 3) - 1 AS grid_target_lookup_timestamp_us,
-            origin_timestamp_us - local_session_us + (intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + 1) * tupleElement(horizon_tuple, 3) - 1 AS grid_base_lookup_timestamp_us
+            ) * tupleElement(horizon_tuple, 3) - 1) AS grid_target_lookup_timestamp_us,
+            toUInt64(origin_timestamp_us - toUInt64(local_session_us) + (intDiv(toUInt64(local_session_us), tupleElement(horizon_tuple, 3)) + 1) * tupleElement(horizon_tuple, 3) - 1) AS grid_base_lookup_timestamp_us
         FROM origins
         ARRAY JOIN horizons AS horizon_tuple
         ORDER BY ticker, origin_local_date, grid_end_timestamp_us, origin_ordinal, horizon_us
