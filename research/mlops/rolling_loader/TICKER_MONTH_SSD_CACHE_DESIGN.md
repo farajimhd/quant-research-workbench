@@ -408,16 +408,22 @@ semantics are more important than duplicating daily-bar start/end timestamps.
 
 ## Intraday Forward Labels
 
-Dense intraday bar grids are not persisted as separate cache files. The builder
-does build temporary ClickHouse base bars inside each label query so labels can
-be computed from compact grids instead of per-origin raw-event range scans.
+Dense intraday bar grids are not persisted as separate SSD cache files. The
+builder maintains a shared ClickHouse intermediate table,
+`intraday_base_bars_by_time_ticker` by default, with one row per
+`(local_date, ticker, label_resolution_us, bucket_index, bar_family)`. Missing
+local-session days are populated once for the selected month, then every
+ticker/month/part label and intraday-context query reuses the same table. This
+keeps the cache format origin-relative while avoiding repeated raw-event bar
+aggregation inside each part query.
 
 The builder computes grid-aligned forward labels set-wise for each
 ticker/month/part package. This is not a per-origin query. It is one bounded
 query per ticker/month/part that:
 
 1. Builds sparse family bars at only the base resolutions required by the
-   configured horizons.
+   configured horizons, or reuses already-built sparse family bars from the
+   shared intermediate table.
 2. Skips the origin's current partial bucket.
 3. Aggregates full future buckets through the requested horizon or `eod`.
 

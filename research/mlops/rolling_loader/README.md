@@ -232,8 +232,15 @@ cache must be rebuilt with a larger value.
 Intraday labels are stored as grid-aligned `next_*` labels. The builder skips
 the origin's current partial bucket and starts every label at the next bucket in
 the selected base resolution. This bounds timestamp approximation error by the
-base resolution while avoiding per-origin raw-event scans. The cache does not
-store dense intraday bar grids and does not store `current_*` intraday labels.
+base resolution while avoiding per-origin raw-event scans.
+
+The SSD cache does not store dense intraday bar grids and does not store
+`current_*` intraday labels. During a build, the script maintains a shared
+ClickHouse intermediate table, `intraday_base_bars_by_time_ticker` by default,
+with one row per `(local_date, ticker, resolution, bucket, bar_family)`. Missing
+local-session days are built once, then all ticker/month/part label and
+backward-context queries reuse those bars. This replaces the older behavior
+where each part query rebuilt the same bars from raw events.
 
 On disk, `intraday_forward_labels_part_*.parquet` stores one row per origin.
 Each horizon-dependent field is a list column ordered by `horizon_us`. The
@@ -739,6 +746,16 @@ test is usually:
 ```powershell
 --label-fetch-workers 8
 ```
+
+The default intraday base-bar table can be overridden with:
+
+```powershell
+--intraday-base-bars-table intraday_base_bars_by_time_ticker
+```
+
+Use `--skip-intraday-base-bar-build` only when that table is already populated
+for every local-session day in the requested month. Label and intraday-context
+queries still read the table either way.
 
 ### Builder Logging
 

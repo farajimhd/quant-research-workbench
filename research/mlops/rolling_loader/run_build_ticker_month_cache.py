@@ -85,6 +85,7 @@ DEFAULTS: dict[str, Any] = {
     "sec_context_database": "market_sip_compact",
     "events_table": "events",
     "condition_token_reference_table": "event_condition_token_reference",
+    "intraday_base_bars_table": "intraday_base_bars_by_time_ticker",
     "macro_bars_table": "macro_bars_by_time_symbol",
     "news_token_table": "news_text_tokens",
     "sec_filing_text_token_table": "sec_filing_text_tokens",
@@ -516,6 +517,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sec-context-database", default=DEFAULTS["sec_context_database"])
     parser.add_argument("--events-table", default=DEFAULTS["events_table"])
     parser.add_argument("--condition-token-reference-table", default=DEFAULTS["condition_token_reference_table"])
+    parser.add_argument("--intraday-base-bars-table", default=DEFAULTS["intraday_base_bars_table"], help="Shared ClickHouse table of per-day intraday grid bars reused by label/context queries.")
+    parser.add_argument("--skip-intraday-base-bar-build", action="store_true", help="Assume intraday base bars are already built; label/context queries still read the table.")
     parser.add_argument("--macro-bars-table", default=DEFAULTS["macro_bars_table"])
     parser.add_argument("--news-token-table", default=DEFAULTS["news_token_table"])
     parser.add_argument("--sec-filing-text-token-table", default=DEFAULTS["sec_filing_text_token_table"])
@@ -676,6 +679,8 @@ def main(argv: list[str] | None = None) -> int:
             month_dir = month_dir_for(cache_root, args.split, month)
             month_dir.mkdir(parents=True, exist_ok=True)
             window = month_window(month)
+            if not args.refresh_context_only:
+                ensure_intraday_base_bars(args=args, client_opts=client_opts, config=config, window=window, stats=stats, stop_event=stop_event)
             month_tickers = _resolve_refresh_tickers(args, cache_root, month) if args.refresh_context_only else _resolve_tickers_for_month(args, client_opts, config, window)
             stats.packages_total += len(month_tickers)
             stats.message(f"{month}: tickers={len(month_tickers):,}" + (" context-refresh-only" if args.refresh_context_only else ""))
@@ -892,6 +897,224 @@ def ensure_category_reference_table(
         raise RuntimeError(f"Category reference table build did not produce rows: {config.sec_context_database}.{config.category_reference_table}")
     stats.message(f"category_reference: built table={config.sec_context_database}.{config.category_reference_table} rows={final_rows:,}")
     stats.log_event("category_reference_build_done", table=config.category_reference_table, rows=final_rows, elapsed_seconds=time.perf_counter() - started)
+
+
+def ensure_intraday_base_bars(
+    *,
+    args: argparse.Namespace,
+    client_opts: Mapping[str, str],
+    config: RollingMarketDataConfig,
+    window: Any,
+    stats: BuildStats,
+    stop_event: threading.Event,
+) -> None:
+    if bool(getattr(args, "skip_intraday_base_bar_build", False)):
+        stats.message(f"intraday_base_bars: build skipped table={config.database}.{args.intraday_base_bars_table}")
+        stats.log_event("intraday_base_bars_build_skipped", table=args.intraday_base_bars_table, month=window.month)
+        return
+    started = time.perf_counter()
+    table = str(args.intraday_base_bars_table)
+    _execute_clickhouse_sql(
+        client_opts=client_opts,
+        sql=_create_intraday_base_bars_table_sql(config.database, table, default_storage_policy()),
+        label=f"intraday_base_bars_create_{window.month}",
+    )
+    existing_dates = _intraday_base_bar_existing_dates(client_opts=client_opts, config=config, table=table, window=window)
+    all_dates: list[dt.date] = []
+    current = window.first_date
+    while current < window.next_month_date:
+        all_dates.append(current)
+        current += dt.timedelta(days=1)
+    missing_dates = [day for day in all_dates if day.isoformat() not in existing_dates]
+    stats.message(
+        f"intraday_base_bars: {window.month} ready_days={len(all_dates) - len(missing_dates):,} "
+        f"missing_days={len(missing_dates):,} table={config.database}.{table}"
+    )
+    stats.log_event(
+        "intraday_base_bars_month_start",
+        month=window.month,
+        table=table,
+        total_days=len(all_dates),
+        missing_days=len(missing_dates),
+    )
+    for index, day in enumerate(missing_dates, start=1):
+        if stop_event.is_set():
+            raise KeyboardInterrupt
+        day_started = time.perf_counter()
+        stats.phase = f"intraday_base_bars {window.month} {day.isoformat()}"
+        stats.message(f"intraday_base_bars: building {day.isoformat()} ({index:,}/{len(missing_dates):,})")
+        _execute_clickhouse_sql(
+            client_opts=client_opts,
+            sql=_insert_intraday_base_bars_day_sql(args=args, config=config, local_date=day),
+            label=f"intraday_base_bars_insert_{day.isoformat()}",
+        )
+        row_count = _intraday_base_bar_day_rows(client_opts=client_opts, config=config, table=table, local_date=day)
+        elapsed = time.perf_counter() - day_started
+        stats.profile_event("intraday_base_bars_day_done", month=window.month, local_date=day.isoformat(), rows=row_count, seconds=elapsed)
+        stats.log_event("intraday_base_bars_day_done", month=window.month, local_date=day.isoformat(), rows=row_count, seconds=elapsed)
+    stats.phase = f"month {window.month}"
+    stats.message(f"intraday_base_bars: {window.month} ready elapsed_min={(time.perf_counter() - started) / 60.0:.1f}")
+    stats.log_event("intraday_base_bars_month_done", month=window.month, table=table, seconds=time.perf_counter() - started)
+
+
+def _create_intraday_base_bars_table_sql(database: str, table: str, storage_policy: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
+(
+    local_date Date,
+    ticker LowCardinality(String),
+    label_resolution_us UInt64,
+    bucket_index UInt64,
+    bar_family LowCardinality(String),
+    open Float32,
+    close Float32,
+    high Float32,
+    low Float32,
+    size_sum Float64,
+    size_open Float64,
+    size_close Float64,
+    size_high Float64,
+    size_low Float64,
+    event_count UInt64,
+    first_event_timestamp_us UInt64,
+    last_event_timestamp_us UInt64,
+    built_at DateTime DEFAULT now()
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(local_date)
+ORDER BY (ticker, local_date, label_resolution_us, bucket_index, bar_family)
+{_mergetree_settings_sql(storage_policy)}
+"""
+
+
+def _mergetree_settings_sql(storage_policy: str) -> str:
+    settings = ["index_granularity = 8192"]
+    policy = str(storage_policy or "").strip()
+    if policy:
+        settings.append(f"storage_policy = {sql_string(policy)}")
+    return "SETTINGS " + ", ".join(settings)
+
+
+def _intraday_base_bar_existing_dates(*, client_opts: Mapping[str, str], config: RollingMarketDataConfig, table: str, window: Any) -> set[str]:
+    sql = f"""
+SELECT toString(local_date)
+FROM {quote_ident(config.database)}.{quote_ident(table)}
+WHERE local_date >= toDate({sql_string(window.first_date.isoformat())})
+  AND local_date < toDate({sql_string(window.next_month_date.isoformat())})
+GROUP BY local_date
+FORMAT TSV
+"""
+    text = _execute_clickhouse_sql(client_opts=client_opts, sql=sql, label=f"intraday_base_bars_existing_{window.month}")
+    return {line.strip() for line in text.splitlines() if line.strip()}
+
+
+def _intraday_base_bar_day_rows(*, client_opts: Mapping[str, str], config: RollingMarketDataConfig, table: str, local_date: dt.date) -> int:
+    sql = f"""
+SELECT count()
+FROM {quote_ident(config.database)}.{quote_ident(table)}
+WHERE local_date = toDate({sql_string(local_date.isoformat())})
+FORMAT TSV
+"""
+    return _parse_clickhouse_count(_execute_clickhouse_sql(client_opts=client_opts, sql=sql, label=f"intraday_base_bars_count_{local_date.isoformat()}"))
+
+
+def _insert_intraday_base_bars_day_sql(*, args: argparse.Namespace, config: RollingMarketDataConfig, local_date: dt.date) -> str:
+    source_table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    target_table = f"{quote_ident(config.database)}.{quote_ident(str(args.intraday_base_bars_table))}"
+    resolutions = ", ".join(f"toUInt64({value})" for value in INTRADAY_LABEL_GRID_RESOLUTIONS_US)
+    next_date = local_date + dt.timedelta(days=1)
+    return f"""
+INSERT INTO {target_table}
+(
+    local_date,
+    ticker,
+    label_resolution_us,
+    bucket_index,
+    bar_family,
+    open,
+    close,
+    high,
+    low,
+    size_sum,
+    size_open,
+    size_close,
+    size_high,
+    size_low,
+    event_count,
+    first_event_timestamp_us,
+    last_event_timestamp_us,
+    built_at
+)
+SELECT
+    local_date,
+    ticker,
+    label_resolution_us,
+    intDiv(toUInt64(local_session_us), label_resolution_us) AS bucket_index,
+    bar_family,
+    toFloat32(argMin(price, tuple(sip_timestamp_us, ordinal))) AS open,
+    toFloat32(argMax(price, tuple(sip_timestamp_us, ordinal))) AS close,
+    toFloat32(max(price)) AS high,
+    toFloat32(min(price)) AS low,
+    sum(size) AS size_sum,
+    argMin(size, tuple(sip_timestamp_us, ordinal)) AS size_open,
+    argMax(size, tuple(sip_timestamp_us, ordinal)) AS size_close,
+    max(size) AS size_high,
+    min(size) AS size_low,
+    count() AS event_count,
+    min(toUInt64(sip_timestamp_us)) AS first_event_timestamp_us,
+    max(toUInt64(sip_timestamp_us)) AS last_event_timestamp_us,
+    now() AS built_at
+FROM
+(
+    SELECT
+        ticker,
+        local_date,
+        local_session_us,
+        sip_timestamp_us,
+        ordinal,
+        tupleElement(family_tuple, 1) AS bar_family,
+        tupleElement(family_tuple, 2) AS price,
+        tupleElement(family_tuple, 3) AS size,
+        arrayJoin([{resolutions}]) AS label_resolution_us
+    FROM
+    (
+        SELECT
+            upper(ticker) AS ticker,
+            ordinal,
+            sip_timestamp_us,
+            bitAnd(event_meta, 1) AS event_type,
+            toFloat32(if(price_primary_int > 0, price_primary_int / if(bitAnd(event_meta, 2) = 2, 10000.0, 100.0), 0.0)) AS price_primary,
+            toFloat32(if(price_secondary_int > 0, price_secondary_int / if(bitAnd(event_meta, 4) = 4, 10000.0, 100.0), 0.0)) AS price_secondary,
+            toFloat64(size_primary) AS size_primary,
+            toFloat64(size_secondary) AS size_secondary,
+            toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
+            toDate(ts_local) AS local_date,
+            dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
+            dateDiff('microsecond', toStartOfDay(ts_local), ts_local) AS local_session_us
+        FROM {source_table}
+        PREWHERE event_date >= toDate({sql_string(local_date.isoformat())})
+          AND event_date <= toDate({sql_string(next_date.isoformat())})
+        WHERE toDate(ts_local) = toDate({sql_string(local_date.isoformat())})
+          AND local_second >= {SESSION_START_SECOND}
+          AND local_second < {SESSION_END_SECOND}
+    )
+    ARRAY JOIN arrayFilter(
+        x -> tupleElement(x, 2) > 0 AND tupleElement(x, 3) > 0,
+        if(
+            event_type = 1,
+            [tuple('trade', price_primary, size_primary)],
+            [tuple('quote_bid', price_secondary, size_secondary), tuple('quote_ask', price_primary, size_primary)]
+        )
+    ) AS family_tuple
+)
+GROUP BY
+    local_date,
+    ticker,
+    label_resolution_us,
+    bucket_index,
+    bar_family
+{_settings_sql(config)}
+"""
 
 
 def _category_reference_table_status(*, client_opts: Mapping[str, str], config: RollingMarketDataConfig) -> tuple[bool, int]:
@@ -2118,6 +2341,7 @@ def _query_intraday_context_bars_asof(
     month_min_ordinal: int,
 ) -> Any:
     table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    base_table = f"{quote_ident(config.database)}.{quote_ident(str(args.intraday_base_bars_table))}"
     horizon_specs = _intraday_label_horizon_specs(horizons)
     if not horizon_specs:
         return _empty_frame()
@@ -2246,22 +2470,24 @@ WITH
             ticker,
             local_date,
             label_resolution_us,
-            toInt64(intDiv(toUInt64(local_session_us), label_resolution_us)) AS bucket_index,
+            toInt64(bucket_index) AS bucket_index,
             bar_family,
-            argMin(price, tuple(sip_timestamp_us, ordinal)) AS open,
-            argMax(price, tuple(sip_timestamp_us, ordinal)) AS close,
-            max(price) AS high,
-            min(price) AS low,
-            sum(size) AS size_sum,
-            argMin(size, tuple(sip_timestamp_us, ordinal)) AS size_open,
-            argMax(size, tuple(sip_timestamp_us, ordinal)) AS size_close,
-            max(size) AS size_high,
-            min(size) AS size_low,
-            count() AS event_count,
-            max(sip_timestamp_us) AS last_event_timestamp_us
-        FROM label_family_events
-        ARRAY JOIN label_resolutions AS label_resolution_us
-        GROUP BY ticker, local_date, label_resolution_us, bucket_index, bar_family
+            open,
+            close,
+            high,
+            low,
+            size_sum,
+            size_open,
+            size_close,
+            size_high,
+            size_low,
+            event_count,
+            last_event_timestamp_us
+        FROM {base_table}
+        PREWHERE ticker = {sql_string(ticker)}
+          AND local_date >= toDate({sql_string(window.first_date.isoformat())})
+          AND local_date < toDate({sql_string(window.next_month_date.isoformat())})
+        WHERE label_resolution_us IN ({label_resolutions})
     ),
     early_context_bars AS
     (
@@ -2463,6 +2689,7 @@ def _query_intraday_forward_labels_asof(
     month_min_ordinal: int,
 ) -> Any:
     table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    base_table = f"{quote_ident(config.database)}.{quote_ident(str(args.intraday_base_bars_table))}"
     horizon_specs = _intraday_label_horizon_specs(horizons)
     if not horizon_specs:
         return _empty_frame()
@@ -2617,97 +2844,31 @@ WITH
         WINDOW event_window AS (PARTITION BY ticker, local_date ORDER BY sip_timestamp_us, ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
         ORDER BY ticker, local_date, sip_timestamp_us, ordinal
     ),
-    label_events AS
-    (
-        SELECT
-            ticker,
-            ordinal,
-            sip_timestamp_us,
-            bitAnd(event_meta, 1) AS event_type,
-            toFloat32(if(price_primary_int > 0, price_primary_int / if(bitAnd(event_meta, 2) = 2, 10000.0, 100.0), 0.0)) AS price_primary,
-            toFloat32(if(price_secondary_int > 0, price_secondary_int / if(bitAnd(event_meta, 4) = 4, 10000.0, 100.0), 0.0)) AS price_secondary,
-            toFloat64(size_primary) AS size_primary,
-            toFloat64(size_secondary) AS size_secondary,
-            toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
-            toDate(ts_local) AS local_date,
-            dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
-            dateDiff('microsecond', toStartOfDay(ts_local), ts_local) AS local_session_us
-        FROM {table}
-        PREWHERE ticker = {sql_string(ticker)}
-          AND event_date >= toDate({sql_string(window.first_date.isoformat())})
-          AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
-        WHERE sip_timestamp_us >= {int(window.first_session_start_us)}
-          AND sip_timestamp_us <= {int(window.last_session_end_us)}
-          AND toDate(ts_local) >= toDate({sql_string(window.first_date.isoformat())})
-          AND toDate(ts_local) < toDate({sql_string(window.next_month_date.isoformat())})
-          AND local_second < 72000
-    ),
-    label_family_events AS
-    (
-        SELECT
-            ticker,
-            local_date,
-            local_session_us,
-            sip_timestamp_us,
-            ordinal,
-            'trade' AS bar_family,
-            price_primary AS price,
-            size_primary AS size
-        FROM label_events
-        WHERE event_type = 1 AND price_primary > 0 AND size_primary > 0
-        UNION ALL
-        SELECT
-            ticker,
-            local_date,
-            local_session_us,
-            sip_timestamp_us,
-            ordinal,
-            'quote_bid' AS bar_family,
-            price_secondary AS price,
-            size_secondary AS size
-        FROM label_events
-        WHERE event_type = 0 AND price_secondary > 0 AND size_secondary > 0
-        UNION ALL
-        SELECT
-            ticker,
-            local_date,
-            local_session_us,
-            sip_timestamp_us,
-            ordinal,
-            'quote_ask' AS bar_family,
-            price_primary AS price,
-            size_primary AS size
-        FROM label_events
-        WHERE event_type = 0 AND price_primary > 0 AND size_primary > 0
-    ),
     base_bars AS
     (
         SELECT
             ticker,
             local_date,
-            label_resolution_us AS label_resolution_us,
-            intDiv(toUInt64(local_session_us), label_resolution_us) AS bucket_index,
-            bar_family,
-            argMin(price, tuple(sip_timestamp_us, ordinal)) AS open,
-            argMax(price, tuple(sip_timestamp_us, ordinal)) AS close,
-            max(price) AS high,
-            min(price) AS low,
-            sum(size) AS size_sum,
-            argMin(size, tuple(sip_timestamp_us, ordinal)) AS size_open,
-            argMax(size, tuple(sip_timestamp_us, ordinal)) AS size_close,
-            max(size) AS size_high,
-            min(size) AS size_low,
-            count() AS event_count,
-            min(sip_timestamp_us) AS first_event_timestamp_us,
-            max(sip_timestamp_us) AS last_event_timestamp_us
-        FROM label_family_events
-        ARRAY JOIN label_resolutions AS label_resolution_us
-        GROUP BY
-            ticker,
-            local_date,
             label_resolution_us,
             bucket_index,
-            bar_family
+            bar_family,
+            open,
+            close,
+            high,
+            low,
+            size_sum,
+            size_open,
+            size_close,
+            size_high,
+            size_low,
+            event_count,
+            first_event_timestamp_us,
+            last_event_timestamp_us
+        FROM {base_table}
+        PREWHERE ticker = {sql_string(ticker)}
+          AND local_date >= toDate({sql_string(window.first_date.isoformat())})
+          AND local_date < toDate({sql_string(window.next_month_date.isoformat())})
+        WHERE label_resolution_us IN ({label_resolutions})
     ),
     future_bars AS
     (
