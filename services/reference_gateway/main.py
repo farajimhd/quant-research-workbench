@@ -41,21 +41,21 @@ from services.reference_gateway.tradability import tradability_rule_markdown
 
 
 SOURCE_SYNC_OPERATION_NAMES = {
-    "massive_active_tickers": "Source: Massive active tickers",
+    "massive_active_tickers": "Source: Massive /v3/reference/tickers",
     "canonical_symbols": "Source: q_live canonical symbols",
-    "massive_overview": "Source: Massive overview",
-    "ibkr_conids": "Source: IBKR conids",
+    "massive_overview": "Source: Massive /v3/reference/tickers/{ticker}",
+    "ibkr_conids": "Source: IBKR /iserver/secdef/search",
     "ticker_reconciliation": "Source: ticker reconciliation",
 }
 
 PUBLICATION_OPERATION_NAMES = {
-    "finra_short_volume:CNMS": "Publication: FINRA short volume",
-    "sec_fails_to_deliver": "Publication: SEC fails to deliver",
-    "massive_splits": "Publication: Massive splits",
-    "massive_dividends": "Publication: Massive dividends",
-    "massive_ipos": "Publication: Massive IPOs",
-    "massive_ticker_details": "Publication: Massive ticker details",
-    "ibkr_borrow_availability": "Publication: IBKR borrow",
+    "finra_short_volume:CNMS": "Source: FINRA CNMS short volume",
+    "sec_fails_to_deliver": "Source: SEC fails-to-deliver zip",
+    "massive_splits": "Source: Massive /v3/reference/splits",
+    "massive_dividends": "Source: Massive /v3/reference/dividends",
+    "massive_ipos": "Source: Massive /v3/reference/ipos",
+    "massive_ticker_details": "Source: Massive ticker details snapshot",
+    "ibkr_borrow_availability": "Source: IBKR /iserver/marketdata/snapshot",
 }
 
 
@@ -435,7 +435,7 @@ def main() -> None:
             publication_source = publication_source_from_line(line)
             if publication_source:
                 update_latest_operation(
-                    PUBLICATION_OPERATION_NAMES.get(publication_source, "Publication: " + publication_source.replace("_", " ")),
+                    PUBLICATION_OPERATION_NAMES.get(publication_source, "Source: " + publication_source.replace("_", " ")),
                     publication_status_from_line(line),
                     truncate_detail(line),
                     rows=publication_rows_from_line(line),

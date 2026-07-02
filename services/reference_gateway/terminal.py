@@ -201,7 +201,7 @@ def source_sync_panel(record: ReferenceRunRecord) -> Panel:
     issue_write = latest_operation(record.operations, "Write source-sync issues")
     graph = latest_operation(record.operations, "Write canonical graph")
     graph_issue = latest_operation(record.operations, "Write graph issues")
-    table = compact_ops_table(item_width=26)
+    table = compact_ops_table(item_width=36)
     source_ops = [op for op in record.operations if op.name.startswith("Source: ")]
     if source_ops:
         for op in source_ops:
@@ -233,18 +233,13 @@ def maintenance_panel(record: ReferenceRunRecord) -> Panel:
     rebuild = latest_operation(record.operations, "Rebuild tradable publications")
     gap_fill = latest_operation(record.operations, "Market publication gap fill")
     policy = latest_operation(record.operations, "Promotion write policy")
-    publication_ops = [op for op in record.operations if op.name.startswith("Publication: ")]
     table = compact_ops_table(item_width=26)
     table.add_row("Mode", style_status(record.config.maintenance_mode), "-", write_policy_text(record.write_policy))
     add_compact_op(table, "Policy", policy)
     add_compact_op(table, "Schema", schema)
     add_compact_op(table, "Rebuild", rebuild)
-    if publication_ops:
-        for op in publication_ops:
-            add_compact_op(table, op.name.replace("Publication: ", ""), op)
-    else:
-        add_compact_op(table, "Gap fill", gap_fill)
-    ops = [op for op in [policy, schema, rebuild, gap_fill, *publication_ops] if op is not None]
+    add_compact_op(table, "Gap fill", gap_fill)
+    ops = [op for op in [policy, schema, rebuild, gap_fill] if op is not None]
     return Panel(table, title="Maintenance", box=box.ROUNDED, border_style=panel_status_color(ops), padding=(0, 1))
 
 
