@@ -1438,7 +1438,7 @@ def _build_ticker_month_package(
                 "max_origin_events_per_part": int(args.max_origin_events_per_part),
                 "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
                 "intraday_context_horizons": [h.name for h in parse_horizons(args.intraday_context_horizons)],
-                "intraday_context_semantics": "grid_aligned_completed_buckets_clipped_to_session_start",
+                "intraday_context_semantics": "completed_grid_buckets_clipped_to_session_start_with_first_bucket_origin_fallback",
                 "intraday_label_semantics": "grid_aligned_next_bucket",
                 "intraday_label_grid_resolutions_us": list(INTRADAY_LABEL_GRID_RESOLUTIONS_US),
                 "intraday_label_grid_policy": {
@@ -2092,6 +2092,7 @@ WITH
             origin_ordinal,
             origin_timestamp_us,
             origin_local_date,
+            local_session_us,
             origin_timestamp_us - local_session_us AS local_midnight_timestamp_us,
             tupleElement(horizon_tuple, 1) AS horizon,
             tupleElement(horizon_tuple, 2) AS horizon_us,
@@ -2109,7 +2110,11 @@ WITH
                 )
             ) AS first_context_bucket,
             local_midnight_timestamp_us + first_context_bucket * toInt64(tupleElement(horizon_tuple, 3)) AS context_grid_start_timestamp_us,
-            local_midnight_timestamp_us + (last_context_bucket + 1) * toInt64(tupleElement(horizon_tuple, 3)) AS context_grid_end_timestamp_us
+            if(
+                last_context_bucket < session_start_bucket,
+                origin_timestamp_us,
+                local_midnight_timestamp_us + (last_context_bucket + 1) * toInt64(tupleElement(horizon_tuple, 3))
+            ) AS context_grid_end_timestamp_us
         FROM origins
         ARRAY JOIN horizons AS horizon_tuple
         ORDER BY ticker, origin_local_date, context_grid_end_timestamp_us, origin_ordinal, horizon_us
@@ -2177,6 +2182,50 @@ WITH
         ARRAY JOIN label_resolutions AS label_resolution_us
         GROUP BY ticker, local_date, label_resolution_us, bucket_index, bar_family
     ),
+    early_context_bars AS
+    (
+        SELECT
+            o.origin_key AS origin_key,
+            o.horizon_us AS horizon_us,
+            argMinIf(e.price, tuple(e.sip_timestamp_us, e.ordinal), e.bar_family = 'trade') AS trade_open,
+            argMaxIf(e.price, tuple(e.sip_timestamp_us, e.ordinal), e.bar_family = 'trade') AS trade_close,
+            maxIf(e.price, e.bar_family = 'trade') AS trade_high,
+            minIf(e.price, e.bar_family = 'trade') AS trade_low,
+            sumIf(e.size, e.bar_family = 'trade') AS trade_size_sum,
+            countIf(e.bar_family = 'trade') AS trade_event_count,
+            argMinIf(e.price, tuple(e.sip_timestamp_us, e.ordinal), e.bar_family = 'quote_bid') AS quote_bid_open,
+            argMaxIf(e.price, tuple(e.sip_timestamp_us, e.ordinal), e.bar_family = 'quote_bid') AS quote_bid_close,
+            maxIf(e.price, e.bar_family = 'quote_bid') AS quote_bid_high,
+            minIf(e.price, e.bar_family = 'quote_bid') AS quote_bid_low,
+            argMinIf(e.size, tuple(e.sip_timestamp_us, e.ordinal), e.bar_family = 'quote_bid') AS quote_bid_size_open,
+            argMaxIf(e.size, tuple(e.sip_timestamp_us, e.ordinal), e.bar_family = 'quote_bid') AS quote_bid_size_close,
+            maxIf(e.size, e.bar_family = 'quote_bid') AS quote_bid_size_high,
+            minIf(e.size, e.bar_family = 'quote_bid') AS quote_bid_size_low,
+            countIf(e.bar_family = 'quote_bid') AS quote_bid_event_count,
+            argMinIf(e.price, tuple(e.sip_timestamp_us, e.ordinal), e.bar_family = 'quote_ask') AS quote_ask_open,
+            argMaxIf(e.price, tuple(e.sip_timestamp_us, e.ordinal), e.bar_family = 'quote_ask') AS quote_ask_close,
+            maxIf(e.price, e.bar_family = 'quote_ask') AS quote_ask_high,
+            minIf(e.price, e.bar_family = 'quote_ask') AS quote_ask_low,
+            argMinIf(e.size, tuple(e.sip_timestamp_us, e.ordinal), e.bar_family = 'quote_ask') AS quote_ask_size_open,
+            argMaxIf(e.size, tuple(e.sip_timestamp_us, e.ordinal), e.bar_family = 'quote_ask') AS quote_ask_size_close,
+            maxIf(e.size, e.bar_family = 'quote_ask') AS quote_ask_size_high,
+            minIf(e.size, e.bar_family = 'quote_ask') AS quote_ask_size_low,
+            countIf(e.bar_family = 'quote_ask') AS quote_ask_event_count,
+            maxIf(e.sip_timestamp_us, e.bar_family = 'trade') AS trade_last_event_timestamp_us,
+            maxIf(e.sip_timestamp_us, e.bar_family = 'quote_bid') AS quote_bid_last_event_timestamp_us,
+            maxIf(e.sip_timestamp_us, e.bar_family = 'quote_ask') AS quote_ask_last_event_timestamp_us
+        FROM origin_horizons AS o
+        LEFT JOIN label_family_events AS e
+            ON e.ticker = o.ticker
+           AND e.local_date = o.origin_local_date
+           AND e.local_session_us >= {SESSION_START_SECOND * 1_000_000}
+           AND e.local_session_us <= o.local_session_us
+           AND (e.sip_timestamp_us < o.origin_timestamp_us OR e.ordinal <= o.origin_ordinal)
+        WHERE o.last_context_bucket < o.session_start_bucket
+        GROUP BY
+            o.origin_key,
+            o.horizon_us
+    ),
     context_bars AS
     (
         SELECT
@@ -2239,41 +2288,44 @@ WITH
             o.label_resolution_us,
             o.context_grid_start_timestamp_us,
             o.context_grid_end_timestamp_us,
-            toFloat32(ifNull(b.trade_open, 0.0)) AS trade_open,
-            toFloat32(ifNull(b.trade_close, 0.0)) AS trade_close,
-            toFloat32(ifNull(b.trade_high, 0.0)) AS trade_high,
-            toFloat32(ifNull(b.trade_low, 0.0)) AS trade_low,
-            toFloat32(ifNull(b.trade_size_sum, 0.0)) AS trade_size_sum,
-            toUInt64(ifNull(b.trade_event_count, 0)) AS trade_event_count,
-            toFloat32(ifNull(b.quote_bid_open, 0.0)) AS quote_bid_open,
-            toFloat32(ifNull(b.quote_bid_close, 0.0)) AS quote_bid_close,
-            toFloat32(ifNull(b.quote_bid_high, 0.0)) AS quote_bid_high,
-            toFloat32(ifNull(b.quote_bid_low, 0.0)) AS quote_bid_low,
-            toFloat32(ifNull(b.quote_bid_size_open, 0.0)) AS quote_bid_size_open,
-            toFloat32(ifNull(b.quote_bid_size_close, 0.0)) AS quote_bid_size_close,
-            toFloat32(ifNull(b.quote_bid_size_high, 0.0)) AS quote_bid_size_high,
-            toFloat32(ifNull(b.quote_bid_size_low, 0.0)) AS quote_bid_size_low,
-            toUInt64(ifNull(b.quote_bid_event_count, 0)) AS quote_bid_event_count,
-            toFloat32(ifNull(b.quote_ask_open, 0.0)) AS quote_ask_open,
-            toFloat32(ifNull(b.quote_ask_close, 0.0)) AS quote_ask_close,
-            toFloat32(ifNull(b.quote_ask_high, 0.0)) AS quote_ask_high,
-            toFloat32(ifNull(b.quote_ask_low, 0.0)) AS quote_ask_low,
-            toFloat32(ifNull(b.quote_ask_size_open, 0.0)) AS quote_ask_size_open,
-            toFloat32(ifNull(b.quote_ask_size_close, 0.0)) AS quote_ask_size_close,
-            toFloat32(ifNull(b.quote_ask_size_high, 0.0)) AS quote_ask_size_high,
-            toFloat32(ifNull(b.quote_ask_size_low, 0.0)) AS quote_ask_size_low,
-            toUInt64(ifNull(b.quote_ask_event_count, 0)) AS quote_ask_event_count,
-            toUInt8(ifNull(b.trade_event_count, 0) > 0) AS trade_available,
-            toUInt8(ifNull(b.quote_bid_event_count, 0) > 0) AS quote_bid_available,
-            toUInt8(ifNull(b.quote_ask_event_count, 0) > 0) AS quote_ask_available,
-            toInt64(ifNull(b.trade_last_event_timestamp_us, 0)) AS trade_last_event_timestamp_us,
-            toInt64(ifNull(b.quote_bid_last_event_timestamp_us, 0)) AS quote_bid_last_event_timestamp_us,
-            toInt64(ifNull(b.quote_ask_last_event_timestamp_us, 0)) AS quote_ask_last_event_timestamp_us,
-            toUInt8(ifNull(b.trade_event_count, 0) > 0 OR ifNull(b.quote_bid_event_count, 0) > 0 OR ifNull(b.quote_ask_event_count, 0) > 0) AS available
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.trade_open, b.trade_open), 0.0)) AS trade_open,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.trade_close, b.trade_close), 0.0)) AS trade_close,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.trade_high, b.trade_high), 0.0)) AS trade_high,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.trade_low, b.trade_low), 0.0)) AS trade_low,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.trade_size_sum, b.trade_size_sum), 0.0)) AS trade_size_sum,
+            toUInt64(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.trade_event_count, b.trade_event_count), 0)) AS trade_event_count,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_bid_open, b.quote_bid_open), 0.0)) AS quote_bid_open,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_bid_close, b.quote_bid_close), 0.0)) AS quote_bid_close,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_bid_high, b.quote_bid_high), 0.0)) AS quote_bid_high,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_bid_low, b.quote_bid_low), 0.0)) AS quote_bid_low,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_bid_size_open, b.quote_bid_size_open), 0.0)) AS quote_bid_size_open,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_bid_size_close, b.quote_bid_size_close), 0.0)) AS quote_bid_size_close,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_bid_size_high, b.quote_bid_size_high), 0.0)) AS quote_bid_size_high,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_bid_size_low, b.quote_bid_size_low), 0.0)) AS quote_bid_size_low,
+            toUInt64(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_bid_event_count, b.quote_bid_event_count), 0)) AS quote_bid_event_count,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_ask_open, b.quote_ask_open), 0.0)) AS quote_ask_open,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_ask_close, b.quote_ask_close), 0.0)) AS quote_ask_close,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_ask_high, b.quote_ask_high), 0.0)) AS quote_ask_high,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_ask_low, b.quote_ask_low), 0.0)) AS quote_ask_low,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_ask_size_open, b.quote_ask_size_open), 0.0)) AS quote_ask_size_open,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_ask_size_close, b.quote_ask_size_close), 0.0)) AS quote_ask_size_close,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_ask_size_high, b.quote_ask_size_high), 0.0)) AS quote_ask_size_high,
+            toFloat32(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_ask_size_low, b.quote_ask_size_low), 0.0)) AS quote_ask_size_low,
+            toUInt64(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_ask_event_count, b.quote_ask_event_count), 0)) AS quote_ask_event_count,
+            toUInt8(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.trade_event_count, b.trade_event_count), 0) > 0) AS trade_available,
+            toUInt8(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_bid_event_count, b.quote_bid_event_count), 0) > 0) AS quote_bid_available,
+            toUInt8(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_ask_event_count, b.quote_ask_event_count), 0) > 0) AS quote_ask_available,
+            toInt64(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.trade_last_event_timestamp_us, b.trade_last_event_timestamp_us), 0)) AS trade_last_event_timestamp_us,
+            toInt64(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_bid_last_event_timestamp_us, b.quote_bid_last_event_timestamp_us), 0)) AS quote_bid_last_event_timestamp_us,
+            toInt64(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_ask_last_event_timestamp_us, b.quote_ask_last_event_timestamp_us), 0)) AS quote_ask_last_event_timestamp_us,
+            toUInt8(ifNull(if(o.last_context_bucket < o.session_start_bucket, p.trade_event_count, b.trade_event_count), 0) > 0 OR ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_bid_event_count, b.quote_bid_event_count), 0) > 0 OR ifNull(if(o.last_context_bucket < o.session_start_bucket, p.quote_ask_event_count, b.quote_ask_event_count), 0) > 0) AS available
         FROM origin_horizons AS o
         LEFT JOIN context_bars AS b
             ON b.origin_key = o.origin_key
            AND b.horizon_us = o.horizon_us
+        LEFT JOIN early_context_bars AS p
+            ON p.origin_key = o.origin_key
+           AND p.horizon_us = o.horizon_us
     )
 SELECT
     origin_key,
