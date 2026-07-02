@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -39,6 +39,12 @@ class SupervisorTerminalState:
     reauth_attempts: int = 0
     login_attempts: int = 0
     tickle_count: int = 0
+    tickle_failures: int = 0
+    last_tickle_at_utc: datetime | None = None
+    next_tickle_due_utc: datetime | None = None
+    last_tickle_status_code: int = 0
+    last_tickle_latency_ms: float = 0.0
+    last_tickle_error: str = ""
     clickhouse_status: str = "not_started"
     clickhouse_error: str = ""
     event_log_path: str = ""
@@ -79,7 +85,7 @@ def render_dashboard(config: IbkrGatewayConfig, state: SupervisorTerminalState) 
     session = session_panel(config, state)
     counters = counters_panel(state)
     summary = Columns([session, counters], equal=True, expand=True) if width >= 150 else Group(session, counters)
-    main = [header_panel(config, state), operation_panel(state), summary, log_panel(state), events_panel(state, limit=4 if compact else 8)]
+    main = [header_panel(config, state), operation_panel(state), summary, tickle_panel(config, state), log_panel(state), events_panel(state, limit=4 if compact else 8)]
     if not compact:
         main.insert(3, alerts_panel(state))
     return Group(*main)
@@ -137,7 +143,23 @@ def counters_panel(state: SupervisorTerminalState) -> Panel:
     table.add_row("Reauth attempts", str(state.reauth_attempts), "ssodh/init attempts")
     table.add_row("Login attempts", str(state.login_attempts), "Playwright attempts")
     table.add_row("Tickles", str(state.tickle_count), "successful keepalive calls")
+    table.add_row("Tickle failures", str(state.tickle_failures), "consecutive failed keepalive calls")
     return Panel(table, title="Counters", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
+
+
+def tickle_panel(config: IbkrGatewayConfig, state: SupervisorTerminalState) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Item", style="cyan", no_wrap=True, width=18)
+    table.add_column("Value", overflow="fold", ratio=1)
+    table.add_row("Status", style_status(state.keepalive_status))
+    table.add_row("Frequency", f"{config.tickle_seconds:.0f}s")
+    table.add_row("Last tickle", compact_time(state.last_tickle_at_utc))
+    table.add_row("Next due", next_due_text(state.next_tickle_due_utc))
+    table.add_row("HTTP", str(state.last_tickle_status_code or "-"))
+    table.add_row("Latency", f"{state.last_tickle_latency_ms:.0f} ms" if state.last_tickle_latency_ms else "-")
+    if state.last_tickle_error:
+        table.add_row("Error", f"[red]{state.last_tickle_error[:220]}[/red]")
+    return Panel(table, title="Keepalive Tickle", box=box.ROUNDED, border_style=status_color(state.keepalive_status), padding=(0, 1))
 
 
 def log_panel(state: SupervisorTerminalState) -> Panel:
@@ -206,7 +228,16 @@ def event_detail(row: dict[str, Any]) -> str:
             return str(row[key])
     result = row.get("result") if isinstance(row.get("result"), dict) else {}
     if result:
-        return str(result.get("error") or result.get("payload") or "")
+        parts = []
+        if result.get("status_code"):
+            parts.append(f"status={result['status_code']}")
+        if row.get("latency_ms"):
+            parts.append(f"latency={float(row['latency_ms']):.0f}ms")
+        if result.get("error"):
+            parts.append(str(result["error"]))
+        if not parts and "ok" in result:
+            parts.append("ok" if result.get("ok") else "not ok")
+        return " ".join(parts)
     return ""
 
 
@@ -236,8 +267,35 @@ def full_time(value: datetime) -> str:
     return f"UTC {value.astimezone(UTC).strftime('%H:%M:%S')}  ET {value.astimezone(EASTERN).strftime('%H:%M:%S')}  VAN {value.astimezone(VANCOUVER).strftime('%H:%M:%S')}"
 
 
+def compact_time(value: datetime | None) -> str:
+    if value is None:
+        return "-"
+    return f"UTC {value.astimezone(UTC).strftime('%H:%M:%S')} / ET {value.astimezone(EASTERN).strftime('%H:%M:%S')}"
+
+
+def next_due_text(value: datetime | None) -> str:
+    if value is None:
+        return "-"
+    seconds = max(0, int((value - datetime.now(UTC)).total_seconds()))
+    return f"{compact_time(value)} ({seconds}s)"
+
+
 def short_utc(value: Any) -> str:
     text = str(value or "")
     if "T" in text:
         return text.split("T", 1)[1].replace("Z", "")[:8]
     return "-"
+
+
+def parse_event_time(value: Any) -> datetime:
+    text = str(value or "").strip()
+    if not text:
+        return datetime.now(UTC)
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return datetime.now(UTC)
+
+
+def tickle_next_due(value: Any, config: IbkrGatewayConfig) -> datetime:
+    return parse_event_time(value) + timedelta(seconds=config.tickle_seconds)

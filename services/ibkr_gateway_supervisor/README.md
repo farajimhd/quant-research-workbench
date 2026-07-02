@@ -54,7 +54,8 @@ IBKR_GATEWAY_CLICKHOUSE_TABLE=ibkr_gateway_supervisor_event_v1
 When stdout is interactive, the daemon shows a Rich terminal dashboard with:
 
 - gateway, authentication, login, account, and keepalive status
-- retry and tickle counters
+- retry counters and a dedicated keepalive tickle panel with last tickle, next
+  due time, HTTP status, latency, and consecutive failures
 - recent alerts and events
 - JSONL and ClickHouse persistence status
 
@@ -63,6 +64,8 @@ Every supervisor event is appended to a per-run JSONL file under
 ClickHouse persistence uses one compact table by default:
 `q_live.ibkr_gateway_supervisor_event_v1`. If ClickHouse is unavailable, the
 service disables ClickHouse writes for that run and continues writing JSONL.
+The terminal intentionally shows compact event summaries instead of raw payload
+dictionaries; use JSONL or ClickHouse when you need the full payload.
 
 ## Commands
 

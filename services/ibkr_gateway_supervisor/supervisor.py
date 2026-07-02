@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import signal
 import subprocess
@@ -15,7 +14,7 @@ from services.ibkr_gateway_supervisor.config import IbkrGatewayConfig
 from services.ibkr_gateway_supervisor.event_log import SupervisorEventLog
 from services.ibkr_gateway_supervisor.login import run_playwright_login
 from services.ibkr_gateway_supervisor.notifications import Notifier
-from services.ibkr_gateway_supervisor.terminal import SupervisorTerminal, SupervisorTerminalState
+from services.ibkr_gateway_supervisor.terminal import SupervisorTerminal, SupervisorTerminalState, parse_event_time, tickle_next_due
 
 
 class IbkrGatewaySupervisor:
@@ -50,8 +49,8 @@ class IbkrGatewaySupervisor:
                     account_count=len(ids),
                     configured_account_present=bool(self.config.account_id and self.config.account_id in ids),
                 )
-                tickle = self.client.tickle()
-                self.emit("tickle", result=self.public_result(tickle))
+                tickle, latency_ms = self.call_tickle()
+                self.emit("tickle", result=self.public_result(tickle), latency_ms=latency_ms)
                 return 0 if tickle.ok else 2
             if status.ok and can_reauthenticate(status.payload):
                 reauth = self.client.reauthenticate()
@@ -218,8 +217,8 @@ class IbkrGatewaySupervisor:
         return False
 
     def handle_tickle(self) -> None:
-        tickle = self.client.tickle()
-        self.emit("tickle", result=self.public_result(tickle))
+        tickle, latency_ms = self.call_tickle()
+        self.emit("tickle", result=self.public_result(tickle), latency_ms=latency_ms)
         if tickle.ok:
             return
         self.notifier.notify_once(
@@ -227,6 +226,12 @@ class IbkrGatewaySupervisor:
             "IBKR Client Portal tickle failed",
             f"The keepalive call failed for account={self.config.account_key}. result={self.public_result(tickle)}",
         )
+
+    def call_tickle(self) -> tuple[HttpResult, float]:
+        started = time.perf_counter()
+        tickle = self.client.tickle()
+        latency_ms = round((time.perf_counter() - started) * 1000.0, 1)
+        return tickle, latency_ms
 
     def stop_started_process(self) -> None:
         if not self.started_process:
@@ -263,7 +268,7 @@ class IbkrGatewaySupervisor:
         if self.terminal is not None:
             self.terminal.update()
         else:
-            print(json.dumps(row, sort_keys=True, default=str), flush=True)
+            print(plain_event_line(row), flush=True)
 
     def update_terminal_state(self, row: dict[str, Any]) -> None:
         state = self.terminal_state
@@ -311,12 +316,22 @@ class IbkrGatewaySupervisor:
             state.account_status = "ready" if row.get("configured_account_present") else "missing"
         elif event == "tickle":
             result = row.get("result") if isinstance(row.get("result"), dict) else {}
+            state.last_tickle_at_utc = parse_event_time(row.get("ts_utc"))
+            state.next_tickle_due_utc = tickle_next_due(row.get("ts_utc"), self.config)
+            state.last_tickle_status_code = int(result.get("status_code") or 0)
+            state.last_tickle_latency_ms = float(row.get("latency_ms") or 0.0)
             if result.get("ok"):
                 state.keepalive_status = "ok"
                 state.tickle_count += 1
+                state.tickle_failures = 0
+                state.last_tickle_error = ""
+                state.current_operation = "Keepalive tickle succeeded"
             else:
                 state.keepalive_status = "failed"
-                state.last_error = str(result.get("error") or "Tickle failed")
+                state.tickle_failures += 1
+                state.last_tickle_error = str(result.get("error") or "Tickle failed")
+                state.last_error = state.last_tickle_error
+                state.current_operation = "Keepalive tickle failed"
                 state.alerts.append(state.last_error)
         elif event in {"gateway_process_stopping", "gateway_listener_stopping"}:
             state.gateway_status = "stopping"
@@ -342,6 +357,31 @@ def sanitize(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     return value
+
+
+def plain_event_line(row: dict[str, Any]) -> str:
+    event = str(row.get("event") or "-")
+    result = row.get("result") if isinstance(row.get("result"), dict) else {}
+    status = event_status_text(row, result)
+    parts = [str(row.get("ts_utc") or ""), event, status]
+    if row.get("latency_ms"):
+        parts.append(f"latency={float(row['latency_ms']):.0f}ms")
+    for key in ("message", "reason", "error"):
+        if row.get(key):
+            parts.append(f"{key}={row[key]}")
+            break
+    if result.get("error"):
+        parts.append(f"error={result['error']}")
+    return " ".join(part for part in parts if part)
+
+
+def event_status_text(row: dict[str, Any], result: dict[str, Any]) -> str:
+    if "authenticated" in row:
+        return "authenticated" if row.get("authenticated") else "unauthenticated"
+    if "ok" in result:
+        code = result.get("status_code") or "-"
+        return f"ok status={code}" if result.get("ok") else f"failed status={code}"
+    return "event"
 
 
 def tail_text(path: Path, *, max_chars: int = 1_000) -> str:
