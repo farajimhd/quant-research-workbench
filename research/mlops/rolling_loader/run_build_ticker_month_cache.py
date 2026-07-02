@@ -2613,6 +2613,8 @@ WITH
             ON b.ticker = o.ticker
            AND b.local_date = o.origin_local_date
            AND b.label_resolution_us = o.label_resolution_us
+           AND b.bucket_index >= o.first_context_bucket
+           AND b.bucket_index <= o.last_context_bucket
         GROUP BY
             o.origin_key,
             o.horizon,
@@ -2947,6 +2949,8 @@ WITH
             ON b.ticker = o.ticker
            AND b.local_date = o.origin_local_date
            AND b.label_resolution_us = o.label_resolution_us
+           AND b.bucket_index >= o.first_future_bucket
+           AND b.bucket_index <= o.last_future_bucket
         WHERE b.bucket_index >= o.first_future_bucket
           AND b.bucket_index <= o.last_future_bucket
           AND o.grid_end_session_us <= {SESSION_END_US}
