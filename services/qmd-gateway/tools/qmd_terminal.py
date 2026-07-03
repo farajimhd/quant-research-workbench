@@ -203,9 +203,6 @@ def update_rates(state: PollState, metrics: dict[str, Any], now: float) -> None:
         "scanner_candidates_emitted",
         "live_market_state_events_emitted",
         "live_market_state_events_persisted",
-        "reference_filtered_events",
-        "reference_filtered_scanner",
-        "reference_filtered_live_state",
     ]
     rates: dict[str, float] = {}
     if elapsed > 0:
@@ -346,8 +343,6 @@ def render_runtime(state: PollState) -> Any:
         ("Scanner rows", format_int(metrics.get("scanner_candidates_emitted")), format_rate(state.rates.get("scanner_candidates_emitted_per_sec"))),
         ("Live state events", format_int(metrics.get("live_market_state_events_emitted")), format_rate(state.rates.get("live_market_state_events_emitted_per_sec"))),
         ("Live state persisted", format_int(metrics.get("live_market_state_events_persisted")), format_rate(state.rates.get("live_market_state_events_persisted_per_sec"))),
-        ("Reference symbols", format_int(metrics.get("reference_tradability_loaded_symbols")), f"blocked={format_int(metrics.get('reference_tradability_blocked_symbols'))}"),
-        ("Reference filtered", format_int(metrics.get("reference_filtered_events")), f"scanner={format_int(metrics.get('reference_filtered_scanner'))} state={format_int(metrics.get('reference_filtered_live_state'))}"),
         ("Gap fill runs", format_int(metrics.get("gap_fill_runs")), f"failures={format_int(metrics.get('gap_fill_failures'))}"),
     ]
     return Panel(metric_table(rows), title="Runtime", box=box.ROUNDED, border_style="yellow", padding=(0, 1))
@@ -439,7 +434,6 @@ def render_backpressure(state: PollState) -> Any:
         ("Indicator queue", "indicator_events_dropped"),
         ("Live state broadcast", "live_market_state_broadcast_dropped"),
         ("Live state insert failures", "live_market_state_persist_failures"),
-        ("Reference refresh failures", "reference_tradability_refresh_failures"),
         ("Raw CH queue", "clickhouse_events_dropped"),
     ]
     total = sum(int(as_float(metrics.get(key))) for _, key in rows)

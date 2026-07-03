@@ -10,7 +10,6 @@ use crate::live_market_state::{
 };
 use crate::maintenance::{MaintenanceSnapshot, SharedMaintenanceState};
 use crate::metrics::{MetricsSnapshot, SharedMetrics};
-use crate::reference_tradability::{ReferenceTradabilitySummary, SharedReferenceTradabilityStore};
 use crate::scanner::{ScannerPrimitive, ScannerPrimitiveSnapshot, SharedScannerStore};
 use crate::session::session_phase;
 use crate::signal_catalog::{signal_catalog, SignalMethodEntry};
@@ -41,7 +40,6 @@ pub struct AppState {
     pub market: SharedMarketState,
     pub maintenance: SharedMaintenanceState,
     pub metrics: SharedMetrics,
-    pub reference_tradability: SharedReferenceTradabilityStore,
     pub scanner: SharedScannerStore,
     pub scanner_events: broadcast::Sender<ScannerPrimitive>,
 }
@@ -73,10 +71,6 @@ pub fn app(state: AppState) -> Router {
         .route("/config", get(config))
         .route("/metrics", get(metrics_snapshot))
         .route("/snapshot/maintenance", get(maintenance_snapshot))
-        .route(
-            "/snapshot/reference-tradability",
-            get(reference_tradability_snapshot),
-        )
         .route("/snapshot/coverage", get(coverage_snapshot))
         .route("/indicator-catalog", get(indicator_catalog_snapshot))
         .route("/signal-catalog", get(signal_catalog_snapshot))
@@ -139,25 +133,16 @@ async fn maintenance_snapshot(State(state): State<Arc<AppState>>) -> Json<Mainte
     Json(state.maintenance.snapshot().await)
 }
 
-async fn reference_tradability_snapshot(
-    State(state): State<Arc<AppState>>,
-) -> Json<ReferenceTradabilitySummary> {
-    Json(state.reference_tradability.summary().await)
-}
-
 async fn live_market_state_snapshot(
     State(state): State<Arc<AppState>>,
     Query(query): Query<LimitQuery>,
 ) -> Json<LiveMarketStateSnapshot> {
-    let mut snapshot = state
-        .live_market_state
-        .snapshot(query.limit.unwrap_or(250).min(5_000))
-        .await;
-    snapshot.active = filter_live_state_rows(&state, snapshot.active).await;
-    snapshot.recent = filter_live_state_rows(&state, snapshot.recent).await;
-    snapshot.active_count = snapshot.active.len();
-    snapshot.history_count = snapshot.recent.len();
-    Json(snapshot)
+    Json(
+        state
+            .live_market_state
+            .snapshot(query.limit.unwrap_or(250).min(5_000))
+            .await,
+    )
 }
 
 async fn ticker_live_market_state_snapshot(
@@ -165,25 +150,10 @@ async fn ticker_live_market_state_snapshot(
     Path(ticker): Path<String>,
     Query(query): Query<LimitQuery>,
 ) -> Json<TickerLiveMarketStateSnapshot> {
-    let normalized = ticker.to_ascii_uppercase();
-    if !state
-        .reference_tradability
-        .is_emit_allowed(&normalized)
-        .await
-    {
-        return Json(TickerLiveMarketStateSnapshot {
-            as_of: chrono::Utc::now(),
-            ticker: normalized,
-            active: Vec::new(),
-            recent: Vec::new(),
-            is_live_tradable: false,
-            blocking_reasons: vec!["reference_not_tradable".to_string()],
-        });
-    }
     Json(
         state
             .live_market_state
-            .ticker_snapshot(&normalized, query.limit.unwrap_or(250).min(5_000))
+            .ticker_snapshot(&ticker, query.limit.unwrap_or(250).min(5_000))
             .await,
     )
 }
@@ -345,64 +315,31 @@ async fn scanner_snapshot(
     State(state): State<Arc<AppState>>,
     Query(query): Query<LimitQuery>,
 ) -> Json<ScannerSnapshot> {
-    let limit = query.limit.unwrap_or(250).min(5_000);
-    let mut snapshot = state.market.scanner_snapshot(5_000).await;
-    let mut rows = Vec::new();
-    for row in snapshot.rows {
-        if state
-            .reference_tradability
-            .is_emit_allowed(&row.ticker)
-            .await
-        {
-            rows.push(row);
-        }
-        if rows.len() >= limit {
-            break;
-        }
-    }
-    snapshot.total_symbols = rows.len();
-    snapshot.row_count = rows.len();
-    snapshot.rows = rows;
-    Json(snapshot)
+    Json(
+        state
+            .market
+            .scanner_snapshot(query.limit.unwrap_or(250).min(5_000))
+            .await,
+    )
 }
 
 async fn scanner_primitive_snapshot(
     State(state): State<Arc<AppState>>,
     Query(query): Query<LimitQuery>,
 ) -> Json<ScannerPrimitiveSnapshot> {
-    let limit = query.limit.unwrap_or(250).min(5_000);
-    let mut snapshot = state.scanner.snapshot(5_000).await;
-    let mut rows = Vec::new();
-    for row in snapshot.rows {
-        if state
-            .reference_tradability
-            .is_emit_allowed(&row.ticker)
-            .await
-        {
-            rows.push(row);
-        }
-        if rows.len() >= limit {
-            break;
-        }
-    }
-    snapshot.row_count = rows.len();
-    snapshot.rows = rows;
-    Json(snapshot)
+    Json(
+        state
+            .scanner
+            .snapshot(query.limit.unwrap_or(250).min(5_000))
+            .await,
+    )
 }
 
 async fn ticker_snapshot(
     State(state): State<Arc<AppState>>,
     Path(ticker): Path<String>,
 ) -> Json<Option<SymbolSnapshot>> {
-    let normalized = ticker.to_ascii_uppercase();
-    if !state
-        .reference_tradability
-        .is_emit_allowed(&normalized)
-        .await
-    {
-        return Json(None);
-    }
-    Json(state.market.ticker_snapshot(&normalized).await)
+    Json(state.market.ticker_snapshot(&ticker).await)
 }
 
 async fn bar_snapshot(
@@ -410,21 +347,12 @@ async fn bar_snapshot(
     Path(ticker): Path<String>,
     Query(query): Query<BarsQuery>,
 ) -> Json<BarSnapshot> {
-    let normalized = ticker.to_ascii_uppercase();
-    let timeframe = query.timeframe.as_deref().unwrap_or("1m");
-    if !state
-        .reference_tradability
-        .is_emit_allowed(&normalized)
-        .await
-    {
-        return Json(empty_bar_snapshot(&normalized, timeframe));
-    }
     Json(
         state
             .bars
             .snapshot(
-                &normalized,
-                timeframe,
+                &ticker,
+                query.timeframe.as_deref().unwrap_or("1m"),
                 query
                     .limit
                     .unwrap_or(500)
@@ -439,19 +367,11 @@ async fn compact_event_snapshot(
     Path(ticker): Path<String>,
     Query(query): Query<LimitQuery>,
 ) -> Json<Vec<LiveCompactEvent>> {
-    let normalized = ticker.to_ascii_uppercase();
-    if !state
-        .reference_tradability
-        .is_emit_allowed(&normalized)
-        .await
-    {
-        return Json(Vec::new());
-    }
     Json(
         state
             .compact_event_store
             .latest_sorted(
-                &normalized,
+                &ticker,
                 query
                     .limit
                     .unwrap_or(128)
@@ -466,21 +386,12 @@ async fn indicator_snapshot(
     Path(ticker): Path<String>,
     Query(query): Query<BarsQuery>,
 ) -> Json<IndicatorSnapshot> {
-    let normalized = ticker.to_ascii_uppercase();
-    let timeframe = query.timeframe.as_deref().unwrap_or("1m");
-    if !state
-        .reference_tradability
-        .is_emit_allowed(&normalized)
-        .await
-    {
-        return Json(empty_indicator_snapshot(&normalized, timeframe));
-    }
     Json(
         state
             .indicators
             .snapshot(
-                &normalized,
-                timeframe,
+                &ticker,
+                query.timeframe.as_deref().unwrap_or("1m"),
                 query
                     .limit
                     .unwrap_or(500)
@@ -677,23 +588,7 @@ async fn stream_scanner(mut socket: WebSocket, state: Arc<AppState>) {
     let mut timer = interval(Duration::from_millis(state.config.scanner_broadcast_ms));
     loop {
         timer.tick().await;
-        let mut snapshot = state.market.scanner_snapshot(5_000).await;
-        let mut rows = Vec::new();
-        for row in snapshot.rows {
-            if state
-                .reference_tradability
-                .is_emit_allowed(&row.ticker)
-                .await
-            {
-                rows.push(row);
-            }
-            if rows.len() >= 250 {
-                break;
-            }
-        }
-        snapshot.total_symbols = rows.len();
-        snapshot.row_count = rows.len();
-        snapshot.rows = rows;
+        let snapshot = state.market.scanner_snapshot(250).await;
         match serde_json::to_string(&snapshot) {
             Ok(text) => {
                 if socket.send(Message::Text(text.into())).await.is_err() {
@@ -749,11 +644,7 @@ async fn stream_ticker(mut socket: WebSocket, state: Arc<AppState>, ticker: Stri
     let mut timer = interval(Duration::from_millis(state.config.ticker_broadcast_ms));
     loop {
         timer.tick().await;
-        let snapshot = if state.reference_tradability.is_emit_allowed(&ticker).await {
-            state.market.ticker_snapshot(&ticker).await
-        } else {
-            None
-        };
+        let snapshot = state.market.ticker_snapshot(&ticker).await;
         match serde_json::to_string(&snapshot) {
             Ok(text) => {
                 if socket.send(Message::Text(text.into())).await.is_err() {
@@ -783,18 +674,14 @@ async fn stream_bars(
     let mut timer = interval(Duration::from_millis(state.config.ticker_broadcast_ms));
     loop {
         timer.tick().await;
-        let snapshot = if state.reference_tradability.is_emit_allowed(&ticker).await {
-            state
-                .bars
-                .snapshot(
-                    &ticker,
-                    &timeframe,
-                    limit.min(state.config.bar_history_limit),
-                )
-                .await
-        } else {
-            empty_bar_snapshot(&ticker, &timeframe)
-        };
+        let snapshot = state
+            .bars
+            .snapshot(
+                &ticker,
+                &timeframe,
+                limit.min(state.config.bar_history_limit),
+            )
+            .await;
         match serde_json::to_string(&snapshot) {
             Ok(text) => {
                 if socket.send(Message::Text(text.into())).await.is_err() {
@@ -824,18 +711,14 @@ async fn stream_indicators(
     let mut timer = interval(Duration::from_millis(state.config.ticker_broadcast_ms));
     loop {
         timer.tick().await;
-        let snapshot = if state.reference_tradability.is_emit_allowed(&ticker).await {
-            state
-                .indicators
-                .snapshot(
-                    &ticker,
-                    &timeframe,
-                    limit.min(state.config.indicator_history_limit),
-                )
-                .await
-        } else {
-            empty_indicator_snapshot(&ticker, &timeframe)
-        };
+        let snapshot = state
+            .indicators
+            .snapshot(
+                &ticker,
+                &timeframe,
+                limit.min(state.config.indicator_history_limit),
+            )
+            .await;
         match serde_json::to_string(&snapshot) {
             Ok(text) => {
                 if socket.send(Message::Text(text.into())).await.is_err() {
@@ -852,41 +735,5 @@ async fn stream_indicators(
                 }
             }
         }
-    }
-}
-
-async fn filter_live_state_rows(
-    state: &Arc<AppState>,
-    rows: Vec<LiveSymbolMarketStateEvent>,
-) -> Vec<LiveSymbolMarketStateEvent> {
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        if state
-            .reference_tradability
-            .is_emit_allowed(&row.ticker)
-            .await
-        {
-            out.push(row);
-        }
-    }
-    out
-}
-
-fn empty_bar_snapshot(ticker: &str, timeframe: &str) -> BarSnapshot {
-    BarSnapshot {
-        current: None,
-        history: Vec::new(),
-        ticker: ticker.to_ascii_uppercase(),
-        timeframe: timeframe.to_string(),
-    }
-}
-
-fn empty_indicator_snapshot(ticker: &str, timeframe: &str) -> IndicatorSnapshot {
-    IndicatorSnapshot {
-        ticker: ticker.to_ascii_uppercase(),
-        tick: None,
-        timeframe: timeframe.to_string(),
-        current: None,
-        history: Vec::new(),
     }
 }

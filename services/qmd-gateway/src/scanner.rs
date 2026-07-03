@@ -1,6 +1,5 @@
 use crate::bars::BarRow;
 use crate::metrics::SharedMetrics;
-use crate::reference_tradability::SharedReferenceTradabilityStore;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -112,7 +111,6 @@ pub fn spawn_scanner_primitive_engine(
     channel_capacity: usize,
     metrics: SharedMetrics,
     primitive_sender: broadcast::Sender<ScannerPrimitive>,
-    reference_tradability: SharedReferenceTradabilityStore,
 ) -> ScannerPrimitiveRouter {
     let (sender, receiver) = mpsc::channel::<BarRow>(channel_capacity.max(1));
     tokio::spawn(run_scanner_primitive_engine(
@@ -120,7 +118,6 @@ pub fn spawn_scanner_primitive_engine(
         receiver,
         metrics,
         primitive_sender,
-        reference_tradability,
     ));
     ScannerPrimitiveRouter { sender }
 }
@@ -130,13 +127,8 @@ async fn run_scanner_primitive_engine(
     mut receiver: mpsc::Receiver<BarRow>,
     metrics: SharedMetrics,
     primitive_sender: broadcast::Sender<ScannerPrimitive>,
-    reference_tradability: SharedReferenceTradabilityStore,
 ) {
     while let Some(row) = receiver.recv().await {
-        if !reference_tradability.is_emit_allowed(&row.sym).await {
-            metrics.inc_reference_filtered_scanner();
-            continue;
-        }
         let primitives = evaluate_bar(&row);
         if primitives.is_empty() {
             continue;

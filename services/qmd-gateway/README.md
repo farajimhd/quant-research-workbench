@@ -14,7 +14,6 @@ Current responsibilities:
 - normalize quote/trade events
 - maintain in-memory live market state
 - maintain an in-memory abnormal market-state overlay and persist only special transitions
-- filter app-facing emissions through the reference gateway's tradable universe
 - build sharded live quote/trade bars for `1s`, `10s`, `30s`, `1m`, `5m`, and `1h`
 - build sharded streaming tick and bar-level indicators
 - build Massive-only scanner primitive candidates from live bars
@@ -87,10 +86,6 @@ Environment variables:
 - `QMD_COMPACT_EVENT_REORDER_FORCE_FLUSH_MS`, default `2000`
 - `QMD_COMPACT_EVENT_REORDER_MAX_EVENTS_PER_TICKER`, default `4096`
 - `QMD_REFERENCE_DIR`, default resolves to repo `research/market_references/massive`
-- `QMD_REFERENCE_TRADABILITY_ENABLED`, default `true`
-- `QMD_REFERENCE_TRADABILITY_TABLE`, default `feature_tradable_universe_v1`
-- `QMD_REFERENCE_TRADABILITY_REFRESH_MS`, default `60000`; effective minimum `5000`
-- `QMD_REFERENCE_TRADABILITY_FAIL_CLOSED`, default `true`
 - `QMD_PERSIST_RAW_EVENTS`, default `false`
 - `QMD_LIVE_MARKET_STATE_ENABLED`, default `true`
 - `QMD_LIVE_MARKET_STATE_TABLE`, default `live_symbol_market_event_v1`
@@ -276,29 +271,15 @@ eligible-trade handling are not yet wired into QMD, these fields are named
 `estimated_luld_*` and should not be used as authoritative halt/limit-state
 messages.
 
-QMD uses two separate tradability gates:
-
-1. Reference tradability is a hard universe gate maintained by the reference
-   gateway. QMD loads the latest `feature_tradable_universe_v1` rows and filters
-   app-facing emissions for symbols where `is_tradable = 0` or the symbol is
-   missing while fail-closed mode is active. These symbols are still persisted
-   to event/bar tables so data capture remains complete.
-2. Live abnormal market state is a temporary market-condition gate maintained by
-   QMD. Quote/trade events and closed 1s bars open or close sparse condition
-   rows. These symbols are still emitted to the app, but the live state tells
-   the order/scanner gate that new orders are temporarily blocked while the
-   condition is active.
-
-The live abnormal market-state overlay keeps current state in memory and appends
-durable rows only when a predefined special state opens or closes. Ordinary
-`normal` state is not persisted. The default persisted families are estimated
-LULD near/breach states and locked/crossed quote states. Configured halt/resume
-condition ids can also open or close `condition_halt` rows.
-
-Reference tradability refresh is asynchronous. QMD startup, websocket ingest,
-bar building, and ClickHouse persistence do not wait on the reference DB read.
-If fail-closed mode is enabled and the cache is not loaded yet, app-facing
-emissions are suppressed until the background refresh succeeds.
+The live abnormal market-state overlay consumes quote/trade events and closed
+1s bars. It keeps current state in memory and appends durable rows only when a
+predefined special state opens or closes. Ordinary `normal` state is
+not persisted. The default persisted families are estimated LULD near/breach
+states and locked/crossed quote states. Configured halt/resume condition ids can
+also open or close `condition_halt` rows. Consumers read
+`/snapshot/live-market-state`, `/snapshot/live-market-state/{ticker}`, or
+`/stream/live-market-state` and combine those live blocks with reference
+tradability and broker/account checks.
 
 Bar-level indicator history is retained per timeframe using
 `QMD_INDICATOR_HISTORY_BY_TIMEFRAME`. The default scanner/chart compromise is:
