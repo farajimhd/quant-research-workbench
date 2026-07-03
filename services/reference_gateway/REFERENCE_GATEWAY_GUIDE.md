@@ -11,9 +11,11 @@ publication data coherent. It is not a high-frequency ingest service.
    Download current reference evidence from Massive, IBKR, FINRA, SEC, and
    other configured providers. Source sync is always part of operational runs.
    It is not a separate operator flag. Startup source sync reconciles active
-   tickers first, writes accepted canonical graph rows when policy allows, then
-   takes a current IBKR borrow/shortability snapshot for active US stock
-   listings with valid conids.
+   tickers first, writes accepted canonical graph rows, refreshes current
+   Massive snapshot/float rows for newly accepted tickers, then takes a current
+   IBKR borrow/shortability snapshot for active US stock listings with valid
+   conids. If the observation cannot be inserted safely, source sync writes an
+   open issue and keeps the instrument non-tradable.
 
 2. Integrity guardrail
 
@@ -26,7 +28,9 @@ publication data coherent. It is not a high-frequency ingest service.
 
    Run heavier work: schema upkeep, canonical graph promotion, full tradable
    publication rebuilds, scanner static rebuilds, and recent market publication
-   gap fill. In `Auto`, this work is deferred during active market hours.
+   gap fill. Maintenance also resolves issues opened by source sync when they
+   become deterministic. In `Auto`, this work is deferred during active market
+   hours.
 
 4. Observability and control
 
@@ -131,15 +135,16 @@ Allowed during market hours:
 - Massive active ticker sync
 - Massive overview evidence fetch
 - IBKR conid lookup
+- accepted canonical graph rows for safe new ticker observations
+- current Massive snapshot/float rows for newly accepted tickers
 - IBKR borrow/shortability snapshot writes to `market_security_borrow_v1`
 - writing new mapping issues
-- deterministic issue resolution
 - immediate latest-universe replacement rows with `is_tradable = 0`
 
 Deferred in `Maintenance=Auto` during market hours:
 
 - schema changes
-- canonical graph promotion
+- deterministic issue resolution
 - full tradable/scanner publication rebuild
 - recent market-publication gap fill
 

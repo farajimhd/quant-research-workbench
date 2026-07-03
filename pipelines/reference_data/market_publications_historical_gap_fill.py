@@ -879,7 +879,14 @@ def run_massive_ticker_details(
     start_date: date,
     end_date: date,
     symbols: dict[str, SymbolRef],
+    on_progress: Any | None = None,
 ) -> list[SourceResult]:
+    def progress(line: str) -> None:
+        if on_progress is not None:
+            on_progress(line)
+        else:
+            print(line, flush=True)
+
     # Ticker details is a current-state endpoint. It can refresh today's snapshot,
     # but it cannot reconstruct historical daily snapshots for old gaps.
     today = datetime.now(UTC).date()
@@ -915,11 +922,7 @@ def run_massive_ticker_details(
     failed = 0
     not_found = 0
     observed_at = datetime.now(UTC)
-    print(
-        "massive_ticker_details api_key_diagnostic="
-        + json.dumps(massive_api_key_diagnostic(), sort_keys=True),
-        flush=True,
-    )
+    progress("massive_ticker_details api_key_diagnostic=" + json.dumps(massive_api_key_diagnostic(), sort_keys=True))
     for index, ref in enumerate(symbols.values(), start=1):
         try:
             overview = fetch_massive_ticker_overview(args, ref.ticker)
@@ -934,13 +937,12 @@ def run_massive_ticker_details(
             not_found += 1
         except Exception as exc:  # noqa: BLE001
             failed += 1
-            print(f"massive_ticker_details ticker={ref.ticker} status=failed error={safe_exception_text(exc)}", flush=True)
+            progress(f"massive_ticker_details ticker={ref.ticker} status=failed error={safe_exception_text(exc)}")
         if index % 500 == 0:
-            print(
+            progress(
                 f"massive_ticker_details progress={index:,}/{len(symbols):,} "
                 f"snapshot_rows={len(snapshot_rows):,} float_rows={len(float_rows):,} "
-                f"not_found={not_found:,} failed={failed:,}",
-                flush=True,
+                f"not_found={not_found:,} failed={failed:,}"
             )
     stamp_rows(snapshot_rows, run_id)
     stamp_rows(float_rows, run_id)
@@ -961,12 +963,11 @@ def run_massive_ticker_details(
         "api_key_diagnostic": massive_api_key_diagnostic(),
     }
     results = [SourceResult("massive_ticker_details", "massive_ticker_details", target_start, target_end, len(symbols), written, failed, status, details)]
-    print(
+    progress(
         f"massive_ticker_details {target_start.isoformat()} status={status} "
-        f"symbols={len(symbols):,} written={written:,} not_found={not_found:,} failed={failed:,}",
-        flush=True,
+        f"symbols={len(symbols):,} written={written:,} not_found={not_found:,} failed={failed:,}"
     )
-    if args.execute:
+    if args.execute and getattr(args, "write_coverage", True):
         insert_publication_coverage(
             client,
             database=args.write_database,

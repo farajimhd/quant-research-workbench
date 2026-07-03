@@ -57,6 +57,7 @@ class GraphWriteResult:
     accepted_candidates: int
     issue_candidates: int
     table_counts: dict[str, int]
+    accepted_tickers: list[str]
     issues: list[GraphWriteIssue]
     reason: str
 
@@ -82,6 +83,7 @@ def write_canonical_graph_candidates(config: ReferenceGatewayConfig, plan: Activ
             accepted_candidates=0,
             issue_candidates=0,
             table_counts={table: 0 for table in IDENTITY_TABLES},
+            accepted_tickers=[],
             issues=[],
             reason="no_ready_candidates",
         )
@@ -93,12 +95,14 @@ def write_canonical_graph_candidates(config: ReferenceGatewayConfig, plan: Activ
     rows_by_table: dict[str, list[dict[str, Any]]] = {table: [] for table in IDENTITY_TABLES}
     issues: list[GraphWriteIssue] = []
     accepted = 0
+    accepted_tickers: list[str] = []
     for candidate in ready:
         accepted_rows, candidate_issues = build_candidate_rows(candidate, existing, run_id, now)
         if candidate_issues:
             issues.extend(candidate_issues)
             continue
         accepted += 1
+        accepted_tickers.append(candidate.ticker.upper())
         for table_name, rows in accepted_rows.items():
             rows_by_table[table_name].extend(rows)
         update_existing_graph(existing, accepted_rows)
@@ -114,6 +118,7 @@ def write_canonical_graph_candidates(config: ReferenceGatewayConfig, plan: Activ
         accepted_candidates=accepted,
         issue_candidates=len(issues),
         table_counts={table: len(rows) for table, rows in rows_by_table.items()},
+        accepted_tickers=accepted_tickers,
         issues=issues,
         reason="inserted_canonical_graph_rows" if inserted else "no_rows_inserted",
     )

@@ -66,6 +66,12 @@ class ReferenceGatewayConfig:
     daemon_after_hours_interval_seconds: float
     market_publication_gap_fill_enabled: bool
     market_publication_gap_fill_days: int
+    current_ticker_detail_insert_batch_size: int
+    current_ticker_detail_request_min_interval_seconds: float
+    current_ticker_detail_request_timeout_seconds: int
+    current_ticker_detail_request_max_retries: int
+    current_ticker_detail_request_retry_base_seconds: float
+    current_ticker_detail_request_retry_max_seconds: float
     ibkr_borrow_snapshot_batch_size: int
     ibkr_borrow_insert_batch_size: int
     ibkr_borrow_request_min_interval_seconds: float
@@ -139,7 +145,7 @@ class ReferenceGatewayConfig:
             market_hours_write_override=maintenance_force,
             market_hours_write_reason=maintenance_reason,
             write_discovered_issues=not integrity_report_only,
-            write_canonical_graph=not maintenance_skip,
+            write_canonical_graph=not integrity_report_only,
             immediate_tradability_block_enabled=not integrity_report_only,
             resolve_stale_issues=not integrity_report_only,
             rebuild_tradable_on_execute=not maintenance_skip,
@@ -149,6 +155,12 @@ class ReferenceGatewayConfig:
             daemon_after_hours_interval_seconds=env_float("REFERENCE_GATEWAY_DAEMON_AFTER_HOURS_INTERVAL_SECONDS", 3600.0),
             market_publication_gap_fill_enabled=not maintenance_skip,
             market_publication_gap_fill_days=env_int("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_DAYS", 14),
+            current_ticker_detail_insert_batch_size=env_int("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_INSERT_BATCH_SIZE", 50_000),
+            current_ticker_detail_request_min_interval_seconds=env_float("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_REQUEST_MIN_INTERVAL_SECONDS", 0.12),
+            current_ticker_detail_request_timeout_seconds=env_int("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_REQUEST_TIMEOUT_SECONDS", 60),
+            current_ticker_detail_request_max_retries=env_int("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_REQUEST_MAX_RETRIES", 5),
+            current_ticker_detail_request_retry_base_seconds=env_float("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_REQUEST_RETRY_BASE_SECONDS", 2.0),
+            current_ticker_detail_request_retry_max_seconds=env_float("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_REQUEST_RETRY_MAX_SECONDS", 120.0),
             ibkr_borrow_snapshot_batch_size=env_int("REFERENCE_GATEWAY_IBKR_BORROW_SNAPSHOT_BATCH_SIZE", 100),
             ibkr_borrow_insert_batch_size=env_int("REFERENCE_GATEWAY_IBKR_BORROW_INSERT_BATCH_SIZE", 50_000),
             ibkr_borrow_request_min_interval_seconds=env_float("REFERENCE_GATEWAY_IBKR_BORROW_REQUEST_MIN_INTERVAL_SECONDS", 0.12),
@@ -198,6 +210,17 @@ class ReferenceGatewayConfig:
                 "active_ticker_max_pages": self.active_ticker_max_pages,
                 "active_ticker_page_limit": self.active_ticker_page_limit,
                 "active_ticker_new_candidate_limit": self.active_ticker_new_candidate_limit,
+                "write_canonical_graph": self.write_canonical_graph,
+                "current_ticker_detail_insert_batch_size": self.current_ticker_detail_insert_batch_size,
+                "current_ticker_detail_request_min_interval_seconds": self.current_ticker_detail_request_min_interval_seconds,
+                "current_ticker_detail_request_timeout_seconds": self.current_ticker_detail_request_timeout_seconds,
+                "current_ticker_detail_request_max_retries": self.current_ticker_detail_request_max_retries,
+                "current_ticker_detail_request_retry_base_seconds": self.current_ticker_detail_request_retry_base_seconds,
+                "current_ticker_detail_request_retry_max_seconds": self.current_ticker_detail_request_retry_max_seconds,
+                "ibkr_borrow_snapshot_batch_size": self.ibkr_borrow_snapshot_batch_size,
+                "ibkr_borrow_insert_batch_size": self.ibkr_borrow_insert_batch_size,
+                "ibkr_borrow_request_min_interval_seconds": self.ibkr_borrow_request_min_interval_seconds,
+                "ibkr_borrow_request_timeout_seconds": self.ibkr_borrow_request_timeout_seconds,
             },
             "integrity": {
                 "mode": self.integrity_mode,
@@ -210,15 +233,10 @@ class ReferenceGatewayConfig:
                 "after_hours_writes_only": self.after_hours_writes_only,
                 "market_hours_write_override": self.market_hours_write_override,
                 "market_hours_write_reason": self.market_hours_write_reason,
-                "write_canonical_graph": self.write_canonical_graph,
                 "rebuild_tradable_on_execute": self.rebuild_tradable_on_execute,
                 "rebuild_tradable_in_test_mode": self.rebuild_tradable_in_test_mode,
                 "market_publication_gap_fill_enabled": self.market_publication_gap_fill_enabled,
                 "market_publication_gap_fill_days": self.market_publication_gap_fill_days,
-                "ibkr_borrow_snapshot_batch_size": self.ibkr_borrow_snapshot_batch_size,
-                "ibkr_borrow_insert_batch_size": self.ibkr_borrow_insert_batch_size,
-                "ibkr_borrow_request_min_interval_seconds": self.ibkr_borrow_request_min_interval_seconds,
-                "ibkr_borrow_request_timeout_seconds": self.ibkr_borrow_request_timeout_seconds,
             },
             "terminal": {
                 "rich_enabled": self.terminal_rich_enabled,

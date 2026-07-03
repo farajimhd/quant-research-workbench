@@ -24,6 +24,7 @@ from services.reference_gateway.alerts import (
 from services.reference_gateway.audit import run_reference_audit, write_report
 from services.reference_gateway.canonical_graph_writer import write_canonical_graph_candidates
 from services.reference_gateway.config import ReferenceGatewayConfig, ReferenceGatewayConfigOverrides
+from services.reference_gateway.current_ticker_detail_sync import run_current_ticker_detail_sync
 from services.reference_gateway.daemon import run_reference_daemon
 from services.reference_gateway.facts import ensure_fact_schema
 from services.reference_gateway.issue_resolution import resolve_stale_active_ticker_issues
@@ -46,6 +47,7 @@ SOURCE_SYNC_OPERATION_NAMES = {
     "massive_active_tickers": "Source: Massive /v3/reference/tickers",
     "canonical_symbols": "Source: q_live canonical symbols",
     "massive_overview": "Source: Massive /v3/reference/tickers/{ticker}",
+    "massive_ticker_details": "Source: Massive current snapshot/float",
     "ibkr_conids": "Source: IBKR /iserver/secdef/search",
     "ibkr_borrow_availability": "Source: IBKR /iserver/marketdata/snapshot",
     "ticker_reconciliation": "Source: ticker reconciliation",
@@ -289,18 +291,6 @@ def main() -> None:
             f"write_database={config.clickhouse_write_database}"
         )
         refresh_reference_state("after_market_publication_schema")
-    if config.execute and config.resolve_stale_issues:
-        started = time.perf_counter()
-        resolution = resolve_stale_active_ticker_issues(config)
-        add_operation("Resolve issues", "completed", resolution_detail(resolution), rows=resolution.resolved, seconds=time.perf_counter() - started)
-        emit("stale_issue_resolution=" + json.dumps(asdict(resolution), sort_keys=True))
-    if config.execute and config.rebuild_tradable_on_execute and write_policy.writes_allowed:
-        started = time.perf_counter()
-        rebuild = rebuild_tradable_publications(config, reason="pre_audit_source_truth_refresh")
-        add_operation("Rebuild tradable publications", rebuild.status, rebuild.reason, seconds=time.perf_counter() - started)
-        emit("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True))
-    elif config.execute and config.rebuild_tradable_on_execute:
-        add_operation("Rebuild tradable publications", "skipped", write_policy.reason)
     audit_started = time.perf_counter()
     report = run_reference_audit(config)
     record.audit = report
@@ -357,7 +347,7 @@ def main() -> None:
             else:
                 add_operation("Write source-sync issues", "skipped", "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
                 emit("source_sync_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
-            if config.write_canonical_graph and write_policy.writes_allowed:
+            if config.write_canonical_graph:
                 started = time.perf_counter()
                 graph_write = write_canonical_graph_candidates(config, plan)
                 add_operation("Write canonical graph", "completed", graph_write.reason, rows=graph_write.inserted_rows, seconds=time.perf_counter() - started)
@@ -384,37 +374,44 @@ def main() -> None:
                     add_operation("Write graph issues", "skipped", "REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
                     emit("canonical_graph_issue_write=skipped reason=REFERENCE_GATEWAY_WRITE_DISCOVERED_ISSUES_FALSE")
             else:
-                reason = "REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH_FALSE" if not config.write_canonical_graph else write_policy.reason
+                reason = "REFERENCE_GATEWAY_WRITE_CANONICAL_GRAPH_FALSE"
                 add_operation("Write canonical graph", "skipped", reason)
                 emit("canonical_graph_write=skipped reason=" + reason)
-            if config.resolve_stale_issues:
-                started = time.perf_counter()
-                resolution = resolve_stale_active_ticker_issues(config)
-                add_operation("Resolve issues", "completed", resolution_detail(resolution), rows=resolution.resolved, seconds=time.perf_counter() - started)
-                emit("stale_issue_resolution=" + json.dumps(asdict(resolution), sort_keys=True))
-            changed_rows = issue_write.written if issue_write is not None else 0
-            if graph_write is not None:
-                changed_rows += graph_write.inserted_rows
-            if graph_issue_write is not None:
-                changed_rows += graph_issue_write.written
-            if changed_rows > 0 and config.rebuild_tradable_on_execute and write_policy.writes_allowed:
-                started = time.perf_counter()
-                rebuild = rebuild_tradable_publications(config, reason="post_source_sync_issue_write")
-                add_operation("Rebuild tradable publications", rebuild.status, rebuild.reason, seconds=time.perf_counter() - started)
-                emit("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True))
-                audit_started = time.perf_counter()
-                report = run_reference_audit(config)
-                record.audit = report
-                add_operation("Post-write reference audit", report.status, f"{len(report.checks)} checks", seconds=time.perf_counter() - audit_started)
-                report_path = write_report(report, config.report_root_win)
-                record.report_path = str(report_path or record.report_path)
-                logger.event("audit_completed", **audit_log_summary(report, report_path=record.report_path, post_write=True))
-                write_alert_batch(build_audit_alerts(report, report_path=record.report_path, post_write=True), "post_write_reference_audit")
-                refresh_terminal()
-                if report_path:
-                    emit(f"post_issue_report={report_path}")
-            elif changed_rows > 0 and config.rebuild_tradable_on_execute:
-                add_operation("Post-issue tradable rebuild", "skipped", write_policy.reason)
+        else:
+            graph_write = None
+
+        accepted_tickers = list(getattr(graph_write, "accepted_tickers", []) or [])
+        current_details_started = time.perf_counter()
+
+        def current_details_progress(source: str, status: str, message: str, rows: int | None) -> None:
+            elapsed = time.perf_counter() - current_details_started
+            operation_name = SOURCE_SYNC_OPERATION_NAMES.get(source, "Source: " + source.replace("_", " "))
+            update_latest_operation(operation_name, status, truncate_detail(message), rows=rows, seconds=elapsed)
+            update_latest_operation("Source sync", "running", truncate_detail(message), rows=rows, seconds=time.perf_counter() - source_sync_started)
+
+        current_details = run_current_ticker_detail_sync(config, tickers=accepted_tickers, on_progress=current_details_progress)
+        current_details_status = "completed" if current_details.status in {"completed", "covered_empty", "skipped"} else current_details.status
+        update_latest_operation(
+            SOURCE_SYNC_OPERATION_NAMES["massive_ticker_details"],
+            current_details_status,
+            (
+                f"requested={current_details.requested:,} matched={current_details.matched:,} "
+                f"written={current_details.written:,} failed={current_details.failed:,} status={current_details.status}"
+            ),
+            rows=current_details.written,
+            seconds=current_details.wall_seconds,
+        )
+        logger.event(
+            "current_ticker_detail_source_sync_completed",
+            attempted=current_details.attempted,
+            status=current_details.status,
+            requested=current_details.requested,
+            matched=current_details.matched,
+            written=current_details.written,
+            failed=current_details.failed,
+            wall_seconds=current_details.wall_seconds,
+            details=current_details.details,
+        )
 
         borrow_started = time.perf_counter()
 
@@ -446,6 +443,12 @@ def main() -> None:
             overview_fetched=plan.overview_fetched,
             ibkr_searched=plan.ibkr_searched,
             candidate_limit=plan.candidate_limit,
+            current_detail_attempted=current_details.attempted,
+            current_detail_status=current_details.status,
+            current_detail_requested=current_details.requested,
+            current_detail_matched=current_details.matched,
+            current_detail_written=current_details.written,
+            current_detail_failed=current_details.failed,
             ibkr_borrow_attempted=borrow_sync.attempted,
             ibkr_borrow_status=borrow_sync.status,
             ibkr_borrow_eligible=borrow_sync.eligible,
@@ -464,7 +467,7 @@ def main() -> None:
             wall_seconds=borrow_sync.wall_seconds,
             details=borrow_sync.details,
         )
-        source_sync_status = "completed" if borrow_status == "completed" else "warning"
+        source_sync_status = "completed" if borrow_status == "completed" and current_details_status == "completed" else "warning"
         write_alert_batch(build_source_sync_alerts(plan), "source_sync")
         add_operation(
             "Source sync",
@@ -472,6 +475,7 @@ def main() -> None:
             (
                 f"provider={plan.provider_rows:,} missing={plan.missing_tickers:,} "
                 f"overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
+                f"current_detail_written={current_details.written:,} current_detail_failed={current_details.failed:,} "
                 f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,}"
             ),
             rows=plan.missing_tickers,
@@ -481,15 +485,43 @@ def main() -> None:
             "source_sync=done "
             f"provider_rows={plan.provider_rows:,} known_symbols={plan.known_active_symbols:,} "
             f"missing={plan.missing_tickers:,} overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
+            f"current_detail_written={current_details.written:,} current_detail_failed={current_details.failed:,} "
             f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,} "
             f"saturated={plan.provider_saturated} wall_seconds={time.perf_counter() - source_sync_started:.2f}"
         )
         refresh_reference_state("after_source_sync_writes")
-    if (
-        config.execute
-        and config.market_publication_gap_fill_enabled
-        and (not config.test_write_mode or config.maintenance_mode == "force")
-    ):
+
+    maintenance_allowed = config.execute and config.maintenance_mode != "skip" and write_policy.writes_allowed
+    maintenance_skip_reason = "maintenance_disabled" if config.maintenance_mode == "skip" else write_policy.reason
+    if maintenance_allowed:
+        if config.resolve_stale_issues:
+            started = time.perf_counter()
+            resolution = resolve_stale_active_ticker_issues(config)
+            add_operation("Resolve issues", "completed", resolution_detail(resolution), rows=resolution.resolved, seconds=time.perf_counter() - started)
+            emit("stale_issue_resolution=" + json.dumps(asdict(resolution), sort_keys=True))
+        if config.rebuild_tradable_on_execute:
+            started = time.perf_counter()
+            rebuild = rebuild_tradable_publications(config, reason="maintenance_cycle")
+            add_operation("Rebuild tradable publications", rebuild.status, rebuild.reason, seconds=time.perf_counter() - started)
+            emit("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True))
+            audit_started = time.perf_counter()
+            report = run_reference_audit(config)
+            record.audit = report
+            add_operation("Post-maintenance reference audit", report.status, f"{len(report.checks)} checks", seconds=time.perf_counter() - audit_started)
+            report_path = write_report(report, config.report_root_win)
+            record.report_path = str(report_path or record.report_path)
+            logger.event("audit_completed", **audit_log_summary(report, report_path=record.report_path, post_write=True))
+            write_alert_batch(build_audit_alerts(report, report_path=record.report_path, post_write=True), "post_maintenance_reference_audit")
+            refresh_terminal()
+            if report_path:
+                emit(f"post_maintenance_report={report_path}")
+    else:
+        if config.execute and config.resolve_stale_issues:
+            add_operation("Resolve issues", "skipped", maintenance_skip_reason)
+        if config.execute and config.rebuild_tradable_on_execute:
+            add_operation("Rebuild tradable publications", "skipped", maintenance_skip_reason)
+
+    if maintenance_allowed and config.market_publication_gap_fill_enabled and (not config.test_write_mode or config.maintenance_mode == "force"):
         started = time.perf_counter()
         add_operation(
             "Market publication gap fill",
@@ -538,9 +570,10 @@ def main() -> None:
             ),
             "market_publication_gap_fill",
         )
-    elif config.execute and config.test_write_mode and config.market_publication_gap_fill_enabled:
-        add_operation("Market publication gap fill", "skipped", "temp_mode_requires_maintenance_force")
-        emit("market_publication_gap_fill=skipped reason=temp_mode_requires_maintenance_force")
+    elif config.execute and config.market_publication_gap_fill_enabled:
+        reason = "temp_mode_requires_maintenance_force" if config.test_write_mode and config.maintenance_mode != "force" else maintenance_skip_reason
+        add_operation("Market publication gap fill", "skipped", reason)
+        emit("market_publication_gap_fill=skipped reason=" + reason)
     refresh_reference_state("final")
     record.final_status = report.status
     record.wall_seconds = time.perf_counter() - run_started
