@@ -682,6 +682,65 @@ versioned model data adapter.
 
 ## Build Cache
 
+### Streaming CPU Fast Path
+
+The preferred experimental builder for large workstation runs is:
+
+```powershell
+python -m research.mlops.rolling_loader.run_build_ticker_month_cache_streaming `
+  --month 2019-09 `
+  --cache-id train_201909_ticker_month_streaming `
+  --resume
+```
+
+For a period, the script builds only complete months inside the requested
+range:
+
+```powershell
+python -m research.mlops.rolling_loader.run_build_ticker_month_cache_streaming `
+  --start-utc 2019-02-01T00:00:00Z `
+  --end-utc 2020-01-01T00:00:00Z `
+  --cache-id train_201902_201912_ticker_month_streaming `
+  --resume
+```
+
+This script is built around the physical layout of `events`:
+
+| Stage | What happens |
+| --- | --- |
+| Month plan | Reads `events_ticker_day_index`, dedupes `ReplacingMergeTree` rows with `argMax(..., built_at)`, and creates one ticker/month plan. |
+| Warmup plan | For each ticker chunk, subtracts `max_cached_event_lookback_rows` from the first origin ordinal and uses the day index to find every source day needed for that ordinal range. Warmup can cross month boundaries. |
+| Event fetch | Fetches many small `ticker + ordinal BETWEEN` chunks from ClickHouse using the event-date bounds from the day index. |
+| CPU processing | Builds origins and raw event-window indices in Python/Polars/NumPy after each small event frame arrives. |
+| Context fetch | Fetches ticker news, SEC embeddings, XBRL, daily bars, and corporate actions as package-level time-ordered streams. These streams include prior history and are not materialized per origin. |
+| Finalize | Concats and deduplicates fetched event rows for the ticker package, builds compact intraday base bars and sparse condition-event streams in Polars, writes package manifests, and atomically moves the package into place. |
+
+Context semantics are important: the builder stores streams; the loader resolves
+context per origin with as-of logic. A context row is available for an origin
+only when its availability timestamp is not after `origin_timestamp_us`. Missing
+or short context is represented by masks and zero padding at loader output time.
+
+The default concurrency is workstation-oriented:
+
+```text
+fetch workers                  8
+process workers               48
+context workers               24
+finalize workers              16
+max inflight fetches          48
+max inflight process tasks   128
+target origin rows/fetch  500000
+ClickHouse max_threads         8 per query
+ClickHouse memory cap        120G per query
+```
+
+Use `--ticker-limit` or `--tickers` for quick tests. The Rich terminal uses the
+same non-blinking dashboard renderer as the original ticker/month builder and
+shows the `plan`, `fetch`, `process`, `context`, and `finalize` lanes. Ctrl+C
+logs an interrupt message, cancels tracked ClickHouse query ids for this
+process, writes an interrupted root manifest, and leaves completed packages
+intact.
+
 Workstation form:
 
 ```powershell
