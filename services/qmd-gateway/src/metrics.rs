@@ -53,6 +53,12 @@ struct MetricsInner {
     massive_connect_failures: AtomicU64,
     massive_disconnects: AtomicU64,
     parse_failures: AtomicU64,
+    reference_filtered_events: AtomicU64,
+    reference_filtered_live_state: AtomicU64,
+    reference_filtered_scanner: AtomicU64,
+    reference_tradability_blocked_symbols: AtomicU64,
+    reference_tradability_loaded_symbols: AtomicU64,
+    reference_tradability_refresh_failures: AtomicU64,
     scanner_candidates_emitted: AtomicU64,
     service_start_unix_ms: AtomicI64,
 }
@@ -104,6 +110,12 @@ pub struct MetricsSnapshot {
     pub massive_disconnects: u64,
     pub parse_failures: u64,
     pub process_uptime_ms: i64,
+    pub reference_filtered_events: u64,
+    pub reference_filtered_live_state: u64,
+    pub reference_filtered_scanner: u64,
+    pub reference_tradability_blocked_symbols: u64,
+    pub reference_tradability_loaded_symbols: u64,
+    pub reference_tradability_refresh_failures: u64,
     pub scanner_candidates_emitted: u64,
 }
 
@@ -166,6 +178,12 @@ impl SharedMetrics {
                 massive_connect_failures: AtomicU64::new(0),
                 massive_disconnects: AtomicU64::new(0),
                 parse_failures: AtomicU64::new(0),
+                reference_filtered_events: AtomicU64::new(0),
+                reference_filtered_live_state: AtomicU64::new(0),
+                reference_filtered_scanner: AtomicU64::new(0),
+                reference_tradability_blocked_symbols: AtomicU64::new(0),
+                reference_tradability_loaded_symbols: AtomicU64::new(0),
+                reference_tradability_refresh_failures: AtomicU64::new(0),
                 scanner_candidates_emitted: AtomicU64::new(0),
                 service_start_unix_ms: AtomicI64::new(Utc::now().timestamp_millis()),
             }),
@@ -244,6 +262,15 @@ impl SharedMetrics {
             massive_disconnects: self.get(&self.inner.massive_disconnects),
             parse_failures: self.get(&self.inner.parse_failures),
             process_uptime_ms: now_ms - start_ms,
+            reference_filtered_events: self.get(&self.inner.reference_filtered_events),
+            reference_filtered_live_state: self.get(&self.inner.reference_filtered_live_state),
+            reference_filtered_scanner: self.get(&self.inner.reference_filtered_scanner),
+            reference_tradability_blocked_symbols: self
+                .get(&self.inner.reference_tradability_blocked_symbols),
+            reference_tradability_loaded_symbols: self
+                .get(&self.inner.reference_tradability_loaded_symbols),
+            reference_tradability_refresh_failures: self
+                .get(&self.inner.reference_tradability_refresh_failures),
             scanner_candidates_emitted: self.get(&self.inner.scanner_candidates_emitted),
         }
     }
@@ -414,6 +441,27 @@ impl SharedMetrics {
 
     pub fn inc_parse_failure(&self) {
         self.inc(&self.inner.parse_failures, 1);
+    }
+
+    pub fn inc_reference_filtered_event(&self) {
+        self.inc(&self.inner.reference_filtered_events, 1);
+    }
+
+    pub fn inc_reference_filtered_live_state(&self) {
+        self.inc(&self.inner.reference_filtered_live_state, 1);
+    }
+
+    pub fn inc_reference_filtered_scanner(&self) {
+        self.inc(&self.inner.reference_filtered_scanner, 1);
+    }
+
+    pub fn inc_reference_tradability_refresh_failure(&self) {
+        self.inc(&self.inner.reference_tradability_refresh_failures, 1);
+    }
+
+    pub fn set_reference_tradability_counts(&self, loaded: u64, blocked: u64) {
+        self.set(&self.inner.reference_tradability_loaded_symbols, loaded);
+        self.set(&self.inner.reference_tradability_blocked_symbols, blocked);
     }
 
     pub fn inc_scanner_candidates(&self, count: u64) {

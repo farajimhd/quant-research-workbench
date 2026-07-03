@@ -4,6 +4,7 @@ use crate::event::{massive_status_message, parse_massive_payload, MarketEvent};
 use crate::indicators::IndicatorEventRouter;
 use crate::live_market_state::LiveMarketStateRouter;
 use crate::metrics::SharedMetrics;
+use crate::reference_tradability::SharedReferenceTradabilityStore;
 use crate::state::SharedMarketState;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
@@ -19,6 +20,7 @@ pub struct MarketEventFanout {
     pub bar_router: BarEventRouter,
     pub indicator_router: IndicatorEventRouter,
     pub live_market_state_router: LiveMarketStateRouter,
+    pub reference_tradability: SharedReferenceTradabilityStore,
     pub event_sender: broadcast::Sender<MarketEvent>,
     pub metrics: SharedMetrics,
 }
@@ -111,8 +113,16 @@ pub async fn fanout_market_event(event: MarketEvent, fanout: &MarketEventFanout)
     {
         eprintln!("Live market state receiver closed; could not route one market event.");
     }
-    if fanout.event_sender.send(event.clone()).is_err() {
-        fanout.metrics.inc_event_broadcast_dropped();
+    let reference_emit_allowed = fanout
+        .reference_tradability
+        .is_emit_allowed(event.ticker())
+        .await;
+    if reference_emit_allowed {
+        if fanout.event_sender.send(event.clone()).is_err() {
+            fanout.metrics.inc_event_broadcast_dropped();
+        }
+    } else {
+        fanout.metrics.inc_reference_filtered_event();
     }
     if fanout.bar_router.send(event.clone()).await.is_err() {
         fanout.metrics.inc_bar_event_dropped();

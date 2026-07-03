@@ -75,6 +75,7 @@ In monitor mode, exiting the monitor stops the background gateway process.
 | `GET /config` | Effective configuration after env parsing. Do not expose publicly because it includes structure and presence flags. |
 | `GET /metrics` | Operational counters and lag values. |
 | `GET /snapshot/maintenance` | In-flight startup maintenance, gap-fill, and backfill progress state. |
+| `GET /snapshot/reference-tradability` | QMD's current hard reference emission-gate summary. |
 | `GET /indicator-catalog` | Indicator family contract. |
 | `GET /signal-catalog` | Signal method contract. |
 | `GET /snapshot/scanner?limit=250` | Simple latest market-state scanner snapshot. |
@@ -122,6 +123,10 @@ In monitor mode, exiting the monitor stops the background gateway process.
 | `live_market_state_events_persisted` | Abnormal market-state transition rows inserted to ClickHouse. | Should track emitted rows. |
 | `live_market_state_broadcast_dropped` | UI/API live-state stream had no receiver or lagged. | Durable persistence is still authoritative; inspect only if live UI misses transitions. |
 | `live_market_state_persist_failures` | ClickHouse insert failures for abnormal market-state rows. | Treat as audit loss; inspect ClickHouse permissions/schema. |
+| `reference_tradability_loaded_symbols` | Symbols loaded from latest reference tradable universe. | Should be nonzero before the app relies on QMD emissions. |
+| `reference_tradability_blocked_symbols` | Symbols suppressed by the reference hard gate. | Expected when reference issues exist. |
+| `reference_filtered_events`, `reference_filtered_scanner`, `reference_filtered_live_state` | App-facing emissions suppressed by reference hard gate. | Persistence still continues; high values mean many received symbols are not currently reference-tradable. |
+| `reference_tradability_refresh_failures` | Failed refreshes of latest reference tradability rows. | In fail-closed mode, unknown/unloaded symbols are suppressed until refresh succeeds. |
 | `gap_fill_runs`, `gap_fill_failures` | Gap-fill attempts and failures. | Failures need REST/ClickHouse error review. |
 | `gap_fill_rows_written` | Rows repaired by REST gap fill. | High values after restart are expected; high values every cycle mean ingestion gaps remain. |
 | `gap_fill_last_duration_ms` | Last gap-fill runtime. | If large, reduce symbols/pages or move repair after hours. |
@@ -270,6 +275,7 @@ Before live use:
 7. `events` receives rows or `/stream/compact-events` emits rows.
 8. `live_market_bars`, `bars_by_symbol_time`, and `bars_by_time_symbol` receive closed bars.
 9. `/snapshot/live-market-state` is reachable and `live_symbol_market_event_v1` exists.
+10. `/snapshot/reference-tradability` shows loaded reference symbols before trading clients rely on QMD emissions.
 
 ## Failure Triage
 
@@ -283,6 +289,7 @@ Before live use:
 | Indicators are missing but bars arrive | Check `indicator_events_dropped`, `bar_rows_indicator_dropped`, and indicator history limits. |
 | Scanner primitives are missing | Confirm bars close, then check whether current market activity meets primitive thresholds. |
 | Live market state is missing | Confirm `QMD_LIVE_MARKET_STATE_ENABLED=true`, bars close, and the state is actually abnormal. Normal state does not write rows. |
+| App streams are missing a ticker but ClickHouse has rows | Check `/snapshot/reference-tradability` and `reference_filtered_*` metrics. Reference-blocked symbols are intentionally not emitted. |
 | API is slow | Lower broadcast frequency, inspect websocket clients, and watch drop counters. |
 | Gap fill does not run | Check `QMD_GAP_FILL_ENABLED`, `MASSIVE_API_KEY`, `QMD_GAP_FILL_MODE`, and whether the current phase allows repair. |
 | Gap fill records `awaiting_live_symbols` | The durable symbol universe is empty and no websocket compact symbols have arrived yet. Once websocket symbols arrive, repair should add them to `qmd_gap_fill_symbol_universe_v1` and retry on `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS`. |

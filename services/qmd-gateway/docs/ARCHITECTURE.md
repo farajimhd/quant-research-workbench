@@ -15,6 +15,7 @@ Massive websocket
       -> in-memory bars
       -> in-memory indicators
       -> in-memory abnormal market-state overlay
+      -> reference tradability emission gate
       -> Massive-only scanner primitives
       -> compact live event stream/table
       -> ClickHouse q_live compact events/bars/optional raw/optional indicators
@@ -39,6 +40,7 @@ The gateway outputs market-data primitives. The app backend combines those primi
 | `state.rs` | Simple latest market snapshot | Market events | `/snapshot/scanner`, `/snapshot/ticker` | Final scanner scoring |
 | `bars.rs` | Live bar aggregation | Market events | `BarRow`, `live_market_bars`, `bars_by_symbol_time`, `bars_by_time_symbol` | Historical chart storage |
 | `live_market_state.rs` | Live abnormal market-state overlay | Market events, closed bars | `/snapshot/live-market-state`, `/stream/live-market-state`, `live_symbol_market_event_v1` | Reference identity/routing decisions |
+| `reference_tradability.rs` | Hard reference emission gate | Latest `feature_tradable_universe_v1` | In-memory allow/block map and `/snapshot/reference-tradability` | Reference graph ownership |
 | `indicators.rs` | Streaming tick and bar indicators | Market events, closed bars | Tick snapshots, `IndicatorRow` | Wide research feature generation |
 | `scanner.rs` | Massive-only scanner primitives | Closed bars | Primitive snapshot/stream | Broker/reference-aware signals |
 | `compact_event.rs` | Live compact event contract, live ring buffers, sorted persistence ordinals | Market events | `/stream/compact-events`, `/snapshot/compact-events/{ticker}`, `events` | Encoder chunk construction |
@@ -141,8 +143,14 @@ Default sources:
 - closed 1s bars open/close locked/crossed quote states
 - configured quote/trade condition ids open/close `condition_halt`
 
-The gateway treats this as a live overlay only. Reference tradability and broker
-routing remain owned by the reference gateway and broker/order services.
+This flow is not the hard reference universe gate. A reference-blocked symbol is
+suppressed from app-facing QMD streams/snapshots. A live-condition-blocked symbol
+is still emitted, with active condition state, because it may become tradable
+again when QMD observes the close/resume transition.
+
+Reference tradability and broker routing remain owned by the reference gateway
+and broker/order services. QMD reads the reference tradability publication and
+uses it only as an emission gate.
 
 ## Indicator Flow
 

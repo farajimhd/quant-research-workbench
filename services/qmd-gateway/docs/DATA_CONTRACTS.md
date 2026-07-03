@@ -164,6 +164,7 @@ Current default event families:
 API contracts:
 
 ```text
+GET /snapshot/reference-tradability
 GET /snapshot/live-market-state?limit=250
 GET /snapshot/live-market-state/{ticker}?limit=250
 WS  /stream/live-market-state
@@ -175,6 +176,12 @@ tradability and broker/account checks:
 ```text
 reference_tradable AND routing_valid AND no active live blocking state
 ```
+
+QMD enforces `reference_tradable` as a hard app-emission filter. Raw ingest,
+compact persistence, bar persistence, and condition persistence continue for all
+received tickers. App-facing market snapshots, primitive streams, compact live
+buffers, and market-state broadcasts are filtered through the latest reference
+tradability cache.
 
 Price integer scale:
 

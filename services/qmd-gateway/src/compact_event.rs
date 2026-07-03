@@ -1,6 +1,7 @@
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::metrics::SharedMetrics;
+use crate::reference_tradability::SharedReferenceTradabilityStore;
 use crate::timefmt::clickhouse_datetime64;
 use chrono::{DateTime, TimeZone, Utc};
 use reqwest::Client;
@@ -221,6 +222,7 @@ pub struct CompactEventClickHouseWriter {
     event_sender: broadcast::Sender<LiveCompactEvent>,
     live_store: SharedCompactEventStore,
     metrics: SharedMetrics,
+    reference_tradability: SharedReferenceTradabilityStore,
     references: CompactEventReferences,
 }
 
@@ -329,6 +331,7 @@ impl CompactEventClickHouseWriter {
         references: CompactEventReferences,
         event_sender: broadcast::Sender<LiveCompactEvent>,
         live_store: SharedCompactEventStore,
+        reference_tradability: SharedReferenceTradabilityStore,
         metrics: SharedMetrics,
     ) -> Self {
         Self {
@@ -337,6 +340,7 @@ impl CompactEventClickHouseWriter {
             event_sender,
             live_store,
             metrics,
+            reference_tradability,
             references,
         }
     }
@@ -407,11 +411,15 @@ impl CompactEventClickHouseWriter {
                                 Ok(mut compact) => {
                                     arrival_sequence = arrival_sequence.saturating_add(1);
                                     compact.arrival_sequence = arrival_sequence;
-                                    if self.event_sender.send(compact.clone()).is_err() {
-                                        self.metrics.inc_compact_event_broadcast_dropped();
+                                    if self.reference_tradability.is_emit_allowed(&compact.ticker).await {
+                                        if self.event_sender.send(compact.clone()).is_err() {
+                                            self.metrics.inc_compact_event_broadcast_dropped();
+                                        }
+                                        self.live_store.push(compact.clone()).await;
+                                        self.metrics.inc_compact_events_emitted(1);
+                                    } else {
+                                        self.metrics.inc_reference_filtered_event();
                                     }
-                                    self.live_store.push(compact.clone()).await;
-                                    self.metrics.inc_compact_events_emitted(1);
                                     if self.config.persist_compact_events {
                                         let ticker = compact.ticker.clone();
                                         let buffer = reorder_buffers.entry(ticker).or_default();

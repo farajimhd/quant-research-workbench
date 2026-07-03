@@ -13,6 +13,7 @@ mod live_market_state;
 mod maintenance;
 mod massive;
 mod metrics;
+mod reference_tradability;
 mod replay;
 mod scanner;
 mod session;
@@ -38,6 +39,10 @@ use crate::live_market_state::{
 use crate::maintenance::SharedMaintenanceState;
 use crate::massive::{run_massive_ingest, MarketEventFanout};
 use crate::metrics::SharedMetrics;
+use crate::reference_tradability::{
+    refresh_reference_tradability_once, spawn_reference_tradability_refresh,
+    SharedReferenceTradabilityStore,
+};
 use crate::replay::run_replay_service;
 use crate::scanner::{spawn_scanner_primitive_engine, ScannerPrimitive, SharedScannerStore};
 use crate::session::is_streaming_phase;
@@ -78,6 +83,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     let scanner = SharedScannerStore::new(config.scanner_primitive_history_limit);
     let live_market_state = SharedLiveMarketStateStore::new(config.live_market_state_history_limit);
+    let reference_tradability = SharedReferenceTradabilityStore::new(
+        config.reference_tradability_enabled,
+        config.reference_tradability_fail_closed,
+    );
     let maintenance = SharedMaintenanceState::new();
     let compact_event_store =
         SharedCompactEventStore::new(config.compact_event_live_buffer_events_per_ticker);
@@ -95,6 +104,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (scanner_sender, _scanner_receiver) = broadcast::channel::<ScannerPrimitive>(10_000);
     let (live_market_state_sender, _live_market_state_receiver) =
         broadcast::channel::<LiveSymbolMarketStateEvent>(10_000);
+
+    match refresh_reference_tradability_once(&config, &reference_tradability, &metrics).await {
+        Ok(summary) => eprintln!(
+            "QMD reference tradability loaded: enabled={} loaded={} symbols={} blocked={} universe_date={}",
+            summary.enabled,
+            summary.loaded,
+            summary.symbols,
+            summary.blocked,
+            summary.latest_universe_date.as_deref().unwrap_or("-")
+        ),
+        Err(error) => {
+            metrics.inc_reference_tradability_refresh_failure();
+            eprintln!("QMD reference tradability initial load failed; emissions will follow fail_closed policy: {error}");
+        }
+    }
+    spawn_reference_tradability_refresh(
+        config.clone(),
+        reference_tradability.clone(),
+        metrics.clone(),
+    );
 
     if config.persist_raw_events {
         let writer = ClickHouseWriter::new(config.clone());
@@ -121,6 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             references,
             compact_event_sender.clone(),
             compact_event_store.clone(),
+            reference_tradability.clone(),
             metrics.clone(),
         );
         compact_writer.initialize().await.map_err(|error| {
@@ -163,12 +193,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.scanner_primitive_channel_capacity,
         metrics.clone(),
         scanner_sender.clone(),
+        reference_tradability.clone(),
     );
     let live_market_state_router = spawn_live_market_state_service(
         config.clone(),
         live_market_state.clone(),
         metrics.clone(),
         live_market_state_sender.clone(),
+        reference_tradability.clone(),
     );
     let bar_router = spawn_bar_engines(
         bars.clone(),
@@ -195,6 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         bar_router: bar_router.clone(),
         indicator_router: indicator_router.clone(),
         live_market_state_router: live_market_state_router.clone(),
+        reference_tradability: reference_tradability.clone(),
         event_sender: event_sender.clone(),
         metrics: metrics.clone(),
     };
@@ -210,6 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         live_market_state_events: live_market_state_sender,
         market: market.clone(),
         metrics: metrics.clone(),
+        reference_tradability,
         maintenance: maintenance.clone(),
         scanner,
         scanner_events: scanner_sender,

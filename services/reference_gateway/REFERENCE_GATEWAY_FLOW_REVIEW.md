@@ -1393,17 +1393,29 @@ reference_tradable AND routing_valid AND no active QMD live blocking state
 ```
 
 Fact-table work in the reference gateway should therefore not duplicate QMD
-state rows. The reference gateway may consume QMD's table to explain or audit a
-decision, but the current live block should come from QMD's live-state snapshot
-or stream. If a downstream table needs a trading-facing view, it should be a
-latest-view/read-model over QMD state plus reference facts, not a copy of every
-normal market row. Repeated observations of an already-active abnormal state
-refresh QMD memory but should not be copied into durable reference facts.
+state rows. The first part, `reference_tradable`, is a hard exclusion maintained
+by the reference gateway and enforced by QMD as an app-emission filter. QMD still
+persists received market events and bars for every ticker, but it does not emit
+scanner, compact-live, ticker, bar, indicator, or live-state data for symbols
+that the latest reference universe marks non-tradable.
+
+The second part, `no active QMD live blocking state`, is a temporary condition
+overlay maintained by QMD. A live-condition-blocked ticker is still emitted to
+the app so the UI can show the ticker and the active condition, but new order
+entry must be blocked until QMD observes the close/resume transition.
+
+The reference gateway may consume QMD's table to explain or audit a decision,
+but the current live block should come from QMD's live-state snapshot or stream.
+If a downstream table needs a trading-facing view, it should be a latest-view or
+read-model over QMD state plus reference facts, not a copy of every normal
+market row. Repeated observations of an already-active abnormal state refresh
+QMD memory but should not be copied into durable reference facts.
 
 Reference fact-table follow-up tasks:
 
-1. Add the live overlay input to the `security_tradability_fact_v1` design as
-   an external/current overlay, not a static source of truth.
+1. Keep `security_tradability_fact_v1` reference-owned: it reflects identity,
+   mapping, listing, issue, and source-integrity correctness, not momentary
+   market conditions.
 2. Keep `security_routing_fact_v1` broker/reference-only.
 3. Add a consumer contract for live trading: read QMD active abnormal states and
    block if any active row has `is_live_tradability_blocking = 1`.

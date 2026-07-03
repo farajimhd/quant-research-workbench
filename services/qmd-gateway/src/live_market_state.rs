@@ -2,6 +2,7 @@ use crate::bars::BarRow;
 use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
 use crate::metrics::SharedMetrics;
+use crate::reference_tradability::SharedReferenceTradabilityStore;
 use crate::timefmt::{clickhouse_datetime64, clickhouse_datetime64_opt};
 use chrono::{DateTime, Utc};
 use reqwest::Client;
@@ -201,6 +202,7 @@ pub fn spawn_live_market_state_service(
     store: SharedLiveMarketStateStore,
     metrics: SharedMetrics,
     event_sender: broadcast::Sender<LiveSymbolMarketStateEvent>,
+    reference_tradability: SharedReferenceTradabilityStore,
 ) -> LiveMarketStateRouter {
     let (sender, receiver) =
         mpsc::channel::<LiveMarketStateInput>(config.live_market_state_channel_capacity.max(1));
@@ -209,6 +211,7 @@ pub fn spawn_live_market_state_service(
         store,
         metrics,
         event_sender,
+        reference_tradability,
         receiver,
     ));
     LiveMarketStateRouter { sender }
@@ -219,6 +222,7 @@ async fn run_live_market_state_service(
     store: SharedLiveMarketStateStore,
     metrics: SharedMetrics,
     event_sender: broadcast::Sender<LiveSymbolMarketStateEvent>,
+    reference_tradability: SharedReferenceTradabilityStore,
     mut receiver: mpsc::Receiver<LiveMarketStateInput>,
 ) {
     let writer = LiveMarketStateClickHouseWriter::new(config.clone());
@@ -240,8 +244,12 @@ async fn run_live_market_state_service(
                             if transition.event_status == "updated" {
                                 continue;
                             }
-                            if event_sender.send(transition.clone()).is_err() {
-                                metrics.inc_live_market_state_broadcast_dropped();
+                            if reference_tradability.is_emit_allowed(&transition.ticker).await {
+                                if event_sender.send(transition.clone()).is_err() {
+                                    metrics.inc_live_market_state_broadcast_dropped();
+                                }
+                            } else {
+                                metrics.inc_reference_filtered_live_state();
                             }
                             batch.push(transition);
                             metrics.inc_live_market_state_emitted(1);

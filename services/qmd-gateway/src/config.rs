@@ -82,6 +82,10 @@ pub struct GatewayConfig {
     pub replay_max_rows: usize,
     pub replay_symbols: Vec<String>,
     pub reference_dir: String,
+    pub reference_tradability_enabled: bool,
+    pub reference_tradability_fail_closed: bool,
+    pub reference_tradability_refresh_ms: u64,
+    pub reference_tradability_table: String,
     pub scanner_primitive_channel_capacity: usize,
     pub scanner_primitive_history_limit: usize,
     pub scanner_broadcast_ms: u64,
@@ -315,6 +319,19 @@ impl GatewayConfig {
             replay_max_rows: env_usize("QMD_REPLAY_MAX_ROWS", 1_000_000),
             replay_symbols: env_list("QMD_REPLAY_SYMBOLS"),
             reference_dir: env_string("QMD_REFERENCE_DIR", &default_reference_dir()),
+            reference_tradability_enabled: env_bool("QMD_REFERENCE_TRADABILITY_ENABLED", true),
+            reference_tradability_fail_closed: env_bool(
+                "QMD_REFERENCE_TRADABILITY_FAIL_CLOSED",
+                true,
+            ),
+            reference_tradability_refresh_ms: env_u64(
+                "QMD_REFERENCE_TRADABILITY_REFRESH_MS",
+                60_000,
+            ),
+            reference_tradability_table: env_string(
+                "QMD_REFERENCE_TRADABILITY_TABLE",
+                "feature_tradable_universe_v1",
+            ),
             scanner_primitive_channel_capacity: env_usize(
                 "QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY",
                 250_000,
