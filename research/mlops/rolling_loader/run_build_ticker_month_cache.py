@@ -86,6 +86,8 @@ DEFAULTS: dict[str, Any] = {
     "events_table": "events",
     "condition_token_reference_table": "event_condition_token_reference",
     "intraday_base_bars_table": "intraday_base_bars_by_time_ticker",
+    "intraday_condition_events_table": "intraday_condition_events_by_time_ticker",
+    "intraday_aux_build_status_table": "intraday_aux_build_status",
     "macro_bars_table": "macro_bars_by_time_symbol",
     "news_token_table": "news_text_tokens",
     "sec_filing_text_token_table": "sec_filing_text_tokens",
@@ -101,6 +103,8 @@ DEFAULTS: dict[str, Any] = {
     "workers": 64,
     "event_fetch_workers": 6,
     "context_fetch_workers": 16,
+    "bar_context_workers": 4,
+    "condition_fetch_workers": 4,
     "label_fetch_workers": 6,
     "cpu_workers": 16,
     "write_workers": 8,
@@ -431,6 +435,8 @@ class LaneExecutors:
         self.executors: dict[str, ThreadPoolExecutor] = {
             "event": ThreadPoolExecutor(max_workers=max(1, int(args.event_fetch_workers)), thread_name_prefix="tmc-event"),
             "context": ThreadPoolExecutor(max_workers=max(1, int(args.context_fetch_workers)), thread_name_prefix="tmc-context"),
+            "bar": ThreadPoolExecutor(max_workers=max(1, int(args.bar_context_workers)), thread_name_prefix="tmc-bar"),
+            "condition": ThreadPoolExecutor(max_workers=max(1, int(args.condition_fetch_workers)), thread_name_prefix="tmc-condition"),
             "label": ThreadPoolExecutor(max_workers=max(1, int(args.label_fetch_workers)), thread_name_prefix="tmc-label"),
             "cpu": ThreadPoolExecutor(max_workers=max(1, int(args.cpu_workers)), thread_name_prefix="tmc-cpu"),
             "write": ThreadPoolExecutor(max_workers=max(1, int(args.write_workers)), thread_name_prefix="tmc-write"),
@@ -522,6 +528,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--events-table", default=DEFAULTS["events_table"])
     parser.add_argument("--condition-token-reference-table", default=DEFAULTS["condition_token_reference_table"])
     parser.add_argument("--intraday-base-bars-table", default=DEFAULTS["intraday_base_bars_table"], help="Shared ClickHouse table of per-day intraday grid bars reused by label/context queries.")
+    parser.add_argument("--intraday-condition-events-table", default=DEFAULTS["intraday_condition_events_table"], help="Shared sparse ClickHouse table of condition-event timestamps used to materialize future condition labels.")
+    parser.add_argument("--intraday-aux-build-status-table", default=DEFAULTS["intraday_aux_build_status_table"], help="Small status table that records completed shared intraday auxiliary builds by month.")
     parser.add_argument("--skip-intraday-base-bar-build", action="store_true", help="Assume intraday base bars are already built; label/context queries still read the table.")
     parser.add_argument("--macro-bars-table", default=DEFAULTS["macro_bars_table"])
     parser.add_argument("--news-token-table", default=DEFAULTS["news_token_table"])
@@ -547,6 +555,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=DEFAULTS["workers"], help="Package coordinator workers.")
     parser.add_argument("--event-fetch-workers", type=int, default=DEFAULTS["event_fetch_workers"])
     parser.add_argument("--context-fetch-workers", type=int, default=DEFAULTS["context_fetch_workers"])
+    parser.add_argument("--bar-context-workers", type=int, default=DEFAULTS["bar_context_workers"])
+    parser.add_argument("--condition-fetch-workers", type=int, default=DEFAULTS["condition_fetch_workers"])
     parser.add_argument("--label-fetch-workers", type=int, default=DEFAULTS["label_fetch_workers"])
     parser.add_argument("--cpu-workers", type=int, default=DEFAULTS["cpu_workers"])
     parser.add_argument("--write-workers", type=int, default=DEFAULTS["write_workers"])
@@ -681,6 +691,8 @@ def main(argv: list[str] | None = None) -> int:
         ensure_category_reference_table(args=args, client_opts=client_opts, config=config, stats=stats)
         if not args.refresh_context_only and not args.skip_intraday_base_bar_build:
             ensure_intraday_base_bars_table(args=args, client_opts=client_opts, config=config)
+        if not args.refresh_context_only:
+            ensure_intraday_condition_events_tables(args=args, client_opts=client_opts, config=config)
         for month in months:
             if stop_event.is_set():
                 break
@@ -691,6 +703,19 @@ def main(argv: list[str] | None = None) -> int:
             month_tickers = _resolve_refresh_tickers(args, cache_root, month) if args.refresh_context_only else _resolve_tickers_for_month(args, client_opts, config, window)
             stats.packages_total += len(month_tickers)
             stats.message(f"{month}: tickers={len(month_tickers):,}" + (" context-refresh-only" if args.refresh_context_only else ""))
+            if not args.refresh_context_only:
+                lanes.submit(
+                    "condition",
+                    f"{month}:intraday_condition_events_month",
+                    lambda window=window: ensure_intraday_condition_events_for_month(
+                        args=args,
+                        client_opts=client_opts,
+                        config=config,
+                        window=window,
+                        stats=stats,
+                        stop_event=stop_event,
+                    ),
+                ).result()
             _write_global_month_package(args=args, client_opts=client_opts, config=config, cache_root=cache_root, month=month, window=window, lanes=lanes, stats=stats, stop_event=stop_event)
             package_executor = ThreadPoolExecutor(max_workers=max(1, int(args.workers)), thread_name_prefix="tmc-package")
             pending: dict[Future[TickerMonthResult], int] = {}
@@ -916,6 +941,83 @@ def ensure_intraday_base_bars_table(*, args: argparse.Namespace, client_opts: Ma
     )
 
 
+def ensure_intraday_condition_events_tables(*, args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig) -> None:
+    _execute_clickhouse_sql(
+        client_opts=client_opts,
+        sql=_create_intraday_condition_events_table_sql(config.database, str(args.intraday_condition_events_table), default_storage_policy()),
+        label="intraday_condition_events_create",
+    )
+    _execute_clickhouse_sql(
+        client_opts=client_opts,
+        sql=_create_intraday_aux_build_status_table_sql(config.database, str(args.intraday_aux_build_status_table), default_storage_policy()),
+        label="intraday_aux_build_status_create",
+    )
+
+
+def ensure_intraday_condition_events_for_month(
+    *,
+    args: argparse.Namespace,
+    client_opts: Mapping[str, str],
+    config: RollingMarketDataConfig,
+    window: Any,
+    stats: BuildStats,
+    stop_event: threading.Event,
+) -> Mapping[str, int]:
+    if bool(getattr(args, "refresh_context_only", False)):
+        return {"rows": 0, "bytes": 0}
+    table = str(args.intraday_condition_events_table)
+    status_table = str(args.intraday_aux_build_status_table)
+    status = _intraday_aux_build_status(
+        client_opts=client_opts,
+        config=config,
+        status_table=status_table,
+        artifact_name=table,
+        month=window.month,
+    )
+    if status is not None:
+        rows = int(status.get("row_count", 0) or 0)
+        stats.message(f"intraday_condition_events: {window.month} ready rows={rows:,}")
+        stats.log_event("intraday_condition_events_month_ready", month=window.month, table=table, rows=rows)
+        return {"rows": rows, "bytes": 0}
+    if stop_event.is_set():
+        raise KeyboardInterrupt
+    started = time.perf_counter()
+    existing_rows = _intraday_condition_events_month_rows(client_opts=client_opts, config=config, table=table, window=window)
+    if existing_rows > 0:
+        stats.message(f"intraday_condition_events: {window.month} incomplete status; dropping sparse partition rows={existing_rows:,}")
+        stats.log_event("intraday_condition_events_drop_partition_start", month=window.month, table=table, rows=existing_rows)
+        _execute_clickhouse_sql(
+            client_opts=client_opts,
+            sql=f"ALTER TABLE {quote_ident(config.database)}.{quote_ident(table)} DROP PARTITION {int(window.first_date.strftime('%Y%m'))}",
+            label=f"intraday_condition_events_drop_{window.month}",
+        )
+    stats.message(f"intraday_condition_events: building sparse month table {window.month}")
+    stats.log_event("intraday_condition_events_month_start", month=window.month, table=table)
+    _execute_clickhouse_sql(
+        client_opts=client_opts,
+        sql=_insert_intraday_condition_events_month_sql(args=args, config=config, window=window),
+        label=f"intraday_condition_events_insert_{window.month}",
+    )
+    rows = _intraday_condition_events_month_rows(client_opts=client_opts, config=config, table=table, window=window)
+    _execute_clickhouse_sql(
+        client_opts=client_opts,
+        sql=_insert_intraday_aux_build_status_sql(
+            database=config.database,
+            status_table=status_table,
+            artifact_name=table,
+            month=window.month,
+            row_count=rows,
+            build_version="v1_sparse_conditions",
+        ),
+        label=f"intraday_condition_events_status_{window.month}",
+    )
+    elapsed = time.perf_counter() - started
+    stats.message(f"intraday_condition_events: built {window.month} rows={rows:,} seconds={elapsed:.1f}")
+    stats.profile_event("intraday_condition_events_month_done", month=window.month, table=table, rows=rows, seconds=elapsed)
+    stats.log_event("intraday_condition_events_month_done", month=window.month, table=table, rows=rows, seconds=elapsed)
+    return {"rows": rows, "bytes": 0}
+
+
 def ensure_intraday_base_bars_for_ticker(
     *,
     args: argparse.Namespace,
@@ -996,6 +1098,44 @@ ORDER BY (ticker, local_date, label_resolution_us, bucket_index, bar_family)
 """
 
 
+def _create_intraday_condition_events_table_sql(database: str, table: str, storage_policy: str) -> str:
+    condition_columns = ",\n    ".join(f"{quote_ident(key)} UInt8" for key in FUTURE_CONDITION_LABEL_KEYS)
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
+(
+    local_date Date,
+    ticker LowCardinality(String),
+    timestamp_us UInt64,
+    ordinal UInt64,
+    local_session_us UInt64,
+    {condition_columns},
+    built_at DateTime DEFAULT now()
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(local_date)
+ORDER BY (ticker, local_date, timestamp_us, ordinal)
+{_mergetree_settings_sql(storage_policy)}
+"""
+
+
+def _create_intraday_aux_build_status_table_sql(database: str, table: str, storage_policy: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
+(
+    artifact_name LowCardinality(String),
+    month LowCardinality(String),
+    status LowCardinality(String),
+    row_count UInt64,
+    build_version LowCardinality(String),
+    built_at DateTime DEFAULT now(),
+    updated_at DateTime DEFAULT now()
+)
+ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (artifact_name, month)
+{_mergetree_settings_sql(storage_policy)}
+"""
+
+
 def _mergetree_settings_sql(storage_policy: str) -> str:
     settings = ["index_granularity = 8192"]
     policy = str(storage_policy or "").strip()
@@ -1028,6 +1168,82 @@ WHERE ticker = {sql_string(ticker.upper())}
 FORMAT TSV
 """
     return _parse_clickhouse_count(_execute_clickhouse_sql(client_opts=client_opts, sql=sql, label=f"intraday_base_bars_count_{window.month}_{ticker}"))
+
+
+def _intraday_condition_events_month_rows(*, client_opts: Mapping[str, str], config: RollingMarketDataConfig, table: str, window: Any) -> int:
+    sql = f"""
+SELECT count()
+FROM {quote_ident(config.database)}.{quote_ident(table)}
+WHERE local_date >= toDate({sql_string(window.first_date.isoformat())})
+  AND local_date < toDate({sql_string(window.next_month_date.isoformat())})
+FORMAT TSV
+"""
+    return _parse_clickhouse_count(_execute_clickhouse_sql(client_opts=client_opts, sql=sql, label=f"intraday_condition_events_count_{window.month}"))
+
+
+def _intraday_aux_build_status(
+    *,
+    client_opts: Mapping[str, str],
+    config: RollingMarketDataConfig,
+    status_table: str,
+    artifact_name: str,
+    month: str,
+) -> dict[str, Any] | None:
+    sql = f"""
+SELECT
+    argMax(status, updated_at) AS status,
+    argMax(row_count, updated_at) AS row_count,
+    argMax(build_version, updated_at) AS build_version
+FROM {quote_ident(config.database)}.{quote_ident(status_table)}
+WHERE artifact_name = {sql_string(artifact_name)}
+  AND month = {sql_string(month)}
+GROUP BY
+    artifact_name,
+    month
+FORMAT TSV
+"""
+    text = _execute_clickhouse_sql(client_opts=client_opts, sql=sql, label=f"intraday_aux_status_{artifact_name}_{month}")
+    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    if not first:
+        return None
+    parts = first.split("\t")
+    status = parts[0] if parts else ""
+    if status != "complete":
+        return None
+    row_count = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+    build_version = parts[2] if len(parts) > 2 else ""
+    return {"status": status, "row_count": row_count, "build_version": build_version}
+
+
+def _insert_intraday_aux_build_status_sql(
+    *,
+    database: str,
+    status_table: str,
+    artifact_name: str,
+    month: str,
+    row_count: int,
+    build_version: str,
+) -> str:
+    return f"""
+INSERT INTO {quote_ident(database)}.{quote_ident(status_table)}
+(
+    artifact_name,
+    month,
+    status,
+    row_count,
+    build_version,
+    built_at,
+    updated_at
+)
+SELECT
+    {sql_string(artifact_name)} AS artifact_name,
+    {sql_string(month)} AS month,
+    'complete' AS status,
+    toUInt64({int(row_count)}) AS row_count,
+    {sql_string(build_version)} AS build_version,
+    now() AS built_at,
+    now() AS updated_at
+"""
 
 
 def _query_intraday_base_bars_for_ticker(
@@ -1072,21 +1288,64 @@ ORDER BY
 
 
 def _query_intraday_condition_events(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str) -> Any:
-    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    table = f"{quote_ident(config.database)}.{quote_ident(str(args.intraday_condition_events_table))}"
+    condition_columns = ",\n    ".join(quote_ident(key) for key in FUTURE_CONDITION_LABEL_KEYS)
+    query = f"""
+SELECT
+    upper(ticker) AS ticker,
+    timestamp_us,
+    ordinal,
+    local_date,
+    local_session_us,
+    {condition_columns}
+FROM {table}
+PREWHERE ticker = {sql_string(ticker.upper())}
+  AND local_date >= toDate({sql_string(window.first_date.isoformat())})
+  AND local_date < toDate({sql_string(window.next_month_date.isoformat())})
+ORDER BY ticker, local_date, timestamp_us, ordinal
+{_settings_sql(config)}
+"""
+    return query_polars(client_opts, query)
+
+
+def _insert_intraday_condition_events_month_sql(
+    *,
+    args: argparse.Namespace,
+    config: RollingMarketDataConfig,
+    window: Any,
+) -> str:
+    source_table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    target_table = f"{quote_ident(config.database)}.{quote_ident(str(args.intraday_condition_events_table))}"
     condition_token_aliases = _condition_token_array_aliases_sql(config)
     condition_event_select = _future_condition_event_select_sql()
-    condition_columns = ",\n    ".join(f"{quote_ident(key + '_event')} AS {quote_ident(key)}" for key in FUTURE_CONDITION_LABEL_KEYS)
+    condition_select_columns = ",\n    ".join(f"{quote_ident(key + '_event')} AS {quote_ident(key)}" for key in FUTURE_CONDITION_LABEL_KEYS)
     condition_filter = " OR ".join(f"{quote_ident(key + '_event')} > 0" for key in FUTURE_CONDITION_LABEL_KEYS)
-    query = f"""
+    insert_columns = ",\n    ".join(
+        [
+            "local_date",
+            "ticker",
+            "timestamp_us",
+            "ordinal",
+            "local_session_us",
+            *[quote_ident(key) for key in FUTURE_CONDITION_LABEL_KEYS],
+            "built_at",
+        ]
+    )
+    return f"""
+INSERT INTO {target_table}
+(
+    {insert_columns}
+)
 WITH
     {condition_token_aliases}
 SELECT
+    local_date,
     upper(ticker) AS ticker,
-    sip_timestamp_us AS timestamp_us,
-    ordinal,
-    toDate(ts_local) AS local_date,
+    toUInt64(sip_timestamp_us) AS timestamp_us,
+    toUInt64(ordinal) AS ordinal,
     toUInt64(local_session_us) AS local_session_us,
-    {condition_columns}
+    {condition_select_columns},
+    now() AS built_at
 FROM
 (
     SELECT
@@ -1099,17 +1358,17 @@ FROM
         condition_token_4,
         condition_token_5,
         toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
+        toDate(ts_local) AS local_date,
         dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
         dateDiff('microsecond', toStartOfDay(ts_local), ts_local) AS local_session_us,
         {condition_event_select}
-    FROM {table}
-    PREWHERE ticker = {sql_string(ticker)}
-      AND event_date >= toDate({sql_string(window.first_date.isoformat())})
+    FROM {source_table}
+    PREWHERE event_date >= toDate({sql_string(window.first_date.isoformat())})
       AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
     WHERE sip_timestamp_us >= {int(window.first_session_start_us)}
       AND sip_timestamp_us < {int(window.last_session_end_us)}
-      AND toDate(ts_local) >= toDate({sql_string(window.first_date.isoformat())})
-      AND toDate(ts_local) < toDate({sql_string(window.next_month_date.isoformat())})
+      AND local_date >= toDate({sql_string(window.first_date.isoformat())})
+      AND local_date < toDate({sql_string(window.next_month_date.isoformat())})
       AND local_second >= {SESSION_START_SECOND}
       AND local_second < {SESSION_END_SECOND}
 )
@@ -1117,7 +1376,6 @@ WHERE {condition_filter}
 ORDER BY ticker, local_date, timestamp_us, ordinal
 {_settings_sql(config)}
 """
-    return query_polars(client_opts, query)
 
 
 def _insert_intraday_base_bars_ticker_sql(
@@ -1660,12 +1918,12 @@ def _build_ticker_month_package(
         month_min_ordinal = int(origin_bounds[0]) if origin_bounds else 0
         corporate_actions: Any | None = None
         intraday_base_bars_future = lanes.submit(
-            "context",
+            "bar",
             f"{month}:{ticker}:intraday_base_bars_file",
             lambda: _query_intraday_base_bars_for_ticker(args, client_opts, config, window, ticker),
         )
         intraday_condition_events_future = lanes.submit(
-            "context",
+            "condition",
             f"{month}:{ticker}:intraday_condition_events",
             lambda: _query_intraday_condition_events(args, client_opts, config, window, ticker),
         )

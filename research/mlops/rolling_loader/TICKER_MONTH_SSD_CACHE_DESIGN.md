@@ -422,6 +422,16 @@ because the 100ms resolution can create hundreds of millions of intermediate
 rows for one active market day. This keeps the cache format origin-relative
 while avoiding repeated raw-event bar aggregation inside each part query.
 
+Future condition flags use a parallel shared sparse ClickHouse artifact. For
+each requested month, the builder ensures
+`intraday_condition_events_by_time_ticker` and records completion in
+`intraday_aux_build_status`. The sparse table contains only condition events
+that match the forecastable groups used by the training labels. It is built
+once for the month from raw `events` and `event_condition_token_reference`.
+Ticker/month packages then read only bounded ticker/month slices into
+`intraday_condition_events.parquet`, avoiding repeated raw-event condition scans
+for every package while preserving the same source-token semantics.
+
 The builder computes grid-aligned forward labels set-wise for each
 ticker/month/part package. This is not a per-origin query. It is one bounded
 query per ticker/month/part that:

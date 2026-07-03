@@ -246,6 +246,18 @@ not front-load every ticker for a whole day/month because the 100ms grid can be
 hundreds of millions of rows per active market day. This replaces the older
 behavior where each part query rebuilt the same bars from raw events.
 
+Condition-event labels use the same shared-artifact pattern. Before package
+workers start for a month, the builder ensures a sparse ClickHouse table,
+`intraday_condition_events_by_time_ticker` by default. That table stores only
+events that match forecastable condition groups such as halt/pause, resume,
+news-risk, and LULD/limit-state flags. A small
+`intraday_aux_build_status` table records that the month-level sparse condition
+artifact is complete, including zero-row months. Package workers then read
+bounded ticker/month slices from the sparse table instead of scanning raw
+`events` repeatedly. This keeps condition-label integrity tied to the same
+`event_condition_token_reference` rules while removing thousands of redundant
+condition scans.
+
 By default, the cache does not write redundant
 `intraday_forward_labels_part_*.parquet` files. It writes compact
 `intraday_base_bars.parquet` and `intraday_condition_events.parquet` once per
@@ -766,9 +778,30 @@ The default intraday base-bar table can be overridden with:
 --intraday-base-bars-table intraday_base_bars_by_time_ticker
 ```
 
+The default sparse condition-event and auxiliary status tables can be
+overridden with:
+
+```powershell
+--intraday-condition-events-table intraday_condition_events_by_time_ticker
+--intraday-aux-build-status-table intraday_aux_build_status
+```
+
 Use `--skip-intraday-base-bar-build` only when that table is already populated
 for every local-session day in the requested month. Label and intraday-context
 queries still read the table either way.
+
+The Rich terminal separates high-level work into lanes. The most important
+builder lanes are:
+
+| Lane | Meaning |
+| --- | --- |
+| `event` | Raw event part fetches for ticker/month packages. |
+| `context` | Text embedding, XBRL, daily bar, and corporate-action context reads. |
+| `bar` | Shared intraday base-bar package reads. |
+| `condition` | Month-level sparse condition-event build and package condition-event reads. |
+| `label` | Optional materialized/debug label work and per-ticker base-bar build checks. |
+| `cpu` | In-memory origin/window index construction. |
+| `write` | Parquet package writes. |
 
 ### Builder Logging
 
