@@ -54,8 +54,8 @@ def run_startup_ibkr_borrow_sync(
         storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
     )
 
-    progress("running", "Loading active US stock listings with IBKR conids.", None)
-    symbols = load_symbol_refs(client, config.clickhouse_read_database)
+    progress("running", "Loading active US stock listings with IBKR conids from the write database.", None)
+    symbols = load_symbol_refs(client, config.clickhouse_write_database)
     eligible = sum(1 for ref in symbols.values() if ref.ibkr_conid.strip().isdigit())
     if eligible == 0:
         return IbkrBorrowSyncResult(

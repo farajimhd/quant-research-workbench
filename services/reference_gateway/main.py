@@ -317,13 +317,13 @@ def main() -> None:
     if report_path:
         emit(f"report={report_path}")
     if should_sync_sources:
-        started = time.perf_counter()
+        source_sync_started = time.perf_counter()
         add_operation("Source sync", "running", "Starting Massive active ticker reconciliation.", seconds=0.0)
         for operation_name in SOURCE_SYNC_OPERATION_NAMES.values():
             ensure_operation(operation_name, "waiting", "not started", seconds=0.0)
 
         def source_sync_progress(source: str, status: str, message: str, rows: int | None) -> None:
-            elapsed = time.perf_counter() - started
+            elapsed = time.perf_counter() - source_sync_started
             operation_name = SOURCE_SYNC_OPERATION_NAMES.get(source, "Source: " + source.replace("_", " "))
             update_latest_operation(operation_name, status, truncate_detail(message), rows=rows, seconds=elapsed)
             update_latest_operation("Source sync", "running", truncate_detail(message), rows=rows, seconds=elapsed)
@@ -332,75 +332,7 @@ def main() -> None:
         plan_path = write_active_ticker_plan(plan, config.report_root_win)
         if plan_path:
             emit(f"source_sync_report={plan_path}")
-        borrow_started = time.perf_counter()
 
-        def ibkr_borrow_progress(source: str, status: str, message: str, rows: int | None) -> None:
-            elapsed = time.perf_counter() - borrow_started
-            operation_name = SOURCE_SYNC_OPERATION_NAMES.get(source, "Source: " + source.replace("_", " "))
-            update_latest_operation(operation_name, status, truncate_detail(message), rows=rows, seconds=elapsed)
-            update_latest_operation("Source sync", "running", truncate_detail(message), rows=rows, seconds=time.perf_counter() - started)
-
-        borrow_sync = run_startup_ibkr_borrow_sync(config, on_progress=ibkr_borrow_progress)
-        borrow_status = "completed" if borrow_sync.status in {"completed", "covered_empty"} else borrow_sync.status
-        update_latest_operation(
-            SOURCE_SYNC_OPERATION_NAMES["ibkr_borrow_availability"],
-            borrow_status,
-            (
-                f"eligible={borrow_sync.eligible:,} written={borrow_sync.written:,} "
-                f"failed={borrow_sync.failed:,} status={borrow_sync.status}"
-            ),
-            rows=borrow_sync.written,
-            seconds=borrow_sync.wall_seconds,
-        )
-        logger.event(
-            "source_sync_completed",
-            provider_rows=plan.provider_rows,
-            provider_pages=plan.provider_pages,
-            provider_saturated=plan.provider_saturated,
-            known_active_symbols=plan.known_active_symbols,
-            missing_tickers=plan.missing_tickers,
-            overview_fetched=plan.overview_fetched,
-            ibkr_searched=plan.ibkr_searched,
-            candidate_limit=plan.candidate_limit,
-            ibkr_borrow_attempted=borrow_sync.attempted,
-            ibkr_borrow_status=borrow_sync.status,
-            ibkr_borrow_eligible=borrow_sync.eligible,
-            ibkr_borrow_written=borrow_sync.written,
-            ibkr_borrow_failed=borrow_sync.failed,
-            wall_seconds=time.perf_counter() - started,
-            report_path=str(plan_path or ""),
-        )
-        logger.event(
-            "ibkr_borrow_source_sync_completed",
-            attempted=borrow_sync.attempted,
-            status=borrow_sync.status,
-            eligible=borrow_sync.eligible,
-            written=borrow_sync.written,
-            failed=borrow_sync.failed,
-            wall_seconds=borrow_sync.wall_seconds,
-            details=borrow_sync.details,
-        )
-        source_sync_status = "completed" if borrow_status == "completed" else "warning"
-        write_alert_batch(build_source_sync_alerts(plan), "source_sync")
-        add_operation(
-            "Source sync",
-            source_sync_status,
-            (
-                f"provider={plan.provider_rows:,} missing={plan.missing_tickers:,} "
-                f"overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
-                f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,}"
-            ),
-            rows=plan.missing_tickers,
-            seconds=time.perf_counter() - started,
-        )
-        emit(
-            "source_sync=done "
-            f"provider_rows={plan.provider_rows:,} known_symbols={plan.known_active_symbols:,} "
-            f"missing={plan.missing_tickers:,} overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
-            f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,} "
-            f"saturated={plan.provider_saturated} wall_seconds={time.perf_counter() - started:.2f}"
-        )
-        refresh_reference_state("after_source_sync")
         if config.execute:
             issue_write = None
             graph_write = None
@@ -483,7 +415,76 @@ def main() -> None:
                     emit(f"post_issue_report={report_path}")
             elif changed_rows > 0 and config.rebuild_tradable_on_execute:
                 add_operation("Post-issue tradable rebuild", "skipped", write_policy.reason)
-            refresh_reference_state("after_source_sync_writes")
+
+        borrow_started = time.perf_counter()
+
+        def ibkr_borrow_progress(source: str, status: str, message: str, rows: int | None) -> None:
+            elapsed = time.perf_counter() - borrow_started
+            operation_name = SOURCE_SYNC_OPERATION_NAMES.get(source, "Source: " + source.replace("_", " "))
+            update_latest_operation(operation_name, status, truncate_detail(message), rows=rows, seconds=elapsed)
+            update_latest_operation("Source sync", "running", truncate_detail(message), rows=rows, seconds=time.perf_counter() - source_sync_started)
+
+        borrow_sync = run_startup_ibkr_borrow_sync(config, on_progress=ibkr_borrow_progress)
+        borrow_status = "completed" if borrow_sync.status in {"completed", "covered_empty"} else borrow_sync.status
+        update_latest_operation(
+            SOURCE_SYNC_OPERATION_NAMES["ibkr_borrow_availability"],
+            borrow_status,
+            (
+                f"eligible={borrow_sync.eligible:,} written={borrow_sync.written:,} "
+                f"failed={borrow_sync.failed:,} status={borrow_sync.status}"
+            ),
+            rows=borrow_sync.written,
+            seconds=borrow_sync.wall_seconds,
+        )
+        logger.event(
+            "source_sync_completed",
+            provider_rows=plan.provider_rows,
+            provider_pages=plan.provider_pages,
+            provider_saturated=plan.provider_saturated,
+            known_active_symbols=plan.known_active_symbols,
+            missing_tickers=plan.missing_tickers,
+            overview_fetched=plan.overview_fetched,
+            ibkr_searched=plan.ibkr_searched,
+            candidate_limit=plan.candidate_limit,
+            ibkr_borrow_attempted=borrow_sync.attempted,
+            ibkr_borrow_status=borrow_sync.status,
+            ibkr_borrow_eligible=borrow_sync.eligible,
+            ibkr_borrow_written=borrow_sync.written,
+            ibkr_borrow_failed=borrow_sync.failed,
+            wall_seconds=time.perf_counter() - source_sync_started,
+            report_path=str(plan_path or ""),
+        )
+        logger.event(
+            "ibkr_borrow_source_sync_completed",
+            attempted=borrow_sync.attempted,
+            status=borrow_sync.status,
+            eligible=borrow_sync.eligible,
+            written=borrow_sync.written,
+            failed=borrow_sync.failed,
+            wall_seconds=borrow_sync.wall_seconds,
+            details=borrow_sync.details,
+        )
+        source_sync_status = "completed" if borrow_status == "completed" else "warning"
+        write_alert_batch(build_source_sync_alerts(plan), "source_sync")
+        add_operation(
+            "Source sync",
+            source_sync_status,
+            (
+                f"provider={plan.provider_rows:,} missing={plan.missing_tickers:,} "
+                f"overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
+                f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,}"
+            ),
+            rows=plan.missing_tickers,
+            seconds=time.perf_counter() - source_sync_started,
+        )
+        emit(
+            "source_sync=done "
+            f"provider_rows={plan.provider_rows:,} known_symbols={plan.known_active_symbols:,} "
+            f"missing={plan.missing_tickers:,} overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
+            f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,} "
+            f"saturated={plan.provider_saturated} wall_seconds={time.perf_counter() - source_sync_started:.2f}"
+        )
+        refresh_reference_state("after_source_sync_writes")
     if (
         config.execute
         and config.market_publication_gap_fill_enabled

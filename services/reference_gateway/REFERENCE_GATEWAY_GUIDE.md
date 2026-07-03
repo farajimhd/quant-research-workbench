@@ -10,9 +10,10 @@ publication data coherent. It is not a high-frequency ingest service.
 
    Download current reference evidence from Massive, IBKR, FINRA, SEC, and
    other configured providers. Source sync is always part of operational runs.
-   It is not a separate operator flag. Startup source sync includes a current
-   IBKR borrow/shortability snapshot for active US stock listings with valid
-   conids.
+   It is not a separate operator flag. Startup source sync reconciles active
+   tickers first, writes accepted canonical graph rows when policy allows, then
+   takes a current IBKR borrow/shortability snapshot for active US stock
+   listings with valid conids.
 
 2. Integrity guardrail
 
