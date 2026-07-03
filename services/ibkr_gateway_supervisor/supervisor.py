@@ -296,6 +296,9 @@ class IbkrGatewaySupervisor:
             state.status_code = int(result.get("status_code") or 0)
             state.auth_status = "authenticated" if row.get("authenticated") else "unauthenticated"
             state.current_operation = "Authenticated" if row.get("authenticated") else "Waiting for authenticated session"
+            if row.get("authenticated"):
+                state.last_error = ""
+                state.login_status = "ok" if state.login_status in {"failed", "running", "waiting"} else state.login_status
         elif event == "reauthenticate":
             state.current_operation = "Attempting IBKR session reauthentication"
         elif event == "auto_login_started":
@@ -304,11 +307,11 @@ class IbkrGatewaySupervisor:
         elif event == "auto_login_completed":
             state.login_status = "ok"
             state.auth_status = "authenticated"
+            state.last_error = ""
             state.current_operation = "Automatic login completed"
         elif event == "auto_login_failed":
             state.login_status = "failed"
-            state.last_error = str(row.get("error") or "Automatic login failed")
-            state.alerts.append(state.last_error)
+            record_error(state, row, str(row.get("error") or "Automatic login failed"))
         elif event == "auto_login_waiting":
             state.login_status = "waiting"
             state.current_operation = "Waiting before next automatic login attempt"
@@ -333,9 +336,8 @@ class IbkrGatewaySupervisor:
                 state.keepalive_status = "failed"
                 state.tickle_failures += 1
                 state.last_tickle_error = str(result.get("error") or "Tickle failed")
-                state.last_error = state.last_tickle_error
+                record_error(state, row, state.last_tickle_error)
                 state.current_operation = "Keepalive tickle failed"
-                state.alerts.append(state.last_error)
         elif event in {"gateway_process_stopping", "gateway_listener_stopping"}:
             state.gateway_status = "stopping"
             state.current_operation = "Stopping supervisor-started gateway process"
@@ -343,7 +345,7 @@ class IbkrGatewaySupervisor:
             state.gateway_status = "stopped"
             state.current_operation = "Supervisor stopped"
         if "failed" in event:
-            state.last_error = str(row.get("error") or row.get("message") or event)
+            record_error(state, row, str(row.get("error") or row.get("message") or event))
 
     def should_persist_event(self, row: dict[str, Any]) -> bool:
         if row.get("event") != "tickle":
@@ -370,6 +372,20 @@ def sanitize(value: Any) -> Any:
 def tickle_status(row: dict[str, Any]) -> str:
     result = row.get("result") if isinstance(row.get("result"), dict) else {}
     return "ok" if result.get("ok") else "failed"
+
+
+def record_error(state: SupervisorTerminalState, row: dict[str, Any], message: str) -> None:
+    state.last_error = message
+    item = f"{short_event_time(row.get('ts_utc'))} {row.get('event')}: {message}"
+    if not state.error_history or state.error_history[-1] != item:
+        state.error_history.append(item)
+
+
+def short_event_time(value: Any) -> str:
+    text = str(value or "").strip()
+    if "T" in text:
+        return text.split("T", 1)[1].replace("Z", "")[:8]
+    return "-"
 
 
 def plain_event_line(row: dict[str, Any]) -> str:

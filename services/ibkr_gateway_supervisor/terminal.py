@@ -49,7 +49,7 @@ class SupervisorTerminalState:
     clickhouse_error: str = ""
     event_log_path: str = ""
     recent_events: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=12))
-    alerts: deque[str] = field(default_factory=lambda: deque(maxlen=6))
+    error_history: deque[str] = field(default_factory=lambda: deque(maxlen=6))
 
 
 class SupervisorTerminal:
@@ -175,13 +175,13 @@ def log_panel(state: SupervisorTerminalState) -> Panel:
 
 def alerts_panel(state: SupervisorTerminalState) -> Panel:
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
-    table.add_column("Recent Alerts", overflow="fold", ratio=1)
-    if state.alerts:
-        for alert in list(state.alerts)[-6:]:
-            table.add_row(f"[yellow]{alert}[/yellow]")
+    table.add_column("Error History", overflow="fold", ratio=1)
+    if state.error_history:
+        for item in list(state.error_history)[-6:]:
+            table.add_row(f"[yellow]{item}[/yellow]")
     else:
-        table.add_row("[dim]No alerts.[/dim]")
-    return Panel(table, box=box.ROUNDED, border_style="yellow" if state.alerts else "green", padding=(0, 1))
+        table.add_row("[dim]No errors recorded.[/dim]")
+    return Panel(table, box=box.ROUNDED, border_style="yellow" if state.error_history else "green", padding=(0, 1))
 
 
 def events_panel(state: SupervisorTerminalState, *, limit: int) -> Panel:
@@ -201,13 +201,21 @@ def events_panel(state: SupervisorTerminalState, *, limit: int) -> Panel:
 
 
 def overall_status(state: SupervisorTerminalState) -> str:
-    if state.last_error or state.login_status == "failed":
+    if current_connection_failed(state):
         return "failed"
     if state.auth_status == "authenticated" and state.keepalive_status in {"ok", "idle"}:
         return "ok"
     if state.login_status in {"running", "waiting"} or state.auth_status in {"unauthenticated", "unknown"}:
         return "working"
     return "warning"
+
+
+def current_connection_failed(state: SupervisorTerminalState) -> bool:
+    if state.auth_status == "authenticated":
+        return False
+    if state.last_error or state.login_status == "failed" or state.keepalive_status == "failed":
+        return True
+    return state.gateway_status in {"failed", "stopped"} and state.auth_status != "authenticated"
 
 
 def event_status(row: dict[str, Any]) -> str:
