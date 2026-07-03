@@ -50,3 +50,38 @@ Interpretation:
   before the Massive float effective date.
 - This experiment validates the idea only; it does not populate
   `security_share_supply_fact_v1`.
+
+## Security Dimension Line Plot
+
+Script:
+
+```powershell
+python pipelines\reference_data\experiments\plot_security_dimensions.py --ticker AAPL --start-date 2019-01-01 --end-date 2027-01-01
+```
+
+Purpose:
+
+1. Query source-backed security dimensions from existing SEC and Massive tables.
+2. Keep storage sparse: no fact table is written.
+3. Plot each dimension as a step-line where the latest known value carries
+   forward until the next source observation.
+
+The dimension query layer lives in:
+
+```text
+pipelines/reference_data/security_dimensions.py
+```
+
+The initial dimensions include:
+
+- SEC entity/common shares outstanding.
+- SEC weighted average basic and diluted shares.
+- SEC public float in USD.
+- Massive free float.
+- Massive shares outstanding fields when present.
+
+Outputs are written under:
+
+```text
+prepared/reference_data/experiments/security_dimensions/<run_id>/
+```
