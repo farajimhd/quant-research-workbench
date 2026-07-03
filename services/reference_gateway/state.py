@@ -267,6 +267,5 @@ def short_table_name(table_name: str) -> str:
         "feature_scanner_static": "scanner",
         "market_reference_alert_consumer_state": "consumer_state",
         "issuer_fundamental_metric_fact": "fundamental",
-        "security_liquidity_profile_fact": "liquidity",
     }
     return replacements.get(table_name, table_name)

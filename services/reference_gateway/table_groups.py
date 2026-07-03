@@ -129,7 +129,6 @@ REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
             "security_sec_text_signal_fact_v1",
             "issuer_fundamental_metric_fact_v1",
             "security_valuation_fact_v1",
-            "security_liquidity_profile_fact_v1",
         ),
         update_policy=(
             "Store compact normalized history only. Source tables keep provider detail, fact fillers update "

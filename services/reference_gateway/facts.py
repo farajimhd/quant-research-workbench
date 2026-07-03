@@ -15,7 +15,6 @@ FACT_TABLES: tuple[str, ...] = (
     "security_sec_text_signal_fact_v1",
     "issuer_fundamental_metric_fact_v1",
     "security_valuation_fact_v1",
-    "security_liquidity_profile_fact_v1",
 )
 
 
@@ -84,13 +83,6 @@ FACT_TABLE_SPECS: tuple[FactTableSpec, ...] = (
         ("fundamental", "feature_invalidation"),
         ("issuer_fundamental_metric_fact_v1", "market_security_market_snapshot_v1"),
         "Derived valuation and balance-sheet context tied to a security and source input versions.",
-    ),
-    FactTableSpec(
-        "security_liquidity_profile_fact_v1",
-        "qmd_gateway",
-        ("market_structure",),
-        ("live_market_bars_v1", "market_sip_compact.events"),
-        "Historical/current liquidity profile; QMD owns computation and reference gateway consumes it.",
     ),
 )
 
@@ -378,42 +370,8 @@ PARTITION BY toYYYYMM(as_of_utc)
 ORDER BY (ifNull(symbol_id, ''), valuation_metric, as_of_utc, valuation_fact_id)
 SETTINGS {settings}
 """.strip(),
-        f"""
-CREATE TABLE IF NOT EXISTS {table(database, 'security_liquidity_profile_fact_v1')}
-(
-    liquidity_profile_fact_id String,
-    security_id Nullable(String),
-    listing_id Nullable(String),
-    symbol_id Nullable(String),
-    provider_ticker String,
-    profile_window LowCardinality(String),
-    session_date Date,
-    observed_at_utc DateTime64(3, 'UTC'),
-    median_spread_bps Nullable(Float64),
-    median_quote_size Nullable(Float64),
-    median_trade_size Nullable(Float64),
-    trade_count Nullable(UInt64),
-    quote_count Nullable(UInt64),
-    total_volume Nullable(UInt64),
-    dollar_volume Nullable(Float64),
-    volatility_bps Nullable(Float64),
-    liquidity_score Nullable(Float64),
-    source_system LowCardinality(String),
-    source_table String,
-    source_event_id String,
-    source_evidence_ref String,
-    source_content_sha256 String,
-    source_run_id String,
-    inserted_at DateTime64(3, 'UTC')
-)
-ENGINE = ReplacingMergeTree(inserted_at)
-PARTITION BY toYYYYMM(session_date)
-ORDER BY (provider_ticker, session_date, profile_window, observed_at_utc, liquidity_profile_fact_id)
-SETTINGS {settings}
-""".strip(),
     )
 
 
 def table(database: str, name: str) -> str:
     return f"{quote_ident(database)}.{quote_ident(name)}"
-

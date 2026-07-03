@@ -1344,8 +1344,8 @@ data and `q_live` schema.
 
 | Fact family | Table | Existing state | What it means | Main sources | Alert alignment | Redundancy decision |
 | --- | --- | --- | --- | --- | --- | --- |
-| Tradability | `security_tradability_fact_v1` | Schema implemented; filler pending | Time-aware reason a security/listing/symbol is tradable or blocked. This is the durable history behind `is_tradable`. | reference audits, mapping issues, IBKR routing, Massive active status | `tradability_guardrail/*` | New table is justified because `feature_tradable_universe_v1` stores latest state only. |
-| Routing | `security_routing_fact_v1` | Schema implemented; filler pending | Broker routing evidence such as IBKR conid, selected contract, ambiguity status, and validity window. | IBKR CPAPI, listing/symbol graph | `tradability_guardrail/conid_routing` | New table is justified because conid evidence should be historized separately from listing identity. |
+| Tradability | `security_tradability_fact_v1` | Schema and filler implemented | Time-aware reason a security/listing/symbol is tradable or blocked. This is the durable reference history behind `is_tradable`; it does not include QMD live halt/LULD states. | reference audits, mapping issues, latest tradable universe, Massive active status | `tradability_guardrail/*` | New table is justified because `feature_tradable_universe_v1` stores latest state only. The filler writes only when the latest fact differs from current reference state. |
+| Routing | `security_routing_fact_v1` | Schema and filler implemented | Broker routing evidence such as IBKR conid, selected contract, ambiguity status, and validity window. | IBKR CPAPI, listing/symbol graph | `tradability_guardrail/conid_routing` | New table is justified because conid evidence should be historized separately from listing identity. The filler writes only when routing status/conid/exchange/currency changes. |
 | Share supply | `security_share_supply_fact_v1` | Schema implemented; filler pending | Shares outstanding, weighted shares, share-class shares, units, and source confidence. | SEC XBRL, Massive market snapshot | `share_supply/shares_outstanding`, `share_supply/xbrl_fact_change` | New table is justified because current source rows use different meanings and timestamps. |
 | Float | `market_security_float_v1` or future `security_float_fact_v1` | Existing partial | Provider or derived estimate of freely tradable shares. | Massive overview, future SEC-derived float logic | `share_supply/float_estimate` | Reuse existing table if it can hold source tag, confidence, and evidence cleanly. Avoid a second float table unless semantics diverge. |
 | Market snapshot | `market_security_market_snapshot_v1` | Existing | Provider snapshot values such as market cap, round lot, and shares from Massive. | Massive snapshot/reference endpoints | `market_publication/market_snapshot` | Existing table is enough; do not duplicate into a generic fact table. |
@@ -1364,7 +1364,7 @@ data and `q_live` schema.
 | SEC text signal | `security_sec_text_signal_fact_v1` | Schema implemented; filler pending | Extracted labels from filing text, such as offering, ATM, shelf, warrant, going concern, auditor change, delisting, reverse split mention, or risk flags. | `sec_filing_text_v2`, deterministic rules, future LLM extraction | `sec_filing/offering_supply`, `sec_filing/insider_activity`, `data_quality/text_signal` | New table is justified because source text is large and unstructured. Store labels/spans/evidence refs, not full text. |
 | Fundamental metric | `issuer_fundamental_metric_fact_v1` | Schema implemented; filler pending | Normalized XBRL metrics such as revenue, net income, assets, liabilities, cash, debt, operating cash flow, EPS, and shares. | `sec_xbrl_company_fact_v1`, `sec_xbrl_frame_observation_v1` | `fundamental/xbrl_fact_change` | New table is justified only for curated metrics used by models/trading. Do not mirror all XBRL facts. |
 | Valuation | `security_valuation_fact_v1` | Schema implemented; filler pending | Derived ratios such as market cap to sales, EV-like approximations, price to book, or cash per share when inputs exist. | market snapshot plus curated fundamental metrics | `fundamental/valuation`, `feature_invalidation/valuation` | New table is justified for derived values with explicit input version/evidence. |
-| Liquidity profile | `security_liquidity_profile_fact_v1` | Schema implemented; QMD filler pending | Historical/liquid current profile such as median spread, median volume, dollar volume, volatility, and trade frequency. | QMD bars/events, historical SIP compact events | `market_structure/liquidity` | New table is justified, but QMD should own its raw computation; reference gateway can consume the publication. |
+| QMD macro bars and market status | not a reference fact table | Out of reference gateway scope | QMD should create macro bars and persist market status. Reference gateway should not own a liquidity/profile fact table unless we later define a compact non-redundant reference publication contract. | QMD | `market_structure/*` | Deferred outside reference gateway fact ownership. |
 
 ### QMD Live Tradability Overlay Boundary
 
@@ -1392,20 +1392,18 @@ The order/scanner gate should evaluate:
 reference_tradable AND routing_valid AND no active QMD live blocking state
 ```
 
-Fact-table work in the reference gateway should therefore not duplicate QMD
-state rows. The reference gateway may consume QMD's table to explain or audit a
-decision, but the current live block should come from QMD's live-state snapshot
-or stream. If a downstream table needs a trading-facing view, it should be a
-latest-view/read-model over QMD state plus reference facts, not a copy of every
-normal market row. Repeated observations of an already-active abnormal state
-refresh QMD memory but should not be copied into durable reference facts.
+Fact-table work in the reference gateway must not duplicate QMD state rows.
+The current live block should come from QMD's live-state snapshot or stream.
+The trading app/order layer combines QMD live state with reference facts.
+Repeated observations of an already-active abnormal state refresh QMD memory
+but must not be copied into durable reference facts.
 
 Reference fact-table follow-up tasks:
 
-1. Add the live overlay input to the `security_tradability_fact_v1` design as
-   an external/current overlay, not a static source of truth.
+1. Keep `security_tradability_fact_v1` reference-only: identity, mapping,
+   listing, conid, source-conflict, and active-status issues.
 2. Keep `security_routing_fact_v1` broker/reference-only.
-3. Add a consumer contract for live trading: read QMD active abnormal states and
+3. The live trading app must read QMD active abnormal states separately and
    block if any active row has `is_live_tradability_blocking = 1`.
 4. Add a reconciliation/audit query that verifies QMD abnormal events can be
    joined to known active symbols, but do not block QMD if a brand-new ticker is
@@ -1666,7 +1664,6 @@ Phase 5: derived facts.
 Outputs:
 
 - `security_valuation_fact_v1`
-- `security_liquidity_profile_fact_v1`
 
 Inputs:
 

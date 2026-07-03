@@ -26,6 +26,7 @@ from services.reference_gateway.canonical_graph_writer import write_canonical_gr
 from services.reference_gateway.config import ReferenceGatewayConfig, ReferenceGatewayConfigOverrides
 from services.reference_gateway.current_ticker_detail_sync import run_current_ticker_detail_sync
 from services.reference_gateway.daemon import run_reference_daemon
+from services.reference_gateway.fact_fillers import fill_reference_tradability_and_routing_facts
 from services.reference_gateway.facts import ensure_fact_schema
 from services.reference_gateway.issue_resolution import resolve_stale_active_ticker_issues
 from services.reference_gateway.issue_writer import write_active_ticker_mapping_issues, write_graph_mapping_issues
@@ -171,6 +172,32 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.event("reference_state_failed", reason=reason, error=repr(exc))
         refresh_terminal()
+
+    def fill_reference_facts(reason: str) -> None:
+        started = time.perf_counter()
+        result = fill_reference_tradability_and_routing_facts(config, reason=reason)
+        status = result.status if result.status != "completed" or result.total_rows > 0 else "completed"
+        add_operation(
+            "Fill reference facts",
+            status,
+            (
+                f"{result.reason}; tradability={result.tradability_rows:,} routing={result.routing_rows:,} "
+                f"source={result.source_database} issues={result.issue_database} target={result.target_database}"
+            ),
+            rows=result.total_rows,
+            seconds=time.perf_counter() - started,
+        )
+        logger.event(
+            "reference_fact_fill_completed",
+            status=result.status,
+            reason=result.reason,
+            tradability_rows=result.tradability_rows,
+            routing_rows=result.routing_rows,
+            source_database=result.source_database,
+            issue_database=result.issue_database,
+            target_database=result.target_database,
+            source_run_id=result.source_run_id,
+        )
 
     def refresh_terminal() -> None:
         if terminal is not None:
@@ -469,6 +496,7 @@ def main() -> None:
         )
         source_sync_status = "completed" if borrow_status == "completed" and current_details_status == "completed" else "warning"
         write_alert_batch(build_source_sync_alerts(plan), "source_sync")
+        fill_reference_facts("after_source_sync")
         add_operation(
             "Source sync",
             source_sync_status,
@@ -512,6 +540,7 @@ def main() -> None:
             record.report_path = str(report_path or record.report_path)
             logger.event("audit_completed", **audit_log_summary(report, report_path=record.report_path, post_write=True))
             write_alert_batch(build_audit_alerts(report, report_path=record.report_path, post_write=True), "post_maintenance_reference_audit")
+            fill_reference_facts("after_tradable_publication_rebuild")
             refresh_terminal()
             if report_path:
                 emit(f"post_maintenance_report={report_path}")
