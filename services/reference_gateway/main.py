@@ -28,6 +28,7 @@ from services.reference_gateway.daemon import run_reference_daemon
 from services.reference_gateway.facts import ensure_fact_schema
 from services.reference_gateway.issue_resolution import resolve_stale_active_ticker_issues
 from services.reference_gateway.issue_writer import write_active_ticker_mapping_issues, write_graph_mapping_issues
+from services.reference_gateway.ibkr_borrow_sync import run_startup_ibkr_borrow_sync
 from services.reference_gateway.market_publications import ensure_market_publication_schema
 from services.reference_gateway.policy import evaluate_write_policy
 from services.reference_gateway.preflight import run_preflight
@@ -46,6 +47,7 @@ SOURCE_SYNC_OPERATION_NAMES = {
     "canonical_symbols": "Source: q_live canonical symbols",
     "massive_overview": "Source: Massive /v3/reference/tickers/{ticker}",
     "ibkr_conids": "Source: IBKR /iserver/secdef/search",
+    "ibkr_borrow_availability": "Source: IBKR /iserver/marketdata/snapshot",
     "ticker_reconciliation": "Source: ticker reconciliation",
 }
 
@@ -56,7 +58,6 @@ PUBLICATION_OPERATION_NAMES = {
     "massive_dividends": "Source: Massive /v3/reference/dividends",
     "massive_ipos": "Source: Massive /v3/reference/ipos",
     "massive_ticker_details": "Source: Massive ticker details snapshot",
-    "ibkr_borrow_availability": "Source: IBKR /iserver/marketdata/snapshot",
 }
 
 
@@ -329,6 +330,28 @@ def main() -> None:
 
         plan = run_active_ticker_plan(config, on_progress=source_sync_progress)
         plan_path = write_active_ticker_plan(plan, config.report_root_win)
+        if plan_path:
+            emit(f"source_sync_report={plan_path}")
+        borrow_started = time.perf_counter()
+
+        def ibkr_borrow_progress(source: str, status: str, message: str, rows: int | None) -> None:
+            elapsed = time.perf_counter() - borrow_started
+            operation_name = SOURCE_SYNC_OPERATION_NAMES.get(source, "Source: " + source.replace("_", " "))
+            update_latest_operation(operation_name, status, truncate_detail(message), rows=rows, seconds=elapsed)
+            update_latest_operation("Source sync", "running", truncate_detail(message), rows=rows, seconds=time.perf_counter() - started)
+
+        borrow_sync = run_startup_ibkr_borrow_sync(config, on_progress=ibkr_borrow_progress)
+        borrow_status = "completed" if borrow_sync.status in {"completed", "covered_empty"} else borrow_sync.status
+        update_latest_operation(
+            SOURCE_SYNC_OPERATION_NAMES["ibkr_borrow_availability"],
+            borrow_status,
+            (
+                f"eligible={borrow_sync.eligible:,} written={borrow_sync.written:,} "
+                f"failed={borrow_sync.failed:,} status={borrow_sync.status}"
+            ),
+            rows=borrow_sync.written,
+            seconds=borrow_sync.wall_seconds,
+        )
         logger.event(
             "source_sync_completed",
             provider_rows=plan.provider_rows,
@@ -339,14 +362,34 @@ def main() -> None:
             overview_fetched=plan.overview_fetched,
             ibkr_searched=plan.ibkr_searched,
             candidate_limit=plan.candidate_limit,
-            wall_seconds=plan.wall_seconds,
+            ibkr_borrow_attempted=borrow_sync.attempted,
+            ibkr_borrow_status=borrow_sync.status,
+            ibkr_borrow_eligible=borrow_sync.eligible,
+            ibkr_borrow_written=borrow_sync.written,
+            ibkr_borrow_failed=borrow_sync.failed,
+            wall_seconds=time.perf_counter() - started,
             report_path=str(plan_path or ""),
         )
+        logger.event(
+            "ibkr_borrow_source_sync_completed",
+            attempted=borrow_sync.attempted,
+            status=borrow_sync.status,
+            eligible=borrow_sync.eligible,
+            written=borrow_sync.written,
+            failed=borrow_sync.failed,
+            wall_seconds=borrow_sync.wall_seconds,
+            details=borrow_sync.details,
+        )
+        source_sync_status = "completed" if borrow_status == "completed" else "warning"
         write_alert_batch(build_source_sync_alerts(plan), "source_sync")
         add_operation(
             "Source sync",
-            "completed",
-            f"provider={plan.provider_rows:,} missing={plan.missing_tickers:,} overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,}",
+            source_sync_status,
+            (
+                f"provider={plan.provider_rows:,} missing={plan.missing_tickers:,} "
+                f"overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
+                f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,}"
+            ),
             rows=plan.missing_tickers,
             seconds=time.perf_counter() - started,
         )
@@ -354,10 +397,9 @@ def main() -> None:
             "source_sync=done "
             f"provider_rows={plan.provider_rows:,} known_symbols={plan.known_active_symbols:,} "
             f"missing={plan.missing_tickers:,} overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
-            f"saturated={plan.provider_saturated} wall_seconds={plan.wall_seconds:.2f}"
+            f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,} "
+            f"saturated={plan.provider_saturated} wall_seconds={time.perf_counter() - started:.2f}"
         )
-        if plan_path:
-            emit(f"source_sync_report={plan_path}")
         refresh_reference_state("after_source_sync")
         if config.execute:
             issue_write = None

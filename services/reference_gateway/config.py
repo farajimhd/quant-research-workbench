@@ -66,6 +66,10 @@ class ReferenceGatewayConfig:
     daemon_after_hours_interval_seconds: float
     market_publication_gap_fill_enabled: bool
     market_publication_gap_fill_days: int
+    ibkr_borrow_snapshot_batch_size: int
+    ibkr_borrow_insert_batch_size: int
+    ibkr_borrow_request_min_interval_seconds: float
+    ibkr_borrow_request_timeout_seconds: int
     terminal_rich_enabled: bool
     terminal_screen_enabled: bool
     terminal_refresh_seconds: float
@@ -145,6 +149,10 @@ class ReferenceGatewayConfig:
             daemon_after_hours_interval_seconds=env_float("REFERENCE_GATEWAY_DAEMON_AFTER_HOURS_INTERVAL_SECONDS", 3600.0),
             market_publication_gap_fill_enabled=not maintenance_skip,
             market_publication_gap_fill_days=env_int("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_DAYS", 14),
+            ibkr_borrow_snapshot_batch_size=env_int("REFERENCE_GATEWAY_IBKR_BORROW_SNAPSHOT_BATCH_SIZE", 100),
+            ibkr_borrow_insert_batch_size=env_int("REFERENCE_GATEWAY_IBKR_BORROW_INSERT_BATCH_SIZE", 50_000),
+            ibkr_borrow_request_min_interval_seconds=env_float("REFERENCE_GATEWAY_IBKR_BORROW_REQUEST_MIN_INTERVAL_SECONDS", 0.12),
+            ibkr_borrow_request_timeout_seconds=env_int("REFERENCE_GATEWAY_IBKR_BORROW_REQUEST_TIMEOUT_SECONDS", 60),
             terminal_rich_enabled=env_bool_auto("REFERENCE_GATEWAY_TERMINAL_RICH_ENABLED", sys.stdout.isatty()),
             terminal_screen_enabled=env_bool("REFERENCE_GATEWAY_TERMINAL_SCREEN_ENABLED", True),
             terminal_refresh_seconds=env_float("REFERENCE_GATEWAY_TERMINAL_REFRESH_SECONDS", 1.0),
@@ -207,6 +215,10 @@ class ReferenceGatewayConfig:
                 "rebuild_tradable_in_test_mode": self.rebuild_tradable_in_test_mode,
                 "market_publication_gap_fill_enabled": self.market_publication_gap_fill_enabled,
                 "market_publication_gap_fill_days": self.market_publication_gap_fill_days,
+                "ibkr_borrow_snapshot_batch_size": self.ibkr_borrow_snapshot_batch_size,
+                "ibkr_borrow_insert_batch_size": self.ibkr_borrow_insert_batch_size,
+                "ibkr_borrow_request_min_interval_seconds": self.ibkr_borrow_request_min_interval_seconds,
+                "ibkr_borrow_request_timeout_seconds": self.ibkr_borrow_request_timeout_seconds,
             },
             "terminal": {
                 "rich_enabled": self.terminal_rich_enabled,

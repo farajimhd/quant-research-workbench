@@ -1075,7 +1075,14 @@ def run_ibkr_borrow_availability(
     start_date: date,
     end_date: date,
     symbols: dict[str, SymbolRef],
+    on_progress: Any | None = None,
 ) -> list[SourceResult]:
+    def progress(line: str) -> None:
+        if on_progress is not None:
+            on_progress(line)
+        else:
+            print(line, flush=True)
+
     today = datetime.now(UTC).date()
     target_start = max(start_date, today)
     target_end = min(end_date, today + timedelta(days=1))
@@ -1111,9 +1118,11 @@ def run_ibkr_borrow_availability(
     rows: list[dict[str, Any]] = []
     failed = 0
     try:
+        progress("ibkr_borrow_availability status=running step=prepare_marketdata_session")
         ibkr_prepare_marketdata_session(args)
-        for start in range(0, len(refs), 100):
-            batch = refs[start : start + 100]
+        snapshot_batch_size = max(1, int(getattr(args, "ibkr_borrow_batch_size", 100) or 100))
+        for start in range(0, len(refs), snapshot_batch_size):
+            batch = refs[start : start + snapshot_batch_size]
             by_conid = {ref.ibkr_conid: ref for ref in batch}
             try:
                 payload = ibkr_marketdata_snapshot(args, sorted(by_conid))
@@ -1125,9 +1134,10 @@ def run_ibkr_borrow_availability(
                     rows.append(normalize_ibkr_borrow_row(item, ref, observed_at))
             except Exception as exc:  # noqa: BLE001
                 failed += len(batch)
-                print(f"ibkr_borrow_availability batch_start={start:,} status=failed error={repr(exc)}", flush=True)
-            if start and start % 5_000 == 0:
-                print(f"ibkr_borrow_availability progress={start:,}/{len(refs):,} rows={len(rows):,} failed={failed:,}", flush=True)
+                progress(f"ibkr_borrow_availability batch_start={start:,} status=failed error={repr(exc)}")
+            completed = min(start + len(batch), len(refs))
+            if completed == len(refs) or completed % max(snapshot_batch_size, 1_000) == 0:
+                progress(f"ibkr_borrow_availability progress={completed:,}/{len(refs):,} rows={len(rows):,} failed={failed:,}")
     except Exception as exc:  # noqa: BLE001
         failed = max(failed, len(refs))
         details = {"error": repr(exc), "target_table": "market_security_borrow_v1"}
@@ -1144,7 +1154,7 @@ def run_ibkr_borrow_availability(
     status = "completed" if rows else "covered_empty" if failed == 0 else "failed"
     finished = datetime.now(UTC)
     result = SourceResult("ibkr_borrow_availability", "ibkr_borrow_availability", target_start, target_end, len(refs), written, failed, status, details)
-    print(f"ibkr_borrow_availability {target_start.isoformat()} status={status} eligible={len(refs):,} written={written:,} failed={failed:,}", flush=True)
+    progress(f"ibkr_borrow_availability {target_start.isoformat()} status={status} eligible={len(refs):,} written={written:,} failed={failed:,}")
     if args.execute:
         insert_publication_coverage(
             client,
