@@ -11,7 +11,6 @@ from services.ibkr_gateway_supervisor.config import IbkrGatewayConfig
 
 async def run_playwright_login(config: IbkrGatewayConfig) -> bool:
     try:
-        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
         from playwright.async_api import async_playwright
     except ImportError as exc:
         raise RuntimeError("Playwright is not installed. Install it with `pip install playwright` and run `python -m playwright install chromium`.") from exc
@@ -37,20 +36,18 @@ async def run_playwright_login(config: IbkrGatewayConfig) -> bool:
         print("Submitted IBKR login form. Waiting for authenticated Client Portal session.", flush=True)
         deadline = time.monotonic() + config.login_timeout_seconds
         authenticated = False
+        last_status_summary = "not checked"
         while time.monotonic() < deadline:
             status = client.auth_status()
+            last_status_summary = auth_status_summary(status.payload, status_code=status.status_code, ok=status.ok, error=status.error)
             if status.ok and is_authenticated(status.payload):
                 authenticated = True
                 break
             await asyncio.sleep(2.0)
         if not authenticated:
-            title = ""
-            try:
-                title = await page.title()
-            except PlaywrightTimeoutError:
-                title = ""
+            diagnostics = await login_page_diagnostics(page, secrets=[config.username, password])
             await browser.close()
-            raise RuntimeError(f"IBKR login did not authenticate before timeout. Last page title={title!r}")
+            raise RuntimeError(f"IBKR login did not authenticate before timeout. {diagnostics} last_auth_status={last_status_summary}")
         await browser.close()
     return verify_account(client, config)
 
@@ -291,3 +288,43 @@ def verify_account(client: IbkrClientPortalClient, config: IbkrGatewayConfig) ->
 
 def mask_ids(ids: list[str]) -> list[str]:
     return [("*" * max(0, len(item) - 4)) + item[-4:] for item in ids]
+
+
+async def login_page_diagnostics(page: Any, *, secrets: list[str]) -> str:
+    title = await safe_page_value(page.title)
+    url = redact_text(str(getattr(page, "url", "") or ""), secrets)
+    visible_text = await safe_page_text(page, secrets=secrets)
+    return f"last_page_title={title!r} last_page_url={url!r} visible_text={visible_text!r}"
+
+
+async def safe_page_value(func: Any) -> str:
+    try:
+        value = await func()
+    except Exception:  # noqa: BLE001
+        return ""
+    return str(value or "")
+
+
+async def safe_page_text(page: Any, *, secrets: list[str]) -> str:
+    try:
+        text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+    except Exception:  # noqa: BLE001
+        text = ""
+    compact = " ".join(str(text or "").split())
+    return redact_text(compact[:1_500], secrets)
+
+
+def auth_status_summary(payload: Any, *, status_code: int, ok: bool, error: str) -> str:
+    if not isinstance(payload, dict):
+        return f"ok={ok} status_code={status_code} error={error or '-'}"
+    keys = ["authenticated", "connected", "established", "competing", "fail", "message"]
+    values = {key: payload.get(key) for key in keys if key in payload}
+    return f"ok={ok} status_code={status_code} error={error or '-'} payload={values}"
+
+
+def redact_text(text: str, secrets: list[str]) -> str:
+    redacted = text
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "<redacted>")
+    return redacted
