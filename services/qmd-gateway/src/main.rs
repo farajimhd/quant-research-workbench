@@ -40,8 +40,7 @@ use crate::maintenance::SharedMaintenanceState;
 use crate::massive::{run_massive_ingest, MarketEventFanout};
 use crate::metrics::SharedMetrics;
 use crate::reference_tradability::{
-    refresh_reference_tradability_once, spawn_reference_tradability_refresh,
-    SharedReferenceTradabilityStore,
+    spawn_reference_tradability_refresh, SharedReferenceTradabilityStore,
 };
 use crate::replay::run_replay_service;
 use crate::scanner::{spawn_scanner_primitive_engine, ScannerPrimitive, SharedScannerStore};
@@ -105,24 +104,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (live_market_state_sender, _live_market_state_receiver) =
         broadcast::channel::<LiveSymbolMarketStateEvent>(10_000);
 
-    match refresh_reference_tradability_once(&config, &reference_tradability, &metrics).await {
-        Ok(summary) => eprintln!(
-            "QMD reference tradability loaded: enabled={} loaded={} symbols={} blocked={} universe_date={}",
-            summary.enabled,
-            summary.loaded,
-            summary.symbols,
-            summary.blocked,
-            summary.latest_universe_date.as_deref().unwrap_or("-")
-        ),
-        Err(error) => {
-            metrics.inc_reference_tradability_refresh_failure();
-            eprintln!("QMD reference tradability initial load failed; emissions will follow fail_closed policy: {error}");
-        }
-    }
     spawn_reference_tradability_refresh(
         config.clone(),
         reference_tradability.clone(),
         metrics.clone(),
+    );
+    eprintln!(
+        "QMD reference tradability refresh is asynchronous: interval_ms={} fail_closed={}",
+        config.reference_tradability_refresh_ms.max(5_000),
+        config.reference_tradability_fail_closed
     );
 
     if config.persist_raw_events {

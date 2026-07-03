@@ -144,10 +144,21 @@ pub fn spawn_reference_tradability_refresh(
         ));
         loop {
             timer.tick().await;
-            if let Err(error) = refresh_reference_tradability_once(&config, &store, &metrics).await
-            {
-                metrics.inc_reference_tradability_refresh_failure();
-                eprintln!("QMD reference tradability refresh failed: {error}");
+            match refresh_reference_tradability_once(&config, &store, &metrics).await {
+                Ok(summary) => {
+                    eprintln!(
+                        "QMD reference tradability refreshed: enabled={} loaded={} symbols={} blocked={} universe_date={}",
+                        summary.enabled,
+                        summary.loaded,
+                        summary.symbols,
+                        summary.blocked,
+                        summary.latest_universe_date.as_deref().unwrap_or("-")
+                    );
+                }
+                Err(error) => {
+                    metrics.inc_reference_tradability_refresh_failure();
+                    eprintln!("QMD reference tradability refresh failed: {error}");
+                }
             }
         }
     });

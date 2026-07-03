@@ -43,7 +43,7 @@ Settings are read from environment variables at process start. The gateway also 
 | `QMD_REFERENCE_DIR` | repo `research/market_references/massive` | Massive reference files used for condition packing. | Must contain `conditions_indicators_glossary.json`. |
 | `QMD_REFERENCE_TRADABILITY_ENABLED` | `true` | Load the reference gateway's latest tradable-universe publication and use it as QMD's hard app-emission gate. | Keep enabled for live trading. Disabling allows every received ticker to be emitted. |
 | `QMD_REFERENCE_TRADABILITY_TABLE` | `feature_tradable_universe_v1` | ClickHouse table containing the latest reference tradability rows. | Owned by reference gateway; QMD only reads it. |
-| `QMD_REFERENCE_TRADABILITY_REFRESH_MS` | `60000` | Periodic refresh interval for the in-memory reference tradability cache. | Lower values make reference fixes visible faster but add ClickHouse polling. |
+| `QMD_REFERENCE_TRADABILITY_REFRESH_MS` | `60000` | Periodic refresh interval for the in-memory reference tradability cache. Effective minimum is `5000`. | Lower values make reference fixes visible faster but add ClickHouse polling. The refresh is asynchronous and does not block live ingest or persistence. |
 | `QMD_REFERENCE_TRADABILITY_FAIL_CLOSED` | `true` | Treat unknown or unloaded tickers as not app-emittable. | This is the safe live-trading default. Persistence still continues. |
 | `QMD_BAR_CHANNEL_CAPACITY` | `250000` | Queue size for bar aggregation shards. | If latency rises, raise this or increase bar shards. |
 | `QMD_INDICATOR_CHANNEL_CAPACITY` | `250000` | Queue size for tick-indicator event shards. | If latency rises, raise this or increase indicator shards. |
@@ -81,6 +81,11 @@ Reference filtering and live condition blocking are intentionally different.
 Reference-blocked symbols are not emitted to app-facing streams/snapshots.
 Live-condition-blocked symbols are emitted with condition state so the app can
 display the symbol but block order entry while the condition remains active.
+
+The reference cache refresh runs in the background. If fail-closed mode is
+enabled and the cache has not loaded yet, app-facing emissions are suppressed;
+raw ingest, compact persistence, bar persistence, and condition persistence
+continue.
 
 ## Bars
 

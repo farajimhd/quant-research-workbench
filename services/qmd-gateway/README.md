@@ -89,7 +89,7 @@ Environment variables:
 - `QMD_REFERENCE_DIR`, default resolves to repo `research/market_references/massive`
 - `QMD_REFERENCE_TRADABILITY_ENABLED`, default `true`
 - `QMD_REFERENCE_TRADABILITY_TABLE`, default `feature_tradable_universe_v1`
-- `QMD_REFERENCE_TRADABILITY_REFRESH_MS`, default `60000`
+- `QMD_REFERENCE_TRADABILITY_REFRESH_MS`, default `60000`; effective minimum `5000`
 - `QMD_REFERENCE_TRADABILITY_FAIL_CLOSED`, default `true`
 - `QMD_PERSIST_RAW_EVENTS`, default `false`
 - `QMD_LIVE_MARKET_STATE_ENABLED`, default `true`
@@ -294,6 +294,11 @@ durable rows only when a predefined special state opens or closes. Ordinary
 `normal` state is not persisted. The default persisted families are estimated
 LULD near/breach states and locked/crossed quote states. Configured halt/resume
 condition ids can also open or close `condition_halt` rows.
+
+Reference tradability refresh is asynchronous. QMD startup, websocket ingest,
+bar building, and ClickHouse persistence do not wait on the reference DB read.
+If fail-closed mode is enabled and the cache is not loaded yet, app-facing
+emissions are suppressed until the background refresh succeeds.
 
 Bar-level indicator history is retained per timeframe using
 `QMD_INDICATOR_HISTORY_BY_TIMEFRAME`. The default scanner/chart compromise is:
