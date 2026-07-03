@@ -4,6 +4,10 @@ use crate::config::GatewayConfig;
 use crate::event::MarketEvent;
 use crate::indicator_catalog::{indicator_catalog, IndicatorCatalogEntry};
 use crate::indicators::{IndicatorSnapshot, SharedIndicatorStore};
+use crate::live_market_state::{
+    LiveMarketStateSnapshot, LiveSymbolMarketStateEvent, SharedLiveMarketStateStore,
+    TickerLiveMarketStateSnapshot,
+};
 use crate::maintenance::{MaintenanceSnapshot, SharedMaintenanceState};
 use crate::metrics::{MetricsSnapshot, SharedMetrics};
 use crate::scanner::{ScannerPrimitive, ScannerPrimitiveSnapshot, SharedScannerStore};
@@ -31,6 +35,8 @@ pub struct AppState {
     pub config: GatewayConfig,
     pub events: broadcast::Sender<MarketEvent>,
     pub indicators: SharedIndicatorStore,
+    pub live_market_state: SharedLiveMarketStateStore,
+    pub live_market_state_events: broadcast::Sender<LiveSymbolMarketStateEvent>,
     pub market: SharedMarketState,
     pub maintenance: SharedMaintenanceState,
     pub metrics: SharedMetrics,
@@ -80,8 +86,17 @@ pub fn app(state: AppState) -> Router {
             get(compact_event_snapshot),
         )
         .route("/snapshot/indicators/{ticker}", get(indicator_snapshot))
+        .route(
+            "/snapshot/live-market-state",
+            get(live_market_state_snapshot),
+        )
+        .route(
+            "/snapshot/live-market-state/{ticker}",
+            get(ticker_live_market_state_snapshot),
+        )
         .route("/stream/compact-events", get(compact_event_stream))
         .route("/stream/events", get(event_stream))
+        .route("/stream/live-market-state", get(live_market_state_stream))
         .route("/stream/scanner", get(scanner_stream))
         .route("/stream/scanner-primitives", get(scanner_primitive_stream))
         .route("/stream/ticker/{ticker}", get(ticker_stream))
@@ -116,6 +131,31 @@ async fn metrics_snapshot(State(state): State<Arc<AppState>>) -> Json<MetricsSna
 
 async fn maintenance_snapshot(State(state): State<Arc<AppState>>) -> Json<MaintenanceSnapshot> {
     Json(state.maintenance.snapshot().await)
+}
+
+async fn live_market_state_snapshot(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<LimitQuery>,
+) -> Json<LiveMarketStateSnapshot> {
+    Json(
+        state
+            .live_market_state
+            .snapshot(query.limit.unwrap_or(250).min(5_000))
+            .await,
+    )
+}
+
+async fn ticker_live_market_state_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(ticker): Path<String>,
+    Query(query): Query<LimitQuery>,
+) -> Json<TickerLiveMarketStateSnapshot> {
+    Json(
+        state
+            .live_market_state
+            .ticker_snapshot(&ticker, query.limit.unwrap_or(250).min(5_000))
+            .await,
+    )
 }
 
 async fn coverage_snapshot(
@@ -441,6 +481,44 @@ async fn compact_event_stream(
     ws.on_upgrade(move |socket| async move {
         stream_compact_events(socket, state).await;
     })
+}
+
+async fn live_market_state_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        stream_live_market_state(socket, state).await;
+    })
+}
+
+async fn stream_live_market_state(mut socket: WebSocket, state: Arc<AppState>) {
+    let mut receiver = state.live_market_state_events.subscribe();
+    loop {
+        match receiver.recv().await {
+            Ok(event) => {
+                if socket
+                    .send(Message::Text(
+                        serde_json::to_string(&event)
+                            .unwrap_or_else(|_| "{}".to_string())
+                            .into(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(count)) => {
+                let warning =
+                    format!(r#"{{"warning":"live_market_state_stream_lagged","skipped":{count}}}"#);
+                if socket.send(Message::Text(warning.into())).await.is_err() {
+                    break;
+                }
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
 }
 
 async fn stream_compact_events(mut socket: WebSocket, state: Arc<AppState>) {

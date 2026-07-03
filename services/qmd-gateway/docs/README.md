@@ -24,6 +24,7 @@ Use it to comment on the market-data gateway without mixing in app-backend topic
 - **NBBO**: National Best Bid and Offer, represented here by Massive quote bid/ask fields. This is not level 2 order book depth.
 - **Bar**: aggregated quote/trade data for a fixed timeframe such as `1s`, `1m`, or `1h`.
 - **Indicator**: reusable computed state such as EMA, RSI, spread, trade rate, or tape imbalance.
+- **Live abnormal market state**: sparse QMD-owned overlay for exceptional live states such as estimated LULD near/breach, locked/crossed quote, or configured halt/resume conditions. Normal state is kept in memory and not persisted.
 - **Scanner primitive**: an early market-data candidate emitted by the gateway. It is not a final trade signal.
 - **Signal method**: a cataloged trading setup contract. Most are not implemented as gateway primitives yet.
 - **Hot path**: code that runs while live Massive data is arriving. It must avoid blocking.

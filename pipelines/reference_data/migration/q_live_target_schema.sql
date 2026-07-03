@@ -1430,3 +1430,28 @@ ENGINE = ReplacingMergeTree(inserted_at)
 PARTITION BY toYYYYMM(accepted_at_utc)
 ORDER BY (accepted_at_utc, ifNull(ticker, ''), accession_number, bridge_id)
 SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';
+
+CREATE TABLE IF NOT EXISTS q_live.live_symbol_market_event_v1
+(
+    schema_version UInt16,
+    event_id String,
+    ticker LowCardinality(String),
+    event_type LowCardinality(String),
+    event_status LowCardinality(String),
+    event_start_utc DateTime64(3, 'UTC'),
+    event_end_utc Nullable(DateTime64(3, 'UTC')),
+    source_event_ts_utc DateTime64(3, 'UTC'),
+    source_event_type LowCardinality(String),
+    source_conditions Array(UInt16),
+    source_indicators Array(UInt16),
+    severity LowCardinality(String),
+    is_live_tradability_blocking UInt8,
+    block_reason Nullable(String),
+    evidence_json String,
+    source_run_id String,
+    inserted_at_utc DateTime64(3, 'UTC')
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(event_start_utc)
+ORDER BY (ticker, event_type, event_start_utc, event_id)
+SETTINGS index_granularity = 8192, storage_policy = '{{CLICKHOUSE_LIVE_STORAGE_POLICY}}';

@@ -45,8 +45,33 @@ Settings are read from environment variables at process start. The gateway also 
 | `QMD_INDICATOR_CHANNEL_CAPACITY` | `250000` | Queue size for tick-indicator event shards. | If latency rises, raise this or increase indicator shards. |
 | `QMD_INDICATOR_BAR_CHANNEL_CAPACITY` | `250000` | Queue size for closed bars sent to indicator engine. | Relevant when many timeframes close at once. |
 | `QMD_SCANNER_PRIMITIVE_CHANNEL_CAPACITY` | `250000` | Queue size for closed bars sent to scanner primitive engine. | Relevant when scanner primitive evaluation lags. |
+| `QMD_LIVE_MARKET_STATE_CHANNEL_CAPACITY` | `250000` | Queue size for quote/trade events and closed bars entering the abnormal market-state overlay. | Required path; if full, live ingest/bar finalization backpressures rather than dropping state evaluation. |
 
 Required data-path queues use awaited sends. A full queue applies backpressure instead of dropping canonical quote/trade work. Compact live inference does not wait for DB ordinals: the ML/app path reads the in-memory per-ticker buffer, while final ticker-local ordinals are assigned only when sorted rows are flushed to `q_live`.
+
+## Live Abnormal Market State
+
+| Env Var | Default | Meaning | Tuning Note |
+|---|---:|---|---|
+| `QMD_LIVE_MARKET_STATE_ENABLED` | `true` | Persist abnormal live market-state transitions to ClickHouse. | Keep enabled for order/scanner audit. Ordinary normal rows are never persisted. |
+| `QMD_LIVE_MARKET_STATE_TABLE` | `live_symbol_market_event_v1` | ClickHouse table for abnormal market-state transition rows. | The table stores sparse open/close rows only. Repeated active-state observations refresh memory but are not persisted. |
+| `QMD_LIVE_MARKET_STATE_HISTORY_LIMIT` | `5000` | In-memory recent abnormal-state events retained for API snapshots. | Does not affect durable storage. |
+| `QMD_LIVE_MARKET_STATE_TRADE_HALT_CONDITIONS` | empty | Comma-separated Massive trade condition ids that open `condition_halt`. | Leave empty until condition ids are validated against the reference glossary. |
+| `QMD_LIVE_MARKET_STATE_TRADE_RESUME_CONDITIONS` | empty | Comma-separated Massive trade condition ids that close `condition_halt`. | Must be validated before production use. |
+| `QMD_LIVE_MARKET_STATE_QUOTE_HALT_CONDITIONS` | empty | Comma-separated Massive quote condition ids that open `condition_halt`. | Optional; trade conditions are usually the first candidate. |
+| `QMD_LIVE_MARKET_STATE_QUOTE_RESUME_CONDITIONS` | empty | Comma-separated Massive quote condition ids that close `condition_halt`. | Optional; use only after validation. |
+
+The gateway also opens/closes abnormal states from bar-derived conditions:
+
+- `estimated_luld_near_upper`
+- `estimated_luld_near_lower`
+- `estimated_luld_breach_upper`
+- `estimated_luld_breach_lower`
+- `locked_crossed_quote`
+
+LULD rows are estimates from QMD's bar logic, not official SIP LULD messages.
+Near-band rows are warning context. Breach rows and locked/crossed quote rows
+are live-tradability blocking until their close transition is observed.
 
 ## Bars
 

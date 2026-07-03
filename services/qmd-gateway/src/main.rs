@@ -9,6 +9,7 @@ mod event;
 mod gapfill;
 mod indicator_catalog;
 mod indicators;
+mod live_market_state;
 mod maintenance;
 mod massive;
 mod metrics;
@@ -30,6 +31,9 @@ use crate::event::MarketEvent;
 use crate::gapfill::{run_gap_fill_service, run_startup_maintenance};
 use crate::indicators::{
     spawn_indicator_engines, IndicatorClickHouseWriter, IndicatorRow, SharedIndicatorStore,
+};
+use crate::live_market_state::{
+    spawn_live_market_state_service, LiveSymbolMarketStateEvent, SharedLiveMarketStateStore,
 };
 use crate::maintenance::SharedMaintenanceState;
 use crate::massive::{run_massive_ingest, MarketEventFanout};
@@ -73,6 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.indicator_shard_count,
     );
     let scanner = SharedScannerStore::new(config.scanner_primitive_history_limit);
+    let live_market_state = SharedLiveMarketStateStore::new(config.live_market_state_history_limit);
     let maintenance = SharedMaintenanceState::new();
     let compact_event_store =
         SharedCompactEventStore::new(config.compact_event_live_buffer_events_per_ticker);
@@ -88,6 +93,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (compact_event_sender, _compact_event_receiver) =
         broadcast::channel::<LiveCompactEvent>(10_000);
     let (scanner_sender, _scanner_receiver) = broadcast::channel::<ScannerPrimitive>(10_000);
+    let (live_market_state_sender, _live_market_state_receiver) =
+        broadcast::channel::<LiveSymbolMarketStateEvent>(10_000);
 
     if config.persist_raw_events {
         let writer = ClickHouseWriter::new(config.clone());
@@ -157,11 +164,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         metrics.clone(),
         scanner_sender.clone(),
     );
+    let live_market_state_router = spawn_live_market_state_service(
+        config.clone(),
+        live_market_state.clone(),
+        metrics.clone(),
+        live_market_state_sender.clone(),
+    );
     let bar_router = spawn_bar_engines(
         bars.clone(),
         config.bar_channel_capacity,
         Some(indicator_router.bar_sender()),
         Some(scanner_router.clone()),
+        Some(live_market_state_router.clone()),
         bar_writer_sender,
         metrics.clone(),
     );
@@ -180,6 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         },
         bar_router: bar_router.clone(),
         indicator_router: indicator_router.clone(),
+        live_market_state_router: live_market_state_router.clone(),
         event_sender: event_sender.clone(),
         metrics: metrics.clone(),
     };
@@ -191,6 +206,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config: config.clone(),
         events: event_sender,
         indicators,
+        live_market_state,
+        live_market_state_events: live_market_state_sender,
         market: market.clone(),
         metrics: metrics.clone(),
         maintenance: maintenance.clone(),

@@ -14,6 +14,7 @@ Massive websocket
       -> in-memory market state
       -> in-memory bars
       -> in-memory indicators
+      -> in-memory abnormal market-state overlay
       -> Massive-only scanner primitives
       -> compact live event stream/table
       -> ClickHouse q_live compact events/bars/optional raw/optional indicators
@@ -37,6 +38,7 @@ The gateway outputs market-data primitives. The app backend combines those primi
 | `massive.rs` | Websocket connection and fan-out | Massive websocket | Queues for state, bars, indicators, compact writer, optional raw writer | Blocking writes |
 | `state.rs` | Simple latest market snapshot | Market events | `/snapshot/scanner`, `/snapshot/ticker` | Final scanner scoring |
 | `bars.rs` | Live bar aggregation | Market events | `BarRow`, `live_market_bars`, `bars_by_symbol_time`, `bars_by_time_symbol` | Historical chart storage |
+| `live_market_state.rs` | Live abnormal market-state overlay | Market events, closed bars | `/snapshot/live-market-state`, `/stream/live-market-state`, `live_symbol_market_event_v1` | Reference identity/routing decisions |
 | `indicators.rs` | Streaming tick and bar indicators | Market events, closed bars | Tick snapshots, `IndicatorRow` | Wide research feature generation |
 | `scanner.rs` | Massive-only scanner primitives | Closed bars | Primitive snapshot/stream | Broker/reference-aware signals |
 | `compact_event.rs` | Live compact event contract, live ring buffers, sorted persistence ordinals | Market events | `/stream/compact-events`, `/snapshot/compact-events/{ticker}`, `events` | Encoder chunk construction |
@@ -55,6 +57,7 @@ Massive websocket text
   -> best-effort event broadcast stream
   -> bar queue
   -> indicator tick queue
+  -> abnormal market-state queue
   -> compact event queue
   -> optional raw ClickHouse queue
 ```
@@ -117,6 +120,30 @@ each bar. The fields are intentionally labeled as estimates because official
 Tier 1/ETP classification and SIP eligible-trade handling are not yet part of
 the QMD hot path.
 
+## Live Abnormal Market-State Flow
+
+```text
+MarketEvent and closed BarRow
+  -> live_market_state.rs
+  -> update in-memory active abnormal states
+  -> append durable transition only when a special state opens/closes
+  -> broadcast transition to /stream/live-market-state
+```
+
+This flow deliberately does not persist ordinary `normal` state. The active
+state map is the low-latency current overlay for scanner/order gates. The
+ClickHouse table is an audit stream for exceptional states that can affect
+tradability or risk review.
+
+Default sources:
+
+- closed 1s bars open/close estimated LULD near/breach states
+- closed 1s bars open/close locked/crossed quote states
+- configured quote/trade condition ids open/close `condition_halt`
+
+The gateway treats this as a live overlay only. Reference tradability and broker
+routing remain owned by the reference gateway and broker/order services.
+
 ## Indicator Flow
 
 Tick indicators are updated from quotes/trades. Bar indicators are updated only from closed bars. This avoids rescanning stored rows while live data is arriving.
@@ -146,6 +173,7 @@ Default durable writes:
 | `live_massive_trades` | `clickhouse.rs` | no | Optional raw trade replay/debug source |
 | `live_massive_quotes` | `clickhouse.rs` | no | Optional raw quote replay/debug source |
 | `live_market_bars` | `bars.rs` | yes | Published bar history |
+| `live_symbol_market_event_v1` | `live_market_state.rs` | yes | Abnormal live market-state transition audit |
 | `live_market_indicators` | `indicators.rs` | no | Optional materialized bar-level indicator rows |
 | `qmd_gap_fill_runs` | `gapfill.rs` | yes | Gap-fill audit log |
 | `qmd_market_coverage_manifest_v1` | `gapfill.rs` | yes | Coarse startup repair and historical flatfile planning manifest |

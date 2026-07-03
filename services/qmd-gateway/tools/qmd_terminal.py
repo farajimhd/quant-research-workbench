@@ -201,6 +201,8 @@ def update_rates(state: PollState, metrics: dict[str, Any], now: float) -> None:
         "compact_events_persisted",
         "bar_rows_emitted",
         "scanner_candidates_emitted",
+        "live_market_state_events_emitted",
+        "live_market_state_events_persisted",
     ]
     rates: dict[str, float] = {}
     if elapsed > 0:
@@ -339,6 +341,8 @@ def render_runtime(state: PollState) -> Any:
         ("Compact written", format_int(metrics.get("compact_events_persisted")), format_rate(state.rates.get("compact_events_persisted_per_sec"))),
         ("Bars emitted", format_int(metrics.get("bar_rows_emitted")), format_rate(state.rates.get("bar_rows_emitted_per_sec"))),
         ("Scanner rows", format_int(metrics.get("scanner_candidates_emitted")), format_rate(state.rates.get("scanner_candidates_emitted_per_sec"))),
+        ("Live state events", format_int(metrics.get("live_market_state_events_emitted")), format_rate(state.rates.get("live_market_state_events_emitted_per_sec"))),
+        ("Live state persisted", format_int(metrics.get("live_market_state_events_persisted")), format_rate(state.rates.get("live_market_state_events_persisted_per_sec"))),
         ("Gap fill runs", format_int(metrics.get("gap_fill_runs")), f"failures={format_int(metrics.get('gap_fill_failures'))}"),
     ]
     return Panel(metric_table(rows), title="Runtime", box=box.ROUNDED, border_style="yellow", padding=(0, 1))
@@ -428,6 +432,8 @@ def render_backpressure(state: PollState) -> Any:
         ("Bar indicator queue", "bar_rows_indicator_dropped"),
         ("Bar scanner queue", "bar_rows_scanner_dropped"),
         ("Indicator queue", "indicator_events_dropped"),
+        ("Live state broadcast", "live_market_state_broadcast_dropped"),
+        ("Live state insert failures", "live_market_state_persist_failures"),
         ("Raw CH queue", "clickhouse_events_dropped"),
     ]
     total = sum(int(as_float(metrics.get(key))) for _, key in rows)

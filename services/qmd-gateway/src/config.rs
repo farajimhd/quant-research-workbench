@@ -60,6 +60,14 @@ pub struct GatewayConfig {
     #[serde(skip_serializing)]
     pub massive_api_key: String,
     pub massive_ws_url: String,
+    pub live_market_state_channel_capacity: usize,
+    pub live_market_state_enabled: bool,
+    pub live_market_state_history_limit: usize,
+    pub live_market_state_table: String,
+    pub live_market_state_trade_halt_conditions: Vec<u16>,
+    pub live_market_state_trade_resume_conditions: Vec<u16>,
+    pub live_market_state_quote_halt_conditions: Vec<u16>,
+    pub live_market_state_quote_resume_conditions: Vec<u16>,
     pub qmd_coverage_table: String,
     pub qmd_flatfile_event_coverage_table: String,
     pub qmd_gap_fill_symbol_universe_table: String,
@@ -256,6 +264,31 @@ impl GatewayConfig {
             max_clickhouse_batch: env_usize("QMD_CLICKHOUSE_MAX_BATCH", 10_000),
             massive_api_key,
             massive_ws_url: env_string("QMD_MASSIVE_WS_URL", "wss://socket.massive.com/stocks"),
+            live_market_state_channel_capacity: env_usize(
+                "QMD_LIVE_MARKET_STATE_CHANNEL_CAPACITY",
+                250_000,
+            ),
+            live_market_state_enabled: env_bool("QMD_LIVE_MARKET_STATE_ENABLED", true),
+            live_market_state_history_limit: env_usize(
+                "QMD_LIVE_MARKET_STATE_HISTORY_LIMIT",
+                5_000,
+            ),
+            live_market_state_table: env_string(
+                "QMD_LIVE_MARKET_STATE_TABLE",
+                "live_symbol_market_event_v1",
+            ),
+            live_market_state_trade_halt_conditions: env_u16_list(
+                "QMD_LIVE_MARKET_STATE_TRADE_HALT_CONDITIONS",
+            ),
+            live_market_state_trade_resume_conditions: env_u16_list(
+                "QMD_LIVE_MARKET_STATE_TRADE_RESUME_CONDITIONS",
+            ),
+            live_market_state_quote_halt_conditions: env_u16_list(
+                "QMD_LIVE_MARKET_STATE_QUOTE_HALT_CONDITIONS",
+            ),
+            live_market_state_quote_resume_conditions: env_u16_list(
+                "QMD_LIVE_MARKET_STATE_QUOTE_RESUME_CONDITIONS",
+            ),
             qmd_coverage_table: env_string("QMD_COVERAGE_TABLE", "qmd_market_coverage_manifest_v1"),
             qmd_flatfile_event_coverage_table: env_string(
                 "QMD_FLATFILE_EVENT_COVERAGE_TABLE",
@@ -470,6 +503,17 @@ fn env_list(name: &str) -> Vec<String> {
         .map(|value| value.trim().to_ascii_uppercase())
         .filter(|value| !value.is_empty())
         .collect()
+}
+
+fn env_u16_list(name: &str) -> Vec<u16> {
+    env::var(name)
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .filter_map(|part| part.trim().parse::<u16>().ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn env_list_with_default(name: &str, default: &[&str]) -> Vec<String> {

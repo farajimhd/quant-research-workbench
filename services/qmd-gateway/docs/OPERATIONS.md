@@ -16,6 +16,7 @@ Main tasks:
 | Bar workers | Build bars by ticker shard. | Bars, bar indicators, and scanner primitives lag or drop. |
 | Indicator workers | Build tick and bar indicators by ticker shard. | Indicator snapshots lag or drop. |
 | Scanner primitive worker | Emits Massive-only primitive candidates. | Primitive stream becomes stale. |
+| Live abnormal market-state worker | Tracks active abnormal states and persists only transition rows. | Live tradability overlay becomes stale. |
 | Gap-fill worker | Repairs recent quote/trade gaps with Massive REST through the same event fan-out as websocket ingest. | Missing recent events remain until next repair. |
 | Replay worker | Optional one-shot replay from ClickHouse raw rows. | Only active when replay env vars enable it. |
 | Local API server | Exposes health, metrics, snapshots, and streams. | App cannot consume gateway data. |
@@ -81,6 +82,8 @@ In monitor mode, exiting the monitor stops the background gateway process.
 | `GET /snapshot/ticker/AAPL` | Latest quote/trade state for one ticker. |
 | `GET /snapshot/bars/AAPL?timeframe=1m&limit=500` | Recent in-memory closed bars for one ticker/timeframe. |
 | `GET /snapshot/indicators/AAPL?timeframe=1m&limit=500` | Recent indicator state for one ticker/timeframe. |
+| `GET /snapshot/live-market-state?limit=250` | Active and recent abnormal market-state transitions. |
+| `GET /snapshot/live-market-state/AAPL?limit=250` | Active and recent abnormal states for one ticker plus live-tradability blocking reasons. |
 
 ## Websocket Endpoints
 
@@ -93,6 +96,7 @@ In monitor mode, exiting the monitor stops the background gateway process.
 | `/stream/ticker/{ticker}` | Periodic latest ticker snapshot. |
 | `/stream/bars/{ticker}?timeframe=1m&limit=500` | Periodic bar snapshot. |
 | `/stream/indicators/{ticker}?timeframe=1m&limit=500` | Periodic indicator snapshot. |
+| `/stream/live-market-state` | Abnormal market-state open/close transitions. Repeated active-state observations are kept in memory and not emitted as duplicate rows. |
 
 ## Metrics To Watch
 
@@ -114,6 +118,10 @@ In monitor mode, exiting the monitor stops the background gateway process.
 | `bar_rows_scanner_dropped` | Scanner primitive receiver closed before accepting a closed bar. | Treat as a service fault. |
 | `bar_rows_emitted` | Closed bars produced. | Should rise by timeframe during active feed. |
 | `scanner_candidates_emitted` | Scanner primitives emitted. | Useful for scanner activity rate. |
+| `live_market_state_events_emitted` | Abnormal market-state transition rows emitted by the overlay. | Should be sparse; large steady growth means a noisy rule is persisting too much. |
+| `live_market_state_events_persisted` | Abnormal market-state transition rows inserted to ClickHouse. | Should track emitted rows. |
+| `live_market_state_broadcast_dropped` | UI/API live-state stream had no receiver or lagged. | Durable persistence is still authoritative; inspect only if live UI misses transitions. |
+| `live_market_state_persist_failures` | ClickHouse insert failures for abnormal market-state rows. | Treat as audit loss; inspect ClickHouse permissions/schema. |
 | `gap_fill_runs`, `gap_fill_failures` | Gap-fill attempts and failures. | Failures need REST/ClickHouse error review. |
 | `gap_fill_rows_written` | Rows repaired by REST gap fill. | High values after restart are expected; high values every cycle mean ingestion gaps remain. |
 | `gap_fill_last_duration_ms` | Last gap-fill runtime. | If large, reduce symbols/pages or move repair after hours. |
@@ -241,6 +249,7 @@ Use replay in a separate run from live trading unless you are deliberately testi
 | `live_market_bars` | yes | Published bars for chart/date-slice queries. |
 | `bars_by_symbol_time` | yes | Same published bars ordered for per-symbol temporal windows. |
 | `bars_by_time_symbol` | yes | Same published bars ordered for market-wide time snapshots. |
+| `live_symbol_market_event_v1` | yes | Sparse abnormal live market-state transition audit; normal state is not persisted. |
 | `live_market_indicators` | optional | Materialized closed bar-level indicators when `QMD_PERSIST_INDICATORS=true`. |
 | `qmd_gap_fill_runs` | yes if gap fill enabled | Audit trail for gap-fill attempts. |
 | `qmd_market_coverage_manifest_v1` | yes if startup maintenance or historical planning is enabled | Coarse run-level live repair and historical flatfile planning manifest. |
@@ -260,6 +269,7 @@ Before live use:
 6. Drop counters stay at zero or remain explainable during bursts.
 7. `events` receives rows or `/stream/compact-events` emits rows.
 8. `live_market_bars`, `bars_by_symbol_time`, and `bars_by_time_symbol` receive closed bars.
+9. `/snapshot/live-market-state` is reachable and `live_symbol_market_event_v1` exists.
 
 ## Failure Triage
 
@@ -272,6 +282,7 @@ Before live use:
 | Bars are missing but raw rows arrive | Check `bar_events_dropped`, bar shard count, and configured timeframes. |
 | Indicators are missing but bars arrive | Check `indicator_events_dropped`, `bar_rows_indicator_dropped`, and indicator history limits. |
 | Scanner primitives are missing | Confirm bars close, then check whether current market activity meets primitive thresholds. |
+| Live market state is missing | Confirm `QMD_LIVE_MARKET_STATE_ENABLED=true`, bars close, and the state is actually abnormal. Normal state does not write rows. |
 | API is slow | Lower broadcast frequency, inspect websocket clients, and watch drop counters. |
 | Gap fill does not run | Check `QMD_GAP_FILL_ENABLED`, `MASSIVE_API_KEY`, `QMD_GAP_FILL_MODE`, and whether the current phase allows repair. |
 | Gap fill records `awaiting_live_symbols` | The durable symbol universe is empty and no websocket compact symbols have arrived yet. Once websocket symbols arrive, repair should add them to `qmd_gap_fill_symbol_universe_v1` and retry on `QMD_GAP_FILL_AWAITING_SYMBOLS_RETRY_MS`. |

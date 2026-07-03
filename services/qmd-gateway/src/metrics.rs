@@ -46,6 +46,10 @@ struct MetricsInner {
     ingest_quotes: AtomicU64,
     ingest_trades: AtomicU64,
     last_event_unix_ms: AtomicI64,
+    live_market_state_broadcast_dropped: AtomicU64,
+    live_market_state_events_emitted: AtomicU64,
+    live_market_state_events_persisted: AtomicU64,
+    live_market_state_persist_failures: AtomicU64,
     massive_connect_failures: AtomicU64,
     massive_disconnects: AtomicU64,
     parse_failures: AtomicU64,
@@ -92,6 +96,10 @@ pub struct MetricsSnapshot {
     pub ingest_trades: u64,
     pub last_event_lag_ms: Option<i64>,
     pub last_event_ts: Option<DateTime<Utc>>,
+    pub live_market_state_broadcast_dropped: u64,
+    pub live_market_state_events_emitted: u64,
+    pub live_market_state_events_persisted: u64,
+    pub live_market_state_persist_failures: u64,
     pub massive_connect_failures: u64,
     pub massive_disconnects: u64,
     pub parse_failures: u64,
@@ -151,6 +159,10 @@ impl SharedMetrics {
                 ingest_quotes: AtomicU64::new(0),
                 ingest_trades: AtomicU64::new(0),
                 last_event_unix_ms: AtomicI64::new(0),
+                live_market_state_broadcast_dropped: AtomicU64::new(0),
+                live_market_state_events_emitted: AtomicU64::new(0),
+                live_market_state_events_persisted: AtomicU64::new(0),
+                live_market_state_persist_failures: AtomicU64::new(0),
                 massive_connect_failures: AtomicU64::new(0),
                 massive_disconnects: AtomicU64::new(0),
                 parse_failures: AtomicU64::new(0),
@@ -220,6 +232,14 @@ impl SharedMetrics {
             } else {
                 None
             },
+            live_market_state_broadcast_dropped: self
+                .get(&self.inner.live_market_state_broadcast_dropped),
+            live_market_state_events_emitted: self
+                .get(&self.inner.live_market_state_events_emitted),
+            live_market_state_events_persisted: self
+                .get(&self.inner.live_market_state_events_persisted),
+            live_market_state_persist_failures: self
+                .get(&self.inner.live_market_state_persist_failures),
             massive_connect_failures: self.get(&self.inner.massive_connect_failures),
             massive_disconnects: self.get(&self.inner.massive_disconnects),
             parse_failures: self.get(&self.inner.parse_failures),
@@ -366,6 +386,22 @@ impl SharedMetrics {
 
     pub fn inc_indicator_event_dropped(&self) {
         self.inc(&self.inner.indicator_events_dropped, 1);
+    }
+
+    pub fn inc_live_market_state_broadcast_dropped(&self) {
+        self.inc(&self.inner.live_market_state_broadcast_dropped, 1);
+    }
+
+    pub fn inc_live_market_state_emitted(&self, count: u64) {
+        self.inc(&self.inner.live_market_state_events_emitted, count);
+    }
+
+    pub fn inc_live_market_state_persisted(&self, count: u64) {
+        self.inc(&self.inner.live_market_state_events_persisted, count);
+    }
+
+    pub fn inc_live_market_state_persist_failed(&self) {
+        self.inc(&self.inner.live_market_state_persist_failures, 1);
     }
 
     pub fn inc_massive_connect_failure(&self) {

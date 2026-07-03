@@ -13,6 +13,7 @@ Current responsibilities:
 - default subscription scope is full tape: `T.*` and `Q.*`
 - normalize quote/trade events
 - maintain in-memory live market state
+- maintain an in-memory abnormal market-state overlay and persist only special transitions
 - build sharded live quote/trade bars for `1s`, `10s`, `30s`, `1m`, `5m`, and `1h`
 - build sharded streaming tick and bar-level indicators
 - build Massive-only scanner primitive candidates from live bars
@@ -86,6 +87,14 @@ Environment variables:
 - `QMD_COMPACT_EVENT_REORDER_MAX_EVENTS_PER_TICKER`, default `4096`
 - `QMD_REFERENCE_DIR`, default resolves to repo `research/market_references/massive`
 - `QMD_PERSIST_RAW_EVENTS`, default `false`
+- `QMD_LIVE_MARKET_STATE_ENABLED`, default `true`
+- `QMD_LIVE_MARKET_STATE_TABLE`, default `live_symbol_market_event_v1`
+- `QMD_LIVE_MARKET_STATE_CHANNEL_CAPACITY`, default `250000`
+- `QMD_LIVE_MARKET_STATE_HISTORY_LIMIT`, default `5000`
+- `QMD_LIVE_MARKET_STATE_TRADE_HALT_CONDITIONS`, default empty comma-separated condition ids
+- `QMD_LIVE_MARKET_STATE_TRADE_RESUME_CONDITIONS`, default empty comma-separated condition ids
+- `QMD_LIVE_MARKET_STATE_QUOTE_HALT_CONDITIONS`, default empty comma-separated condition ids
+- `QMD_LIVE_MARKET_STATE_QUOTE_RESUME_CONDITIONS`, default empty comma-separated condition ids
 - `QMD_BAR_CHANNEL_CAPACITY`, default `250000`
 - `QMD_BAR_HISTORY_LIMIT`, default `1000`
 - `QMD_BAR_SHARD_COUNT`, default `8`
@@ -261,6 +270,16 @@ percentages, an active regular-session flag, and a compact state such as
 eligible-trade handling are not yet wired into QMD, these fields are named
 `estimated_luld_*` and should not be used as authoritative halt/limit-state
 messages.
+
+The live abnormal market-state overlay consumes quote/trade events and closed
+1s bars. It keeps current state in memory and appends durable rows only when a
+predefined special state opens or closes. Ordinary `normal` state is
+not persisted. The default persisted families are estimated LULD near/breach
+states and locked/crossed quote states. Configured halt/resume condition ids can
+also open or close `condition_halt` rows. Consumers read
+`/snapshot/live-market-state`, `/snapshot/live-market-state/{ticker}`, or
+`/stream/live-market-state` and combine those live blocks with reference
+tradability and broker/account checks.
 
 Bar-level indicator history is retained per timeframe using
 `QMD_INDICATOR_HISTORY_BY_TIMEFRAME`. The default scanner/chart compromise is:

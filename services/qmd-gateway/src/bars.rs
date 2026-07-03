@@ -1,5 +1,6 @@
 use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
+use crate::live_market_state::LiveMarketStateRouter;
 use crate::metrics::SharedMetrics;
 use crate::scanner::ScannerPrimitiveRouter;
 use crate::timefmt::{clickhouse_datetime64, clickhouse_datetime64_opt};
@@ -1084,6 +1085,7 @@ pub fn spawn_bar_engines(
     channel_capacity: usize,
     indicator_sender: Option<mpsc::Sender<BarRow>>,
     scanner_sender: Option<ScannerPrimitiveRouter>,
+    live_market_state_sender: Option<LiveMarketStateRouter>,
     writer_sender: mpsc::Sender<BarRow>,
     metrics: SharedMetrics,
 ) -> BarEventRouter {
@@ -1099,6 +1101,7 @@ pub fn spawn_bar_engines(
             receiver,
             indicator_sender.clone(),
             scanner_sender.clone(),
+            live_market_state_sender.clone(),
             writer_sender.clone(),
             metrics.clone(),
         ));
@@ -1114,6 +1117,7 @@ async fn run_bar_engine(
     mut receiver: mpsc::Receiver<MarketEvent>,
     indicator_sender: Option<mpsc::Sender<BarRow>>,
     scanner_sender: Option<ScannerPrimitiveRouter>,
+    live_market_state_sender: Option<LiveMarketStateRouter>,
     writer_sender: mpsc::Sender<BarRow>,
     metrics: SharedMetrics,
 ) {
@@ -1124,18 +1128,18 @@ async fn run_bar_engine(
                 match event {
                     Some(event) => {
                         let finalized = shard.apply_event(&event).await;
-                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), &metrics, finalized).await;
+                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
                     }
                     None => {
                         let finalized = shard.finalize_due(Utc::now()).await;
-                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), &metrics, finalized).await;
+                        send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
                         return;
                     }
                 }
             }
             _ = heartbeat.tick() => {
                 let finalized = shard.finalize_due(Utc::now()).await;
-                send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), &metrics, finalized).await;
+                send_finalized_bars(shard_id, &writer_sender, indicator_sender.as_ref(), scanner_sender.as_ref(), live_market_state_sender.as_ref(), &metrics, finalized).await;
             }
         }
     }
@@ -1146,6 +1150,7 @@ async fn send_finalized_bars(
     writer_sender: &mpsc::Sender<BarRow>,
     indicator_sender: Option<&mpsc::Sender<BarRow>>,
     scanner_sender: Option<&ScannerPrimitiveRouter>,
+    live_market_state_sender: Option<&LiveMarketStateRouter>,
     metrics: &SharedMetrics,
     rows: Vec<BarRow>,
 ) {
@@ -1161,6 +1166,11 @@ async fn send_finalized_bars(
             if sender.send_bar(row.clone()).await.is_err() {
                 metrics.inc_bar_scanner_dropped();
                 eprintln!("Scanner primitive receiver closed; shard {shard_id} could not route one finalized bar.");
+            }
+        }
+        if let Some(sender) = live_market_state_sender {
+            if sender.send_bar(row.clone()).await.is_err() {
+                eprintln!("Live market state receiver closed; shard {shard_id} could not route one finalized bar.");
             }
         }
         if writer_sender.send(row).await.is_err() {

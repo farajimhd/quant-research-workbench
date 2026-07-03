@@ -12,6 +12,7 @@ This file documents the values produced by `qmd-gateway`. A **formula** is the e
 | Bars | `schema_version` | `2` | Increment when bar fields or formulas change. |
 | Bar indicators | `schema_version` | `1` | Increment when persisted indicator fields or formulas change. |
 | Scanner primitives | `schema_version` | `1` | Increment when primitive output contract changes. |
+| Live abnormal market-state events | `schema_version` | `1` | Increment when abnormal state event semantics change. |
 
 Once production data is written under a version, do not change that version's field meaning. Add a new version or field.
 
@@ -124,6 +125,56 @@ insert failure or bar insert failure from hiding a q_live time gap.
 | `rows_written`, `event_rows`, `bar_rows` | Writer-specific row counts. Repair rows store per-interval counts, not one repeated global count. |
 | `error_count` | Nonzero when a diagnostic row records a failed or partial interval. |
 | `metadata_json` | Per-run metadata including excluded raw tables and repair interval details. |
+
+## Live Abnormal Market-State Event Row
+
+Table: `live_symbol_market_event_v1`
+
+This table is an exception/audit stream, not a full state table. QMD keeps the
+current live state in memory and writes a row only when a predefined abnormal
+state opens or closes. Ordinary `normal` state is intentionally not
+persisted.
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | Live abnormal market-state contract version. |
+| `event_id` | Stable run-scoped id from run id, ticker, event type, status, and source timestamp. |
+| `ticker` | Uppercase Massive ticker. |
+| `event_type` | Abnormal state family, for example `estimated_luld_near_upper`, `estimated_luld_breach_lower`, `locked_crossed_quote`, or `condition_halt`. |
+| `event_status` | `opened` or `closed`; `updated` is reserved for future explicit throttled update rows. |
+| `event_start_utc` | Source timestamp that opened the active abnormal state. |
+| `event_end_utc` | Source timestamp that closed the state, otherwise null. |
+| `source_event_ts_utc` | Quote/trade/bar timestamp that caused this transition. |
+| `source_event_type` | `trade`, `quote`, or `bar`. |
+| `source_conditions` | Raw Massive condition ids from the source quote/trade, if any. |
+| `source_indicators` | Raw Massive quote indicator ids from the source quote, if any. |
+| `severity` | `warning` or `critical`. |
+| `is_live_tradability_blocking` | `1` when the live state should block new orders while active. |
+| `block_reason` | Short machine-readable reason when blocking. |
+| `evidence_json` | Minimal evidence needed to explain the transition; not a raw event dump. |
+| `source_run_id` | QMD run id. |
+| `inserted_at_utc` | Gateway insert-row creation time. |
+
+Current default event families:
+
+- estimated LULD near/breach states from closed 1s bars
+- locked/crossed quote states from closed 1s bars
+- configured halt/resume condition ids from quote/trade events
+
+API contracts:
+
+```text
+GET /snapshot/live-market-state?limit=250
+GET /snapshot/live-market-state/{ticker}?limit=250
+WS  /stream/live-market-state
+```
+
+The live order/scanner decision should combine this overlay with reference
+tradability and broker/account checks:
+
+```text
+reference_tradable AND routing_valid AND no active live blocking state
+```
 
 Price integer scale:
 

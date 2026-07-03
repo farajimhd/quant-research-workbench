@@ -2,6 +2,7 @@ use crate::bars::BarEventRouter;
 use crate::config::GatewayConfig;
 use crate::event::{massive_status_message, parse_massive_payload, MarketEvent};
 use crate::indicators::IndicatorEventRouter;
+use crate::live_market_state::LiveMarketStateRouter;
 use crate::metrics::SharedMetrics;
 use crate::state::SharedMarketState;
 use futures_util::{SinkExt, StreamExt};
@@ -17,6 +18,7 @@ pub struct MarketEventFanout {
     pub compact_writer_sender: Option<mpsc::Sender<MarketEvent>>,
     pub bar_router: BarEventRouter,
     pub indicator_router: IndicatorEventRouter,
+    pub live_market_state_router: LiveMarketStateRouter,
     pub event_sender: broadcast::Sender<MarketEvent>,
     pub metrics: SharedMetrics,
 }
@@ -101,6 +103,14 @@ pub async fn fanout_market_event(event: MarketEvent, fanout: &MarketEventFanout)
     };
     fanout.metrics.observe_event(kind, event.ts());
     fanout.state.apply_event(&event).await;
+    if fanout
+        .live_market_state_router
+        .send_event(event.clone())
+        .await
+        .is_err()
+    {
+        eprintln!("Live market state receiver closed; could not route one market event.");
+    }
     if fanout.event_sender.send(event.clone()).is_err() {
         fanout.metrics.inc_event_broadcast_dropped();
     }

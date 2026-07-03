@@ -1366,6 +1366,51 @@ data and `q_live` schema.
 | Valuation | `security_valuation_fact_v1` | Schema implemented; filler pending | Derived ratios such as market cap to sales, EV-like approximations, price to book, or cash per share when inputs exist. | market snapshot plus curated fundamental metrics | `fundamental/valuation`, `feature_invalidation/valuation` | New table is justified for derived values with explicit input version/evidence. |
 | Liquidity profile | `security_liquidity_profile_fact_v1` | Schema implemented; QMD filler pending | Historical/liquid current profile such as median spread, median volume, dollar volume, volatility, and trade frequency. | QMD bars/events, historical SIP compact events | `market_structure/liquidity` | New table is justified, but QMD should own its raw computation; reference gateway can consume the publication. |
 
+### QMD Live Tradability Overlay Boundary
+
+Reference tradability and broker routing facts are not the full live order
+answer. They cover slow-changing identity, mapping, route, and reference
+publication risks. QMD owns the live market-data overlay because it sees the
+quote/trade stream first.
+
+QMD now publishes sparse abnormal state transitions to:
+
+```text
+q_live.live_symbol_market_event_v1
+```
+
+Normal state is not persisted. QMD keeps the active state map in memory and
+only appends rows when predefined abnormal states open or close:
+
+- estimated LULD near/breach states from closed bars
+- locked/crossed quote states from closed bars
+- configured quote/trade halt-resume condition transitions
+
+The order/scanner gate should evaluate:
+
+```text
+reference_tradable AND routing_valid AND no active QMD live blocking state
+```
+
+Fact-table work in the reference gateway should therefore not duplicate QMD
+state rows. The reference gateway may consume QMD's table to explain or audit a
+decision, but the current live block should come from QMD's live-state snapshot
+or stream. If a downstream table needs a trading-facing view, it should be a
+latest-view/read-model over QMD state plus reference facts, not a copy of every
+normal market row. Repeated observations of an already-active abnormal state
+refresh QMD memory but should not be copied into durable reference facts.
+
+Reference fact-table follow-up tasks:
+
+1. Add the live overlay input to the `security_tradability_fact_v1` design as
+   an external/current overlay, not a static source of truth.
+2. Keep `security_routing_fact_v1` broker/reference-only.
+3. Add a consumer contract for live trading: read QMD active abnormal states and
+   block if any active row has `is_live_tradability_blocking = 1`.
+4. Add a reconciliation/audit query that verifies QMD abnormal events can be
+   joined to known active symbols, but do not block QMD if a brand-new ticker is
+   not yet in reference tables.
+
 ### SEC/XBRL Useful Fact Scope
 
 SEC and XBRL should not be copied wholesale into new tables. The first curated
