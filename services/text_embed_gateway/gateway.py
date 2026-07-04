@@ -380,15 +380,24 @@ class TextEmbedGateway:
 
     def _load_model(self) -> None:
         started = time.perf_counter()
-        self.tokenizer = TextTokenizer(model=self.config.tokenizer_model, local_files_only=self.config.local_files_only, strict=True)
-        self.embedding_model = TextEmbeddingModel(
-            model=self.config.embedding_model,
-            tokenizer_model=self.config.tokenizer_model,
-            local_files_only=self.config.local_files_only,
-            device=self.config.embedding_device,
-            torch_dtype=self.config.embedding_torch_dtype,
-            pooling=self.config.embedding_pooling,
-        )
+        try:
+            self.tokenizer = TextTokenizer(model=self.config.tokenizer_model, local_files_only=self.config.local_files_only, strict=True)
+            self.embedding_model = TextEmbeddingModel(
+                model=self.config.embedding_model,
+                tokenizer_model=self.config.tokenizer_model,
+                local_files_only=self.config.local_files_only,
+                device=self.config.embedding_device,
+                torch_dtype=self.config.embedding_torch_dtype,
+                pooling=self.config.embedding_pooling,
+            )
+        except Exception as exc:  # noqa: BLE001
+            hint = (
+                "Qwen files are not available in the local HuggingFace cache. "
+                "Run once with '.\\scripts\\run_text_embed_gateway.ps1 -LoadModelCheck -NoLocalFilesOnly' "
+                "or set TEXT_EMBED_LOCAL_FILES_ONLY=false on a machine with internet access. "
+                "After the files are cached, return to the default offline mode for production."
+            )
+            raise RuntimeError(f"{hint} Original error: {exc!r}") from exc
         self.metrics.model_status = "loaded"
         self.metrics.model_load_seconds = time.perf_counter() - started
         self.metrics.embedding_dim = int(self.embedding_model.embedding_dim)

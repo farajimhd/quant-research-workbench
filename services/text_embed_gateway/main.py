@@ -59,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--check-only", action="store_true", help="Load config and construct the service, then exit before loading Qwen.")
     parser.add_argument("--load-model-check", action="store_true", help="Load and release Qwen once, then exit.")
     parser.add_argument("--no-background", action="store_true", help="Start HTTP app without model/poll loops.")
+    parser.add_argument("--no-local-files-only", action="store_true", help="Allow HuggingFace downloads/lookups for the first Qwen cache warmup.")
     return parser.parse_args()
 
 
@@ -69,6 +70,10 @@ def main() -> None:
         import os
 
         os.environ["TEXT_EMBED_GATEWAY_BIND"] = args.bind
+    if args.no_local_files_only:
+        import os
+
+        os.environ["TEXT_EMBED_LOCAL_FILES_ONLY"] = "false"
     cfg = TextEmbedGatewayConfig.from_env()
     if args.check_only:
         print("Text embedding gateway config OK", flush=True)
@@ -86,4 +91,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -81,3 +81,12 @@ PowerShell launcher:
 .\scripts\run_text_embed_gateway.ps1 -LoadModelCheck
 .\scripts\run_text_embed_gateway.ps1
 ```
+
+First-time model download/cache warmup:
+
+```powershell
+.\scripts\run_text_embed_gateway.ps1 -LoadModelCheck -NoLocalFilesOnly
+```
+
+Use the default local-files-only mode after the Qwen tokenizer/model files are
+cached, so production does not depend on HuggingFace network availability.

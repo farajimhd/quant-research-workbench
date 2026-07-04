@@ -5,7 +5,8 @@ param(
     [string]$PythonExe = "",
     [switch]$CheckOnly,
     [switch]$LoadModelCheck,
-    [switch]$NoBackground
+    [switch]$NoBackground,
+    [switch]$NoLocalFilesOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +17,9 @@ if ($Bind.Trim()) {
 }
 if ($DataRoot.Trim()) {
     $env:TEXT_EMBED_GATEWAY_DATA_ROOT_WIN = $DataRoot.Trim()
+}
+if ($NoLocalFilesOnly) {
+    $env:TEXT_EMBED_LOCAL_FILES_ONLY = "false"
 }
 
 function Resolve-CondaEnvPython {
@@ -82,6 +86,9 @@ if ($LoadModelCheck) {
 }
 if ($NoBackground) {
     $argsList += "--no-background"
+}
+if ($NoLocalFilesOnly) {
+    $argsList += "--no-local-files-only"
 }
 
 Invoke-TextEmbedGatewayPython -ModuleArgs $argsList
