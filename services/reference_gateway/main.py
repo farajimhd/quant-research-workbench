@@ -7,10 +7,11 @@ import os
 import sys
 import time
 from dataclasses import asdict
+from datetime import UTC, datetime
 
 from research.mlops.clickhouse import discover_clickhouse_env_files
 from research.mlops.env import load_env_files, secret_status
-from services.reference_gateway.active_tickers import run_active_ticker_plan, write_active_ticker_plan
+from services.reference_gateway.active_tickers import ActiveTickerPlan, run_active_ticker_plan, write_active_ticker_plan
 from services.reference_gateway.alerts import (
     ReferenceAlert,
     build_audit_alerts,
@@ -24,19 +25,23 @@ from services.reference_gateway.alerts import (
 from services.reference_gateway.audit import run_reference_audit, write_report
 from services.reference_gateway.canonical_graph_writer import write_canonical_graph_candidates
 from services.reference_gateway.config import ReferenceGatewayConfig, ReferenceGatewayConfigOverrides
-from services.reference_gateway.current_ticker_detail_sync import run_current_ticker_detail_sync
+from services.reference_gateway.country_assertions import write_country_assertions
+from services.reference_gateway.current_ticker_detail_sync import CurrentTickerDetailSyncResult, run_current_ticker_detail_sync
 from services.reference_gateway.daemon import run_reference_daemon
 from services.reference_gateway.fact_fillers import fill_reference_tradability_and_routing_facts
 from services.reference_gateway.facts import ensure_fact_schema
 from services.reference_gateway.issue_resolution import resolve_stale_active_ticker_issues
 from services.reference_gateway.issue_writer import write_active_ticker_mapping_issues, write_graph_mapping_issues
-from services.reference_gateway.ibkr_borrow_sync import run_startup_ibkr_borrow_sync
+from services.reference_gateway.ibkr_borrow_sync import IbkrBorrowSyncResult, run_startup_ibkr_borrow_sync
 from services.reference_gateway.market_publications import ensure_market_publication_schema
+from services.reference_gateway.memory import memory_snapshot, start_memory_trace
 from services.reference_gateway.policy import evaluate_write_policy
 from services.reference_gateway.preflight import run_preflight
+from services.reference_gateway.publication_bootstrap import bootstrap_existing_publication_coverage
 from services.reference_gateway.publication_maintenance import run_recent_publication_gap_fill
 from services.reference_gateway.publication_rebuild import rebuild_tradable_publications
 from services.reference_gateway.runtime_log import RuntimeLogger
+from services.reference_gateway.source_schedule import ensure_source_schedule_schema, record_source_schedule, schedule_decision
 from services.reference_gateway.state import collect_reference_state
 from services.reference_gateway.table_groups import table_group_markdown
 from services.reference_gateway.terminal import OperationRecord, ReferenceRunRecord, ReferenceTerminalSession
@@ -51,6 +56,7 @@ SOURCE_SYNC_OPERATION_NAMES = {
     "massive_ticker_details": "Source: Massive current snapshot/float",
     "ibkr_conids": "Source: IBKR /iserver/secdef/search",
     "ibkr_borrow_availability": "Source: IBKR /iserver/marketdata/snapshot",
+    "country_assertions": "Source: country assertions",
     "ticker_reconciliation": "Source: ticker reconciliation",
 }
 
@@ -61,6 +67,7 @@ PUBLICATION_OPERATION_NAMES = {
     "massive_dividends": "Source: Massive /v3/reference/dividends",
     "massive_ipos": "Source: Massive /v3/reference/ipos",
     "massive_ticker_details": "Source: Massive ticker details snapshot",
+    "ibkr_borrow_availability": "Source: IBKR borrow availability",
 }
 
 
@@ -83,6 +90,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    start_memory_trace()
     args = parse_args()
     load_env_files(discover_clickhouse_env_files())
     if args.maintenance == "force" and not args.maintenance_reason.strip():
@@ -254,6 +262,7 @@ def main() -> None:
         config=config.public_dict(),
         write_policy=asdict(write_policy),
         argv=sys.argv[1:],
+        memory=memory_snapshot("run_started").public_dict(),
     )
     should_sync_sources = True
     if config.preflight_enabled:
@@ -295,6 +304,13 @@ def main() -> None:
             storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
         )
         add_operation("Reference fact schema", "completed", f"write={config.clickhouse_write_database}", seconds=time.perf_counter() - started)
+        started = time.perf_counter()
+        ensure_source_schedule_schema(
+            ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password()),
+            database=config.clickhouse_write_database,
+            storage_policy=os.environ.get("CLICKHOUSE_LIVE_STORAGE_POLICY") or "",
+        )
+        add_operation("Source schedule schema", "completed", f"write={config.clickhouse_write_database}", seconds=time.perf_counter() - started)
         refresh_reference_state("after_fact_schema")
     if config.execute and config.market_publication_gap_fill_enabled:
         from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
@@ -317,6 +333,16 @@ def main() -> None:
             f"read_database={config.clickhouse_read_database} "
             f"write_database={config.clickhouse_write_database}"
         )
+        started = time.perf_counter()
+        bootstrap = bootstrap_existing_publication_coverage(config, reason="startup_schema_coverage_bootstrap")
+        add_operation(
+            "Bootstrap publication coverage",
+            bootstrap.status,
+            f"checked={bootstrap.sources_checked:,} covered={bootstrap.sources_covered:,} reason={bootstrap.reason}",
+            rows=bootstrap.rows_written,
+            seconds=time.perf_counter() - started,
+        )
+        logger.event("publication_coverage_bootstrap_completed", **asdict(bootstrap))
         refresh_reference_state("after_market_publication_schema")
     audit_started = time.perf_counter()
     report = run_reference_audit(config)
@@ -345,7 +371,44 @@ def main() -> None:
             update_latest_operation(operation_name, status, truncate_detail(message), rows=rows, seconds=elapsed)
             update_latest_operation("Source sync", "running", truncate_detail(message), rows=rows, seconds=elapsed)
 
-        plan = run_active_ticker_plan(config, on_progress=source_sync_progress)
+        from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
+
+        schedule_client = ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password())
+        active_schedule = schedule_decision(
+            schedule_client,
+            config,
+            source_name="massive_active_tickers",
+            frequency_seconds=config.active_ticker_sync_frequency_seconds,
+            force=config.maintenance_mode == "force",
+        )
+        if active_schedule.should_run:
+            plan = run_active_ticker_plan(config, on_progress=source_sync_progress)
+            record_source_schedule(
+                schedule_client,
+                config,
+                source_name="massive_active_tickers",
+                status="completed",
+                rows_written=0,
+                details=plan.public_dict() | {"schedule_reason": active_schedule.reason},
+                frequency_seconds=config.active_ticker_sync_frequency_seconds,
+            )
+        else:
+            now_text = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            plan = ActiveTickerPlan(now_text, 0, 0, False, 0, 0, 0, 0, config.active_ticker_new_candidate_limit, [], 0.0)
+            update_latest_operation(
+                SOURCE_SYNC_OPERATION_NAMES["massive_active_tickers"],
+                "skipped",
+                f"{active_schedule.reason}; next_due={active_schedule.next_due_at_utc or '-'}",
+                rows=0,
+                seconds=0.0,
+            )
+            update_latest_operation(
+                "Source sync",
+                "running",
+                f"Massive active ticker sync skipped: {active_schedule.reason}; next_due={active_schedule.next_due_at_utc or '-'}",
+                rows=0,
+                seconds=0.0,
+            )
         plan_path = write_active_ticker_plan(plan, config.report_root_win)
         if plan_path:
             emit(f"source_sync_report={plan_path}")
@@ -416,7 +479,35 @@ def main() -> None:
             update_latest_operation(operation_name, status, truncate_detail(message), rows=rows, seconds=elapsed)
             update_latest_operation("Source sync", "running", truncate_detail(message), rows=rows, seconds=time.perf_counter() - source_sync_started)
 
-        current_details = run_current_ticker_detail_sync(config, tickers=accepted_tickers, on_progress=current_details_progress)
+        current_detail_schedule = schedule_decision(
+            schedule_client,
+            config,
+            source_name="massive_ticker_details",
+            frequency_seconds=config.current_ticker_detail_frequency_seconds,
+            force=bool(accepted_tickers),
+        )
+        if current_detail_schedule.should_run:
+            current_details = run_current_ticker_detail_sync(config, tickers=accepted_tickers, on_progress=current_details_progress)
+            record_source_schedule(
+                schedule_client,
+                config,
+                source_name="massive_ticker_details",
+                status=current_details.status,
+                rows_written=current_details.written,
+                details=asdict(current_details) | {"schedule_reason": current_detail_schedule.reason},
+                frequency_seconds=config.current_ticker_detail_frequency_seconds,
+            )
+        else:
+            current_details = CurrentTickerDetailSyncResult(
+                False,
+                "skipped",
+                requested=len(accepted_tickers),
+                wall_seconds=0.0,
+                details={
+                    "reason": current_detail_schedule.reason,
+                    "next_due_at_utc": current_detail_schedule.next_due_at_utc,
+                },
+            )
         current_details_status = "completed" if current_details.status in {"completed", "covered_empty", "skipped"} else current_details.status
         update_latest_operation(
             SOURCE_SYNC_OPERATION_NAMES["massive_ticker_details"],
@@ -448,8 +539,34 @@ def main() -> None:
             update_latest_operation(operation_name, status, truncate_detail(message), rows=rows, seconds=elapsed)
             update_latest_operation("Source sync", "running", truncate_detail(message), rows=rows, seconds=time.perf_counter() - source_sync_started)
 
-        borrow_sync = run_startup_ibkr_borrow_sync(config, on_progress=ibkr_borrow_progress)
-        borrow_status = "completed" if borrow_sync.status in {"completed", "covered_empty"} else borrow_sync.status
+        borrow_schedule = schedule_decision(
+            schedule_client,
+            config,
+            source_name="ibkr_borrow_availability",
+            frequency_seconds=config.ibkr_borrow_frequency_seconds,
+        )
+        if borrow_schedule.should_run:
+            borrow_sync = run_startup_ibkr_borrow_sync(config, on_progress=ibkr_borrow_progress)
+            record_source_schedule(
+                schedule_client,
+                config,
+                source_name="ibkr_borrow_availability",
+                status=borrow_sync.status,
+                rows_written=borrow_sync.written,
+                details=asdict(borrow_sync) | {"schedule_reason": borrow_schedule.reason},
+                frequency_seconds=config.ibkr_borrow_frequency_seconds,
+            )
+        else:
+            borrow_sync = IbkrBorrowSyncResult(
+                False,
+                "skipped",
+                wall_seconds=0.0,
+                details={
+                    "reason": borrow_schedule.reason,
+                    "next_due_at_utc": borrow_schedule.next_due_at_utc,
+                },
+            )
+        borrow_status = "completed" if borrow_sync.status in {"completed", "covered_empty", "skipped"} else borrow_sync.status
         update_latest_operation(
             SOURCE_SYNC_OPERATION_NAMES["ibkr_borrow_availability"],
             borrow_status,
@@ -460,6 +577,41 @@ def main() -> None:
             rows=borrow_sync.written,
             seconds=borrow_sync.wall_seconds,
         )
+        country_schedule = schedule_decision(
+            schedule_client,
+            config,
+            source_name="country_assertions",
+            frequency_seconds=config.country_assertion_frequency_seconds,
+        )
+        if country_schedule.should_run:
+            country_started = time.perf_counter()
+            update_latest_operation(SOURCE_SYNC_OPERATION_NAMES["country_assertions"], "running", "Writing country assertions from canonical exchange evidence.", seconds=0.0)
+            country_result = write_country_assertions(config, reason="source_sync")
+            record_source_schedule(
+                schedule_client,
+                config,
+                source_name="country_assertions",
+                status=country_result.status,
+                rows_written=country_result.rows_written,
+                details=asdict(country_result) | {"schedule_reason": country_schedule.reason},
+                frequency_seconds=config.country_assertion_frequency_seconds,
+            )
+            update_latest_operation(
+                SOURCE_SYNC_OPERATION_NAMES["country_assertions"],
+                country_result.status,
+                country_result.reason,
+                rows=country_result.rows_written,
+                seconds=time.perf_counter() - country_started,
+            )
+        else:
+            update_latest_operation(
+                SOURCE_SYNC_OPERATION_NAMES["country_assertions"],
+                "skipped",
+                f"{country_schedule.reason}; next_due={country_schedule.next_due_at_utc or '-'}",
+                rows=0,
+                seconds=0.0,
+            )
+            country_result = None
         logger.event(
             "source_sync_completed",
             provider_rows=plan.provider_rows,
@@ -481,6 +633,8 @@ def main() -> None:
             ibkr_borrow_eligible=borrow_sync.eligible,
             ibkr_borrow_written=borrow_sync.written,
             ibkr_borrow_failed=borrow_sync.failed,
+            country_assertion_status=getattr(country_result, "status", "skipped"),
+            country_assertion_written=getattr(country_result, "rows_written", 0),
             wall_seconds=time.perf_counter() - source_sync_started,
             report_path=str(plan_path or ""),
         )
@@ -504,7 +658,8 @@ def main() -> None:
                 f"provider={plan.provider_rows:,} missing={plan.missing_tickers:,} "
                 f"overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
                 f"current_detail_written={current_details.written:,} current_detail_failed={current_details.failed:,} "
-                f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,}"
+                f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,} "
+                f"country_written={getattr(country_result, 'rows_written', 0):,}"
             ),
             rows=plan.missing_tickers,
             seconds=time.perf_counter() - source_sync_started,
@@ -515,6 +670,7 @@ def main() -> None:
             f"missing={plan.missing_tickers:,} overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
             f"current_detail_written={current_details.written:,} current_detail_failed={current_details.failed:,} "
             f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,} "
+            f"country_written={getattr(country_result, 'rows_written', 0):,} "
             f"saturated={plan.provider_saturated} wall_seconds={time.perf_counter() - source_sync_started:.2f}"
         )
         refresh_reference_state("after_source_sync_writes")
@@ -530,7 +686,7 @@ def main() -> None:
         if config.rebuild_tradable_on_execute:
             started = time.perf_counter()
             rebuild = rebuild_tradable_publications(config, reason="maintenance_cycle")
-            add_operation("Rebuild tradable publications", rebuild.status, rebuild.reason, seconds=time.perf_counter() - started)
+            add_operation("Rebuild SEC bridge and tradable publications", rebuild.status, rebuild.reason, seconds=time.perf_counter() - started)
             emit("tradable_publication_rebuild=" + json.dumps(asdict(rebuild), sort_keys=True))
             audit_started = time.perf_counter()
             report = run_reference_audit(config)
@@ -548,16 +704,42 @@ def main() -> None:
         if config.execute and config.resolve_stale_issues:
             add_operation("Resolve issues", "skipped", maintenance_skip_reason)
         if config.execute and config.rebuild_tradable_on_execute:
-            add_operation("Rebuild tradable publications", "skipped", maintenance_skip_reason)
+            add_operation("Rebuild SEC bridge and tradable publications", "skipped", maintenance_skip_reason)
 
     if maintenance_allowed and config.market_publication_gap_fill_enabled and (not config.test_write_mode or config.maintenance_mode == "force"):
         started = time.perf_counter()
+        from research.mlops.clickhouse import ClickHouseHttpClient, default_clickhouse_password
+
+        schedule_client = ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password())
+        publication_schedule = schedule_decision(
+            schedule_client,
+            config,
+            source_name="market_publication_gap_fill",
+            frequency_seconds=config.market_publication_gap_fill_frequency_seconds,
+            force=config.maintenance_mode == "force",
+        )
         add_operation(
             "Market publication gap fill",
-            "running",
-            f"Starting source sync for recent publication window; days={config.market_publication_gap_fill_days}",
+            "running" if publication_schedule.should_run else "skipped",
+            (
+                f"schedule={publication_schedule.reason}; next_due={publication_schedule.next_due_at_utc or '-'}; "
+                f"recent_days={config.market_publication_gap_fill_days}; deep_start={config.market_publication_deep_backfill_start_date}"
+            ),
             seconds=0.0,
         )
+        if not publication_schedule.should_run:
+            record_source_schedule(
+                schedule_client,
+                config,
+                source_name="market_publication_gap_fill",
+                status="skipped_not_due",
+                rows_written=0,
+                details=asdict(publication_schedule),
+                frequency_seconds=config.market_publication_gap_fill_frequency_seconds,
+            )
+            maintenance = None
+        else:
+            maintenance = None
         for operation_name in PUBLICATION_OPERATION_NAMES.values():
             ensure_operation(operation_name, "waiting", "not started", seconds=0.0)
 
@@ -578,27 +760,43 @@ def main() -> None:
                 seconds=time.perf_counter() - started,
             )
 
-        maintenance = run_recent_publication_gap_fill(config, on_progress=publication_progress)
+        if publication_schedule.should_run:
+            maintenance = run_recent_publication_gap_fill(
+                config,
+                on_progress=publication_progress,
+                deep=config.market_publication_deep_backfill_enabled,
+            )
         for operation_name in PUBLICATION_OPERATION_NAMES.values():
             latest = next((op for op in reversed(record.operations) if op.name == operation_name), None)
             if latest is not None and latest.status == "waiting":
                 update_latest_operation(operation_name, "skipped", "No uncovered recent window reported for this source.", seconds=time.perf_counter() - started)
-        update_latest_operation(
-            "Market publication gap fill",
-            "completed" if maintenance.returncode == 0 else "failed",
-            f"{maintenance.start_date}->{maintenance.end_date}; {maintenance.reason}; {last_nonempty_line(maintenance.stdout_tail)}",
-            seconds=time.perf_counter() - started,
-        )
-        emit("market_publication_gap_fill=" + json.dumps(asdict(maintenance), sort_keys=True))
-        refresh_reference_state("after_market_publication_gap_fill")
-        write_alert_batch(
-            build_publication_maintenance_alert(
-                "completed" if maintenance.returncode == 0 else "failed",
-                maintenance.reason,
-                asdict(maintenance),
-            ),
-            "market_publication_gap_fill",
-        )
+        if maintenance is not None:
+            maintenance_status = "completed" if maintenance.returncode == 0 else "failed"
+            record_source_schedule(
+                schedule_client,
+                config,
+                source_name="market_publication_gap_fill",
+                status=maintenance_status,
+                rows_written=publication_written_rows(maintenance.stdout_tail),
+                details=asdict(maintenance),
+                frequency_seconds=config.market_publication_gap_fill_frequency_seconds,
+            )
+            update_latest_operation(
+                "Market publication gap fill",
+                maintenance_status,
+                f"{maintenance.start_date}->{maintenance.end_date}; {maintenance.reason}; {last_nonempty_line(maintenance.stdout_tail)}",
+                seconds=time.perf_counter() - started,
+            )
+            emit("market_publication_gap_fill=" + json.dumps(asdict(maintenance), sort_keys=True))
+            refresh_reference_state("after_market_publication_gap_fill")
+            write_alert_batch(
+                build_publication_maintenance_alert(
+                    maintenance_status,
+                    maintenance.reason,
+                    asdict(maintenance),
+                ),
+                "market_publication_gap_fill",
+            )
     elif config.execute and config.market_publication_gap_fill_enabled:
         reason = "temp_mode_requires_maintenance_force" if config.test_write_mode and config.maintenance_mode != "force" else maintenance_skip_reason
         add_operation("Market publication gap fill", "skipped", reason)
@@ -606,11 +804,23 @@ def main() -> None:
     refresh_reference_state("final")
     record.final_status = report.status
     record.wall_seconds = time.perf_counter() - run_started
-    logger.event("run_finished", status=record.final_status, wall_seconds=record.wall_seconds, report_path=record.report_path)
+    final_memory = memory_snapshot("run_finished")
+    if config.daemon_child_max_rss_mb > 0 and final_memory.rss_bytes is not None:
+        max_bytes = config.daemon_child_max_rss_mb * 1024 * 1024
+        if final_memory.rss_bytes > max_bytes:
+            record.final_status = "failed"
+            add_operation(
+                "Memory guardrail",
+                "failed",
+                f"rss={final_memory.rss_bytes:,} max={max_bytes:,}",
+                rows=final_memory.rss_bytes,
+            )
+            logger.event("memory_guardrail_failed", max_rss_bytes=max_bytes, memory=final_memory.public_dict())
+    logger.event("run_finished", status=record.final_status, wall_seconds=record.wall_seconds, report_path=record.report_path, memory=final_memory.public_dict())
     refresh_terminal()
     stop_terminal()
-    emit(f"status={report.status} wall_seconds={report.wall_seconds:.2f}")
-    if report.status == "failed":
+    emit(f"status={record.final_status} wall_seconds={record.wall_seconds:.2f}")
+    if record.final_status == "failed":
         sys.exit(2)
 
 
@@ -705,6 +915,15 @@ def publication_rows_from_line(line: str) -> int | None:
         return int(match.group(1).replace(",", ""))
     except ValueError:
         return None
+
+
+def publication_written_rows(output_tail: str) -> int:
+    total = 0
+    for line in str(output_tail or "").splitlines():
+        rows = publication_rows_from_line(line)
+        if rows is not None and "written=" in line:
+            total += rows
+    return total
 
 
 if __name__ == "__main__":

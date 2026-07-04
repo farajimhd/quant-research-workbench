@@ -29,11 +29,17 @@ def run_recent_publication_gap_fill(
     config: ReferenceGatewayConfig,
     *,
     on_progress: Callable[[str], None] | None = None,
+    deep: bool = False,
 ) -> PublicationMaintenanceResult:
     if not config.market_publication_gap_fill_enabled:
         return PublicationMaintenanceResult(False, None, "", "", "disabled", [], "", "")
     end_date = date.today() + timedelta(days=1)
-    start_date = end_date - timedelta(days=max(1, config.market_publication_gap_fill_days))
+    if deep and config.market_publication_deep_backfill_enabled:
+        start_date = date.fromisoformat(config.market_publication_deep_backfill_start_date)
+        reason = "deep_reference_publication_gap_fill"
+    else:
+        start_date = end_date - timedelta(days=max(1, config.market_publication_gap_fill_days))
+        reason = "recent_reference_publication_gap_fill"
     command = [
         sys.executable,
         "pipelines/reference_data/market_publications_historical_gap_fill.py",
@@ -46,7 +52,7 @@ def run_recent_publication_gap_fill(
         "--write-database",
         config.clickhouse_write_database,
         "--sources",
-        "finra_short_volume,sec_fails_to_deliver,massive_splits,massive_dividends,massive_ipos,massive_ticker_details",
+        "finra_short_volume,sec_fails_to_deliver,massive_splits,massive_dividends,massive_ipos,massive_ticker_details,ibkr_borrow_availability",
         "--finra-venues",
         "CNMS",
         "--output-root-win",
@@ -78,7 +84,7 @@ def run_recent_publication_gap_fill(
         returncode=returncode,
         start_date=start_date.isoformat(),
         end_date=end_date.isoformat(),
-        reason="recent_reference_publication_gap_fill",
+        reason=reason,
         command=command,
         stdout_tail=tail(stdout),
         stderr_tail="",

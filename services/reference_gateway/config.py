@@ -64,8 +64,17 @@ class ReferenceGatewayConfig:
     daemon_loop_enabled: bool
     daemon_active_interval_seconds: float
     daemon_after_hours_interval_seconds: float
+    daemon_child_timeout_seconds: float
+    daemon_child_max_rss_mb: int
     market_publication_gap_fill_enabled: bool
     market_publication_gap_fill_days: int
+    market_publication_deep_backfill_enabled: bool
+    market_publication_deep_backfill_start_date: str
+    active_ticker_sync_frequency_seconds: int
+    current_ticker_detail_frequency_seconds: int
+    ibkr_borrow_frequency_seconds: int
+    country_assertion_frequency_seconds: int
+    market_publication_gap_fill_frequency_seconds: int
     current_ticker_detail_insert_batch_size: int
     current_ticker_detail_request_min_interval_seconds: float
     current_ticker_detail_request_timeout_seconds: int
@@ -153,8 +162,17 @@ class ReferenceGatewayConfig:
             daemon_loop_enabled=run_mode == "daemon" and diagnostics_mode == "none",
             daemon_active_interval_seconds=env_float("REFERENCE_GATEWAY_DAEMON_ACTIVE_INTERVAL_SECONDS", 900.0),
             daemon_after_hours_interval_seconds=env_float("REFERENCE_GATEWAY_DAEMON_AFTER_HOURS_INTERVAL_SECONDS", 3600.0),
+            daemon_child_timeout_seconds=env_float("REFERENCE_GATEWAY_DAEMON_CHILD_TIMEOUT_SECONDS", 7200.0),
+            daemon_child_max_rss_mb=env_int("REFERENCE_GATEWAY_DAEMON_CHILD_MAX_RSS_MB", 0),
             market_publication_gap_fill_enabled=not maintenance_skip,
             market_publication_gap_fill_days=env_int("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_DAYS", 14),
+            market_publication_deep_backfill_enabled=env_bool("REFERENCE_GATEWAY_MARKET_PUBLICATION_DEEP_BACKFILL_ENABLED", True),
+            market_publication_deep_backfill_start_date=env_string("REFERENCE_GATEWAY_MARKET_PUBLICATION_DEEP_BACKFILL_START_DATE", "2019-01-01"),
+            active_ticker_sync_frequency_seconds=env_int("REFERENCE_GATEWAY_ACTIVE_TICKER_SYNC_FREQUENCY_SECONDS", 900),
+            current_ticker_detail_frequency_seconds=env_int("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_FREQUENCY_SECONDS", 86400),
+            ibkr_borrow_frequency_seconds=env_int("REFERENCE_GATEWAY_IBKR_BORROW_FREQUENCY_SECONDS", 1800),
+            country_assertion_frequency_seconds=env_int("REFERENCE_GATEWAY_COUNTRY_ASSERTION_FREQUENCY_SECONDS", 86400),
+            market_publication_gap_fill_frequency_seconds=env_int("REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_FREQUENCY_SECONDS", 3600),
             current_ticker_detail_insert_batch_size=env_int("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_INSERT_BATCH_SIZE", 50_000),
             current_ticker_detail_request_min_interval_seconds=env_float("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_REQUEST_MIN_INTERVAL_SECONDS", 0.12),
             current_ticker_detail_request_timeout_seconds=env_int("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_REQUEST_TIMEOUT_SECONDS", 60),
@@ -203,20 +221,26 @@ class ReferenceGatewayConfig:
                 "diagnostics_mode": self.diagnostics_mode,
                 "daemon_active_interval_seconds": self.daemon_active_interval_seconds,
                 "daemon_after_hours_interval_seconds": self.daemon_after_hours_interval_seconds,
+                "daemon_child_timeout_seconds": self.daemon_child_timeout_seconds,
+                "daemon_child_max_rss_mb": self.daemon_child_max_rss_mb,
                 "preflight_enabled": self.preflight_enabled,
             },
             "source_sync": {
                 "enabled_for_operational_runs": True,
+                "active_ticker_sync_frequency_seconds": self.active_ticker_sync_frequency_seconds,
                 "active_ticker_max_pages": self.active_ticker_max_pages,
                 "active_ticker_page_limit": self.active_ticker_page_limit,
                 "active_ticker_new_candidate_limit": self.active_ticker_new_candidate_limit,
                 "write_canonical_graph": self.write_canonical_graph,
+                "current_ticker_detail_frequency_seconds": self.current_ticker_detail_frequency_seconds,
                 "current_ticker_detail_insert_batch_size": self.current_ticker_detail_insert_batch_size,
                 "current_ticker_detail_request_min_interval_seconds": self.current_ticker_detail_request_min_interval_seconds,
                 "current_ticker_detail_request_timeout_seconds": self.current_ticker_detail_request_timeout_seconds,
                 "current_ticker_detail_request_max_retries": self.current_ticker_detail_request_max_retries,
                 "current_ticker_detail_request_retry_base_seconds": self.current_ticker_detail_request_retry_base_seconds,
                 "current_ticker_detail_request_retry_max_seconds": self.current_ticker_detail_request_retry_max_seconds,
+                "ibkr_borrow_frequency_seconds": self.ibkr_borrow_frequency_seconds,
+                "country_assertion_frequency_seconds": self.country_assertion_frequency_seconds,
                 "ibkr_borrow_snapshot_batch_size": self.ibkr_borrow_snapshot_batch_size,
                 "ibkr_borrow_insert_batch_size": self.ibkr_borrow_insert_batch_size,
                 "ibkr_borrow_request_min_interval_seconds": self.ibkr_borrow_request_min_interval_seconds,
@@ -237,6 +261,9 @@ class ReferenceGatewayConfig:
                 "rebuild_tradable_in_test_mode": self.rebuild_tradable_in_test_mode,
                 "market_publication_gap_fill_enabled": self.market_publication_gap_fill_enabled,
                 "market_publication_gap_fill_days": self.market_publication_gap_fill_days,
+                "market_publication_deep_backfill_enabled": self.market_publication_deep_backfill_enabled,
+                "market_publication_deep_backfill_start_date": self.market_publication_deep_backfill_start_date,
+                "market_publication_gap_fill_frequency_seconds": self.market_publication_gap_fill_frequency_seconds,
             },
             "terminal": {
                 "rich_enabled": self.terminal_rich_enabled,

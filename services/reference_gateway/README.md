@@ -16,6 +16,12 @@ SEC ingestion writes raw filing/text/XBRL rows only; downstream services such as
 `text_embed_gateway` read this bridge to convert SEC CIK/accession events into
 the same ticker-aligned context schema used by historical training data.
 
+The broader fact-table schemas are present for compact downstream publications,
+but share supply, news, SEC, short pressure, borrow, country, and similar
+dimensions are query-first unless a dedicated materialized publication is
+explicitly enabled. The trading app should use the security-dimension query
+layer for those dimensions.
+
 For the detailed operating model, read:
 
 ```text
@@ -136,13 +142,59 @@ During market hours:
 After hours:
 
 - clean canonical graph promotions can run
-- tradable/scanner publications can be rebuilt
-- recent market publication gap fill can run
+- SEC bridge plus tradable/scanner publications can be rebuilt
+- coverage-aware market publication gap fill can run from the configured deep
+  backfill start date
 - schema upkeep can run
 
 `Maintenance=Force` allows maintenance work during an active window only with a
 reason. `Maintenance=Skip` disables maintenance while leaving source sync and
 integrity guardrails active.
+
+## Source Schedules
+
+Operational source sync always runs, but expensive provider jobs are gated by
+`market_reference_source_schedule_v1`:
+
+- `massive_ticker_details`
+- `ibkr_borrow_availability`
+- `country_assertions`
+- `market_publication_gap_fill`
+
+The schedule table is DB-backed so daemon restarts do not lose cadence state.
+Tune cadence with:
+
+```text
+REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_FREQUENCY_SECONDS=86400
+REFERENCE_GATEWAY_IBKR_BORROW_FREQUENCY_SECONDS=1800
+REFERENCE_GATEWAY_COUNTRY_ASSERTION_FREQUENCY_SECONDS=86400
+REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_FREQUENCY_SECONDS=3600
+```
+
+## Autonomous Publication Maintenance
+
+When maintenance is allowed, the gateway runs the coverage-aware publication
+worker with `--resume-from-coverage`. The default deep backfill start date is
+2019-01-01, so large historical gaps are handled by the service instead of
+requiring a manual workstation command.
+
+The gateway also bootstraps coverage from existing migrated publication tables
+for short interest, Reg SHO threshold, presentation assets, and Massive flatfile
+inventory. Bootstrap coverage records that existing rows were inspected; it
+does not fabricate provider rows.
+
+## Memory Guardrail
+
+Each child cycle writes memory snapshots to the runtime JSONL log. The parent
+daemon also records its memory after each child cycle exits. Optional controls:
+
+```text
+REFERENCE_GATEWAY_DAEMON_CHILD_TIMEOUT_SECONDS=7200
+REFERENCE_GATEWAY_DAEMON_CHILD_MAX_RSS_MB=0
+```
+
+If `REFERENCE_GATEWAY_DAEMON_CHILD_MAX_RSS_MB` is non-zero and the child exits
+above that RSS limit, the cycle fails instead of silently continuing.
 
 ## Outputs
 
@@ -173,7 +225,12 @@ REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES=1000
 REFERENCE_GATEWAY_ACTIVE_TICKER_NEW_CANDIDATE_LIMIT=250
 REFERENCE_GATEWAY_DAEMON_ACTIVE_INTERVAL_SECONDS=900
 REFERENCE_GATEWAY_DAEMON_AFTER_HOURS_INTERVAL_SECONDS=3600
+REFERENCE_GATEWAY_DAEMON_CHILD_TIMEOUT_SECONDS=7200
+REFERENCE_GATEWAY_DAEMON_CHILD_MAX_RSS_MB=0
 REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_DAYS=14
+REFERENCE_GATEWAY_MARKET_PUBLICATION_DEEP_BACKFILL_ENABLED=true
+REFERENCE_GATEWAY_MARKET_PUBLICATION_DEEP_BACKFILL_START_DATE=2019-01-01
+REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_FREQUENCY_SECONDS=3600
 ```
 
 Deployment-specific database env overrides are still supported:

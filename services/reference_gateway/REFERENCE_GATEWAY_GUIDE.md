@@ -15,7 +15,9 @@ publication data coherent. It is not a high-frequency ingest service.
    Massive snapshot/float rows for newly accepted tickers, then takes a current
    IBKR borrow/shortability snapshot for active US stock listings with valid
    conids. If the observation cannot be inserted safely, source sync writes an
-   open issue and keeps the instrument non-tradable.
+   open issue and keeps the instrument non-tradable. Expensive provider jobs are
+   gated by the DB-backed `market_reference_source_schedule_v1` table so daemon
+   restarts do not lose cadence state.
 
 2. Integrity guardrail
 
@@ -26,11 +28,11 @@ publication data coherent. It is not a high-frequency ingest service.
 
 3. Maintenance
 
-   Run heavier work: schema upkeep, canonical graph promotion, full tradable
-   publication rebuilds, scanner static rebuilds, and recent market publication
-   gap fill. Maintenance also resolves issues opened by source sync when they
-   become deterministic. In `Auto`, this work is deferred during active market
-   hours.
+   Run heavier work: schema upkeep, canonical graph promotion, SEC market bridge
+   rebuilds, full tradable publication rebuilds, scanner static rebuilds, and
+   coverage-aware market publication gap fill. Maintenance also resolves issues
+   opened by source sync when they become deterministic. In `Auto`, this work is
+   deferred during active market hours.
 
 4. Observability and control
 
@@ -125,6 +127,12 @@ Diagnostics:
    sync, issue writes, immediate tradability blocking, allowed maintenance, and
    report/log writing.
 
+9. Each child cycle records memory snapshots in the runtime JSONL log at start
+   and finish. The parent daemon records its own memory after each child exits.
+   `REFERENCE_GATEWAY_DAEMON_CHILD_TIMEOUT_SECONDS` stops hung child cycles, and
+   `REFERENCE_GATEWAY_DAEMON_CHILD_MAX_RSS_MB` can fail a cycle that exits above
+   the configured RSS ceiling.
+
 ## Market-Hours Policy
 
 Market hours are not a blocker for the service itself.
@@ -138,6 +146,8 @@ Allowed during market hours:
 - accepted canonical graph rows for safe new ticker observations
 - current Massive snapshot/float rows for newly accepted tickers
 - IBKR borrow/shortability snapshot writes to `market_security_borrow_v1`
+- country assertion writes to `market_security_country_v1` from canonical
+  listing/exchange evidence
 - writing new mapping issues
 - immediate latest-universe replacement rows with `is_tradable = 0`
 
@@ -145,11 +155,17 @@ Deferred in `Maintenance=Auto` during market hours:
 
 - schema changes
 - deterministic issue resolution
-- full tradable/scanner publication rebuild
-- recent market-publication gap fill
+- full SEC bridge plus tradable/scanner publication rebuild
+- coverage-aware market-publication gap fill from the configured deep backfill
+  start date
 
 `Maintenance=Force` can run deferred work only when an auditable reason is
 supplied. `Maintenance=Skip` disables deferred work.
+
+The publication coverage bootstrap records existing migrated source-table
+ranges for short interest, Reg SHO threshold rows, Massive presentation assets,
+and Massive flatfile inventory. Bootstrap coverage does not fabricate source
+rows; it only records trusted coverage for data already present in the database.
 
 ## Issue Resolution Classes
 

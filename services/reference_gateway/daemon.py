@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from services.gateway_policy import active_collection_window
 from services.reference_gateway.config import ReferenceGatewayConfig
+from services.reference_gateway.memory import memory_snapshot
 from services.reference_gateway.preflight import run_preflight
 from services.reference_gateway.runtime_log import RUNTIME_LOG_ENV, RuntimeLogger, new_runtime_log_path
 
@@ -55,6 +56,7 @@ def run_reference_daemon(config: ReferenceGatewayConfig, base_args: list[str]) -
             elapsed_seconds=cycle.elapsed_seconds,
             next_seconds=cycle.interval_seconds,
             command=cycle.command,
+            parent_memory=memory_snapshot("daemon_cycle_completed").public_dict(),
         )
         print(
             "reference_gateway_daemon_cycle="
@@ -75,7 +77,16 @@ def run_daemon_cycle(config: ReferenceGatewayConfig, base_args: list[str], *, lo
     command.extend(child_cycle_args(base_args))
     env = dict(os.environ)
     env[RUNTIME_LOG_ENV] = str(log_path)
-    returncode = subprocess.run(command, check=False, env=env).returncode
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            env=env,
+            timeout=config.daemon_child_timeout_seconds if config.daemon_child_timeout_seconds > 0 else None,
+        )
+        returncode = completed.returncode
+    except subprocess.TimeoutExpired:
+        returncode = 124
     interval = config.daemon_active_interval_seconds if active else config.daemon_after_hours_interval_seconds
     return DaemonCycle(
         started_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
