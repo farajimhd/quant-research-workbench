@@ -11,9 +11,9 @@ from pipelines.sec.edgar.sec_pipeline.coverage import SecCoverageConfig, ensure_
 from pipelines.sec.edgar.sec_pipeline.feed import SecCurrentFeedClient
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
 from pipelines.sec.edgar.sec_pipeline.rate_limit import SecRateLimiter
-from pipelines.news.benzinga.news_pipeline.provider import MassiveMarketStatusClient
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.sec_gateway.config import SecGatewayConfig
+from services.market_hours import MassiveMarketHoursClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,5 +124,17 @@ def check_market_status(config: SecGatewayConfig) -> str:
     api_key = os.environ.get("MASSIVE_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("MASSIVE_API_KEY is required when SEC_MARKET_STATUS_ENABLED=true")
-    result = MassiveMarketStatusClient(endpoint_url=config.market_status_url, api_key=api_key).fetch_now()
-    return f"market={result.market or 'unknown'} early={result.early_hours} after={result.after_hours} server_time={result.server_time}"
+    result = MassiveMarketHoursClient.from_env(
+        service_prefix="SEC",
+        api_key=api_key,
+        status_url=config.market_status_url,
+        holidays_url=config.market_holidays_url,
+        enabled=config.market_status_enabled,
+        refresh_seconds=config.market_status_refresh_seconds,
+    ).snapshot(force=True)
+    return (
+        f"session={result.session} active={result.active_collection_window} "
+        f"source={result.source} reason={result.reason} market={result.market or 'unknown'} "
+        f"early={result.early_hours} after={result.after_hours} holiday={result.holiday_status or '-'} "
+        f"server_time={result.server_time}"
+    )

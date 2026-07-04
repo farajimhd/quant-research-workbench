@@ -76,8 +76,10 @@ SEC_GATEWAY_FULL_AUDIT_AFTER_WRITE_BATCHES=0
 SEC_GATEWAY_COLLECTION_START_ET=04:00
 SEC_GATEWAY_COLLECTION_END_ET=20:00
 SEC_MARKET_STATUS_URL=https://api.massive.com/v1/marketstatus/now
+SEC_MARKET_HOLIDAYS_URL=https://api.massive.com/v1/marketstatus/upcoming
 SEC_MARKET_STATUS_ENABLED=true
 SEC_MARKET_STATUS_REFRESH_SECONDS=10
+SEC_MARKET_HOLIDAYS_REFRESH_SECONDS=3600
 SEC_REQUEST_MIN_INTERVAL_SECONDS=0.12
 SEC_GATEWAY_AUTO_RUN_HISTORICAL_ON_WORKSTATION=true
 ```
@@ -263,8 +265,11 @@ filings for the same company.
 
 ## Poll Cadence
 
-The SEC gateway uses Massive market status when `SEC_MARKET_STATUS_ENABLED=true`.
-Premarket and after-hours are treated as active trading sessions:
+The SEC gateway uses the shared service market-hours policy when
+`SEC_MARKET_STATUS_ENABLED=true`. Massive market status
+(`/v1/marketstatus/now`) supplies the current active/closed state, and Massive
+market holidays (`/v1/marketstatus/upcoming`) supply full closures and early
+closes. Premarket and after-hours are treated as active trading sessions:
 
 ```text
 active/premarket/after-hours: SEC_GATEWAY_POLL_SECONDS

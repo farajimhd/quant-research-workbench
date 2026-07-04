@@ -14,13 +14,19 @@ import shutil
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from services.market_hours import MassiveMarketHoursClient  # noqa: E402
 
 try:
     from rich import box
@@ -42,7 +48,6 @@ except Exception:  # pragma: no cover - fallback is for environments without ric
 
 EASTERN = ZoneInfo("America/New_York")
 VANCOUVER = ZoneInfo("America/Vancouver")
-MARKET_STATUS_URL = "https://api.massive.com/v1/marketstatus/now"
 
 
 @dataclass
@@ -179,12 +184,25 @@ def get_market_status(state: PollState, timeout: float) -> dict[str, Any] | None
     if not api_key:
         state.market_status_error = "MASSIVE_API_KEY missing in terminal environment"
         return None
-    url = MARKET_STATUS_URL + "?" + urllib.parse.urlencode({"apiKey": api_key})
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
-            state.market_status_error = ""
-            return json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        snapshot = MassiveMarketHoursClient.from_env(
+            service_prefix="QMD",
+            api_key=api_key,
+            refresh_seconds=max(1.0, timeout),
+        ).snapshot(force=True)
+        state.market_status_error = snapshot.error
+        return {
+            "market": snapshot.market or snapshot.session,
+            "earlyHours": snapshot.early_hours,
+            "afterHours": snapshot.after_hours,
+            "serverTime": snapshot.server_time,
+            "source": snapshot.source,
+            "reason": snapshot.reason,
+            "holidayStatus": snapshot.holiday_status,
+            "holidayName": snapshot.holiday_name,
+            "activeCollectionWindow": snapshot.active_collection_window,
+        }
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, RuntimeError) as exc:
         state.market_status_error = str(exc)
         state.errors.append(f"{datetime.now().strftime('%H:%M:%S')} market-status: {exc}")
         state.errors = state.errors[-20:]

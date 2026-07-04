@@ -112,6 +112,12 @@ against the canonical graph, Massive overview evidence is fetched for new
 candidates, and IBKR Client Portal is queried for conid evidence. IBKR is
 required because unresolved conids are trading blockers.
 
+Market hours are evaluated through the shared Massive-backed service policy:
+`/v1/marketstatus/now` supplies the current active/closed state and
+`/v1/marketstatus/upcoming` supplies full closures and early closes. If Massive
+is unavailable, the policy falls back to the local New York extended-hours
+schedule.
+
 During market hours:
 
 - source sync runs

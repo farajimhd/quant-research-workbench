@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import os
-import time
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, date, datetime, time as dt_time, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from pipelines.sec.edgar.sec_pipeline.clickhouse_writer import SecClickHouseWriter, SecWriteResult, qi, sql_string
 from pipelines.sec.edgar.sec_pipeline.coverage import (
@@ -31,15 +29,12 @@ from pipelines.sec.edgar.sec_pipeline.historical_fill import (
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
 from pipelines.sec.edgar.sec_pipeline.live_pipeline import SecLiveFilingPipeline
 from pipelines.sec.edgar.sec_pipeline.rate_limit import SecRateLimiter
-from pipelines.news.benzinga.news_pipeline.provider import MarketStatusResult, MassiveMarketStatusClient
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.run_logger import AsyncRunLogger
 from services.sec_gateway.config import SecGatewayConfig, WORKSTATION_SHARE_CODE_ROOT_WIN
 from services.sec_gateway.preflight import PreflightError, PreflightReport, run_preflight
 from services.gateway_policy import backfill_auto_run_allowed, maintenance_window_message
-
-
-EASTERN = ZoneInfo("America/New_York")
+from services.market_hours import MarketHoursSnapshot, MassiveMarketHoursClient
 
 
 @dataclass(slots=True)
@@ -158,13 +153,15 @@ class SecGateway:
         self._http = SecHttpClient(user_agent=config.pipeline.sec_user_agent, rate_limiter=self._limiter, timeout_seconds=config.pipeline.request_timeout_seconds)
         self._feed = SecCurrentFeedClient(feed_url=self.feed_url(), http=self._http)
         self._live_pipeline = SecLiveFilingPipeline(http=self._http, raw_root_win=config.pipeline.raw_live_root_win)
-        self._market_status: MarketStatusResult | None = None
-        self._market_status_next_refresh = 0.0
+        self._market_status: MarketHoursSnapshot | None = None
         self._massive_api_key = os.environ.get("MASSIVE_API_KEY", "").strip()
-        self.market_status_provider = (
-            MassiveMarketStatusClient(endpoint_url=config.market_status_url, api_key=self._massive_api_key)
-            if self._massive_api_key
-            else None
+        self.market_status_provider = MassiveMarketHoursClient.from_env(
+            service_prefix="SEC",
+            api_key=self._massive_api_key,
+            status_url=config.market_status_url,
+            holidays_url=config.market_holidays_url,
+            enabled=config.market_status_enabled,
+            refresh_seconds=config.market_status_refresh_seconds,
         )
 
     async def start(self) -> None:
@@ -372,14 +369,12 @@ class SecGateway:
         )
 
     def current_poll_seconds(self) -> float:
-        status = self._market_status
-        if status is not None:
-            return self.config.poll_seconds if market_status_is_active(status) else self.config.closed_poll_seconds
-        return self.config.poll_seconds if self.local_extended_session_active() else self.config.closed_poll_seconds
+        status = self._market_status or self.market_status_provider.snapshot()
+        self._market_status = status
+        return self.config.poll_seconds if status.active_collection_window else self.config.closed_poll_seconds
 
     def local_extended_session_active(self) -> bool:
-        now_et = datetime.now(EASTERN).time()
-        return dt_time(4, 0) <= now_et <= dt_time(20, 0)
+        return self.market_status_provider.snapshot().active_collection_window
 
     def _prepare_coverage(self) -> None:
         ensure_coverage_table(self._client, self._coverage)
@@ -735,31 +730,13 @@ class SecGateway:
             self.metrics.market_status_source = "disabled"
             self.metrics.current_poll_seconds = self.current_poll_seconds()
             return
-        now = time.monotonic()
-        if self._market_status is not None and now < self._market_status_next_refresh:
-            self.metrics.current_poll_seconds = self.current_poll_seconds()
-            return
-        self._market_status_next_refresh = now + max(1.0, self.config.market_status_refresh_seconds)
-        if self.market_status_provider is None:
-            self.metrics.market_status_source = "local_clock_missing_key"
-            self.metrics.market_status = "local_extended" if self.local_extended_session_active() else "closed"
-            self.metrics.current_poll_seconds = self.current_poll_seconds()
-            return
-        try:
-            status = self.market_status_provider.fetch_now()
-        except Exception as exc:  # noqa: BLE001
-            self.metrics.market_status_error = repr(exc)
-            self.metrics.market_status_source = "local_clock_fallback"
-            self.metrics.market_status = "local_extended" if self.local_extended_session_active() else "closed"
-            self.metrics.current_poll_seconds = self.current_poll_seconds()
-            self._log("market_status_fetch_failed", error=repr(exc))
-            return
+        status = self.market_status_provider.snapshot()
         self._market_status = status
-        self.metrics.market_status = market_status_session(status)
-        self.metrics.market_status_source = "massive"
+        self.metrics.market_status = status.session or status.market or "unknown"
+        self.metrics.market_status_source = status.source
         self.metrics.market_status_server_time = status.server_time
-        self.metrics.market_status_updated_at_utc = status.fetched_at_utc.isoformat(timespec="seconds").replace("+00:00", "Z")
-        self.metrics.market_status_error = ""
+        self.metrics.market_status_updated_at_utc = status.checked_at_utc.isoformat(timespec="seconds").replace("+00:00", "Z")
+        self.metrics.market_status_error = status.error
         self.metrics.current_poll_seconds = self.current_poll_seconds()
         self._log(
             "market_status_updated",
@@ -767,6 +744,10 @@ class SecGateway:
             early_hours=status.early_hours,
             after_hours=status.after_hours,
             server_time=status.server_time,
+            source=status.source,
+            reason=status.reason,
+            holiday_status=status.holiday_status,
+            holiday_name=status.holiday_name,
         )
 
     def _process_item(self, item: SecFeedItem, existing: set[str]) -> SecWriteResult:
@@ -838,24 +819,3 @@ def workstation_script_run_path(script_path: Path, config: SecGatewayConfig) -> 
     except ValueError:
         return script_path
     return config.pipeline.workstation_code_root_win / relative
-
-
-def market_status_is_active(status: MarketStatusResult) -> bool:
-    if status.early_hours or status.after_hours:
-        return True
-    if status.market in {"open", "early-hours", "after-hours", "early_hours", "after_hours"}:
-        return True
-    exchanges = status.raw.get("exchanges")
-    if isinstance(exchanges, dict):
-        for name in ("nasdaq", "nyse"):
-            if str(exchanges.get(name) or "").strip().lower() == "open":
-                return True
-    return False
-
-
-def market_status_session(status: MarketStatusResult) -> str:
-    if status.early_hours:
-        return "early_hours"
-    if status.after_hours:
-        return "after_hours"
-    return status.market or "unknown"

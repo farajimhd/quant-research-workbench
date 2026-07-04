@@ -9,9 +9,10 @@ from typing import Callable
 
 from pipelines.news.benzinga.core.coverage_manifest import CoverageManifestConfig, ensure_coverage_manifest_table
 from pipelines.news.benzinga.core.clickhouse_writer import NewsWriteConfig, validate_target_tables
-from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig, MassiveMarketStatusClient
+from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.config import NewsGatewayConfig
+from services.market_hours import MassiveMarketHoursClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,8 +146,17 @@ def check_benzinga_provider(config: NewsGatewayConfig, api_key: str) -> str:
 
 
 def check_market_status(config: NewsGatewayConfig, api_key: str) -> str:
-    result = MassiveMarketStatusClient(endpoint_url=config.market_status_url, api_key=api_key).fetch_now()
+    result = MassiveMarketHoursClient.from_env(
+        service_prefix="NEWS",
+        api_key=api_key,
+        status_url=config.market_status_url,
+        holidays_url=config.market_holidays_url,
+        enabled=config.market_status_enabled,
+        refresh_seconds=config.market_status_refresh_seconds,
+    ).snapshot(force=True)
     return (
-        f"market={result.market or '-'} earlyHours={result.early_hours} "
-        f"afterHours={result.after_hours} serverTime={result.server_time or '-'}"
+        f"session={result.session} active={result.active_collection_window} "
+        f"source={result.source} reason={result.reason} market={result.market or '-'} "
+        f"earlyHours={result.early_hours} afterHours={result.after_hours} "
+        f"holiday={result.holiday_status or '-'} serverTime={result.server_time or '-'}"
     )

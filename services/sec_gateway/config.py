@@ -26,6 +26,7 @@ class SecGatewayConfig:
     poll_seconds: float
     closed_poll_seconds: float
     market_status_url: str
+    market_holidays_url: str
     market_status_enabled: bool
     market_status_refresh_seconds: float
     current_feed_count: int
@@ -57,6 +58,7 @@ class SecGatewayConfig:
             poll_seconds=env_float("SEC_GATEWAY_POLL_SECONDS", env_float("SEC_GATEWAY_MARKET_POLL_SECONDS", 30.0)),
             closed_poll_seconds=env_float("SEC_GATEWAY_CLOSED_POLL_SECONDS", 300.0),
             market_status_url=env_string("SEC_MARKET_STATUS_URL", env_string("NEWS_MARKET_STATUS_URL", "https://api.massive.com/v1/marketstatus/now")),
+            market_holidays_url=env_string("SEC_MARKET_HOLIDAYS_URL", env_string("NEWS_MARKET_HOLIDAYS_URL", "https://api.massive.com/v1/marketstatus/upcoming")),
             market_status_enabled=env_bool("SEC_MARKET_STATUS_ENABLED", True),
             market_status_refresh_seconds=env_float("SEC_MARKET_STATUS_REFRESH_SECONDS", 10.0),
             current_feed_count=env_int("SEC_GATEWAY_CURRENT_FEED_COUNT", 100),

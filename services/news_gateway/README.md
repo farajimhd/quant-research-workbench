@@ -151,11 +151,14 @@ Existing rows are skipped by canonical news ID, so the intentionally overlapping
 windows are safe. The overlap is kept because provider rows can arrive late or a
 single poll can fail while the service keeps running.
 
-The gateway uses Massive market status (`/v1/marketstatus/now`) as the source of
-truth for active versus closed market state. It refreshes the status at most once
-every 10 seconds. If the status endpoint fails, the service keeps running and
-falls back to the local Eastern-time schedule until the next successful status
-refresh.
+The gateway uses the shared service market-hours policy:
+
+- Massive market status (`/v1/marketstatus/now`) is the source of truth for the
+  current active versus closed state.
+- Massive market holidays (`/v1/marketstatus/upcoming`) are cached and used for
+  full market closures and early closes.
+- If Massive status is unavailable, the service keeps running and falls back to
+  the local New York extended-hours schedule until the next successful refresh.
 
 For news polling, premarket and after-hours count as active market. The gateway
 therefore treats `earlyHours=true` or `afterHours=true` as active even if the
@@ -480,7 +483,9 @@ NEWS_BENZINGA_MARKET_LOOKBACK_MINUTES=5
 NEWS_BENZINGA_CLOSED_LOOKBACK_MINUTES=10
 NEWS_MARKET_STATUS_ENABLED=true
 NEWS_MARKET_STATUS_URL=https://api.massive.com/v1/marketstatus/now
+NEWS_MARKET_HOLIDAYS_URL=https://api.massive.com/v1/marketstatus/upcoming
 NEWS_MARKET_STATUS_REFRESH_SECONDS=10
+NEWS_MARKET_HOLIDAYS_REFRESH_SECONDS=3600
 NEWS_BENZINGA_POLL_OVERLAP_SECONDS=120
 NEWS_BENZINGA_STARTUP_AUTO_FILL_MAX_GAP_DAYS=30
 NEWS_GATEWAY_COLLECTION_START_ET=04:00

@@ -11,6 +11,11 @@ It does not stop or restart any live service. It only inspects durable coverage
 tables/source tables, records maintenance task rows, and generates or runs the
 same service-specific gap-fill commands that the gateways already use.
 
+Auto-run eligibility uses the shared service market-hours policy. Massive
+`/v1/marketstatus/now` supplies the current active/closed state, and Massive
+`/v1/marketstatus/upcoming` supplies full closures and early closes. The local
+New York extended-hours clock is only a fallback when Massive is unavailable.
+
 ## Source Of Truth
 
 QMD:

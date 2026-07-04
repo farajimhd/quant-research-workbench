@@ -3,10 +3,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
-
-
-EASTERN = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,12 +38,9 @@ def service_collection_window(service_prefix: str) -> CollectionWindow:
 
 
 def active_collection_window(now_utc: datetime | None = None, *, service_prefix: str = "") -> bool:
-    window = service_collection_window(service_prefix) if service_prefix else DEFAULT_COLLECTION_WINDOW
-    local = (now_utc or datetime.now(UTC)).astimezone(EASTERN)
-    minute = local.hour * 60 + local.minute
-    if window.start_minute_et <= window.end_minute_et:
-        return window.start_minute_et <= minute < window.end_minute_et
-    return minute >= window.start_minute_et or minute < window.end_minute_et
+    from services.market_hours import get_market_hours_client
+
+    return get_market_hours_client(service_prefix or "SERVICE").snapshot(now_utc or datetime.now(UTC)).active_collection_window
 
 
 def backfill_auto_run_allowed(*, is_workstation: bool, execute: bool, auto_run_enabled: bool, service_prefix: str) -> bool:
