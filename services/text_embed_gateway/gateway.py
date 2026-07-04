@@ -1,0 +1,719 @@
+from __future__ import annotations
+
+import asyncio
+import gc
+import json
+import os
+import threading
+import time
+import uuid
+from collections import deque
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+from pipelines.market_sip.events.clickhouse_build_text_tokens import (
+    SourceBatch,
+    TextEmbeddingModel,
+    TextTokenizer,
+    TokenTableBatch,
+    create_news_embedding_table_sql,
+    create_news_token_table_sql,
+    create_sec_embedding_table_sql,
+    create_sec_token_table_sql,
+    embed_and_insert_token_table_batch,
+    tokenize_and_insert_source_batch,
+)
+from research.mlops.clickhouse import ClickHouseHttpClient, parse_size_bytes, quote_ident, sql_string
+from services.market_hours import MarketHoursSnapshot, MassiveMarketHoursClient
+from services.news_gateway.run_logger import AsyncRunLogger
+from services.text_embed_gateway.config import TextEmbedGatewayConfig
+
+
+@dataclass(slots=True)
+class TextEmbedMetrics:
+    started_at_utc: str = field(default_factory=lambda: utc_now_text())
+    current_phase: str = "starting"
+    current_phase_message: str = "Starting text embedding gateway."
+    current_phase_started_at_utc: str = field(default_factory=lambda: utc_now_text())
+    model_status: str = "not_loaded"
+    model_load_seconds: float = 0.0
+    embedding_dim: int = 0
+    embedding_device: str = ""
+    embedding_torch_dtype: str = ""
+    embedding_pooling: str = ""
+    market_status: str = ""
+    market_status_source: str = "local_clock"
+    market_status_updated_at_utc: str = ""
+    market_status_error: str = ""
+    cycles: int = 0
+    live_cycles: int = 0
+    historical_cycles: int = 0
+    source_rows_fetched: int = 0
+    source_rows_tokenized: int = 0
+    token_rows_fetched: int = 0
+    embedding_rows_written: int = 0
+    coverage_rows_written: int = 0
+    news_source_rows: int = 0
+    sec_source_rows: int = 0
+    news_token_rows: int = 0
+    sec_token_rows: int = 0
+    last_cycle_seconds: float = 0.0
+    last_fetch_seconds: float = 0.0
+    last_embedding_seconds: float = 0.0
+    last_insert_seconds: float = 0.0
+    active_queries: int = 0
+    cancelled_queries: int = 0
+    failures: int = 0
+    last_error: str = ""
+    last_processed_source: str = ""
+    last_processed_mode: str = ""
+    last_processed_rows: int = 0
+    recent_status_rows: int = 0
+    run_log_path: str = ""
+
+
+class TrackedClickHouseClient(ClickHouseHttpClient):
+    def __init__(self, base_url: str, user: str, password: str, *, query_prefix: str) -> None:
+        super().__init__(base_url, user, password)
+        self.query_prefix = query_prefix
+        self._active_query_ids: set[str] = set()
+        self._lock = threading.RLock()
+
+    def execute(self, sql: str, *, query_id: str | None = None) -> str:
+        own_query_id = query_id or f"{self.query_prefix}_{uuid.uuid4().hex}"
+        with self._lock:
+            self._active_query_ids.add(own_query_id)
+        try:
+            return super().execute(sql, query_id=own_query_id)
+        finally:
+            with self._lock:
+                self._active_query_ids.discard(own_query_id)
+
+    def active_query_ids(self) -> list[str]:
+        with self._lock:
+            return sorted(self._active_query_ids)
+
+    def cancel_active_queries(self) -> int:
+        query_ids = self.active_query_ids()
+        if not query_ids:
+            return 0
+        values = ", ".join(sql_string(value) for value in query_ids)
+        sql = f"KILL QUERY WHERE query_id IN ({values}) ASYNC"
+        ClickHouseHttpClient.execute(self, sql, query_id=f"{self.query_prefix}_kill_{uuid.uuid4().hex}")
+        return len(query_ids)
+
+
+class TextEmbedGateway:
+    def __init__(self, config: TextEmbedGatewayConfig) -> None:
+        self.config = config
+        self.metrics = TextEmbedMetrics()
+        self._run_id = f"text_embed_gateway_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        self._stop_event = asyncio.Event()
+        self._poll_task: asyncio.Task[None] | None = None
+        self._terminal_task: asyncio.Task[None] | None = None
+        password = default_password()
+        self.client = TrackedClickHouseClient(config.clickhouse_url, config.clickhouse_user, password, query_prefix="text_embed")
+        self.market_status_provider = MassiveMarketHoursClient.from_env(
+            service_prefix="TEXT_EMBED",
+            api_key=os.environ.get("MASSIVE_API_KEY", "").strip(),
+            status_url=config.market_status_url,
+            holidays_url=config.market_holidays_url,
+            enabled=config.market_status_enabled,
+            refresh_seconds=config.market_status_refresh_seconds,
+        )
+        self.tokenizer: TextTokenizer | None = None
+        self.embedding_model: TextEmbeddingModel | None = None
+        self._recent: deque[dict[str, Any]] = deque(maxlen=max(1, config.recent_status_limit))
+        self.logger = AsyncRunLogger(
+            root=config.log_root_win,
+            run_id=self._run_id,
+            enabled=config.run_log_enabled,
+            queue_size=config.run_log_queue_size,
+        )
+        self.logger.path = self.logger.path.with_name("text_embed_gateway_events.jsonl")
+        self.metrics.run_log_path = str(self.logger.path) if config.run_log_enabled else ""
+        self.report_path = config.log_root_win / self._run_id / "text_embed_gateway_profile.jsonl"
+
+    async def start(self) -> None:
+        await self.logger.start()
+        self._log("service_starting", config=self.config.public_dict())
+        if self.config.terminal_rich_enabled and self._terminal_task is None:
+            from services.text_embed_gateway.terminal import run_terminal_dashboard
+
+            self._terminal_task = asyncio.create_task(run_terminal_dashboard(self), name="text-embed-terminal")
+        try:
+            self._set_phase("loading_model", "Loading tokenizer and Qwen embedding model to GPU.")
+            await asyncio.to_thread(self._load_model)
+            self._set_phase("schema", "Ensuring token, embedding, and coverage tables.")
+            await asyncio.to_thread(self.ensure_schema)
+            self._set_phase("polling", "Text embedding gap polling is running.")
+            self._poll_task = asyncio.create_task(self._poll_loop(), name="text-embed-poll-loop")
+            self._log("service_started")
+        except Exception as exc:  # noqa: BLE001
+            self.metrics.failures += 1
+            self.metrics.last_error = repr(exc)
+            self._set_phase("failed", repr(exc))
+            self.logger.exception("service_start_failed", exc)
+            raise
+
+    async def stop(self) -> None:
+        self._set_phase("stopping", "Shutdown requested; finishing current persist step and releasing GPU memory.")
+        self._stop_event.set()
+        try:
+            cancelled = await asyncio.to_thread(self.client.cancel_active_queries)
+            self.metrics.cancelled_queries += cancelled
+            if cancelled:
+                self._log("active_clickhouse_queries_cancelled", count=cancelled)
+        except Exception as exc:  # noqa: BLE001
+            self.metrics.last_error = repr(exc)
+            self.logger.exception("cancel_active_queries_failed", exc)
+        if self._poll_task is not None:
+            try:
+                await asyncio.wait_for(self._poll_task, timeout=self.config.graceful_shutdown_seconds)
+            except TimeoutError:
+                self._poll_task.cancel()
+                await asyncio.gather(self._poll_task, return_exceptions=True)
+                self._log("poll_loop_cancelled_after_timeout", timeout_seconds=self.config.graceful_shutdown_seconds)
+        if self._terminal_task is not None:
+            self._terminal_task.cancel()
+            await asyncio.gather(self._terminal_task, return_exceptions=True)
+        await asyncio.to_thread(self._release_model)
+        await self.logger.stop()
+
+    def snapshot_metrics(self) -> dict[str, Any]:
+        self.metrics.active_queries = len(self.client.active_query_ids())
+        self._prune_recent()
+        self.metrics.recent_status_rows = len(self._recent)
+        return asdict(self.metrics)
+
+    def recent_snapshot(self, limit: int = 50) -> dict[str, Any]:
+        self._prune_recent()
+        return {"rows": list(self._recent)[: max(1, int(limit))], "limit": limit}
+
+    def current_market_status(self) -> MarketHoursSnapshot:
+        status = self.market_status_provider.snapshot()
+        self.metrics.market_status = status.session or status.market or "unknown"
+        self.metrics.market_status_source = status.source
+        self.metrics.market_status_updated_at_utc = status.checked_at_utc.isoformat(timespec="seconds").replace("+00:00", "Z")
+        self.metrics.market_status_error = status.error
+        return status
+
+    def ensure_schema(self) -> None:
+        args = self._args()
+        statements = [
+            f"CREATE DATABASE IF NOT EXISTS {quote_ident(self.config.target_database)}",
+            create_news_token_table_sql(self.config.target_database, self.config.news_token_table, self.config.storage_policy),
+            create_sec_token_table_sql(self.config.target_database, self.config.sec_token_table, self.config.storage_policy),
+            create_news_embedding_table_sql(self.config.target_database, self.config.news_embedding_table, self.config.storage_policy),
+            create_sec_embedding_table_sql(self.config.target_database, self.config.sec_embedding_table, self.config.storage_policy),
+            create_coverage_table_sql(self.config.target_database, self.config.coverage_table, self.config.storage_policy),
+        ]
+        for statement in statements:
+            self.client.execute(statement)
+        self._log("schema_ready", target_database=args.target_database)
+
+    async def _poll_loop(self) -> None:
+        while not self._stop_event.is_set():
+            started = time.perf_counter()
+            try:
+                status = await asyncio.to_thread(self.current_market_status)
+                mode = "live" if status.active_collection_window else "closed"
+                self._set_phase("polling", f"Embedding {mode} gaps.")
+                await asyncio.to_thread(self._run_cycle, mode)
+                sleep_seconds = self.config.live_poll_seconds if status.active_collection_window else self.config.closed_poll_seconds
+                self.metrics.last_cycle_seconds = time.perf_counter() - started
+                await asyncio.wait_for(self._stop_event.wait(), timeout=max(0.25, sleep_seconds))
+            except TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self.metrics.failures += 1
+                self.metrics.last_error = repr(exc)
+                self._set_phase("error", repr(exc))
+                self.logger.exception("poll_cycle_failed", exc)
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=min(30.0, max(1.0, self.config.closed_poll_seconds)))
+                except TimeoutError:
+                    continue
+
+    def _run_cycle(self, mode: str) -> None:
+        self.metrics.cycles += 1
+        if mode == "live":
+            self.metrics.live_cycles += 1
+        else:
+            self.metrics.historical_cycles += 1
+        ranges = self._time_ranges(mode)
+        total_written = 0
+        for source in ("news", "sec"):
+            if self._stop_event.is_set():
+                break
+            source_rows = self._fetch_missing_source_rows(source, ranges[source], mode)
+            if source_rows:
+                total_written += self._tokenize_embed_and_persist_source(source, source_rows, mode)
+            if self._stop_event.is_set():
+                break
+            token_rows = self._fetch_missing_token_rows(source, ranges[source], mode)
+            if token_rows:
+                total_written += self._embed_and_persist_tokens(source, token_rows, mode)
+        self._log("cycle_complete", mode=mode, rows=total_written)
+
+    def _time_ranges(self, mode: str) -> dict[str, tuple[datetime, datetime]]:
+        now = datetime.now(UTC)
+        if mode == "live":
+            start = now - timedelta(minutes=max(1, self.config.live_lookback_minutes))
+            end = now + timedelta(minutes=5)
+        else:
+            start = now - timedelta(days=max(1, self.config.historical_lookback_days))
+            end = now + timedelta(minutes=5)
+        return {"news": (start, end), "sec": (start, end)}
+
+    def _fetch_missing_source_rows(self, source: str, bounds: tuple[datetime, datetime], mode: str) -> list[dict[str, Any]]:
+        started = time.perf_counter()
+        sql = missing_news_source_sql(self.config, bounds, mode) if source == "news" else missing_sec_source_sql(self.config, bounds, mode)
+        rows = json_rows(self.client.execute(sql))
+        seconds = time.perf_counter() - started
+        self.metrics.last_fetch_seconds = seconds
+        self.metrics.source_rows_fetched += len(rows)
+        if source == "news":
+            self.metrics.news_source_rows += len(rows)
+        else:
+            self.metrics.sec_source_rows += len(rows)
+        if rows:
+            self._remember(source=source, mode=mode, stage="source_fetch", rows=len(rows), seconds=seconds)
+        return rows
+
+    def _fetch_missing_token_rows(self, source: str, bounds: tuple[datetime, datetime], mode: str) -> list[dict[str, Any]]:
+        started = time.perf_counter()
+        sql = missing_news_token_sql(self.config, bounds, mode) if source == "news" else missing_sec_token_sql(self.config, bounds, mode)
+        rows = json_rows(self.client.execute(sql))
+        seconds = time.perf_counter() - started
+        self.metrics.last_fetch_seconds = seconds
+        self.metrics.token_rows_fetched += len(rows)
+        if source == "news":
+            self.metrics.news_token_rows += len(rows)
+        else:
+            self.metrics.sec_token_rows += len(rows)
+        if rows:
+            self._remember(source=source, mode=mode, stage="token_fetch", rows=len(rows), seconds=seconds)
+        return rows
+
+    def _tokenize_embed_and_persist_source(self, source: str, rows: list[dict[str, Any]], mode: str) -> int:
+        if self.tokenizer is None or self.embedding_model is None:
+            raise RuntimeError("Text embedding model is not loaded.")
+        started = time.perf_counter()
+        source_batch = SourceBatch(source=source, rows=rows, seconds=0.0)
+        before = self.metrics.embedding_rows_written
+        token_rows = tokenize_and_insert_source_batch(
+            self.client,
+            self.tokenizer,
+            self.embedding_model,
+            self._args(),
+            source_batch,
+            report_path=self.report_path,
+        )
+        self.metrics.source_rows_tokenized += len(rows)
+        written = int(token_rows)
+        self.metrics.embedding_rows_written += written
+        self.metrics.last_embedding_seconds = time.perf_counter() - started
+        self._insert_coverage(source, rows, mode=mode, stage="source", status="ready", token_rows=token_rows, embedding_rows=written)
+        self._remember(source=source, mode=mode, stage="source_embed", rows=written, seconds=self.metrics.last_embedding_seconds)
+        self.metrics.last_processed_source = source
+        self.metrics.last_processed_mode = mode
+        self.metrics.last_processed_rows = written
+        return self.metrics.embedding_rows_written - before
+
+    def _embed_and_persist_tokens(self, source: str, rows: list[dict[str, Any]], mode: str) -> int:
+        if self.embedding_model is None:
+            raise RuntimeError("Text embedding model is not loaded.")
+        started = time.perf_counter()
+        before = self.metrics.embedding_rows_written
+        inserted = embed_and_insert_token_table_batch(
+            self.client,
+            self.embedding_model,
+            self._args(),
+            TokenTableBatch(source=source, rows=rows, seconds=0.0),
+            report_path=self.report_path,
+        )
+        self.metrics.embedding_rows_written += inserted
+        self.metrics.last_embedding_seconds = time.perf_counter() - started
+        self._insert_coverage(source, rows, mode=mode, stage="token", status="ready", token_rows=len(rows), embedding_rows=inserted)
+        self._remember(source=source, mode=mode, stage="token_embed", rows=inserted, seconds=self.metrics.last_embedding_seconds)
+        self.metrics.last_processed_source = source
+        self.metrics.last_processed_mode = mode
+        self.metrics.last_processed_rows = inserted
+        return self.metrics.embedding_rows_written - before
+
+    def _insert_coverage(self, source: str, rows: list[dict[str, Any]], *, mode: str, stage: str, status: str, token_rows: int, embedding_rows: int) -> None:
+        if not rows:
+            return
+        started = time.perf_counter()
+        payload = []
+        for row in rows:
+            event_time_key = "published_at_utc" if source == "news" else "accepted_at_utc"
+            payload.append(
+                {
+                    "source": source,
+                    "mode": mode,
+                    "stage": stage,
+                    "status": status,
+                    "ticker": str(row.get("ticker", "") or "").upper(),
+                    "timestamp_us": int(row.get("timestamp_us", 0) or 0),
+                    "event_time": str(row.get(event_time_key, "") or ""),
+                    "source_id": str(row.get("source_id", "") or ""),
+                    "token_chunk_index": int(row.get("token_chunk_index", 0) or 0),
+                    "tokenizer_model": self.config.tokenizer_model,
+                    "embedding_model": self.config.embedding_model,
+                    "embedding_pooling": self.config.embedding_pooling,
+                    "token_rows": int(token_rows),
+                    "embedding_rows": int(embedding_rows),
+                    "last_error": "",
+                }
+            )
+        target = f"{quote_ident(self.config.target_database)}.{quote_ident(self.config.coverage_table)}"
+        insert_json_each_row(self.client, target, payload)
+        self.metrics.coverage_rows_written += len(payload)
+        self.metrics.last_insert_seconds = time.perf_counter() - started
+
+    def _load_model(self) -> None:
+        started = time.perf_counter()
+        self.tokenizer = TextTokenizer(model=self.config.tokenizer_model, local_files_only=self.config.local_files_only, strict=True)
+        self.embedding_model = TextEmbeddingModel(
+            model=self.config.embedding_model,
+            tokenizer_model=self.config.tokenizer_model,
+            local_files_only=self.config.local_files_only,
+            device=self.config.embedding_device,
+            torch_dtype=self.config.embedding_torch_dtype,
+            pooling=self.config.embedding_pooling,
+        )
+        self.metrics.model_status = "loaded"
+        self.metrics.model_load_seconds = time.perf_counter() - started
+        self.metrics.embedding_dim = int(self.embedding_model.embedding_dim)
+        self.metrics.embedding_device = self.embedding_model.device
+        self.metrics.embedding_torch_dtype = self.embedding_model.torch_dtype_name
+        self.metrics.embedding_pooling = self.embedding_model.pooling
+
+    def _release_model(self) -> None:
+        self._set_phase("releasing_model", "Freeing tokenizer/model references and CUDA cache.")
+        torch_module = getattr(self.embedding_model, "torch", None)
+        self.embedding_model = None
+        self.tokenizer = None
+        gc.collect()
+        if torch_module is not None and torch_module.cuda.is_available():
+            torch_module.cuda.empty_cache()
+            try:
+                torch_module.cuda.ipc_collect()
+            except Exception:
+                pass
+        self.metrics.model_status = "released"
+
+    def _args(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            target_database=self.config.target_database,
+            news_token_table=self.config.news_token_table,
+            sec_token_table=self.config.sec_token_table,
+            news_embedding_table=self.config.news_embedding_table,
+            sec_embedding_table=self.config.sec_embedding_table,
+            tokenizer_model=self.config.tokenizer_model,
+            embedding_model=self.config.embedding_model,
+            embedding_pooling=self.config.embedding_pooling,
+            news_max_tokens=self.config.news_max_tokens,
+            news_max_chunks=self.config.news_max_chunks,
+            sec_chunk_tokens=self.config.sec_chunk_tokens,
+            sec_max_chunks=self.config.sec_max_chunks,
+            insert_batch_size=max(1, self.config.source_batch_size),
+            embedding_batch_size=max(1, self.config.embedding_batch_size),
+            embedding_insert_batch_size=max(1, self.config.embedding_insert_batch_size),
+            dry_run=False,
+            build_embeddings=True,
+            max_threads=self.config.max_threads,
+            max_memory_usage=self.config.max_memory_usage,
+        )
+
+    def _set_phase(self, phase: str, message: str) -> None:
+        self.metrics.current_phase = phase
+        self.metrics.current_phase_message = message
+        self.metrics.current_phase_started_at_utc = utc_now_text()
+        self._log("phase", phase=phase, message=message)
+
+    def _remember(self, *, source: str, mode: str, stage: str, rows: int, seconds: float) -> None:
+        self._recent.appendleft(
+            {
+                "updated_at_utc": utc_now_text(),
+                "source": source,
+                "mode": mode,
+                "stage": stage,
+                "rows": int(rows),
+                "seconds": round(float(seconds), 3),
+            }
+        )
+        self._prune_recent()
+
+    def _prune_recent(self) -> None:
+        retention = timedelta(hours=max(0.0, self.config.recent_status_retention_hours))
+        if retention.total_seconds() <= 0:
+            return
+        cutoff = datetime.now(UTC) - retention
+        self._recent = deque((row for row in self._recent if parse_utc(row.get("updated_at_utc")) >= cutoff), maxlen=max(1, self.config.recent_status_limit))
+
+    def _log(self, event: str, **payload: Any) -> None:
+        self.logger.event(event, **payload)
+
+
+def missing_news_source_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime], mode: str) -> str:
+    limit = config.source_batch_size if mode == "live" else config.historical_batch_limit
+    db = quote_ident(config.source_database)
+    target = quote_ident(config.target_database)
+    token_table = quote_ident(config.news_token_table)
+    body_chars = max(1, config.news_body_prefix_chars)
+    external_chars = max(1, config.news_external_prefix_chars)
+    pdf_chars = max(1, config.news_pdf_prefix_chars)
+    return f"""
+SELECT
+    nt.ticker AS ticker,
+    toUInt64(toUnixTimestamp64Micro(nt.published_at_utc)) AS timestamp_us,
+    nt.published_at_utc AS published_at_utc,
+    nt.canonical_news_id AS source_id,
+    nt.provider AS provider,
+    nt.provider_article_id AS provider_article_id,
+    n.title AS title,
+    n.teaser AS teaser,
+    substring(n.body_text, 1, {body_chars}) AS body_text,
+    substring(n.external_text, 1, {external_chars}) AS external_text,
+    substring(n.pdf_text, 1, {pdf_chars}) AS pdf_text,
+    length(n.body_text) AS body_text_char_count,
+    length(n.external_text) AS external_text_char_count,
+    length(n.pdf_text) AS pdf_text_char_count,
+    length(n.body_text) + length(n.external_text) + length(n.pdf_text) AS source_text_char_count,
+    n.has_body AS has_body,
+    n.has_external_text AS has_external_text,
+    n.has_pdf AS has_pdf,
+    n.article_url AS article_url,
+    n.url_domain AS url_domain,
+    arrayStringConcat(n.channels, ',') AS channels,
+    arrayStringConcat(n.provider_tags, ',') AS provider_tags,
+    arrayStringConcat(n.content_quality_flags, ',') AS quality_flags
+FROM {db}.benzinga_news_ticker_v1 AS nt
+ANY INNER JOIN {db}.benzinga_news_normalized_v1 AS n
+    ON nt.canonical_news_id = n.canonical_news_id
+LEFT JOIN {target}.{token_table} AS tok
+    ON tok.ticker = nt.ticker
+   AND tok.source_id = nt.canonical_news_id
+   AND tok.tokenizer_model = {sql_string(config.tokenizer_model)}
+WHERE nt.published_at_utc >= {dt64_sql(bounds[0])}
+  AND nt.published_at_utc < {dt64_sql(bounds[1])}
+  AND tok.source_id = ''
+ORDER BY nt.published_at_utc DESC, nt.ticker, nt.canonical_news_id
+LIMIT {max(1, int(limit))}
+{query_settings(config)}
+FORMAT JSONEachRow
+"""
+
+
+def missing_sec_source_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime], mode: str) -> str:
+    limit = config.source_batch_size if mode == "live" else config.historical_batch_limit
+    source_db = quote_ident(config.source_database)
+    target = quote_ident(config.target_database)
+    filing_table = quote_ident(config.sec_live_filing_table)
+    text_table = quote_ident(config.sec_live_text_table)
+    mapping_table = quote_ident(config.sec_ticker_mapping_table)
+    token_table = quote_ident(config.sec_token_table)
+    text_chars = max(1, config.sec_text_prefix_chars)
+    return f"""
+SELECT
+    src.ticker,
+    src.timestamp_us,
+    src.accepted_at_utc,
+    concat(src.accession_number, ':', toString(src.text_rank), ':', src.document_id) AS source_id,
+    src.cik,
+    src.accession_number,
+    src.form_type,
+    src.text_rank,
+    src.document_id,
+    src.text_kind,
+    substring(src.text, 1, {text_chars}) AS text,
+    src.text_char_count AS source_text_char_count,
+    src.quality_flags
+FROM
+(
+    SELECT
+        upper(map.ticker) AS ticker,
+        toUInt64(toUnixTimestamp64Micro(f.accepted_at_utc)) AS timestamp_us,
+        f.accepted_at_utc AS accepted_at_utc,
+        t.cik AS cik,
+        t.accession_number AS accession_number,
+        f.form_type AS form_type,
+        toUInt8(least(row_number() OVER (PARTITION BY t.cik, t.accession_number ORDER BY t.document_id, t.text_kind) - 1, 255)) AS text_rank,
+        t.document_id AS document_id,
+        t.text_kind AS text_kind,
+        t.text AS text,
+        t.text_char_count AS text_char_count,
+        arrayStringConcat(t.quality_flags, ',') AS quality_flags
+    FROM {source_db}.{text_table} AS t
+    ANY INNER JOIN {source_db}.{filing_table} AS f
+        ON f.cik = t.cik
+       AND f.accession_number = t.accession_number
+    ANY LEFT JOIN {source_db}.{mapping_table} AS map
+        ON map.cik = t.cik
+    WHERE f.accepted_at_utc >= {dt64_sql(bounds[0])}
+      AND f.accepted_at_utc < {dt64_sql(bounds[1])}
+      AND map.ticker != ''
+) AS src
+LEFT JOIN {target}.{token_table} AS tok
+    ON tok.ticker = src.ticker
+   AND tok.accession_number = src.accession_number
+   AND tok.text_rank = src.text_rank
+   AND tok.document_id = src.document_id
+   AND tok.tokenizer_model = {sql_string(config.tokenizer_model)}
+WHERE tok.source_id = ''
+ORDER BY src.accepted_at_utc DESC, src.ticker, src.accession_number, src.text_rank, src.document_id
+LIMIT {max(1, int(limit))}
+{query_settings(config)}
+FORMAT JSONEachRow
+"""
+
+
+def missing_news_token_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime], mode: str) -> str:
+    limit = config.token_batch_size if mode == "live" else config.historical_batch_limit
+    target = quote_ident(config.target_database)
+    token_table = quote_ident(config.news_token_table)
+    embedding_table = quote_ident(config.news_embedding_table)
+    return f"""
+SELECT
+    t.ticker, t.timestamp_us, t.published_at_utc, t.source_id, t.provider, t.provider_article_id,
+    t.title, t.article_url, t.url_domain, t.channels, t.provider_tags, t.quality_flags,
+    t.tokenizer_model, t.max_tokens, t.token_chunk_index, t.token_start, t.token_end,
+    t.original_token_count, t.token_count, t.padding_tokens, t.was_truncated,
+    t.input_ids, t.attention_mask, t.text_hash, t.text_char_count, t.source_text_char_count,
+    t.text_prefix_truncated
+FROM {target}.{token_table} AS t
+LEFT JOIN {target}.{embedding_table} AS e
+    ON e.ticker = t.ticker
+   AND e.source_id = t.source_id
+   AND e.token_chunk_index = t.token_chunk_index
+   AND e.embedding_model = {sql_string(config.embedding_model)}
+   AND e.embedding_pooling = {sql_string(config.embedding_pooling)}
+WHERE t.published_at_utc >= {dt64_sql(bounds[0])}
+  AND t.published_at_utc < {dt64_sql(bounds[1])}
+  AND t.tokenizer_model = {sql_string(config.tokenizer_model)}
+  AND e.source_id = ''
+ORDER BY t.published_at_utc DESC, t.ticker, t.source_id, t.token_chunk_index
+LIMIT {max(1, int(limit))}
+{query_settings(config)}
+FORMAT JSONEachRow
+"""
+
+
+def missing_sec_token_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime], mode: str) -> str:
+    limit = config.token_batch_size if mode == "live" else config.historical_batch_limit
+    target = quote_ident(config.target_database)
+    token_table = quote_ident(config.sec_token_table)
+    embedding_table = quote_ident(config.sec_embedding_table)
+    return f"""
+SELECT
+    t.ticker, t.timestamp_us, t.accepted_at_utc, t.source_id, t.cik, t.accession_number,
+    t.form_type, t.text_rank, t.document_id, t.text_kind, t.quality_flags, t.tokenizer_model,
+    t.max_tokens, t.token_chunk_index, t.token_start, t.token_end, t.original_token_count,
+    t.token_count, t.padding_tokens, t.was_truncated, t.input_ids, t.attention_mask,
+    t.text_hash, t.text_char_count, t.source_text_char_count, t.text_prefix_truncated
+FROM {target}.{token_table} AS t
+LEFT JOIN {target}.{embedding_table} AS e
+    ON e.ticker = t.ticker
+   AND e.accession_number = t.accession_number
+   AND e.text_rank = t.text_rank
+   AND e.document_id = t.document_id
+   AND e.source_id = t.source_id
+   AND e.token_chunk_index = t.token_chunk_index
+   AND e.embedding_model = {sql_string(config.embedding_model)}
+   AND e.embedding_pooling = {sql_string(config.embedding_pooling)}
+WHERE t.accepted_at_utc >= {dt64_sql(bounds[0])}
+  AND t.accepted_at_utc < {dt64_sql(bounds[1])}
+  AND t.tokenizer_model = {sql_string(config.tokenizer_model)}
+  AND e.source_id = ''
+ORDER BY t.accepted_at_utc DESC, t.ticker, t.accession_number, t.text_rank, t.document_id, t.token_chunk_index
+LIMIT {max(1, int(limit))}
+{query_settings(config)}
+FORMAT JSONEachRow
+"""
+
+
+def create_coverage_table_sql(database: str, table: str, storage_policy: str) -> str:
+    settings = ["index_granularity = 8192"]
+    if storage_policy.strip():
+        settings.append(f"storage_policy = {sql_string(storage_policy.strip())}")
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(table)}
+(
+    source LowCardinality(String),
+    mode LowCardinality(String),
+    stage LowCardinality(String),
+    status LowCardinality(String),
+    ticker LowCardinality(String),
+    timestamp_us UInt64 CODEC(T64, ZSTD(1)),
+    event_time DateTime64(9, 'UTC') CODEC(Delta, ZSTD(1)),
+    source_id String,
+    token_chunk_index UInt8,
+    tokenizer_model LowCardinality(String),
+    embedding_model LowCardinality(String),
+    embedding_pooling LowCardinality(String),
+    token_rows UInt32,
+    embedding_rows UInt32,
+    last_error String CODEC(ZSTD(3)),
+    updated_at DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(event_time)
+ORDER BY (source, ticker, timestamp_us, source_id, token_chunk_index)
+SETTINGS {", ".join(settings)}
+"""
+
+
+def insert_json_each_row(client: ClickHouseHttpClient, table: str, rows: list[dict[str, Any]]) -> None:
+    payload = "\n".join(json.dumps(row, separators=(",", ":"), ensure_ascii=False) for row in rows)
+    if payload:
+        client.execute(f"INSERT INTO {table} FORMAT JSONEachRow\n{payload}")
+
+
+def json_rows(text: str) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def dt64_sql(value: datetime) -> str:
+    value = value.astimezone(UTC)
+    text = value.isoformat(timespec="microseconds").replace("+00:00", "")
+    return f"toDateTime64({sql_string(text)}, 9, 'UTC')"
+
+
+def query_settings(config: TextEmbedGatewayConfig) -> str:
+    settings = []
+    if int(config.max_threads) > 0:
+        settings.append(f"max_threads = {int(config.max_threads)}")
+    if config.max_memory_usage.strip() and config.max_memory_usage.strip() != "0":
+        settings.append(f"max_memory_usage = {parse_size_bytes(config.max_memory_usage)}")
+    return "\nSETTINGS " + ", ".join(settings) if settings else ""
+
+
+def utc_now_text() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def parse_utc(value: Any) -> datetime:
+    text = str(value or "").strip()
+    if not text:
+        return datetime.fromtimestamp(0, UTC)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.fromtimestamp(0, UTC)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def default_password() -> str:
+    from research.mlops.clickhouse import default_clickhouse_password
+
+    return default_clickhouse_password()
