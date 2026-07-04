@@ -81,6 +81,31 @@ class TextEmbedMetrics:
     sec_context_table: str = ""
     sec_context_status: str = "not_checked"
     sec_context_rows_refreshed: int = 0
+    gap_cycle_mode: str = ""
+    gap_window_start_utc: str = ""
+    gap_window_end_utc: str = ""
+    gap_updated_at_utc: str = ""
+    news_source_gap_detected: int = 0
+    sec_source_gap_detected: int = 0
+    news_token_gap_detected: int = 0
+    sec_token_gap_detected: int = 0
+    sec_context_gap_detected: int = 0
+    sec_context_blocked_detected: int = 0
+    news_source_gap_completed: int = 0
+    sec_source_gap_completed: int = 0
+    news_token_gap_completed: int = 0
+    sec_token_gap_completed: int = 0
+    sec_context_gap_completed: int = 0
+    news_source_gap_remaining: int = 0
+    sec_source_gap_remaining: int = 0
+    news_token_gap_remaining: int = 0
+    sec_token_gap_remaining: int = 0
+    sec_context_gap_remaining: int = 0
+    news_source_gap_period: str = ""
+    sec_source_gap_period: str = ""
+    news_token_gap_period: str = ""
+    sec_token_gap_period: str = ""
+    sec_context_gap_period: str = ""
     run_log_path: str = ""
 
 
@@ -264,6 +289,7 @@ class TextEmbedGateway:
         else:
             self.metrics.historical_cycles += 1
         ranges = self._time_ranges(mode)
+        self._begin_gap_cycle(mode, ranges["news"])
         total_written = 0
         for source in ("news", "sec"):
             if self._stop_event.is_set():
@@ -271,14 +297,29 @@ class TextEmbedGateway:
             try:
                 if source == "sec":
                     self._refresh_sec_context(ranges[source], mode)
+                source_summary = self._summarize_source_gaps(source, ranges[source])
                 source_rows = self._fetch_missing_source_rows(source, ranges[source], mode)
                 if source_rows:
                     total_written += self._tokenize_embed_and_persist_source(source, source_rows, mode)
+                    self._set_gap_completed(source, "source", len(source_rows))
                 if self._stop_event.is_set():
                     break
+                token_summary = self._summarize_token_gaps(source, ranges[source])
                 token_rows = self._fetch_missing_token_rows(source, ranges[source], mode)
                 if token_rows:
                     total_written += self._embed_and_persist_tokens(source, token_rows, mode)
+                    self._set_gap_completed(source, "token", len(token_rows))
+                self._log(
+                    "gap_summary",
+                    mode=mode,
+                    source=source,
+                    source_detected=source_summary["rows"],
+                    source_completed=getattr(self.metrics, f"{source}_source_gap_completed"),
+                    token_detected=token_summary["rows"],
+                    token_completed=getattr(self.metrics, f"{source}_token_gap_completed"),
+                    window_start=self.metrics.gap_window_start_utc,
+                    window_end=self.metrics.gap_window_end_utc,
+                )
             except Exception as exc:  # noqa: BLE001
                 self.metrics.failures += 1
                 self.metrics.last_error = f"{source}: {exc!r}"
@@ -296,6 +337,68 @@ class TextEmbedGateway:
             end = now + timedelta(minutes=5)
         return {"news": (start, end), "sec": (start, end)}
 
+    def _begin_gap_cycle(self, mode: str, bounds: tuple[datetime, datetime]) -> None:
+        self.metrics.gap_cycle_mode = mode
+        self.metrics.gap_window_start_utc = utc_text(bounds[0])
+        self.metrics.gap_window_end_utc = utc_text(bounds[1])
+        self.metrics.gap_updated_at_utc = utc_now_text()
+        for name in (
+            "news_source_gap_detected",
+            "sec_source_gap_detected",
+            "news_token_gap_detected",
+            "sec_token_gap_detected",
+            "sec_context_gap_detected",
+            "sec_context_blocked_detected",
+            "news_source_gap_completed",
+            "sec_source_gap_completed",
+            "news_token_gap_completed",
+            "sec_token_gap_completed",
+            "sec_context_gap_completed",
+            "news_source_gap_remaining",
+            "sec_source_gap_remaining",
+            "news_token_gap_remaining",
+            "sec_token_gap_remaining",
+            "sec_context_gap_remaining",
+        ):
+            setattr(self.metrics, name, 0)
+        for name in (
+            "news_source_gap_period",
+            "sec_source_gap_period",
+            "news_token_gap_period",
+            "sec_token_gap_period",
+            "sec_context_gap_period",
+        ):
+            setattr(self.metrics, name, "")
+
+    def _summarize_source_gaps(self, source: str, bounds: tuple[datetime, datetime]) -> dict[str, Any]:
+        sql = news_source_gap_summary_sql(self.config, bounds) if source == "news" else sec_source_gap_summary_sql(self.config, bounds)
+        summary = first_json_row(self.client.execute(sql))
+        rows = int(summary.get("rows", 0) or 0)
+        setattr(self.metrics, f"{source}_source_gap_detected", rows)
+        setattr(self.metrics, f"{source}_source_gap_remaining", max(0, rows - int(getattr(self.metrics, f"{source}_source_gap_completed"))))
+        setattr(self.metrics, f"{source}_source_gap_period", gap_period(summary))
+        self.metrics.gap_updated_at_utc = utc_now_text()
+        return summary
+
+    def _summarize_token_gaps(self, source: str, bounds: tuple[datetime, datetime]) -> dict[str, Any]:
+        sql = news_token_gap_summary_sql(self.config, bounds) if source == "news" else sec_token_gap_summary_sql(self.config, bounds)
+        summary = first_json_row(self.client.execute(sql))
+        rows = int(summary.get("rows", 0) or 0)
+        setattr(self.metrics, f"{source}_token_gap_detected", rows)
+        setattr(self.metrics, f"{source}_token_gap_remaining", max(0, rows - int(getattr(self.metrics, f"{source}_token_gap_completed"))))
+        setattr(self.metrics, f"{source}_token_gap_period", gap_period(summary))
+        self.metrics.gap_updated_at_utc = utc_now_text()
+        return summary
+
+    def _set_gap_completed(self, source: str, kind: str, rows: int) -> None:
+        completed_name = f"{source}_{kind}_gap_completed"
+        detected_name = f"{source}_{kind}_gap_detected"
+        remaining_name = f"{source}_{kind}_gap_remaining"
+        completed = int(getattr(self.metrics, completed_name)) + int(rows)
+        setattr(self.metrics, completed_name, completed)
+        setattr(self.metrics, remaining_name, max(0, int(getattr(self.metrics, detected_name)) - completed))
+        self.metrics.gap_updated_at_utc = utc_now_text()
+
     def _refresh_sec_context(self, bounds: tuple[datetime, datetime], mode: str) -> None:
         if not self._sec_bridge_available:
             if self.metrics.sec_bridge_status != "missing":
@@ -311,12 +414,21 @@ class TextEmbedGateway:
             self.client.execute(insert_missing_sec_text_context_sql(self.config, bounds))
         blocked_rows = self._record_sec_context_blocks(bounds, mode)
         rows = filing_rows + text_rows
+        self.metrics.sec_context_gap_detected = rows
+        self.metrics.sec_context_gap_completed = rows
+        self.metrics.sec_context_gap_remaining = 0
+        self.metrics.sec_context_blocked_detected = blocked_rows
+        self.metrics.sec_context_gap_period = self._sec_context_gap_period(bounds) if rows or blocked_rows else ""
         self.metrics.sec_context_rows_refreshed += rows
         self.metrics.sec_context_status = "ready"
         seconds = time.perf_counter() - started
         if rows or blocked_rows:
             self._remember(source="sec", mode=mode, stage="context_refresh", rows=rows, seconds=seconds)
             self._log("sec_context_refresh", mode=mode, filing_rows=filing_rows, text_rows=text_rows, blocked_rows=blocked_rows, seconds=round(seconds, 3))
+
+    def _sec_context_gap_period(self, bounds: tuple[datetime, datetime]) -> str:
+        summary = first_json_row(self.client.execute(sec_context_gap_period_sql(self.config, bounds)))
+        return gap_period(summary)
 
     def _record_sec_context_blocks(self, bounds: tuple[datetime, datetime], mode: str) -> int:
         rows = json_rows(self.client.execute(sec_missing_bridge_rows_sql(self.config, bounds)))
@@ -598,6 +710,30 @@ FORMAT JSONEachRow
 """
 
 
+def news_source_gap_summary_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
+    db = quote_ident(config.source_database)
+    target = quote_ident(config.target_database)
+    token_table = quote_ident(config.news_token_table)
+    return f"""
+SELECT
+    count() AS rows,
+    min(nt.published_at_utc) AS min_time,
+    max(nt.published_at_utc) AS max_time
+FROM {db}.benzinga_news_ticker_v1 AS nt
+ANY INNER JOIN {db}.benzinga_news_normalized_v1 AS n
+    ON nt.canonical_news_id = n.canonical_news_id
+LEFT JOIN {target}.{token_table} AS tok
+    ON tok.ticker = nt.ticker
+   AND tok.source_id = nt.canonical_news_id
+   AND tok.tokenizer_model = {sql_string(config.tokenizer_model)}
+WHERE nt.published_at_utc >= {dt64_sql(bounds[0])}
+  AND nt.published_at_utc < {dt64_sql(bounds[1])}
+  AND tok.source_id = ''
+{query_settings(config)}
+FORMAT JSONEachRow
+"""
+
+
 def count_missing_sec_filing_context_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
     return f"""
 SELECT count()
@@ -783,6 +919,48 @@ FORMAT JSONEachRow
 """
 
 
+def sec_context_gap_period_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
+    source_db = quote_ident(config.source_database)
+    filing_table = quote_ident(config.sec_live_filing_table)
+    text_table = quote_ident(config.sec_live_text_table)
+    filing_context = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_filing_table)}"
+    text_context = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
+    return f"""
+SELECT
+    count() AS rows,
+    min(event_time) AS min_time,
+    max(event_time) AS max_time
+FROM
+(
+    SELECT f.accepted_at_utc AS event_time
+    FROM {source_db}.{filing_table} AS f FINAL
+    LEFT JOIN {filing_context} AS existing
+        ON existing.timestamp_us = toUInt64(toUnixTimestamp64Micro(f.accepted_at_utc))
+       AND existing.accession_number = f.accession_number
+       AND existing.cik = f.cik
+    WHERE f.accepted_at_utc >= {dt64_sql(bounds[0])}
+      AND f.accepted_at_utc < {dt64_sql(bounds[1])}
+      AND existing.accession_number = ''
+    UNION ALL
+    SELECT fc.accepted_at_utc AS event_time
+    FROM {filing_context} AS fc
+    INNER JOIN {source_db}.{text_table} AS t
+        ON t.cik = fc.cik
+       AND t.accession_number = fc.accession_number
+    LEFT JOIN {text_context} AS existing
+        ON existing.ticker = fc.ticker
+       AND existing.timestamp_us = fc.timestamp_us
+       AND existing.accession_number = fc.accession_number
+       AND existing.document_id = ifNull(t.document_id, '')
+    WHERE fc.accepted_at_utc >= {dt64_sql(bounds[0])}
+      AND fc.accepted_at_utc < {dt64_sql(bounds[1])}
+      AND existing.document_id = ''
+)
+{query_settings(config)}
+FORMAT JSONEachRow
+"""
+
+
 def sec_bridge_cte_sql(config: TextEmbedGatewayConfig) -> str:
     source_db = quote_ident(config.source_database)
     bridge_table = quote_ident(config.sec_bridge_table)
@@ -846,6 +1024,30 @@ FORMAT JSONEachRow
 """
 
 
+def sec_source_gap_summary_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
+    context = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
+    target = quote_ident(config.target_database)
+    token_table = quote_ident(config.sec_token_table)
+    return f"""
+SELECT
+    count() AS rows,
+    min(src.accepted_at_utc) AS min_time,
+    max(src.accepted_at_utc) AS max_time
+FROM {context} AS src
+LEFT JOIN {target}.{token_table} AS tok
+    ON tok.ticker = src.ticker
+   AND tok.accession_number = src.accession_number
+   AND tok.text_rank = src.text_rank
+   AND tok.document_id = src.document_id
+   AND tok.tokenizer_model = {sql_string(config.tokenizer_model)}
+WHERE tok.source_id = ''
+  AND src.accepted_at_utc >= {dt64_sql(bounds[0])}
+  AND src.accepted_at_utc < {dt64_sql(bounds[1])}
+{query_settings(config)}
+FORMAT JSONEachRow
+"""
+
+
 def missing_news_token_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime], mode: str) -> str:
     limit = config.token_batch_size if mode == "live" else config.historical_batch_limit
     target = quote_ident(config.target_database)
@@ -872,6 +1074,31 @@ WHERE t.published_at_utc >= {dt64_sql(bounds[0])}
   AND e.source_id = ''
 ORDER BY t.published_at_utc DESC, t.ticker, t.source_id, t.token_chunk_index
 LIMIT {max(1, int(limit))}
+{query_settings(config)}
+FORMAT JSONEachRow
+"""
+
+
+def news_token_gap_summary_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
+    target = quote_ident(config.target_database)
+    token_table = quote_ident(config.news_token_table)
+    embedding_table = quote_ident(config.news_embedding_table)
+    return f"""
+SELECT
+    count() AS rows,
+    min(t.published_at_utc) AS min_time,
+    max(t.published_at_utc) AS max_time
+FROM {target}.{token_table} AS t
+LEFT JOIN {target}.{embedding_table} AS e
+    ON e.ticker = t.ticker
+   AND e.source_id = t.source_id
+   AND e.token_chunk_index = t.token_chunk_index
+   AND e.embedding_model = {sql_string(config.embedding_model)}
+   AND e.embedding_pooling = {sql_string(config.embedding_pooling)}
+WHERE t.published_at_utc >= {dt64_sql(bounds[0])}
+  AND t.published_at_utc < {dt64_sql(bounds[1])}
+  AND t.tokenizer_model = {sql_string(config.tokenizer_model)}
+  AND e.source_id = ''
 {query_settings(config)}
 FORMAT JSONEachRow
 """
@@ -905,6 +1132,34 @@ WHERE t.accepted_at_utc >= {dt64_sql(bounds[0])}
   AND e.source_id = ''
 ORDER BY t.accepted_at_utc DESC, t.ticker, t.accession_number, t.text_rank, t.document_id, t.token_chunk_index
 LIMIT {max(1, int(limit))}
+{query_settings(config)}
+FORMAT JSONEachRow
+"""
+
+
+def sec_token_gap_summary_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
+    target = quote_ident(config.target_database)
+    token_table = quote_ident(config.sec_token_table)
+    embedding_table = quote_ident(config.sec_embedding_table)
+    return f"""
+SELECT
+    count() AS rows,
+    min(t.accepted_at_utc) AS min_time,
+    max(t.accepted_at_utc) AS max_time
+FROM {target}.{token_table} AS t
+LEFT JOIN {target}.{embedding_table} AS e
+    ON e.ticker = t.ticker
+   AND e.accession_number = t.accession_number
+   AND e.text_rank = t.text_rank
+   AND e.document_id = t.document_id
+   AND e.source_id = t.source_id
+   AND e.token_chunk_index = t.token_chunk_index
+   AND e.embedding_model = {sql_string(config.embedding_model)}
+   AND e.embedding_pooling = {sql_string(config.embedding_pooling)}
+WHERE t.accepted_at_utc >= {dt64_sql(bounds[0])}
+  AND t.accepted_at_utc < {dt64_sql(bounds[1])}
+  AND t.tokenizer_model = {sql_string(config.tokenizer_model)}
+  AND e.source_id = ''
 {query_settings(config)}
 FORMAT JSONEachRow
 """
@@ -958,6 +1213,31 @@ def json_rows(text: str) -> list[dict[str, Any]]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
+def first_json_row(text: str) -> dict[str, Any]:
+    rows = json_rows(text)
+    return rows[0] if rows else {"rows": 0, "min_time": "", "max_time": ""}
+
+
+def gap_period(summary: dict[str, Any]) -> str:
+    rows = int(summary.get("rows", 0) or 0)
+    if rows <= 0:
+        return ""
+    start = compact_utc_value(summary.get("min_time"))
+    end = compact_utc_value(summary.get("max_time"))
+    if not start and not end:
+        return ""
+    if start == end:
+        return start
+    return f"{start} -> {end}"
+
+
+def compact_utc_value(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text.startswith("1970-01-01"):
+        return ""
+    return text.replace("T", " ").replace("+00:00", "").replace("Z", "")[:19]
+
+
 def dt64_sql(value: datetime) -> str:
     value = value.astimezone(UTC)
     text = value.isoformat(timespec="microseconds").replace("+00:00", "")
@@ -975,6 +1255,10 @@ def query_settings(config: TextEmbedGatewayConfig) -> str:
 
 def utc_now_text() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def utc_text(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def parse_utc(value: Any) -> datetime:

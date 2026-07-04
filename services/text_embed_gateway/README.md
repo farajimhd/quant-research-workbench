@@ -21,6 +21,19 @@ The gateway does not retain SEC filings, article bodies, PDFs, enriched text, or
 embedding arrays in memory after a batch is written. The terminal keeps only a
 small TTL-bounded status history.
 
+The Rich terminal includes a `Gap Summary` panel. For each cycle it reports the
+current scanned UTC window, detected gaps, completed rows in that cycle, an
+estimated remaining count, and the min/max missing event period for:
+
+- news source rows missing tokens
+- news token rows missing embeddings
+- SEC context rows missing from recent raw SEC rows
+- SEC context rows missing tokens
+- SEC token rows missing embeddings
+
+SEC rows blocked by missing ticker mapping are shown on the SEC context row as
+`blocked_mapping=N` and are retried in later cycles.
+
 ## Important Env Vars
 
 ```text

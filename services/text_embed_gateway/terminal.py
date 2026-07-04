@@ -33,6 +33,7 @@ def render_dashboard(gateway: "TextEmbedGateway") -> Group:
         header_panel(gateway, metrics),
         status_panel(metrics),
         progress_panel(metrics),
+        gap_summary_panel(metrics),
         runtime_panel(gateway, metrics),
         recent_table(gateway.recent_snapshot(12)),
     )
@@ -108,6 +109,56 @@ def progress_panel(metrics: dict[str, Any]) -> Panel:
         f"last={float(metrics.get('last_cycle_seconds') or 0.0):.2f}s active_queries={fmt(metrics.get('active_queries'))}",
     )
     return Panel(table, title="Live Progress", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
+
+
+def gap_summary_panel(metrics: dict[str, Any]) -> Panel:
+    mode = str(metrics.get("gap_cycle_mode") or "-")
+    start = compact_time(str(metrics.get("gap_window_start_utc") or ""))
+    end = compact_time(str(metrics.get("gap_window_end_utc") or ""))
+    updated = compact_time(str(metrics.get("gap_updated_at_utc") or ""))
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Gap", style="cyan", no_wrap=True, width=18)
+    table.add_column("Detected", justify="right", no_wrap=True, width=12)
+    table.add_column("Done", justify="right", no_wrap=True, width=12)
+    table.add_column("Remaining", justify="right", no_wrap=True, width=12)
+    table.add_column("Missing Period UTC", overflow="fold", ratio=1)
+    table.add_row(
+        "News source",
+        fmt(metrics.get("news_source_gap_detected")),
+        fmt(metrics.get("news_source_gap_completed")),
+        fmt(metrics.get("news_source_gap_remaining")),
+        str(metrics.get("news_source_gap_period") or "-"),
+    )
+    table.add_row(
+        "News tokens",
+        fmt(metrics.get("news_token_gap_detected")),
+        fmt(metrics.get("news_token_gap_completed")),
+        fmt(metrics.get("news_token_gap_remaining")),
+        str(metrics.get("news_token_gap_period") or "-"),
+    )
+    table.add_row(
+        "SEC context",
+        fmt(metrics.get("sec_context_gap_detected")),
+        fmt(metrics.get("sec_context_gap_completed")),
+        fmt(metrics.get("sec_context_gap_remaining")),
+        with_blocked_period(metrics.get("sec_context_gap_period"), metrics.get("sec_context_blocked_detected")),
+    )
+    table.add_row(
+        "SEC source",
+        fmt(metrics.get("sec_source_gap_detected")),
+        fmt(metrics.get("sec_source_gap_completed")),
+        fmt(metrics.get("sec_source_gap_remaining")),
+        str(metrics.get("sec_source_gap_period") or "-"),
+    )
+    table.add_row(
+        "SEC tokens",
+        fmt(metrics.get("sec_token_gap_detected")),
+        fmt(metrics.get("sec_token_gap_completed")),
+        fmt(metrics.get("sec_token_gap_remaining")),
+        str(metrics.get("sec_token_gap_period") or "-"),
+    )
+    title = f"Gap Summary  mode={mode}  window={start} -> {end}  updated={updated}"
+    return Panel(table, title=title, box=box.ROUNDED, border_style="magenta", padding=(0, 1))
 
 
 def runtime_panel(gateway: "TextEmbedGateway", metrics: dict[str, Any]) -> Panel:
@@ -188,3 +239,14 @@ def compact_time(value: str) -> str:
 
 def truncate(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[: max(0, limit - 1)] + "..."
+
+
+def with_blocked_period(period: Any, blocked: Any) -> str:
+    text = str(period or "-")
+    try:
+        blocked_count = int(blocked or 0)
+    except Exception:
+        blocked_count = 0
+    if blocked_count > 0:
+        return f"{text}  blocked_mapping={blocked_count:,}"
+    return text
