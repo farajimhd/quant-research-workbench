@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -36,9 +38,11 @@ class SecSubmissionFiling:
 
 
 class SecSubmissionsClient:
-    def __init__(self, *, http: SecHttpClient) -> None:
+    def __init__(self, *, http: SecHttpClient, max_cache_entries: int = 512) -> None:
         self.http = http
-        self._payload_cache: dict[str, tuple[dict[str, Any], str]] = {}
+        self.max_cache_entries = max(0, int(max_cache_entries))
+        self._payload_cache: OrderedDict[str, tuple[dict[str, Any], str]] = OrderedDict()
+        self._cache_lock = threading.RLock()
 
     def fetch_recent_filing(self, *, cik: str, accession_number: str) -> SecSubmissionFiling | None:
         payload, source_sha = self.fetch_payload(cik=cik)
@@ -48,14 +52,27 @@ class SecSubmissionsClient:
         import hashlib
 
         cik_text = str(cik).zfill(10)
-        cached = self._payload_cache.get(cik_text)
+        with self._cache_lock:
+            cached = self._payload_cache.get(cik_text)
+            if cached is not None:
+                self._payload_cache.move_to_end(cik_text)
         if cached is not None:
             return cached
         response = self.http.get(SUBMISSIONS_URL.format(cik=str(cik).zfill(10)))
         source_sha = hashlib.sha256(response.body).hexdigest()
         payload = json.loads(response.body.decode("utf-8", errors="replace"))
-        self._payload_cache[cik_text] = (payload, source_sha)
+        if self.max_cache_entries > 0:
+            with self._cache_lock:
+                self._payload_cache[cik_text] = (payload, source_sha)
+                self._payload_cache.move_to_end(cik_text)
+                while len(self._payload_cache) > self.max_cache_entries:
+                    self._payload_cache.popitem(last=False)
         return payload, source_sha
+
+    def cache_stats(self) -> dict[str, int]:
+        with self._cache_lock:
+            entries = len(self._payload_cache)
+        return {"submissions_cache_entries": entries, "submissions_cache_limit": self.max_cache_entries}
 
 
 def find_recent_filing(payload: dict[str, Any], *, source_sha: str, accession_number: str) -> SecSubmissionFiling | None:

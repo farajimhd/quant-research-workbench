@@ -30,13 +30,27 @@ class LiveFilingRows:
 
 
 class SecLiveFilingPipeline:
-    def __init__(self, *, http: SecHttpClient, raw_root_win: Path, min_text_chars: int = 40, max_text_chars: int = 5_000_000) -> None:
+    def __init__(
+        self,
+        *,
+        http: SecHttpClient,
+        raw_root_win: Path,
+        min_text_chars: int = 40,
+        max_text_chars: int = 5_000_000,
+        submissions_cache_entries: int = 512,
+        xbrl_payload_cache_entries: int = 32,
+        xbrl_missing_cik_cache_entries: int = 5_000,
+    ) -> None:
         self.http = http
         self.raw_root_win = raw_root_win
         self.min_text_chars = min_text_chars
         self.max_text_chars = max_text_chars
-        self.submissions = SecSubmissionsClient(http=http)
-        self.xbrl_extractor = SecLiveXbrlExtractor(http=http)
+        self.submissions = SecSubmissionsClient(http=http, max_cache_entries=submissions_cache_entries)
+        self.xbrl_extractor = SecLiveXbrlExtractor(
+            http=http,
+            max_payload_cache_entries=xbrl_payload_cache_entries,
+            max_missing_cik_cache_entries=xbrl_missing_cik_cache_entries,
+        )
 
     def process_feed_item(self, item: SecFeedItem, *, source_run_id: str) -> LiveFilingRows:
         url = accession_text_url(item.cik, item.accession_number)
@@ -104,6 +118,12 @@ class SecLiveFilingPipeline:
         path = root / f"{item.accession_number}.txt"
         path.write_bytes(raw)
         return path
+
+    def cache_stats(self) -> dict[str, int]:
+        return {
+            **self.submissions.cache_stats(),
+            **self.xbrl_extractor.cache_stats(),
+        }
 
 
 def apply_submission_metadata(

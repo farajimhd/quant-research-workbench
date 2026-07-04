@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
@@ -26,26 +28,33 @@ class LiveXbrlRows:
 
 
 class SecLiveXbrlExtractor:
-    def __init__(self, *, http: SecHttpClient) -> None:
+    def __init__(self, *, http: SecHttpClient, max_payload_cache_entries: int = 32, max_missing_cik_cache_entries: int = 5_000) -> None:
         self.http = http
-        self._payload_cache: dict[str, tuple[dict[str, Any], str]] = {}
-        self._missing_ciks: set[str] = set()
+        self.max_payload_cache_entries = max(0, int(max_payload_cache_entries))
+        self.max_missing_cik_cache_entries = max(0, int(max_missing_cik_cache_entries))
+        self._payload_cache: OrderedDict[str, tuple[dict[str, Any], str]] = OrderedDict()
+        self._missing_ciks: OrderedDict[str, None] = OrderedDict()
+        self._cache_lock = threading.RLock()
 
     def extract_for_accession(self, *, cik: str, accession_number: str, source_run_id: str, inserted_at: str) -> LiveXbrlRows:
         return self.extract_for_accessions(cik=cik, accession_numbers={accession_number}, source_run_id=source_run_id, inserted_at=inserted_at)
 
     def extract_for_accessions(self, *, cik: str, accession_numbers: set[str], source_run_id: str, inserted_at: str) -> LiveXbrlRows:
         cik_text = str(cik).zfill(10)
-        if cik_text in self._missing_ciks:
-            return LiveXbrlRows(fetched=True, companyfacts_status="missing_404")
-        cached = self._payload_cache.get(cik_text)
+        with self._cache_lock:
+            if cik_text in self._missing_ciks:
+                self._missing_ciks.move_to_end(cik_text)
+                return LiveXbrlRows(fetched=True, companyfacts_status="missing_404")
+            cached = self._payload_cache.get(cik_text)
+            if cached is not None:
+                self._payload_cache.move_to_end(cik_text)
         if cached is None:
             url = COMPANYFACTS_URL.format(cik=cik_text)
             try:
                 response = self.http.get(url)
             except SecHttpError as exc:
                 if exc.status == 404:
-                    self._missing_ciks.add(cik_text)
+                    self._remember_missing_cik(cik_text)
                     return LiveXbrlRows(
                         fetched=True,
                         companyfacts_status="missing_404",
@@ -54,7 +63,7 @@ class SecLiveXbrlExtractor:
                 raise
             source_sha = hashlib.sha256(response.body).hexdigest()
             payload = json.loads(response.body.decode("utf-8", errors="replace"))
-            self._payload_cache[cik_text] = (payload, source_sha)
+            self._remember_payload(cik_text, payload, source_sha)
         else:
             payload, source_sha = cached
         return extract_companyfacts_payload(
@@ -65,6 +74,35 @@ class SecLiveXbrlExtractor:
             inserted_at=inserted_at,
             source_content_sha256=source_sha,
         )
+
+    def _remember_payload(self, cik_text: str, payload: dict[str, Any], source_sha: str) -> None:
+        if self.max_payload_cache_entries <= 0:
+            return
+        with self._cache_lock:
+            self._payload_cache[cik_text] = (payload, source_sha)
+            self._payload_cache.move_to_end(cik_text)
+            while len(self._payload_cache) > self.max_payload_cache_entries:
+                self._payload_cache.popitem(last=False)
+
+    def _remember_missing_cik(self, cik_text: str) -> None:
+        if self.max_missing_cik_cache_entries <= 0:
+            return
+        with self._cache_lock:
+            self._missing_ciks[cik_text] = None
+            self._missing_ciks.move_to_end(cik_text)
+            while len(self._missing_ciks) > self.max_missing_cik_cache_entries:
+                self._missing_ciks.popitem(last=False)
+
+    def cache_stats(self) -> dict[str, int]:
+        with self._cache_lock:
+            payload_entries = len(self._payload_cache)
+            missing_entries = len(self._missing_ciks)
+        return {
+            "xbrl_payload_cache_entries": payload_entries,
+            "xbrl_payload_cache_limit": self.max_payload_cache_entries,
+            "xbrl_missing_cik_cache_entries": missing_entries,
+            "xbrl_missing_cik_cache_limit": self.max_missing_cik_cache_entries,
+        }
 
 
 def extract_companyfacts_payload(

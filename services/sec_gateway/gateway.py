@@ -84,6 +84,12 @@ class SecGatewayMetrics:
     last_worker_message: str = ""
     coverage_interval_count: int = 0
     pending_shutdown_jobs: int = 0
+    submissions_cache_entries: int = 0
+    submissions_cache_limit: int = 0
+    xbrl_payload_cache_entries: int = 0
+    xbrl_payload_cache_limit: int = 0
+    xbrl_missing_cik_cache_entries: int = 0
+    xbrl_missing_cik_cache_limit: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +158,14 @@ class SecGateway:
         self._limiter = SecRateLimiter(config.pipeline.request_min_interval_seconds)
         self._http = SecHttpClient(user_agent=config.pipeline.sec_user_agent, rate_limiter=self._limiter, timeout_seconds=config.pipeline.request_timeout_seconds)
         self._feed = SecCurrentFeedClient(feed_url=self.feed_url(), http=self._http)
-        self._live_pipeline = SecLiveFilingPipeline(http=self._http, raw_root_win=config.pipeline.raw_live_root_win)
+        self._live_pipeline = SecLiveFilingPipeline(
+            http=self._http,
+            raw_root_win=config.pipeline.raw_live_root_win,
+            submissions_cache_entries=config.submissions_cache_entries,
+            xbrl_payload_cache_entries=config.xbrl_payload_cache_entries,
+            xbrl_missing_cik_cache_entries=config.xbrl_missing_cik_cache_entries,
+        )
+        self._refresh_cache_metrics()
         self._market_status: MarketHoursSnapshot | None = None
         self._massive_api_key = os.environ.get("MASSIVE_API_KEY", "").strip()
         self.market_status_provider = MassiveMarketHoursClient.from_env(
@@ -769,6 +782,7 @@ class SecGateway:
         )
 
     def _remember(self, item: SecFeedItem, result: SecWriteResult) -> None:
+        self._refresh_cache_metrics()
         row = {
             "accession_number": item.accession_number,
             "cik": item.cik,
@@ -783,6 +797,15 @@ class SecGateway:
         }
         self._recent.insert(0, row)
         del self._recent[250:]
+
+    def _refresh_cache_metrics(self) -> None:
+        stats = self._live_pipeline.cache_stats()
+        self.metrics.submissions_cache_entries = int(stats.get("submissions_cache_entries") or 0)
+        self.metrics.submissions_cache_limit = int(stats.get("submissions_cache_limit") or 0)
+        self.metrics.xbrl_payload_cache_entries = int(stats.get("xbrl_payload_cache_entries") or 0)
+        self.metrics.xbrl_payload_cache_limit = int(stats.get("xbrl_payload_cache_limit") or 0)
+        self.metrics.xbrl_missing_cik_cache_entries = int(stats.get("xbrl_missing_cik_cache_entries") or 0)
+        self.metrics.xbrl_missing_cik_cache_limit = int(stats.get("xbrl_missing_cik_cache_limit") or 0)
 
     def host_role(self) -> str:
         return "workstation" if self.config.is_workstation else "remote"

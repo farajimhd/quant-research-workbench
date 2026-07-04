@@ -71,6 +71,9 @@ SEC_GATEWAY_POLL_SECONDS=30
 SEC_GATEWAY_CLOSED_POLL_SECONDS=300
 SEC_GATEWAY_LIVE_WORKERS=4
 SEC_GATEWAY_LIVE_QUEUE_MAX_ITEMS=500
+SEC_GATEWAY_SUBMISSIONS_CACHE_ENTRIES=512
+SEC_GATEWAY_XBRL_PAYLOAD_CACHE_ENTRIES=32
+SEC_GATEWAY_XBRL_MISSING_CIK_CACHE_ENTRIES=5000
 SEC_GATEWAY_FULL_AUDIT_ON_STARTUP=true
 SEC_GATEWAY_FULL_AUDIT_AFTER_WRITE_BATCHES=0
 SEC_GATEWAY_COLLECTION_START_ET=04:00
@@ -99,6 +102,21 @@ temp smoke test, override only the write database:
 SEC_CLICKHOUSE_READ_DATABASE=q_live
 SEC_CLICKHOUSE_WRITE_DATABASE=q_sec_tmp
 ```
+
+## Memory Bounds
+
+The live gateway caches SEC submissions JSON and SEC companyfacts JSON by CIK to
+avoid repeated requests when multiple filings arrive for the same company. These
+caches are bounded because companyfacts payloads can be large:
+
+```text
+SEC_GATEWAY_SUBMISSIONS_CACHE_ENTRIES=512
+SEC_GATEWAY_XBRL_PAYLOAD_CACHE_ENTRIES=32
+SEC_GATEWAY_XBRL_MISSING_CIK_CACHE_ENTRIES=5000
+```
+
+The Rich terminal and `/health` metrics expose the current cache counts and
+limits. A running gateway must be restarted to pick up changed limits.
 
 When the gateway is started on the workstation and historical gaps are found,
 it writes the exact historical-fill PowerShell script under:

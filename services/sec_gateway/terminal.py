@@ -108,6 +108,11 @@ def runtime_panel(gateway: "SecGateway", metrics: dict[str, Any]) -> Panel:
     table.add_row("Written", fmt(metrics.get("written_filings")), "")
     table.add_row("Skipped existing", fmt(metrics.get("skipped_existing")), "")
     table.add_row("Queued / completed", fmt(metrics.get("live_queued_filings")), f"completed {fmt(metrics.get('live_completed_filings'))}, worker failures {fmt(metrics.get('live_worker_failures'))}")
+    table.add_row(
+        "SEC caches",
+        f"sub {fmt(metrics.get('submissions_cache_entries'))}/{fmt(metrics.get('submissions_cache_limit'))}",
+        f"xbrl {fmt(metrics.get('xbrl_payload_cache_entries'))}/{fmt(metrics.get('xbrl_payload_cache_limit'))}; missing {fmt(metrics.get('xbrl_missing_cik_cache_entries'))}/{fmt(metrics.get('xbrl_missing_cik_cache_limit'))}",
+    )
     table.add_row("XBRL facts", fmt(metrics.get("xbrl_company_fact_rows")), f"concepts {fmt(metrics.get('xbrl_concept_rows'))}, frames {fmt(metrics.get('xbrl_frame_rows'))}, observations {fmt(metrics.get('xbrl_frame_observation_rows'))}")
     table.add_row("Failures", fmt(metrics.get("poll_failures")), str(metrics.get("last_error") or "-"))
     table.add_row("Last accession", str(metrics.get("last_form_type") or "-"), str(metrics.get("last_accession") or "-"))
