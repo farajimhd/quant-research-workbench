@@ -35,8 +35,8 @@ TEXT_EMBED_SEC_EMBEDDING_TABLE=sec_filing_text_embeddings
 TEXT_EMBED_COVERAGE_TABLE=text_embedding_coverage_v1
 TEXT_EMBED_SEC_LIVE_FILING_TABLE=sec_filing_v2
 TEXT_EMBED_SEC_LIVE_TEXT_TABLE=sec_filing_text_v2
-TEXT_EMBED_SEC_TICKER_MAPPING_DATABASE=
-TEXT_EMBED_SEC_TICKER_MAPPING_TABLE=sec_bulk_mirror_company_ticker_v1
+TEXT_EMBED_SEC_BRIDGE_TABLE=id_sec_market_bridge_v1
+TEXT_EMBED_SEC_MAX_TEXT_ROWS_PER_FILING=2
 TEXT_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
 TEXT_EMBED_TOKENIZER_MODEL=Qwen/Qwen3-0.6B
 TEXT_EMBED_DEVICE=auto
@@ -92,9 +92,14 @@ First-time model download/cache warmup:
 Use the default local-files-only mode after the Qwen tokenizer/model files are
 cached, so production does not depend on HuggingFace network availability.
 
-`TEXT_EMBED_SEC_TICKER_MAPPING_DATABASE` can be left empty. In that case the
-gateway expects `sec_bulk_mirror_company_ticker_v1` in `TEXT_EMBED_SOURCE_DATABASE`
-(`q_live` by default). Set `TEXT_EMBED_SEC_TICKER_MAPPING_DATABASE` only when the
-mapping table is intentionally stored somewhere else. If the mapping table is
-missing, SEC source-text tokenization is skipped but news and existing-token
-embedding still continue.
+SEC source rows are read from the same live SEC tables written by the SEC
+gateway: `q_live.sec_filing_v2` and `q_live.sec_filing_text_v2` by default.
+Ticker assignment uses `q_live.id_sec_market_bridge_v1`, which is the same
+bridge contract used to build historical `market_sip_compact.sec_filing_text_context`.
+If the bridge table is missing, SEC source-text tokenization is skipped but news
+and existing-token embedding still continue.
+
+SEC `source_id` is intentionally compatible with the historical token builder:
+`accession_number:text_rank:document_id`. The SEC context builder currently uses
+`text_rank=0` for selected filing text rows and keeps `document_id` in the key,
+so the live gateway does the same instead of creating a row-number rank.

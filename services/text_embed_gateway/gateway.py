@@ -72,8 +72,8 @@ class TextEmbedMetrics:
     last_processed_mode: str = ""
     last_processed_rows: int = 0
     recent_status_rows: int = 0
-    sec_mapping_database: str = ""
-    sec_mapping_status: str = "not_checked"
+    sec_bridge_table: str = ""
+    sec_bridge_status: str = "not_checked"
     run_log_path: str = ""
 
 
@@ -128,7 +128,7 @@ class TextEmbedGateway:
         )
         self.tokenizer: TextTokenizer | None = None
         self.embedding_model: TextEmbeddingModel | None = None
-        self._sec_mapping_database = ""
+        self._sec_bridge_available = False
         self._recent: deque[dict[str, Any]] = deque(maxlen=max(1, config.recent_status_limit))
         self.logger = AsyncRunLogger(
             root=config.log_root_win,
@@ -216,9 +216,9 @@ class TextEmbedGateway:
         ]
         for statement in statements:
             self.client.execute(statement)
-        self._sec_mapping_database = self._resolve_sec_mapping_database()
-        self.metrics.sec_mapping_database = self._sec_mapping_database
-        self.metrics.sec_mapping_status = "ready" if self._sec_mapping_database else "missing"
+        self._sec_bridge_available = self._resolve_sec_bridge_table()
+        self.metrics.sec_bridge_table = f"{self.config.source_database}.{self.config.sec_bridge_table}"
+        self.metrics.sec_bridge_status = "ready" if self._sec_bridge_available else "missing"
         self._log("schema_ready", target_database=args.target_database)
 
     async def _poll_loop(self) -> None:
@@ -284,13 +284,13 @@ class TextEmbedGateway:
         return {"news": (start, end), "sec": (start, end)}
 
     def _fetch_missing_source_rows(self, source: str, bounds: tuple[datetime, datetime], mode: str) -> list[dict[str, Any]]:
-        if source == "sec" and not self._sec_mapping_database:
-            if self.metrics.sec_mapping_status != "missing":
-                self.metrics.sec_mapping_status = "missing"
-            self._remember(source=source, mode=mode, stage="source_skipped_no_mapping", rows=0, seconds=0.0)
+        if source == "sec" and not self._sec_bridge_available:
+            if self.metrics.sec_bridge_status != "missing":
+                self.metrics.sec_bridge_status = "missing"
+            self._remember(source=source, mode=mode, stage="source_skipped_no_bridge", rows=0, seconds=0.0)
             return []
         started = time.perf_counter()
-        sql = missing_news_source_sql(self.config, bounds, mode) if source == "news" else missing_sec_source_sql(self.config, bounds, mode, mapping_database=self._sec_mapping_database)
+        sql = missing_news_source_sql(self.config, bounds, mode) if source == "news" else missing_sec_source_sql(self.config, bounds, mode)
         rows = json_rows(self.client.execute(sql))
         seconds = time.perf_counter() - started
         self.metrics.last_fetch_seconds = seconds
@@ -422,34 +422,26 @@ class TextEmbedGateway:
         self.metrics.embedding_torch_dtype = self.embedding_model.torch_dtype_name
         self.metrics.embedding_pooling = self.embedding_model.pooling
 
-    def _resolve_sec_mapping_database(self) -> str:
-        table = self.config.sec_ticker_mapping_table
-        explicit = self.config.sec_ticker_mapping_database.strip()
-        candidates = [explicit] if explicit else [self.config.source_database]
-        unique_candidates = []
-        seen = set()
-        for candidate in candidates:
-            text = candidate.strip()
-            if text and text not in seen:
-                seen.add(text)
-                unique_candidates.append(text)
+    def _resolve_sec_bridge_table(self) -> bool:
+        database = self.config.source_database
+        table = self.config.sec_bridge_table
         rows = self.client.execute(
             f"""
             SELECT database
             FROM system.tables
             WHERE name = {sql_string(table)}
-              AND database IN ({','.join(sql_string(item) for item in unique_candidates)})
+              AND database = {sql_string(database)}
             ORDER BY database
             LIMIT 1
             FORMAT TSV
             """
         ).strip().splitlines()
-        database = rows[0].strip() if rows else ""
-        if not database:
-            self._log("sec_mapping_table_missing", table=table, candidates=unique_candidates)
+        available = bool(rows and rows[0].strip())
+        if not available:
+            self._log("sec_bridge_table_missing", database=database, table=table)
         else:
-            self._log("sec_mapping_table_resolved", database=database, table=table)
-        return database
+            self._log("sec_bridge_table_resolved", database=database, table=table)
+        return available
 
     def _release_model(self) -> None:
         self._set_phase("releasing_model", "Freeing tokenizer/model references and CUDA cache.")
@@ -568,16 +560,16 @@ FORMAT JSONEachRow
 """
 
 
-def missing_sec_source_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime], mode: str, *, mapping_database: str) -> str:
+def missing_sec_source_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime], mode: str) -> str:
     limit = config.source_batch_size if mode == "live" else config.historical_batch_limit
     source_db = quote_ident(config.source_database)
     target = quote_ident(config.target_database)
     filing_table = quote_ident(config.sec_live_filing_table)
     text_table = quote_ident(config.sec_live_text_table)
-    mapping_db = quote_ident(mapping_database)
-    mapping_table = quote_ident(config.sec_ticker_mapping_table)
+    bridge_table = quote_ident(config.sec_bridge_table)
     token_table = quote_ident(config.sec_token_table)
     text_chars = max(1, config.sec_text_prefix_chars)
+    per_filing = max(1, config.sec_max_text_rows_per_filing)
     return f"""
 SELECT
     src.ticker,
@@ -595,28 +587,47 @@ SELECT
     src.quality_flags
 FROM
 (
+    WITH bridge AS
+    (
+        SELECT
+            ifNull(ticker, '') AS ticker,
+            cik,
+            ifNull(accession_number, '') AS accession_number,
+            valid_from_date,
+            valid_to_date_exclusive,
+            any(bridge_id) AS bridge_id,
+            max(confidence_score) AS confidence_score
+        FROM {source_db}.{bridge_table}
+        WHERE ifNull(ticker, '') != ''
+          AND mapping_status IN ('active', 'mapped', 'accepted', '')
+        GROUP BY ticker, cik, accession_number, valid_from_date, valid_to_date_exclusive
+    )
     SELECT
-        upper(map.ticker) AS ticker,
+        upper(b.ticker) AS ticker,
         toUInt64(toUnixTimestamp64Micro(f.accepted_at_utc)) AS timestamp_us,
         f.accepted_at_utc AS accepted_at_utc,
         t.cik AS cik,
         t.accession_number AS accession_number,
         f.form_type AS form_type,
-        toUInt8(least(row_number() OVER (PARTITION BY t.cik, t.accession_number ORDER BY t.document_id, t.text_kind) - 1, 255)) AS text_rank,
+        toUInt8(0) AS text_rank,
         t.document_id AS document_id,
         t.text_kind AS text_kind,
         t.text AS text,
         t.text_char_count AS text_char_count,
         arrayStringConcat(t.quality_flags, ',') AS quality_flags
     FROM {source_db}.{text_table} AS t
-    ANY INNER JOIN {source_db}.{filing_table} AS f
+    ANY INNER JOIN {source_db}.{filing_table} AS f FINAL
         ON f.cik = t.cik
        AND f.accession_number = t.accession_number
-    ANY LEFT JOIN {mapping_db}.{mapping_table} AS map
-        ON map.cik = t.cik
+    INNER JOIN bridge AS b
+        ON b.cik = f.cik
     WHERE f.accepted_at_utc >= {dt64_sql(bounds[0])}
       AND f.accepted_at_utc < {dt64_sql(bounds[1])}
-      AND map.ticker != ''
+      AND (b.accession_number = '' OR b.accession_number = f.accession_number)
+      AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
+      AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
+    ORDER BY b.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
+    LIMIT {per_filing} BY b.ticker, f.cik, f.accession_number
 ) AS src
 LEFT JOIN {target}.{token_table} AS tok
     ON tok.ticker = src.ticker
