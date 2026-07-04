@@ -61,9 +61,10 @@ python pipelines\reference_data\experiments\plot_security_dimensions.py --ticker
 
 Purpose:
 
-1. Query source-backed security dimensions from existing SEC and Massive tables.
+1. Query source-backed security dimensions from existing SEC, Massive, FINRA,
+   IBKR, Benzinga, and reference-gateway tables.
 2. Keep storage sparse: no fact table is written.
-3. Plot each dimension as a step-line where the latest known value carries
+3. Plot numeric dimensions as a step-line where the latest known value carries
    forward until the next source observation.
 
 The dimension query layer lives in:
@@ -72,13 +73,14 @@ The dimension query layer lives in:
 pipelines/reference_data/security_dimensions.py
 ```
 
-The initial dimensions include:
+The broader downstream contract is documented in:
 
-- SEC entity/common shares outstanding.
-- SEC weighted average basic and diluted shares.
-- SEC public float in USD.
-- Massive free float.
-- Massive shares outstanding fields when present.
+```text
+pipelines/reference_data/SECURITY_DIMENSIONS_GUIDE.md
+```
+
+The plotter skips non-numeric rows when requested dimensions include text or
+boolean scanner metadata.
 
 Outputs are written under:
 

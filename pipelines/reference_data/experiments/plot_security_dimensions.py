@@ -89,7 +89,11 @@ def main() -> None:
     plot_path = None
     if args.plot:
         plot_path = run_root / f"{args.ticker.upper() or 'symbol'}_security_dimensions.png"
-        plot_path = render_plot(rows, plot_path, title=args.title or f"{args.ticker.upper()} SEC/Massive Dimensions")
+        numeric_rows = [row for row in rows if row.get("value") is not None]
+        skipped_rows = len(rows) - len(numeric_rows)
+        if skipped_rows:
+            summary["plot_skipped_non_numeric_rows"] = skipped_rows
+        plot_path = render_plot(numeric_rows, plot_path, title=args.title or f"{args.ticker.upper()} SEC/Massive Dimensions")
         summary["plot_path"] = str(plot_path)
     summary_path = run_root / "security_dimension_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
