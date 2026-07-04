@@ -35,6 +35,7 @@ TEXT_EMBED_SEC_EMBEDDING_TABLE=sec_filing_text_embeddings
 TEXT_EMBED_COVERAGE_TABLE=text_embedding_coverage_v1
 TEXT_EMBED_SEC_LIVE_FILING_TABLE=sec_filing_v2
 TEXT_EMBED_SEC_LIVE_TEXT_TABLE=sec_filing_text_v2
+TEXT_EMBED_SEC_TICKER_MAPPING_DATABASE=
 TEXT_EMBED_SEC_TICKER_MAPPING_TABLE=sec_bulk_mirror_company_ticker_v1
 TEXT_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
 TEXT_EMBED_TOKENIZER_MODEL=Qwen/Qwen3-0.6B
@@ -90,3 +91,9 @@ First-time model download/cache warmup:
 
 Use the default local-files-only mode after the Qwen tokenizer/model files are
 cached, so production does not depend on HuggingFace network availability.
+
+`TEXT_EMBED_SEC_TICKER_MAPPING_DATABASE` can be left empty. The gateway resolves
+`sec_bulk_mirror_company_ticker_v1` from `q_live`, `market_sip_compact`,
+`sec_core`, or the configured source/context/target databases at startup. If it
+cannot find the table, SEC source-text tokenization is skipped but news and
+existing-token embedding still continue.

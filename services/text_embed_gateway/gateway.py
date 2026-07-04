@@ -72,6 +72,8 @@ class TextEmbedMetrics:
     last_processed_mode: str = ""
     last_processed_rows: int = 0
     recent_status_rows: int = 0
+    sec_mapping_database: str = ""
+    sec_mapping_status: str = "not_checked"
     run_log_path: str = ""
 
 
@@ -126,6 +128,7 @@ class TextEmbedGateway:
         )
         self.tokenizer: TextTokenizer | None = None
         self.embedding_model: TextEmbeddingModel | None = None
+        self._sec_mapping_database = ""
         self._recent: deque[dict[str, Any]] = deque(maxlen=max(1, config.recent_status_limit))
         self.logger = AsyncRunLogger(
             root=config.log_root_win,
@@ -213,6 +216,9 @@ class TextEmbedGateway:
         ]
         for statement in statements:
             self.client.execute(statement)
+        self._sec_mapping_database = self._resolve_sec_mapping_database()
+        self.metrics.sec_mapping_database = self._sec_mapping_database
+        self.metrics.sec_mapping_status = "ready" if self._sec_mapping_database else "missing"
         self._log("schema_ready", target_database=args.target_database)
 
     async def _poll_loop(self) -> None:
@@ -251,14 +257,20 @@ class TextEmbedGateway:
         for source in ("news", "sec"):
             if self._stop_event.is_set():
                 break
-            source_rows = self._fetch_missing_source_rows(source, ranges[source], mode)
-            if source_rows:
-                total_written += self._tokenize_embed_and_persist_source(source, source_rows, mode)
-            if self._stop_event.is_set():
-                break
-            token_rows = self._fetch_missing_token_rows(source, ranges[source], mode)
-            if token_rows:
-                total_written += self._embed_and_persist_tokens(source, token_rows, mode)
+            try:
+                source_rows = self._fetch_missing_source_rows(source, ranges[source], mode)
+                if source_rows:
+                    total_written += self._tokenize_embed_and_persist_source(source, source_rows, mode)
+                if self._stop_event.is_set():
+                    break
+                token_rows = self._fetch_missing_token_rows(source, ranges[source], mode)
+                if token_rows:
+                    total_written += self._embed_and_persist_tokens(source, token_rows, mode)
+            except Exception as exc:  # noqa: BLE001
+                self.metrics.failures += 1
+                self.metrics.last_error = f"{source}: {exc!r}"
+                self._remember(source=source, mode=mode, stage="error", rows=0, seconds=0.0)
+                self.logger.exception("source_cycle_failed", exc, source=source, mode=mode)
         self._log("cycle_complete", mode=mode, rows=total_written)
 
     def _time_ranges(self, mode: str) -> dict[str, tuple[datetime, datetime]]:
@@ -272,8 +284,13 @@ class TextEmbedGateway:
         return {"news": (start, end), "sec": (start, end)}
 
     def _fetch_missing_source_rows(self, source: str, bounds: tuple[datetime, datetime], mode: str) -> list[dict[str, Any]]:
+        if source == "sec" and not self._sec_mapping_database:
+            if self.metrics.sec_mapping_status != "missing":
+                self.metrics.sec_mapping_status = "missing"
+            self._remember(source=source, mode=mode, stage="source_skipped_no_mapping", rows=0, seconds=0.0)
+            return []
         started = time.perf_counter()
-        sql = missing_news_source_sql(self.config, bounds, mode) if source == "news" else missing_sec_source_sql(self.config, bounds, mode)
+        sql = missing_news_source_sql(self.config, bounds, mode) if source == "news" else missing_sec_source_sql(self.config, bounds, mode, mapping_database=self._sec_mapping_database)
         rows = json_rows(self.client.execute(sql))
         seconds = time.perf_counter() - started
         self.metrics.last_fetch_seconds = seconds
@@ -405,6 +422,38 @@ class TextEmbedGateway:
         self.metrics.embedding_torch_dtype = self.embedding_model.torch_dtype_name
         self.metrics.embedding_pooling = self.embedding_model.pooling
 
+    def _resolve_sec_mapping_database(self) -> str:
+        table = self.config.sec_ticker_mapping_table
+        candidates = []
+        explicit = self.config.sec_ticker_mapping_database.strip()
+        if explicit:
+            candidates.append(explicit)
+        candidates.extend([self.config.source_database, self.config.context_database, self.config.target_database, "sec_core", "q_live", "market_sip_compact"])
+        unique_candidates = []
+        seen = set()
+        for candidate in candidates:
+            text = candidate.strip()
+            if text and text not in seen:
+                seen.add(text)
+                unique_candidates.append(text)
+        rows = self.client.execute(
+            f"""
+            SELECT database
+            FROM system.tables
+            WHERE name = {sql_string(table)}
+              AND database IN ({','.join(sql_string(item) for item in unique_candidates)})
+            ORDER BY multiIf(database = {sql_string(explicit)}, 0, database = {sql_string(self.config.source_database)}, 1, database = {sql_string(self.config.context_database)}, 2, database = {sql_string(self.config.target_database)}, 3, 9)
+            LIMIT 1
+            FORMAT TSV
+            """
+        ).strip().splitlines()
+        database = rows[0].strip() if rows else ""
+        if not database:
+            self._log("sec_mapping_table_missing", table=table, candidates=unique_candidates)
+        else:
+            self._log("sec_mapping_table_resolved", database=database, table=table)
+        return database
+
     def _release_model(self) -> None:
         self._set_phase("releasing_model", "Freeing tokenizer/model references and CUDA cache.")
         torch_module = getattr(self.embedding_model, "torch", None)
@@ -522,12 +571,13 @@ FORMAT JSONEachRow
 """
 
 
-def missing_sec_source_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime], mode: str) -> str:
+def missing_sec_source_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime], mode: str, *, mapping_database: str) -> str:
     limit = config.source_batch_size if mode == "live" else config.historical_batch_limit
     source_db = quote_ident(config.source_database)
     target = quote_ident(config.target_database)
     filing_table = quote_ident(config.sec_live_filing_table)
     text_table = quote_ident(config.sec_live_text_table)
+    mapping_db = quote_ident(mapping_database)
     mapping_table = quote_ident(config.sec_ticker_mapping_table)
     token_table = quote_ident(config.sec_token_table)
     text_chars = max(1, config.sec_text_prefix_chars)
@@ -565,7 +615,7 @@ FROM
     ANY INNER JOIN {source_db}.{filing_table} AS f
         ON f.cik = t.cik
        AND f.accession_number = t.accession_number
-    ANY LEFT JOIN {source_db}.{mapping_table} AS map
+    ANY LEFT JOIN {mapping_db}.{mapping_table} AS map
         ON map.cik = t.cik
     WHERE f.accepted_at_utc >= {dt64_sql(bounds[0])}
       AND f.accepted_at_utc < {dt64_sql(bounds[1])}

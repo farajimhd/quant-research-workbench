@@ -39,6 +39,7 @@ class TextEmbedGatewayConfig:
     coverage_table: str
     sec_live_filing_table: str
     sec_live_text_table: str
+    sec_ticker_mapping_database: str
     sec_ticker_mapping_table: str
     storage_policy: str
     tokenizer_model: str
@@ -105,6 +106,7 @@ class TextEmbedGatewayConfig:
             coverage_table=env_string("TEXT_EMBED_COVERAGE_TABLE", "text_embedding_coverage_v1"),
             sec_live_filing_table=env_string("TEXT_EMBED_SEC_LIVE_FILING_TABLE", "sec_filing_v2"),
             sec_live_text_table=env_string("TEXT_EMBED_SEC_LIVE_TEXT_TABLE", "sec_filing_text_v2"),
+            sec_ticker_mapping_database=env_string("TEXT_EMBED_SEC_TICKER_MAPPING_DATABASE", ""),
             sec_ticker_mapping_table=env_string("TEXT_EMBED_SEC_TICKER_MAPPING_TABLE", "sec_bulk_mirror_company_ticker_v1"),
             storage_policy=env_string("TEXT_EMBED_STORAGE_POLICY", default_storage_policy()),
             tokenizer_model=env_string("TEXT_EMBED_TOKENIZER_MODEL", "Qwen/Qwen3-0.6B"),
