@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -38,10 +39,11 @@ class SecSubmissionFiling:
 
 
 class SecSubmissionsClient:
-    def __init__(self, *, http: SecHttpClient, max_cache_entries: int = 512) -> None:
+    def __init__(self, *, http: SecHttpClient, max_cache_entries: int = 512, max_cache_age_seconds: float = 3600.0) -> None:
         self.http = http
         self.max_cache_entries = max(0, int(max_cache_entries))
-        self._payload_cache: OrderedDict[str, tuple[dict[str, Any], str]] = OrderedDict()
+        self.max_cache_age_seconds = max(0.0, float(max_cache_age_seconds))
+        self._payload_cache: OrderedDict[str, tuple[dict[str, Any], str, float]] = OrderedDict()
         self._cache_lock = threading.RLock()
 
     def fetch_recent_filing(self, *, cik: str, accession_number: str) -> SecSubmissionFiling | None:
@@ -52,18 +54,21 @@ class SecSubmissionsClient:
         import hashlib
 
         cik_text = str(cik).zfill(10)
+        now = time.monotonic()
         with self._cache_lock:
+            self._prune_expired_locked(now)
             cached = self._payload_cache.get(cik_text)
             if cached is not None:
                 self._payload_cache.move_to_end(cik_text)
         if cached is not None:
-            return cached
+            payload, source_sha, _cached_at = cached
+            return payload, source_sha
         response = self.http.get(SUBMISSIONS_URL.format(cik=str(cik).zfill(10)))
         source_sha = hashlib.sha256(response.body).hexdigest()
         payload = json.loads(response.body.decode("utf-8", errors="replace"))
         if self.max_cache_entries > 0:
             with self._cache_lock:
-                self._payload_cache[cik_text] = (payload, source_sha)
+                self._payload_cache[cik_text] = (payload, source_sha, time.monotonic())
                 self._payload_cache.move_to_end(cik_text)
                 while len(self._payload_cache) > self.max_cache_entries:
                     self._payload_cache.popitem(last=False)
@@ -71,8 +76,24 @@ class SecSubmissionsClient:
 
     def cache_stats(self) -> dict[str, int]:
         with self._cache_lock:
+            self._prune_expired_locked(time.monotonic())
             entries = len(self._payload_cache)
-        return {"submissions_cache_entries": entries, "submissions_cache_limit": self.max_cache_entries}
+        return {
+            "submissions_cache_entries": entries,
+            "submissions_cache_limit": self.max_cache_entries,
+            "submissions_cache_max_age_seconds": int(self.max_cache_age_seconds),
+        }
+
+    def _prune_expired_locked(self, now: float) -> None:
+        if self.max_cache_age_seconds <= 0:
+            return
+        expired = [
+            cik
+            for cik, (_payload, _source_sha, cached_at) in self._payload_cache.items()
+            if now - cached_at > self.max_cache_age_seconds
+        ]
+        for cik in expired:
+            self._payload_cache.pop(cik, None)
 
 
 def find_recent_filing(payload: dict[str, Any], *, source_sha: str, accession_number: str) -> SecSubmissionFiling | None:

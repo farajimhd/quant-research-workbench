@@ -38,17 +38,24 @@ class SecLiveFilingPipeline:
         min_text_chars: int = 40,
         max_text_chars: int = 5_000_000,
         submissions_cache_entries: int = 512,
+        submissions_cache_max_age_seconds: float = 3600.0,
         xbrl_payload_cache_entries: int = 32,
+        xbrl_payload_cache_max_age_seconds: float = 3600.0,
         xbrl_missing_cik_cache_entries: int = 5_000,
     ) -> None:
         self.http = http
         self.raw_root_win = raw_root_win
         self.min_text_chars = min_text_chars
         self.max_text_chars = max_text_chars
-        self.submissions = SecSubmissionsClient(http=http, max_cache_entries=submissions_cache_entries)
+        self.submissions = SecSubmissionsClient(
+            http=http,
+            max_cache_entries=submissions_cache_entries,
+            max_cache_age_seconds=submissions_cache_max_age_seconds,
+        )
         self.xbrl_extractor = SecLiveXbrlExtractor(
             http=http,
             max_payload_cache_entries=xbrl_payload_cache_entries,
+            max_payload_cache_age_seconds=xbrl_payload_cache_max_age_seconds,
             max_missing_cik_cache_entries=xbrl_missing_cik_cache_entries,
         )
 

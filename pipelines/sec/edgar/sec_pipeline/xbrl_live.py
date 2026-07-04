@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -28,11 +29,19 @@ class LiveXbrlRows:
 
 
 class SecLiveXbrlExtractor:
-    def __init__(self, *, http: SecHttpClient, max_payload_cache_entries: int = 32, max_missing_cik_cache_entries: int = 5_000) -> None:
+    def __init__(
+        self,
+        *,
+        http: SecHttpClient,
+        max_payload_cache_entries: int = 32,
+        max_payload_cache_age_seconds: float = 3600.0,
+        max_missing_cik_cache_entries: int = 5_000,
+    ) -> None:
         self.http = http
         self.max_payload_cache_entries = max(0, int(max_payload_cache_entries))
+        self.max_payload_cache_age_seconds = max(0.0, float(max_payload_cache_age_seconds))
         self.max_missing_cik_cache_entries = max(0, int(max_missing_cik_cache_entries))
-        self._payload_cache: OrderedDict[str, tuple[dict[str, Any], str]] = OrderedDict()
+        self._payload_cache: OrderedDict[str, tuple[dict[str, Any], str, float]] = OrderedDict()
         self._missing_ciks: OrderedDict[str, None] = OrderedDict()
         self._cache_lock = threading.RLock()
 
@@ -41,7 +50,9 @@ class SecLiveXbrlExtractor:
 
     def extract_for_accessions(self, *, cik: str, accession_numbers: set[str], source_run_id: str, inserted_at: str) -> LiveXbrlRows:
         cik_text = str(cik).zfill(10)
+        now = time.monotonic()
         with self._cache_lock:
+            self._prune_expired_payloads_locked(now)
             if cik_text in self._missing_ciks:
                 self._missing_ciks.move_to_end(cik_text)
                 return LiveXbrlRows(fetched=True, companyfacts_status="missing_404")
@@ -65,7 +76,7 @@ class SecLiveXbrlExtractor:
             payload = json.loads(response.body.decode("utf-8", errors="replace"))
             self._remember_payload(cik_text, payload, source_sha)
         else:
-            payload, source_sha = cached
+            payload, source_sha, _cached_at = cached
         return extract_companyfacts_payload(
             payload,
             cik=cik,
@@ -79,7 +90,7 @@ class SecLiveXbrlExtractor:
         if self.max_payload_cache_entries <= 0:
             return
         with self._cache_lock:
-            self._payload_cache[cik_text] = (payload, source_sha)
+            self._payload_cache[cik_text] = (payload, source_sha, time.monotonic())
             self._payload_cache.move_to_end(cik_text)
             while len(self._payload_cache) > self.max_payload_cache_entries:
                 self._payload_cache.popitem(last=False)
@@ -95,14 +106,27 @@ class SecLiveXbrlExtractor:
 
     def cache_stats(self) -> dict[str, int]:
         with self._cache_lock:
+            self._prune_expired_payloads_locked(time.monotonic())
             payload_entries = len(self._payload_cache)
             missing_entries = len(self._missing_ciks)
         return {
             "xbrl_payload_cache_entries": payload_entries,
             "xbrl_payload_cache_limit": self.max_payload_cache_entries,
+            "xbrl_payload_cache_max_age_seconds": int(self.max_payload_cache_age_seconds),
             "xbrl_missing_cik_cache_entries": missing_entries,
             "xbrl_missing_cik_cache_limit": self.max_missing_cik_cache_entries,
         }
+
+    def _prune_expired_payloads_locked(self, now: float) -> None:
+        if self.max_payload_cache_age_seconds <= 0:
+            return
+        expired = [
+            cik
+            for cik, (_payload, _source_sha, cached_at) in self._payload_cache.items()
+            if now - cached_at > self.max_payload_cache_age_seconds
+        ]
+        for cik in expired:
+            self._payload_cache.pop(cik, None)
 
 
 def extract_companyfacts_payload(

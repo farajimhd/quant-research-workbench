@@ -111,8 +111,9 @@ def runtime_panel(gateway: "SecGateway", metrics: dict[str, Any]) -> Panel:
     table.add_row(
         "SEC caches",
         f"sub {fmt(metrics.get('submissions_cache_entries'))}/{fmt(metrics.get('submissions_cache_limit'))}",
-        f"xbrl {fmt(metrics.get('xbrl_payload_cache_entries'))}/{fmt(metrics.get('xbrl_payload_cache_limit'))}; missing {fmt(metrics.get('xbrl_missing_cik_cache_entries'))}/{fmt(metrics.get('xbrl_missing_cik_cache_limit'))}",
+        f"sub_ttl={ttl_text(metrics.get('submissions_cache_max_age_seconds'))}; xbrl {fmt(metrics.get('xbrl_payload_cache_entries'))}/{fmt(metrics.get('xbrl_payload_cache_limit'))} ttl={ttl_text(metrics.get('xbrl_payload_cache_max_age_seconds'))}; missing {fmt(metrics.get('xbrl_missing_cik_cache_entries'))}/{fmt(metrics.get('xbrl_missing_cik_cache_limit'))}",
     )
+    table.add_row("Recent metadata", fmt(metrics.get("recent_metadata_rows")), f"ttl={float(metrics.get('recent_metadata_retention_hours') or 0.0):.1f}h")
     table.add_row("XBRL facts", fmt(metrics.get("xbrl_company_fact_rows")), f"concepts {fmt(metrics.get('xbrl_concept_rows'))}, frames {fmt(metrics.get('xbrl_frame_rows'))}, observations {fmt(metrics.get('xbrl_frame_observation_rows'))}")
     table.add_row("Failures", fmt(metrics.get("poll_failures")), str(metrics.get("last_error") or "-"))
     table.add_row("Last accession", str(metrics.get("last_form_type") or "-"), str(metrics.get("last_accession") or "-"))
@@ -167,6 +168,15 @@ def fmt(value: Any) -> str:
         return f"{int(value or 0):,}"
     except Exception:
         return str(value or "-")
+
+
+def ttl_text(value: Any) -> str:
+    seconds = float(value or 0.0)
+    if seconds <= 0:
+        return "off"
+    if seconds < 3600:
+        return f"{seconds / 60.0:.0f}m"
+    return f"{seconds / 3600.0:.1f}h"
 
 
 def parse_utc(value: Any) -> datetime | None:

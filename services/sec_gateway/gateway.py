@@ -86,10 +86,14 @@ class SecGatewayMetrics:
     pending_shutdown_jobs: int = 0
     submissions_cache_entries: int = 0
     submissions_cache_limit: int = 0
+    submissions_cache_max_age_seconds: int = 0
     xbrl_payload_cache_entries: int = 0
     xbrl_payload_cache_limit: int = 0
+    xbrl_payload_cache_max_age_seconds: int = 0
     xbrl_missing_cik_cache_entries: int = 0
     xbrl_missing_cik_cache_limit: int = 0
+    recent_metadata_rows: int = 0
+    recent_metadata_retention_hours: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +166,9 @@ class SecGateway:
             http=self._http,
             raw_root_win=config.pipeline.raw_live_root_win,
             submissions_cache_entries=config.submissions_cache_entries,
+            submissions_cache_max_age_seconds=config.submissions_cache_max_age_seconds,
             xbrl_payload_cache_entries=config.xbrl_payload_cache_entries,
+            xbrl_payload_cache_max_age_seconds=config.xbrl_payload_cache_max_age_seconds,
             xbrl_missing_cik_cache_entries=config.xbrl_missing_cik_cache_entries,
         )
         self._refresh_cache_metrics()
@@ -234,11 +240,13 @@ class SecGateway:
         return report
 
     def snapshot_metrics(self) -> dict[str, Any]:
+        self._prune_recent_metadata()
         self.metrics.live_queue_size = self._live_queue.qsize()
         self.metrics.pending_shutdown_jobs = self._live_queue.qsize() + self.metrics.live_active_workers
         return asdict(self.metrics)
 
     def recent_snapshot(self, limit: int = 100) -> dict[str, Any]:
+        self._prune_recent_metadata()
         return {"rows": list(self._recent[:limit]), "limit": limit}
 
     def feed_url(self) -> str:
@@ -796,16 +804,27 @@ class SecGateway:
             "xbrl_facts": result.xbrl_company_fact_rows,
         }
         self._recent.insert(0, row)
-        del self._recent[250:]
+        self._prune_recent_metadata()
 
     def _refresh_cache_metrics(self) -> None:
         stats = self._live_pipeline.cache_stats()
         self.metrics.submissions_cache_entries = int(stats.get("submissions_cache_entries") or 0)
         self.metrics.submissions_cache_limit = int(stats.get("submissions_cache_limit") or 0)
+        self.metrics.submissions_cache_max_age_seconds = int(stats.get("submissions_cache_max_age_seconds") or 0)
         self.metrics.xbrl_payload_cache_entries = int(stats.get("xbrl_payload_cache_entries") or 0)
         self.metrics.xbrl_payload_cache_limit = int(stats.get("xbrl_payload_cache_limit") or 0)
+        self.metrics.xbrl_payload_cache_max_age_seconds = int(stats.get("xbrl_payload_cache_max_age_seconds") or 0)
         self.metrics.xbrl_missing_cik_cache_entries = int(stats.get("xbrl_missing_cik_cache_entries") or 0)
         self.metrics.xbrl_missing_cik_cache_limit = int(stats.get("xbrl_missing_cik_cache_limit") or 0)
+
+    def _prune_recent_metadata(self) -> None:
+        retention = timedelta(hours=max(0.0, self.config.recent_metadata_retention_hours))
+        if retention.total_seconds() > 0:
+            cutoff = datetime.now(UTC) - retention
+            self._recent = [row for row in self._recent if recent_row_time(row) is None or recent_row_time(row) >= cutoff]
+        del self._recent[250:]
+        self.metrics.recent_metadata_rows = len(self._recent)
+        self.metrics.recent_metadata_retention_hours = max(0.0, float(self.config.recent_metadata_retention_hours))
 
     def host_role(self) -> str:
         return "workstation" if self.config.is_workstation else "remote"
@@ -842,3 +861,16 @@ def workstation_script_run_path(script_path: Path, config: SecGatewayConfig) -> 
     except ValueError:
         return script_path
     return config.pipeline.workstation_code_root_win / relative
+
+
+def recent_row_time(row: dict[str, Any]) -> datetime | None:
+    text = str(row.get("updated_at_utc") or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)

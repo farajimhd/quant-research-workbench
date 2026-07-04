@@ -517,9 +517,18 @@ Writes and memory:
 NEWS_BENZINGA_EXECUTE=true
 NEWS_CLICKHOUSE_MAX_BATCH=1000
 NEWS_RECENT_HISTORY_LIMIT=5000
+NEWS_RECENT_METADATA_RETENTION_HOURS=24
 NEWS_BENZINGA_TEXT_LIMIT_CHARS=50000
 NEWS_BENZINGA_URL_DOMAIN_POLICY_JSON=<optional policy file>
 ```
+
+The news gateway writes durable rows and raw/enriched artifacts to ClickHouse
+and disk. In memory it keeps only live metadata summaries for terminal/API
+emission: title, teaser, URL, tickers, quality flags, and status fields. It does
+not retain article body text, extracted PDF text, or enriched payload text after
+background processing and publishing complete. The metadata window can be
+shortened, for example to `2`, if intraday news volume is high and the trading
+app only needs the last few hours.
 
 Terminal:
 

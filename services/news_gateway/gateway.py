@@ -122,6 +122,10 @@ class GatewayMetrics:
     background_fetch_tasks: int = 0
     background_enriched_urls: int = 0
     background_last_message: str = ""
+    memory_recent_rows: int = 0
+    memory_seen_ids: int = 0
+    memory_ticker_keys: int = 0
+    memory_metadata_retention_hours: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,7 +201,7 @@ class PollStrategy:
 class NewsGateway:
     def __init__(self, config: NewsGatewayConfig) -> None:
         self.config = config
-        self.state = NewsMemoryState(config.recent_history_limit)
+        self.state = NewsMemoryState(config.recent_history_limit, metadata_retention_hours=config.recent_metadata_retention_hours)
         self.metrics = GatewayMetrics()
         self._stop_event = asyncio.Event()
         self._poll_task: asyncio.Task[None] | None = None
@@ -340,6 +344,13 @@ class NewsGateway:
         self.metrics.current_phase_started_at_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         self._log_event("phase_changed", phase=phase, message=message)
         self._print_status(f"news_gateway_phase={phase} message={message}")
+
+    async def _refresh_memory_metrics(self) -> None:
+        stats = await self.state.stats()
+        self.metrics.memory_recent_rows = int(stats.get("recent_rows") or 0)
+        self.metrics.memory_seen_ids = int(stats.get("seen_ids") or 0)
+        self.metrics.memory_ticker_keys = int(stats.get("ticker_keys") or 0)
+        self.metrics.memory_metadata_retention_hours = float(stats.get("metadata_retention_hours") or 0.0)
 
     async def _plan_startup_gap(self) -> None:
         now = datetime.now(UTC)
@@ -660,6 +671,7 @@ class NewsGateway:
                 unique_rows, duplicate_rows = self._count_run_unique_news(processed)
                 if pending_memory_rows:
                     await self.state.upsert_rows(pending_memory_rows)
+                    await self._refresh_memory_metrics()
                 if live_items:
                     await self._enqueue_background_batch(
                         BackgroundNewsBatch(
@@ -735,6 +747,7 @@ class NewsGateway:
                 f"Wrote {write_summary.normalized_rows_inserted:,} row(s), skipped {write_summary.skipped_existing:,}.",
             )
             await self.state.add_rows([item.result.normalized_row for item in processed])
+            await self._refresh_memory_metrics()
             self.metrics.provider_rows += len(fetch_result.items)
             self.metrics.processed_rows += len(processed)
             self.metrics.failed_rows += failed
@@ -958,6 +971,7 @@ class NewsGateway:
                     )
             write_summary = await self._publish_processed(final_items, poll_id=batch.poll_id, coverage_mode="live_background")
             await self.state.upsert_rows([item.result.normalized_row for item in final_items])
+            await self._refresh_memory_metrics()
             self.metrics.written_rows += write_summary.normalized_rows_inserted
             self.metrics.skipped_existing += write_summary.skipped_existing
             self.metrics.background_completed_batches += 1

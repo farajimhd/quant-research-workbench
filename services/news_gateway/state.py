@@ -31,12 +31,13 @@ class NewsSummary:
 
 
 class NewsMemoryState:
-    def __init__(self, history_limit: int) -> None:
+    def __init__(self, history_limit: int, *, metadata_retention_hours: float = 24.0) -> None:
         self._history_limit = max(100, history_limit)
+        self._retention = timedelta(hours=max(0.0, float(metadata_retention_hours)))
         self._lock = asyncio.Lock()
         self._recent: deque[NewsSummary] = deque(maxlen=self._history_limit)
         self._by_ticker: dict[str, deque[NewsSummary]] = defaultdict(lambda: deque(maxlen=self._history_limit))
-        self._seen: set[str] = set()
+        self._seen: dict[str, datetime] = {}
 
     async def add_rows(self, rows: list[dict[str, Any]]) -> int:
         return await self.upsert_rows(rows)
@@ -44,13 +45,15 @@ class NewsMemoryState:
     async def upsert_rows(self, rows: list[dict[str, Any]]) -> int:
         added = 0
         async with self._lock:
+            self._prune_locked(datetime.now(UTC))
             for row in rows:
                 key = str(row.get("canonical_news_id") or "")
                 if not key:
                     continue
-                is_new = key not in self._seen
                 summary = row_to_summary(row)
-                self._seen.add(key)
+                summary_time = parse_dt(summary.published_at_utc) or datetime.now(UTC)
+                is_new = key not in self._seen
+                self._seen[key] = summary_time
                 self._recent.appendleft(summary)
                 for ticker in summary.tickers:
                     self._by_ticker[ticker.upper()].appendleft(summary)
@@ -60,6 +63,7 @@ class NewsMemoryState:
 
     async def recent_snapshot(self, limit: int = 250) -> dict[str, Any]:
         async with self._lock:
+            self._prune_locked(datetime.now(UTC))
             rows = latest_unique(list(self._recent), max(1, min(limit, self._history_limit)))
             return {
                 "as_of": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -72,6 +76,7 @@ class NewsMemoryState:
         key = ticker.upper()
         now = datetime.now(UTC)
         async with self._lock:
+            self._prune_locked(now)
             rows = latest_unique(list(self._by_ticker.get(key, [])), max(1, min(limit, self._history_limit)))
         parsed_times = [parse_dt(row.published_at_utc) for row in rows]
         return {
@@ -82,6 +87,30 @@ class NewsMemoryState:
             "news_count_session": len(rows),
             "rows": [asdict(row) for row in rows],
         }
+
+    async def stats(self) -> dict[str, Any]:
+        async with self._lock:
+            self._prune_locked(datetime.now(UTC))
+            return {
+                "recent_rows": len(self._recent),
+                "ticker_keys": len(self._by_ticker),
+                "seen_ids": len(self._seen),
+                "metadata_retention_hours": self._retention.total_seconds() / 3600.0 if self._retention.total_seconds() > 0 else 0.0,
+            }
+
+    def _prune_locked(self, now: datetime) -> None:
+        if self._retention.total_seconds() <= 0:
+            return
+        cutoff = now - self._retention
+        self._recent = deque((row for row in self._recent if keep_summary(row, cutoff)), maxlen=self._history_limit)
+        empty_tickers: list[str] = []
+        for ticker, rows in self._by_ticker.items():
+            self._by_ticker[ticker] = deque((row for row in rows if keep_summary(row, cutoff)), maxlen=self._history_limit)
+            if not self._by_ticker[ticker]:
+                empty_tickers.append(ticker)
+        for ticker in empty_tickers:
+            self._by_ticker.pop(ticker, None)
+        self._seen = {key: value for key, value in self._seen.items() if value >= cutoff}
 
 
 def row_to_summary(row: dict[str, Any]) -> NewsSummary:
@@ -120,6 +149,11 @@ def latest_unique(rows: list[NewsSummary], limit: int) -> list[NewsSummary]:
         if len(output) >= limit:
             break
     return output
+
+
+def keep_summary(row: NewsSummary, cutoff: datetime) -> bool:
+    published = parse_dt(row.published_at_utc)
+    return published is None or published >= cutoff
 
 
 def parse_dt(value: str) -> datetime | None:

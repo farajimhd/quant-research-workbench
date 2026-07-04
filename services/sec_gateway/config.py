@@ -35,8 +35,11 @@ class SecGatewayConfig:
     live_workers: int
     live_queue_max_items: int
     submissions_cache_entries: int
+    submissions_cache_max_age_seconds: float
     xbrl_payload_cache_entries: int
+    xbrl_payload_cache_max_age_seconds: float
     xbrl_missing_cik_cache_entries: int
+    recent_metadata_retention_hours: float
     full_audit_on_startup: bool
     full_audit_after_write_batches: int
     terminal_rich_enabled: bool
@@ -70,8 +73,11 @@ class SecGatewayConfig:
             live_workers=env_int("SEC_GATEWAY_LIVE_WORKERS", 4),
             live_queue_max_items=env_int("SEC_GATEWAY_LIVE_QUEUE_MAX_ITEMS", 500),
             submissions_cache_entries=env_int("SEC_GATEWAY_SUBMISSIONS_CACHE_ENTRIES", 512),
+            submissions_cache_max_age_seconds=env_float("SEC_GATEWAY_SUBMISSIONS_CACHE_MAX_AGE_SECONDS", 3600.0),
             xbrl_payload_cache_entries=env_int("SEC_GATEWAY_XBRL_PAYLOAD_CACHE_ENTRIES", 32),
+            xbrl_payload_cache_max_age_seconds=env_float("SEC_GATEWAY_XBRL_PAYLOAD_CACHE_MAX_AGE_SECONDS", 3600.0),
             xbrl_missing_cik_cache_entries=env_int("SEC_GATEWAY_XBRL_MISSING_CIK_CACHE_ENTRIES", 5_000),
+            recent_metadata_retention_hours=env_float("SEC_GATEWAY_RECENT_METADATA_RETENTION_HOURS", 24.0),
             full_audit_on_startup=env_bool("SEC_GATEWAY_FULL_AUDIT_ON_STARTUP", True),
             full_audit_after_write_batches=env_int("SEC_GATEWAY_FULL_AUDIT_AFTER_WRITE_BATCHES", 0),
             terminal_rich_enabled=env_bool_auto("SEC_GATEWAY_TERMINAL_RICH_ENABLED", sys.stdout.isatty()),

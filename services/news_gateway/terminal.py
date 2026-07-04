@@ -210,6 +210,11 @@ def metrics_panel(gateway: "NewsGateway", metrics: dict[str, Any]) -> Panel:
     table.add_row("Written rows", fmt(metrics.get("written_rows")), fmt(metrics.get("last_cycle_written_rows")))
     table.add_row("Skipped existing", fmt(metrics.get("skipped_existing")), fmt(metrics.get("last_cycle_skipped_existing")))
     table.add_row("Raw saved", fmt(metrics.get("raw_saved")), f"{float(metrics.get('last_cycle_wall_seconds') or 0.0):.2f}s")
+    table.add_row(
+        "Memory state",
+        fmt(metrics.get("memory_recent_rows")),
+        f"seen={fmt(metrics.get('memory_seen_ids'))} tickers={fmt(metrics.get('memory_ticker_keys'))} ttl={float(metrics.get('memory_metadata_retention_hours') or 0.0):.1f}h",
+    )
     table.add_row("Failures", fmt(metrics.get("poll_failures")), truncate(str(metrics.get("last_error") or "-"), 120))
     mode = "execute" if gateway.config.execute else "dry-run"
     location = "workstation" if gateway.config.is_workstation else "remote"
