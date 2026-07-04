@@ -73,3 +73,11 @@ Run service:
 ```powershell
 python -m services.text_embed_gateway.main
 ```
+
+PowerShell launcher:
+
+```powershell
+.\scripts\run_text_embed_gateway.ps1 -CheckOnly
+.\scripts\run_text_embed_gateway.ps1 -LoadModelCheck
+.\scripts\run_text_embed_gateway.ps1
+```
