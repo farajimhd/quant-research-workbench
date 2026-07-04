@@ -424,11 +424,8 @@ class TextEmbedGateway:
 
     def _resolve_sec_mapping_database(self) -> str:
         table = self.config.sec_ticker_mapping_table
-        candidates = []
         explicit = self.config.sec_ticker_mapping_database.strip()
-        if explicit:
-            candidates.append(explicit)
-        candidates.extend([self.config.source_database, self.config.context_database, self.config.target_database, "sec_core", "q_live", "market_sip_compact"])
+        candidates = [explicit] if explicit else [self.config.source_database]
         unique_candidates = []
         seen = set()
         for candidate in candidates:
@@ -442,7 +439,7 @@ class TextEmbedGateway:
             FROM system.tables
             WHERE name = {sql_string(table)}
               AND database IN ({','.join(sql_string(item) for item in unique_candidates)})
-            ORDER BY multiIf(database = {sql_string(explicit)}, 0, database = {sql_string(self.config.source_database)}, 1, database = {sql_string(self.config.context_database)}, 2, database = {sql_string(self.config.target_database)}, 3, 9)
+            ORDER BY database
             LIMIT 1
             FORMAT TSV
             """

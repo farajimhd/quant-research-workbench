@@ -92,8 +92,9 @@ First-time model download/cache warmup:
 Use the default local-files-only mode after the Qwen tokenizer/model files are
 cached, so production does not depend on HuggingFace network availability.
 
-`TEXT_EMBED_SEC_TICKER_MAPPING_DATABASE` can be left empty. The gateway resolves
-`sec_bulk_mirror_company_ticker_v1` from `q_live`, `market_sip_compact`,
-`sec_core`, or the configured source/context/target databases at startup. If it
-cannot find the table, SEC source-text tokenization is skipped but news and
-existing-token embedding still continue.
+`TEXT_EMBED_SEC_TICKER_MAPPING_DATABASE` can be left empty. In that case the
+gateway expects `sec_bulk_mirror_company_ticker_v1` in `TEXT_EMBED_SOURCE_DATABASE`
+(`q_live` by default). Set `TEXT_EMBED_SEC_TICKER_MAPPING_DATABASE` only when the
+mapping table is intentionally stored somewhere else. If the mapping table is
+missing, SEC source-text tokenization is skipped but news and existing-token
+embedding still continue.
