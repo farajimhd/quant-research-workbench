@@ -26,6 +26,10 @@ from pipelines.market_sip.events.clickhouse_build_text_tokens import (
     embed_and_insert_token_table_batch,
     tokenize_and_insert_source_batch,
 )
+from pipelines.market_sip.events.clickhouse_build_sec_context import (
+    create_filing_context_table_sql,
+    create_text_context_table_sql,
+)
 from research.mlops.clickhouse import ClickHouseHttpClient, parse_size_bytes, quote_ident, sql_string
 from services.market_hours import MarketHoursSnapshot, MassiveMarketHoursClient
 from services.news_gateway.run_logger import AsyncRunLogger
@@ -74,6 +78,9 @@ class TextEmbedMetrics:
     recent_status_rows: int = 0
     sec_bridge_table: str = ""
     sec_bridge_status: str = "not_checked"
+    sec_context_table: str = ""
+    sec_context_status: str = "not_checked"
+    sec_context_rows_refreshed: int = 0
     run_log_path: str = ""
 
 
@@ -213,12 +220,16 @@ class TextEmbedGateway:
             create_news_embedding_table_sql(self.config.target_database, self.config.news_embedding_table, self.config.storage_policy),
             create_sec_embedding_table_sql(self.config.target_database, self.config.sec_embedding_table, self.config.storage_policy),
             create_coverage_table_sql(self.config.target_database, self.config.coverage_table, self.config.storage_policy),
+            create_filing_context_table_sql(self.config.context_database, self.config.sec_context_filing_table, self.config.storage_policy),
+            create_text_context_table_sql(self.config.context_database, self.config.sec_context_text_table, self.config.storage_policy),
         ]
         for statement in statements:
             self.client.execute(statement)
         self._sec_bridge_available = self._resolve_sec_bridge_table()
         self.metrics.sec_bridge_table = f"{self.config.source_database}.{self.config.sec_bridge_table}"
         self.metrics.sec_bridge_status = "ready" if self._sec_bridge_available else "missing"
+        self.metrics.sec_context_table = f"{self.config.context_database}.{self.config.sec_context_text_table}"
+        self.metrics.sec_context_status = "ready"
         self._log("schema_ready", target_database=args.target_database)
 
     async def _poll_loop(self) -> None:
@@ -258,6 +269,8 @@ class TextEmbedGateway:
             if self._stop_event.is_set():
                 break
             try:
+                if source == "sec":
+                    self._refresh_sec_context(ranges[source], mode)
                 source_rows = self._fetch_missing_source_rows(source, ranges[source], mode)
                 if source_rows:
                     total_written += self._tokenize_embed_and_persist_source(source, source_rows, mode)
@@ -283,12 +296,37 @@ class TextEmbedGateway:
             end = now + timedelta(minutes=5)
         return {"news": (start, end), "sec": (start, end)}
 
-    def _fetch_missing_source_rows(self, source: str, bounds: tuple[datetime, datetime], mode: str) -> list[dict[str, Any]]:
-        if source == "sec" and not self._sec_bridge_available:
+    def _refresh_sec_context(self, bounds: tuple[datetime, datetime], mode: str) -> None:
+        if not self._sec_bridge_available:
             if self.metrics.sec_bridge_status != "missing":
                 self.metrics.sec_bridge_status = "missing"
-            self._remember(source=source, mode=mode, stage="source_skipped_no_bridge", rows=0, seconds=0.0)
-            return []
+            self._remember(source="sec", mode=mode, stage="context_skipped_no_bridge", rows=0, seconds=0.0)
+            return
+        started = time.perf_counter()
+        filing_rows = scalar_count(self.client, count_missing_sec_filing_context_sql(self.config, bounds))
+        if filing_rows:
+            self.client.execute(insert_missing_sec_filing_context_sql(self.config, bounds))
+        text_rows = scalar_count(self.client, count_missing_sec_text_context_sql(self.config, bounds))
+        if text_rows:
+            self.client.execute(insert_missing_sec_text_context_sql(self.config, bounds))
+        blocked_rows = self._record_sec_context_blocks(bounds, mode)
+        rows = filing_rows + text_rows
+        self.metrics.sec_context_rows_refreshed += rows
+        self.metrics.sec_context_status = "ready"
+        seconds = time.perf_counter() - started
+        if rows or blocked_rows:
+            self._remember(source="sec", mode=mode, stage="context_refresh", rows=rows, seconds=seconds)
+            self._log("sec_context_refresh", mode=mode, filing_rows=filing_rows, text_rows=text_rows, blocked_rows=blocked_rows, seconds=round(seconds, 3))
+
+    def _record_sec_context_blocks(self, bounds: tuple[datetime, datetime], mode: str) -> int:
+        rows = json_rows(self.client.execute(sec_missing_bridge_rows_sql(self.config, bounds)))
+        if not rows:
+            return 0
+        self._insert_coverage("sec", rows, mode=mode, stage="context", status="blocked_missing_ticker_mapping", token_rows=0, embedding_rows=0)
+        self._remember(source="sec", mode=mode, stage="context_blocked_mapping", rows=len(rows), seconds=0.0)
+        return len(rows)
+
+    def _fetch_missing_source_rows(self, source: str, bounds: tuple[datetime, datetime], mode: str) -> list[dict[str, Any]]:
         started = time.perf_counter()
         sql = missing_news_source_sql(self.config, bounds, mode) if source == "news" else missing_sec_source_sql(self.config, bounds, mode)
         rows = json_rows(self.client.execute(sql))
@@ -560,16 +598,222 @@ FORMAT JSONEachRow
 """
 
 
-def missing_sec_source_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime], mode: str) -> str:
-    limit = config.source_batch_size if mode == "live" else config.historical_batch_limit
+def count_missing_sec_filing_context_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
+    return f"""
+SELECT count()
+FROM
+(
+{missing_sec_filing_context_select_sql(config, bounds)}
+)
+{query_settings(config)}
+FORMAT TSV
+"""
+
+
+def insert_missing_sec_filing_context_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
+    target = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_filing_table)}"
+    return f"""
+INSERT INTO {target}
+{missing_sec_filing_context_select_sql(config, bounds)}
+{query_settings(config)}
+"""
+
+
+def missing_sec_filing_context_select_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
     source_db = quote_ident(config.source_database)
-    target = quote_ident(config.target_database)
+    filing_table = quote_ident(config.sec_live_filing_table)
+    target = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_filing_table)}"
+    return f"""
+WITH {sec_bridge_cte_sql(config)}
+SELECT
+    b.ticker AS ticker,
+    toUInt64(toUnixTimestamp64Micro(f.accepted_at_utc)) AS timestamp_us,
+    f.accepted_at_utc AS accepted_at_utc,
+    f.cik AS cik,
+    f.accession_number AS accession_number,
+    ifNull(f.form_type, '') AS form_type,
+    ifNull(f.accepted_at_source, '') AS accepted_at_source,
+    toFloat32(b.confidence_score) AS mapping_confidence,
+    b.bridge_id AS bridge_id,
+    b.security_id AS security_id,
+    b.listing_id AS listing_id,
+    b.symbol_id AS symbol_id,
+    toString(f.filing_id) AS filing_id,
+    ifNull(f.company_name, '') AS company_name,
+    ifNull(f.primary_document, '') AS primary_document,
+    ifNull(f.primary_document_url, '') AS primary_document_url,
+    ifNull(f.filing_detail_url, '') AS filing_detail_url,
+    ifNull(f.items, '') AS items,
+    now64(3, 'UTC') AS updated_at
+FROM {source_db}.{filing_table} AS f FINAL
+INNER JOIN bridge AS b
+    ON b.cik = f.cik
+LEFT JOIN {target} AS existing
+    ON existing.ticker = b.ticker
+   AND existing.timestamp_us = toUInt64(toUnixTimestamp64Micro(f.accepted_at_utc))
+   AND existing.accession_number = f.accession_number
+   AND existing.cik = f.cik
+WHERE f.accepted_at_utc IS NOT NULL
+  AND (b.accession_number = '' OR b.accession_number = f.accession_number)
+  AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
+  AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
+  AND f.accepted_at_utc >= {dt64_sql(bounds[0])}
+  AND f.accepted_at_utc < {dt64_sql(bounds[1])}
+  AND existing.accession_number = ''
+"""
+
+
+def count_missing_sec_text_context_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
+    return f"""
+SELECT count()
+FROM
+(
+{missing_sec_text_context_select_sql(config, bounds)}
+)
+{query_settings(config)}
+FORMAT TSV
+"""
+
+
+def insert_missing_sec_text_context_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
+    target = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
+    return f"""
+INSERT INTO {target}
+{missing_sec_text_context_select_sql(config, bounds)}
+{query_settings(config)}
+"""
+
+
+def missing_sec_text_context_select_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
+    source_db = quote_ident(config.source_database)
+    text_table = quote_ident(config.sec_live_text_table)
+    filing_context = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_filing_table)}"
+    target = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
+    text_chars = max(1, int(config.sec_text_prefix_chars))
+    per_filing = max(1, int(config.sec_max_text_rows_per_filing))
+    return f"""
+SELECT
+    selected.ticker AS ticker,
+    selected.timestamp_us AS timestamp_us,
+    selected.accepted_at_utc AS accepted_at_utc,
+    selected.cik AS cik,
+    selected.accession_number AS accession_number,
+    selected.form_type AS form_type,
+    selected.text_rank AS text_rank,
+    selected.document_id AS document_id,
+    selected.text_kind AS text_kind,
+    selected.text AS text,
+    selected.text_char_count AS text_char_count,
+    selected.quality_flags AS quality_flags,
+    now64(3, 'UTC') AS updated_at
+FROM
+(
+    SELECT
+        f.ticker AS ticker,
+        f.timestamp_us AS timestamp_us,
+        f.accepted_at_utc AS accepted_at_utc,
+        f.cik AS cik,
+        f.accession_number AS accession_number,
+        f.form_type AS form_type,
+        toUInt8(0) AS text_rank,
+        ifNull(t.document_id, '') AS document_id,
+        ifNull(t.text_kind, '') AS text_kind,
+        substring(ifNull(t.text, ''), 1, {text_chars}) AS text,
+        toUInt32(least(ifNull(t.text_char_count, 0), 4294967295)) AS text_char_count,
+        arrayStringConcat(t.quality_flags, ',') AS quality_flags
+    FROM {filing_context} AS f
+    INNER JOIN {source_db}.{text_table} AS t
+        ON t.cik = f.cik
+       AND t.accession_number = f.accession_number
+    WHERE f.accepted_at_utc >= {dt64_sql(bounds[0])}
+      AND f.accepted_at_utc < {dt64_sql(bounds[1])}
+    ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
+    LIMIT {per_filing} BY f.ticker, f.cik, f.accession_number
+) AS selected
+LEFT JOIN {target} AS existing
+    ON existing.ticker = selected.ticker
+   AND existing.timestamp_us = selected.timestamp_us
+   AND existing.accession_number = selected.accession_number
+   AND existing.text_rank = selected.text_rank
+   AND existing.document_id = selected.document_id
+WHERE existing.document_id = ''
+"""
+
+
+def sec_missing_bridge_rows_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
+    limit = max(1, int(config.source_batch_size))
+    source_db = quote_ident(config.source_database)
     filing_table = quote_ident(config.sec_live_filing_table)
     text_table = quote_ident(config.sec_live_text_table)
+    context = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
+    return f"""
+WITH {sec_bridge_cte_sql(config)}
+SELECT
+    '' AS ticker,
+    toUInt64(toUnixTimestamp64Micro(f.accepted_at_utc)) AS timestamp_us,
+    f.accepted_at_utc AS accepted_at_utc,
+    concat(f.accession_number, ':0:', ifNull(t.document_id, '')) AS source_id,
+    f.cik AS cik,
+    f.accession_number AS accession_number,
+    ifNull(f.form_type, '') AS form_type,
+    toUInt8(0) AS text_rank,
+    ifNull(t.document_id, '') AS document_id,
+    ifNull(t.text_kind, '') AS text_kind
+FROM {source_db}.{text_table} AS t
+ANY INNER JOIN {source_db}.{filing_table} AS f FINAL
+    ON f.cik = t.cik
+   AND f.accession_number = t.accession_number
+LEFT JOIN bridge AS b
+    ON b.cik = f.cik
+   AND (b.accession_number = '' OR b.accession_number = f.accession_number)
+   AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
+   AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
+LEFT JOIN {context} AS existing
+    ON existing.timestamp_us = toUInt64(toUnixTimestamp64Micro(f.accepted_at_utc))
+   AND existing.accession_number = f.accession_number
+   AND existing.document_id = ifNull(t.document_id, '')
+WHERE f.accepted_at_utc >= {dt64_sql(bounds[0])}
+  AND f.accepted_at_utc < {dt64_sql(bounds[1])}
+  AND b.cik = ''
+  AND existing.document_id = ''
+ORDER BY f.accepted_at_utc DESC, f.cik, f.accession_number, t.text_kind, t.document_id
+LIMIT {limit}
+{query_settings(config)}
+FORMAT JSONEachRow
+"""
+
+
+def sec_bridge_cte_sql(config: TextEmbedGatewayConfig) -> str:
+    source_db = quote_ident(config.source_database)
     bridge_table = quote_ident(config.sec_bridge_table)
+    return f"""
+bridge AS
+(
+    SELECT
+        ifNull(ticker, '') AS ticker,
+        cik,
+        ifNull(accession_number, '') AS accession_number,
+        valid_from_date,
+        valid_to_date_exclusive,
+        any(bridge_id) AS bridge_id,
+        any(ifNull(security_id, '')) AS security_id,
+        any(ifNull(listing_id, '')) AS listing_id,
+        any(ifNull(symbol_id, '')) AS symbol_id,
+        max(confidence_score) AS confidence_score
+    FROM {source_db}.{bridge_table}
+    WHERE ifNull(ticker, '') != ''
+      AND mapping_status IN ('active', 'mapped', 'accepted', '')
+    GROUP BY ticker, cik, accession_number, valid_from_date, valid_to_date_exclusive
+)
+"""
+
+
+def missing_sec_source_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime], mode: str) -> str:
+    limit = config.source_batch_size if mode == "live" else config.historical_batch_limit
+    context = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
+    target = quote_ident(config.target_database)
     token_table = quote_ident(config.sec_token_table)
     text_chars = max(1, config.sec_text_prefix_chars)
-    per_filing = max(1, config.sec_max_text_rows_per_filing)
     return f"""
 SELECT
     src.ticker,
@@ -585,50 +829,7 @@ SELECT
     substring(src.text, 1, {text_chars}) AS text,
     src.text_char_count AS source_text_char_count,
     src.quality_flags
-FROM
-(
-    WITH bridge AS
-    (
-        SELECT
-            ifNull(ticker, '') AS ticker,
-            cik,
-            ifNull(accession_number, '') AS accession_number,
-            valid_from_date,
-            valid_to_date_exclusive,
-            any(bridge_id) AS bridge_id,
-            max(confidence_score) AS confidence_score
-        FROM {source_db}.{bridge_table}
-        WHERE ifNull(ticker, '') != ''
-          AND mapping_status IN ('active', 'mapped', 'accepted', '')
-        GROUP BY ticker, cik, accession_number, valid_from_date, valid_to_date_exclusive
-    )
-    SELECT
-        upper(b.ticker) AS ticker,
-        toUInt64(toUnixTimestamp64Micro(f.accepted_at_utc)) AS timestamp_us,
-        f.accepted_at_utc AS accepted_at_utc,
-        t.cik AS cik,
-        t.accession_number AS accession_number,
-        f.form_type AS form_type,
-        toUInt8(0) AS text_rank,
-        t.document_id AS document_id,
-        t.text_kind AS text_kind,
-        t.text AS text,
-        t.text_char_count AS text_char_count,
-        arrayStringConcat(t.quality_flags, ',') AS quality_flags
-    FROM {source_db}.{text_table} AS t
-    ANY INNER JOIN {source_db}.{filing_table} AS f FINAL
-        ON f.cik = t.cik
-       AND f.accession_number = t.accession_number
-    INNER JOIN bridge AS b
-        ON b.cik = f.cik
-    WHERE f.accepted_at_utc >= {dt64_sql(bounds[0])}
-      AND f.accepted_at_utc < {dt64_sql(bounds[1])}
-      AND (b.accession_number = '' OR b.accession_number = f.accession_number)
-      AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
-      AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
-    ORDER BY b.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
-    LIMIT {per_filing} BY b.ticker, f.cik, f.accession_number
-) AS src
+FROM {context} AS src
 LEFT JOIN {target}.{token_table} AS tok
     ON tok.ticker = src.ticker
    AND tok.accession_number = src.accession_number
@@ -636,6 +837,8 @@ LEFT JOIN {target}.{token_table} AS tok
    AND tok.document_id = src.document_id
    AND tok.tokenizer_model = {sql_string(config.tokenizer_model)}
 WHERE tok.source_id = ''
+  AND src.accepted_at_utc >= {dt64_sql(bounds[0])}
+  AND src.accepted_at_utc < {dt64_sql(bounds[1])}
 ORDER BY src.accepted_at_utc DESC, src.ticker, src.accession_number, src.text_rank, src.document_id
 LIMIT {max(1, int(limit))}
 {query_settings(config)}
@@ -742,6 +945,13 @@ def insert_json_each_row(client: ClickHouseHttpClient, table: str, rows: list[di
     payload = "\n".join(json.dumps(row, separators=(",", ":"), ensure_ascii=False) for row in rows)
     if payload:
         client.execute(f"INSERT INTO {table} FORMAT JSONEachRow\n{payload}")
+
+
+def scalar_count(client: ClickHouseHttpClient, sql: str) -> int:
+    text = client.execute(sql).strip()
+    if not text:
+        return 0
+    return int(text.splitlines()[0].split("\t")[0] or "0")
 
 
 def json_rows(text: str) -> list[dict[str, Any]]:

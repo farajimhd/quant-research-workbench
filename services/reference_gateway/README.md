@@ -11,6 +11,11 @@ Benzinga articles, and SEC streams filings/XBRL. The reference gateway keeps the
 identity graph, broker conids, market publication data, and tradability outputs
 current enough for scanner setup, live trading, and training joins.
 
+It also owns the ongoing SEC-to-market bridge `q_live.id_sec_market_bridge_v1`.
+SEC ingestion writes raw filing/text/XBRL rows only; downstream services such as
+`text_embed_gateway` read this bridge to convert SEC CIK/accession events into
+the same ticker-aligned context schema used by historical training data.
+
 For the detailed operating model, read:
 
 ```text

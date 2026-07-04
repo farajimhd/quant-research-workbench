@@ -31,8 +31,10 @@ start service
 -> show Rich terminal status and expose HTTP/websocket snapshots
 ```
 
-The gateway does not own global ticker/reference mappings. SEC-sourced ticker
-mapping files belong to the future reference-data service.
+The gateway does not own global ticker/reference mappings. It writes raw SEC
+filing, document, text, skip, and XBRL rows only. `reference_gateway` maintains
+`q_live.id_sec_market_bridge_v1`, and `text_embed_gateway` reads that bridge to
+refresh ticker-aligned SEC text context before token and embedding writes.
 
 ## Run
 

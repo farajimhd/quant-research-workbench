@@ -37,6 +37,8 @@ class TextEmbedGatewayConfig:
     news_embedding_table: str
     sec_embedding_table: str
     coverage_table: str
+    sec_context_filing_table: str
+    sec_context_text_table: str
     sec_live_filing_table: str
     sec_live_text_table: str
     sec_bridge_table: str
@@ -104,6 +106,8 @@ class TextEmbedGatewayConfig:
             news_embedding_table=env_string("TEXT_EMBED_NEWS_EMBEDDING_TABLE", "news_text_embeddings"),
             sec_embedding_table=env_string("TEXT_EMBED_SEC_EMBEDDING_TABLE", "sec_filing_text_embeddings"),
             coverage_table=env_string("TEXT_EMBED_COVERAGE_TABLE", "text_embedding_coverage_v1"),
+            sec_context_filing_table=env_string("TEXT_EMBED_SEC_CONTEXT_FILING_TABLE", "sec_filing_context"),
+            sec_context_text_table=env_string("TEXT_EMBED_SEC_CONTEXT_TEXT_TABLE", "sec_filing_text_context"),
             sec_live_filing_table=env_string("TEXT_EMBED_SEC_LIVE_FILING_TABLE", "sec_filing_v2"),
             sec_live_text_table=env_string("TEXT_EMBED_SEC_LIVE_TEXT_TABLE", "sec_filing_text_v2"),
             sec_bridge_table=env_string("TEXT_EMBED_SEC_BRIDGE_TABLE", "id_sec_market_bridge_v1"),
