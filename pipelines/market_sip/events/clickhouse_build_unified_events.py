@@ -1000,9 +1000,25 @@ GROUP BY e.ticker, c.ordinal_offset
 
 
 def delete_day_sql(args: argparse.Namespace, job: DayJob) -> str:
+    raise RuntimeError(
+        "Unsafe day event delete is disabled. A source/file day is not the same "
+        "boundary as UTC event_date: after-hours rows can spill into the next UTC "
+        "date, and deleting by event_date can remove the previous source day's "
+        "spillover while leaving current source-day spillover behind. Use a "
+        "source-day timestamp-bounded delete/rebuild path instead."
+    )
+
+
+def delete_utc_event_date_sql(args: argparse.Namespace, source_date: str) -> str:
+    """Delete a literal UTC event_date only when the caller is intentionally date-scoped.
+
+    This must not be used for retrying a flatfile source/session day. SIP flatfiles
+    are source-day jobs, while event_date is derived from UTC timestamps and can
+    cross source-day boundaries.
+    """
     return f"""
 ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.events_table)}
-DELETE WHERE event_date = toDate({sql_string(job.source_date)})
+DELETE WHERE event_date = toDate({sql_string(source_date)})
 {mutation_settings(args)}
 """
 
