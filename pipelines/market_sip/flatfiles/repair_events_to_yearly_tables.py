@@ -72,6 +72,14 @@ EVENT_COLUMNS = (
     "event_date",
 )
 EVENT_VALUE_COLUMNS = tuple(column for column in EVENT_COLUMNS if column != "ordinal")
+ANSI_GREEN = "\033[92m"
+ANSI_RESET = "\033[0m"
+
+
+def green_text(value: str) -> str:
+    if not sys.stdout.isatty():
+        return value
+    return f"{ANSI_GREEN}{value}{ANSI_RESET}"
 
 
 class QueryRunner:
@@ -991,11 +999,11 @@ def audit_year_range(
         append_jsonl(report_path, audit)
         raise RuntimeError(f"Year {year} audit failed: {failures}")
     append_jsonl(report_path, audit)
-    print(
+    message = (
         f"YEAR AUDIT OK {year} {start_date.isoformat()} -> {end_date.isoformat()} "
-        f"rows={audit['rows']:,} total={state['rows']:,}",
-        flush=True,
+        f"rows={audit['rows']:,} total={state['rows']:,}"
     )
+    print(green_text(message), flush=True)
 
 
 def audit_year(client: ClickHouseHttpClient, args: argparse.Namespace, year: int, expected_rows: int, report_path: Path) -> None:
