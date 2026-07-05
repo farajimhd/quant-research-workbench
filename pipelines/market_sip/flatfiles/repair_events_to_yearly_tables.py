@@ -219,6 +219,14 @@ def iter_dates(start: date, end: date) -> list[date]:
     return [date.fromordinal(ordinal) for ordinal in range(start.toordinal(), end.toordinal() + 1)]
 
 
+def flatfile_destination(root: Path, key: str) -> Path:
+    key_parts = Path(key).parts
+    root_name = root.name.replace("\\", "/").rstrip("/")
+    if key_parts and key_parts[0] == root_name:
+        return root.joinpath(*key_parts[1:])
+    return root.joinpath(*key_parts)
+
+
 def day_files_for_date(args: argparse.Namespace, source: date) -> DayFiles:
     root = Path(args.flatfiles_root_win)
     source_text = source.isoformat()
@@ -228,8 +236,8 @@ def day_files_for_date(args: argparse.Namespace, source: date) -> DayFiles:
     trade_key = f"us_stocks_sip/trades_v1/{year}/{month}/{source_text}.csv.gz"
     return DayFiles(
         source_date=source_text,
-        quote_job=DownloadJob(kind="quotes", session_date=source_text, key=quote_key, destination=str(root / quote_key)),
-        trade_job=DownloadJob(kind="trades", session_date=source_text, key=trade_key, destination=str(root / trade_key)),
+        quote_job=DownloadJob(kind="quotes", session_date=source_text, key=quote_key, destination=str(flatfile_destination(root, quote_key))),
+        trade_job=DownloadJob(kind="trades", session_date=source_text, key=trade_key, destination=str(flatfile_destination(root, trade_key))),
     )
 
 
