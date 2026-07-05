@@ -147,6 +147,23 @@ through the workstation share:
 The terminal still reports the workstation-local `D:/TradingML/...` path, so
 the command can be copied into a workstation PowerShell session without editing.
 
+Before writing the script, the gateway syncs the historical-fill runtime
+dependencies from the current repo into the workstation code root:
+
+```text
+pipelines/sec/edgar/
+research/mlops/
+pipelines/__init__.py
+pipelines/sec/__init__.py
+research/__init__.py
+```
+
+This keeps generated gap-fill scripts tied to the code that generated them and
+prevents stale workstation runtime copies from running old SEC ingest logic. The
+sync is targeted and non-destructive: it overwrites those dependency files, but
+does not delete generated scripts, data, logs, secrets, or unrelated runtime
+folders.
+
 With `SEC_GATEWAY_AUTO_RUN_HISTORICAL_ON_WORKSTATION=true`, the gateway starts
 that script automatically only when it is running on the workstation outside the
 active collection window, which defaults to `04:00-20:00 ET`. During the active

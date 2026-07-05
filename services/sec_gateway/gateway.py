@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -35,6 +36,9 @@ from services.sec_gateway.config import SecGatewayConfig, WORKSTATION_SHARE_CODE
 from services.sec_gateway.preflight import PreflightError, PreflightReport, run_preflight
 from services.gateway_policy import backfill_auto_run_allowed, maintenance_window_message
 from services.market_hours import MarketHoursSnapshot, MassiveMarketHoursClient
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(slots=True)
@@ -434,6 +438,7 @@ class SecGateway:
         start = min(gap.start_utc.date() for gap in gaps)
         end = (datetime.now(UTC).date() + timedelta(days=1))
         script_root = workstation_script_write_root(self.config)
+        sync_summary = sync_historical_gap_fill_dependencies(self.config, script_root)
         root = script_root / "generated" / "sec_gateway_manual_gap_fill" / self._run_id
         data_root = workstation_script_data_root(self.config)
         prepared_root = data_root / "prepared"
@@ -533,6 +538,7 @@ class SecGateway:
             "historical_gap_fill_script_written",
             script_path=str(run_script_path),
             script_storage_path=str(script_path),
+            dependency_sync=sync_summary,
             commands=[plan.command for plan in plans],
         )
         if backfill_auto_run_allowed(
@@ -861,6 +867,57 @@ def workstation_script_run_path(script_path: Path, config: SecGatewayConfig) -> 
     except ValueError:
         return script_path
     return config.pipeline.workstation_code_root_win / relative
+
+
+def sync_historical_gap_fill_dependencies(config: SecGatewayConfig, target_code_root: Path) -> dict[str, Any]:
+    source_root = REPO_ROOT
+    target_root = target_code_root
+    if same_path(source_root, target_root):
+        return {"status": "skipped", "reason": "source_and_target_are_same", "target": str(target_root)}
+
+    copied: list[str] = []
+    for relative_dir in [
+        Path("pipelines/sec/edgar"),
+        Path("research/mlops"),
+    ]:
+        copy_dependency_tree(source_root / relative_dir, target_root / relative_dir)
+        copied.append(str(relative_dir).replace("\\", "/"))
+
+    for relative_file in [
+        Path("pipelines/__init__.py"),
+        Path("pipelines/sec/__init__.py"),
+        Path("research/__init__.py"),
+    ]:
+        copy_dependency_file(source_root / relative_file, target_root / relative_file)
+        copied.append(str(relative_file).replace("\\", "/"))
+
+    return {"status": "ok", "source": str(source_root), "target": str(target_root), "copied": copied}
+
+
+def same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve().samefile(right.resolve())
+    except (FileNotFoundError, OSError, ValueError):
+        return str(left).rstrip("\\/").lower() == str(right).rstrip("\\/").lower()
+
+
+def copy_dependency_tree(source: Path, target: Path) -> None:
+    if not source.exists():
+        raise RuntimeError(f"SEC historical dependency source directory is missing: {source}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        target,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", ".mypy_cache"),
+    )
+
+
+def copy_dependency_file(source: Path, target: Path) -> None:
+    if not source.exists():
+        raise RuntimeError(f"SEC historical dependency source file is missing: {source}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
 
 
 def recent_row_time(row: dict[str, Any]) -> datetime | None:
