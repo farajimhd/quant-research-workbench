@@ -201,6 +201,18 @@ def query_text(client: ClickHouseHttpClient, sql: str) -> str:
     return client.query_tsv(sql).strip()
 
 
+def parse_tsv_with_names(text: str) -> list[dict[str, str]]:
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return []
+    keys = lines[0].split("\t")
+    rows: list[dict[str, str]] = []
+    for line in lines[1:]:
+        values = line.split("\t")
+        rows.append(dict(zip(keys, values, strict=False)))
+    return rows
+
+
 def query_settings_clause(args: argparse.Namespace) -> str:
     return query_settings(args)
 
@@ -744,7 +756,7 @@ WHERE event_date >= toDate({sql_string(f"{year}-01-01")})
 """
 
 
-def audit_year_sql(args: argparse.Namespace, year: int) -> str:
+def audit_year_period_sql(args: argparse.Namespace, year: int, start_date: date, end_date: date) -> str:
     table = year_table_name(args, year)
     return f"""
 WITH ordered AS
@@ -756,28 +768,114 @@ WITH ordered AS
         lagInFrame(ordinal) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS prev_ordinal,
         lagInFrame(sip_timestamp_us) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS prev_ts
     FROM {quote_ident(args.database)}.{quote_ident(table)}
+    WHERE event_date >= toDate({sql_string(start_date.isoformat())})
+      AND event_date < toDate({sql_string(end_date.isoformat())})
 )
 SELECT
-    (SELECT count() FROM {quote_ident(args.database)}.{quote_ident(table)}) AS rows,
-    (SELECT count() - uniqExact(ticker, ordinal) FROM {quote_ident(args.database)}.{quote_ident(table)}) AS duplicate_ticker_ordinal_rows,
-    countIf(prev_ordinal != 0 AND ordinal != prev_ordinal + 1) AS intra_year_ordinal_gap_steps,
-    countIf(prev_ordinal != 0 AND sip_timestamp_us < prev_ts) AS timestamp_backsteps
+    count() AS rows,
+    count() - uniqExact(ticker, ordinal) AS duplicate_ticker_ordinal_rows,
+    countIf(prev_ordinal != 0 AND ordinal != prev_ordinal + 1) AS intra_period_ordinal_gap_steps,
+    countIf(prev_ordinal != 0 AND sip_timestamp_us < prev_ts) AS timestamp_backsteps,
+    uniqExact(ticker) AS tickers
 FROM ordered
 FORMAT TSVWithNames
 """
 
 
+def audit_year_period_boundaries_sql(args: argparse.Namespace, year: int, start_date: date, end_date: date) -> str:
+    table = year_table_name(args, year)
+    return f"""
+SELECT
+    ticker,
+    min(ordinal) AS min_ordinal,
+    max(ordinal) AS max_ordinal,
+    min(sip_timestamp_us) AS min_sip_timestamp_us,
+    max(sip_timestamp_us) AS max_sip_timestamp_us,
+    count() AS rows
+FROM {quote_ident(args.database)}.{quote_ident(table)}
+WHERE event_date >= toDate({sql_string(start_date.isoformat())})
+  AND event_date < toDate({sql_string(end_date.isoformat())})
+GROUP BY ticker
+ORDER BY ticker
+FORMAT TSVWithNames
+"""
+
+
 def audit_year(client: ClickHouseHttpClient, args: argparse.Namespace, year: int, expected_rows: int, report_path: Path) -> None:
-    text = query_text(client, audit_year_sql(args, year))
-    lines = text.splitlines()
-    if len(lines) < 2:
-        raise RuntimeError(f"Year {year} audit returned no rows")
-    keys = lines[0].split("\t")
-    values = lines[1].split("\t")
-    audit = {key: int(float(value or 0)) for key, value in zip(keys, values, strict=False)}
-    audit["expected_rows"] = int(expected_rows)
-    audit["year"] = int(year)
-    audit["type"] = "year_audit"
+    audit: dict[str, Any] = {
+        "type": "year_audit",
+        "year": int(year),
+        "expected_rows": int(expected_rows),
+        "rows": 0,
+        "duplicate_ticker_ordinal_rows": 0,
+        "intra_period_ordinal_gap_steps": 0,
+        "inter_period_ordinal_gap_steps": 0,
+        "inter_period_ordinal_overlap_steps": 0,
+        "timestamp_backsteps": 0,
+        "periods": 0,
+        "status": "ok",
+    }
+    last_by_ticker: dict[str, tuple[int, int]] = {}
+    first_failure_examples: list[dict[str, Any]] = []
+    for chunk_start, chunk_end in iter_date_ranges(date(year, 1, 1), date(year + 1, 1, 1), args.insert_chunk_days):
+        summary_rows = parse_tsv_with_names(query_text(client, audit_year_period_sql(args, year, chunk_start, chunk_end)))
+        if not summary_rows:
+            raise RuntimeError(f"Year {year} audit returned no summary for {chunk_start} -> {chunk_end}")
+        summary = {key: int(float(value or 0)) for key, value in summary_rows[0].items()}
+        audit["rows"] += summary["rows"]
+        audit["duplicate_ticker_ordinal_rows"] += summary["duplicate_ticker_ordinal_rows"]
+        audit["intra_period_ordinal_gap_steps"] += summary["intra_period_ordinal_gap_steps"]
+        audit["timestamp_backsteps"] += summary["timestamp_backsteps"]
+        audit["periods"] += 1
+
+        boundary_rows = parse_tsv_with_names(query_text(client, audit_year_period_boundaries_sql(args, year, chunk_start, chunk_end)))
+        for row in boundary_rows:
+            ticker = row["ticker"]
+            min_ordinal = int(row["min_ordinal"])
+            max_ordinal = int(row["max_ordinal"])
+            min_ts = int(row["min_sip_timestamp_us"])
+            max_ts = int(row["max_sip_timestamp_us"])
+            previous = last_by_ticker.get(ticker)
+            if previous is not None:
+                prev_max_ordinal, prev_max_ts = previous
+                if min_ordinal <= prev_max_ordinal:
+                    audit["inter_period_ordinal_overlap_steps"] += 1
+                    if len(first_failure_examples) < 10:
+                        first_failure_examples.append(
+                            {
+                                "ticker": ticker,
+                                "period_start": chunk_start.isoformat(),
+                                "previous_max_ordinal": prev_max_ordinal,
+                                "current_min_ordinal": min_ordinal,
+                                "kind": "ordinal_overlap",
+                            }
+                        )
+                elif min_ordinal != prev_max_ordinal + 1:
+                    audit["inter_period_ordinal_gap_steps"] += 1
+                    if len(first_failure_examples) < 10:
+                        first_failure_examples.append(
+                            {
+                                "ticker": ticker,
+                                "period_start": chunk_start.isoformat(),
+                                "previous_max_ordinal": prev_max_ordinal,
+                                "current_min_ordinal": min_ordinal,
+                                "kind": "ordinal_gap",
+                            }
+                        )
+                if min_ts < prev_max_ts:
+                    audit["timestamp_backsteps"] += 1
+                    if len(first_failure_examples) < 10:
+                        first_failure_examples.append(
+                            {
+                                "ticker": ticker,
+                                "period_start": chunk_start.isoformat(),
+                                "previous_max_sip_timestamp_us": prev_max_ts,
+                                "current_min_sip_timestamp_us": min_ts,
+                                "kind": "timestamp_backstep",
+                            }
+                        )
+            last_by_ticker[ticker] = (max_ordinal, max_ts)
+
     audit["status"] = "ok"
     failures = {
         key: value
@@ -785,7 +883,9 @@ def audit_year(client: ClickHouseHttpClient, args: argparse.Namespace, year: int
         if key
         in {
             "duplicate_ticker_ordinal_rows",
-            "intra_year_ordinal_gap_steps",
+            "intra_period_ordinal_gap_steps",
+            "inter_period_ordinal_gap_steps",
+            "inter_period_ordinal_overlap_steps",
             "timestamp_backsteps",
         }
         and value
@@ -795,6 +895,7 @@ def audit_year(client: ClickHouseHttpClient, args: argparse.Namespace, year: int
     if failures:
         audit["status"] = "failed"
         audit["failures"] = failures
+        audit["first_failure_examples"] = first_failure_examples
         append_jsonl(report_path, audit)
         raise RuntimeError(f"Year {year} audit failed: {failures}")
     append_jsonl(report_path, audit)
@@ -1057,7 +1158,38 @@ def main() -> int:
         existing_rows = year_table_row_count(client, args, year) if args.execute else 0
         if existing_rows and args.skip_existing_year and year not in set(args.force_rebuild_year):
             print(f"YEAR SKIP {year} table={table} existing_rows={existing_rows:,}", flush=True)
-            runner.run(f"insert_state_{year}_from_existing", insert_state_after_year_sql(args, year))
+            repair_days = available_repair_days_for_year(args, windows, year)
+            if repair_days:
+                old_count = query_scalar(client, source_old_year_count_sql(args, year, repair_days)) if args.execute else 0
+                repair_count = query_scalar(client, repair_year_count_sql(args, year)) if args.execute else 0
+                expected_rows = old_count + repair_count
+            else:
+                old_count = existing_rows
+                repair_count = 0
+                expected_rows = existing_rows
+            append_jsonl(
+                report_path,
+                {
+                    "type": "year_skip_existing",
+                    "year": year,
+                    "existing_rows": existing_rows,
+                    "old_rows": old_count,
+                    "repair_rows": repair_count,
+                    "expected_rows": expected_rows,
+                },
+            )
+            if args.execute:
+                audit_year(client, args, year, expected_rows, report_path)
+            for chunk_start, chunk_end in iter_date_ranges(date(year, 1, 1), date(year + 1, 1, 1), args.insert_chunk_days):
+                chunk_label = f"{chunk_start.strftime('%Y%m%d')}_{chunk_end.strftime('%Y%m%d')}"
+                runner.run(
+                    f"insert_state_{year}_{chunk_label}",
+                    insert_state_after_period_sql(args, year, chunk_start, chunk_end),
+                )
+            if args.drop_old_year_partitions:
+                for label, sql in drop_old_year_partitions_sql(args, year):
+                    runner.run(label, sql)
+            log_repair_stage(runner, args, run_id, "year", year, "ok", f"existing_rows={existing_rows}")
             continue
         print("=" * 96, flush=True)
         print(f"YEAR START {year} table={table}", flush=True)
