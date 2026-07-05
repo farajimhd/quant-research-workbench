@@ -157,6 +157,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-threads", type=int, default=64)
     parser.add_argument("--max-memory-usage", default="400G")
     parser.add_argument("--max-partitions-per-insert-block", type=int, default=1024)
+    parser.add_argument(
+        "--insert-chunk-days",
+        type=int,
+        default=1,
+        help="UTC event_date days per year-table insert. Smaller chunks reduce ClickHouse memory and keep ordinal state bounded.",
+    )
+    parser.add_argument(
+        "--derived-chunk-days",
+        type=int,
+        default=7,
+        help="UTC event_date days per derived continuity/index insert.",
+    )
     parser.add_argument("--output-root-win", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--force-rebuild-year", action="append", type=int, default=[], help="Drop and rebuild a target year table before inserting it.")
     parser.add_argument("--skip-existing-year", action=argparse.BooleanOptionalAction, default=True)
@@ -217,6 +229,18 @@ def parse_repair_windows(values: list[str]) -> list[tuple[date, date]]:
 
 def iter_dates(start: date, end: date) -> list[date]:
     return [date.fromordinal(ordinal) for ordinal in range(start.toordinal(), end.toordinal() + 1)]
+
+
+def iter_date_ranges(start: date, end: date, chunk_days: int) -> list[tuple[date, date]]:
+    if chunk_days <= 0:
+        raise ValueError("chunk_days must be positive")
+    ranges: list[tuple[date, date]] = []
+    current = start
+    while current < end:
+        chunk_end = min(date.fromordinal(current.toordinal() + chunk_days), end)
+        ranges.append((current, chunk_end))
+        current = chunk_end
+    return ranges
 
 
 def flatfile_destination(root: Path, key: str) -> Path:
@@ -470,9 +494,16 @@ def repair_source_dates_sql(days: list[date]) -> str:
     return f"SELECT arrayJoin([{values}]) AS source_date"
 
 
-def old_event_candidates_sql(args: argparse.Namespace, year: int, repair_days: list[date]) -> str:
-    year_start = f"{year}-01-01"
-    year_end = f"{year + 1}-01-01"
+def old_event_candidates_sql(
+    args: argparse.Namespace,
+    year: int,
+    repair_days: list[date],
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> str:
+    period_start = start_date.isoformat() if start_date else f"{year}-01-01"
+    period_end = end_date.isoformat() if end_date else f"{year + 1}-01-01"
     db = quote_ident(args.database)
     source = quote_ident(args.source_events_table)
     if repair_days:
@@ -518,14 +549,22 @@ SELECT
     e.event_date
 FROM {db}.{source} AS e
 {range_filter}
-WHERE e.event_date >= toDate({sql_string(year_start)})
-  AND e.event_date < toDate({sql_string(year_end)})
+WHERE e.event_date >= toDate({sql_string(period_start)})
+  AND e.event_date < toDate({sql_string(period_end)})
   {where_extra}
 """
 
 
-def repair_event_candidates_sql(args: argparse.Namespace, year: int) -> str:
+def repair_event_candidates_sql(
+    args: argparse.Namespace,
+    year: int,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> str:
     table = repair_raw_table_name(args, year)
+    period_start = start_date.isoformat() if start_date else f"{year}-01-01"
+    period_end = end_date.isoformat() if end_date else f"{year + 1}-01-01"
     return f"""
 SELECT
     ticker,
@@ -551,18 +590,37 @@ SELECT
     condition_token_5,
     event_date
 FROM {quote_ident(args.database)}.{quote_ident(table)}
-WHERE event_date >= toDate({sql_string(f"{year}-01-01")})
-  AND event_date < toDate({sql_string(f"{year + 1}-01-01")})
+WHERE event_date >= toDate({sql_string(period_start)})
+  AND event_date < toDate({sql_string(period_end)})
 """
 
 
-def insert_year_sql(args: argparse.Namespace, year: int, repair_days: list[date]) -> str:
+def repair_days_can_affect_period(repair_days: list[date], start_date: date, end_date: date) -> bool:
+    if not repair_days:
+        return False
+    min_day = min(repair_days)
+    max_day = max(repair_days)
+    # Source/session days can spill into the next UTC event_date after after-hours trading.
+    affected_start = min_day
+    affected_end = date.fromordinal(max_day.toordinal() + 2)
+    return start_date < affected_end and end_date > affected_start
+
+
+def insert_year_period_sql(args: argparse.Namespace, year: int, repair_days: list[date], start_date: date, end_date: date) -> str:
     target = year_table_name(args, year)
-    candidate_parts = [old_event_candidates_sql(args, year, repair_days)]
-    if repair_days:
-        candidate_parts.append(repair_event_candidates_sql(args, year))
+    include_repair = repair_days_can_affect_period(repair_days, start_date, end_date)
+    candidate_parts = [old_event_candidates_sql(args, year, repair_days, start_date=start_date, end_date=end_date)]
+    if include_repair:
+        candidate_parts.append(repair_event_candidates_sql(args, year, start_date=start_date, end_date=end_date))
     candidates = "\nUNION ALL\n".join(candidate_parts)
     columns = ",\n    ".join(EVENT_COLUMNS)
+    # Normal periods can use old ordinals as stable chronology, matching the source table primary key.
+    # Repair-affected periods must merge rebuilt flatfile rows by timestamp/sequence/hash.
+    ordinal_order = (
+        "c.sip_timestamp_us, c.sort_sequence, bitAnd(c.event_meta, 1), c.sort_hash, c.sort_ordinal"
+        if include_repair
+        else "c.sort_ordinal"
+    )
     return f"""
 INSERT INTO {quote_ident(args.database)}.{quote_ident(target)}
 (
@@ -573,7 +631,7 @@ SELECT
     coalesce(s.ordinal_offset, toUInt64(0))
         + toUInt64(row_number() OVER (
             PARTITION BY c.ticker
-            ORDER BY c.sip_timestamp_us, c.sort_sequence, bitAnd(c.event_meta, 1), c.sort_hash, c.sort_ordinal
+            ORDER BY {ordinal_order}
         ) - 1) AS ordinal,
     c.event_meta,
     c.sip_timestamp_us,
@@ -606,6 +664,10 @@ ORDER BY c.ticker, ordinal
 """
 
 
+def insert_year_sql(args: argparse.Namespace, year: int, repair_days: list[date]) -> str:
+    return insert_year_period_sql(args, year, repair_days, date(year, 1, 1), date(year + 1, 1, 1))
+
+
 def insert_state_after_year_sql(args: argparse.Namespace, year: int) -> str:
     target = year_table_name(args, year)
     return f"""
@@ -635,6 +697,27 @@ FROM
     FROM {quote_ident(args.database)}.{quote_ident(args.state_table)}
     GROUP BY ticker
 )
+GROUP BY ticker
+{query_settings_clause(args)}
+"""
+
+
+def insert_state_after_period_sql(args: argparse.Namespace, year: int, start_date: date, end_date: date) -> str:
+    target = year_table_name(args, year)
+    return f"""
+INSERT INTO {quote_ident(args.database)}.{quote_ident(args.state_table)}
+(
+    ticker,
+    next_ordinal,
+    processed_year
+)
+SELECT
+    ticker,
+    max(ordinal) + 1 AS next_ordinal,
+    toUInt16({int(year)}) AS processed_year
+FROM {quote_ident(args.database)}.{quote_ident(target)}
+WHERE event_date >= toDate({sql_string(start_date.isoformat())})
+  AND event_date < toDate({sql_string(end_date.isoformat())})
 GROUP BY ticker
 {query_settings_clause(args)}
 """
@@ -756,9 +839,21 @@ def create_derived_tables(runner: QueryRunner, args: argparse.Namespace) -> None
         validate_ticker_day_index_table_schema(runner.client, index_args)
 
 
-def insert_derived_continuity_sql(args: argparse.Namespace, view_name: str) -> str:
+def insert_derived_continuity_sql(
+    args: argparse.Namespace,
+    view_name: str,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> str:
     src_date = source_date_expr()
     build_step = build_step_expr(src_date)
+    where_clause = ""
+    if start_date and end_date:
+        where_clause = (
+            f"\nWHERE event_date >= toDate({sql_string(start_date.isoformat())})"
+            f"\n  AND event_date < toDate({sql_string(end_date.isoformat())})"
+        )
     return f"""
 INSERT INTO {quote_ident(args.database)}.{quote_ident(derived_continuity_table(args))}
 (
@@ -781,14 +876,27 @@ SELECT
     min(sip_timestamp_us) AS first_sip_timestamp_us,
     max(sip_timestamp_us) AS last_sip_timestamp_us
 FROM {quote_ident(args.database)}.{quote_ident(view_name)}
+{where_clause}
 GROUP BY ticker, source_date
 {query_settings_clause(args)}
 """
 
 
-def insert_derived_index_sql(args: argparse.Namespace, view_name: str) -> str:
+def insert_derived_index_sql(
+    args: argparse.Namespace,
+    view_name: str,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> str:
     src_date = source_date_expr()
     build_step = build_step_expr(src_date)
+    where_clause = ""
+    if start_date and end_date:
+        where_clause = (
+            f"\nWHERE event_date >= toDate({sql_string(start_date.isoformat())})"
+            f"\n  AND event_date < toDate({sql_string(end_date.isoformat())})"
+        )
     return f"""
 INSERT INTO {quote_ident(args.database)}.{quote_ident(derived_index_table(args))}
 (
@@ -813,6 +921,7 @@ SELECT
     max(sip_timestamp_us) AS last_sip_timestamp_us,
     {build_step} AS build_step
 FROM {quote_ident(args.database)}.{quote_ident(view_name)}
+{where_clause}
 GROUP BY ticker, source_date
 {query_settings_clause(args)}
 """
@@ -961,10 +1070,28 @@ def main() -> int:
         repair_count = query_scalar(client, repair_year_count_sql(args, year)) if args.execute and repair_days else 0
         expected_rows = old_count + repair_count
         append_jsonl(report_path, {"type": "year_plan", "year": year, "old_rows": old_count, "repair_rows": repair_count, "expected_rows": expected_rows})
-        runner.run(f"insert_{table}", insert_year_sql(args, year, repair_days))
+        for chunk_start, chunk_end in iter_date_ranges(date(year, 1, 1), date(year + 1, 1, 1), args.insert_chunk_days):
+            chunk_label = f"{chunk_start.strftime('%Y%m%d')}_{chunk_end.strftime('%Y%m%d')}"
+            print(f"YEAR CHUNK {year} {chunk_start.isoformat()} -> {chunk_end.isoformat()}", flush=True)
+            append_jsonl(
+                report_path,
+                {
+                    "type": "year_chunk_start",
+                    "year": year,
+                    "start_date": chunk_start.isoformat(),
+                    "end_date": chunk_end.isoformat(),
+                },
+            )
+            runner.run(
+                f"insert_{table}_{chunk_label}",
+                insert_year_period_sql(args, year, repair_days, chunk_start, chunk_end),
+            )
+            runner.run(
+                f"insert_state_{year}_{chunk_label}",
+                insert_state_after_period_sql(args, year, chunk_start, chunk_end),
+            )
         if args.execute:
             audit_year(client, args, year, expected_rows, report_path)
-        runner.run(f"insert_state_{year}", insert_state_after_year_sql(args, year))
         if args.drop_old_year_partitions:
             for label, sql in drop_old_year_partitions_sql(args, year):
                 runner.run(label, sql)
@@ -974,8 +1101,18 @@ def main() -> int:
 
     if args.build_derived_tables:
         create_derived_tables(runner, args)
-        runner.run(f"insert_{derived_continuity_table(args)}", insert_derived_continuity_sql(args, args.events_all_view))
-        runner.run(f"insert_{derived_index_table(args)}", insert_derived_index_sql(args, args.events_all_view))
+        for year in years:
+            for chunk_start, chunk_end in iter_date_ranges(date(year, 1, 1), date(year + 1, 1, 1), args.derived_chunk_days):
+                chunk_label = f"{chunk_start.strftime('%Y%m%d')}_{chunk_end.strftime('%Y%m%d')}"
+                print(f"DERIVED CHUNK {chunk_start.isoformat()} -> {chunk_end.isoformat()}", flush=True)
+                runner.run(
+                    f"insert_{derived_continuity_table(args)}_{chunk_label}",
+                    insert_derived_continuity_sql(args, args.events_all_view, start_date=chunk_start, end_date=chunk_end),
+                )
+                runner.run(
+                    f"insert_{derived_index_table(args)}_{chunk_label}",
+                    insert_derived_index_sql(args, args.events_all_view, start_date=chunk_start, end_date=chunk_end),
+                )
         if args.execute:
             audit_derived_tables(client, args, args.events_all_view, report_path)
         if args.promote_derived_tables:
