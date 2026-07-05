@@ -26,6 +26,9 @@ The Rich terminal separates progress into several panels:
 
 - `Cumulative Rows`: total source rows fetched, token rows fetched, embeddings
   written, coverage rows, and current active ClickHouse queries.
+- `Work Focus`: shows the current mode/source/stage/window being processed and
+  the last embedding extraction batch, including sequence count, token count,
+  inference seconds, insert seconds, and sequences/second.
 - `Cycle Summary`: keeps the last recent live cycle and the last historical
   gap-fill cycle visible at the same time, including window, detected gaps,
   completed gaps, remaining gaps, rows written, and cycle seconds.

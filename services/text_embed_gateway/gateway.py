@@ -53,6 +53,23 @@ class TextEmbedMetrics:
     market_status_source: str = "local_clock"
     market_status_updated_at_utc: str = ""
     market_status_error: str = ""
+    active_mode: str = ""
+    active_source: str = ""
+    active_stage: str = ""
+    active_window_utc: str = ""
+    active_detail: str = ""
+    active_started_at_utc: str = ""
+    last_embedding_at_utc: str = ""
+    last_embedding_mode: str = ""
+    last_embedding_source: str = ""
+    last_embedding_stage: str = ""
+    last_embedding_sequences: int = 0
+    last_embedding_tokens: int = 0
+    last_embedding_inference_seconds: float = 0.0
+    last_embedding_insert_seconds: float = 0.0
+    last_embedding_batch_seconds: float = 0.0
+    last_embedding_sequences_per_second: float = 0.0
+    last_embedding_tokens_per_second: float = 0.0
     cycles: int = 0
     live_cycles: int = 0
     historical_cycles: int = 0
@@ -371,29 +388,29 @@ class TextEmbedGateway:
                 source_label = source.upper()
                 mode_label_text = mode.upper()
                 if source == "sec":
-                    self._set_phase("polling", f"{mode_label_text} SEC: refreshing mapped SEC text context.")
+                    self._set_active_work(mode=mode, source=source, stage="context_refresh", detail=f"{mode_label_text} SEC: refreshing mapped SEC text context.", bounds=ranges[source])
                     self._refresh_sec_context(ranges[source], mode)
                     cycle_detected += int(self.metrics.sec_context_gap_detected) + int(self.metrics.sec_context_blocked_detected)
                     cycle_completed += int(self.metrics.sec_context_gap_completed)
                     cycle_remaining += int(self.metrics.sec_context_gap_remaining) + int(self.metrics.sec_context_blocked_detected)
-                self._set_phase("polling", f"{mode_label_text} {source_label}: summarizing source-token gaps.")
+                self._set_active_work(mode=mode, source=source, stage="source_gap_summary", detail=f"{mode_label_text} {source_label}: summarizing source-token gaps.", bounds=ranges[source])
                 source_summary = self._summarize_source_gaps(source, ranges[source])
                 cycle_detected += int(source_summary["rows"])
-                self._set_phase("polling", f"{mode_label_text} {source_label}: fetching missing source text.")
+                self._set_active_work(mode=mode, source=source, stage="source_fetch", detail=f"{mode_label_text} {source_label}: fetching missing source text.", bounds=ranges[source])
                 source_rows = self._fetch_missing_source_rows(source, ranges[source], mode)
                 if source_rows:
-                    self._set_phase("polling", f"{mode_label_text} {source_label}: tokenizing and embedding {len(source_rows):,} source rows.")
+                    self._set_active_work(mode=mode, source=source, stage="source_embed", detail=f"{mode_label_text} {source_label}: tokenizing and embedding {len(source_rows):,} source rows.", bounds=ranges[source])
                     total_written += self._tokenize_embed_and_persist_source(source, source_rows, mode)
                     self._set_gap_completed(source, "source", len(source_rows))
                 if self._stop_event.is_set():
                     break
-                self._set_phase("polling", f"{mode_label_text} {source_label}: summarizing token-embedding gaps.")
+                self._set_active_work(mode=mode, source=source, stage="token_gap_summary", detail=f"{mode_label_text} {source_label}: summarizing token-embedding gaps.", bounds=ranges[source])
                 token_summary = self._summarize_token_gaps(source, ranges[source])
                 cycle_detected += int(token_summary["rows"])
-                self._set_phase("polling", f"{mode_label_text} {source_label}: fetching token rows missing embeddings.")
+                self._set_active_work(mode=mode, source=source, stage="token_fetch", detail=f"{mode_label_text} {source_label}: fetching token rows missing embeddings.", bounds=ranges[source])
                 token_rows = self._fetch_missing_token_rows(source, ranges[source], mode)
                 if token_rows:
-                    self._set_phase("polling", f"{mode_label_text} {source_label}: embedding {len(token_rows):,} existing token rows.")
+                    self._set_active_work(mode=mode, source=source, stage="token_embed", detail=f"{mode_label_text} {source_label}: embedding {len(token_rows):,} existing token rows.", bounds=ranges[source])
                     total_written += self._embed_and_persist_tokens(source, token_rows, mode)
                     self._set_gap_completed(source, "token", len(token_rows))
                 source_completed = int(getattr(self.metrics, f"{source}_source_gap_completed"))
@@ -402,7 +419,7 @@ class TextEmbedGateway:
                 token_remaining = int(getattr(self.metrics, f"{source}_token_gap_remaining"))
                 cycle_completed += source_completed + token_completed
                 cycle_remaining += source_remaining + token_remaining
-                self._set_phase("polling", f"{mode_label_text} {source_label}: updating coverage report.")
+                self._set_active_work(mode=mode, source=source, stage="coverage_summary", detail=f"{mode_label_text} {source_label}: updating coverage report.", bounds=ranges[source])
                 coverage_summary = self._summarize_available_coverage(source, ranges[source])
                 self._record_source_report(
                     mode=mode,
@@ -749,6 +766,17 @@ class TextEmbedGateway:
         setattr(self.metrics, f"{mode}_last_inference_tokens", tokens)
         setattr(self.metrics, f"{mode}_last_batch_seconds", batch_seconds)
         setattr(self.metrics, f"{mode}_last_insert_seconds", insert_seconds)
+        self.metrics.last_embedding_at_utc = utc_now_text()
+        self.metrics.last_embedding_mode = mode
+        self.metrics.last_embedding_source = source
+        self.metrics.last_embedding_stage = stage
+        self.metrics.last_embedding_sequences = sequences
+        self.metrics.last_embedding_tokens = tokens
+        self.metrics.last_embedding_inference_seconds = inference_seconds
+        self.metrics.last_embedding_insert_seconds = insert_seconds
+        self.metrics.last_embedding_batch_seconds = batch_seconds
+        self.metrics.last_embedding_sequences_per_second = safe_div(sequences, inference_seconds)
+        self.metrics.last_embedding_tokens_per_second = safe_div(tokens, inference_seconds)
         self._remember(source=source, mode=mode, stage=f"{stage}_timing", rows=sequences, seconds=inference_seconds)
         self._log(
             "embedding_timing",
@@ -924,6 +952,15 @@ class TextEmbedGateway:
         self.metrics.current_phase_message = message
         self.metrics.current_phase_started_at_utc = utc_now_text()
         self._log("phase", phase=phase, message=message)
+
+    def _set_active_work(self, *, mode: str, source: str, stage: str, detail: str, bounds: tuple[datetime, datetime] | None = None) -> None:
+        self.metrics.active_mode = mode
+        self.metrics.active_source = source
+        self.metrics.active_stage = stage
+        self.metrics.active_detail = detail
+        self.metrics.active_started_at_utc = utc_now_text()
+        self.metrics.active_window_utc = f"{utc_text(bounds[0])} -> {utc_text(bounds[1])}" if bounds is not None else ""
+        self._set_phase("polling", detail)
 
     def _remember(self, *, source: str, mode: str, stage: str, rows: int, seconds: float) -> None:
         self._recent.appendleft(

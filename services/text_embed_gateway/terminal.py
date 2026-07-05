@@ -32,6 +32,7 @@ def render_dashboard(gateway: "TextEmbedGateway") -> Group:
     return Group(
         header_panel(gateway, metrics),
         status_panel(metrics),
+        work_focus_panel(metrics),
         progress_panel(metrics),
         cycle_summary_panel(metrics),
         coverage_report_panel(metrics),
@@ -67,6 +68,19 @@ def status_panel(metrics: dict[str, Any]) -> Panel:
     table.add_column(ratio=1, overflow="fold")
     table.add_row("Phase", f"[{color}]{status_label(phase)}[/{color}]")
     table.add_row("Message", str(metrics.get("current_phase_message") or "-"))
+    if metrics.get("active_stage"):
+        focus = " / ".join(
+            part
+            for part in (
+                mode_label(str(metrics.get("active_mode") or "")),
+                source_label(str(metrics.get("active_source") or "")),
+                stage_label(metrics.get("active_stage")),
+            )
+            if part and part != "-"
+        )
+        table.add_row("Focus", focus or "-")
+    if metrics.get("active_window_utc"):
+        table.add_row("Window UTC", str(metrics.get("active_window_utc") or "-").replace("T", " ").replace("Z", ""))
     table.add_row("Model", style_status(str(metrics.get("model_status") or "-")))
     table.add_row("Market", f"{str(metrics.get('market_status') or '-')} / {str(metrics.get('market_status_source') or '-')}")
     if metrics.get("market_status_error"):
@@ -74,6 +88,40 @@ def status_panel(metrics: dict[str, Any]) -> Panel:
     if metrics.get("last_error"):
         table.add_row("Last error", str(metrics.get("last_error") or "-"))
     return Panel(table, title="Current Operation", box=box.ROUNDED, border_style=color, padding=(0, 1))
+
+
+def work_focus_panel(metrics: dict[str, Any]) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Item", style="cyan", no_wrap=True, width=18)
+    table.add_column("Mode", no_wrap=True, width=12)
+    table.add_column("Source", no_wrap=True, width=8)
+    table.add_column("Stage", no_wrap=True, width=18)
+    table.add_column("Rows/Seq", justify="right", no_wrap=True, width=12)
+    table.add_column("Timing", no_wrap=True, width=34)
+    table.add_column("Detail", overflow="fold", ratio=1)
+    table.add_row(
+        "Active focus",
+        mode_label(str(metrics.get("active_mode") or "")),
+        source_label(str(metrics.get("active_source") or "")),
+        stage_label(metrics.get("active_stage")),
+        "-",
+        f"started={compact_time(str(metrics.get('active_started_at_utc') or ''))}",
+        f"{metrics.get('active_detail') or '-'}  window={str(metrics.get('active_window_utc') or '-').replace('T', ' ').replace('Z', '')}",
+    )
+    table.add_row(
+        "Last extraction",
+        mode_label(str(metrics.get("last_embedding_mode") or "")),
+        source_label(str(metrics.get("last_embedding_source") or "")),
+        stage_label(metrics.get("last_embedding_stage")),
+        fmt(metrics.get("last_embedding_sequences")),
+        (
+            f"infer={seconds(metrics.get('last_embedding_inference_seconds'))} "
+            f"insert={seconds(metrics.get('last_embedding_insert_seconds'))} "
+            f"seq/s={float(metrics.get('last_embedding_sequences_per_second') or 0.0):.1f}"
+        ),
+        f"tokens={fmt(metrics.get('last_embedding_tokens'))} updated={compact_time(str(metrics.get('last_embedding_at_utc') or ''))}",
+    )
+    return Panel(table, title="Work Focus", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
 
 
 def progress_panel(metrics: dict[str, Any]) -> Panel:
@@ -320,6 +368,11 @@ def mode_label(mode: str) -> str:
 
 def source_label(source: str) -> str:
     return "News" if source == "news" else "SEC" if source == "sec" else str(source or "-")
+
+
+def stage_label(stage: Any) -> str:
+    text = str(stage or "")
+    return text.replace("_", " ").title() if text else "-"
 
 
 def style_status(value: str) -> str:
