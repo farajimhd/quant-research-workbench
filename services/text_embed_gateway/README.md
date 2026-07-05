@@ -9,10 +9,11 @@ schemas as the historical builder in `pipelines/market_sip/events`.
 1. Load `.env` files, connect to ClickHouse, and load Qwen to GPU at service
    startup.
 2. Ensure token tables, embedding tables, and `text_embedding_coverage_v1`.
-3. During market collection hours, poll only the recent live window for:
+3. Always poll the recent live window for news and SEC rows, even when the
+   market is closed or after-hours text arrives:
    - source text rows that do not yet have token rows
    - token rows that do not yet have embedding rows
-4. Outside market collection hours, process broader historical gaps.
+4. Outside market collection hours, also process broader historical gaps.
 5. Persist token rows, embedding rows, and lightweight coverage rows.
 6. On shutdown, cancel active ClickHouse queries, finish the current persist
    step when possible, release model references, and clear CUDA cache.

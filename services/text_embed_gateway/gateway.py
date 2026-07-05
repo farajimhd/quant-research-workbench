@@ -258,16 +258,26 @@ class TextEmbedGateway:
         self._log("schema_ready", target_database=args.target_database)
 
     async def _poll_loop(self) -> None:
+        last_historical_started = 0.0
         while not self._stop_event.is_set():
             started = time.perf_counter()
             try:
                 status = await asyncio.to_thread(self.current_market_status)
-                mode = "live" if status.active_collection_window else "closed"
-                self._set_phase("polling", f"Embedding {mode} gaps.")
-                await asyncio.to_thread(self._run_cycle, mode)
-                sleep_seconds = self.config.live_poll_seconds if status.active_collection_window else self.config.closed_poll_seconds
+                self._set_phase("polling", "Embedding recent live text gaps.")
+                await asyncio.to_thread(self._run_cycle, "live")
+
+                now_monotonic = time.monotonic()
+                should_run_historical = (
+                    not status.active_collection_window
+                    and now_monotonic - last_historical_started >= max(1.0, self.config.closed_poll_seconds)
+                )
+                if should_run_historical and not self._stop_event.is_set():
+                    last_historical_started = now_monotonic
+                    self._set_phase("polling", "Embedding closed historical gaps.")
+                    await asyncio.to_thread(self._run_cycle, "closed")
+
                 self.metrics.last_cycle_seconds = time.perf_counter() - started
-                await asyncio.wait_for(self._stop_event.wait(), timeout=max(0.25, sleep_seconds))
+                await asyncio.wait_for(self._stop_event.wait(), timeout=max(0.25, self.config.live_poll_seconds))
             except TimeoutError:
                 continue
             except asyncio.CancelledError:
