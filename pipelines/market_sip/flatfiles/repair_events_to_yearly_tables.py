@@ -344,12 +344,30 @@ CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.state_
     ticker LowCardinality(String),
     next_ordinal UInt64,
     processed_year UInt16,
+    processed_through_date Date DEFAULT toDate('1970-01-01'),
+    state_order UInt32 DEFAULT 0,
     updated_at DateTime DEFAULT now()
 )
 ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY ticker
 {mergetree_settings(args.storage_policy)}
 """
+
+
+def ensure_state_table_columns(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
+    table = f"{quote_ident(args.database)}.{quote_ident(args.state_table)}"
+    client.execute(
+        f"""
+ALTER TABLE {table}
+    ADD COLUMN IF NOT EXISTS processed_through_date Date DEFAULT toDate('1970-01-01')
+"""
+    )
+    client.execute(
+        f"""
+ALTER TABLE {table}
+    ADD COLUMN IF NOT EXISTS state_order UInt32 DEFAULT 0
+"""
+    )
 
 
 def create_repair_raw_table_sql(args: argparse.Namespace, table: str) -> str:
@@ -667,7 +685,7 @@ LEFT JOIN
 (
     SELECT
         ticker,
-        argMax(next_ordinal, updated_at) AS ordinal_offset
+        argMax(next_ordinal, tuple(state_order, next_ordinal)) AS ordinal_offset
     FROM {quote_ident(args.database)}.{quote_ident(args.state_table)}
     GROUP BY ticker
 ) AS s ON s.ticker = c.ticker
@@ -687,12 +705,16 @@ INSERT INTO {quote_ident(args.database)}.{quote_ident(args.state_table)}
 (
     ticker,
     next_ordinal,
-    processed_year
+    processed_year,
+    processed_through_date,
+    state_order
 )
 SELECT
     ticker,
     max(next_ordinal) AS next_ordinal,
-    toUInt16({int(year)}) AS processed_year
+    toUInt16({int(year)}) AS processed_year,
+    toDate({sql_string(f"{year + 1}-01-01")}) AS processed_through_date,
+    toUInt32(dateDiff('day', toDate('1970-01-01'), toDate({sql_string(f"{year + 1}-01-01")}))) AS state_order
 FROM
 (
     SELECT
@@ -705,7 +727,7 @@ FROM
 
     SELECT
         ticker,
-        argMax(next_ordinal, updated_at) AS next_ordinal
+        argMax(next_ordinal, tuple(state_order, next_ordinal)) AS next_ordinal
     FROM {quote_ident(args.database)}.{quote_ident(args.state_table)}
     GROUP BY ticker
 )
@@ -721,12 +743,16 @@ INSERT INTO {quote_ident(args.database)}.{quote_ident(args.state_table)}
 (
     ticker,
     next_ordinal,
-    processed_year
+    processed_year,
+    processed_through_date,
+    state_order
 )
 SELECT
     ticker,
     max(ordinal) + 1 AS next_ordinal,
-    toUInt16({int(year)}) AS processed_year
+    toUInt16({int(year)}) AS processed_year,
+    toDate({sql_string(end_date.isoformat())}) AS processed_through_date,
+    toUInt32(dateDiff('day', toDate('1970-01-01'), toDate({sql_string(end_date.isoformat())}))) AS state_order
 FROM {quote_ident(args.database)}.{quote_ident(target)}
 WHERE event_date >= toDate({sql_string(start_date.isoformat())})
   AND event_date < toDate({sql_string(end_date.isoformat())})
@@ -1152,6 +1178,8 @@ def main() -> int:
 
     runner.run("create_repair_log", create_repair_log_table_sql(args))
     runner.run("create_state", create_state_table_sql(args))
+    if args.execute:
+        ensure_state_table_columns(client, args)
 
     for year in years:
         table = year_table_name(args, year)
