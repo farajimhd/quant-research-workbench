@@ -644,12 +644,12 @@ def insert_year_period_sql(args: argparse.Namespace, year: int, repair_days: lis
         candidate_parts.append(repair_event_candidates_sql(args, year, start_date=start_date, end_date=end_date))
     candidates = "\nUNION ALL\n".join(candidate_parts)
     columns = ",\n    ".join(EVENT_COLUMNS)
-    # Normal periods can use old ordinals as stable chronology, matching the source table primary key.
-    # Repair-affected periods must merge rebuilt flatfile rows by timestamp/sequence/hash.
+    # Recalculate chronology from timestamps. Existing ordinals are only a deterministic
+    # tie-breaker for old rows; repaired flatfile rows use source sequence instead.
     ordinal_order = (
         "c.sip_timestamp_us, c.sort_sequence, bitAnd(c.event_meta, 1), c.sort_hash, c.sort_ordinal"
         if include_repair
-        else "c.sort_ordinal"
+        else "c.sip_timestamp_us, c.sort_ordinal, bitAnd(c.event_meta, 1), c.sort_hash"
     )
     return f"""
 INSERT INTO {quote_ident(args.database)}.{quote_ident(target)}
