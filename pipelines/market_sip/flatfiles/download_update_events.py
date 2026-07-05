@@ -1921,6 +1921,50 @@ def rebuild_day_ticker_index(
         f"insert_ticker_day_index_{day.source_date}",
         insert_day_ticker_index_sql(args, day, build_step),
     )
+    mismatches = query_ticker_day_index_mismatches(client, args, [day])
+    check = {
+        "type": "ticker_day_index_check",
+        "source_date": day.source_date,
+        "build_step": build_step,
+        "reason": reason,
+        "mismatches": mismatches,
+        "status": "ok" if mismatches == 0 else "failed",
+    }
+    append_jsonl(report_path, check)
+    if mismatches:
+        try:
+            cleanup_profile = run_profiled(
+                client,
+                f"cleanup_bad_ticker_day_index_{day.source_date}",
+                delete_day_ticker_index_sql(args, day),
+            )
+            append_jsonl(
+                report_path,
+                {
+                    "type": "ticker_day_index_cleanup",
+                    "source_date": day.source_date,
+                    "build_step": build_step,
+                    "reason": "validation_failed",
+                    "profile": asdict(cleanup_profile),
+                    "status": "ok",
+                },
+            )
+        except Exception as cleanup_exc:
+            append_jsonl(
+                report_path,
+                {
+                    "type": "ticker_day_index_cleanup",
+                    "source_date": day.source_date,
+                    "build_step": build_step,
+                    "reason": "validation_failed",
+                    "status": "failed",
+                    "error": repr(cleanup_exc),
+                },
+            )
+        raise RuntimeError(
+            f"day={day.source_date} rebuilt ticker/day index has {mismatches:,} mismatched ticker rows "
+            f"against {args.database}.{args.continuity_table}; refusing to mark the day usable."
+        )
     append_jsonl(
         report_path,
         {
