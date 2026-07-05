@@ -11,7 +11,7 @@ from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_str
 
 PUBLICATION_SOURCE_KINDS: tuple[str, ...] = (
     "finra_short_volume",
-    "finra_short_interest",
+    "massive_short_interest",
     "sec_fails_to_deliver",
     "reg_sho_threshold",
     "ibkr_borrow_availability",
@@ -25,14 +25,13 @@ PUBLICATION_SOURCE_KINDS: tuple[str, ...] = (
 
 IMPLEMENTED_PUBLICATION_COVERAGE_KINDS: tuple[str, ...] = (
     "finra_short_volume:CNMS",
-    "finra_short_interest",
+    "massive_short_interest",
     "sec_fails_to_deliver",
     "reg_sho_threshold",
     "massive_splits",
     "massive_dividends",
     "massive_ipos",
     "massive_presentation_assets",
-    "massive_flatfile_inventory",
     "massive_ticker_details",
     "ibkr_borrow_availability",
     "sec_country_assertions",
@@ -48,7 +47,6 @@ IMPLEMENTED_PUBLICATION_TABLES: frozenset[str] = frozenset(
         "market_cash_dividend_v1",
         "market_ipo_v1",
         "market_presentation_asset_v1",
-        "massive_flatfile_source_file_v1",
         "market_fails_to_deliver_v1",
         "market_reg_sho_threshold_v1",
         "market_security_borrow_v1",
@@ -251,7 +249,6 @@ MARKET_PUBLICATION_SOURCE_TABLES: tuple[str, ...] = (
     "market_cash_dividend_v1",
     "market_ipo_v1",
     "market_presentation_asset_v1",
-    "massive_flatfile_source_file_v1",
 )
 
 
@@ -277,6 +274,7 @@ def market_publication_audit(client: ClickHouseHttpClient, *, database: str) -> 
         "market_stock_split_v1": "execution_date",
         "market_cash_dividend_v1": "ex_dividend_date",
         "market_ipo_v1": "listing_date",
+        "market_presentation_asset_v1": "last_seen_at_utc",
         "market_fails_to_deliver_v1": "settlement_date",
         "market_reg_sho_threshold_v1": "threshold_date",
         "market_security_borrow_v1": "observed_at_utc",

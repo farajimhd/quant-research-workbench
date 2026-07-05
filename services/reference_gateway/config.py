@@ -81,6 +81,7 @@ class ReferenceGatewayConfig:
     current_ticker_detail_request_max_retries: int
     current_ticker_detail_request_retry_base_seconds: float
     current_ticker_detail_request_retry_max_seconds: float
+    presentation_asset_root_win: Path
     ibkr_borrow_snapshot_batch_size: int
     ibkr_borrow_insert_batch_size: int
     ibkr_borrow_request_min_interval_seconds: float
@@ -92,7 +93,7 @@ class ReferenceGatewayConfig:
     @classmethod
     def from_env(cls, overrides: ReferenceGatewayConfigOverrides | None = None) -> "ReferenceGatewayConfig":
         overrides = overrides or ReferenceGatewayConfigOverrides()
-        bind = env_string("REFERENCE_GATEWAY_BIND", "127.0.0.1:8798")
+        bind = env_string("REFERENCE_GATEWAY_BIND", "127.0.0.1:8799")
         host, port = parse_bind(bind)
         data_root = resolve_data_root()
         prepared_root = Path(env_string("REFERENCE_GATEWAY_PREPARED_ROOT_WIN", str(data_root / "prepared")))
@@ -179,6 +180,12 @@ class ReferenceGatewayConfig:
             current_ticker_detail_request_max_retries=env_int("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_REQUEST_MAX_RETRIES", 5),
             current_ticker_detail_request_retry_base_seconds=env_float("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_REQUEST_RETRY_BASE_SECONDS", 2.0),
             current_ticker_detail_request_retry_max_seconds=env_float("REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_REQUEST_RETRY_MAX_SECONDS", 120.0),
+            presentation_asset_root_win=Path(
+                env_string(
+                    "REFERENCE_GATEWAY_PRESENTATION_ASSET_ROOT_WIN",
+                    str(data_root / "reference_gateway" / "artifacts" / "presentation_assets"),
+                )
+            ),
             ibkr_borrow_snapshot_batch_size=env_int("REFERENCE_GATEWAY_IBKR_BORROW_SNAPSHOT_BATCH_SIZE", 100),
             ibkr_borrow_insert_batch_size=env_int("REFERENCE_GATEWAY_IBKR_BORROW_INSERT_BATCH_SIZE", 50_000),
             ibkr_borrow_request_min_interval_seconds=env_float("REFERENCE_GATEWAY_IBKR_BORROW_REQUEST_MIN_INTERVAL_SECONDS", 0.12),
@@ -239,6 +246,7 @@ class ReferenceGatewayConfig:
                 "current_ticker_detail_request_max_retries": self.current_ticker_detail_request_max_retries,
                 "current_ticker_detail_request_retry_base_seconds": self.current_ticker_detail_request_retry_base_seconds,
                 "current_ticker_detail_request_retry_max_seconds": self.current_ticker_detail_request_retry_max_seconds,
+                "presentation_asset_root_win": str(self.presentation_asset_root_win),
                 "ibkr_borrow_frequency_seconds": self.ibkr_borrow_frequency_seconds,
                 "country_assertion_frequency_seconds": self.country_assertion_frequency_seconds,
                 "ibkr_borrow_snapshot_batch_size": self.ibkr_borrow_snapshot_batch_size,
@@ -311,7 +319,7 @@ def path_exists(path: Path) -> bool:
 def parse_bind(value: str) -> tuple[str, int]:
     text = value.strip()
     if ":" not in text:
-        return text, 8798
+        return text, 8799
     host, port_text = text.rsplit(":", 1)
     return host, int(port_text)
 

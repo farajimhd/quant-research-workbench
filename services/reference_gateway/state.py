@@ -41,14 +41,13 @@ class ReferenceTableState:
 
 SOURCE_TARGETS: dict[str, tuple[str, str, str]] = {
     "finra_short_volume:CNMS": ("FINRA short volume", "market_short_volume_v1", "daily CNMS short-volume publication"),
-    "finra_short_interest": ("FINRA short interest", "market_short_interest_v1", "short-interest publication coverage"),
+    "massive_short_interest": ("Massive short interest", "market_short_interest_v1", "short-interest publication coverage"),
     "sec_fails_to_deliver": ("SEC fails-to-deliver", "market_fails_to_deliver_v1", "SEC FTD settlement publication"),
     "reg_sho_threshold": ("Reg SHO threshold", "market_reg_sho_threshold_v1", "SEC/Nasdaq threshold security publication coverage"),
     "massive_splits": ("Massive splits", "market_stock_split_v1", "split corporate actions"),
     "massive_dividends": ("Massive dividends", "market_cash_dividend_v1", "cash dividend corporate actions"),
     "massive_ipos": ("Massive IPOs", "market_ipo_v1", "IPO publication rows"),
     "massive_presentation_assets": ("Massive presentation assets", "market_presentation_asset_v1", "presentation asset inventory coverage"),
-    "massive_flatfile_inventory": ("Massive flatfile inventory", "massive_flatfile_source_file_v1", "Massive flatfile source-file inventory coverage"),
     "massive_ticker_details": ("Massive ticker details", "market_security_market_snapshot_v1, market_security_float_v1", "current-state market snapshot and shares"),
     "ibkr_borrow_availability": ("IBKR borrow snapshot", "market_security_borrow_v1", "broker shortability and borrow availability"),
     "sec_country_assertions": ("Country assertions", "market_security_country_v1", "canonical exchange/listing country assertions"),
@@ -251,9 +250,8 @@ def parse_json_lines(text: str) -> list[dict[str, Any]]:
 
 def planned_source_label(table_name: str) -> str:
     labels = {
-        "market_short_interest_v1": "FINRA short interest",
+        "market_short_interest_v1": "Massive short interest",
         "market_presentation_asset_v1": "Massive presentation assets",
-        "massive_flatfile_source_file_v1": "Massive flatfile inventory",
         "market_reg_sho_threshold_v1": "Reg SHO threshold",
         "market_security_country_v1": "SEC country assertions",
     }

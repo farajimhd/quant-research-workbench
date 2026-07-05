@@ -163,8 +163,8 @@ Deferred in `Maintenance=Auto` during market hours:
 supplied. `Maintenance=Skip` disables deferred work.
 
 The publication coverage bootstrap records existing migrated source-table
-ranges for short interest, Reg SHO threshold rows, Massive presentation assets,
-and Massive flatfile inventory. Bootstrap coverage does not fabricate source
+ranges for Massive short interest, Reg SHO threshold rows, and Massive
+presentation assets. Bootstrap coverage does not fabricate source
 rows; it only records trusted coverage for data already present in the database.
 
 ## Issue Resolution Classes

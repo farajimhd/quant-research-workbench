@@ -52,7 +52,11 @@ def run_recent_publication_gap_fill(
         "--write-database",
         config.clickhouse_write_database,
         "--sources",
-        "finra_short_volume,sec_fails_to_deliver,massive_splits,massive_dividends,massive_ipos,massive_ticker_details,ibkr_borrow_availability",
+        (
+            "finra_short_volume,massive_short_interest,sec_fails_to_deliver,reg_sho_threshold,"
+            "massive_splits,massive_dividends,massive_ipos,massive_ticker_details,"
+            "massive_presentation_assets,ibkr_borrow_availability,sec_country_assertions"
+        ),
         "--finra-venues",
         "CNMS",
         "--output-root-win",

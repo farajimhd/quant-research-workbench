@@ -65,27 +65,29 @@ python -m services.reference_gateway.main --read-database q_live --test-write-da
 Historical/gap-fill market publications:
 
 ```powershell
-python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\market_publications_historical_gap_fill.py --start-date 2026-01-01 --end-date 2026-06-22 --read-database q_live --write-database q_live --sources finra_short_volume,sec_fails_to_deliver --finra-venues CNMS --output-root-win D:/market-data/prepared/reference_market_publications --resume-from-coverage --execute
+python D:\TradingCodes\quant-research-workbench\pipelines\reference_data\market_publications_historical_gap_fill.py --start-date 2026-01-01 --end-date 2026-06-22 --read-database q_live --write-database q_live --sources finra_short_volume,massive_short_interest,sec_fails_to_deliver,reg_sho_threshold,massive_splits,massive_dividends,massive_ipos,massive_ticker_details,massive_presentation_assets,ibkr_borrow_availability,sec_country_assertions --finra-venues CNMS --output-root-win D:/market-data/prepared/reference_market_publications --presentation-asset-root-win D:/market-data/reference_gateway/artifacts/presentation_assets --resume-from-coverage --execute
 ```
 
 Workstation runtime command:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\market_publications_historical_gap_fill.py --start-date 2026-01-01 --end-date 2026-06-22 --read-database q_live --write-database q_live --sources finra_short_volume,sec_fails_to_deliver --finra-venues CNMS --output-root-win D:/market-data/prepared/reference_market_publications --resume-from-coverage --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\market_publications_historical_gap_fill.py --start-date 2026-01-01 --end-date 2026-06-22 --read-database q_live --write-database q_live --sources finra_short_volume,massive_short_interest,sec_fails_to_deliver,reg_sho_threshold,massive_splits,massive_dividends,massive_ipos,massive_ticker_details,massive_presentation_assets,ibkr_borrow_availability,sec_country_assertions --finra-venues CNMS --output-root-win D:/market-data/prepared/reference_market_publications --presentation-asset-root-win D:/market-data/reference_gateway/artifacts/presentation_assets --resume-from-coverage --execute
 ```
 
 Workstation temp-write smoke:
 
 ```powershell
-python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\market_publications_historical_gap_fill.py --start-date 2026-01-01 --end-date 2026-06-22 --read-database q_live --write-database q_reference_tmp --sources finra_short_volume,sec_fails_to_deliver --finra-venues CNMS --output-root-win D:/market-data/prepared/reference_market_publications --resume-from-coverage --execute
+python D:\TradingML\codes\quant_research_workbench_pipelines\pipelines\reference_data\market_publications_historical_gap_fill.py --start-date 2026-01-01 --end-date 2026-06-22 --read-database q_live --write-database q_reference_tmp --sources finra_short_volume,massive_short_interest,sec_fails_to_deliver,reg_sho_threshold,massive_splits,massive_dividends,massive_ipos,massive_ticker_details,massive_presentation_assets,ibkr_borrow_availability,sec_country_assertions --finra-venues CNMS --output-root-win D:/market-data/prepared/reference_market_publications --presentation-asset-root-win D:/market-data/reference_gateway/artifacts/presentation_assets --resume-from-coverage --execute
 ```
 
 The fill script writes compact normalized rows and
-`market_reference_publication_coverage_v1` rows. It currently implements FINRA
-daily short-sale volume and SEC fails-to-deliver historical fills. IBKR borrow
-availability is point-in-time only and should be polled into
-`market_security_borrow_v1`; it should not be backfilled as if historical borrow
-availability were known.
+`market_reference_publication_coverage_v1` rows. It implements FINRA daily
+short-sale volume, Massive short interest, SEC fails-to-deliver, NasdaqTrader
+Reg SHO threshold rows, Massive corporate actions, Massive current ticker
+details/share-supply/presentation assets, IBKR point-in-time borrow, and
+country assertions. IBKR borrow and Massive ticker details are current-state
+sources; for historical windows the script records `source_not_historical`
+instead of fabricating old snapshots.
 
 The reference gateway can run a recent coverage-aware publication fill after its
 execute-mode audit. Large/manual historical fills should still use the script

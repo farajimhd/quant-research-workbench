@@ -62,12 +62,16 @@ SOURCE_SYNC_OPERATION_NAMES = {
 
 PUBLICATION_OPERATION_NAMES = {
     "finra_short_volume:CNMS": "Source: FINRA CNMS short volume",
+    "massive_short_interest": "Source: Massive short interest",
     "sec_fails_to_deliver": "Source: SEC fails-to-deliver zip",
+    "reg_sho_threshold": "Source: Reg SHO threshold lists",
     "massive_splits": "Source: Massive /v3/reference/splits",
     "massive_dividends": "Source: Massive /v3/reference/dividends",
     "massive_ipos": "Source: Massive /v3/reference/ipos",
+    "massive_presentation_assets": "Source: Massive presentation assets",
     "massive_ticker_details": "Source: Massive ticker details snapshot",
     "ibkr_borrow_availability": "Source: IBKR borrow availability",
+    "sec_country_assertions": "Source: country assertions",
 }
 
 

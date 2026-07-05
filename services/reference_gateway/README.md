@@ -179,9 +179,16 @@ worker with `--resume-from-coverage`. The default deep backfill start date is
 requiring a manual workstation command.
 
 The gateway also bootstraps coverage from existing migrated publication tables
-for short interest, Reg SHO threshold, presentation assets, and Massive flatfile
-inventory. Bootstrap coverage records that existing rows were inspected; it
+for Massive short interest, Reg SHO threshold, and presentation assets.
+Bootstrap coverage records that existing rows were inspected; it
 does not fabricate provider rows.
+
+Massive ticker-detail sync writes the downstream current-state tables together:
+`market_security_market_snapshot_v1`, `market_security_float_v1`, and
+`market_presentation_asset_v1`. Newly downloaded logo/icon assets are stored
+under `REFERENCE_GATEWAY_PRESENTATION_ASSET_ROOT_WIN`, defaulting to
+`D:/market-data/reference_gateway/artifacts/presentation_assets` on the
+workstation data root.
 
 ## Memory Guardrail
 

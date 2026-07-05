@@ -92,7 +92,6 @@ REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
             "market_cash_dividend_v1",
             "market_ipo_v1",
             "market_presentation_asset_v1",
-            "massive_flatfile_source_file_v1",
             "market_fails_to_deliver_v1",
             "market_reg_sho_threshold_v1",
             "market_security_borrow_v1",
@@ -100,8 +99,8 @@ REFERENCE_TABLE_GROUPS: tuple[ReferenceTableGroup, ...] = (
             "market_reference_publication_coverage_v1",
         ),
         update_policy=(
-            "Fill from authoritative or best-available publication sources. FINRA owns short volume and short "
-            "interest, SEC owns fails-to-deliver and XBRL-derived country/float evidence, Massive owns corporate "
+            "Fill from authoritative or best-available publication sources. FINRA owns short volume, Massive owns "
+            "short interest, SEC owns fails-to-deliver and XBRL-derived country/float evidence, Massive owns corporate "
             "actions and overview snapshots, and IBKR owns broker-specific borrow availability. Coverage rows are "
             "the source of truth for historical/gap-fill completeness."
         ),

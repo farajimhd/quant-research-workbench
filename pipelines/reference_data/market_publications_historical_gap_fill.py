@@ -5,6 +5,7 @@ import calendar
 import hashlib
 import io
 import json
+import mimetypes
 import os
 import re
 import ssl
@@ -48,6 +49,7 @@ FINRA_SHORT_VOLUME_SOURCES = {
     "FORF": "https://cdn.finra.org/equity/regsho/daily/FORFshvol{yyyymmdd}.txt",
     "FADF": "https://cdn.finra.org/equity/regsho/daily/FADFshvol{yyyymmdd}.txt",
 }
+NASDAQ_REG_SHO_THRESHOLD_URL = "https://www.nasdaqtrader.com/dynamic/symdir/regsho/nasdaqth{yyyymmdd}.txt"
 SEC_FTD_PAGE = "https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data"
 SEC_FTD_FILE_URL = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{yyyymm}{half}.zip"
 DEFAULT_USER_AGENT = "quant-reference-gateway/1.0 contact: local-research"
@@ -83,12 +85,16 @@ MASSIVE_SOURCE_SPECS = {
 }
 IMPLEMENTED_SOURCES = {
     "finra_short_volume",
+    "massive_short_interest",
     "sec_fails_to_deliver",
+    "reg_sho_threshold",
     "massive_splits",
     "massive_dividends",
     "massive_ipos",
     "massive_ticker_details",
+    "massive_presentation_assets",
     "ibkr_borrow_availability",
+    "sec_country_assertions",
 }
 WORKSTATION_COMPUTER_NAME = "DESKTOP-SAAI85T"
 WORKSTATION_DATA_ROOT_WIN = Path("D:/market-data")
@@ -144,10 +150,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root-win", default=os.environ.get("REFERENCE_PUBLICATION_OUTPUT_ROOT_WIN") or str(default_output_root()))
     parser.add_argument(
         "--sources",
-        default="finra_short_volume,sec_fails_to_deliver,massive_splits,massive_dividends,massive_ipos,massive_ticker_details,ibkr_borrow_availability",
+        default=(
+            "finra_short_volume,massive_short_interest,sec_fails_to_deliver,reg_sho_threshold,"
+            "massive_splits,massive_dividends,massive_ipos,massive_ticker_details,"
+            "massive_presentation_assets,ibkr_borrow_availability,sec_country_assertions"
+        ),
         help=(
-            "Comma separated source list. Implemented: finra_short_volume, sec_fails_to_deliver, "
-            "massive_splits, massive_dividends, massive_ipos, massive_ticker_details, ibkr_borrow_availability."
+            "Comma separated source list. Implemented: finra_short_volume, massive_short_interest, "
+            "sec_fails_to_deliver, reg_sho_threshold, massive_splits, massive_dividends, massive_ipos, "
+            "massive_ticker_details, massive_presentation_assets, ibkr_borrow_availability, sec_country_assertions."
         ),
     )
     parser.add_argument("--finra-venues", default="CNMS", help="Comma separated FINRA short-volume source files. Default CNMS consolidated NMS.")
@@ -158,6 +169,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-max-retries", type=int, default=5)
     parser.add_argument("--request-retry-base-seconds", type=float, default=2.0)
     parser.add_argument("--request-retry-max-seconds", type=float, default=120.0)
+    parser.add_argument(
+        "--presentation-asset-root-win",
+        default=os.environ.get("REFERENCE_GATEWAY_PRESENTATION_ASSET_ROOT_WIN") or str(default_presentation_asset_root()),
+        help="Root for newly downloaded Massive logo/icon assets. This is intentionally separate from legacy trading-dashboard artifacts.",
+    )
     parser.add_argument(
         "--sec-ftd-link-mode",
         choices=["direct", "html", "auto"],
@@ -230,20 +246,27 @@ def main() -> None:
                     source_system="finra",
                     source_object=f"daily_short_volume:{venue}",
                     coverage_kind=f"finra_short_volume:{venue}",
+                    target_table="market_short_volume_v1",
                     start_date=start_date,
                     end_date=end_date,
                     worker=lambda day, venue=venue: fetch_finra_short_volume_day(args, day, venue, symbols),
                 )
             )
+    if "massive_short_interest" in sources:
+        results.extend(run_massive_short_interest(client, args, run_id, start_date, end_date, symbols))
     if "sec_fails_to_deliver" in sources:
         results.extend(run_sec_ftd(client, args, run_id, start_date, end_date, symbols))
+    if "reg_sho_threshold" in sources:
+        results.extend(run_reg_sho_threshold(client, args, run_id, start_date, end_date, symbols))
     for source in ("massive_splits", "massive_dividends", "massive_ipos"):
         if source in sources:
             results.extend(run_massive_date_source(client, args, run_id, source, start_date, end_date, symbols))
-    if "massive_ticker_details" in sources:
+    if "massive_ticker_details" in sources or "massive_presentation_assets" in sources:
         results.extend(run_massive_ticker_details(client, args, run_id, start_date, end_date, symbols))
     if "ibkr_borrow_availability" in sources:
         results.extend(run_ibkr_borrow_availability(client, args, run_id, start_date, end_date, symbols))
+    if "sec_country_assertions" in sources:
+        results.extend(run_sec_country_assertions(client, args, run_id, start_date, end_date))
     write_summary(run_root, args, run_id, results)
     print_summary(results, run_root)
 
@@ -257,6 +280,7 @@ def run_date_source(
     source_system: str,
     source_object: str,
     coverage_kind: str,
+    target_table: str,
     start_date: date,
     end_date: date,
     worker: Any,
@@ -283,7 +307,7 @@ def run_date_source(
                 finished = datetime.now(UTC)
                 status = "covered_empty"
                 reason = "non_publication_day_weekend" if day.weekday() >= 5 else "non_publication_day_market_holiday"
-                details = {"reason": reason, "target_table": "market_short_volume_v1"}
+                details = {"reason": reason, "target_table": target_table}
                 result = SourceResult(source_object, coverage_kind, day, day + timedelta(days=1), 0, 0, 0, status, details)
                 results.append(result)
                 print(f"{coverage_kind} {day.isoformat()} status={status} rows=0 written=0 reason={reason}", flush=True)
@@ -318,9 +342,19 @@ def run_date_source(
             except FileNotFoundError as exc:
                 rows = []
                 rows_written = 0
-                rows_failed = 0
-                status = "covered_empty"
-                details = {"message": safe_exception_text(exc), "target_table": "market_short_volume_v1", "missing_file": True}
+                if is_missing_file_not_yet_available(coverage_kind, day):
+                    rows_failed = 0
+                    status = "source_not_yet_available"
+                    details = {
+                        "message": safe_exception_text(exc),
+                        "target_table": target_table,
+                        "missing_file": True,
+                        "reason": "provider_file_not_published_yet",
+                    }
+                else:
+                    rows_failed = 0
+                    status = "covered_empty"
+                    details = {"message": safe_exception_text(exc), "target_table": target_table, "missing_file": True}
             except Exception as exc:  # noqa: BLE001
                 rows = []
                 rows_written = 0
@@ -329,13 +363,13 @@ def run_date_source(
                     status = "source_not_yet_available"
                     details = {
                         "message": safe_exception_text(exc),
-                        "target_table": "market_short_volume_v1",
+                        "target_table": target_table,
                         "reason": "provider_file_not_published_yet",
                     }
                 else:
                     rows_failed = 1
                     status = "failed"
-                    details = {"error": safe_exception_text(exc), "target_table": "market_short_volume_v1"}
+                    details = {"error": safe_exception_text(exc), "target_table": target_table}
             finished = datetime.now(UTC)
             result = SourceResult(
                 source=source_object,
@@ -433,6 +467,289 @@ def fetch_finra_short_volume_day(
             }
         )
     return rows, {"target_table": "market_short_volume_v1", "url": url, "venue": venue, "sha256": sha256_bytes(content)}
+
+
+def run_massive_short_interest(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    run_id: str,
+    start_date: date,
+    end_date: date,
+    symbols: dict[str, SymbolRef],
+) -> list[SourceResult]:
+    gaps = find_publication_gaps(
+        client,
+        database=args.write_database,
+        coverage_kind="massive_short_interest",
+        source_system="massive",
+        start_date=start_date,
+        end_date=end_date,
+    ) if args.resume_from_coverage else [PublicationDateGap(start_date, end_date)]  # type: ignore[list-item]
+    results: list[SourceResult] = []
+    for gap in gaps:
+        started = datetime.now(UTC)
+        try:
+            provider_rows, details = fetch_massive_short_interest_rows(args, gap.start_date, gap.end_date)
+            rows = [normalize_massive_short_interest(row, details, symbols) for row in provider_rows if parse_optional_date(row.get("settlement_date")) is not None]
+            stamp_rows(rows, run_id)
+            written = insert_rows(client, args.write_database, "market_short_interest_v1", rows, args.batch_size) if args.execute else 0
+            status = "completed" if rows else "covered_empty"
+            failed = 0
+        except Exception as exc:  # noqa: BLE001
+            provider_rows = []
+            rows = []
+            written = 0
+            failed = 1
+            status = "failed"
+            details = {"error": safe_exception_text(exc), "target_table": "market_short_interest_v1"}
+        finished = datetime.now(UTC)
+        result = SourceResult("massive_short_interest", "massive_short_interest", gap.start_date, gap.end_date, len(provider_rows), written, failed, status, details)
+        results.append(result)
+        print(
+            f"massive_short_interest {gap.start_date.isoformat()}->{gap.end_date.isoformat()} "
+            f"status={status} provider_rows={len(provider_rows):,} written={written:,}",
+            flush=True,
+        )
+        if args.execute:
+            insert_publication_coverage(
+                client,
+                database=args.write_database,
+                coverage_id=f"{run_id}:massive_short_interest:{gap.start_date.isoformat()}:{gap.end_date.isoformat()}",
+                coverage_kind="massive_short_interest",
+                source_system="massive",
+                source_object="short-interest",
+                start_date=gap.start_date,
+                end_date=gap.end_date,
+                status=status,
+                rows_read=len(provider_rows),
+                rows_written=written,
+                rows_failed=failed,
+                started_at_utc=started,
+                finished_at_utc=finished,
+                details=details,
+                source_run_id=run_id,
+            )
+    return results
+
+
+def fetch_massive_short_interest_rows(args: argparse.Namespace, start_date: date, end_date: date) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    api_key = massive_api_key()
+    params = {
+        "settlement_date.gte": start_date.isoformat(),
+        "settlement_date.lt": end_date.isoformat(),
+        "limit": "50000",
+        "sort": "settlement_date.asc",
+        "apiKey": api_key,
+    }
+    url = "https://api.massive.com/stocks/v1/short-interest?" + parse.urlencode(params)
+    rows, pages, saturated = fetch_massive_paginated(args, url, api_key)
+    digest = sha256_bytes(json.dumps(rows, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"))
+    return rows, {"url": safe_url(url), "sha256": digest, "pages": pages, "saturated": saturated, "target_table": "market_short_interest_v1"}
+
+
+def normalize_massive_short_interest(row: dict[str, Any], details: dict[str, Any], symbols: dict[str, SymbolRef]) -> dict[str, Any]:
+    ticker = str(row.get("ticker") or "").strip().upper()
+    settlement_date = parse_optional_date(row.get("settlement_date"))
+    ref = symbols.get(ticker)
+    provider_id = str(row.get("id") or "")
+    event_key = provider_id or f"{ticker}:{settlement_date}:{row.get('short_interest')}:{row.get('days_to_cover')}"
+    return {
+        "short_interest_id": stable_id("massive_short_interest", event_key),
+        "symbol_id": ref.symbol_id if ref else "",
+        "listing_id": ref.listing_id if ref else "",
+        "security_id": ref.security_id if ref else "",
+        "source_system": "massive",
+        "source_venue": None,
+        "provider_ticker": ticker,
+        "settlement_date": settlement_date.isoformat() if settlement_date else None,
+        "publication_date": date_string_or_none(row.get("publication_date") or row.get("published_date")),
+        "published_at_utc": datetime_string_or_none(row.get("published_at_utc") or row.get("published_utc")),
+        "short_interest": parse_int(row.get("short_interest")),
+        "avg_daily_volume": parse_int(row.get("avg_daily_volume")),
+        "days_to_cover": parse_float(row.get("days_to_cover")),
+        "source_event_key": event_key,
+        "source_evidence_ref": details.get("url", ""),
+        "source_run_id": "",
+        "source_content_sha256": row_sha256(row),
+        "inserted_at": clickhouse_now64(),
+    }
+
+
+def run_reg_sho_threshold(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    run_id: str,
+    start_date: date,
+    end_date: date,
+    symbols: dict[str, SymbolRef],
+) -> list[SourceResult]:
+    return run_date_source(
+        client=client,
+        args=args,
+        database=args.write_database,
+        run_id=run_id,
+        source_system="nasdaqtrader",
+        source_object="reg_sho_threshold:nasdaq",
+        coverage_kind="reg_sho_threshold",
+        target_table="market_reg_sho_threshold_v1",
+        start_date=start_date,
+        end_date=end_date,
+        worker=lambda day: fetch_nasdaq_reg_sho_threshold_day(args, day, symbols),
+    )
+
+
+def fetch_nasdaq_reg_sho_threshold_day(
+    args: argparse.Namespace,
+    day: date,
+    symbols: dict[str, SymbolRef],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    yyyymmdd = day.strftime("%Y%m%d")
+    url = NASDAQ_REG_SHO_THRESHOLD_URL.format(yyyymmdd=yyyymmdd)
+    content = fetch_bytes(args, url)
+    text = content.decode("utf-8", errors="replace")
+    rows: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        clean = line.strip()
+        if not clean or clean.lower().startswith("symbol|") or clean.lower().startswith("file creation time"):
+            continue
+        parts = clean.split("|")
+        ticker = parts[0].strip().upper() if parts else ""
+        if not ticker or ticker == "SYMBOL":
+            continue
+        ref = symbols.get(ticker)
+        event_key = f"nasdaq:{day.isoformat()}:{ticker}"
+        rows.append(
+            {
+                "threshold_id": stable_id("reg_sho_threshold", event_key),
+                "symbol_id": ref.symbol_id if ref else None,
+                "listing_id": ref.listing_id if ref else None,
+                "security_id": ref.security_id if ref else None,
+                "source_system": "nasdaqtrader",
+                "provider_ticker": ticker,
+                "threshold_date": day.isoformat(),
+                "listing_exchange": "NASDAQ",
+                "threshold_status": "threshold",
+                "source_event_key": event_key,
+                "source_evidence_ref": url,
+                "source_run_id": "",
+                "source_content_sha256": sha256_bytes(content),
+                "inserted_at": clickhouse_now64(),
+            }
+        )
+    return rows, {"target_table": "market_reg_sho_threshold_v1", "url": url, "sha256": sha256_bytes(content), "venue": "NASDAQ"}
+
+
+def run_sec_country_assertions(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    run_id: str,
+    start_date: date,
+    end_date: date,
+) -> list[SourceResult]:
+    today = datetime.now(UTC).date()
+    target_start = max(start_date, today)
+    target_end = min(end_date, today + timedelta(days=1))
+    if target_start >= target_end:
+        return [
+            SourceResult(
+                "sec_country_assertions",
+                "sec_country_assertions",
+                start_date,
+                end_date,
+                0,
+                0,
+                0,
+                "source_not_historical",
+                {"message": "Country assertions are current-state derivations from reference tables."},
+            )
+        ]
+    gaps = find_publication_gaps(
+        client,
+        database=args.write_database,
+        coverage_kind="sec_country_assertions",
+        source_system="reference_gateway",
+        start_date=target_start,
+        end_date=target_end,
+    ) if args.resume_from_coverage else [PublicationDateGap(target_start, target_end)]  # type: ignore[list-item]
+    if not gaps:
+        return []
+    started = datetime.now(UTC)
+    inserted_at = started.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    if args.execute:
+        client.execute(
+            f"""
+INSERT INTO {qtable(args.write_database, 'market_security_country_v1')}
+(country_assertion_id, symbol_id, listing_id, security_id, issuer_id, provider_ticker, assertion_date, listing_country_code, issuer_legal_country_code, issuer_hq_country_code, security_issue_country_code, effective_country_code, confidence_score, source_system, source_event_key, source_evidence_ref, source_run_id, source_content_sha256, inserted_at)
+WITH
+    today() AS assertion_date,
+    {sql_string(run_id)} AS source_run_id,
+    toDateTime64({sql_string(inserted_at)}, 3, 'UTC') AS inserted_at
+SELECT
+    concat('country:', u.symbol_id, ':', toString(assertion_date), ':', lower(hex(MD5(concat(u.symbol_id, ':', ifNull(ex.iso_country_code, '')))))) AS country_assertion_id,
+    u.symbol_id,
+    u.listing_id,
+    u.security_id,
+    u.issuer_id,
+    upper(u.ticker) AS provider_ticker,
+    assertion_date,
+    nullIf(upper(ifNull(ex.iso_country_code, '')), '') AS listing_country_code,
+    CAST(NULL, 'Nullable(String)') AS issuer_legal_country_code,
+    CAST(NULL, 'Nullable(String)') AS issuer_hq_country_code,
+    CAST(NULL, 'Nullable(String)') AS security_issue_country_code,
+    nullIf(upper(ifNull(ex.iso_country_code, '')), '') AS effective_country_code,
+    if(upper(ifNull(ex.iso_country_code, '')) = 'US', 0.85, 0.65) AS confidence_score,
+    'reference_gateway' AS source_system,
+    concat('feature_tradable_universe_v1:', toString(u.universe_date), ':', u.symbol_id) AS source_event_key,
+    concat('ref_exchange_v1:', ifNull(u.exchange_code, '')) AS source_evidence_ref,
+    source_run_id,
+    lower(hex(MD5(concat(u.symbol_id, ':', ifNull(u.exchange_code, ''), ':', ifNull(ex.iso_country_code, ''))))) AS source_content_sha256,
+    inserted_at
+FROM
+(
+    SELECT *
+    FROM {qtable(args.read_database, 'feature_tradable_universe_v1')} FINAL
+    WHERE universe_date = (SELECT max(universe_date) FROM {qtable(args.read_database, 'feature_tradable_universe_v1')} FINAL)
+) AS u
+LEFT JOIN {qtable(args.read_database, 'ref_exchange_v1')} AS ex FINAL ON ex.exchange_code = u.exchange_code
+WHERE u.symbol_id != ''
+  AND ifNull(u.exchange_code, '') != ''
+""".strip()
+        )
+        rows = int(
+            client.query_tsv(
+                f"""
+                SELECT count()
+                FROM {qtable(args.write_database, 'market_security_country_v1')} FINAL
+                WHERE source_run_id = {sql_string(run_id)}
+                """
+            ).strip()
+            or "0"
+        )
+    else:
+        rows = 0
+    finished = datetime.now(UTC)
+    details = {"target_table": "market_security_country_v1", "reason": "latest_tradable_universe_exchange_country"}
+    if args.execute:
+        insert_publication_coverage(
+            client,
+            database=args.write_database,
+            coverage_id=f"{run_id}:sec_country_assertions:{target_start.isoformat()}:{target_end.isoformat()}",
+            coverage_kind="sec_country_assertions",
+            source_system="reference_gateway",
+            source_object="feature_tradable_universe_v1/ref_exchange_v1",
+            start_date=target_start,
+            end_date=target_end,
+            status="completed",
+            rows_read=rows,
+            rows_written=rows,
+            rows_failed=0,
+            started_at_utc=started,
+            finished_at_utc=finished,
+            details=details,
+            source_run_id=run_id,
+        )
+    print(f"sec_country_assertions {target_start.isoformat()} status=completed rows={rows:,} written={rows:,}", flush=True)
+    return [SourceResult("sec_country_assertions", "sec_country_assertions", target_start, target_end, rows, rows, 0, "completed", details)]
 
 
 def run_sec_ftd(
@@ -919,9 +1236,12 @@ def run_massive_ticker_details(
     started = datetime.now(UTC)
     snapshot_rows: list[dict[str, Any]] = []
     float_rows: list[dict[str, Any]] = []
+    asset_rows: list[dict[str, Any]] = []
     failed = 0
     not_found = 0
+    asset_failed = 0
     observed_at = datetime.now(UTC)
+    presentation_asset_root = Path(getattr(args, "presentation_asset_root_win", "") or default_presentation_asset_root())
     progress("massive_ticker_details api_key_diagnostic=" + json.dumps(massive_api_key_diagnostic(), sort_keys=True))
     for index, ref in enumerate(symbols.values(), start=1):
         try:
@@ -933,6 +1253,11 @@ def run_massive_ticker_details(
             snapshot_rows.append(snapshot)
             if float_row is not None:
                 float_rows.append(float_row)
+            try:
+                asset_rows.extend(normalize_massive_presentation_assets(args, overview, ref, observed_at, presentation_asset_root))
+            except Exception as exc:  # noqa: BLE001
+                asset_failed += 1
+                progress(f"massive_presentation_assets ticker={ref.ticker} status=failed error={safe_exception_text(exc)}")
         except MassiveTickerNotFound:
             not_found += 1
         except Exception as exc:  # noqa: BLE001
@@ -942,30 +1267,40 @@ def run_massive_ticker_details(
             progress(
                 f"massive_ticker_details progress={index:,}/{len(symbols):,} "
                 f"snapshot_rows={len(snapshot_rows):,} float_rows={len(float_rows):,} "
-                f"not_found={not_found:,} failed={failed:,}"
+                f"asset_rows={len(asset_rows):,} not_found={not_found:,} failed={failed:,} asset_failed={asset_failed:,}"
             )
     stamp_rows(snapshot_rows, run_id)
     stamp_rows(float_rows, run_id)
+    stamp_rows(asset_rows, run_id)
     snapshot_written = insert_rows(client, args.write_database, "market_security_market_snapshot_v1", snapshot_rows, args.batch_size) if args.execute else 0
     float_written = insert_rows(client, args.write_database, "market_security_float_v1", float_rows, args.batch_size) if args.execute else 0
-    written = snapshot_written + float_written
+    asset_written = insert_rows(client, args.write_database, "market_presentation_asset_v1", asset_rows, args.batch_size) if args.execute else 0
+    written = snapshot_written + float_written + asset_written
     status = "completed" if snapshot_rows or float_rows else "covered_empty"
     finished = datetime.now(UTC)
     details = {
         "target_tables": ["market_security_market_snapshot_v1", "market_security_float_v1"],
         "snapshot_rows": len(snapshot_rows),
         "float_rows": len(float_rows),
+        "asset_rows": len(asset_rows),
         "snapshot_written": snapshot_written,
         "float_written": float_written,
+        "asset_written": asset_written,
         "not_found_tickers": not_found,
         "failed_tickers": failed,
+        "asset_failed_tickers": asset_failed,
         "observed_at_utc": observed_at.isoformat().replace("+00:00", "Z"),
+        "presentation_asset_root_win": str(presentation_asset_root),
         "api_key_diagnostic": massive_api_key_diagnostic(),
     }
-    results = [SourceResult("massive_ticker_details", "massive_ticker_details", target_start, target_end, len(symbols), written, failed, status, details)]
+    results = [
+        SourceResult("massive_ticker_details", "massive_ticker_details", target_start, target_end, len(symbols), snapshot_written + float_written, failed, status, details),
+        SourceResult("massive_presentation_assets", "massive_presentation_assets", target_start, target_end, len(symbols), asset_written, asset_failed, "completed" if asset_rows else "covered_empty", details),
+    ]
     progress(
         f"massive_ticker_details {target_start.isoformat()} status={status} "
-        f"symbols={len(symbols):,} written={written:,} not_found={not_found:,} failed={failed:,}"
+        f"symbols={len(symbols):,} written={snapshot_written + float_written:,} assets_written={asset_written:,} "
+        f"not_found={not_found:,} failed={failed:,} asset_failed={asset_failed:,}"
     )
     if args.execute and getattr(args, "write_coverage", True):
         insert_publication_coverage(
@@ -981,6 +1316,24 @@ def run_massive_ticker_details(
             rows_read=len(symbols),
             rows_written=written,
             rows_failed=failed,
+            started_at_utc=started,
+            finished_at_utc=finished,
+            details=details,
+            source_run_id=run_id,
+        )
+        insert_publication_coverage(
+            client,
+            database=args.write_database,
+            coverage_id=f"{run_id}:massive_presentation_assets:{target_start.isoformat()}:{target_end.isoformat()}",
+            coverage_kind="massive_presentation_assets",
+            source_system="massive",
+            source_object="ticker_details_branding",
+            start_date=target_start,
+            end_date=target_end,
+            status="completed" if asset_rows else "covered_empty",
+            rows_read=len(symbols),
+            rows_written=asset_written,
+            rows_failed=asset_failed,
             started_at_utc=started,
             finished_at_utc=finished,
             details=details,
@@ -1046,6 +1399,84 @@ def normalize_massive_ticker_detail(overview: dict[str, Any], ref: SymbolRef, ob
         "inserted_at": clickhouse_now64(),
     }
     return snapshot, float_row
+
+
+def normalize_massive_presentation_assets(
+    args: argparse.Namespace,
+    overview: dict[str, Any],
+    ref: SymbolRef,
+    observed_at: datetime,
+    asset_root: Path,
+) -> list[dict[str, Any]]:
+    branding = overview.get("branding")
+    if not isinstance(branding, dict):
+        return []
+    asset_specs = [
+        ("logo", branding.get("logo_url") or branding.get("logo")),
+        ("icon", branding.get("icon_url") or branding.get("icon")),
+    ]
+    rows: list[dict[str, Any]] = []
+    for asset_kind, raw_url in asset_specs:
+        url = str(raw_url or "").strip()
+        if not url:
+            continue
+        content = fetch_bytes(args, url)
+        digest = sha256_bytes(content)
+        mime_type = guess_mime_type(url, content)
+        suffix = suffix_for_asset(url, mime_type)
+        relative_path = Path("massive") / asset_kind / f"{ref.ticker.lower()}-{digest[:16]}{suffix}"
+        target = asset_root / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists() or target.stat().st_size != len(content):
+            target.write_bytes(content)
+        first_seen = observed_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        event_key = f"{ref.ticker}:{asset_kind}:{url}:{digest}"
+        rows.append(
+            {
+                "asset_id": stable_id("presentation_asset", event_key),
+                "asset_kind": asset_kind,
+                "display_name": f"{ref.ticker} {asset_kind}",
+                "relative_path": str(relative_path).replace("\\", "/"),
+                "mime_type": mime_type,
+                "byte_size": len(content),
+                "content_hash_sha256": digest,
+                "source_system": "massive",
+                "source_reference": url,
+                "source_file_name": Path(parse.urlsplit(url).path).name or f"{ref.ticker.lower()}-{asset_kind}{suffix}",
+                "status": "active",
+                "first_seen_at_utc": first_seen,
+                "last_seen_at_utc": first_seen,
+                "last_verified_at_utc": first_seen,
+                "source_run_id": "",
+                "source_content_sha256": row_sha256(overview),
+                "inserted_at": clickhouse_now64(),
+            }
+        )
+    return rows
+
+
+def guess_mime_type(url: str, content: bytes) -> str:
+    guessed = mimetypes.guess_type(parse.urlsplit(url).path)[0]
+    if guessed:
+        return guessed
+    if content.startswith(b"\x89PNG"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if content.startswith(b"<svg") or b"<svg" in content[:200].lower():
+        return "image/svg+xml"
+    return "application/octet-stream"
+
+
+def suffix_for_asset(url: str, mime_type: str) -> str:
+    suffix = Path(parse.urlsplit(url).path).suffix
+    if suffix:
+        return suffix.lower()
+    return {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/svg+xml": ".svg",
+    }.get(mime_type, ".bin")
 
 
 def fetch_massive_paginated(args: argparse.Namespace, first_url: str, api_key: str) -> tuple[list[dict[str, Any]], int, bool]:
@@ -1385,6 +1816,10 @@ def is_source_not_yet_available(coverage_kind: str, day: date, exc: Exception) -
     return day >= datetime.now(UTC).date()
 
 
+def is_missing_file_not_yet_available(coverage_kind: str, day: date) -> bool:
+    return coverage_kind in {"reg_sho_threshold"} and day >= datetime.now(UTC).date()
+
+
 def default_user_agent() -> str:
     return (
         os.environ.get("SEC_USER_AGENT")
@@ -1481,6 +1916,17 @@ def date_string_or_none(value: Any) -> str | None:
     return parsed.isoformat() if parsed else None
 
 
+def datetime_string_or_none(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
+    return parsed.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
 def string_or_none(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
@@ -1568,6 +2014,14 @@ def default_output_root() -> Path:
     return WORKSTATION_DATA_ROOT_WIN / "prepared" / "reference_market_publications"
 
 
+def default_presentation_asset_root() -> Path:
+    if is_workstation_host() and path_exists(WORKSTATION_DATA_ROOT_WIN):
+        return WORKSTATION_DATA_ROOT_WIN / "reference_gateway" / "artifacts" / "presentation_assets"
+    if path_exists(WORKSTATION_SHARE_DATA_ROOT_WIN):
+        return WORKSTATION_SHARE_DATA_ROOT_WIN / "reference_gateway" / "artifacts" / "presentation_assets"
+    return WORKSTATION_DATA_ROOT_WIN / "reference_gateway" / "artifacts" / "presentation_assets"
+
+
 def is_workstation_host() -> bool:
     return os.environ.get("COMPUTERNAME", "").strip().upper() == WORKSTATION_COMPUTER_NAME
 
@@ -1600,11 +2054,11 @@ def schema_missing_results(args: argparse.Namespace, sources: list[str], start_d
                         },
                     )
                 )
-        elif source == "sec_fails_to_deliver":
+        elif source in {"massive_short_interest", "sec_fails_to_deliver", "reg_sho_threshold", "sec_country_assertions"}:
             results.append(
                 SourceResult(
-                    source="sec_fails_to_deliver",
-                    coverage_kind="sec_fails_to_deliver",
+                    source=source,
+                    coverage_kind=source,
                     start_date=start_date,
                     end_date=end_date,
                     rows_read=0,
@@ -1617,7 +2071,7 @@ def schema_missing_results(args: argparse.Namespace, sources: list[str], start_d
                     },
                 )
             )
-        elif source in {"massive_splits", "massive_dividends", "massive_ipos", "massive_ticker_details", "ibkr_borrow_availability"}:
+        elif source in {"massive_splits", "massive_dividends", "massive_ipos", "massive_ticker_details", "massive_presentation_assets", "ibkr_borrow_availability"}:
             results.append(
                 SourceResult(
                     source=source,

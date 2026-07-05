@@ -20,8 +20,10 @@ def write_country_assertions(config: ReferenceGatewayConfig, *, reason: str) -> 
     if not config.execute:
         return CountryAssertionResult("skipped", 0, "execute_false:" + reason, "")
     client = ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, default_clickhouse_password())
-    required = ("feature_tradable_universe_v1", "ref_exchange_v1", "market_security_country_v1")
-    missing = [name for name in required if not table_exists(client, config.clickhouse_write_database, name)]
+    source_required = ("feature_tradable_universe_v1", "ref_exchange_v1")
+    target_required = ("market_security_country_v1",)
+    missing = [name for name in source_required if not table_exists(client, config.clickhouse_read_database, name)]
+    missing.extend(name for name in target_required if not table_exists(client, config.clickhouse_write_database, name))
     if missing:
         return CountryAssertionResult("skipped", 0, "missing_tables:" + ",".join(missing), "")
     run_id = "reference_gateway_country_assertions_" + datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -58,10 +60,10 @@ SELECT
 FROM
 (
     SELECT *
-    FROM {table(config.clickhouse_write_database, 'feature_tradable_universe_v1')} FINAL
-    WHERE universe_date = (SELECT max(universe_date) FROM {table(config.clickhouse_write_database, 'feature_tradable_universe_v1')} FINAL)
+    FROM {table(config.clickhouse_read_database, 'feature_tradable_universe_v1')} FINAL
+    WHERE universe_date = (SELECT max(universe_date) FROM {table(config.clickhouse_read_database, 'feature_tradable_universe_v1')} FINAL)
 ) AS u
-LEFT JOIN {table(config.clickhouse_write_database, 'ref_exchange_v1')} AS ex FINAL ON ex.exchange_code = u.exchange_code
+LEFT JOIN {table(config.clickhouse_read_database, 'ref_exchange_v1')} AS ex FINAL ON ex.exchange_code = u.exchange_code
 WHERE u.symbol_id != ''
   AND ifNull(u.exchange_code, '') != ''
 """.strip()

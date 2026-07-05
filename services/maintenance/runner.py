@@ -69,7 +69,7 @@ REFERENCE_IMPLEMENTED_PUBLICATION_SPECS: tuple[tuple[str, str, str], ...] = (
 )
 
 REFERENCE_PLANNED_PUBLICATION_SPECS: tuple[tuple[str, str, str], ...] = (
-    ("finra_short_interest", "finra", "FINRA exchange-published short-interest source"),
+    ("massive_short_interest", "massive", "Massive short-interest source"),
     ("reg_sho_threshold", "exchange_or_sec", "Reg SHO threshold-list source"),
     ("massive_presentation_assets", "massive", "Massive presentation assets"),
     ("sec_country_assertions", "sec", "SEC/XBRL-derived country assertions"),
@@ -720,7 +720,11 @@ def reference_gap_fill_command(ctx: MaintenanceContext, start: date, end: date, 
         write_database,
         "--sources",
         os.environ.get("REFERENCE_MAINTENANCE_PUBLICATION_SOURCES")
-        or "finra_short_volume,sec_fails_to_deliver,massive_splits,massive_dividends,massive_ipos,massive_ticker_details,ibkr_borrow_availability",
+        or (
+            "finra_short_volume,massive_short_interest,sec_fails_to_deliver,reg_sho_threshold,"
+            "massive_splits,massive_dividends,massive_ipos,massive_ticker_details,"
+            "massive_presentation_assets,ibkr_borrow_availability,sec_country_assertions"
+        ),
         "--finra-venues",
         os.environ.get("REFERENCE_MAINTENANCE_FINRA_VENUES") or "CNMS",
         "--output-root-win",

@@ -20,8 +20,8 @@ class PublicationCoverageBootstrapResult:
 
 BOOTSTRAP_SOURCES: tuple[dict[str, str], ...] = (
     {
-        "coverage_kind": "finra_short_interest",
-        "source_system": "finra",
+        "coverage_kind": "massive_short_interest",
+        "source_system": "massive",
         "source_object": "market_short_interest_v1",
         "table": "market_short_interest_v1",
         "date_column": "settlement_date",
@@ -39,13 +39,6 @@ BOOTSTRAP_SOURCES: tuple[dict[str, str], ...] = (
         "source_object": "market_presentation_asset_v1",
         "table": "market_presentation_asset_v1",
         "date_column": "last_seen_at_utc",
-    },
-    {
-        "coverage_kind": "massive_flatfile_inventory",
-        "source_system": "massive",
-        "source_object": "massive_flatfile_source_file_v1",
-        "table": "massive_flatfile_source_file_v1",
-        "date_column": "partition_date",
     },
 )
 
