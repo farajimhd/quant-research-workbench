@@ -41,7 +41,6 @@ from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noq
     create_continuity_table_sql,
     create_events_table_sql,
     create_manifest_table_sql,
-    delete_day_sql,
     condition_token_reference_subquery,
     indicator_code_expr,
     indicator_token_reference_subquery,
@@ -1220,6 +1219,62 @@ DELETE WHERE source_date = toDate({sql_string(day.source_date)})
 """
 
 
+def day_continuity_timestamp_bounds(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles, build_step: int) -> tuple[int, int] | None:
+    row = first_tsv_row(
+        client,
+        f"""
+SELECT
+    min(first_sip_timestamp_us) AS first_sip_timestamp_us,
+    max(last_sip_timestamp_us) AS last_sip_timestamp_us,
+    count() AS ticker_rows
+FROM
+(
+    SELECT
+        ticker,
+        tupleElement(state, 1) AS event_count,
+        tupleElement(state, 2) AS first_sip_timestamp_us,
+        tupleElement(state, 3) AS last_sip_timestamp_us
+    FROM
+    (
+        SELECT
+            ticker,
+            argMax(tuple(event_count, first_sip_timestamp_us, last_sip_timestamp_us), updated_at) AS state
+        FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+        WHERE build_step = toUInt32({int(build_step)})
+          AND source_date = toDate({sql_string(day.source_date)})
+        GROUP BY ticker
+    )
+    WHERE event_count > 0
+)
+""",
+    )
+    if not row or row[0] in {"", "\\N"} or row[1] in {"", "\\N"} or int(float(row[2] or 0)) <= 0:
+        return None
+    first_us = int(float(row[0] or 0))
+    last_us = int(float(row[1] or 0))
+    if first_us <= 0 or last_us <= 0 or first_us > last_us:
+        return None
+    return first_us, last_us
+
+
+def delete_day_events_by_timestamp_bounds_sql(args: argparse.Namespace, day: DayFiles, first_us: int, last_us: int) -> str:
+    source = date.fromisoformat(day.source_date)
+    allowed_dates = ", ".join(
+        sql_string(value)
+        for value in (
+            source.isoformat(),
+            date.fromordinal(source.toordinal() + 1).isoformat(),
+        )
+    )
+    return f"""
+ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.events_table)}
+DELETE WHERE sip_timestamp_us >= toUInt64({int(first_us)})
+  AND sip_timestamp_us <= toUInt64({int(last_us)})
+  AND event_date IN ({allowed_dates})
+{mutation_settings(args)}
+"""
+
+
 def insert_day_ticker_index_sql(args: argparse.Namespace, day: DayFiles, build_step: int) -> str:
     return f"""
 INSERT INTO {quote_ident(args.database)}.{quote_ident(args.ticker_day_index_table)}
@@ -1236,31 +1291,28 @@ INSERT INTO {quote_ident(args.database)}.{quote_ident(args.ticker_day_index_tabl
 )
 SELECT
     ticker,
-    source_date,
-    event_count,
-    last_ordinal - event_count + 1 AS first_ordinal,
-    last_ordinal,
-    next_ordinal,
-    first_sip_timestamp_us,
-    last_sip_timestamp_us,
-    build_step
+    toDate({sql_string(day.source_date)}) AS source_date,
+    tupleElement(state, 1) AS event_count,
+    tupleElement(state, 3) - tupleElement(state, 1) + 1 AS first_ordinal,
+    tupleElement(state, 3) AS last_ordinal,
+    tupleElement(state, 2) AS next_ordinal,
+    tupleElement(state, 4) AS first_sip_timestamp_us,
+    tupleElement(state, 5) AS last_sip_timestamp_us,
+    toUInt32({int(build_step)}) AS build_step
 FROM
 (
     SELECT
         ticker,
-        toUInt32({int(build_step)}) AS build_step,
-        toDate({sql_string(day.source_date)}) AS source_date,
-        argMax(event_count, updated_at) AS event_count,
-        argMax(next_ordinal, updated_at) AS next_ordinal,
-        argMax(last_ordinal, updated_at) AS last_ordinal,
-        argMax(first_sip_timestamp_us, updated_at) AS first_sip_timestamp_us,
-        argMax(last_sip_timestamp_us, updated_at) AS last_sip_timestamp_us
+        argMax(
+            tuple(event_count, next_ordinal, last_ordinal, first_sip_timestamp_us, last_sip_timestamp_us),
+            updated_at
+        ) AS state
     FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
     WHERE build_step = toUInt32({int(build_step)})
       AND source_date = toDate({sql_string(day.source_date)})
     GROUP BY ticker
 )
-WHERE event_count > 0
+WHERE tupleElement(state, 1) > 0
 {query_settings(args)}
 """
 
@@ -1441,6 +1493,7 @@ FROM
     ) AS c ON c.ticker = r.ticker AND c.source_date = r.source_date
 )
 WHERE raw_rows != continuity_rows
+SETTINGS join_use_nulls = 1
 """,
     )
     return int(float(row[0] or 0)) if row else 0
@@ -1464,7 +1517,11 @@ FROM
         c.last_ordinal AS continuity_last_ordinal,
         i.last_ordinal AS index_last_ordinal,
         c.next_ordinal AS continuity_next_ordinal,
-        i.next_ordinal AS index_next_ordinal
+        i.next_ordinal AS index_next_ordinal,
+        c.first_sip_timestamp_us AS continuity_first_sip_timestamp_us,
+        i.first_sip_timestamp_us AS index_first_sip_timestamp_us,
+        c.last_sip_timestamp_us AS continuity_last_sip_timestamp_us,
+        i.last_sip_timestamp_us AS index_last_sip_timestamp_us
     FROM
     (
         SELECT
@@ -1473,7 +1530,9 @@ FROM
             event_count,
             last_ordinal - event_count + 1 AS first_ordinal,
             last_ordinal,
-            next_ordinal
+            next_ordinal,
+            first_sip_timestamp_us,
+            last_sip_timestamp_us
         FROM
         (
             SELECT
@@ -1482,7 +1541,9 @@ FROM
                 source_date,
                 argMax(event_count, updated_at) AS event_count,
                 argMax(last_ordinal, updated_at) AS last_ordinal,
-                argMax(next_ordinal, updated_at) AS next_ordinal
+                argMax(next_ordinal, updated_at) AS next_ordinal,
+                argMax(first_sip_timestamp_us, updated_at) AS first_sip_timestamp_us,
+                argMax(last_sip_timestamp_us, updated_at) AS last_sip_timestamp_us
             FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
             WHERE source_date IN ({dates})
             GROUP BY ticker, build_step, source_date
@@ -1497,7 +1558,9 @@ FROM
             argMax(event_count, built_at) AS event_count,
             argMax(first_ordinal, built_at) AS first_ordinal,
             argMax(last_ordinal, built_at) AS last_ordinal,
-            argMax(next_ordinal, built_at) AS next_ordinal
+            argMax(next_ordinal, built_at) AS next_ordinal,
+            argMax(first_sip_timestamp_us, built_at) AS first_sip_timestamp_us,
+            argMax(last_sip_timestamp_us, built_at) AS last_sip_timestamp_us
         FROM {quote_ident(args.database)}.{quote_ident(args.ticker_day_index_table)}
         WHERE source_date IN ({dates})
         GROUP BY ticker, source_date
@@ -1507,8 +1570,11 @@ WHERE continuity_event_count != index_event_count
    OR continuity_first_ordinal != index_first_ordinal
    OR continuity_last_ordinal != index_last_ordinal
    OR continuity_next_ordinal != index_next_ordinal
+   OR continuity_first_sip_timestamp_us != index_first_sip_timestamp_us
+   OR continuity_last_sip_timestamp_us != index_last_sip_timestamp_us
    OR isNull(continuity_event_count)
    OR isNull(index_event_count)
+SETTINGS join_use_nulls = 1
 """,
     )
     return int(float(row[0] or 0)) if row else 0
@@ -2001,6 +2067,7 @@ def validate_day_continuity_after_insert(
     report_path: Path,
 ) -> None:
     ticker_rows, continuity_events = day_continuity_summary(client, args, day, build_step)
+    ticker_mismatches = query_continuity_mismatches(client, args, [day])
     audit = {
         "type": "day_continuity_check",
         "source_date": day.source_date,
@@ -2008,6 +2075,7 @@ def validate_day_continuity_after_insert(
         "ticker_rows": ticker_rows,
         "continuity_events": continuity_events,
         "expected_event_rows": expected_event_rows,
+        "ticker_mismatches": ticker_mismatches,
         "status": "ok",
     }
     if expected_event_rows is not None and continuity_events != expected_event_rows:
@@ -2016,6 +2084,13 @@ def validate_day_continuity_after_insert(
         raise RuntimeError(
             f"day={day.source_date} continuity event_count sum {continuity_events:,} "
             f"does not match inserted event rows {expected_event_rows:,}; refusing to build ticker/day index."
+        )
+    if ticker_mismatches:
+        audit["status"] = "failed"
+        append_jsonl(report_path, audit)
+        raise RuntimeError(
+            f"day={day.source_date} continuity has {ticker_mismatches:,} ticker rows mismatched "
+            "against the source flatfile rows; refusing to build ticker/day index."
         )
     append_jsonl(report_path, audit)
 
@@ -2062,8 +2137,27 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
         if not args.force_day_delete:
             raise RuntimeError(f"day={day.source_date} status={status}; rerun with --force-day-delete to avoid duplicate rows")
         if reporter is not None:
-            reporter.notice(f"Deleting existing event rows for {day.source_date} because status={status} and --force-day-delete is set.", style="bold yellow")
-        _run_profiled_with_reporter(client, f"delete_events_day_{day.source_date}", delete_day_sql(args, job), reporter, day=day.source_date, stage="delete", detail="event rows")
+            reporter.notice(
+                f"Deleting existing event rows for source day {day.source_date} from continuity timestamp bounds "
+                f"because status={status} and --force-day-delete is set.",
+                style="bold yellow",
+            )
+        bounds = day_continuity_timestamp_bounds(client, args, day, job.build_step)
+        if bounds is None:
+            raise RuntimeError(
+                f"day={day.source_date} status={status} has no usable continuity timestamp bounds; "
+                "refusing unsafe event_date-based delete for flatfile source-day retry."
+            )
+        first_us, last_us = bounds
+        _run_profiled_with_reporter(
+            client,
+            f"delete_events_source_day_{day.source_date}",
+            delete_day_events_by_timestamp_bounds_sql(args, day, first_us, last_us),
+            reporter,
+            day=day.source_date,
+            stage="delete",
+            detail=f"event rows timestamp_us={first_us}-{last_us}",
+        )
 
     # Continuity and ticker/day index are derived per-day metadata. Always purge
     # them before a fresh day insert so absent tickers from stale attempts cannot
