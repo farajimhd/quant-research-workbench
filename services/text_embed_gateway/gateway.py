@@ -143,6 +143,14 @@ class TextEmbedMetrics:
     news_token_gap_period: str = ""
     sec_token_gap_period: str = ""
     sec_context_gap_period: str = ""
+    news_available_source_rows: int = 0
+    sec_available_source_rows: int = 0
+    news_available_token_rows: int = 0
+    sec_available_token_rows: int = 0
+    news_available_embedding_rows: int = 0
+    sec_available_embedding_rows: int = 0
+    news_available_period: str = ""
+    sec_available_period: str = ""
     run_log_path: str = ""
 
 
@@ -384,10 +392,14 @@ class TextEmbedGateway:
                 token_remaining = int(getattr(self.metrics, f"{source}_token_gap_remaining"))
                 cycle_completed += source_completed + token_completed
                 cycle_remaining += source_remaining + token_remaining
+                coverage_summary = self._summarize_available_coverage(source, ranges[source])
                 self._log(
                     "gap_summary",
                     mode=mode,
                     source=source,
+                    source_available=coverage_summary["source_rows"],
+                    embedding_input_available=coverage_summary["token_rows"],
+                    embeddings_available=coverage_summary["embedding_rows"],
                     source_detected=source_summary["rows"],
                     source_completed=source_completed,
                     embedding_input_detected=token_summary["rows"],
@@ -481,6 +493,28 @@ class TextEmbedGateway:
         setattr(self.metrics, f"{source}_token_gap_period", gap_period(summary))
         self.metrics.gap_updated_at_utc = utc_now_text()
         return summary
+
+    def _summarize_available_coverage(self, source: str, bounds: tuple[datetime, datetime]) -> dict[str, Any]:
+        sql = news_available_coverage_sql(self.config, bounds) if source == "news" else sec_available_coverage_sql(self.config, bounds)
+        summary = first_json_row(self.client.execute(sql))
+        source_rows = int(summary.get("source_rows", 0) or 0)
+        token_rows = int(summary.get("token_rows", 0) or 0)
+        embedding_rows = int(summary.get("embedding_rows", 0) or 0)
+        setattr(self.metrics, f"{source}_available_source_rows", source_rows)
+        setattr(self.metrics, f"{source}_available_token_rows", token_rows)
+        setattr(self.metrics, f"{source}_available_embedding_rows", embedding_rows)
+        setattr(self.metrics, f"{source}_available_period", gap_period({"rows": source_rows, "min_time": summary.get("min_time"), "max_time": summary.get("max_time")}))
+        self._log(
+            "coverage_summary",
+            source=source,
+            source_available=source_rows,
+            embedding_input_available=token_rows,
+            embeddings_available=embedding_rows,
+            window_start=utc_text(bounds[0]),
+            window_end=utc_text(bounds[1]),
+            period=getattr(self.metrics, f"{source}_available_period"),
+        )
+        return {"source_rows": source_rows, "token_rows": token_rows, "embedding_rows": embedding_rows}
 
     def _set_gap_completed(self, source: str, kind: str, rows: int) -> None:
         completed_name = f"{source}_{kind}_gap_completed"
@@ -910,6 +944,57 @@ FORMAT JSONEachRow
 """
 
 
+def news_available_coverage_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
+    db = quote_ident(config.source_database)
+    target = quote_ident(config.target_database)
+    token_table = quote_ident(config.news_token_table)
+    embedding_table = quote_ident(config.news_embedding_table)
+    return f"""
+SELECT
+    (
+        SELECT count()
+        FROM {db}.benzinga_news_ticker_v1 AS nt
+        ANY INNER JOIN {db}.benzinga_news_normalized_v1 AS n
+            ON nt.canonical_news_id = n.canonical_news_id
+        WHERE nt.published_at_utc >= {dt64_sql(bounds[0])}
+          AND nt.published_at_utc < {dt64_sql(bounds[1])}
+    ) AS source_rows,
+    (
+        SELECT count()
+        FROM {target}.{token_table} AS t
+        WHERE t.published_at_utc >= {dt64_sql(bounds[0])}
+          AND t.published_at_utc < {dt64_sql(bounds[1])}
+          AND t.tokenizer_model = {sql_string(config.tokenizer_model)}
+    ) AS token_rows,
+    (
+        SELECT count()
+        FROM {target}.{embedding_table} AS e
+        WHERE e.published_at_utc >= {dt64_sql(bounds[0])}
+          AND e.published_at_utc < {dt64_sql(bounds[1])}
+          AND e.embedding_model = {sql_string(config.embedding_model)}
+          AND e.embedding_pooling = {sql_string(config.embedding_pooling)}
+    ) AS embedding_rows,
+    (
+        SELECT min(nt.published_at_utc)
+        FROM {db}.benzinga_news_ticker_v1 AS nt
+        ANY INNER JOIN {db}.benzinga_news_normalized_v1 AS n
+            ON nt.canonical_news_id = n.canonical_news_id
+        WHERE nt.published_at_utc >= {dt64_sql(bounds[0])}
+          AND nt.published_at_utc < {dt64_sql(bounds[1])}
+    ) AS min_time,
+    (
+        SELECT max(nt.published_at_utc)
+        FROM {db}.benzinga_news_ticker_v1 AS nt
+        ANY INNER JOIN {db}.benzinga_news_normalized_v1 AS n
+            ON nt.canonical_news_id = n.canonical_news_id
+        WHERE nt.published_at_utc >= {dt64_sql(bounds[0])}
+          AND nt.published_at_utc < {dt64_sql(bounds[1])}
+    ) AS max_time
+{query_settings(config)}
+FORMAT JSONEachRow
+"""
+
+
 def count_missing_sec_filing_context_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
     return f"""
 SELECT count()
@@ -1219,6 +1304,51 @@ LEFT JOIN {target}.{token_table} AS tok
 WHERE tok.source_id = ''
   AND src.accepted_at_utc >= {dt64_sql(bounds[0])}
   AND src.accepted_at_utc < {dt64_sql(bounds[1])}
+{query_settings(config)}
+FORMAT JSONEachRow
+"""
+
+
+def sec_available_coverage_sql(config: TextEmbedGatewayConfig, bounds: tuple[datetime, datetime]) -> str:
+    context = f"{quote_ident(config.context_database)}.{quote_ident(config.sec_context_text_table)}"
+    target = quote_ident(config.target_database)
+    token_table = quote_ident(config.sec_token_table)
+    embedding_table = quote_ident(config.sec_embedding_table)
+    return f"""
+SELECT
+    (
+        SELECT count()
+        FROM {context} AS src
+        WHERE src.accepted_at_utc >= {dt64_sql(bounds[0])}
+          AND src.accepted_at_utc < {dt64_sql(bounds[1])}
+    ) AS source_rows,
+    (
+        SELECT count()
+        FROM {target}.{token_table} AS t
+        WHERE t.accepted_at_utc >= {dt64_sql(bounds[0])}
+          AND t.accepted_at_utc < {dt64_sql(bounds[1])}
+          AND t.tokenizer_model = {sql_string(config.tokenizer_model)}
+    ) AS token_rows,
+    (
+        SELECT count()
+        FROM {target}.{embedding_table} AS e
+        WHERE e.accepted_at_utc >= {dt64_sql(bounds[0])}
+          AND e.accepted_at_utc < {dt64_sql(bounds[1])}
+          AND e.embedding_model = {sql_string(config.embedding_model)}
+          AND e.embedding_pooling = {sql_string(config.embedding_pooling)}
+    ) AS embedding_rows,
+    (
+        SELECT min(src.accepted_at_utc)
+        FROM {context} AS src
+        WHERE src.accepted_at_utc >= {dt64_sql(bounds[0])}
+          AND src.accepted_at_utc < {dt64_sql(bounds[1])}
+    ) AS min_time,
+    (
+        SELECT max(src.accepted_at_utc)
+        FROM {context} AS src
+        WHERE src.accepted_at_utc >= {dt64_sql(bounds[0])}
+          AND src.accepted_at_utc < {dt64_sql(bounds[1])}
+    ) AS max_time
 {query_settings(config)}
 FORMAT JSONEachRow
 """

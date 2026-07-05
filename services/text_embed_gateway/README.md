@@ -29,6 +29,10 @@ The Rich terminal separates progress into several panels:
 - `Cycle Summary`: keeps the last recent live cycle and the last historical
   gap-fill cycle visible at the same time, including window, detected gaps,
   completed gaps, remaining gaps, rows written, and cycle seconds.
+- `Coverage Report`: for the current window, reports total available news/SEC
+  source text rows, available token chunks, available embedding chunks, source
+  gaps, embedding gaps, rows processed this cycle, remaining rows, and the
+  source availability period.
 - `Gap Summary`: shows the detailed gap rows for the current cycle.
 - `Embedding Timing`: reports live and historical inference batches, sequences,
   average inference seconds, last inference seconds, average ms/sequence,

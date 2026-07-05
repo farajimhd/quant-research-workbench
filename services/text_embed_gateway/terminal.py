@@ -34,6 +34,7 @@ def render_dashboard(gateway: "TextEmbedGateway") -> Group:
         status_panel(metrics),
         progress_panel(metrics),
         cycle_summary_panel(metrics),
+        coverage_report_panel(metrics),
         gap_summary_panel(metrics),
         timing_panel(metrics),
         runtime_panel(gateway, metrics),
@@ -137,6 +138,38 @@ def cycle_summary_panel(metrics: dict[str, Any]) -> Panel:
             f"{float(metrics.get(f'{mode}_last_cycle_seconds') or 0.0):.2f}",
         )
     return Panel(table, title="Cycle Summary", box=box.ROUNDED, border_style="blue", padding=(0, 1))
+
+
+def coverage_report_panel(metrics: dict[str, Any]) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Source", style="cyan", no_wrap=True, width=8)
+    table.add_column("Available Text", justify="right", no_wrap=True, width=16)
+    table.add_column("Token Chunks", justify="right", no_wrap=True, width=14)
+    table.add_column("Embeddings", justify="right", no_wrap=True, width=14)
+    table.add_column("Source Gap", justify="right", no_wrap=True, width=12)
+    table.add_column("Embed Gap", justify="right", no_wrap=True, width=12)
+    table.add_column("Processed", justify="right", no_wrap=True, width=12)
+    table.add_column("Remaining", justify="right", no_wrap=True, width=12)
+    table.add_column("Available Period UTC", overflow="fold", ratio=1)
+    for source, label in (("news", "News"), ("sec", "SEC")):
+        source_gap = int(metrics.get(f"{source}_source_gap_detected") or 0)
+        embed_gap = int(metrics.get(f"{source}_token_gap_detected") or 0)
+        processed = int(metrics.get(f"{source}_source_gap_completed") or 0) + int(metrics.get(f"{source}_token_gap_completed") or 0)
+        remaining = int(metrics.get(f"{source}_source_gap_remaining") or 0) + int(metrics.get(f"{source}_token_gap_remaining") or 0)
+        if source == "sec":
+            remaining += int(metrics.get("sec_context_blocked_detected") or 0)
+        table.add_row(
+            label,
+            fmt(metrics.get(f"{source}_available_source_rows")),
+            fmt(metrics.get(f"{source}_available_token_rows")),
+            fmt(metrics.get(f"{source}_available_embedding_rows")),
+            fmt(source_gap),
+            fmt(embed_gap),
+            fmt(processed),
+            fmt(remaining),
+            str(metrics.get(f"{source}_available_period") or "-"),
+        )
+    return Panel(table, title="Coverage Report", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
 
 
 def gap_summary_panel(metrics: dict[str, Any]) -> Panel:
