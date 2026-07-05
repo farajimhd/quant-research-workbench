@@ -202,6 +202,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--retry-started", action="store_true")
     parser.add_argument("--force-day-delete", action="store_true")
+    parser.add_argument(
+        "--force-day-rebuild",
+        action="store_true",
+        help=(
+            "Rebuild source days even when the manifest says ok. Existing event rows are deleted "
+            "from the source-day continuity timestamp bounds before reinserting."
+        ),
+    )
     parser.add_argument("--skip-bars", action="store_true", help="Only update compact events; do not rebuild macro bar rows.")
     parser.add_argument(
         "--bar-replace-range",
@@ -1275,6 +1283,112 @@ DELETE WHERE sip_timestamp_us >= toUInt64({int(first_us)})
 """
 
 
+def day_event_integrity_counts(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    day: DayFiles,
+    first_us: int,
+    last_us: int,
+) -> dict[str, int]:
+    source = date.fromisoformat(day.source_date)
+    allowed_dates = ", ".join(
+        sql_string(value)
+        for value in (
+            source.isoformat(),
+            date.fromordinal(source.toordinal() + 1).isoformat(),
+        )
+    )
+    row = first_tsv_row(
+        client,
+        f"""
+WITH scoped AS
+(
+    SELECT
+        ticker,
+        ordinal,
+        sip_timestamp_us,
+        event_meta
+    FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
+    WHERE sip_timestamp_us >= toUInt64({int(first_us)})
+      AND sip_timestamp_us <= toUInt64({int(last_us)})
+      AND event_date IN ({allowed_dates})
+),
+ordered AS
+(
+    SELECT
+        ticker,
+        ordinal,
+        sip_timestamp_us,
+        lagInFrame(ordinal) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_ordinal,
+        lagInFrame(sip_timestamp_us) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_ts
+    FROM scoped
+)
+SELECT
+    (SELECT count() FROM scoped) AS rows,
+    (SELECT count() - uniqExact(ticker, ordinal) FROM scoped) AS duplicate_ticker_ordinal_rows,
+    countIf(prev_ordinal != 0 AND ordinal = prev_ordinal) AS repeated_ordinal_transitions,
+    countIf(prev_ordinal != 0 AND ordinal < prev_ordinal) AS ordinal_backsteps,
+    countIf(prev_ordinal != 0 AND ordinal > prev_ordinal + 1) AS ordinal_gap_transitions,
+    countIf(prev_ts != 0 AND sip_timestamp_us < prev_ts) AS timestamp_backsteps
+FROM ordered
+{query_settings(args)}
+""",
+    )
+    keys = [
+        "rows",
+        "duplicate_ticker_ordinal_rows",
+        "repeated_ordinal_transitions",
+        "ordinal_backsteps",
+        "ordinal_gap_transitions",
+        "timestamp_backsteps",
+    ]
+    if not row:
+        return {key: 0 for key in keys}
+    return {key: int(float(value or 0)) for key, value in zip(keys, row, strict=False)}
+
+
+def validate_day_event_integrity(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    day: DayFiles,
+    build_step: int,
+    report_path: Path,
+    *,
+    context: str,
+) -> dict[str, int]:
+    bounds = day_continuity_timestamp_bounds(client, args, day, build_step)
+    audit: dict[str, Any] = {
+        "type": "day_event_integrity_check",
+        "source_date": day.source_date,
+        "build_step": build_step,
+        "context": context,
+        "status": "ok",
+    }
+    if bounds is None:
+        audit["status"] = "failed"
+        audit["exception"] = "missing continuity timestamp bounds"
+        append_jsonl(report_path, audit)
+        raise RuntimeError(f"day={day.source_date} has no continuity timestamp bounds for event integrity audit.")
+    first_us, last_us = bounds
+    counts = day_event_integrity_counts(client, args, day, first_us, last_us)
+    audit.update({"first_sip_timestamp_us": first_us, "last_sip_timestamp_us": last_us, **counts})
+    bad_keys = [
+        "duplicate_ticker_ordinal_rows",
+        "repeated_ordinal_transitions",
+        "ordinal_backsteps",
+        "ordinal_gap_transitions",
+        "timestamp_backsteps",
+    ]
+    failed = {key: counts.get(key, 0) for key in bad_keys if counts.get(key, 0)}
+    if failed:
+        audit["status"] = "failed"
+        append_jsonl(report_path, audit)
+        details = ", ".join(f"{key}={value:,}" for key, value in failed.items())
+        raise RuntimeError(f"day={day.source_date} event integrity failed after {context}: {details}")
+    append_jsonl(report_path, audit)
+    return counts
+
+
 def insert_day_ticker_index_sql(args: argparse.Namespace, day: DayFiles, build_step: int) -> str:
     return f"""
 INSERT INTO {quote_ident(args.database)}.{quote_ident(args.ticker_day_index_table)}
@@ -2122,7 +2236,17 @@ def _run_profiled_with_reporter(
 def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles, run_id: str, report_path: Path, reporter: UpdateProgressReporter | None = None) -> str:
     job = DayJob(source_date=day.source_date, build_step=build_step_for_date(day.source_date))
     status = latest_day_status(client, args, job)
-    if status == "ok":
+    if status == "ok" and not args.force_day_rebuild:
+        if reporter is not None:
+            reporter.task_start(f"{day.source_date}:audit:events_existing", "validate existing event rows", day=day.source_date, stage="audit")
+        integrity_counts = validate_day_event_integrity(client, args, day, job.build_step, report_path, context="manifest_ok_skip")
+        if reporter is not None:
+            reporter.task_done(
+                f"{day.source_date}:audit:events_existing",
+                "ok",
+                rows=integrity_counts.get("rows", 0),
+                detail="existing events have unique ordinals and monotonic timestamps",
+            )
         if reporter is not None:
             reporter.task_start(f"{day.source_date}:index:manifest_ok", "rebuild ticker/day index", day=day.source_date, stage="index")
         rebuild_day_ticker_index(client, args, day, job.build_step, report_path, reason="manifest_ok")
@@ -2133,13 +2257,13 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
     if status in {"failed", "started", "interrupted"} and not (args.retry_failed or args.retry_started):
         print(f"DAY SKIP {day.source_date} status={status}; pass retry flags to revisit", flush=True)
         return "incomplete_skipped"
-    if status in {"failed", "started", "interrupted"}:
-        if not args.force_day_delete:
+    if status in {"failed", "started", "interrupted"} or args.force_day_rebuild:
+        if not (args.force_day_delete or args.force_day_rebuild):
             raise RuntimeError(f"day={day.source_date} status={status}; rerun with --force-day-delete to avoid duplicate rows")
         if reporter is not None:
             reporter.notice(
                 f"Deleting existing event rows for source day {day.source_date} from continuity timestamp bounds "
-                f"because status={status} and --force-day-delete is set.",
+                f"because status={status} and a forced rebuild/delete was requested.",
                 style="bold yellow",
             )
         bounds = day_continuity_timestamp_bounds(client, args, day, job.build_step)
@@ -2184,6 +2308,16 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
         validate_day_continuity_after_insert(client, args, day, job.build_step, profile.written_rows, report_path)
         if reporter is not None:
             reporter.task_done(f"{day.source_date}:audit:continuity", "ok", rows=profile.written_rows, detail="continuity sum matches event rows")
+            reporter.task_start(f"{day.source_date}:audit:events", "validate event row integrity", day=day.source_date, stage="audit")
+        integrity_counts = validate_day_event_integrity(client, args, day, job.build_step, report_path, context="post_insert")
+        if reporter is not None:
+            reporter.task_done(
+                f"{day.source_date}:audit:events",
+                "ok",
+                rows=integrity_counts.get("rows", 0),
+                detail="unique ordinals and monotonic timestamps",
+            )
+        if reporter is not None:
             reporter.task_start(f"{day.source_date}:index:events_inserted", "rebuild ticker/day index", day=day.source_date, stage="index")
         index_profile = rebuild_day_ticker_index(client, args, day, job.build_step, report_path, reason="events_inserted")
         if reporter is not None:
