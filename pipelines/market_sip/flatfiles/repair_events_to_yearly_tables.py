@@ -233,18 +233,43 @@ def day_files_for_date(args: argparse.Namespace, source: date) -> DayFiles:
     )
 
 
-def validate_flatfiles_exist(args: argparse.Namespace, windows: list[tuple[date, date]]) -> None:
-    missing: list[str] = []
+def repair_day_file_status(args: argparse.Namespace, source: date) -> tuple[DayFiles, bool, bool]:
+    day = day_files_for_date(args, source)
+    quote_exists = Path(day.quote_job.destination).exists()
+    trade_exists = Path(day.trade_job.destination).exists()
+    return day, quote_exists, trade_exists
+
+
+def validate_repair_flatfiles(args: argparse.Namespace, windows: list[tuple[date, date]]) -> dict[str, list[str]]:
+    partial_missing: list[str] = []
+    skipped_non_trading: list[str] = []
+    empty_windows: list[str] = []
     for start, end in windows:
+        available_in_window = 0
         for source in iter_dates(start, end):
-            day = day_files_for_date(args, source)
-            for path in (Path(day.quote_job.destination), Path(day.trade_job.destination)):
-                if not path.exists():
-                    missing.append(str(path))
-    if missing:
-        preview = "\n".join(missing[:20])
-        suffix = f"\n... {len(missing) - 20:,} more" if len(missing) > 20 else ""
-        raise FileNotFoundError(f"Missing repair flatfiles:\n{preview}{suffix}")
+            day, quote_exists, trade_exists = repair_day_file_status(args, source)
+            if quote_exists and trade_exists:
+                available_in_window += 1
+                continue
+            if not quote_exists and not trade_exists:
+                skipped_non_trading.append(source.isoformat())
+                continue
+            if not quote_exists:
+                partial_missing.append(day.quote_job.destination)
+            if not trade_exists:
+                partial_missing.append(day.trade_job.destination)
+        if available_in_window == 0:
+            empty_windows.append(f"{start.isoformat()}:{end.isoformat()}")
+    if partial_missing:
+        preview = "\n".join(partial_missing[:20])
+        suffix = f"\n... {len(partial_missing) - 20:,} more" if len(partial_missing) > 20 else ""
+        raise FileNotFoundError(f"Repair window has partial quote/trade flatfile pairs:\n{preview}{suffix}")
+    if empty_windows:
+        raise FileNotFoundError(
+            "Repair window has no available quote/trade flatfile pairs. Check --flatfiles-root-win or window dates: "
+            + ", ".join(empty_windows)
+        )
+    return {"skipped_non_trading": skipped_non_trading}
 
 
 def table_exists(client: ClickHouseHttpClient, database: str, table: str) -> bool:
@@ -410,8 +435,17 @@ def repair_days_for_year(windows: list[tuple[date, date]], year: int) -> list[da
     return sorted(set(days))
 
 
+def available_repair_days_for_year(args: argparse.Namespace, windows: list[tuple[date, date]], year: int) -> list[date]:
+    available: list[date] = []
+    for source in repair_days_for_year(windows, year):
+        _day, quote_exists, trade_exists = repair_day_file_status(args, source)
+        if quote_exists and trade_exists:
+            available.append(source)
+    return available
+
+
 def build_repair_raw_for_year(runner: QueryRunner, args: argparse.Namespace, windows: list[tuple[date, date]], year: int) -> None:
-    days = repair_days_for_year(windows, year)
+    days = available_repair_days_for_year(args, windows, year)
     if not days:
         return
     create_repair_raw_table(runner, args, year)
@@ -864,7 +898,7 @@ def main() -> int:
     if args.replace_events_with_view and not args.drop_old_year_partitions:
         raise ValueError("--replace-events-with-view should only be used after --drop-old-year-partitions")
     windows = parse_repair_windows(args.repair_window)
-    validate_flatfiles_exist(args, windows)
+    flatfile_status = validate_repair_flatfiles(args, windows)
     run_id = time.strftime("%Y%m%d_%H%M%S")
     report_path = Path(args.output_root_win) / f"yearly_event_repair_{run_id}.jsonl"
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
@@ -886,10 +920,17 @@ def main() -> int:
             "run_id": run_id,
             "args": {key: value for key, value in vars(args).items() if key != "password"},
             "repair_windows": [(start.isoformat(), end.isoformat()) for start, end in windows],
+            "flatfile_status": flatfile_status,
         },
     )
     print(f"YEARLY EVENT REPAIR run_id={run_id} report={report_path}", flush=True)
     print(f"execute={args.execute} years={years[0]}..{years[-1]} drop_old_year_partitions={args.drop_old_year_partitions}", flush=True)
+    if flatfile_status["skipped_non_trading"]:
+        print(
+            "Repair window skips missing non-trading dates with no quote/trade files: "
+            + ", ".join(flatfile_status["skipped_non_trading"]),
+            flush=True,
+        )
 
     runner.run("create_repair_log", create_repair_log_table_sql(args))
     runner.run("create_state", create_state_table_sql(args))
@@ -906,7 +947,7 @@ def main() -> int:
         if year in set(args.force_rebuild_year):
             runner.run(f"delete_state_from_{year}", delete_state_from_year_sql(args, year))
         create_year_table(runner, args, year)
-        repair_days = repair_days_for_year(windows, year)
+        repair_days = available_repair_days_for_year(args, windows, year)
         build_repair_raw_for_year(runner, args, windows, year)
         old_count = query_scalar(client, source_old_year_count_sql(args, year, repair_days)) if args.execute else 0
         repair_count = query_scalar(client, repair_year_count_sql(args, year)) if args.execute and repair_days else 0
