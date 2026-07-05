@@ -52,7 +52,7 @@ from research.mlops.env import load_env_files  # noqa: E402
 
 DEFAULT_DATABASE = "market_sip_compact"
 DEFAULT_OUTPUT_ROOT = Path("D:/market-data/prepared/clickhouse_sip_ingest/yearly_event_repair")
-DEFAULT_REPAIR_WINDOWS = ("2020-10-06:2020-10-08", "2021-02-15:2021-02-17")
+DEFAULT_REPAIR_WINDOWS = ("2020-10-06:2020-10-08", "2021-02-12:2021-02-17")
 EVENT_COLUMNS = (
     "ticker",
     "ordinal",
