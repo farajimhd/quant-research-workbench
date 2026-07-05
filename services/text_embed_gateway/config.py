@@ -134,7 +134,7 @@ class TextEmbedGatewayConfig:
             live_poll_seconds=env_float("TEXT_EMBED_LIVE_POLL_SECONDS", 2.0),
             closed_poll_seconds=env_float("TEXT_EMBED_CLOSED_POLL_SECONDS", 60.0),
             live_lookback_minutes=env_int("TEXT_EMBED_LIVE_LOOKBACK_MINUTES", 180),
-            historical_lookback_days=env_int("TEXT_EMBED_HISTORICAL_LOOKBACK_DAYS", 30),
+            historical_lookback_days=max(60, env_int("TEXT_EMBED_HISTORICAL_LOOKBACK_DAYS", 60)),
             historical_batch_limit=env_int("TEXT_EMBED_HISTORICAL_BATCH_LIMIT", 512),
             max_threads=env_int("TEXT_EMBED_CLICKHOUSE_MAX_THREADS", 8),
             max_memory_usage=env_string("TEXT_EMBED_CLICKHOUSE_MAX_MEMORY_USAGE", "16G"),
