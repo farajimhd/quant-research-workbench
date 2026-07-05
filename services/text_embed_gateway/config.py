@@ -64,6 +64,7 @@ class TextEmbedGatewayConfig:
     embedding_insert_batch_size: int
     live_poll_seconds: float
     closed_poll_seconds: float
+    weekend_poll_seconds: float
     live_lookback_minutes: int
     historical_lookback_days: int
     historical_batch_limit: int
@@ -133,6 +134,7 @@ class TextEmbedGatewayConfig:
             embedding_insert_batch_size=env_int("TEXT_EMBED_INSERT_BATCH_SIZE", 64),
             live_poll_seconds=env_float("TEXT_EMBED_LIVE_POLL_SECONDS", 2.0),
             closed_poll_seconds=env_float("TEXT_EMBED_CLOSED_POLL_SECONDS", 60.0),
+            weekend_poll_seconds=env_float("TEXT_EMBED_WEEKEND_POLL_SECONDS", 300.0),
             live_lookback_minutes=env_int("TEXT_EMBED_LIVE_LOOKBACK_MINUTES", 180),
             historical_lookback_days=max(60, env_int("TEXT_EMBED_HISTORICAL_LOOKBACK_DAYS", 60)),
             historical_batch_limit=env_int("TEXT_EMBED_HISTORICAL_BATCH_LIMIT", 512),

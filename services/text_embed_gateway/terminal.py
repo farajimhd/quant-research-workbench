@@ -81,6 +81,10 @@ def status_panel(metrics: dict[str, Any]) -> Panel:
         table.add_row("Focus", focus or "-")
     if metrics.get("active_window_utc"):
         table.add_row("Window UTC", str(metrics.get("active_window_utc") or "-").replace("T", " ").replace("Z", ""))
+    if metrics.get("next_poll_at_utc"):
+        table.add_row("Next poll UTC", compact_time(str(metrics.get("next_poll_at_utc") or "")))
+    if metrics.get("poll_cadence_label"):
+        table.add_row("Cadence", f"{metrics.get('poll_cadence_label')} ({metrics.get('poll_cadence_reason') or '-'})")
     table.add_row("Model", style_status(str(metrics.get("model_status") or "-")))
     table.add_row("Market", f"{str(metrics.get('market_status') or '-')} / {str(metrics.get('market_status_source') or '-')}")
     if metrics.get("market_status_error"):
@@ -105,8 +109,8 @@ def work_focus_panel(metrics: dict[str, Any]) -> Panel:
         source_label(str(metrics.get("active_source") or "")),
         stage_label(metrics.get("active_stage")),
         "-",
-        f"started={compact_time(str(metrics.get('active_started_at_utc') or ''))}",
-        f"{metrics.get('active_detail') or '-'}  window={str(metrics.get('active_window_utc') or '-').replace('T', ' ').replace('Z', '')}",
+        active_timing(metrics),
+        active_detail(metrics),
     )
     table.add_row(
         "Last extraction",
@@ -132,21 +136,21 @@ def progress_panel(metrics: dict[str, Any]) -> Panel:
     table.add_column("Total", justify="right", no_wrap=True, width=14)
     table.add_column("Last", overflow="fold", ratio=1)
     table.add_row(
-        "Source gaps",
+        "Fetched source",
         fmt(metrics.get("news_source_rows")),
         fmt(metrics.get("sec_source_rows")),
         fmt(metrics.get("source_rows_fetched")),
         f"last_fetch={float(metrics.get('last_fetch_seconds') or 0.0):.2f}s",
     )
     table.add_row(
-        "Token gaps",
+        "Fetched tokens",
         fmt(metrics.get("news_token_rows")),
         fmt(metrics.get("sec_token_rows")),
         fmt(metrics.get("token_rows_fetched")),
         f"last_embed={float(metrics.get('last_embedding_seconds') or 0.0):.2f}s",
     )
     table.add_row(
-        "Embeddings",
+        "Embeddings written",
         "-",
         "-",
         fmt(metrics.get("embedding_rows_written")),
@@ -201,7 +205,8 @@ def coverage_report_panel(metrics: dict[str, Any]) -> Panel:
     table.add_column("Processed", justify="right", no_wrap=True, width=12)
     table.add_column("Remaining", justify="right", no_wrap=True, width=12)
     table.add_column("Available Period UTC", overflow="fold", ratio=1)
-    for mode, source, report in report_rows(reports):
+    rows_added = 0
+    for mode, source, report in report_rows(reports, include_empty=False):
         processed = int(report.get("source_completed") or 0) + int(report.get("embedding_completed") or 0) + int(report.get("context_completed") or 0)
         remaining = int(report.get("source_remaining") or 0) + int(report.get("embedding_remaining") or 0) + int(report.get("context_remaining") or 0) + int(report.get("context_blocked") or 0)
         table.add_row(
@@ -216,6 +221,9 @@ def coverage_report_panel(metrics: dict[str, Any]) -> Panel:
             fmt(remaining),
             str(report.get("available_period") or "-"),
         )
+        rows_added += 1
+    if rows_added == 0:
+        table.add_row("-", "-", "-", "-", "-", "-", "-", "-", "-", "No coverage reports have completed yet.")
     return Panel(table, title="Coverage Report", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
 
 
@@ -224,42 +232,28 @@ def gap_summary_panel(metrics: dict[str, Any]) -> Panel:
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
     table.add_column("Mode", style="cyan", no_wrap=True, width=10)
     table.add_column("Source", style="cyan", no_wrap=True, width=8)
-    table.add_column("Gap", style="cyan", no_wrap=True, width=12)
+    table.add_column("Gap", style="cyan", no_wrap=True, width=18)
     table.add_column("Detected", justify="right", no_wrap=True, width=12)
     table.add_column("Done", justify="right", no_wrap=True, width=12)
     table.add_column("Remaining", justify="right", no_wrap=True, width=12)
     table.add_column("Missing Period UTC", overflow="fold", ratio=1)
-    for mode, source, report in report_rows(reports):
+    rows_added = 0
+    for mode, source, report in report_rows(reports, include_empty=False):
         if source == "sec":
-            table.add_row(
-                mode_label(mode),
-                source_label(source),
+            rows_added += add_gap_row(
+                table,
+                mode,
+                source,
                 "Context",
-                fmt(report.get("context_detected")),
-                fmt(report.get("context_completed")),
-                fmt(int(report.get("context_remaining") or 0) + int(report.get("context_blocked") or 0)),
+                report.get("context_detected"),
+                report.get("context_completed"),
+                int(report.get("context_remaining") or 0) + int(report.get("context_blocked") or 0),
                 with_blocked_period(report.get("context_period"), report.get("context_blocked")),
             )
-        table.add_row(
-            mode_label(mode),
-            source_label(source),
-            "Source",
-            fmt(report.get("source_detected")),
-            fmt(report.get("source_completed")),
-            fmt(report.get("source_remaining")),
-            str(report.get("source_period") or "-"),
-        )
-        table.add_row(
-            mode_label(mode),
-            source_label(source),
-            "Embedding",
-            fmt(report.get("embedding_detected")),
-            fmt(report.get("embedding_completed")),
-            fmt(report.get("embedding_remaining")),
-            str(report.get("embedding_period") or "-"),
-        )
-    if not any(report_rows(reports)):
-        table.add_row("-", "-", "-", "-", "-", "-", "-")
+        rows_added += add_gap_row(table, mode, source, "Source", report.get("source_detected"), report.get("source_completed"), report.get("source_remaining"), str(report.get("source_period") or "-"))
+        rows_added += add_gap_row(table, mode, source, "Embedding", report.get("embedding_detected"), report.get("embedding_completed"), report.get("embedding_remaining"), str(report.get("embedding_period") or "-"))
+    if rows_added == 0:
+        table.add_row("-", "-", "No active gaps", "-", "-", "-", "Latest completed reports have no remaining source or embedding gaps.")
     return Panel(table, title="Gap Summary by Mode", box=box.ROUNDED, border_style="magenta", padding=(0, 1))
 
 
@@ -274,6 +268,7 @@ def runtime_panel(gateway: "TextEmbedGateway", metrics: dict[str, Any]) -> Panel
     table.add_row("SEC context", str(metrics.get("sec_context_status") or "-"), f"{metrics.get('sec_context_table') or '-'} refreshed={fmt(metrics.get('sec_context_rows_refreshed'))}")
     table.add_row("Batch sizes", fmt(gateway.config.embedding_batch_size), f"source={gateway.config.source_batch_size:,} token={gateway.config.token_batch_size:,} insert={gateway.config.embedding_insert_batch_size:,}")
     table.add_row("Lookback", f"{gateway.config.live_lookback_minutes:,}m", f"closed historical={gateway.config.historical_lookback_days:,}d limit={gateway.config.historical_batch_limit:,}")
+    table.add_row("Poll cadence", f"{metrics.get('poll_cadence_label') or '-'}", f"active={gateway.config.live_poll_seconds:.1f}s closed={gateway.config.closed_poll_seconds:.1f}s weekend={gateway.config.weekend_poll_seconds:.1f}s")
     table.add_row("Recent status", fmt(metrics.get("recent_status_rows")), f"ttl={gateway.config.recent_status_retention_hours:.1f}h")
     table.add_row("Failures", fmt(metrics.get("failures")), str(metrics.get("last_error") or "-"))
     table.add_row("Log", "-", truncate(str(metrics.get("run_log_path") or "-"), 140))
@@ -349,7 +344,7 @@ def source_reports(metrics: dict[str, Any]) -> dict[str, dict[str, dict[str, Any
     return {"live": {}, "historical": {}}
 
 
-def report_rows(reports: dict[str, dict[str, dict[str, Any]]]) -> list[tuple[str, str, dict[str, Any]]]:
+def report_rows(reports: dict[str, dict[str, dict[str, Any]]], *, include_empty: bool = True) -> list[tuple[str, str, dict[str, Any]]]:
     rows: list[tuple[str, str, dict[str, Any]]] = []
     for mode in ("live", "historical"):
         mode_reports = reports.get(mode) or {}
@@ -357,9 +352,39 @@ def report_rows(reports: dict[str, dict[str, dict[str, Any]]]) -> list[tuple[str
             report = mode_reports.get(source)
             if isinstance(report, dict):
                 rows.append((mode, source, report))
-            else:
+            elif include_empty:
                 rows.append((mode, source, {}))
     return rows
+
+
+def add_gap_row(table: Table, mode: str, source: str, gap: str, detected: Any, done: Any, remaining: Any, period: str) -> int:
+    values = [detected, done, remaining]
+    has_count = any(int_or_zero(value) for value in values)
+    has_period = bool(period and period != "-")
+    if not has_count and not has_period:
+        return 0
+    table.add_row(mode_label(mode), source_label(source), gap, fmt(detected), fmt(done), fmt(remaining), period or "-")
+    return 1
+
+
+def active_timing(metrics: dict[str, Any]) -> str:
+    next_poll = compact_time(str(metrics.get("next_poll_at_utc") or ""))
+    if next_poll != "-":
+        return f"next={next_poll} wait={float(metrics.get('next_poll_seconds') or 0.0):.0f}s"
+    return f"started={compact_time(str(metrics.get('active_started_at_utc') or ''))}"
+
+
+def active_detail(metrics: dict[str, Any]) -> str:
+    detail = str(metrics.get("active_detail") or "-")
+    window = str(metrics.get("active_window_utc") or "").replace("T", " ").replace("Z", "")
+    return f"{detail}  window={window}" if window else detail
+
+
+def int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
 
 
 def mode_label(mode: str) -> str:
@@ -382,11 +407,11 @@ def style_status(value: str) -> str:
 
 def status_color(value: str) -> str:
     lowered = value.lower()
-    if lowered in {"polling", "loaded", "schema", "running"}:
+    if lowered in {"polling", "loaded", "schema", "running", "working"}:
         return "green"
     if lowered in {"failed", "error"}:
         return "red"
-    if lowered in {"stopping", "releasing_model", "loading_model"}:
+    if lowered in {"stopping", "releasing_model", "loading_model", "waiting"}:
         return "yellow"
     return "cyan"
 

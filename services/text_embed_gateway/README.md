@@ -9,13 +9,17 @@ schemas as the historical builder in `pipelines/market_sip/events`.
 1. Load `.env` files, connect to ClickHouse, and load Qwen to GPU at service
    startup.
 2. Ensure token tables, embedding tables, and `text_embedding_coverage_v1`.
-3. Always poll the recent live window for news and SEC rows, even when the
-   market is closed or after-hours text arrives:
+3. Poll the recent live window for news and SEC rows, even when the market is
+   closed or after-hours text arrives. Cadence is market-aware:
+   - active collection window: `TEXT_EMBED_LIVE_POLL_SECONDS`
+   - closed weekday: `TEXT_EMBED_CLOSED_POLL_SECONDS`
+   - weekend: `TEXT_EMBED_WEEKEND_POLL_SECONDS`
+4. For each live poll:
    - source text rows that do not yet have token rows
    - token rows that do not yet have embedding rows
-4. Outside market collection hours, also process broader historical gaps.
-5. Persist token rows, embedding rows, and lightweight coverage rows.
-6. On shutdown, cancel active ClickHouse queries, finish the current persist
+5. Outside market collection hours, also process broader historical gaps.
+6. Persist token rows, embedding rows, and lightweight coverage rows.
+7. On shutdown, cancel active ClickHouse queries, finish the current persist
    step when possible, release model references, and clear CUDA cache.
 
 The gateway does not retain SEC filings, article bodies, PDFs, enriched text, or
@@ -29,6 +33,9 @@ The Rich terminal separates progress into several panels:
 - `Work Focus`: shows the current mode/source/stage/window being processed and
   the last embedding extraction batch, including sequence count, token count,
   inference seconds, insert seconds, and sequences/second.
+- `Current Operation`: shows `WORKING` while a query/embed/persist stage is
+  running and `WAITING` between cycles, including the next poll time and the
+  active/closed/weekend cadence.
 - `Cycle Summary`: keeps the last recent live cycle and the last historical
   gap-fill cycle visible at the same time, including window, detected gaps,
   completed gaps, remaining gaps, rows written, and cycle seconds.
@@ -83,6 +90,9 @@ TEXT_EMBED_LOCAL_FILES_ONLY=true
 TEXT_EMBED_BATCH_SIZE=16
 TEXT_EMBED_SOURCE_BATCH_SIZE=64
 TEXT_EMBED_TOKEN_BATCH_SIZE=256
+TEXT_EMBED_LIVE_POLL_SECONDS=2
+TEXT_EMBED_CLOSED_POLL_SECONDS=60
+TEXT_EMBED_WEEKEND_POLL_SECONDS=300
 TEXT_EMBED_LIVE_LOOKBACK_MINUTES=180
 TEXT_EMBED_HISTORICAL_LOOKBACK_DAYS=60
 TEXT_EMBED_HISTORICAL_BATCH_LIMIT=512

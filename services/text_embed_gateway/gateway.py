@@ -59,6 +59,10 @@ class TextEmbedMetrics:
     active_window_utc: str = ""
     active_detail: str = ""
     active_started_at_utc: str = ""
+    next_poll_at_utc: str = ""
+    next_poll_seconds: float = 0.0
+    poll_cadence_reason: str = ""
+    poll_cadence_label: str = ""
     last_embedding_at_utc: str = ""
     last_embedding_mode: str = ""
     last_embedding_source: str = ""
@@ -339,21 +343,23 @@ class TextEmbedGateway:
             started = time.perf_counter()
             try:
                 status = await asyncio.to_thread(self.current_market_status)
-                self._set_phase("polling", "Embedding recent live text gaps.")
+                poll_seconds = self._poll_interval_seconds(status)
+                self._set_phase("working", "Checking recent live text gaps.")
                 await asyncio.to_thread(self._run_cycle, "live")
 
                 now_monotonic = time.monotonic()
                 should_run_historical = (
                     not status.active_collection_window
-                    and now_monotonic - last_historical_started >= max(1.0, self.config.closed_poll_seconds)
+                    and now_monotonic - last_historical_started >= max(1.0, poll_seconds)
                 )
                 if should_run_historical and not self._stop_event.is_set():
                     last_historical_started = now_monotonic
-                    self._set_phase("polling", "Embedding closed historical gaps.")
+                    self._set_phase("working", "Checking closed historical gaps.")
                     await asyncio.to_thread(self._run_cycle, "historical")
 
                 self.metrics.last_cycle_seconds = time.perf_counter() - started
-                await asyncio.wait_for(self._stop_event.wait(), timeout=max(0.25, self.config.live_poll_seconds))
+                self._set_waiting(status, poll_seconds)
+                await asyncio.wait_for(self._stop_event.wait(), timeout=max(0.25, poll_seconds))
             except TimeoutError:
                 continue
             except asyncio.CancelledError:
@@ -364,7 +370,9 @@ class TextEmbedGateway:
                 self._set_phase("error", repr(exc))
                 self.logger.exception("poll_cycle_failed", exc)
                 try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=min(30.0, max(1.0, self.config.closed_poll_seconds)))
+                    retry_seconds = min(30.0, max(1.0, self.config.closed_poll_seconds))
+                    self._set_error_waiting(retry_seconds)
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=retry_seconds)
                 except TimeoutError:
                     continue
 
@@ -960,7 +968,65 @@ class TextEmbedGateway:
         self.metrics.active_detail = detail
         self.metrics.active_started_at_utc = utc_now_text()
         self.metrics.active_window_utc = f"{utc_text(bounds[0])} -> {utc_text(bounds[1])}" if bounds is not None else ""
-        self._set_phase("polling", detail)
+        self.metrics.next_poll_at_utc = ""
+        self.metrics.next_poll_seconds = 0.0
+        self.metrics.poll_cadence_reason = ""
+        self._set_phase("working", detail)
+
+    def _set_waiting(self, status: MarketHoursSnapshot, sleep_seconds: float) -> None:
+        now = datetime.now(UTC)
+        self.metrics.active_mode = ""
+        self.metrics.active_source = ""
+        self.metrics.active_stage = "waiting"
+        self.metrics.active_detail = f"Sleeping before next live gap check ({self._poll_cadence_reason(status)})."
+        self.metrics.active_started_at_utc = utc_text(now)
+        self.metrics.active_window_utc = ""
+        self.metrics.next_poll_seconds = float(sleep_seconds)
+        self.metrics.next_poll_at_utc = utc_text(now + timedelta(seconds=max(0.25, sleep_seconds)))
+        self.metrics.poll_cadence_reason = self._poll_cadence_reason(status)
+        self.metrics.poll_cadence_label = self._poll_cadence_label(status)
+        self._set_phase("waiting", self.metrics.active_detail)
+
+    def _set_error_waiting(self, sleep_seconds: float) -> None:
+        now = datetime.now(UTC)
+        self.metrics.active_mode = ""
+        self.metrics.active_source = ""
+        self.metrics.active_stage = "error_backoff"
+        self.metrics.active_detail = "Backing off after poll cycle error."
+        self.metrics.active_started_at_utc = utc_text(now)
+        self.metrics.active_window_utc = ""
+        self.metrics.next_poll_seconds = float(sleep_seconds)
+        self.metrics.next_poll_at_utc = utc_text(now + timedelta(seconds=max(0.25, sleep_seconds)))
+        self.metrics.poll_cadence_reason = "error_backoff"
+        self.metrics.poll_cadence_label = f"{sleep_seconds:.0f}s error backoff"
+
+    def _poll_interval_seconds(self, status: MarketHoursSnapshot) -> float:
+        if status.active_collection_window:
+            return max(0.25, self.config.live_poll_seconds)
+        if self._is_weekend_status(status):
+            return max(1.0, self.config.weekend_poll_seconds)
+        return max(1.0, self.config.closed_poll_seconds)
+
+    def _poll_cadence_label(self, status: MarketHoursSnapshot) -> str:
+        seconds = self._poll_interval_seconds(status)
+        if status.active_collection_window:
+            return f"{seconds:.0f}s active"
+        if self._is_weekend_status(status):
+            return f"{seconds:.0f}s weekend"
+        return f"{seconds:.0f}s closed"
+
+    def _poll_cadence_reason(self, status: MarketHoursSnapshot) -> str:
+        if status.active_collection_window:
+            return "active market collection window"
+        if self._is_weekend_status(status):
+            return "weekend closed market"
+        return "closed market"
+
+    def _is_weekend_status(self, status: MarketHoursSnapshot) -> bool:
+        try:
+            return datetime.fromisoformat(status.local_time_et).weekday() >= 5
+        except ValueError:
+            return datetime.now(UTC).astimezone().weekday() >= 5
 
     def _remember(self, *, source: str, mode: str, stage: str, rows: int, seconds: float) -> None:
         self._recent.appendleft(
