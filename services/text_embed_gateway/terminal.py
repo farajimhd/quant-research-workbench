@@ -33,7 +33,9 @@ def render_dashboard(gateway: "TextEmbedGateway") -> Group:
         header_panel(gateway, metrics),
         status_panel(metrics),
         progress_panel(metrics),
+        cycle_summary_panel(metrics),
         gap_summary_panel(metrics),
+        timing_panel(metrics),
         runtime_panel(gateway, metrics),
         recent_table(gateway.recent_snapshot(12)),
     )
@@ -108,7 +110,33 @@ def progress_panel(metrics: dict[str, Any]) -> Panel:
         fmt(metrics.get("cycles")),
         f"last={float(metrics.get('last_cycle_seconds') or 0.0):.2f}s active_queries={fmt(metrics.get('active_queries'))}",
     )
-    return Panel(table, title="Live Progress", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
+    return Panel(table, title="Cumulative Rows", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
+
+
+def cycle_summary_panel(metrics: dict[str, Any]) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Mode", style="cyan", no_wrap=True, width=12)
+    table.add_column("Cycles", justify="right", no_wrap=True, width=10)
+    table.add_column("Last UTC", no_wrap=True, width=19)
+    table.add_column("Window UTC", overflow="fold", ratio=1)
+    table.add_column("Detected", justify="right", no_wrap=True, width=10)
+    table.add_column("Done", justify="right", no_wrap=True, width=10)
+    table.add_column("Remain", justify="right", no_wrap=True, width=10)
+    table.add_column("Rows", justify="right", no_wrap=True, width=10)
+    table.add_column("Sec", justify="right", no_wrap=True, width=8)
+    for mode, label in (("live", "Live"), ("historical", "Historical")):
+        table.add_row(
+            label,
+            fmt(metrics.get(f"{mode}_cycles")),
+            compact_time(str(metrics.get(f"{mode}_last_cycle_at_utc") or "")),
+            str(metrics.get(f"{mode}_last_window_utc") or "-").replace("T", " ").replace("Z", ""),
+            fmt(metrics.get(f"{mode}_last_gap_detected")),
+            fmt(metrics.get(f"{mode}_last_gap_completed")),
+            fmt(metrics.get(f"{mode}_last_gap_remaining")),
+            fmt(metrics.get(f"{mode}_last_rows_written")),
+            f"{float(metrics.get(f'{mode}_last_cycle_seconds') or 0.0):.2f}",
+        )
+    return Panel(table, title="Cycle Summary", box=box.ROUNDED, border_style="blue", padding=(0, 1))
 
 
 def gap_summary_panel(metrics: dict[str, Any]) -> Panel:
@@ -178,6 +206,34 @@ def runtime_panel(gateway: "TextEmbedGateway", metrics: dict[str, Any]) -> Panel
     return Panel(table, title="Runtime", box=box.ROUNDED, border_style="green" if not metrics.get("last_error") else "yellow", padding=(0, 1))
 
 
+def timing_panel(metrics: dict[str, Any]) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Mode", style="cyan", no_wrap=True, width=12)
+    table.add_column("Batches", justify="right", no_wrap=True, width=10)
+    table.add_column("Seq", justify="right", no_wrap=True, width=12)
+    table.add_column("Avg infer", justify="right", no_wrap=True, width=12)
+    table.add_column("Last infer", justify="right", no_wrap=True, width=12)
+    table.add_column("ms/seq", justify="right", no_wrap=True, width=10)
+    table.add_column("Seq/s", justify="right", no_wrap=True, width=10)
+    table.add_column("Tok/s", justify="right", no_wrap=True, width=12)
+    table.add_column("Avg insert", justify="right", no_wrap=True, width=11)
+    table.add_column("Avg batch", justify="right", no_wrap=True, width=11)
+    for mode, label in (("live", "Live"), ("historical", "Historical")):
+        table.add_row(
+            label,
+            fmt(metrics.get(f"{mode}_embedding_batches")),
+            fmt(metrics.get(f"{mode}_embedding_sequences")),
+            seconds(metrics.get(f"{mode}_avg_inference_seconds")),
+            seconds(metrics.get(f"{mode}_last_inference_seconds")),
+            f"{float(metrics.get(f'{mode}_avg_inference_ms_per_sequence') or 0.0):.1f}",
+            f"{float(metrics.get(f'{mode}_avg_inference_sequences_per_second') or 0.0):.1f}",
+            f"{float(metrics.get(f'{mode}_avg_inference_tokens_per_second') or 0.0):.0f}",
+            seconds(metrics.get(f"{mode}_avg_insert_seconds")),
+            seconds(metrics.get(f"{mode}_avg_batch_seconds")),
+        )
+    return Panel(table, title="Embedding Timing", box=box.ROUNDED, border_style="yellow", padding=(0, 1))
+
+
 def recent_table(snapshot: dict[str, Any]) -> Table:
     rows = snapshot.get("rows") or []
     table = Table(title=f"Recent Embedding Work ({len(rows)})", box=box.ROUNDED, expand=True, header_style="bold cyan")
@@ -206,6 +262,10 @@ def fmt(value: Any) -> str:
         return f"{int(value or 0):,}"
     except Exception:
         return str(value or "-")
+
+
+def seconds(value: Any) -> str:
+    return f"{float(value or 0.0):.3f}s"
 
 
 def style_status(value: str) -> str:

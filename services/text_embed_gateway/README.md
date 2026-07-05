@@ -22,9 +22,21 @@ The gateway does not retain SEC filings, article bodies, PDFs, enriched text, or
 embedding arrays in memory after a batch is written. The terminal keeps only a
 small TTL-bounded status history.
 
-The Rich terminal includes a `Gap Summary` panel. For each cycle it reports the
-current scanned UTC window, detected gaps, completed rows in that cycle, an
-estimated remaining count, and the min/max missing event period for:
+The Rich terminal separates progress into several panels:
+
+- `Cumulative Rows`: total source rows fetched, token rows fetched, embeddings
+  written, coverage rows, and current active ClickHouse queries.
+- `Cycle Summary`: keeps the last recent live cycle and the last historical
+  gap-fill cycle visible at the same time, including window, detected gaps,
+  completed gaps, remaining gaps, rows written, and cycle seconds.
+- `Gap Summary`: shows the detailed gap rows for the current cycle.
+- `Embedding Timing`: reports live and historical inference batches, sequences,
+  average inference seconds, last inference seconds, average ms/sequence,
+  sequences/second, tokens/second, insert seconds, and batch seconds.
+
+For each gap cycle, the gateway reports the current scanned UTC window,
+detected gaps, completed rows in that cycle, an estimated remaining count, and
+the min/max missing event period for:
 
 - news source rows missing tokens
 - news token rows missing embeddings

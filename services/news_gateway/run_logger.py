@@ -9,7 +9,18 @@ from pathlib import Path
 from typing import Any
 
 
-SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+SECRET_MARKERS = ("KEY", "SECRET", "PASSWORD")
+SAFE_TOKEN_KEY_MARKERS = (
+    "TOKEN_ROWS",
+    "TOKEN_COUNT",
+    "TOKEN_CHUNK",
+    "TOKENIZER",
+    "TOKEN_GAP",
+    "TOKEN_DETECTED",
+    "TOKEN_COMPLETED",
+    "TOKEN_INSERT_SECONDS",
+    "TOKENS",
+)
 MAX_STRING_LENGTH = 2_000
 
 
@@ -99,7 +110,9 @@ def sanitize(value: Any) -> Any:
         output: dict[str, Any] = {}
         for key, item in value.items():
             text_key = str(key)
-            if any(marker in text_key.upper() for marker in SECRET_MARKERS):
+            upper_key = text_key.upper()
+            is_secret_token = "TOKEN" in upper_key and not any(marker in upper_key for marker in SAFE_TOKEN_KEY_MARKERS)
+            if any(marker in upper_key for marker in SECRET_MARKERS) or is_secret_token:
                 output[text_key] = "REDACTED"
             else:
                 output[text_key] = sanitize(item)

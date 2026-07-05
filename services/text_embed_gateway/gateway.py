@@ -24,6 +24,7 @@ from pipelines.market_sip.events.clickhouse_build_text_tokens import (
     create_sec_embedding_table_sql,
     create_sec_token_table_sql,
     embed_and_insert_token_table_batch,
+    safe_div,
     tokenize_and_insert_source_batch,
 )
 from pipelines.market_sip.events.clickhouse_build_sec_context import (
@@ -55,6 +56,20 @@ class TextEmbedMetrics:
     cycles: int = 0
     live_cycles: int = 0
     historical_cycles: int = 0
+    live_last_cycle_at_utc: str = ""
+    historical_last_cycle_at_utc: str = ""
+    live_last_cycle_seconds: float = 0.0
+    historical_last_cycle_seconds: float = 0.0
+    live_last_rows_written: int = 0
+    historical_last_rows_written: int = 0
+    live_last_gap_detected: int = 0
+    historical_last_gap_detected: int = 0
+    live_last_gap_completed: int = 0
+    historical_last_gap_completed: int = 0
+    live_last_gap_remaining: int = 0
+    historical_last_gap_remaining: int = 0
+    live_last_window_utc: str = ""
+    historical_last_window_utc: str = ""
     source_rows_fetched: int = 0
     source_rows_tokenized: int = 0
     token_rows_fetched: int = 0
@@ -68,6 +83,28 @@ class TextEmbedMetrics:
     last_fetch_seconds: float = 0.0
     last_embedding_seconds: float = 0.0
     last_insert_seconds: float = 0.0
+    live_embedding_batches: int = 0
+    historical_embedding_batches: int = 0
+    live_embedding_sequences: int = 0
+    historical_embedding_sequences: int = 0
+    live_embedding_tokens: int = 0
+    historical_embedding_tokens: int = 0
+    live_embedding_seconds: float = 0.0
+    historical_embedding_seconds: float = 0.0
+    live_embedding_insert_seconds: float = 0.0
+    historical_embedding_insert_seconds: float = 0.0
+    live_embedding_batch_seconds: float = 0.0
+    historical_embedding_batch_seconds: float = 0.0
+    live_last_inference_seconds: float = 0.0
+    historical_last_inference_seconds: float = 0.0
+    live_last_inference_sequences: int = 0
+    historical_last_inference_sequences: int = 0
+    live_last_inference_tokens: int = 0
+    historical_last_inference_tokens: int = 0
+    live_last_batch_seconds: float = 0.0
+    historical_last_batch_seconds: float = 0.0
+    live_last_insert_seconds: float = 0.0
+    historical_last_insert_seconds: float = 0.0
     active_queries: int = 0
     cancelled_queries: int = 0
     failures: int = 0
@@ -171,6 +208,7 @@ class TextEmbedGateway:
         self.logger.path = self.logger.path.with_name("text_embed_gateway_events.jsonl")
         self.metrics.run_log_path = str(self.logger.path) if config.run_log_enabled else ""
         self.report_path = config.log_root_win / self._run_id / "text_embed_gateway_profile.jsonl"
+        self._profile_offset = self.report_path.stat().st_size if self.report_path.exists() else 0
 
     async def start(self) -> None:
         await self.logger.start()
@@ -222,7 +260,19 @@ class TextEmbedGateway:
         self.metrics.active_queries = len(self.client.active_query_ids())
         self._prune_recent()
         self.metrics.recent_status_rows = len(self._recent)
-        return asdict(self.metrics)
+        payload = asdict(self.metrics)
+        for mode in ("live", "historical"):
+            sequences = float(payload.get(f"{mode}_embedding_sequences") or 0.0)
+            tokens = float(payload.get(f"{mode}_embedding_tokens") or 0.0)
+            seconds = float(payload.get(f"{mode}_embedding_seconds") or 0.0)
+            batches = float(payload.get(f"{mode}_embedding_batches") or 0.0)
+            payload[f"{mode}_avg_inference_seconds"] = safe_div(seconds, batches)
+            payload[f"{mode}_avg_inference_ms_per_sequence"] = 1000.0 * safe_div(seconds, sequences)
+            payload[f"{mode}_avg_inference_sequences_per_second"] = safe_div(sequences, seconds)
+            payload[f"{mode}_avg_inference_tokens_per_second"] = safe_div(tokens, seconds)
+            payload[f"{mode}_avg_batch_seconds"] = safe_div(float(payload.get(f"{mode}_embedding_batch_seconds") or 0.0), batches)
+            payload[f"{mode}_avg_insert_seconds"] = safe_div(float(payload.get(f"{mode}_embedding_insert_seconds") or 0.0), batches)
+        return payload
 
     def recent_snapshot(self, limit: int = 50) -> dict[str, Any]:
         self._prune_recent()
@@ -274,7 +324,7 @@ class TextEmbedGateway:
                 if should_run_historical and not self._stop_event.is_set():
                     last_historical_started = now_monotonic
                     self._set_phase("polling", "Embedding closed historical gaps.")
-                    await asyncio.to_thread(self._run_cycle, "closed")
+                    await asyncio.to_thread(self._run_cycle, "historical")
 
                 self.metrics.last_cycle_seconds = time.perf_counter() - started
                 await asyncio.wait_for(self._stop_event.wait(), timeout=max(0.25, self.config.live_poll_seconds))
@@ -293,6 +343,7 @@ class TextEmbedGateway:
                     continue
 
     def _run_cycle(self, mode: str) -> None:
+        cycle_started = time.perf_counter()
         self.metrics.cycles += 1
         if mode == "live":
             self.metrics.live_cycles += 1
@@ -301,13 +352,20 @@ class TextEmbedGateway:
         ranges = self._time_ranges(mode)
         self._begin_gap_cycle(mode, ranges["news"])
         total_written = 0
+        cycle_detected = 0
+        cycle_completed = 0
+        cycle_remaining = 0
         for source in ("news", "sec"):
             if self._stop_event.is_set():
                 break
             try:
                 if source == "sec":
                     self._refresh_sec_context(ranges[source], mode)
+                    cycle_detected += int(self.metrics.sec_context_gap_detected) + int(self.metrics.sec_context_blocked_detected)
+                    cycle_completed += int(self.metrics.sec_context_gap_completed)
+                    cycle_remaining += int(self.metrics.sec_context_gap_remaining) + int(self.metrics.sec_context_blocked_detected)
                 source_summary = self._summarize_source_gaps(source, ranges[source])
+                cycle_detected += int(source_summary["rows"])
                 source_rows = self._fetch_missing_source_rows(source, ranges[source], mode)
                 if source_rows:
                     total_written += self._tokenize_embed_and_persist_source(source, source_rows, mode)
@@ -315,18 +373,25 @@ class TextEmbedGateway:
                 if self._stop_event.is_set():
                     break
                 token_summary = self._summarize_token_gaps(source, ranges[source])
+                cycle_detected += int(token_summary["rows"])
                 token_rows = self._fetch_missing_token_rows(source, ranges[source], mode)
                 if token_rows:
                     total_written += self._embed_and_persist_tokens(source, token_rows, mode)
                     self._set_gap_completed(source, "token", len(token_rows))
+                source_completed = int(getattr(self.metrics, f"{source}_source_gap_completed"))
+                token_completed = int(getattr(self.metrics, f"{source}_token_gap_completed"))
+                source_remaining = int(getattr(self.metrics, f"{source}_source_gap_remaining"))
+                token_remaining = int(getattr(self.metrics, f"{source}_token_gap_remaining"))
+                cycle_completed += source_completed + token_completed
+                cycle_remaining += source_remaining + token_remaining
                 self._log(
                     "gap_summary",
                     mode=mode,
                     source=source,
                     source_detected=source_summary["rows"],
-                    source_completed=getattr(self.metrics, f"{source}_source_gap_completed"),
-                    token_detected=token_summary["rows"],
-                    token_completed=getattr(self.metrics, f"{source}_token_gap_completed"),
+                    source_completed=source_completed,
+                    embedding_input_detected=token_summary["rows"],
+                    embedding_input_completed=token_completed,
                     window_start=self.metrics.gap_window_start_utc,
                     window_end=self.metrics.gap_window_end_utc,
                 )
@@ -335,7 +400,24 @@ class TextEmbedGateway:
                 self.metrics.last_error = f"{source}: {exc!r}"
                 self._remember(source=source, mode=mode, stage="error", rows=0, seconds=0.0)
                 self.logger.exception("source_cycle_failed", exc, source=source, mode=mode)
-        self._log("cycle_complete", mode=mode, rows=total_written)
+        self._record_mode_cycle(
+            mode=mode,
+            rows=total_written,
+            seconds=time.perf_counter() - cycle_started,
+            detected=cycle_detected,
+            completed=cycle_completed,
+            remaining=cycle_remaining,
+            bounds=ranges["news"],
+        )
+        self._log(
+            "cycle_complete",
+            mode=mode,
+            rows=total_written,
+            gaps_detected=cycle_detected,
+            gaps_completed=cycle_completed,
+            gaps_remaining=cycle_remaining,
+            seconds=round(float(getattr(self.metrics, f"{'live' if mode == 'live' else 'historical'}_last_cycle_seconds")), 3),
+        )
 
     def _time_ranges(self, mode: str) -> dict[str, tuple[datetime, datetime]]:
         now = datetime.now(UTC)
@@ -482,6 +564,7 @@ class TextEmbedGateway:
         if self.tokenizer is None or self.embedding_model is None:
             raise RuntimeError("Text embedding model is not loaded.")
         started = time.perf_counter()
+        profile_offset = self._profile_offset
         source_batch = SourceBatch(source=source, rows=rows, seconds=0.0)
         before = self.metrics.embedding_rows_written
         token_rows = tokenize_and_insert_source_batch(
@@ -496,6 +579,7 @@ class TextEmbedGateway:
         written = int(token_rows)
         self.metrics.embedding_rows_written += written
         self.metrics.last_embedding_seconds = time.perf_counter() - started
+        self._record_embedding_profile(mode=mode, source=source, stage="source_embed", rows=self._consume_profile_rows(profile_offset))
         self._insert_coverage(source, rows, mode=mode, stage="source", status="ready", token_rows=token_rows, embedding_rows=written)
         self._remember(source=source, mode=mode, stage="source_embed", rows=written, seconds=self.metrics.last_embedding_seconds)
         self.metrics.last_processed_source = source
@@ -507,6 +591,7 @@ class TextEmbedGateway:
         if self.embedding_model is None:
             raise RuntimeError("Text embedding model is not loaded.")
         started = time.perf_counter()
+        profile_offset = self._profile_offset
         before = self.metrics.embedding_rows_written
         inserted = embed_and_insert_token_table_batch(
             self.client,
@@ -517,6 +602,7 @@ class TextEmbedGateway:
         )
         self.metrics.embedding_rows_written += inserted
         self.metrics.last_embedding_seconds = time.perf_counter() - started
+        self._record_embedding_profile(mode=mode, source=source, stage="token_embed", rows=self._consume_profile_rows(profile_offset))
         self._insert_coverage(source, rows, mode=mode, stage="token", status="ready", token_rows=len(rows), embedding_rows=inserted)
         self._remember(source=source, mode=mode, stage="token_embed", rows=inserted, seconds=self.metrics.last_embedding_seconds)
         self.metrics.last_processed_source = source
@@ -554,6 +640,86 @@ class TextEmbedGateway:
         insert_json_each_row(self.client, target, payload)
         self.metrics.coverage_rows_written += len(payload)
         self.metrics.last_insert_seconds = time.perf_counter() - started
+
+    def _consume_profile_rows(self, offset: int) -> list[dict[str, Any]]:
+        if not self.report_path.exists():
+            self._profile_offset = 0
+            return []
+        current_size = self.report_path.stat().st_size
+        if current_size < offset:
+            offset = 0
+        rows: list[dict[str, Any]] = []
+        with self.report_path.open("r", encoding="utf-8") as handle:
+            handle.seek(offset)
+            for line in handle:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    rows.append(json.loads(text))
+                except json.JSONDecodeError:
+                    continue
+            self._profile_offset = handle.tell()
+        return rows
+
+    def _record_embedding_profile(self, *, mode: str, source: str, stage: str, rows: list[dict[str, Any]]) -> None:
+        if mode not in {"live", "historical"}:
+            mode = "historical"
+        if not rows:
+            return
+        batches = len(rows)
+        sequences = sum(int(row.get("embedding_sequences", row.get("embedding_rows", 0)) or 0) for row in rows)
+        tokens = sum(int(row.get("embedding_tokens", 0) or 0) for row in rows)
+        inference_seconds = sum(float(row.get("embedding_seconds", 0.0) or 0.0) for row in rows)
+        insert_seconds = sum(float(row.get("embedding_insert_seconds", 0.0) or 0.0) for row in rows)
+        batch_seconds = sum(float(row.get("batch_seconds", 0.0) or 0.0) for row in rows)
+        setattr(self.metrics, f"{mode}_embedding_batches", int(getattr(self.metrics, f"{mode}_embedding_batches")) + batches)
+        setattr(self.metrics, f"{mode}_embedding_sequences", int(getattr(self.metrics, f"{mode}_embedding_sequences")) + sequences)
+        setattr(self.metrics, f"{mode}_embedding_tokens", int(getattr(self.metrics, f"{mode}_embedding_tokens")) + tokens)
+        setattr(self.metrics, f"{mode}_embedding_seconds", float(getattr(self.metrics, f"{mode}_embedding_seconds")) + inference_seconds)
+        setattr(self.metrics, f"{mode}_embedding_insert_seconds", float(getattr(self.metrics, f"{mode}_embedding_insert_seconds")) + insert_seconds)
+        setattr(self.metrics, f"{mode}_embedding_batch_seconds", float(getattr(self.metrics, f"{mode}_embedding_batch_seconds")) + batch_seconds)
+        setattr(self.metrics, f"{mode}_last_inference_seconds", inference_seconds)
+        setattr(self.metrics, f"{mode}_last_inference_sequences", sequences)
+        setattr(self.metrics, f"{mode}_last_inference_tokens", tokens)
+        setattr(self.metrics, f"{mode}_last_batch_seconds", batch_seconds)
+        setattr(self.metrics, f"{mode}_last_insert_seconds", insert_seconds)
+        self._remember(source=source, mode=mode, stage=f"{stage}_timing", rows=sequences, seconds=inference_seconds)
+        self._log(
+            "embedding_timing",
+            mode=mode,
+            source=source,
+            stage=stage,
+            batches=batches,
+            sequences=sequences,
+            tokens=tokens,
+            inference_seconds=round(inference_seconds, 6),
+            batch_seconds=round(batch_seconds, 6),
+            insert_seconds=round(insert_seconds, 6),
+            sequences_per_second=safe_div(sequences, inference_seconds),
+            tokens_per_second=safe_div(tokens, inference_seconds),
+        )
+
+    def _record_mode_cycle(
+        self,
+        *,
+        mode: str,
+        rows: int,
+        seconds: float,
+        detected: int,
+        completed: int,
+        remaining: int,
+        bounds: tuple[datetime, datetime],
+    ) -> None:
+        if mode not in {"live", "historical"}:
+            mode = "historical"
+        setattr(self.metrics, f"{mode}_last_cycle_at_utc", utc_now_text())
+        setattr(self.metrics, f"{mode}_last_cycle_seconds", float(seconds))
+        setattr(self.metrics, f"{mode}_last_rows_written", int(rows))
+        setattr(self.metrics, f"{mode}_last_gap_detected", int(detected))
+        setattr(self.metrics, f"{mode}_last_gap_completed", int(completed))
+        setattr(self.metrics, f"{mode}_last_gap_remaining", int(remaining))
+        setattr(self.metrics, f"{mode}_last_window_utc", f"{utc_text(bounds[0])} -> {utc_text(bounds[1])}")
 
     def _load_model(self) -> None:
         started = time.perf_counter()
