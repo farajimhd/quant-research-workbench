@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import zipfile
@@ -43,6 +44,7 @@ DEFAULT_BATCH_SIZE = 50_000
 DEFAULT_INSERT_MAX_RETRIES = 12
 DEFAULT_INSERT_RETRY_BASE_SECONDS = 5.0
 DEFAULT_INSERT_RETRY_MAX_SECONDS = 120.0
+MEMBER_MANIFEST_TABLE = "sec_bulk_mirror_member_manifest_v1"
 SOURCE_URLS = {
     "submissions": f"{SEC_BULK_BASE_URL}/bulkdata/submissions.zip",
     "companyfacts": f"{SEC_BULK_BASE_URL}/xbrl/companyfacts.zip",
@@ -99,6 +101,12 @@ def parse_args() -> argparse.Namespace:
         default=float(os.environ.get("SEC_BULK_INSERT_RETRY_MAX_SECONDS", str(DEFAULT_INSERT_RETRY_MAX_SECONDS))),
     )
     parser.add_argument("--limit-ciks", type=int, default=0, help="Debug cap for submissions/companyfacts CIK JSON files.")
+    parser.add_argument(
+        "--disable-member-manifest",
+        action="store_true",
+        default=os.environ.get("SEC_BULK_MEMBER_MANIFEST_ENABLED", "true").strip().lower() in {"0", "false", "no", "off"},
+        help="Fallback to the legacy full ZIP parse/insert path instead of skipping completed ZIP members.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-g-drive", action="store_true")
     return parser.parse_args()
@@ -129,6 +137,8 @@ def main() -> None:
     )
     create_database_and_tables(client, args.database, args.storage_policy)
     insert_raw_source_rows(client, args.database, artifacts, retry)
+    if not args.disable_member_manifest:
+        bootstrap_member_manifests(client, args.database, artifacts, retry)
 
     totals: dict[str, int] = {}
     for artifact in artifacts:
@@ -137,9 +147,9 @@ def main() -> None:
             rows = parse_ticker_mapping(artifact)
             inserted = insert_rows(client, args.database, "sec_bulk_mirror_company_ticker_v1", rows, retry)
         elif artifact.source_name == "submissions":
-            inserted = ingest_submissions_zip(client, args.database, artifact, args.batch_size, args.limit_ciks, retry)
+            inserted = ingest_submissions_zip(client, args.database, artifact, args.batch_size, args.limit_ciks, retry, not args.disable_member_manifest)
         elif artifact.source_name == "companyfacts":
-            inserted = ingest_companyfacts_zip(client, args.database, artifact, args.batch_size, args.limit_ciks, retry)
+            inserted = ingest_companyfacts_zip(client, args.database, artifact, args.batch_size, args.limit_ciks, retry, not args.disable_member_manifest)
         else:
             inserted = 0
         totals[artifact.source_name] = inserted
@@ -248,6 +258,7 @@ def create_database_and_tables(client: ClickHouseHttpClient, database: str, stor
         submission_file_ref_table_sql(database, storage_policy),
         filing_table_sql(database, storage_policy),
         xbrl_fact_table_sql(database, storage_policy),
+        member_manifest_table_sql(database, storage_policy),
     ]:
         client.execute(sql)
 
@@ -270,6 +281,183 @@ def insert_raw_source_rows(client: ClickHouseHttpClient, database: str, artifact
         for item in artifacts
     ]
     insert_rows(client, database, "sec_bulk_mirror_raw_source_file_v1", rows, retry)
+
+
+def bootstrap_member_manifests(client: ClickHouseHttpClient, database: str, artifacts: list[SourceArtifact], retry: InsertRetryConfig) -> None:
+    for artifact in artifacts:
+        if artifact.source_name not in {"submissions", "companyfacts"}:
+            continue
+        existing = scalar_int(
+            client,
+            f"""
+            SELECT count()
+            FROM {quote_ident(database)}.{quote_ident(MEMBER_MANIFEST_TABLE)} FINAL
+            WHERE source_name = {sql_string(artifact.source_name)}
+              AND source_file_id = {sql_string(artifact.source_file_id)}
+              AND status = 'completed'
+            """,
+        )
+        if existing:
+            continue
+        completion_state = load_existing_completion_state(client, database, artifact)
+        if not completion_state:
+            print(f"member_manifest_bootstrap source={artifact.source_name} current_source_file_id_has_no_existing_mirror_rows", flush=True)
+            continue
+        rows: list[dict[str, Any]] = []
+        now = clickhouse_datetime64_now()
+        completed_ciks = 0
+        with zipfile.ZipFile(artifact.path) as archive:
+            infos = sorted((info for info in archive.infolist() if info.filename.lower().endswith(".json")), key=lambda item: item.filename)
+            for info in infos:
+                cik = cik_from_member_name(info.filename)
+                if not existing_member_is_complete(artifact, archive, info, cik, completion_state):
+                    continue
+                completed_ciks += 1
+                rows.append(member_manifest_row(artifact, info, cik, now, status="completed", rows_inserted=0, error="bootstrap_from_existing_mirror_rows"))
+                if len(rows) >= 10_000:
+                    insert_rows(client, database, MEMBER_MANIFEST_TABLE, rows, retry)
+                    rows.clear()
+        insert_rows(client, database, MEMBER_MANIFEST_TABLE, rows, retry)
+        print(f"member_manifest_bootstrap source={artifact.source_name} completed_ciks={completed_ciks:,}", flush=True)
+
+
+def load_existing_completion_state(client: ClickHouseHttpClient, database: str, artifact: SourceArtifact) -> dict[str, Any]:
+    if artifact.source_name == "submissions":
+        company_ciks = load_distinct_ciks(client, database, "sec_bulk_mirror_company_v1", artifact.source_file_id)
+        filing_counts = load_counts_by_cik(client, database, "sec_bulk_mirror_filing_v1", artifact.source_file_id)
+        return {"company_ciks": company_ciks, "filing_counts": filing_counts}
+    elif artifact.source_name == "companyfacts":
+        fact_counts = load_counts_by_cik(client, database, "sec_bulk_mirror_xbrl_fact_v1", artifact.source_file_id)
+        return {"fact_counts": fact_counts}
+    return {}
+
+
+def load_distinct_ciks(client: ClickHouseHttpClient, database: str, table: str, source_file_id: str) -> set[str]:
+    out = client.execute(
+        f"""
+        SELECT DISTINCT cik
+        FROM {quote_ident(database)}.{quote_ident(table)} FINAL
+        WHERE source_file_id = {sql_string(source_file_id)}
+          AND cik != ''
+        FORMAT TSV
+        """
+    )
+    return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+def load_counts_by_cik(client: ClickHouseHttpClient, database: str, table: str, source_file_id: str) -> dict[str, int]:
+    out = client.execute(
+        f"""
+        SELECT cik, count()
+        FROM {quote_ident(database)}.{quote_ident(table)} FINAL
+        WHERE source_file_id = {sql_string(source_file_id)}
+          AND cik != ''
+        GROUP BY cik
+        FORMAT TSV
+        """
+    )
+    counts: dict[str, int] = {}
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2:
+            counts[parts[0]] = int(parts[1])
+    return counts
+
+
+def existing_member_is_complete(
+    artifact: SourceArtifact,
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    cik: str,
+    completion_state: dict[str, Any],
+) -> bool:
+    if artifact.source_name == "submissions":
+        if cik not in completion_state.get("company_ciks", set()):
+            return False
+        data = json.loads(archive.read(info).decode("utf-8", errors="replace"))
+        expected_filings = expected_submission_filing_count(data)
+        return completion_state.get("filing_counts", {}).get(cik, 0) >= expected_filings
+    if artifact.source_name == "companyfacts":
+        data = json.loads(archive.read(info).decode("utf-8", errors="replace"))
+        expected_facts = expected_companyfacts_fact_count(data)
+        return expected_facts > 0 and completion_state.get("fact_counts", {}).get(cik, 0) >= expected_facts
+    return False
+
+
+def load_completed_member_signatures(client: ClickHouseHttpClient, database: str, artifact: SourceArtifact) -> set[str]:
+    if artifact.source_name not in {"submissions", "companyfacts"}:
+        return set()
+    out = client.execute(
+        f"""
+        SELECT member_signature
+        FROM {quote_ident(database)}.{quote_ident(MEMBER_MANIFEST_TABLE)} FINAL
+        WHERE source_name = {sql_string(artifact.source_name)}
+          AND source_file_id = {sql_string(artifact.source_file_id)}
+          AND status = 'completed'
+        FORMAT TSV
+        """
+    )
+    return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+def scalar_int(client: ClickHouseHttpClient, sql: str) -> int:
+    out = client.execute(sql + "\nFORMAT TSV").strip()
+    return int(out or "0")
+
+
+def member_signature(artifact: SourceArtifact, info: zipfile.ZipInfo) -> str:
+    payload = "|".join(
+        [
+            artifact.source_name,
+            artifact.source_file_id,
+            info.filename,
+            str(info.CRC),
+            str(info.file_size),
+            str(info.compress_size),
+        ]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def member_manifest_row(
+    artifact: SourceArtifact,
+    info: zipfile.ZipInfo,
+    cik: str,
+    now: str,
+    *,
+    status: str,
+    rows_inserted: int,
+    error: str,
+) -> dict[str, Any]:
+    return {
+        "source_name": artifact.source_name,
+        "source_kind": artifact.source_kind,
+        "source_file_id": artifact.source_file_id,
+        "member_name": info.filename,
+        "cik": cik,
+        "member_crc": int(info.CRC),
+        "member_file_size": int(info.file_size),
+        "member_compress_size": int(info.compress_size),
+        "member_modified_at_utc": zip_member_modified_at(info),
+        "member_signature": member_signature(artifact, info),
+        "status": status,
+        "rows_inserted": max(0, int(rows_inserted)),
+        "processed_at_utc": now,
+        "error": error,
+    }
+
+
+def zip_member_modified_at(info: zipfile.ZipInfo) -> str | None:
+    try:
+        year, month, day, hour, minute, second = info.date_time
+        return datetime(year, month, day, hour, minute, second, tzinfo=UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    except (TypeError, ValueError):
+        return None
+
+
+def cik_from_member_name(name: str) -> str:
+    match = re.search(r"(\d{1,10})", Path(name).stem)
+    return cik10(match.group(1)) if match else ""
 
 
 def parse_ticker_mapping(artifact: SourceArtifact) -> list[dict[str, Any]]:
@@ -329,22 +517,37 @@ def ingest_submissions_zip(
     batch_size: int,
     limit_ciks: int,
     retry: InsertRetryConfig,
+    use_member_manifest: bool,
 ) -> int:
     company_batch: list[dict[str, Any]] = []
     filing_batch: list[dict[str, Any]] = []
     file_ref_batch: list[dict[str, Any]] = []
+    manifest_batch: list[dict[str, Any]] = []
+    completed_signatures = load_completed_member_signatures(client, database, artifact) if use_member_manifest else set()
     inserted = 0
     processed = 0
+    skipped = 0
     now = clickhouse_datetime64_now()
     with zipfile.ZipFile(artifact.path) as archive:
-        for name in sorted(item for item in archive.namelist() if item.lower().endswith(".json")):
+        infos = sorted((info for info in archive.infolist() if info.filename.lower().endswith(".json")), key=lambda item: item.filename)
+        for info in infos:
             if limit_ciks and processed >= limit_ciks:
                 break
-            data = json.loads(archive.read(name).decode("utf-8", errors="replace"))
-            cik = cik10(data.get("cik") or data.get("cik_str") or Path(name).stem.replace("CIK", ""))
+            name = info.filename
+            signature = member_signature(artifact, info)
+            if signature in completed_signatures:
+                skipped += 1
+                if skipped % 25_000 == 0:
+                    print(f"submissions skipped_completed_members={skipped:,} processed_ciks={processed:,}", flush=True)
+                continue
+            data = json.loads(archive.read(info).decode("utf-8", errors="replace"))
+            cik = cik10(data.get("cik") or data.get("cik_str") or cik_from_member_name(name))
             company_batch.append(company_row(data, cik, artifact.source_file_id, now))
             file_ref_batch.extend(submission_file_ref_rows(data, cik, artifact.source_file_id, now))
-            filing_batch.extend(submission_filing_rows(data, cik, artifact, now))
+            filing_rows = submission_filing_rows(data, cik, artifact, now)
+            filing_batch.extend(filing_rows)
+            if use_member_manifest:
+                manifest_batch.append(member_manifest_row(artifact, info, cik, now, status="completed", rows_inserted=1 + len(filing_rows), error=""))
             processed += 1
             if len(company_batch) >= batch_size:
                 inserted += flush(client, database, "sec_bulk_mirror_company_v1", company_batch, retry)
@@ -352,11 +555,17 @@ def ingest_submissions_zip(
                 inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v1", file_ref_batch, retry)
             if len(filing_batch) >= batch_size:
                 inserted += flush(client, database, "sec_bulk_mirror_filing_v1", filing_batch, retry)
+            if use_member_manifest and len(manifest_batch) >= 5_000:
+                inserted += flush_member_manifest(client, database, retry, company_batch, file_ref_batch, filing_batch, manifest_batch)
             if processed % 5_000 == 0:
-                print(f"submissions processed_ciks={processed:,} pending_filings={len(filing_batch):,}", flush=True)
+                print(f"submissions processed_ciks={processed:,} skipped_completed={skipped:,} pending_filings={len(filing_batch):,}", flush=True)
     inserted += flush(client, database, "sec_bulk_mirror_company_v1", company_batch, retry)
     inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v1", file_ref_batch, retry)
     inserted += flush(client, database, "sec_bulk_mirror_filing_v1", filing_batch, retry)
+    if use_member_manifest:
+        insert_rows(client, database, MEMBER_MANIFEST_TABLE, manifest_batch, retry)
+    if skipped:
+        print(f"submissions skipped_completed_members={skipped:,}", flush=True)
     return inserted
 
 
@@ -395,6 +604,14 @@ def submission_file_ref_rows(data: dict[str, Any], cik: str, source_file_id: str
             }
         )
     return rows
+
+
+def expected_submission_filing_count(data: dict[str, Any]) -> int:
+    recent = data.get("filings", {}).get("recent", {}) or {}
+    accessions = recent.get("accessionNumber", [])
+    if isinstance(accessions, list):
+        return sum(1 for accession in accessions if clean_string(accession))
+    return 0
 
 
 def submission_filing_rows(data: dict[str, Any], cik: str, artifact: SourceArtifact, now: str) -> list[dict[str, Any]]:
@@ -441,6 +658,18 @@ def submission_filing_rows(data: dict[str, Any], cik: str, artifact: SourceArtif
     return rows
 
 
+def expected_companyfacts_fact_count(data: dict[str, Any]) -> int:
+    count = 0
+    for tags in (data.get("facts", {}) or {}).values():
+        if not isinstance(tags, dict):
+            continue
+        for tag_payload in tags.values():
+            for facts in (tag_payload.get("units", {}) or {}).values():
+                if isinstance(facts, list):
+                    count += len(facts)
+    return count
+
+
 def ingest_companyfacts_zip(
     client: ClickHouseHttpClient,
     database: str,
@@ -448,18 +677,30 @@ def ingest_companyfacts_zip(
     batch_size: int,
     limit_ciks: int,
     retry: InsertRetryConfig,
+    use_member_manifest: bool,
 ) -> int:
     batch: list[dict[str, Any]] = []
+    manifest_batch: list[dict[str, Any]] = []
+    completed_signatures = load_completed_member_signatures(client, database, artifact) if use_member_manifest else set()
     inserted = 0
     processed = 0
+    skipped = 0
     now = clickhouse_datetime64_now()
     with zipfile.ZipFile(artifact.path) as archive:
-        for name in sorted(item for item in archive.namelist() if item.lower().endswith(".json")):
+        infos = sorted((info for info in archive.infolist() if info.filename.lower().endswith(".json")), key=lambda item: item.filename)
+        for info in infos:
             if limit_ciks and processed >= limit_ciks:
                 break
-            data = json.loads(archive.read(name).decode("utf-8", errors="replace"))
-            cik = cik10(data.get("cik") or Path(name).stem.replace("CIK", ""))
+            signature = member_signature(artifact, info)
+            if signature in completed_signatures:
+                skipped += 1
+                if skipped % 10_000 == 0:
+                    print(f"companyfacts skipped_completed_members={skipped:,} processed_ciks={processed:,}", flush=True)
+                continue
+            data = json.loads(archive.read(info).decode("utf-8", errors="replace"))
+            cik = cik10(data.get("cik") or cik_from_member_name(info.filename))
             entity_name = clean_string(data.get("entityName", ""))
+            member_rows = 0
             for taxonomy, tags in (data.get("facts", {}) or {}).items():
                 if not isinstance(tags, dict):
                     continue
@@ -471,12 +712,23 @@ def ingest_companyfacts_zip(
                             continue
                         for fact in facts:
                             batch.append(xbrl_fact_row(cik, entity_name, taxonomy, tag, label, description, unit, fact, artifact.source_file_id, now))
+                            member_rows += 1
                             if len(batch) >= batch_size:
                                 inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v1", batch, retry)
+            if use_member_manifest:
+                manifest_batch.append(member_manifest_row(artifact, info, cik, now, status="completed", rows_inserted=member_rows, error=""))
             processed += 1
+            if use_member_manifest and len(manifest_batch) >= 5_000:
+                inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v1", batch, retry)
+                insert_rows(client, database, MEMBER_MANIFEST_TABLE, manifest_batch, retry)
+                manifest_batch.clear()
             if processed % 1_000 == 0:
-                print(f"companyfacts processed_ciks={processed:,} pending_facts={len(batch):,}", flush=True)
+                print(f"companyfacts processed_ciks={processed:,} skipped_completed={skipped:,} pending_facts={len(batch):,}", flush=True)
     inserted += flush(client, database, "sec_bulk_mirror_xbrl_fact_v1", batch, retry)
+    if use_member_manifest:
+        insert_rows(client, database, MEMBER_MANIFEST_TABLE, manifest_batch, retry)
+    if skipped:
+        print(f"companyfacts skipped_completed_members={skipped:,}", flush=True)
     return inserted
 
 
@@ -523,6 +775,24 @@ def flush(client: ClickHouseHttpClient, database: str, table: str, rows: list[di
     count = insert_rows(client, database, table, rows, retry)
     rows.clear()
     return count
+
+
+def flush_member_manifest(
+    client: ClickHouseHttpClient,
+    database: str,
+    retry: InsertRetryConfig,
+    company_batch: list[dict[str, Any]],
+    file_ref_batch: list[dict[str, Any]],
+    filing_batch: list[dict[str, Any]],
+    manifest_batch: list[dict[str, Any]],
+) -> int:
+    inserted = 0
+    inserted += flush(client, database, "sec_bulk_mirror_company_v1", company_batch, retry)
+    inserted += flush(client, database, "sec_bulk_mirror_submission_file_ref_v1", file_ref_batch, retry)
+    inserted += flush(client, database, "sec_bulk_mirror_filing_v1", filing_batch, retry)
+    insert_rows(client, database, MEMBER_MANIFEST_TABLE, manifest_batch, retry)
+    manifest_batch.clear()
+    return inserted
 
 
 def insert_rows(client: ClickHouseHttpClient, database: str, table: str, rows: list[dict[str, Any]], retry: InsertRetryConfig) -> int:
@@ -778,6 +1048,31 @@ CREATE TABLE IF NOT EXISTS {quote_ident(database)}.sec_bulk_mirror_xbrl_fact_v1
 ENGINE = ReplacingMergeTree(last_seen_at_utc)
 PARTITION BY toYYYYMM(ifNull(end_date, toDate('1970-01-01')))
 ORDER BY (cik, taxonomy, tag, unit, ifNull(end_date, toDate('1970-01-01')), ifNull(accession_number, ''))
+SETTINGS {merge_tree_settings(storage_policy)}
+"""
+
+
+def member_manifest_table_sql(database: str, storage_policy: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(database)}.{quote_ident(MEMBER_MANIFEST_TABLE)}
+(
+    source_name LowCardinality(String),
+    source_kind LowCardinality(String),
+    source_file_id String,
+    member_name String,
+    cik String,
+    member_crc UInt64,
+    member_file_size UInt64,
+    member_compress_size UInt64,
+    member_modified_at_utc Nullable(DateTime64(6, 'UTC')),
+    member_signature String,
+    status LowCardinality(String),
+    rows_inserted UInt64,
+    processed_at_utc DateTime64(9, 'UTC'),
+    error String
+)
+ENGINE = ReplacingMergeTree(processed_at_utc)
+ORDER BY (source_name, source_file_id, member_name, member_signature)
 SETTINGS {merge_tree_settings(storage_policy)}
 """
 
