@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 import signal
 import shutil
 import sys
@@ -78,6 +79,10 @@ from pipelines.market_sip.events.clickhouse_build_training_category_reference im
     insert_reference_sql,
     query_settings as category_reference_query_settings,
 )
+from pipelines.market_sip.events.clickhouse_build_unified_events import (
+    events_table_for_year,
+    events_table_uses_year_suffix,
+)
 
 
 DEFAULTS: dict[str, Any] = {
@@ -144,6 +149,19 @@ DEFAULTS: dict[str, Any] = {
     "refresh_seconds": 1.0,
     "profile_slow_seconds": 10.0,
 }
+
+
+def _events_source_table(config: RollingMarketDataConfig, start_date: str | dt.date, end_date: str | dt.date) -> str:
+    base_table = str(config.events_table)
+    if not events_table_uses_year_suffix(base_table):
+        return f"{quote_ident(config.database)}.{quote_ident(base_table)}"
+    start_year = dt.date.fromisoformat(str(start_date)[:10]).year
+    end_year = dt.date.fromisoformat(str(end_date)[:10]).year
+    tables = [events_table_for_year(base_table, year) for year in range(start_year, end_year + 1)]
+    if len(tables) == 1:
+        return f"{quote_ident(config.database)}.{quote_ident(tables[0])}"
+    pattern = "^(" + "|".join(re.escape(table) for table in tables) + ")$"
+    return f"merge({sql_string(config.database)}, {sql_string(pattern)})"
 
 SESSION_START_SECOND = 4 * 60 * 60
 SESSION_END_SECOND = 20 * 60 * 60
@@ -1314,7 +1332,7 @@ def _insert_intraday_condition_events_month_sql(
     config: RollingMarketDataConfig,
     window: Any,
 ) -> str:
-    source_table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    source_table = _events_source_table(config, window.first_date, window.next_month_date)
     target_table = f"{quote_ident(config.database)}.{quote_ident(str(args.intraday_condition_events_table))}"
     condition_token_aliases = _condition_token_array_aliases_sql(config)
     condition_event_select = _future_condition_event_select_sql()
@@ -1386,7 +1404,6 @@ def _insert_intraday_base_bars_ticker_sql(
     ticker: str,
     missing_dates: Iterable[dt.date],
 ) -> str:
-    source_table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
     target_table = f"{quote_ident(config.database)}.{quote_ident(str(args.intraday_base_bars_table))}"
     resolutions = ", ".join(f"toUInt64({value})" for value in INTRADAY_LABEL_GRID_RESOLUTIONS_US)
     dates = sorted({day for day in missing_dates})
@@ -1394,6 +1411,7 @@ def _insert_intraday_base_bars_ticker_sql(
         raise ValueError("missing_dates must not be empty")
     first_date = min(dates)
     last_event_date = max(dates) + dt.timedelta(days=1)
+    source_table = _events_source_table(config, first_date, last_event_date)
     local_date_filter = ", ".join(f"toDate({sql_string(day.isoformat())})" for day in dates)
     return f"""
 INSERT INTO {target_table}
@@ -1529,7 +1547,7 @@ def _resolve_tickers_for_month(args: argparse.Namespace, client_opts: Mapping[st
     if args.tickers:
         tickers = sorted({item.strip().upper() for item in args.tickers.split(",") if item.strip()})
         return tickers[: int(args.ticker_limit)] if int(args.ticker_limit) > 0 else tickers
-    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    table = _events_source_table(config, window.first_date, window.next_month_date)
     query = f"""
 WITH
     fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC') AS ts_utc,
@@ -2538,7 +2556,7 @@ def _deterministic_sample_indexes(count: int, samples: int, *, month: str, ticke
 def _query_events_part(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str, part: OriginOrdinalPart) -> Any:
     if not part.fetch_event_date_start or not part.fetch_event_date_end:
         raise RuntimeError(f"{ticker} part_{part.part_id:05d} is missing fetch event_date bounds.")
-    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    table = _events_source_table(config, part.fetch_event_date_start, part.fetch_event_date_end)
     query = f"""
 WITH
     fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC') AS ts_utc,
@@ -2591,7 +2609,7 @@ ORDER BY ticker, ordinal
 
 
 def _query_origin_bounds(args: argparse.Namespace, client_opts: Mapping[str, str], config: RollingMarketDataConfig, window: Any, ticker: str) -> tuple[int, int] | None:
-    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    table = _events_source_table(config, window.first_date, window.next_month_date)
     query = f"""
 WITH
     fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC') AS ts_utc,
@@ -2795,7 +2813,7 @@ def _query_intraday_context_bars_asof(
     part: OriginOrdinalPart,
     month_min_ordinal: int,
 ) -> Any:
-    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    table = _events_source_table(config, window.first_date, window.next_month_date)
     base_table = f"{quote_ident(config.database)}.{quote_ident(str(args.intraday_base_bars_table))}"
     horizon_specs = _intraday_label_horizon_specs(horizons)
     if not horizon_specs:
@@ -3145,7 +3163,7 @@ def _query_intraday_forward_labels_asof(
     part: OriginOrdinalPart,
     month_min_ordinal: int,
 ) -> Any:
-    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    table = _events_source_table(config, window.first_date, window.next_month_date)
     base_table = f"{quote_ident(config.database)}.{quote_ident(str(args.intraday_base_bars_table))}"
     horizon_specs = _intraday_label_horizon_specs(horizons)
     if not horizon_specs:

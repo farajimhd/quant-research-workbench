@@ -575,7 +575,7 @@ SELECT
     condition_token_3,
     condition_token_4,
     condition_token_5
-FROM market_sip_compact.events
+FROM market_sip_compact.events_YYYY
 PREWHERE ticker = <ticker>
   AND ordinal >= <origin_ordinal - events_per_chunk + 1>
   AND ordinal <= <origin_ordinal>
@@ -592,10 +592,14 @@ If fewer rows are returned, the sampled origin is invalid for that chunk length.
 
 ## Open Decisions
 
-The first production build should decide:
+Production storage now uses one physical event table per year:
 
 ```text
-events table name
-partition mode, currently suggested as month
-whether events_issues is built immediately or in a later audit pass
+market_sip_compact.events_2019
+market_sip_compact.events_2020
+...
 ```
+
+Operational commands may still pass `--events-table events`; ingestion and
+downstream builders treat that as a logical name and route to `events_YYYY`.
+Use a concrete table name only for isolated scratch/test tables.

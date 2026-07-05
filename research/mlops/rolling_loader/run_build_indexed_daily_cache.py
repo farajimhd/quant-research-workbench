@@ -4,6 +4,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import signal
 import shutil
 import sys
@@ -62,6 +63,10 @@ from research.mlops.rolling_loader.streaming_training import (
     StreamingProfiler,
     current_rss_mib,
 )
+from pipelines.market_sip.events.clickhouse_build_unified_events import (
+    events_table_for_year,
+    events_table_uses_year_suffix,
+)
 
 
 DEFAULTS: dict[str, Any] = {
@@ -104,6 +109,17 @@ DEFAULTS: dict[str, Any] = {
     "event_fetch_max_split_depth": 2,
     "output_root": str(DEFAULT_INDEXED_DAILY_CACHE_ROOT),
 }
+
+
+def _events_source_table(config: RollingMarketDataConfig, start_date: dt.date, end_date: dt.date) -> str:
+    base_table = str(config.events_table)
+    if not events_table_uses_year_suffix(base_table):
+        return f"{quote_ident(config.database)}.{quote_ident(base_table)}"
+    tables = [events_table_for_year(base_table, year) for year in range(start_date.year, end_date.year + 1)]
+    if len(tables) == 1:
+        return f"{quote_ident(config.database)}.{quote_ident(tables[0])}"
+    pattern = "^(" + "|".join(re.escape(table) for table in tables) + ")$"
+    return f"merge({sql_string(config.database)}, {sql_string(pattern)})"
 
 
 @dataclass(slots=True)
@@ -756,7 +772,7 @@ def _session_dependency_events_query(
     split_count: int,
     split_index: int,
 ) -> str:
-    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    table = _events_source_table(config, dep_start_date, dep_end_date)
     bucket_filter = ""
     if bucket_count > 1:
         bucket_filter = f"\n      AND cityHash64(ticker) % {int(bucket_count)} = {int(bucket_index)}"

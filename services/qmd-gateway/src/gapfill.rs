@@ -1137,6 +1137,11 @@ impl GapFillService {
         &self,
         window_start: DateTime<Utc>,
     ) -> Result<Vec<String>, String> {
+        let table = live_event_table_expr(
+            &self.config,
+            window_start.date_naive(),
+            Utc::now().date_naive(),
+        );
         let sql = format!(
             r#"
             SELECT DISTINCT ticker
@@ -1147,7 +1152,7 @@ impl GapFillService {
             ORDER BY ticker
             FORMAT TSV
             "#,
-            table = self.config.compact_event_table,
+            table = table,
             start_date = window_start.date_naive(),
             start_us = window_start.timestamp_micros(),
         );
@@ -1155,6 +1160,8 @@ impl GapFillService {
     }
 
     async fn latest_q_live_symbols(&self) -> Result<Vec<String>, String> {
+        let now = Utc::now().date_naive();
+        let table = live_event_table_expr(&self.config, now - ChronoDuration::days(3), now);
         let sql = format!(
             r#"
             WITH latest AS (SELECT max(event_date) AS event_date FROM {table})
@@ -1165,7 +1172,7 @@ impl GapFillService {
             ORDER BY ticker
             FORMAT TSV
             "#,
-            table = self.config.compact_event_table,
+            table = table,
         );
         self.symbols_from_sql(&sql).await
     }
@@ -1176,7 +1183,7 @@ impl GapFillService {
         let sql = format!(
             r#"
             SELECT DISTINCT ticker
-            FROM {db}.events
+            FROM {db}.events_ticker_day_index
             WHERE source_date = toDate('{latest}')
               AND ticker != ''
             ORDER BY ticker
@@ -1189,19 +1196,7 @@ impl GapFillService {
         if !symbols.is_empty() {
             return Ok(symbols);
         }
-        let sql = format!(
-            r#"
-            SELECT DISTINCT sym
-            FROM {db}.events
-            WHERE source_date = toDate('{latest}')
-              AND sym != ''
-            ORDER BY sym
-            FORMAT TSV
-            "#,
-            db = db,
-            latest = escape_sql_string(&latest),
-        );
-        self.symbols_from_historical_sql(&sql).await
+        Ok(symbols)
     }
 
     async fn latest_historical_symbols_for_market_days(
@@ -1222,7 +1217,7 @@ impl GapFillService {
                 LIMIT {days}
             )
             SELECT DISTINCT ticker
-            FROM {db}.events
+            FROM {db}.events_ticker_day_index
             WHERE source_date IN (SELECT source_date FROM recent_dates)
               AND ticker != ''
             ORDER BY ticker
@@ -1235,28 +1230,7 @@ impl GapFillService {
         if !symbols.is_empty() {
             return Ok(symbols);
         }
-        let sql = format!(
-            r#"
-            WITH recent_dates AS
-            (
-                SELECT source_date
-                FROM {db}.events_ordinal_continuity
-                WHERE source_date >= toDate('2019-01-01')
-                GROUP BY source_date
-                ORDER BY source_date DESC
-                LIMIT {days}
-            )
-            SELECT DISTINCT sym
-            FROM {db}.events
-            WHERE source_date IN (SELECT source_date FROM recent_dates)
-              AND sym != ''
-            ORDER BY sym
-            FORMAT TSV
-            "#,
-            db = db,
-            days = days,
-        );
-        self.symbols_from_historical_sql(&sql).await
+        Ok(symbols)
     }
 
     async fn symbols_from_sql(&self, sql: &str) -> Result<Vec<String>, String> {
@@ -1385,7 +1359,7 @@ impl GapFillService {
         let (window_start, _, _) = self.recent_live_window();
         let start_date = window_start.date_naive();
         let start_us = window_start.timestamp_micros();
-        let table = &self.config.compact_event_table;
+        let table = live_event_table_expr(&self.config, start_date, Utc::now().date_naive());
         let sql = format!(
             r#"
             WITH recent AS
@@ -1923,7 +1897,7 @@ impl GapFillService {
             self.config.historical_pipeline_code_root
         );
         format!(
-            "python {} --database {} --events-table events --macro-bars-table macro_bars_by_time_symbol --bar-timeframes 1d,1w,1y --start-date {} --end-date {}",
+            "python {} --database {} --events-table events --macro-bars-table macro_bars_by_time_symbol --bar-timeframes 1d --start-date {} --end-date {}",
             shell_arg(&script),
             shell_arg(&self.config.historical_clickhouse_database),
             start_date,
@@ -2042,6 +2016,58 @@ fn parse_clickhouse_datetime64(value: &str) -> Option<DateTime<Utc>> {
                 .ok()
                 .map(|value| value.with_timezone(&Utc))
         })
+}
+
+fn live_event_table_expr(
+    config: &GatewayConfig,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> String {
+    if config.compact_event_table != "events" && !config.compact_event_table.contains("{year}") {
+        return config.compact_event_table.clone();
+    }
+    let tables = (start_date.year()..=end_date.year())
+        .map(|year| compact_event_table_for_year(config, year))
+        .collect::<Vec<_>>();
+    if tables.len() == 1 {
+        return tables[0].clone();
+    }
+    let pattern = format!(
+        "^({})$",
+        tables
+            .iter()
+            .map(|table| regex_escape(table))
+            .collect::<Vec<_>>()
+            .join("|")
+    );
+    format!(
+        "merge(currentDatabase(), '{}')",
+        escape_sql_string(&pattern)
+    )
+}
+
+fn compact_event_table_for_year(config: &GatewayConfig, year: i32) -> String {
+    if config.compact_event_table == "events" {
+        format!("events_{year}")
+    } else {
+        config
+            .compact_event_table
+            .replace("{year}", &year.to_string())
+    }
+}
+
+fn regex_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(
+            ch,
+            '.' | '+' | '*' | '?' | '^' | '$' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
+        ) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn escape_sql_string(value: &str) -> String {

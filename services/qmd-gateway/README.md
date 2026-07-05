@@ -78,7 +78,11 @@ Environment variables:
 - `QMD_EVENT_CHANNEL_CAPACITY`, default `250000`
 - `QMD_COMPACT_EVENTS_ENABLED`, default `true`
 - `QMD_PERSIST_COMPACT_EVENTS`, default `true`
-- `QMD_COMPACT_EVENT_TABLE`, default `events`
+- `QMD_COMPACT_EVENT_TABLE`, default `events`. The default is a logical table
+  name: compact live rows are written to `events_YYYY` by UTC event date, while
+  `QMD_COMPACT_EVENT_CONTINUITY_TABLE` remains the global ticker ordinal
+  continuity table. Pass a fixed non-default table only for an isolated test
+  writer.
 - `QMD_COMPACT_EVENT_CONTINUITY_TABLE`, default `live_event_ordinal_continuity`
 - `QMD_COMPACT_EVENT_CHANNEL_CAPACITY`, default `250000`
 - `QMD_COMPACT_EVENT_LIVE_BUFFER_EVENTS_PER_TICKER`, default `512`
@@ -461,13 +465,13 @@ repair rows. The flatfile source of truth is
 `qmd_flatfile_event_coverage_v1`: on first startup, QMD bootstraps one
 2019-forward coverage row from the latest `market_sip_compact`
 `events_ordinal_continuity.source_date`. Historical quote/trade flatfiles remain
-disk-only; the planned updater writes unified `events` plus qmd-compatible
-`live_market_bars`. After hours, the gateway can plan the
+disk-only; the planned updater writes yearly unified `events_YYYY` tables plus
+daily macro bars. After hours, the gateway can plan the
 `download_update_events.py` command for missing historical flatfile days, using
 a US equity market-session calendar so weekends and market holidays are
-skipped. The generated command explicitly targets `events`,
-`live_market_bars`, and the default historical bar timeframes
-`1s,5s,1m,5m,1d,1w,1mo`. On a workstation host with
+skipped. The generated command passes the logical `--events-table events`; the
+Python updater routes each source day to `events_YYYY` and builds `1d` macro
+bars incrementally. On a workstation host with
 `QMD_HISTORICAL_FLATFILE_AUTORUN=true`, it launches that command
 asynchronously; otherwise it prints the command for manual workstation
 execution.

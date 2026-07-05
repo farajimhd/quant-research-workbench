@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from collections import deque
 import json
+import re
 import sys
 import time
 import uuid
@@ -31,6 +32,7 @@ from research.mlops.clickhouse import (  # noqa: E402
 )
 from research.mlops.env import load_env_files, secret_status  # noqa: E402
 from pipelines.market_sip.validation.clickhouse_delete_compact_audit_rows import default_clickhouse_url_with_network_fallback  # noqa: E402
+from pipelines.market_sip.events.clickhouse_build_unified_events import events_table_for_year, events_table_uses_year_suffix  # noqa: E402
 
 
 BAR_SCHEMA_VERSION = 2
@@ -43,6 +45,19 @@ DEFAULT_MACRO_BARS_TABLE = "macro_bars_by_time_symbol"
 DEFAULT_STAGING_BARS_TABLE = "_staging_trade_bars"
 DEFAULT_TIMEFRAMES = ("1d", "1w", "1y")
 DEFAULT_OUTPUT_ROOT = DEFAULT_OUTPUT_ROOT_WIN / "trade_bars"
+
+
+def event_source_table(args: argparse.Namespace) -> str:
+    base_table = str(args.events_table)
+    if not events_table_uses_year_suffix(base_table):
+        return f"{quote_ident(args.database)}.{quote_ident(base_table)}"
+    start_year = date.fromisoformat(str(args.start_date)[:10]).year
+    end_year = date.fromisoformat(str(args.end_date)[:10]).year
+    tables = [events_table_for_year(base_table, year) for year in range(start_year, end_year + 1)]
+    if len(tables) == 1:
+        return f"{quote_ident(args.database)}.{quote_ident(tables[0])}"
+    pattern = "^(" + "|".join(re.escape(table) for table in tables) + ")$"
+    return f"merge({sql_string(args.database)}, {sql_string(pattern)})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1348,7 +1363,7 @@ def macro_period_expressions(spec: TimeframeSpec) -> tuple[str, str, str]:
 
 def insert_macro_bars_sql(args: argparse.Namespace, spec: TimeframeSpec) -> str:
     db = quote_ident(args.database)
-    src = f"{db}.{quote_ident(args.events_table)}"
+    src = event_source_table(args)
     dst = f"{db}.{quote_ident(args.macro_bars_table)}"
     period_start_expr, bar_start_expr, bar_end_expr = macro_period_expressions(spec)
     trade_price = "if(bitAnd(bitShiftRight(event_meta, 1), 1) = 1, toFloat64(price_primary_int) / 10000.0, toFloat64(price_primary_int) / 100.0)"
@@ -1485,7 +1500,7 @@ HAVING event_count > 0
 
 def insert_live_market_bars_sql(args: argparse.Namespace, spec: TimeframeSpec) -> str:
     db = quote_ident(args.database)
-    src = f"{db}.{quote_ident(args.events_table)}"
+    src = event_source_table(args)
     dst = f"{db}.{quote_ident(args.bars_table)}"
     trade_price = "if(bitAnd(bitShiftRight(event_meta, 1), 1) = 1, toFloat64(price_primary_int) / 10000.0, toFloat64(price_primary_int) / 100.0)"
     ask_price = trade_price

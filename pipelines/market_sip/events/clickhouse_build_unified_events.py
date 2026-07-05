@@ -33,6 +33,7 @@ from research.mlops.env import load_env_files, secret_status  # noqa: E402
 
 
 DEFAULT_EVENTS_TABLE = "events"
+DEFAULT_YEARLY_EVENTS_TABLE_PREFIX = "events_"
 DEFAULT_MANIFEST_TABLE = "events_build_manifest"
 DEFAULT_CONTINUITY_TABLE = "events_ordinal_continuity"
 DEFAULT_TRAIN_INDEX_TABLE = "train_2019_to_2025"
@@ -51,6 +52,29 @@ DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE = "event_condition_token_reference"
 DEFAULT_DROP_TRADE_CORRECTION_CODES = "7,8,10,11"
 CONDITION_TOKEN_SLOTS = 5
 CONDITION_TOKEN_COLUMNS = tuple(f"condition_token_{idx}" for idx in range(1, CONDITION_TOKEN_SLOTS + 1))
+
+
+def events_table_uses_year_suffix(events_table: str) -> bool:
+    """Return true when the logical events table should be routed to events_<year>."""
+    value = str(events_table or DEFAULT_EVENTS_TABLE).strip()
+    return value == DEFAULT_EVENTS_TABLE or "{year}" in value
+
+
+def events_table_for_year(events_table: str, year: int) -> str:
+    value = str(events_table or DEFAULT_EVENTS_TABLE).strip()
+    if value == DEFAULT_EVENTS_TABLE:
+        return f"{DEFAULT_YEARLY_EVENTS_TABLE_PREFIX}{int(year)}"
+    if "{year}" in value:
+        return value.format(year=int(year))
+    return value
+
+
+def events_table_for_source_date(events_table: str, source_date: str | datetime) -> str:
+    if isinstance(source_date, datetime):
+        year = source_date.year
+    else:
+        year = datetime.fromisoformat(str(source_date)[:10]).year
+    return events_table_for_year(events_table, year)
 
 
 @dataclass(frozen=True, slots=True)

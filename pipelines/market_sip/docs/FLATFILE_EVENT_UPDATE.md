@@ -5,17 +5,18 @@ and trade flatfiles on disk, then inserts unified compact events and
 training macro bars into ClickHouse. It does not persist raw or compact
 quote/trade tables.
 
-Use this pipeline when the goal is to extend `market_sip_compact.events` from
-new Massive flatfiles without spending ClickHouse disk on intermediate quote and
-trade tables. Bars are rebuilt from the compact `events` rows after event
-insertion succeeds.
+Use this pipeline when the goal is to extend the yearly compact event tables
+from new Massive flatfiles without spending ClickHouse disk on intermediate
+quote and trade tables. With the default `--events-table events`, production
+rows are routed by source-day year into `market_sip_compact.events_YYYY`. Bars
+are rebuilt from the same yearly source table after event insertion succeeds.
 
 ## What It Builds
 
 The pipeline writes:
 
 - downloaded quote/trade `.csv.gz` flatfiles on disk
-- unified event rows in `market_sip_compact.events`
+- unified event rows in `market_sip_compact.events_YYYY`
 - day build status rows in `market_sip_compact.events_build_manifest`
 - per-ticker ordinal carry-forward rows in
   `market_sip_compact.events_ordinal_continuity`
@@ -35,7 +36,7 @@ It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
 3. Wait until both quote and trade files for a day are complete.
 4. For each completed day, in chronological order, have ClickHouse read the
    quote/trade gzip CSV files through `file()`.
-5. Convert raw rows directly to the current `market_sip_compact.events` schema:
+5. Convert raw rows directly to the current `market_sip_compact.events_YYYY` schema:
    price integer plus scale flags, size fields, exchanges, packed conditions,
    event type, event date, and SIP timestamp in microseconds.
 6. Filter rows that cannot be placed in the stream, such as blank ticker,
@@ -50,7 +51,7 @@ It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
    table; train and validation periods are selected by the loader instead of
    being baked into table names.
 10. Rebuild daily macro bar rows for the successfully updated date range
-   directly from `events`. The direct flatfile update default is `1d` only,
+   directly from the same yearly event table. The direct flatfile update default is `1d` only,
    which matches the current training data requirement. Daily bars use the New
    York extended-hours session, 04:00 ET through 20:00 ET, so the daily close is
    the after-hours close. Weekly/yearly bars can still be requested explicitly
@@ -275,7 +276,13 @@ ClickHouse:
 - `--user`: ClickHouse user.
 - `--password`: ClickHouse password.
 - `--database`: target database, default `market_sip_compact`.
-- `--events-table`: target events table, default `events`.
+- `--events-table`: logical target events table, default `events`. In
+  production this routes each source day to `events_YYYY`. Pass a non-default
+  fixed table name only for isolated test/scratch builds, or a pattern such as
+  `events_{year}` if you need a different yearly prefix.
+- `--day-raw-audit-sample-size`: per-kind raw flatfile rows sampled after each
+  source-day insert and matched back to compact event rows. Default: `4`; set
+  `0` to disable.
 - `--macro-bars-table`: target macro bar table, default
   `macro_bars_by_time_symbol`.
 - `--bar-timeframes`: comma-separated macro bar timeframes to rebuild after

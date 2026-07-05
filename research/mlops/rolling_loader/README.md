@@ -34,8 +34,14 @@ the ticker/month cache and loader.
 
 ## Ticker/Month SSD Cache
 
-The event table is partitioned by month and ordered by `(ticker, ordinal)`.
-The fastest natural unit is therefore:
+Production compact events are stored in yearly physical tables
+`market_sip_compact.events_YYYY`. Builder arguments still default to the
+logical name `events`; the builder resolves it to the relevant `events_YYYY`
+table for the requested month and uses a ClickHouse `merge(...)` source only
+for rare cross-year lookback windows.
+
+Each yearly event table is partitioned by month and ordered by
+`(ticker, ordinal)`. The fastest natural unit is therefore:
 
 ```text
 one ticker, one month
@@ -704,13 +710,13 @@ python -m research.mlops.rolling_loader.run_build_ticker_month_cache_streaming `
   --resume
 ```
 
-This script is built around the physical layout of `events`:
+This script is built around the physical layout of yearly `events_YYYY` tables:
 
 | Stage | What happens |
 | --- | --- |
 | Month plan | Reads `events_ticker_day_index`, dedupes `ReplacingMergeTree` rows with `argMax(..., built_at)`, and creates one ticker/month plan. |
 | Warmup plan | For each ticker chunk, subtracts `max_cached_event_lookback_rows` from the first origin ordinal and uses the day index to find every source day needed for that ordinal range. Warmup can cross month boundaries. |
-| Event fetch | Fetches many small `ticker + ordinal BETWEEN` chunks from ClickHouse using the event-date bounds from the day index. |
+| Event fetch | Fetches many small `ticker + ordinal BETWEEN` chunks from ClickHouse using the event-date bounds from the day index and the resolved yearly event table. |
 | CPU processing | Builds origins and raw event-window indices in Python/Polars/NumPy after each small event frame arrives. |
 | Context fetch | Fetches ticker news, SEC embeddings, XBRL, daily bars, and corporate actions as package-level time-ordered streams. These streams include prior history and are not materialized per origin. |
 | Finalize | Concats and deduplicates fetched event rows for the ticker package, builds compact intraday base bars and sparse condition-event streams in Polars, writes package manifests, and atomically moves the package into place. |

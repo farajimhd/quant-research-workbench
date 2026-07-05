@@ -44,6 +44,8 @@ from pipelines.market_sip.events.clickhouse_build_unified_events import (  # noq
     condition_token_reference_subquery,
     indicator_code_expr,
     indicator_token_reference_subquery,
+    events_table_for_source_date,
+    events_table_uses_year_suffix,
     insert_day_manifest,
     latest_day_status,
     mergetree_settings,
@@ -119,6 +121,7 @@ DEFAULT_DOWNLOAD_WORKERS = 8
 DEFAULT_MAX_THREADS = 32
 DEFAULT_TEST_TABLE_PREFIX = "test_flatfile_event_update"
 DEFAULT_TEST_SAMPLE_SIZE = 100
+DEFAULT_DAY_RAW_AUDIT_SAMPLE_SIZE = 4
 DEFAULT_TICKER_DAY_INDEX_TABLE = "events_ticker_day_index"
 DEFAULT_DIRECT_MACRO_BAR_TIMEFRAMES = ("1d",)
 
@@ -236,6 +239,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_TEST_SAMPLE_SIZE,
         help="Per-kind reference rows sampled from main quotes/trades and matched back to temp events.",
+    )
+    parser.add_argument(
+        "--day-raw-audit-sample-size",
+        type=int,
+        default=DEFAULT_DAY_RAW_AUDIT_SAMPLE_SIZE,
+        help="Per-kind raw flatfile rows sampled after each production day insert and matched to compact events. Set 0 to disable.",
     )
     parser.add_argument(
         "--test-keep-tables",
@@ -1360,6 +1369,7 @@ def validate_day_event_integrity(
     audit: dict[str, Any] = {
         "type": "day_event_integrity_check",
         "source_date": day.source_date,
+        "events_table": args.events_table,
         "build_step": build_step,
         "context": context,
         "status": "ok",
@@ -1441,10 +1451,29 @@ def append_jsonl(path: Path, row: dict[str, Any]) -> None:
         handle.write(json.dumps(row, default=str) + "\n")
 
 
-def ensure_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
-    client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.database)}")
+def event_args_for_day(args: argparse.Namespace, day_or_source_date: DayFiles | str) -> argparse.Namespace:
+    source_date = day_or_source_date.source_date if isinstance(day_or_source_date, DayFiles) else str(day_or_source_date)
+    if not events_table_uses_year_suffix(str(args.events_table)):
+        return args
+    scoped = argparse.Namespace(**vars(args))
+    scoped.events_table = events_table_for_source_date(str(args.events_table), source_date)
+    return scoped
+
+
+def ensure_event_table(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
     client.execute(create_events_table_sql(args))
     validate_events_table_schema(client, args)
+
+
+def ensure_tables(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles] | None = None) -> None:
+    client.execute(f"CREATE DATABASE IF NOT EXISTS {quote_ident(args.database)}")
+    if days and events_table_uses_year_suffix(str(args.events_table)):
+        for table in sorted({event_args_for_day(args, day).events_table for day in days}):
+            scoped = argparse.Namespace(**vars(args))
+            scoped.events_table = table
+            ensure_event_table(client, scoped)
+    else:
+        ensure_event_table(client, args)
     client.execute(create_manifest_table_sql(args))
     client.execute(create_continuity_table_sql(args))
     ensure_continuity_table_columns(client, args)
@@ -1694,7 +1723,29 @@ SETTINGS join_use_nulls = 1
     return int(float(row[0] or 0)) if row else 0
 
 
-def query_sample_events(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles], event_type: int) -> list[dict[str, Any]]:
+def query_sample_events(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles], event_type: int, *, sample_size: int | None = None) -> list[dict[str, Any]]:
+    scope_filters: list[str] = []
+    for day in days:
+        bounds = day_continuity_timestamp_bounds(client, args, day, build_step_for_date(day.source_date))
+        source = date.fromisoformat(day.source_date)
+        allowed_dates = ", ".join(
+            sql_string(value)
+            for value in (
+                source.isoformat(),
+                date.fromordinal(source.toordinal() + 1).isoformat(),
+            )
+        )
+        if bounds is None:
+            scope_filters.append(f"(event_date IN ({allowed_dates}))")
+        else:
+            first_us, last_us = bounds
+            scope_filters.append(
+                f"(sip_timestamp_us >= toUInt64({int(first_us)}) "
+                f"AND sip_timestamp_us <= toUInt64({int(last_us)}) "
+                f"AND event_date IN ({allowed_dates}))"
+            )
+    scope_filter = " OR ".join(scope_filters) if scope_filters else "0"
+    limit = max(1, int(args.test_sample_size if sample_size is None else sample_size))
     sql = f"""
 SELECT
     ticker,
@@ -1716,8 +1767,9 @@ SELECT
     event_date
 FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
 WHERE bitAnd(event_meta, 1) = toUInt8({int(event_type)})
+  AND ({scope_filter})
 ORDER BY cityHash64(ticker, ordinal, sip_timestamp_us, bitAnd(event_meta, 1))
-LIMIT {max(1, int(args.test_sample_size))}
+LIMIT {limit}
 FORMAT JSONEachRow
 """
     rows = []
@@ -1988,11 +2040,13 @@ def validate_events_against_raw_csv(
     client: ClickHouseHttpClient,
     args: argparse.Namespace,
     days: list[DayFiles],
+    *,
+    sample_size: int | None = None,
 ) -> dict[str, dict[str, Any]]:
     token_maps = load_condition_token_maps(client, args)
     sample_by_kind = {
-        "quotes": query_sample_events(client, args, days, 0),
-        "trades": query_sample_events(client, args, days, 1),
+        "quotes": query_sample_events(client, args, days, 0, sample_size=sample_size),
+        "trades": query_sample_events(client, args, days, 1, sample_size=sample_size),
     }
     days_by_date = {day.source_date: day for day in days}
     result: dict[str, dict[str, Any]] = {}
@@ -2042,7 +2096,7 @@ def audit_test_events(client: ClickHouseHttpClient, args: argparse.Namespace, da
     counts = query_audit_counts(client, args, days)
     continuity_mismatches = query_continuity_mismatches(client, args, days)
     ticker_day_index_mismatches = query_ticker_day_index_mismatches(client, args, days)
-    raw_csv_validation = validate_events_against_raw_csv(client, args, days)
+    raw_csv_validation = validate_events_against_raw_csv(client, args, days, sample_size=int(args.test_sample_size))
     audit = {
         "type": "test_audit",
         "status": "ok",
@@ -2086,6 +2140,36 @@ def audit_test_events(client: ClickHouseHttpClient, args: argparse.Namespace, da
     print("=" * 100, flush=True)
 
 
+def audit_day_events_against_raw_csv(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    day: DayFiles,
+    report_path: Path,
+) -> None:
+    sample_size = max(0, int(getattr(args, "day_raw_audit_sample_size", 0)))
+    if sample_size <= 0:
+        return
+    validation = validate_events_against_raw_csv(client, args, [day], sample_size=sample_size)
+    audit = {
+        "type": "day_raw_csv_audit",
+        "source_date": day.source_date,
+        "events_table": args.events_table,
+        "sample_size": sample_size,
+        "validation": validation,
+        "status": "ok",
+    }
+    failures: dict[str, Any] = {}
+    for kind, result in validation.items():
+        if int(result.get("sample_rows") or 0) <= 0 or int(result.get("mismatch_rows") or 0) > 0:
+            failures[kind] = result
+    if failures:
+        audit["status"] = "failed"
+        audit["failures"] = failures
+        append_jsonl(report_path, audit)
+        raise RuntimeError(f"day={day.source_date} raw flatfile audit failed for {args.database}.{args.events_table}: {failures}")
+    append_jsonl(report_path, audit)
+
+
 def rebuild_day_ticker_index(
     client: ClickHouseHttpClient,
     args: argparse.Namespace,
@@ -2105,6 +2189,7 @@ def rebuild_day_ticker_index(
     check = {
         "type": "ticker_day_index_check",
         "source_date": day.source_date,
+        "events_table": args.events_table,
         "build_step": build_step,
         "reason": reason,
         "mismatches": mismatches,
@@ -2185,6 +2270,7 @@ def validate_day_continuity_after_insert(
     audit = {
         "type": "day_continuity_check",
         "source_date": day.source_date,
+        "events_table": args.events_table,
         "build_step": build_step,
         "ticker_rows": ticker_rows,
         "continuity_events": continuity_events,
@@ -2234,7 +2320,9 @@ def _run_profiled_with_reporter(
 
 
 def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles, run_id: str, report_path: Path, reporter: UpdateProgressReporter | None = None) -> str:
+    args = event_args_for_day(args, day)
     job = DayJob(source_date=day.source_date, build_step=build_step_for_date(day.source_date))
+    ensure_event_table(client, args)
     status = latest_day_status(client, args, job)
     if status == "ok" and not args.force_day_rebuild:
         if reporter is not None:
@@ -2247,6 +2335,10 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
                 rows=integrity_counts.get("rows", 0),
                 detail="existing events have unique ordinals and monotonic timestamps",
             )
+            reporter.task_start(f"{day.source_date}:audit:raw_existing", "sample raw flatfile match", day=day.source_date, stage="audit")
+        audit_day_events_against_raw_csv(client, args, day, report_path)
+        if reporter is not None:
+            reporter.task_done(f"{day.source_date}:audit:raw_existing", "ok", detail="sample compact rows match raw flatfiles")
         if reporter is not None:
             reporter.task_start(f"{day.source_date}:index:manifest_ok", "rebuild ticker/day index", day=day.source_date, stage="index")
         rebuild_day_ticker_index(client, args, day, job.build_step, report_path, reason="manifest_ok")
@@ -2317,6 +2409,10 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
                 rows=integrity_counts.get("rows", 0),
                 detail="unique ordinals and monotonic timestamps",
             )
+            reporter.task_start(f"{day.source_date}:audit:raw", "sample raw flatfile match", day=day.source_date, stage="audit")
+        audit_day_events_against_raw_csv(client, args, day, report_path)
+        if reporter is not None:
+            reporter.task_done(f"{day.source_date}:audit:raw", "ok", detail="sample compact rows match raw flatfiles")
         if reporter is not None:
             reporter.task_start(f"{day.source_date}:index:events_inserted", "rebuild ticker/day index", day=day.source_date, stage="index")
         index_profile = rebuild_day_ticker_index(client, args, day, job.build_step, report_path, reason="events_inserted")
@@ -2325,11 +2421,12 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
         insert_day_manifest(client, args, job, status="ok", run_id=run_id, profile=profile)
         append_jsonl(
             report_path,
-            {
-                "type": "day",
-                "source_date": day.source_date,
-                "status": "ok",
-                "event_profile": asdict(profile),
+        {
+            "type": "day",
+            "source_date": day.source_date,
+            "events_table": args.events_table,
+            "status": "ok",
+            "event_profile": asdict(profile),
                 "continuity_profile": asdict(continuity_profile),
                 "ticker_day_index_profile": asdict(index_profile),
             },
@@ -2347,7 +2444,7 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
     except Exception as exc:
         profile = QueryProfile(label=f"insert_events_from_flatfiles_{day.source_date}", query_id="", wall_seconds=0.0, exception=repr(exc))
         insert_day_manifest(client, args, job, status="failed", run_id=run_id, profile=profile, exception=repr(exc))
-        append_jsonl(report_path, {"type": "day", "source_date": day.source_date, "status": "failed", "exception": repr(exc)})
+        append_jsonl(report_path, {"type": "day", "source_date": day.source_date, "events_table": args.events_table, "status": "failed", "exception": repr(exc)})
         raise
 
 
@@ -2362,6 +2459,26 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
             reporter.notice("Macro bar creation skipped because no successfully updated days were available.", style="yellow")
         print("BAR SKIP no successfully updated days", flush=True)
         return
+    if events_table_uses_year_suffix(str(args.events_table)):
+        groups: dict[str, list[DayFiles]] = defaultdict(list)
+        for day in days:
+            groups[event_args_for_day(args, day).events_table].append(day)
+        if len(groups) > 1:
+            for table, table_days in sorted(groups.items()):
+                scoped = argparse.Namespace(**vars(args))
+                scoped.events_table = table
+                if reporter is not None:
+                    reporter.notice(
+                        f"Building macro bars from yearly event table {args.database}.{table} "
+                        f"for {min(day.source_date for day in table_days)}->{max(day.source_date for day in table_days)}.",
+                        style="cyan",
+                    )
+                build_updated_bars(client, scoped, table_days, report_path, reporter=reporter)
+            return
+        if groups:
+            scoped = argparse.Namespace(**vars(args))
+            scoped.events_table = next(iter(groups))
+            args = scoped
     parse_timeframes(args.bar_timeframes)
     min_day = min(day.source_date for day in days)
     max_day = max(day.source_date for day in days)
@@ -2426,6 +2543,7 @@ def build_updated_bars(client: ClickHouseHttpClient, args: argparse.Namespace, d
         report_path,
         {
             "type": "bar_update",
+            "events_table": args.events_table,
             "bar_tables": [asdict(spec) for spec in bar_tables],
             "timeframes": bar_args.timeframes,
             "requested_start_date": min_day,
@@ -2447,6 +2565,8 @@ def main() -> None:
     print("=" * 100, flush=True)
     print("Massive SIP flatfile download + direct event update", flush=True)
     print(f"database={args.database} events_table={args.events_table}", flush=True)
+    if events_table_uses_year_suffix(str(args.events_table)):
+        print("events_table_routing=yearly (source day YYYY -> events_YYYY)", flush=True)
     print(f"ticker_day_index_table={args.ticker_day_index_table}", flush=True)
     print(f"bar_tables={format_bar_tables(bar_tables)}", flush=True)
     print(f"test_mode={args.test_mode}", flush=True)
@@ -2483,13 +2603,15 @@ def main() -> None:
             f"database={args.database} events_table={args.events_table} "
             f"ticker_day_index={args.ticker_day_index_table} bars={format_bar_tables(bar_tables)} test_mode={args.test_mode}"
         )
+        if events_table_uses_year_suffix(str(args.events_table)):
+            reporter.log("events_table_routing=yearly (source day YYYY -> events_YYYY)")
         if args.test_mode:
             reporter.set_stage("prepare test tables")
             reporter.notice("Dropping same-run temp tables before isolated test build.", style="bold yellow")
             drop_test_tables(client, args)
         reporter.set_stage("ensure tables")
         reporter.notice("Ensuring event, manifest, continuity, ticker/day index, and macro bar tables exist.", style="cyan")
-        ensure_tables(client, args)
+        ensure_tables(client, args, days)
 
         progress_queue: mp.Queue = mp.Queue()
         reporter.set_stage("download flatfiles")

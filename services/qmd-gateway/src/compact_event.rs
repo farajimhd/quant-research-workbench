@@ -2,7 +2,7 @@ use crate::config::GatewayConfig;
 use crate::event::{MarketEvent, QuoteEvent, TradeEvent};
 use crate::metrics::SharedMetrics;
 use crate::timefmt::clickhouse_datetime64;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, TimeZone, Utc};
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -219,6 +219,7 @@ pub struct CompactEventClickHouseWriter {
     client: Client,
     config: GatewayConfig,
     event_sender: broadcast::Sender<LiveCompactEvent>,
+    ensured_event_tables: Arc<RwLock<HashSet<String>>>,
     live_store: SharedCompactEventStore,
     metrics: SharedMetrics,
     references: CompactEventReferences,
@@ -335,6 +336,7 @@ impl CompactEventClickHouseWriter {
             client: Client::new(),
             config,
             event_sender,
+            ensured_event_tables: Arc::new(RwLock::new(HashSet::new())),
             live_store,
             metrics,
             references,
@@ -353,19 +355,12 @@ impl CompactEventClickHouseWriter {
             false,
         )
         .await?;
-        self.execute(&self.create_table_sql(), true).await?;
+        let current_table = self.compact_event_table_for_year(Utc::now().year());
+        self.ensure_compact_event_table(&current_table).await?;
         self.execute(&self.create_continuity_table_sql(), true)
             .await?;
         self.execute(&self.create_live_coverage_table_sql(), true)
-            .await?;
-        self.execute(
-            &format!(
-                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS arrival_sequence UInt64 CODEC(T64, ZSTD(1)) AFTER ingest_ts",
-                self.config.compact_event_table
-            ),
-            true,
-        )
-        .await
+            .await
     }
 
     pub async fn run(self, mut receiver: mpsc::Receiver<MarketEvent>) {
@@ -575,91 +570,106 @@ impl CompactEventClickHouseWriter {
     }
 
     async fn insert_events(&self, rows: &[LiveCompactEvent]) -> Result<(), String> {
-        let body = rows
-            .iter()
-            .map(|event| {
-                json!({
-                    "event_date": event.event_date,
-                    "schema_version": event.schema_version,
-                    "ingest_ts": clickhouse_datetime64(&event.ingest_ts),
-                    "arrival_sequence": event.arrival_sequence,
-                    "ticker": event.ticker,
-                    "ordinal": event.ordinal,
-                    "event_meta": event.event_meta,
-                    "sip_timestamp_us": event.sip_timestamp_us,
-                    "price_primary_int": event.price_primary_int,
-                    "price_secondary_int": event.price_secondary_int,
-                    "size_primary": event.size_primary,
-                    "size_secondary": event.size_secondary,
-                    "exchange_primary": event.exchange_primary,
-                    "exchange_secondary": event.exchange_secondary,
-                    "condition_token_1": event.condition_token_1,
-                    "condition_token_2": event.condition_token_2,
-                    "condition_token_3": event.condition_token_3,
-                    "condition_token_4": event.condition_token_4,
-                    "condition_token_5": event.condition_token_5,
-                    "source_sequence": event.source_sequence,
-                    "issue_flags": event.issue_flags,
+        let mut by_table: BTreeMap<String, Vec<&LiveCompactEvent>> = BTreeMap::new();
+        for event in rows {
+            by_table
+                .entry(self.compact_event_table_for_date(&event.event_date))
+                .or_default()
+                .push(event);
+        }
+        for (table, table_rows) in by_table {
+            self.ensure_compact_event_table(&table).await?;
+            let body = table_rows
+                .iter()
+                .map(|event| {
+                    json!({
+                        "event_date": event.event_date,
+                        "schema_version": event.schema_version,
+                        "ingest_ts": clickhouse_datetime64(&event.ingest_ts),
+                        "arrival_sequence": event.arrival_sequence,
+                        "ticker": event.ticker,
+                        "ordinal": event.ordinal,
+                        "event_meta": event.event_meta,
+                        "sip_timestamp_us": event.sip_timestamp_us,
+                        "price_primary_int": event.price_primary_int,
+                        "price_secondary_int": event.price_secondary_int,
+                        "size_primary": event.size_primary,
+                        "size_secondary": event.size_secondary,
+                        "exchange_primary": event.exchange_primary,
+                        "exchange_secondary": event.exchange_secondary,
+                        "condition_token_1": event.condition_token_1,
+                        "condition_token_2": event.condition_token_2,
+                        "condition_token_3": event.condition_token_3,
+                        "condition_token_4": event.condition_token_4,
+                        "condition_token_5": event.condition_token_5,
+                        "source_sequence": event.source_sequence,
+                        "issue_flags": event.issue_flags,
+                    })
+                    .to_string()
                 })
-                .to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.query_with_body(
-            &format!(
-                "INSERT INTO {} FORMAT JSONEachRow",
-                self.config.compact_event_table
-            ),
-            body,
-        )
-        .await
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.query_with_body(&format!("INSERT INTO {table} FORMAT JSONEachRow"), body)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn load_ordinal_state(&self) -> Result<HashMap<String, OrdinalState>, String> {
         if !self.config.persist_compact_events {
             return Ok(HashMap::new());
         }
-        let event_rows = self
-            .query(
-                &format!(
-                    "SELECT ticker, max(ordinal), argMax(sip_timestamp_us, ordinal), argMax(source_sequence, ordinal), argMax(bitAnd(event_meta, 1), ordinal) FROM {} GROUP BY ticker FORMAT TSV",
-                    self.config.compact_event_table
-                ),
-                true,
-            )
-            .await?;
+        let event_tables = self.compact_event_source_tables().await?;
         let mut out = HashMap::new();
-        for row in event_rows.lines() {
-            let mut parts = row.split('\t');
-            let Some(ticker) = parts.next() else {
-                continue;
-            };
-            let Some(last_ordinal) = parts.next() else {
-                continue;
-            };
-            let last_sip_timestamp_us = parts
-                .next()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(0);
-            let last_source_sequence = parts
-                .next()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(0);
-            let last_event_type = parts
-                .next()
-                .and_then(|value| value.parse::<u8>().ok())
-                .unwrap_or(0);
-            if let Ok(value) = last_ordinal.parse::<u64>() {
-                out.insert(
-                    ticker.to_string(),
-                    OrdinalState {
-                        next_ordinal: value.saturating_add(1),
-                        last_event_type,
-                        last_ordinal: Some(value),
-                        last_sip_timestamp_us,
-                        last_source_sequence,
-                    },
-                );
+        for table in event_tables {
+            let event_rows = self
+                .query(
+                    &format!(
+                        "SELECT ticker, max(ordinal), argMax(sip_timestamp_us, ordinal), argMax(source_sequence, ordinal), argMax(bitAnd(event_meta, 1), ordinal) FROM {table} GROUP BY ticker FORMAT TSV",
+                    ),
+                    true,
+                )
+                .await
+                .unwrap_or_default();
+            for row in event_rows.lines() {
+                let mut parts = row.split('\t');
+                let Some(ticker) = parts.next() else {
+                    continue;
+                };
+                let Some(last_ordinal) = parts.next() else {
+                    continue;
+                };
+                let last_sip_timestamp_us = parts
+                    .next()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0);
+                let last_source_sequence = parts
+                    .next()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0);
+                let last_event_type = parts
+                    .next()
+                    .and_then(|value| value.parse::<u8>().ok())
+                    .unwrap_or(0);
+                if let Ok(value) = last_ordinal.parse::<u64>() {
+                    let replace = out
+                        .get(ticker)
+                        .and_then(|state: &OrdinalState| state.last_ordinal)
+                        .map(|current| value > current)
+                        .unwrap_or(true);
+                    if replace {
+                        out.insert(
+                            ticker.to_string(),
+                            OrdinalState {
+                                next_ordinal: value.saturating_add(1),
+                                last_event_type,
+                                last_ordinal: Some(value),
+                                last_sip_timestamp_us,
+                                last_source_sequence,
+                            },
+                        );
+                    }
+                }
             }
         }
         let continuity_rows = self
@@ -716,19 +726,42 @@ impl CompactEventClickHouseWriter {
         if !self.config.persist_compact_events {
             return Ok(0);
         }
-        let row = self
-            .query(
-                &format!(
-                    "SELECT max(arrival_sequence) FROM {} FORMAT TSV",
-                    self.config.compact_event_table
-                ),
-                true,
-            )
-            .await?;
-        Ok(row.trim().parse::<u64>().unwrap_or(0))
+        let mut max_value = 0u64;
+        for table in self.compact_event_source_tables().await? {
+            let row = self
+                .query(
+                    &format!("SELECT max(arrival_sequence) FROM {table} FORMAT TSV"),
+                    true,
+                )
+                .await
+                .unwrap_or_default();
+            max_value = max_value.max(row.trim().parse::<u64>().unwrap_or(0));
+        }
+        Ok(max_value)
     }
 
-    fn create_table_sql(&self) -> String {
+    async fn ensure_compact_event_table(&self, table: &str) -> Result<(), String> {
+        {
+            let guard = self.ensured_event_tables.read().await;
+            if guard.contains(table) {
+                return Ok(());
+            }
+        }
+        self.execute(&self.create_table_sql_for(table), true)
+            .await?;
+        self.execute(
+            &format!(
+                "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS arrival_sequence UInt64 CODEC(T64, ZSTD(1)) AFTER ingest_ts"
+            ),
+            true,
+        )
+        .await?;
+        let mut guard = self.ensured_event_tables.write().await;
+        guard.insert(table.to_string());
+        Ok(())
+    }
+
+    fn create_table_sql_for(&self, table: &str) -> String {
         format!(
             r#"
             CREATE TABLE IF NOT EXISTS {table}
@@ -760,9 +793,58 @@ impl CompactEventClickHouseWriter {
             ORDER BY (ticker, ordinal)
             {settings}
             "#,
-            table = self.config.compact_event_table,
+            table = table,
             settings = merge_tree_settings(&self.config.clickhouse_storage_policy),
         )
+    }
+
+    fn compact_events_use_yearly_tables(&self) -> bool {
+        self.config.compact_event_table == "events"
+            || self.config.compact_event_table.contains("{year}")
+    }
+
+    fn compact_event_table_for_year(&self, year: i32) -> String {
+        if self.config.compact_event_table == "events" {
+            format!("events_{year}")
+        } else if self.config.compact_event_table.contains("{year}") {
+            self.config
+                .compact_event_table
+                .replace("{year}", &year.to_string())
+        } else {
+            self.config.compact_event_table.clone()
+        }
+    }
+
+    fn compact_event_table_for_date(&self, event_date: &str) -> String {
+        let year = event_date
+            .get(0..4)
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or_else(|| Utc::now().year());
+        self.compact_event_table_for_year(year)
+    }
+
+    async fn compact_event_source_tables(&self) -> Result<Vec<String>, String> {
+        if !self.compact_events_use_yearly_tables() {
+            return Ok(vec![self.config.compact_event_table.clone()]);
+        }
+        let rows = self
+            .query(
+                "SELECT name FROM system.tables WHERE database = currentDatabase() AND match(name, '^events_[0-9]{4}$') ORDER BY name FORMAT TSV",
+                true,
+            )
+            .await
+            .unwrap_or_default();
+        let mut tables = rows
+            .lines()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let current = self.compact_event_table_for_year(Utc::now().year());
+        if !tables.iter().any(|table| table == &current) {
+            tables.push(current);
+        }
+        Ok(tables)
     }
 
     fn create_continuity_table_sql(&self) -> String {

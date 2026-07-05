@@ -4,6 +4,7 @@ import argparse
 import datetime as dt
 import json
 import random
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,6 +72,10 @@ from research.mlops.rolling_loader.ticker_month_cache import (
     read_json,
     write_json_atomic,
 )
+from pipelines.market_sip.events.clickhouse_build_unified_events import (
+    events_table_for_year,
+    events_table_uses_year_suffix,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +97,20 @@ class TickerMonthAuditConfig:
     source_label_horizons_per_sample: int = 4
     max_threads: int = 8
     max_memory_usage: str = "80G"
+
+
+def _events_source_table(config: TickerMonthAuditConfig, start_timestamp_us: int, end_timestamp_us: int | None = None) -> str:
+    base_table = str(config.events_table)
+    if not events_table_uses_year_suffix(base_table):
+        return f"{quote_ident(config.database)}.{quote_ident(base_table)}"
+    start_dt = dt.datetime.fromtimestamp(max(0, int(start_timestamp_us)) / 1_000_000.0, tz=dt.timezone.utc)
+    end_value = int(end_timestamp_us) if end_timestamp_us is not None and int(end_timestamp_us) > 0 else int(start_timestamp_us)
+    end_dt = dt.datetime.fromtimestamp(max(0, end_value) / 1_000_000.0, tz=dt.timezone.utc)
+    tables = [events_table_for_year(base_table, year) for year in range(start_dt.year, end_dt.year + 1)]
+    if len(tables) == 1:
+        return f"{quote_ident(config.database)}.{quote_ident(tables[0])}"
+    pattern = "^(" + "|".join(re.escape(table) for table in tables) + ")$"
+    return f"merge({sql_string(config.database)}, {sql_string(pattern)})"
 
 
 @dataclass(slots=True)
@@ -548,7 +567,7 @@ def _source_check_origin(origins: Any, manifest: Mapping[str, Any], config: Tick
     row = origins.row(idx, named=True)
     ticker = str(row["ticker"])
     ordinal = int(row["origin_ordinal"])
-    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    table = _events_source_table(config, int(row["origin_timestamp_us"]))
     query = f"""
 SELECT
     ticker,
@@ -717,11 +736,11 @@ def _source_label_query_sql(
     grid_end_timestamp_us: int | None,
     config: TickerMonthAuditConfig,
 ) -> str:
-    event_table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
     news_table = f"{quote_ident(config.database)}.{quote_ident(config.news_embedding_table)}"
     sec_table = f"{quote_ident(config.sec_context_database)}.{quote_ident(config.sec_filing_text_embedding_table)}"
     start_timestamp_us = int(grid_start_timestamp_us) if grid_start_timestamp_us is not None and int(grid_start_timestamp_us) > 0 else int(origin_timestamp_us) + 1
     end_timestamp_us = int(grid_end_timestamp_us) if grid_end_timestamp_us is not None and int(grid_end_timestamp_us) > 0 else int(origin_timestamp_us) + int(horizon_us) + 1
+    event_table = _events_source_table(config, start_timestamp_us, end_timestamp_us)
     return f"""
 WITH
     toDate(toTimeZone(fromUnixTimestamp64Micro({int(origin_timestamp_us)}, 'UTC'), {sql_string(SESSION_TIMEZONE)})) AS origin_local_date,

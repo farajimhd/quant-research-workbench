@@ -46,6 +46,7 @@ from research.mlops.rolling_loader.run_build_ticker_month_cache import (
     _cancel_active_work_with_grace,
     _client_options,
     _empty_frame,
+    _events_source_table,
     _polars,
     _query_category_references,
     _query_corporate_actions,
@@ -715,7 +716,7 @@ WHERE last_ordinal >= {int(fetch_ordinal_start)}
 
 
 def _query_events_chunk(*, args: argparse.Namespace, client_opts: Mapping[str, str], config: Any, chunk: FetchChunk) -> Any:
-    table = f"{quote_ident(config.database)}.{quote_ident(config.events_table)}"
+    table = _events_source_table(config, chunk.fetch_event_date_start, chunk.fetch_event_date_end)
     query = f"""
 WITH
     fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC') AS ts_utc,
