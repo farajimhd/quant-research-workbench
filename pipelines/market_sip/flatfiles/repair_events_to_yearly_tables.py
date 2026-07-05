@@ -421,10 +421,17 @@ def derived_index_table(args: argparse.Namespace) -> str:
     return f"{args.ticker_day_index_table}_yearly_repair"
 
 
+def drop_table_sql(args: argparse.Namespace, table: str) -> str:
+    return f"""
+DROP TABLE IF EXISTS {quote_ident(args.database)}.{quote_ident(table)} SYNC
+SETTINGS max_table_size_to_drop = 0
+"""
+
+
 def create_year_table(runner: QueryRunner, args: argparse.Namespace, year: int) -> None:
     table = year_table_name(args, year)
     if year in set(args.force_rebuild_year):
-        runner.run(f"drop_{table}", f"DROP TABLE IF EXISTS {quote_ident(args.database)}.{quote_ident(table)} SYNC")
+        runner.run(f"drop_{table}", drop_table_sql(args, table))
     year_args = argparse.Namespace(**vars(args))
     year_args.events_table = table
     runner.run(f"create_{table}", create_events_table_sql(year_args))
@@ -441,7 +448,7 @@ DELETE WHERE processed_year >= toUInt16({int(year)})
 def create_repair_raw_table(runner: QueryRunner, args: argparse.Namespace, year: int) -> None:
     table = repair_raw_table_name(args, year)
     if year in set(args.force_rebuild_year):
-        runner.run(f"drop_{table}", f"DROP TABLE IF EXISTS {quote_ident(args.database)}.{quote_ident(table)} SYNC")
+        runner.run(f"drop_{table}", drop_table_sql(args, table))
     runner.run(f"create_{table}", create_repair_raw_table_sql(args, table))
 
 
@@ -1014,7 +1021,11 @@ def drop_old_year_partitions_sql(args: argparse.Namespace, year: int) -> list[tu
     for month in range(1, 13):
         partition = f"{year}{month:02d}"
         label = f"drop_old_events_partition_{partition}"
-        sql = f"ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.source_events_table)} DROP PARTITION {partition}"
+        sql = f"""
+ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.source_events_table)}
+DROP PARTITION {partition}
+SETTINGS max_partition_size_to_drop = 0
+"""
         statements.append((label, sql))
     return statements
 
@@ -1035,13 +1046,13 @@ CREATE OR REPLACE VIEW {quote_ident(args.database)}.{quote_ident(view)} AS
 def create_derived_tables(runner: QueryRunner, args: argparse.Namespace) -> None:
     cont_args = argparse.Namespace(**vars(args))
     cont_args.continuity_table = derived_continuity_table(args)
-    runner.run(f"drop_{derived_continuity_table(args)}", f"DROP TABLE IF EXISTS {quote_ident(args.database)}.{quote_ident(derived_continuity_table(args))} SYNC")
+    runner.run(f"drop_{derived_continuity_table(args)}", drop_table_sql(args, derived_continuity_table(args)))
     runner.run(f"create_{derived_continuity_table(args)}", create_continuity_table_sql(cont_args))
     if runner.execute:
         ensure_continuity_table_columns(runner.client, cont_args)
     index_args = argparse.Namespace(**vars(args))
     index_args.ticker_day_index_table = derived_index_table(args)
-    runner.run(f"drop_{derived_index_table(args)}", f"DROP TABLE IF EXISTS {quote_ident(args.database)}.{quote_ident(derived_index_table(args))} SYNC")
+    runner.run(f"drop_{derived_index_table(args)}", drop_table_sql(args, derived_index_table(args)))
     runner.run(f"create_{derived_index_table(args)}", create_ticker_day_index_table_sql(index_args))
     if runner.execute:
         validate_ticker_day_index_table_schema(runner.client, index_args)
