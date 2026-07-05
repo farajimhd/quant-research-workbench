@@ -268,6 +268,7 @@ def runtime_panel(gateway: "TextEmbedGateway", metrics: dict[str, Any]) -> Panel
     table.add_row("SEC context", str(metrics.get("sec_context_status") or "-"), f"{metrics.get('sec_context_table') or '-'} refreshed={fmt(metrics.get('sec_context_rows_refreshed'))}")
     table.add_row("Batch sizes", fmt(gateway.config.embedding_batch_size), f"source={gateway.config.source_batch_size:,} token={gateway.config.token_batch_size:,} insert={gateway.config.embedding_insert_batch_size:,}")
     table.add_row("Lookback", f"{gateway.config.live_lookback_minutes:,}m", f"closed historical={gateway.config.historical_lookback_days:,}d limit={gateway.config.historical_batch_limit:,}")
+    table.add_row("SEC context chunks", f"{gateway.config.sec_context_refresh_chunk_hours:.1f}h", f"historical max/cycle={gateway.config.sec_context_historical_max_chunks_per_cycle:,}")
     table.add_row("Poll cadence", f"{metrics.get('poll_cadence_label') or '-'}", f"active={gateway.config.live_poll_seconds:.1f}s closed={gateway.config.closed_poll_seconds:.1f}s weekend={gateway.config.weekend_poll_seconds:.1f}s")
     table.add_row("Recent status", fmt(metrics.get("recent_status_rows")), f"ttl={gateway.config.recent_status_retention_hours:.1f}h")
     table.add_row("Failures", fmt(metrics.get("failures")), str(metrics.get("last_error") or "-"))

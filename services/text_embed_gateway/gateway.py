@@ -228,6 +228,7 @@ class TextEmbedGateway:
         self.tokenizer: TextTokenizer | None = None
         self.embedding_model: TextEmbeddingModel | None = None
         self._sec_bridge_available = False
+        self._historical_sec_context_cursor_end: datetime | None = None
         self._recent: deque[dict[str, Any]] = deque(maxlen=max(1, config.recent_status_limit))
         self.logger = AsyncRunLogger(
             root=config.log_root_win,
@@ -588,25 +589,77 @@ class TextEmbedGateway:
             self._remember(source="sec", mode=mode, stage="context_skipped_no_bridge", rows=0, seconds=0.0)
             return
         started = time.perf_counter()
-        filing_rows = scalar_count(self.client, count_missing_sec_filing_context_sql(self.config, bounds))
-        if filing_rows:
-            self.client.execute(insert_missing_sec_filing_context_sql(self.config, bounds))
-        text_rows = scalar_count(self.client, count_missing_sec_text_context_sql(self.config, bounds))
-        if text_rows:
-            self.client.execute(insert_missing_sec_text_context_sql(self.config, bounds))
-        blocked_rows = self._record_sec_context_blocks(bounds, mode)
+        refresh_ranges = self._sec_context_refresh_ranges(bounds, mode)
+        filing_rows = 0
+        text_rows = 0
+        blocked_rows = 0
+        active_start: datetime | None = None
+        active_end: datetime | None = None
+        for index, refresh_bounds in enumerate(refresh_ranges, 1):
+            if self._stop_event.is_set():
+                break
+            detail = (
+                f"{mode.upper()} SEC: refreshing mapped SEC text context "
+                f"chunk {index:,}/{len(refresh_ranges):,}."
+            )
+            self._set_active_work(mode=mode, source="sec", stage="context_refresh", detail=detail, bounds=refresh_bounds)
+            chunk_filing_rows = scalar_count(self.client, count_missing_sec_filing_context_sql(self.config, refresh_bounds))
+            if chunk_filing_rows:
+                self.client.execute(insert_missing_sec_filing_context_sql(self.config, refresh_bounds))
+            chunk_text_rows = scalar_count(self.client, count_missing_sec_text_context_sql(self.config, refresh_bounds))
+            if chunk_text_rows:
+                self.client.execute(insert_missing_sec_text_context_sql(self.config, refresh_bounds))
+            chunk_blocked_rows = self._record_sec_context_blocks(refresh_bounds, mode)
+            if chunk_filing_rows or chunk_text_rows or chunk_blocked_rows:
+                active_start = refresh_bounds[0] if active_start is None else min(active_start, refresh_bounds[0])
+                active_end = refresh_bounds[1] if active_end is None else max(active_end, refresh_bounds[1])
+            filing_rows += chunk_filing_rows
+            text_rows += chunk_text_rows
+            blocked_rows += chunk_blocked_rows
+        self._advance_sec_context_cursor(bounds, mode, refresh_ranges)
         rows = filing_rows + text_rows
         self.metrics.sec_context_gap_detected = rows
         self.metrics.sec_context_gap_completed = rows
         self.metrics.sec_context_gap_remaining = 0
         self.metrics.sec_context_blocked_detected = blocked_rows
-        self.metrics.sec_context_gap_period = self._sec_context_gap_period(bounds) if rows or blocked_rows else ""
+        self.metrics.sec_context_gap_period = f"{utc_text(active_start)} -> {utc_text(active_end)}" if active_start is not None and active_end is not None else ""
         self.metrics.sec_context_rows_refreshed += rows
         self.metrics.sec_context_status = "ready"
         seconds = time.perf_counter() - started
         if rows or blocked_rows:
             self._remember(source="sec", mode=mode, stage="context_refresh", rows=rows, seconds=seconds)
-            self._log("sec_context_refresh", mode=mode, filing_rows=filing_rows, text_rows=text_rows, blocked_rows=blocked_rows, seconds=round(seconds, 3))
+            self._log(
+                "sec_context_refresh",
+                mode=mode,
+                filing_rows=filing_rows,
+                text_rows=text_rows,
+                blocked_rows=blocked_rows,
+                chunks=len(refresh_ranges),
+                period=self.metrics.sec_context_gap_period,
+                seconds=round(seconds, 3),
+            )
+
+    def _sec_context_refresh_ranges(self, bounds: tuple[datetime, datetime], mode: str) -> list[tuple[datetime, datetime]]:
+        if mode != "historical":
+            return [bounds]
+        chunk_seconds = max(60.0, float(self.config.sec_context_refresh_chunk_hours) * 3600.0)
+        max_chunks = max(1, int(self.config.sec_context_historical_max_chunks_per_cycle))
+        cursor_end = self._historical_sec_context_cursor_end
+        if cursor_end is None or cursor_end <= bounds[0] or cursor_end > bounds[1]:
+            cursor_end = bounds[1]
+        refresh_ranges: list[tuple[datetime, datetime]] = []
+        chunk_end = cursor_end
+        while chunk_end > bounds[0] and len(refresh_ranges) < max_chunks:
+            chunk_start = max(bounds[0], chunk_end - timedelta(seconds=chunk_seconds))
+            refresh_ranges.append((chunk_start, chunk_end))
+            chunk_end = chunk_start
+        return refresh_ranges or [bounds]
+
+    def _advance_sec_context_cursor(self, bounds: tuple[datetime, datetime], mode: str, refresh_ranges: list[tuple[datetime, datetime]]) -> None:
+        if mode != "historical" or not refresh_ranges:
+            return
+        next_cursor = refresh_ranges[-1][0]
+        self._historical_sec_context_cursor_end = None if next_cursor <= bounds[0] else next_cursor
 
     def _sec_context_gap_period(self, bounds: tuple[datetime, datetime]) -> str:
         summary = first_json_row(self.client.execute(sec_context_gap_period_sql(self.config, bounds)))

@@ -22,6 +22,11 @@ schemas as the historical builder in `pipelines/market_sip/events`.
 7. On shutdown, cancel active ClickHouse queries, finish the current persist
    step when possible, release model references, and clear CUDA cache.
 
+Historical SEC context refresh is chunked before tokenization/embedding. This
+avoids forcing ClickHouse to sort the full historical lookback window in one
+query when selecting the top SEC text rows per filing. The gateway scans chunks
+newest-to-oldest and advances the cursor only after a chunk succeeds.
+
 The gateway does not retain SEC filings, article bodies, PDFs, enriched text, or
 embedding arrays in memory after a batch is written. The terminal keeps only a
 small TTL-bounded status history.
@@ -81,6 +86,8 @@ TEXT_EMBED_SEC_LIVE_FILING_TABLE=sec_filing_v2
 TEXT_EMBED_SEC_LIVE_TEXT_TABLE=sec_filing_text_v2
 TEXT_EMBED_SEC_BRIDGE_TABLE=id_sec_market_bridge_v1
 TEXT_EMBED_SEC_MAX_TEXT_ROWS_PER_FILING=2
+TEXT_EMBED_SEC_CONTEXT_REFRESH_CHUNK_HOURS=24
+TEXT_EMBED_SEC_CONTEXT_HISTORICAL_MAX_CHUNKS_PER_CYCLE=7
 TEXT_EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
 TEXT_EMBED_TOKENIZER_MODEL=Qwen/Qwen3-0.6B
 TEXT_EMBED_DEVICE=auto
