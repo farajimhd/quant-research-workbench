@@ -380,7 +380,7 @@ def existing_member_is_complete(
     if artifact.source_name == "companyfacts":
         data = json.loads(archive.read(info).decode("utf-8", errors="replace"))
         expected_facts = expected_companyfacts_fact_count(data)
-        return expected_facts > 0 and completion_state.get("fact_counts", {}).get(cik, 0) >= expected_facts
+        return expected_facts == 0 or completion_state.get("fact_counts", {}).get(cik, 0) >= expected_facts
     return False
 
 
@@ -1202,6 +1202,7 @@ def print_header(args: argparse.Namespace, loaded_env_files: list[Path], artifac
     print(f"artifacts={len(artifacts)}", flush=True)
     print(f"storage_policy={args.storage_policy or '<default>'}", flush=True)
     print(f"batch_size={args.batch_size} limit_ciks={args.limit_ciks} dry_run={args.dry_run}", flush=True)
+    print(f"member_manifest_enabled={not args.disable_member_manifest}", flush=True)
     print(f"report_path={report_path}", flush=True)
     print(
         "secret_status="
