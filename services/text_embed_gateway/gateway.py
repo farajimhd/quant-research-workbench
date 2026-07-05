@@ -151,6 +151,7 @@ class TextEmbedMetrics:
     sec_available_embedding_rows: int = 0
     news_available_period: str = ""
     sec_available_period: str = ""
+    source_reports: dict[str, dict[str, dict[str, Any]]] = field(default_factory=lambda: {"live": {}, "historical": {}})
     run_log_path: str = ""
 
 
@@ -367,23 +368,32 @@ class TextEmbedGateway:
             if self._stop_event.is_set():
                 break
             try:
+                source_label = source.upper()
+                mode_label_text = mode.upper()
                 if source == "sec":
+                    self._set_phase("polling", f"{mode_label_text} SEC: refreshing mapped SEC text context.")
                     self._refresh_sec_context(ranges[source], mode)
                     cycle_detected += int(self.metrics.sec_context_gap_detected) + int(self.metrics.sec_context_blocked_detected)
                     cycle_completed += int(self.metrics.sec_context_gap_completed)
                     cycle_remaining += int(self.metrics.sec_context_gap_remaining) + int(self.metrics.sec_context_blocked_detected)
+                self._set_phase("polling", f"{mode_label_text} {source_label}: summarizing source-token gaps.")
                 source_summary = self._summarize_source_gaps(source, ranges[source])
                 cycle_detected += int(source_summary["rows"])
+                self._set_phase("polling", f"{mode_label_text} {source_label}: fetching missing source text.")
                 source_rows = self._fetch_missing_source_rows(source, ranges[source], mode)
                 if source_rows:
+                    self._set_phase("polling", f"{mode_label_text} {source_label}: tokenizing and embedding {len(source_rows):,} source rows.")
                     total_written += self._tokenize_embed_and_persist_source(source, source_rows, mode)
                     self._set_gap_completed(source, "source", len(source_rows))
                 if self._stop_event.is_set():
                     break
+                self._set_phase("polling", f"{mode_label_text} {source_label}: summarizing token-embedding gaps.")
                 token_summary = self._summarize_token_gaps(source, ranges[source])
                 cycle_detected += int(token_summary["rows"])
+                self._set_phase("polling", f"{mode_label_text} {source_label}: fetching token rows missing embeddings.")
                 token_rows = self._fetch_missing_token_rows(source, ranges[source], mode)
                 if token_rows:
+                    self._set_phase("polling", f"{mode_label_text} {source_label}: embedding {len(token_rows):,} existing token rows.")
                     total_written += self._embed_and_persist_tokens(source, token_rows, mode)
                     self._set_gap_completed(source, "token", len(token_rows))
                 source_completed = int(getattr(self.metrics, f"{source}_source_gap_completed"))
@@ -392,7 +402,27 @@ class TextEmbedGateway:
                 token_remaining = int(getattr(self.metrics, f"{source}_token_gap_remaining"))
                 cycle_completed += source_completed + token_completed
                 cycle_remaining += source_remaining + token_remaining
+                self._set_phase("polling", f"{mode_label_text} {source_label}: updating coverage report.")
                 coverage_summary = self._summarize_available_coverage(source, ranges[source])
+                self._record_source_report(
+                    mode=mode,
+                    source=source,
+                    bounds=ranges[source],
+                    coverage=coverage_summary,
+                    source_detected=int(source_summary["rows"]),
+                    source_completed=source_completed,
+                    source_remaining=source_remaining,
+                    source_period=gap_period(source_summary),
+                    embedding_detected=int(token_summary["rows"]),
+                    embedding_completed=token_completed,
+                    embedding_remaining=token_remaining,
+                    embedding_period=gap_period(token_summary),
+                    context_detected=int(self.metrics.sec_context_gap_detected) if source == "sec" else 0,
+                    context_completed=int(self.metrics.sec_context_gap_completed) if source == "sec" else 0,
+                    context_remaining=int(self.metrics.sec_context_gap_remaining) if source == "sec" else 0,
+                    context_blocked=int(self.metrics.sec_context_blocked_detected) if source == "sec" else 0,
+                    context_period=str(self.metrics.sec_context_gap_period) if source == "sec" else "",
+                )
                 self._log(
                     "gap_summary",
                     mode=mode,
@@ -500,10 +530,11 @@ class TextEmbedGateway:
         source_rows = int(summary.get("source_rows", 0) or 0)
         token_rows = int(summary.get("token_rows", 0) or 0)
         embedding_rows = int(summary.get("embedding_rows", 0) or 0)
+        period = gap_period({"rows": source_rows, "min_time": summary.get("min_time"), "max_time": summary.get("max_time")})
         setattr(self.metrics, f"{source}_available_source_rows", source_rows)
         setattr(self.metrics, f"{source}_available_token_rows", token_rows)
         setattr(self.metrics, f"{source}_available_embedding_rows", embedding_rows)
-        setattr(self.metrics, f"{source}_available_period", gap_period({"rows": source_rows, "min_time": summary.get("min_time"), "max_time": summary.get("max_time")}))
+        setattr(self.metrics, f"{source}_available_period", period)
         self._log(
             "coverage_summary",
             source=source,
@@ -512,9 +543,9 @@ class TextEmbedGateway:
             embeddings_available=embedding_rows,
             window_start=utc_text(bounds[0]),
             window_end=utc_text(bounds[1]),
-            period=getattr(self.metrics, f"{source}_available_period"),
+            period=period,
         )
-        return {"source_rows": source_rows, "token_rows": token_rows, "embedding_rows": embedding_rows}
+        return {"source_rows": source_rows, "token_rows": token_rows, "embedding_rows": embedding_rows, "period": period}
 
     def _set_gap_completed(self, source: str, kind: str, rows: int) -> None:
         completed_name = f"{source}_{kind}_gap_completed"
@@ -754,6 +785,54 @@ class TextEmbedGateway:
         setattr(self.metrics, f"{mode}_last_gap_completed", int(completed))
         setattr(self.metrics, f"{mode}_last_gap_remaining", int(remaining))
         setattr(self.metrics, f"{mode}_last_window_utc", f"{utc_text(bounds[0])} -> {utc_text(bounds[1])}")
+
+    def _record_source_report(
+        self,
+        *,
+        mode: str,
+        source: str,
+        bounds: tuple[datetime, datetime],
+        coverage: dict[str, Any],
+        source_detected: int,
+        source_completed: int,
+        source_remaining: int,
+        source_period: str,
+        embedding_detected: int,
+        embedding_completed: int,
+        embedding_remaining: int,
+        embedding_period: str,
+        context_detected: int = 0,
+        context_completed: int = 0,
+        context_remaining: int = 0,
+        context_blocked: int = 0,
+        context_period: str = "",
+    ) -> None:
+        if mode not in {"live", "historical"}:
+            mode = "historical"
+        report = {
+            "updated_at_utc": utc_now_text(),
+            "window_start_utc": utc_text(bounds[0]),
+            "window_end_utc": utc_text(bounds[1]),
+            "available_source_rows": int(coverage.get("source_rows", 0) or 0),
+            "available_token_rows": int(coverage.get("token_rows", 0) or 0),
+            "available_embedding_rows": int(coverage.get("embedding_rows", 0) or 0),
+            "available_period": str(coverage.get("period", "") or ""),
+            "source_detected": int(source_detected),
+            "source_completed": int(source_completed),
+            "source_remaining": int(source_remaining),
+            "source_period": str(source_period or ""),
+            "embedding_detected": int(embedding_detected),
+            "embedding_completed": int(embedding_completed),
+            "embedding_remaining": int(embedding_remaining),
+            "embedding_period": str(embedding_period or ""),
+            "context_detected": int(context_detected),
+            "context_completed": int(context_completed),
+            "context_remaining": int(context_remaining),
+            "context_blocked": int(context_blocked),
+            "context_period": str(context_period or ""),
+        }
+        reports = self.metrics.source_reports
+        reports.setdefault(mode, {})[source] = report
 
     def _load_model(self) -> None:
         started = time.perf_counter()

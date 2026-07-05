@@ -141,7 +141,9 @@ def cycle_summary_panel(metrics: dict[str, Any]) -> Panel:
 
 
 def coverage_report_panel(metrics: dict[str, Any]) -> Panel:
+    reports = source_reports(metrics)
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Mode", style="cyan", no_wrap=True, width=10)
     table.add_column("Source", style="cyan", no_wrap=True, width=8)
     table.add_column("Available Text", justify="right", no_wrap=True, width=16)
     table.add_column("Token Chunks", justify="right", no_wrap=True, width=14)
@@ -151,75 +153,66 @@ def coverage_report_panel(metrics: dict[str, Any]) -> Panel:
     table.add_column("Processed", justify="right", no_wrap=True, width=12)
     table.add_column("Remaining", justify="right", no_wrap=True, width=12)
     table.add_column("Available Period UTC", overflow="fold", ratio=1)
-    for source, label in (("news", "News"), ("sec", "SEC")):
-        source_gap = int(metrics.get(f"{source}_source_gap_detected") or 0)
-        embed_gap = int(metrics.get(f"{source}_token_gap_detected") or 0)
-        processed = int(metrics.get(f"{source}_source_gap_completed") or 0) + int(metrics.get(f"{source}_token_gap_completed") or 0)
-        remaining = int(metrics.get(f"{source}_source_gap_remaining") or 0) + int(metrics.get(f"{source}_token_gap_remaining") or 0)
-        if source == "sec":
-            remaining += int(metrics.get("sec_context_blocked_detected") or 0)
+    for mode, source, report in report_rows(reports):
+        processed = int(report.get("source_completed") or 0) + int(report.get("embedding_completed") or 0) + int(report.get("context_completed") or 0)
+        remaining = int(report.get("source_remaining") or 0) + int(report.get("embedding_remaining") or 0) + int(report.get("context_remaining") or 0) + int(report.get("context_blocked") or 0)
         table.add_row(
-            label,
-            fmt(metrics.get(f"{source}_available_source_rows")),
-            fmt(metrics.get(f"{source}_available_token_rows")),
-            fmt(metrics.get(f"{source}_available_embedding_rows")),
-            fmt(source_gap),
-            fmt(embed_gap),
+            mode_label(mode),
+            source_label(source),
+            fmt(report.get("available_source_rows")),
+            fmt(report.get("available_token_rows")),
+            fmt(report.get("available_embedding_rows")),
+            fmt(report.get("source_detected")),
+            fmt(report.get("embedding_detected")),
             fmt(processed),
             fmt(remaining),
-            str(metrics.get(f"{source}_available_period") or "-"),
+            str(report.get("available_period") or "-"),
         )
     return Panel(table, title="Coverage Report", box=box.ROUNDED, border_style="cyan", padding=(0, 1))
 
 
 def gap_summary_panel(metrics: dict[str, Any]) -> Panel:
-    mode = str(metrics.get("gap_cycle_mode") or "-")
-    start = compact_time(str(metrics.get("gap_window_start_utc") or ""))
-    end = compact_time(str(metrics.get("gap_window_end_utc") or ""))
-    updated = compact_time(str(metrics.get("gap_updated_at_utc") or ""))
+    reports = source_reports(metrics)
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
-    table.add_column("Gap", style="cyan", no_wrap=True, width=18)
+    table.add_column("Mode", style="cyan", no_wrap=True, width=10)
+    table.add_column("Source", style="cyan", no_wrap=True, width=8)
+    table.add_column("Gap", style="cyan", no_wrap=True, width=12)
     table.add_column("Detected", justify="right", no_wrap=True, width=12)
     table.add_column("Done", justify="right", no_wrap=True, width=12)
     table.add_column("Remaining", justify="right", no_wrap=True, width=12)
     table.add_column("Missing Period UTC", overflow="fold", ratio=1)
-    table.add_row(
-        "News source",
-        fmt(metrics.get("news_source_gap_detected")),
-        fmt(metrics.get("news_source_gap_completed")),
-        fmt(metrics.get("news_source_gap_remaining")),
-        str(metrics.get("news_source_gap_period") or "-"),
-    )
-    table.add_row(
-        "News tokens",
-        fmt(metrics.get("news_token_gap_detected")),
-        fmt(metrics.get("news_token_gap_completed")),
-        fmt(metrics.get("news_token_gap_remaining")),
-        str(metrics.get("news_token_gap_period") or "-"),
-    )
-    table.add_row(
-        "SEC context",
-        fmt(metrics.get("sec_context_gap_detected")),
-        fmt(metrics.get("sec_context_gap_completed")),
-        fmt(metrics.get("sec_context_gap_remaining")),
-        with_blocked_period(metrics.get("sec_context_gap_period"), metrics.get("sec_context_blocked_detected")),
-    )
-    table.add_row(
-        "SEC source",
-        fmt(metrics.get("sec_source_gap_detected")),
-        fmt(metrics.get("sec_source_gap_completed")),
-        fmt(metrics.get("sec_source_gap_remaining")),
-        str(metrics.get("sec_source_gap_period") or "-"),
-    )
-    table.add_row(
-        "SEC tokens",
-        fmt(metrics.get("sec_token_gap_detected")),
-        fmt(metrics.get("sec_token_gap_completed")),
-        fmt(metrics.get("sec_token_gap_remaining")),
-        str(metrics.get("sec_token_gap_period") or "-"),
-    )
-    title = f"Gap Summary  mode={mode}  window={start} -> {end}  updated={updated}"
-    return Panel(table, title=title, box=box.ROUNDED, border_style="magenta", padding=(0, 1))
+    for mode, source, report in report_rows(reports):
+        if source == "sec":
+            table.add_row(
+                mode_label(mode),
+                source_label(source),
+                "Context",
+                fmt(report.get("context_detected")),
+                fmt(report.get("context_completed")),
+                fmt(int(report.get("context_remaining") or 0) + int(report.get("context_blocked") or 0)),
+                with_blocked_period(report.get("context_period"), report.get("context_blocked")),
+            )
+        table.add_row(
+            mode_label(mode),
+            source_label(source),
+            "Source",
+            fmt(report.get("source_detected")),
+            fmt(report.get("source_completed")),
+            fmt(report.get("source_remaining")),
+            str(report.get("source_period") or "-"),
+        )
+        table.add_row(
+            mode_label(mode),
+            source_label(source),
+            "Embedding",
+            fmt(report.get("embedding_detected")),
+            fmt(report.get("embedding_completed")),
+            fmt(report.get("embedding_remaining")),
+            str(report.get("embedding_period") or "-"),
+        )
+    if not any(report_rows(reports)):
+        table.add_row("-", "-", "-", "-", "-", "-", "-")
+    return Panel(table, title="Gap Summary by Mode", box=box.ROUNDED, border_style="magenta", padding=(0, 1))
 
 
 def runtime_panel(gateway: "TextEmbedGateway", metrics: dict[str, Any]) -> Panel:
@@ -299,6 +292,34 @@ def fmt(value: Any) -> str:
 
 def seconds(value: Any) -> str:
     return f"{float(value or 0.0):.3f}s"
+
+
+def source_reports(metrics: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
+    reports = metrics.get("source_reports")
+    if isinstance(reports, dict):
+        return reports
+    return {"live": {}, "historical": {}}
+
+
+def report_rows(reports: dict[str, dict[str, dict[str, Any]]]) -> list[tuple[str, str, dict[str, Any]]]:
+    rows: list[tuple[str, str, dict[str, Any]]] = []
+    for mode in ("live", "historical"):
+        mode_reports = reports.get(mode) or {}
+        for source in ("news", "sec"):
+            report = mode_reports.get(source)
+            if isinstance(report, dict):
+                rows.append((mode, source, report))
+            else:
+                rows.append((mode, source, {}))
+    return rows
+
+
+def mode_label(mode: str) -> str:
+    return "Live" if mode == "live" else "Historical" if mode == "historical" else str(mode or "-")
+
+
+def source_label(source: str) -> str:
+    return "News" if source == "news" else "SEC" if source == "sec" else str(source or "-")
 
 
 def style_status(value: str) -> str:
