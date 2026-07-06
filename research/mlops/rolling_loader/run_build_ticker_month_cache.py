@@ -4784,27 +4784,42 @@ class TickerMonthDashboard:
         longest_query_seconds = max((float(row.get("seconds") or 0.0) for row in active_queries.values()), default=0.0)
         terminal_size = shutil.get_terminal_size((140, 40))
         compact = terminal_size.columns < 145 or terminal_size.lines < 28
-        summary = Table.grid(expand=False)
-        pair_count = 2 if compact else 3
-        for idx in range(pair_count):
-            if idx:
-                summary.add_column(width=3)
-            summary.add_column(justify="right", style="dim", no_wrap=True)
-            summary.add_column(no_wrap=True)
-        rows = [
-            (("Phase", self.stats.phase), ("Elapsed", _format_duration(elapsed)), ("ETA", _format_duration(eta))),
-            (("Months", f"{self.stats.months_done}/{self.stats.months_total}"), ("Packages", f"{self.stats.packages_done}/{self.stats.packages_total}"), ("Failed", f"{self.stats.packages_failed}")),
-            (("Events", f"{self.stats.events_written:,}"), ("Origins", f"{self.stats.origins_written:,}"), ("Labels", f"{self.stats.labels_written:,}")),
-            (("Size", _format_bytes(self.stats.bytes_written)), ("RSS", f"{self.stats.current_rss_mib:.1f}/{self.stats.max_rss_mib:.1f} MiB"), ("ActiveQ", f"{len(active_queries)} / {_format_duration(longest_query_seconds)}")),
-            (("Logs", str(self.stats.log_path or "")), ("Progress", str(self.stats.progress_path or "")), ("Errors", str(self.stats.errors_path or ""))),
-        ]
-        for row in rows:
-            cells: list[str] = []
-            for idx, (key, value) in enumerate(row[:pair_count]):
-                if idx:
-                    cells.append("")
-                cells.extend([f"{key}:", f" {value}"])
-            summary.add_row(*cells)
+        summary = Table(expand=True, box=box.SIMPLE, show_edge=False, pad_edge=False)
+        if compact:
+            summary.add_column("Metric", style="bold cyan", width=12, no_wrap=True)
+            summary.add_column("Value", overflow="ellipsis")
+            compact_rows = [
+                ("Phase", self.stats.phase),
+                ("Elapsed", _format_duration(elapsed)),
+                ("ETA", _format_duration(eta)),
+                ("Months", f"{self.stats.months_done}/{self.stats.months_total}"),
+                ("Packages", f"{self.stats.packages_done}/{self.stats.packages_total}"),
+                ("Events", f"{self.stats.events_written:,}"),
+                ("Origins", f"{self.stats.origins_written:,}"),
+                ("Labels", f"{self.stats.labels_written:,}"),
+                ("Size", _format_bytes(self.stats.bytes_written)),
+                ("RSS", f"{self.stats.current_rss_mib:.1f}/{self.stats.max_rss_mib:.1f} MiB"),
+                ("ActiveQ", f"{len(active_queries)} / {_format_duration(longest_query_seconds)}"),
+                ("Log", str(self.stats.log_path or "")),
+            ]
+            for key, value in compact_rows:
+                summary.add_row(key, str(value))
+        else:
+            for group in ("Run", "Build", "Output"):
+                summary.add_column(f"{group} Metric", style="bold cyan", width=14, no_wrap=True)
+                summary.add_column(f"{group} Value", overflow="ellipsis")
+            rows = [
+                (("Phase", self.stats.phase), ("Months", f"{self.stats.months_done}/{self.stats.months_total}"), ("Events", f"{self.stats.events_written:,}")),
+                (("Elapsed", _format_duration(elapsed)), ("Packages", f"{self.stats.packages_done}/{self.stats.packages_total}"), ("Origins", f"{self.stats.origins_written:,}")),
+                (("ETA", _format_duration(eta)), ("Failed", f"{self.stats.packages_failed}"), ("Labels", f"{self.stats.labels_written:,}")),
+                (("ActiveQ", f"{len(active_queries)} / {_format_duration(longest_query_seconds)}"), ("RSS", f"{self.stats.current_rss_mib:.1f}/{self.stats.max_rss_mib:.1f} MiB"), ("Size", _format_bytes(self.stats.bytes_written))),
+                (("Log", str(self.stats.log_path or "")), ("Progress", str(self.stats.progress_path or "")), ("Errors", str(self.stats.errors_path or ""))),
+            ]
+            for row in rows:
+                cells: list[str] = []
+                for key, value in row:
+                    cells.extend([str(key), str(value)])
+                summary.add_row(*cells)
 
         lanes = Table(expand=True, box=box.SIMPLE)
         lanes.add_column("Lane", width=9, no_wrap=True)
@@ -4831,7 +4846,15 @@ class TickerMonthDashboard:
         workers.add_column("Write", ratio=1, no_wrap=True)
         workers.add_column("Seconds", width=8, no_wrap=True)
         workers.add_column("Message", overflow="ellipsis", ratio=2, no_wrap=True)
-        worker_rows = [self.stats.workers[idx] for idx in sorted(self.stats.workers)[:12]]
+        sorted_worker_rows = sorted(
+            self.stats.workers.values(),
+            key=lambda worker: (
+                0 if worker.status == "running" else 1,
+                0 if worker.stage else 1,
+                worker.worker_id,
+            ),
+        )
+        worker_rows = sorted_worker_rows[:12]
         while len(worker_rows) < 12:
             worker_rows.append(PackageState(worker_id=len(worker_rows)))
         for worker in worker_rows:

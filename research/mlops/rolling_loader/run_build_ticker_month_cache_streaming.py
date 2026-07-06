@@ -143,6 +143,95 @@ class ContextBuildResult:
     bytes_written: int = 0
 
 
+STREAMING_TASK_STATE = threading.local()
+
+
+def _parse_streaming_task_label(label: str) -> tuple[str, str]:
+    parts = str(label or "").split(":")
+    month = parts[0] if parts else ""
+    ticker = parts[1] if len(parts) > 1 else ""
+    return month, ticker
+
+
+def _acquire_worker_state(stats: BuildStats, *, lane: str, label: str) -> PackageState:
+    month, ticker = _parse_streaming_task_label(label)
+    idle = [worker for worker in stats.workers.values() if worker.status != "running"]
+    if idle:
+        worker = min(idle, key=lambda item: item.worker_id)
+    else:
+        worker_id = max(stats.workers.keys(), default=-1) + 1
+        worker = PackageState(worker_id=worker_id)
+        stats.workers[worker_id] = worker
+    worker.start_package(month=month, ticker=ticker)
+    worker.stage = lane
+    worker.message = label
+    if lane == "fetch":
+        worker.events_total = 1
+    elif lane == "process":
+        worker.cpu_total = 1
+        worker.write_total = 1
+    elif lane == "context":
+        worker.context_total = 5
+        worker.write_total = 5
+    elif lane == "finalize":
+        worker.cpu_total = 3
+        worker.labels_total = 1
+        worker.write_total = 2
+    else:
+        worker.cpu_total = 1
+    return worker
+
+
+def _task_update(
+    *,
+    stage: str | None = None,
+    message: str | None = None,
+    events_done: int | None = None,
+    events_total: int | None = None,
+    context_done: int | None = None,
+    context_total: int | None = None,
+    labels_done: int | None = None,
+    labels_total: int | None = None,
+    cpu_done: int | None = None,
+    cpu_total: int | None = None,
+    write_done: int | None = None,
+    write_total: int | None = None,
+) -> None:
+    worker = getattr(STREAMING_TASK_STATE, "worker", None)
+    if worker is None:
+        return
+    if stage is not None:
+        worker.stage = str(stage)
+    if message is not None:
+        worker.message = str(message)
+    for name, value in (
+        ("events_done", events_done),
+        ("events_total", events_total),
+        ("context_done", context_done),
+        ("context_total", context_total),
+        ("labels_done", labels_done),
+        ("labels_total", labels_total),
+        ("cpu_done", cpu_done),
+        ("cpu_total", cpu_total),
+        ("write_done", write_done),
+        ("write_total", write_total),
+    ):
+        if value is not None:
+            setattr(worker, name, int(value))
+    if worker.started_at:
+        worker.seconds = time.perf_counter() - worker.started_at
+
+
+def _finish_worker_state(worker: PackageState | None, *, status: str, message: str) -> None:
+    if worker is None:
+        return
+    worker.status = status
+    worker.stage = status
+    worker.message = message
+    if worker.started_at:
+        worker.seconds = time.perf_counter() - worker.started_at
+
+
 class StreamingLaneExecutors:
     def __init__(self, stats: BuildStats, workers: Mapping[str, int]) -> None:
         self.stats = stats
@@ -160,10 +249,14 @@ class StreamingLaneExecutors:
         def wrapped() -> Any:
             thread_id = threading.get_ident()
             started = time.perf_counter()
+            worker: PackageState | None = None
             with self.stats.lock:
                 state.queued = max(0, state.queued - 1)
                 state.running += 1
                 state.active[thread_id] = label
+                worker = _acquire_worker_state(self.stats, lane=lane, label=label)
+            STREAMING_TASK_STATE.worker = worker
+            STREAMING_TASK_STATE.lane = lane
             self.stats.profile_event(f"{lane}_start", label=label)
             try:
                 result = fn()
@@ -174,8 +267,12 @@ class StreamingLaneExecutors:
                     state.failed += 1
                     state.seconds += elapsed
                     state.active.pop(thread_id, None)
+                    _finish_worker_state(worker, status="failed", message=repr(exc))
                 self.stats.profile_event(f"{lane}_error", label=label, seconds=elapsed, error=repr(exc))
                 raise
+            finally:
+                STREAMING_TASK_STATE.worker = None
+                STREAMING_TASK_STATE.lane = ""
             elapsed = time.perf_counter() - started
             rows = _row_count(result)
             bytes_count = _byte_count(result)
@@ -186,6 +283,7 @@ class StreamingLaneExecutors:
                 state.bytes += bytes_count
                 state.seconds += elapsed
                 state.active.pop(thread_id, None)
+                _finish_worker_state(worker, status="done", message=f"{label} done in {elapsed:.1f}s")
             self.stats.profile_event(f"{lane}_done", label=label, seconds=elapsed, rows=rows, bytes=bytes_count)
             return result
 
@@ -339,7 +437,8 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
         dashboard = TickerMonthDashboard(enabled=not args.no_rich, live=not args.plain_status, refresh_seconds=args.refresh_seconds, stats=stats)
-        stats.workers = {idx: PackageState(worker_id=idx) for idx in range(max(12, int(args.fetch_workers) + int(args.process_workers)))}
+        worker_slots = max(12, int(args.fetch_workers) + int(args.process_workers) + int(args.context_workers) + int(args.finalize_workers))
+        stats.workers = {idx: PackageState(worker_id=idx) for idx in range(worker_slots)}
 
         def request_stop(_signum: int, _frame: Any) -> None:
             stop_event.set()
@@ -717,6 +816,12 @@ WHERE last_ordinal >= {int(fetch_ordinal_start)}
 
 def _query_events_chunk(*, args: argparse.Namespace, client_opts: Mapping[str, str], config: Any, chunk: FetchChunk) -> Any:
     table = _events_source_table(config, chunk.fetch_event_date_start, chunk.fetch_event_date_end)
+    _task_update(
+        stage="fetch",
+        events_done=0,
+        events_total=1,
+        message=f"{chunk.ticker} ord {chunk.fetch_ordinal_start:,}-{chunk.fetch_ordinal_end:,}",
+    )
     query = f"""
 WITH
     fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC') AS ts_utc,
@@ -765,7 +870,9 @@ PREWHERE ticker = {sql_string(chunk.ticker)}
 ORDER BY ticker, ordinal
 {_settings_sql(config)}
 """
-    return query_polars(client_opts, query)
+    frame = query_polars(client_opts, query)
+    _task_update(events_done=1, message=f"fetched {frame.height:,} event rows")
+    return frame
 
 
 def _process_event_chunk(
@@ -779,6 +886,14 @@ def _process_event_chunk(
 ) -> PartBuildResult:
     package_tmp = _package_tmp_dir(cache_root, args.split, chunk.month, chunk.ticker)
     package_tmp.mkdir(parents=True, exist_ok=True)
+    _task_update(
+        stage="window-index",
+        cpu_done=0,
+        cpu_total=1,
+        write_done=0,
+        write_total=4,
+        message=f"building windows for {events.height:,} rows",
+    )
     origins, windows, ranges, skipped_history, skipped_gap = _build_origins_and_windows(
         events,
         context_lags,
@@ -789,18 +904,25 @@ def _process_event_chunk(
         origin_ordinal_end=int(chunk.origin_ordinal_end),
         month_min_ordinal=int(chunk.origin_ordinal_start),
     )
+    _task_update(cpu_done=1, stage="write-parts", message=f"origins={origins.height:,} windows={windows.height:,}")
     files = {
         "events": f"events_part_{chunk.part_id:05d}.parquet",
         "origins": f"origins_part_{chunk.part_id:05d}.parquet",
         "event_window_index": f"event_window_index_part_{chunk.part_id:05d}.parquet",
         "ranges": f"ranges_part_{chunk.part_id:05d}.parquet",
     }
-    writes = [
-        _write_parquet(events, package_tmp / files["events"]),
-        _write_parquet(origins, package_tmp / files["origins"]),
-        _write_parquet(windows, package_tmp / files["event_window_index"]),
-        _write_parquet(ranges, package_tmp / files["ranges"]),
-    ]
+    writes = []
+    for idx, (frame, key) in enumerate(
+        (
+            (events, "events"),
+            (origins, "origins"),
+            (windows, "event_window_index"),
+            (ranges, "ranges"),
+        ),
+        start=1,
+    ):
+        writes.append(_write_parquet(frame, package_tmp / files[key]))
+        _task_update(write_done=idx, message=f"wrote {key} rows={frame.height:,}")
     return PartBuildResult(
         month=chunk.month,
         ticker=chunk.ticker,
@@ -823,22 +945,30 @@ def _process_event_chunk(
 def _build_ticker_context(*, args: argparse.Namespace, client_opts: Mapping[str, str], config: Any, cache_root: Path, window: Any, plan: TickerMonthPlan) -> ContextBuildResult:
     package_tmp = _package_tmp_dir(cache_root, args.split, plan.month, plan.ticker)
     package_tmp.mkdir(parents=True, exist_ok=True)
-    frames: dict[str, Any] = {
-        "ticker_news_embeddings": _query_ticker_news(args, client_opts, config, window, plan.ticker),
-        "sec_filing_embeddings": _query_sec_tokens(args, client_opts, config, window, plan.ticker),
-        "xbrl": _query_xbrl(args, client_opts, config, window, plan.ticker) if not args.skip_xbrl else _empty_frame(),
-        "daily_bars": _query_daily_bars(args, client_opts, config, window, symbols=(plan.ticker,)),
-        "corporate_actions": _query_corporate_actions(args, client_opts, config, window, plan.ticker) if not args.skip_corporate_actions else _empty_frame(),
-    }
+    query_steps: list[tuple[str, Callable[[], Any]]] = [
+        ("ticker_news_embeddings", lambda: _query_ticker_news(args, client_opts, config, window, plan.ticker)),
+        ("sec_filing_embeddings", lambda: _query_sec_tokens(args, client_opts, config, window, plan.ticker)),
+        ("xbrl", lambda: _query_xbrl(args, client_opts, config, window, plan.ticker) if not args.skip_xbrl else _empty_frame()),
+        ("daily_bars", lambda: _query_daily_bars(args, client_opts, config, window, symbols=(plan.ticker,))),
+        ("corporate_actions", lambda: _query_corporate_actions(args, client_opts, config, window, plan.ticker) if not args.skip_corporate_actions else _empty_frame()),
+    ]
+    _task_update(stage="context-query", context_done=0, context_total=len(query_steps), write_done=0, write_total=len(query_steps), message="querying ticker context")
+    frames: dict[str, Any] = {}
+    for idx, (key, query_fn) in enumerate(query_steps, start=1):
+        _task_update(stage=f"query-{key}", message=f"querying {key}")
+        frames[key] = query_fn()
+        _task_update(context_done=idx, message=f"{key} rows={frames[key].height:,}")
     files: dict[str, str] = {}
     counts: dict[str, int] = {}
     bytes_written = 0
-    for key, frame in frames.items():
+    _task_update(stage="context-write", message="writing context files")
+    for idx, (key, frame) in enumerate(frames.items(), start=1):
         filename = f"{key}.parquet"
         result = _write_parquet(frame, package_tmp / filename)
         files[key] = filename
         counts[key] = int(result["rows"])
         bytes_written += int(result["bytes"])
+        _task_update(write_done=idx, message=f"wrote {key} rows={frame.height:,}")
     return ContextBuildResult(month=plan.month, ticker=plan.ticker, files=files, counts=counts, bytes_written=bytes_written)
 
 
@@ -860,12 +990,28 @@ def _finalize_package(
     part_results = sorted(part_results, key=lambda item: item.part_id)
     if not part_results:
         raise RuntimeError(f"{plan.month} {plan.ticker}: no event part results to finalize.")
+    _task_update(
+        stage="finalize-read",
+        cpu_done=0,
+        cpu_total=4,
+        labels_done=0,
+        labels_total=len(part_results),
+        write_done=0,
+        write_total=max(1, len(part_results) + 3),
+        message=f"reading {len(part_results):,} event parts",
+    )
     event_frames = [pl.read_parquet(package_tmp / item.files["events"]) for item in part_results]
+    _task_update(stage="finalize-concat", cpu_done=1, message=f"concatenating {len(event_frames):,} event parts")
     events_all = pl.concat(event_frames, how="vertical").sort(["ticker", "ordinal"]).unique(subset=["ticker", "ordinal"], keep="first", maintain_order=True)
+    _task_update(stage="build-bars", cpu_done=2, message=f"building bars from {events_all.height:,} events")
     intraday_bars = _build_intraday_base_bars(events_all)
+    _task_update(stage="build-conditions", cpu_done=3, message=f"bars={intraday_bars.height:,}; building condition events")
     condition_events = _build_intraday_condition_events(events_all)
+    _task_update(stage="write-bars", cpu_done=4, message=f"condition rows={condition_events.height:,}")
     intraday_write = _write_parquet(intraday_bars, package_tmp / "intraday_base_bars.parquet")
+    _task_update(write_done=1, message=f"wrote intraday_base_bars rows={intraday_bars.height:,}")
     condition_write = _write_parquet(condition_events, package_tmp / "intraday_condition_events.parquet")
+    _task_update(write_done=2, message=f"wrote condition_events rows={condition_events.height:,}")
     corporate_actions_path = package_tmp / context_result.files.get("corporate_actions", "corporate_actions.parquet")
     corporate_actions = pl.read_parquet(corporate_actions_path) if corporate_actions_path.exists() else _empty_frame()
     label_days = parse_day_horizons(args.corporate_action_label_days)
@@ -874,11 +1020,13 @@ def _finalize_package(
     total_event_rows = 0
     total_skipped_history = 0
     total_skipped_gap = 0
-    for result in part_results:
+    for label_idx, result in enumerate(part_results, start=1):
+        _task_update(stage="daily-labels", message=f"part {label_idx:,}/{len(part_results):,} corporate labels")
         origins = pl.read_parquet(package_tmp / result.files["origins"])
         labels = _build_corporate_action_daily_labels(origins, corporate_actions, label_days)
         label_file = f"corporate_action_daily_labels_part_{result.part_id:05d}.parquet"
         label_write = _write_parquet(labels, package_tmp / label_file)
+        _task_update(labels_done=label_idx, write_done=2 + label_idx, message=f"wrote labels part {label_idx:,} rows={labels.height:,}")
         files = dict(result.files)
         files["corporate_action_daily_labels"] = label_file
         counts = dict(result.counts)
@@ -942,8 +1090,10 @@ def _finalize_package(
         "skipped_window_gap": int(total_skipped_gap),
         "byte_count": int(directory_size(package_tmp)),
     }
+    _task_update(stage="manifest", message="writing package manifest")
     write_json_atomic(package_tmp / "manifest.json", manifest)
     final_dir = ticker_package_dir(month_dir_for(cache_root, args.split, plan.month), plan.ticker)
+    _task_update(stage="replace", write_done=len(part_results) + 3, message="publishing package directory")
     replace_complete_dir(package_tmp, final_dir, resume=bool(args.resume))
     return int(directory_size(final_dir))
 
