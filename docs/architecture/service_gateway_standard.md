@@ -29,6 +29,7 @@ Text Embed, IBKR Supervisor, Market AI, and future data services in this repo.
 - [Coverage Policy](#coverage-policy)
 - [Preflight Policy](#preflight-policy)
 - [Logging Policy](#logging-policy)
+- [Error Handling Policy](#error-handling-policy)
 - [Terminal Policy](#terminal-policy)
   - [Status Vocabulary](#status-vocabulary)
   - [Required Panels](#required-panels)
@@ -189,6 +190,7 @@ Shared concepts:
 | `dashboard.py` | JSON-serializable dashboard state contract. |
 | `rich_renderer.py` | Shared Rich renderer for the standard dashboard panels. |
 | `health.py` | Consistent `/health`, `/config`, `/metrics`, and `/snapshot/status` shapes. |
+| `errors.py` | Standard error classes, error lifecycle state, retry classification, correlation ids, and terminal/log/API error summaries. |
 
 Domain logic should remain inside the owning service:
 
@@ -1046,7 +1048,127 @@ Required log classes:
 - skipped and duplicate reasons
 - gap decisions
 - reconciliation decisions
+- error lifecycle events: raised, classified, retry scheduled, retry attempted,
+  retry exhausted, resolved, ignored with reason
 - error type, message, and enough identifiers to debug
+
+Each log row should include `run_id`, `service`, `phase`, `task`, and
+`event_type`. Error rows must also include `error_id` so the terminal, API, and
+JSONL log can all refer to the same failure without printing raw provider
+payloads or secrets.
+
+## Error Handling Policy
+
+Every service must treat errors as stateful operational events, not only as
+terminal messages. A service should be able to answer:
+
+```text
+what failed
+where it failed
+whether it is retryable
+whether retry is active, exhausted, or resolved
+what item/table/range was affected
+whether live work can continue safely
+```
+
+The shared module should define one error record shape. Recommended fields:
+
+```text
+error_id
+service
+run_id
+phase
+task
+provider
+table
+item_id
+category
+severity
+retryable
+attempt
+max_attempts
+next_retry_at_utc
+status
+first_seen_utc
+last_seen_utc
+resolved_at_utc
+message
+safe_detail
+log_ref
+```
+
+`safe_detail` is a redacted debugging summary. It must not contain API keys,
+passwords, access tokens, full raw documents, full news bodies, full SEC
+payloads, or other raw market/news/provider data.
+
+Standard error categories:
+
+| Category | Meaning | Default behavior |
+| --- | --- | --- |
+| `dependency` | Required dependency unavailable during preflight or runtime. | Block startup when required; degrade only if the service has a documented fallback. |
+| `provider_rate_limit` | Provider returned a rate-limit response such as HTTP 429. | Retry with provider-specific pacing and backoff. |
+| `provider_transient` | Timeout, connection reset, HTTP 5xx, websocket reconnect, or temporary provider failure. | Retry with backoff; keep service degraded only while active. |
+| `provider_not_found_expected` | Provider says a specific optional item does not exist. Example: SEC companyfacts 404 for a CIK with no facts. | Record as resolved/known-missing after classification; do not keep dashboard red. |
+| `provider_not_found_required` | Required provider item is missing. Example: required accession file missing during SEC text backfill. | Mark affected item/range failed and escalate to audit or manual review. |
+| `schema_contract` | Provider, file, table, or model output does not match the expected schema. | Fail fast; do not blind-retry until code/schema is fixed. |
+| `database_write` | ClickHouse write failed. | Retry only for transient transport/server pressure; fail fast for syntax, missing column, bad type, or partition design errors. |
+| `data_integrity` | Parent/child mismatch, duplicate key, missing coverage, or inconsistent publication. | Block promotion/tradability when relevant; resolve through repair or manual review. |
+| `data_quality` | Data is structurally valid but suspicious, stale, weak identity, or low confidence. | Continue if safe; expose warning and issue rows. |
+| `per_item_parse` | One news article, SEC filing, PDF, URL, or provider row failed parsing. | Log item failure and continue batch unless threshold is exceeded. |
+| `artifact_io` | Disk read/write/copy/extract failure. | Retry when transient; fail the affected item/range if persistent. |
+| `resource_pressure` | Queue full, memory pressure, disk pressure, GPU unavailable, or worker starvation. | Slow down, spill, or block according to service policy; do not silently lose canonical work. |
+| `operator_action_required` | The service cannot safely repair the issue itself. | Generate a clear action, script, or issue row. |
+
+Standard severity:
+
+| Severity | Meaning |
+| --- | --- |
+| `critical` | Service cannot safely continue required work, or continuing could corrupt data or allow unsafe trading. Terminal stays red until resolved or shutdown. |
+| `error` | Current task/item/range failed. Service may continue other safe work, but the failure remains active until retried, resolved, or explicitly deferred. |
+| `warning` | Degraded or suspicious behavior. Live work can continue with clear visibility. |
+| `info` | Expected condition or completed recovery. |
+
+Standard lifecycle:
+
+```text
+raised
+-> classified
+-> retry_scheduled | retry_attempted | retry_exhausted
+-> resolved | deferred | manual_action_required
+```
+
+Rules:
+
+- A retryable error must show attempt count, max attempts, next retry time, and
+  affected task/table/item.
+- A resolved error must stop coloring the service as failed. It remains visible
+  under recent/resolved history for the run and in the JSONL log.
+- A non-retryable error must say why it is not retryable. For example,
+  `schema_contract` and non-transient `database_write` errors should not loop.
+- Per-item errors must include the item identifier and should not stop the
+  whole service unless the configured threshold is exceeded.
+- Provider 404 is not one category. The service must classify whether it is an
+  expected missing optional item or a required missing item.
+- Error aggregation must preserve both current state and history. For example,
+  SEC should show whether a filing download failure is still retrying, resolved
+  after retry, known-missing, or requires manual repair.
+
+The terminal and `/snapshot/status` must expose the same error state:
+
+```text
+active_critical_count
+active_error_count
+active_warning_count
+retrying_count
+resolved_this_run_count
+retry_exhausted_count
+manual_action_count
+latest_active_errors
+latest_resolved_errors
+```
+
+Daily summary should include errors raised, retries attempted, errors resolved,
+retry-exhausted errors, and manual-action items for the service day.
 
 ## Terminal Policy
 
@@ -1443,14 +1565,35 @@ Separate active problems from history:
 
 ```text
 Active Critical
+Active Retrying
 Active Warning
+Retry Exhausted
 Resolved This Run
 Recent Error History
 Manual Action Required
 ```
 
-Each error row must include enough identifiers to find the JSONL log entry.
-Long errors must wrap. Raw payloads and secrets must never be rendered.
+Each error row should include:
+
+```text
+error_id
+category
+severity
+retryable
+status
+attempt / max_attempts
+next_retry_at
+task/table/item
+first_seen
+last_seen
+resolved_at when applicable
+short safe message
+```
+
+Rows must make it obvious whether the error is still active, currently
+retrying, exhausted, ignored as expected, or resolved. Long errors must wrap.
+Raw payloads and secrets must never be rendered. The row must include enough
+identifiers to find the full JSONL log entry.
 
 ### Rendering Policy
 
@@ -1506,6 +1649,7 @@ queues
 coverage
 sources_sinks
 recent_items
+error_state
 warnings_errors
 service_specific
 ```
@@ -1545,6 +1689,10 @@ Domain-specific endpoints are allowed after these standard endpoints.
 The terminal should render from the same state exposed by `/snapshot/status`.
 If the terminal shows `blocked`, `catching_up`, `degraded`, or a pending manual
 action, the API should expose the same state.
+
+`/snapshot/status` must include the standard `error_state` object from the
+Error Handling Policy. Clients should not scrape terminal text to learn whether
+an error is active, retrying, exhausted, or resolved.
 
 ## Audit Policy
 
@@ -1631,6 +1779,16 @@ AuditConfig
   post_write_audit
   full_audit_frequency
   fail_on_critical
+
+ErrorPolicyConfig
+  retry_enabled
+  max_attempts
+  base_backoff_seconds
+  max_backoff_seconds
+  jitter_seconds
+  per_item_error_limit
+  retryable_provider_statuses
+  fail_fast_categories
 
 ProviderConfig
   name
