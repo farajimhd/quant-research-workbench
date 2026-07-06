@@ -290,6 +290,24 @@ fundamentals, issuer identity, or final trading signals.
   app to read old history from `market_sip_compact.events_<year>` and use
   `q_live.events` only for the current/recent window that flatfiles have not
   safely covered yet.
+- QMD may support one explicit destructive mode named `init-reset`. This mode
+  is QMD-only and must not be generalized to News, SEC, Reference, Text Embed,
+  or IBKR tables. `init-reset` drops and recreates QMD-owned q_live live/recent
+  tables, including event, ordinal, bar, coverage, symbol-universe, gap-fill,
+  and optional sparse abnormal-state tables. It is intended for first clean
+  startup, compact-encoding reset, or ordinal reset when rolling q_live event
+  retention has made ordinal counters unnecessarily large.
+- `init-reset` is not blocked by market hours. If the operator explicitly
+  starts QMD in this mode, it should reset the QMD-owned tables whether the
+  market is open or closed. The reset command still must be exclusive for QMD
+  writers: another QMD process must not be writing the same tables while they
+  are dropped and recreated.
+- After `init-reset`, q_live live coverage is intentionally empty. The normal
+  recent gap-fill path must then rebuild the current market day plus
+  `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior market sessions from Massive REST.
+  During market hours, the current-day recovery may run as a separate gap-fill
+  process while live collection resumes. The reset mode itself should not add
+  separate gap-fill knobs.
 
 **Terminal/API:**
 
