@@ -38,7 +38,7 @@ def service_collection_window(service_prefix: str) -> CollectionWindow:
 
 
 def active_collection_window(now_utc: datetime | None = None, *, service_prefix: str = "") -> bool:
-    from services.market_hours import get_market_hours_client
+    from services.gateway_core.market_calendar import get_market_hours_client
 
     return get_market_hours_client(service_prefix or "SERVICE").snapshot(now_utc or datetime.now(UTC)).active_collection_window
 

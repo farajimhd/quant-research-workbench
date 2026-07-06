@@ -48,7 +48,7 @@ from services.news_gateway.preflight import PreflightError, PreflightReport, run
 from services.news_gateway.run_logger import AsyncRunLogger
 from services.news_gateway.state import NewsMemoryState
 from services.gateway_policy import backfill_auto_run_allowed, maintenance_window_message
-from services.market_hours import MarketHoursSnapshot, MassiveMarketHoursClient
+from services.gateway_core.market_calendar import MarketHoursSnapshot, MassiveMarketHoursClient
 
 
 EASTERN = ZoneInfo("America/New_York")

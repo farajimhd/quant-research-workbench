@@ -13,7 +13,7 @@ from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
 from pipelines.sec.edgar.sec_pipeline.rate_limit import SecRateLimiter
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.sec_gateway.config import SecGatewayConfig
-from services.market_hours import MassiveMarketHoursClient
+from services.gateway_core.market_calendar import MassiveMarketHoursClient
 
 
 @dataclass(frozen=True, slots=True)

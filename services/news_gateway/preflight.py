@@ -12,7 +12,7 @@ from pipelines.news.benzinga.core.clickhouse_writer import NewsWriteConfig, vali
 from pipelines.news.benzinga.news_pipeline.provider import BenzingaProviderClient, BenzingaProviderConfig
 from research.mlops.clickhouse import ClickHouseHttpClient
 from services.news_gateway.config import NewsGatewayConfig
-from services.market_hours import MassiveMarketHoursClient
+from services.gateway_core.market_calendar import MassiveMarketHoursClient
 
 
 @dataclass(frozen=True, slots=True)

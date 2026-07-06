@@ -35,7 +35,7 @@ from services.news_gateway.run_logger import AsyncRunLogger
 from services.sec_gateway.config import SecGatewayConfig, WORKSTATION_SHARE_CODE_ROOT_WIN
 from services.sec_gateway.preflight import PreflightError, PreflightReport, run_preflight
 from services.gateway_policy import backfill_auto_run_allowed, maintenance_window_message
-from services.market_hours import MarketHoursSnapshot, MassiveMarketHoursClient
+from services.gateway_core.market_calendar import MarketHoursSnapshot, MassiveMarketHoursClient
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

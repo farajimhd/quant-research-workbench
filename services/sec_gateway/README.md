@@ -233,15 +233,10 @@ finishes without failed stages.
 
 ## After-Hours Maintenance
 
-SEC participates in the shared after-hours maintenance runner:
-
-```powershell
-python -m services.maintenance.runner --services sec --execute
-```
-
-The runner audits `q_live.sec_coverage_manifest_v1` with the same SEC coverage
-planner used by the gateway. If filing, text, or XBRL coverage is stale, it
-generates the unified historical fill command:
+The SEC Gateway owns its own coverage checks, current feed repair, and
+historical gap-fill planning. It audits `q_live.sec_coverage_manifest_v1` with
+the same SEC coverage planner used by live startup. If filing, text, or XBRL
+coverage is stale, it generates the unified historical fill command:
 
 ```text
 pipelines/sec/edgar/sec_historical_gap_fill.py
@@ -250,9 +245,7 @@ pipelines/sec/edgar/sec_historical_gap_fill.py
 That command is the canonical historical repair path. It downloads or reuses SEC
 daily archives, extracts filing parents and normalized filing text, refreshes
 companyfacts/XBRL, repairs XBRL relationships, runs the integrity audit, and
-writes coverage. The maintenance runner records every SEC action in
-`q_live.service_maintenance_task_v1` so after-hours checks are auditable across
-gateway restarts.
+writes coverage.
 
 When the coverage manifest is empty, the gateway bootstraps one compact
 `sec_historical_baseline` row from the existing source-of-truth SEC tables. That

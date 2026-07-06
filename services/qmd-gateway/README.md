@@ -165,20 +165,13 @@ of the historical `market_sip_compact.events` training table.
 
 ## After-Hours Maintenance
 
-QMD participates in the shared after-hours maintenance runner:
-
-```powershell
-python -m services.maintenance.runner --services qmd --execute
-```
-
 The QMD maintenance source of truth for historical event availability is
 `market_sip_compact.events` plus `market_sip_compact.events_ordinal_continuity`.
-The runner intentionally does not copy historical rows directly into `q_live`.
-Recent `q_live` event gaps must be repaired through the QMD replay/fanout path
-so `events`, `live_event_ordinal_continuity`, and the three bar
-layouts remain consistent. The runner records QMD source coverage, live
-coverage, row counts, and the `/snapshot/maintenance` API state in
-`q_live.service_maintenance_task_v1`.
+QMD owns its own coverage checks, recent REST repair, historical flatfile
+planning, and retention cleanup. It intentionally does not copy historical rows
+directly into `q_live`. Recent `q_live` event gaps must be repaired through the
+QMD replay/fanout path so `events`, `live_event_ordinal_continuity`, and the
+bar layouts remain consistent.
 
 During active streaming hours, recent q_live REST repair starts from symbols
 kept in the durable gap-fill symbol universe. If the universe is empty, QMD

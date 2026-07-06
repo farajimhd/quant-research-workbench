@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from services.market_hours import MassiveMarketHoursClient  # noqa: E402
+from services.gateway_core.market_calendar import MassiveMarketHoursClient  # noqa: E402
 
 try:
     from rich import box

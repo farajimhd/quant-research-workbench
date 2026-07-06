@@ -32,7 +32,7 @@ from pipelines.market_sip.events.clickhouse_build_sec_context import (
     create_text_context_table_sql,
 )
 from research.mlops.clickhouse import ClickHouseHttpClient, parse_size_bytes, quote_ident, sql_string
-from services.market_hours import MarketHoursSnapshot, MassiveMarketHoursClient
+from services.gateway_core.market_calendar import MarketHoursSnapshot, MassiveMarketHoursClient
 from services.news_gateway.run_logger import AsyncRunLogger
 from services.text_embed_gateway.config import TextEmbedGatewayConfig
 
