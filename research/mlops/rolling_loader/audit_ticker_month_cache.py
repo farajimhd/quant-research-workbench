@@ -6,7 +6,7 @@ import json
 import random
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
@@ -213,7 +213,7 @@ def run_audit(config: TickerMonthAuditConfig) -> AuditResult:
         "ok": status == "passed",
         "generated_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
         "summary": totals,
-        "issues": [issue.__dict__ for issue in issues],
+        "issues": [asdict(issue) for issue in issues],
     }
     report_path = root / f"{config.split}_ticker_month_audit_report.json"
     write_json_atomic(report_path, report)
@@ -911,7 +911,23 @@ def _discover_package_dirs(root: Path, split: str, manifest: Mapping[str, Any], 
     if not split_dir.exists():
         issues.append(AuditIssue("error", "split_missing", f"Missing split directory: {split_dir}"))
         return []
-    return sorted(path for path in split_dir.glob("month=*/ticker_hash=*/ticker=*") if path.is_dir())
+    package_dirs: list[Path] = []
+    temp_dirs: list[str] = []
+    for path in sorted(item for item in split_dir.glob("month=*/ticker_hash=*/ticker=*") if item.is_dir()):
+        if path.name.endswith(".tmp"):
+            temp_dirs.append(str(path))
+            continue
+        package_dirs.append(path)
+    if temp_dirs:
+        issues.append(
+            AuditIssue(
+                "warning",
+                "incomplete_temp_packages",
+                f"Ignored {len(temp_dirs):,} incomplete temp package director{'y' if len(temp_dirs) == 1 else 'ies'}.",
+                {"examples": temp_dirs[:8], "count": len(temp_dirs)},
+            )
+        )
+    return package_dirs
 
 
 def _check_root_manifest(manifest: Mapping[str, Any], issues: list[AuditIssue]) -> None:
@@ -921,8 +937,11 @@ def _check_root_manifest(manifest: Mapping[str, Any], issues: list[AuditIssue]) 
         issues.append(AuditIssue("error", "manifest_format", f"Unexpected manifest format: {manifest.get('format')!r}"))
     if int(manifest.get("version") or 0) != TICKER_MONTH_CACHE_VERSION:
         issues.append(AuditIssue("error", "manifest_version", f"Unexpected manifest version: {manifest.get('version')!r}"))
-    if manifest.get("status") not in {"running", "complete", "audit_failed", "interrupted"}:
-        issues.append(AuditIssue("warning", "manifest_status", f"Unexpected manifest status: {manifest.get('status')!r}"))
+    status = manifest.get("status")
+    if status not in {"running", "complete", "audit_failed", "interrupted"}:
+        issues.append(AuditIssue("warning", "manifest_status", f"Unexpected manifest status: {status!r}"))
+    elif status != "complete":
+        issues.append(AuditIssue("warning", "manifest_incomplete", f"Root manifest status is {status!r}; cache may be partial."))
 
 
 def _read_manifest(path: Path, issues: list[AuditIssue]) -> dict[str, Any]:
