@@ -363,6 +363,13 @@ def run_profiled(client: ClickHouseHttpClient, label: str, sql: str, settings: s
     exception = ""
     try:
         client.execute(full_sql, query_id=query_id)
+    except KeyboardInterrupt:
+        print(f"INTERRUPT received; cancelling ClickHouse query_id={query_id}", flush=True)
+        try:
+            client.execute(f"KILL QUERY WHERE query_id = {sql_string(query_id)} ASYNC")
+        except Exception as kill_exc:  # noqa: BLE001
+            print(f"WARN failed to cancel query_id={query_id}: {kill_exc!r}", flush=True)
+        raise
     except Exception as exc:  # noqa: BLE001
         exception = repr(exc)
         print(f"QUERY FAILED {label}: {exception}", flush=True)

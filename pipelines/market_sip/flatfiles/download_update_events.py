@@ -1722,6 +1722,30 @@ FROM
     return int(float(row[0] or 0)) if row else 0
 
 
+def query_raw_day_timestamp_bounds(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles) -> tuple[int, int] | None:
+    row = first_tsv_row(
+        client,
+        f"""
+SELECT
+    min(sip_timestamp_us),
+    max(sip_timestamp_us),
+    count()
+FROM
+(
+{raw_event_union_sql(args, day)}
+)
+{query_settings(args)}
+""",
+    )
+    if not row or row[0] in {"", "\\N"} or row[1] in {"", "\\N"} or int(float(row[2] or 0)) <= 0:
+        return None
+    first_us = int(float(row[0] or 0))
+    last_us = int(float(row[1] or 0))
+    if first_us <= 0 or last_us <= 0 or first_us > last_us:
+        return None
+    return first_us, last_us
+
+
 def query_ticker_day_index_mismatches(client: ClickHouseHttpClient, args: argparse.Namespace, days: list[DayFiles]) -> int:
     dates = ", ".join(sql_string(day.source_date) for day in days)
     row = first_tsv_row(
@@ -2375,6 +2399,18 @@ def validate_day_continuity_after_insert(
     append_jsonl(report_path, audit)
 
 
+def later_built_source_day_count(client: ClickHouseHttpClient, args: argparse.Namespace, build_step: int) -> int:
+    row = first_tsv_row(
+        client,
+        f"""
+SELECT countDistinct(source_date)
+FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+WHERE build_step > toUInt32({int(build_step)})
+""",
+    )
+    return int(float(row[0] or 0)) if row else 0
+
+
 def audit_raw_day_count(
     client: ClickHouseHttpClient,
     args: argparse.Namespace,
@@ -2464,6 +2500,13 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
     if status in {"failed", "started", "interrupted"} or args.force_day_rebuild:
         if not (args.force_day_delete or args.force_day_rebuild):
             raise RuntimeError(f"day={day.source_date} status={status}; rerun with --force-day-delete to avoid duplicate rows")
+        later_days = later_built_source_day_count(client, args, job.build_step)
+        if later_days:
+            raise RuntimeError(
+                f"day={day.source_date} cannot be rebuilt because {later_days:,} later source days already have continuity rows. "
+                "Rebuilding an earlier source day would invalidate later ticker ordinals; rebuild from that day forward or reset "
+                "the affected event/continuity/index tables."
+            )
         if reporter is not None:
             reporter.notice(
                 f"Deleting existing event rows for source day {day.source_date} from continuity timestamp bounds "
@@ -2472,10 +2515,17 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
             )
         bounds = day_continuity_timestamp_bounds(client, args, day, job.build_step)
         if bounds is None:
-            raise RuntimeError(
-                f"day={day.source_date} status={status} has no usable continuity timestamp bounds; "
-                "refusing unsafe event_date-based delete for flatfile source-day retry."
-            )
+            bounds = query_raw_day_timestamp_bounds(client, args, day)
+            if bounds is None:
+                raise RuntimeError(
+                    f"day={day.source_date} status={status} has no usable continuity or raw flatfile timestamp bounds; "
+                    "refusing unsafe event_date-based delete for flatfile source-day retry."
+                )
+            if reporter is not None:
+                reporter.notice(
+                    f"Continuity bounds were missing for {day.source_date}; using raw flatfile timestamp bounds for cleanup.",
+                    style="bold yellow",
+                )
         first_us, last_us = bounds
         _run_profiled_with_reporter(
             client,
