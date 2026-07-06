@@ -19,7 +19,7 @@ Text Embed, IBKR Supervisor, Market AI, and future data services in this repo.
   - [IBKR Gateway Supervisor](#ibkr-gateway-supervisor)
   - [News Intelligence Service](#news-intelligence-service)
   - [Market AI Service](#market-ai-service)
-  - [Maintenance Runner](#maintenance-runner)
+  - [No Standalone Maintenance Runner](#no-standalone-maintenance-runner)
   - [Cross-Service Dependency Rules](#cross-service-dependency-rules)
 - [Storage Rule](#storage-rule)
 - [Market Session Source Of Truth](#market-session-source-of-truth)
@@ -54,10 +54,10 @@ its own output tables / coverage
 work still needed
 ```
 
-Event-like logs and maintenance task rows are useful for observability and
-operator workflows, but they are not the source of truth for downstream work.
-The source of truth is durable upstream data plus durable coverage and the
-consumer's own durable output state.
+Event-like logs, service task ledgers, and maintenance reports are useful for
+observability and operator workflows, but they are not the source of truth for
+downstream work. The source of truth is durable upstream data plus durable
+coverage and the consumer's own durable output state.
 
 Hot paths must stay narrow:
 
@@ -221,8 +221,7 @@ their implementation spreads into separate conventions.
 | Text Embed Gateway | Python GPU/model reconciliation gateway | normalized news, SEC filing text, SEC market bridge, historical-compatible context tables | token tables, embedding tables, embedding coverage | market-aware polling and historical reconciliation | Keep news and SEC text tokenized and embedded with historical-compatible contracts. |
 | IBKR Gateway Supervisor | Python broker-session supervisor | local IBKR Client Portal Gateway process and CPAPI auth endpoints | JSONL events, optional compact ClickHouse supervisor event table, Rich telemetry | fixed keepalive/status cadence | Keep one IBKR Client Portal session authenticated and observable. |
 | News Intelligence Service | Python model-serving service | normalized article request payloads, local model artifacts, optional local LLM endpoint | synchronous classification response | request-driven | Serve news labels; it must not poll providers or write canonical news rows. |
-| Market AI Service | Python ML serving/replay boundary | QMD compact event stream or replay iterator | prediction stream/API, in-memory model state, future prediction tables when defined | event-driven | Convert compact events into model chunks, run encoder/temporal inference, and publish predictions. |
-| Maintenance Runner | Python offline coordinator | service coverage/source tables | maintenance run/task tables, reports, generated commands | after-hours or manual | Coordinate service-specific gap checks without owning domain data. |
+| Market AI Service | TBD model-dependent service boundary | QMD compact event stream or replay iterator, Text Embed Gateway outputs, final trained model artifacts | model-specific multimodal cache, prediction stream/API, future prediction tables when defined | TBD after model selection | Not implemented at this stage. Once the final ML model is chosen, manage the multimodal data cache required by that model and serve predictions. |
 
 ### QMD Gateway
 
@@ -737,80 +736,81 @@ and returns labels with model/taxonomy/prompt versions.
 
 ### Market AI Service
 
-**Current code path:** `services/market-ai`.
+**Current code path:** not implemented at this stage.
 
-**Role:** Market AI is the ML serving/replay boundary for compact market-event
-models. It consumes QMD compact events, builds fixed event chunks, batches
-encoder inference, keeps per-ticker embedding state, batches temporal inference,
-and publishes predictions when a production publishing contract is defined.
+**Status:** TBD. This service must not be implemented until the final trained
+ML model and its runtime contract are chosen.
+
+**Role:** Market AI is the future model-dependent inference boundary. Its
+shape depends on the selected model architecture, input windows, modality
+requirements, cache layout, and prediction contract. The current standard only
+reserves the boundary so other services do not accidentally take ownership of
+model-specific inference work.
 
 **Sources:**
 
 - QMD compact-event websocket.
 - Synthetic or historical replay iterator for validation/training reuse.
-- Production model checkpoints once configured.
+- Text Embed Gateway outputs such as news embeddings, SEC text embeddings, and
+  future text/context representations selected by the trained model.
+- Production model checkpoints once a model is selected and promoted.
 - Massive market status and holiday endpoints for session labeling, live versus
   closed scheduling, warmup policy, and maintenance/replay timing.
 
 **Sinks and durable contracts:**
 
-- In-memory event rings, chunk batches, embedding rings, and prediction output.
-- Future prediction tables/streams must be defined before production write
-  mode is enabled.
+- Model-specific multimodal cache. The cache may include event windows, bar
+  windows, text embeddings, reference features, SEC/news context, and any other
+  trained-model input state. The exact contents are TBD and must be driven by
+  the final model contract.
+- Prediction stream/API.
+- Future prediction tables, if the production design requires durable
+  prediction storage. These tables must be defined before production write mode
+  is enabled.
 
 **Runtime policy:**
 
-- Work is emitted only for tickers that update; the service must not rebuild a
-  whole-market batch at every timestamp.
-- Live serving and offline training should use the same batching engine so
-  representation does not drift.
-- Invalid/lossy windows are controlled by model config; strict lossless windows
-  are the default.
+- Do not build a generic Market AI daemon before the model is finalized.
+- Live serving and offline replay should use the same data-cache and batching
+  engine once designed, so training and production representations do not drift.
+- Any future implementation must state exactly which upstream versions it uses:
+  QMD event encoding, bar schema, text embedding model/version, reference
+  feature queries, and prediction target version.
 
 **Terminal/API:**
 
-- Show source status, events received, chunks created, encoder/temporal batches,
-  predictions, queue depths, event/chunk/sample rates, model timing, and recent
-  messages/errors.
+- TBD with the model. The eventual terminal should still use the shared service
+  dashboard policy and show model load state, source freshness, cache health,
+  inference queue health, batch timing, prediction counts, and error state.
 
 **Out of scope:**
 
 - QMD market-data persistence.
 - Reference identity and tradability.
 - Broker execution.
+- Text embedding extraction. Market AI consumes Text Embed outputs; it does not
+  tokenize or embed source text itself.
 
-### Maintenance Runner
+### No Standalone Maintenance Runner
 
-**Current code path:** `services/maintenance`.
+Maintenance is not a separate service in the current architecture. Each owning
+service is responsible for its own coverage checks, gap detection, gap fill,
+audit, after-hours work, and generated workstation scripts.
 
-**Role:** The maintenance runner coordinates after-hours checks. It does not
-replace the gateways and does not own domain data. It inspects durable source
-and coverage tables, records maintenance task rows, and generates or runs the
-same service-specific gap-fill commands the gateways use.
+Rules:
 
-**Sources:**
+- QMD owns QMD event/bar coverage and repair.
+- News owns Benzinga coverage, normalization, enrichment, and gap fill.
+- SEC owns filing/text/XBRL coverage, live feed polling, and historical repair.
+- Reference owns reference-source sync, identity integrity, publication
+  coverage, issue resolution, and source-specific historical fills.
+- Text Embed owns source-minus-token/embedding reconciliation and embedding
+  coverage.
 
-- QMD coverage and `market_sip_compact.events_<year>` source tables.
-- News coverage manifest and Benzinga provider.
-- SEC coverage manifest and SEC historical sources.
-- Reference publication coverage and publication source tables.
-- Massive market status and holiday endpoints for the shared after-hours
-  maintenance decision.
-
-**Sinks:**
-
-- `q_live.service_maintenance_run_v1`.
-- `q_live.service_maintenance_task_v1`.
-- `<market-data>/prepared/service_maintenance/<run_id>/` reports.
-
-**Policy:**
-
-- Do not stop or restart live services.
-- Use the shared active collection window and Massive market status/holiday
-  provider.
-- Auto-run is allowed only when the operator enables it and policy allows.
-- Generated commands must use the same service-specific code path as live
-  gateway gap fills.
+This avoids a second scheduler that can drift from the service that actually
+knows the domain contract. A future orchestrator may observe service health or
+start service-owned commands, but it must not become the source of truth for
+coverage or gap state.
 
 ### Cross-Service Dependency Rules
 
@@ -819,14 +819,14 @@ requirements:
 
 | Producer | Consumer | Consumer action |
 | --- | --- | --- |
-| QMD compact events and 1d bars | Market AI, trading app, maintenance | Consume snapshots/streams for inference and trading context; use q_live coverage for recent repair checks and `market_sip_compact.events_<year>` for historical event history. |
+| QMD compact events and 1d bars | Market AI, trading app, QMD-owned maintenance | Consume snapshots/streams for inference and trading context; QMD uses q_live coverage for recent repair checks and `market_sip_compact.events_<year>` for historical event history. |
 | News normalized rows | Text Embed, trading app, News Intelligence caller | Reconcile missing tokens/embeddings or classify rows without requiring news gateway to emit a durable event. |
 | SEC filing/text/XBRL rows | Reference, Text Embed, trading app | Rebuild SEC-market bridge, build SEC context, tokenize/embed text, and expose filing/XBRL context. |
 | Reference identity/tradable publications | Trading app, scanner setup, QMD-adjacent consumers | Treat `is_tradable=0` as a hard reference block; live market-state blocks are separate runtime context. |
 | Reference SEC bridge | Text Embed | Embed only SEC text rows with valid market bridge; retry blocked rows after bridge updates. |
 | IBKR supervisor auth/session | live trading backend, Reference conid/borrow sync | Use CPAPI only after supervisor/preflight reports the broker session is reachable. |
 | Text Embed embeddings | Market AI / downstream inference | Use embeddings by source/version; missing embeddings are discovered by source-minus-output reconciliation. |
-| Maintenance task rows | operators and service dashboards | Observability only; services must still reconcile durable source/output state. |
+| Service task ledgers and maintenance reports | operators and service dashboards | Observability only; services must still reconcile durable source/output state. |
 
 The default implementation pattern is:
 
@@ -834,7 +834,7 @@ The default implementation pattern is:
 producer writes canonical table and coverage
 consumer periodically reconciles source table minus its output table
 consumer writes its own coverage/output
-maintenance audits both sides after hours
+owning service audits both sides during its maintenance window
 ```
 
 Use explicit service-to-service events only for low-latency live UI/model
@@ -871,9 +871,9 @@ Massive market holidays/upcoming endpoint
 The local New York extended-hours clock is only a fallback when Massive status
 is temporarily unavailable. It must not become a separate source of truth for
 one service while other services use Massive. The goal is that QMD, News, SEC,
-Reference, Text Embed, IBKR Supervisor, Market AI, News Intelligence, and the
-maintenance runner all agree on whether the system is in active collection,
-closed-market, holiday, early-close, or maintenance mode.
+Reference, Text Embed, IBKR Supervisor, Market AI, and News Intelligence all
+agree on whether the system is in active collection, closed-market, holiday,
+early-close, or maintenance mode.
 
 Service rules:
 
