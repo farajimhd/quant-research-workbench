@@ -24,6 +24,7 @@ Text Embed, IBKR Supervisor, Market AI, and future data services in this repo.
 - [Storage Rule](#storage-rule)
 - [Market Session Source Of Truth](#market-session-source-of-truth)
 - [Active Collection Window](#active-collection-window)
+- [Reconciliation And Gap Fill Policy](#reconciliation-and-gap-fill-policy)
 - [Backfill Policy](#backfill-policy)
 - [Queue Policy](#queue-policy)
 - [Coverage Policy](#coverage-policy)
@@ -93,9 +94,9 @@ All services should use the same names for the same operational concepts.
 | `source sync` | Low-frequency reconciliation with external reference-like sources. |
 | `initial fill` | First population of an empty or untrusted dataset. |
 | `backfill` | Broad historical population over a large range. |
-| `gap fill` | Repair of missing intervals inside already-known coverage. |
+| `gap fill` | Execution step that repairs missing rows or intervals discovered by reconciliation. |
 | `coverage` | Durable statement that a source interval was fetched, written, or verified empty. |
-| `reconciliation` | Source-minus-output query that discovers missing work. |
+| `reconciliation` | Read/planning step that compares upstream source/coverage with this service's output/coverage and produces a work plan. |
 | `preflight` | Required dependency checks before live work, provider fetches, database writes, or historical work. |
 | `audit` | Post-write integrity validation over persisted data. |
 | `maintenance` | Deferred heavier repair/sync/audit work. |
@@ -110,9 +111,10 @@ These terms must stay distinct:
 initial fill != backfill != gap fill != reconciliation != coverage != audit
 ```
 
-Initial fill and backfill write data. Gap fill repairs missing intervals.
-Reconciliation discovers missing work. Coverage records completed/empty
-intervals. Audit checks persisted data correctness.
+Initial fill and backfill write data over broad ranges. Reconciliation
+discovers missing work and decides whether it is safe to run now. Gap fill
+executes the repair plan for allowed rows/intervals. Coverage records
+completed/empty intervals. Audit checks persisted data correctness.
 
 ## Required Lifecycle
 
@@ -912,6 +914,81 @@ SEC_GATEWAY_COLLECTION_END_ET=20:00
 ```
 
 QMD uses the same rule through its Rust session phase logic.
+
+## Reconciliation And Gap Fill Policy
+
+Reconciliation and gap fill are related but not the same operation.
+
+```text
+reconciliation = discover and plan missing work
+gap fill       = execute the allowed repair work
+```
+
+Reconciliation is mostly read-only. It compares upstream sources, upstream
+coverage, service-owned output tables, and service-owned coverage. Its output
+is a work plan:
+
+```text
+missing rows
+missing intervals
+verified-empty intervals that need coverage
+blocked items
+deferred historical work
+manual-action items
+```
+
+Gap fill consumes that work plan and performs provider calls, file reads,
+normalization, database writes, coverage updates, and post-write audit for the
+allowed subset.
+
+This separation is useful because the service can safely ask "what is missing?"
+more often than it can safely run heavy repair. For example:
+
+```text
+text_embed reconciliation:
+  find news/SEC text rows without tokens or embeddings
+
+text_embed gap fill:
+  tokenize/embed only the rows allowed by current policy
+```
+
+During the active collection window, reconciliation and gap fill are both
+limited to the live operational scope:
+
+```text
+current service day / current market day
+or
+a documented service-specific hot repair window
+```
+
+They must not scan, download, normalize, embed, or rewrite broad historical
+ranges during active collection unless the service-specific config explicitly
+defines that hot window. Any work outside the active scope is recorded as
+deferred and handled after hours or by a generated workstation command.
+
+Examples:
+
+- News can reconcile and fill current-day Benzinga gaps while polling live
+  news. Older gaps are deferred or scripted.
+- SEC can reconcile current feed/current-day filing gaps while polling the feed.
+  Older archive or XBRL repairs are deferred or scripted.
+- QMD can reconcile and fill the current day plus its explicitly configured
+  recent live repair window. Broader historical flatfile repair stays in the
+  historical update path.
+- Text Embed can reconcile recent rows during the day, but large historical
+  embedding catch-up must be deferred because it competes for CPU/GPU and
+  ClickHouse resources.
+
+The terminal should show both states separately:
+
+```text
+reconciliation: found 12 gaps, 2 active-scope, 10 deferred
+gap fill: running active-scope gap 1/2
+```
+
+The JSONL log and `/snapshot/status` should preserve the same distinction so a
+failure can be understood as either discovery failure, planning/defer decision,
+or repair execution failure.
 
 ## Backfill Policy
 
@@ -1751,6 +1828,8 @@ ScheduleConfig
   weekend_poll_seconds
   market_status_enabled
   market_status_refresh_seconds
+  active_window_reconcile_scope
+  active_window_gap_fill_scope
 
 CoverageConfig
   coverage_table
