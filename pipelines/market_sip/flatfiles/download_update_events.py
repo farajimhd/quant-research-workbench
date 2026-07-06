@@ -1537,33 +1537,69 @@ event_by_ticker AS
 (
     SELECT
         ticker,
-        count() AS event_rows,
-        count() - uniqExact(ordinal) AS duplicate_ticker_ordinal_rows,
-        countIf(prev_ordinal != 0 AND ordinal = prev_ordinal) AS repeated_ordinal_transitions,
-        countIf(prev_ordinal != 0 AND ordinal < prev_ordinal) AS ordinal_backsteps,
-        countIf(prev_ordinal != 0 AND ordinal > prev_ordinal + 1) AS ordinal_gap_transitions,
-        countIf(prev_ts != 0 AND sip_timestamp_us < prev_ts) AS timestamp_backsteps
+        toUInt64(count()) AS event_rows,
+        toUInt64(count() - uniqExact(ordinal)) AS duplicate_ticker_ordinal_rows,
+        toUInt64(countIf(prev_ordinal != 0 AND ordinal = prev_ordinal)) AS repeated_ordinal_transitions,
+        toUInt64(countIf(prev_ordinal != 0 AND ordinal < prev_ordinal)) AS ordinal_backsteps,
+        toUInt64(countIf(prev_ordinal != 0 AND ordinal > prev_ordinal + 1)) AS ordinal_gap_transitions,
+        toUInt64(countIf(prev_ts != 0 AND sip_timestamp_us < prev_ts)) AS timestamp_backsteps
     FROM ordered
     GROUP BY ticker
 ),
 continuity_by_ticker AS
 (
-    SELECT ticker, argMax(event_count, updated_at) AS continuity_rows
+    SELECT ticker, toUInt64(argMax(event_count, updated_at)) AS continuity_rows
     FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
     WHERE build_step = toUInt32({int(build_step)})
       AND source_date = toDate({sql_string(day.source_date)})
     GROUP BY ticker
+),
+reconciled_by_ticker AS
+(
+    SELECT
+        ticker,
+        sum(event_rows) AS event_rows,
+        sum(continuity_rows) AS continuity_rows,
+        sum(duplicate_ticker_ordinal_rows) AS duplicate_ticker_ordinal_rows,
+        sum(repeated_ordinal_transitions) AS repeated_ordinal_transitions,
+        sum(ordinal_backsteps) AS ordinal_backsteps,
+        sum(ordinal_gap_transitions) AS ordinal_gap_transitions,
+        sum(timestamp_backsteps) AS timestamp_backsteps
+    FROM
+    (
+        SELECT
+            ticker,
+            event_rows,
+            toUInt64(0) AS continuity_rows,
+            duplicate_ticker_ordinal_rows,
+            repeated_ordinal_transitions,
+            ordinal_backsteps,
+            ordinal_gap_transitions,
+            timestamp_backsteps
+        FROM event_by_ticker
+        UNION ALL
+        SELECT
+            ticker,
+            toUInt64(0) AS event_rows,
+            continuity_rows,
+            toUInt64(0) AS duplicate_ticker_ordinal_rows,
+            toUInt64(0) AS repeated_ordinal_transitions,
+            toUInt64(0) AS ordinal_backsteps,
+            toUInt64(0) AS ordinal_gap_transitions,
+            toUInt64(0) AS timestamp_backsteps
+        FROM continuity_by_ticker
+    )
+    GROUP BY ticker
 )
 SELECT
-    coalesce(sum(coalesce(e.event_rows, toUInt64(0))), toUInt64(0)) AS rows,
-    coalesce(sum(coalesce(e.duplicate_ticker_ordinal_rows, toUInt64(0))), toUInt64(0)) AS duplicate_ticker_ordinal_rows,
-    coalesce(sum(coalesce(e.repeated_ordinal_transitions, toUInt64(0))), toUInt64(0)) AS repeated_ordinal_transitions,
-    coalesce(sum(coalesce(e.ordinal_backsteps, toUInt64(0))), toUInt64(0)) AS ordinal_backsteps,
-    coalesce(sum(coalesce(e.ordinal_gap_transitions, toUInt64(0))), toUInt64(0)) AS ordinal_gap_transitions,
-    coalesce(sum(coalesce(e.timestamp_backsteps, toUInt64(0))), toUInt64(0)) AS timestamp_backsteps,
-    countIf(coalesce(e.event_rows, toUInt64(0)) != coalesce(c.continuity_rows, toUInt64(0))) AS event_continuity_mismatches
-FROM event_by_ticker AS e
-FULL OUTER JOIN continuity_by_ticker AS c ON c.ticker = e.ticker
+    toUInt64(sum(event_rows)) AS rows,
+    toUInt64(sum(duplicate_ticker_ordinal_rows)) AS duplicate_ticker_ordinal_rows,
+    toUInt64(sum(repeated_ordinal_transitions)) AS repeated_ordinal_transitions,
+    toUInt64(sum(ordinal_backsteps)) AS ordinal_backsteps,
+    toUInt64(sum(ordinal_gap_transitions)) AS ordinal_gap_transitions,
+    toUInt64(sum(timestamp_backsteps)) AS timestamp_backsteps,
+    toUInt64(countIf(event_rows != continuity_rows)) AS event_continuity_mismatches
+FROM reconciled_by_ticker
 {settings_sql}
 """,
     )
