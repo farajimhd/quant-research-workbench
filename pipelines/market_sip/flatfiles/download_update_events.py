@@ -474,6 +474,8 @@ class UpdateProgressReporter:
         self.file_states: dict[str, dict[str, Any]] = {}
         self.worker_states: dict[int, dict[str, Any]] = {}
         self.day_status: dict[str, str] = {}
+        self.day_work: dict[str, dict[str, Any]] = {}
+        self.day_order: deque[str] = deque(maxlen=8)
         self.task_states: dict[str, dict[str, Any]] = {}
         self.notices: deque[tuple[str, str]] = deque(maxlen=12)
         self.logs: deque[str] = deque(maxlen=max(5, int(args.progress_log_lines)))
@@ -604,6 +606,10 @@ class UpdateProgressReporter:
 
     def handle_day_start(self, day: str, index: int) -> None:
         self.day_status[day] = "running"
+        work = self._ensure_day_work(day)
+        work["status"] = "running"
+        work["started_at"] = time.time()
+        work["finished_at"] = 0.0
         self.completed_days = max(self.completed_days, index - 1)
         self.log(f"day start [{index:,}/{self.total_days:,}] {day}")
         self._refresh(force=True)
@@ -611,6 +617,9 @@ class UpdateProgressReporter:
     def handle_day_done(self, day: str, status: str) -> None:
         prior = self.day_status.get(day)
         self.day_status[day] = status
+        work = self._ensure_day_work(day)
+        work["status"] = status
+        work["finished_at"] = time.time()
         if prior != status:
             self.completed_days += 1
             if status == "ok":
@@ -631,6 +640,7 @@ class UpdateProgressReporter:
             "rows": "",
             "detail": "",
         }
+        self._day_stage_start(day, key, label, stage)
         self._refresh(force=True)
 
     def task_done(self, key: str, status: str, *, seconds: float | None = None, rows: int | None = None, detail: str = "") -> None:
@@ -639,6 +649,7 @@ class UpdateProgressReporter:
         state["seconds"] = float(seconds if seconds is not None else time.time() - float(state.get("started_at") or time.time()))
         state["rows"] = "" if rows is None else f"{int(rows):,}"
         state["detail"] = detail
+        self._day_stage_done(key, status, seconds=float(state["seconds"]), rows=rows, detail=detail)
         self._refresh(force=True)
 
     def _refresh(self, *, force: bool = False) -> None:
@@ -662,14 +673,12 @@ class UpdateProgressReporter:
         transfer_speed = self._run_transfer_speed()
         active_remaining = self._active_download_remaining_bytes()
         download_eta = self._format_duration(active_remaining / transfer_speed) if transfer_speed > 0 and active_remaining > 0 else "-"
-        table = self._table_cls.grid(expand=True)
-        for _ in range(4):
-            table.add_column(ratio=1)
-        table.add_row("stage", str(self.stage), "elapsed", self._format_duration(elapsed))
-        table.add_row("days", f"{self.completed_days:,}/{self.total_days:,}", "days/min", f"{self._day_completion_rate_per_minute():.2f}")
-        table.add_row("day eta", day_eta, "elapsed", self._format_duration(elapsed))
-        table.add_row("downloads checked", f"{self.completed_files:,}/{self.download_total_files:,}", "dl eta", download_eta)
-        table.add_row("run transfer", self._format_bytes(self._run_transfer_bytes()), "speed", f"{self._format_bytes(transfer_speed)}/s")
+        table = self._table_cls.grid(expand=False, padding=(0, 2))
+        for _ in range(6):
+            table.add_column(no_wrap=True)
+        table.add_row("[bold cyan]Stage[/]", str(self.stage), "[bold cyan]Elapsed[/]", self._format_duration(elapsed), "[bold cyan]Day ETA[/]", day_eta)
+        table.add_row("[bold cyan]Days[/]", f"{self.completed_days:,}/{self.total_days:,}", "[bold cyan]Days/min[/]", f"{self._day_completion_rate_per_minute():.2f}", "[bold cyan]DL ETA[/]", download_eta)
+        table.add_row("[bold cyan]Downloads[/]", f"{self.completed_files:,}/{self.download_total_files:,}", "[bold cyan]Run transfer[/]", self._format_bytes(self._run_transfer_bytes()), "[bold cyan]Speed[/]", f"{self._format_bytes(transfer_speed)}/s")
         return self._panel_cls(table, title="Flatfile Event Update", border_style="cyan")
 
     def _download_panel(self) -> Any:
@@ -705,6 +714,50 @@ class UpdateProgressReporter:
 
     def _task_panel(self) -> Any:
         table = self._table_cls(expand=True, show_header=True, header_style="bold", box=None, pad_edge=False)
+        table.add_column("Day", width=10, no_wrap=True)
+        table.add_column("Progress", width=21, no_wrap=True)
+        table.add_column("Raw", width=9, no_wrap=True)
+        table.add_column("Delete", width=9, no_wrap=True)
+        table.add_column("Events", width=9, no_wrap=True)
+        table.add_column("Cont", width=9, no_wrap=True)
+        table.add_column("A:Cont", width=9, no_wrap=True)
+        table.add_column("A:Ord", width=9, no_wrap=True)
+        table.add_column("A:Raw", width=9, no_wrap=True)
+        table.add_column("Index", width=9, no_wrap=True)
+        table.add_column("Total", width=9, justify="right", no_wrap=True)
+        table.add_column("Status", width=10, no_wrap=True)
+        active_days = [day for day in self.day_order if self.day_work.get(day, {}).get("status") == "running"]
+        recent_days = list(self.day_order)[-5:]
+        display_days = active_days + [day for day in recent_days if day not in active_days]
+        if not display_days:
+            day_pct = self.completed_days / self.total_days if self.total_days else 0.0
+            table.add_row("-", f"{self._mini_bar(day_pct, 10)} {day_pct:4.0%}", "-", "-", "-", "-", "-", "-", "-", "-", "-", "waiting")
+        for day in display_days[-6:]:
+            work = self._ensure_day_work(day)
+            stages = work["stages"]
+            active_stage_keys = self._active_day_stage_keys(stages)
+            done = sum(1 for key in active_stage_keys if stages[key]["status"] in {"ok", "skipped"})
+            total = max(1, len(active_stage_keys))
+            pct = done / total
+            elapsed = self._work_elapsed(work)
+            table.add_row(
+                day,
+                f"{self._mini_bar(pct, 10)} {done}/{total}",
+                self._stage_cell(stages["raw"]),
+                self._stage_cell(stages["delete"]),
+                self._stage_cell(stages["events"]),
+                self._stage_cell(stages["continuity"]),
+                self._stage_cell(stages["audit_continuity"]),
+                self._stage_cell(stages["audit_events"]),
+                self._stage_cell(stages["audit_raw"]),
+                self._stage_cell(stages["index"]),
+                self._format_duration(elapsed),
+                self._day_status_cell(str(work.get("status") or "-")),
+            )
+        return self._panel_cls(table, title="Day Work: Raw, Insert, Continuity, Audits, Index", border_style="magenta")
+
+    def _recent_task_panel(self) -> Any:
+        table = self._table_cls(expand=True, show_header=True, header_style="bold", box=None, pad_edge=False)
         table.add_column("Kind", width=12, no_wrap=True)
         table.add_column("Day", width=10, no_wrap=True)
         table.add_column("Status", width=11, no_wrap=True)
@@ -726,7 +779,142 @@ class UpdateProgressReporter:
                 f"{seconds:.1f}",
                 str(row.get("detail") or row.get("label") or ""),
             )
-        return self._panel_cls(table, title="Event Inserts, Audit, Index and Macro Bars", border_style="magenta")
+        return self._panel_cls(table, title="Recent Work Details", border_style="magenta")
+
+    def _ensure_day_work(self, day: str) -> dict[str, Any]:
+        if not day:
+            day = "-"
+        work = self.day_work.get(day)
+        if work is None:
+            work = {
+                "day": day,
+                "status": self.day_status.get(day, "pending"),
+                "mode": "build",
+                "started_at": time.time(),
+                "finished_at": 0.0,
+                "stages": {key: self._new_stage_state() for key in self._day_stage_order()},
+            }
+            self.day_work[day] = work
+        if day not in self.day_order:
+            self.day_order.append(day)
+        return work
+
+    def _new_stage_state(self) -> dict[str, Any]:
+        return {
+            "status": "pending",
+            "started_at": 0.0,
+            "seconds": 0.0,
+            "rows": "",
+            "detail": "",
+        }
+
+    def _day_stage_order(self) -> tuple[str, ...]:
+        return (
+            "raw",
+            "delete",
+            "events",
+            "continuity",
+            "audit_continuity",
+            "audit_events",
+            "audit_raw",
+            "index",
+        )
+
+    def _active_day_stage_keys(self, stages: dict[str, dict[str, Any]]) -> list[str]:
+        order = list(self._day_stage_order())
+        if stages["delete"]["status"] == "pending":
+            order.remove("delete")
+        if stages["events"]["status"] == "skipped":
+            for key in ("events", "continuity", "audit_continuity"):
+                if key in order:
+                    order.remove(key)
+        return order
+
+    def _canonical_day_stage(self, key: str, label: str, stage: str) -> str | None:
+        text = f"{key} {label} {stage}".lower()
+        if "raw_stats" in text or "raw_count" in text or "raw flatfile count" in text:
+            return "raw"
+        if "delete" in text:
+            return "delete"
+        if stage == "events" or "insert_events_from_flatfiles" in text:
+            return "events"
+        if stage == "continuity" or "continuity_from_flatfiles" in text:
+            return "continuity"
+        if "audit:continuity" in text or "continuity counts" in text:
+            return "audit_continuity"
+        if "audit:events" in text or "events_existing" in text or "event row integrity" in text:
+            return "audit_events"
+        if "audit:raw" in text or "raw_existing" in text or "sample raw" in text:
+            return "audit_raw"
+        if stage == "index" or "ticker/day index" in text:
+            return "index"
+        return None
+
+    def _day_stage_start(self, day: str, key: str, label: str, stage: str) -> None:
+        stage_key = self._canonical_day_stage(key, label, stage)
+        if not day or stage_key is None:
+            return
+        work = self._ensure_day_work(day)
+        if "existing" in key.lower() or "manifest_ok" in key.lower():
+            work["mode"] = "existing"
+            for skipped in ("events", "continuity", "audit_continuity"):
+                skipped_state = work["stages"][skipped]
+                if skipped_state["status"] == "pending":
+                    skipped_state["status"] = "skipped"
+        state = work["stages"][stage_key]
+        state["status"] = "running"
+        state["started_at"] = time.time()
+        state["seconds"] = 0.0
+        state["detail"] = label
+
+    def _day_stage_done(self, key: str, status: str, *, seconds: float, rows: int | None, detail: str) -> None:
+        task = self.task_states.get(key)
+        if not task:
+            return
+        day = str(task.get("day") or "")
+        stage_key = self._canonical_day_stage(key, str(task.get("label") or ""), str(task.get("stage") or ""))
+        if not day or stage_key is None:
+            return
+        work = self._ensure_day_work(day)
+        state = work["stages"][stage_key]
+        state["status"] = status
+        state["seconds"] = float(seconds)
+        state["rows"] = "" if rows is None else f"{int(rows):,}"
+        state["detail"] = detail or str(task.get("label") or "")
+
+    def _work_elapsed(self, work: dict[str, Any]) -> float:
+        started_at = float(work.get("started_at") or time.time())
+        finished_at = float(work.get("finished_at") or 0.0)
+        end = finished_at if finished_at > 0 else time.time()
+        return max(0.0, end - started_at)
+
+    def _stage_cell(self, state: dict[str, Any]) -> str:
+        status = str(state.get("status") or "pending")
+        if status == "pending":
+            return "-"
+        if status == "skipped":
+            return "[dim]skip[/]"
+        seconds = float(state.get("seconds") or 0.0)
+        if status == "running":
+            started_at = float(state.get("started_at") or 0.0)
+            seconds = max(0.0, time.time() - started_at) if started_at > 0 else seconds
+            return f"[yellow]run[/] {self._format_duration(seconds)}"
+        if status == "ok":
+            return f"[green]ok[/] {self._format_duration(seconds)}"
+        if status in {"failed", "error"}:
+            return f"[red]err[/] {self._format_duration(seconds)}"
+        return f"{status[:3]} {self._format_duration(seconds)}"
+
+    def _day_status_cell(self, status: str) -> str:
+        if status == "ok":
+            return "[green]ok[/]"
+        if status == "running":
+            return "[yellow]running[/]"
+        if status in {"failed", "error"}:
+            return "[red]failed[/]"
+        if status in {"skipped", "dry_run"}:
+            return "[dim]skip[/]"
+        return status[:10]
 
     def _notice_panel(self) -> Any:
         if not self.notices:
@@ -2455,7 +2643,18 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
     ensure_event_table(client, args)
     status = latest_day_status(client, args, job)
     if status == "ok" and not args.force_day_rebuild:
-        raw_stats = audit_raw_day_count(client, args, day, report_path, context="manifest_ok_skip")
+        raw_key = f"{day.source_date}:raw_stats_existing"
+        raw_started_at = time.time()
+        if reporter is not None:
+            reporter.task_start(raw_key, "raw flatfile count", day=day.source_date, stage="raw")
+        try:
+            raw_stats = audit_raw_day_count(client, args, day, report_path, context="manifest_ok_skip")
+        except Exception:
+            if reporter is not None:
+                reporter.task_done(raw_key, "failed", seconds=time.time() - raw_started_at)
+            raise
+        if reporter is not None:
+            reporter.task_done(raw_key, "ok", seconds=time.time() - raw_started_at, rows=raw_stats.rows, detail="raw row count and timestamp bounds")
         if reporter is not None:
             reporter.task_start(f"{day.source_date}:audit:events_existing", "validate existing event rows", day=day.source_date, stage="audit")
         integrity_counts = validate_day_event_integrity(
@@ -2538,7 +2737,18 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
 
     insert_day_manifest(client, args, job, status="started", run_id=run_id)
     try:
-        raw_stats = audit_raw_day_count(client, args, day, report_path, context="pre_insert")
+        raw_key = f"{day.source_date}:raw_stats"
+        raw_started_at = time.time()
+        if reporter is not None:
+            reporter.task_start(raw_key, "raw flatfile count", day=day.source_date, stage="raw")
+        try:
+            raw_stats = audit_raw_day_count(client, args, day, report_path, context="pre_insert")
+        except Exception:
+            if reporter is not None:
+                reporter.task_done(raw_key, "failed", seconds=time.time() - raw_started_at)
+            raise
+        if reporter is not None:
+            reporter.task_done(raw_key, "ok", seconds=time.time() - raw_started_at, rows=raw_stats.rows, detail="raw row count and timestamp bounds")
         profile = _run_profiled_with_reporter(client, f"insert_events_from_flatfiles_{day.source_date}", insert_direct_day_sql(args, day, job.build_step), reporter, day=day.source_date, stage="events", detail="flatfile events")
         if profile.written_rows is not None and int(profile.written_rows) != raw_stats.rows:
             raise RuntimeError(
