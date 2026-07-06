@@ -324,16 +324,16 @@ def _snapshot_health(snapshot: dict[str, Any]) -> Panel:
 def _snapshot_runtime_summary(snapshot: dict[str, Any]) -> Panel:
     runtime = snapshot.get("runtime") if isinstance(snapshot.get("runtime"), dict) else {}
     daily = snapshot.get("daily_summary") if isinstance(snapshot.get("daily_summary"), dict) else {}
-    rows = metric_rows(runtime, section="runtime") + metric_rows(daily, section="daily")
+    rows = transposed_metric_rows(runtime, daily)
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
     table.add_column("Metric", style="cyan", no_wrap=True, width=24)
-    table.add_column("Scope", no_wrap=True, width=9)
-    table.add_column("Value", justify="right", no_wrap=True, width=16)
+    table.add_column("Runtime", justify="right", no_wrap=True, width=16)
+    table.add_column("Daily", justify="right", no_wrap=True, width=16)
     table.add_column("Detail", overflow="fold", ratio=1)
     for row in rows[:14]:
-        table.add_row(row["metric"], row["section"], row["value"], row["detail"])
+        table.add_row(row["metric"], row["runtime"], row["daily"], row["detail"])
     if not rows:
-        table.add_row("runtime", "runtime", "-", "No runtime counters reported.")
+        table.add_row("runtime", "-", "-", "No runtime counters reported.")
     hidden = max(0, len(rows) - 14)
     if hidden:
         table.add_row("more", "-", "-", f"{hidden:,} metric row(s) hidden.")
@@ -696,6 +696,33 @@ def metric_rows(payload: dict[str, Any], *, section: str) -> list[dict[str, str]
             continue
         metric, detail = split_metric_value(value)
         rows.append({"metric": key.replace("_", " "), "section": section, "value": metric, "detail": detail})
+    return rows
+
+
+def transposed_metric_rows(runtime: dict[str, Any], daily: dict[str, Any]) -> list[dict[str, str]]:
+    runtime_rows = {row["metric"]: row for row in metric_rows(runtime, section="runtime")}
+    daily_rows = {row["metric"]: row for row in metric_rows(daily, section="daily")}
+    ordered_metrics: list[str] = []
+    for row in list(runtime_rows.values()) + list(daily_rows.values()):
+        if row["metric"] not in ordered_metrics:
+            ordered_metrics.append(row["metric"])
+    rows: list[dict[str, str]] = []
+    for metric in ordered_metrics:
+        runtime_row = runtime_rows.get(metric, {})
+        daily_row = daily_rows.get(metric, {})
+        details: list[str] = []
+        if runtime_row.get("detail"):
+            details.append(f"runtime: {runtime_row['detail']}")
+        if daily_row.get("detail"):
+            details.append(f"daily: {daily_row['detail']}")
+        rows.append(
+            {
+                "metric": metric,
+                "runtime": runtime_row.get("value", "-"),
+                "daily": daily_row.get("value", "-"),
+                "detail": "; ".join(details),
+            }
+        )
     return rows
 
 
