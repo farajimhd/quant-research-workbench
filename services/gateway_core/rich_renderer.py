@@ -7,13 +7,19 @@ status vocabulary, panel/table defaults, and `Live` refresh behavior.
 from __future__ import annotations
 
 import shutil
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from rich import box
 from rich.console import Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
+
+
+EASTERN = ZoneInfo("America/New_York")
+VANCOUVER = ZoneInfo("America/Vancouver")
 
 
 STATUS_STYLES = {
@@ -161,7 +167,7 @@ def standard_panel(
 
 def standard_table(
     *columns: str,
-    expand: bool = True,
+    expand: bool = False,
     show_edge: bool = False,
     simple: bool = True,
     header_style: str = "bold cyan",
@@ -178,7 +184,7 @@ def standard_table(
 
 
 def detail_table(rows: list[tuple[Any, Any]], *, key_width: int = 18) -> Table:
-    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table = Table(box=box.SIMPLE, expand=False, show_edge=False)
     table.add_column("Field", style="cyan", no_wrap=True, width=key_width)
     table.add_column("Value", overflow="fold")
     for key, value in rows:
@@ -187,7 +193,7 @@ def detail_table(rows: list[tuple[Any, Any]], *, key_width: int = 18) -> Table:
 
 
 def metric_table(rows: list[tuple[Any, Any, Any]], *, value_heading: str = "Value", detail_heading: str = "Detail") -> Table:
-    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table = Table(box=box.SIMPLE, expand=False, show_edge=False)
     table.add_column("Metric", style="cyan", no_wrap=True)
     table.add_column(value_heading, justify="right", no_wrap=True)
     table.add_column(detail_heading, overflow="fold")
@@ -219,45 +225,100 @@ def render_standard_snapshot(snapshot: dict[str, Any]) -> Group:
     parts: list[Any] = [
         _snapshot_header(snapshot),
         _snapshot_current_operation(snapshot),
-        _snapshot_configuration(snapshot),
-        _snapshot_dependencies(snapshot, limit=4 if profile["compact"] else 8),
-        _snapshot_runtime(snapshot),
-        _snapshot_tasks(snapshot, limit=6 if profile["compact"] else 12),
-        _snapshot_coverage(snapshot),
-        _snapshot_sources(snapshot, limit=6 if profile["compact"] else 12),
-        _snapshot_errors(snapshot),
+        _snapshot_overview(snapshot, profile=profile),
     ]
     recent = snapshot.get("recent_items")
-    if recent:
+    if recent and profile["compact"]:
         parts.append(_snapshot_recent(recent, limit=4 if profile["compact"] else 8))
     return Group(*parts)
 
 
 def _snapshot_header(snapshot: dict[str, Any]) -> Panel:
     header = snapshot.get("header") if isinstance(snapshot.get("header"), dict) else {}
-    rows = [
-        ("Service", header.get("service", "-")),
-        ("Status", styled_status(header.get("status", "-"))),
-        ("Bind", header.get("bind", "-")),
-        ("Mode", header.get("mode", "-")),
-        ("Read DB", header.get("read_database", "-")),
-        ("Write DB", header.get("write_database", "-")),
-        ("Updated", header.get("snapshot_utc", "-")),
-        ("Market", header.get("market_status", "-")),
-    ]
-    return standard_panel(detail_table(rows), title="Header", status=header.get("status", "running"))
+    service = str(header.get("service") or "-").replace("_", " ").title()
+    status = header.get("status", "-")
+    color = status_style(status)
+    now = parse_utc_datetime(header.get("snapshot_utc"))
+    market = compact_market_label(header)
+    left_line_1 = f"[bold]{service}[/bold]  [{color}]{status_label(status)}[/{color}]"
+    left_line_2 = "  ".join(
+        part
+        for part in (
+            label_value("bind", header.get("bind")),
+            label_value("mode", header.get("mode")),
+            label_value("run", header.get("run_mode")),
+            label_value("exec", header.get("execute")),
+        )
+        if part
+    )
+    left_line_3 = "  ".join(
+        part
+        for part in (
+            label_value("read", header.get("read_database")),
+            label_value("write", header.get("write_database")),
+            label_value("market", market),
+        )
+        if part
+    )
+    right_line_1 = time_triplet(now)
+    right_line_2 = label_value("data", truncate(header.get("data_root"), 96)) or ""
+    grid = Table.grid(expand=True)
+    grid.add_column(ratio=3, overflow="fold")
+    grid.add_column(ratio=2, justify="right", overflow="fold")
+    grid.add_row(left_line_1, right_line_1)
+    grid.add_row(left_line_2 or "-", right_line_2)
+    if left_line_3:
+        grid.add_row(left_line_3, "")
+    return Panel(grid, box=box.ROUNDED, border_style=color, padding=(0, 1))
 
 
 def _snapshot_current_operation(snapshot: dict[str, Any]) -> Panel:
     op = snapshot.get("current_operation") if isinstance(snapshot.get("current_operation"), dict) else {}
-    rows = [
-        ("Phase", op.get("phase", "-")),
-        ("Status", styled_status(op.get("status", "-"))),
-        ("Started", op.get("started_at", "-")),
-        ("Message", op.get("message", "-")),
-        ("Next", op.get("next_action", "-")),
-    ]
-    return standard_panel(detail_table(rows), title="Current Operation", status=op.get("status", "running"))
+    status = op.get("status", "running")
+    color = status_style(status)
+    grid = Table.grid(expand=True)
+    grid.add_column(style="cyan", no_wrap=True, width=14)
+    grid.add_column(ratio=1, overflow="fold")
+    grid.add_column(style="cyan", no_wrap=True, width=10)
+    grid.add_column(ratio=1, overflow="fold")
+    grid.add_row("Phase", status_label(op.get("phase", "-")), "Status", styled_status(status))
+    if op.get("started_at") or op.get("next_action"):
+        grid.add_row("Started", str(op.get("started_at") or "-"), "Next", str(op.get("next_action") or "-"))
+    grid.add_row("Message", truncate(op.get("message") or "No active operation message.", 260), "", "")
+    return Panel(grid, title="Current Operation", box=box.ROUNDED, border_style=color, padding=(0, 1))
+
+
+def _snapshot_overview(snapshot: dict[str, Any], *, profile: dict[str, Any]) -> Panel:
+    table = Table(box=box.SIMPLE, expand=True, show_edge=False)
+    table.add_column("Area", style="cyan", no_wrap=True, width=18)
+    table.add_column("Status", no_wrap=True, width=14)
+    table.add_column("Rows / Sec", justify="right", no_wrap=True, width=14)
+    table.add_column("Detail", overflow="fold", ratio=1)
+    config = snapshot.get("configuration") if isinstance(snapshot.get("configuration"), dict) else {}
+    deps = snapshot.get("dependencies") if isinstance(snapshot.get("dependencies"), list) else []
+    runtime = snapshot.get("runtime") if isinstance(snapshot.get("runtime"), dict) else {}
+    tasks = snapshot.get("tasks") if isinstance(snapshot.get("tasks"), list) else []
+    coverage = snapshot.get("coverage") if isinstance(snapshot.get("coverage"), dict) else {}
+    sources = snapshot.get("sources_sinks") if isinstance(snapshot.get("sources_sinks"), list) else []
+    error = snapshot.get("error_state") if isinstance(snapshot.get("error_state"), dict) else {}
+    table.add_row("Configuration", styled_status("ok"), "-", compact_pairs(config, ("bind", "execute", "read_database", "write_database", "source_database", "target_database"), 180))
+    table.add_row("Dependencies", aggregate_status(deps), str(len(deps)) if deps else "-", aggregate_detail(deps, empty="No dependency state reported."))
+    table.add_row("Runtime", styled_status("running"), runtime_primary_value(runtime), compact_pairs(runtime, tuple(runtime.keys()), 220))
+    if tasks:
+        table.add_row("Tasks", aggregate_status(tasks), str(len(tasks)), aggregate_detail(tasks, name_key="name", detail_key="message", empty="No task state reported."))
+    elif not profile["compact"]:
+        table.add_row("Tasks", styled_status("waiting"), "-", "No task state reported.")
+    coverage_status = coverage.get("status") or "ok"
+    coverage_detail = compact_pairs(coverage, ("status", "message", "coverage_interval_count", "active_window_utc"), 240)
+    table.add_row("Coverage", styled_status(coverage_status), str(coverage.get("coverage_interval_count") or "-"), coverage_detail)
+    if sources:
+        table.add_row("Sources", aggregate_status(sources), str(len(sources)), aggregate_detail(sources, empty="No source/sink state reported."))
+    elif not profile["compact"]:
+        table.add_row("Sources", styled_status("waiting"), "-", "No source/sink state reported.")
+    error_status = error.get("status") or "ok"
+    error_detail = compact_pairs(error, ("message", "last_error", "severity", "retryable"), 240)
+    table.add_row("Errors", styled_status(error_status), str(error.get("error_count") or error.get("failures") or "-"), error_detail)
+    return Panel(table, title="Service Overview", box=box.ROUNDED, border_style=status_style(error_status), padding=(0, 1))
 
 
 def _snapshot_configuration(snapshot: dict[str, Any]) -> Panel:
@@ -351,3 +412,98 @@ def _snapshot_recent(recent: dict[str, Any], *, limit: int) -> Panel:
     if not rows:
         table.add_row("-", "-", "-", "No recent items reported.")
     return standard_panel(table, title="Recent Domain Items", status="ok")
+
+
+def parse_utc_datetime(value: Any) -> datetime:
+    text = str(value or "").strip()
+    if not text:
+        return datetime.now(UTC)
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return datetime.now(UTC)
+
+
+def time_triplet(value: datetime) -> str:
+    date = value.astimezone(UTC).strftime("%Y-%m-%d")
+    return (
+        f"[dim]{date}[/dim]  "
+        f"[dim]UTC[/dim] {value.astimezone(UTC).strftime('%H:%M:%S')}  "
+        f"[dim]ET[/dim] {value.astimezone(EASTERN).strftime('%H:%M:%S')}  "
+        f"[dim]VAN[/dim] {value.astimezone(VANCOUVER).strftime('%H:%M:%S')}"
+    )
+
+
+def label_value(label: str, value: Any) -> str:
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return ""
+    return f"[dim]{label}[/dim] {text}"
+
+
+def compact_market_label(header: dict[str, Any]) -> str:
+    status = str(header.get("market_status") or "").strip()
+    source = str(header.get("market_status_source") or "").strip()
+    if status and source:
+        return f"{status}/{source}"
+    return status or source
+
+
+def compact_pairs(payload: dict[str, Any], keys: tuple[Any, ...], limit: int) -> str:
+    parts: list[str] = []
+    for key in keys:
+        text_key = str(key)
+        if text_key not in payload:
+            continue
+        value = payload.get(text_key)
+        if value is None or value == "":
+            continue
+        parts.append(f"{text_key}={value}")
+    return truncate("; ".join(parts) if parts else "-", limit)
+
+
+def runtime_primary_value(runtime: dict[str, Any]) -> str:
+    for key in ("poll_runs", "cycles", "provider_rows", "feed_items", "source_rows_fetched", "embedding_rows_written"):
+        if key in runtime:
+            return str(runtime.get(key) if runtime.get(key) is not None else "-")
+    return "-"
+
+
+def aggregate_status(rows: list[Any]) -> str:
+    statuses = [normalize_status(row.get("status") if isinstance(row, dict) else "") for row in rows]
+    if any("failed" in status or "error" in status for status in statuses):
+        return styled_status("failed")
+    if any(status in {"warning", "warn", "stale", "missing", "degraded"} for status in statuses):
+        return styled_status("warning")
+    if any(status in {"running", "working", "queued", "processing"} for status in statuses):
+        return styled_status("running")
+    if rows:
+        return styled_status("ok")
+    return styled_status("waiting")
+
+
+def aggregate_detail(
+    rows: list[Any],
+    *,
+    name_key: str = "name",
+    detail_key: str = "detail",
+    empty: str,
+    limit: int = 260,
+) -> str:
+    if not rows:
+        return empty
+    parts: list[str] = []
+    for row in rows[:4]:
+        if not isinstance(row, dict):
+            continue
+        name = row.get(name_key) or row.get("check") or row.get("source") or row.get("task") or "-"
+        status = row.get("status") or "-"
+        detail = row.get(detail_key) or row.get("message") or row.get("targets") or ""
+        text = f"{name}:{status}"
+        if detail:
+            text += f" ({detail})"
+        parts.append(str(text))
+    hidden = max(0, len(rows) - 4)
+    if hidden:
+        parts.append(f"+{hidden} more")
+    return truncate("; ".join(parts), limit)

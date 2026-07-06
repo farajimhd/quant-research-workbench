@@ -92,8 +92,8 @@ def render_dashboard(config: IbkrGatewayConfig, state: SupervisorTerminalState) 
 
 def ibkr_standard_snapshot(config: IbkrGatewayConfig, state: SupervisorTerminalState) -> dict[str, Any]:
     metrics = {
-        "current_phase": state.current_operation,
-        "current_phase_message": state.last_error or state.last_tickle_error,
+        "current_phase": "supervision",
+        "current_phase_message": state.last_error or state.last_tickle_error or state.current_operation,
         "status": overall_status(state),
         "last_error": state.last_error,
         "errors": len(state.error_history),
