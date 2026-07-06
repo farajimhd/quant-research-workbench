@@ -736,14 +736,14 @@ class UpdateProgressReporter:
         table = self._table_cls(expand=True, show_header=True, header_style="bold", box=None, pad_edge=False)
         table.add_column("Day", width=10, no_wrap=True)
         table.add_column("Progress", width=21, no_wrap=True)
-        table.add_column("Raw", width=9, no_wrap=True)
-        table.add_column("Delete", width=9, no_wrap=True)
-        table.add_column("Events", width=9, no_wrap=True)
-        table.add_column("Cont", width=9, no_wrap=True)
-        table.add_column("A:Cont", width=9, no_wrap=True)
-        table.add_column("A:Ord", width=9, no_wrap=True)
-        table.add_column("A:Raw", width=9, no_wrap=True)
-        table.add_column("Index", width=9, no_wrap=True)
+        table.add_column("Raw Stats", width=11, no_wrap=True)
+        table.add_column("Cleanup", width=9, no_wrap=True)
+        table.add_column("Event Insert", width=12, no_wrap=True)
+        table.add_column("Ordinal State", width=13, no_wrap=True)
+        table.add_column("Audit Counts", width=12, no_wrap=True)
+        table.add_column("Audit Events", width=12, no_wrap=True)
+        table.add_column("Audit Raw", width=10, no_wrap=True)
+        table.add_column("Day Index", width=10, no_wrap=True)
         table.add_column("Total", width=9, justify="right", no_wrap=True)
         table.add_column("Status", width=10, no_wrap=True)
         active_days = [day for day in self.day_order if self.day_work.get(day, {}).get("status") == "running"]
@@ -774,7 +774,7 @@ class UpdateProgressReporter:
                 self._format_duration(elapsed),
                 self._day_status_cell(str(work.get("status") or "-")),
             )
-        return self._panel_cls(table, title="Day Work: Raw, Insert, Continuity, Audits, Index", border_style="magenta")
+        return self._panel_cls(table, title="Day Work: Raw Stats, Cleanup, Event Insert, Ordinal State, Audits, Day Index", border_style="magenta")
 
     def _recent_task_panel(self) -> Any:
         table = self._table_cls(expand=True, show_header=True, header_style="bold", box=None, pad_edge=False)
