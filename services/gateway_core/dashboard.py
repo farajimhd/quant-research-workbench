@@ -21,6 +21,8 @@ def build_dashboard_snapshot(
     current_phase = str(metrics.get("current_phase") or metrics.get("active_mode") or "running")
     status = service_status(metrics)
     now = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    read_db = read_database(config_public)
+    write_db = write_database(config_public)
     return {
         "header": {
             "service": service_name,
@@ -29,8 +31,8 @@ def build_dashboard_snapshot(
             "mode": config_public.get("operator_mode", config_public.get("mode", "")),
             "run_mode": config_public.get("run_mode", ""),
             "execute": config_public.get("execute", ""),
-            "read_database": read_database(config_public),
-            "write_database": write_database(config_public),
+            "read_database": read_db,
+            "write_database": write_db,
             "data_root": str(config_public.get("data_root_win") or config_public.get("data_root") or ""),
             "snapshot_utc": now,
             "market_status": metrics.get("market_status", ""),
@@ -50,6 +52,7 @@ def build_dashboard_snapshot(
         "daily_summary": daily_summary(metrics),
         "tasks": task_summary(metrics),
         "task_table_progress": table_progress(metrics),
+        "configured_tables": configured_tables(config_public, read_database=read_db, write_database=write_db),
         "queues": queue_summary(metrics),
         "coverage": coverage_summary(metrics),
         "sources_sinks": sources_sinks or [],
@@ -74,7 +77,7 @@ def public_config(config: Any) -> dict[str, Any]:
 
 def flatten_config(payload: dict[str, Any]) -> dict[str, Any]:
     flat = dict(payload)
-    for key in ("service", "database", "storage"):
+    for key in ("service", "database", "storage", "pipeline"):
         nested = payload.get(key)
         if isinstance(nested, dict):
             for nested_key, value in nested.items():
@@ -119,7 +122,7 @@ def compact_config(config: dict[str, Any]) -> dict[str, Any]:
         "market_status_refresh_seconds",
         "terminal_refresh_seconds",
     ]
-    return {key: str(config.get(key)) for key in keys if key in config}
+    return {key: config.get(key) for key in keys if key in config}
 
 
 def preflight_dependencies(metrics: dict[str, Any]) -> list[dict[str, Any]]:
@@ -198,6 +201,56 @@ def table_progress(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     if "coverage_interval_count" in metrics:
         rows.append({"task_table": "coverage", "operation": "reconcile", "status": metrics.get("gap_status", ""), "done": metrics.get("coverage_interval_count", 0), "total": "", "detail": metrics.get("gap_message", "")})
     return rows
+
+
+def configured_tables(config: dict[str, Any], *, read_database: str, write_database: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for key, value in sorted(config.items()):
+        if not is_table_config_key(key):
+            continue
+        if value is None or value == "":
+            continue
+        table_names = table_names_from_value(value)
+        for table_name in table_names:
+            database = table_database_for_key(key, read_database=read_database, write_database=write_database)
+            identity = (database, table_name)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            rows.append(
+                {
+                    "name": table_name,
+                    "status": "configured",
+                    "database": database,
+                    "config_key": key,
+                    "rows": None,
+                    "detail": f"{database}.{table_name}",
+                }
+            )
+    return rows
+
+
+def is_table_config_key(key: str) -> bool:
+    text = key.lower()
+    if "database" in text or "timetable" in text:
+        return False
+    return text.endswith("_table") or text.endswith("_tables") or text.endswith("_table_name")
+
+
+def table_names_from_value(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def table_database_for_key(key: str, *, read_database: str, write_database: str) -> str:
+    lowered = key.lower()
+    if any(token in lowered for token in ("source", "read", "context", "live")):
+        return read_database or write_database
+    return write_database or read_database
 
 
 def queue_summary(metrics: dict[str, Any]) -> list[dict[str, Any]]:

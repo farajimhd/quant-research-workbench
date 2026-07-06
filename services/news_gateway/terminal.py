@@ -95,9 +95,13 @@ def phase_panel(metrics: dict[str, Any]) -> Panel:
 def progress_panel(metrics: dict[str, Any]) -> Panel:
     table = Table(box=box.SIMPLE, expand=True, show_edge=False)
     table.add_column("Background Job", style="cyan", no_wrap=True, width=24)
-    table.add_column("Progress", no_wrap=True, width=48)
-    table.add_column("Done", justify="right", no_wrap=True, width=14)
-    table.add_column("Details", overflow="fold", ratio=1)
+    table.add_column("Status", no_wrap=True, width=12)
+    table.add_column("Progress", no_wrap=True, width=34)
+    table.add_column("Queue", justify="right", no_wrap=True, width=10)
+    table.add_column("Active", justify="right", no_wrap=True, width=10)
+    table.add_column("Done", justify="right", no_wrap=True, width=12)
+    table.add_column("Failed", justify="right", no_wrap=True, width=10)
+    table.add_column("Detail", overflow="fold", ratio=1)
 
     bootstrap_total = int(metrics.get("bootstrap_probe_total") or 0)
     bootstrap_done = int(metrics.get("bootstrap_probe_completed") or 0)
@@ -122,31 +126,43 @@ def progress_panel(metrics: dict[str, Any]) -> Panel:
 
     table.add_row(
         "Coverage probes",
+        "running" if bootstrap_total and bootstrap_done < bootstrap_total else "idle",
         progress_text(bootstrap_done, bootstrap_total),
+        "-",
+        "-",
         progress_count(bootstrap_done, bootstrap_total),
-        f"empty={bootstrap_empty:,}  needs_fill={bootstrap_positive:,}" if bootstrap_total else "[dim]No bootstrap probe job active.[/dim]",
+        "-",
+        f"empty {bootstrap_empty:,}; needs fill {bootstrap_positive:,}" if bootstrap_total else "[dim]No bootstrap probe job active.[/dim]",
     )
     table.add_row(
         "Startup gap fill",
+        "running" if gap_total and gap_flushed < gap_total else "idle",
         progress_text(gap_flushed, gap_total),
+        "-",
+        f"{gap_in_flight:,}" if gap_total else "-",
         progress_count(gap_flushed, gap_total),
-        f"submitted={gap_submitted:,}  in_flight={gap_in_flight:,}" if gap_total else "[dim]No startup gap-fill job active.[/dim]",
+        "-",
+        f"submitted {gap_submitted:,}" if gap_total else "[dim]No startup gap-fill job active.[/dim]",
     )
     table.add_row(
         "News background",
+        "running" if background_queue or background_active else "idle",
         busy_text("running" if background_queue or background_active else "idle", background_queue + background_active),
-        f"queue={background_queue:,}",
-        (
-            f"active_batches={background_active:,}  pending_articles={background_pending_articles:,}  "
-            f"done={background_completed_articles:,}  failed={background_failed_articles:,}  "
-            f"url_tasks={background_fetch_tasks:,}  enriched_urls={background_enriched_urls:,}"
-        ),
+        f"{background_queue:,}",
+        f"{background_active:,}",
+        f"{background_completed_articles:,}",
+        f"{background_failed_articles:,}",
+        f"pending articles {background_pending_articles:,}; url tasks {background_fetch_tasks:,}; enriched urls {background_enriched_urls:,}",
     )
     table.add_row(
         "Database publish",
+        publish_status,
         busy_text(publish_status, publish_active),
-        f"active={publish_active:,}",
-        f"pending_rows={publish_pending_rows:,}  completed={publish_completed:,}  failed={publish_failed:,}",
+        f"{publish_pending_rows:,}",
+        f"{publish_active:,}",
+        f"{publish_completed:,}",
+        f"{publish_failed:,}",
+        "normalized/ticker rows are published asynchronously",
     )
     active = (
         (bootstrap_total > 0 and bootstrap_done < bootstrap_total)
