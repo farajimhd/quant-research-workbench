@@ -11,6 +11,8 @@ import uvicorn
 from fastapi import FastAPI
 
 from research.mlops.env import discover_env_files, load_env_files
+from services.gateway_core.dashboard import build_dashboard_snapshot
+from services.gateway_core.health import build_health_payload
 from services.text_embed_gateway.config import TextEmbedGatewayConfig
 from services.text_embed_gateway.gateway import TextEmbedGateway
 
@@ -36,7 +38,7 @@ def create_app(config: TextEmbedGatewayConfig | None = None, *, start_background
 
     @app.get("/health")
     async def health() -> dict[str, object]:
-        return {"status": "ok", "config": cfg.public_dict(), "metrics": gateway.snapshot_metrics()}
+        return build_health_payload(service_name="text_embed_gateway", config=cfg, metrics=gateway.snapshot_metrics())
 
     @app.get("/config")
     async def config_payload() -> dict[str, object]:
@@ -45,6 +47,15 @@ def create_app(config: TextEmbedGatewayConfig | None = None, *, start_background
     @app.get("/metrics")
     async def metrics() -> dict[str, object]:
         return gateway.snapshot_metrics()
+
+    @app.get("/snapshot/status")
+    async def status_snapshot() -> dict[str, object]:
+        return build_dashboard_snapshot(
+            service_name="text_embed_gateway",
+            config=cfg,
+            metrics=gateway.snapshot_metrics(),
+            recent_items=gateway.recent_snapshot(25),
+        )
 
     @app.get("/snapshot/text-embeddings/recent")
     async def recent(limit: int = 50) -> dict[str, object]:

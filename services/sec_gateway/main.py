@@ -11,6 +11,8 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from research.mlops.env import discover_env_files, load_env_files
+from services.gateway_core.dashboard import build_dashboard_snapshot
+from services.gateway_core.health import build_health_payload
 from services.sec_gateway.config import SecGatewayConfig
 from services.sec_gateway.gateway import SecGateway
 from services.sec_gateway.preflight import PreflightError
@@ -37,7 +39,7 @@ def create_app(config: SecGatewayConfig | None = None, *, start_background: bool
 
     @app.get("/health")
     async def health() -> dict[str, object]:
-        return {"status": "ok", "config": {"bind": cfg.bind, "execute": cfg.execute, "is_workstation": cfg.is_workstation}, "metrics": gateway.snapshot_metrics()}
+        return build_health_payload(service_name="sec_gateway", config=cfg, metrics=gateway.snapshot_metrics())
 
     @app.get("/config")
     async def config_payload() -> dict[str, object]:
@@ -46,6 +48,15 @@ def create_app(config: SecGatewayConfig | None = None, *, start_background: bool
     @app.get("/metrics")
     async def metrics() -> dict[str, object]:
         return gateway.snapshot_metrics()
+
+    @app.get("/snapshot/status")
+    async def status_snapshot() -> dict[str, object]:
+        return build_dashboard_snapshot(
+            service_name="sec_gateway",
+            config=cfg,
+            metrics=gateway.snapshot_metrics(),
+            recent_items=gateway.recent_snapshot(25),
+        )
 
     @app.get("/snapshot/sec/recent")
     async def recent(limit: int = 100) -> dict[str, object]:

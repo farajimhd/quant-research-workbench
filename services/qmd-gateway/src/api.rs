@@ -65,11 +65,25 @@ struct HealthPayload {
     subscriptions: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct StandardStatusPayload {
+    header: Value,
+    current_operation: Value,
+    configuration: Value,
+    runtime: MetricsSnapshot,
+    tasks: Vec<Value>,
+    coverage: Value,
+    queues: Value,
+    error_state: Value,
+    service_specific: Value,
+}
+
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/config", get(config))
         .route("/metrics", get(metrics_snapshot))
+        .route("/snapshot/status", get(status_snapshot))
         .route("/snapshot/maintenance", get(maintenance_snapshot))
         .route("/snapshot/coverage", get(coverage_snapshot))
         .route("/indicator-catalog", get(indicator_catalog_snapshot))
@@ -127,6 +141,108 @@ async fn config(State(state): State<Arc<AppState>>) -> Json<GatewayConfig> {
 
 async fn metrics_snapshot(State(state): State<Arc<AppState>>) -> Json<MetricsSnapshot> {
     Json(state.metrics.snapshot())
+}
+
+async fn status_snapshot(State(state): State<Arc<AppState>>) -> Json<StandardStatusPayload> {
+    let metrics = state.metrics.snapshot();
+    let maintenance = state.maintenance.snapshot().await;
+    let market_metrics = state.market.metrics().await;
+    let session = format!("{:?}", session_phase(chrono::Utc::now()));
+    let running = state.config.api_key_present;
+    let status = if !running {
+        "DEGRADED"
+    } else if maintenance.active {
+        "CATCHING_UP"
+    } else {
+        "RUNNING"
+    };
+    let queue_drops = metrics.events_broadcast_dropped
+        + metrics.bar_events_dropped
+        + metrics.indicator_events_dropped
+        + metrics.compact_event_queue_dropped
+        + metrics.clickhouse_events_dropped;
+    Json(StandardStatusPayload {
+        header: json!({
+            "service": "qmd_gateway",
+            "status": status,
+            "bind": state.config.bind,
+            "mode": state.config.gap_fill_mode,
+            "execute": true,
+            "read_database": state.config.historical_clickhouse_database,
+            "write_database": state.config.clickhouse_database,
+            "snapshot_utc": chrono::Utc::now().to_rfc3339(),
+            "market_status": session,
+            "subscriptions": state.config.subscription_channels(),
+        }),
+        current_operation: json!({
+            "phase": if maintenance.active { maintenance.phase.clone() } else { "streaming".to_string() },
+            "status": if maintenance.active { maintenance.status.clone() } else { "running".to_string() },
+            "message": if maintenance.active { maintenance.message.clone() } else { "websocket ingest and writers active".to_string() },
+            "started_at": maintenance.started_at_utc,
+            "next_action": "",
+        }),
+        configuration: json!({
+            "bind": state.config.bind,
+            "clickhouse_database": state.config.clickhouse_database,
+            "historical_clickhouse_database": state.config.historical_clickhouse_database,
+            "gap_fill_enabled": state.config.gap_fill_enabled,
+            "recent_live_prior_market_days": state.config.recent_live_prior_market_days,
+            "persist_raw_events": state.config.persist_raw_events,
+            "persist_compact_events": state.config.persist_compact_events,
+            "persist_indicators": state.config.persist_indicators,
+        }),
+        runtime: metrics.clone(),
+        tasks: vec![
+            json!({
+                "task": "websocket ingest",
+                "status": if running { "running" } else { "blocked" },
+                "rows": metrics.ingest_events,
+                "message": if running { "Massive websocket ingest active or waiting for session." } else { "MASSIVE_API_KEY missing." },
+            }),
+            json!({
+                "task": "maintenance and gap fill",
+                "status": maintenance.status,
+                "rows": maintenance.rows_written,
+                "message": maintenance.message,
+                "done": maintenance.completed_jobs,
+                "total": maintenance.total_jobs,
+            }),
+            json!({
+                "task": "bar publication",
+                "status": "running",
+                "rows": metrics.bar_rows_emitted,
+                "message": "Streaming bars are updated from trade and quote events.",
+            }),
+        ],
+        coverage: json!({
+            "status": maintenance.status,
+            "message": maintenance.message,
+            "window_start_utc": maintenance.window_start_utc,
+            "window_end_utc": maintenance.window_end_utc,
+            "completed_jobs": maintenance.completed_jobs,
+            "total_jobs": maintenance.total_jobs,
+        }),
+        queues: json!({
+            "event_broadcast_dropped": metrics.events_broadcast_dropped,
+            "bar_events_dropped": metrics.bar_events_dropped,
+            "indicator_events_dropped": metrics.indicator_events_dropped,
+            "compact_event_queue_dropped": metrics.compact_event_queue_dropped,
+            "clickhouse_events_dropped": metrics.clickhouse_events_dropped,
+            "queue_drop_total": queue_drops,
+        }),
+        error_state: json!({
+            "status": if queue_drops > 0 || metrics.parse_failures > 0 || metrics.gap_fill_failures > 0 { "degraded" } else { "ok" },
+            "active": queue_drops > 0 || metrics.parse_failures > 0 || metrics.gap_fill_failures > 0,
+            "severity": if queue_drops > 0 { "warning" } else { "info" },
+            "message": if queue_drops > 0 { "One or more downstream queues rejected work; inspect queue counters." } else { "" },
+            "retryable": true,
+            "last_error": "",
+        }),
+        service_specific: json!({
+            "market": market_metrics,
+            "maintenance": maintenance,
+        }),
+    })
 }
 
 async fn maintenance_snapshot(State(state): State<Arc<AppState>>) -> Json<MaintenanceSnapshot> {

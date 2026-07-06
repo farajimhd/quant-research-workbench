@@ -8,6 +8,7 @@ from pathlib import Path
 from research.mlops.env import discover_env_files, load_env_files
 from services.ibkr_gateway_supervisor.config import IbkrGatewayConfig
 from services.ibkr_gateway_supervisor.login import run_playwright_login
+from services.ibkr_gateway_supervisor.status import build_ibkr_status_snapshot
 from services.ibkr_gateway_supervisor.supervisor import IbkrGatewaySupervisor
 
 
@@ -39,7 +40,10 @@ def main() -> None:
     try:
         if args.check_only:
             print(json.dumps(config.public_dict(), indent=2, sort_keys=True), flush=True)
-            raise SystemExit(IbkrGatewaySupervisor(config).check_once())
+            supervisor = IbkrGatewaySupervisor(config)
+            code = supervisor.check_once()
+            print(json.dumps(build_ibkr_status_snapshot(config, supervisor.terminal_state), indent=2, sort_keys=True, default=str), flush=True)
+            raise SystemExit(code)
         if args.login_once:
             raise SystemExit(0 if asyncio.run(run_playwright_login(config)) else 1)
         IbkrGatewaySupervisor(config).run_forever()

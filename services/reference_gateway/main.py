@@ -43,6 +43,7 @@ from services.reference_gateway.publication_rebuild import rebuild_tradable_publ
 from services.reference_gateway.runtime_log import RuntimeLogger
 from services.reference_gateway.source_schedule import ensure_source_schedule_schema, record_source_schedule, schedule_decision
 from services.reference_gateway.state import collect_reference_state
+from services.reference_gateway.status import build_reference_status_snapshot
 from services.reference_gateway.table_groups import table_group_markdown
 from services.reference_gateway.terminal import OperationRecord, ReferenceRunRecord, ReferenceTerminalSession
 from services.reference_gateway.tradable_blocker import block_latest_universe_for_open_issues
@@ -820,6 +821,7 @@ def main() -> None:
                 rows=final_memory.rss_bytes,
             )
             logger.event("memory_guardrail_failed", max_rss_bytes=max_bytes, memory=final_memory.public_dict())
+    logger.event("standard_status_snapshot", snapshot=build_reference_status_snapshot(record))
     logger.event("run_finished", status=record.final_status, wall_seconds=record.wall_seconds, report_path=record.report_path, memory=final_memory.public_dict())
     refresh_terminal()
     stop_terminal()
