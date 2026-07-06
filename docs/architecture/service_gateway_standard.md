@@ -222,7 +222,7 @@ their implementation spreads into separate conventions.
 | Reference Gateway | Python low-frequency reference reconciler | Massive reference endpoints, q_live identity tables, IBKR Client Portal, FINRA/SEC/Massive publications | identity graph, source mappings, issues, tradable/scanner publications, market reference publications, reference alerts | daemon cycles and after-hours maintenance | Keep market reference identity, conid/routing evidence, tradability publications, and slow reference publications coherent. |
 | Text Embed Gateway | Python GPU/model reconciliation gateway | normalized news, SEC filing text, SEC market bridge, historical-compatible context tables | token tables, embedding tables, embedding coverage | market-aware polling and historical reconciliation | Keep news and SEC text tokenized and embedded with historical-compatible contracts. |
 | IBKR Gateway Supervisor | Python broker-session supervisor | local IBKR Client Portal Gateway process and CPAPI auth endpoints | JSONL events, optional compact ClickHouse supervisor event table, Rich telemetry | fixed keepalive/status cadence | Keep one IBKR Client Portal session authenticated and observable. |
-| News Intelligence Service | Python model-serving service | normalized article request payloads, local model artifacts, optional local LLM endpoint | synchronous classification response | request-driven | Serve news labels; it must not poll providers or write canonical news rows. |
+| News Intelligence Service | TBD model-serving service boundary | normalized article request payloads, local model artifacts, optional local LLM endpoint | synchronous classification response | request-driven | TBD until the final news-label model stack and serving contract are selected. It must not poll providers or write canonical news rows. |
 | Market AI Service | TBD model-dependent service boundary | QMD compact event stream or replay iterator, Text Embed Gateway outputs, final trained model artifacts | model-specific multimodal cache, prediction stream/API, future prediction tables when defined | TBD after model selection | Not implemented at this stage. Once the final ML model is chosen, manage the multimodal data cache required by that model and serve predictions. |
 
 ### QMD Gateway
@@ -582,6 +582,12 @@ a high-frequency ingest service.
   tradability blocks, maintenance policy, and recent issues/resolutions.
 - Each source endpoint should have a stable terminal row, not just a single
   generic "source sync" line.
+- In daemon mode, the parent reference process must expose:
+  `/health`, `/config`, `/metrics`, `/snapshot/status`,
+  `/snapshot/reference/recent`, and `/stream/reference`.
+- The API reports parent daemon state and recent child-cycle/log status. The
+  child sync/audit process still owns the actual source-sync, audit, and
+  maintenance work.
 
 **Out of scope:**
 
@@ -694,6 +700,11 @@ and does not own trading orders.
 - Show gateway process, auth state, account state, login attempts, keepalive
   tickle state, retry counters, active failures, resolved failure history, and
   alert delivery status.
+- Normal supervisor mode must expose `/health`, `/config`, `/metrics`,
+  `/snapshot/status`, `/snapshot/ibkr/recent`, and `/stream/ibkr` while the
+  keepalive/auth loop runs in the service lifespan.
+- One-shot modes such as `--check-only` and `--login-once` remain CLI commands
+  and do not start the HTTP service.
 
 **Out of scope:**
 
@@ -704,6 +715,10 @@ and does not own trading orders.
 ### News Intelligence Service
 
 **Current code path:** `services/news-intelligence`.
+
+**Status:** TBD. Keep this boundary documented, but do not treat the current
+experimental scripts as a production gateway until the final model stack,
+taxonomy, prompt contract, and serving contract are selected.
 
 **Role:** News Intelligence is a request-driven model service. It receives one
 normalized article, runs configured fast models and optional local LLM stages,

@@ -19,6 +19,9 @@ class IbkrGatewayConfig:
     client_library_path: Path
     gateway_config_path: Path
     run_bat_path: Path
+    bind: str
+    host: str
+    port: int
     base_url: str
     login_url: str
     tickle_seconds: float
@@ -56,6 +59,8 @@ class IbkrGatewayConfig:
         gateway_config_path = Path(env_string("IBKR_GATEWAY_CONFIG_PATH", str(client_library_path / "root" / "conf.yaml"))).expanduser()
         run_bat_path = Path(env_string("IBKR_GATEWAY_RUN_BAT_PATH", str(client_library_path / "bin" / "run.bat"))).expanduser()
         base_url = env_string("IBKR_CPAPI_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+        bind = env_string("IBKR_GATEWAY_SUPERVISOR_BIND", "127.0.0.1:8800")
+        host, port = parse_bind(bind)
         return cls(
             account_key=normalized_key,
             account_id=env_string(f"{prefix}_ACCOUNT_ID", ""),
@@ -64,6 +69,9 @@ class IbkrGatewayConfig:
             client_library_path=client_library_path,
             gateway_config_path=gateway_config_path,
             run_bat_path=run_bat_path,
+            bind=bind,
+            host=host,
+            port=port,
             base_url=base_url,
             login_url=env_string("IBKR_GATEWAY_LOGIN_URL", login_url_from_base_url(base_url)),
             tickle_seconds=env_float("IBKR_GATEWAY_TICKLE_SECONDS", 60.0),
@@ -108,6 +116,14 @@ class IbkrGatewayConfig:
 def normalize_account_key(value: str) -> str:
     text = (value or "").strip().lower().replace("_", "-")
     return text or "paper"
+
+
+def parse_bind(value: str) -> tuple[str, int]:
+    text = value.strip()
+    if ":" not in text:
+        return text, 8800
+    host, port_text = text.rsplit(":", 1)
+    return host, int(port_text)
 
 
 def login_url_from_base_url(base_url: str) -> str:

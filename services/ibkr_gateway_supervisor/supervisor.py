@@ -4,6 +4,7 @@ import asyncio
 import os
 import signal
 import subprocess
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -249,11 +250,17 @@ class IbkrGatewaySupervisor:
             self.gateway_listener_pid = None
 
     def install_signal_handlers(self) -> None:
+        if threading.current_thread() is not threading.main_thread():
+            return
+
         def request_stop(_signum: int, _frame: object) -> None:
-            self._stop = True
+            self.request_stop()
 
         signal.signal(signal.SIGINT, request_stop)
         signal.signal(signal.SIGTERM, request_stop)
+
+    def request_stop(self) -> None:
+        self._stop = True
 
     def emit(self, event: str, **payload: Any) -> None:
         row = {
