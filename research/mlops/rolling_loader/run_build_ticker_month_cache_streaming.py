@@ -232,6 +232,17 @@ def _finish_worker_state(worker: PackageState | None, *, status: str, message: s
         worker.seconds = time.perf_counter() - worker.started_at
 
 
+def _raise_if_stopped(stop_event: threading.Event) -> None:
+    if stop_event.is_set():
+        raise KeyboardInterrupt
+
+
+def _cancel_pending_futures(futures: Iterable[Future[Any]]) -> None:
+    for future in futures:
+        if not future.done():
+            future.cancel()
+
+
 class StreamingLaneExecutors:
     def __init__(self, stats: BuildStats, workers: Mapping[str, int]) -> None:
         self.stats = stats
@@ -420,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest["config"]["context_semantics"] = "package_level_time_ordered_streams_resolved_per_origin_by_loader"
     write_json_atomic(cache_root / "manifest.json", manifest)
     previous_sigint = signal.getsignal(signal.SIGINT)
+    interrupt_count = 0
     try:
         if loaded_env:
             print("Loaded .env files: " + ", ".join(str(path) for path in loaded_env), flush=True)
@@ -441,11 +453,16 @@ def main(argv: list[str] | None = None) -> int:
         stats.workers = {idx: PackageState(worker_id=idx) for idx in range(worker_slots)}
 
         def request_stop(_signum: int, _frame: Any) -> None:
+            nonlocal interrupt_count
+            interrupt_count += 1
             stop_event.set()
             stats.stop_requested = True
             stats.interrupted = True
             stats.phase = "stopping"
-            message = "Ctrl+C received; cancelling active ClickHouse queries and queued work"
+            if interrupt_count > 1:
+                message = "Second Ctrl+C received; forcing process exit after ClickHouse cancellation request"
+            else:
+                message = "Ctrl+C received; cancelling active ClickHouse queries and queued work"
             stats.message(message)
             try:
                 original_stderr.write("\n" + message + "\n")
@@ -454,6 +471,8 @@ def main(argv: list[str] | None = None) -> int:
                 pass
             cancel_active_clickhouse_queries(client_opts=client_opts, stats=stats)
             cancel_process_clickhouse_queries(client_opts=client_opts, stats=stats, reason="ctrl_c")
+            if interrupt_count > 1:
+                os._exit(130)
             raise KeyboardInterrupt
 
         signal.signal(signal.SIGINT, request_stop)
@@ -565,7 +584,7 @@ def _build_month(
         context_futures[(month, plan.ticker)] = lanes.submit(
             "context",
             f"{month}:{plan.ticker}:context",
-            lambda plan=plan: _build_ticker_context(args=args, client_opts=client_opts, config=config, cache_root=cache_root, window=window, plan=plan),
+            lambda plan=plan: _build_ticker_context(args=args, client_opts=client_opts, config=config, cache_root=cache_root, window=window, plan=plan, stop_event=stop_event),
         )
 
     exhausted = False
@@ -591,6 +610,7 @@ def _build_month(
             for future in done_fetch:
                 chunk, events = future.result()
                 while len(pending_process) >= max(1, int(args.max_inflight_process)):
+                    _raise_if_stopped(stop_event)
                     done_process, pending_process = wait(pending_process, timeout=0.1, return_when=FIRST_COMPLETED)
                     for process_future in done_process:
                         result = process_future.result()
@@ -607,6 +627,7 @@ def _build_month(
                             context_lags=context_lags,
                             chunk=chunk,
                             events=events,
+                            stop_event=stop_event,
                         ),
                     )
                 )
@@ -619,7 +640,7 @@ def _build_month(
         stats.current_rss_mib = current_rss_mib()
         stats.max_rss_mib = max(stats.max_rss_mib, stats.current_rss_mib)
 
-    context_results = {key: future.result() for key, future in context_futures.items()}
+    context_results = _wait_for_context_results(context_futures, stats=stats, stop_event=stop_event)
     finalize_futures: list[Future[Any]] = []
     for plan in plans:
         finalize_futures.append(
@@ -635,17 +656,49 @@ def _build_month(
                     part_results=part_results.get(plan.ticker, []),
                     context_result=context_results[(month, plan.ticker)],
                     context_lags=context_lags,
+                    stop_event=stop_event,
                 ),
             )
         )
-    for future in finalize_futures:
-        package_bytes = int(future.result())
-        with stats.lock:
-            stats.packages_done += 1
-            stats.bytes_written += package_bytes
+    _wait_for_finalize_results(finalize_futures, stats=stats, stop_event=stop_event)
+    stats.message(f"{month}: complete packages={len(plans):,}")
+
+
+def _wait_for_context_results(
+    futures: Mapping[tuple[str, str], Future[ContextBuildResult]],
+    *,
+    stats: BuildStats,
+    stop_event: threading.Event,
+) -> dict[tuple[str, str], ContextBuildResult]:
+    pending = set(futures.values())
+    future_keys = {future: key for key, future in futures.items()}
+    results: dict[tuple[str, str], ContextBuildResult] = {}
+    while pending:
+        if stop_event.is_set():
+            _cancel_pending_futures(pending)
+            raise KeyboardInterrupt
+        done, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+        for future in done:
+            results[future_keys[future]] = future.result()
         stats.current_rss_mib = current_rss_mib()
         stats.max_rss_mib = max(stats.max_rss_mib, stats.current_rss_mib)
-    stats.message(f"{month}: complete packages={len(plans):,}")
+    return results
+
+
+def _wait_for_finalize_results(futures: Iterable[Future[Any]], *, stats: BuildStats, stop_event: threading.Event) -> None:
+    pending = set(futures)
+    while pending:
+        if stop_event.is_set():
+            _cancel_pending_futures(pending)
+            raise KeyboardInterrupt
+        done, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+        for future in done:
+            package_bytes = int(future.result())
+            with stats.lock:
+                stats.packages_done += 1
+                stats.bytes_written += package_bytes
+        stats.current_rss_mib = current_rss_mib()
+        stats.max_rss_mib = max(stats.max_rss_mib, stats.current_rss_mib)
 
 
 def _plan_month(*, args: argparse.Namespace, client_opts: Mapping[str, str], config: Any, window: Any, month: str) -> list[TickerMonthPlan]:
@@ -883,9 +936,11 @@ def _process_event_chunk(
     context_lags: tuple[int, ...],
     chunk: FetchChunk,
     events: Any,
+    stop_event: threading.Event,
 ) -> PartBuildResult:
     package_tmp = _package_tmp_dir(cache_root, args.split, chunk.month, chunk.ticker)
     package_tmp.mkdir(parents=True, exist_ok=True)
+    _raise_if_stopped(stop_event)
     _task_update(
         stage="window-index",
         cpu_done=0,
@@ -904,6 +959,7 @@ def _process_event_chunk(
         origin_ordinal_end=int(chunk.origin_ordinal_end),
         month_min_ordinal=int(chunk.origin_ordinal_start),
     )
+    _raise_if_stopped(stop_event)
     _task_update(cpu_done=1, stage="write-parts", message=f"origins={origins.height:,} windows={windows.height:,}")
     files = {
         "events": f"events_part_{chunk.part_id:05d}.parquet",
@@ -921,6 +977,7 @@ def _process_event_chunk(
         ),
         start=1,
     ):
+        _raise_if_stopped(stop_event)
         writes.append(_write_parquet(frame, package_tmp / files[key]))
         _task_update(write_done=idx, message=f"wrote {key} rows={frame.height:,}")
     return PartBuildResult(
@@ -942,7 +999,7 @@ def _process_event_chunk(
     )
 
 
-def _build_ticker_context(*, args: argparse.Namespace, client_opts: Mapping[str, str], config: Any, cache_root: Path, window: Any, plan: TickerMonthPlan) -> ContextBuildResult:
+def _build_ticker_context(*, args: argparse.Namespace, client_opts: Mapping[str, str], config: Any, cache_root: Path, window: Any, plan: TickerMonthPlan, stop_event: threading.Event) -> ContextBuildResult:
     package_tmp = _package_tmp_dir(cache_root, args.split, plan.month, plan.ticker)
     package_tmp.mkdir(parents=True, exist_ok=True)
     query_steps: list[tuple[str, Callable[[], Any]]] = [
@@ -955,6 +1012,7 @@ def _build_ticker_context(*, args: argparse.Namespace, client_opts: Mapping[str,
     _task_update(stage="context-query", context_done=0, context_total=len(query_steps), write_done=0, write_total=len(query_steps), message="querying ticker context")
     frames: dict[str, Any] = {}
     for idx, (key, query_fn) in enumerate(query_steps, start=1):
+        _raise_if_stopped(stop_event)
         _task_update(stage=f"query-{key}", message=f"querying {key}")
         frames[key] = query_fn()
         _task_update(context_done=idx, message=f"{key} rows={frames[key].height:,}")
@@ -963,6 +1021,7 @@ def _build_ticker_context(*, args: argparse.Namespace, client_opts: Mapping[str,
     bytes_written = 0
     _task_update(stage="context-write", message="writing context files")
     for idx, (key, frame) in enumerate(frames.items(), start=1):
+        _raise_if_stopped(stop_event)
         filename = f"{key}.parquet"
         result = _write_parquet(frame, package_tmp / filename)
         files[key] = filename
@@ -982,6 +1041,7 @@ def _finalize_package(
     part_results: list[PartBuildResult],
     context_result: ContextBuildResult,
     context_lags: tuple[int, ...],
+    stop_event: threading.Event,
 ) -> int:
     pl = _polars()
     package_tmp = _package_tmp_dir(cache_root, args.split, plan.month, plan.ticker)
@@ -1000,16 +1060,22 @@ def _finalize_package(
         write_total=max(1, len(part_results) + 3),
         message=f"reading {len(part_results):,} event parts",
     )
+    _raise_if_stopped(stop_event)
     event_frames = [pl.read_parquet(package_tmp / item.files["events"]) for item in part_results]
     _task_update(stage="finalize-concat", cpu_done=1, message=f"concatenating {len(event_frames):,} event parts")
+    _raise_if_stopped(stop_event)
     events_all = pl.concat(event_frames, how="vertical").sort(["ticker", "ordinal"]).unique(subset=["ticker", "ordinal"], keep="first", maintain_order=True)
     _task_update(stage="build-bars", cpu_done=2, message=f"building bars from {events_all.height:,} events")
+    _raise_if_stopped(stop_event)
     intraday_bars = _build_intraday_base_bars(events_all)
     _task_update(stage="build-conditions", cpu_done=3, message=f"bars={intraday_bars.height:,}; building condition events")
+    _raise_if_stopped(stop_event)
     condition_events = _build_intraday_condition_events(events_all)
     _task_update(stage="write-bars", cpu_done=4, message=f"condition rows={condition_events.height:,}")
+    _raise_if_stopped(stop_event)
     intraday_write = _write_parquet(intraday_bars, package_tmp / "intraday_base_bars.parquet")
     _task_update(write_done=1, message=f"wrote intraday_base_bars rows={intraday_bars.height:,}")
+    _raise_if_stopped(stop_event)
     condition_write = _write_parquet(condition_events, package_tmp / "intraday_condition_events.parquet")
     _task_update(write_done=2, message=f"wrote condition_events rows={condition_events.height:,}")
     corporate_actions_path = package_tmp / context_result.files.get("corporate_actions", "corporate_actions.parquet")
@@ -1021,6 +1087,7 @@ def _finalize_package(
     total_skipped_history = 0
     total_skipped_gap = 0
     for label_idx, result in enumerate(part_results, start=1):
+        _raise_if_stopped(stop_event)
         _task_update(stage="daily-labels", message=f"part {label_idx:,}/{len(part_results):,} corporate labels")
         origins = pl.read_parquet(package_tmp / result.files["origins"])
         labels = _build_corporate_action_daily_labels(origins, corporate_actions, label_days)
@@ -1091,9 +1158,11 @@ def _finalize_package(
         "byte_count": int(directory_size(package_tmp)),
     }
     _task_update(stage="manifest", message="writing package manifest")
+    _raise_if_stopped(stop_event)
     write_json_atomic(package_tmp / "manifest.json", manifest)
     final_dir = ticker_package_dir(month_dir_for(cache_root, args.split, plan.month), plan.ticker)
     _task_update(stage="replace", write_done=len(part_results) + 3, message="publishing package directory")
+    _raise_if_stopped(stop_event)
     replace_complete_dir(package_tmp, final_dir, resume=bool(args.resume))
     return int(directory_size(final_dir))
 
