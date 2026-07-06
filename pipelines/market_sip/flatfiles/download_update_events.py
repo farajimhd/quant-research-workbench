@@ -1491,6 +1491,7 @@ def day_event_integrity_counts(
     client: ClickHouseHttpClient,
     args: argparse.Namespace,
     day: DayFiles,
+    build_step: int,
     first_us: int,
     last_us: int,
 ) -> dict[str, int]:
@@ -1502,6 +1503,11 @@ def day_event_integrity_counts(
             date.fromordinal(source.toordinal() + 1).isoformat(),
         )
     )
+    settings_sql = query_settings(args)
+    if settings_sql.strip():
+        settings_sql = settings_sql.replace("SETTINGS ", "SETTINGS join_use_nulls = 1, ", 1)
+    else:
+        settings_sql = "\nSETTINGS join_use_nulls = 1"
     row = first_tsv_row(
         client,
         f"""
@@ -1526,16 +1532,39 @@ ordered AS
         lagInFrame(ordinal) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_ordinal,
         lagInFrame(sip_timestamp_us) OVER (PARTITION BY ticker ORDER BY ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS prev_ts
     FROM scoped
+),
+event_by_ticker AS
+(
+    SELECT
+        ticker,
+        count() AS event_rows,
+        count() - uniqExact(ordinal) AS duplicate_ticker_ordinal_rows,
+        countIf(prev_ordinal != 0 AND ordinal = prev_ordinal) AS repeated_ordinal_transitions,
+        countIf(prev_ordinal != 0 AND ordinal < prev_ordinal) AS ordinal_backsteps,
+        countIf(prev_ordinal != 0 AND ordinal > prev_ordinal + 1) AS ordinal_gap_transitions,
+        countIf(prev_ts != 0 AND sip_timestamp_us < prev_ts) AS timestamp_backsteps
+    FROM ordered
+    GROUP BY ticker
+),
+continuity_by_ticker AS
+(
+    SELECT ticker, argMax(event_count, updated_at) AS continuity_rows
+    FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+    WHERE build_step = toUInt32({int(build_step)})
+      AND source_date = toDate({sql_string(day.source_date)})
+    GROUP BY ticker
 )
 SELECT
-    (SELECT count() FROM scoped) AS rows,
-    (SELECT count() - uniqExact(ticker, ordinal) FROM scoped) AS duplicate_ticker_ordinal_rows,
-    countIf(prev_ordinal != 0 AND ordinal = prev_ordinal) AS repeated_ordinal_transitions,
-    countIf(prev_ordinal != 0 AND ordinal < prev_ordinal) AS ordinal_backsteps,
-    countIf(prev_ordinal != 0 AND ordinal > prev_ordinal + 1) AS ordinal_gap_transitions,
-    countIf(prev_ts != 0 AND sip_timestamp_us < prev_ts) AS timestamp_backsteps
-FROM ordered
-{query_settings(args)}
+    coalesce(sum(coalesce(e.event_rows, toUInt64(0))), toUInt64(0)) AS rows,
+    coalesce(sum(coalesce(e.duplicate_ticker_ordinal_rows, toUInt64(0))), toUInt64(0)) AS duplicate_ticker_ordinal_rows,
+    coalesce(sum(coalesce(e.repeated_ordinal_transitions, toUInt64(0))), toUInt64(0)) AS repeated_ordinal_transitions,
+    coalesce(sum(coalesce(e.ordinal_backsteps, toUInt64(0))), toUInt64(0)) AS ordinal_backsteps,
+    coalesce(sum(coalesce(e.ordinal_gap_transitions, toUInt64(0))), toUInt64(0)) AS ordinal_gap_transitions,
+    coalesce(sum(coalesce(e.timestamp_backsteps, toUInt64(0))), toUInt64(0)) AS timestamp_backsteps,
+    countIf(coalesce(e.event_rows, toUInt64(0)) != coalesce(c.continuity_rows, toUInt64(0))) AS event_continuity_mismatches
+FROM event_by_ticker AS e
+FULL OUTER JOIN continuity_by_ticker AS c ON c.ticker = e.ticker
+{settings_sql}
 """,
     )
     keys = [
@@ -1545,61 +1574,11 @@ FROM ordered
         "ordinal_backsteps",
         "ordinal_gap_transitions",
         "timestamp_backsteps",
+        "event_continuity_mismatches",
     ]
     if not row:
         return {key: 0 for key in keys}
     return {key: int(float(value or 0)) for key, value in zip(keys, row, strict=False)}
-
-
-def query_event_continuity_mismatches(
-    client: ClickHouseHttpClient,
-    args: argparse.Namespace,
-    day: DayFiles,
-    build_step: int,
-    first_us: int,
-    last_us: int,
-) -> int:
-    source = date.fromisoformat(day.source_date)
-    allowed_dates = ", ".join(
-        sql_string(value)
-        for value in (
-            source.isoformat(),
-            date.fromordinal(source.toordinal() + 1).isoformat(),
-        )
-    )
-    row = first_tsv_row(
-        client,
-        f"""
-SELECT count()
-FROM
-(
-    SELECT
-        coalesce(e.ticker, c.ticker) AS ticker,
-        coalesce(e.event_rows, toUInt64(0)) AS event_rows,
-        coalesce(c.continuity_rows, toUInt64(0)) AS continuity_rows
-    FROM
-    (
-        SELECT ticker, count() AS event_rows
-        FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
-        WHERE sip_timestamp_us >= toUInt64({int(first_us)})
-          AND sip_timestamp_us <= toUInt64({int(last_us)})
-          AND event_date IN ({allowed_dates})
-        GROUP BY ticker
-    ) AS e
-    FULL OUTER JOIN
-    (
-        SELECT ticker, argMax(event_count, updated_at) AS continuity_rows
-        FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
-        WHERE build_step = toUInt32({int(build_step)})
-          AND source_date = toDate({sql_string(day.source_date)})
-        GROUP BY ticker
-    ) AS c ON c.ticker = e.ticker
-)
-WHERE event_rows != continuity_rows
-SETTINGS join_use_nulls = 1
-""",
-    )
-    return int(float(row[0] or 0)) if row else 0
 
 
 def validate_day_event_integrity(
@@ -1627,8 +1606,8 @@ def validate_day_event_integrity(
         append_jsonl(report_path, audit)
         raise RuntimeError(f"day={day.source_date} has no continuity timestamp bounds for event integrity audit.")
     first_us, last_us = bounds
-    counts = day_event_integrity_counts(client, args, day, first_us, last_us)
-    event_continuity_mismatches = query_event_continuity_mismatches(client, args, day, build_step, first_us, last_us)
+    counts = day_event_integrity_counts(client, args, day, build_step, first_us, last_us)
+    event_continuity_mismatches = counts.get("event_continuity_mismatches", 0)
     audit.update(
         {
             "first_sip_timestamp_us": first_us,
