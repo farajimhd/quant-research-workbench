@@ -22,6 +22,7 @@ Text Embed, IBKR Supervisor, Market AI, and future data services in this repo.
   - [Maintenance Runner](#maintenance-runner)
   - [Cross-Service Dependency Rules](#cross-service-dependency-rules)
 - [Storage Rule](#storage-rule)
+- [Market Session Source Of Truth](#market-session-source-of-truth)
 - [Active Collection Window](#active-collection-window)
 - [Backfill Policy](#backfill-policy)
 - [Queue Policy](#queue-policy)
@@ -235,6 +236,8 @@ fundamentals, issuer identity, or final trading signals.
 
 - Massive websocket stock trades and quotes, normally wildcard `T.*` and `Q.*`.
 - Massive REST trades/quotes for recent q_live gap repair.
+- Massive market status and holiday endpoints for session state, startup
+  maintenance scheduling, and terminal/API market-state display.
 - `market_sip_compact.events_<year>` tables for historical flatfile event data.
   The correct table is selected by event year, for example
   `market_sip_compact.events_2026` for 2026 events.
@@ -376,7 +379,8 @@ background workers, writes canonical rows, and serves recent news to the app.
 
 - Massive-served Benzinga REST endpoint.
 - Approved external article/PDF/plain-text URLs discovered from Benzinga items.
-- Massive market status and holiday endpoints for active/closed cadence.
+- Massive market status and holiday endpoints for active/closed cadence and
+  startup/after-hours maintenance policy.
 
 **Sinks and durable contracts:**
 
@@ -512,6 +516,8 @@ a high-frequency ingest service.
 - Massive short interest, splits, dividends, IPOs, market snapshots, floats,
   and presentation assets.
 - SEC fails-to-deliver and country evidence where implemented.
+- Massive market status and holiday endpoints for source-sync cadence,
+  maintenance scheduling, and terminal/API market-state display.
 
 **Sinks and table groups:**
 
@@ -595,6 +601,8 @@ pooling, and ClickHouse contracts as the historical builders.
 - `q_live.id_sec_market_bridge_v1`.
 - Historical-compatible context tables in `market_sip_compact`.
 - Local Qwen tokenizer/model artifacts.
+- Massive market status and holiday endpoints for live/closed/weekend polling
+  cadence and historical-work scheduling.
 
 **Sinks and durable contracts:**
 
@@ -655,6 +663,10 @@ and does not own trading orders.
 - Local Client Portal Gateway install path and `run.bat`.
 - IBKR CPAPI auth/status, reauth, accounts, and tickle endpoints.
 - Playwright login helper when automated login is enabled.
+- Massive market status and holiday endpoints for terminal/API session context
+  and any non-auth maintenance scheduling. Broker keepalive/auth checks remain
+  on fixed IBKR cadences because they protect the CPAPI session independently of
+  equity market hours.
 
 **Sinks and durable contracts:**
 
@@ -699,6 +711,9 @@ and returns labels with model/taxonomy/prompt versions.
 - Normalized article request body from a caller.
 - Local model artifacts under the configured model root.
 - Optional OpenAI-compatible local LLM endpoint such as vLLM.
+- Massive market status and holiday endpoints when the service adds scheduled
+  warmup, cache refresh, batch inference, or maintenance work. Request-time
+  classification remains caller-driven.
 
 **Sinks and durable contracts:**
 
@@ -732,6 +747,8 @@ and publishes predictions when a production publishing contract is defined.
 - QMD compact-event websocket.
 - Synthetic or historical replay iterator for validation/training reuse.
 - Production model checkpoints once configured.
+- Massive market status and holiday endpoints for session labeling, live versus
+  closed scheduling, warmup policy, and maintenance/replay timing.
 
 **Sinks and durable contracts:**
 
@@ -775,6 +792,8 @@ same service-specific gap-fill commands the gateways use.
 - News coverage manifest and Benzinga provider.
 - SEC coverage manifest and SEC historical sources.
 - Reference publication coverage and publication source tables.
+- Massive market status and holiday endpoints for the shared after-hours
+  maintenance decision.
 
 **Sinks:**
 
@@ -785,7 +804,8 @@ same service-specific gap-fill commands the gateways use.
 **Policy:**
 
 - Do not stop or restart live services.
-- Use shared active collection window and market-hours provider.
+- Use the shared active collection window and Massive market status/holiday
+  provider.
 - Auto-run is allowed only when the operator enables it and policy allows.
 - Generated commands must use the same service-specific code path as live
   gateway gap fills.
@@ -835,6 +855,37 @@ From the laptop, services should use:
 
 If that storage is not available, the service should fail with a clear message.
 It must not silently write service artifacts to laptop-local storage.
+
+## Market Session Source Of Truth
+
+All services must use the same market-session source for cadence and
+maintenance decisions:
+
+```text
+Massive market status endpoint
+Massive market holidays/upcoming endpoint
+```
+
+The local New York extended-hours clock is only a fallback when Massive status
+is temporarily unavailable. It must not become a separate source of truth for
+one service while other services use Massive. The goal is that QMD, News, SEC,
+Reference, Text Embed, IBKR Supervisor, Market AI, News Intelligence, and the
+maintenance runner all agree on whether the system is in active collection,
+closed-market, holiday, early-close, or maintenance mode.
+
+Service rules:
+
+- Scheduled polling, source sync, background reconciliation, gap fill,
+  after-hours maintenance, and terminal/API market-state display use Massive
+  status/holiday data.
+- Services may use domain-specific fixed cadences only when the task is not a
+  market-data cadence. Example: IBKR `/tickle` and auth checks protect the
+  broker session and stay on fixed broker cadences.
+- If Massive status is unavailable, the service should continue only if it can
+  safely use the documented local fallback. The dashboard and JSONL log must
+  show that the market state is fallback-derived.
+- Market-session state should be exposed in `/snapshot/status` and the standard
+  terminal header/current-operation panels.
 
 ## Active Collection Window
 
