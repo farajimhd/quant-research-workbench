@@ -9,10 +9,11 @@ from zoneinfo import ZoneInfo
 
 from rich import box
 from rich.console import Console, Group
-from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 
+from services.gateway_core.dashboard import build_dashboard_snapshot
+from services.gateway_core.rich_renderer import render_standard_snapshot, standard_live, status_color, style_status, status_label
 from services.reference_gateway.audit import ReferenceAuditReport
 from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.policy import ReferenceWritePolicy
@@ -49,13 +50,11 @@ class ReferenceTerminalSession:
     def __init__(self, record: ReferenceRunRecord, *, console: Console | None = None, screen: bool = False) -> None:
         self.record = record
         self.console = console or Console()
-        self.live = Live(
+        self.live = standard_live(
             render_reference_dashboard(record),
             console=self.console,
-            auto_refresh=False,
-            transient=False,
             screen=screen,
-            vertical_overflow="crop",
+            refresh_seconds=0.5,
         )
         self.started = False
         self.last_update_at = 0.0
@@ -92,9 +91,7 @@ def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
     roomy = terminal_width >= 190 and terminal_height >= 62
     if compact:
         return Group(
-            header_panel(record),
-            current_operation_panel(record),
-            overview_panel(record),
+            render_standard_snapshot(reference_standard_snapshot(record)),
             source_sync_panel(record, compact=True),
             source_coverage_panel(record, limit=8),
             reference_tables_panel(record, limit=6, detail_rows=False),
@@ -103,9 +100,7 @@ def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
         )
     if narrow or not roomy:
         return Group(
-            header_panel(record),
-            current_operation_panel(record),
-            overview_panel(record),
+            render_standard_snapshot(reference_standard_snapshot(record)),
             source_sync_panel(record, compact=True),
             source_coverage_panel(record, limit=12),
             reference_tables_panel(record, limit=9, detail_rows=False),
@@ -114,9 +109,7 @@ def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
             audit_aggregate_panel(record, limit=4),
         )
     return Group(
-        header_panel(record),
-        current_operation_panel(record),
-        overview_panel(record),
+        render_standard_snapshot(reference_standard_snapshot(record)),
         source_sync_panel(record, compact=False),
         source_coverage_panel(record, limit=20),
         reference_tables_panel(record, limit=12, detail_rows=True),
@@ -124,6 +117,45 @@ def render_reference_dashboard(record: ReferenceRunRecord) -> Group:
         operations_panel(record.operations, limit=10),
         audit_aggregate_panel(record, limit=4),
         audit_findings_panel(record, limit=6),
+    )
+
+
+def reference_standard_snapshot(record: ReferenceRunRecord) -> dict[str, Any]:
+    latest = last_operation(record)
+    metrics = {
+        "current_phase": latest.name if latest else "starting",
+        "current_phase_message": latest.detail if latest else "",
+        "status": record.final_status,
+        "audit_status": record.audit.status if record.audit else "not_started",
+        "source_rows_fetched": sum(state.rows or 0 for state in record.source_states),
+        "tasks": [
+            {"name": op.name, "status": op.status, "rows": op.rows, "seconds": op.seconds, "message": op.detail}
+            for op in record.operations
+        ],
+    }
+    sources = [
+        {"name": state.source, "status": state.status, "rows": state.rows, "detail": state.note, "coverage": state.coverage, "targets": state.targets}
+        for state in record.source_states
+    ]
+    return build_dashboard_snapshot(
+        service_name="reference_gateway",
+        config=record.config,
+        metrics=metrics,
+        sources_sinks=sources,
+        service_specific={
+            "source_states": sources,
+            "table_states": [
+                {
+                    "group": state.group_id,
+                    "status": state.status,
+                    "rows": state.rows,
+                    "tables_present": state.tables_present,
+                    "tables_total": state.tables_total,
+                    "latest_update": state.latest_update,
+                }
+                for state in record.table_states
+            ],
+        },
     )
 
 
@@ -458,28 +490,6 @@ def audit_aggregate_panel(record: ReferenceRunRecord, *, limit: int) -> Panel:
         table.add_row("[dim]more[/dim]", "-", fmt(hidden), "-", "Additional audit warnings/errors hidden in this view.")
 
     return Panel(table, title="Audit Issue Summary", box=box.ROUNDED, border_style=status_color(audit.status), padding=(0, 1))
-
-
-def style_status(value: str) -> str:
-    color = status_color(value)
-    return f"[{color}]{status_label(value)}[/{color}]"
-
-
-def status_color(value: str) -> str:
-    lowered = str(value or "").lower()
-    if lowered in {"ok", "completed", "pass", "allowed", "done", "success", "auto"}:
-        return "green"
-    if lowered in {"failed", "error", "blocked"}:
-        return "red"
-    if lowered in {"warning", "warn", "skipped", "source_not_yet_available", "deferred", "skip", "stale", "missing"}:
-        return "yellow"
-    if lowered in {"planned", "empty", "partial"}:
-        return "cyan"
-    return "cyan"
-
-
-def status_label(value: str) -> str:
-    return str(value or "-").replace("_", " ").upper()
 
 
 def severity_label(value: str) -> str:

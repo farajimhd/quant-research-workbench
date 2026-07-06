@@ -7,9 +7,12 @@ from zoneinfo import ZoneInfo
 
 from rich import box
 from rich.console import Group
-from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
+
+from services.gateway_core.dashboard import build_dashboard_snapshot
+from services.gateway_core.rich_renderer import render_standard_snapshot
+from services.gateway_core.rich_renderer import standard_live, style_status
 
 if TYPE_CHECKING:
     from services.sec_gateway.gateway import SecGateway
@@ -21,7 +24,7 @@ VANCOUVER = ZoneInfo("America/Vancouver")
 
 async def run_terminal_dashboard(gateway: "SecGateway") -> None:
     refresh = max(0.25, gateway.config.terminal_refresh_seconds)
-    with Live(render_dashboard(gateway), auto_refresh=False, transient=False, screen=gateway.config.terminal_screen_enabled, vertical_overflow="crop") as live:
+    with standard_live(render_dashboard(gateway), screen=gateway.config.terminal_screen_enabled, refresh_seconds=refresh) as live:
         while not gateway._stop_event.is_set():  # noqa: SLF001
             live.update(render_dashboard(gateway), refresh=True)
             await asyncio.sleep(refresh)
@@ -29,12 +32,14 @@ async def run_terminal_dashboard(gateway: "SecGateway") -> None:
 
 def render_dashboard(gateway: "SecGateway") -> Group:
     metrics = gateway.snapshot_metrics()
+    standard = build_dashboard_snapshot(
+        service_name="sec_gateway",
+        config=gateway.config,
+        metrics=metrics,
+        recent_items=gateway.recent_snapshot(12),
+    )
     return Group(
-        header_panel(gateway, metrics),
-        status_panel(metrics),
-        preflight_panel(metrics),
-        runtime_panel(gateway, metrics),
-        gaps_panel(metrics),
+        render_standard_snapshot(standard),
         recent_table(gateway.recent_snapshot(12)),
     )
 
@@ -217,14 +222,3 @@ def full_time_text(value: Any) -> str:
 
 def local_short(value: datetime) -> str:
     return value.strftime("%m-%d %H:%M")
-
-
-def style_status(value: str) -> str:
-    lowered = value.lower()
-    if lowered in {"ok", "polling", "running"}:
-        return f"[green]{value}[/green]"
-    if lowered in {"failed", "error"}:
-        return f"[red]{value}[/red]"
-    if lowered in {"needs_action", "warn", "warning"}:
-        return f"[yellow]{value}[/yellow]"
-    return value

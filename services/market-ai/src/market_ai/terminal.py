@@ -6,31 +6,34 @@ from typing import TYPE_CHECKING, Any
 try:
     from rich import box
     from rich.console import Group
-    from rich.live import Live
     from rich.panel import Panel
     from rich.table import Table
+
+    from services.gateway_core.dashboard import build_dashboard_snapshot
+    from services.gateway_core.rich_renderer import render_standard_snapshot, standard_live, status_color
 except Exception:  # pragma: no cover - fallback is handled by caller.
     box = None
     Group = None
-    Live = None
     Panel = None
     Table = None
+    build_dashboard_snapshot = None
+    render_standard_snapshot = None
+    standard_live = None
+    status_color = None
 
 if TYPE_CHECKING:
     from market_ai.runtime import MarketAIService
 
 
 async def run_terminal_dashboard(service: "MarketAIService") -> None:
-    if Live is None:
+    if standard_live is None:
         await run_plain_dashboard(service)
         return
     refresh_seconds = service.service_config.terminal_refresh_seconds
-    with Live(
+    with standard_live(
         render_dashboard(service),
-        auto_refresh=False,
-        transient=False,
         screen=service.service_config.rich_screen,
-        vertical_overflow="crop",
+        refresh_seconds=refresh_seconds,
     ) as live:
         while not service.stop_event.is_set():
             live.update(render_dashboard(service), refresh=True)
@@ -55,8 +58,28 @@ async def run_plain_dashboard(service: "MarketAIService") -> None:
 
 def render_dashboard(service: "MarketAIService") -> Any:
     metrics = service.metrics.snapshot()
+    standard = (
+        render_standard_snapshot(
+            build_dashboard_snapshot(
+                service_name="market_ai",
+                config=service.service_config,
+                metrics={
+                    **metrics,
+                    "current_phase": metrics.get("source_status"),
+                    "current_phase_message": latest_message(metrics),
+                    "tasks": [
+                        {"name": "event ingest", "status": metrics.get("source_status"), "rows": metrics.get("events_received"), "message": service.service_config.source},
+                        {"name": "chunk creation", "status": metrics.get("source_status"), "rows": metrics.get("chunks_created"), "message": "model-dependent cache construction"},
+                        {"name": "prediction publish", "status": metrics.get("source_status"), "rows": metrics.get("predictions"), "message": "TBD until model is finalized"},
+                    ],
+                },
+            )
+        )
+        if build_dashboard_snapshot is not None and render_standard_snapshot is not None
+        else header_panel(service, metrics)
+    )
     return Group(
-        header_panel(service, metrics),
+        standard,
         throughput_panel(metrics),
         timing_panel(metrics),
         queue_panel(service, metrics),
@@ -64,12 +87,17 @@ def render_dashboard(service: "MarketAIService") -> Any:
     )
 
 
+def latest_message(metrics: dict[str, Any]) -> str:
+    rows = metrics.get("messages") or []
+    return str(rows[-1]) if rows else ""
+
+
 def header_panel(service: "MarketAIService", metrics: dict[str, Any]) -> Any:
     table = Table.grid(expand=True)
     table.add_column(ratio=2)
     table.add_column(justify="right", ratio=3)
     status = str(metrics.get("source_status") or "unknown")
-    color = "green" if status in {"running", "draining", "finished"} else "yellow"
+    color = status_color(status) if status_color is not None else "yellow"
     if metrics.get("errors"):
         color = "red"
     table.add_row(

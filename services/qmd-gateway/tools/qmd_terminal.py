@@ -32,18 +32,22 @@ try:
     from rich import box
     from rich.columns import Columns
     from rich.console import Group
-    from rich.live import Live
     from rich.panel import Panel
     from rich.table import Table
     from rich.text import Text
+
+    from services.gateway_core.rich_renderer import render_standard_snapshot, standard_live, status_color, style_status
 except Exception:  # pragma: no cover - fallback is for environments without rich.
     box = None
     Columns = None
     Group = None
-    Live = None
     Panel = None
     Table = None
     Text = None
+    standard_live = None
+    status_color = None
+    style_status = None
+    render_standard_snapshot = None
 
 
 EASTERN = ZoneInfo("America/New_York")
@@ -55,6 +59,7 @@ class PollState:
     base_url: str
     errors: list[str] = field(default_factory=list)
     health: dict[str, Any] = field(default_factory=dict)
+    status: dict[str, Any] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
     maintenance: dict[str, Any] = field(default_factory=dict)
     coverage: dict[str, Any] = field(default_factory=dict)
@@ -76,15 +81,12 @@ def main() -> int:
         refresh_seconds=max(0.25, float(args.refresh_seconds)),
     )
     watch = [item.strip().upper() for item in args.watch.split(",") if item.strip()]
-    if Live is None:
+    if standard_live is None:
         return run_plain(args, state, watch)
-    with Live(
+    with standard_live(
         render_dashboard(state, watch),
-        auto_refresh=False,
         screen=not args.no_screen,
-        transient=False,
-        vertical_overflow="crop",
-        refresh_per_second=4,
+        refresh_seconds=state.refresh_seconds,
     ) as live:
         while True:
             poll_once(
@@ -153,6 +155,7 @@ def poll_once(
     now = time.perf_counter()
     state.updated_at = datetime.now(UTC)
     state.health = get_json(state, "/health", timeout) or {}
+    state.status = get_json(state, "/snapshot/status", timeout) or {}
     metrics = get_json(state, "/metrics", timeout) or {}
     state.maintenance = get_json(state, "/snapshot/maintenance", timeout) or {}
     state.coverage = get_json(state, "/snapshot/coverage?limit=8", timeout) or {}
@@ -239,7 +242,7 @@ def render_dashboard(state: PollState, watch: list[str]) -> Any:
     messages = render_messages(state, limit=4 if compact else 6)
     if compact:
         return Group(
-            render_header(state),
+            render_standard_or_header(state),
             render_current_operation(state),
             messages,
             Columns(
@@ -250,7 +253,7 @@ def render_dashboard(state: PollState, watch: list[str]) -> Any:
             render_maintenance_progress(state),
         )
     return Group(
-        render_header(state),
+        render_standard_or_header(state),
         render_current_operation(state),
         messages,
         Columns(
@@ -267,6 +270,12 @@ def render_dashboard(state: PollState, watch: list[str]) -> Any:
         ),
         render_recent_events(state, watch),
     )
+
+
+def render_standard_or_header(state: PollState) -> Any:
+    if render_standard_snapshot is not None and state.status:
+        return render_standard_snapshot(state.status)
+    return render_header(state)
 
 
 def render_header(state: PollState) -> Any:
@@ -642,21 +651,9 @@ def market_detail(state: PollState) -> str:
 
 
 def status_text(value: str) -> str:
-    style = status_color(value)
-    return f"[{style}]{value}[/{style}]"
-
-
-def status_color(value: str) -> str:
-    lowered = value.lower()
-    if lowered in {"running", "ok", "up_to_date", "completed", "launched"}:
-        return "green"
-    if lowered in {"planned", "waiting", "skipped", "api_only_missing_massive_key", "awaiting_live_symbols"}:
-        return "yellow"
-    if lowered in {"no_symbols_available"}:
-        return "red"
-    if "fail" in lowered or "error" in lowered or "needs" in lowered or "blocked" in lowered:
-        return "red"
-    return "cyan"
+    if style_status is None:
+        return value
+    return style_status(value)
 
 
 def ok_label(ok: bool) -> str:

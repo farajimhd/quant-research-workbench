@@ -8,9 +8,11 @@ from zoneinfo import ZoneInfo
 from rich import box
 from rich.columns import Columns
 from rich.console import Group
-from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
+
+from services.gateway_core.dashboard import build_dashboard_snapshot
+from services.gateway_core.rich_renderer import render_standard_snapshot, standard_live, status_color
 
 if TYPE_CHECKING:
     from services.news_gateway.gateway import NewsGateway
@@ -23,12 +25,10 @@ VANCOUVER_TZ = ZoneInfo("America/Vancouver")
 async def run_terminal_dashboard(gateway: "NewsGateway") -> None:
     refresh_seconds = max(0.25, gateway.config.terminal_refresh_seconds)
     initial_snapshot: dict[str, Any] = {"rows": [], "limit": gateway.config.terminal_news_limit}
-    with Live(
+    with standard_live(
         render_dashboard(gateway, initial_snapshot),
-        auto_refresh=False,
-        transient=False,
         screen=gateway.config.terminal_screen_enabled,
-        vertical_overflow="crop",
+        refresh_seconds=refresh_seconds,
     ) as live:
         while not gateway._stop_event.is_set():  # noqa: SLF001
             snapshot = await gateway.state.recent_snapshot(gateway.config.terminal_news_limit)
@@ -39,17 +39,15 @@ async def run_terminal_dashboard(gateway: "NewsGateway") -> None:
 
 def render_dashboard(gateway: "NewsGateway", news_snapshot: dict[str, Any]) -> Group:
     metrics = gateway.snapshot_metrics()
-    now = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    standard = build_dashboard_snapshot(
+        service_name="news_gateway",
+        config=gateway.config,
+        metrics=metrics,
+        recent_items=news_snapshot,
+    )
     return Group(
-        header_panel(gateway, metrics, now),
-        phase_panel(metrics),
+        render_standard_snapshot(standard),
         progress_panel(metrics),
-        Columns(
-            [preflight_panel(metrics), metrics_panel(gateway, metrics)],
-            equal=True,
-            expand=True,
-        ),
-        gap_panel(metrics),
         news_table(news_snapshot),
     )
 
@@ -391,62 +389,6 @@ def compact_process_code(value: str) -> str:
     if "artifact" in text:
         return "ART"
     return text.replace("background_", "bg_").replace("provider_verified_", "").replace("_", "-")[:6].upper()
-
-
-def status_color(status: str) -> str:
-    text = status.strip().lower()
-    if text in {
-        "ok",
-        "no_rows",
-        "covered_by_live_lookback",
-        "no_watermark",
-        "polling",
-        "idle",
-        "live_write",
-        "live_coverage",
-        "shutdown_background_drained",
-        "shutdown_publish_drained",
-    }:
-        return "green"
-    if text in {
-        "starting",
-        "queued",
-        "publishing",
-        "processing",
-        "gap fill",
-        "stopping",
-        "not_started",
-        "completed_with_errors",
-        "warning",
-        "auto_started",
-        "workstation_auto_started_large_gap",
-        "manual_required_large_gap",
-        "preflight",
-        "coverage_bootstrap",
-        "coverage_gap_probe_plan",
-        "coverage_gap_probe",
-        "gap_planning",
-        "gap_fill",
-        "gap_fill_fetch",
-        "gap_fill_concurrent",
-        "gap_fill_progress",
-        "gap_fill_deferred_fetch",
-        "gap_fill_deferred_process",
-        "gap_fill_deferred_write",
-        "live_write",
-        "shutdown_waiting_for_workers",
-        "shutdown_waiting_for_background_news",
-        "shutdown_waiting_for_publish",
-        "live_background_queue",
-        "live_background_process",
-        "live_background_write",
-        "live_fetch",
-        "live_process",
-    }:
-        return "yellow"
-    if text in {"failed"} or "failed" in text:
-        return "red"
-    return "cyan"
 
 
 def gap_color(status: str) -> str:

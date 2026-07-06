@@ -8,12 +8,12 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from rich import box
-from rich.columns import Columns
 from rich.console import Group
-from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 
+from services.gateway_core.dashboard import build_dashboard_snapshot
+from services.gateway_core.rich_renderer import render_standard_snapshot, standard_live, status_color, style_status
 from services.ibkr_gateway_supervisor.config import IbkrGatewayConfig
 
 
@@ -56,16 +56,13 @@ class SupervisorTerminal:
     def __init__(self, config: IbkrGatewayConfig, state: SupervisorTerminalState) -> None:
         self.config = config
         self.state = state
-        self.live: Live | None = None
+        self.live: Any | None = None
 
     def start(self) -> None:
-        self.live = Live(
+        self.live = standard_live(
             render_dashboard(self.config, self.state),
-            auto_refresh=False,
-            transient=False,
             screen=self.config.terminal_screen_enabled,
-            vertical_overflow="crop",
-            refresh_per_second=max(1, int(1 / max(0.1, self.config.terminal_refresh_seconds))),
+            refresh_seconds=self.config.terminal_refresh_seconds,
         )
         self.live.start()
 
@@ -80,15 +77,48 @@ class SupervisorTerminal:
 
 
 def render_dashboard(config: IbkrGatewayConfig, state: SupervisorTerminalState) -> Group:
-    width, height = shutil.get_terminal_size((120, 40))
+    _width, height = shutil.get_terminal_size((120, 40))
     compact = height < 34
-    session = session_panel(config, state)
-    counters = counters_panel(state)
-    summary = Columns([session, counters], equal=True, expand=True) if width >= 150 else Group(session, counters)
-    main = [header_panel(config, state), operation_panel(state), summary, tickle_panel(config, state), log_panel(state), events_panel(state, limit=4 if compact else 8)]
+    main = [
+        render_standard_snapshot(ibkr_standard_snapshot(config, state)),
+        tickle_panel(config, state),
+        log_panel(state),
+        events_panel(state, limit=4 if compact else 8),
+    ]
     if not compact:
         main.insert(3, alerts_panel(state))
     return Group(*main)
+
+
+def ibkr_standard_snapshot(config: IbkrGatewayConfig, state: SupervisorTerminalState) -> dict[str, Any]:
+    metrics = {
+        "current_phase": state.current_operation,
+        "current_phase_message": state.last_error or state.last_tickle_error,
+        "status": overall_status(state),
+        "last_error": state.last_error,
+        "errors": len(state.error_history),
+        "poll_runs": state.tickle_count,
+        "poll_failures": state.tickle_failures,
+        "tasks": [
+            {"name": "gateway session", "status": state.gateway_status, "message": state.current_operation},
+            {"name": "authentication", "status": state.auth_status, "rows": state.auth_failures, "message": "auth status and reauthentication checks"},
+            {"name": "keepalive", "status": state.keepalive_status, "rows": state.tickle_count, "message": state.last_tickle_error},
+        ],
+    }
+    sources = [
+        {"name": "IBKR Client Portal", "status": state.gateway_status, "detail": f"pid={state.gateway_pid or '-'} listener={state.listener_pid or '-'}"},
+        {"name": "IBKR auth", "status": state.auth_status, "detail": f"http={state.status_code or '-'}"},
+        {"name": "IBKR keepalive", "status": state.keepalive_status, "detail": f"tickles={state.tickle_count} failures={state.tickle_failures}"},
+        {"name": "IBKR account", "status": state.account_status, "detail": config.account_key},
+    ]
+    return build_dashboard_snapshot(
+        service_name="ibkr_gateway_supervisor",
+        config=config,
+        metrics=metrics,
+        recent_items={"rows": list(state.recent_events)},
+        sources_sinks=sources,
+        service_specific={"event_log_path": state.event_log_path, "error_history": list(state.error_history)},
+    )
 
 
 def header_panel(config: IbkrGatewayConfig, state: SupervisorTerminalState) -> Panel:
@@ -247,24 +277,6 @@ def event_detail(row: dict[str, Any]) -> str:
             parts.append("ok" if result.get("ok") else "not ok")
         return " ".join(parts)
     return ""
-
-
-def style_status(value: str) -> str:
-    color = status_color(value)
-    return f"[{color}]{value or '-'}[/{color}]"
-
-
-def status_color(value: str) -> str:
-    lowered = str(value or "").lower()
-    if lowered in {"ok", "ready", "authenticated", "running"}:
-        return "green"
-    if lowered in {"failed", "error"}:
-        return "red"
-    if lowered in {"working", "warning", "unauthenticated", "waiting", "not_started", "unknown"}:
-        return "yellow"
-    if lowered in {"disabled"}:
-        return "dim"
-    return "cyan"
 
 
 def clock(value: datetime) -> str:

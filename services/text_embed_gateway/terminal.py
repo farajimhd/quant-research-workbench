@@ -7,9 +7,11 @@ from zoneinfo import ZoneInfo
 
 from rich import box
 from rich.console import Group
-from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
+
+from services.gateway_core.dashboard import build_dashboard_snapshot
+from services.gateway_core.rich_renderer import render_standard_snapshot, standard_live, status_color, style_status, status_label
 
 if TYPE_CHECKING:
     from services.text_embed_gateway.gateway import TextEmbedGateway
@@ -21,7 +23,7 @@ VANCOUVER = ZoneInfo("America/Vancouver")
 
 async def run_terminal_dashboard(gateway: "TextEmbedGateway") -> None:
     refresh = max(0.25, gateway.config.terminal_refresh_seconds)
-    with Live(render_dashboard(gateway), auto_refresh=False, transient=False, screen=gateway.config.terminal_screen_enabled, vertical_overflow="crop") as live:
+    with standard_live(render_dashboard(gateway), screen=gateway.config.terminal_screen_enabled, refresh_seconds=refresh) as live:
         while not gateway._stop_event.is_set():  # noqa: SLF001
             live.update(render_dashboard(gateway), refresh=True)
             await asyncio.sleep(refresh)
@@ -29,9 +31,14 @@ async def run_terminal_dashboard(gateway: "TextEmbedGateway") -> None:
 
 def render_dashboard(gateway: "TextEmbedGateway") -> Group:
     metrics = gateway.snapshot_metrics()
+    standard = build_dashboard_snapshot(
+        service_name="text_embed_gateway",
+        config=gateway.config,
+        metrics=metrics,
+        recent_items=gateway.recent_snapshot(12),
+    )
     return Group(
-        header_panel(gateway, metrics),
-        status_panel(metrics),
+        render_standard_snapshot(standard),
         work_focus_panel(metrics),
         progress_panel(metrics),
         cycle_summary_panel(metrics),
@@ -399,26 +406,6 @@ def source_label(source: str) -> str:
 def stage_label(stage: Any) -> str:
     text = str(stage or "")
     return text.replace("_", " ").title() if text else "-"
-
-
-def style_status(value: str) -> str:
-    color = status_color(value)
-    return f"[{color}]{status_label(value)}[/{color}]"
-
-
-def status_color(value: str) -> str:
-    lowered = value.lower()
-    if lowered in {"polling", "loaded", "schema", "running", "working"}:
-        return "green"
-    if lowered in {"failed", "error"}:
-        return "red"
-    if lowered in {"stopping", "releasing_model", "loading_model", "waiting"}:
-        return "yellow"
-    return "cyan"
-
-
-def status_label(value: str) -> str:
-    return value.replace("_", " ").upper() if value else "-"
 
 
 def clock(value: datetime) -> str:
