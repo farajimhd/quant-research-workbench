@@ -2084,22 +2084,47 @@ def write_source_day_stats(client: ClickHouseHttpClient, args: argparse.Namespac
     client.execute(insert_source_day_stats_sql(args, identity, stats))
 
 
+def raw_day_stats_sql(args: argparse.Namespace, day: DayFiles) -> str:
+    quote_path = windows_path_to_clickhouse_path(Path(day.quote_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
+    trade_path = windows_path_to_clickhouse_path(Path(day.trade_job.destination), Path(args.flatfiles_root_win), args.flatfiles_root_ch)
+    quote_predicate = quote_clean_predicate()
+    trade_predicate = trade_clean_predicate(args)
+    sip_us = "intDiv(toUInt64OrZero(sip_timestamp), 1000)"
+    return f"""
+SELECT
+    sum(quote_event_rows) AS quote_event_rows,
+    sum(trade_event_rows) AS trade_event_rows,
+    sum(event_rows) AS event_rows,
+    min(first_sip_timestamp_us) AS first_sip_timestamp_us,
+    max(last_sip_timestamp_us) AS last_sip_timestamp_us
+FROM
+(
+    SELECT
+        count() AS quote_event_rows,
+        toUInt64(0) AS trade_event_rows,
+        count() AS event_rows,
+        min({sip_us}) AS first_sip_timestamp_us,
+        max({sip_us}) AS last_sip_timestamp_us
+    FROM file({sql_string(quote_path)}, 'CSVWithNames', {sql_string(QUOTE_SCHEMA_STRING)})
+    WHERE {quote_predicate}
+    UNION ALL
+    SELECT
+        toUInt64(0) AS quote_event_rows,
+        count() AS trade_event_rows,
+        count() AS event_rows,
+        min({sip_us}) AS first_sip_timestamp_us,
+        max({sip_us}) AS last_sip_timestamp_us
+    FROM file({sql_string(trade_path)}, 'CSVWithNames', {sql_string(TRADE_SCHEMA_STRING)})
+    WHERE {trade_predicate}
+)
+{query_settings(args)}
+"""
+
+
 def query_raw_day_event_stats_uncached(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles) -> RawDayStats:
     row = first_tsv_row(
         client,
-        f"""
-SELECT
-    countIf(bitAnd(event_meta, 1) = 0),
-    countIf(bitAnd(event_meta, 1) = 1),
-    count(),
-    min(sip_timestamp_us),
-    max(sip_timestamp_us)
-FROM
-(
-{raw_event_union_sql(args, day)}
-)
-{query_settings(args)}
-""",
+        raw_day_stats_sql(args, day),
     )
     if not row:
         return RawDayStats(quote_rows=0, trade_rows=0, rows=0, first_sip_timestamp_us=0, last_sip_timestamp_us=0)
