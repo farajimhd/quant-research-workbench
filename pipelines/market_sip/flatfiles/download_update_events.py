@@ -123,7 +123,9 @@ DEFAULT_TEST_TABLE_PREFIX = "test_flatfile_event_update"
 DEFAULT_TEST_SAMPLE_SIZE = 100
 DEFAULT_DAY_RAW_AUDIT_SAMPLE_SIZE = 32
 DEFAULT_TICKER_DAY_INDEX_TABLE = "events_ticker_day_index"
+DEFAULT_SOURCE_DAY_STATS_TABLE = "events_source_day_stats"
 DEFAULT_DIRECT_MACRO_BAR_TIMEFRAMES = ("1d",)
+SOURCE_DAY_STATS_VERSION = 1
 
 SAFE_TEST_TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -143,9 +145,24 @@ class DayJob:
 
 @dataclass(frozen=True, slots=True)
 class RawDayStats:
+    quote_rows: int
+    trade_rows: int
     rows: int
     first_sip_timestamp_us: int
     last_sip_timestamp_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class SourceDayFileIdentity:
+    source_date: str
+    stats_version: int
+    source_filter_key: str
+    quote_file_path: str
+    quote_file_size: int
+    quote_file_mtime_ns: int
+    trade_file_path: str
+    trade_file_size: int
+    trade_file_mtime_ns: int
 
 
 def parse_args() -> argparse.Namespace:
@@ -164,6 +181,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest-table", default=DEFAULT_MANIFEST_TABLE)
     parser.add_argument("--continuity-table", default=DEFAULT_CONTINUITY_TABLE)
     parser.add_argument("--ticker-day-index-table", default=DEFAULT_TICKER_DAY_INDEX_TABLE)
+    parser.add_argument("--source-day-stats-table", default=DEFAULT_SOURCE_DAY_STATS_TABLE)
+    parser.add_argument("--refresh-source-day-stats", action="store_true")
+    parser.add_argument("--no-source-day-stats-cache", action="store_true")
     parser.add_argument("--macro-bars-table", default=DEFAULT_MACRO_BARS_TABLE)
     parser.add_argument("--bars-table", default=DEFAULT_BARS_TABLE)
     parser.add_argument("--bars-by-symbol-time-table", default=DEFAULT_BARS_BY_SYMBOL_TIME_TABLE)
@@ -1376,6 +1396,44 @@ ORDER BY (source_date, ticker)
 """
 
 
+def create_source_day_stats_table_sql(args: argparse.Namespace) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.source_day_stats_table)}
+(
+    source_date Date,
+    stats_version UInt32,
+    source_filter_key String,
+    quote_file_path String,
+    quote_file_size UInt64,
+    quote_file_mtime_ns UInt64,
+    trade_file_path String,
+    trade_file_size UInt64,
+    trade_file_mtime_ns UInt64,
+    quote_event_rows UInt64,
+    trade_event_rows UInt64,
+    total_event_rows_after_filters UInt64,
+    first_sip_timestamp_us UInt64,
+    last_sip_timestamp_us UInt64,
+    updated_at DateTime DEFAULT now()
+)
+ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(source_date)
+ORDER BY
+(
+    source_date,
+    stats_version,
+    source_filter_key,
+    quote_file_path,
+    quote_file_size,
+    quote_file_mtime_ns,
+    trade_file_path,
+    trade_file_size,
+    trade_file_mtime_ns
+)
+{mergetree_settings(args.storage_policy)}
+"""
+
+
 def validate_ticker_day_index_table_schema(client: ClickHouseHttpClient, args: argparse.Namespace) -> None:
     expected = {
         "ticker": "LowCardinality(String)",
@@ -1753,6 +1811,7 @@ def ensure_tables(client: ClickHouseHttpClient, args: argparse.Namespace, days: 
     client.execute(create_continuity_table_sql(args))
     ensure_continuity_table_columns(client, args)
     client.execute(create_ticker_day_index_table_sql(args))
+    client.execute(create_source_day_stats_table_sql(args))
     validate_ticker_day_index_table_schema(client, args)
 
 
@@ -1765,6 +1824,7 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
         DEFAULT_MANIFEST_TABLE,
         DEFAULT_CONTINUITY_TABLE,
         DEFAULT_TICKER_DAY_INDEX_TABLE,
+        DEFAULT_SOURCE_DAY_STATS_TABLE,
         DEFAULT_MACRO_BARS_TABLE,
         DEFAULT_BARS_TABLE,
         DEFAULT_BARS_BY_SYMBOL_TIME_TABLE,
@@ -1779,6 +1839,7 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
     args.manifest_table = f"{prefix}_{run_id}_manifest"
     args.continuity_table = f"{prefix}_{run_id}_continuity"
     args.ticker_day_index_table = f"{prefix}_{run_id}_ticker_day_index"
+    args.source_day_stats_table = f"{prefix}_{run_id}_source_day_stats"
     args.macro_bars_table = f"{prefix}_{run_id}_macro_bars_by_time_symbol"
     args.bars_table = f"{prefix}_{run_id}_bars"
     args.bars_by_symbol_time_table = f"{prefix}_{run_id}_bars_by_symbol_time"
@@ -1788,6 +1849,7 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
         args.manifest_table,
         args.continuity_table,
         args.ticker_day_index_table,
+        args.source_day_stats_table,
         args.macro_bars_table,
         args.bars_table,
         args.bars_by_symbol_time_table,
@@ -1798,6 +1860,7 @@ def configure_test_tables(args: argparse.Namespace, run_id: str) -> None:
             DEFAULT_MANIFEST_TABLE,
             DEFAULT_CONTINUITY_TABLE,
             DEFAULT_TICKER_DAY_INDEX_TABLE,
+            DEFAULT_SOURCE_DAY_STATS_TABLE,
             DEFAULT_MACRO_BARS_TABLE,
             DEFAULT_BARS_TABLE,
             DEFAULT_BARS_BY_SYMBOL_TIME_TABLE,
@@ -1818,6 +1881,7 @@ def drop_test_tables(client: ClickHouseHttpClient, args: argparse.Namespace) -> 
         args.manifest_table,
         args.continuity_table,
         args.ticker_day_index_table,
+        args.source_day_stats_table,
         args.macro_bars_table,
         args.bars_table,
         args.bars_by_symbol_time_table,
@@ -1917,11 +1981,116 @@ SETTINGS join_use_nulls = 1
     return int(float(row[0] or 0)) if row else 0
 
 
-def query_raw_day_event_stats(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles) -> RawDayStats:
+def source_filter_key(args: argparse.Namespace) -> str:
+    codes = ",".join(f"{code:02d}" for code in parse_trade_correction_codes(getattr(args, "drop_trade_correction_codes", "")))
+    return f"flatfile_direct_events_v{SOURCE_DAY_STATS_VERSION}|drop_trade_correction_codes={codes}|condition_slots={CONDITION_TOKEN_SLOTS}"
+
+
+def source_day_file_identity(args: argparse.Namespace, day: DayFiles) -> SourceDayFileIdentity:
+    quote_path = Path(day.quote_job.destination)
+    trade_path = Path(day.trade_job.destination)
+    quote_stat = quote_path.stat()
+    trade_stat = trade_path.stat()
+    return SourceDayFileIdentity(
+        source_date=day.source_date,
+        stats_version=SOURCE_DAY_STATS_VERSION,
+        source_filter_key=source_filter_key(args),
+        quote_file_path=str(quote_path),
+        quote_file_size=int(quote_stat.st_size),
+        quote_file_mtime_ns=int(quote_stat.st_mtime_ns),
+        trade_file_path=str(trade_path),
+        trade_file_size=int(trade_stat.st_size),
+        trade_file_mtime_ns=int(trade_stat.st_mtime_ns),
+    )
+
+
+def query_cached_source_day_stats(client: ClickHouseHttpClient, args: argparse.Namespace, identity: SourceDayFileIdentity) -> RawDayStats | None:
     row = first_tsv_row(
         client,
         f"""
 SELECT
+    argMax(quote_event_rows, updated_at),
+    argMax(trade_event_rows, updated_at),
+    argMax(total_event_rows_after_filters, updated_at),
+    argMax(first_sip_timestamp_us, updated_at),
+    argMax(last_sip_timestamp_us, updated_at)
+FROM {quote_ident(args.database)}.{quote_ident(args.source_day_stats_table)}
+WHERE source_date = toDate({sql_string(identity.source_date)})
+  AND stats_version = toUInt32({int(identity.stats_version)})
+  AND source_filter_key = {sql_string(identity.source_filter_key)}
+  AND quote_file_path = {sql_string(identity.quote_file_path)}
+  AND quote_file_size = toUInt64({int(identity.quote_file_size)})
+  AND quote_file_mtime_ns = toUInt64({int(identity.quote_file_mtime_ns)})
+  AND trade_file_path = {sql_string(identity.trade_file_path)}
+  AND trade_file_size = toUInt64({int(identity.trade_file_size)})
+  AND trade_file_mtime_ns = toUInt64({int(identity.trade_file_mtime_ns)})
+FORMAT TSV
+""",
+    )
+    if not row or len(row) != 5 or row[0] in {"", "\\N"}:
+        return None
+    stats = RawDayStats(
+        quote_rows=int(float(row[0] or 0)),
+        trade_rows=int(float(row[1] or 0)),
+        rows=int(float(row[2] or 0)),
+        first_sip_timestamp_us=int(float(row[3] or 0)),
+        last_sip_timestamp_us=int(float(row[4] or 0)),
+    )
+    if stats.rows <= 0 or stats.first_sip_timestamp_us <= 0 or stats.last_sip_timestamp_us < stats.first_sip_timestamp_us:
+        return None
+    if stats.rows != stats.quote_rows + stats.trade_rows:
+        return None
+    return stats
+
+
+def insert_source_day_stats_sql(args: argparse.Namespace, identity: SourceDayFileIdentity, stats: RawDayStats) -> str:
+    return f"""
+INSERT INTO {quote_ident(args.database)}.{quote_ident(args.source_day_stats_table)}
+(
+    source_date,
+    stats_version,
+    source_filter_key,
+    quote_file_path,
+    quote_file_size,
+    quote_file_mtime_ns,
+    trade_file_path,
+    trade_file_size,
+    trade_file_mtime_ns,
+    quote_event_rows,
+    trade_event_rows,
+    total_event_rows_after_filters,
+    first_sip_timestamp_us,
+    last_sip_timestamp_us
+)
+SELECT
+    toDate({sql_string(identity.source_date)}) AS source_date,
+    toUInt32({int(identity.stats_version)}) AS stats_version,
+    {sql_string(identity.source_filter_key)} AS source_filter_key,
+    {sql_string(identity.quote_file_path)} AS quote_file_path,
+    toUInt64({int(identity.quote_file_size)}) AS quote_file_size,
+    toUInt64({int(identity.quote_file_mtime_ns)}) AS quote_file_mtime_ns,
+    {sql_string(identity.trade_file_path)} AS trade_file_path,
+    toUInt64({int(identity.trade_file_size)}) AS trade_file_size,
+    toUInt64({int(identity.trade_file_mtime_ns)}) AS trade_file_mtime_ns,
+    toUInt64({int(stats.quote_rows)}) AS quote_event_rows,
+    toUInt64({int(stats.trade_rows)}) AS trade_event_rows,
+    toUInt64({int(stats.rows)}) AS total_event_rows_after_filters,
+    toUInt64({int(stats.first_sip_timestamp_us)}) AS first_sip_timestamp_us,
+    toUInt64({int(stats.last_sip_timestamp_us)}) AS last_sip_timestamp_us
+"""
+
+
+def write_source_day_stats(client: ClickHouseHttpClient, args: argparse.Namespace, identity: SourceDayFileIdentity, stats: RawDayStats) -> None:
+    client.execute(insert_source_day_stats_sql(args, identity, stats))
+
+
+def query_raw_day_event_stats_uncached(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles) -> RawDayStats:
+    row = first_tsv_row(
+        client,
+        f"""
+SELECT
+    countIf(bitAnd(event_meta, 1) = 0),
+    countIf(bitAnd(event_meta, 1) = 1),
     count(),
     min(sip_timestamp_us),
     max(sip_timestamp_us)
@@ -1933,11 +2102,60 @@ FROM
 """,
     )
     if not row:
-        return RawDayStats(rows=0, first_sip_timestamp_us=0, last_sip_timestamp_us=0)
-    rows = int(float(row[0] or 0))
-    first_us = int(float(row[1] or 0)) if row[1] not in {"", "\\N"} else 0
-    last_us = int(float(row[2] or 0)) if row[2] not in {"", "\\N"} else 0
-    return RawDayStats(rows=rows, first_sip_timestamp_us=first_us, last_sip_timestamp_us=last_us)
+        return RawDayStats(quote_rows=0, trade_rows=0, rows=0, first_sip_timestamp_us=0, last_sip_timestamp_us=0)
+    quote_rows = int(float(row[0] or 0))
+    trade_rows = int(float(row[1] or 0))
+    rows = int(float(row[2] or 0))
+    first_us = int(float(row[3] or 0)) if row[3] not in {"", "\\N"} else 0
+    last_us = int(float(row[4] or 0)) if row[4] not in {"", "\\N"} else 0
+    return RawDayStats(quote_rows=quote_rows, trade_rows=trade_rows, rows=rows, first_sip_timestamp_us=first_us, last_sip_timestamp_us=last_us)
+
+
+def query_raw_day_event_stats(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles, *, report_path: Path | None = None, context: str = "") -> RawDayStats:
+    use_cache = not bool(getattr(args, "no_source_day_stats_cache", False))
+    identity: SourceDayFileIdentity | None = None
+    if use_cache:
+        identity = source_day_file_identity(args, day)
+        if not bool(getattr(args, "refresh_source_day_stats", False)):
+            cached = query_cached_source_day_stats(client, args, identity)
+            if cached is not None:
+                if report_path is not None:
+                    append_jsonl(
+                        report_path,
+                        {
+                            "type": "source_day_stats_cache",
+                            "source_date": day.source_date,
+                            "source_day_stats_table": args.source_day_stats_table,
+                            "context": context,
+                            "status": "hit",
+                            "raw_event_rows": cached.rows,
+                            "quote_event_rows": cached.quote_rows,
+                            "trade_event_rows": cached.trade_rows,
+                            "first_sip_timestamp_us": cached.first_sip_timestamp_us,
+                            "last_sip_timestamp_us": cached.last_sip_timestamp_us,
+                        },
+                    )
+                return cached
+    stats = query_raw_day_event_stats_uncached(client, args, day)
+    if use_cache and identity is not None and stats.rows > 0 and stats.first_sip_timestamp_us > 0 and stats.last_sip_timestamp_us >= stats.first_sip_timestamp_us and stats.rows == stats.quote_rows + stats.trade_rows:
+        write_source_day_stats(client, args, identity, stats)
+        if report_path is not None:
+            append_jsonl(
+                report_path,
+                {
+                    "type": "source_day_stats_cache",
+                    "source_date": day.source_date,
+                    "source_day_stats_table": args.source_day_stats_table,
+                    "context": context,
+                    "status": "miss_written",
+                    "raw_event_rows": stats.rows,
+                    "quote_event_rows": stats.quote_rows,
+                    "trade_event_rows": stats.trade_rows,
+                    "first_sip_timestamp_us": stats.first_sip_timestamp_us,
+                    "last_sip_timestamp_us": stats.last_sip_timestamp_us,
+                },
+            )
+    return stats
 
 
 def query_raw_day_event_count(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles) -> int:
@@ -2409,6 +2627,7 @@ def audit_test_events(client: ClickHouseHttpClient, args: argparse.Namespace, da
         "manifest_table": args.manifest_table,
         "continuity_table": args.continuity_table,
         "ticker_day_index_table": args.ticker_day_index_table,
+        "source_day_stats_table": args.source_day_stats_table,
         "source_dates": [day.source_date for day in days],
         "counts": counts,
         "continuity_mismatches": continuity_mismatches,
@@ -2611,16 +2830,18 @@ def audit_raw_day_count(
     *,
     context: str,
 ) -> RawDayStats:
-    stats = query_raw_day_event_stats(client, args, day)
+    stats = query_raw_day_event_stats(client, args, day, report_path=report_path, context=context)
     audit = {
         "type": "day_raw_count_check",
         "source_date": day.source_date,
         "events_table": args.events_table,
         "context": context,
         "raw_event_rows": stats.rows,
+        "quote_event_rows": stats.quote_rows,
+        "trade_event_rows": stats.trade_rows,
         "first_sip_timestamp_us": stats.first_sip_timestamp_us,
         "last_sip_timestamp_us": stats.last_sip_timestamp_us,
-        "status": "ok" if stats.rows > 0 and stats.first_sip_timestamp_us > 0 and stats.last_sip_timestamp_us >= stats.first_sip_timestamp_us else "failed",
+        "status": "ok" if stats.rows > 0 and stats.rows == stats.quote_rows + stats.trade_rows and stats.first_sip_timestamp_us > 0 and stats.last_sip_timestamp_us >= stats.first_sip_timestamp_us else "failed",
     }
     append_jsonl(report_path, audit)
     if audit["status"] != "ok":
@@ -2960,12 +3181,18 @@ def main() -> None:
     if events_table_uses_year_suffix(str(args.events_table)):
         print("events_table_routing=yearly (source day YYYY -> events_YYYY)", flush=True)
     print(f"ticker_day_index_table={args.ticker_day_index_table}", flush=True)
+    print(
+        f"source_day_stats_table={args.source_day_stats_table} "
+        f"cache_enabled={not args.no_source_day_stats_cache} refresh={args.refresh_source_day_stats}",
+        flush=True,
+    )
     print(f"bar_tables={format_bar_tables(bar_tables)}", flush=True)
     print(f"test_mode={args.test_mode}", flush=True)
     if args.test_mode:
         print(
             f"test_tables manifest={args.manifest_table} continuity={args.continuity_table} "
-            f"ticker_day_index={args.ticker_day_index_table} macro_bars={format_bar_tables(bar_tables)} "
+            f"ticker_day_index={args.ticker_day_index_table} source_day_stats={args.source_day_stats_table} "
+            f"macro_bars={format_bar_tables(bar_tables)} "
             f"raw_csv_sample_size={args.test_sample_size}",
             flush=True,
         )
@@ -2993,7 +3220,8 @@ def main() -> None:
         reporter.log(f"report={report_path}")
         reporter.log(
             f"database={args.database} events_table={args.events_table} "
-            f"ticker_day_index={args.ticker_day_index_table} bars={format_bar_tables(bar_tables)} test_mode={args.test_mode}"
+            f"ticker_day_index={args.ticker_day_index_table} source_day_stats={args.source_day_stats_table} "
+            f"bars={format_bar_tables(bar_tables)} test_mode={args.test_mode}"
         )
         if events_table_uses_year_suffix(str(args.events_table)):
             reporter.log("events_table_routing=yearly (source day YYYY -> events_YYYY)")
@@ -3002,7 +3230,7 @@ def main() -> None:
             reporter.notice("Dropping same-run temp tables before isolated test build.", style="bold yellow")
             drop_test_tables(client, args)
         reporter.set_stage("ensure tables")
-        reporter.notice("Ensuring event, manifest, continuity, ticker/day index, and macro bar tables exist.", style="cyan")
+        reporter.notice("Ensuring event, manifest, source stats, continuity, ticker/day index, and macro bar tables exist.", style="cyan")
         ensure_tables(client, args, days)
 
         progress_queue: mp.Queue = mp.Queue()

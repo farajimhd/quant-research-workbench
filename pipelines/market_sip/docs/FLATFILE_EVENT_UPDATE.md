@@ -18,6 +18,8 @@ The pipeline writes:
 - downloaded quote/trade `.csv.gz` flatfiles on disk
 - unified event rows in `market_sip_compact.events_YYYY`
 - day build status rows in `market_sip_compact.events_build_manifest`
+- raw source-day file statistics in
+  `market_sip_compact.events_source_day_stats`
 - per-ticker ordinal carry-forward rows in
   `market_sip_compact.events_ordinal_continuity`
 - loader-facing per-ticker/day event index rows in
@@ -34,23 +36,27 @@ It does not write `market_sip_compact.quotes` or `market_sip_compact.trades`.
 2. Download missing or incomplete quote/trade flatfiles to the configured
    flatfile root with atomic `.part` replacement.
 3. Wait until both quote and trade files for a day are complete.
-4. For each completed day, in chronological order, have ClickHouse read the
+4. For each completed day, in chronological order, resolve raw source-day
+   metadata from `events_source_day_stats` when the exact quote/trade file
+   identity and filter version match. On a cache miss, compute the same metadata
+   from the raw files and persist it before continuing.
+5. Have ClickHouse read the
    quote/trade gzip CSV files through `file()`.
-5. Convert raw rows directly to the current `market_sip_compact.events_YYYY` schema:
+6. Convert raw rows directly to the current `market_sip_compact.events_YYYY` schema:
    price integer plus scale flags, size fields, exchanges, packed conditions,
    event type, event date, and SIP timestamp in microseconds.
-6. Filter rows that cannot be placed in the stream, such as blank ticker,
+7. Filter rows that cannot be placed in the stream, such as blank ticker,
    missing SIP timestamp, or missing sequence number. Rows with price, size, or
    crossed-quote issues are kept, but the affected numeric event fields are set
    to zero so condition/indicator signals such as halts are not lost.
-7. Assign ticker-local ordinals using `events_ordinal_continuity`.
-8. Write `events_build_manifest` and `events_ordinal_continuity` rows for the
+8. Assign ticker-local ordinals using `events_ordinal_continuity`.
+9. Write `events_build_manifest` and `events_ordinal_continuity` rows for the
    processed day.
-9. Rebuild the neutral ticker/day event index for that source day from the
+10. Rebuild the neutral ticker/day event index for that source day from the
    latest continuity state. This table is the loader-facing discovery/index
    table; train and validation periods are selected by the loader instead of
    being baked into table names.
-10. Rebuild daily macro bar rows for the successfully updated date range
+11. Rebuild daily macro bar rows for the successfully updated date range
    directly from the same yearly event table. The direct flatfile update default is `1d` only,
    which matches the current training data requirement. Daily bars use the New
    York extended-hours session, 04:00 ET through 20:00 ET, so the daily close is
@@ -95,6 +101,40 @@ only when a partial boundary bar is intentional.
 Downloads can run concurrently. Event insertion is intentionally chronological:
 each day depends on the previous continuity state, so concurrent day inserts
 would corrupt ordinals.
+
+## Source-Day Stats Cache
+
+`events_source_day_stats` is a raw input metadata cache, separate from
+`events_build_manifest`. The manifest records build attempts and status. The
+stats table records what is inside an exact quote/trade flatfile pair for the
+current source filter version:
+
+```text
+source_date
+stats_version
+source_filter_key
+quote_file_path
+quote_file_size
+quote_file_mtime_ns
+trade_file_path
+trade_file_size
+trade_file_mtime_ns
+quote_event_rows
+trade_event_rows
+total_event_rows_after_filters
+first_sip_timestamp_us
+last_sip_timestamp_us
+updated_at
+```
+
+The ingest reuses cached stats only when the file paths, sizes, mtimes,
+stats version, and filter key all match. Otherwise it recomputes the stats from
+the raw gzip CSV files using the same `raw_event_union_sql(...)` path used by
+the event insert. This preserves row-count and timestamp-bound correctness
+while avoiding repeated raw gzip scans after the stats are known.
+
+Use `--refresh-source-day-stats` to force recomputation and write a fresh stats
+row. Use `--no-source-day-stats-cache` to disable the cache path for a run.
 
 ## Loader-Facing Event Index
 
