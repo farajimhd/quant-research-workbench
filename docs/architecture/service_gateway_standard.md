@@ -3,6 +3,41 @@
 This document defines the operating convention for QMD, News, SEC, Reference,
 Text Embed, IBKR Supervisor, Market AI, and future data services in this repo.
 
+## Table Of Contents
+
+- [Core Principles](#core-principles)
+- [Shared Vocabulary](#shared-vocabulary)
+- [Required Lifecycle](#required-lifecycle)
+- [Shared Gateway Core](#shared-gateway-core)
+- [Service Designs](#service-designs)
+  - [Service Matrix](#service-matrix)
+  - [QMD Gateway](#qmd-gateway)
+  - [News Gateway](#news-gateway)
+  - [SEC Gateway](#sec-gateway)
+  - [Reference Gateway](#reference-gateway)
+  - [Text Embed Gateway](#text-embed-gateway)
+  - [IBKR Gateway Supervisor](#ibkr-gateway-supervisor)
+  - [News Intelligence Service](#news-intelligence-service)
+  - [Market AI Service](#market-ai-service)
+  - [Maintenance Runner](#maintenance-runner)
+  - [Cross-Service Dependency Rules](#cross-service-dependency-rules)
+- [Storage Rule](#storage-rule)
+- [Active Collection Window](#active-collection-window)
+- [Backfill Policy](#backfill-policy)
+- [Queue Policy](#queue-policy)
+- [Coverage Policy](#coverage-policy)
+- [Preflight Policy](#preflight-policy)
+- [Logging Policy](#logging-policy)
+- [Terminal Policy](#terminal-policy)
+  - [Status Vocabulary](#status-vocabulary)
+  - [Required Panels](#required-panels)
+  - [Rendering Policy](#rendering-policy)
+  - [Shared Dashboard State](#shared-dashboard-state)
+  - [Service-Specific Panels](#service-specific-panels)
+- [API Policy](#api-policy)
+- [Audit Policy](#audit-policy)
+- [Shared Config Groups](#shared-config-groups)
+
 ## Core Principles
 
 Services are independent reconcilers. A service should not depend on another
