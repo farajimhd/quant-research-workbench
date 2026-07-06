@@ -121,7 +121,7 @@ DEFAULT_DOWNLOAD_WORKERS = 8
 DEFAULT_MAX_THREADS = 32
 DEFAULT_TEST_TABLE_PREFIX = "test_flatfile_event_update"
 DEFAULT_TEST_SAMPLE_SIZE = 100
-DEFAULT_DAY_RAW_AUDIT_SAMPLE_SIZE = 4
+DEFAULT_DAY_RAW_AUDIT_SAMPLE_SIZE = 32
 DEFAULT_TICKER_DAY_INDEX_TABLE = "events_ticker_day_index"
 DEFAULT_DIRECT_MACRO_BAR_TIMEFRAMES = ("1d",)
 
@@ -1356,6 +1356,57 @@ FROM ordered
     return {key: int(float(value or 0)) for key, value in zip(keys, row, strict=False)}
 
 
+def query_event_continuity_mismatches(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    day: DayFiles,
+    build_step: int,
+    first_us: int,
+    last_us: int,
+) -> int:
+    source = date.fromisoformat(day.source_date)
+    allowed_dates = ", ".join(
+        sql_string(value)
+        for value in (
+            source.isoformat(),
+            date.fromordinal(source.toordinal() + 1).isoformat(),
+        )
+    )
+    row = first_tsv_row(
+        client,
+        f"""
+SELECT count()
+FROM
+(
+    SELECT
+        coalesce(e.ticker, c.ticker) AS ticker,
+        coalesce(e.event_rows, toUInt64(0)) AS event_rows,
+        coalesce(c.continuity_rows, toUInt64(0)) AS continuity_rows
+    FROM
+    (
+        SELECT ticker, count() AS event_rows
+        FROM {quote_ident(args.database)}.{quote_ident(args.events_table)}
+        WHERE sip_timestamp_us >= toUInt64({int(first_us)})
+          AND sip_timestamp_us <= toUInt64({int(last_us)})
+          AND event_date IN ({allowed_dates})
+        GROUP BY ticker
+    ) AS e
+    FULL OUTER JOIN
+    (
+        SELECT ticker, argMax(event_count, updated_at) AS continuity_rows
+        FROM {quote_ident(args.database)}.{quote_ident(args.continuity_table)}
+        WHERE build_step = toUInt32({int(build_step)})
+          AND source_date = toDate({sql_string(day.source_date)})
+        GROUP BY ticker
+    ) AS c ON c.ticker = e.ticker
+)
+WHERE event_rows != continuity_rows
+SETTINGS join_use_nulls = 1
+""",
+    )
+    return int(float(row[0] or 0)) if row else 0
+
+
 def validate_day_event_integrity(
     client: ClickHouseHttpClient,
     args: argparse.Namespace,
@@ -1364,6 +1415,7 @@ def validate_day_event_integrity(
     report_path: Path,
     *,
     context: str,
+    expected_event_rows: int | None = None,
 ) -> dict[str, int]:
     bounds = day_continuity_timestamp_bounds(client, args, day, build_step)
     audit: dict[str, Any] = {
@@ -1381,7 +1433,16 @@ def validate_day_event_integrity(
         raise RuntimeError(f"day={day.source_date} has no continuity timestamp bounds for event integrity audit.")
     first_us, last_us = bounds
     counts = day_event_integrity_counts(client, args, day, first_us, last_us)
-    audit.update({"first_sip_timestamp_us": first_us, "last_sip_timestamp_us": last_us, **counts})
+    event_continuity_mismatches = query_event_continuity_mismatches(client, args, day, build_step, first_us, last_us)
+    audit.update(
+        {
+            "first_sip_timestamp_us": first_us,
+            "last_sip_timestamp_us": last_us,
+            "expected_event_rows": expected_event_rows,
+            "event_continuity_mismatches": event_continuity_mismatches,
+            **counts,
+        }
+    )
     bad_keys = [
         "duplicate_ticker_ordinal_rows",
         "repeated_ordinal_transitions",
@@ -1390,6 +1451,10 @@ def validate_day_event_integrity(
         "timestamp_backsteps",
     ]
     failed = {key: counts.get(key, 0) for key in bad_keys if counts.get(key, 0)}
+    if expected_event_rows is not None and counts.get("rows", 0) != expected_event_rows:
+        failed["row_count_mismatch"] = {"actual": counts.get("rows", 0), "expected": expected_event_rows}
+    if event_continuity_mismatches:
+        failed["event_continuity_mismatches"] = event_continuity_mismatches
     if failed:
         audit["status"] = "failed"
         append_jsonl(report_path, audit)
@@ -1637,6 +1702,21 @@ FROM
 )
 WHERE raw_rows != continuity_rows
 SETTINGS join_use_nulls = 1
+""",
+    )
+    return int(float(row[0] or 0)) if row else 0
+
+
+def query_raw_day_event_count(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFiles) -> int:
+    row = first_tsv_row(
+        client,
+        f"""
+SELECT count()
+FROM
+(
+{raw_event_union_sql(args, day)}
+)
+{query_settings(args)}
 """,
     )
     return int(float(row[0] or 0)) if row else 0
@@ -2295,6 +2375,29 @@ def validate_day_continuity_after_insert(
     append_jsonl(report_path, audit)
 
 
+def audit_raw_day_count(
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    day: DayFiles,
+    report_path: Path,
+    *,
+    context: str,
+) -> int:
+    raw_rows = query_raw_day_event_count(client, args, day)
+    audit = {
+        "type": "day_raw_count_check",
+        "source_date": day.source_date,
+        "events_table": args.events_table,
+        "context": context,
+        "raw_event_rows": raw_rows,
+        "status": "ok" if raw_rows > 0 else "failed",
+    }
+    append_jsonl(report_path, audit)
+    if raw_rows <= 0:
+        raise RuntimeError(f"day={day.source_date} raw flatfile row-count audit found zero event rows; refusing to continue.")
+    return raw_rows
+
+
 def _run_profiled_with_reporter(
     client: ClickHouseHttpClient,
     label: str,
@@ -2325,9 +2428,18 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
     ensure_event_table(client, args)
     status = latest_day_status(client, args, job)
     if status == "ok" and not args.force_day_rebuild:
+        raw_rows = audit_raw_day_count(client, args, day, report_path, context="manifest_ok_skip")
         if reporter is not None:
             reporter.task_start(f"{day.source_date}:audit:events_existing", "validate existing event rows", day=day.source_date, stage="audit")
-        integrity_counts = validate_day_event_integrity(client, args, day, job.build_step, report_path, context="manifest_ok_skip")
+        integrity_counts = validate_day_event_integrity(
+            client,
+            args,
+            day,
+            job.build_step,
+            report_path,
+            context="manifest_ok_skip",
+            expected_event_rows=raw_rows,
+        )
         if reporter is not None:
             reporter.task_done(
                 f"{day.source_date}:audit:events_existing",
@@ -2385,7 +2497,13 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
 
     insert_day_manifest(client, args, job, status="started", run_id=run_id)
     try:
+        raw_rows = audit_raw_day_count(client, args, day, report_path, context="pre_insert")
         profile = _run_profiled_with_reporter(client, f"insert_events_from_flatfiles_{day.source_date}", insert_direct_day_sql(args, day, job.build_step), reporter, day=day.source_date, stage="events", detail="flatfile events")
+        if profile.written_rows is not None and int(profile.written_rows) != raw_rows:
+            raise RuntimeError(
+                f"day={day.source_date} inserted event rows {int(profile.written_rows):,} "
+                f"does not match raw flatfile event rows {raw_rows:,}."
+            )
         continuity_profile = _run_profiled_with_reporter(
             client,
             f"insert_events_continuity_from_flatfiles_{day.source_date}",
@@ -2397,11 +2515,19 @@ def run_day(client: ClickHouseHttpClient, args: argparse.Namespace, day: DayFile
         )
         if reporter is not None:
             reporter.task_start(f"{day.source_date}:audit:continuity", "validate continuity counts", day=day.source_date, stage="audit")
-        validate_day_continuity_after_insert(client, args, day, job.build_step, profile.written_rows, report_path)
+        validate_day_continuity_after_insert(client, args, day, job.build_step, raw_rows, report_path)
         if reporter is not None:
             reporter.task_done(f"{day.source_date}:audit:continuity", "ok", rows=profile.written_rows, detail="continuity sum matches event rows")
             reporter.task_start(f"{day.source_date}:audit:events", "validate event row integrity", day=day.source_date, stage="audit")
-        integrity_counts = validate_day_event_integrity(client, args, day, job.build_step, report_path, context="post_insert")
+        integrity_counts = validate_day_event_integrity(
+            client,
+            args,
+            day,
+            job.build_step,
+            report_path,
+            context="post_insert",
+            expected_event_rows=raw_rows,
+        )
         if reporter is not None:
             reporter.task_done(
                 f"{day.source_date}:audit:events",
