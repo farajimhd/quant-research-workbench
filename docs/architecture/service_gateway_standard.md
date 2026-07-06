@@ -36,6 +36,12 @@ Heavy historical work, bridge rebuilds, embedding extraction, publication
 maintenance, and model inference catch-up should run in background workers or
 after-hours maintenance unless the service is specifically an offline worker.
 
+Documentation in this standard must avoid unexplained engineering shorthand.
+When a term such as `backpressure`, `drop`, `fanout`, `canonical`, `coverage`,
+or `reconciliation` is used, the nearby text should explain the practical
+behavior. The reader should not need to infer implementation behavior from
+jargon.
+
 ## Shared Vocabulary
 
 All services should use the same names for the same operational concepts.
@@ -170,7 +176,7 @@ their implementation spreads into separate conventions.
 
 | Service | Type | Primary sources | Primary sinks | Cadence | Canonical responsibility |
 | --- | --- | --- | --- | --- | --- |
-| QMD Gateway | high-rate Rust streaming gateway | Massive stock websocket `T.*`, `Q.*`; Massive REST repair; historical `market_sip_compact` coverage | `q_live.events`, live continuity rows, live bars, abnormal market-state rows, QMD coverage tables, local streams | continuous websocket plus startup/after-hours repair | Lossless live market-event capture, bars, compact streams, and Massive-only scanner primitives. |
+| QMD Gateway | high-rate Rust streaming gateway | Massive stock websocket `T.*`, `Q.*`; Massive REST repair; historical `market_sip_compact.events_<year>` coverage | `q_live.events`, live continuity rows, 1d live bars, sparse abnormal market-state rows, QMD coverage tables, local streams | continuous websocket plus startup/after-hours repair | Lossless live market-event capture, 1d bar persistence, compact streams, and Massive-only scanner primitives. |
 | News Gateway | Python REST/text gateway | Massive-served Benzinga REST, approved external URL/PDF artifacts | `q_live.benzinga_news_normalized_v1`, `q_live.benzinga_news_ticker_v1`, coverage manifest, raw artifacts | market-aware polling | Canonical Benzinga news rows and ticker links with async enrichment. |
 | SEC Gateway | Python SEC filing gateway | SEC current Atom feed, submissions JSON, companyfacts JSON, daily archives | `q_live.sec_filing_v2`, `sec_filing_document_v2`, `sec_filing_text_v2`, SEC XBRL tables, SEC coverage | market-aware polling plus historical gap fill | Canonical SEC filing/text/XBRL rows. |
 | Reference Gateway | Python low-frequency reference reconciler | Massive reference endpoints, q_live identity tables, IBKR Client Portal, FINRA/SEC/Massive publications | identity graph, source mappings, issues, tradable/scanner publications, market reference publications, reference alerts | daemon cycles and after-hours maintenance | Keep market reference identity, conid/routing evidence, tradability publications, and slow reference publications coherent. |
@@ -194,38 +200,69 @@ fundamentals, issuer identity, or final trading signals.
 
 - Massive websocket stock trades and quotes, normally wildcard `T.*` and `Q.*`.
 - Massive REST trades/quotes for recent q_live gap repair.
-- `market_sip_compact.events` and
-  `market_sip_compact.events_ordinal_continuity` for historical flatfile
-  coverage planning and symbol-universe seeding.
+- `market_sip_compact.events_<year>` tables for historical flatfile event data.
+  The correct table is selected by event year, for example
+  `market_sip_compact.events_2026` for 2026 events.
+- Historical flatfile continuity/publication metadata created by the updated
+  `download_update_events.py` pipeline. That script is the authoritative
+  historical flatfile update path.
 - Local Massive reference files for quote/trade condition packing.
 
 **Sinks and durable contracts:**
 
-- `q_live.events`: compact live market event stream/table.
+- `q_live.events`: compact live market event stream/table for the current
+  short live-retention window. This table is not a permanent historical store.
+  The default retention is the current day plus 3 prior market days. Older rows
+  are stale after maintenance verifies that the corresponding
+  `market_sip_compact.events_<year>` table contains the same historical
+  coverage. After verification, maintenance should delete q_live rows older
+  than the retention window to protect SSD storage.
+- `q_live.events` schema/encoding is version-sensitive. If the compact event
+  encoding algorithm changes or a bug is found in the encoded structure, the
+  table may need to be recreated from a clean slate. Historical data should be
+  recovered from `market_sip_compact.events_<year>` plus the recent q_live
+  retention window, not by keeping stale encoded q_live rows forever.
 - `q_live.live_event_ordinal_continuity`: append-only ticker-local ordinal
   continuity snapshots.
-- `q_live.live_market_bars`: closed bars for configured timeframes.
+- `q_live.live_market_bars`: 1d bars only. Intraday bars can exist in memory,
+  streams, or downstream app caches, but the standard q_live persistent bar
+  contract is daily bars unless a separate durable intraday bar table is
+  explicitly designed.
 - `q_live.live_symbol_market_event_v1`: sparse abnormal state open/close audit
-  rows. Ordinary `normal` state is not persisted.
-- `q_live.qmd_live_event_coverage_v1`: recent live compact-event/bar coverage.
+  rows. Ordinary `normal` state is not persisted. The purpose of this table is
+  to retain compact exceptional state transitions such as halt/resume evidence,
+  estimated LULD near/breach transitions, or locked/crossed quote transitions
+  without scanning the full event stream. This table is justified only if the
+  trading app, audit process, or model review needs a durable record of these
+  sparse exceptional states. If no consumer uses it, it should be disabled or
+  removed rather than expanded into a large state table.
+- `q_live.qmd_live_event_coverage_v1`: recent live compact-event and 1d-bar
+  coverage.
 - `q_live.qmd_flatfile_event_coverage_v1`: historical flatfile coverage.
 - `q_live.qmd_gap_fill_symbol_universe_v1`: durable ticker queue for recent
   live repair.
 - `q_live.qmd_gap_fill_runs`: repair audit log.
-- Optional debug tables `live_massive_trades`, `live_massive_quotes`, and
-  `live_market_indicators` stay disabled by default unless a run explicitly
-  needs raw replay or materialized indicators.
+- Stale/non-standard tables `live_massive_trades`, `live_massive_quotes`, and
+  `live_market_indicators` must not be part of the standard QMD persistence
+  path. QMD should not persist raw quotes, raw trades, or materialized
+  indicators in q_live. Indicators are computed from events/bars in memory or
+  on demand from persisted bars/events.
 
 **Hot path policy:**
 
-- Required quote/trade paths use backpressure instead of dropping canonical
-  work.
-- Local websocket broadcasts are best effort and may report lag/skipped client
-  updates because consumers can recover from snapshots.
+- Required quote/trade paths must wait rather than discard data. Practically,
+  if a required internal queue is full, the websocket processing path slows down
+  until the required worker catches up. This is what this document means by
+  `backpressure`. It protects canonical market events from being silently lost.
+- Local websocket broadcasts are best effort. If a UI client is disconnected or
+  too slow, the service may skip sending some transient UI updates to that
+  client and report the skipped count. The canonical event is still processed
+  and persisted; only the temporary client message can be skipped.
 - Bar, indicator, scanner primitive, compact-event, and live-market-state work
   must receive the same normalized `MarketEvent` stream.
-- Indicators are kept in memory by default; persisted indicators should remain
-  disabled because current bar-level indicators can be recomputed from bars.
+- Indicators are kept in memory or computed later from bars/events. Persisted
+  indicator rows should remain removed from the standard service because they
+  duplicate data that can be reconstructed.
 
 **Coverage and gap fill:**
 
@@ -242,8 +279,17 @@ fundamentals, issuer identity, or final trading signals.
 - When no live symbols exist yet, QMD seeds the repair universe from the latest
   configured historical sessions; during streaming hours it also adds
   websocket-discovered symbols to the durable universe queue.
-- Historical flatfile gaps are planned from `market_sip_compact` coverage. QMD
-  must not merge q_live live rows into the historical flatfile database.
+- Historical flatfile gaps are planned from the year-partitioned
+  `market_sip_compact.events_<year>` tables and their continuity metadata. QMD
+  must not merge q_live live rows into the historical flatfile database. The
+  historical update path is `download_update_events.py`.
+- Daily maintenance must coordinate q_live retention with the flatfile update
+  path. Before q_live rows older than the 3-prior-market-day retention window
+  are deleted, maintenance must verify that the corresponding
+  `market_sip_compact.events_<year>` coverage exists. This allows the trading
+  app to read old history from `market_sip_compact.events_<year>` and use
+  `q_live.events` only for the current/recent window that flatfiles have not
+  safely covered yet.
 
 **Terminal/API:**
 
@@ -672,7 +718,7 @@ same service-specific gap-fill commands the gateways use.
 
 **Sources:**
 
-- QMD coverage and `market_sip_compact` source tables.
+- QMD coverage and `market_sip_compact.events_<year>` source tables.
 - News coverage manifest and Benzinga provider.
 - SEC coverage manifest and SEC historical sources.
 - Reference publication coverage and publication source tables.
@@ -698,7 +744,7 @@ requirements:
 
 | Producer | Consumer | Consumer action |
 | --- | --- | --- |
-| QMD compact events and bars | Market AI, trading app, maintenance | Consume snapshots/streams for inference and trading context; use q_live coverage for durable repair checks. |
+| QMD compact events and 1d bars | Market AI, trading app, maintenance | Consume snapshots/streams for inference and trading context; use q_live coverage for recent repair checks and `market_sip_compact.events_<year>` for historical event history. |
 | News normalized rows | Text Embed, trading app, News Intelligence caller | Reconcile missing tokens/embeddings or classify rows without requiring news gateway to emit a durable event. |
 | SEC filing/text/XBRL rows | Reference, Text Embed, trading app | Rebuild SEC-market bridge, build SEC context, tokenize/embed text, and expose filing/XBRL context. |
 | Reference identity/tradable publications | Trading app, scanner setup, QMD-adjacent consumers | Treat `is_tradable=0` as a hard reference block; live market-state blocks are separate runtime context. |
@@ -804,19 +850,26 @@ method for finding durable work.
 Queue sizes should be large enough that normal bursts do not create lag.
 However, a large in-memory queue is not the final reliability mechanism.
 
-Canonical data is lossless:
+Canonical data is lossless. Here, `lossless` means the service must not
+intentionally ignore, skip, or discard a source row that is part of the durable
+contract. If the service cannot process a required row immediately, it should
+slow intake, queue the work, spill to disk, fail loudly, or mark the service
+blocked. It should not silently continue as if the row never existed.
 
 - QMD canonical market events require a lossless capture path.
-- News canonical article rows must not be silently dropped.
-- SEC filing and XBRL rows must not be silently dropped.
+- News canonical article rows must not be silently ignored.
+- SEC filing and XBRL rows must not be silently ignored.
 
-Best-effort outputs may drop only when the consumer can recover from snapshots:
+Best-effort outputs may skip transient delivery only when the consumer can
+recover from snapshots or durable tables. In this context, `drop` means "do not
+send this temporary UI/websocket message to this slow or disconnected
+consumer"; it must not mean "lose the underlying canonical data."
 
 - UI websocket broadcasts
 - preview streams
 - transient dashboard updates
 
-Any best-effort drop must be counted in metrics and logs.
+Any best-effort skipped delivery must be counted in metrics and logs.
 
 For QMD, the target design is:
 
@@ -829,9 +882,11 @@ Massive websocket
 -> optional UI streams
 ```
 
-Bars, indicators, and scanners should derive from the canonical event stream.
-If they lag, the service should show replay lag and queue pressure rather than
-silently losing required data.
+Bars, scanner primitives, and in-memory/on-demand indicators should derive from
+the canonical event stream. If they lag, the service should show replay lag and
+queue pressure rather than silently losing required data. QMD should not persist
+raw quotes, raw trades, or materialized indicator rows as part of the standard
+q_live contract.
 
 ## Coverage Policy
 
