@@ -1063,6 +1063,9 @@ not a custom status page. The terminal must answer these questions quickly:
 8. Are queues and workers healthy?
 9. Are dependencies currently available?
 10. What are the recent important items, warnings, and errors?
+11. What is the current state of each important table the service reads or
+    writes?
+12. What has the service accomplished today so far?
 
 Every service terminal should use the same fixed panel order. Panels may be
 compacted on small terminals, but their meaning and relative order should not
@@ -1074,7 +1077,9 @@ Current Operation
 Configuration And Mode
 Dependencies
 Runtime Summary
+Daily Summary
 Work Plan / Task Ledger
+Task / Table Progress
 Queues And Workers
 Coverage / Reconciliation
 Sources And Sinks
@@ -1246,6 +1251,50 @@ last cycle seconds
 
 Numbers should be right-aligned and close enough to labels to scan quickly.
 
+**Daily Summary**
+
+Every continuously running service should show a daily summary for the current
+market/service day. This is the "what happened today so far?" panel. It should
+be derived from runtime counters plus durable table state when available, not
+from transient terminal text.
+
+Standard columns:
+
+```text
+Metric | Today | Last Hour | Last Cycle | Detail
+```
+
+Common metrics:
+
+```text
+provider/source rows observed today
+new durable rows written today
+duplicate/skipped rows today
+failed rows/tasks today
+coverage intervals completed today
+gap-fill intervals completed today
+old rows pruned today
+latest durable timestamp
+latest provider timestamp
+```
+
+Service examples:
+
+- QMD: live events written today, 1d bars written, q_live rows pruned,
+  recent gap-fill intervals completed, latest event time.
+- News: provider rows observed, unique articles written, duplicate articles,
+  enriched articles, failed enrichment tasks, latest published time.
+- SEC: feed items observed, filings written, text rows written, XBRL rows
+  written, skipped existing filings, latest accepted time.
+- Reference: source observations, accepted graph writes, issue writes,
+  tradability blocks, source-sync endpoints completed, latest publication date.
+- Text Embed: source rows found, token rows written, embedding rows written,
+  blocked SEC rows, model batches, latest embedded source time.
+- IBKR Supervisor: auth checks, tickles, auth state changes, login attempts,
+  alerts, latest successful tickle.
+- Market AI: events consumed, chunks created, encoder batches, temporal
+  batches, predictions emitted, latest prediction time.
+
 **Work Plan / Task Ledger**
 
 Every service should show a stable list of lifecycle tasks. Rows should update;
@@ -1274,6 +1323,39 @@ graceful shutdown
 
 If a task does not apply, show `not_applicable` or omit it by documented service
 type. Do not hide a running or failed task.
+
+**Task / Table Progress**
+
+Every service must report progress for each meaningful task and table it owns or
+depends on. A table row should remain visible while it is being checked,
+created, written, reconciled, pruned, or audited.
+
+Standard columns:
+
+```text
+Task/Table | Operation | Status | Done | Total | Rate | ETA | Detail
+```
+
+Rules:
+
+- If total work is known, show `Done`, `Total`, percent, rate, and ETA.
+- If total work is not known, show an active spinner/status and the latest
+  unit processed.
+- For tables, show whether the service is reading, writing, auditing,
+  reconciling, pruning, or waiting on that table.
+- If a service writes multiple tables in one pipeline, each table gets its own
+  row so the operator can see which table is blocked or lagging.
+- Rows should be stable. Update values in place instead of inserting/removing
+  rows every refresh.
+
+Examples:
+
+```text
+q_live.events | write | running | 1.2M | - | 42k/s | - | latest=2026-07-06 09:34:12
+q_live.live_market_bars | write | waiting | 0 | - | - | - | next 1d close
+q_live.benzinga_news_normalized_v1 | publish | completed | 18 | 18 | - | - | skipped=422
+market_sip_compact.sec_filing_text_embeddings | embed | running | 4,096 | 12,800 | 310/s | 28s | gpu ok
+```
 
 **Queues And Workers**
 
@@ -1321,16 +1403,27 @@ manifests when they exist.
 This panel tells the operator what the service owns:
 
 ```text
-Kind | Table/Endpoint | Role | Rows/State | Freshness | Status
+Kind | Table/Endpoint | Role | Rows/State | Today | Freshness | Status
 ```
 
 Examples:
 
 ```text
-source | q_live.sec_filing_text_v2 | upstream | rows | latest accepted_at | ok
-source | q_live.id_sec_market_bridge_v1 | required bridge | rows | latest update | ok
-sink | market_sip_compact.sec_filing_text_embeddings | output | rows | latest embed | lagging
+source | q_live.sec_filing_text_v2 | upstream | rows | new today | latest accepted_at | ok
+source | q_live.id_sec_market_bridge_v1 | required bridge | rows | updates today | latest update | ok
+sink | market_sip_compact.sec_filing_text_embeddings | output | rows | written today | latest embed | lagging
 ```
+
+Each service should summarize the current state of every important table it can
+access:
+
+- total row count or approximate count when exact count is expensive
+- rows written today
+- latest source/provider timestamp
+- latest durable table timestamp
+- oldest retained timestamp when retention applies
+- coverage status when applicable
+- table health: ok, lagging, missing, stale, blocked, or failed
 
 **Recent Domain Items**
 
@@ -1406,7 +1499,9 @@ current_operation
 configuration
 dependencies
 runtime
+daily_summary
 tasks
+task_table_progress
 queues
 coverage
 sources_sinks
