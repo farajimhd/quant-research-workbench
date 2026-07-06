@@ -1947,24 +1947,16 @@ def token_columns(token_ids: list[int]) -> dict[str, int]:
 
 
 def quote_condition_tokens(row: dict[str, Any], token_maps: dict[str, dict[int, int]]) -> dict[str, int]:
-    condition_codes_ = nonempty_codes(row.get("conditions"))
-    indicator_codes = nonempty_codes(row.get("indicators"))
-    token_ids: list[int] = []
-    for code in condition_codes_[:4]:
-        token_id = token_maps["quote_conditions"].get(code, 0)
-        token_ids.append(token_id)
-    for code in indicator_codes[: max(0, CONDITION_TOKEN_SLOTS - len(token_ids))]:
-        token_id = token_maps["quote_indicators"].get(code, 0)
-        token_ids.append(token_id)
+    condition_codes_ = condition_codes(row.get("conditions"), 4)
+    indicator_code = condition_codes(row.get("indicators"), 1)[0]
+    token_ids = [token_maps["quote_conditions"].get(code, 0) for code in condition_codes_]
+    token_ids.append(token_maps["quote_indicators"].get(indicator_code, 0))
     return token_columns(token_ids)
 
 
 def trade_condition_tokens(row: dict[str, Any], token_maps: dict[str, dict[int, int]]) -> dict[str, int]:
-    condition_codes_ = nonempty_codes(row.get("conditions"))
-    token_ids: list[int] = []
-    for code in condition_codes_[:CONDITION_TOKEN_SLOTS]:
-        token_id = token_maps["trade_conditions"].get(code, 0)
-        token_ids.append(token_id)
+    condition_codes_ = condition_codes(row.get("conditions"), CONDITION_TOKEN_SLOTS)
+    token_ids = [token_maps["trade_conditions"].get(code, 0) for code in condition_codes_]
     return token_columns(token_ids)
 
 
