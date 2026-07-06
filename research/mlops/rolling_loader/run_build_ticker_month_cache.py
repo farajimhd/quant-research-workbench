@@ -725,11 +725,12 @@ def main(argv: list[str] | None = None) -> int:
                 lanes.submit(
                     "condition",
                     f"{month}:intraday_condition_events_month",
-                    lambda window=window: ensure_intraday_condition_events_for_month(
+                    lambda window=window, month_tickers=month_tickers: ensure_intraday_condition_events_for_month(
                         args=args,
                         client_opts=client_opts,
                         config=config,
                         window=window,
+                        tickers=month_tickers,
                         stats=stats,
                         stop_event=stop_event,
                     ),
@@ -978,6 +979,7 @@ def ensure_intraday_condition_events_for_month(
     client_opts: Mapping[str, str],
     config: RollingMarketDataConfig,
     window: Any,
+    tickers: Sequence[str] | None = None,
     stats: BuildStats,
     stop_event: threading.Event,
 ) -> Mapping[str, int]:
@@ -985,6 +987,8 @@ def ensure_intraday_condition_events_for_month(
         return {"rows": 0, "bytes": 0}
     table = str(args.intraday_condition_events_table)
     status_table = str(args.intraday_aux_build_status_table)
+    scoped_tickers = sorted({str(ticker).upper() for ticker in (tickers or []) if str(ticker).strip()})
+    scoped_build = _is_ticker_scoped_build(args) and bool(scoped_tickers)
     status = _intraday_aux_build_status(
         client_opts=client_opts,
         config=config,
@@ -1000,39 +1004,59 @@ def ensure_intraday_condition_events_for_month(
     if stop_event.is_set():
         raise KeyboardInterrupt
     started = time.perf_counter()
-    existing_rows = _intraday_condition_events_month_rows(client_opts=client_opts, config=config, table=table, window=window)
+    existing_rows = _intraday_condition_events_month_rows(client_opts=client_opts, config=config, table=table, window=window, tickers=scoped_tickers if scoped_build else None)
     if existing_rows > 0:
-        stats.message(f"intraday_condition_events: {window.month} incomplete status; dropping sparse partition rows={existing_rows:,}")
-        stats.log_event("intraday_condition_events_drop_partition_start", month=window.month, table=table, rows=existing_rows)
-        _execute_clickhouse_sql(
-            client_opts=client_opts,
-            sql=f"ALTER TABLE {quote_ident(config.database)}.{quote_ident(table)} DROP PARTITION {int(window.first_date.strftime('%Y%m'))}",
-            label=f"intraday_condition_events_drop_{window.month}",
-        )
-    stats.message(f"intraday_condition_events: building sparse month table {window.month}")
-    stats.log_event("intraday_condition_events_month_start", month=window.month, table=table)
+        if scoped_build:
+            stats.message(
+                f"intraday_condition_events: {window.month} scoped refresh tickers={len(scoped_tickers):,} "
+                f"existing_rows={existing_rows:,}"
+            )
+            stats.log_event("intraday_condition_events_delete_scoped_start", month=window.month, table=table, rows=existing_rows, tickers=len(scoped_tickers))
+            _execute_clickhouse_sql(
+                client_opts=client_opts,
+                sql=_delete_intraday_condition_events_sql(config=config, table=table, window=window, tickers=scoped_tickers),
+                label=f"intraday_condition_events_delete_scoped_{window.month}",
+            )
+        else:
+            stats.message(f"intraday_condition_events: {window.month} incomplete status; dropping sparse partition rows={existing_rows:,}")
+            stats.log_event("intraday_condition_events_drop_partition_start", month=window.month, table=table, rows=existing_rows)
+            _execute_clickhouse_sql(
+                client_opts=client_opts,
+                sql=f"ALTER TABLE {quote_ident(config.database)}.{quote_ident(table)} DROP PARTITION {int(window.first_date.strftime('%Y%m'))}",
+                label=f"intraday_condition_events_drop_{window.month}",
+            )
+    scope_text = f" scoped_tickers={len(scoped_tickers):,}" if scoped_build else ""
+    stats.message(f"intraday_condition_events: building sparse month table {window.month}{scope_text}")
+    stats.log_event("intraday_condition_events_month_start", month=window.month, table=table, scoped=scoped_build, tickers=len(scoped_tickers))
     _execute_clickhouse_sql(
         client_opts=client_opts,
-        sql=_insert_intraday_condition_events_month_sql(args=args, config=config, window=window),
+        sql=_insert_intraday_condition_events_month_sql(args=args, config=config, window=window, tickers=scoped_tickers if scoped_build else None),
         label=f"intraday_condition_events_insert_{window.month}",
     )
-    rows = _intraday_condition_events_month_rows(client_opts=client_opts, config=config, table=table, window=window)
-    _execute_clickhouse_sql(
-        client_opts=client_opts,
-        sql=_insert_intraday_aux_build_status_sql(
-            database=config.database,
-            status_table=status_table,
-            artifact_name=table,
-            month=window.month,
-            row_count=rows,
-            build_version="v1_sparse_conditions",
-        ),
-        label=f"intraday_condition_events_status_{window.month}",
-    )
+    rows = _intraday_condition_events_month_rows(client_opts=client_opts, config=config, table=table, window=window, tickers=scoped_tickers if scoped_build else None)
+    if scoped_build:
+        stats.message(
+            f"intraday_condition_events: scoped build complete {window.month} tickers={len(scoped_tickers):,} "
+            f"rows={rows:,}; shared month status not marked complete"
+        )
+        stats.log_event("intraday_condition_events_status_skipped_scoped", month=window.month, table=table, rows=rows, tickers=len(scoped_tickers))
+    else:
+        _execute_clickhouse_sql(
+            client_opts=client_opts,
+            sql=_insert_intraday_aux_build_status_sql(
+                database=config.database,
+                status_table=status_table,
+                artifact_name=table,
+                month=window.month,
+                row_count=rows,
+                build_version="v1_sparse_conditions",
+            ),
+            label=f"intraday_condition_events_status_{window.month}",
+        )
     elapsed = time.perf_counter() - started
     stats.message(f"intraday_condition_events: built {window.month} rows={rows:,} seconds={elapsed:.1f}")
-    stats.profile_event("intraday_condition_events_month_done", month=window.month, table=table, rows=rows, seconds=elapsed)
-    stats.log_event("intraday_condition_events_month_done", month=window.month, table=table, rows=rows, seconds=elapsed)
+    stats.profile_event("intraday_condition_events_month_done", month=window.month, table=table, rows=rows, seconds=elapsed, scoped=scoped_build, tickers=len(scoped_tickers))
+    stats.log_event("intraday_condition_events_month_done", month=window.month, table=table, rows=rows, seconds=elapsed, scoped=scoped_build, tickers=len(scoped_tickers))
     return {"rows": rows, "bytes": 0}
 
 
@@ -1188,12 +1212,45 @@ FORMAT TSV
     return _parse_clickhouse_count(_execute_clickhouse_sql(client_opts=client_opts, sql=sql, label=f"intraday_base_bars_count_{window.month}_{ticker}"))
 
 
-def _intraday_condition_events_month_rows(*, client_opts: Mapping[str, str], config: RollingMarketDataConfig, table: str, window: Any) -> int:
+def _is_ticker_scoped_build(args: argparse.Namespace) -> bool:
+    return bool(str(getattr(args, "tickers", "") or "").strip()) or int(getattr(args, "ticker_limit", 0) or 0) > 0
+
+
+def _ticker_in_filter_sql(tickers: Sequence[str], *, column: str = "ticker") -> str:
+    values = sorted({str(ticker).upper() for ticker in tickers if str(ticker).strip()})
+    if not values:
+        return ""
+    return f" AND {column} IN (" + ", ".join(sql_string(value) for value in values) + ")"
+
+
+def _delete_intraday_condition_events_sql(*, config: RollingMarketDataConfig, table: str, window: Any, tickers: Sequence[str]) -> str:
+    ticker_filter = _ticker_in_filter_sql(tickers)
+    if not ticker_filter:
+        raise ValueError("Scoped intraday condition event delete requires at least one ticker.")
+    return f"""
+ALTER TABLE {quote_ident(config.database)}.{quote_ident(table)}
+DELETE WHERE local_date >= toDate({sql_string(window.first_date.isoformat())})
+  AND local_date < toDate({sql_string(window.next_month_date.isoformat())})
+  {ticker_filter}
+{_settings_sql(config)}
+"""
+
+
+def _intraday_condition_events_month_rows(
+    *,
+    client_opts: Mapping[str, str],
+    config: RollingMarketDataConfig,
+    table: str,
+    window: Any,
+    tickers: Sequence[str] | None = None,
+) -> int:
+    ticker_filter = _ticker_in_filter_sql(tickers or ())
     sql = f"""
 SELECT count()
 FROM {quote_ident(config.database)}.{quote_ident(table)}
 WHERE local_date >= toDate({sql_string(window.first_date.isoformat())})
   AND local_date < toDate({sql_string(window.next_month_date.isoformat())})
+  {ticker_filter}
 FORMAT TSV
 """
     return _parse_clickhouse_count(_execute_clickhouse_sql(client_opts=client_opts, sql=sql, label=f"intraday_condition_events_count_{window.month}"))
@@ -1331,6 +1388,7 @@ def _insert_intraday_condition_events_month_sql(
     args: argparse.Namespace,
     config: RollingMarketDataConfig,
     window: Any,
+    tickers: Sequence[str] | None = None,
 ) -> str:
     source_table = _events_source_table(config, window.first_date, window.next_month_date)
     target_table = f"{quote_ident(config.database)}.{quote_ident(str(args.intraday_condition_events_table))}"
@@ -1338,6 +1396,7 @@ def _insert_intraday_condition_events_month_sql(
     condition_event_select = _future_condition_event_select_sql()
     condition_select_columns = ",\n    ".join(f"{quote_ident(key + '_event')} AS {quote_ident(key)}" for key in FUTURE_CONDITION_LABEL_KEYS)
     condition_filter = " OR ".join(f"{quote_ident(key + '_event')} > 0" for key in FUTURE_CONDITION_LABEL_KEYS)
+    ticker_filter = _ticker_in_filter_sql(tickers or ())
     insert_columns = ",\n    ".join(
         [
             "local_date",
@@ -1383,6 +1442,7 @@ FROM
     FROM {source_table}
     PREWHERE event_date >= toDate({sql_string(window.first_date.isoformat())})
       AND event_date <= toDate({sql_string(window.next_month_date.isoformat())})
+      {ticker_filter}
     WHERE sip_timestamp_us >= {int(window.first_session_start_us)}
       AND sip_timestamp_us < {int(window.last_session_end_us)}
       AND local_date >= toDate({sql_string(window.first_date.isoformat())})
