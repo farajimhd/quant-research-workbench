@@ -159,6 +159,567 @@ Domain logic should remain inside the owning service:
 - IBKR login/session mechanics.
 - Tokenization, embedding, and model inference.
 
+## Service Designs
+
+This section maps the current service code into the shared gateway model. It is
+intended as the review surface for future refactors: current behavior should be
+made to converge on these policies, and new services should be added here before
+their implementation spreads into separate conventions.
+
+### Service Matrix
+
+| Service | Type | Primary sources | Primary sinks | Cadence | Canonical responsibility |
+| --- | --- | --- | --- | --- | --- |
+| QMD Gateway | high-rate Rust streaming gateway | Massive stock websocket `T.*`, `Q.*`; Massive REST repair; historical `market_sip_compact` coverage | `q_live.events`, live continuity rows, live bars, abnormal market-state rows, QMD coverage tables, local streams | continuous websocket plus startup/after-hours repair | Lossless live market-event capture, bars, compact streams, and Massive-only scanner primitives. |
+| News Gateway | Python REST/text gateway | Massive-served Benzinga REST, approved external URL/PDF artifacts | `q_live.benzinga_news_normalized_v1`, `q_live.benzinga_news_ticker_v1`, coverage manifest, raw artifacts | market-aware polling | Canonical Benzinga news rows and ticker links with async enrichment. |
+| SEC Gateway | Python SEC filing gateway | SEC current Atom feed, submissions JSON, companyfacts JSON, daily archives | `q_live.sec_filing_v2`, `sec_filing_document_v2`, `sec_filing_text_v2`, SEC XBRL tables, SEC coverage | market-aware polling plus historical gap fill | Canonical SEC filing/text/XBRL rows. |
+| Reference Gateway | Python low-frequency reference reconciler | Massive reference endpoints, q_live identity tables, IBKR Client Portal, FINRA/SEC/Massive publications | identity graph, source mappings, issues, tradable/scanner publications, market reference publications, reference alerts | daemon cycles and after-hours maintenance | Keep market reference identity, conid/routing evidence, tradability publications, and slow reference publications coherent. |
+| Text Embed Gateway | Python GPU/model reconciliation gateway | normalized news, SEC filing text, SEC market bridge, historical-compatible context tables | token tables, embedding tables, embedding coverage | market-aware polling and historical reconciliation | Keep news and SEC text tokenized and embedded with historical-compatible contracts. |
+| IBKR Gateway Supervisor | Python broker-session supervisor | local IBKR Client Portal Gateway process and CPAPI auth endpoints | JSONL events, optional compact ClickHouse supervisor event table, Rich telemetry | fixed keepalive/status cadence | Keep one IBKR Client Portal session authenticated and observable. |
+| News Intelligence Service | Python model-serving service | normalized article request payloads, local model artifacts, optional local LLM endpoint | synchronous classification response | request-driven | Serve news labels; it must not poll providers or write canonical news rows. |
+| Market AI Service | Python ML serving/replay boundary | QMD compact event stream or replay iterator | prediction stream/API, in-memory model state, future prediction tables when defined | event-driven | Convert compact events into model chunks, run encoder/temporal inference, and publish predictions. |
+| Maintenance Runner | Python offline coordinator | service coverage/source tables | maintenance run/task tables, reports, generated commands | after-hours or manual | Coordinate service-specific gap checks without owning domain data. |
+
+### QMD Gateway
+
+**Current code path:** `services/qmd-gateway`.
+
+**Role:** QMD is the only high-frequency market data service. It stays narrow:
+Massive quote/trade ingest, compact live events, bars, live abnormal
+market-state overlay, Massive-only scanner primitives, and market-data repair.
+It must not own broker orders, account state, portfolios, conids, logos,
+fundamentals, issuer identity, or final trading signals.
+
+**Sources:**
+
+- Massive websocket stock trades and quotes, normally wildcard `T.*` and `Q.*`.
+- Massive REST trades/quotes for recent q_live gap repair.
+- `market_sip_compact.events` and
+  `market_sip_compact.events_ordinal_continuity` for historical flatfile
+  coverage planning and symbol-universe seeding.
+- Local Massive reference files for quote/trade condition packing.
+
+**Sinks and durable contracts:**
+
+- `q_live.events`: compact live market event stream/table.
+- `q_live.live_event_ordinal_continuity`: append-only ticker-local ordinal
+  continuity snapshots.
+- `q_live.live_market_bars`: closed bars for configured timeframes.
+- `q_live.live_symbol_market_event_v1`: sparse abnormal state open/close audit
+  rows. Ordinary `normal` state is not persisted.
+- `q_live.qmd_live_event_coverage_v1`: recent live compact-event/bar coverage.
+- `q_live.qmd_flatfile_event_coverage_v1`: historical flatfile coverage.
+- `q_live.qmd_gap_fill_symbol_universe_v1`: durable ticker queue for recent
+  live repair.
+- `q_live.qmd_gap_fill_runs`: repair audit log.
+- Optional debug tables `live_massive_trades`, `live_massive_quotes`, and
+  `live_market_indicators` stay disabled by default unless a run explicitly
+  needs raw replay or materialized indicators.
+
+**Hot path policy:**
+
+- Required quote/trade paths use backpressure instead of dropping canonical
+  work.
+- Local websocket broadcasts are best effort and may report lag/skipped client
+  updates because consumers can recover from snapshots.
+- Bar, indicator, scanner primitive, compact-event, and live-market-state work
+  must receive the same normalized `MarketEvent` stream.
+- Indicators are kept in memory by default; persisted indicators should remain
+  disabled because current bar-level indicators can be recomputed from bars.
+
+**Coverage and gap fill:**
+
+- Recent q_live gaps are discovered from `qmd_live_event_coverage_v1`, not from
+  min/max event timestamps.
+- A recent interval is clean only where compact-event and bar coverage overlap,
+  or where an explicit completed repair row covers it.
+- Repair covers the current market day plus
+  `QMD_RECENT_LIVE_PRIOR_MARKET_DAYS` prior US market sessions, inside
+  04:00-20:00 ET.
+- Gap repair converts Massive REST rows into the same `MarketEvent` type as the
+  websocket and sends them through the same state, bars, scanner, indicator, and
+  persistence fanout.
+- When no live symbols exist yet, QMD seeds the repair universe from the latest
+  configured historical sessions; during streaming hours it also adds
+  websocket-discovered symbols to the durable universe queue.
+- Historical flatfile gaps are planned from `market_sip_compact` coverage. QMD
+  must not merge q_live live rows into the historical flatfile database.
+
+**Terminal/API:**
+
+- QMD should expose the standard dashboard snapshot in addition to its current
+  `/health`, `/config`, `/metrics`, `/snapshot/maintenance`,
+  `/snapshot/coverage`, market snapshots, bar snapshots, indicator snapshots,
+  scanner snapshots, compact-event streams, and live-market-state streams.
+- The QMD terminal must show market status, websocket status, ingest rates,
+  queue pressure, ClickHouse writer lag, coverage/repair progress, recent
+  compact events, and abnormal market-state transitions using the shared panel
+  vocabulary.
+
+**Out of scope:**
+
+- Reference tradability decisions.
+- IBKR conid lookup or order routing.
+- Final scanner/trade signals.
+- Portfolio/order/fill state.
+
+### News Gateway
+
+**Current code path:** `services/news_gateway` and
+`pipelines/news/benzinga/news_pipeline`.
+
+**Role:** The News Gateway is the production Benzinga news ingestion service.
+It polls the Massive-served Benzinga REST endpoint, saves raw payloads,
+normalizes each item through the shared Benzinga item pipeline, enriches text in
+background workers, writes canonical rows, and serves recent news to the app.
+
+**Sources:**
+
+- Massive-served Benzinga REST endpoint.
+- Approved external article/PDF/plain-text URLs discovered from Benzinga items.
+- Massive market status and holiday endpoints for active/closed cadence.
+
+**Sinks and durable contracts:**
+
+- Raw provider JSON artifacts:
+  `<data-root>/news-benzinga/raw/YYYY/MM/DD/benzinga_<id>.json`.
+- Live URL artifacts:
+  `<data-root>/news-benzinga/live-url-artifacts`.
+- `q_live.benzinga_news_normalized_v1`: final canonical normalized rows.
+- `q_live.benzinga_news_ticker_v1`: article-to-ticker links.
+- `q_live.benzinga_news_coverage_manifest_v1`: provider coverage.
+- JSONL operational logs under
+  `<data-root>/prepared/news_gateway/logs/<run_id>/`.
+
+**Hot path policy:**
+
+- The provider row is added to in-memory recent-news state immediately.
+- Slow URL/PDF fetch, extraction, canonical normalization, and ClickHouse
+  publish run in bounded background workers.
+- ClickHouse receives final canonical rows only; partial in-memory pending rows
+  are not inserted.
+- Existing canonical news IDs are skipped and logged as duplicate/known rows.
+
+**Schedule and coverage:**
+
+- Active window: 04:00-20:00 ET. Premarket and after-hours count as active for
+  news.
+- Active cadence: poll every 5 seconds, fetch the last 5 minutes.
+- Closed cadence: poll every 5 minutes, fetch the last 10 minutes.
+- Polls align to wall-clock boundaries and intentionally overlap.
+- Coverage bootstrap trusts the completed historical range, then verifies
+  recent empty buckets with cheap provider probes when configured.
+- Startup gaps up to the configured inline threshold are filled concurrently.
+  Larger gaps generate workstation scripts or auto-run on the workstation
+  outside the active collection window.
+
+**Terminal/API:**
+
+- The terminal should show dependency preflight, market status, live/background
+  processing status, provider rows, unique/duplicate rows, raw saves, publish
+  status, enrichment status, coverage/gap state, latest news, and active versus
+  resolved failures.
+- Failed transient enrichment/provider errors should not keep the full dashboard
+  red after recovery. Active critical errors remain red.
+
+**Out of scope:**
+
+- Model labels and sentiment inference. Those belong to News Intelligence or a
+  downstream inference service.
+- SEC filing ingestion.
+- Reference identity correction.
+
+### SEC Gateway
+
+**Current code path:** `services/sec_gateway` and
+`pipelines/sec/edgar/sec_pipeline`.
+
+**Role:** The SEC Gateway is the live service layer for SEC filings. It writes
+canonical SEC filing parent, document, text, skip, and XBRL rows. It does not
+own ticker/reference mappings or embeddings.
+
+**Sources:**
+
+- SEC current Atom feed for live filings.
+- SEC submissions JSON for true acceptance metadata and filing lists.
+- SEC companyfacts JSON for XBRL concepts and facts.
+- SEC daily archives for historical filing text and documents.
+- Massive market status/holiday endpoints for cadence and maintenance policy.
+
+**Sinks and durable contracts:**
+
+- `q_live.sec_filing_v2`.
+- `q_live.sec_filing_document_v2`.
+- `q_live.sec_filing_text_v2`.
+- SEC XBRL concept, company fact, frame, and frame-observation tables.
+- `q_live.sec_coverage_manifest_v1`.
+- JSONL logs under the SEC gateway run-log root.
+
+**Hot path policy:**
+
+- Poll SEC current feed, enqueue new accessions, and process them in a bounded
+  live worker pool.
+- For each accession, canonicalize parent filing metadata from submissions,
+  download the accession text, parse SGML documents, extract normalized text,
+  fetch companyfacts when XBRL or inline-XBRL evidence exists, and write the
+  configured SEC database.
+- Cache submissions and companyfacts by CIK with bounded count and age.
+- Missing SEC companyfacts for a CIK is a normal provider condition and should
+  be cached as a missing-CIK state, not treated as a fatal gateway failure.
+
+**Schedule and coverage:**
+
+- Active cadence defaults to 30 seconds.
+- Closed cadence defaults to 300 seconds.
+- Coverage kinds include live feed, daily archives, bulk submissions,
+  companyfacts, text extraction, integrity audit, and stage-level historical
+  fill rows.
+- The live run keeps one live coverage row open and updates it after successful
+  feed fetches, including empty/all-duplicate polls.
+- Historical gap fill is stage-aware. Completed stages can be skipped on resume;
+  semantic coverage rows are written only after the full unified fill command
+  succeeds.
+- Large historical work should use the unified SEC historical gap-fill command,
+  not a sequence of ad hoc old scripts.
+
+**Terminal/API:**
+
+- The terminal should show market status, feed items, live queue, active
+  workers, written/skipped filings, XBRL row counts, cache sizes, coverage gaps,
+  generated scripts, audit status, and recent filings.
+
+**Out of scope:**
+
+- `id_sec_market_bridge_v1`. Reference Gateway owns bridge maintenance.
+- Text embeddings. Text Embed Gateway owns context/token/embedding output.
+- Final news/SEC signal or LLM interpretation.
+
+### Reference Gateway
+
+**Current code path:** `services/reference_gateway` and
+`pipelines/reference_data`.
+
+**Role:** The Reference Gateway is a continuously runnable, low-frequency
+reference reconciler. It keeps identity, source mapping, conid/routing evidence,
+tradability publications, and market reference publications coherent. It is not
+a high-frequency ingest service.
+
+**Sources:**
+
+- Massive active tickers and ticker-detail/reference endpoints.
+- IBKR Client Portal contract search and borrow/shortability endpoints.
+- Existing q_live canonical identity and SEC tables.
+- FINRA daily short-volume publications.
+- Massive short interest, splits, dividends, IPOs, market snapshots, floats,
+  and presentation assets.
+- SEC fails-to-deliver and country evidence where implemented.
+
+**Sinks and table groups:**
+
+- Reference dimensions: countries, asset classes, exchanges, exchange
+  currencies, ticker types.
+- Issuer/security/listing/symbol identity tables.
+- Source mapping, mapping issue, and SEC-market bridge tables.
+- `feature_tradable_universe_v1` and `feature_scanner_static_v1`.
+- Market reference publications:
+  `market_security_market_snapshot_v1`, `market_security_float_v1`,
+  `market_short_interest_v1`, `market_short_volume_v1`,
+  `market_stock_split_v1`, `market_cash_dividend_v1`, `market_ipo_v1`,
+  `market_presentation_asset_v1`, `market_fails_to_deliver_v1`,
+  `market_reg_sho_threshold_v1`, `market_security_borrow_v1`,
+  `market_security_country_v1`, and
+  `market_reference_publication_coverage_v1`.
+- Reference alerts and source schedule rows.
+- Canonical fact schemas where implemented; fact fillers must stay compact and
+  not mirror every raw source row.
+
+**Source-sync policy:**
+
+- Operational runs always include source sync. It should not be a hidden
+  per-endpoint operator flag.
+- New Massive active ticker observations drive downstream updates: canonical
+  identity graph rows when safe, IBKR conid resolution, current Massive
+  ticker-detail/float/snapshot rows, presentation assets, IBKR borrow rows, and
+  country assertions.
+- If an observation cannot be inserted safely, the gateway writes an issue and
+  keeps the affected instrument non-tradable.
+- Provider cadence is stored in
+  `market_reference_source_schedule_v1` so daemon restarts do not lose source
+  sync state.
+
+**Integrity policy:**
+
+- In strict mode, reference issues must immediately block affected instruments
+  from tradable publications.
+- Deterministic resolvers may close stale issues when canonical evidence is now
+  complete and unambiguous.
+- Ambiguous mappings or conflicting durable identities require human review and
+  remain non-tradable.
+- Active trading is allowed during source sync and issue blocking. Heavy
+  promotion/maintenance can be deferred during the active collection window.
+
+**Maintenance policy:**
+
+- Auto maintenance can run schema upkeep, deterministic issue resolution,
+  SEC bridge rebuilds, full tradable/scanner rebuilds, and publication gap
+  fills when policy allows.
+- `Maintenance=Force` requires an auditable reason.
+- Temp mode reads `q_live` and writes `q_reference_tmp`; production mode reads
+  and writes `q_live`.
+
+**Terminal/API:**
+
+- The terminal should show preflight, current operation, source sync per
+  endpoint, source coverage, reference table state, audit issue groups,
+  tradability blocks, maintenance policy, and recent issues/resolutions.
+- Each source endpoint should have a stable terminal row, not just a single
+  generic "source sync" line.
+
+**Out of scope:**
+
+- Live quote/trade state. QMD owns live market-state transitions.
+- Broker order execution and portfolio state.
+- News/SEC text embeddings.
+
+### Text Embed Gateway
+
+**Current code path:** `services/text_embed_gateway`.
+
+**Role:** The Text Embed Gateway is a GPU/model reconciliation service. It keeps
+news and SEC text tokenized and embedded using the same tokenizer, model,
+pooling, and ClickHouse contracts as the historical builders.
+
+**Sources:**
+
+- `q_live.benzinga_news_normalized_v1`.
+- `q_live.sec_filing_v2` and `q_live.sec_filing_text_v2`.
+- `q_live.id_sec_market_bridge_v1`.
+- Historical-compatible context tables in `market_sip_compact`.
+- Local Qwen tokenizer/model artifacts.
+
+**Sinks and durable contracts:**
+
+- `market_sip_compact.news_text_tokens`.
+- `market_sip_compact.news_text_embeddings`.
+- `market_sip_compact.sec_filing_context`.
+- `market_sip_compact.sec_filing_text_context`.
+- `market_sip_compact.sec_filing_text_tokens`.
+- `market_sip_compact.sec_filing_text_embeddings`.
+- `market_sip_compact.text_embedding_coverage_v1`.
+
+**Reconciliation policy:**
+
+- The service compares source text rows to token rows, and token rows to
+  embedding rows.
+- SEC context refresh joins SEC filing/text rows with
+  `id_sec_market_bridge_v1`. Rows without a valid bridge are reported as
+  blocked and retried later; news and existing-token embedding continue.
+- Live lookback is an optimization; historical reconciliation must be broad
+  enough to pick up data inserted while the service was offline.
+- The configured historical lookback has a code-enforced minimum of 60 days.
+
+**Memory and GPU policy:**
+
+- Load the model at startup and fail preflight/load checks if the model cannot
+  be loaded in production mode.
+- Do not retain article bodies, filing text, PDFs, or embedding arrays after a
+  batch is written.
+- On shutdown, cancel active ClickHouse queries where possible, finish the
+  current persist step when safe, release model references, and clear CUDA
+  cache.
+
+**Terminal/API:**
+
+- The terminal should preserve separate live-news, live-SEC, historical-news,
+  and historical-SEC state so a quiet live cycle does not erase historical gap
+  context.
+- It should show source rows, token rows, embedding rows, coverage rows,
+  current mode/source/stage/window, inference timing, insert timing, and GPU
+  model status.
+
+**Out of scope:**
+
+- News/SEC ingestion and normalization.
+- SEC-market bridge maintenance.
+- Prediction labels or trading signals.
+
+### IBKR Gateway Supervisor
+
+**Current code path:** `services/ibkr_gateway_supervisor`.
+
+**Role:** The IBKR supervisor keeps the local IBKR Client Portal Gateway process
+running, authenticated, and observable. It does not bypass IBKR authentication
+and does not own trading orders.
+
+**Sources:**
+
+- Local Client Portal Gateway install path and `run.bat`.
+- IBKR CPAPI auth/status, reauth, accounts, and tickle endpoints.
+- Playwright login helper when automated login is enabled.
+
+**Sinks and durable contracts:**
+
+- Per-run JSONL event log under `tmp/ibkr_gateway_supervisor/<run_id>/`.
+- Optional compact ClickHouse event table
+  `q_live.ibkr_gateway_supervisor_event_v1`.
+- Terminal telemetry for keepalive and active auth state.
+
+**Runtime policy:**
+
+- Launch CP Gateway if configured and not reachable.
+- Check auth status on a fixed cadence.
+- Attempt SSO reopen or Playwright login when required and allowed.
+- Call `/tickle` on a fixed cadence.
+- Routine successful tickles are telemetry only unless status changes; status
+  transitions are logged.
+- If ClickHouse logging is unavailable, continue JSONL logging and terminal
+  supervision.
+
+**Terminal/API:**
+
+- Show gateway process, auth state, account state, login attempts, keepalive
+  tickle state, retry counters, active failures, resolved failure history, and
+  alert delivery status.
+
+**Out of scope:**
+
+- Portfolio/order/fill persistence.
+- Reference identity resolution.
+- Market-data ingestion.
+
+### News Intelligence Service
+
+**Current code path:** `services/news-intelligence`.
+
+**Role:** News Intelligence is a request-driven model service. It receives one
+normalized article, runs configured fast models and optional local LLM stages,
+and returns labels with model/taxonomy/prompt versions.
+
+**Sources:**
+
+- Normalized article request body from a caller.
+- Local model artifacts under the configured model root.
+- Optional OpenAI-compatible local LLM endpoint such as vLLM.
+
+**Sinks and durable contracts:**
+
+- Synchronous `/classify` response.
+- It does not own ClickHouse writes. The caller maps labels to persistence.
+
+**Runtime policy:**
+
+- Serve `/health`, `/models`, and `/classify`.
+- Degrade to deterministic fallback labels when optional models are missing if
+  configured to keep ingestion paths non-blocking.
+- Keep prompt/model/taxonomy versions explicit in responses.
+
+**Out of scope:**
+
+- Provider polling.
+- News normalization/enrichment.
+- Canonical news persistence.
+
+### Market AI Service
+
+**Current code path:** `services/market-ai`.
+
+**Role:** Market AI is the ML serving/replay boundary for compact market-event
+models. It consumes QMD compact events, builds fixed event chunks, batches
+encoder inference, keeps per-ticker embedding state, batches temporal inference,
+and publishes predictions when a production publishing contract is defined.
+
+**Sources:**
+
+- QMD compact-event websocket.
+- Synthetic or historical replay iterator for validation/training reuse.
+- Production model checkpoints once configured.
+
+**Sinks and durable contracts:**
+
+- In-memory event rings, chunk batches, embedding rings, and prediction output.
+- Future prediction tables/streams must be defined before production write
+  mode is enabled.
+
+**Runtime policy:**
+
+- Work is emitted only for tickers that update; the service must not rebuild a
+  whole-market batch at every timestamp.
+- Live serving and offline training should use the same batching engine so
+  representation does not drift.
+- Invalid/lossy windows are controlled by model config; strict lossless windows
+  are the default.
+
+**Terminal/API:**
+
+- Show source status, events received, chunks created, encoder/temporal batches,
+  predictions, queue depths, event/chunk/sample rates, model timing, and recent
+  messages/errors.
+
+**Out of scope:**
+
+- QMD market-data persistence.
+- Reference identity and tradability.
+- Broker execution.
+
+### Maintenance Runner
+
+**Current code path:** `services/maintenance`.
+
+**Role:** The maintenance runner coordinates after-hours checks. It does not
+replace the gateways and does not own domain data. It inspects durable source
+and coverage tables, records maintenance task rows, and generates or runs the
+same service-specific gap-fill commands the gateways use.
+
+**Sources:**
+
+- QMD coverage and `market_sip_compact` source tables.
+- News coverage manifest and Benzinga provider.
+- SEC coverage manifest and SEC historical sources.
+- Reference publication coverage and publication source tables.
+
+**Sinks:**
+
+- `q_live.service_maintenance_run_v1`.
+- `q_live.service_maintenance_task_v1`.
+- `<market-data>/prepared/service_maintenance/<run_id>/` reports.
+
+**Policy:**
+
+- Do not stop or restart live services.
+- Use shared active collection window and market-hours provider.
+- Auto-run is allowed only when the operator enables it and policy allows.
+- Generated commands must use the same service-specific code path as live
+  gateway gap fills.
+
+### Cross-Service Dependency Rules
+
+These relationships are durable-source relationships, not event-bus
+requirements:
+
+| Producer | Consumer | Consumer action |
+| --- | --- | --- |
+| QMD compact events and bars | Market AI, trading app, maintenance | Consume snapshots/streams for inference and trading context; use q_live coverage for durable repair checks. |
+| News normalized rows | Text Embed, trading app, News Intelligence caller | Reconcile missing tokens/embeddings or classify rows without requiring news gateway to emit a durable event. |
+| SEC filing/text/XBRL rows | Reference, Text Embed, trading app | Rebuild SEC-market bridge, build SEC context, tokenize/embed text, and expose filing/XBRL context. |
+| Reference identity/tradable publications | Trading app, scanner setup, QMD-adjacent consumers | Treat `is_tradable=0` as a hard reference block; live market-state blocks are separate runtime context. |
+| Reference SEC bridge | Text Embed | Embed only SEC text rows with valid market bridge; retry blocked rows after bridge updates. |
+| IBKR supervisor auth/session | live trading backend, Reference conid/borrow sync | Use CPAPI only after supervisor/preflight reports the broker session is reachable. |
+| Text Embed embeddings | Market AI / downstream inference | Use embeddings by source/version; missing embeddings are discovered by source-minus-output reconciliation. |
+| Maintenance task rows | operators and service dashboards | Observability only; services must still reconcile durable source/output state. |
+
+The default implementation pattern is:
+
+```text
+producer writes canonical table and coverage
+consumer periodically reconciles source table minus its output table
+consumer writes its own coverage/output
+maintenance audits both sides after hours
+```
+
+Use explicit service-to-service events only for low-latency live UI/model
+delivery. Do not rely on them as the only mechanism for correctness or
+historical catch-up.
+
 ## Storage Rule
 
 Service data belongs on workstation storage first:
