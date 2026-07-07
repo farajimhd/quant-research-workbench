@@ -34,6 +34,34 @@ from research.mlops.rolling_loader.daily_index_cache import (
 
 
 DEFAULT_EVENT_OUTPUT_MODE = "raw_stream"
+DEFAULT_INTRADAY_LABEL_HORIZONS = (
+    "100ms",
+    "200ms",
+    "300ms",
+    "400ms",
+    "500ms",
+    "1s",
+    "2s",
+    "3s",
+    "5s",
+    "10s",
+    "15s",
+    "30s",
+    "60s",
+    "120s",
+    "180s",
+    "300s",
+    "600s",
+    "900s",
+    "1200s",
+    "1800s",
+    "3600s",
+    "7200s",
+    "3h",
+    "4h",
+    "5h",
+    "eod",
+)
 SUPPORTED_EVENT_OUTPUT_MODES = {"none", "raw_flat", "raw_stream", "raw_windows", "encoded_uint8"}
 DEFAULT_DATA_GROUPS = ("events", "intraday_labels")
 TEXT_CONTEXT_GROUPS = {"ticker_news_embeddings", "market_news_embeddings", "sec_filing_embeddings"}
@@ -219,6 +247,7 @@ class DailyIndexLoaderConfig:
     xbrl_max_items: int = 4096
     corporate_action_max_items: int = 128
     corporate_action_label_days: tuple[int, ...] = (1, 2, 3, 7, 28)
+    intraday_label_horizons: tuple[str, ...] = DEFAULT_INTRADAY_LABEL_HORIZONS
     ticker_news_token_chunks: int = 2
     market_news_token_chunks: int = 2
     sec_filing_token_chunks: int = 8
@@ -565,14 +594,17 @@ class DailyIndexCacheIndex:
                 **(manifest.get("config") or {}),
             }
             package_files = _package_context_files_from_manifest(manifest)
+            intraday_files_by_date = _intraday_context_files_by_source_date(manifest)
             for part in manifest.get("parts") or ():
                 if not isinstance(part, Mapping):
                     continue
                 origin_count = int(part.get("origin_rows") or 0)
                 if origin_count <= 0:
                     continue
+                source_date = _source_date_from_part(part)
                 files = {
                     **package_files,
+                    **intraday_files_by_date.get(source_date, {}),
                     "events": str(part.get("event_path") or ""),
                     "origins": str(part.get("origin_path") or ""),
                 }
@@ -654,7 +686,7 @@ class DailyIndexPartReader:
         if need_labels and "intraday_forward_labels" in plan.files:
             loaded.labels = pl.read_parquet(_plan_file_path(plan, plan.files["intraday_forward_labels"]))
         if need_labels:
-            compact_files = _package_context_files(plan.package_dir)
+            compact_files = {**_package_context_files(plan.package_dir), **dict(plan.files)}
             for key in ("intraday_base_bars", "intraday_condition_events", "ticker_news_embeddings", "sec_filing_embeddings"):
                 filename = compact_files.get(key)
                 if filename and key not in loaded.context:
@@ -1664,7 +1696,7 @@ class DailyIndexBatchMaterializer:
     ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], np.ndarray, np.ndarray, tuple[str, ...], dict[str, float | int]]:
         if "intraday_labels" not in self.config.data_groups and "labels" not in self.config.data_groups:
             return {}, {}, {}, {}, np.zeros((len(refs), 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32), np.zeros((len(refs), 0), dtype=np.bool_), (), {}
-        horizons = _cached_horizons(parts)
+        horizons = _cached_horizons(parts, config=self.config)
         horizon_count = len(horizons)
         labels_out = {key: np.zeros((len(refs), horizon_count), dtype=dtype) for key, dtype in LABEL_VALUE_DTYPES.items()}
         family_values = {
@@ -1765,7 +1797,7 @@ class DailyIndexBatchMaterializer:
             if self.config.strict_audit:
                 raise RuntimeError(f"Missing intraday_base_bars compact label source for {_part_key(part.plan)}.")
             return
-        specs = _intraday_horizon_specs(_cached_horizons([part]))
+        specs = _intraday_horizon_specs(_cached_horizons([part], config=self.config))
         if len(specs) != int(horizon_count):
             raise RuntimeError(f"Intraday horizon count mismatch for {_part_key(part.plan)}.")
         origin_rows = _origin_rows_for_refs(refs, rows)
@@ -2194,6 +2226,7 @@ def normalize_loader_config(config: DailyIndexLoaderConfig) -> DailyIndexLoaderC
         xbrl_max_items=max(0, int(config.xbrl_max_items)),
         corporate_action_max_items=max(0, int(config.corporate_action_max_items)),
         corporate_action_label_days=tuple(max(1, int(value)) for value in config.corporate_action_label_days),
+        intraday_label_horizons=tuple(str(value).strip() for value in config.intraday_label_horizons if str(value).strip()),
         ticker_news_token_chunks=max(1, int(config.ticker_news_token_chunks)),
         market_news_token_chunks=max(1, int(config.market_news_token_chunks)),
         sec_filing_token_chunks=max(1, int(config.sec_filing_token_chunks)),
@@ -2279,6 +2312,37 @@ def _package_context_files(package_dir: Path) -> dict[str, str]:
     manifest_path = package_dir / "manifest.json"
     manifest = read_json(manifest_path)
     return _package_context_files_from_manifest(manifest)
+
+
+def _source_date_from_part(part: Mapping[str, Any]) -> str:
+    raw = str(part.get("source_date") or "")
+    if raw:
+        return raw[:10]
+    job_id = str(part.get("job_id") or "")
+    for token in job_id.split("|"):
+        if len(token) >= 10 and token[4:5] == "-" and token[7:8] == "-":
+            return token[:10]
+    return ""
+
+
+def _intraday_context_files_by_source_date(manifest: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+    out: dict[str, dict[str, str]] = {}
+    for part in manifest.get("modality_parts") or ():
+        if not isinstance(part, Mapping):
+            continue
+        source_date = _source_date_from_part(part)
+        if not source_date:
+            continue
+        paths = dict(part.get("output_paths") or {})
+        selected = {
+            str(key): str(value)
+            for key, value in paths.items()
+            if str(key) in {"intraday_base_bars", "intraday_condition_events"} and str(value)
+        }
+        if not selected:
+            continue
+        out.setdefault(source_date, {}).update(selected)
+    return out
 
 
 def _package_context_files_from_manifest(manifest: Mapping[str, Any]) -> dict[str, str]:
@@ -3293,11 +3357,15 @@ def _part_key(plan: DailyIndexPartPlan) -> str:
     return f"{plan.month}|{plan.ticker}|{int(plan.part_id)}"
 
 
-def _cached_horizons(parts: Sequence[LoadedDailyIndexPart]) -> tuple[str, ...]:
+def _cached_horizons(parts: Sequence[LoadedDailyIndexPart], *, config: DailyIndexLoaderConfig | None = None) -> tuple[str, ...]:
     for part in parts:
         horizons = part.plan.config.get("intraday_label_horizons") or ()
         if horizons:
             return tuple(str(item) for item in horizons)
+    if config is not None:
+        horizons = tuple(str(item) for item in getattr(config, "intraday_label_horizons", ()) if str(item).strip())
+        if horizons:
+            return horizons
     return ()
 
 

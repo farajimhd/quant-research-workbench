@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--months", default="2019-02")
     parser.add_argument("--tickers", default="")
     parser.add_argument("--data-groups", default=",".join(default_loader.data_groups))
+    parser.add_argument("--intraday-label-horizons", default=",".join(default_loader.intraday_label_horizons))
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--warmup-batches", type=int, default=1)
     parser.add_argument("--batches", type=int, default=8)
@@ -296,6 +297,7 @@ def _run_profile_batch(
 
 
 def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
+    intraday_label_horizons = _split_csv(args.intraday_label_horizons)
     model = ModelConfig(
         d_model=int(args.d_model),
         event_layers=int(args.event_layers),
@@ -303,6 +305,7 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         fusion_layers=int(args.fusion_layers),
         fusion_heads=int(args.fusion_heads),
         dropout=float(args.dropout),
+        intraday_horizons=len(intraday_label_horizons),
     )
     loader = LoaderConfig(
         cache_root=Path(args.cache_root),
@@ -313,6 +316,7 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         seed=int(args.seed),
         dataset_id=str(args.dataset_id),
         data_groups=_split_csv(args.data_groups),
+        intraday_label_horizons=intraday_label_horizons,
         read_workers=int(args.read_workers),
         materialize_workers=int(args.materialize_workers),
         loaded_parts_per_group=int(args.loaded_parts_per_group),

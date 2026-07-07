@@ -63,6 +63,34 @@ CORPORATE_ACTION_FLAGS = (
 )
 BAR_FAMILIES = ("trade", "quote_bid", "quote_ask")
 BAR_FEATURE_DIMS = {"trade": 6, "quote_bid": 9, "quote_ask": 9}
+DEFAULT_INTRADAY_LABEL_HORIZONS = (
+    "100ms",
+    "200ms",
+    "300ms",
+    "400ms",
+    "500ms",
+    "1s",
+    "2s",
+    "3s",
+    "5s",
+    "10s",
+    "15s",
+    "30s",
+    "60s",
+    "120s",
+    "180s",
+    "300s",
+    "600s",
+    "900s",
+    "1200s",
+    "1800s",
+    "3600s",
+    "7200s",
+    "3h",
+    "4h",
+    "5h",
+    "eod",
+)
 
 
 @dataclass(slots=True)
@@ -94,7 +122,7 @@ class ModelConfig:
     corporate_action_numeric_dim: int = 13
     corporate_action_time_dim: int = 13
     corporate_action_effective_time_dim: int = 13
-    intraday_horizons: int = 20
+    intraday_horizons: int = len(DEFAULT_INTRADAY_LABEL_HORIZONS)
     corporate_action_days: tuple[int, ...] = (1, 2, 3, 7, 28)
     event_feature_names: tuple[str, ...] = DEFAULT_EVENT_FEATURE_NAMES
     use_text: bool = True
@@ -119,6 +147,7 @@ class LoaderConfig:
     dataset_id: str = "temporal_v3_1m_2019_v1"
     data_groups: tuple[str, ...] = DEFAULT_DATA_GROUPS
     event_columns: tuple[str, ...] = DEFAULT_EVENT_FEATURE_NAMES
+    intraday_label_horizons: tuple[str, ...] = DEFAULT_INTRADAY_LABEL_HORIZONS
     event_stream_length: int = 1024
     loaded_parts_per_group: int = 4
     read_workers: int = 4

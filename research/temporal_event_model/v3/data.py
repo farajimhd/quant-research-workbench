@@ -166,6 +166,7 @@ def loader_config_from_v3(config: LoaderConfig) -> Any:
         seed=config.seed,
         data_groups=config.data_groups,
         event_columns=config.event_columns,
+        intraday_label_horizons=config.intraday_label_horizons,
         event_output_mode="raw_stream",
         event_stream_length=config.event_stream_length,
         loaded_parts_per_group=config.loaded_parts_per_group,
