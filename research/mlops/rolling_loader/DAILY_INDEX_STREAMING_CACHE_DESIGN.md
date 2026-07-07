@@ -709,12 +709,17 @@ Required panels:
 9. Messages / Errors
 
 Each modality panel should be a stable table. The first row is the modality
-overall status bar. The default display is compact so all modality panels fit
-on a normal workstation terminal: one stable row for `Fetch`, one for `Process`,
-and one for `Write`. The compact view still uses visual progress bars: the
-summary has a weighted overall bar, and each modality/stage row has its own
-bar. Each stage row also reports active workers, completed jobs, row progress
-and rate when available, and the leading active job.
+overall status bar. That overall bar should be a wide full-panel bar, not a
+small table-cell bar. A horizontal separator line sits under the overall bar so
+it is visually detached from the worker/stage rows.
+
+The default display is compact so all modality panels fit on a normal
+workstation terminal: one stable row for `Fetch`, one for `Process`, and one
+for `Write`. The compact view still uses visual progress bars: the summary has
+a weighted wide overall bar, each modality has a wide overall bar, and each
+modality/stage row has its own smaller worker/stage bar. Each stage row also
+reports active workers, completed jobs, row progress and rate when available,
+and the leading active job.
 
 Detailed per-worker rows are still available with `--progress-worker-detail`.
 The detailed view reserves stable rows by configured worker count. If the
@@ -723,10 +728,10 @@ mode to keep the dashboard readable.
 
 ```text
 Events
-Overall       [############--------]  61.4%  rows 8.2B/13.4B  eta 02:14:33
+Overall [############################################--------]  61.4%  rows 8.2B/13.4B  eta 02:14:33
+--------------------------------------------------------------------------------
 
 Stage    Workers  Bar             Progress                                  Active job
-Overall  26       [######----]    61.4%  rows 8.2B/13.4B                    queues fetch=0 process=4 write=2
 Fetch    9/16     [###-------]    31/252 jobs rows 8.2M/11.0M 220k/s         2019-09 AAPL 2019-09-03 (+8)
 Process  1/2      [###-------]    30/252 jobs rows 8.2M/9.7M 410k/s          2019-09 MSFT validate/time
 Write    3/8      [###-------]    28/252 jobs rows 1.3GB/3.1GB 420MB/s       AAPL events part_0002 (+2)
