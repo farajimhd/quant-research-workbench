@@ -46,6 +46,7 @@ from research.mlops.rolling_loader.run_build_ticker_month_cache import (
     _query_ticker_news,
     _query_xbrl,
     cancel_active_clickhouse_queries as cancel_legacy_active_clickhouse_queries,
+    cancel_process_clickhouse_queries as cancel_legacy_process_clickhouse_queries,
 )
 from research.mlops.rolling_loader.run_build_ticker_month_cache_streaming import (
     _build_intraday_base_bars,
@@ -98,6 +99,7 @@ SESSION_REGULAR_END_SECOND = 16 * 60 * 60
 SESSION_END_SECOND = 20 * 60 * 60
 SESSION_LENGTH_SECOND = SESSION_END_SECOND - SESSION_START_SECOND
 QUERY_ID_PREFIX = "daily_index_streaming_cache_"
+PROCESS_QUERY_ID_PREFIX = f"{QUERY_ID_PREFIX}{os.getpid()}_"
 
 
 @dataclass(frozen=True, slots=True)
@@ -787,8 +789,15 @@ def main(argv: list[str] | None = None) -> int:
         build_state.status = "interrupted"
         build_state.message(f"Interrupt received signal={signum}; stopping queues and cancelling active ClickHouse queries.")
         stop_event.set()
-        cancel_active_queries(client_opts=client_opts, active_queries=active_queries)
-        cancel_legacy_active_clickhouse_queries(client_opts=client_opts, stats=None)
+        active_cancelled = cancel_active_queries(client_opts=client_opts, active_queries=active_queries)
+        prefix_cancelled = cancel_process_queries(client_opts=client_opts)
+        legacy_active_cancelled = cancel_legacy_active_clickhouse_queries(client_opts=client_opts, stats=None)
+        legacy_prefix_cancelled = cancel_legacy_process_clickhouse_queries(client_opts=client_opts, stats=None, reason="daily_index_streaming_cache_interrupt")
+        build_state.message(
+            "ClickHouse cancellation complete "
+            f"daily_active={active_cancelled:,} daily_prefix={prefix_cancelled:,} "
+            f"helper_active={legacy_active_cancelled:,} helper_prefix={legacy_prefix_cancelled:,}."
+        )
 
     previous_sigint = signal.getsignal(signal.SIGINT)
     previous_sigterm = signal.getsignal(signal.SIGTERM)
@@ -1204,7 +1213,7 @@ def fetch_events(
     query_slots: threading.Semaphore,
 ) -> FetchedPayload:
     started = time.perf_counter()
-    query_id = f"{QUERY_ID_PREFIX}{threading.get_ident()}_{uuid.uuid4().hex}"
+    query_id = f"{PROCESS_QUERY_ID_PREFIX}{threading.get_ident()}_{uuid.uuid4().hex}"
     active_queries.register(query_id, job_label(job))
     query = event_query(args=args, job=job)
     try:
@@ -1347,7 +1356,7 @@ def fetch_generic_modality(
     query_slots: threading.Semaphore,
 ) -> GenericFetchedPayload:
     started = time.perf_counter()
-    query_id = f"{QUERY_ID_PREFIX}{job.data_group}_{threading.get_ident()}_{uuid.uuid4().hex}"
+    query_id = f"{PROCESS_QUERY_ID_PREFIX}{job.data_group}_{threading.get_ident()}_{uuid.uuid4().hex}"
     active_queries.register(query_id, generic_job_label(job))
     try:
         with query_slots:
@@ -1501,7 +1510,7 @@ WHERE source_date >= toDate({sql_string(start.isoformat())})
   {ticker_filter}
 ORDER BY source_date ASC, ticker ASC
 """
-    query_id = f"{QUERY_ID_PREFIX}plan_{uuid.uuid4().hex}"
+    query_id = f"{PROCESS_QUERY_ID_PREFIX}plan_{uuid.uuid4().hex}"
     active_queries.register(query_id, "events daily index plan")
     try:
         with query_slots:
@@ -1884,6 +1893,7 @@ def cancel_active_queries(*, client_opts: Mapping[str, str], active_queries: Act
     ids = sorted(active_queries.snapshot())
     if not ids:
         return 0
+    client = None
     try:
         import clickhouse_connect  # type: ignore
 
@@ -1897,11 +1907,50 @@ def cancel_active_queries(*, client_opts: Mapping[str, str], active_queries: Act
             secure=secure,
         )
         quoted = ", ".join(sql_string(query_id) for query_id in ids)
-        client.command(f"KILL QUERY WHERE query_id IN ({quoted}) ASYNC")
-        client.close()
+        client.command(f"KILL QUERY WHERE query_id IN ({quoted}) SYNC")
         return len(ids)
     except Exception:
         return 0
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
+def cancel_process_queries(*, client_opts: Mapping[str, str]) -> int:
+    client = None
+    try:
+        import clickhouse_connect  # type: ignore
+
+        parsed = urlparse(str(client_opts["clickhouse_url"]))
+        secure = parsed.scheme == "https"
+        client = clickhouse_connect.get_client(
+            host=parsed.hostname or "localhost",
+            port=parsed.port or (8443 if secure else 8123),
+            username=str(client_opts.get("user") or "default"),
+            password=str(client_opts.get("password") or ""),
+            secure=secure,
+        )
+        prefix_like = PROCESS_QUERY_ID_PREFIX + "%"
+        result = client.command(f"KILL QUERY WHERE query_id LIKE {sql_string(prefix_like)} SYNC")
+        return count_killed_queries(result)
+    except Exception:
+        return 0
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
+def count_killed_queries(result: Any) -> int:
+    text = str(result or "")
+    if not text.strip():
+        return 0
+    return sum(1 for line in text.splitlines() if line.strip().startswith("finished\t"))
 
 
 def drain_standard_queue(work_queue: "queue.Queue[Any]") -> int:

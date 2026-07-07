@@ -950,15 +950,17 @@ On Ctrl+C:
 
 1. Stop accepting new jobs.
 2. Signal fetch workers to stop before submitting new ClickHouse queries.
-3. Let in-flight fetches finish or cancel known query ids if shutdown timeout is
-   exceeded.
-4. Let process workers finish payloads already fetched.
-5. Let write workers flush completed processed payloads.
-6. Write partial manifest state with `status=interrupted`.
-7. Print a clear terminal message:
+3. Cancel registered active ClickHouse query ids synchronously.
+4. Run a synchronous process-prefix `KILL QUERY` for any orphaned ClickHouse
+   queries whose ids start with this builder process prefix.
+5. Cancel active helper queries from imported sparse-context query helpers.
+6. Drain queued work without writing partial payloads.
+7. Let write workers finish any atomic rename already in progress.
+8. Write partial manifest state with `status=interrupted`.
+9. Print a clear terminal message:
 
 ```text
-Interrupt received. Stopping workers, flushing completed writes, and recording resumable state.
+Interrupt received. Stopping workers, cancelling ClickHouse queries, flushing completed writes, and recording resumable state.
 ```
 
 The next run should skip completed ticker/month parts only if manifests and
