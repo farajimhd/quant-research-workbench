@@ -378,7 +378,7 @@ def start_reference_api_server(config: ReferenceGatewayConfig, state: ReferenceD
             return
 
     def run() -> None:
-        server_config = uvicorn.Config(app, host=config.host, port=config.port, log_level="warning")
+        server_config = uvicorn.Config(app, host=config.host, port=config.port, log_level="warning", access_log=False)
         try:
             uvicorn.Server(server_config).run()
         except Exception as exc:  # noqa: BLE001

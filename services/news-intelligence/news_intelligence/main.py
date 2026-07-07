@@ -89,7 +89,7 @@ def _snapshot_metrics() -> dict[str, object]:
 
 def main() -> None:
     host, port_text = config.bind.rsplit(":", 1)
-    uvicorn.run(app, host=host, port=int(port_text), log_level="info")
+    uvicorn.run(app, host=host, port=int(port_text), log_level="info", access_log=False)
 
 
 if __name__ == "__main__":

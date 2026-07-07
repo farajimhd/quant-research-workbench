@@ -97,7 +97,7 @@ def main() -> None:
         gateway._release_model()  # noqa: SLF001
         return
     app = create_app(cfg, start_background=not args.no_background)
-    uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="info", timeout_graceful_shutdown=int(cfg.graceful_shutdown_seconds))
+    uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="info", access_log=False, timeout_graceful_shutdown=int(cfg.graceful_shutdown_seconds))
 
 
 if __name__ == "__main__":

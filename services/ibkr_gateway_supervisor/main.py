@@ -160,7 +160,7 @@ def main() -> None:
             raise SystemExit(code)
         if args.login_once:
             raise SystemExit(0 if asyncio.run(run_playwright_login(config)) else 1)
-        uvicorn.run(create_app(config, start_background=not args.no_background), host=config.host, port=config.port, log_level="info")
+        uvicorn.run(create_app(config, start_background=not args.no_background), host=config.host, port=config.port, log_level="info", access_log=False)
     except RuntimeError as exc:
         print(json.dumps({"status": "failed", "error": str(exc)}, sort_keys=True), flush=True)
         raise SystemExit(2) from None

@@ -130,7 +130,7 @@ def main() -> int:
         }
 
     print(json.dumps({"event": "server_ready", "endpoint": f"http://{args.host}:{args.port}/v1", "served_model_name": served_model_name}), flush=True)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
     return 0
 
 

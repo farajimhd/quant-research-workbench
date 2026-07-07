@@ -102,7 +102,7 @@ def main() -> None:
         print("SEC gateway preflight OK", flush=True)
         print(json.dumps(report.public_dict(), indent=2), flush=True)
         return
-    uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="info", timeout_graceful_shutdown=int(cfg.graceful_shutdown_seconds))
+    uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="info", access_log=False, timeout_graceful_shutdown=int(cfg.graceful_shutdown_seconds))
 
 
 if __name__ == "__main__":
