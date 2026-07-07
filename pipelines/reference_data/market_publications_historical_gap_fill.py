@@ -1420,7 +1420,7 @@ def normalize_massive_presentation_assets(
         url = str(raw_url or "").strip()
         if not url:
             continue
-        content = fetch_bytes(args, url)
+        content = fetch_massive_asset_bytes(args, url)
         digest = sha256_bytes(content)
         mime_type = guess_mime_type(url, content)
         suffix = suffix_for_asset(url, mime_type)
@@ -1430,7 +1430,8 @@ def normalize_massive_presentation_assets(
         if not target.exists() or target.stat().st_size != len(content):
             target.write_bytes(content)
         first_seen = observed_at.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        event_key = f"{ref.ticker}:{asset_kind}:{url}:{digest}"
+        source_reference = safe_url(url)
+        event_key = f"{ref.ticker}:{asset_kind}:{source_reference}:{digest}"
         rows.append(
             {
                 "asset_id": stable_id("presentation_asset", event_key),
@@ -1441,7 +1442,7 @@ def normalize_massive_presentation_assets(
                 "byte_size": len(content),
                 "content_hash_sha256": digest,
                 "source_system": "massive",
-                "source_reference": url,
+                "source_reference": source_reference,
                 "source_file_name": Path(parse.urlsplit(url).path).name or f"{ref.ticker.lower()}-{asset_kind}{suffix}",
                 "status": "active",
                 "first_seen_at_utc": first_seen,
@@ -1494,10 +1495,25 @@ def fetch_massive_paginated(args: argparse.Namespace, first_url: str, api_key: s
     return rows, pages, False
 
 
+def fetch_massive_asset_bytes(args: argparse.Namespace, url: str) -> bytes:
+    fetch_url = append_api_key(url, massive_api_key()) if is_massive_url(url) else url
+    return fetch_bytes(args, fetch_url)
+
+
+def is_massive_url(url: str) -> bool:
+    parsed = parse.urlsplit(str(url or ""))
+    return parsed.netloc.lower() == "api.massive.com"
+
+
 def append_api_key(url: str, api_key: str) -> str:
     if not url:
         return ""
-    return url if "apiKey=" in url else url + ("&" if "?" in url else "?") + parse.urlencode({"apiKey": api_key})
+    parsed = parse.urlsplit(url)
+    params = parse.parse_qsl(parsed.query, keep_blank_values=True)
+    if any(key.lower() == "apikey" for key, _ in params):
+        return url
+    params.append(("apiKey", api_key))
+    return parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parse.urlencode(params), parsed.fragment))
 
 
 def run_ibkr_borrow_availability(
@@ -1798,13 +1814,32 @@ def parse_retry_after_seconds(value: str) -> float | None:
 def safe_url(url: str) -> str:
     parsed = parse.urlsplit(url)
     params = parse.parse_qsl(parsed.query, keep_blank_values=True)
-    redacted = [(key, "redacted" if key.lower() in {"apikey", "api_key", "token"} else value) for key, value in params]
+    redacted = [(key, "redacted" if key.lower() in SECRET_QUERY_KEYS else value) for key, value in params]
     return parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parse.urlencode(redacted), parsed.fragment))
 
 
 def safe_exception_text(exc: Exception) -> str:
     text = repr(exc)
-    return re.sub(r"([?&](?:apiKey|api_key|token)=)[^&'\"\s)]+", r"\1redacted", text, flags=re.IGNORECASE)
+    return redact_secret_text(text)
+
+
+SECRET_QUERY_KEYS = {"apikey", "api_key", "token", "key"}
+
+
+def redact_secret_text(value: str) -> str:
+    text = str(value)
+    text = re.sub(
+        r"([?&](?:apiKey|apikey|api_key|token|key)=)[^&'\"\s)]+",
+        r"\1redacted",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"((?:apiKey|apikey|api_key|token|key)['\"]?\s*[:=]\s*['\"]?)[^'\"&\s,)]+",
+        r"\1redacted",
+        text,
+        flags=re.IGNORECASE,
+    )
 
 
 def is_source_not_yet_available(coverage_kind: str, day: date, exc: Exception) -> bool:
@@ -1889,12 +1924,8 @@ def massive_api_key() -> str:
 def massive_api_key_diagnostic() -> dict[str, Any]:
     key = os.environ.get("MASSIVE_API_KEY", "").strip()
     if not key:
-        return {"present": False, "length": 0, "sha256_prefix": ""}
-    return {
-        "present": True,
-        "length": len(key),
-        "sha256_prefix": hashlib.sha256(key.encode("utf-8")).hexdigest()[:12],
-    }
+        return {"present": False}
+    return {"present": True}
 
 
 def ibkr_base_url() -> str:

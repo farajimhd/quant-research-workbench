@@ -76,12 +76,34 @@ class ReferenceDaemonState:
         self.touch("failed", "daemon_error", message)
 
     def metrics(self) -> dict[str, Any]:
+        child_event = latest_runtime_event(self.runtime_log_path)
+        current_phase = self.current_phase
+        current_message = self.current_phase_message
+        current_status = self.status
+        updated_at_utc = self.updated_at_utc
+        child_tasks: list[dict[str, Any]] = []
+        if child_event:
+            event_name = str(child_event.get("event") or "")
+            operation_name = str(child_event.get("name") or event_name)
+            operation_status = str(child_event.get("status") or self.status)
+            current_phase = operation_name or current_phase
+            current_message = str(child_event.get("detail") or child_event.get("reason") or current_message)
+            current_status = operation_status if operation_status else current_status
+            updated_at_utc = str(child_event.get("ts_utc") or updated_at_utc)
+            child_tasks.append(
+                {
+                    "name": operation_name,
+                    "status": operation_status,
+                    "rows": child_event.get("rows", ""),
+                    "message": current_message,
+                }
+            )
         return {
-            "status": self.status,
-            "current_phase": self.current_phase,
-            "current_phase_message": self.current_phase_message,
+            "status": current_status,
+            "current_phase": current_phase,
+            "current_phase_message": current_message,
             "started_at_utc": self.started_at_utc,
-            "updated_at_utc": self.updated_at_utc,
+            "updated_at_utc": updated_at_utc,
             "poll_runs": self.poll_runs,
             "poll_failures": self.poll_failures,
             "last_error": self.last_error,
@@ -94,11 +116,14 @@ class ReferenceDaemonState:
             "tasks": [
                 {"name": "daemon parent", "status": self.status, "message": self.current_phase_message},
                 {"name": "child cycles", "status": "ok" if self.poll_failures == 0 else "warning", "rows": self.poll_runs, "message": "reference sync/audit child runs"},
+                *child_tasks,
             ],
         }
 
     def recent_snapshot(self, limit: int = 25) -> dict[str, Any]:
-        rows = list(self.recent_cycles)[-max(1, min(limit, 250)) :]
+        rows = latest_runtime_events(self.runtime_log_path, limit=max(1, min(limit, 250)))
+        if not rows:
+            rows = list(self.recent_cycles)[-max(1, min(limit, 250)) :]
         return {"rows": rows, "runtime_log_path": self.runtime_log_path}
 
 
@@ -254,3 +279,36 @@ def start_reference_api_server(config: ReferenceGatewayConfig, state: ReferenceD
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def latest_runtime_event(path: str) -> dict[str, Any]:
+    rows = latest_runtime_events(path, limit=1)
+    return rows[-1] if rows else {}
+
+
+def latest_runtime_events(path: str, *, limit: int) -> list[dict[str, Any]]:
+    if not path:
+        return []
+    log_path = Path(path)
+    if not log_path.exists():
+        return []
+    try:
+        with log_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 262_144), os.SEEK_SET)
+            text = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = text.splitlines()
+    if lines and not lines[0].startswith("{"):
+        lines = lines[1:]
+    rows: list[dict[str, Any]] = []
+    for line in lines[-max(1, limit * 8) :]:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("event") in {"operation", "operation_progress", "daemon_cycle_completed", "audit_completed", "alerts_written"}:
+            rows.append(payload)
+    return rows[-limit:]
