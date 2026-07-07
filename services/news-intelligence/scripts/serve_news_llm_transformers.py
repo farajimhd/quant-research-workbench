@@ -10,11 +10,16 @@ from pathlib import Path
 from typing import Any
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+
+from services.gateway_core.uvicorn_logging import quiet_uvicorn_log_config, suppress_uvicorn_access_logger
 
 from news_intelligence.config import IntelligenceConfig
 from news_intelligence.model_registry import ModelRegistry
@@ -130,7 +135,15 @@ def main() -> int:
         }
 
     print(json.dumps({"event": "server_ready", "endpoint": f"http://{args.host}:{args.port}/v1", "served_model_name": served_model_name}), flush=True)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
+    suppress_uvicorn_access_logger()
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        access_log=False,
+        log_config=quiet_uvicorn_log_config(),
+    )
     return 0
 
 

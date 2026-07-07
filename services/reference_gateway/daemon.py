@@ -17,6 +17,7 @@ from typing import Any
 from services.gateway_policy import active_collection_window
 from services.gateway_core.dashboard import build_dashboard_snapshot
 from services.gateway_core.health import build_health_payload
+from services.gateway_core.uvicorn_logging import quiet_uvicorn_log_config, suppress_uvicorn_access_logger
 from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.memory import memory_snapshot
 from services.reference_gateway.preflight import run_preflight
@@ -378,7 +379,15 @@ def start_reference_api_server(config: ReferenceGatewayConfig, state: ReferenceD
             return
 
     def run() -> None:
-        server_config = uvicorn.Config(app, host=config.host, port=config.port, log_level="warning", access_log=False)
+        suppress_uvicorn_access_logger()
+        server_config = uvicorn.Config(
+            app,
+            host=config.host,
+            port=config.port,
+            log_level="warning",
+            access_log=False,
+            log_config=quiet_uvicorn_log_config(),
+        )
         try:
             uvicorn.Server(server_config).run()
         except Exception as exc:  # noqa: BLE001

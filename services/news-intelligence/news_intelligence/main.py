@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from services.gateway_core.dashboard import build_dashboard_snapshot
 from services.gateway_core.health import build_health_payload
+from services.gateway_core.uvicorn_logging import quiet_uvicorn_log_config, suppress_uvicorn_access_logger
 
 from .config import IntelligenceConfig
 from .schemas import IntelligenceResponse, NewsArticleForClassification
@@ -89,7 +90,15 @@ def _snapshot_metrics() -> dict[str, object]:
 
 def main() -> None:
     host, port_text = config.bind.rsplit(":", 1)
-    uvicorn.run(app, host=host, port=int(port_text), log_level="info", access_log=False)
+    suppress_uvicorn_access_logger()
+    uvicorn.run(
+        app,
+        host=host,
+        port=int(port_text),
+        log_level="info",
+        access_log=False,
+        log_config=quiet_uvicorn_log_config(),
+    )
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from research.mlops.env import discover_env_files, load_env_files
 from services.gateway_core.health import build_health_payload
+from services.gateway_core.uvicorn_logging import quiet_uvicorn_log_config, suppress_uvicorn_access_logger
 from services.ibkr_gateway_supervisor.config import IbkrGatewayConfig
 from services.ibkr_gateway_supervisor.login import run_playwright_login
 from services.ibkr_gateway_supervisor.status import build_ibkr_status_snapshot
@@ -160,7 +161,15 @@ def main() -> None:
             raise SystemExit(code)
         if args.login_once:
             raise SystemExit(0 if asyncio.run(run_playwright_login(config)) else 1)
-        uvicorn.run(create_app(config, start_background=not args.no_background), host=config.host, port=config.port, log_level="info", access_log=False)
+        suppress_uvicorn_access_logger()
+        uvicorn.run(
+            create_app(config, start_background=not args.no_background),
+            host=config.host,
+            port=config.port,
+            log_level="info",
+            access_log=False,
+            log_config=quiet_uvicorn_log_config(),
+        )
     except RuntimeError as exc:
         print(json.dumps({"status": "failed", "error": str(exc)}, sort_keys=True), flush=True)
         raise SystemExit(2) from None

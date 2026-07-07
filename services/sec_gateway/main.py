@@ -13,6 +13,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from research.mlops.env import discover_env_files, load_env_files
 from services.gateway_core.dashboard import build_dashboard_snapshot
 from services.gateway_core.health import build_health_payload
+from services.gateway_core.uvicorn_logging import quiet_uvicorn_log_config, suppress_uvicorn_access_logger
 from services.sec_gateway.config import SecGatewayConfig
 from services.sec_gateway.gateway import SecGateway
 from services.sec_gateway.preflight import PreflightError
@@ -102,7 +103,16 @@ def main() -> None:
         print("SEC gateway preflight OK", flush=True)
         print(json.dumps(report.public_dict(), indent=2), flush=True)
         return
-    uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="info", access_log=False, timeout_graceful_shutdown=int(cfg.graceful_shutdown_seconds))
+    suppress_uvicorn_access_logger()
+    uvicorn.run(
+        app,
+        host=cfg.host,
+        port=cfg.port,
+        log_level="info",
+        access_log=False,
+        log_config=quiet_uvicorn_log_config(),
+        timeout_graceful_shutdown=int(cfg.graceful_shutdown_seconds),
+    )
 
 
 if __name__ == "__main__":

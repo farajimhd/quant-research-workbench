@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from research.mlops.env import discover_env_files, load_env_files
 from services.gateway_core.dashboard import build_dashboard_snapshot
 from services.gateway_core.health import build_health_payload
+from services.gateway_core.uvicorn_logging import quiet_uvicorn_log_config, suppress_uvicorn_access_logger
 from services.text_embed_gateway.config import TextEmbedGatewayConfig
 from services.text_embed_gateway.gateway import TextEmbedGateway
 
@@ -97,7 +98,16 @@ def main() -> None:
         gateway._release_model()  # noqa: SLF001
         return
     app = create_app(cfg, start_background=not args.no_background)
-    uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="info", access_log=False, timeout_graceful_shutdown=int(cfg.graceful_shutdown_seconds))
+    suppress_uvicorn_access_logger()
+    uvicorn.run(
+        app,
+        host=cfg.host,
+        port=cfg.port,
+        log_level="info",
+        access_log=False,
+        log_config=quiet_uvicorn_log_config(),
+        timeout_graceful_shutdown=int(cfg.graceful_shutdown_seconds),
+    )
 
 
 if __name__ == "__main__":
