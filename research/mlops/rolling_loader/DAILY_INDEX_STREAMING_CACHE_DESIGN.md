@@ -244,14 +244,22 @@ Use explicit parameters:
 
 ```text
 event_context_rows = 1024 by default for the first implementation
-event_context_guard_rows = 1 by default
+event_context_guard_rows = 0 by default
 ```
 
-The fetch start is:
+`event_context_rows` is the total event-window length available to the loader
+for the first origin. It includes the current origin event. With
+`event_context_rows=1024`, the first origin needs:
+
+```text
+1023 prior events + current origin event
+```
+
+The fetch start is therefore:
 
 ```text
 fetch_start_ordinal =
-  max(1, origin_first_ordinal - event_context_rows - event_context_guard_rows)
+  max(1, origin_first_ordinal - event_context_rows + 1 - event_context_guard_rows)
 
 fetch_end_ordinal = origin_last_ordinal
 ```
@@ -261,10 +269,17 @@ For example:
 ```text
 origin_first_ordinal = 50,000
 event_context_rows = 1,024
-event_context_guard_rows = 1
+event_context_guard_rows = 0
 
-fetch_start_ordinal = 48,975
+fetch_start_ordinal = 48,977
 fetch_end_ordinal   = origin_last_ordinal
+```
+
+The first origin window can then use:
+
+```text
+48,977 ... 49,999 = 1,023 prior events
+50,000            = current origin event
 ```
 
 Rows are tagged:
@@ -274,9 +289,9 @@ ordinal < origin_first_ordinal  -> context_only = true
 ordinal >= origin_first_ordinal -> origin-eligible month row
 ```
 
-The loader should use only the configured `event_context_rows` for model
-context. The extra guard row is for continuity/audit and can be ignored by the
-loader unless a future loader explicitly requests it.
+The loader should use the configured `event_context_rows` as the total event
+window length. `event_context_guard_rows` is optional extra prior history for
+diagnostics or future experiments and defaults to zero.
 
 ### Cross-Month and Cross-Year Context
 
@@ -683,7 +698,7 @@ For every ticker/month initial context:
 2. Context row count is:
 
 ```text
-min(event_context_rows + event_context_guard_rows, origin_first_ordinal - 1)
+min(event_context_rows - 1 + event_context_guard_rows, origin_first_ordinal - 1)
 ```
 
 For every ticker/month:
