@@ -121,8 +121,11 @@ cache_root/
         part_000001.parquet
       origins/
         part_000000.parquet
+      event_metadata/
+        part_000000.json
       intraday_labels/
-        part_000000.parquet
+        intraday_base_bars_part_000000.parquet
+        intraday_condition_events_part_000000.parquet
       macro_bars/
         part_000000.parquet
       news_embeddings/
@@ -706,26 +709,28 @@ Required panels:
 9. Messages / Errors
 
 Each modality panel should be a stable table. The first row is the modality
-overall status bar. After that, each worker slot gets one fixed row. Rows are
-grouped by process name (`Fetch`, `Process`, `Write`) and worker id.
+overall status bar. The default display is compact so all modality panels fit
+on a normal workstation terminal: one stable row for `Fetch`, one for `Process`,
+and one for `Write`. Each stage row reports active workers, completed jobs,
+row progress/rate when available, and the leading active job.
+
+Detailed per-worker rows are still available with `--progress-worker-detail`.
+The detailed view reserves stable rows by configured worker count. If the
+terminal is short, the implementation may automatically fall back to compact
+mode to keep the dashboard readable.
 
 ```text
 Events
 Overall       [############--------]  61.4%  rows 8.2B/13.4B  eta 02:14:33
 
-Process name  Worker  Status                                      Current Job
-Fetch         01      [#############-------]  8.2M/11.0M 220k/s    2019-09 AAPL 2019-09-03
-Fetch         02      idle                                        -
-...
-Fetch         16      [####----------------]  1.1M/5.8M 180k/s     2019-09 QQQ 2019-09-04
-Process       01      [################----]  8.2M/9.7M 410k/s     2019-09 MSFT validate/time
-Process       02      idle                                        -
-Write         01      [########------------]  1.3GB/3.1GB 420MB/s  AAPL events part_0002
-...
-Write         08      idle                                        -
+Stage    Workers  Progress                                  Active job
+Overall  26       61.4%  rows 8.2B/13.4B                    queues fetch=0 process=4 write=2
+Fetch    9/16     31/252 jobs rows 8.2M/11.0M 220k/s         2019-09 AAPL 2019-09-03 (+8)
+Process  1/2      30/252 jobs rows 8.2M/9.7M 410k/s          2019-09 MSFT validate/time
+Write    3/8      28/252 jobs rows 1.3GB/3.1GB 420MB/s       AAPL events part_0002 (+2)
 ```
 
-For the Events panel with the 96-worker default table, the panel has exactly:
+For `--progress-worker-detail`, the Events panel has exactly:
 
 ```text
 1 overall row

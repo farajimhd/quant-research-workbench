@@ -373,11 +373,20 @@ class BuildState:
 
 
 class DailyIndexStreamingDashboard:
-    def __init__(self, state: BuildState, *, refresh_per_second: float, progress_screen: bool, progress_layout: str) -> None:
+    def __init__(
+        self,
+        state: BuildState,
+        *,
+        refresh_per_second: float,
+        progress_screen: bool,
+        progress_layout: str,
+        worker_detail: bool,
+    ) -> None:
         self.state = state
         self.refresh_per_second = max(0.5, float(refresh_per_second))
         self.progress_screen = bool(progress_screen)
         self.progress_layout = str(progress_layout)
+        self.worker_detail = bool(worker_detail)
         self._live = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -426,10 +435,12 @@ class DailyIndexStreamingDashboard:
         from rich import box
         from rich.console import Group
         from rich.panel import Panel
-        from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
         from rich.table import Table
         from rich.text import Text
 
+        terminal = shutil.get_terminal_size((160, 48))
+        compact = (not self.worker_detail) or terminal.lines < 58
+        message_limit = 4 if compact else 8
         with self.state._lock:
             modalities = {name: snapshot_modality(modality) for name, modality in self.state.modalities.items()}
             messages = list(self.state.messages)
@@ -461,27 +472,18 @@ class DailyIndexStreamingDashboard:
         panels: list[Any] = [
             Panel(summary, title="Daily-Indexed Streaming Cache", box=box.ROUNDED, border_style="red" if last_error else "green", padding=(0, 1))
         ]
-        overall_progress = Progress(
-            TextColumn("[cyan]Overall"),
-            BarColumn(bar_width=None),
-            TextColumn(f"{done_units:,}/{total_units:,}"),
-            TimeRemainingColumn(),
-            expand=True,
-        )
-        overall_progress.add_task("overall", total=max(1, total_units), completed=min(done_units, max(1, total_units)))
-        panels.append(overall_progress)
 
-        modality_panels = [self._modality_panel(name, modalities.get(name) or empty_modality_snapshot(name)) for name in MODALITY_PANEL_NAMES]
+        modality_panels = [self._modality_panel(name, modalities.get(name) or empty_modality_snapshot(name), compact=compact) for name in MODALITY_PANEL_NAMES]
         panels.append(two_column_panel_grid(modality_panels))
 
         msg_table = Table(box=box.SIMPLE, show_header=False, expand=True)
         msg_table.add_column("Message")
-        for line in messages[-12:]:
+        for line in messages[-message_limit:]:
             msg_table.add_row(Text(line, overflow="fold"))
         panels.append(Panel(msg_table, title="Messages / Errors", box=box.ROUNDED, border_style="yellow", padding=(0, 1)))
         return Group(*panels)
 
-    def _modality_panel(self, name: str, modality: dict[str, Any]) -> object:
+    def _modality_panel(self, name: str, modality: dict[str, Any], *, compact: bool) -> object:
         from rich import box
         from rich.panel import Panel
         from rich.table import Table
@@ -489,13 +491,49 @@ class DailyIndexStreamingDashboard:
         expected = int(modality["expected_units"])
         written = int(modality["written_units"])
         progress = written / expected if expected > 0 else 0.0
+        workers = list(modality["workers"])
+        if compact:
+            table = Table(box=box.SIMPLE, expand=True)
+            table.add_column("Stage", no_wrap=True, style="cyan")
+            table.add_column("Workers", justify="right", no_wrap=True)
+            table.add_column("Progress", overflow="fold")
+            table.add_column("Active job", overflow="fold")
+            table.add_row("Overall", str(len(workers)), f"{progress * 100.0:.1f}%  {written:,}/{expected:,}", queue_detail(modality))
+            if not workers:
+                table.add_row("Pipeline", "0", "disabled", "not selected in --data-groups")
+            for process_name in ("Fetch", "Process", "Write"):
+                process_workers = [worker for worker in workers if str(worker.get("process_name")) == process_name]
+                if not process_workers:
+                    continue
+                active = [
+                    worker
+                    for worker in process_workers
+                    if str(worker.get("status") or "idle") not in {"idle", "done", "stopped"}
+                ]
+                completed_jobs = int(modality.get(f"{process_name.lower()}_done") or 0)
+                total_jobs = int(modality.get("fetch_jobs") or 0)
+                completed_rows = sum(int(worker.get("completed") or 0) for worker in process_workers)
+                total_rows = sum(int(worker.get("total") or 0) for worker in process_workers)
+                rate = sum(float(worker.get("rate") or 0.0) for worker in active or process_workers)
+                active_job = "-"
+                if active:
+                    active_job = str(active[0].get("current_job") or "-")
+                    if len(active) > 1:
+                        active_job = f"{active_job} (+{len(active) - 1})"
+                progress_text = f"{completed_jobs:,}/{total_jobs:,} jobs"
+                if total_rows > 0:
+                    progress_text = f"{progress_text}  rows {completed_rows:,}/{total_rows:,}"
+                if rate > 0:
+                    progress_text = f"{progress_text}  {rate:,.0f}/s"
+                table.add_row(process_name, f"{len(active):,}/{len(process_workers):,}", progress_text, active_job)
+            return Panel(table, title=name, box=box.ROUNDED, border_style="blue", padding=(0, 1))
+
         table = Table(box=box.SIMPLE, expand=True)
         table.add_column("Process", no_wrap=True, style="cyan")
         table.add_column("W", justify="right", no_wrap=True)
         table.add_column("Status", overflow="fold")
         table.add_column("Current job", overflow="fold")
         table.add_row("Overall", "-", f"{progress * 100.0:.2f}%  units {written:,}/{expected:,}", queue_detail(modality))
-        workers = list(modality["workers"])
         if not workers:
             table.add_row("Pipeline", "-", "disabled", "not selected in --data-groups")
         for worker in workers:
@@ -611,6 +649,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
     parser.add_argument("--progress-refresh-per-second", type=float, default=1.0)
     parser.add_argument("--progress-screen", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--progress-worker-detail",
+        action="store_true",
+        help="Show one Rich dashboard row per worker. By default panels use compact per-stage rows so all modalities fit on screen.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--replace-existing", action="store_true")
     parser.add_argument("--shutdown-timeout-seconds", type=float, default=15.0)
@@ -668,7 +711,13 @@ def run(
     writer_slots: threading.Semaphore,
 ) -> int:
     build_state.status = "planning"
-    with DailyIndexStreamingDashboard(build_state, refresh_per_second=args.progress_refresh_per_second, progress_screen=args.progress_screen, progress_layout=args.progress_layout):
+    with DailyIndexStreamingDashboard(
+        build_state,
+        refresh_per_second=args.progress_refresh_per_second,
+        progress_screen=args.progress_screen,
+        progress_layout=args.progress_layout,
+        worker_detail=bool(args.progress_worker_detail),
+    ):
         config = build_config_from_args(args)
         units = query_event_daily_units(args=args, client_opts=client_opts, months=months, active_queries=active_queries, query_slots=query_slots)
         if not units:
@@ -1089,7 +1138,7 @@ def write_event_payload(cache_root: Path, payload: ProcessedPayload) -> WrittenP
     prefix = f"part_{job.part_id:08d}_{job.kind}_{safe_token(job.source_date or job.month)}_{job.ordinal_start}_{job.ordinal_end}"
     event_path = package / "events" / f"{prefix}.parquet"
     origin_path = package / "origins" / f"{prefix}.parquet"
-    meta_path = package / "parts" / f"{prefix}.json"
+    meta_path = package / "event_metadata" / f"{prefix}.json"
     event_result = write_parquet(payload.events.select([column for column in DEFAULT_EVENT_COLUMNS if column in payload.events.columns]), event_path)
     origin_result = write_parquet(payload.origins, origin_path)
     metadata = {

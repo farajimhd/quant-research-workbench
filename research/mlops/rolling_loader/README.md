@@ -71,6 +71,7 @@ cache_root/
         daily_index.parquet
         events/
         origins/
+        event_metadata/
         intraday_labels/
         macro_bars/
         news_embeddings/
@@ -80,8 +81,10 @@ cache_root/
 ```
 
 Very liquid tickers can be physically split into multiple ordinal-bounded
-parts. These part boundaries are storage boundaries only. They are not model
-or training boundaries.
+part files. These part boundaries are storage boundaries only. They are not
+model or training boundaries. Event sidecar JSON is written under
+`event_metadata/`; intraday outputs are written under `intraday_labels/` as
+`intraday_base_bars_*.parquet` and `intraday_condition_events_*.parquet`.
 
 ### Keys
 
