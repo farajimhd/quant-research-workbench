@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_CACHE_ROOT = Path("D:/market-data/prepared/rolling_ticker_month_cache/train_201902_201907_ticker_month")
+DEFAULT_CACHE_ROOT = Path("D:/market-data/prepared/daily_index_streaming_cache/train_201902_201907_daily_index")
 DEFAULT_OUTPUT_ROOT = Path("D:/TradingML/runtimes/temporal_event_model/v3/train")
 DEFAULT_DATA_GROUPS = (
     "events",

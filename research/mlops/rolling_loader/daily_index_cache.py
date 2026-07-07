@@ -15,12 +15,11 @@ import numpy as np
 
 from research.mlops.data.config import RollingMarketDataConfig, TimeBarHorizon
 from research.mlops.data.contracts import BAR_FAMILY_FEATURE_KEYS, BAR_FAMILY_KEYS
-from research.mlops.rolling_loader.materialized_cache import DEFAULT_MATERIALIZED_CACHE_ROOT
 
 
-TICKER_MONTH_CACHE_FORMAT = "rolling_ticker_month_ssd_cache"
-TICKER_MONTH_CACHE_VERSION = 2
-DEFAULT_TICKER_MONTH_CACHE_ROOT = DEFAULT_MATERIALIZED_CACHE_ROOT.parent / "rolling_ticker_month_cache"
+DAILY_INDEX_CACHE_FORMAT = "daily_index_streaming_cache"
+DAILY_INDEX_CACHE_VERSION = 1
+DEFAULT_DAILY_INDEX_CACHE_ROOT = Path("D:/market-data/prepared/daily_index_streaming_cache")
 SESSION_TIMEZONE = "America/New_York"
 SESSION_START = dt.time(4, 0, 0)
 SESSION_END = dt.time(20, 0, 0)
@@ -103,22 +102,6 @@ class MonthWindow:
     last_session_end_utc: str
     timezone: str = SESSION_TIMEZONE
 
-
-@dataclass(frozen=True, slots=True)
-class TickerMonthResult:
-    month: str
-    ticker: str
-    package_dir: Path
-    status: str
-    event_count: int = 0
-    origin_count: int = 0
-    label_rows: int = 0
-    byte_count: int = 0
-    skipped_not_enough_history: int = 0
-    skipped_window_gap: int = 0
-    error: str = ""
-
-
 def month_window(month: str, *, timezone: str = SESSION_TIMEZONE) -> MonthWindow:
     first = parse_month(month)
     next_month = add_months(first, 1)
@@ -188,21 +171,15 @@ def timestamp_us_to_ny_date(timestamp_us: int) -> str:
     return dt.datetime.fromtimestamp(int(timestamp_us) / 1_000_000.0, tz=dt.timezone.utc).astimezone(tz).date().isoformat()
 
 
-def month_dir_for(cache_root: Path, split: str, month: str) -> Path:
-    return Path(cache_root) / str(split) / f"month={month}"
+def month_dir_for(cache_root: Path, month: str) -> Path:
+    return Path(cache_root) / f"month={month}"
 
 
 def ticker_package_dir(month_dir: Path, ticker: str) -> Path:
     upper = str(ticker).upper()
-    bucket = f"{stable_ticker_bucket(upper):02x}"
-    return Path(month_dir) / f"ticker_hash={bucket}" / f"ticker={upper}"
+    return Path(month_dir) / f"ticker={upper}"
 
 
-def stable_ticker_bucket(ticker: str, buckets: int = 256) -> int:
-    value = 0
-    for char in str(ticker).upper().encode("utf-8"):
-        value = ((value * 131) + int(char)) & 0xFFFFFFFF
-    return value % max(1, int(buckets))
 
 
 def context_lags_from_args(
@@ -248,38 +225,10 @@ def jsonable(value: Any) -> Any:
     return value
 
 
-def directory_size(path: Path) -> int:
-    total = 0
-    if not path.exists():
-        return 0
-    for item in path.rglob("*"):
-        if item.is_file():
-            total += int(item.stat().st_size)
-    return total
 
 
-def cleanup_tmp_dirs(cache_root: Path) -> int:
-    removed = 0
-    if not cache_root.exists():
-        return 0
-    for path in cache_root.rglob("*.tmp"):
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-            removed += 1
-        elif path.is_file():
-            path.unlink(missing_ok=True)
-            removed += 1
-    return removed
 
 
-def replace_complete_dir(tmp_dir: Path, final_dir: Path, *, resume: bool) -> None:
-    if final_dir.exists():
-        if resume:
-            shutil.rmtree(final_dir)
-        else:
-            raise FileExistsError(f"Refusing to overwrite existing package directory: {final_dir}")
-    final_dir.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(tmp_dir, final_dir)
 
 
 def build_config_from_args(args: Any) -> RollingMarketDataConfig:
@@ -396,92 +345,6 @@ def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def month_manifest_payload(*, args: Any, cache_id: str, cache_root: Path, loaded_env: list[Path], months: tuple[str, ...], context_lags: tuple[int, ...]) -> dict[str, Any]:
-    return {
-        "format": TICKER_MONTH_CACHE_FORMAT,
-        "version": TICKER_MONTH_CACHE_VERSION,
-        "status": "running",
-        "cache_id": cache_id,
-        "cache_root": str(cache_root),
-        "split": str(args.split),
-        "created_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
-        "months": list(months),
-        "source": {
-            "database": args.database,
-            "events_table": args.events_table,
-            "condition_token_reference_table": getattr(args, "condition_token_reference_table", "event_condition_token_reference"),
-            "macro_bars_table": args.macro_bars_table,
-            "news_token_table": args.news_token_table,
-            "news_embedding_table": getattr(args, "news_embedding_table", "news_text_embeddings"),
-            "sec_context_database": args.sec_context_database,
-            "sec_filing_text_token_table": args.sec_filing_text_token_table,
-            "sec_filing_text_embedding_table": getattr(args, "sec_filing_text_embedding_table", "sec_filing_text_embeddings"),
-            "sec_xbrl_context_table": args.sec_xbrl_context_table,
-            "category_reference_table": args.category_reference_table,
-            "q_live_database": getattr(args, "q_live_database", "q_live"),
-            "stock_split_table": getattr(args, "stock_split_table", "market_stock_split_v1"),
-            "cash_dividend_table": getattr(args, "cash_dividend_table", "market_cash_dividend_v1"),
-        },
-        "config": {
-            "events_per_chunk": int(args.events_per_chunk),
-            "context_lags": list(context_lags),
-            "context_chunk_stride_events": int(args.context_chunk_stride_events),
-            "sample_stride_events": int(args.sample_stride_events),
-            "context_fetch_mode": "month_plus_latest_prior_items",
-            "ticker_news_prior_items": int(getattr(args, "ticker_news_prior_items", 0)),
-            "market_news_prior_items": int(getattr(args, "market_news_prior_items", 0)),
-            "sec_filing_prior_items": int(getattr(args, "sec_filing_prior_items", 0)),
-            "xbrl_prior_rows": int(getattr(args, "xbrl_prior_rows", 0)),
-            "xbrl_items": int(getattr(args, "xbrl_items", 0)),
-            "corporate_action_items": int(getattr(args, "corporate_action_items", 0)),
-            "corporate_action_lookback_days": int(getattr(args, "corporate_action_lookback_days", 0)),
-            "corporate_action_label_days": list(parse_day_horizons(getattr(args, "corporate_action_label_days", ""))),
-            "event_payload_columns": list(EVENT_PAYLOAD_COLUMNS),
-            "event_time_feature_columns": list(EVENT_TIME_FEATURE_COLUMNS),
-            "context_available_time_feature_columns": list(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS),
-            "context_effective_time_feature_columns": list(CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS),
-            "intraday_label_horizons": [h.name for h in parse_horizons(args.intraday_label_horizons)],
-            "intraday_context_horizons": [h.name for h in parse_horizons(getattr(args, "intraday_context_horizons", args.intraday_label_horizons))],
-            "intraday_context_semantics": "completed_grid_buckets_clipped_to_session_start_with_first_bucket_origin_fallback",
-            "intraday_label_semantics": "grid_aligned_next_bucket",
-            "intraday_label_grid_resolutions_us": [100_000, 1_000_000, 5_000_000, 30_000_000, 60_000_000],
-            "intraday_label_grid_policy": {
-                "100000": "horizon_us <= 60000000",
-                "1000000": "60000000 < horizon_us <= 900000000",
-                "5000000": "900000000 < horizon_us <= 3600000000",
-                "30000000": "3600000000 < horizon_us <= 10800000000",
-                "60000000": "horizon_us > 10800000000 or eod",
-            },
-            "bar_families": list(BAR_FAMILY_KEYS),
-            "bar_family_feature_keys": {family: list(BAR_FAMILY_FEATURE_KEYS[family]) for family in BAR_FAMILY_KEYS},
-            "future_bar_label_keys": [
-                *(f"{family}_{field}" for family in BAR_FAMILY_KEYS for field in BAR_FAMILY_FEATURE_KEYS[family]),
-                *(f"{family}_available" for family in BAR_FAMILY_KEYS),
-                *(f"{family}_last_event_timestamp_us" for family in BAR_FAMILY_KEYS),
-            ],
-            "future_condition_label_keys": [
-                "condition_halt_pause_flag",
-                "condition_resume_flag",
-                "condition_news_risk_flag",
-                "condition_luld_limit_state_flag",
-            ],
-            "future_external_arrival_label_keys": [
-                "ticker_news_arrival_flag",
-                "sec_filing_arrival_flag",
-            ],
-            "future_event_flag_label_keys": [
-                "condition_halt_pause_flag",
-                "condition_resume_flag",
-                "condition_news_risk_flag",
-                "condition_luld_limit_state_flag",
-                "ticker_news_arrival_flag",
-                "sec_filing_arrival_flag",
-            ],
-        },
-        "env_files_loaded": [str(path) for path in loaded_env],
-        "args": redacted_args(args),
-        "packages": [],
-    }
 
 
 def redacted_args(args: Any) -> dict[str, Any]:
@@ -504,5 +367,4 @@ def redacted_args(args: Any) -> dict[str, Any]:
     return out
 
 
-def month_window_dict(window: MonthWindow) -> dict[str, Any]:
-    return asdict(window)
+

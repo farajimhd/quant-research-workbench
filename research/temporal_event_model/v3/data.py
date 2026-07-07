@@ -6,7 +6,7 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
-from research.mlops.rolling_loader.ticker_month_dataset import TickerMonthTrainingBatch
+from research.mlops.rolling_loader.daily_index_dataset import DailyIndexTrainingBatch
 from research.temporal_event_model.v3.config import (
     BAR_FAMILIES,
     BAR_FEATURE_DIMS,
@@ -29,7 +29,7 @@ class TemporalBatch:
 
 
 def batch_to_torch(
-    batch: TickerMonthTrainingBatch,
+    batch: DailyIndexTrainingBatch,
     *,
     model_config: ModelConfig,
     device: torch.device,
@@ -153,9 +153,9 @@ def make_dummy_temporal_batch(
 
 
 def loader_config_from_v3(config: LoaderConfig) -> Any:
-    from research.mlops.rolling_loader.ticker_month_dataset import TickerMonthLoaderConfig
+    from research.mlops.rolling_loader.daily_index_dataset import DailyIndexLoaderConfig
 
-    return TickerMonthLoaderConfig(
+    return DailyIndexLoaderConfig(
         cache_root=config.cache_root,
         split=config.split,
         start_utc=config.start_utc,
@@ -201,7 +201,7 @@ def validation_loader_config_from_v3(config: LoaderConfig) -> Any:
     )
 
 
-def _event_stream(batch: TickerMonthTrainingBatch, config: ModelConfig, device: torch.device, non_blocking: bool) -> torch.Tensor:
+def _event_stream(batch: DailyIndexTrainingBatch, config: ModelConfig, device: torch.device, non_blocking: bool) -> torch.Tensor:
     arr = batch.raw_event_stream
     if arr.size == 0:
         arr = np.zeros((batch.sample_count, config.event_stream_length, config.event_feature_count), dtype=np.float32)

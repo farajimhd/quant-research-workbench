@@ -41,7 +41,7 @@ python research\temporal_event_model\v3\train.py --dummy-data --wandb-mode disab
 
 ## Data Contract
 
-The trainer uses `AsyncTickerMonthBatchLoader` in `raw_stream` event mode.
+The trainer uses `AsyncDailyIndexBatchLoader` in `raw_stream` event mode.
 The v3 loader config explicitly requests this event column order:
 
 ```text

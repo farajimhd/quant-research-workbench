@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 DEFAULT_ARGS: dict[str, str | int | float | bool] = {
-    "cache-root": "D:/market-data/prepared/rolling_ticker_month_cache/train_201902_201912_ticker_month",
+    "cache-root": "D:/market-data/prepared/daily_index_streaming_cache/train_201902_201912_daily_index",
     "output-root": "D:/TradingML/runtimes/temporal_event_model/v3/train",
     "dataset-id": "temporal_v3_201902_201912_v1",
     "split": "train",

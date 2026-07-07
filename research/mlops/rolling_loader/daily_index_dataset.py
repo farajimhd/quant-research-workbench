@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import datetime as dt
 import hashlib
@@ -18,18 +18,16 @@ import numpy as np
 from research.mlops.clickhouse_events import encode_unified_event_windows
 from research.mlops.compact_events import EVENT_BYTES, HEADER_BYTES
 from research.mlops.data.contracts import BAR_FAMILY_FEATURE_KEYS, BAR_FAMILY_KEYS, FUTURE_BAR_FEATURE_KEYS
-from research.mlops.rolling_loader.ticker_month_cache import (
+from research.mlops.rolling_loader.daily_index_cache import (
     BAR_START_TIME_FEATURE_COLUMNS,
     CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS,
     CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS,
     EVENT_PAYLOAD_COLUMNS,
     EVENT_TIME_FEATURE_COLUMNS,
-    TICKER_MONTH_CACHE_FORMAT,
-    TICKER_MONTH_CACHE_VERSION,
+    DAILY_INDEX_CACHE_FORMAT,
+    DAILY_INDEX_CACHE_VERSION,
     full_months_in_period,
-    month_dir_for,
     read_json,
-    ticker_package_dir,
 )
 
 
@@ -188,7 +186,7 @@ ENCODER_EVENT_DTYPE = np.dtype(
 
 
 @dataclass(frozen=True, slots=True)
-class TickerMonthLoaderConfig:
+class DailyIndexLoaderConfig:
     cache_root: Path
     split: str = "train"
     start_utc: str = ""
@@ -241,9 +239,10 @@ class TickerMonthLoaderConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class TickerMonthPartPlan:
+class DailyIndexPartPlan:
     month: str
     ticker: str
+    cache_root: Path
     package_dir: Path
     part_id: int
     files: Mapping[str, str]
@@ -258,8 +257,8 @@ class TickerMonthPartPlan:
 
 
 @dataclass(slots=True)
-class LoadedTickerMonthPart:
-    plan: TickerMonthPartPlan
+class LoadedDailyIndexPart:
+    plan: DailyIndexPartPlan
     events: Any | None = None
     origins: Any | None = None
     windows: Any | None = None
@@ -422,13 +421,13 @@ class CorporateActionContextIndex:
 
 
 @dataclass(frozen=True, slots=True)
-class TickerMonthSampleRef:
+class DailyIndexSampleRef:
     part_index: int
     origin_row: int
 
 
 @dataclass(slots=True)
-class TickerMonthTrainingBatch:
+class DailyIndexTrainingBatch:
     ticker: np.ndarray
     origin_ordinal: np.ndarray
     origin_timestamp_us: np.ndarray
@@ -464,7 +463,7 @@ class TickerMonthTrainingBatch:
 
 
 @dataclass(slots=True)
-class TickerMonthLoaderState:
+class DailyIndexLoaderState:
     loader_state_version: int = LOADER_STATE_VERSION
     dataset_plan_id: str = ""
     cache_manifest_fingerprint: str = ""
@@ -505,7 +504,7 @@ class TickerMonthLoaderState:
         }
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "TickerMonthLoaderState":
+    def from_dict(cls, value: Mapping[str, Any]) -> "DailyIndexLoaderState":
         state = cls()
         for key in (
             "loader_state_version",
@@ -531,21 +530,20 @@ class TickerMonthLoaderState:
         return state
 
 
-class TickerMonthCacheIndex:
-    def __init__(self, config: TickerMonthLoaderConfig) -> None:
+class DailyIndexCacheIndex:
+    def __init__(self, config: DailyIndexLoaderConfig) -> None:
         self.config = normalize_loader_config(config)
         self.root_manifest = _read_root_manifest(Path(self.config.cache_root))
         self.parts = self._discover_parts()
 
-    def _discover_parts(self) -> list[TickerMonthPartPlan]:
+    def _discover_parts(self) -> list[DailyIndexPartPlan]:
         root = Path(self.config.cache_root)
-        split_dir = root / str(self.config.split)
-        if not split_dir.exists():
-            raise FileNotFoundError(f"Missing cache split directory: {split_dir}")
+        if not root.exists():
+            raise FileNotFoundError(f"Missing daily-index cache root: {root}")
         selected_months = set(_selected_months(self.config, self.root_manifest))
         selected_tickers = {ticker.upper() for ticker in self.config.tickers}
-        plans: list[TickerMonthPartPlan] = []
-        for package_dir in self._candidate_package_dirs(split_dir, selected_months, selected_tickers):
+        plans: list[DailyIndexPartPlan] = []
+        for package_dir in self._candidate_package_dirs(root, selected_months, selected_tickers):
             if not package_dir.is_dir():
                 continue
             month = _path_value(package_dir, "month")
@@ -558,80 +556,82 @@ class TickerMonthCacheIndex:
             if not manifest_path.exists():
                 continue
             manifest = read_json(manifest_path)
-            if manifest.get("status") != "complete":
-                continue
             package_config = manifest.get("config") or {}
+            package_files = _package_context_files_from_manifest(manifest)
             for part in manifest.get("parts") or ():
                 if not isinstance(part, Mapping):
                     continue
-                files = part.get("files") or {}
-                counts = part.get("counts") or {}
-                origin_count = int(counts.get("origins") or 0)
+                origin_count = int(part.get("origin_rows") or 0)
                 if origin_count <= 0:
                     continue
+                files = {
+                    **package_files,
+                    "events": str(part.get("event_path") or ""),
+                    "origins": str(part.get("origin_path") or ""),
+                }
                 plans.append(
-                    TickerMonthPartPlan(
+                    DailyIndexPartPlan(
                         month=str(month),
                         ticker=str(ticker),
+                        cache_root=root,
                         package_dir=package_dir,
                         part_id=int(part.get("part_id") or 0),
                         files={str(key): str(value) for key, value in files.items()},
                         config=package_config,
                         origin_count=origin_count,
-                        event_count=int(counts.get("events") or 0),
-                        label_count=int(counts.get("intraday_forward_labels") or 0),
-                        origin_ordinal_start=int(part.get("origin_ordinal_start") or 0),
-                        origin_ordinal_end=int(part.get("origin_ordinal_end") or 0),
-                        fetch_ordinal_start=int(part.get("fetch_ordinal_start") or 0),
-                        fetch_ordinal_end=int(part.get("fetch_ordinal_end") or 0),
+                        event_count=int(part.get("event_rows") or 0),
+                        label_count=0,
+                        origin_ordinal_start=int(part.get("ordinal_min") or 0),
+                        origin_ordinal_end=int(part.get("ordinal_max") or 0),
+                        fetch_ordinal_start=int(part.get("ordinal_min") or 0),
+                        fetch_ordinal_end=int(part.get("ordinal_max") or 0),
                     )
                 )
         if not plans:
-            raise RuntimeError(f"No complete ticker/month parts found under {split_dir}")
+            raise RuntimeError(f"No complete daily-index event parts found under {root}")
         return plans
 
-    def _candidate_package_dirs(self, split_dir: Path, selected_months: set[str], selected_tickers: set[str]) -> list[Path]:
+    def _candidate_package_dirs(self, root: Path, selected_months: set[str], selected_tickers: set[str]) -> list[Path]:
         root = Path(self.config.cache_root)
         if selected_months and selected_tickers:
             paths: list[Path] = []
             for month in sorted(selected_months):
-                month_dir = month_dir_for(root, str(self.config.split), month)
                 for ticker in sorted(selected_tickers):
-                    paths.append(ticker_package_dir(month_dir, ticker))
+                    paths.append(root / f"month={month}" / f"ticker={ticker}")
             return paths
         if selected_months:
             paths = []
             for month in sorted(selected_months):
-                month_dir = month_dir_for(root, str(self.config.split), month)
-                paths.extend(sorted(month_dir.glob("ticker_hash=*/ticker=*")))
+                month_dir = root / f"month={month}"
+                paths.extend(sorted(month_dir.glob("ticker=*")))
             return paths
         if selected_tickers:
             paths = []
-            for month_dir in sorted(split_dir.glob("month=*")):
+            for month_dir in sorted(root.glob("month=*")):
                 if not month_dir.is_dir():
                     continue
                 for ticker in sorted(selected_tickers):
-                    paths.append(ticker_package_dir(month_dir, ticker))
+                    paths.append(month_dir / f"ticker={ticker}")
             return paths
-        return sorted(split_dir.glob("month=*/ticker_hash=*/ticker=*"))
+        return sorted(root.glob("month=*/ticker=*"))
 
 
-class TickerMonthPartReader:
+class DailyIndexPartReader:
     def __init__(self, data_groups: Sequence[str], *, include_external_context: bool = False) -> None:
         self.data_groups = set(str(group) for group in data_groups)
         self.include_external_context = bool(include_external_context)
         self._global_context_cache: dict[tuple[Path, str], Any] = {}
 
-    def load(self, plan: TickerMonthPartPlan) -> LoadedTickerMonthPart:
+    def load(self, plan: DailyIndexPartPlan) -> LoadedDailyIndexPart:
         return self.load_payload(self.load_origins(plan))
 
-    def load_origins(self, plan: TickerMonthPartPlan) -> LoadedTickerMonthPart:
+    def load_origins(self, plan: DailyIndexPartPlan) -> LoadedDailyIndexPart:
         pl = _polars()
-        loaded = LoadedTickerMonthPart(plan=plan)
-        loaded.origins = pl.read_parquet(plan.package_dir / plan.files["origins"])
+        loaded = LoadedDailyIndexPart(plan=plan)
+        loaded.origins = pl.read_parquet(_plan_file_path(plan, plan.files["origins"]))
         return loaded
 
-    def load_payload(self, loaded: LoadedTickerMonthPart) -> LoadedTickerMonthPart:
+    def load_payload(self, loaded: LoadedDailyIndexPart) -> LoadedDailyIndexPart:
         pl = _polars()
         plan = loaded.plan
         need_events = bool({"events", "event_windows", "encoded_events"}.intersection(self.data_groups))
@@ -639,33 +639,33 @@ class TickerMonthPartReader:
         need_intraday_bars = "intraday_bars" in self.data_groups
         need_corporate_labels = bool(CORPORATE_ACTION_LABEL_GROUPS.intersection(self.data_groups))
         if need_events:
-            loaded.events = pl.read_parquet(plan.package_dir / plan.files["events"])
+            loaded.events = pl.read_parquet(_plan_file_path(plan, plan.files["events"]))
         if need_events and "event_window_index" in plan.files:
-            loaded.windows = pl.read_parquet(plan.package_dir / plan.files["event_window_index"])
+            loaded.windows = pl.read_parquet(_plan_file_path(plan, plan.files["event_window_index"]))
         if need_labels and "intraday_forward_labels" in plan.files:
-            loaded.labels = pl.read_parquet(plan.package_dir / plan.files["intraday_forward_labels"])
+            loaded.labels = pl.read_parquet(_plan_file_path(plan, plan.files["intraday_forward_labels"]))
         if need_labels:
             compact_files = _package_context_files(plan.package_dir)
             for key in ("intraday_base_bars", "intraday_condition_events", "ticker_news_embeddings", "sec_filing_embeddings"):
                 filename = compact_files.get(key)
                 if filename and key not in loaded.context:
-                    loaded.context[key] = pl.read_parquet(plan.package_dir / filename)
+                    loaded.context[key] = pl.read_parquet(_plan_file_path(plan, filename))
         if need_intraday_bars and "intraday_context_bars" in plan.files:
-            loaded.context["intraday_bars"] = pl.read_parquet(plan.package_dir / plan.files["intraday_context_bars"])
+            loaded.context["intraday_bars"] = pl.read_parquet(_plan_file_path(plan, plan.files["intraday_context_bars"]))
         if need_corporate_labels and "corporate_action_daily_labels" in plan.files:
-            loaded.context["corporate_action_daily_labels"] = pl.read_parquet(plan.package_dir / plan.files["corporate_action_daily_labels"])
+            loaded.context["corporate_action_daily_labels"] = pl.read_parquet(_plan_file_path(plan, plan.files["corporate_action_daily_labels"]))
         if self.include_external_context or bool(TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).union(INTRADAY_BAR_CONTEXT_GROUPS).union(XBRL_CONTEXT_GROUPS).union(CORPORATE_ACTION_CONTEXT_GROUPS).intersection(self.data_groups)):
             for key, filename in _package_context_files(plan.package_dir).items():
                 if key in self.data_groups:
-                    loaded.context[key] = pl.read_parquet(plan.package_dir / filename)
+                    loaded.context[key] = pl.read_parquet(_plan_file_path(plan, filename))
             if "market_news_embeddings" in self.data_groups:
-                global_path = _month_global_dir(plan.package_dir) / "market_news_embeddings.parquet"
+                global_path = _global_context_file(_month_global_dir(plan.package_dir), "market_news_embeddings")
                 cache_key = (global_path, "market_news_embeddings")
                 if cache_key not in self._global_context_cache:
                     self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
                 loaded.context["market_news_embeddings"] = self._global_context_cache[cache_key]
             if "global_daily_bars" in self.data_groups:
-                global_path = _month_global_dir(plan.package_dir) / "global_daily_bars.parquet"
+                global_path = _global_context_file(_month_global_dir(plan.package_dir), "global_daily_bars")
                 cache_key = (global_path, "global_daily_bars")
                 if cache_key not in self._global_context_cache:
                     self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
@@ -679,8 +679,8 @@ class TickerMonthPartReader:
         return loaded
 
 
-class TickerMonthBatchMaterializer:
-    def __init__(self, config: TickerMonthLoaderConfig) -> None:
+class DailyIndexBatchMaterializer:
+    def __init__(self, config: DailyIndexLoaderConfig) -> None:
         self.config = normalize_loader_config(config)
         self.context_lags = tuple(index * int(self.config.context_stride_events) for index in range(int(self.config.context_chunks)))
         self._text_index_cache: dict[tuple[int, str, int, int], TextContextIndex] = {}
@@ -704,7 +704,7 @@ class TickerMonthBatchMaterializer:
         if int(self.config.flat_coverage_events) > 0:
             self.coverage_events = max(int(self.config.flat_coverage_events), int(self.coverage_events))
 
-    def validate_part_config(self, plan: TickerMonthPartPlan) -> None:
+    def validate_part_config(self, plan: DailyIndexPartPlan) -> None:
         cached = int(plan.config.get("max_cached_event_lookback_rows") or plan.config.get("required_event_lookback_rows") or 0)
         required = int(self.coverage_events)
         if required > cached:
@@ -721,7 +721,7 @@ class TickerMonthBatchMaterializer:
         with self._label_index_lock:
             self._label_index_cache.clear()
 
-    def materialize(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> TickerMonthTrainingBatch:
+    def materialize(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> DailyIndexTrainingBatch:
         start = time.perf_counter()
         if not refs:
             return _empty_batch(self.config.event_output_mode)
@@ -805,7 +805,7 @@ class TickerMonthBatchMaterializer:
             external_context = _external_context_summary(parts)
         profile["context_seconds"] = time.perf_counter() - context_start
         profile["materialize_seconds"] = time.perf_counter() - start
-        return TickerMonthTrainingBatch(
+        return DailyIndexTrainingBatch(
             ticker=tickers,
             origin_ordinal=ordinals,
             origin_timestamp_us=timestamps,
@@ -836,7 +836,7 @@ class TickerMonthBatchMaterializer:
             profile=profile,
         )
 
-    def _materialize_raw_windows(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> dict[str, np.ndarray]:
+    def _materialize_raw_windows(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> dict[str, np.ndarray]:
         starts = self._window_starts(parts, refs)
         out: dict[str, np.ndarray] = {}
         offsets = np.arange(int(self.config.events_per_window), dtype=np.int64)
@@ -856,8 +856,8 @@ class TickerMonthBatchMaterializer:
 
     def _materialize_raw_stream(
         self,
-        parts: Sequence[LoadedTickerMonthPart],
-        refs: Sequence[TickerMonthSampleRef],
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
     ) -> tuple[np.ndarray, tuple[str, ...], dict[str, float | int]]:
         stage_start = time.perf_counter()
         stream_length = int(self.config.event_stream_length)
@@ -902,7 +902,7 @@ class TickerMonthBatchMaterializer:
             profile["raw_stream_gather_seconds"] = float(profile["raw_stream_gather_seconds"]) + (time.perf_counter() - gather_start)
         return out, columns, profile
 
-    def _materialize_raw_flat(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    def _materialize_raw_flat(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[dict[str, np.ndarray], np.ndarray]:
         coverage = int(self.coverage_events)
         out: dict[str, np.ndarray] = {}
         mask = np.ones((len(refs), coverage), dtype=np.bool_)
@@ -924,7 +924,7 @@ class TickerMonthBatchMaterializer:
             out[column] = values
         return out, mask
 
-    def _materialize_text_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
+    def _materialize_text_inputs(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
         requested = [group for group in ("ticker_news_embeddings", "market_news_embeddings", "sec_filing_embeddings") if group in self.config.data_groups]
         if not requested:
             return {}, {}
@@ -1012,7 +1012,7 @@ class TickerMonthBatchMaterializer:
             cache[key] = index
             return index
 
-    def _materialize_xbrl_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, np.ndarray], dict[str, float | int]]:
+    def _materialize_xbrl_inputs(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[dict[str, np.ndarray], dict[str, float | int]]:
         if "xbrl" not in self.config.data_groups:
             return {}, {}
         max_items = max(0, int(self.config.xbrl_max_items))
@@ -1133,7 +1133,7 @@ class TickerMonthBatchMaterializer:
             self._xbrl_category_cache[key] = index
             return index
 
-    def _materialize_corporate_action_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, np.ndarray], dict[str, float | int]]:
+    def _materialize_corporate_action_inputs(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[dict[str, np.ndarray], dict[str, float | int]]:
         if "corporate_actions" not in self.config.data_groups:
             return {}, {}
         max_items = max(0, int(self.config.corporate_action_max_items))
@@ -1219,7 +1219,7 @@ class TickerMonthBatchMaterializer:
             self._corporate_action_index_cache[key] = index
             return index
 
-    def _materialize_intraday_bar_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
+    def _materialize_intraday_bar_inputs(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
         if "intraday_bars" not in self.config.data_groups:
             return {}, {}
         horizons = _cached_intraday_context_horizons(parts)
@@ -1306,7 +1306,7 @@ class TickerMonthBatchMaterializer:
         payload = _intraday_bar_payload(values, mask, time_features, family_values, family_masks, family_time_features, horizons)
         return {key: payload}, profile
 
-    def _label_context_index_for_frame(self, part: LoadedTickerMonthPart, frame: Any, horizon_count: int) -> LabelContextIndex:
+    def _label_context_index_for_frame(self, part: LoadedDailyIndexPart, frame: Any, horizon_count: int) -> LabelContextIndex:
         key = (id(part.origins), id(frame), int(horizon_count))
         with self._label_index_lock:
             cached = self._label_index_cache.get(key)
@@ -1316,7 +1316,7 @@ class TickerMonthBatchMaterializer:
             self._label_index_cache[key] = index
             return index
 
-    def _materialize_corporate_action_labels(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, np.ndarray], tuple[int, ...], dict[str, float | int]]:
+    def _materialize_corporate_action_labels(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[dict[str, np.ndarray], tuple[int, ...], dict[str, float | int]]:
         if not CORPORATE_ACTION_LABEL_GROUPS.intersection(set(self.config.data_groups)):
             return {}, (), {}
         days = _cached_corporate_action_label_days(parts)
@@ -1350,7 +1350,7 @@ class TickerMonthBatchMaterializer:
             profile["corporate_action_label_gather_seconds"] = float(profile["corporate_action_label_gather_seconds"]) + (time.perf_counter() - gather_start)
         return out, days, profile
 
-    def _materialize_bar_inputs(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
+    def _materialize_bar_inputs(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
         requested = [group for group in ("daily_bars", "global_daily_bars") if group in self.config.data_groups]
         if not requested:
             return {}, {}
@@ -1525,7 +1525,7 @@ class TickerMonthBatchMaterializer:
             self._bar_index_cache[key] = index
             return index
 
-    def _materialize_encoded(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[np.ndarray, np.ndarray]:
+    def _materialize_encoded(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[np.ndarray, np.ndarray]:
         starts = self._window_starts(parts, refs)
         flat_count = len(refs) * len(self.context_lags)
         windows = np.empty((flat_count, 128), dtype=ENCODER_EVENT_DTYPE)
@@ -1560,7 +1560,7 @@ class TickerMonthBatchMaterializer:
             raise RuntimeError(f"Encoded event window failed validation at flat window {bad}: {reasons[bad]!r}")
         return headers.reshape(len(refs), len(self.context_lags), HEADER_BYTES), events.reshape(len(refs), len(self.context_lags), 128, EVENT_BYTES)
 
-    def _window_starts(self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> np.ndarray:
+    def _window_starts(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> np.ndarray:
         origins = _origin_event_offsets(parts, refs)
         lag_array = np.asarray(self.context_lags, dtype=np.int64)
         starts = origins[:, None] - lag_array[None, :] - int(self.config.events_per_window) + 1
@@ -1580,7 +1580,7 @@ class TickerMonthBatchMaterializer:
         return starts
 
     def _materialize_intraday_labels(
-        self, parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]
+        self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]
     ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], np.ndarray, np.ndarray, tuple[str, ...], dict[str, float | int]]:
         if "intraday_labels" not in self.config.data_groups and "labels" not in self.config.data_groups:
             return {}, {}, {}, {}, np.zeros((len(refs), 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32), np.zeros((len(refs), 0), dtype=np.bool_), (), {}
@@ -1673,8 +1673,8 @@ class TickerMonthBatchMaterializer:
 
     def _materialize_intraday_labels_from_compact(
         self,
-        part: LoadedTickerMonthPart,
-        refs: Sequence[TickerMonthSampleRef],
+        part: LoadedDailyIndexPart,
+        refs: Sequence[DailyIndexSampleRef],
         rows: np.ndarray,
         horizon_count: int,
         labels_out: dict[str, np.ndarray],
@@ -1863,7 +1863,7 @@ class TickerMonthBatchMaterializer:
                     if present:
                         labels_out[key][int(row), horizon_index] = bool(np.any(values[int(lval) : int(rval)]))
 
-    def _intraday_compact_label_index(self, part: LoadedTickerMonthPart) -> IntradayCompactLabelIndex:
+    def _intraday_compact_label_index(self, part: LoadedDailyIndexPart) -> IntradayCompactLabelIndex:
         key = id(part.context.get("intraday_base_bars"))
         with self._intraday_compact_label_lock:
             cached = self._intraday_compact_label_cache.get(key)
@@ -1873,7 +1873,7 @@ class TickerMonthBatchMaterializer:
             self._intraday_compact_label_cache[key] = index
             return index
 
-    def _label_context_index(self, part: LoadedTickerMonthPart, horizon_count: int) -> LabelContextIndex:
+    def _label_context_index(self, part: LoadedDailyIndexPart, horizon_count: int) -> LabelContextIndex:
         key = (id(part.origins), id(part.labels), int(horizon_count))
         with self._label_index_lock:
             cached = self._label_index_cache.get(key)
@@ -1884,16 +1884,16 @@ class TickerMonthBatchMaterializer:
             return index
 
 
-class AsyncTickerMonthBatchLoader:
-    def __init__(self, config: TickerMonthLoaderConfig) -> None:
+class AsyncDailyIndexBatchLoader:
+    def __init__(self, config: DailyIndexLoaderConfig) -> None:
         self.config = normalize_loader_config(config)
-        self.index = TickerMonthCacheIndex(self.config)
-        self.reader = TickerMonthPartReader(self.config.data_groups, include_external_context=self.config.include_external_context)
-        self.materializer = TickerMonthBatchMaterializer(self.config)
+        self.index = DailyIndexCacheIndex(self.config)
+        self.reader = DailyIndexPartReader(self.config.data_groups, include_external_context=self.config.include_external_context)
+        self.materializer = DailyIndexBatchMaterializer(self.config)
         self.cache_manifest_fingerprint = _cache_plan_fingerprint(self.index.root_manifest, self.index.parts)
         self.dataset_plan_id = _dataset_plan_id(self.config, self.cache_manifest_fingerprint)
         seed = secrets.randbits(63) if self.config.randomize_seed else int(self.config.seed)
-        self.state = TickerMonthLoaderState(
+        self.state = DailyIndexLoaderState(
             dataset_plan_id=self.dataset_plan_id,
             cache_manifest_fingerprint=self.cache_manifest_fingerprint,
             seed=int(seed),
@@ -1902,7 +1902,7 @@ class AsyncTickerMonthBatchLoader:
             package_count=len(self.index.parts),
         )
 
-    def iter_batches(self) -> Iterator[TickerMonthTrainingBatch]:
+    def iter_batches(self) -> Iterator[DailyIndexTrainingBatch]:
         if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
             return
         start_us = _parse_timestamp_us(self.config.start_utc) if self.config.start_utc else None
@@ -1945,7 +1945,7 @@ class AsyncTickerMonthBatchLoader:
                 loaded = list(read_pool.map(self.reader.load_payload, (loaded_origins[index] for index in active_part_indices)))
                 group_profile["payload_load_seconds"] = time.perf_counter() - stage_start
                 refs = [
-                    TickerMonthSampleRef(part_index=int(part_index_map[int(ref.part_index)]), origin_row=int(ref.origin_row))
+                    DailyIndexSampleRef(part_index=int(part_index_map[int(ref.part_index)]), origin_row=int(ref.origin_row))
                     for ref in refs
                 ]
                 group_keys = {_part_key(part.plan) for part in loaded}
@@ -2010,7 +2010,7 @@ class AsyncTickerMonthBatchLoader:
         return self.state.to_dict()
 
     def load_state_dict(self, value: Mapping[str, Any]) -> None:
-        state = TickerMonthLoaderState.from_dict(value)
+        state = DailyIndexLoaderState.from_dict(value)
         if state.loader_state_version != LOADER_STATE_VERSION:
             raise ValueError(f"Unsupported loader state version: {state.loader_state_version}")
         if state.dataset_plan_id and state.dataset_plan_id != self.dataset_plan_id:
@@ -2040,13 +2040,13 @@ class AsyncTickerMonthBatchLoader:
         }
         return out
 
-    def _epoch_plans(self, epoch: int) -> list[TickerMonthPartPlan]:
+    def _epoch_plans(self, epoch: int) -> list[DailyIndexPartPlan]:
         plans = list(self.index.parts)
         if self.config.shuffle_parts:
             random.Random(_stable_int_seed("packages", self.state.seed, epoch, self.dataset_plan_id)).shuffle(plans)
         return plans
 
-    def _record_emitted_batch(self, batch: TickerMonthTrainingBatch) -> None:
+    def _record_emitted_batch(self, batch: DailyIndexTrainingBatch) -> None:
         samples = int(batch.sample_count)
         self.state.emitted_batches += 1
         self.state.emitted_samples += samples
@@ -2062,7 +2062,7 @@ class AsyncTickerMonthBatchLoader:
             self.state.seen_by_month[month] = int(self.state.seen_by_month.get(month, 0)) + count
             self.state.seen_by_part[key] = int(self.state.seen_by_part.get(key, 0)) + count
 
-    def _apply_epoch_sample_cap(self, batch: TickerMonthTrainingBatch) -> TickerMonthTrainingBatch:
+    def _apply_epoch_sample_cap(self, batch: DailyIndexTrainingBatch) -> DailyIndexTrainingBatch:
         cap = int(self.config.max_origins_per_epoch)
         if cap <= 0:
             return batch
@@ -2074,7 +2074,7 @@ class AsyncTickerMonthBatchLoader:
         return _slice_training_batch(batch, 0, remaining)
 
 
-def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoaderConfig:
+def normalize_loader_config(config: DailyIndexLoaderConfig) -> DailyIndexLoaderConfig:
     mode = str(config.event_output_mode)
     if mode not in SUPPORTED_EVENT_OUTPUT_MODES:
         raise ValueError(f"Unsupported event_output_mode={mode!r}; expected one of {sorted(SUPPORTED_EVENT_OUTPUT_MODES)}")
@@ -2083,7 +2083,7 @@ def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoade
         groups = (*groups, "events")
     if mode == "encoded_uint8":
         groups = (*tuple(group for group in groups if group != "encoded_events"), "events", "encoded_events")
-    return TickerMonthLoaderConfig(
+    return DailyIndexLoaderConfig(
         cache_root=Path(config.cache_root),
         split=str(config.split),
         start_utc=str(config.start_utc),
@@ -2139,16 +2139,16 @@ def normalize_loader_config(config: TickerMonthLoaderConfig) -> TickerMonthLoade
 def _read_root_manifest(cache_root: Path) -> dict[str, Any]:
     path = Path(cache_root) / "manifest.json"
     if not path.exists():
-        raise FileNotFoundError(f"Missing ticker/month cache manifest: {path}")
+        raise FileNotFoundError(f"Missing daily-index cache manifest: {path}")
     manifest = read_json(path)
-    if manifest.get("format") != TICKER_MONTH_CACHE_FORMAT:
-        raise ValueError(f"Unexpected cache format: {manifest.get('format')!r}")
-    if int(manifest.get("version") or 0) != TICKER_MONTH_CACHE_VERSION:
-        raise ValueError(f"Unexpected cache version: {manifest.get('version')!r}")
+    if manifest.get("cache_format") != DAILY_INDEX_CACHE_FORMAT:
+        raise ValueError(f"Unexpected cache format: {manifest.get('cache_format')!r}")
+    if int(manifest.get("cache_version") or 0) != DAILY_INDEX_CACHE_VERSION:
+        raise ValueError(f"Unexpected cache version: {manifest.get('cache_version')!r}")
     return manifest
 
 
-def _selected_months(config: TickerMonthLoaderConfig, manifest: Mapping[str, Any]) -> tuple[str, ...]:
+def _selected_months(config: DailyIndexLoaderConfig, manifest: Mapping[str, Any]) -> tuple[str, ...]:
     if config.months:
         return tuple(config.months)
     if config.start_utc and config.end_utc:
@@ -2176,19 +2176,66 @@ def _month_global_dir(package_dir: Path) -> Path:
     return Path(package_dir).parent / "global"
 
 
+def _plan_file_path(plan: DailyIndexPartPlan, value: str) -> Path:
+    path = Path(str(value))
+    if path.is_absolute():
+        return path
+    cache_relative = Path(plan.cache_root) / path
+    if cache_relative.exists() or str(path).startswith("month="):
+        return cache_relative
+    return Path(plan.package_dir) / path
+
+
+def _global_context_file(global_dir: Path, key: str) -> Path:
+    manifest_path = Path(global_dir) / "manifest.json"
+    if not manifest_path.exists():
+        return Path(global_dir) / f"{key}.parquet"
+    files = _package_context_files_from_manifest(read_json(manifest_path))
+    value = files.get(str(key))
+    return Path(global_dir) / value if value else Path(global_dir) / f"{key}.parquet"
+
+
 def _package_context_files(package_dir: Path) -> dict[str, str]:
     manifest_path = package_dir / "manifest.json"
     manifest = read_json(manifest_path)
-    files = manifest.get("files") or {}
+    return _package_context_files_from_manifest(manifest)
+
+
+def _package_context_files_from_manifest(manifest: Mapping[str, Any]) -> dict[str, str]:
     out: dict[str, str] = {}
-    for key, value in files.items():
+    raw_files = dict(manifest.get("files") or {})
+    for part in manifest.get("modality_parts") or ():
+        if not isinstance(part, Mapping):
+            continue
+        for key, value in dict(part.get("output_paths") or {}).items():
+            raw_files[str(key)] = str(value)
+        path = str(part.get("event_path") or "")
+        if path:
+            raw_files[str(part.get("data_group") or part.get("modality") or Path(path).stem)] = path
+    for key, value in raw_files.items():
         normalized = TEXT_CONTEXT_GROUP_ALIASES.get(str(key), str(key))
-        if normalized in {"ticker_news_embeddings", "sec_filing_embeddings", "xbrl", "daily_bars", "corporate_actions", "intraday_base_bars", "intraday_condition_events"}:
+        normalized = {
+            "news_embeddings": "ticker_news_embeddings",
+            "sec_embeddings": "sec_filing_embeddings",
+            "macro_bars": "daily_bars",
+            "global_macro_bars": "global_daily_bars",
+        }.get(normalized, normalized)
+        if normalized in {
+            "ticker_news_embeddings",
+            "market_news_embeddings",
+            "sec_filing_embeddings",
+            "xbrl",
+            "daily_bars",
+            "global_daily_bars",
+            "corporate_actions",
+            "intraday_base_bars",
+            "intraday_condition_events",
+        }:
             out[normalized] = str(value)
     return out
 
 
-def _text_group_limits(config: TickerMonthLoaderConfig, group: str) -> tuple[int, int]:
+def _text_group_limits(config: DailyIndexLoaderConfig, group: str) -> tuple[int, int]:
     group = TEXT_CONTEXT_GROUP_ALIASES.get(str(group), str(group))
     if group == "ticker_news_embeddings":
         return max(0, int(config.ticker_news_max_items)), max(1, int(config.ticker_news_token_chunks))
@@ -2651,15 +2698,15 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 
 def _sample_refs_for_loaded_parts(
-    loaded: Sequence[LoadedTickerMonthPart],
+    loaded: Sequence[LoadedDailyIndexPart],
     *,
-    config: TickerMonthLoaderConfig,
+    config: DailyIndexLoaderConfig,
     seed: int,
     dataset_plan_id: str,
     start_us: int | None,
     end_us: int | None,
-) -> list[TickerMonthSampleRef]:
-    refs: list[TickerMonthSampleRef] = []
+) -> list[DailyIndexSampleRef]:
+    refs: list[DailyIndexSampleRef] = []
     for part_index, part in enumerate(loaded):
         if part.origins is None or part.origins.height == 0:
             continue
@@ -2684,11 +2731,11 @@ def _sample_refs_for_loaded_parts(
                         selected.append(int(row))
                 candidate_rows = np.asarray(selected, dtype=np.int64)
         for row in candidate_rows:
-            refs.append(TickerMonthSampleRef(part_index=int(part_index), origin_row=int(row)))
+            refs.append(DailyIndexSampleRef(part_index=int(part_index), origin_row=int(row)))
     return refs
 
 
-def _batched_refs(refs: Sequence[TickerMonthSampleRef], batch_size: int) -> Iterator[list[TickerMonthSampleRef]]:
+def _batched_refs(refs: Sequence[DailyIndexSampleRef], batch_size: int) -> Iterator[list[DailyIndexSampleRef]]:
     size = max(1, int(batch_size))
     for start in range(0, len(refs), size):
         yield list(refs[start : start + size])
@@ -2698,10 +2745,10 @@ class _ReadyBatchBuffer:
     def __init__(self, *, batch_size: int, drop_last: bool) -> None:
         self.batch_size = max(1, int(batch_size))
         self.drop_last = bool(drop_last)
-        self._chunks: list[TickerMonthTrainingBatch] = []
+        self._chunks: list[DailyIndexTrainingBatch] = []
         self._samples = 0
 
-    def add(self, batch: TickerMonthTrainingBatch) -> Iterator[TickerMonthTrainingBatch]:
+    def add(self, batch: DailyIndexTrainingBatch) -> Iterator[DailyIndexTrainingBatch]:
         if batch.sample_count <= 0:
             return
         self._chunks.append(batch)
@@ -2713,7 +2760,7 @@ class _ReadyBatchBuffer:
             self._chunks = [remainder] if remainder.sample_count else []
             self._samples = int(remainder.sample_count)
 
-    def flush(self) -> Iterator[TickerMonthTrainingBatch]:
+    def flush(self) -> Iterator[DailyIndexTrainingBatch]:
         if self.drop_last or self._samples <= 0:
             self._chunks = []
             self._samples = 0
@@ -2724,7 +2771,7 @@ class _ReadyBatchBuffer:
         yield combined
 
 
-def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> TickerMonthTrainingBatch:
+def _concat_training_batches(batches: Sequence[DailyIndexTrainingBatch]) -> DailyIndexTrainingBatch:
     nonempty = [batch for batch in batches if batch.sample_count > 0]
     if not nonempty:
         return _empty_batch("")
@@ -2745,7 +2792,7 @@ def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> Tic
                 continue
             if isinstance(value, (int, float)):
                 profile[key] = float(profile.get(key, 0.0)) + float(value)
-    return TickerMonthTrainingBatch(
+    return DailyIndexTrainingBatch(
         ticker=np.concatenate([batch.ticker for batch in nonempty], axis=0),
         origin_ordinal=np.concatenate([batch.origin_ordinal for batch in nonempty], axis=0),
         origin_timestamp_us=np.concatenate([batch.origin_timestamp_us for batch in nonempty], axis=0),
@@ -2777,11 +2824,11 @@ def _concat_training_batches(batches: Sequence[TickerMonthTrainingBatch]) -> Tic
     )
 
 
-def _slice_training_batch(batch: TickerMonthTrainingBatch, start: int, end: int) -> TickerMonthTrainingBatch:
+def _slice_training_batch(batch: DailyIndexTrainingBatch, start: int, end: int) -> DailyIndexTrainingBatch:
     start = max(0, int(start))
     end = max(start, min(int(end), int(batch.sample_count)))
     profile = _slice_profile(batch.profile, int(batch.sample_count), end - start)
-    return TickerMonthTrainingBatch(
+    return DailyIndexTrainingBatch(
         ticker=batch.ticker[start:end],
         origin_ordinal=batch.origin_ordinal[start:end],
         origin_timestamp_us=batch.origin_timestamp_us[start:end],
@@ -2847,7 +2894,7 @@ def _concat_text_inputs(items: Sequence[Mapping[str, Mapping[str, np.ndarray]]])
     return out
 
 
-def _concat_bar_inputs(batches: Sequence[TickerMonthTrainingBatch]) -> dict[str, dict[str, np.ndarray]]:
+def _concat_bar_inputs(batches: Sequence[DailyIndexTrainingBatch]) -> dict[str, dict[str, np.ndarray]]:
     names: set[str] = set()
     for batch in batches:
         names.update(batch.bar_inputs.keys())
@@ -2894,7 +2941,7 @@ def _concat_optional_arrays(items: Sequence[np.ndarray]) -> np.ndarray:
     return np.concatenate(arrays, axis=0)
 
 
-def _merge_external_context(batches: Sequence[TickerMonthTrainingBatch]) -> dict[str, Any]:
+def _merge_external_context(batches: Sequence[DailyIndexTrainingBatch]) -> dict[str, Any]:
     merged: dict[str, Any] = {}
     for batch in batches:
         for key, value in batch.external_context.items():
@@ -2905,7 +2952,7 @@ def _merge_external_context(batches: Sequence[TickerMonthTrainingBatch]) -> dict
     return merged
 
 
-def _count_batch_samples_for_part_keys(batch: TickerMonthTrainingBatch, part_keys: set[str]) -> int:
+def _count_batch_samples_for_part_keys(batch: DailyIndexTrainingBatch, part_keys: set[str]) -> int:
     if batch.source_part_key.shape[0] == 0 or not part_keys:
         return 0
     return int(np.count_nonzero(np.isin(batch.source_part_key.astype(str, copy=False), list(part_keys))))
@@ -2913,15 +2960,15 @@ def _count_batch_samples_for_part_keys(batch: TickerMonthTrainingBatch, part_key
 
 def _materialize_bounded(
     executor: ThreadPoolExecutor,
-    materializer: TickerMonthBatchMaterializer,
-    loaded: Sequence[LoadedTickerMonthPart],
-    batches: Iterator[list[TickerMonthSampleRef]],
+    materializer: DailyIndexBatchMaterializer,
+    loaded: Sequence[LoadedDailyIndexPart],
+    batches: Iterator[list[DailyIndexSampleRef]],
     *,
     preserve_order: bool = True,
-) -> Iterator[TickerMonthTrainingBatch]:
+) -> Iterator[DailyIndexTrainingBatch]:
     max_pending = max(1, int(getattr(executor, "_max_workers", 1))) * 2
     if preserve_order:
-        pending_ordered: deque[Future[TickerMonthTrainingBatch]] = deque()
+        pending_ordered: deque[Future[DailyIndexTrainingBatch]] = deque()
 
         def submit_until_full_ordered() -> None:
             while len(pending_ordered) < max_pending:
@@ -2941,7 +2988,7 @@ def _materialize_bounded(
             submit_until_full_ordered()
         return
 
-    pending: set[Future[TickerMonthTrainingBatch]] = set()
+    pending: set[Future[DailyIndexTrainingBatch]] = set()
 
     def submit_until_full() -> None:
         while len(pending) < max_pending:
@@ -2964,7 +3011,7 @@ def _materialize_bounded(
         submit_until_full()
 
 
-def _identity_arrays(parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _identity_arrays(parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     tickers = np.empty((len(refs),), dtype=object)
     ordinals = np.empty((len(refs),), dtype=np.int64)
     timestamps = np.empty((len(refs),), dtype=np.int64)
@@ -2977,7 +3024,7 @@ def _identity_arrays(parts: Sequence[LoadedTickerMonthPart], refs: Sequence[Tick
     return tickers, ordinals, timestamps
 
 
-def _source_part_keys(parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> np.ndarray:
+def _source_part_keys(parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> np.ndarray:
     keys = np.empty((len(refs),), dtype=object)
     part_keys = [_part_key(part.plan) for part in parts]
     for part_index, rows in _rows_by_part(refs).items():
@@ -2985,7 +3032,7 @@ def _source_part_keys(parts: Sequence[LoadedTickerMonthPart], refs: Sequence[Tic
     return keys
 
 
-def _origin_event_offsets(parts: Sequence[LoadedTickerMonthPart], refs: Sequence[TickerMonthSampleRef]) -> np.ndarray:
+def _origin_event_offsets(parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> np.ndarray:
     offsets = np.empty((len(refs),), dtype=np.int64)
     for part_index, rows in _rows_by_part(refs).items():
         part = parts[int(part_index)]
@@ -2994,25 +3041,25 @@ def _origin_event_offsets(parts: Sequence[LoadedTickerMonthPart], refs: Sequence
     return offsets
 
 
-def _rows_by_part(refs: Sequence[TickerMonthSampleRef]) -> dict[int, np.ndarray]:
+def _rows_by_part(refs: Sequence[DailyIndexSampleRef]) -> dict[int, np.ndarray]:
     rows: dict[int, list[int]] = {}
     for row, ref in enumerate(refs):
         rows.setdefault(int(ref.part_index), []).append(int(row))
     return {part_index: np.asarray(part_rows, dtype=np.int64) for part_index, part_rows in rows.items()}
 
 
-def _origin_rows_for_refs(refs: Sequence[TickerMonthSampleRef], rows: np.ndarray) -> np.ndarray:
+def _origin_rows_for_refs(refs: Sequence[DailyIndexSampleRef], rows: np.ndarray) -> np.ndarray:
     return np.fromiter((int(refs[int(row)].origin_row) for row in rows), dtype=np.int64, count=int(rows.shape[0]))
 
 
-def _event_columns_for_output(config: TickerMonthLoaderConfig) -> tuple[str, ...]:
+def _event_columns_for_output(config: DailyIndexLoaderConfig) -> tuple[str, ...]:
     if config.event_columns:
         return tuple(dict.fromkeys(str(column) for column in config.event_columns))
     suppressed = {str(column) for column in config.suppress_event_columns}
     return tuple(column for column in NUMERIC_EVENT_COLUMNS if column not in suppressed)
 
 
-def _validated_event_columns_for_output(parts: Sequence[LoadedTickerMonthPart], config: TickerMonthLoaderConfig) -> tuple[str, ...]:
+def _validated_event_columns_for_output(parts: Sequence[LoadedDailyIndexPart], config: DailyIndexLoaderConfig) -> tuple[str, ...]:
     columns = _event_columns_for_output(config)
     missing = [column for column in columns if not _all_parts_have_event_column(parts, column)]
     if missing and config.event_columns:
@@ -3020,18 +3067,18 @@ def _validated_event_columns_for_output(parts: Sequence[LoadedTickerMonthPart], 
     return tuple(column for column in columns if column not in missing)
 
 
-def _all_parts_have_event_column(parts: Sequence[LoadedTickerMonthPart], column: str) -> bool:
+def _all_parts_have_event_column(parts: Sequence[LoadedDailyIndexPart], column: str) -> bool:
     return all(part.events is not None and column in part.events.columns for part in parts)
 
 
-def _event_column_dtype(parts: Sequence[LoadedTickerMonthPart], column: str) -> np.dtype:
+def _event_column_dtype(parts: Sequence[LoadedDailyIndexPart], column: str) -> np.dtype:
     for part in parts:
         if part.events is not None and column in part.events.columns:
             return np.asarray(part.event_array(column)).dtype
     return np.float32
 
 
-def _uses_dataset_hash_filter(config: TickerMonthLoaderConfig) -> bool:
+def _uses_dataset_hash_filter(config: DailyIndexLoaderConfig) -> bool:
     return (
         float(config.sample_fraction) < 1.0
         or int(config.sample_hash_modulus) > 0
@@ -3039,7 +3086,7 @@ def _uses_dataset_hash_filter(config: TickerMonthLoaderConfig) -> bool:
     )
 
 
-def _uses_fast_fraction_filter(config: TickerMonthLoaderConfig) -> bool:
+def _uses_fast_fraction_filter(config: DailyIndexLoaderConfig) -> bool:
     return (
         float(config.sample_fraction) < 1.0
         and int(config.sample_hash_modulus) <= 0
@@ -3048,10 +3095,10 @@ def _uses_fast_fraction_filter(config: TickerMonthLoaderConfig) -> bool:
 
 
 def _fast_fraction_candidate_rows(
-    plan: TickerMonthPartPlan,
+    plan: DailyIndexPartPlan,
     candidate_rows: np.ndarray,
     *,
-    config: TickerMonthLoaderConfig,
+    config: DailyIndexLoaderConfig,
     seed: int,
     dataset_plan_id: str,
 ) -> np.ndarray:
@@ -3067,11 +3114,11 @@ def _fast_fraction_candidate_rows(
 
 
 def _sample_selected(
-    plan: TickerMonthPartPlan,
+    plan: DailyIndexPartPlan,
     origin_ordinal: int,
     origin_timestamp_us: int,
     *,
-    config: TickerMonthLoaderConfig,
+    config: DailyIndexLoaderConfig,
     seed: int,
     dataset_plan_id: str,
 ) -> bool:
@@ -3091,7 +3138,7 @@ def _sample_selected(
     return True
 
 
-def _sample_hash64(plan: TickerMonthPartPlan, origin_ordinal: int, origin_timestamp_us: int, *, seed: int, dataset_plan_id: str) -> int:
+def _sample_hash64(plan: DailyIndexPartPlan, origin_ordinal: int, origin_timestamp_us: int, *, seed: int, dataset_plan_id: str) -> int:
     text = "|".join(
         (
             str(dataset_plan_id),
@@ -3113,10 +3160,10 @@ def _stable_int_seed(*items: object) -> int:
     return int.from_bytes(digest, byteorder="big", signed=False)
 
 
-def _cache_plan_fingerprint(manifest: Mapping[str, Any], parts: Sequence[TickerMonthPartPlan]) -> str:
+def _cache_plan_fingerprint(manifest: Mapping[str, Any], parts: Sequence[DailyIndexPartPlan]) -> str:
     payload = {
-        "format": str(manifest.get("format", "")),
-        "version": int(manifest.get("version") or 0),
+        "cache_format": str(manifest.get("cache_format", "")),
+        "cache_version": int(manifest.get("cache_version") or 0),
         "parts": [
             {
                 "month": part.month,
@@ -3143,7 +3190,7 @@ def _manifest_fingerprint(manifest: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _dataset_plan_id(config: TickerMonthLoaderConfig, manifest_fingerprint: str) -> str:
+def _dataset_plan_id(config: DailyIndexLoaderConfig, manifest_fingerprint: str) -> str:
     if config.dataset_id:
         return str(config.dataset_id)
     payload = {
@@ -3162,11 +3209,11 @@ def _dataset_plan_id(config: TickerMonthLoaderConfig, manifest_fingerprint: str)
     return f"auto_{digest[:16]}"
 
 
-def _part_key(plan: TickerMonthPartPlan) -> str:
+def _part_key(plan: DailyIndexPartPlan) -> str:
     return f"{plan.month}|{plan.ticker}|{int(plan.part_id)}"
 
 
-def _cached_horizons(parts: Sequence[LoadedTickerMonthPart]) -> tuple[str, ...]:
+def _cached_horizons(parts: Sequence[LoadedDailyIndexPart]) -> tuple[str, ...]:
     for part in parts:
         horizons = part.plan.config.get("intraday_label_horizons") or ()
         if horizons:
@@ -3225,7 +3272,7 @@ def _intraday_horizon_specs(horizons: Sequence[str]) -> tuple[tuple[str, int, in
     return tuple(sorted(specs, key=lambda item: (item[1], item[0])))
 
 
-def _cached_intraday_context_horizons(parts: Sequence[LoadedTickerMonthPart]) -> tuple[str, ...]:
+def _cached_intraday_context_horizons(parts: Sequence[LoadedDailyIndexPart]) -> tuple[str, ...]:
     for part in parts:
         horizons = part.plan.config.get("intraday_context_horizons") or ()
         if horizons:
@@ -3264,7 +3311,7 @@ def _intraday_bar_payload(
     return payload
 
 
-def _cached_corporate_action_label_days(parts: Sequence[LoadedTickerMonthPart]) -> tuple[int, ...]:
+def _cached_corporate_action_label_days(parts: Sequence[LoadedDailyIndexPart]) -> tuple[int, ...]:
     for part in parts:
         values = part.plan.config.get("corporate_action_label_days") or ()
         if values:
@@ -3368,7 +3415,7 @@ def _prepare_label_context_index(origins: Any, labels: Any, expected: int, *, st
     return LabelContextIndex(ordinals=origin_ordinals, label_rows=label_rows, missing_mask=missing)
 
 
-def _prepare_intraday_compact_label_index(part: LoadedTickerMonthPart) -> IntradayCompactLabelIndex:
+def _prepare_intraday_compact_label_index(part: LoadedDailyIndexPart) -> IntradayCompactLabelIndex:
     frame = part.context.get("intraday_base_bars")
     bars: dict[tuple[str, int, str], IntradayBarFamilyIndex] = {}
     if frame is not None and int(getattr(frame, "height", 0) or 0) > 0:
@@ -3544,7 +3591,7 @@ def _empty_label_context_index(expected: int) -> LabelContextIndex:
     )
 
 
-def _bar_offsets_for_group(config: TickerMonthLoaderConfig, group: str) -> tuple[int, ...]:
+def _bar_offsets_for_group(config: DailyIndexLoaderConfig, group: str) -> tuple[int, ...]:
     raw = config.global_daily_bar_offsets if str(group) == "global_daily_bars" else config.ticker_daily_bar_offsets
     offsets = tuple(sorted({max(1, int(value)) for value in raw}))
     return offsets or (1,)
@@ -3632,7 +3679,7 @@ def _gather_pivoted_label_column(column_values: np.ndarray, indices: np.ndarray,
     return out
 
 
-def _external_context_summary(parts: Sequence[LoadedTickerMonthPart]) -> dict[str, Any]:
+def _external_context_summary(parts: Sequence[LoadedDailyIndexPart]) -> dict[str, Any]:
     summary: dict[str, Any] = {}
     for part in parts:
         for name, frame in part.context.items():
@@ -3641,8 +3688,8 @@ def _external_context_summary(parts: Sequence[LoadedTickerMonthPart]) -> dict[st
     return summary
 
 
-def _empty_batch(mode: str) -> TickerMonthTrainingBatch:
-    return TickerMonthTrainingBatch(
+def _empty_batch(mode: str) -> DailyIndexTrainingBatch:
+    return DailyIndexTrainingBatch(
         ticker=np.asarray([], dtype=object),
         origin_ordinal=np.asarray([], dtype=np.int64),
         origin_timestamp_us=np.asarray([], dtype=np.int64),
@@ -3665,3 +3712,4 @@ def _polars() -> Any:
     except ModuleNotFoundError as exc:
         raise RuntimeError("Install polars to use ticker/month cache loader.") from exc
     return pl
+

@@ -1,52 +1,30 @@
-"""Stateful production-aligned rolling data loader.
+"""Daily-index rolling cache builder and loader.
 
-The package is intentionally separate from ``research.mlops.data`` because the
-older provider materializes dense low-frequency context per sample. This loader
-keeps bounded caches, emits stable ids, and materializes batches only at the
-final collator/profiler step.
+The rolling-loader package now exposes only the daily-index streaming cache path.
+Older materialized, replay, indexed-daily, and ticker-month experiments were
+removed so training code cannot accidentally depend on stale cache contracts.
 """
 
-from research.mlops.rolling_loader.config import RollingLoaderConfig
-from research.mlops.rolling_loader.initialize import InitializedRollingReplay, initialize_clickhouse_replay
-from research.mlops.rolling_loader.loader import (
-    MaterializedRollingBatch,
-    RollingContextLoader,
-    RollingSamplePointer,
+from research.mlops.rolling_loader.daily_index_cache import (
+    DAILY_INDEX_CACHE_FORMAT,
+    DAILY_INDEX_CACHE_VERSION,
+    DEFAULT_DAILY_INDEX_CACHE_ROOT,
 )
-from research.mlops.rolling_loader.materialized_cache import (
-    MATERIALIZED_CACHE_FORMAT,
-    RollingMaterializedShardWriter,
-)
-from research.mlops.rolling_loader.streaming_training import (
-    StreamingBatchEnvelope,
-    StreamingClickHouseTrainingSource,
-    StreamingProfiler,
-    StreamingRollingTrainingProvider,
-)
-from research.mlops.rolling_loader.ticker_month_dataset import (
-    AsyncTickerMonthBatchLoader,
-    TickerMonthCacheIndex,
-    TickerMonthLoaderConfig,
-    TickerMonthLoaderState,
-    TickerMonthTrainingBatch,
+from research.mlops.rolling_loader.daily_index_dataset import (
+    AsyncDailyIndexBatchLoader,
+    DailyIndexCacheIndex,
+    DailyIndexLoaderConfig,
+    DailyIndexLoaderState,
+    DailyIndexTrainingBatch,
 )
 
 __all__ = [
-    "InitializedRollingReplay",
-    "MATERIALIZED_CACHE_FORMAT",
-    "MaterializedRollingBatch",
-    "RollingMaterializedShardWriter",
-    "StreamingBatchEnvelope",
-    "StreamingClickHouseTrainingSource",
-    "StreamingProfiler",
-    "StreamingRollingTrainingProvider",
-    "AsyncTickerMonthBatchLoader",
-    "RollingContextLoader",
-    "RollingLoaderConfig",
-    "RollingSamplePointer",
-    "TickerMonthCacheIndex",
-    "TickerMonthLoaderConfig",
-    "TickerMonthLoaderState",
-    "TickerMonthTrainingBatch",
-    "initialize_clickhouse_replay",
+    "AsyncDailyIndexBatchLoader",
+    "DAILY_INDEX_CACHE_FORMAT",
+    "DAILY_INDEX_CACHE_VERSION",
+    "DEFAULT_DAILY_INDEX_CACHE_ROOT",
+    "DailyIndexCacheIndex",
+    "DailyIndexLoaderConfig",
+    "DailyIndexLoaderState",
+    "DailyIndexTrainingBatch",
 ]

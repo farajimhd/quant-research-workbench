@@ -404,10 +404,10 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
 
 
 def _make_loader(config: LoaderConfig, *, validation: bool, optional: bool = False) -> Any:
-    from research.mlops.rolling_loader.ticker_month_dataset import AsyncTickerMonthBatchLoader
+    from research.mlops.rolling_loader.daily_index_dataset import AsyncDailyIndexBatchLoader
 
     try:
-        return AsyncTickerMonthBatchLoader(validation_loader_config_from_v3(config) if validation else loader_config_from_v3(config))
+        return AsyncDailyIndexBatchLoader(validation_loader_config_from_v3(config) if validation else loader_config_from_v3(config))
     except FileNotFoundError:
         if optional:
             print("Validation cache split was not found; validation will be skipped.", flush=True)

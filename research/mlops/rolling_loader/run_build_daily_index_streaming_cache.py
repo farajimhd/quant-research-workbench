@@ -37,22 +37,20 @@ from research.mlops.clickhouse import (
     sql_string,
 )
 from research.mlops.env import load_env_files
-from research.mlops.rolling_loader.run_build_ticker_month_cache import (
-    DEFAULTS as TICKER_MONTH_DEFAULTS,
+from research.mlops.rolling_loader.daily_index_context import (
+    DEFAULTS as DAILY_INDEX_CONTEXT_DEFAULTS,
+    _build_intraday_base_bars,
+    _build_intraday_condition_events,
     _query_corporate_actions,
     _query_daily_bars,
     _query_market_news,
     _query_sec_tokens,
     _query_ticker_news,
     _query_xbrl,
-    cancel_active_clickhouse_queries as cancel_legacy_active_clickhouse_queries,
-    cancel_process_clickhouse_queries as cancel_legacy_process_clickhouse_queries,
+    cancel_active_clickhouse_queries as cancel_context_active_clickhouse_queries,
+    cancel_process_clickhouse_queries as cancel_context_process_clickhouse_queries,
 )
-from research.mlops.rolling_loader.run_build_ticker_month_cache_streaming import (
-    _build_intraday_base_bars,
-    _build_intraday_condition_events,
-)
-from research.mlops.rolling_loader.ticker_month_cache import (
+from research.mlops.rolling_loader.daily_index_cache import (
     EVENT_PAYLOAD_COLUMNS,
     EVENT_TIME_FEATURE_COLUMNS,
     add_months,
@@ -662,20 +660,20 @@ def two_column_panel_grid(panels: list[Any]) -> object:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a daily-index streaming ticker/month SSD cache.")
     parser.add_argument("--database", default="market_sip_compact")
-    parser.add_argument("--sec-context-database", default=TICKER_MONTH_DEFAULTS["sec_context_database"])
-    parser.add_argument("--q-live-database", default=TICKER_MONTH_DEFAULTS["q_live_database"])
+    parser.add_argument("--sec-context-database", default=DAILY_INDEX_CONTEXT_DEFAULTS["sec_context_database"])
+    parser.add_argument("--q-live-database", default=DAILY_INDEX_CONTEXT_DEFAULTS["q_live_database"])
     parser.add_argument("--events-table", default="events")
     parser.add_argument("--events-ticker-day-index-table", default="events_ticker_day_index")
-    parser.add_argument("--condition-token-reference-table", default=TICKER_MONTH_DEFAULTS["condition_token_reference_table"])
-    parser.add_argument("--macro-bars-table", default=TICKER_MONTH_DEFAULTS["macro_bars_table"])
-    parser.add_argument("--news-token-table", default=TICKER_MONTH_DEFAULTS["news_token_table"])
-    parser.add_argument("--sec-filing-text-token-table", default=TICKER_MONTH_DEFAULTS["sec_filing_text_token_table"])
-    parser.add_argument("--news-embedding-table", default=TICKER_MONTH_DEFAULTS["news_embedding_table"])
-    parser.add_argument("--sec-filing-text-embedding-table", default=TICKER_MONTH_DEFAULTS["sec_filing_text_embedding_table"])
-    parser.add_argument("--sec-xbrl-context-table", default=TICKER_MONTH_DEFAULTS["sec_xbrl_context_table"])
-    parser.add_argument("--category-reference-table", default=TICKER_MONTH_DEFAULTS["category_reference_table"])
-    parser.add_argument("--stock-split-table", default=TICKER_MONTH_DEFAULTS["stock_split_table"])
-    parser.add_argument("--cash-dividend-table", default=TICKER_MONTH_DEFAULTS["cash_dividend_table"])
+    parser.add_argument("--condition-token-reference-table", default=DAILY_INDEX_CONTEXT_DEFAULTS["condition_token_reference_table"])
+    parser.add_argument("--macro-bars-table", default=DAILY_INDEX_CONTEXT_DEFAULTS["macro_bars_table"])
+    parser.add_argument("--news-token-table", default=DAILY_INDEX_CONTEXT_DEFAULTS["news_token_table"])
+    parser.add_argument("--sec-filing-text-token-table", default=DAILY_INDEX_CONTEXT_DEFAULTS["sec_filing_text_token_table"])
+    parser.add_argument("--news-embedding-table", default=DAILY_INDEX_CONTEXT_DEFAULTS["news_embedding_table"])
+    parser.add_argument("--sec-filing-text-embedding-table", default=DAILY_INDEX_CONTEXT_DEFAULTS["sec_filing_text_embedding_table"])
+    parser.add_argument("--sec-xbrl-context-table", default=DAILY_INDEX_CONTEXT_DEFAULTS["sec_xbrl_context_table"])
+    parser.add_argument("--category-reference-table", default=DAILY_INDEX_CONTEXT_DEFAULTS["category_reference_table"])
+    parser.add_argument("--stock-split-table", default=DAILY_INDEX_CONTEXT_DEFAULTS["stock_split_table"])
+    parser.add_argument("--cash-dividend-table", default=DAILY_INDEX_CONTEXT_DEFAULTS["cash_dividend_table"])
     parser.add_argument("--cache-root", default=str(DEFAULT_CACHE_ROOT))
     parser.add_argument("--cache-id", default="")
     parser.add_argument("--month", action="append", default=[], help="Month to build, YYYY-MM. Repeatable.")
@@ -713,30 +711,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--corporate-fetch-workers", type=int, default=1)
     parser.add_argument("--corporate-process-workers", type=int, default=1)
     parser.add_argument("--corporate-write-workers", type=int, default=1)
-    parser.add_argument("--events-per-chunk", type=int, default=TICKER_MONTH_DEFAULTS["events_per_chunk"])
-    parser.add_argument("--short-context-chunks", type=int, default=TICKER_MONTH_DEFAULTS["short_context_chunks"])
-    parser.add_argument("--context-chunk-stride-events", type=int, default=TICKER_MONTH_DEFAULTS["context_chunk_stride_events"])
-    parser.add_argument("--short-context-stride-chunks", type=int, default=TICKER_MONTH_DEFAULTS["short_context_stride_chunks"])
-    parser.add_argument("--long-context-lags", default=TICKER_MONTH_DEFAULTS["long_context_lags"])
-    parser.add_argument("--sample-stride-events", type=int, default=TICKER_MONTH_DEFAULTS["sample_stride_events"])
-    parser.add_argument("--macro-lookback-days", type=int, default=TICKER_MONTH_DEFAULTS["macro_lookback_days"])
-    parser.add_argument("--label-lookahead-days", type=int, default=TICKER_MONTH_DEFAULTS["label_lookahead_days"])
-    parser.add_argument("--news-lookback-days", type=int, default=TICKER_MONTH_DEFAULTS["news_lookback_days"])
-    parser.add_argument("--sec-lookback-days", type=int, default=TICKER_MONTH_DEFAULTS["sec_lookback_days"])
-    parser.add_argument("--xbrl-lookback-days", type=int, default=TICKER_MONTH_DEFAULTS["xbrl_lookback_days"])
-    parser.add_argument("--ticker-news-items", type=int, default=TICKER_MONTH_DEFAULTS["ticker_news_items"])
-    parser.add_argument("--market-news-items", type=int, default=TICKER_MONTH_DEFAULTS["market_news_items"])
-    parser.add_argument("--sec-filing-items", type=int, default=TICKER_MONTH_DEFAULTS["sec_filing_items"])
-    parser.add_argument("--ticker-news-prior-items", type=int, default=TICKER_MONTH_DEFAULTS["ticker_news_prior_items"])
-    parser.add_argument("--market-news-prior-items", type=int, default=TICKER_MONTH_DEFAULTS["market_news_prior_items"])
-    parser.add_argument("--sec-filing-prior-items", type=int, default=TICKER_MONTH_DEFAULTS["sec_filing_prior_items"])
-    parser.add_argument("--xbrl-items", type=int, default=TICKER_MONTH_DEFAULTS["xbrl_items"])
-    parser.add_argument("--xbrl-prior-rows", type=int, default=TICKER_MONTH_DEFAULTS["xbrl_prior_rows"])
-    parser.add_argument("--corporate-action-items", type=int, default=TICKER_MONTH_DEFAULTS["corporate_action_items"])
-    parser.add_argument("--corporate-action-lookback-days", type=int, default=TICKER_MONTH_DEFAULTS["corporate_action_lookback_days"])
-    parser.add_argument("--corporate-action-label-days", default=TICKER_MONTH_DEFAULTS["corporate_action_label_days"])
-    parser.add_argument("--intraday-label-horizons", default=TICKER_MONTH_DEFAULTS["intraday_label_horizons"])
-    parser.add_argument("--intraday-context-horizons", default=TICKER_MONTH_DEFAULTS["intraday_context_horizons"])
+    parser.add_argument("--events-per-chunk", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["events_per_chunk"])
+    parser.add_argument("--short-context-chunks", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["short_context_chunks"])
+    parser.add_argument("--context-chunk-stride-events", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["context_chunk_stride_events"])
+    parser.add_argument("--short-context-stride-chunks", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["short_context_stride_chunks"])
+    parser.add_argument("--long-context-lags", default=DAILY_INDEX_CONTEXT_DEFAULTS["long_context_lags"])
+    parser.add_argument("--sample-stride-events", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["sample_stride_events"])
+    parser.add_argument("--macro-lookback-days", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["macro_lookback_days"])
+    parser.add_argument("--label-lookahead-days", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["label_lookahead_days"])
+    parser.add_argument("--news-lookback-days", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["news_lookback_days"])
+    parser.add_argument("--sec-lookback-days", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["sec_lookback_days"])
+    parser.add_argument("--xbrl-lookback-days", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["xbrl_lookback_days"])
+    parser.add_argument("--ticker-news-items", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["ticker_news_items"])
+    parser.add_argument("--market-news-items", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["market_news_items"])
+    parser.add_argument("--sec-filing-items", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["sec_filing_items"])
+    parser.add_argument("--ticker-news-prior-items", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["ticker_news_prior_items"])
+    parser.add_argument("--market-news-prior-items", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["market_news_prior_items"])
+    parser.add_argument("--sec-filing-prior-items", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["sec_filing_prior_items"])
+    parser.add_argument("--xbrl-items", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["xbrl_items"])
+    parser.add_argument("--xbrl-prior-rows", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["xbrl_prior_rows"])
+    parser.add_argument("--corporate-action-items", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["corporate_action_items"])
+    parser.add_argument("--corporate-action-lookback-days", type=int, default=DAILY_INDEX_CONTEXT_DEFAULTS["corporate_action_lookback_days"])
+    parser.add_argument("--corporate-action-label-days", default=DAILY_INDEX_CONTEXT_DEFAULTS["corporate_action_label_days"])
+    parser.add_argument("--intraday-label-horizons", default=DAILY_INDEX_CONTEXT_DEFAULTS["intraday_label_horizons"])
+    parser.add_argument("--intraday-context-horizons", default=DAILY_INDEX_CONTEXT_DEFAULTS["intraday_context_horizons"])
     parser.add_argument("--skip-xbrl", action="store_true")
     parser.add_argument("--skip-corporate-actions", action="store_true")
     parser.add_argument("--skip-token-contexts", action="store_true")
@@ -791,8 +789,8 @@ def main(argv: list[str] | None = None) -> int:
         stop_event.set()
         active_cancelled = cancel_active_queries(client_opts=client_opts, active_queries=active_queries)
         prefix_cancelled = cancel_process_queries(client_opts=client_opts)
-        legacy_active_cancelled = cancel_legacy_active_clickhouse_queries(client_opts=client_opts, stats=None)
-        legacy_prefix_cancelled = cancel_legacy_process_clickhouse_queries(client_opts=client_opts, stats=None, reason="daily_index_streaming_cache_interrupt")
+        legacy_active_cancelled = cancel_context_active_clickhouse_queries(client_opts=client_opts, stats=None)
+        legacy_prefix_cancelled = cancel_context_process_clickhouse_queries(client_opts=client_opts, stats=None, reason="daily_index_streaming_cache_interrupt")
         build_state.message(
             "ClickHouse cancellation complete "
             f"daily_active={active_cancelled:,} daily_prefix={prefix_cancelled:,} "

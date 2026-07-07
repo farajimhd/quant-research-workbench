@@ -21,13 +21,13 @@ the same data position and reproduce benchmark batches across model variants.
 The primary data source is the ticker-month cache loader:
 
 ```text
-research.mlops.rolling_loader.ticker_month_dataset.AsyncTickerMonthBatchLoader
+research.mlops.rolling_loader.daily_index_dataset.AsyncDailyIndexBatchLoader
 ```
 
 The cache is produced by:
 
 ```text
-research.mlops.rolling_loader.run_build_ticker_month_cache
+research.mlops.rolling_loader.run_build_daily_index_streaming_cache
 ```
 
 Current builder contract:
