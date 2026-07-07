@@ -18,6 +18,25 @@ It does not mutate rows in place.
 
 SEC submissions API values ending in `Z` are UTC timestamps. A bad parser version incorrectly converted those rows through New York time, shifting some live rows four or five hours too late. That breaks live consumers such as `text_embed_gateway`, which selects SEC rows by `accepted_at_utc`.
 
+## Timestamp Storage Rule
+
+All SEC timestamps persisted to ClickHouse must represent UTC instants. Columns
+such as `accepted_at_utc`, `filed_at_utc`, and `inserted_at` are storage
+timestamps, not display timestamps.
+
+Rules for SEC write paths:
+
+- A raw SEC timestamp ending in `Z` is already UTC and must be stored as the
+  same UTC instant.
+- A raw SEC timestamp with an explicit numeric offset must honor that offset and
+  be converted to UTC before insert.
+- A raw SEC timestamp without an offset must be interpreted only according to
+  the documented source for that field. Do not use the laptop or workstation
+  local timezone as an implicit default.
+- Terminals, notebooks, and UI pages may display UTC values in ET, Vancouver
+  time, or local time, but write paths must convert operator-local timestamps
+  back to UTC before insertion.
+
 ## Safety Rules
 
 - Dry-run is the default.

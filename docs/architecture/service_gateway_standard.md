@@ -22,6 +22,7 @@ Text Embed, IBKR Supervisor, Market AI, and future data services in this repo.
   - [No Standalone Maintenance Runner](#no-standalone-maintenance-runner)
   - [Cross-Service Dependency Rules](#cross-service-dependency-rules)
 - [Storage Rule](#storage-rule)
+- [Timestamp Policy](#timestamp-policy)
 - [Market Session Source Of Truth](#market-session-source-of-truth)
 - [Active Collection Window](#active-collection-window)
 - [Reconciliation And Gap Fill Policy](#reconciliation-and-gap-fill-policy)
@@ -874,6 +875,38 @@ From the laptop, services should use:
 
 If that storage is not available, the service should fail with a clear message.
 It must not silently write service artifacts to laptop-local storage.
+
+## Timestamp Policy
+
+All persisted timestamps in ClickHouse must represent UTC instants. Timestamp
+columns should use UTC semantics explicitly, for example `DateTime64(...,
+'UTC')` or integer epoch fields whose unit and UTC meaning are documented.
+
+Provider timestamps must be normalized to UTC before insert. If a provider value
+contains an explicit offset such as `Z`, `+00:00`, or `-04:00`, the parser must
+honor that offset. If a provider value has no offset, the parser must use the
+provider's documented source timezone and convert the result to UTC before
+writing. If the source timezone is unknown, the row should be rejected, held for
+review, or written with an explicit quality issue; it must not be silently
+interpreted as local machine time.
+
+Database values are storage values, not display values. Frontends, terminals,
+reports, and notebooks may render the same UTC instant in ET, Vancouver time,
+local time, or another operator timezone, but those conversions happen at the
+read/display layer. Any write path that receives frontend or operator-local time
+must convert it back to UTC before insertion.
+
+Every gateway should include timestamp checks in preflight, audit, or post-write
+validation for tables it owns:
+
+- provider raw timestamp versus normalized UTC timestamp, when the raw value is
+  retained;
+- impossible future timestamps beyond a small provider-specific tolerance;
+- unexpected timezone-sized offsets from the provider raw value;
+- timestamp order regressions inside source batches where the provider promises
+  ordering;
+- rows whose timestamp falls outside the requested gap-fill/backfill window
+  after UTC normalization.
 
 ## Market Session Source Of Truth
 
