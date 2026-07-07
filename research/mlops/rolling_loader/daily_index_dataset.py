@@ -1269,7 +1269,7 @@ class DailyIndexBatchMaterializer:
     def _materialize_intraday_bar_inputs(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
         if "intraday_bars" not in self.config.data_groups:
             return {}, {}
-        horizons = _cached_intraday_context_horizons(parts)
+        horizons = _cached_intraday_context_horizons(parts, config=self.config)
         horizon_count = len(horizons)
         batch = int(len(refs))
         key = BAR_INPUT_GROUP_TO_KEY["intraday_bars"]
@@ -1291,6 +1291,7 @@ class DailyIndexBatchMaterializer:
         profile: dict[str, float | int] = {
             "intraday_bar_lookup_seconds": 0.0,
             "intraday_bar_gather_seconds": 0.0,
+            "intraday_bar_compact_seconds": 0.0,
         }
         if horizon_count <= 0 or batch <= 0:
             return {key: _intraday_bar_payload(values, mask, time_features, family_values, family_masks, family_time_features, horizons)}, profile
@@ -1299,6 +1300,23 @@ class DailyIndexBatchMaterializer:
             part = parts[int(part_index)]
             frame = part.context.get("intraday_bars")
             if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+                compact_frame = part.context.get("intraday_base_bars")
+                if compact_frame is not None and int(getattr(compact_frame, "height", 0) or 0) > 0:
+                    compact_start = time.perf_counter()
+                    self._materialize_intraday_bar_inputs_from_compact(
+                        part=part,
+                        refs=refs,
+                        rows=rows,
+                        horizons=horizons,
+                        values=values,
+                        mask=mask,
+                        time_features=time_features,
+                        family_values=family_values,
+                        family_masks=family_masks,
+                        family_time_features=family_time_features,
+                    )
+                    profile["intraday_bar_compact_seconds"] = float(profile["intraday_bar_compact_seconds"]) + (time.perf_counter() - compact_start)
+                    continue
                 if self.config.strict_audit:
                     raise RuntimeError(f"Missing intraday context bars for {part.plan.month}:{part.plan.ticker}:part_{part.plan.part_id:05d}.")
                 continue
@@ -1352,6 +1370,98 @@ class DailyIndexBatchMaterializer:
             profile["intraday_bar_gather_seconds"] = float(profile["intraday_bar_gather_seconds"]) + (time.perf_counter() - gather_start)
         payload = _intraday_bar_payload(values, mask, time_features, family_values, family_masks, family_time_features, horizons)
         return {key: payload}, profile
+
+    def _materialize_intraday_bar_inputs_from_compact(
+        self,
+        *,
+        part: LoadedDailyIndexPart,
+        refs: Sequence[DailyIndexSampleRef],
+        rows: np.ndarray,
+        horizons: Sequence[str],
+        values: np.ndarray,
+        mask: np.ndarray,
+        time_features: np.ndarray,
+        family_values: dict[str, np.ndarray],
+        family_masks: dict[str, np.ndarray],
+        family_time_features: dict[str, np.ndarray],
+    ) -> None:
+        horizon_count = int(len(horizons))
+        if horizon_count <= 0 or rows.shape[0] <= 0:
+            return
+        specs = _intraday_horizon_specs(horizons)
+        if len(specs) != horizon_count:
+            raise RuntimeError(f"Intraday context horizon count mismatch for {_part_key(part.plan)}.")
+        origins = part.origins
+        if origins is None:
+            raise RuntimeError(f"Missing origins for {_part_key(part.plan)}.")
+        missing_columns = {"origin_timestamp_us", "origin_local_date", "origin_local_session_us"}.difference(set(origins.columns))
+        if missing_columns:
+            raise RuntimeError(f"Compact intraday bar materialization requires origin columns {sorted(missing_columns)} for {_part_key(part.plan)}. Rebuild the cache.")
+        batch = int(values.shape[0])
+        labels_out = {key: np.zeros((batch, horizon_count), dtype=dtype) for key, dtype in LABEL_VALUE_DTYPES.items()}
+        origin_rows = _origin_rows_for_refs(refs, rows)
+        origin_timestamps = part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[origin_rows]
+        local_dates = np.asarray(origins.get_column("origin_local_date").to_numpy(), dtype=object)[origin_rows]
+        local_dates = np.asarray([str(value)[:10] for value in local_dates], dtype=object)
+        local_session_us = part.origin_array("origin_local_session_us").astype(np.int64, copy=False)[origin_rows]
+        local_midnight_us = origin_timestamps - local_session_us
+        compact_index = self._intraday_compact_label_index(part)
+        out_rows = rows.astype(np.int64, copy=False)
+        for horizon_index, (_horizon, _horizon_us, resolution_us, bucket_count, is_eod) in enumerate(specs):
+            origin_bucket = local_session_us // int(resolution_us)
+            last_bucket = origin_bucket - 1
+            if is_eod:
+                first_bucket = np.zeros_like(last_bucket)
+            else:
+                first_bucket = np.maximum(0, last_bucket - int(bucket_count) + 1)
+            valid = last_bucket >= first_bucket
+            grid_start_session_us = first_bucket * int(resolution_us)
+            grid_end_session_us = (last_bucket + 1) * int(resolution_us)
+            grid_start_ts = local_midnight_us + grid_start_session_us
+            labels_out["label_grid_start_timestamp_us"][out_rows, horizon_index] = grid_start_ts.astype(np.int64, copy=False)
+            labels_out["label_grid_end_timestamp_us"][out_rows, horizon_index] = (local_midnight_us + grid_end_session_us).astype(np.int64, copy=False)
+            for family in BAR_FAMILY_KEYS:
+                self._fill_compact_bar_family(
+                    compact_index,
+                    family=family,
+                    dates=local_dates,
+                    first_bucket=first_bucket,
+                    last_bucket=last_bucket,
+                    valid=valid,
+                    output_rows=out_rows,
+                    horizon_index=horizon_index,
+                    resolution_us=int(resolution_us),
+                    labels_out=labels_out,
+                )
+            selected_mask = np.zeros((int(out_rows.shape[0]),), dtype=np.bool_)
+            for family in BAR_FAMILY_KEYS:
+                selected_mask |= labels_out[f"{family}_available"][out_rows, horizon_index].astype(np.bool_, copy=False)
+            if not bool(selected_mask.any()):
+                continue
+            absolute_time = _absolute_utc_time_feature_matrix(grid_start_ts).astype(np.float32, copy=False)
+            age_days = np.maximum(0.0, (origin_timestamps.astype(np.float64) - grid_start_ts.astype(np.float64)) / 86_400_000_000.0).astype(np.float32)
+            gathered_time = np.concatenate(
+                [absolute_time, np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)],
+                axis=-1,
+            ).astype(np.float32, copy=False)
+            gathered_time[~selected_mask] = 0.0
+            time_features[out_rows, horizon_index] = gathered_time
+            mask[out_rows, horizon_index] = selected_mask
+            for family in BAR_FAMILY_KEYS:
+                fields = BAR_SOURCE_FEATURE_KEYS[family]
+                rows_family_mask = labels_out[f"{family}_available"][out_rows, horizon_index].astype(np.bool_, copy=False)
+                family_masks[family][out_rows, horizon_index] = rows_family_mask
+                family_time = gathered_time.copy()
+                family_time[~rows_family_mask] = 0.0
+                family_time_features[family][out_rows, horizon_index] = family_time
+                for field_index, field_name in enumerate(fields):
+                    source_key = f"{family}_{field_name}"
+                    if source_key in labels_out:
+                        family_values[family][out_rows, horizon_index, field_index] = labels_out[source_key][out_rows, horizon_index].astype(np.float32, copy=False)
+            trade_fields = list(BAR_SOURCE_FEATURE_KEYS["trade"])
+            for output_field, source_field in (("open", "open"), ("close", "close"), ("high", "high"), ("low", "low"), ("size_sum", "size_sum"), ("event_count", "event_count")):
+                if output_field in BAR_FEATURE_KEYS and source_field in trade_fields:
+                    values[out_rows, horizon_index, BAR_FEATURE_KEYS.index(output_field)] = family_values["trade"][out_rows, horizon_index, trade_fields.index(source_field)]
 
     def _label_context_index_for_frame(self, part: LoadedDailyIndexPart, frame: Any, horizon_count: int) -> LabelContextIndex:
         key = (id(part.origins), id(frame), int(horizon_count))
@@ -3420,7 +3530,7 @@ def _intraday_horizon_specs(horizons: Sequence[str]) -> tuple[tuple[str, int, in
     return tuple(sorted(specs, key=lambda item: (item[1], item[0])))
 
 
-def _cached_intraday_context_horizons(parts: Sequence[LoadedDailyIndexPart]) -> tuple[str, ...]:
+def _cached_intraday_context_horizons(parts: Sequence[LoadedDailyIndexPart], *, config: DailyIndexLoaderConfig | None = None) -> tuple[str, ...]:
     for part in parts:
         horizons = part.plan.config.get("intraday_context_horizons") or ()
         if horizons:
@@ -3431,6 +3541,10 @@ def _cached_intraday_context_horizons(parts: Sequence[LoadedDailyIndexPart]) -> 
             continue
         row = frame.row(0, named=True)
         return tuple(str(item) for item in (row.get("horizon") or ()))
+    if config is not None:
+        horizons = tuple(str(item) for item in getattr(config, "intraday_label_horizons", ()) if str(item).strip())
+        if horizons:
+            return horizons
     return ()
 
 
