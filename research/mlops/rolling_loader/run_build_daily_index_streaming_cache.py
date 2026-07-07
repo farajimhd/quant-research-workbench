@@ -44,7 +44,6 @@ from research.mlops.rolling_loader.ticker_month_cache import (
     full_months_in_period,
     jsonable,
     month_window,
-    stable_ticker_bucket,
     write_json_atomic,
 )
 
@@ -52,6 +51,7 @@ from research.mlops.rolling_loader.ticker_month_cache import (
 DEFAULT_CACHE_ROOT = Path("D:/market-data/prepared/daily_index_streaming_cache")
 DEFAULT_DATA_GROUPS = "events"
 DEFAULT_EVENT_COLUMNS = (*EVENT_PAYLOAD_COLUMNS, *EVENT_TIME_FEATURE_COLUMNS, "context_only")
+MODALITY_PANEL_NAMES = ("Events", "Intraday Labels", "Macro Bars", "News Embeddings", "SEC Embeddings", "XBRL", "Corporate Actions")
 SESSION_TIMEZONE = "America/New_York"
 SESSION_START_SECOND = 4 * 60 * 60
 SESSION_REGULAR_START_SECOND = 9 * 60 * 60 + 30 * 60
@@ -387,10 +387,8 @@ class DailyIndexStreamingDashboard:
         overall_progress.add_task("overall", total=max(1, total_units), completed=min(done_units, max(1, total_units)))
         panels.append(overall_progress)
 
-        for name in ("Events", "Intraday Labels", "Macro Bars", "News Embeddings", "SEC Embeddings", "XBRL", "Corporate Actions"):
-            if name not in modalities:
-                continue
-            panels.append(self._modality_panel(name, modalities[name]))
+        modality_panels = [self._modality_panel(name, modalities.get(name) or empty_modality_snapshot(name)) for name in MODALITY_PANEL_NAMES]
+        panels.append(two_column_panel_grid(modality_panels))
 
         msg_table = Table(box=box.SIMPLE, show_header=False, expand=True)
         msg_table.add_column("Message")
@@ -408,14 +406,30 @@ class DailyIndexStreamingDashboard:
         written = int(modality["written_units"])
         progress = written / expected if expected > 0 else 0.0
         table = Table(box=box.SIMPLE, expand=True)
-        table.add_column("Process name", no_wrap=True, style="cyan")
-        table.add_column("Worker", justify="right", no_wrap=True)
+        table.add_column("Process", no_wrap=True, style="cyan")
+        table.add_column("W", justify="right", no_wrap=True)
         table.add_column("Status", overflow="fold")
-        table.add_column("Current Job", overflow="fold")
+        table.add_column("Current job", overflow="fold")
         table.add_row("Overall", "-", f"{progress * 100.0:.2f}%  units {written:,}/{expected:,}", queue_detail(modality))
-        for worker in modality["workers"]:
+        workers = list(modality["workers"])
+        if not workers:
+            table.add_row("Adapter", "-", "not implemented", "no worker pool in this version")
+        for worker in workers:
             table.add_row(worker["process_name"], f"{int(worker['worker_id']):02d}", worker_status_text(worker), str(worker["current_job"]))
         return Panel(table, title=name, box=box.ROUNDED, border_style="blue", padding=(0, 1))
+
+
+def two_column_panel_grid(panels: list[Any]) -> object:
+    from rich.table import Table
+
+    grid = Table.grid(expand=True)
+    grid.add_column(ratio=1)
+    grid.add_column(ratio=1)
+    for index in range(0, len(panels), 2):
+        left = panels[index]
+        right = panels[index + 1] if index + 1 < len(panels) else ""
+        grid.add_row(left, right)
+    return grid
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1247,7 +1261,7 @@ def ticker_filter_sql(text: str) -> str:
 
 def package_dir(*, cache_root: Path, month: str, ticker: str) -> Path:
     upper = str(ticker).upper()
-    return cache_root / f"month={month}" / f"ticker_hash={stable_ticker_bucket(upper):02x}" / f"ticker={upper}"
+    return cache_root / f"month={month}" / f"ticker={upper}"
 
 
 def write_parquet(frame: Any, path: Path) -> dict[str, int]:
@@ -1313,6 +1327,24 @@ def snapshot_modality(modality: ModalityStats) -> dict[str, Any]:
         "process_queue_depth": modality.process_queue_depth,
         "write_queue_depth": modality.write_queue_depth,
         "workers": [asdict(worker) for worker in modality.workers],
+    }
+
+
+def empty_modality_snapshot(name: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "expected_units": 0,
+        "fetched_units": 0,
+        "processed_units": 0,
+        "written_units": 0,
+        "fetch_jobs": 0,
+        "fetch_done": 0,
+        "process_done": 0,
+        "write_done": 0,
+        "fetch_queue_depth": 0,
+        "process_queue_depth": 0,
+        "write_queue_depth": 0,
+        "workers": [],
     }
 
 
