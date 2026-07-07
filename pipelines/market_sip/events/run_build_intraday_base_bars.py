@@ -25,6 +25,7 @@ DEFAULTS = {
     "progress_layout": "auto",
     "progress_refresh_per_second": 2.0,
     "progress_log_lines": 10,
+    "progress_screen": True,
 }
 
 
@@ -48,6 +49,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default=DEFAULTS["progress_layout"])
     parser.add_argument("--progress-refresh-per-second", type=float, default=DEFAULTS["progress_refresh_per_second"])
     parser.add_argument("--progress-log-lines", type=int, default=DEFAULTS["progress_log_lines"])
+    parser.add_argument("--progress-screen", action=argparse.BooleanOptionalAction, default=DEFAULTS["progress_screen"])
     parser.add_argument("--storage-policy", default="")
     parser.add_argument("--clickhouse-url", default="")
     parser.add_argument("--user", default="")
@@ -94,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         "--progress-log-lines",
         str(args.progress_log_lines),
     ]
+    command.append("--progress-screen" if args.progress_screen else "--no-progress-screen")
     if args.date:
         command.extend(["--date", args.date])
     else:

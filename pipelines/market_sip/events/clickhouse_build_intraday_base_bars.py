@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import re
 import sys
+import threading
 import time
 import uuid
 from collections import deque
@@ -135,6 +136,9 @@ class IntradayBarBuildReporter:
         self._console = None
         self._live = None
         self._rich_enabled = False
+        self._lock = threading.Lock()
+        self._stop_refresh = threading.Event()
+        self._refresh_thread: threading.Thread | None = None
 
     def __enter__(self) -> "IntradayBarBuildReporter":
         if str(self.args.progress_layout) != "text":
@@ -148,10 +152,13 @@ class IntradayBarBuildReporter:
                     console=self._console,
                     refresh_per_second=max(1.0, float(self.args.progress_refresh_per_second)),
                     transient=False,
-                    auto_refresh=True,
+                    auto_refresh=False,
+                    screen=bool(self.args.progress_screen),
+                    vertical_overflow="crop",
                 )
-                self._live.start()
+                self._live.start(refresh=True)
                 self._rich_enabled = True
+                self._start_refresh_thread()
             except Exception as exc:  # noqa: BLE001
                 self._rich_enabled = False
                 print(f"Rich progress unavailable; falling back to text progress: {exc!r}", flush=True)
@@ -162,8 +169,11 @@ class IntradayBarBuildReporter:
         if exc is not None:
             self.last_error = repr(exc)
             self.current_phase = "error"
+        self._stop_refresh.set()
+        if self._refresh_thread is not None:
+            self._refresh_thread.join(timeout=2.0)
         if self._live is not None:
-            self._live.update(self._render())
+            self._refresh(force=True)
             self._live.stop()
 
     def message(self, text: str) -> None:
@@ -171,7 +181,7 @@ class IntradayBarBuildReporter:
         line = f"{stamp} {text}"
         self.messages.append(line)
         if self._live is not None:
-            self._live.update(self._render())
+            self._refresh(force=True)
         else:
             print(line, flush=True)
 
@@ -184,8 +194,7 @@ class IntradayBarBuildReporter:
         self.current_query = label
         self.current_query_started_at = time.perf_counter()
         self.current_phase = label
-        if self._live is not None:
-            self._live.update(self._render())
+        self.message(f"query start {label}")
 
     def query_done(self, profile: QueryProfile) -> None:
         self.recent_queries.append(profile)
@@ -206,8 +215,7 @@ class IntradayBarBuildReporter:
         elif result.status == "failed":
             self.failed_days += 1
         self.recent_results.append(result)
-        if self._live is not None:
-            self._live.update(self._render())
+        self._refresh(force=True)
 
     def interrupted(self) -> None:
         self.current_phase = "interrupted"
@@ -293,6 +301,24 @@ class IntradayBarBuildReporter:
         header = Panel(summary, title=title, border_style="red" if self.last_error else "green", box=box.ROUNDED, padding=(0, 1))
         return Group(header, progress, queries, results, messages)
 
+    def _start_refresh_thread(self) -> None:
+        if self._refresh_thread is not None:
+            return
+
+        def _loop() -> None:
+            interval = 1.0 / max(0.5, float(self.args.progress_refresh_per_second))
+            while not self._stop_refresh.wait(interval):
+                self._refresh(force=False)
+
+        self._refresh_thread = threading.Thread(target=_loop, name="intraday-bars-rich-refresh", daemon=True)
+        self._refresh_thread.start()
+
+    def _refresh(self, *, force: bool) -> None:
+        if self._live is None:
+            return
+        with self._lock:
+            self._live.update(self._render(), refresh=True)
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build reusable intraday base bars in ClickHouse from compact SIP events.")
@@ -321,6 +347,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
     parser.add_argument("--progress-refresh-per-second", type=float, default=2.0)
     parser.add_argument("--progress-log-lines", type=int, default=10)
+    parser.add_argument("--progress-screen", action=argparse.BooleanOptionalAction, default=True, help="Render Rich progress in an alternate screen to avoid blinking/scrollback churn.")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -530,6 +557,7 @@ def insert_intraday_base_bars_sql(*, args: argparse.Namespace, dates: list[dt.da
     source_table = event_source_table(args=args, first_date=min(dates), last_exclusive=max(dates) + dt.timedelta(days=1))
     local_date_filter = ", ".join(f"toDate({sql_string(day.isoformat())})" for day in dates)
     resolutions = ", ".join(f"toUInt64({value})" for value in resolutions_us)
+    base_resolution_us = min(resolutions_us)
     ticker_filter = ticker_filter_sql(args)
     first_event_date = min(dates)
     last_event_date = max(dates) + dt.timedelta(days=1)
@@ -559,64 +587,97 @@ SELECT
     local_date,
     ticker,
     label_resolution_us,
-    intDiv(toUInt64(local_session_us), label_resolution_us) AS bucket_index,
+    intDiv(base_bucket_index * toUInt64({base_resolution_us}), label_resolution_us) AS bucket_index,
     bar_family,
-    toFloat32(argMin(price, tuple(sip_timestamp_us, ordinal))) AS open,
-    toFloat32(argMax(price, tuple(sip_timestamp_us, ordinal))) AS close,
-    toFloat32(max(price)) AS high,
-    toFloat32(min(price)) AS low,
-    sum(size) AS size_sum,
-    argMin(size, tuple(sip_timestamp_us, ordinal)) AS size_open,
-    argMax(size, tuple(sip_timestamp_us, ordinal)) AS size_close,
-    max(size) AS size_high,
-    min(size) AS size_low,
-    count() AS event_count,
-    min(toUInt64(sip_timestamp_us)) AS first_event_timestamp_us,
-    max(toUInt64(sip_timestamp_us)) AS last_event_timestamp_us,
+    toFloat32(argMin(open, tuple(base_first_event_timestamp_us, base_bucket_index))) AS open,
+    toFloat32(argMax(close, tuple(base_last_event_timestamp_us, base_bucket_index))) AS close,
+    toFloat32(max(high)) AS high,
+    toFloat32(min(low)) AS low,
+    sum(size_sum) AS size_sum,
+    argMin(size_open, tuple(base_first_event_timestamp_us, base_bucket_index)) AS size_open,
+    argMax(size_close, tuple(base_last_event_timestamp_us, base_bucket_index)) AS size_close,
+    max(size_high) AS size_high,
+    min(size_low) AS size_low,
+    sum(event_count) AS event_count,
+    min(base_first_event_timestamp_us) AS first_event_timestamp_us,
+    max(base_last_event_timestamp_us) AS last_event_timestamp_us,
     now() AS built_at
 FROM
 (
     SELECT
-        upper(event_ticker) AS ticker,
         local_date,
-        local_session_us,
-        sip_timestamp_us,
-        ordinal,
-        tupleElement(family_tuple, 1) AS bar_family,
-        tupleElement(family_tuple, 2) AS price,
-        tupleElement(family_tuple, 3) AS size,
+        ticker,
+        base_bucket_index,
+        bar_family,
+        open,
+        close,
+        high,
+        low,
+        size_sum,
+        size_open,
+        size_close,
+        size_high,
+        size_low,
+        event_count,
+        base_first_event_timestamp_us,
+        base_last_event_timestamp_us,
         arrayJoin([{resolutions}]) AS label_resolution_us
     FROM
     (
         SELECT
-            ticker AS event_ticker,
-            ordinal,
-            sip_timestamp_us,
-            bitAnd(event_meta, 1) AS event_type,
-            toFloat32(if(price_primary_int > 0, price_primary_int / if(bitAnd(event_meta, 2) = 2, 10000.0, 100.0), 0.0)) AS price_primary,
-            toFloat32(if(price_secondary_int > 0, price_secondary_int / if(bitAnd(event_meta, 4) = 4, 10000.0, 100.0), 0.0)) AS price_secondary,
-            toFloat64(size_primary) AS size_primary,
-            toFloat64(size_secondary) AS size_secondary,
-            toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
-            toDate(ts_local) AS local_date,
-            dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
-            dateDiff('microsecond', toStartOfDay(ts_local), ts_local) AS local_session_us
-        FROM {source_table}
-        PREWHERE event_date >= toDate({sql_string(first_event_date.isoformat())})
-          AND event_date <= toDate({sql_string(last_event_date.isoformat())})
-          {ticker_filter}
-        WHERE local_date IN ({local_date_filter})
-          AND local_second >= {SESSION_START_SECOND}
-          AND local_second < {SESSION_END_SECOND}
-    )
-    ARRAY JOIN arrayFilter(
-        x -> tupleElement(x, 2) > 0 AND tupleElement(x, 3) > 0,
-        if(
-            event_type = 1,
-            [tuple('trade', price_primary, size_primary)],
-            [tuple('quote_bid', price_secondary, size_secondary), tuple('quote_ask', price_primary, size_primary)]
+            local_date,
+            upper(event_ticker) AS ticker,
+            intDiv(toUInt64(local_session_us), toUInt64({base_resolution_us})) AS base_bucket_index,
+            tupleElement(family_tuple, 1) AS bar_family,
+            toFloat32(argMin(tupleElement(family_tuple, 2), tuple(sip_timestamp_us, ordinal))) AS open,
+            toFloat32(argMax(tupleElement(family_tuple, 2), tuple(sip_timestamp_us, ordinal))) AS close,
+            toFloat32(max(tupleElement(family_tuple, 2))) AS high,
+            toFloat32(min(tupleElement(family_tuple, 2))) AS low,
+            sum(tupleElement(family_tuple, 3)) AS size_sum,
+            argMin(tupleElement(family_tuple, 3), tuple(sip_timestamp_us, ordinal)) AS size_open,
+            argMax(tupleElement(family_tuple, 3), tuple(sip_timestamp_us, ordinal)) AS size_close,
+            max(tupleElement(family_tuple, 3)) AS size_high,
+            min(tupleElement(family_tuple, 3)) AS size_low,
+            count() AS event_count,
+            min(toUInt64(sip_timestamp_us)) AS base_first_event_timestamp_us,
+            max(toUInt64(sip_timestamp_us)) AS base_last_event_timestamp_us
+        FROM
+        (
+            SELECT
+                ticker AS event_ticker,
+                ordinal,
+                sip_timestamp_us,
+                bitAnd(event_meta, 1) AS event_type,
+                toFloat32(if(price_primary_int > 0, price_primary_int / if(bitAnd(event_meta, 2) = 2, 10000.0, 100.0), 0.0)) AS price_primary,
+                toFloat32(if(price_secondary_int > 0, price_secondary_int / if(bitAnd(event_meta, 4) = 4, 10000.0, 100.0), 0.0)) AS price_secondary,
+                toFloat64(size_primary) AS size_primary,
+                toFloat64(size_secondary) AS size_secondary,
+                toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
+                toDate(ts_local) AS local_date,
+                dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
+                dateDiff('microsecond', toStartOfDay(ts_local), ts_local) AS local_session_us
+            FROM {source_table}
+            PREWHERE event_date >= toDate({sql_string(first_event_date.isoformat())})
+              AND event_date <= toDate({sql_string(last_event_date.isoformat())})
+              {ticker_filter}
+            WHERE local_date IN ({local_date_filter})
+              AND local_second >= {SESSION_START_SECOND}
+              AND local_second < {SESSION_END_SECOND}
         )
-    ) AS family_tuple
+        ARRAY JOIN arrayFilter(
+            x -> tupleElement(x, 2) > 0 AND tupleElement(x, 3) > 0,
+            if(
+                event_type = 1,
+                [tuple('trade', price_primary, size_primary)],
+                [tuple('quote_bid', price_secondary, size_secondary), tuple('quote_ask', price_primary, size_primary)]
+            )
+        ) AS family_tuple
+        GROUP BY
+            local_date,
+            ticker,
+            base_bucket_index,
+            bar_family
+    )
 )
 GROUP BY
     local_date,
@@ -632,12 +693,14 @@ def insert_intraday_condition_bars_sql(*, args: argparse.Namespace, dates: list[
     source_table = event_source_table(args=args, first_date=min(dates), last_exclusive=max(dates) + dt.timedelta(days=1))
     local_date_filter = ", ".join(f"toDate({sql_string(day.isoformat())})" for day in dates)
     resolutions = ", ".join(f"toUInt64({value})" for value in resolutions_us)
+    base_resolution_us = min(resolutions_us)
     ticker_filter = ticker_filter_sql(args)
     first_event_date = min(dates)
     last_event_date = max(dates) + dt.timedelta(days=1)
     condition_token_aliases = condition_token_array_aliases_sql(args)
     condition_event_select = condition_event_select_sql()
-    condition_select_columns = ",\n    ".join(f"max({quote_ident(key + '_event')}) AS {quote_ident(key)}" for key in FUTURE_CONDITION_LABEL_KEYS)
+    condition_base_select_columns = ",\n            ".join(f"max({quote_ident(key + '_event')}) AS {quote_ident(key)}" for key in FUTURE_CONDITION_LABEL_KEYS)
+    condition_rollup_select_columns = ",\n    ".join(f"max({quote_ident(key)}) AS {quote_ident(key)}" for key in FUTURE_CONDITION_LABEL_KEYS)
     condition_filter = " OR ".join(f"{quote_ident(key + '_event')} > 0" for key in FUTURE_CONDITION_LABEL_KEYS)
     condition_columns = ",\n    ".join(quote_ident(key) for key in FUTURE_CONDITION_LABEL_KEYS)
     return f"""
@@ -659,53 +722,65 @@ SELECT
     local_date,
     upper(ticker) AS ticker,
     label_resolution_us,
-    intDiv(toUInt64(local_session_us), label_resolution_us) AS bucket_index,
-    {condition_select_columns},
-    count() AS condition_event_count,
-    min(toUInt64(sip_timestamp_us)) AS first_event_timestamp_us,
-    max(toUInt64(sip_timestamp_us)) AS last_event_timestamp_us,
+    intDiv(base_bucket_index * toUInt64({base_resolution_us}), label_resolution_us) AS bucket_index,
+    {condition_rollup_select_columns},
+    sum(condition_event_count) AS condition_event_count,
+    min(base_first_event_timestamp_us) AS first_event_timestamp_us,
+    max(base_last_event_timestamp_us) AS last_event_timestamp_us,
     now() AS built_at
 FROM
 (
     SELECT
         ticker,
-        ordinal,
-        sip_timestamp_us,
         local_date,
-        local_second,
-        local_session_us,
-        condition_token_1,
-        condition_token_2,
-        condition_token_3,
-        condition_token_4,
-        condition_token_5,
+        base_bucket_index,
+        {", ".join(quote_ident(key) for key in FUTURE_CONDITION_LABEL_KEYS)},
+        condition_event_count,
+        base_first_event_timestamp_us,
+        base_last_event_timestamp_us,
         arrayJoin([{resolutions}]) AS label_resolution_us,
-        {condition_event_select}
+        1 AS rollup_marker
     FROM
     (
         SELECT
             ticker,
-            ordinal,
-            sip_timestamp_us,
-            condition_token_1,
-            condition_token_2,
-            condition_token_3,
-            condition_token_4,
-            condition_token_5,
-            toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
-            toDate(ts_local) AS local_date,
-            dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
-            dateDiff('microsecond', toStartOfDay(ts_local), ts_local) AS local_session_us
-        FROM {source_table}
-        PREWHERE event_date >= toDate({sql_string(first_event_date.isoformat())})
-          AND event_date <= toDate({sql_string(last_event_date.isoformat())})
-          {ticker_filter}
-        WHERE local_date IN ({local_date_filter})
-          AND local_second >= {SESSION_START_SECOND}
-          AND local_second < {SESSION_END_SECOND}
+            local_date,
+            intDiv(toUInt64(local_session_us), toUInt64({base_resolution_us})) AS base_bucket_index,
+            {condition_base_select_columns},
+            count() AS condition_event_count,
+            min(toUInt64(sip_timestamp_us)) AS base_first_event_timestamp_us,
+            max(toUInt64(sip_timestamp_us)) AS base_last_event_timestamp_us
+        FROM
+        (
+            SELECT
+                ticker,
+                ordinal,
+                sip_timestamp_us,
+                condition_token_1,
+                condition_token_2,
+                condition_token_3,
+                condition_token_4,
+                condition_token_5,
+                toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
+                toDate(ts_local) AS local_date,
+                dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
+                dateDiff('microsecond', toStartOfDay(ts_local), ts_local) AS local_session_us,
+                {condition_event_select}
+            FROM {source_table}
+            PREWHERE event_date >= toDate({sql_string(first_event_date.isoformat())})
+              AND event_date <= toDate({sql_string(last_event_date.isoformat())})
+              {ticker_filter}
+            WHERE local_date IN ({local_date_filter})
+              AND local_second >= {SESSION_START_SECOND}
+              AND local_second < {SESSION_END_SECOND}
+        )
+        WHERE {condition_filter}
+        GROUP BY
+            ticker,
+            local_date,
+            base_bucket_index
     )
 )
-WHERE {condition_filter}
 GROUP BY
     local_date,
     ticker,
@@ -929,6 +1004,7 @@ def execute_profiled(
     query_id = f"intraday_base_bars_{_query_id_label(label)}_{uuid.uuid4().hex}"
     full_sql = sql.rstrip(";") + settings
     reporter.query_start(label)
+    append_jsonl(reporter.report_path, {"event": "query_start", "label": label, "query_id": query_id, "utc": dt.datetime.now(tz=dt.timezone.utc).isoformat()})
     started = time.perf_counter()
     exception = ""
     text = ""
@@ -948,7 +1024,31 @@ def execute_profiled(
     profile = QueryProfile(label=label, query_id=query_id, wall_seconds=time.perf_counter() - started, exception=exception)
     enrich_profile_from_query_log(client, profile)
     if exception:
+        append_jsonl(
+            reporter.report_path,
+            {
+                "event": "query_failed",
+                "label": label,
+                "query_id": query_id,
+                "seconds": profile.wall_seconds,
+                "exception": exception,
+                "utc": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
+            },
+        )
         raise RuntimeError(f"{label} failed: {exception}")
+    append_jsonl(
+        reporter.report_path,
+        {
+            "event": "query_done",
+            "label": label,
+            "query_id": query_id,
+            "seconds": profile.wall_seconds,
+            "read_rows": profile.read_rows,
+            "written_rows": profile.written_rows,
+            "memory_usage_bytes": profile.memory_usage_bytes,
+            "utc": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
+        },
+    )
     if return_text:
         return profile, text
     reporter.query_done(profile)
@@ -992,7 +1092,13 @@ def parse_resolutions(text: str) -> tuple[int, ...]:
         values.append(value)
     if not values:
         raise ValueError("At least one resolution is required.")
-    return tuple(sorted(set(values)))
+    out = tuple(sorted(set(values)))
+    base = out[0]
+    invalid = [value for value in out if value % base != 0]
+    if invalid:
+        formatted = ", ".join(format_resolution(value) for value in invalid)
+        raise ValueError(f"All resolutions must be exact multiples of the smallest resolution {format_resolution(base)}; invalid={formatted}.")
+    return out
 
 
 def format_resolution(value: int) -> str:

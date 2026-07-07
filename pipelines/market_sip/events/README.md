@@ -122,6 +122,12 @@ one selected condition event occurred. Flags are aggregated with `max()` and
 `condition_event_count` records the number of condition-bearing events in that
 bucket. Missing rows mean all condition flags are false for that bucket.
 
+The intraday builder does not aggregate every requested resolution directly
+from raw events. It first builds sparse buckets at the smallest requested
+resolution, then rolls larger resolutions up from that base grid in the same
+insert. This keeps the raw event scan to one pass per local session day while
+preserving exact open/close/high/low/count semantics for coarser horizons.
+
 ## Bar Boundaries
 
 Macro bar grouping is based on `events.sip_timestamp_us`, converted to
