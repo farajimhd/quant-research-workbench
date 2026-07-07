@@ -7,8 +7,11 @@ import re
 import threading
 import time
 import uuid
+from io import BytesIO
 from typing import Any, Mapping
+from urllib import error as url_error
 from urllib import request as url_request
+from urllib import parse as url_parse
 from urllib.parse import urlparse
 
 import numpy as np
@@ -137,6 +140,10 @@ class ActiveQueryRegistry:
     def clear(self) -> None:
         with self._lock:
             self._queries.clear()
+
+
+ACTIVE_QUERIES = ActiveQueryRegistry()
+QUERY_CONTEXT = threading.local()
 
 def _events_source_table(config: RollingMarketDataConfig, start_date: str | dt.date, end_date: str | dt.date) -> str:
     base_table = str(config.events_table)
@@ -564,8 +571,8 @@ ORDER BY ticker, available_timestamp_us, effective_timestamp_us, action_type, co
 def query_polars(client_opts: Mapping[str, str], query: str) -> Any:
     try:
         import clickhouse_connect  # type: ignore
-    except ModuleNotFoundError as exc:
-        raise RuntimeError("Install clickhouse-connect in this environment to query ClickHouse Arrow results.") from exc
+    except ModuleNotFoundError:
+        return query_polars_http_arrow(client_opts, query)
     parsed = urlparse(str(client_opts["clickhouse_url"]))
     secure = parsed.scheme == "https"
     retries = max(0, int(client_opts.get("query_retries") or 0))
@@ -598,6 +605,53 @@ def query_polars(client_opts: Mapping[str, str], query: str) -> Any:
                 pass
         if retry_sleep > 0:
             time.sleep(retry_sleep)
+
+def query_polars_http_arrow(client_opts: Mapping[str, str], query: str) -> Any:
+    retries = max(0, int(client_opts.get("query_retries") or 0))
+    backoff_seconds = max(0.0, float(client_opts.get("query_retry_backoff_seconds") or 0.0))
+    attempt = 0
+    while True:
+        retry_sleep = 0.0
+        query_id = f"{_clickhouse_query_id_prefix()}{threading.get_ident()}_{uuid.uuid4().hex}"
+        ACTIVE_QUERIES.register(query_id, label=str(getattr(QUERY_CONTEXT, "label", "")))
+        try:
+            data = _execute_clickhouse_arrow_stream(client_opts=client_opts, query=query, query_id=query_id)
+            try:
+                import pyarrow as pa  # type: ignore
+            except ModuleNotFoundError as exc:
+                raise RuntimeError("Install pyarrow to use the ClickHouse HTTP ArrowStream fallback.") from exc
+            with pa.ipc.open_stream(BytesIO(data)) as reader:
+                table = reader.read_all()
+            return _polars().from_arrow(table)
+        except Exception as exc:
+            if attempt >= retries or not _is_transient_clickhouse_read_error(exc):
+                raise
+            retry_sleep = backoff_seconds * float(2**attempt)
+            attempt += 1
+        finally:
+            ACTIVE_QUERIES.unregister(query_id)
+        if retry_sleep > 0:
+            time.sleep(retry_sleep)
+
+def _execute_clickhouse_arrow_stream(*, client_opts: Mapping[str, str], query: str, query_id: str) -> bytes:
+    base_url = str(client_opts["clickhouse_url"]).rstrip("/")
+    url = base_url + "/?" + url_parse.urlencode({"query_id": query_id})
+    sql = query.strip().rstrip(";").rstrip()
+    if " FORMAT " not in f" {sql[-64:].upper()} ":
+        sql += "\nFORMAT ArrowStream"
+    req = url_request.Request(url, data=sql.encode("utf-8"), method="POST")
+    user = str(client_opts.get("user") or "default")
+    password = str(client_opts.get("password") or "")
+    if user:
+        req.add_header("X-ClickHouse-User", user)
+    if password:
+        req.add_header("X-ClickHouse-Key", password)
+    try:
+        with url_request.urlopen(req, timeout=None) as response:
+            return response.read()
+    except url_error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"ClickHouse HTTP {exc.code} {exc.reason}: {body}") from exc
 
 def _query_arrow_with_id(client: Any, *, query: str, query_id: str) -> Any:
     try:
