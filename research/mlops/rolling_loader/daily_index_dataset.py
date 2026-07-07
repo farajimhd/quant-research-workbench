@@ -1342,15 +1342,37 @@ class DailyIndexBatchMaterializer:
         profile: dict[str, float | int] = {
             "corporate_action_label_lookup_seconds": 0.0,
             "corporate_action_label_gather_seconds": 0.0,
+            "corporate_action_label_derived_parts": 0,
+            "corporate_action_label_dense_parts": 0,
+            "corporate_action_label_missing_context_parts": 0,
         }
         if horizon_count <= 0:
             return out, days, profile
+        origin_timestamps = _identity_arrays(parts, refs)[2]
         for part_index, rows in _rows_by_part(refs).items():
             part = parts[int(part_index)]
             labels = part.context.get("corporate_action_daily_labels")
             if labels is None or int(getattr(labels, "height", 0) or 0) <= 0:
-                if self.config.strict_audit:
-                    raise RuntimeError(f"Missing corporate action labels for {part.plan.month}:{part.plan.ticker}:part_{part.plan.part_id:05d}.")
+                context = part.context.get("corporate_actions")
+                if context is None:
+                    profile["corporate_action_label_missing_context_parts"] = int(profile["corporate_action_label_missing_context_parts"]) + 1
+                    if self.config.strict_audit:
+                        raise RuntimeError(
+                            "Missing corporate action labels and corporate action context for "
+                            f"{part.plan.month}:{part.plan.ticker}:part_{part.plan.part_id:05d}."
+                        )
+                    continue
+                derive_start = time.perf_counter()
+                self._derive_corporate_action_labels_from_context(
+                    part=part,
+                    context=context,
+                    origin_timestamps_us=origin_timestamps[rows],
+                    output_rows=rows,
+                    days=days,
+                    out=out,
+                )
+                profile["corporate_action_label_gather_seconds"] = float(profile["corporate_action_label_gather_seconds"]) + (time.perf_counter() - derive_start)
+                profile["corporate_action_label_derived_parts"] = int(profile["corporate_action_label_derived_parts"]) + 1
                 continue
             origin_rows = _origin_rows_for_refs(refs, rows)
             lookup_start = time.perf_counter()
@@ -1363,7 +1385,50 @@ class DailyIndexBatchMaterializer:
             for key, dtype in CORPORATE_ACTION_LABEL_DTYPES.items():
                 out[key][rows] = _label_column_matrix_for_rows(labels, key, source_indices, horizon_count, dtype)
             profile["corporate_action_label_gather_seconds"] = float(profile["corporate_action_label_gather_seconds"]) + (time.perf_counter() - gather_start)
+            profile["corporate_action_label_dense_parts"] = int(profile["corporate_action_label_dense_parts"]) + 1
         return out, days, profile
+
+    def _derive_corporate_action_labels_from_context(
+        self,
+        *,
+        part: LoadedDailyIndexPart,
+        context: Any,
+        origin_timestamps_us: np.ndarray,
+        output_rows: np.ndarray,
+        days: Sequence[int],
+        out: dict[str, np.ndarray],
+    ) -> None:
+        if int(getattr(context, "height", 0) or 0) <= 0 or int(origin_timestamps_us.shape[0]) <= 0:
+            return
+        index = self._corporate_action_context_index(context, max_items=int(self.config.corporate_action_max_items))
+        if index.item_count <= 0:
+            return
+        effective = np.asarray(index.effective_timestamps_us, dtype=np.int64)
+        valid_effective = effective > 0
+        if not bool(valid_effective.any()):
+            return
+        origins = np.asarray(origin_timestamps_us, dtype=np.int64)
+        horizon_us = np.asarray(days, dtype=np.int64) * np.int64(86_400_000_000)
+        future = (
+            (effective[None, None, :] > origins[:, None, None])
+            & (effective[None, None, :] <= (origins[:, None, None] + horizon_us[None, :, None]))
+            & valid_effective[None, None, :]
+        )
+        if not bool(future.any()):
+            return
+        numeric = index.numeric_features
+        if numeric.shape[1] < len(CORPORATE_ACTION_NUMERIC_FEATURE_KEYS):
+            raise RuntimeError(f"Corporate action context is missing numeric features for {_part_key(part.plan)}.")
+        flag_by_label = {
+            "future_split_flag": numeric[:, CORPORATE_ACTION_NUMERIC_FEATURE_KEYS.index("is_split")] > 0.5,
+            "future_reverse_split_flag": numeric[:, CORPORATE_ACTION_NUMERIC_FEATURE_KEYS.index("is_reverse_split")] > 0.5,
+            "future_forward_split_flag": numeric[:, CORPORATE_ACTION_NUMERIC_FEATURE_KEYS.index("is_forward_split")] > 0.5,
+            "future_dividend_ex_flag": numeric[:, CORPORATE_ACTION_NUMERIC_FEATURE_KEYS.index("is_dividend")] > 0.5,
+            "future_special_dividend_ex_flag": numeric[:, CORPORATE_ACTION_NUMERIC_FEATURE_KEYS.index("is_special_dividend")] > 0.5,
+        }
+        for key, flags in flag_by_label.items():
+            out[key][output_rows] = (future & flags[None, None, :]).any(axis=2)
+        out["future_any_corporate_action_flag"][output_rows] = future.any(axis=2)
 
     def _materialize_bar_inputs(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
         requested = [group for group in ("daily_bars", "global_daily_bars") if group in self.config.data_groups]
