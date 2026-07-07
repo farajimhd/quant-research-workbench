@@ -711,8 +711,10 @@ Required panels:
 Each modality panel should be a stable table. The first row is the modality
 overall status bar. The default display is compact so all modality panels fit
 on a normal workstation terminal: one stable row for `Fetch`, one for `Process`,
-and one for `Write`. Each stage row reports active workers, completed jobs,
-row progress/rate when available, and the leading active job.
+and one for `Write`. The compact view still uses visual progress bars: the
+summary has a weighted overall bar, and each modality/stage row has its own
+bar. Each stage row also reports active workers, completed jobs, row progress
+and rate when available, and the leading active job.
 
 Detailed per-worker rows are still available with `--progress-worker-detail`.
 The detailed view reserves stable rows by configured worker count. If the
@@ -723,11 +725,11 @@ mode to keep the dashboard readable.
 Events
 Overall       [############--------]  61.4%  rows 8.2B/13.4B  eta 02:14:33
 
-Stage    Workers  Progress                                  Active job
-Overall  26       61.4%  rows 8.2B/13.4B                    queues fetch=0 process=4 write=2
-Fetch    9/16     31/252 jobs rows 8.2M/11.0M 220k/s         2019-09 AAPL 2019-09-03 (+8)
-Process  1/2      30/252 jobs rows 8.2M/9.7M 410k/s          2019-09 MSFT validate/time
-Write    3/8      28/252 jobs rows 1.3GB/3.1GB 420MB/s       AAPL events part_0002 (+2)
+Stage    Workers  Bar             Progress                                  Active job
+Overall  26       [######----]    61.4%  rows 8.2B/13.4B                    queues fetch=0 process=4 write=2
+Fetch    9/16     [###-------]    31/252 jobs rows 8.2M/11.0M 220k/s         2019-09 AAPL 2019-09-03 (+8)
+Process  1/2      [###-------]    30/252 jobs rows 8.2M/9.7M 410k/s          2019-09 MSFT validate/time
+Write    3/8      [###-------]    28/252 jobs rows 1.3GB/3.1GB 420MB/s       AAPL events part_0002 (+2)
 ```
 
 For `--progress-worker-detail`, the Events panel has exactly:

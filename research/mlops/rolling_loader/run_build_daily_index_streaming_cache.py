@@ -460,14 +460,15 @@ class DailyIndexStreamingDashboard:
         summary = Table(box=box.SIMPLE, expand=True, show_edge=False)
         summary.add_column("Metric", style="cyan", no_wrap=True)
         summary.add_column("Value", no_wrap=True)
+        summary.add_column("Bar", no_wrap=True)
         summary.add_column("Detail")
-        summary.add_row("Status", status.upper(), f"errors={errors:,} parts={parts:,}")
-        summary.add_row("Cache", self.state.cache_id, str(self.state.cache_root))
-        summary.add_row("Months", ", ".join(self.state.months), f"groups={','.join(self.state.data_groups)}")
-        summary.add_row("Overall", f"{progress * 100.0:.2f}%", f"units={done_units:,}/{total_units:,} rate={rate:,.0f}/s eta={format_seconds(eta)}")
-        summary.add_row("Elapsed", format_seconds(elapsed), f"rss={current_rss_mib():,.1f} MiB")
+        summary.add_row("Status", status.upper(), "", f"errors={errors:,} parts={parts:,}")
+        summary.add_row("Cache", self.state.cache_id, "", str(self.state.cache_root))
+        summary.add_row("Months", ", ".join(self.state.months), "", f"groups={','.join(self.state.data_groups)}")
+        summary.add_row("Overall", f"{progress * 100.0:.2f}%", self._progress_bar(done_units, total_units, width=24), f"units={done_units:,}/{total_units:,} rate={rate:,.0f}/s eta={format_seconds(eta)}")
+        summary.add_row("Elapsed", format_seconds(elapsed), "", f"rss={current_rss_mib():,.1f} MiB")
         if last_error:
-            summary.add_row("Last error", last_error, "")
+            summary.add_row("Last error", last_error, "", "")
 
         panels: list[Any] = [
             Panel(summary, title="Daily-Indexed Streaming Cache", box=box.ROUNDED, border_style="red" if last_error else "green", padding=(0, 1))
@@ -496,11 +497,12 @@ class DailyIndexStreamingDashboard:
             table = Table(box=box.SIMPLE, expand=True)
             table.add_column("Stage", no_wrap=True, style="cyan")
             table.add_column("Workers", justify="right", no_wrap=True)
-            table.add_column("Progress", overflow="fold")
-            table.add_column("Active job", overflow="fold")
-            table.add_row("Overall", str(len(workers)), f"{progress * 100.0:.1f}%  {written:,}/{expected:,}", queue_detail(modality))
+            table.add_column("Bar", no_wrap=True)
+            table.add_column("Progress", overflow="ellipsis", no_wrap=True)
+            table.add_column("Active job", overflow="ellipsis", no_wrap=True, max_width=46)
+            table.add_row("Overall", str(len(workers)), self._progress_bar(written, expected, width=14), f"{progress * 100.0:.1f}%  {written:,}/{expected:,}", queue_detail(modality))
             if not workers:
-                table.add_row("Pipeline", "0", "disabled", "not selected in --data-groups")
+                table.add_row("Pipeline", "0", self._progress_bar(0, 1, width=14), "disabled", "not selected in --data-groups")
             for process_name in ("Fetch", "Process", "Write"):
                 process_workers = [worker for worker in workers if str(worker.get("process_name")) == process_name]
                 if not process_workers:
@@ -525,20 +527,35 @@ class DailyIndexStreamingDashboard:
                     progress_text = f"{progress_text}  rows {completed_rows:,}/{total_rows:,}"
                 if rate > 0:
                     progress_text = f"{progress_text}  {rate:,.0f}/s"
-                table.add_row(process_name, f"{len(active):,}/{len(process_workers):,}", progress_text, active_job)
+                table.add_row(process_name, f"{len(active):,}/{len(process_workers):,}", self._progress_bar(completed_jobs, total_jobs, width=14), progress_text, active_job)
             return Panel(table, title=name, box=box.ROUNDED, border_style="blue", padding=(0, 1))
 
         table = Table(box=box.SIMPLE, expand=True)
         table.add_column("Process", no_wrap=True, style="cyan")
         table.add_column("W", justify="right", no_wrap=True)
-        table.add_column("Status", overflow="fold")
-        table.add_column("Current job", overflow="fold")
-        table.add_row("Overall", "-", f"{progress * 100.0:.2f}%  units {written:,}/{expected:,}", queue_detail(modality))
+        table.add_column("Bar", no_wrap=True)
+        table.add_column("Status", overflow="ellipsis", no_wrap=True)
+        table.add_column("Current job", overflow="ellipsis", no_wrap=True, max_width=58)
+        table.add_row("Overall", "-", self._progress_bar(written, expected, width=14), f"{progress * 100.0:.2f}%  units {written:,}/{expected:,}", queue_detail(modality))
         if not workers:
-            table.add_row("Pipeline", "-", "disabled", "not selected in --data-groups")
+            table.add_row("Pipeline", "-", self._progress_bar(0, 1, width=14), "disabled", "not selected in --data-groups")
         for worker in workers:
-            table.add_row(worker["process_name"], f"{int(worker['worker_id']):02d}", worker_status_text(worker), str(worker["current_job"]))
+            table.add_row(
+                worker["process_name"],
+                f"{int(worker['worker_id']):02d}",
+                self._progress_bar(int(worker.get("completed") or 0), int(worker.get("total") or 0), width=14),
+                worker_status_text(worker),
+                str(worker["current_job"]),
+            )
         return Panel(table, title=name, box=box.ROUNDED, border_style="blue", padding=(0, 1))
+
+    @staticmethod
+    def _progress_bar(completed: int | float, total: int | float, *, width: int) -> object:
+        from rich.progress_bar import ProgressBar
+
+        total_value = max(1.0, float(total or 0))
+        completed_value = min(max(0.0, float(completed or 0)), total_value)
+        return ProgressBar(total=total_value, completed=completed_value, width=width)
 
 
 def two_column_panel_grid(panels: list[Any]) -> object:
