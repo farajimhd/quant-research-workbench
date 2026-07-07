@@ -322,11 +322,19 @@ Check:
 This should start the continuous production daemon. The parent process should
 preflight once, then launch child cycles with `--run once`.
 
+The parent daemon owns the Rich terminal for the full daemon lifetime. Child
+cycles run with their own Rich terminal disabled, and their stdout/stderr is
+captured into the parent runtime JSONL log as `daemon_child_output` events. This
+keeps the console from switching back to plain text between cycles while still
+preserving child output for debugging.
+
 Check:
 
 - runtime JSONL log is created under
   `<market-data>/prepared/reference_gateway/logs/<run_id>/`
 - each child command and result is logged
+- child stdout/stderr appears in the runtime JSONL log, not directly in the
+  console
 - a child failure stops the daemon instead of being hidden
 - no orphaned child process remains after shutdown
 

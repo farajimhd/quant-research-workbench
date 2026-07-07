@@ -12,11 +12,12 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from services.gateway_policy import active_collection_window
 from services.gateway_core.dashboard import build_dashboard_snapshot
 from services.gateway_core.health import build_health_payload
+from services.gateway_core.rich_renderer import render_standard_snapshot, standard_live
 from services.gateway_core.uvicorn_logging import quiet_uvicorn_log_config, suppress_uvicorn_access_logger
 from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.memory import memory_snapshot
@@ -136,18 +137,70 @@ class ReferenceDaemonState:
         return {"rows": rows, "runtime_log_path": self.runtime_log_path}
 
 
+class ReferenceDaemonTerminalSession:
+    def __init__(self, state: ReferenceDaemonState) -> None:
+        self.state = state
+        self.live = standard_live(
+            self._render(),
+            screen=state.config.terminal_screen_enabled,
+            refresh_seconds=max(0.5, state.config.terminal_refresh_seconds),
+        )
+        self.started = False
+        self.last_update_at = 0.0
+
+    def start(self) -> None:
+        if self.started:
+            return
+        self.live.start(refresh=True)
+        self.started = True
+
+    def update(self, *, force: bool = False) -> None:
+        if not self.started:
+            return
+        now = time.monotonic()
+        if force or now - self.last_update_at >= max(0.5, self.state.config.terminal_refresh_seconds):
+            self.live.update(self._render(), refresh=True)
+            self.last_update_at = now
+
+    def stop(self) -> None:
+        if not self.started:
+            return
+        self.update(force=True)
+        self.live.stop()
+        self.started = False
+
+    def _render(self) -> Any:
+        return render_standard_snapshot(
+            build_dashboard_snapshot(
+                service_name="reference_gateway",
+                config=self.state.config,
+                metrics=self.state.metrics(),
+                recent_items=self.state.recent_snapshot(25),
+                service_specific={
+                    "daemon_mode": True,
+                    "last_cycle": self.state.last_cycle,
+                    "runtime_log_path": self.state.runtime_log_path,
+                },
+            )
+        )
+
+
 def run_reference_daemon(config: ReferenceGatewayConfig, base_args: list[str]) -> None:
     log_path = new_runtime_log_path(config.prepared_root_win)
     logger = RuntimeLogger(log_path)
     state = ReferenceDaemonState(config=config)
     state.set_log_path(log_path)
     start_reference_api_server(config, state)
-    print(
-        "reference_gateway_daemon=started "
-        f"execute={config.execute} read_database={config.clickhouse_read_database} "
-        f"write_database={config.clickhouse_write_database} runtime_log={log_path}",
-        flush=True,
-    )
+    terminal = ReferenceDaemonTerminalSession(state) if config.terminal_rich_enabled else None
+    if terminal is not None:
+        terminal.start()
+    else:
+        print(
+            "reference_gateway_daemon=started "
+            f"execute={config.execute} read_database={config.clickhouse_read_database} "
+            f"write_database={config.clickhouse_write_database} runtime_log={log_path}",
+            flush=True,
+        )
     logger.event(
         "daemon_started",
         execute=config.execute,
@@ -156,15 +209,26 @@ def run_reference_daemon(config: ReferenceGatewayConfig, base_args: list[str]) -
         base_args=base_args,
     )
     if config.preflight_enabled:
+        state.touch("running", "preflight", "Checking reference gateway dependencies before daemon cycles.")
+        if terminal is not None:
+            terminal.update(force=True)
         result = run_preflight(config, require_source_sync_dependencies=True, logger=logger)
-        print("reference_gateway_preflight=" + json.dumps(result.public_dict(), sort_keys=True), flush=True)
+        state.touch("running" if result.status == "ok" else "failed", "preflight", f"Preflight {result.status}.")
+        logger.event("daemon_preflight_completed", **result.public_dict())
+        if terminal is not None:
+            terminal.update(force=True)
+        else:
+            print("reference_gateway_preflight=" + json.dumps(result.public_dict(), sort_keys=True), flush=True)
         if result.status != "ok":
             logger.event("daemon_failed", reason="preflight_failed")
             state.record_error("preflight_failed")
+            if terminal is not None:
+                terminal.update(force=True)
+                terminal.stop()
             raise SystemExit(2)
     try:
         while True:
-            cycle = run_daemon_cycle(config, base_args, log_path=log_path, state=state, logger=logger)
+            cycle = run_daemon_cycle(config, base_args, log_path=log_path, state=state, logger=logger, terminal=terminal)
             state.record_cycle(cycle)
             logger.event(
                 "daemon_cycle_completed",
@@ -175,21 +239,37 @@ def run_reference_daemon(config: ReferenceGatewayConfig, base_args: list[str]) -
                 command=cycle.command,
                 parent_memory=memory_snapshot("daemon_cycle_completed").public_dict(),
             )
-            print(
-                "reference_gateway_daemon_cycle="
-                f"active_window={cycle.active_window} returncode={cycle.returncode} "
-                f"elapsed_seconds={cycle.elapsed_seconds:.1f} next_seconds={cycle.interval_seconds:.1f}",
-                flush=True,
-            )
+            if terminal is not None:
+                terminal.update(force=True)
+            else:
+                print(
+                    "reference_gateway_daemon_cycle="
+                    f"active_window={cycle.active_window} returncode={cycle.returncode} "
+                    f"elapsed_seconds={cycle.elapsed_seconds:.1f} next_seconds={cycle.interval_seconds:.1f}",
+                    flush=True,
+                )
             if cycle.returncode != 0:
                 logger.event("daemon_stopped", reason="child_cycle_failed", returncode=cycle.returncode)
+                if terminal is not None:
+                    terminal.stop()
                 raise SystemExit(cycle.returncode)
-            sleep_for_next_cycle(cycle.interval_seconds, state=state, logger=logger)
+            sleep_for_next_cycle(cycle.interval_seconds, state=state, logger=logger, terminal=terminal)
     except KeyboardInterrupt:
         state.touch("stopping", "keyboard_interrupt", "Ctrl+C received; reference gateway daemon is stopping.")
         logger.event("daemon_stopped", reason="keyboard_interrupt")
-        print("reference_gateway_daemon=stopped reason=keyboard_interrupt", flush=True)
+        if terminal is not None:
+            terminal.update(force=True)
+            terminal.stop()
+        else:
+            print("reference_gateway_daemon=stopped reason=keyboard_interrupt", flush=True)
         raise SystemExit(130) from None
+    except Exception as exc:
+        state.record_error(f"daemon_exception: {type(exc).__name__}: {exc}")
+        logger.event("daemon_stopped", reason="daemon_exception", error=repr(exc))
+        if terminal is not None:
+            terminal.update(force=True)
+            terminal.stop()
+        raise
 
 
 def run_daemon_cycle(
@@ -199,6 +279,7 @@ def run_daemon_cycle(
     log_path: Path,
     state: ReferenceDaemonState,
     logger: RuntimeLogger,
+    terminal: ReferenceDaemonTerminalSession | None,
 ) -> DaemonCycle:
     started = time.perf_counter()
     active = active_collection_window(service_prefix="REFERENCE")
@@ -206,21 +287,33 @@ def run_daemon_cycle(
     command.extend(child_cycle_args(base_args))
     env = dict(os.environ)
     env[RUNTIME_LOG_ENV] = str(log_path)
+    env["REFERENCE_GATEWAY_TERMINAL_RICH_ENABLED"] = "false"
+    env["REFERENCE_GATEWAY_TERMINAL_SCREEN_ENABLED"] = "false"
     process: subprocess.Popen[Any] | None = None
     try:
         process = subprocess.Popen(  # noqa: S603
             command,
             env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
             start_new_session=os.name != "nt",
         )
+        stdout_thread = start_output_drain(process.stdout, stream_name="stdout", logger=logger) if process.stdout is not None else None
+        stderr_thread = start_output_drain(process.stderr, stream_name="stderr", logger=logger) if process.stderr is not None else None
         state.active_child_pid = process.pid
         state.touch("running", "child_cycle_running", f"Reference sync child is running pid={process.pid}.")
         logger.event("daemon_child_started", pid=process.pid, active_window=active, command=command)
+        if terminal is not None:
+            terminal.update(force=True)
         returncode = wait_for_child_cycle(
             process,
             timeout_seconds=config.daemon_child_timeout_seconds if config.daemon_child_timeout_seconds > 0 else None,
             logger=logger,
+            terminal=terminal,
         )
     except subprocess.TimeoutExpired:
         if process is not None:
@@ -232,6 +325,9 @@ def run_daemon_cycle(
             terminate_child_process(process, reason="keyboard_interrupt", logger=logger)
         raise
     finally:
+        if process is not None:
+            join_output_drain(stdout_thread if "stdout_thread" in locals() else None)
+            join_output_drain(stderr_thread if "stderr_thread" in locals() else None)
         state.active_child_pid = None
     interval = config.daemon_active_interval_seconds if active else config.daemon_after_hours_interval_seconds
     return DaemonCycle(
@@ -249,15 +345,20 @@ def wait_for_child_cycle(
     *,
     timeout_seconds: float | None,
     logger: RuntimeLogger,
+    terminal: ReferenceDaemonTerminalSession | None,
 ) -> int:
     deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
     while True:
         returncode = process.poll()
         if returncode is not None:
             logger.event("daemon_child_completed", pid=process.pid, returncode=returncode)
+            if terminal is not None:
+                terminal.update(force=True)
             return int(returncode)
         if deadline is not None and time.monotonic() >= deadline:
             raise subprocess.TimeoutExpired(process.args, timeout_seconds)
+        if terminal is not None:
+            terminal.update()
         time.sleep(0.25)
 
 
@@ -304,17 +405,46 @@ def kill_child_process_tree(process: subprocess.Popen[Any], *, reason: str, logg
     logger.event("daemon_child_killed", pid=process.pid, reason=reason, returncode=process.returncode)
 
 
-def sleep_for_next_cycle(interval_seconds: float, *, state: ReferenceDaemonState, logger: RuntimeLogger) -> None:
+def sleep_for_next_cycle(
+    interval_seconds: float,
+    *,
+    state: ReferenceDaemonState,
+    logger: RuntimeLogger,
+    terminal: ReferenceDaemonTerminalSession | None,
+) -> None:
     remaining = max(5.0, interval_seconds)
     state.touch("running", "waiting_for_next_cycle", f"Sleeping {remaining:.1f}s before next reference sync cycle.")
     logger.event("daemon_sleep_started", seconds=remaining)
+    if terminal is not None:
+        terminal.update(force=True)
     deadline = time.monotonic() + remaining
     while True:
         left = deadline - time.monotonic()
         if left <= 0:
             logger.event("daemon_sleep_completed", seconds=remaining)
+            if terminal is not None:
+                terminal.update(force=True)
             return
+        if terminal is not None:
+            terminal.update()
         time.sleep(min(1.0, left))
+
+
+def start_output_drain(stream: TextIO, *, stream_name: str, logger: RuntimeLogger) -> threading.Thread:
+    def drain() -> None:
+        for line in stream:
+            text = line.strip()
+            if text:
+                logger.event("daemon_child_output", stream=stream_name, line=text[:2_000])
+
+    thread = threading.Thread(target=drain, name=f"reference-gateway-child-{stream_name}", daemon=True)
+    thread.start()
+    return thread
+
+
+def join_output_drain(thread: threading.Thread | None) -> None:
+    if thread is not None:
+        thread.join(timeout=2.0)
 
 
 def child_cycle_args(base_args: list[str]) -> list[str]:
