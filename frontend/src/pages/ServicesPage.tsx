@@ -112,7 +112,7 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
       </div>
       {error ? <div className="services-alert"><ShieldAlert size={16} />{error}</div> : null}
       {loading && !payload ? <div className="services-loading"><Loader2 size={18} /> Loading service status.</div> : null}
-      {selected ? <ServiceDetail service={selected} onNavigate={onNavigate} services={services} /> : <ServicesDashboard services={services} onNavigate={onNavigate} />}
+      {selected ? <ServiceDetail service={selected} /> : <ServicesDashboard services={services} onNavigate={onNavigate} />}
     </div>
   );
 }
@@ -153,7 +153,7 @@ function ServicesDashboard({ onNavigate, services }: { onNavigate: (mode: Servic
   );
 }
 
-function ServiceDetail({ onNavigate, service, services }: { onNavigate: (mode: ServicePageMode) => void; service: ServiceStatusPayload; services: ServiceStatusPayload[] }) {
+function ServiceDetail({ service }: { service: ServiceStatusPayload }) {
   const snapshot = service.snapshot ?? {};
   const metrics = service.metrics ?? {};
   const runtimeRows = objectRows(snapshot.runtime, metrics);
@@ -177,14 +177,6 @@ function ServiceDetail({ onNavigate, service, services }: { onNavigate: (mode: S
   ];
   return (
     <>
-      <div className="service-tabs">
-        <button className="service-tab" onClick={() => onNavigate("dashboard")} type="button">All Services</button>
-        {services.map((item) => (
-          <button className={item.registry.id === service.registry.id ? "service-tab active" : "service-tab"} key={item.registry.id} onClick={() => onNavigate(item.registry.id)} type="button">
-            {item.registry.label.replace(" Gateway", "")}
-          </button>
-        ))}
-      </div>
       <MetricStrip items={detailMetrics} />
       <section className="service-focus-grid">
         <Panel title="Current Focus">
