@@ -1499,7 +1499,7 @@ def query_event_daily_units(
     table = f"{quote_ident(args.database)}.{quote_ident(args.events_ticker_day_index_table)}"
     query = f"""
 SELECT
-    upper(ticker) AS ticker,
+    ticker,
     source_date,
     toUInt64(event_count) AS event_count,
     toUInt64(first_ordinal) AS first_ordinal,
@@ -1531,7 +1531,7 @@ ORDER BY source_date ASC, ticker ASC
         units.append(
             EventDailyUnit(
                 month=month,
-                ticker=str(row["ticker"]).upper(),
+                ticker=str(row["ticker"]),
                 source_date=source_date,
                 event_count=int(row["event_count"]),
                 first_ordinal=int(row["first_ordinal"]),
@@ -1701,8 +1701,8 @@ WITH
     toDayOfYear(ts_utc) AS utc_doy,
     dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second
 SELECT
-    cityHash64(upper(ticker)) AS ticker_id,
-    upper(ticker) AS event_ticker,
+    cityHash64(ticker) AS ticker_id,
+    ticker AS event_ticker,
     toUInt64(ordinal) AS ordinal,
     event_meta,
     toUInt64(sip_timestamp_us) AS timestamp_us,
@@ -2138,15 +2138,14 @@ def settings_sql(args: argparse.Namespace) -> str:
 
 
 def ticker_filter_sql(text: str) -> str:
-    values = sorted({item.strip().upper() for item in str(text).split(",") if item.strip()})
+    values = sorted({item.strip() for item in str(text).split(",") if item.strip()})
     if not values:
         return ""
-    return "AND upper(ticker) IN (" + ", ".join(sql_string(value) for value in values) + ")"
+    return "AND ticker IN (" + ", ".join(sql_string(value) for value in values) + ")"
 
 
 def package_dir(*, cache_root: Path, month: str, ticker: str) -> Path:
-    upper = str(ticker).upper()
-    return cache_root / f"month={month}" / f"ticker={upper}"
+    return cache_root / f"month={month}" / f"ticker={safe_token(str(ticker))}"
 
 
 def generic_output_dir(*, cache_root: Path, job: ModalityJob) -> Path:

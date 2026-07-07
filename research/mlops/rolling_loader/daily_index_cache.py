@@ -176,8 +176,7 @@ def month_dir_for(cache_root: Path, month: str) -> Path:
 
 
 def ticker_package_dir(month_dir: Path, ticker: str) -> Path:
-    upper = str(ticker).upper()
-    return Path(month_dir) / f"ticker={upper}"
+    return Path(month_dir) / f"ticker={str(ticker)}"
 
 
 

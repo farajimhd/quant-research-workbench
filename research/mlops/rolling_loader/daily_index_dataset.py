@@ -541,13 +541,13 @@ class DailyIndexCacheIndex:
         if not root.exists():
             raise FileNotFoundError(f"Missing daily-index cache root: {root}")
         selected_months = set(_selected_months(self.config, self.root_manifest))
-        selected_tickers = {ticker.upper() for ticker in self.config.tickers}
+        selected_tickers = {str(ticker) for ticker in self.config.tickers}
         plans: list[DailyIndexPartPlan] = []
         for package_dir in self._candidate_package_dirs(root, selected_months, selected_tickers):
             if not package_dir.is_dir():
                 continue
             month = _path_value(package_dir, "month")
-            ticker = _path_value(package_dir, "ticker").upper()
+            ticker = _path_value(package_dir, "ticker")
             if selected_months and month not in selected_months:
                 continue
             if selected_tickers and ticker not in selected_tickers:
@@ -1391,7 +1391,7 @@ class DailyIndexBatchMaterializer:
                     index_start = time.perf_counter()
                     index = self._daily_bar_context_index(frame)
                     profile["bar_index_seconds"] = float(profile["bar_index_seconds"]) + (time.perf_counter() - index_start)
-                    symbol = str(part.plan.ticker).upper()
+                    symbol = str(part.plan.ticker)
                     for family in BAR_FAMILY_KEYS:
                         starts_by_symbol = index.bar_start_ms_by_family_symbol.get(family, {})
                         if symbol not in starts_by_symbol:
@@ -2089,7 +2089,7 @@ def normalize_loader_config(config: DailyIndexLoaderConfig) -> DailyIndexLoaderC
         start_utc=str(config.start_utc),
         end_utc=str(config.end_utc),
         months=tuple(str(month) for month in config.months),
-        tickers=tuple(str(ticker).upper() for ticker in config.tickers),
+        tickers=tuple(str(ticker) for ticker in config.tickers),
         batch_size=max(1, int(config.batch_size)),
         seed=int(config.seed),
         data_groups=groups,
@@ -3604,7 +3604,7 @@ def _prepare_daily_bar_context_index(frame: Any) -> DailyBarContextIndex:
     if missing:
         raise RuntimeError(f"Daily bar context is missing required columns: {', '.join(missing)}")
     symbols_raw = frame.get_column("sym").to_numpy()
-    symbols = np.asarray([str(symbol).upper() for symbol in symbols_raw], dtype=object)
+    symbols = np.asarray([str(symbol) for symbol in symbols_raw], dtype=object)
     if "bar_family" in getattr(frame, "columns", ()):
         families_raw = frame.get_column("bar_family").to_numpy()
         families = np.asarray([str(value) for value in families_raw], dtype=object)

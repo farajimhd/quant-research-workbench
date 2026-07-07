@@ -435,13 +435,13 @@ def _query_daily_bars(args: argparse.Namespace, client_opts: Mapping[str, str], 
     if not symbols:
         return _empty_frame()
     table = f"{quote_ident(config.database)}.{quote_ident(config.macro_bars_table)}"
-    symbol_sql = ", ".join(sql_string(str(symbol).upper()) for symbol in symbols)
+    symbol_sql = ", ".join(sql_string(str(symbol)) for symbol in symbols)
     start = window.first_date - dt.timedelta(days=max(0, int(config.macro_lookback_days)))
     end = window.next_month_date + dt.timedelta(days=max(0, int(config.label_lookahead_days)))
     time_columns = _bar_start_time_feature_sql("bar_start")
     query = f"""
 SELECT
-    upper(sym) AS sym,
+    sym,
     timeframe,
     toString(bar_family) AS bar_family,
     toUnixTimestamp64Milli(bar_start) AS bar_start_ms,
@@ -458,7 +458,7 @@ SELECT
     {time_columns}
 FROM {table}
 WHERE timeframe = '1d'
-  AND upper(sym) IN ({symbol_sql})
+  AND sym IN ({symbol_sql})
   AND bar_start >= toDateTime64({sql_string(start.isoformat() + " 00:00:00")}, 3, 'UTC')
   AND bar_start < toDateTime64({sql_string(end.isoformat() + " 00:00:00")}, 3, 'UTC')
 ORDER BY sym, timeframe, bar_start
