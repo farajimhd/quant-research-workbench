@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { Activity, Check, ChevronLeft, ChevronRight, Palette, Wifi } from "lucide-react";
+import { Activity, BrainCircuit, Check, ChevronLeft, ChevronRight, DatabaseZap, FileText, Landmark, Newspaper, Palette, RadioTower, ServerCog, Wifi } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { buildMenuItemButtonClassName, buildThemeMenuItemButtonClassName } from "../selectionStyles";
 import { APP_THEMES, DEFAULT_THEME_ID, applyThemeDefinition, isAppThemeId, type AppThemeDefinition, type AppThemeId } from "../theme";
 
-export type PageKey = "real-live-trading";
+export type PageKey = "real-live-trading" | "services-dashboard" | "service-qmd" | "service-news" | "service-sec" | "service-text-embed" | "service-reference" | "service-ibkr";
 export type UiScale = 0.8 | 0.9 | 1 | 1.1 | 1.25;
 
 type LayoutProps = {
@@ -21,6 +21,18 @@ const navGroups = [
     label: "Live Trading",
     items: [
       { key: "real-live-trading" as PageKey, label: "Live", icon: Wifi }
+    ]
+  },
+  {
+    label: "Services",
+    items: [
+      { key: "services-dashboard" as PageKey, label: "Dashboard", icon: ServerCog },
+      { key: "service-qmd" as PageKey, label: "QMD", icon: RadioTower },
+      { key: "service-news" as PageKey, label: "News", icon: Newspaper },
+      { key: "service-sec" as PageKey, label: "SEC", icon: FileText },
+      { key: "service-text-embed" as PageKey, label: "Embeddings", icon: BrainCircuit },
+      { key: "service-reference" as PageKey, label: "Reference", icon: DatabaseZap },
+      { key: "service-ibkr" as PageKey, label: "IBKR", icon: Landmark }
     ]
   }
 ];

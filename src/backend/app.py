@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import urllib.error
+import urllib.request
 from functools import lru_cache
 from dataclasses import asdict
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo
@@ -111,6 +114,64 @@ CHART_DISPLAY_ITEMS_NONE = "__none__"
 EXCHANGE_TIME_ZONE = "America/New_York"
 PORTFOLIO_CHART_TIMEFRAMES = ["30m", "1h", "2h", "4h", "1d"]
 DEBUG_SESSIONS: dict[str, StepBacktestDebugger] = {}
+SERVICE_STATUS_TIMEOUT_SECONDS = 1.8
+
+SERVICE_REGISTRY: dict[str, dict[str, str]] = {
+    "qmd": {
+        "id": "qmd",
+        "label": "QMD Gateway",
+        "kind": "market data",
+        "bind_env": "QMD_GATEWAY_BIND",
+        "default_bind": "127.0.0.1:8795",
+        "description": "Massive quote/trade ingest, recent gap repair, live bars, scanner primitives, and market-state publication.",
+        "recent_path": "/snapshot/scanner-primitives?limit=25",
+    },
+    "news": {
+        "id": "news",
+        "label": "News Gateway",
+        "kind": "news",
+        "bind_env": "NEWS_GATEWAY_BIND",
+        "default_bind": "127.0.0.1:8796",
+        "description": "Benzinga polling, raw retention, enrichment, canonical news rows, ticker links, and coverage repair.",
+        "recent_path": "/snapshot/news/recent?limit=25",
+    },
+    "sec": {
+        "id": "sec",
+        "label": "SEC Gateway",
+        "kind": "filings",
+        "bind_env": "SEC_GATEWAY_BIND",
+        "default_bind": "127.0.0.1:8797",
+        "description": "SEC current feed polling, filing text, XBRL companyfacts, coverage, and historical gap handoff.",
+        "recent_path": "/snapshot/sec/recent?limit=25",
+    },
+    "text-embed": {
+        "id": "text-embed",
+        "label": "Text Embed Gateway",
+        "kind": "inference",
+        "bind_env": "TEXT_EMBED_GATEWAY_BIND",
+        "default_bind": "127.0.0.1:8798",
+        "description": "News and SEC text tokenization, embedding extraction, and embedding coverage reconciliation.",
+        "recent_path": "/snapshot/text-embeddings/recent?limit=25",
+    },
+    "reference": {
+        "id": "reference",
+        "label": "Reference Gateway",
+        "kind": "reference",
+        "bind_env": "REFERENCE_GATEWAY_BIND",
+        "default_bind": "127.0.0.1:8799",
+        "description": "Reference graph sync, source publications, issuer/listing integrity, tradable universe, and issue tracking.",
+        "recent_path": "/snapshot/reference/recent?limit=25",
+    },
+    "ibkr": {
+        "id": "ibkr",
+        "label": "IBKR Supervisor",
+        "kind": "broker",
+        "bind_env": "IBKR_GATEWAY_SUPERVISOR_BIND",
+        "default_bind": "127.0.0.1:8800",
+        "description": "Client Portal Gateway process supervision, authentication state, account checks, and keepalive monitoring.",
+        "recent_path": "/snapshot/ibkr/recent?limit=25",
+    },
+}
 
 app = FastAPI(title="Quant Research Workbench API", version="1.0.0")
 app.add_middleware(
@@ -841,9 +902,115 @@ def parse_derived_columns(value: str | None) -> list[dict[str, Any]]:
     return [item for item in payload if isinstance(item, dict)]
 
 
+def service_base_url(service: dict[str, str]) -> str:
+    bind = os.environ.get(service["bind_env"], service["default_bind"]).strip() or service["default_bind"]
+    host, port = parse_service_bind(bind)
+    if host in {"0.0.0.0", "::"}:
+        host = "127.0.0.1"
+    return f"http://{host}:{port}"
+
+
+def parse_service_bind(bind: str) -> tuple[str, int]:
+    text = bind.strip()
+    if text.startswith("[") and "]:" in text:
+        host, port_text = text[1:].split("]:", 1)
+        return host, int(port_text)
+    if ":" not in text:
+        return text or "127.0.0.1", 80
+    host, port_text = text.rsplit(":", 1)
+    return host or "127.0.0.1", int(port_text)
+
+
+def fetch_service_json(base_url: str, path: str) -> tuple[dict[str, Any] | list[Any] | None, str | None]:
+    url = f"{base_url}{path}"
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=SERVICE_STATUS_TIMEOUT_SECONDS) as response:
+            text = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:500]
+        return None, f"HTTP {exc.code}: {body or exc.reason}"
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None, f"Non-JSON response from {path}"
+    if isinstance(payload, (dict, list)):
+        return payload, None
+    return None, f"Unexpected JSON payload from {path}"
+
+
+def service_status_payload(service_id: str, *, include_recent: bool = True) -> dict[str, Any]:
+    service = SERVICE_REGISTRY.get(service_id)
+    if service is None:
+        raise HTTPException(status_code=404, detail="Unknown service")
+    base_url = service_base_url(service)
+    snapshot, snapshot_error = fetch_service_json(base_url, "/snapshot/status")
+    health_payload: dict[str, Any] | list[Any] | None = None
+    health_error: str | None = None
+    metrics_payload: dict[str, Any] | list[Any] | None = None
+    metrics_error: str | None = None
+    if snapshot_error is not None:
+        health_payload, health_error = fetch_service_json(base_url, "/health")
+        if health_error is None:
+            metrics_payload, metrics_error = fetch_service_json(base_url, "/metrics")
+    recent_payload: dict[str, Any] | list[Any] | None = None
+    recent_error: str | None = None
+    if include_recent and snapshot_error is None and service.get("recent_path"):
+        recent_payload, recent_error = fetch_service_json(base_url, service["recent_path"])
+    online = snapshot_error is None or health_error is None or metrics_error is None
+    normalized_snapshot = snapshot if isinstance(snapshot, dict) else {}
+    header = normalized_snapshot.get("header") if isinstance(normalized_snapshot.get("header"), dict) else {}
+    current_operation = normalized_snapshot.get("current_operation") if isinstance(normalized_snapshot.get("current_operation"), dict) else {}
+    metrics = metrics_payload if isinstance(metrics_payload, dict) else normalized_snapshot.get("service_specific", {})
+    health_status = health_payload.get("service_status") if isinstance(health_payload, dict) else ""
+    status = str(header.get("status") or health_status or "")
+    if not status:
+        status = "ONLINE" if online else "OFFLINE"
+    return {
+        "registry": {
+            "id": service["id"],
+            "label": service["label"],
+            "kind": service["kind"],
+            "description": service["description"],
+            "base_url": base_url,
+        },
+        "online": online,
+        "status": status,
+        "header": header,
+        "current_operation": current_operation,
+        "snapshot": normalized_snapshot,
+        "health": health_payload if isinstance(health_payload, dict) else {},
+        "metrics": metrics if isinstance(metrics, dict) else {},
+        "recent": recent_payload if recent_payload is not None else {},
+        "errors": {
+            "snapshot": snapshot_error,
+            "health": health_error,
+            "metrics": metrics_error,
+            "recent": recent_error,
+        },
+        "checked_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {"status": "ok", "app": "quant-research-workbench"}
+
+
+@app.get("/api/services/status")
+def services_status(include_recent: bool = False) -> dict[str, Any]:
+    services = [service_status_payload(service_id, include_recent=include_recent) for service_id in SERVICE_REGISTRY]
+    return {
+        "checked_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "services": services,
+    }
+
+
+@app.get("/api/services/{service_id}/status")
+def service_status(service_id: str, include_recent: bool = True) -> dict[str, Any]:
+    return service_status_payload(service_id, include_recent=include_recent)
 
 
 @app.get("/api/config/defaults")
