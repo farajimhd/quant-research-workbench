@@ -576,26 +576,26 @@ class _ProfileReporter:
         summary.add_row(f"batch {completed}/{self.total_batches}", f"eta {_duration(eta)}")
         summary.add_row(f"phase {row.get('phase', '-')}", f"samples {state.get('measured_samples', 0)}")
         summary.add_row(f"run {self.run_root}", f"elapsed {_duration(elapsed)}")
-        timing = Table(title="Latest Batch", box=box.SIMPLE_HEAVY, expand=True)
+        timing = Table(title="Latest Batch", box=box.ASCII, expand=True)
         timing.add_column("metric")
         timing.add_column("sec", justify="right")
         for key in ("loader_wait_seconds", "host_to_device_seconds", "forward_seconds", "loss_seconds", "backward_seconds", "optimizer_seconds", "step_seconds"):
             timing.add_row(key.replace("_seconds", ""), f"{float(row.get(key, 0.0)):.3f}")
-        loader = Table(title="Loader Stages", box=box.SIMPLE_HEAVY, expand=True)
+        loader = Table(title="Loader Stages", box=box.ASCII, expand=True)
         loader.add_column("stage")
         loader.add_column("sec", justify="right")
         for key in sorted(k for k in row if k.startswith("loader/") and k.endswith("_seconds"))[:18]:
             loader.add_row(key.replace("loader/", "").replace("_seconds", ""), f"{float(row.get(key, 0.0)):.3f}")
-        mem = Table(title="Memory", box=box.SIMPLE_HEAVY, expand=True)
+        mem = Table(title="Memory", box=box.ASCII, expand=True)
         mem.add_column("metric")
         mem.add_column("GiB", justify="right")
         for key in ("cpu_rss_gib", "gpu_memory_allocated_gib", "gpu_memory_reserved_gib", "gpu_memory_peak_gib"):
             mem.add_row(key.replace("_gib", ""), f"{float(row.get(key, 0.0)):.2f}")
         return Group(
-            Panel(summary, title="Temporal v3 Training Profile", border_style="cyan"),
-            Panel(timing, title="Timing", border_style="green"),
-            Panel(loader, title="Loader Detail", border_style="blue"),
-            Panel(mem, title="Memory", border_style="magenta"),
+            Panel(summary, title="Temporal v3 Training Profile", border_style="cyan", box=box.ASCII),
+            Panel(timing, title="Timing", border_style="green", box=box.ASCII),
+            Panel(loader, title="Loader Detail", border_style="blue", box=box.ASCII),
+            Panel(mem, title="Memory", border_style="magenta", box=box.ASCII),
         )
 
 

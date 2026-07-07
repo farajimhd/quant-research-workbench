@@ -558,7 +558,12 @@ class DailyIndexCacheIndex:
             ticker = str(manifest.get("ticker") or ticker_from_path_token(_path_value(package_dir, "ticker")))
             if selected_tickers and ticker not in selected_tickers:
                 continue
-            package_config = manifest.get("config") or {}
+            package_config = {
+                "event_context_rows": self.root_manifest.get("event_context_rows", 0),
+                "event_context_guard_rows": self.root_manifest.get("event_context_guard_rows", 0),
+                "event_context_year_lookback": self.root_manifest.get("event_context_year_lookback", 0),
+                **(manifest.get("config") or {}),
+            }
             package_files = _package_context_files_from_manifest(manifest)
             for part in manifest.get("parts") or ():
                 if not isinstance(part, Mapping):
@@ -709,7 +714,12 @@ class DailyIndexBatchMaterializer:
             self.coverage_events = max(int(self.config.flat_coverage_events), int(self.coverage_events))
 
     def validate_part_config(self, plan: DailyIndexPartPlan) -> None:
-        cached = int(plan.config.get("max_cached_event_lookback_rows") or plan.config.get("required_event_lookback_rows") or 0)
+        cached = int(
+            plan.config.get("max_cached_event_lookback_rows")
+            or plan.config.get("required_event_lookback_rows")
+            or plan.config.get("event_context_rows")
+            or 0
+        )
         required = int(self.coverage_events)
         if required > cached:
             raise ValueError(
@@ -751,6 +761,7 @@ class DailyIndexBatchMaterializer:
             raw_flat, raw_mask = self._materialize_raw_flat(parts, refs)
         elif output_mode == "raw_stream":
             raw_stream, raw_stream_feature_names, raw_stream_profile = self._materialize_raw_stream(parts, refs)
+            raw_mask = np.ones((len(refs), int(raw_stream.shape[1])), dtype=np.bool_) if raw_stream.ndim == 3 else np.zeros((len(refs), 0), dtype=np.bool_)
             profile.update(raw_stream_profile)
         elif output_mode == "encoded_uint8":
             headers, encoded_events = self._materialize_encoded(parts, refs)
