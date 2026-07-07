@@ -176,7 +176,23 @@ def month_dir_for(cache_root: Path, month: str) -> Path:
 
 
 def ticker_package_dir(month_dir: Path, ticker: str) -> Path:
-    return Path(month_dir) / f"ticker={str(ticker)}"
+    return Path(month_dir) / f"ticker={ticker_path_token(ticker)}"
+
+
+def ticker_path_token(ticker: str) -> str:
+    return str(ticker).encode("utf-8").hex()
+
+
+def ticker_from_path_token(token: str) -> str:
+    value = str(token)
+    if value and len(value) % 2 == 0:
+        try:
+            return bytes.fromhex(value).decode("utf-8")
+        except ValueError:
+            pass
+        except UnicodeDecodeError:
+            pass
+    return value
 
 
 

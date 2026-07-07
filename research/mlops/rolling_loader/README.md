@@ -24,7 +24,7 @@ cache_root/
   build_log.jsonl
   errors.jsonl
   month=YYYY-MM/
-    ticker=SYMBOL/
+    ticker=<utf8-hex-symbol>/
       daily_index.parquet
       manifest.json
       events/*.parquet
@@ -42,7 +42,7 @@ cache_root/
       market_news_embeddings/*.parquet
 ```
 
-There is no split directory and no ticker-hash bucket. Train/validation/test periods are selected by the downstream loader/trainer.
+Ticker package directory names encode the exact ticker bytes as lowercase UTF-8 hex, while package manifests keep the human-readable ticker. This avoids Windows case-insensitive path collisions such as `CPK` versus `CpK`. There is no split directory and no ticker-hash bucket. Train/validation/test periods are selected by the downstream loader/trainer.
 
 ## Builder Flow
 

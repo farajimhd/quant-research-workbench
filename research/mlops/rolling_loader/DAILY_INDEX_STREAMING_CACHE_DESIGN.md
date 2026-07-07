@@ -113,7 +113,7 @@ cache_root/
         part_000000.parquet
       global_macro_bars/
         part_000000.parquet
-    ticker=ABC/
+    ticker=<utf8-hex-symbol>/
       manifest.json
       daily_index.parquet
       events/
@@ -142,6 +142,9 @@ cache_root/
 
 Files are immutable. Writers must write to a temporary path first and then
 rename atomically after the file and sidecar metadata are complete.
+Ticker package path tokens are lowercase UTF-8 hex of the exact ticker string,
+while the package manifest stores the human-readable ticker. This prevents
+case-insensitive Windows path collisions such as `CPK` versus `CpK`.
 
 ## Pipeline Abstraction
 
@@ -920,7 +923,7 @@ cache_root/month=YYYY-MM/manifest.json
 Every ticker/month writes:
 
 ```text
-cache_root/month=YYYY-MM/ticker=ABC/manifest.json
+cache_root/month=YYYY-MM/ticker=<utf8-hex-symbol>/manifest.json
 ```
 
 Ticker manifest fields:

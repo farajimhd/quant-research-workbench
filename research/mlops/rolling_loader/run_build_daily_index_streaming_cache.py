@@ -63,6 +63,7 @@ from research.mlops.rolling_loader.daily_index_cache import (
     month_window as cache_month_window,
     full_months_in_period,
     jsonable,
+    ticker_path_token,
     write_json_atomic,
 )
 
@@ -2146,7 +2147,7 @@ def ticker_filter_sql(text: str) -> str:
 
 
 def package_dir(*, cache_root: Path, month: str, ticker: str) -> Path:
-    return cache_root / f"month={month}" / f"ticker={safe_token(str(ticker))}"
+    return cache_root / f"month={month}" / f"ticker={ticker_path_token(str(ticker))}"
 
 
 def generic_output_dir(*, cache_root: Path, job: ModalityJob) -> Path:

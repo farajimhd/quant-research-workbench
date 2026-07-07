@@ -28,6 +28,8 @@ from research.mlops.rolling_loader.daily_index_cache import (
     DAILY_INDEX_CACHE_VERSION,
     full_months_in_period,
     read_json,
+    ticker_from_path_token,
+    ticker_path_token,
 )
 
 
@@ -547,15 +549,15 @@ class DailyIndexCacheIndex:
             if not package_dir.is_dir():
                 continue
             month = _path_value(package_dir, "month")
-            ticker = _path_value(package_dir, "ticker")
             if selected_months and month not in selected_months:
-                continue
-            if selected_tickers and ticker not in selected_tickers:
                 continue
             manifest_path = package_dir / "manifest.json"
             if not manifest_path.exists():
                 continue
             manifest = read_json(manifest_path)
+            ticker = str(manifest.get("ticker") or ticker_from_path_token(_path_value(package_dir, "ticker")))
+            if selected_tickers and ticker not in selected_tickers:
+                continue
             package_config = manifest.get("config") or {}
             package_files = _package_context_files_from_manifest(manifest)
             for part in manifest.get("parts") or ():
@@ -597,6 +599,7 @@ class DailyIndexCacheIndex:
             paths: list[Path] = []
             for month in sorted(selected_months):
                 for ticker in sorted(selected_tickers):
+                    paths.append(root / f"month={month}" / f"ticker={ticker_path_token(ticker)}")
                     paths.append(root / f"month={month}" / f"ticker={ticker}")
             return paths
         if selected_months:
@@ -611,6 +614,7 @@ class DailyIndexCacheIndex:
                 if not month_dir.is_dir():
                     continue
                 for ticker in sorted(selected_tickers):
+                    paths.append(month_dir / f"ticker={ticker_path_token(ticker)}")
                     paths.append(month_dir / f"ticker={ticker}")
             return paths
         return sorted(root.glob("month=*/ticker=*"))
