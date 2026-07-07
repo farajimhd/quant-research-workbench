@@ -23,6 +23,11 @@ SEC acceptance timestamps are EDGAR/New York wall-clock timestamps. Some SEC JSO
 - Dry-run is the default.
 - Only rows inside the `inserted_at` window are inspected.
 - Only configured `accepted_at_source` values are inspected.
+- The default source list is intentionally limited to live/daily-feed rows:
+  `submissions_recent,archive_acceptance_datetime`.
+- Historical bulk mirror sources are not repaired by default. Use an explicit
+  `--repair-sources` value for bulk rows only after auditing the `sec_core`
+  mirror tables and planning the historical rewrite.
 - A row is repaired only if the corrected timestamp is 3 to 6 hours later than the stored timestamp.
 - Rows whose corrected timestamp moves to another month partition are skipped by default.
 - Replacement rows get a new `source_run_id` and `accepted_at_source` suffix `_timezone_repair`.
@@ -65,6 +70,22 @@ For an explicit UTC inserted-at window:
 ```powershell
 python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_acceptance_timezone_repair.py --start-inserted-at "2026-07-07T00:00:00Z" --end-inserted-at "2026-07-08T00:00:00Z" --execute
 ```
+
+## Historical Bulk Sources
+
+The `sec_core` bulk mirror currently contains sources such as:
+
+```text
+submissions_bulk
+submissions_bulk_recent
+submissions_bulk_fragment
+submissions_bulk_recent_fallback_repair
+submissions_bulk_fragment_fallback_repair
+```
+
+Those sources can represent millions of rows. Do not include them in the live
+repair command. If a historical timestamp rewrite is approved, run it as a
+separate planned operation with an explicit date window and source list.
 
 ## Validate
 

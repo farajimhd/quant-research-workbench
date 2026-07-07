@@ -33,10 +33,14 @@ DEFAULT_TARGET_TABLE = "sec_filing_v2"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_acceptance_timezone_repair")
 DEFAULT_REPAIR_SOURCES = (
     "submissions_recent",
+    "archive_acceptance_datetime",
+)
+HISTORICAL_BULK_REPAIR_SOURCES = (
     "submissions_bulk",
     "submissions_bulk_recent",
     "submissions_bulk_fragment",
-    "archive_acceptance_datetime",
+    "submissions_bulk_recent_fallback_repair",
+    "submissions_bulk_fragment_fallback_repair",
 )
 
 
