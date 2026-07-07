@@ -82,7 +82,9 @@ def classify_exception(exc: BaseException | str, *, service: str, phase: str = "
 def error_summary_from_metrics(metrics: dict[str, Any], *, service: str) -> dict[str, Any]:
     summary = ErrorSummary()
     last_error = str(metrics.get("last_error") or "").strip()
-    failed_phase = str(metrics.get("current_phase") or "").lower() == "failed"
+    phase = str(metrics.get("current_phase") or "").lower()
+    failed_phase = phase == "failed"
+    provider_cooldown = float(metrics.get("sec_request_cooldown_remaining_seconds") or metrics.get("provider_cooldown_remaining_seconds") or 0.0)
     poll_failures = int(metrics.get("poll_failures") or 0)
     failed_rows = int(metrics.get("failed_rows") or metrics.get("failed_filings") or 0)
     if last_error:
@@ -90,13 +92,27 @@ def error_summary_from_metrics(metrics: dict[str, Any], *, service: str) -> dict
         if failed_phase:
             summary.active_critical_count = 1
             record = GatewayErrorRecord(**{**record.public_dict(), "severity": "critical"})
-        elif record.retryable:
+            summary.latest_active_errors.append(record.public_dict())
+        elif record.retryable and (provider_cooldown > 0 or phase == "provider_cooldown"):
             summary.retrying_count = 1
+            summary.latest_active_errors.append(record.public_dict())
+        elif record.retryable:
+            summary.resolved_this_run_count = 1
+            summary.latest_resolved_errors.append(
+                GatewayErrorRecord(
+                    **{
+                        **record.public_dict(),
+                        "status": "resolved",
+                        "resolved_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                    }
+                ).public_dict()
+            )
         elif poll_failures or failed_rows:
             summary.active_error_count = 1
+            summary.latest_active_errors.append(record.public_dict())
         else:
             summary.active_warning_count = 1
-        summary.latest_active_errors.append(record.public_dict())
+            summary.latest_active_errors.append(record.public_dict())
     return asdict(summary)
 
 
@@ -115,4 +131,3 @@ def safe_message(message: str, *, limit: int = 500) -> str:
                 end = len(text)
             text = text[: index + len(marker)] + "<redacted>" + text[end:]
     return text[:limit]
-

@@ -91,7 +91,8 @@ def service_status(metrics: dict[str, Any]) -> str:
     preflight = str(metrics.get("preflight_status") or "").lower()
     if phase == "failed" or preflight == "failed":
         return "FAILED"
-    if metrics.get("last_error"):
+    provider_cooldown = float(metrics.get("sec_request_cooldown_remaining_seconds") or metrics.get("provider_cooldown_remaining_seconds") or 0.0)
+    if phase == "provider_cooldown" or provider_cooldown > 0:
         return "DEGRADED"
     if phase in {"preflight", "coverage_bootstrap", "gap_planning"}:
         return "PREFLIGHT" if phase == "preflight" else "CATCHING_UP"
