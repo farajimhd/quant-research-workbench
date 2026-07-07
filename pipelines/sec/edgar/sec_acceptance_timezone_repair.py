@@ -33,7 +33,6 @@ DEFAULT_TARGET_TABLE = "sec_filing_v2"
 DEFAULT_OUTPUT_ROOT_WIN = Path("D:/market-data/prepared/sec_acceptance_timezone_repair")
 DEFAULT_REPAIR_SOURCES = (
     "submissions_recent",
-    "archive_acceptance_datetime",
 )
 HISTORICAL_BULK_REPAIR_SOURCES = (
     "submissions_bulk",
@@ -78,9 +77,10 @@ class RunPaths:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Repair SEC filing parent rows whose acceptance_datetime_raw was interpreted as UTC. "
-            "The script recomputes raw EDGAR acceptance timestamps as New York wall-clock time "
-            "and inserts replacement rows into sec_filing_v2. Dry-run is the default."
+            "Repair SEC filing parent rows whose accepted_at_utc disagrees with the explicit "
+            "timezone in acceptance_datetime_raw by a timezone-sized offset. The script "
+            "recomputes raw SEC timestamps with normal ISO/RFC3339 semantics and inserts "
+            "replacement rows into sec_filing_v2. Dry-run is the default."
         )
     )
     parser.add_argument("--clickhouse-url", default=default_migration_clickhouse_url())
@@ -93,8 +93,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-inserted-at", default="", help="Exclusive inserted_at upper bound, UTC. Defaults to now plus 5 minutes.")
     parser.add_argument("--lookback-hours", type=float, default=float(os.environ.get("SEC_ACCEPTANCE_TIMEZONE_REPAIR_LOOKBACK_HOURS", "72")))
     parser.add_argument("--repair-sources", default=",".join(DEFAULT_REPAIR_SOURCES))
-    parser.add_argument("--min-shift-hours", type=float, default=3.0)
-    parser.add_argument("--max-shift-hours", type=float, default=6.0)
+    parser.add_argument("--min-abs-shift-hours", type=float, default=3.0)
+    parser.add_argument("--max-abs-shift-hours", type=float, default=6.0)
     parser.add_argument("--limit-rows", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=int(os.environ.get("SEC_ACCEPTANCE_TIMEZONE_REPAIR_BATCH_SIZE", "5000")))
     parser.add_argument("--allow-month-partition-move", action="store_true", help="Allow replacements whose corrected accepted_at_utc lands in another month.")
@@ -198,8 +198,8 @@ def validate_args(args: argparse.Namespace) -> None:
     validate_identifier(args.target_table, "--target-table")
     if args.lookback_hours <= 0:
         raise SystemExit("--lookback-hours must be positive")
-    if args.min_shift_hours < 0 or args.max_shift_hours <= args.min_shift_hours:
-        raise SystemExit("--max-shift-hours must be greater than --min-shift-hours")
+    if args.min_abs_shift_hours < 0 or args.max_abs_shift_hours <= args.min_abs_shift_hours:
+        raise SystemExit("--max-abs-shift-hours must be greater than --min-abs-shift-hours")
     if args.batch_size <= 0:
         raise SystemExit("--batch-size must be positive")
 
@@ -265,8 +265,8 @@ FORMAT JSONEachRow
 def classify_rows(args: argparse.Namespace, rows: list[dict[str, Any]]) -> tuple[list[RepairCandidate], list[dict[str, Any]]]:
     candidates: list[RepairCandidate] = []
     skipped: list[dict[str, Any]] = []
-    min_shift = args.min_shift_hours * 3600.0
-    max_shift = args.max_shift_hours * 3600.0
+    min_shift = args.min_abs_shift_hours * 3600.0
+    max_shift = args.max_abs_shift_hours * 3600.0
     for row in rows:
         corrected_text = parse_acceptance_datetime(row.get("acceptance_datetime_raw"))
         current_dt = parse_db_datetime(row.get("accepted_at_utc"))
@@ -275,7 +275,7 @@ def classify_rows(args: argparse.Namespace, rows: list[dict[str, Any]]) -> tuple
             skipped.append(skip_record(row, "unparseable_timestamp", corrected_text))
             continue
         shift_seconds = (corrected_dt - current_dt).total_seconds()
-        if shift_seconds < min_shift or shift_seconds > max_shift:
+        if abs(shift_seconds) < min_shift or abs(shift_seconds) > max_shift:
             skipped.append(skip_record(row, "shift_outside_repair_window", corrected_text, shift_seconds))
             continue
         if month_key(current_dt) != month_key(corrected_dt) and not args.allow_month_partition_move:
@@ -443,7 +443,7 @@ def print_header(
     print(f"target={args.database}.{args.target_table}", flush=True)
     print(f"inserted_at_window={format_dt(start_inserted)} -> {format_dt(end_inserted)}", flush=True)
     print(f"repair_sources={','.join(repair_sources)}", flush=True)
-    print(f"shift_window_hours={args.min_shift_hours:g}..{args.max_shift_hours:g}", flush=True)
+    print(f"abs_shift_window_hours={args.min_abs_shift_hours:g}..{args.max_abs_shift_hours:g}", flush=True)
     print(f"allow_month_partition_move={args.allow_month_partition_move}", flush=True)
     print(f"run_root={paths.run_root}", flush=True)
     print(f"loaded_env_files={[str(path) for path in loaded_env_files]}", flush=True)

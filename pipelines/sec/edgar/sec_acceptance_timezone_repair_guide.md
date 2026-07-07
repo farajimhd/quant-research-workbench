@@ -1,6 +1,6 @@
 # SEC Acceptance Timezone Repair
 
-Use this script when SEC rows were inserted with EDGAR acceptance timestamps treated as UTC instead of New York wall-clock time.
+Use this script when SEC rows were inserted with `accepted_at_utc` shifted by a timezone-sized offset relative to the explicit timezone in `acceptance_datetime_raw`.
 
 ## What It Repairs
 
@@ -10,25 +10,25 @@ Target table:
 q_live.sec_filing_v2
 ```
 
-The repair reads rows from `sec_filing_v2 FINAL`, recomputes `accepted_at_utc` from `acceptance_datetime_raw` using `America/New_York`, and inserts newer replacement rows into the same `ReplacingMergeTree(inserted_at)` table.
+The repair reads rows from `sec_filing_v2 FINAL`, recomputes `accepted_at_utc` from `acceptance_datetime_raw` using normal ISO/RFC3339 timestamp semantics, and inserts newer replacement rows into the same `ReplacingMergeTree(inserted_at)` table.
 
 It does not mutate rows in place.
 
 ## Why It Exists
 
-SEC acceptance timestamps are EDGAR/New York wall-clock timestamps. Some SEC JSON values look like UTC because they end in `Z`, but treating that suffix as UTC shifts filings four or five hours too early. That breaks live consumers such as `text_embed_gateway`, which selects SEC rows by `accepted_at_utc`.
+SEC submissions API values ending in `Z` are UTC timestamps. A bad parser version incorrectly converted those rows through New York time, shifting some live rows four or five hours too late. That breaks live consumers such as `text_embed_gateway`, which selects SEC rows by `accepted_at_utc`.
 
 ## Safety Rules
 
 - Dry-run is the default.
 - Only rows inside the `inserted_at` window are inspected.
 - Only configured `accepted_at_source` values are inspected.
-- The default source list is intentionally limited to live/daily-feed rows:
-  `submissions_recent,archive_acceptance_datetime`.
+- The default source list is intentionally limited to live submissions rows:
+  `submissions_recent`.
 - Historical bulk mirror sources are not repaired by default. Use an explicit
   `--repair-sources` value for bulk rows only after auditing the `sec_core`
   mirror tables and planning the historical rewrite.
-- A row is repaired only if the corrected timestamp is 3 to 6 hours later than the stored timestamp.
+- A row is repaired only if the corrected timestamp differs from the stored timestamp by 3 to 6 hours.
 - Rows whose corrected timestamp moves to another month partition are skipped by default.
 - Replacement rows get a new `source_run_id` and `accepted_at_source` suffix `_timezone_repair`.
 - Secrets are redacted in manifests.
@@ -73,7 +73,7 @@ python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_acceptan
 
 ## Historical Bulk Sources
 
-The `sec_core` bulk mirror currently contains sources such as:
+The `sec_core` bulk mirror contains sources such as:
 
 ```text
 submissions_bulk
@@ -84,8 +84,10 @@ submissions_bulk_fragment_fallback_repair
 ```
 
 Those sources can represent millions of rows. Do not include them in the live
-repair command. If a historical timestamp rewrite is approved, run it as a
-separate planned operation with an explicit date window and source list.
+repair command. The current review indicates their `Z` timestamps are already
+stored as UTC wall-clock values; if a historical repair is ever considered, run
+it as a separate planned operation with an explicit audit, date window, and
+source list.
 
 ## Validate
 

@@ -14,7 +14,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
-from zoneinfo import ZoneInfo
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -46,7 +45,6 @@ DEFAULT_INSERT_MAX_RETRIES = 12
 DEFAULT_INSERT_RETRY_BASE_SECONDS = 5.0
 DEFAULT_INSERT_RETRY_MAX_SECONDS = 120.0
 MEMBER_MANIFEST_TABLE = "sec_bulk_mirror_member_manifest_v1"
-SEC_ET = ZoneInfo("America/New_York")
 SOURCE_URLS = {
     "submissions": f"{SEC_BULK_BASE_URL}/bulkdata/submissions.zip",
     "companyfacts": f"{SEC_BULK_BASE_URL}/xbrl/companyfacts.zip",
@@ -1092,21 +1090,14 @@ def accepted_at_utc(raw: str) -> str | None:
         return None
     try:
         if "T" in text:
-            iso_text = text[:-1] if text.endswith("Z") else text
-            parsed = datetime.fromisoformat(iso_text)
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
         else:
             parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
-        parsed = parsed.replace(tzinfo=SEC_ET)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
     except ValueError:
-        digits = re.sub(r"\D+", "", text)
-        if len(digits) < 14:
-            return None
-        try:
-            parsed = datetime.strptime(digits[:14], "%Y%m%d%H%M%S").replace(tzinfo=SEC_ET)
-            return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
-        except ValueError:
-            return None
+        return None
 
 
 def filing_document_url(cik: str, accession_compact: str, document: str) -> str:

@@ -7,13 +7,11 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
 
 
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
-SEC_ET = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,23 +139,17 @@ def parse_acceptance_datetime(value: Any) -> str | None:
     text = clean_string(value)
     if not text:
         return None
-    # SEC acceptance timestamps are EDGAR wall-clock times in New York.
-    # Some JSON endpoints append "Z", but treating that suffix as UTC shifts
-    # live filings four/five hours too early and breaks market-reaction joins.
-    iso_text = text[:-1] if text.endswith("Z") else text
-    try:
-        parsed = datetime.fromisoformat(iso_text)
-        parsed = parsed.replace(tzinfo=SEC_ET)
-        return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f000")
-    except ValueError:
-        pass
-    digits = "".join(ch for ch in text if ch.isdigit())
-    if len(digits) >= 14:
+    for candidate in (text, text.replace("Z", "+00:00")):
         try:
-            parsed = datetime.strptime(digits[:14], "%Y%m%d%H%M%S").replace(tzinfo=SEC_ET)
+            parsed = datetime.fromisoformat(candidate)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
             return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f000")
         except ValueError:
-            return None
+            pass
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) >= 14:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]} {digits[8:10]}:{digits[10:12]}:{digits[12:14]}.000000000"
     return None
 
 
