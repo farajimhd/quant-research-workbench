@@ -24,6 +24,7 @@ the ticker/month cache and loader.
 | Component | File | Purpose |
 | --- | --- | --- |
 | Ticker/month cache builder | `run_build_ticker_month_cache.py` | Builds reusable SSD packages from ClickHouse. |
+| Daily-index streaming cache builder | `run_build_daily_index_streaming_cache.py` | New daily-index driven fetch/process/write cache builder. The first implementation supports the Events modality. |
 | Ticker/month cache audit | `audit_ticker_month_cache.py` | Audits completed SSD cache packages. |
 | Ticker/month data loader | `ticker_month_dataset.py` | Reads SSD packages and materializes trainer batches. |
 | Loader profiler | `run_profile_ticker_month_loader.py` | Measures loader speed, memory, and output shapes. |
