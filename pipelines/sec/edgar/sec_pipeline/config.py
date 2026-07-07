@@ -52,6 +52,8 @@ class SecPipelineConfig:
     workstation_conda_env: str
     request_min_interval_seconds: float = 0.12
     request_timeout_seconds: float = 30.0
+    request_transient_error_cooldown_seconds: float = 60.0
+    request_rate_limit_cooldown_seconds: float = 300.0
 
     @classmethod
     def from_env(cls) -> "SecPipelineConfig":
@@ -73,6 +75,8 @@ class SecPipelineConfig:
             workstation_conda_env=env_string("SEC_GATEWAY_WORKSTATION_CONDA_ENV", "ml4t"),
             request_min_interval_seconds=env_float("SEC_REQUEST_MIN_INTERVAL_SECONDS", 0.12),
             request_timeout_seconds=env_float("SEC_REQUEST_TIMEOUT_SECONDS", 30.0),
+            request_transient_error_cooldown_seconds=env_float("SEC_REQUEST_TRANSIENT_ERROR_COOLDOWN_SECONDS", 60.0),
+            request_rate_limit_cooldown_seconds=env_float("SEC_REQUEST_RATE_LIMIT_COOLDOWN_SECONDS", 300.0),
         )
 
     def public_dict(self) -> dict[str, object]:

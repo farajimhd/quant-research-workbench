@@ -89,6 +89,8 @@ SEC_MARKET_STATUS_ENABLED=true
 SEC_MARKET_STATUS_REFRESH_SECONDS=10
 SEC_MARKET_HOLIDAYS_REFRESH_SECONDS=3600
 SEC_REQUEST_MIN_INTERVAL_SECONDS=0.12
+SEC_REQUEST_TRANSIENT_ERROR_COOLDOWN_SECONDS=60
+SEC_REQUEST_RATE_LIMIT_COOLDOWN_SECONDS=300
 SEC_GATEWAY_AUTO_RUN_HISTORICAL_ON_WORKSTATION=true
 ```
 
@@ -302,6 +304,22 @@ then exits. If the timeout is exceeded, the event is logged in the run JSONL log
 The submissions and companyfacts SEC API responses are cached per gateway run by
 CIK. This reduces duplicate SEC requests when a feed poll contains multiple
 filings for the same company.
+
+All SEC network calls share one process-local limiter. Normal requests are
+spaced by `SEC_REQUEST_MIN_INTERVAL_SECONDS`; transient provider failures add a
+global cooldown before any thread can make another SEC request:
+
+```text
+timeout, connection reset, DNS/URL transient, SEC 5xx:
+  SEC_REQUEST_TRANSIENT_ERROR_COOLDOWN_SECONDS
+
+SEC 403 or 429:
+  SEC Retry-After header if present, otherwise SEC_REQUEST_RATE_LIMIT_COOLDOWN_SECONDS
+```
+
+During cooldown the poll loop reports `provider_cooldown`, does not start a new
+feed poll, and live workers also wait before their next SEC request. This avoids
+turning a timeout into a tight retry loop that could violate SEC pacing.
 
 ## Poll Cadence
 

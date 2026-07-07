@@ -73,6 +73,8 @@ class SecGatewayMetrics:
     market_status_updated_at_utc: str = ""
     market_status_error: str = ""
     current_poll_seconds: float = 0.0
+    sec_request_cooldown_remaining_seconds: float = 0.0
+    sec_request_cooldown_reason: str = ""
     xbrl_concept_rows: int = 0
     xbrl_company_fact_rows: int = 0
     xbrl_frame_rows: int = 0
@@ -164,7 +166,13 @@ class SecGateway:
         )
         self._writer = SecClickHouseWriter(self._client, database=config.pipeline.clickhouse.write_database)
         self._limiter = SecRateLimiter(config.pipeline.request_min_interval_seconds)
-        self._http = SecHttpClient(user_agent=config.pipeline.sec_user_agent, rate_limiter=self._limiter, timeout_seconds=config.pipeline.request_timeout_seconds)
+        self._http = SecHttpClient(
+            user_agent=config.pipeline.sec_user_agent,
+            rate_limiter=self._limiter,
+            timeout_seconds=config.pipeline.request_timeout_seconds,
+            transient_error_cooldown_seconds=config.pipeline.request_transient_error_cooldown_seconds,
+            rate_limit_cooldown_seconds=config.pipeline.request_rate_limit_cooldown_seconds,
+        )
         self._feed = SecCurrentFeedClient(feed_url=self.feed_url(), http=self._http)
         self._live_pipeline = SecLiveFilingPipeline(
             http=self._http,
@@ -247,6 +255,9 @@ class SecGateway:
         self._prune_recent_metadata()
         self.metrics.live_queue_size = self._live_queue.qsize()
         self.metrics.pending_shutdown_jobs = self._live_queue.qsize() + self.metrics.live_active_workers
+        cooldown_remaining, cooldown_reason = self._limiter.cooldown_status()
+        self.metrics.sec_request_cooldown_remaining_seconds = round(cooldown_remaining, 1)
+        self.metrics.sec_request_cooldown_reason = cooldown_reason
         return asdict(self.metrics)
 
     def recent_snapshot(self, limit: int = 100) -> dict[str, Any]:
@@ -565,11 +576,30 @@ class SecGateway:
             try:
                 await asyncio.to_thread(self.refresh_market_status_if_needed)
                 self.metrics.current_poll_seconds = self.current_poll_seconds()
+                cooldown_remaining, cooldown_reason = self._limiter.cooldown_status()
+                if cooldown_remaining > 0:
+                    self.metrics.sec_request_cooldown_remaining_seconds = round(cooldown_remaining, 1)
+                    self.metrics.sec_request_cooldown_reason = cooldown_reason
+                    self._set_phase(
+                        "provider_cooldown",
+                        f"SEC provider cooldown active for {cooldown_remaining:.0f}s ({cooldown_reason or 'cooldown'}).",
+                    )
+                    try:
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=min(cooldown_remaining, max(1.0, self.current_poll_seconds())))
+                    except TimeoutError:
+                        pass
+                    continue
                 await self._poll_once()
             except Exception as exc:  # noqa: BLE001
                 self.metrics.poll_failures += 1
                 self.metrics.last_error = repr(exc)
                 self.logger.exception("poll_failed", exc)
+                cooldown_remaining, cooldown_reason = self._limiter.cooldown_status()
+                if cooldown_remaining > 0:
+                    self._set_phase(
+                        "provider_cooldown",
+                        f"SEC provider transient error; delaying requests for {cooldown_remaining:.0f}s ({cooldown_reason or 'cooldown'}).",
+                    )
             elapsed = (datetime.now(UTC) - started).total_seconds()
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=max(0.5, self.current_poll_seconds() - elapsed))

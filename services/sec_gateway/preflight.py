@@ -114,7 +114,13 @@ def check_clickhouse(config: SecGatewayConfig) -> str:
 
 def check_sec_feed(config: SecGatewayConfig) -> str:
     limiter = SecRateLimiter(config.pipeline.request_min_interval_seconds)
-    http = SecHttpClient(user_agent=config.pipeline.sec_user_agent, rate_limiter=limiter, timeout_seconds=config.pipeline.request_timeout_seconds)
+    http = SecHttpClient(
+        user_agent=config.pipeline.sec_user_agent,
+        rate_limiter=limiter,
+        timeout_seconds=config.pipeline.request_timeout_seconds,
+        transient_error_cooldown_seconds=config.pipeline.request_transient_error_cooldown_seconds,
+        rate_limit_cooldown_seconds=config.pipeline.request_rate_limit_cooldown_seconds,
+    )
     feed = SecCurrentFeedClient(feed_url=config.pipeline.feed_url, http=http)
     rows = feed.fetch()
     return f"feed_reachable rows={len(rows)}"
