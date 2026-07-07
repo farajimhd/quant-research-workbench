@@ -110,6 +110,8 @@ def main() -> int:
     summary_json = run_root / "sec_acceptance_downstream_repair_summary.json"
     client = ClickHouseHttpClient(args.clickhouse_url, args.user, args.password)
     inserted_start, inserted_end = inserted_window(args)
+    stage_database = args.target_database
+    stage_table = f"_tmp_sec_acceptance_downstream_candidate_{run_id}"
 
     print_header(args, run_id, run_root, inserted_start, inserted_end, loaded_env_files)
     if args.execute:
@@ -140,18 +142,41 @@ def main() -> int:
         )
 
     action_counts: dict[str, int] = {}
-    for label, sql in delete_sqls(args, inserted_start, inserted_end):
-        run_sql(client, label, sql, report_jsonl, execute=bool(args.execute))
-        if args.execute and args.wait_mutations:
-            wait_for_mutations(client, target_database_for_label(args, label), table_for_label(args, label), int(args.mutation_timeout_seconds), report_jsonl)
-
-    if args.execute:
-        for label, sql in rebuild_context_sqls(args, inserted_start, inserted_end):
-            run_sql(client, label, sql, report_jsonl, execute=True)
-        rebuilt = query_one(client, rebuilt_summary_sql(args, inserted_start, inserted_end))
-        action_counts.update({f"rebuilt_{key}": int(value or 0) for key, value in rebuilt.items() if str(value).isdigit()})
-    else:
+    if not args.execute:
+        for label, sql in delete_sqls(args, inserted_start, inserted_end):
+            run_sql(client, label, sql, report_jsonl, execute=False)
         print("dry_run=True; downstream rows were not deleted and context was not rebuilt.", flush=True)
+    else:
+        try:
+            run_sql(client, "create_candidate_stage", create_candidate_stage_sql(stage_database, stage_table), report_jsonl, execute=True)
+            run_sql(
+                client,
+                "load_candidate_stage",
+                load_candidate_stage_sql(args, inserted_start, inserted_end, stage_database, stage_table),
+                report_jsonl,
+                execute=True,
+            )
+            for label, sql in delete_sqls_for_stage(args, stage_database, stage_table):
+                run_sql(client, label, sql, report_jsonl, execute=True)
+                if args.wait_mutations:
+                    wait_for_mutations(client, target_database_for_label(args, label), table_for_label(args, label), int(args.mutation_timeout_seconds), report_jsonl)
+            for label, sql in rebuild_context_sqls_for_stage(args, stage_database, stage_table):
+                run_sql(client, label, sql, report_jsonl, execute=True)
+            rebuilt = query_one(client, rebuilt_summary_sql_for_stage(args, stage_database, stage_table))
+            action_counts.update({f"rebuilt_{key}": int(value or 0) for key, value in rebuilt.items() if str(value).isdigit()})
+            run_sql(client, "drop_candidate_stage", drop_candidate_stage_sql(stage_database, stage_table), report_jsonl, execute=True)
+        except Exception:
+            write_jsonl(
+                report_jsonl,
+                {
+                    "step": "candidate_stage_retained",
+                    "status": "retained_for_debug",
+                    "database": stage_database,
+                    "table": stage_table,
+                },
+            )
+            print(f"candidate_stage_retained={stage_database}.{stage_table}", flush=True)
+            raise
 
     summary = build_summary(args, run_id, run_root, candidate_summary, action_counts, started)
     summary_json.write_text(json.dumps(asdict(summary), indent=2, sort_keys=True), encoding="utf-8")
@@ -367,6 +392,35 @@ FORMAT JSONEachRow
 """
 
 
+def create_candidate_stage_sql(database: str, table: str) -> str:
+    return f"""
+DROP TABLE IF EXISTS {quote_ident(database)}.{quote_ident(table)}
+"""
+
+
+def load_candidate_stage_sql(args: argparse.Namespace, inserted_start: datetime, inserted_end: datetime, database: str, table: str) -> str:
+    return f"""
+CREATE TABLE {quote_ident(database)}.{quote_ident(table)}
+ENGINE = Memory
+AS
+{candidate_cte(args, inserted_start, inserted_end)}
+SELECT DISTINCT
+    cik,
+    accession_number,
+    bad_accepted_at_utc,
+    bad_timestamp_us,
+    expected_accepted_at_utc,
+    expected_timestamp_us,
+    reason
+FROM candidate
+{query_settings(args)}
+"""
+
+
+def drop_candidate_stage_sql(database: str, table: str) -> str:
+    return f"DROP TABLE IF EXISTS {quote_ident(database)}.{quote_ident(table)}"
+
+
 def delete_sqls(args: argparse.Namespace, inserted_start: datetime, inserted_end: datetime) -> list[tuple[str, str]]:
     cte = candidate_cte(args, inserted_start, inserted_end)
     return [
@@ -430,11 +484,76 @@ DELETE WHERE source = 'sec'
     ]
 
 
+def delete_sqls_for_stage(args: argparse.Namespace, stage_database: str, stage_table: str) -> list[tuple[str, str]]:
+    stage = f"{quote_ident(stage_database)}.{quote_ident(stage_table)}"
+    return [
+        (
+            "delete_sec_filing_context_stale",
+            f"""
+ALTER TABLE {quote_ident(args.context_database)}.{quote_ident(args.filing_context_table)}
+DELETE WHERE (cik, accession_number, timestamp_us) IN
+(
+    SELECT cik, accession_number, bad_timestamp_us FROM {stage}
+)
+""",
+        ),
+        (
+            "delete_sec_filing_text_context_stale",
+            f"""
+ALTER TABLE {quote_ident(args.context_database)}.{quote_ident(args.text_context_table)}
+DELETE WHERE (cik, accession_number, timestamp_us) IN
+(
+    SELECT cik, accession_number, bad_timestamp_us FROM {stage}
+)
+""",
+        ),
+        (
+            "delete_sec_tokens_stale",
+            f"""
+ALTER TABLE {quote_ident(args.target_database)}.{quote_ident(args.sec_token_table)}
+DELETE WHERE (cik, accession_number, timestamp_us) IN
+(
+    SELECT cik, accession_number, bad_timestamp_us FROM {stage}
+)
+""",
+        ),
+        (
+            "delete_sec_embeddings_stale",
+            f"""
+ALTER TABLE {quote_ident(args.target_database)}.{quote_ident(args.sec_embedding_table)}
+DELETE WHERE (cik, accession_number, timestamp_us) IN
+(
+    SELECT cik, accession_number, bad_timestamp_us FROM {stage}
+)
+""",
+        ),
+        (
+            "delete_sec_coverage_stale",
+            f"""
+ALTER TABLE {quote_ident(args.target_database)}.{quote_ident(args.coverage_table)}
+DELETE WHERE source = 'sec'
+  AND (timestamp_us, splitByChar(':', source_id)[1]) IN
+(
+    SELECT bad_timestamp_us, accession_number
+    FROM {stage}
+)
+""",
+        ),
+    ]
+
+
 def rebuild_context_sqls(args: argparse.Namespace, inserted_start: datetime, inserted_end: datetime) -> list[tuple[str, str]]:
     cte_body = candidate_cte_body(args, inserted_start, inserted_end)
     return [
         ("insert_corrected_sec_filing_context", insert_corrected_filing_context_sql(args, cte_body)),
         ("insert_corrected_sec_text_context", insert_corrected_text_context_sql(args, cte_body)),
+    ]
+
+
+def rebuild_context_sqls_for_stage(args: argparse.Namespace, stage_database: str, stage_table: str) -> list[tuple[str, str]]:
+    return [
+        ("insert_corrected_sec_filing_context", insert_corrected_filing_context_sql_for_stage(args, stage_database, stage_table)),
+        ("insert_corrected_sec_text_context", insert_corrected_text_context_sql_for_stage(args, stage_database, stage_table)),
     ]
 
 
@@ -468,6 +587,48 @@ SELECT DISTINCT
     now64(3, 'UTC') AS updated_at
 FROM {source_db}.{quote_ident(args.sec_filing_table)} AS f FINAL
 INNER JOIN candidate AS x
+    ON x.cik = f.cik
+   AND x.accession_number = f.accession_number
+INNER JOIN bridge AS b
+    ON b.cik = f.cik
+WHERE f.accepted_at_utc IS NOT NULL
+  AND (b.accession_number = '' OR b.accession_number = f.accession_number)
+  AND (b.valid_from_date IS NULL OR b.valid_from_date <= toDate(f.accepted_at_utc))
+  AND (b.valid_to_date_exclusive IS NULL OR b.valid_to_date_exclusive > toDate(f.accepted_at_utc))
+{query_settings(args)}
+"""
+
+
+def insert_corrected_filing_context_sql_for_stage(args: argparse.Namespace, stage_database: str, stage_table: str) -> str:
+    source_db = quote_ident(args.source_database)
+    stage = f"{quote_ident(stage_database)}.{quote_ident(stage_table)}"
+    target = f"{quote_ident(args.context_database)}.{quote_ident(args.filing_context_table)}"
+    return f"""
+INSERT INTO {target}
+WITH
+{bridge_cte_sql(args)}
+SELECT DISTINCT
+    b.ticker AS ticker,
+    toUInt64(toUnixTimestamp64Micro(f.accepted_at_utc)) AS timestamp_us,
+    f.accepted_at_utc AS accepted_at_utc,
+    f.cik AS cik,
+    f.accession_number AS accession_number,
+    ifNull(f.form_type, '') AS form_type,
+    ifNull(f.accepted_at_source, '') AS accepted_at_source,
+    toFloat32(b.confidence_score) AS mapping_confidence,
+    b.bridge_id AS bridge_id,
+    b.security_id AS security_id,
+    b.listing_id AS listing_id,
+    b.symbol_id AS symbol_id,
+    toString(f.filing_id) AS filing_id,
+    ifNull(f.company_name, '') AS company_name,
+    ifNull(f.primary_document, '') AS primary_document,
+    ifNull(f.primary_document_url, '') AS primary_document_url,
+    ifNull(f.filing_detail_url, '') AS filing_detail_url,
+    ifNull(f.items, '') AS items,
+    now64(3, 'UTC') AS updated_at
+FROM {source_db}.{quote_ident(args.sec_filing_table)} AS f FINAL
+INNER JOIN {stage} AS x
     ON x.cik = f.cik
    AND x.accession_number = f.accession_number
 INNER JOIN bridge AS b
@@ -518,6 +679,43 @@ LIMIT {per_filing} BY f.ticker, f.cik, f.accession_number
 """
 
 
+def insert_corrected_text_context_sql_for_stage(args: argparse.Namespace, stage_database: str, stage_table: str) -> str:
+    source_db = quote_ident(args.source_database)
+    stage = f"{quote_ident(stage_database)}.{quote_ident(stage_table)}"
+    filing_context = f"{quote_ident(args.context_database)}.{quote_ident(args.filing_context_table)}"
+    target = f"{quote_ident(args.context_database)}.{quote_ident(args.text_context_table)}"
+    text_chars = max(1, int(args.text_prefix_chars))
+    per_filing = max(1, int(args.max_text_rows_per_filing))
+    return f"""
+INSERT INTO {target}
+SELECT
+    f.ticker AS ticker,
+    f.timestamp_us AS timestamp_us,
+    f.accepted_at_utc AS accepted_at_utc,
+    f.cik AS cik,
+    f.accession_number AS accession_number,
+    f.form_type AS form_type,
+    toUInt8(0) AS text_rank,
+    ifNull(t.document_id, '') AS document_id,
+    ifNull(t.text_kind, '') AS text_kind,
+    substring(ifNull(t.text, ''), 1, {text_chars}) AS text,
+    toUInt32(least(ifNull(t.text_char_count, 0), 4294967295)) AS text_char_count,
+    arrayStringConcat(t.quality_flags, ',') AS quality_flags,
+    now64(3, 'UTC') AS updated_at
+FROM {filing_context} AS f
+INNER JOIN {stage} AS x
+    ON x.cik = f.cik
+   AND x.accession_number = f.accession_number
+   AND x.expected_timestamp_us = f.timestamp_us
+INNER JOIN {source_db}.{quote_ident(args.sec_text_source_table)} AS t
+    ON t.cik = f.cik
+   AND t.accession_number = f.accession_number
+ORDER BY f.ticker, f.accepted_at_utc, f.accession_number, t.text_kind, t.document_id
+LIMIT {per_filing} BY f.ticker, f.cik, f.accession_number
+{query_settings(args)}
+"""
+
+
 def bridge_cte_sql(args: argparse.Namespace) -> str:
     source_db = quote_ident(args.source_database)
     return f"""
@@ -548,6 +746,16 @@ def rebuilt_summary_sql(args: argparse.Namespace, inserted_start: datetime, inse
 SELECT
     (SELECT count() FROM {quote_ident(args.context_database)}.{quote_ident(args.filing_context_table)} AS c INNER JOIN candidate AS x ON c.cik=x.cik AND c.accession_number=x.accession_number AND c.timestamp_us=x.expected_timestamp_us) AS filing_context_rows,
     (SELECT count() FROM {quote_ident(args.context_database)}.{quote_ident(args.text_context_table)} AS c INNER JOIN candidate AS x ON c.cik=x.cik AND c.accession_number=x.accession_number AND c.timestamp_us=x.expected_timestamp_us) AS text_context_rows
+FORMAT JSONEachRow
+"""
+
+
+def rebuilt_summary_sql_for_stage(args: argparse.Namespace, stage_database: str, stage_table: str) -> str:
+    stage = f"{quote_ident(stage_database)}.{quote_ident(stage_table)}"
+    return f"""
+SELECT
+    (SELECT count() FROM {quote_ident(args.context_database)}.{quote_ident(args.filing_context_table)} AS c INNER JOIN {stage} AS x ON c.cik=x.cik AND c.accession_number=x.accession_number AND c.timestamp_us=x.expected_timestamp_us) AS filing_context_rows,
+    (SELECT count() FROM {quote_ident(args.context_database)}.{quote_ident(args.text_context_table)} AS c INNER JOIN {stage} AS x ON c.cik=x.cik AND c.accession_number=x.accession_number AND c.timestamp_us=x.expected_timestamp_us) AS text_context_rows
 FORMAT JSONEachRow
 """
 
