@@ -45,6 +45,14 @@ def run_current_ticker_detail_sync(
             on_progress("massive_ticker_details", status, message, rows)
 
     normalized_tickers = sorted({ticker.strip().upper() for ticker in tickers if ticker.strip()})
+    if not normalized_tickers:
+        return CurrentTickerDetailSyncResult(
+            False,
+            "skipped",
+            requested=0,
+            wall_seconds=time.perf_counter() - started,
+            details={"reason": "no_ticker_diff_for_source_sync"},
+        )
     if not config.execute:
         return CurrentTickerDetailSyncResult(False, "skipped", requested=len(normalized_tickers), wall_seconds=0.0, details={"reason": "diagnostic_mode"})
 
@@ -58,16 +66,12 @@ def run_current_ticker_detail_sync(
     )
 
     refs_by_ticker = load_symbol_refs(client, config.clickhouse_write_database)
-    selected_refs = (
-        {ticker: refs_by_ticker[ticker] for ticker in normalized_tickers if ticker in refs_by_ticker}
-        if normalized_tickers
-        else refs_by_ticker
-    )
+    selected_refs = {ticker: refs_by_ticker[ticker] for ticker in normalized_tickers if ticker in refs_by_ticker}
     if not selected_refs:
         return CurrentTickerDetailSyncResult(
             True,
             "failed",
-            requested=len(normalized_tickers) or len(refs_by_ticker),
+            requested=len(normalized_tickers),
             matched=0,
             wall_seconds=time.perf_counter() - started,
             details={"reason": "accepted_tickers_not_visible_in_write_database", "tickers": normalized_tickers[:50]},
@@ -90,8 +94,7 @@ def run_current_ticker_detail_sync(
         write_coverage=False,
     )
 
-    scope = "newly accepted ticker(s)" if normalized_tickers else "active US stock ticker(s)"
-    progress("running", f"Refreshing Massive ticker details for {len(selected_refs):,} {scope}.", len(selected_refs))
+    progress("running", f"Refreshing Massive ticker details for {len(selected_refs):,} newly accepted ticker(s).", len(selected_refs))
     results = run_massive_ticker_details(
         client,
         args,
@@ -106,7 +109,7 @@ def run_current_ticker_detail_sync(
         return CurrentTickerDetailSyncResult(
             True,
             "completed",
-            requested=len(normalized_tickers) or len(selected_refs),
+            requested=len(normalized_tickers),
             matched=len(selected_refs),
             wall_seconds=time.perf_counter() - started,
             details={"reason": "no_current_detail_result"},
@@ -114,7 +117,7 @@ def run_current_ticker_detail_sync(
     return CurrentTickerDetailSyncResult(
         True,
         result.status,
-        requested=len(normalized_tickers) or len(selected_refs),
+        requested=len(normalized_tickers),
         matched=len(selected_refs),
         written=result.rows_written,
         failed=result.rows_failed,

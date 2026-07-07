@@ -163,6 +163,7 @@ integrity guardrails active.
 Operational source sync always runs, but expensive provider jobs are gated by
 `market_reference_source_schedule_v1`:
 
+- `massive_active_tickers`
 - `massive_ticker_details`
 - `ibkr_borrow_availability`
 - `country_assertions`
@@ -172,11 +173,20 @@ The schedule table is DB-backed so daemon restarts do not lose cadence state.
 Tune cadence with:
 
 ```text
+REFERENCE_GATEWAY_ACTIVE_TICKER_SYNC_FREQUENCY_SECONDS=43200
 REFERENCE_GATEWAY_CURRENT_TICKER_DETAIL_FREQUENCY_SECONDS=86400
 REFERENCE_GATEWAY_IBKR_BORROW_FREQUENCY_SECONDS=1800
 REFERENCE_GATEWAY_COUNTRY_ASSERTION_FREQUENCY_SECONDS=86400
 REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_FREQUENCY_SECONDS=3600
 ```
+
+Source sync is diff-based. The Massive active ticker list is checked at the
+configured low-frequency cadence, then compared to the canonical graph and open
+mapping issues. Massive overview and IBKR conid lookup are called only for new
+provider tickers that are not already known and not already blocked by an open
+issue. Massive ticker-detail sync in the source-sync path is called only for
+newly accepted canonical tickers; an empty diff is skipped and never expands to
+the full universe.
 
 ## Autonomous Publication Maintenance
 
@@ -190,7 +200,9 @@ for Massive short interest, Reg SHO threshold, and presentation assets.
 Bootstrap coverage records that existing rows were inspected; it
 does not fabricate provider rows.
 
-Massive ticker-detail sync writes the downstream current-state tables together:
+Maintenance and historical gap fill can still write Massive ticker-detail rows
+for broader windows when coverage requires it. That path writes the downstream
+current-state tables together:
 `market_security_market_snapshot_v1`, `market_security_float_v1`, and
 `market_presentation_asset_v1`. Newly downloaded logo/icon assets are stored
 under `REFERENCE_GATEWAY_PRESENTATION_ASSET_ROOT_WIN`, defaulting to
@@ -203,9 +215,14 @@ Each child cycle writes memory snapshots to the runtime JSONL log. The parent
 daemon also records its memory after each child cycle exits. Optional controls:
 
 ```text
-REFERENCE_GATEWAY_DAEMON_CHILD_TIMEOUT_SECONDS=7200
+REFERENCE_GATEWAY_DAEMON_CHILD_TIMEOUT_SECONDS=0
 REFERENCE_GATEWAY_DAEMON_CHILD_MAX_RSS_MB=0
 ```
+
+`REFERENCE_GATEWAY_DAEMON_CHILD_TIMEOUT_SECONDS=0` disables a hard child-cycle
+timeout. This is the default because source-sync and maintenance jobs can be
+long-running but still healthy when providers are slow. Use a positive timeout
+only for debugging a suspected hang.
 
 If `REFERENCE_GATEWAY_DAEMON_CHILD_MAX_RSS_MB` is non-zero and the child exits
 above that RSS limit, the cycle fails instead of silently continuing.
@@ -237,9 +254,10 @@ REFERENCE_GATEWAY_DIAGNOSTICS=none
 REFERENCE_GATEWAY_ACTIVE_TICKER_PAGE_LIMIT=1000
 REFERENCE_GATEWAY_ACTIVE_TICKER_MAX_PAGES=1000
 REFERENCE_GATEWAY_ACTIVE_TICKER_NEW_CANDIDATE_LIMIT=250
+REFERENCE_GATEWAY_ACTIVE_TICKER_SYNC_FREQUENCY_SECONDS=43200
 REFERENCE_GATEWAY_DAEMON_ACTIVE_INTERVAL_SECONDS=900
 REFERENCE_GATEWAY_DAEMON_AFTER_HOURS_INTERVAL_SECONDS=3600
-REFERENCE_GATEWAY_DAEMON_CHILD_TIMEOUT_SECONDS=7200
+REFERENCE_GATEWAY_DAEMON_CHILD_TIMEOUT_SECONDS=0
 REFERENCE_GATEWAY_DAEMON_CHILD_MAX_RSS_MB=0
 REFERENCE_GATEWAY_MARKET_PUBLICATION_GAP_FILL_DAYS=14
 REFERENCE_GATEWAY_MARKET_PUBLICATION_DEEP_BACKFILL_ENABLED=true

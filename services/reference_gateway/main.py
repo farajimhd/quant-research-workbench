@@ -484,14 +484,14 @@ def main() -> None:
             update_latest_operation(operation_name, status, truncate_detail(message), rows=rows, seconds=elapsed)
             update_latest_operation("Source sync", "running", truncate_detail(message), rows=rows, seconds=time.perf_counter() - source_sync_started)
 
-        current_detail_schedule = schedule_decision(
-            schedule_client,
-            config,
-            source_name="massive_ticker_details",
-            frequency_seconds=config.current_ticker_detail_frequency_seconds,
-            force=bool(accepted_tickers),
-        )
-        if current_detail_schedule.should_run:
+        if accepted_tickers:
+            current_detail_schedule = schedule_decision(
+                schedule_client,
+                config,
+                source_name="massive_ticker_details",
+                frequency_seconds=config.current_ticker_detail_frequency_seconds,
+                force=True,
+            )
             current_details = run_current_ticker_detail_sync(config, tickers=accepted_tickers, on_progress=current_details_progress)
             record_source_schedule(
                 schedule_client,
@@ -506,11 +506,11 @@ def main() -> None:
             current_details = CurrentTickerDetailSyncResult(
                 False,
                 "skipped",
-                requested=len(accepted_tickers),
+                requested=0,
                 wall_seconds=0.0,
                 details={
-                    "reason": current_detail_schedule.reason,
-                    "next_due_at_utc": current_detail_schedule.next_due_at_utc,
+                    "reason": "no_new_or_changed_tickers",
+                    "policy": "source_sync_refreshes_only_diff_tickers",
                 },
             )
         current_details_status = "completed" if current_details.status in {"completed", "covered_empty", "skipped"} else current_details.status

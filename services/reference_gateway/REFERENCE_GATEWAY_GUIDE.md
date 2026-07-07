@@ -129,9 +129,10 @@ Diagnostics:
 
 9. Each child cycle records memory snapshots in the runtime JSONL log at start
    and finish. The parent daemon records its own memory after each child exits.
-   `REFERENCE_GATEWAY_DAEMON_CHILD_TIMEOUT_SECONDS` stops hung child cycles, and
-   `REFERENCE_GATEWAY_DAEMON_CHILD_MAX_RSS_MB` can fail a cycle that exits above
-   the configured RSS ceiling.
+   `REFERENCE_GATEWAY_DAEMON_CHILD_TIMEOUT_SECONDS` can stop hung child cycles
+   when set to a positive value. It defaults to `0`, which disables the hard
+   wall-clock timeout. `REFERENCE_GATEWAY_DAEMON_CHILD_MAX_RSS_MB` can fail a
+   cycle that exits above the configured RSS ceiling.
 
 ## Market-Hours Policy
 
@@ -246,6 +247,19 @@ Runtime JSONL logs:
 
 The daemon exits if a child cycle exits non-zero. It does not silently continue
 after a failed dependency or maintenance cycle.
+
+Default source-sync cadence is intentionally low frequency. Massive active
+tickers default to `REFERENCE_GATEWAY_ACTIVE_TICKER_SYNC_FREQUENCY_SECONDS=43200`
+seconds, which is twice per day. Source-sync detail calls are diff-only:
+new/changed Massive tickers may trigger Massive overview, IBKR conid lookup,
+canonical graph writes, and current ticker-detail enrichment. If there is no
+newly accepted ticker diff, current ticker-detail sync is skipped and never
+refreshes the full active universe from the daemon source-sync path.
+
+The daemon child timeout defaults to disabled
+(`REFERENCE_GATEWAY_DAEMON_CHILD_TIMEOUT_SECONDS=0`). Long provider jobs should
+report progress and finish rather than being killed at a fixed wall-clock
+deadline.
 
 ## Stage 2: Runtime Behavior Validation
 
