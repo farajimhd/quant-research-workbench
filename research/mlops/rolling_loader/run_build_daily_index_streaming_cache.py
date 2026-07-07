@@ -695,7 +695,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="How many prior yearly event tables to include for beginning-of-month event context.",
     )
     parser.add_argument("--chunk-size", type=int, default=2_000_000, help="Max event rows per fetch/write job.")
-    parser.add_argument("--event-fetch-workers", type=int, default=32)
+    parser.add_argument("--event-fetch-workers", type=int, default=64)
     parser.add_argument("--event-process-workers", type=int, default=8)
     parser.add_argument("--event-write-workers", type=int, default=12)
     parser.add_argument("--label-fetch-workers", type=int, default=16)
@@ -745,7 +745,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-token-contexts", action="store_true")
     parser.add_argument("--max-fetched-queue-gib", type=float, default=96.0)
     parser.add_argument("--max-processed-queue-gib", type=float, default=96.0)
-    parser.add_argument("--max-active-clickhouse-queries", type=int, default=0, help="Global ClickHouse fetch-query cap. 0 auto-sizes to the sum of selected ClickHouse fetch workers.")
+    parser.add_argument("--max-active-clickhouse-queries", type=int, default=80, help="Global ClickHouse fetch-query cap. Use 0 to auto-size to the sum of selected ClickHouse fetch workers.")
     parser.add_argument("--max-active-writers", type=int, default=16)
     parser.add_argument("--max-threads", type=int, default=8)
     parser.add_argument("--max-memory-usage", default="120G")
@@ -1916,6 +1916,7 @@ def root_manifest(*, args: argparse.Namespace, months: tuple[str, ...], status: 
         "event_fetch_workers": int(args.event_fetch_workers),
         "event_process_workers": int(args.event_process_workers),
         "event_write_workers": int(args.event_write_workers),
+        "max_active_clickhouse_queries": int(args.max_active_clickhouse_queries),
         "fetch_jobs": int(jobs),
         "expected_units": int(expected_units),
         "updated_at_utc": utc_now(),

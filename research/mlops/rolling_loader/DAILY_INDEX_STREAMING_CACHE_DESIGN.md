@@ -684,32 +684,33 @@ Each modality has independent worker counts:
 ```
 
 Defaults should reflect workload severity. Events are fetch/write heavy and
-process light. One event process worker is functionally enough for simple
-validation and metadata, but the default uses two so validation can overlap
-with writes without creating a large process queue. Intraday labels are process
-heavy because they compute event-derived future bars and flags. Sparse contexts
-are fetch/write dominated; their process stage is intentionally one worker for
-audit and payload handoff only.
+process light, so the default assigns more concurrency to event fetch than
+event processing. Intraday labels are process heavy because they compute
+event-derived future bars and flags. Sparse contexts are fetch/write dominated;
+their process stage is intentionally one worker for audit and payload handoff
+only.
 
 Suggested first-run defaults on the workstation bias more CPU toward event fetch
 and intraday-label processing, which are the expensive lanes in full-month runs:
 
 | Modality | Fetch | Process | Write | Total |
 | --- | ---: | ---: | ---: | ---: |
-| Events | 32 | 8 | 12 | 52 |
+| Events | 64 | 8 | 12 | 84 |
 | Intraday labels | 16 | 32 | 8 | 56 |
 | Macro bars | 4 | 1 | 4 | 9 |
 | News embeddings | 3 | 1 | 3 | 7 |
 | SEC embeddings | 3 | 1 | 3 | 7 |
 | XBRL | 4 | 1 | 3 | 8 |
 | Corporate actions | 1 | 1 | 1 | 3 |
-| **Total** | **57** | **45** | **34** | **136** |
+| **Total** | **89** | **45** | **34** | **168** |
 
 These are worker slots, not guaranteed simultaneous ClickHouse queries or disk
 writes. Global caps such as `--max-active-clickhouse-queries` and
 `--max-active-writers` still limit the truly concurrent I/O operations.
-`--max-active-clickhouse-queries=0` means auto-size the ClickHouse cap to the
-sum of selected ClickHouse fetch workers. Derived modalities, currently
+The default `--max-active-clickhouse-queries` is `80`, which caps the larger
+event fetch pool before it can oversubscribe ClickHouse. Setting
+`--max-active-clickhouse-queries=0` auto-sizes the ClickHouse cap to the sum of
+selected ClickHouse fetch workers. Derived modalities, currently
 `intraday_labels`, are excluded from that sum because they do not query
 ClickHouse directly.
 The default `--max-active-writers` is `16`, so the larger write-worker pool
