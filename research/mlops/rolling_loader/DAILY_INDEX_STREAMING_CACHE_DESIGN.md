@@ -706,20 +706,45 @@ Required panels:
 8. Corporate Actions
 9. Messages / Errors
 
-Each modality panel should show fetch, process, and write state side by side:
+Each modality panel should be a stable table. The first row is the modality
+overall status bar. After that, each worker slot gets one fixed row. Rows are
+grouped by process name (`Fetch`, `Process`, `Write`) and worker id.
 
 ```text
 Events
-Worker  Fetch                         Process                       Write                         Current
-F01     8.2M/11.0M rows  220k/s       -                             -                             2019-09 AAPL
-F02     idle                          -                             -                             -
-P01     -                             4.1M/8.2M rows  310k/s        -                             2019-09 MSFT
-W01     -                             -                             1.3GB/2.0GB  420MB/s          AAPL part_0002
+Overall       [############--------]  61.4%  rows 8.2B/13.4B  eta 02:14:33
+
+Process name  Worker  Status                                      Current Job
+Fetch         01      [#############-------]  8.2M/11.0M 220k/s    2019-09 AAPL 2019-09-03
+Fetch         02      idle                                        -
+...
+Fetch         16      [####----------------]  1.1M/5.8M 180k/s     2019-09 QQQ 2019-09-04
+Process       01      [################----]  8.2M/9.7M 410k/s     2019-09 MSFT validate/time
+Process       02      idle                                        -
+Write         01      [########------------]  1.3GB/3.1GB 420MB/s  AAPL events part_0002
+...
+Write         08      idle                                        -
 ```
+
+For the Events panel with the 96-worker default table, the panel has exactly:
+
+```text
+1 overall row
+16 fetch rows
+2 process rows
+8 write rows
+```
+
+If a worker is idle, its row stays visible and reports `idle`. If a worker is
+blocked by backpressure, its row reports the blocking queue, for example
+`blocked process_queue_bytes` or `blocked writer_slots`. This makes it clear
+whether a modality is slow because of ClickHouse, CPU processing, disk writing,
+or global backpressure.
 
 Summary panel should show:
 
 ```text
+overall_status_bar = weighted sum of modality overall bars
 period
 cache_id
 data_groups
@@ -735,6 +760,20 @@ RSS GiB
 errors
 last completed ticker/date
 ```
+
+The summary overall status bar is calculated from each active modality's
+expected units:
+
+```text
+summary_done_units = sum(modality_done_units)
+summary_total_units = sum(modality_total_units)
+summary_progress = summary_done_units / summary_total_units
+```
+
+For event-like modalities, units are rows. For sparse/context modalities, units
+are source rows or bytes, whichever is the modality's configured progress unit.
+The implementation must not average percentages across panels because that
+would over-weight tiny sparse modalities.
 
 The reporter must preserve last-known useful values instead of flickering
 between numbers and zeros.
