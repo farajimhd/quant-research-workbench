@@ -1240,11 +1240,15 @@ def run_massive_ticker_details(
     failed = 0
     not_found = 0
     asset_failed = 0
+    skipped_incompatible = 0
     observed_at = datetime.now(UTC)
     presentation_asset_root = Path(getattr(args, "presentation_asset_root_win", "") or default_presentation_asset_root())
     progress("massive_ticker_details api_key_diagnostic=" + json.dumps(massive_api_key_diagnostic(), sort_keys=True))
     for index, ref in enumerate(symbols.values(), start=1):
         try:
+            if not is_massive_ticker_detail_compatible(ref.ticker):
+                skipped_incompatible += 1
+                continue
             overview = fetch_massive_ticker_overview(args, ref.ticker)
             if not overview:
                 not_found += 1
@@ -1267,7 +1271,8 @@ def run_massive_ticker_details(
             progress(
                 f"massive_ticker_details progress={index:,}/{len(symbols):,} "
                 f"snapshot_rows={len(snapshot_rows):,} float_rows={len(float_rows):,} "
-                f"asset_rows={len(asset_rows):,} not_found={not_found:,} failed={failed:,} asset_failed={asset_failed:,}"
+                f"asset_rows={len(asset_rows):,} not_found={not_found:,} failed={failed:,} "
+                f"asset_failed={asset_failed:,} skipped_incompatible={skipped_incompatible:,}"
             )
     stamp_rows(snapshot_rows, run_id)
     stamp_rows(float_rows, run_id)
@@ -1289,6 +1294,7 @@ def run_massive_ticker_details(
         "not_found_tickers": not_found,
         "failed_tickers": failed,
         "asset_failed_tickers": asset_failed,
+        "skipped_incompatible_tickers": skipped_incompatible,
         "observed_at_utc": observed_at.isoformat().replace("+00:00", "Z"),
         "presentation_asset_root_win": str(presentation_asset_root),
         "api_key_diagnostic": massive_api_key_diagnostic(),
@@ -1300,7 +1306,8 @@ def run_massive_ticker_details(
     progress(
         f"massive_ticker_details {target_start.isoformat()} status={status} "
         f"symbols={len(symbols):,} written={snapshot_written + float_written:,} assets_written={asset_written:,} "
-        f"not_found={not_found:,} failed={failed:,} asset_failed={asset_failed:,}"
+        f"not_found={not_found:,} failed={failed:,} asset_failed={asset_failed:,} "
+        f"skipped_incompatible={skipped_incompatible:,}"
     )
     if args.execute and getattr(args, "write_coverage", True):
         insert_publication_coverage(
@@ -1350,6 +1357,13 @@ def fetch_massive_ticker_overview(args: argparse.Namespace, ticker: str) -> dict
         raise MassiveTickerNotFound(ticker, safe_url(url)) from exc
     result = payload.get("results") if isinstance(payload, dict) else None
     return result if isinstance(result, dict) else {}
+
+
+def is_massive_ticker_detail_compatible(ticker: str) -> bool:
+    text = str(ticker or "").strip().upper()
+    if not text:
+        return False
+    return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9.\-]*", text))
 
 
 def normalize_massive_ticker_detail(overview: dict[str, Any], ref: SymbolRef, observed_at: datetime) -> tuple[dict[str, Any], dict[str, Any] | None]:
