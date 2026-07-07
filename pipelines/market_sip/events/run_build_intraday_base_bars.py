@@ -20,6 +20,9 @@ DEFAULTS = {
     "max_threads": 32,
     "max_memory_usage": "300G",
     "output_root": r"D:\market-data\prepared\clickhouse_sip_ingest\intraday_base_bars",
+    "progress_layout": "auto",
+    "progress_refresh_per_second": 2.0,
+    "progress_log_lines": 10,
 }
 
 
@@ -38,6 +41,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
     parser.add_argument("--output-root", default=DEFAULTS["output_root"])
+    parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default=DEFAULTS["progress_layout"])
+    parser.add_argument("--progress-refresh-per-second", type=float, default=DEFAULTS["progress_refresh_per_second"])
+    parser.add_argument("--progress-log-lines", type=int, default=DEFAULTS["progress_log_lines"])
     parser.add_argument("--storage-policy", default="")
     parser.add_argument("--clickhouse-url", default="")
     parser.add_argument("--user", default="")
@@ -73,6 +79,12 @@ def main(argv: list[str] | None = None) -> int:
         args.max_memory_usage,
         "--output-root",
         args.output_root,
+        "--progress-layout",
+        args.progress_layout,
+        "--progress-refresh-per-second",
+        str(args.progress_refresh_per_second),
+        "--progress-log-lines",
+        str(args.progress_log_lines),
     ]
     if args.date:
         command.extend(["--date", args.date])
