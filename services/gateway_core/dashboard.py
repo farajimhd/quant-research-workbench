@@ -92,8 +92,9 @@ def service_status(metrics: dict[str, Any]) -> str:
     if phase == "failed" or preflight == "failed":
         return "FAILED"
     provider_cooldown = float(metrics.get("sec_request_cooldown_remaining_seconds") or metrics.get("provider_cooldown_remaining_seconds") or 0.0)
+    provider_cooldown_reason = str(metrics.get("sec_request_cooldown_reason") or metrics.get("provider_cooldown_reason") or "").lower()
     if phase == "provider_cooldown" or provider_cooldown > 0:
-        return "DEGRADED"
+        return "DEGRADED" if provider_cooldown_reason in {"sec_http_403", "sec_http_429"} else "CATCHING_UP"
     if phase in {"preflight", "coverage_bootstrap", "gap_planning"}:
         return "PREFLIGHT" if phase == "preflight" else "CATCHING_UP"
     if phase in {"idle", "waiting"}:

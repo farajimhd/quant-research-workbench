@@ -85,6 +85,7 @@ def error_summary_from_metrics(metrics: dict[str, Any], *, service: str) -> dict
     phase = str(metrics.get("current_phase") or "").lower()
     failed_phase = phase == "failed"
     provider_cooldown = float(metrics.get("sec_request_cooldown_remaining_seconds") or metrics.get("provider_cooldown_remaining_seconds") or 0.0)
+    provider_cooldown_reason = str(metrics.get("sec_request_cooldown_reason") or metrics.get("provider_cooldown_reason") or "").lower()
     poll_failures = int(metrics.get("poll_failures") or 0)
     failed_rows = int(metrics.get("failed_rows") or metrics.get("failed_filings") or 0)
     if last_error:
@@ -95,6 +96,8 @@ def error_summary_from_metrics(metrics: dict[str, Any], *, service: str) -> dict
             summary.latest_active_errors.append(record.public_dict())
         elif record.retryable and (provider_cooldown > 0 or phase == "provider_cooldown"):
             summary.retrying_count = 1
+            if provider_cooldown_reason in {"sec_http_403", "sec_http_429"}:
+                summary.active_error_count = 1
             summary.latest_active_errors.append(record.public_dict())
         elif record.retryable:
             summary.resolved_this_run_count = 1
