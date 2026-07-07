@@ -15,8 +15,12 @@ import traceback
 import uuid
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
 from urllib.parse import urlparse
 
 if __package__ in {None, ""}:
@@ -28,6 +32,7 @@ if __package__ in {None, ""}:
 
 from pipelines.market_sip.events.clickhouse_build_unified_events import events_table_for_year, events_table_uses_year_suffix
 from research.mlops.clickhouse import (
+    ClickHouseHttpClient,
     default_clickhouse_password,
     default_clickhouse_url,
     default_clickhouse_user,
@@ -1755,8 +1760,14 @@ def events_source_table(*, args: argparse.Namespace, job: EventFetchJob) -> str:
 def query_polars(*, client_opts: Mapping[str, str], query: str, query_id: str, retries: int, backoff_seconds: float) -> Any:
     try:
         import clickhouse_connect  # type: ignore
-    except ModuleNotFoundError as exc:
-        raise RuntimeError("Install clickhouse-connect to run the daily-index streaming cache builder.") from exc
+    except ModuleNotFoundError:
+        return query_polars_http_arrow(
+            client_opts=client_opts,
+            query=query,
+            query_id=query_id,
+            retries=retries,
+            backoff_seconds=backoff_seconds,
+        )
     parsed = urlparse(str(client_opts["clickhouse_url"]))
     secure = parsed.scheme == "https"
     attempt = 0
@@ -1784,6 +1795,47 @@ def query_polars(*, client_opts: Mapping[str, str], query: str, query_id: str, r
                 client.close()
             except Exception:
                 pass
+
+
+def query_polars_http_arrow(*, client_opts: Mapping[str, str], query: str, query_id: str, retries: int, backoff_seconds: float) -> Any:
+    attempt = 0
+    while True:
+        try:
+            data = execute_http_arrow_stream(client_opts=client_opts, query=query, query_id=query_id)
+            try:
+                import pyarrow as pa  # type: ignore
+            except ModuleNotFoundError as exc:
+                raise RuntimeError("Install pyarrow to use the ClickHouse HTTP ArrowStream fallback.") from exc
+            with pa.ipc.open_stream(BytesIO(data)) as reader:
+                table = reader.read_all()
+            return polars().from_arrow(table)
+        except Exception as exc:
+            if attempt >= max(0, int(retries)) or not transient_clickhouse_error(exc):
+                raise
+            time.sleep(max(0.0, float(backoff_seconds)) * float(2**attempt))
+            attempt += 1
+
+
+def execute_http_arrow_stream(*, client_opts: Mapping[str, str], query: str, query_id: str) -> bytes:
+    base_url = str(client_opts["clickhouse_url"]).rstrip("/")
+    params = {"query_id": query_id}
+    url = base_url + "/?" + urllib_parse.urlencode(params)
+    sql = query.strip().rstrip(";").rstrip()
+    if " FORMAT " not in f" {sql[-64:].upper()} ":
+        sql += "\nFORMAT ArrowStream"
+    req = urllib_request.Request(url, data=sql.encode("utf-8"), method="POST")
+    user = str(client_opts.get("user") or "default")
+    password = str(client_opts.get("password") or "")
+    if user:
+        req.add_header("X-ClickHouse-User", user)
+    if password:
+        req.add_header("X-ClickHouse-Key", password)
+    try:
+        with urllib_request.urlopen(req, timeout=None) as response:
+            return response.read()
+    except urllib_error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"ClickHouse HTTP {exc.code} {exc.reason}: {body}") from exc
 
 
 def transient_clickhouse_error(exc: BaseException) -> bool:
@@ -1893,57 +1945,31 @@ def cancel_active_queries(*, client_opts: Mapping[str, str], active_queries: Act
     ids = sorted(active_queries.snapshot())
     if not ids:
         return 0
-    client = None
     try:
-        import clickhouse_connect  # type: ignore
-
-        parsed = urlparse(str(client_opts["clickhouse_url"]))
-        secure = parsed.scheme == "https"
-        client = clickhouse_connect.get_client(
-            host=parsed.hostname or "localhost",
-            port=parsed.port or (8443 if secure else 8123),
-            username=str(client_opts.get("user") or "default"),
-            password=str(client_opts.get("password") or ""),
-            secure=secure,
-        )
+        client = clickhouse_http_client(client_opts)
         quoted = ", ".join(sql_string(query_id) for query_id in ids)
-        client.command(f"KILL QUERY WHERE query_id IN ({quoted}) SYNC")
+        client.execute(f"KILL QUERY WHERE query_id IN ({quoted}) SYNC")
         return len(ids)
     except Exception:
         return 0
-    finally:
-        if client is not None:
-            try:
-                client.close()
-            except Exception:
-                pass
 
 
 def cancel_process_queries(*, client_opts: Mapping[str, str]) -> int:
-    client = None
     try:
-        import clickhouse_connect  # type: ignore
-
-        parsed = urlparse(str(client_opts["clickhouse_url"]))
-        secure = parsed.scheme == "https"
-        client = clickhouse_connect.get_client(
-            host=parsed.hostname or "localhost",
-            port=parsed.port or (8443 if secure else 8123),
-            username=str(client_opts.get("user") or "default"),
-            password=str(client_opts.get("password") or ""),
-            secure=secure,
-        )
+        client = clickhouse_http_client(client_opts)
         prefix_like = PROCESS_QUERY_ID_PREFIX + "%"
-        result = client.command(f"KILL QUERY WHERE query_id LIKE {sql_string(prefix_like)} SYNC")
+        result = client.execute(f"KILL QUERY WHERE query_id LIKE {sql_string(prefix_like)} SYNC")
         return count_killed_queries(result)
     except Exception:
         return 0
-    finally:
-        if client is not None:
-            try:
-                client.close()
-            except Exception:
-                pass
+
+
+def clickhouse_http_client(client_opts: Mapping[str, str]) -> ClickHouseHttpClient:
+    return ClickHouseHttpClient(
+        base_url=str(client_opts["clickhouse_url"]),
+        user=str(client_opts.get("user") or "default"),
+        password=str(client_opts.get("password") or ""),
+    )
 
 
 def count_killed_queries(result: Any) -> int:
