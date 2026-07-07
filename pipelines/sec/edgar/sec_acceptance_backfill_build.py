@@ -436,7 +436,7 @@ def insert_rows(client: ClickHouseHttpClient, database: str, table: str, rows: l
     if not valid_rows:
         return 0
     body = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) for row in valid_rows)
-    client.execute(f"INSERT INTO {quote_ident(database)}.{quote_ident(table)} FORMAT JSONEachRow\n{body}")
+    client.execute(f"INSERT INTO {quote_ident(database)}.{quote_ident(table)} SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{body}")
     return len(valid_rows)
 
 

@@ -124,7 +124,7 @@ def insert_coverage(
         "updated_at_utc": dt_text(now),
         "completed_at_utc": dt_text(now) if completed else None,
     }
-    client.execute(f"INSERT INTO {qi(config.database)}.{qi(config.coverage_table)} FORMAT JSONEachRow\n{json.dumps(row, default=str)}")
+    client.execute(f"INSERT INTO {qi(config.database)}.{qi(config.coverage_table)} SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{json.dumps(row, default=str)}")
 
 
 def load_intervals(client: ClickHouseHttpClient, config: SecCoverageConfig) -> list[CoverageInterval]:
@@ -337,4 +337,4 @@ def parse_dt(value: str) -> datetime:
 
 
 def dt_text(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "")
+    return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")

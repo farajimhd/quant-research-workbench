@@ -322,4 +322,4 @@ def filed_at(fact: dict[str, Any]) -> str | None:
     value = nullable_date(fact.get("filed"))
     if value is None:
         return None
-    return datetime.fromisoformat(value).replace(tzinfo=UTC).isoformat(timespec="milliseconds").replace("+00:00", "")
+    return datetime.fromisoformat(value).replace(tzinfo=UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")

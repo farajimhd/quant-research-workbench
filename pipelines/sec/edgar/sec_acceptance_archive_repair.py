@@ -449,7 +449,7 @@ def insert_parts(client: ClickHouseHttpClient, args: argparse.Namespace, part_fi
         if not body.strip():
             continue
         before = time.perf_counter()
-        client.execute(f"INSERT INTO {target} ({columns}) FORMAT JSONEachRow\n{body}")
+        client.execute(f"INSERT INTO {target} ({columns}) SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{body}")
         print(f"inserted_part={index:,}/{len(part_files):,} path={path.name} elapsed={time.perf_counter() - before:.2f}s", flush=True)
     print(f"insert_done parts={len(part_files):,} elapsed={time.perf_counter() - started:.1f}s", flush=True)
 

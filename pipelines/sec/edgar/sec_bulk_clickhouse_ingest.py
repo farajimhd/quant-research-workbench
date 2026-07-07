@@ -809,7 +809,7 @@ def insert_rows(client: ClickHouseHttpClient, database: str, table: str, rows: l
 
 def insert_rows_json(client: ClickHouseHttpClient, database: str, table: str, rows: list[dict[str, Any]]) -> None:
     body = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) for row in rows)
-    client.execute(f"INSERT INTO {quote_ident(database)}.{quote_ident(table)} FORMAT JSONEachRow\n{body}")
+    client.execute(f"INSERT INTO {quote_ident(database)}.{quote_ident(table)} SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{body}")
 
 
 def insert_rows_json_with_retry(
@@ -1095,7 +1095,7 @@ def accepted_at_utc(raw: str) -> str | None:
             parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+        return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f000Z")
     except ValueError:
         return None
 
@@ -1173,7 +1173,7 @@ def compact_json(value: Any) -> str:
 
 
 def clickhouse_datetime64_now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def write_report(path: Path, row: dict[str, Any]) -> None:

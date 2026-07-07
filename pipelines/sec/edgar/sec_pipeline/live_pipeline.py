@@ -64,7 +64,7 @@ class SecLiveFilingPipeline:
         response = self.http.get(url)
         raw_path = self.write_raw(item, response.body)
         filing = parse_filing(response.body, f"{item.accession_number}.txt")
-        inserted_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "")
+        inserted_at = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         archive_date = (item.updated_at_utc or datetime.now(UTC)).date()
         archive_date_text = archive_date.isoformat()
         payload: dict[str, Any] = {

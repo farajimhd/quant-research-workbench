@@ -245,7 +245,7 @@ class SecClickHouseWriter:
         if not rows:
             return
         body = "\n".join(json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=str) for row in rows)
-        self.client.execute(f"INSERT INTO {qi(self.database)}.{qi(table)} FORMAT JSONEachRow\n{body}")
+        self.client.execute(f"INSERT INTO {qi(self.database)}.{qi(table)} SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{body}")
 
 
 def qi(value: str) -> str:

@@ -144,13 +144,17 @@ def parse_acceptance_datetime(value: Any) -> str | None:
             parsed = datetime.fromisoformat(candidate)
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=UTC)
-            return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f000")
+            return format_utc_datetime64_json(parsed)
         except ValueError:
             pass
     digits = "".join(ch for ch in text if ch.isdigit())
     if len(digits) >= 14:
-        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]} {digits[8:10]}:{digits[10:12]}:{digits[12:14]}.000000000"
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}T{digits[8:10]}:{digits[10:12]}:{digits[12:14]}.000000000Z"
     return None
+
+
+def format_utc_datetime64_json(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f000Z")
 
 
 def clean_string(value: Any) -> str:

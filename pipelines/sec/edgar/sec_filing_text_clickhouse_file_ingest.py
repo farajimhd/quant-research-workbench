@@ -433,7 +433,7 @@ def insert_part_manifest(client: ClickHouseHttpClient, args: argparse.Namespace,
         "exception": profile.exception,
     }
     client.execute(
-        f"INSERT INTO {quote_ident(args.database)}.{quote_ident(args.part_manifest_table)} FORMAT JSONEachRow\n"
+        f"INSERT INTO {quote_ident(args.database)}.{quote_ident(args.part_manifest_table)} SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n"
         + json.dumps(row, ensure_ascii=False, default=str)
     )
 

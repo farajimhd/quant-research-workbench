@@ -673,7 +673,7 @@ def insert_batch(client: ClickHouseHttpClient, target: str, columns: str, rows: 
     if not rows:
         return 0
     body = "\n".join(rows)
-    client.execute(f"INSERT INTO {target} ({columns}) FORMAT JSONEachRow\n{body}")
+    client.execute(f"INSERT INTO {target} ({columns}) SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{body}")
     return len(rows)
 
 

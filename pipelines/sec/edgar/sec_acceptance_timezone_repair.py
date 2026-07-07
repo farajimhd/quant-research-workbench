@@ -312,7 +312,7 @@ def parse_db_datetime(value: Any) -> datetime | None:
 
 
 def build_replacement_rows(candidates: list[RepairCandidate], run_id: str) -> list[dict[str, Any]]:
-    inserted_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    inserted_at = format_dt3_json(datetime.now(UTC))
     rows: list[dict[str, Any]] = []
     for candidate in candidates:
         row = dict(candidate.row)
@@ -333,7 +333,7 @@ def insert_replacements(client: ClickHouseHttpClient, args: argparse.Namespace, 
     for start in range(0, len(rows), args.batch_size):
         batch = rows[start : start + args.batch_size]
         body = "\n".join(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in batch)
-        client.execute(f"INSERT INTO {target} ({columns}) FORMAT JSONEachRow\n{body}")
+        client.execute(f"INSERT INTO {target} ({columns}) SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{body}")
         inserted += len(batch)
         print(f"inserted_rows={inserted:,}/{len(rows):,}", flush=True)
     return inserted
@@ -477,7 +477,11 @@ def format_dt(value: datetime) -> str:
 
 
 def format_dt9(value: datetime) -> str:
-    return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f000")
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f000Z")
+
+
+def format_dt3_json(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 if __name__ == "__main__":
