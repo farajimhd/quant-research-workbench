@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import asyncio
+import signal
 import subprocess
 import sys
 import threading
@@ -44,6 +45,7 @@ class ReferenceDaemonState:
     poll_runs: int = 0
     poll_failures: int = 0
     last_error: str = ""
+    active_child_pid: int | None = None
     last_cycle: dict[str, Any] = field(default_factory=dict)
     recent_cycles: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=25))
 
@@ -109,13 +111,19 @@ class ReferenceDaemonState:
             "last_error": self.last_error,
             "runtime_log_path": self.runtime_log_path,
             "daemon_loop_enabled": self.config.daemon_loop_enabled,
+            "active_child_pid": self.active_child_pid or "",
             "last_cycle_returncode": self.last_cycle.get("returncode", ""),
             "last_cycle_elapsed_seconds": self.last_cycle.get("elapsed_seconds", ""),
             "last_cycle_active_window": self.last_cycle.get("active_window", ""),
             "last_cycle_started_at_utc": self.last_cycle.get("started_at_utc", ""),
             "tasks": [
                 {"name": "daemon parent", "status": self.status, "message": self.current_phase_message},
-                {"name": "child cycles", "status": "ok" if self.poll_failures == 0 else "warning", "rows": self.poll_runs, "message": "reference sync/audit child runs"},
+                {
+                    "name": "child cycles",
+                    "status": "running" if self.active_child_pid else ("ok" if self.poll_failures == 0 else "warning"),
+                    "rows": self.poll_runs,
+                    "message": f"active child pid={self.active_child_pid}" if self.active_child_pid else "reference sync/audit child runs",
+                },
                 *child_tasks,
             ],
         }
@@ -153,47 +161,77 @@ def run_reference_daemon(config: ReferenceGatewayConfig, base_args: list[str]) -
             logger.event("daemon_failed", reason="preflight_failed")
             state.record_error("preflight_failed")
             raise SystemExit(2)
-    while True:
-        cycle = run_daemon_cycle(config, base_args, log_path=log_path)
-        state.record_cycle(cycle)
-        logger.event(
-            "daemon_cycle_completed",
-            active_window=cycle.active_window,
-            returncode=cycle.returncode,
-            elapsed_seconds=cycle.elapsed_seconds,
-            next_seconds=cycle.interval_seconds,
-            command=cycle.command,
-            parent_memory=memory_snapshot("daemon_cycle_completed").public_dict(),
-        )
-        print(
-            "reference_gateway_daemon_cycle="
-            f"active_window={cycle.active_window} returncode={cycle.returncode} "
-            f"elapsed_seconds={cycle.elapsed_seconds:.1f} next_seconds={cycle.interval_seconds:.1f}",
-            flush=True,
-        )
-        if cycle.returncode != 0:
-            logger.event("daemon_stopped", reason="child_cycle_failed", returncode=cycle.returncode)
-            raise SystemExit(cycle.returncode)
-        time.sleep(max(5.0, cycle.interval_seconds))
+    try:
+        while True:
+            cycle = run_daemon_cycle(config, base_args, log_path=log_path, state=state, logger=logger)
+            state.record_cycle(cycle)
+            logger.event(
+                "daemon_cycle_completed",
+                active_window=cycle.active_window,
+                returncode=cycle.returncode,
+                elapsed_seconds=cycle.elapsed_seconds,
+                next_seconds=cycle.interval_seconds,
+                command=cycle.command,
+                parent_memory=memory_snapshot("daemon_cycle_completed").public_dict(),
+            )
+            print(
+                "reference_gateway_daemon_cycle="
+                f"active_window={cycle.active_window} returncode={cycle.returncode} "
+                f"elapsed_seconds={cycle.elapsed_seconds:.1f} next_seconds={cycle.interval_seconds:.1f}",
+                flush=True,
+            )
+            if cycle.returncode != 0:
+                logger.event("daemon_stopped", reason="child_cycle_failed", returncode=cycle.returncode)
+                raise SystemExit(cycle.returncode)
+            sleep_for_next_cycle(cycle.interval_seconds, state=state, logger=logger)
+    except KeyboardInterrupt:
+        state.touch("stopping", "keyboard_interrupt", "Ctrl+C received; reference gateway daemon is stopping.")
+        logger.event("daemon_stopped", reason="keyboard_interrupt")
+        print("reference_gateway_daemon=stopped reason=keyboard_interrupt", flush=True)
+        raise SystemExit(130) from None
 
 
-def run_daemon_cycle(config: ReferenceGatewayConfig, base_args: list[str], *, log_path) -> DaemonCycle:
+def run_daemon_cycle(
+    config: ReferenceGatewayConfig,
+    base_args: list[str],
+    *,
+    log_path: Path,
+    state: ReferenceDaemonState,
+    logger: RuntimeLogger,
+) -> DaemonCycle:
     started = time.perf_counter()
     active = active_collection_window(service_prefix="REFERENCE")
     command = [sys.executable, "-m", "services.reference_gateway.main"]
     command.extend(child_cycle_args(base_args))
     env = dict(os.environ)
     env[RUNTIME_LOG_ENV] = str(log_path)
+    process: subprocess.Popen[Any] | None = None
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(  # noqa: S603
             command,
-            check=False,
             env=env,
-            timeout=config.daemon_child_timeout_seconds if config.daemon_child_timeout_seconds > 0 else None,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            start_new_session=os.name != "nt",
         )
-        returncode = completed.returncode
+        state.active_child_pid = process.pid
+        state.touch("running", "child_cycle_running", f"Reference sync child is running pid={process.pid}.")
+        logger.event("daemon_child_started", pid=process.pid, active_window=active, command=command)
+        returncode = wait_for_child_cycle(
+            process,
+            timeout_seconds=config.daemon_child_timeout_seconds if config.daemon_child_timeout_seconds > 0 else None,
+            logger=logger,
+        )
     except subprocess.TimeoutExpired:
+        if process is not None:
+            terminate_child_process(process, reason="timeout", logger=logger)
         returncode = 124
+    except KeyboardInterrupt:
+        if process is not None:
+            state.touch("stopping", "keyboard_interrupt", f"Ctrl+C received; stopping child pid={process.pid}.")
+            terminate_child_process(process, reason="keyboard_interrupt", logger=logger)
+        raise
+    finally:
+        state.active_child_pid = None
     interval = config.daemon_active_interval_seconds if active else config.daemon_after_hours_interval_seconds
     return DaemonCycle(
         started_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -203,6 +241,79 @@ def run_daemon_cycle(config: ReferenceGatewayConfig, base_args: list[str], *, lo
         returncode=returncode,
         elapsed_seconds=time.perf_counter() - started,
     )
+
+
+def wait_for_child_cycle(
+    process: subprocess.Popen[Any],
+    *,
+    timeout_seconds: float | None,
+    logger: RuntimeLogger,
+) -> int:
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+    while True:
+        returncode = process.poll()
+        if returncode is not None:
+            logger.event("daemon_child_completed", pid=process.pid, returncode=returncode)
+            return int(returncode)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise subprocess.TimeoutExpired(process.args, timeout_seconds)
+        time.sleep(0.25)
+
+
+def terminate_child_process(process: subprocess.Popen[Any], *, reason: str, logger: RuntimeLogger) -> None:
+    if process.poll() is not None:
+        return
+    logger.event("daemon_child_terminating", pid=process.pid, reason=reason)
+    try:
+        if os.name == "nt":
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            process.terminate()
+    except Exception as exc:  # noqa: BLE001
+        logger.event("daemon_child_terminate_signal_failed", pid=process.pid, reason=reason, error=repr(exc))
+        try:
+            process.terminate()
+        except Exception as terminate_exc:  # noqa: BLE001
+            logger.event("daemon_child_terminate_failed", pid=process.pid, reason=reason, error=repr(terminate_exc))
+    try:
+        process.wait(timeout=15)
+        logger.event("daemon_child_terminated", pid=process.pid, reason=reason, returncode=process.returncode)
+        return
+    except subprocess.TimeoutExpired:
+        logger.event("daemon_child_killing", pid=process.pid, reason=reason)
+    kill_child_process_tree(process, reason=reason, logger=logger)
+
+
+def kill_child_process_tree(process: subprocess.Popen[Any], *, reason: str, logger: RuntimeLogger) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(  # noqa: S603
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        process.kill()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    logger.event("daemon_child_killed", pid=process.pid, reason=reason, returncode=process.returncode)
+
+
+def sleep_for_next_cycle(interval_seconds: float, *, state: ReferenceDaemonState, logger: RuntimeLogger) -> None:
+    remaining = max(5.0, interval_seconds)
+    state.touch("running", "waiting_for_next_cycle", f"Sleeping {remaining:.1f}s before next reference sync cycle.")
+    logger.event("daemon_sleep_started", seconds=remaining)
+    deadline = time.monotonic() + remaining
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            logger.event("daemon_sleep_completed", seconds=remaining)
+            return
+        time.sleep(min(1.0, left))
 
 
 def child_cycle_args(base_args: list[str]) -> list[str]:
