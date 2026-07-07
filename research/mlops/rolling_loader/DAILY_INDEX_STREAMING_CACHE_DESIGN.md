@@ -437,6 +437,13 @@ WHERE ticker = {ticker}
 ORDER BY ordinal
 ```
 
+If the implementation adds an `event_date` predicate for ClickHouse partition
+pruning, that predicate must be derived from the UTC SIP timestamp bounds for
+the planned range, not from the source/local trading date. A local session can
+cross UTC midnight during after-hours, so `event_date = source_date` can drop
+valid late-session rows even though their ordinals are inside the planned
+range.
+
 Fetch output should be Arrow or Polars. Python row iteration is not acceptable
 for the hot path.
 

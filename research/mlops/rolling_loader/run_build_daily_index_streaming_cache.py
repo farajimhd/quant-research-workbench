@@ -1491,8 +1491,8 @@ def build_event_jobs(args: argparse.Namespace, units: list[EventDailyUnit]) -> t
                         ordinal_end=end,
                         expected_rows=end - start + 1,
                         source_date=unit.source_date,
-                        event_date_start=unit.source_date,
-                        event_date_end=(dt.date.fromisoformat(unit.source_date) + dt.timedelta(days=1)).isoformat(),
+                        event_date_start=utc_date_from_timestamp_us(unit.first_sip_timestamp_us),
+                        event_date_end=(dt.date.fromisoformat(utc_date_from_timestamp_us(unit.last_sip_timestamp_us)) + dt.timedelta(days=1)).isoformat(),
                         origin_first_ordinal=unit.first_ordinal,
                         origin_last_ordinal=unit.last_ordinal,
                         first_sip_timestamp_us=unit.first_sip_timestamp_us,
@@ -1543,6 +1543,10 @@ def build_modality_jobs(
                 )
             )
     return jobs
+
+
+def utc_date_from_timestamp_us(timestamp_us: int) -> str:
+    return dt.datetime.fromtimestamp(int(timestamp_us) / 1_000_000.0, tz=dt.timezone.utc).date().isoformat()
 
 
 def event_query(*, args: argparse.Namespace, job: EventFetchJob) -> str:
