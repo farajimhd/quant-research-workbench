@@ -452,6 +452,10 @@ for the hot path.
 Event processing is intentionally light. It should be vectorized with Polars
 and/or NumPy, but it is not the place for intraday bar or label computation.
 The heavy event-derived calculations belong in the intraday-label pipeline.
+However, intraday labels are not allowed to run their own ClickHouse event
+fetch. The event process stage is the single producer of processed event frames.
+When an origin event frame is complete, it is routed to the intraday-label
+process queue.
 
 Required event process steps:
 
@@ -476,6 +480,11 @@ The process worker must not encode event chunks. Event-window materialization is
 a loader responsibility, constrained by the cached event lookback capacity.
 The process worker must also not compute future intraday bars or labels. Those
 are separate modality outputs with their own process workers.
+
+If a ticker/day is split by `CHUNK_SIZE`, the intraday-label router accumulates
+all split event frames for that `(month, ticker, source_date)` and emits one
+label process job only after every split is present. This preserves day-level
+bar integrity and prevents labels from being computed on partial event streams.
 
 ## Event Write
 
@@ -514,10 +523,18 @@ origin_ordinal
 origin_timestamp_us
 ```
 
-The first implementation can compute labels from the processed event stream for
-the same ticker/day/month when available. If labels need future events beyond
-the current month, the label planner must request a future context extension
-explicitly and tag those rows as label-only context.
+Intraday labels are computed from the processed event stream for the same
+ticker/day/month. They are a derived pipeline:
+
+```text
+event fetch -> event process -> intraday-label router -> intraday-label process -> intraday-label write
+```
+
+There are no intraday-label ClickHouse fetch workers. The label process stage
+receives a complete processed ticker/day event frame, builds base bars and
+condition bars in memory, and writes the label files. If labels need future
+events beyond the current month, the label planner must request a future
+context extension explicitly and tag those rows as label-only context.
 
 Label outputs should remain source-aligned and horizon-aligned:
 
@@ -679,17 +696,21 @@ because all modality pipelines start together:
 | Modality | Fetch | Process | Write | Total |
 | --- | ---: | ---: | ---: | ---: |
 | Events | 16 | 2 | 8 | 26 |
-| Intraday labels | 6 | 20 | 6 | 32 |
+| Intraday labels | 0 | 20 | 6 | 26 |
 | Macro bars | 3 | 6 | 3 | 12 |
 | News embeddings | 3 | 2 | 2 | 7 |
 | SEC embeddings | 3 | 2 | 2 | 7 |
 | XBRL | 3 | 4 | 2 | 9 |
 | Corporate actions | 1 | 1 | 1 | 3 |
-| **Total** | **35** | **37** | **24** | **96** |
+| **Total** | **29** | **37** | **24** | **90** |
 
 These are worker slots, not guaranteed simultaneous ClickHouse queries or disk
 writes. Global caps such as `--max-active-clickhouse-queries` and
 `--max-active-writers` still limit the truly concurrent I/O operations.
+`--max-active-clickhouse-queries=0` means auto-size the ClickHouse cap to the
+sum of selected ClickHouse fetch workers. Derived modalities, currently
+`intraday_labels`, are excluded from that sum because they do not query
+ClickHouse directly.
 
 The actual implementation should allow disabling modalities:
 

@@ -193,6 +193,14 @@ class GenericProcessedPayload:
     process_seconds: float
 
 
+@dataclass(frozen=True, slots=True)
+class IntradayLabelPlan:
+    key: tuple[str, str, str]
+    job: ModalityJob
+    expected_chunks: int
+    expected_rows: int
+
+
 @dataclass(slots=True)
 class WrittenPart:
     modality: str
@@ -333,6 +341,55 @@ class ActiveQueries:
     def snapshot(self) -> dict[str, str]:
         with self._lock:
             return dict(self._queries)
+
+
+class IntradayLabelRouter:
+    def __init__(
+        self,
+        *,
+        plans: Mapping[tuple[str, str, str], IntradayLabelPlan],
+        key_by_event_job_id: Mapping[str, tuple[str, str, str]],
+        process_queue: PayloadQueue,
+        state: "BuildState",
+    ) -> None:
+        self._plans = dict(plans)
+        self._key_by_event_job_id = dict(key_by_event_job_id)
+        self._process_queue = process_queue
+        self._state = state
+        self._lock = threading.Lock()
+        self._frames_by_key: dict[tuple[str, str, str], list[Any]] = defaultdict(list)
+        self._chunks_by_key: dict[tuple[str, str, str], int] = defaultdict(int)
+
+    def add(self, payload: ProcessedPayload, *, stop_event: threading.Event) -> None:
+        key = self._key_by_event_job_id.get(payload.job.job_id)
+        if key is None:
+            return
+        plan = self._plans[key]
+        frames_to_emit: list[Any] | None = None
+        with self._lock:
+            self._frames_by_key[key].append(payload.events)
+            self._chunks_by_key[key] += 1
+            if self._chunks_by_key[key] < int(plan.expected_chunks):
+                return
+            if self._chunks_by_key[key] != int(plan.expected_chunks):
+                raise RuntimeError(f"Intraday label plan {plan.job.job_id} received too many event chunks.")
+            frames_to_emit = self._frames_by_key.pop(key)
+            self._chunks_by_key.pop(key, None)
+        events = concat_event_frames(frames_to_emit)
+        if int(events.height) != int(plan.expected_rows):
+            raise RuntimeError(f"{plan.job.job_id} expected {plan.expected_rows:,} event rows for labels, got {int(events.height):,}.")
+        label_payload = GenericFetchedPayload(
+            job=plan.job,
+            frames={"events": events},
+            row_count=int(events.height),
+            estimated_bytes=frame_estimated_bytes(events),
+            query_id=payload.fetch_query_id,
+            seconds=0.0,
+        )
+        self._process_queue.put(label_payload, label_payload.estimated_bytes, stop_event)
+        stats = self._state.modality("Intraday Labels")
+        stats.fetched_units += progress_units_for_job(plan.job)
+        stats.fetch_done += 1
 
 
 class BuildState:
@@ -683,7 +740,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-token-contexts", action="store_true")
     parser.add_argument("--max-fetched-queue-gib", type=float, default=96.0)
     parser.add_argument("--max-processed-queue-gib", type=float, default=96.0)
-    parser.add_argument("--max-active-clickhouse-queries", type=int, default=16)
+    parser.add_argument("--max-active-clickhouse-queries", type=int, default=0, help="Global ClickHouse fetch-query cap. 0 auto-sizes to the sum of selected ClickHouse fetch workers.")
     parser.add_argument("--max-active-writers", type=int, default=8)
     parser.add_argument("--max-threads", type=int, default=8)
     parser.add_argument("--max-memory-usage", default="120G")
@@ -710,6 +767,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     load_env_files(discover_clickhouse_env_files(), verbose=True)
     data_groups = normalize_data_groups(args.data_groups)
+    validate_data_group_dependencies(data_groups)
+    args.max_active_clickhouse_queries = resolved_active_clickhouse_queries(args, data_groups)
     months = parse_months(args)
     cache_id = args.cache_id or default_cache_id(months=months, data_groups=data_groups)
     cache_root = Path(args.cache_root) / cache_id
@@ -772,6 +831,10 @@ def run(
         data_groups = set(build_state.data_groups)
         if "events" not in data_groups:
             event_jobs = []
+        intraday_plans: dict[tuple[str, str, str], IntradayLabelPlan] = {}
+        intraday_event_keys: dict[str, tuple[str, str, str]] = {}
+        if "intraday_labels" in data_groups:
+            intraday_plans, intraday_event_keys = build_intraday_label_plan(event_jobs)
         modality_jobs = build_modality_jobs(args=args, units_by_package=units_by_package, data_groups=build_state.data_groups)
         expected_units = 0
         total_jobs = len(event_jobs)
@@ -780,6 +843,12 @@ def run(
             event_stats.expected_units = sum(job.expected_rows for job in event_jobs)
             event_stats.fetch_jobs = len(event_jobs)
             expected_units += int(event_stats.expected_units)
+        if "intraday_labels" in data_groups:
+            intraday_stats = build_state.modalities["Intraday Labels"]
+            intraday_stats.expected_units = sum(plan.expected_rows for plan in intraday_plans.values())
+            intraday_stats.fetch_jobs = len(intraday_plans)
+            expected_units += int(intraday_stats.expected_units)
+            total_jobs += len(intraday_plans)
         for jobs_for_group in modality_jobs.values():
             if not jobs_for_group:
                 continue
@@ -806,6 +875,12 @@ def run(
             for _ in range(max(1, int(args.event_fetch_workers))):
                 fetch_queue.put(None)
             pipelines["events"] = PipelineQueues(fetch_queue=fetch_queue, process_queue=process_queue, write_queue=write_queue)
+        if "intraday_labels" in data_groups:
+            pipelines["intraday_labels"] = PipelineQueues(
+                fetch_queue=queue.Queue(),
+                process_queue=PayloadQueue("intraday_labels_process_queue", int(float(args.max_fetched_queue_gib) * 1024**3)),
+                write_queue=PayloadQueue("intraday_labels_write_queue", int(float(args.max_processed_queue_gib) * 1024**3)),
+            )
         for data_group, jobs_for_group in modality_jobs.items():
             fetch_queue_generic: queue.Queue[ModalityJob | None] = queue.Queue()
             process_queue_generic = PayloadQueue(f"{data_group}_process_queue", int(float(args.max_fetched_queue_gib) * 1024**3))
@@ -818,6 +893,10 @@ def run(
 
         build_state.status = "running"
         threads: list[threading.Thread] = []
+        intraday_router = None
+        if "intraday_labels" in data_groups:
+            intraday_pipeline = pipelines["intraday_labels"]
+            intraday_router = IntradayLabelRouter(plans=intraday_plans, key_by_event_job_id=intraday_event_keys, process_queue=intraday_pipeline.process_queue, state=build_state)
         if "events" in data_groups:
             event_stats = build_state.modalities["Events"]
             event_pipeline = pipelines["events"]
@@ -826,7 +905,7 @@ def run(
                 thread.start()
                 threads.append(thread)
             for slot in [worker for worker in event_stats.workers if worker.process_name == "Process"]:
-                thread = threading.Thread(target=event_process_worker, name=f"event-process-{slot.worker_id:02d}", args=(slot, event_pipeline.process_queue, event_pipeline.write_queue, build_state, stop_event))
+                thread = threading.Thread(target=event_process_worker, name=f"event-process-{slot.worker_id:02d}", args=(slot, event_pipeline.process_queue, event_pipeline.write_queue, build_state, stop_event, intraday_router))
                 thread.start()
                 threads.append(thread)
             for slot in [worker for worker in event_stats.workers if worker.process_name == "Write"]:
@@ -841,6 +920,18 @@ def run(
                 thread = threading.Thread(target=generic_fetch_worker, name=f"{data_group}-fetch-{slot.worker_id:02d}", args=(slot, data_group, args, client_opts, config, pipeline.fetch_queue, pipeline.process_queue, build_state, stop_event, active_queries, query_slots))
                 thread.start()
                 threads.append(thread)
+            for slot in [worker for worker in stats.workers if worker.process_name == "Process"]:
+                thread = threading.Thread(target=generic_process_worker, name=f"{data_group}-process-{slot.worker_id:02d}", args=(slot, data_group, pipeline.process_queue, pipeline.write_queue, build_state, stop_event))
+                thread.start()
+                threads.append(thread)
+            for slot in [worker for worker in stats.workers if worker.process_name == "Write"]:
+                thread = threading.Thread(target=generic_write_worker, name=f"{data_group}-write-{slot.worker_id:02d}", args=(slot, data_group, pipeline.write_queue, build_state, stop_event, writer_slots))
+                thread.start()
+                threads.append(thread)
+        if "intraday_labels" in data_groups:
+            data_group = "intraday_labels"
+            stats = build_state.modalities["Intraday Labels"]
+            pipeline = pipelines[data_group]
             for slot in [worker for worker in stats.workers if worker.process_name == "Process"]:
                 thread = threading.Thread(target=generic_process_worker, name=f"{data_group}-process-{slot.worker_id:02d}", args=(slot, data_group, pipeline.process_queue, pipeline.write_queue, build_state, stop_event))
                 thread.start()
@@ -928,7 +1019,14 @@ def event_fetch_worker(
             fetch_queue.task_done()
 
 
-def event_process_worker(slot: WorkerSlot, process_queue: PayloadQueue, write_queue: PayloadQueue, state: BuildState, stop_event: threading.Event) -> None:
+def event_process_worker(
+    slot: WorkerSlot,
+    process_queue: PayloadQueue,
+    write_queue: PayloadQueue,
+    state: BuildState,
+    stop_event: threading.Event,
+    intraday_router: IntradayLabelRouter | None = None,
+) -> None:
     stats = state.modality("Events")
     while not stop_event.is_set():
         try:
@@ -947,6 +1045,8 @@ def event_process_worker(slot: WorkerSlot, process_queue: PayloadQueue, write_qu
             processed = process_events(payload)
             slot.completed = int(processed.events.height)
             slot.rate = slot.completed / max(0.001, processed.process_seconds)
+            if intraday_router is not None:
+                intraday_router.add(processed, stop_event=stop_event)
             write_queue.put(processed, processed.estimated_bytes, stop_event)
             stats.processed_units += int(processed.events.height)
             stats.process_done += 1
@@ -1263,18 +1363,7 @@ def fetch_generic_modality(
 def query_generic_frames(*, args: argparse.Namespace, client_opts: Mapping[str, str], config: Any, job: ModalityJob, query_id: str) -> dict[str, Any]:
     window = cache_month_window(job.month)
     if job.data_group == "intraday_labels":
-        event_job = EventFetchJob(
-            modality="events",
-            job_id=job.job_id,
-            month=job.month,
-            ticker=job.ticker,
-            kind="origin",
-            part_id=job.part_id,
-            ordinal_start=job.ordinal_start,
-            ordinal_end=job.ordinal_end,
-            expected_rows=max(0, int(job.ordinal_end) - int(job.ordinal_start) + 1),
-        )
-        return {"events": query_polars(client_opts=client_opts, query=event_query(args=args, job=event_job), query_id=query_id, retries=int(args.clickhouse_query_retries), backoff_seconds=float(args.clickhouse_query_retry_backoff_seconds))}
+        raise RuntimeError("intraday_labels are derived from processed event frames and must not fetch ClickHouse directly.")
     if job.data_group == "macro_bars":
         symbols = tuple(config.global_symbols) if job.scope == "global" else (job.ticker,)
         return {"macro_bars": _query_daily_bars(args, client_opts, config, window, symbols=symbols)}
@@ -1510,7 +1599,7 @@ def build_modality_jobs(
     data_groups: tuple[str, ...],
 ) -> dict[str, list[ModalityJob]]:
     groups = set(data_groups)
-    jobs: dict[str, list[ModalityJob]] = {group: [] for group in groups if group != "events"}
+    jobs: dict[str, list[ModalityJob]] = {group: [] for group in groups if group not in {"events", "intraday_labels"}}
     for group in sorted(jobs):
         part_id = 0
         months_seen: set[str] = set()
@@ -1543,6 +1632,41 @@ def build_modality_jobs(
                 )
             )
     return jobs
+
+
+def build_intraday_label_plan(event_jobs: Iterable[EventFetchJob]) -> tuple[dict[tuple[str, str, str], IntradayLabelPlan], dict[str, tuple[str, str, str]]]:
+    grouped: dict[tuple[str, str, str], list[EventFetchJob]] = defaultdict(list)
+    for job in event_jobs:
+        if job.kind != "origin":
+            continue
+        if not job.source_date:
+            raise RuntimeError(f"Origin event job {job.job_id} is missing source_date.")
+        grouped[(job.month, job.ticker, job.source_date)].append(job)
+    plans: dict[tuple[str, str, str], IntradayLabelPlan] = {}
+    key_by_event_job_id: dict[str, tuple[str, str, str]] = {}
+    part_id = 0
+    for key, jobs_for_day in sorted(grouped.items()):
+        month, ticker, source_date = key
+        ordered = sorted(jobs_for_day, key=lambda item: (item.ordinal_start, item.ordinal_end, item.part_id))
+        part_id += 1
+        expected_rows = sum(int(job.expected_rows) for job in ordered)
+        plan_job = ModalityJob(
+            modality=MODALITY_BY_DATA_GROUP["intraday_labels"],
+            data_group="intraday_labels",
+            job_id=f"{month}|{ticker}|{source_date}|intraday_labels",
+            month=month,
+            ticker=ticker,
+            scope="ticker",
+            part_id=part_id,
+            expected_rows=expected_rows,
+            ordinal_start=int(ordered[0].ordinal_start),
+            ordinal_end=int(ordered[-1].ordinal_end),
+            output_name=source_date,
+        )
+        plans[key] = IntradayLabelPlan(key=key, job=plan_job, expected_chunks=len(ordered), expected_rows=expected_rows)
+        for job in ordered:
+            key_by_event_job_id[job.job_id] = key
+    return plans, key_by_event_job_id
 
 
 def utc_date_from_timestamp_us(timestamp_us: int) -> str:
@@ -1823,11 +1947,26 @@ def normalize_data_groups(value: str) -> tuple[str, ...]:
     return tuple(groups or ("events",))
 
 
+def validate_data_group_dependencies(data_groups: tuple[str, ...]) -> None:
+    groups = set(data_groups)
+    if "intraday_labels" in groups and "events" not in groups:
+        raise ValueError("intraday_labels requires events because labels are derived from processed event frames.")
+
+
+def resolved_active_clickhouse_queries(args: argparse.Namespace, data_groups: tuple[str, ...]) -> int:
+    configured = int(args.max_active_clickhouse_queries)
+    if configured > 0:
+        return configured
+    fetch_groups = [group for group in data_groups if group != "intraday_labels"]
+    return max(1, sum(worker_count(args, group, "fetch") for group in fetch_groups))
+
+
 def initialize_modality_stats(build_state: BuildState, *, args: argparse.Namespace, data_groups: tuple[str, ...]) -> None:
     for group in data_groups:
         name = MODALITY_BY_DATA_GROUP[group]
         stats = ModalityStats(name=name)
-        add_workers(stats, "Fetch", worker_count(args, group, "fetch"))
+        if group != "intraday_labels":
+            add_workers(stats, "Fetch", worker_count(args, group, "fetch"))
         add_workers(stats, "Process", worker_count(args, group, "process"))
         add_workers(stats, "Write", worker_count(args, group, "write"))
         build_state.modalities[name] = stats
@@ -1953,9 +2092,10 @@ def generic_output_dir(*, cache_root: Path, job: ModalityJob) -> Path:
 
 def generic_output_file_name(job: ModalityJob, frame_name: str) -> str:
     stem = safe_token(frame_name)
+    tag = f"_{safe_token(job.output_name)}" if job.output_name else ""
     if job.scope == "global":
-        return f"{stem}_part_{job.part_id:06d}.parquet"
-    return f"{stem}_part_{job.part_id:06d}_{safe_token(job.ticker)}.parquet"
+        return f"{stem}_part_{job.part_id:06d}{tag}.parquet"
+    return f"{stem}_part_{job.part_id:06d}{tag}_{safe_token(job.ticker)}.parquet"
 
 
 def generic_job_label(job: ModalityJob) -> str:
@@ -1992,6 +2132,16 @@ def frame_estimated_bytes(frame: Any) -> int:
         return int(frame.estimated_size())
     except Exception:
         return int(getattr(frame, "height", 0) or 0) * max(1, int(getattr(frame, "width", 1) or 1)) * 8
+
+
+def concat_event_frames(frames: Iterable[Any]) -> Any:
+    items = [frame for frame in frames if frame is not None and int(getattr(frame, "height", 0) or 0) > 0]
+    if not items:
+        return polars().DataFrame()
+    if len(items) == 1:
+        return items[0].sort("ordinal")
+    pl = polars()
+    return pl.concat(items, how="vertical_relaxed", rechunk=True).sort("ordinal")
 
 
 def polars() -> Any:
