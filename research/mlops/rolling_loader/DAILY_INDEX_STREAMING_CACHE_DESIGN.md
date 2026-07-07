@@ -688,21 +688,23 @@ process light. One event process worker is functionally enough for simple
 validation and metadata, but the default uses two so validation can overlap
 with writes without creating a large process queue. Intraday labels are process
 heavy because they compute event-derived future bars and flags. Sparse contexts
-are usually lighter.
+are fetch/write dominated; their process stage is intentionally one worker for
+audit and payload handoff only.
 
-Suggested first-run defaults on the workstation should sum to 96 worker slots
-because all modality pipelines start together:
+Suggested first-run defaults on the workstation keep the total worker count
+near the prior 96-slot target while moving pass-through sparse-context process
+capacity into fetch/write capacity:
 
 | Modality | Fetch | Process | Write | Total |
 | --- | ---: | ---: | ---: | ---: |
-| Events | 16 | 2 | 8 | 26 |
-| Intraday labels | 0 | 20 | 6 | 26 |
-| Macro bars | 3 | 6 | 3 | 12 |
-| News embeddings | 3 | 2 | 2 | 7 |
-| SEC embeddings | 3 | 2 | 2 | 7 |
-| XBRL | 3 | 4 | 2 | 9 |
+| Events | 16 | 2 | 12 | 30 |
+| Intraday labels | 0 | 20 | 8 | 28 |
+| Macro bars | 4 | 1 | 4 | 9 |
+| News embeddings | 3 | 1 | 3 | 7 |
+| SEC embeddings | 3 | 1 | 3 | 7 |
+| XBRL | 4 | 1 | 3 | 8 |
 | Corporate actions | 1 | 1 | 1 | 3 |
-| **Total** | **29** | **37** | **24** | **90** |
+| **Total** | **31** | **27** | **34** | **92** |
 
 These are worker slots, not guaranteed simultaneous ClickHouse queries or disk
 writes. Global caps such as `--max-active-clickhouse-queries` and
@@ -711,6 +713,8 @@ writes. Global caps such as `--max-active-clickhouse-queries` and
 sum of selected ClickHouse fetch workers. Derived modalities, currently
 `intraday_labels`, are excluded from that sum because they do not query
 ClickHouse directly.
+The default `--max-active-writers` is `16`, so the larger write-worker pool
+does not overload the SSD with every write worker at once.
 
 The actual implementation should allow disabling modalities:
 
