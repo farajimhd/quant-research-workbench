@@ -664,17 +664,23 @@ with writes without creating a large process queue. Intraday labels are process
 heavy because they compute event-derived future bars and flags. Sparse contexts
 are usually lighter.
 
-Suggested first-run defaults on the workstation:
+Suggested first-run defaults on the workstation should sum to 96 worker slots
+because all modality pipelines start together:
 
-| Modality | Fetch | Process | Write |
-| --- | ---: | ---: | ---: |
-| Events | 16 | 2 | 12 |
-| Intraday labels | 8 | 24 | 8 |
-| Macro bars | 4 | 8 | 4 |
-| News embeddings | 4 | 4 | 4 |
-| SEC embeddings | 4 | 4 | 4 |
-| XBRL | 4 | 8 | 4 |
-| Corporate actions | 2 | 4 | 2 |
+| Modality | Fetch | Process | Write | Total |
+| --- | ---: | ---: | ---: | ---: |
+| Events | 16 | 2 | 8 | 26 |
+| Intraday labels | 6 | 20 | 6 | 32 |
+| Macro bars | 3 | 6 | 3 | 12 |
+| News embeddings | 3 | 2 | 2 | 7 |
+| SEC embeddings | 3 | 2 | 2 | 7 |
+| XBRL | 3 | 4 | 2 | 9 |
+| Corporate actions | 1 | 1 | 1 | 3 |
+| **Total** | **35** | **37** | **24** | **96** |
+
+These are worker slots, not guaranteed simultaneous ClickHouse queries or disk
+writes. Global caps such as `--max-active-clickhouse-queries` and
+`--max-active-writers` still limit the truly concurrent I/O operations.
 
 The actual implementation should allow disabling modalities:
 
