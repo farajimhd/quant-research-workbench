@@ -30,6 +30,7 @@ the ticker/month cache and loader.
 | Loader batch audit | `audit_ticker_month_loader_batches.py` | Verifies materialized batches against SSD package files. |
 | Loader batch inspection notebook | `notebooks/ticker_month_loader_batch_inspection.ipynb` | Loads an interactive batch and inspects identities, shapes, masks, labels, text embeddings, XBRL, and bars. |
 | Cache design guide | `TICKER_MONTH_SSD_CACHE_DESIGN.md` | Detailed design rationale and storage contract. |
+| Daily-index streaming cache design | `DAILY_INDEX_STREAMING_CACHE_DESIGN.md` | Replacement builder design based on daily index units, modality pipelines, bounded fetch/process/write queues, fixed-row Rich panels, and explicit event context ordinals. |
 | Legacy stateful replay | `loader.py`, `initialize.py`, `run_training_profile.py` | Older production-style replay/profiling path. |
 
 ## Ticker/Month SSD Cache
