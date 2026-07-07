@@ -143,4 +143,40 @@ LIMIT 20;
 
 ## After Repair
 
-Restart `text_embed_gateway` or let its next live cycle run. If it already built bad SEC context rows before this repair, rebuild that affected context/embedding window separately.
+If `text_embed_gateway` already consumed the bad rows, fixing
+`q_live.sec_filing_v2` is not enough. The downstream tables copy both
+`accepted_at_utc` and `timestamp_us`, and SEC tokenization includes
+`accepted_at_utc` in the model text. Stale downstream rows must be invalidated
+and rebuilt.
+
+Run the downstream dry run:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_acceptance_downstream_repair.py --lookback-hours 168
+```
+
+If the summary reports `bad_parent_rows > 0`, run the parent repair first:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_acceptance_timezone_repair.py --lookback-hours 168 --execute
+```
+
+Then rerun the downstream repair:
+
+```powershell
+python D:\TradingCodes\quant-research-workbench\pipelines\sec\edgar\sec_acceptance_downstream_repair.py --lookback-hours 168 --execute
+```
+
+The downstream repair deletes stale rows from:
+
+```text
+market_sip_compact.sec_filing_context
+market_sip_compact.sec_filing_text_context
+market_sip_compact.sec_filing_text_tokens
+market_sip_compact.sec_filing_text_embeddings
+market_sip_compact.text_embedding_coverage_v1
+```
+
+It rebuilds the corrected SEC context rows. Token and embedding rows are then
+recreated by `text_embed_gateway` from the corrected context. Restart
+`text_embed_gateway` after the downstream repair if it is already running.
