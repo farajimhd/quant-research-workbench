@@ -38,13 +38,56 @@ from research.mlops.env import load_env_files, secret_status  # noqa: E402
 DEFAULT_DATABASE = "market_sip_compact"
 DEFAULT_EVENTS_TABLE = "events"
 DEFAULT_INTRADAY_BASE_BARS_TABLE = "intraday_base_bars_by_time_ticker"
+DEFAULT_INTRADAY_CONDITION_BARS_TABLE = "intraday_condition_bars_by_time_ticker"
+DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE = "event_condition_token_reference"
 DEFAULT_STATUS_TABLE = "intraday_base_bars_build_status"
 DEFAULT_RESOLUTIONS = "100ms,1s,5s,30s,60s"
 DEFAULT_OUTPUT_ROOT = Path("D:/market-data/prepared/clickhouse_sip_ingest/intraday_base_bars")
 SESSION_TIMEZONE = "America/New_York"
 SESSION_START_SECOND = 4 * 60 * 60
 SESSION_END_SECOND = 20 * 60 * 60
-BUILD_VERSION_PREFIX = "v1_clickhouse_daily_intraday_base_bars"
+BUILD_VERSION_PREFIX = "v2_clickhouse_daily_intraday_base_and_condition_bars"
+
+FUTURE_CONDITION_GROUPS: tuple[tuple[str, tuple[tuple[str, tuple[int, ...]], ...]], ...] = (
+    (
+        "condition_halt_pause_flag",
+        (
+            ("cta_security_status", (102, 114, 117)),
+            ("halt_reason", (153, 154, 155, 156, 157, 158, 159, 160, 161, 163, 165, 166, 168, 184, 186)),
+            ("quote_conditions", (43,)),
+            ("luld_indicators", (17,)),
+        ),
+    ),
+    (
+        "condition_resume_flag",
+        (
+            ("cta_security_status", (103,)),
+            ("halt_reason", (169, 170, 171, 172, 173, 174, 178)),
+            ("quote_conditions", (16,)),
+        ),
+    ),
+    (
+        "condition_news_risk_flag",
+        (
+            ("halt_reason", (151,)),
+            ("quote_conditions", (25, 27)),
+            ("halt_reason", (152, 167)),
+            ("quote_conditions", (21, 23)),
+        ),
+    ),
+    (
+        "condition_luld_limit_state_flag",
+        (
+            ("cta_security_status", (114,)),
+            ("halt_reason", (153, 165, 166, 186)),
+            ("quote_conditions", (35, 39, 43)),
+            ("luld_indicators", (11, 12, 22, 23, 24, 25, 26, 27, 28, 29, 30)),
+        ),
+    ),
+)
+FUTURE_CONDITION_LABEL_KEYS: tuple[str, ...] = tuple(name for name, _ in FUTURE_CONDITION_GROUPS)
+CONDITION_INDICATOR_SOURCE_FAMILIES: frozenset[str] = frozenset({"cta_security_status", "halt_reason", "luld_indicators"})
+CONDITION_DIRECT_SOURCE_FAMILIES: frozenset[str] = frozenset({"quote_conditions", "trade_conditions", "trade_corrections_nyse", "unknown"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +302,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database", default=DEFAULT_DATABASE)
     parser.add_argument("--events-table", default=DEFAULT_EVENTS_TABLE)
     parser.add_argument("--intraday-base-bars-table", default=DEFAULT_INTRADAY_BASE_BARS_TABLE)
+    parser.add_argument("--intraday-condition-bars-table", default=DEFAULT_INTRADAY_CONDITION_BARS_TABLE)
+    parser.add_argument("--condition-token-reference-table", default=DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE)
     parser.add_argument("--status-table", default=DEFAULT_STATUS_TABLE)
     parser.add_argument("--start-date", default="", help="Inclusive New York local session date, YYYY-MM-DD.")
     parser.add_argument("--end-date", default="", help="Exclusive New York local session date, YYYY-MM-DD.")
@@ -299,11 +344,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with reporter:
             reporter.message(f"database={args.database} events_table={args.events_table} bars_table={args.intraday_base_bars_table}")
+            reporter.message(f"condition_bars_table={args.intraday_condition_bars_table} condition_reference={args.condition_token_reference_table}")
             reporter.message(f"resolutions={','.join(format_resolution(value) for value in resolutions_us)} storage_policy={args.storage_policy or '<default>'}")
             reporter.message(f"loaded_env_files={[str(path) for path in loaded_env]}")
             reporter.message(f"secret_status={secret_status(['CLICKHOUSE_URL', 'REAL_LIVE_CLICKHOUSE_WRITE_URL', 'CLICKHOUSE_WORKSTATION_USER', 'CLICKHOUSE_WORKSTATION_PASSWORD', 'CLICKHOUSE_USER', 'CLICKHOUSE_PASSWORD'])}")
             if not args.dry_run:
                 execute_profiled(client, "intraday_base_bars_create", create_intraday_base_bars_table_sql(args), "", reporter)
+                execute_profiled(client, "intraday_condition_bars_create", create_intraday_condition_bars_table_sql(args), "", reporter)
                 execute_profiled(client, "intraday_base_bars_status_create", create_status_table_sql(args), "", reporter)
             for chunk in _chunks(local_dates, max(1, int(args.chunk_days))):
                 chunk_results = build_date_chunk(
@@ -343,8 +390,10 @@ def build_date_chunk(
     reporter.chunk_start(label)
     started = time.perf_counter()
     if args.dry_run:
-        sql = insert_intraday_base_bars_sql(args=args, dates=dates, resolutions_us=resolutions_us)
-        append_jsonl(report_path, {"event": "dry_run_sql", "chunk": label, "sql": sql})
+        bars_sql = insert_intraday_base_bars_sql(args=args, dates=dates, resolutions_us=resolutions_us)
+        condition_sql = insert_intraday_condition_bars_sql(args=args, dates=dates, resolutions_us=resolutions_us)
+        append_jsonl(report_path, {"event": "dry_run_sql", "chunk": label, "artifact": "intraday_base_bars", "sql": bars_sql})
+        append_jsonl(report_path, {"event": "dry_run_sql", "chunk": label, "artifact": "intraday_condition_bars", "sql": condition_sql})
         reporter.message(f"dry-run SQL generated for {label}; written to report JSONL")
         results = [DayBuildResult(local_date=day.isoformat(), status="dry_run") for day in dates]
         for result in results:
@@ -381,8 +430,10 @@ def build_date_chunk(
         return [*adopted, *skipped]
     if args.replace_existing:
         execute_profiled(client, f"intraday_base_bars_delete_{label}", delete_intraday_base_bars_sql(args=args, dates=pending_dates), query_settings(args, extra={"mutations_sync": 2}), reporter)
+        execute_profiled(client, f"intraday_condition_bars_delete_{label}", delete_intraday_condition_bars_sql(args=args, dates=pending_dates), query_settings(args, extra={"mutations_sync": 2}), reporter)
     event_count = query_source_event_count(client=client, args=args, dates=pending_dates, reporter=reporter)
     execute_profiled(client, f"intraday_base_bars_insert_{label}", insert_intraday_base_bars_sql(args=args, dates=pending_dates, resolutions_us=resolutions_us), query_settings(args), reporter)
+    execute_profiled(client, f"intraday_condition_bars_insert_{label}", insert_intraday_condition_bars_sql(args=args, dates=pending_dates, resolutions_us=resolutions_us), query_settings(args), reporter)
     results: list[DayBuildResult] = list(adopted)
     for day in pending_dates:
         audit = audit_day(client=client, args=args, day=day, audit=not args.no_audit, reporter=reporter)
@@ -430,6 +481,28 @@ CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.intrad
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(local_date)
 ORDER BY (ticker, local_date, label_resolution_us, bucket_index, bar_family)
+{mergetree_settings_sql(str(args.storage_policy or ""))}
+"""
+
+
+def create_intraday_condition_bars_table_sql(args: argparse.Namespace) -> str:
+    condition_columns = ",\n    ".join(f"{quote_ident(key)} UInt8" for key in FUTURE_CONDITION_LABEL_KEYS)
+    return f"""
+CREATE TABLE IF NOT EXISTS {quote_ident(args.database)}.{quote_ident(args.intraday_condition_bars_table)}
+(
+    local_date Date,
+    ticker LowCardinality(String),
+    label_resolution_us UInt64,
+    bucket_index UInt64,
+    {condition_columns},
+    condition_event_count UInt64,
+    first_event_timestamp_us UInt64,
+    last_event_timestamp_us UInt64,
+    built_at DateTime DEFAULT now()
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(local_date)
+ORDER BY (ticker, local_date, label_resolution_us, bucket_index)
 {mergetree_settings_sql(str(args.storage_policy or ""))}
 """
 
@@ -554,11 +627,108 @@ GROUP BY
 """
 
 
+def insert_intraday_condition_bars_sql(*, args: argparse.Namespace, dates: list[dt.date], resolutions_us: tuple[int, ...]) -> str:
+    target_table = f"{quote_ident(args.database)}.{quote_ident(args.intraday_condition_bars_table)}"
+    source_table = event_source_table(args=args, first_date=min(dates), last_exclusive=max(dates) + dt.timedelta(days=1))
+    local_date_filter = ", ".join(f"toDate({sql_string(day.isoformat())})" for day in dates)
+    resolutions = ", ".join(f"toUInt64({value})" for value in resolutions_us)
+    ticker_filter = ticker_filter_sql(args)
+    first_event_date = min(dates)
+    last_event_date = max(dates) + dt.timedelta(days=1)
+    condition_token_aliases = condition_token_array_aliases_sql(args)
+    condition_event_select = condition_event_select_sql()
+    condition_select_columns = ",\n    ".join(f"max({quote_ident(key + '_event')}) AS {quote_ident(key)}" for key in FUTURE_CONDITION_LABEL_KEYS)
+    condition_filter = " OR ".join(f"{quote_ident(key + '_event')} > 0" for key in FUTURE_CONDITION_LABEL_KEYS)
+    condition_columns = ",\n    ".join(quote_ident(key) for key in FUTURE_CONDITION_LABEL_KEYS)
+    return f"""
+INSERT INTO {target_table}
+(
+    local_date,
+    ticker,
+    label_resolution_us,
+    bucket_index,
+    {condition_columns},
+    condition_event_count,
+    first_event_timestamp_us,
+    last_event_timestamp_us,
+    built_at
+)
+WITH
+    {condition_token_aliases}
+SELECT
+    local_date,
+    upper(ticker) AS ticker,
+    label_resolution_us,
+    intDiv(toUInt64(local_session_us), label_resolution_us) AS bucket_index,
+    {condition_select_columns},
+    count() AS condition_event_count,
+    min(toUInt64(sip_timestamp_us)) AS first_event_timestamp_us,
+    max(toUInt64(sip_timestamp_us)) AS last_event_timestamp_us,
+    now() AS built_at
+FROM
+(
+    SELECT
+        ticker,
+        ordinal,
+        sip_timestamp_us,
+        local_date,
+        local_second,
+        local_session_us,
+        condition_token_1,
+        condition_token_2,
+        condition_token_3,
+        condition_token_4,
+        condition_token_5,
+        arrayJoin([{resolutions}]) AS label_resolution_us,
+        {condition_event_select}
+    FROM
+    (
+        SELECT
+            ticker,
+            ordinal,
+            sip_timestamp_us,
+            condition_token_1,
+            condition_token_2,
+            condition_token_3,
+            condition_token_4,
+            condition_token_5,
+            toTimeZone(fromUnixTimestamp64Micro(sip_timestamp_us, 'UTC'), {sql_string(SESSION_TIMEZONE)}) AS ts_local,
+            toDate(ts_local) AS local_date,
+            dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second,
+            dateDiff('microsecond', toStartOfDay(ts_local), ts_local) AS local_session_us
+        FROM {source_table}
+        PREWHERE event_date >= toDate({sql_string(first_event_date.isoformat())})
+          AND event_date <= toDate({sql_string(last_event_date.isoformat())})
+          {ticker_filter}
+        WHERE local_date IN ({local_date_filter})
+          AND local_second >= {SESSION_START_SECOND}
+          AND local_second < {SESSION_END_SECOND}
+    )
+)
+WHERE {condition_filter}
+GROUP BY
+    local_date,
+    ticker,
+    label_resolution_us,
+    bucket_index
+"""
+
+
 def delete_intraday_base_bars_sql(*, args: argparse.Namespace, dates: list[dt.date]) -> str:
     local_date_filter = ", ".join(f"toDate({sql_string(day.isoformat())})" for day in dates)
     ticker_filter = ticker_filter_sql(args, column="ticker")
     return f"""
 ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.intraday_base_bars_table)}
+DELETE WHERE local_date IN ({local_date_filter})
+  {ticker_filter}
+"""
+
+
+def delete_intraday_condition_bars_sql(*, args: argparse.Namespace, dates: list[dt.date]) -> str:
+    local_date_filter = ", ".join(f"toDate({sql_string(day.isoformat())})" for day in dates)
+    ticker_filter = ticker_filter_sql(args, column="ticker")
+    return f"""
+ALTER TABLE {quote_ident(args.database)}.{quote_ident(args.intraday_condition_bars_table)}
 DELETE WHERE local_date IN ({local_date_filter})
   {ticker_filter}
 """
@@ -577,10 +747,25 @@ def query_existing_day_state(
     rows_sql = f"""
 SELECT
     local_date,
-    count() AS rows
-FROM {quote_ident(args.database)}.{quote_ident(args.intraday_base_bars_table)}
-WHERE local_date IN ({local_date_filter})
-  {ticker_filter}
+    sum(rows) AS rows
+FROM
+(
+    SELECT
+        local_date,
+        count() AS rows
+    FROM {quote_ident(args.database)}.{quote_ident(args.intraday_base_bars_table)}
+    WHERE local_date IN ({local_date_filter})
+      {ticker_filter}
+    GROUP BY local_date
+    UNION ALL
+    SELECT
+        local_date,
+        count() AS rows
+    FROM {quote_ident(args.database)}.{quote_ident(args.intraday_condition_bars_table)}
+    WHERE local_date IN ({local_date_filter})
+      {ticker_filter}
+    GROUP BY local_date
+)
 GROUP BY local_date
 FORMAT TSV
 """
@@ -647,21 +832,43 @@ def audit_day(*, client: ClickHouseHttpClient, args: argparse.Namespace, day: dt
     if audit:
         sql = f"""
 SELECT
-    count() AS rows,
-    rows - uniqExact(tuple(ticker, local_date, label_resolution_us, bucket_index, bar_family)) AS duplicate_keys
-FROM {quote_ident(args.database)}.{quote_ident(args.intraday_base_bars_table)}
-WHERE local_date = toDate({sql_string(day.isoformat())})
-  {ticker_filter}
+    sum(rows) AS rows,
+    sum(duplicate_keys) AS duplicate_keys
+FROM
+(
+    SELECT
+        count() AS rows,
+        rows - uniqExact(tuple(ticker, local_date, label_resolution_us, bucket_index, bar_family)) AS duplicate_keys
+    FROM {quote_ident(args.database)}.{quote_ident(args.intraday_base_bars_table)}
+    WHERE local_date = toDate({sql_string(day.isoformat())})
+      {ticker_filter}
+    UNION ALL
+    SELECT
+        count() AS rows,
+        rows - uniqExact(tuple(ticker, local_date, label_resolution_us, bucket_index)) AS duplicate_keys
+    FROM {quote_ident(args.database)}.{quote_ident(args.intraday_condition_bars_table)}
+    WHERE local_date = toDate({sql_string(day.isoformat())})
+      {ticker_filter}
+)
 FORMAT TSV
 """
     else:
         sql = f"""
 SELECT
-    count() AS rows,
+    sum(rows) AS rows,
     0 AS duplicate_keys
-FROM {quote_ident(args.database)}.{quote_ident(args.intraday_base_bars_table)}
-WHERE local_date = toDate({sql_string(day.isoformat())})
-  {ticker_filter}
+FROM
+(
+    SELECT count() AS rows
+    FROM {quote_ident(args.database)}.{quote_ident(args.intraday_base_bars_table)}
+    WHERE local_date = toDate({sql_string(day.isoformat())})
+      {ticker_filter}
+    UNION ALL
+    SELECT count() AS rows
+    FROM {quote_ident(args.database)}.{quote_ident(args.intraday_condition_bars_table)}
+    WHERE local_date = toDate({sql_string(day.isoformat())})
+      {ticker_filter}
+)
 FORMAT TSV
 """
     first = next((line for line in execute_query_tsv(client, f"intraday_base_bars_audit_{day.isoformat()}", sql, reporter).splitlines() if line.strip()), "0\t0")
@@ -830,11 +1037,43 @@ def ticker_filter_sql(args: argparse.Namespace, *, column: str = "ticker") -> st
     return f"AND {column} IN (" + ", ".join(sql_string(ticker) for ticker in tickers) + ")"
 
 
+def condition_token_array_aliases_sql(args: argparse.Namespace) -> str:
+    table = f"{quote_ident(args.database)}.{quote_ident(args.condition_token_reference_table)}"
+    excluded = ", ".join(sql_string(value) for value in sorted(CONDITION_DIRECT_SOURCE_FAMILIES))
+    aliases: list[str] = []
+    for label_key, groups in FUTURE_CONDITION_GROUPS:
+        predicates = []
+        for source_family, modifiers in groups:
+            modifier_sql = ", ".join(str(int(value)) for value in modifiers)
+            if source_family in CONDITION_INDICATOR_SOURCE_FAMILIES:
+                predicates.append(f"(source_family NOT IN ({excluded}) AND modifier_int IN ({modifier_sql}))")
+            else:
+                predicates.append(f"(source_family = {sql_string(source_family)} AND modifier_int IN ({modifier_sql}))")
+        aliases.append(
+            f"""(
+        SELECT groupArray(toUInt8(token_id))
+        FROM {table}
+        WHERE is_join_canonical = 1
+          AND ({" OR ".join(predicates)})
+    ) AS {quote_ident(label_key + "_tokens")}"""
+        )
+    return ",\n    ".join(aliases)
+
+
+def condition_event_select_sql() -> str:
+    token_array = "arrayFilter(t -> t != 0, [condition_token_1, condition_token_2, condition_token_3, condition_token_4, condition_token_5])"
+    return ",\n        ".join(
+        f"toUInt8(arrayExists(t -> has({quote_ident(label_key + '_tokens')}, t), {token_array})) AS {quote_ident(label_key + '_event')}"
+        for label_key in FUTURE_CONDITION_LABEL_KEYS
+    )
+
+
 def artifact_name(args: argparse.Namespace) -> str:
     tickers = sorted({item.strip().upper() for item in str(args.tickers).split(",") if item.strip()})
+    base = f"{args.intraday_base_bars_table}+{args.intraday_condition_bars_table}"
     if not tickers:
-        return str(args.intraday_base_bars_table)
-    return str(args.intraday_base_bars_table) + ":tickers=" + ",".join(tickers)
+        return base
+    return base + ":tickers=" + ",".join(tickers)
 
 
 def query_settings(args: argparse.Namespace, *, extra: dict[str, int | str] | None = None) -> str:
@@ -886,6 +1125,8 @@ def summarize_results(*, results: list[DayBuildResult], started_at: float, args:
         "database": args.database,
         "events_table": args.events_table,
         "intraday_base_bars_table": args.intraday_base_bars_table,
+        "intraday_condition_bars_table": args.intraday_condition_bars_table,
+        "condition_token_reference_table": args.condition_token_reference_table,
         "status_table": args.status_table,
         "build_version": build_version,
         "days": len(results),

@@ -432,6 +432,13 @@ Ticker/month packages then read only bounded ticker/month slices into
 `intraday_condition_events.parquet`, avoiding repeated raw-event condition scans
 for every package while preserving the same source-token semantics.
 
+For reusable full-grid intraday artifacts, condition buckets are a separate
+ClickHouse table, `intraday_condition_bars_by_time_ticker`, not a fourth
+`bar_family` in `intraday_base_bars_by_time_ticker`. The base-bar table remains
+strictly numeric (`trade`, `quote_bid`, `quote_ask`). The condition-bar table is
+sparse by `(ticker, local_date, label_resolution_us, bucket_index)` and stores
+only the four forecastable condition flags plus `condition_event_count`.
+
 The builder computes grid-aligned forward labels set-wise for each
 ticker/month/part package. This is not a per-origin query. It is one bounded
 query per ticker/month/part that:

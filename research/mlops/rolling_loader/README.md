@@ -264,6 +264,15 @@ bounded ticker/month slices from the sparse table instead of scanning raw
 `event_condition_token_reference` rules while removing thousands of redundant
 condition scans.
 
+When building reusable ClickHouse intraday grids outside the package builder,
+condition buckets stay in their own table,
+`intraday_condition_bars_by_time_ticker`, instead of being added as a fourth
+`bar_family` inside `intraday_base_bars_by_time_ticker`. Trade, quote-bid, and
+quote-ask rows carry numeric OHLC/size/count semantics; condition bars carry
+sparse binary flags and `condition_event_count`. Keeping them separate avoids
+mixing incompatible schemas while still letting labels and audits join on
+`(ticker, local_date, label_resolution_us, bucket_index)`.
+
 By default, the cache does not write redundant
 `intraday_forward_labels_part_*.parquet` files. It writes compact
 `intraday_base_bars.parquet` and `intraday_condition_events.parquet` once per

@@ -92,6 +92,36 @@ when intentionally rebuilding the macro bar table from scratch. `--full-rebuild`
 implies `--drop-table` and purges unsupported macro timeframes such as stale
 `1mo` rows left by older all-bars builds.
 
+## Intraday Base Bars
+
+`clickhouse_build_intraday_base_bars.py` builds reusable intraday grid artifacts
+from compact events. Trade and quote bars are kept in
+`intraday_base_bars_by_time_ticker`; condition bars are intentionally stored in
+the separate `intraday_condition_bars_by_time_ticker` table.
+
+This separation keeps numeric price/size bars clean:
+
+| Table | Partition | Order key | Contents |
+| --- | --- | --- | --- |
+| `intraday_base_bars_by_time_ticker` | `toYYYYMM(local_date)` | `(ticker, local_date, label_resolution_us, bucket_index, bar_family)` | `trade`, `quote_bid`, and `quote_ask` OHLC/size/count bars |
+| `intraday_condition_bars_by_time_ticker` | `toYYYYMM(local_date)` | `(ticker, local_date, label_resolution_us, bucket_index)` | sparse condition buckets with halt/pause, resume, news-risk, and LULD flags |
+
+Condition bars use the canonical dense token ids in
+`event_condition_token_reference` and only include the four forecastable
+condition groups currently used by the loader/model labels:
+
+```text
+condition_halt_pause_flag
+condition_resume_flag
+condition_news_risk_flag
+condition_luld_limit_state_flag
+```
+
+Each condition row represents one ticker/date/resolution/bucket where at least
+one selected condition event occurred. Flags are aggregated with `max()` and
+`condition_event_count` records the number of condition-bearing events in that
+bucket. Missing rows mean all condition flags are false for that bucket.
+
 ## Bar Boundaries
 
 Macro bar grouping is based on `events.sip_timestamp_us`, converted to

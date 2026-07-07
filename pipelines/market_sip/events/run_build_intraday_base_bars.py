@@ -14,6 +14,8 @@ DEFAULTS = {
     "database": "market_sip_compact",
     "events_table": "events",
     "intraday_base_bars_table": "intraday_base_bars_by_time_ticker",
+    "intraday_condition_bars_table": "intraday_condition_bars_by_time_ticker",
+    "condition_token_reference_table": "event_condition_token_reference",
     "status_table": "intraday_base_bars_build_status",
     "resolutions": "100ms,1s,5s,30s,60s",
     "chunk_days": 1,
@@ -31,6 +33,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--database", default=DEFAULTS["database"])
     parser.add_argument("--events-table", default=DEFAULTS["events_table"])
     parser.add_argument("--intraday-base-bars-table", default=DEFAULTS["intraday_base_bars_table"])
+    parser.add_argument("--intraday-condition-bars-table", default=DEFAULTS["intraday_condition_bars_table"])
+    parser.add_argument("--condition-token-reference-table", default=DEFAULTS["condition_token_reference_table"])
     parser.add_argument("--status-table", default=DEFAULTS["status_table"])
     parser.add_argument("--start-date", default="")
     parser.add_argument("--end-date", default="")
@@ -67,6 +71,10 @@ def main(argv: list[str] | None = None) -> int:
         args.events_table,
         "--intraday-base-bars-table",
         args.intraday_base_bars_table,
+        "--intraday-condition-bars-table",
+        args.intraday_condition_bars_table,
+        "--condition-token-reference-table",
+        args.condition_token_reference_table,
         "--status-table",
         args.status_table,
         "--resolutions",
