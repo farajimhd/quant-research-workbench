@@ -128,6 +128,14 @@ resolution, then rolls larger resolutions up from that base grid in the same
 insert. This keeps the raw event scan to one pass per local session day while
 preserving exact open/close/high/low/count semantics for coarser horizons.
 
+The default long-run plan is month chunking plus automatic ticker batching. The
+planner reads `events_ticker_day_index`, estimates event volume for the month,
+and splits tickers into batches of roughly `--ticker-batch-max-events` events
+with at most `--ticker-batch-max-tickers` symbols. This is required because the
+events table is monthly-partitioned and ordered by `(ticker, ordinal)`: a
+full-market single-day query can still scan a large part of the monthly
+partition, while a ticker-batched monthly query can use the primary-key order.
+
 ## Bar Boundaries
 
 Macro bar grouping is based on `events.sip_timestamp_us`, converted to

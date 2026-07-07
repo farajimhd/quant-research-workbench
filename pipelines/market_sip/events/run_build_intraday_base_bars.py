@@ -16,9 +16,13 @@ DEFAULTS = {
     "intraday_base_bars_table": "intraday_base_bars_by_time_ticker",
     "intraday_condition_bars_table": "intraday_condition_bars_by_time_ticker",
     "condition_token_reference_table": "event_condition_token_reference",
+    "ticker_day_index_table": "events_ticker_day_index",
     "status_table": "intraday_base_bars_build_status",
     "resolutions": "100ms,1s,5s,30s,60s",
-    "chunk_days": 1,
+    "chunk_mode": "month",
+    "chunk_days": 31,
+    "ticker_batch_max_events": 100_000_000,
+    "ticker_batch_max_tickers": 256,
     "max_threads": 32,
     "max_memory_usage": "300G",
     "output_root": r"D:\market-data\prepared\clickhouse_sip_ingest\intraday_base_bars",
@@ -36,13 +40,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--intraday-base-bars-table", default=DEFAULTS["intraday_base_bars_table"])
     parser.add_argument("--intraday-condition-bars-table", default=DEFAULTS["intraday_condition_bars_table"])
     parser.add_argument("--condition-token-reference-table", default=DEFAULTS["condition_token_reference_table"])
+    parser.add_argument("--ticker-day-index-table", default=DEFAULTS["ticker_day_index_table"])
     parser.add_argument("--status-table", default=DEFAULTS["status_table"])
     parser.add_argument("--start-date", default="")
     parser.add_argument("--end-date", default="")
     parser.add_argument("--date", default="")
     parser.add_argument("--resolutions", default=DEFAULTS["resolutions"])
     parser.add_argument("--tickers", default="")
+    parser.add_argument("--chunk-mode", choices=("month", "fixed"), default=DEFAULTS["chunk_mode"])
     parser.add_argument("--chunk-days", type=int, default=DEFAULTS["chunk_days"])
+    parser.add_argument("--ticker-batch-max-events", type=int, default=DEFAULTS["ticker_batch_max_events"])
+    parser.add_argument("--ticker-batch-max-tickers", type=int, default=DEFAULTS["ticker_batch_max_tickers"])
     parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
     parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
     parser.add_argument("--output-root", default=DEFAULTS["output_root"])
@@ -77,12 +85,20 @@ def main(argv: list[str] | None = None) -> int:
         args.intraday_condition_bars_table,
         "--condition-token-reference-table",
         args.condition_token_reference_table,
+        "--ticker-day-index-table",
+        args.ticker_day_index_table,
         "--status-table",
         args.status_table,
         "--resolutions",
         args.resolutions,
+        "--chunk-mode",
+        args.chunk_mode,
         "--chunk-days",
         str(args.chunk_days),
+        "--ticker-batch-max-events",
+        str(args.ticker_batch_max_events),
+        "--ticker-batch-max-tickers",
+        str(args.ticker_batch_max_tickers),
         "--max-threads",
         str(args.max_threads),
         "--max-memory-usage",

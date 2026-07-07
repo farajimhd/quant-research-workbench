@@ -41,6 +41,7 @@ DEFAULT_EVENTS_TABLE = "events"
 DEFAULT_INTRADAY_BASE_BARS_TABLE = "intraday_base_bars_by_time_ticker"
 DEFAULT_INTRADAY_CONDITION_BARS_TABLE = "intraday_condition_bars_by_time_ticker"
 DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE = "event_condition_token_reference"
+DEFAULT_TICKER_DAY_INDEX_TABLE = "events_ticker_day_index"
 DEFAULT_STATUS_TABLE = "intraday_base_bars_build_status"
 DEFAULT_RESOLUTIONS = "100ms,1s,5s,30s,60s"
 DEFAULT_OUTPUT_ROOT = Path("D:/market-data/prepared/clickhouse_sip_ingest/intraday_base_bars")
@@ -100,6 +101,13 @@ class DayBuildResult:
     duplicate_keys: int = 0
     seconds: float = 0.0
     message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class TickerBatch:
+    index: int
+    tickers: tuple[str, ...]
+    event_count: int
 
 
 class IntradayBarBuildReporter:
@@ -330,13 +338,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--intraday-base-bars-table", default=DEFAULT_INTRADAY_BASE_BARS_TABLE)
     parser.add_argument("--intraday-condition-bars-table", default=DEFAULT_INTRADAY_CONDITION_BARS_TABLE)
     parser.add_argument("--condition-token-reference-table", default=DEFAULT_CONDITION_TOKEN_REFERENCE_TABLE)
+    parser.add_argument("--ticker-day-index-table", default=DEFAULT_TICKER_DAY_INDEX_TABLE)
     parser.add_argument("--status-table", default=DEFAULT_STATUS_TABLE)
     parser.add_argument("--start-date", default="", help="Inclusive New York local session date, YYYY-MM-DD.")
     parser.add_argument("--end-date", default="", help="Exclusive New York local session date, YYYY-MM-DD.")
     parser.add_argument("--date", default="", help="Build one New York local session date, YYYY-MM-DD.")
     parser.add_argument("--resolutions", default=DEFAULT_RESOLUTIONS, help="Comma-separated bar grids, e.g. 100ms,1s,5s,30s,60s.")
     parser.add_argument("--tickers", default="", help="Optional comma-separated ticker filter for smoke tests or repair.")
-    parser.add_argument("--chunk-days", type=int, default=1, help="Number of local dates per insert query. Default keeps repair/audit granular.")
+    parser.add_argument("--chunk-mode", choices=("month", "fixed"), default="month", help="Date chunking strategy. Month mode aligns with event table partitions.")
+    parser.add_argument("--chunk-days", type=int, default=31, help="Number of local dates per insert query when --chunk-mode fixed.")
+    parser.add_argument("--ticker-batch-max-events", type=int, default=100_000_000, help="Approximate max source events per automatic ticker batch. Set 0 to disable batching.")
+    parser.add_argument("--ticker-batch-max-tickers", type=int, default=256, help="Max tickers per automatic ticker batch.")
     parser.add_argument("--replace-existing", action="store_true", help="Synchronously delete existing bars for the day/chunk before inserting.")
     parser.add_argument("--adopt-existing-complete", action="store_true", help="Mark existing day rows complete if audit passes and no status row exists.")
     parser.add_argument("--no-audit", action="store_true", help="Skip post-insert duplicate-key audit.")
@@ -379,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
                 execute_profiled(client, "intraday_base_bars_create", create_intraday_base_bars_table_sql(args), "", reporter)
                 execute_profiled(client, "intraday_condition_bars_create", create_intraday_condition_bars_table_sql(args), "", reporter)
                 execute_profiled(client, "intraday_base_bars_status_create", create_status_table_sql(args), "", reporter)
-            for chunk in _chunks(local_dates, max(1, int(args.chunk_days))):
+            for chunk in _date_chunks(local_dates, args):
                 chunk_results = build_date_chunk(
                     client=client,
                     args=args,
@@ -411,6 +423,16 @@ def build_date_chunk(
     report_path: Path,
     reporter: IntradayBarBuildReporter,
 ) -> list[DayBuildResult]:
+    if should_use_ticker_batching(args):
+        return build_date_chunk_ticker_batched(
+            client=client,
+            args=args,
+            dates=dates,
+            resolutions_us=resolutions_us,
+            build_version=build_version,
+            report_path=report_path,
+            reporter=reporter,
+        )
     first = dates[0]
     last_exclusive = dates[-1] + dt.timedelta(days=1)
     label = f"{first.isoformat()}_{last_exclusive.isoformat()}"
@@ -479,6 +501,122 @@ def build_date_chunk(
         reporter.day_result(result)
         results.append(result)
     reporter.message(f"chunk done {label} built={len(pending_dates):,} adopted={len(adopted):,} seconds={time.perf_counter() - started:.1f}")
+    return results
+
+
+def build_date_chunk_ticker_batched(
+    *,
+    client: ClickHouseHttpClient,
+    args: argparse.Namespace,
+    dates: list[dt.date],
+    resolutions_us: tuple[int, ...],
+    build_version: str,
+    report_path: Path,
+    reporter: IntradayBarBuildReporter,
+) -> list[DayBuildResult]:
+    first = dates[0]
+    last_exclusive = dates[-1] + dt.timedelta(days=1)
+    label = f"{first.isoformat()}_{last_exclusive.isoformat()}"
+    reporter.chunk_start(label, phase="ticker_batch_chunk")
+    started = time.perf_counter()
+    if args.dry_run:
+        batches = plan_ticker_batches(client=client, args=args, dates=dates, reporter=reporter)
+        append_jsonl(
+            report_path,
+            {
+                "event": "dry_run_ticker_batches",
+                "chunk": label,
+                "batch_count": len(batches),
+                "events": sum(batch.event_count for batch in batches),
+                "preview": [asdict(batch) for batch in batches[:5]],
+                "tail": [asdict(batch) for batch in batches[-3:]],
+            },
+        )
+        results = [DayBuildResult(local_date=day.isoformat(), status="dry_run") for day in dates]
+        for result in results:
+            reporter.day_result(result)
+        return results
+
+    existing = query_existing_day_state(client=client, args=args, dates=dates, build_version=build_version, reporter=reporter)
+    rows_existing = {day: int(state.get("rows", 0)) for day, state in existing.items()}
+    complete_days = {day for day, state in existing.items() if bool(state.get("complete"))}
+    pending_dates = [day for day in dates if day not in complete_days]
+    blocked = [day for day in pending_dates if rows_existing.get(day, 0) > 0 and not args.replace_existing and not args.adopt_existing_complete]
+    if blocked:
+        blocked_text = ", ".join(day.isoformat() for day in blocked)
+        raise RuntimeError(f"Existing intraday bar rows found without complete status for {blocked_text}; use --replace-existing or --adopt-existing-complete.")
+
+    results: list[DayBuildResult] = []
+    if args.adopt_existing_complete:
+        for day in list(pending_dates):
+            if rows_existing.get(day, 0) <= 0:
+                continue
+            audit = audit_day(client=client, args=args, day=day, audit=not args.no_audit, reporter=reporter)
+            if audit["duplicate_keys"] != 0:
+                raise RuntimeError(f"Cannot adopt {day.isoformat()}: duplicate_keys={audit['duplicate_keys']}")
+            insert_status(client=client, args=args, day=day, row_count=audit["row_count"], build_version=build_version, reporter=reporter)
+            result = DayBuildResult(local_date=day.isoformat(), status="adopted", row_count=audit["row_count"], duplicate_keys=audit["duplicate_keys"])
+            append_jsonl(report_path, asdict(result))
+            reporter.day_result(result)
+            results.append(result)
+            pending_dates.remove(day)
+
+    if not pending_dates:
+        skipped = [DayBuildResult(local_date=day.isoformat(), status="complete", row_count=rows_existing.get(day, 0)) for day in complete_days]
+        for result in skipped:
+            append_jsonl(report_path, asdict(result))
+            reporter.day_result(result)
+        reporter.message(f"chunk skip {label} complete={len(complete_days):,}")
+        return [*results, *skipped]
+
+    if args.replace_existing:
+        execute_profiled(client, f"intraday_base_bars_delete_{label}", delete_intraday_base_bars_sql(args=args, dates=pending_dates), query_settings(args, extra={"mutations_sync": 2}), reporter)
+        execute_profiled(client, f"intraday_condition_bars_delete_{label}", delete_intraday_condition_bars_sql(args=args, dates=pending_dates), query_settings(args, extra={"mutations_sync": 2}), reporter)
+
+    event_count = query_index_event_count(client=client, args=args, dates=pending_dates, reporter=reporter)
+    batches = plan_ticker_batches(client=client, args=args, dates=pending_dates, reporter=reporter)
+    reporter.message(
+        f"ticker batches {label}: batches={len(batches):,} events={sum(batch.event_count for batch in batches):,} "
+        f"max_events={int(args.ticker_batch_max_events):,} max_tickers={int(args.ticker_batch_max_tickers):,}"
+    )
+    append_jsonl(
+        report_path,
+        {
+            "event": "ticker_batch_plan",
+            "chunk": label,
+            "batches": len(batches),
+            "events": sum(batch.event_count for batch in batches),
+            "max_events": int(args.ticker_batch_max_events),
+            "max_tickers": int(args.ticker_batch_max_tickers),
+        },
+    )
+
+    for batch in batches:
+        batch_args = args_with_tickers(args, batch.tickers)
+        batch_label = f"{label}_batch_{batch.index:04d}_tickers_{len(batch.tickers)}_events_{batch.event_count}"
+        reporter.current_chunk = batch_label
+        reporter.message(f"batch start {batch.index:,}/{len(batches):,} tickers={len(batch.tickers):,} events={batch.event_count:,}")
+        execute_profiled(client, f"intraday_base_bars_insert_{batch_label}", insert_intraday_base_bars_sql(args=batch_args, dates=pending_dates, resolutions_us=resolutions_us), query_settings(args), reporter)
+        execute_profiled(client, f"intraday_condition_bars_insert_{batch_label}", insert_intraday_condition_bars_sql(args=batch_args, dates=pending_dates, resolutions_us=resolutions_us), query_settings(args), reporter)
+        reporter.message(f"batch done {batch.index:,}/{len(batches):,}")
+
+    for day in pending_dates:
+        audit = audit_day(client=client, args=args, day=day, audit=not args.no_audit, reporter=reporter)
+        if audit["duplicate_keys"] != 0:
+            raise RuntimeError(f"Intraday bar audit failed for {day.isoformat()}: duplicate_keys={audit['duplicate_keys']}")
+        insert_status(client=client, args=args, day=day, row_count=audit["row_count"], build_version=build_version, reporter=reporter)
+        result = DayBuildResult(
+            local_date=day.isoformat(),
+            status="built",
+            row_count=audit["row_count"],
+            event_count=event_count.get(day.isoformat(), 0),
+            duplicate_keys=audit["duplicate_keys"],
+            seconds=time.perf_counter() - started,
+        )
+        append_jsonl(report_path, asdict(result))
+        reporter.day_result(result)
+        results.append(result)
+    reporter.message(f"ticker-batched chunk done {label} days={len(pending_dates):,} batches={len(batches):,} seconds={time.perf_counter() - started:.1f}")
     return results
 
 
@@ -902,6 +1040,66 @@ FORMAT TSV
     return out
 
 
+def query_index_event_count(*, client: ClickHouseHttpClient, args: argparse.Namespace, dates: list[dt.date], reporter: IntradayBarBuildReporter) -> dict[str, int]:
+    date_filter = ", ".join(f"toDate({sql_string(day.isoformat())})" for day in dates)
+    sql = f"""
+SELECT
+    source_date,
+    sum(event_count) AS rows
+FROM {quote_ident(args.database)}.{quote_ident(args.ticker_day_index_table)}
+WHERE source_date IN ({date_filter})
+GROUP BY source_date
+FORMAT TSV
+"""
+    out = {day.isoformat(): 0 for day in dates}
+    for line in execute_query_tsv(client, f"intraday_base_bars_index_events_{dates[0]}_{dates[-1]}", sql, reporter).splitlines():
+        if not line.strip():
+            continue
+        day_text, rows_text = line.split("\t")[:2]
+        out[day_text] = int(rows_text)
+    return out
+
+
+def plan_ticker_batches(*, client: ClickHouseHttpClient, args: argparse.Namespace, dates: list[dt.date], reporter: IntradayBarBuildReporter) -> list[TickerBatch]:
+    date_filter = ", ".join(f"toDate({sql_string(day.isoformat())})" for day in dates)
+    sql = f"""
+SELECT
+    upper(ticker) AS ticker,
+    sum(event_count) AS rows
+FROM {quote_ident(args.database)}.{quote_ident(args.ticker_day_index_table)}
+WHERE source_date IN ({date_filter})
+GROUP BY ticker
+HAVING rows > 0
+ORDER BY rows DESC, ticker ASC
+FORMAT TSV
+"""
+    rows: list[tuple[str, int]] = []
+    for line in execute_query_tsv(client, f"intraday_base_bars_ticker_plan_{dates[0]}_{dates[-1]}", sql, reporter).splitlines():
+        if not line.strip():
+            continue
+        ticker, events_text = line.split("\t")[:2]
+        rows.append((ticker.upper(), int(events_text)))
+    if not rows:
+        return []
+    max_events = max(1, int(args.ticker_batch_max_events))
+    max_tickers = max(1, int(args.ticker_batch_max_tickers))
+    batches: list[TickerBatch] = []
+    current: list[str] = []
+    current_events = 0
+    for ticker, events in rows:
+        would_exceed_events = current and current_events + events > max_events
+        would_exceed_tickers = current and len(current) >= max_tickers
+        if would_exceed_events or would_exceed_tickers:
+            batches.append(TickerBatch(index=len(batches) + 1, tickers=tuple(current), event_count=current_events))
+            current = []
+            current_events = 0
+        current.append(ticker)
+        current_events += events
+    if current:
+        batches.append(TickerBatch(index=len(batches) + 1, tickers=tuple(current), event_count=current_events))
+    return batches
+
+
 def audit_day(*, client: ClickHouseHttpClient, args: argparse.Namespace, day: dt.date, audit: bool, reporter: IntradayBarBuildReporter) -> dict[str, int]:
     ticker_filter = ticker_filter_sql(args, column="ticker")
     if audit:
@@ -1136,11 +1334,41 @@ def _chunks(items: list[dt.date], size: int) -> Iterable[list[dt.date]]:
         yield items[offset : offset + size]
 
 
+def _date_chunks(items: list[dt.date], args: argparse.Namespace) -> Iterable[list[dt.date]]:
+    if str(args.chunk_mode) == "fixed":
+        yield from _chunks(items, max(1, int(args.chunk_days)))
+        return
+    current: list[dt.date] = []
+    current_month: tuple[int, int] | None = None
+    for day in items:
+        month = (day.year, day.month)
+        if current and month != current_month:
+            yield current
+            current = []
+        current.append(day)
+        current_month = month
+    if current:
+        yield current
+
+
 def ticker_filter_sql(args: argparse.Namespace, *, column: str = "ticker") -> str:
     tickers = sorted({item.strip().upper() for item in str(args.tickers).split(",") if item.strip()})
     if not tickers:
         return ""
     return f"AND {column} IN (" + ", ".join(sql_string(ticker) for ticker in tickers) + ")"
+
+
+def should_use_ticker_batching(args: argparse.Namespace) -> bool:
+    return not str(args.tickers).strip() and int(args.ticker_batch_max_events) > 0
+
+
+def args_with_tickers(args: argparse.Namespace, tickers: Iterable[str]) -> argparse.Namespace:
+    values = sorted({str(ticker).strip().upper() for ticker in tickers if str(ticker).strip()})
+    if not values:
+        raise ValueError("Ticker batch must not be empty.")
+    clone = argparse.Namespace(**vars(args))
+    clone.tickers = ",".join(values)
+    return clone
 
 
 def condition_token_array_aliases_sql(args: argparse.Namespace) -> str:
@@ -1233,7 +1461,12 @@ def summarize_results(*, results: list[DayBuildResult], started_at: float, args:
         "intraday_base_bars_table": args.intraday_base_bars_table,
         "intraday_condition_bars_table": args.intraday_condition_bars_table,
         "condition_token_reference_table": args.condition_token_reference_table,
+        "ticker_day_index_table": args.ticker_day_index_table,
         "status_table": args.status_table,
+        "chunk_mode": args.chunk_mode,
+        "chunk_days": int(args.chunk_days),
+        "ticker_batch_max_events": int(args.ticker_batch_max_events),
+        "ticker_batch_max_tickers": int(args.ticker_batch_max_tickers),
         "build_version": build_version,
         "days": len(results),
         "by_status": by_status,
