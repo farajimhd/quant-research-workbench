@@ -624,6 +624,7 @@ def main() -> None:
             provider_saturated=plan.provider_saturated,
             known_active_symbols=plan.known_active_symbols,
             missing_tickers=plan.missing_tickers,
+            skipped_open_issue_tickers=plan.skipped_open_issue_tickers,
             overview_fetched=plan.overview_fetched,
             ibkr_searched=plan.ibkr_searched,
             candidate_limit=plan.candidate_limit,
@@ -661,6 +662,7 @@ def main() -> None:
             source_sync_status,
             (
                 f"provider={plan.provider_rows:,} missing={plan.missing_tickers:,} "
+                f"skipped_open_issues={plan.skipped_open_issue_tickers:,} "
                 f"overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
                 f"current_detail_written={current_details.written:,} current_detail_failed={current_details.failed:,} "
                 f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,} "
@@ -672,7 +674,8 @@ def main() -> None:
         emit(
             "source_sync=done "
             f"provider_rows={plan.provider_rows:,} known_symbols={plan.known_active_symbols:,} "
-            f"missing={plan.missing_tickers:,} overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
+            f"missing={plan.missing_tickers:,} skipped_open_issues={plan.skipped_open_issue_tickers:,} "
+            f"overview={plan.overview_fetched:,} ibkr={plan.ibkr_searched:,} "
             f"current_detail_written={current_details.written:,} current_detail_failed={current_details.failed:,} "
             f"borrow_written={borrow_sync.written:,} borrow_failed={borrow_sync.failed:,} "
             f"country_written={getattr(country_result, 'rows_written', 0):,} "

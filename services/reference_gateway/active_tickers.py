@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident
+from research.mlops.clickhouse import ClickHouseHttpClient, quote_ident, sql_string
 from services.reference_gateway.config import ReferenceGatewayConfig
 from services.reference_gateway.providers import IbkrReferenceClient, MassiveReferenceClient
 
@@ -46,6 +46,8 @@ class ActiveTickerPlan:
     candidate_limit: int
     candidates: list[MissingTickerCandidate]
     wall_seconds: float
+    skipped_open_issue_tickers: int = 0
+    open_issue_tickers: list[str] = field(default_factory=list)
 
     def public_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -76,14 +78,21 @@ def run_active_ticker_plan(
     current = load_current_active_symbols(config)
     emit_progress(on_progress, "canonical_symbols", "completed", f"Loaded {len(current):,} canonical active symbol row(s).", len(current))
     known = {row["ticker"].upper() for row in current}
+    open_issue_tickers = load_open_active_ticker_issue_tickers(config)
+    open_issue_set = set(open_issue_tickers)
     missing = [normalize_massive_ticker(row) for row in provider.tickers]
     missing = [row for row in missing if row.get("ticker") and row["ticker"].upper() not in known]
+    blocked_missing = [row for row in missing if row["ticker"].upper() in open_issue_set]
+    missing = [row for row in missing if row["ticker"].upper() not in open_issue_set]
     candidate_rows = missing[: config.active_ticker_new_candidate_limit]
     emit_progress(
         on_progress,
         "massive_overview",
         "running" if candidate_rows else "completed",
-        f"Found {len(missing):,} provider ticker(s) not in canonical symbols; resolving first {len(candidate_rows):,}.",
+        (
+            f"Found {len(missing):,} unresolved provider ticker(s) not in canonical symbols; "
+            f"skipped {len(blocked_missing):,} with existing open issue(s); resolving first {len(candidate_rows):,}."
+        ),
         0,
     )
     emit_progress(
@@ -169,6 +178,8 @@ def run_active_ticker_plan(
         candidate_limit=config.active_ticker_new_candidate_limit,
         candidates=candidates,
         wall_seconds=time.perf_counter() - started,
+        skipped_open_issue_tickers=len(blocked_missing),
+        open_issue_tickers=open_issue_tickers,
     )
 
 
@@ -206,6 +217,52 @@ def load_current_active_symbols(config: ReferenceGatewayConfig) -> list[dict[str
         """,
     )
     return [{key: str(value or "") for key, value in row.items()} for row in rows]
+
+
+def load_open_active_ticker_issue_tickers(config: ReferenceGatewayConfig) -> list[str]:
+    client = ClickHouseHttpClient(config.clickhouse_url, config.clickhouse_user, _clickhouse_password())
+    tickers: set[str] = set()
+    for database in unique_databases(config.clickhouse_read_database, config.clickhouse_write_database):
+        if not clickhouse_table_exists(client, database, "id_mapping_issue_v1"):
+            continue
+        rows = query_json_each_row(
+            client,
+            f"""
+            SELECT DISTINCT upper(source_entity_key) AS ticker
+            FROM {table(database, 'id_mapping_issue_v1')} FINAL
+            WHERE source_system = 'reference_gateway'
+              AND source_entity_kind = 'massive_active_ticker'
+              AND source_entity_key != ''
+              AND lower(issue_status) IN ('open', 'active', 'blocked')
+            """,
+        )
+        tickers.update(str(row.get("ticker") or "").strip().upper() for row in rows if str(row.get("ticker") or "").strip())
+    return sorted(tickers)
+
+
+def unique_databases(*databases: str) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for database in databases:
+        normalized = str(database or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+    return unique
+
+
+def clickhouse_table_exists(client: ClickHouseHttpClient, database: str, name: str) -> bool:
+    rows = query_json_each_row(
+        client,
+        f"""
+        SELECT count() AS count
+        FROM system.tables
+        WHERE database = {sql_string(database)}
+          AND name = {sql_string(name)}
+        """,
+    )
+    return bool(rows and int(rows[0].get("count") or 0) > 0)
 
 
 def normalize_massive_ticker(row: dict[str, Any]) -> dict[str, str]:

@@ -123,6 +123,13 @@ against the canonical graph, Massive overview evidence is fetched for new
 candidates, and IBKR Client Portal is queried for conid evidence. IBKR is
 required because unresolved conids are trading blockers.
 
+Ticker discovery is Massive-first. The gateway does not discover tradable
+tickers from IBKR because live quotes and trades come from Massive. If a Massive
+active ticker cannot be promoted into the canonical graph, the gateway writes an
+open `id_mapping_issue_v1` row and skips that ticker in later source-sync cycles
+until the issue is resolved. This prevents repeated IBKR lookup loops for the
+same unresolved candidate batch.
+
 Market hours are evaluated through the shared Massive-backed service policy:
 `/v1/marketstatus/now` supplies the current active/closed state and
 `/v1/marketstatus/upcoming` supplies full closures and early closes. If Massive

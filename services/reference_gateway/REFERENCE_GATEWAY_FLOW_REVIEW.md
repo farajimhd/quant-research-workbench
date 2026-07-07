@@ -726,6 +726,8 @@ It should:
 
 - pull active ticker listings from Massive
 - compare them with canonical symbol/listing/security rows in `q_live`
+- skip Massive ticker candidates that already have an open
+  `id_mapping_issue_v1` row for `source_entity_kind='massive_active_ticker'`
 - identify new, missing, changed, inactive, or delisted candidates
 - keep exchange/currency/security-type relationships consistent
 - avoid promoting a candidate into tradable state until required provider
@@ -733,6 +735,12 @@ It should:
 
 If a new active ticker appears, the gateway gathers the required evidence from
 other providers before the ticker can become tradable.
+
+Massive is the discovery source for tradable ticker candidates because QMD live
+quotes and trades also come from Massive. IBKR is downstream routing evidence,
+not an independent ticker discovery source. A ticker that exists only in IBKR is
+not promoted by this service unless Massive also publishes it as an active stock
+ticker.
 
 ### IBKR Contract Sync
 
