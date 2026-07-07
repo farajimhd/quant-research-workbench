@@ -173,6 +173,81 @@ Core runtime components:
 | `RichPipelineReporter` | Non-blinking terminal layout with fixed rows per configured worker count. |
 | `AuditRecorder` | Writes audit results and fails the build on strict integrity violations. |
 
+## Data Transfer Between Workers
+
+Workers communicate with typed in-process queue payloads. The first
+implementation should use bounded Python queues and thread workers because the
+largest payloads are Arrow/Polars objects produced by ClickHouse clients and
+written to local SSD. Process workers should use Polars/NumPy operations that
+release the GIL where possible. If a future CPU-heavy stage is proven to be GIL
+bound, that stage can move to a process pool with Arrow IPC spill files, but
+that is not the default path.
+
+The queue payloads should be small metadata objects plus one owned data handle:
+
+```text
+FetchJob
+  modality
+  job_id
+  month
+  ticker or global key
+  source_date or source range
+  ordinal/timestamp bounds
+  expected_rows
+  retry_count
+
+FetchedPayload
+  job
+  arrow_table or polars_frame
+  row_count
+  estimated_bytes
+  query_id
+  fetch_seconds
+
+ProcessedPayload
+  job
+  processed_frames
+  origin/range metadata
+  audit_summary
+  estimated_bytes
+  process_seconds
+
+WriteJob
+  job
+  output_scope
+  frames_or_ipc_paths
+  manifest_update
+  expected_rows
+```
+
+Payload ownership is single-pass:
+
+```text
+fetch worker owns FetchedPayload
+  -> puts it on process_queue
+  -> process worker becomes owner
+  -> puts ProcessedPayload/WriteJob on write_queue
+  -> write worker becomes owner
+  -> write worker releases frames after atomic write and manifest update
+```
+
+Fetch workers must not keep references after enqueue. Process workers must not
+keep references after enqueue. Write workers release memory immediately after a
+successful write or after recording a failed write. This avoids accidental
+long-lived references that keep large Arrow/Polars buffers resident.
+
+Backpressure is byte based, not only item-count based. Before a worker enqueues
+a payload, it reserves that payload's estimated bytes against the target queue.
+When the next stage takes ownership, the reservation is released from the
+previous queue and charged to the next queue. If the reservation would exceed
+the queue budget, the worker blocks before submitting more work.
+
+Large payloads may be spilled to a local temporary Arrow IPC/parquet file when
+queue byte limits are tight or when a process-pool implementation is used. In
+that case the queue passes an `ipc_path` plus metadata, and the receiving worker
+maps/loads the file. Spill files are temporary build artifacts and must be
+deleted after the write or failed job cleanup.
+
 ## Global Safety Limits
 
 Per-modality worker counts are not enough. The coordinator must enforce global
@@ -365,7 +440,9 @@ for the hot path.
 
 ## Event Process
 
-Event processing should be vectorized with Polars and/or NumPy.
+Event processing is intentionally light. It should be vectorized with Polars
+and/or NumPy, but it is not the place for intraday bar or label computation.
+The heavy event-derived calculations belong in the intraday-label pipeline.
 
 Required event process steps:
 
@@ -388,6 +465,8 @@ Required event process steps:
 
 The process worker must not encode event chunks. Event-window materialization is
 a loader responsibility, constrained by the cached event lookback capacity.
+The process worker must also not compute future intraday bars or labels. Those
+are separate modality outputs with their own process workers.
 
 ## Event Write
 
@@ -578,14 +657,18 @@ Each modality has independent worker counts:
 --corporate-write-workers
 ```
 
-Defaults should reflect workload severity. Events and labels are heavy. Sparse
-contexts are usually lighter.
+Defaults should reflect workload severity. Events are fetch/write heavy and
+process light. One event process worker is functionally enough for simple
+validation and metadata, but the default uses two so validation can overlap
+with writes without creating a large process queue. Intraday labels are process
+heavy because they compute event-derived future bars and flags. Sparse contexts
+are usually lighter.
 
 Suggested first-run defaults on the workstation:
 
 | Modality | Fetch | Process | Write |
 | --- | ---: | ---: | ---: |
-| Events | 16 | 16 | 8 |
+| Events | 16 | 2 | 12 |
 | Intraday labels | 8 | 24 | 8 |
 | Macro bars | 4 | 8 | 4 |
 | News embeddings | 4 | 4 | 4 |
