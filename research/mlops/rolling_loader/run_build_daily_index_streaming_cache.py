@@ -1219,6 +1219,8 @@ def fetch_events(
             frame = query_polars(client_opts=client_opts, query=query, query_id=query_id, retries=int(args.clickhouse_query_retries), backoff_seconds=float(args.clickhouse_query_retry_backoff_seconds))
     finally:
         active_queries.unregister(query_id)
+    if "event_ticker" in frame.columns and "ticker" not in frame.columns:
+        frame = frame.rename({"event_ticker": "ticker"})
     seconds = time.perf_counter() - started
     estimated = frame_estimated_bytes(frame)
     return FetchedPayload(job=job, frame=frame, row_count=int(frame.height), estimated_bytes=estimated, query_id=query_id, seconds=seconds)
@@ -1694,8 +1696,8 @@ WITH
     toDayOfYear(ts_utc) AS utc_doy,
     dateDiff('second', toStartOfDay(ts_local), ts_local) AS local_second
 SELECT
-    cityHash64(ticker) AS ticker_id,
-    upper(ticker) AS ticker,
+    cityHash64(upper(ticker)) AS ticker_id,
+    upper(ticker) AS event_ticker,
     toUInt64(ordinal) AS ordinal,
     event_meta,
     toUInt64(sip_timestamp_us) AS timestamp_us,
@@ -1729,7 +1731,7 @@ PREWHERE ticker = {sql_string(job.ticker)}
   AND ordinal >= {int(job.ordinal_start)}
   AND ordinal <= {int(job.ordinal_end)}
   {date_filter}
-ORDER BY ticker, ordinal
+ORDER BY event_ticker, ordinal
 {settings_sql(args)}
 """
 
