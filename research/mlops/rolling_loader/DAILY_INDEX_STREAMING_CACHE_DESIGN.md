@@ -691,20 +691,19 @@ heavy because they compute event-derived future bars and flags. Sparse contexts
 are fetch/write dominated; their process stage is intentionally one worker for
 audit and payload handoff only.
 
-Suggested first-run defaults on the workstation keep the total worker count
-near the prior 96-slot target while moving pass-through sparse-context process
-capacity into fetch/write capacity:
+Suggested first-run defaults on the workstation bias more CPU toward event fetch
+and intraday-label processing, which are the expensive lanes in full-month runs:
 
 | Modality | Fetch | Process | Write | Total |
 | --- | ---: | ---: | ---: | ---: |
-| Events | 16 | 2 | 12 | 30 |
-| Intraday labels | 0 | 20 | 8 | 28 |
+| Events | 32 | 8 | 12 | 52 |
+| Intraday labels | 16 | 32 | 8 | 56 |
 | Macro bars | 4 | 1 | 4 | 9 |
 | News embeddings | 3 | 1 | 3 | 7 |
 | SEC embeddings | 3 | 1 | 3 | 7 |
 | XBRL | 4 | 1 | 3 | 8 |
 | Corporate actions | 1 | 1 | 1 | 3 |
-| **Total** | **31** | **27** | **34** | **92** |
+| **Total** | **57** | **45** | **34** | **136** |
 
 These are worker slots, not guaranteed simultaneous ClickHouse queries or disk
 writes. Global caps such as `--max-active-clickhouse-queries` and
