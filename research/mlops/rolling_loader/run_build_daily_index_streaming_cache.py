@@ -37,21 +37,60 @@ from research.mlops.clickhouse import (
     sql_string,
 )
 from research.mlops.env import load_env_files
+from research.mlops.rolling_loader.run_build_ticker_month_cache import (
+    DEFAULTS as TICKER_MONTH_DEFAULTS,
+    _query_corporate_actions,
+    _query_daily_bars,
+    _query_market_news,
+    _query_sec_tokens,
+    _query_ticker_news,
+    _query_xbrl,
+    cancel_active_clickhouse_queries as cancel_legacy_active_clickhouse_queries,
+)
+from research.mlops.rolling_loader.run_build_ticker_month_cache_streaming import (
+    _build_intraday_base_bars,
+    _build_intraday_condition_events,
+)
 from research.mlops.rolling_loader.ticker_month_cache import (
     EVENT_PAYLOAD_COLUMNS,
     EVENT_TIME_FEATURE_COLUMNS,
     add_months,
+    build_config_from_args,
+    month_window as cache_month_window,
     full_months_in_period,
     jsonable,
-    month_window,
     write_json_atomic,
 )
 
 
 DEFAULT_CACHE_ROOT = Path("D:/market-data/prepared/daily_index_streaming_cache")
-DEFAULT_DATA_GROUPS = "events"
+DEFAULT_DATA_GROUPS = "events,intraday_labels,macro_bars,news,sec,xbrl,corporate_actions"
 DEFAULT_EVENT_COLUMNS = (*EVENT_PAYLOAD_COLUMNS, *EVENT_TIME_FEATURE_COLUMNS, "context_only")
 MODALITY_PANEL_NAMES = ("Events", "Intraday Labels", "Macro Bars", "News Embeddings", "SEC Embeddings", "XBRL", "Corporate Actions")
+DATA_GROUP_ALIASES = {
+    "events": "events",
+    "intraday_labels": "intraday_labels",
+    "labels": "intraday_labels",
+    "macro": "macro_bars",
+    "macro_bars": "macro_bars",
+    "daily_bars": "macro_bars",
+    "news": "news",
+    "news_embeddings": "news",
+    "sec": "sec",
+    "sec_embeddings": "sec",
+    "xbrl": "xbrl",
+    "corporate": "corporate_actions",
+    "corporate_actions": "corporate_actions",
+}
+MODALITY_BY_DATA_GROUP = {
+    "events": "Events",
+    "intraday_labels": "Intraday Labels",
+    "macro_bars": "Macro Bars",
+    "news": "News Embeddings",
+    "sec": "SEC Embeddings",
+    "xbrl": "XBRL",
+    "corporate_actions": "Corporate Actions",
+}
 SESSION_TIMEZONE = "America/New_York"
 SESSION_START_SECOND = 4 * 60 * 60
 SESSION_REGULAR_START_SECOND = 9 * 60 * 60 + 30 * 60
@@ -118,6 +157,42 @@ class ProcessedPayload:
     process_seconds: float
 
 
+@dataclass(frozen=True, slots=True)
+class ModalityJob:
+    modality: str
+    data_group: str
+    job_id: str
+    month: str
+    ticker: str
+    scope: str
+    part_id: int
+    expected_rows: int = 0
+    ordinal_start: int = 0
+    ordinal_end: int = 0
+    output_name: str = ""
+
+
+@dataclass(slots=True)
+class GenericFetchedPayload:
+    job: ModalityJob
+    frames: dict[str, Any]
+    row_count: int
+    estimated_bytes: int
+    query_id: str
+    seconds: float
+
+
+@dataclass(slots=True)
+class GenericProcessedPayload:
+    job: ModalityJob
+    frames: dict[str, Any]
+    audit: dict[str, Any]
+    estimated_bytes: int
+    fetch_query_id: str
+    fetch_seconds: float
+    process_seconds: float
+
+
 @dataclass(slots=True)
 class WrittenPart:
     modality: str
@@ -141,6 +216,8 @@ class WrittenPart:
     fetch_seconds: float
     process_seconds: float
     write_seconds: float
+    row_count: int = 0
+    output_paths: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -231,6 +308,13 @@ class PayloadQueue:
             self._queue.task_done()
             drained += 1
         return drained
+
+
+@dataclass(slots=True)
+class PipelineQueues:
+    fetch_queue: Any
+    process_queue: PayloadQueue
+    write_queue: PayloadQueue
 
 
 class ActiveQueries:
@@ -413,7 +497,7 @@ class DailyIndexStreamingDashboard:
         table.add_row("Overall", "-", f"{progress * 100.0:.2f}%  units {written:,}/{expected:,}", queue_detail(modality))
         workers = list(modality["workers"])
         if not workers:
-            table.add_row("Adapter", "-", "not implemented", "no worker pool in this version")
+            table.add_row("Pipeline", "-", "disabled", "not selected in --data-groups")
         for worker in workers:
             table.add_row(worker["process_name"], f"{int(worker['worker_id']):02d}", worker_status_text(worker), str(worker["current_job"]))
         return Panel(table, title=name, box=box.ROUNDED, border_style="blue", padding=(0, 1))
@@ -435,8 +519,20 @@ def two_column_panel_grid(panels: list[Any]) -> object:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a daily-index streaming ticker/month SSD cache.")
     parser.add_argument("--database", default="market_sip_compact")
+    parser.add_argument("--sec-context-database", default=TICKER_MONTH_DEFAULTS["sec_context_database"])
+    parser.add_argument("--q-live-database", default=TICKER_MONTH_DEFAULTS["q_live_database"])
     parser.add_argument("--events-table", default="events")
     parser.add_argument("--events-ticker-day-index-table", default="events_ticker_day_index")
+    parser.add_argument("--condition-token-reference-table", default=TICKER_MONTH_DEFAULTS["condition_token_reference_table"])
+    parser.add_argument("--macro-bars-table", default=TICKER_MONTH_DEFAULTS["macro_bars_table"])
+    parser.add_argument("--news-token-table", default=TICKER_MONTH_DEFAULTS["news_token_table"])
+    parser.add_argument("--sec-filing-text-token-table", default=TICKER_MONTH_DEFAULTS["sec_filing_text_token_table"])
+    parser.add_argument("--news-embedding-table", default=TICKER_MONTH_DEFAULTS["news_embedding_table"])
+    parser.add_argument("--sec-filing-text-embedding-table", default=TICKER_MONTH_DEFAULTS["sec_filing_text_embedding_table"])
+    parser.add_argument("--sec-xbrl-context-table", default=TICKER_MONTH_DEFAULTS["sec_xbrl_context_table"])
+    parser.add_argument("--category-reference-table", default=TICKER_MONTH_DEFAULTS["category_reference_table"])
+    parser.add_argument("--stock-split-table", default=TICKER_MONTH_DEFAULTS["stock_split_table"])
+    parser.add_argument("--cash-dividend-table", default=TICKER_MONTH_DEFAULTS["cash_dividend_table"])
     parser.add_argument("--cache-root", default=str(DEFAULT_CACHE_ROOT))
     parser.add_argument("--cache-id", default="")
     parser.add_argument("--month", action="append", default=[], help="Month to build, YYYY-MM. Repeatable.")
@@ -456,6 +552,51 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--event-fetch-workers", type=int, default=16)
     parser.add_argument("--event-process-workers", type=int, default=2)
     parser.add_argument("--event-write-workers", type=int, default=8)
+    parser.add_argument("--label-fetch-workers", type=int, default=6)
+    parser.add_argument("--label-process-workers", type=int, default=20)
+    parser.add_argument("--label-write-workers", type=int, default=6)
+    parser.add_argument("--macro-fetch-workers", type=int, default=3)
+    parser.add_argument("--macro-process-workers", type=int, default=6)
+    parser.add_argument("--macro-write-workers", type=int, default=3)
+    parser.add_argument("--news-fetch-workers", type=int, default=3)
+    parser.add_argument("--news-process-workers", type=int, default=2)
+    parser.add_argument("--news-write-workers", type=int, default=2)
+    parser.add_argument("--sec-fetch-workers", type=int, default=3)
+    parser.add_argument("--sec-process-workers", type=int, default=2)
+    parser.add_argument("--sec-write-workers", type=int, default=2)
+    parser.add_argument("--xbrl-fetch-workers", type=int, default=3)
+    parser.add_argument("--xbrl-process-workers", type=int, default=4)
+    parser.add_argument("--xbrl-write-workers", type=int, default=2)
+    parser.add_argument("--corporate-fetch-workers", type=int, default=1)
+    parser.add_argument("--corporate-process-workers", type=int, default=1)
+    parser.add_argument("--corporate-write-workers", type=int, default=1)
+    parser.add_argument("--events-per-chunk", type=int, default=TICKER_MONTH_DEFAULTS["events_per_chunk"])
+    parser.add_argument("--short-context-chunks", type=int, default=TICKER_MONTH_DEFAULTS["short_context_chunks"])
+    parser.add_argument("--context-chunk-stride-events", type=int, default=TICKER_MONTH_DEFAULTS["context_chunk_stride_events"])
+    parser.add_argument("--short-context-stride-chunks", type=int, default=TICKER_MONTH_DEFAULTS["short_context_stride_chunks"])
+    parser.add_argument("--long-context-lags", default=TICKER_MONTH_DEFAULTS["long_context_lags"])
+    parser.add_argument("--sample-stride-events", type=int, default=TICKER_MONTH_DEFAULTS["sample_stride_events"])
+    parser.add_argument("--macro-lookback-days", type=int, default=TICKER_MONTH_DEFAULTS["macro_lookback_days"])
+    parser.add_argument("--label-lookahead-days", type=int, default=TICKER_MONTH_DEFAULTS["label_lookahead_days"])
+    parser.add_argument("--news-lookback-days", type=int, default=TICKER_MONTH_DEFAULTS["news_lookback_days"])
+    parser.add_argument("--sec-lookback-days", type=int, default=TICKER_MONTH_DEFAULTS["sec_lookback_days"])
+    parser.add_argument("--xbrl-lookback-days", type=int, default=TICKER_MONTH_DEFAULTS["xbrl_lookback_days"])
+    parser.add_argument("--ticker-news-items", type=int, default=TICKER_MONTH_DEFAULTS["ticker_news_items"])
+    parser.add_argument("--market-news-items", type=int, default=TICKER_MONTH_DEFAULTS["market_news_items"])
+    parser.add_argument("--sec-filing-items", type=int, default=TICKER_MONTH_DEFAULTS["sec_filing_items"])
+    parser.add_argument("--ticker-news-prior-items", type=int, default=TICKER_MONTH_DEFAULTS["ticker_news_prior_items"])
+    parser.add_argument("--market-news-prior-items", type=int, default=TICKER_MONTH_DEFAULTS["market_news_prior_items"])
+    parser.add_argument("--sec-filing-prior-items", type=int, default=TICKER_MONTH_DEFAULTS["sec_filing_prior_items"])
+    parser.add_argument("--xbrl-items", type=int, default=TICKER_MONTH_DEFAULTS["xbrl_items"])
+    parser.add_argument("--xbrl-prior-rows", type=int, default=TICKER_MONTH_DEFAULTS["xbrl_prior_rows"])
+    parser.add_argument("--corporate-action-items", type=int, default=TICKER_MONTH_DEFAULTS["corporate_action_items"])
+    parser.add_argument("--corporate-action-lookback-days", type=int, default=TICKER_MONTH_DEFAULTS["corporate_action_lookback_days"])
+    parser.add_argument("--corporate-action-label-days", default=TICKER_MONTH_DEFAULTS["corporate_action_label_days"])
+    parser.add_argument("--intraday-label-horizons", default=TICKER_MONTH_DEFAULTS["intraday_label_horizons"])
+    parser.add_argument("--intraday-context-horizons", default=TICKER_MONTH_DEFAULTS["intraday_context_horizons"])
+    parser.add_argument("--skip-xbrl", action="store_true")
+    parser.add_argument("--skip-corporate-actions", action="store_true")
+    parser.add_argument("--skip-token-contexts", action="store_true")
     parser.add_argument("--max-fetched-queue-gib", type=float, default=96.0)
     parser.add_argument("--max-processed-queue-gib", type=float, default=96.0)
     parser.add_argument("--max-active-clickhouse-queries", type=int, default=16)
@@ -479,13 +620,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     load_env_files(discover_clickhouse_env_files(), verbose=True)
-    data_groups = tuple(sorted({item.strip() for item in str(args.data_groups).split(",") if item.strip()}))
-    unsupported = sorted(set(data_groups).difference({"events"}))
-    if unsupported:
-        raise RuntimeError(
-            "Only the events modality is implemented in this first daily-index streaming builder. "
-            f"Unsupported requested data groups: {unsupported}. Run with --data-groups events."
-        )
+    data_groups = normalize_data_groups(args.data_groups)
     months = parse_months(args)
     cache_id = args.cache_id or default_cache_id(months=months, data_groups=data_groups)
     cache_root = Path(args.cache_root) / cache_id
@@ -497,11 +632,7 @@ def main(argv: list[str] | None = None) -> int:
     query_slots = threading.Semaphore(max(1, int(args.max_active_clickhouse_queries)))
     writer_slots = threading.Semaphore(max(1, int(args.max_active_writers)))
     build_state = BuildState(cache_root=cache_root, cache_id=cache_id, months=months, data_groups=data_groups, report_path=report_path)
-    event_stats = ModalityStats(name="Events")
-    add_workers(event_stats, "Fetch", int(args.event_fetch_workers))
-    add_workers(event_stats, "Process", int(args.event_process_workers))
-    add_workers(event_stats, "Write", int(args.event_write_workers))
-    build_state.modalities["Events"] = event_stats
+    initialize_modality_stats(build_state, args=args, data_groups=data_groups)
     prepare_cache_root(cache_root=cache_root, replace_existing=bool(args.replace_existing), dry_run=bool(args.dry_run))
 
     def _handle_signal(signum: int, _frame: object) -> None:
@@ -509,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
         build_state.message(f"Interrupt received signal={signum}; stopping queues and cancelling active ClickHouse queries.")
         stop_event.set()
         cancel_active_queries(client_opts=client_opts, active_queries=active_queries)
+        cancel_legacy_active_clickhouse_queries(client_opts=client_opts, stats=None)
 
     previous_sigint = signal.getsignal(signal.SIGINT)
     previous_sigterm = signal.getsignal(signal.SIGTERM)
@@ -537,48 +669,95 @@ def run(
 ) -> int:
     build_state.status = "planning"
     with DailyIndexStreamingDashboard(build_state, refresh_per_second=args.progress_refresh_per_second, progress_screen=args.progress_screen, progress_layout=args.progress_layout):
+        config = build_config_from_args(args)
         units = query_event_daily_units(args=args, client_opts=client_opts, months=months, active_queries=active_queries, query_slots=query_slots)
         if not units:
             raise RuntimeError("No events_ticker_day_index rows found for requested months/tickers.")
-        jobs, units_by_package = build_event_jobs(args=args, units=units)
-        event_stats = build_state.modalities["Events"]
-        event_stats.expected_units = sum(job.expected_rows for job in jobs)
-        event_stats.fetch_jobs = len(jobs)
-        write_json_atomic(cache_root / "manifest.json", root_manifest(args=args, months=months, status="running", jobs=len(jobs), expected_units=event_stats.expected_units))
-        append_jsonl(report_path, {"event": "plan", "months": months, "daily_units": len(units), "fetch_jobs": len(jobs), "expected_event_rows": event_stats.expected_units, "utc": utc_now()})
-        build_state.message(f"planned events daily_units={len(units):,} fetch_jobs={len(jobs):,} expected_rows={event_stats.expected_units:,}")
+        event_jobs, units_by_package = build_event_jobs(args=args, units=units)
+        data_groups = set(build_state.data_groups)
+        if "events" not in data_groups:
+            event_jobs = []
+        modality_jobs = build_modality_jobs(args=args, units_by_package=units_by_package, data_groups=build_state.data_groups)
+        expected_units = 0
+        total_jobs = len(event_jobs)
+        if "events" in data_groups:
+            event_stats = build_state.modalities["Events"]
+            event_stats.expected_units = sum(job.expected_rows for job in event_jobs)
+            event_stats.fetch_jobs = len(event_jobs)
+            expected_units += int(event_stats.expected_units)
+        for jobs_for_group in modality_jobs.values():
+            if not jobs_for_group:
+                continue
+            modality_name = MODALITY_BY_DATA_GROUP[jobs_for_group[0].data_group]
+            stats = build_state.modalities[modality_name]
+            stats.fetch_jobs = len(jobs_for_group)
+            stats.expected_units = sum(max(1, int(job.expected_rows)) for job in jobs_for_group)
+            expected_units += int(stats.expected_units)
+            total_jobs += len(jobs_for_group)
+        write_json_atomic(cache_root / "manifest.json", root_manifest(args=args, months=months, status="running", jobs=total_jobs, expected_units=expected_units))
+        append_jsonl(report_path, {"event": "plan", "months": months, "daily_units": len(units), "fetch_jobs": total_jobs, "expected_units": expected_units, "data_groups": list(build_state.data_groups), "utc": utc_now()})
+        build_state.message(f"planned groups={','.join(build_state.data_groups)} daily_units={len(units):,} fetch_jobs={total_jobs:,} expected_units={expected_units:,}")
         if args.dry_run:
-            write_json_atomic(cache_root / "manifest.json", root_manifest(args=args, months=months, status="dry_run", jobs=len(jobs), expected_units=event_stats.expected_units))
+            write_json_atomic(cache_root / "manifest.json", root_manifest(args=args, months=months, status="dry_run", jobs=total_jobs, expected_units=expected_units))
             return 0
 
-        fetch_queue: queue.Queue[EventFetchJob | None] = queue.Queue()
-        process_queue = PayloadQueue("events_process_queue", int(float(args.max_fetched_queue_gib) * 1024**3))
-        write_queue = PayloadQueue("events_write_queue", int(float(args.max_processed_queue_gib) * 1024**3))
-        for job in jobs:
-            fetch_queue.put(job)
-        for _ in range(max(1, int(args.event_fetch_workers))):
-            fetch_queue.put(None)
+        pipelines: dict[str, PipelineQueues] = {}
+        if "events" in data_groups:
+            fetch_queue: queue.Queue[EventFetchJob | None] = queue.Queue()
+            process_queue = PayloadQueue("events_process_queue", int(float(args.max_fetched_queue_gib) * 1024**3))
+            write_queue = PayloadQueue("events_write_queue", int(float(args.max_processed_queue_gib) * 1024**3))
+            for job in event_jobs:
+                fetch_queue.put(job)
+            for _ in range(max(1, int(args.event_fetch_workers))):
+                fetch_queue.put(None)
+            pipelines["events"] = PipelineQueues(fetch_queue=fetch_queue, process_queue=process_queue, write_queue=write_queue)
+        for data_group, jobs_for_group in modality_jobs.items():
+            fetch_queue_generic: queue.Queue[ModalityJob | None] = queue.Queue()
+            process_queue_generic = PayloadQueue(f"{data_group}_process_queue", int(float(args.max_fetched_queue_gib) * 1024**3))
+            write_queue_generic = PayloadQueue(f"{data_group}_write_queue", int(float(args.max_processed_queue_gib) * 1024**3))
+            for job in jobs_for_group:
+                fetch_queue_generic.put(job)
+            for _ in range(max(1, worker_count(args, data_group, "fetch"))):
+                fetch_queue_generic.put(None)
+            pipelines[data_group] = PipelineQueues(fetch_queue=fetch_queue_generic, process_queue=process_queue_generic, write_queue=write_queue_generic)
 
         build_state.status = "running"
         threads: list[threading.Thread] = []
-        for slot in [worker for worker in event_stats.workers if worker.process_name == "Fetch"]:
-            thread = threading.Thread(target=event_fetch_worker, name=f"event-fetch-{slot.worker_id:02d}", args=(slot, args, client_opts, fetch_queue, process_queue, build_state, stop_event, active_queries, query_slots))
-            thread.start()
-            threads.append(thread)
-        for slot in [worker for worker in event_stats.workers if worker.process_name == "Process"]:
-            thread = threading.Thread(target=event_process_worker, name=f"event-process-{slot.worker_id:02d}", args=(slot, process_queue, write_queue, build_state, stop_event))
-            thread.start()
-            threads.append(thread)
-        for slot in [worker for worker in event_stats.workers if worker.process_name == "Write"]:
-            thread = threading.Thread(target=event_write_worker, name=f"event-write-{slot.worker_id:02d}", args=(slot, write_queue, build_state, stop_event, writer_slots))
-            thread.start()
-            threads.append(thread)
+        if "events" in data_groups:
+            event_stats = build_state.modalities["Events"]
+            event_pipeline = pipelines["events"]
+            for slot in [worker for worker in event_stats.workers if worker.process_name == "Fetch"]:
+                thread = threading.Thread(target=event_fetch_worker, name=f"event-fetch-{slot.worker_id:02d}", args=(slot, args, client_opts, event_pipeline.fetch_queue, event_pipeline.process_queue, build_state, stop_event, active_queries, query_slots))
+                thread.start()
+                threads.append(thread)
+            for slot in [worker for worker in event_stats.workers if worker.process_name == "Process"]:
+                thread = threading.Thread(target=event_process_worker, name=f"event-process-{slot.worker_id:02d}", args=(slot, event_pipeline.process_queue, event_pipeline.write_queue, build_state, stop_event))
+                thread.start()
+                threads.append(thread)
+            for slot in [worker for worker in event_stats.workers if worker.process_name == "Write"]:
+                thread = threading.Thread(target=event_write_worker, name=f"event-write-{slot.worker_id:02d}", args=(slot, event_pipeline.write_queue, build_state, stop_event, writer_slots))
+                thread.start()
+                threads.append(thread)
+        for data_group in sorted(modality_jobs):
+            modality_name = MODALITY_BY_DATA_GROUP[data_group]
+            stats = build_state.modalities[modality_name]
+            pipeline = pipelines[data_group]
+            for slot in [worker for worker in stats.workers if worker.process_name == "Fetch"]:
+                thread = threading.Thread(target=generic_fetch_worker, name=f"{data_group}-fetch-{slot.worker_id:02d}", args=(slot, data_group, args, client_opts, config, pipeline.fetch_queue, pipeline.process_queue, build_state, stop_event, active_queries, query_slots))
+                thread.start()
+                threads.append(thread)
+            for slot in [worker for worker in stats.workers if worker.process_name == "Process"]:
+                thread = threading.Thread(target=generic_process_worker, name=f"{data_group}-process-{slot.worker_id:02d}", args=(slot, data_group, pipeline.process_queue, pipeline.write_queue, build_state, stop_event))
+                thread.start()
+                threads.append(thread)
+            for slot in [worker for worker in stats.workers if worker.process_name == "Write"]:
+                thread = threading.Thread(target=generic_write_worker, name=f"{data_group}-write-{slot.worker_id:02d}", args=(slot, data_group, pipeline.write_queue, build_state, stop_event, writer_slots))
+                thread.start()
+                threads.append(thread)
 
         while not stop_event.is_set():
-            event_stats.fetch_queue_depth = fetch_queue.qsize()
-            event_stats.process_queue_depth = process_queue.depth
-            event_stats.write_queue_depth = write_queue.depth
-            if event_stats.write_done >= event_stats.fetch_jobs:
+            update_queue_depths(build_state=build_state, pipelines=pipelines)
+            if all_modalities_complete(build_state):
                 break
             if build_state.errors:
                 stop_event.set()
@@ -586,18 +765,10 @@ def run(
             time.sleep(0.25)
 
         if stop_event.is_set() or build_state.errors:
-            drained_fetch = drain_standard_queue(fetch_queue)
-            drained_process = process_queue.drain()
-            drained_write = write_queue.drain()
-            build_state.message(f"shutdown drain fetch={drained_fetch:,} process={drained_process:,} write={drained_write:,}")
+            drained = drain_pipelines(pipelines)
+            build_state.message(f"shutdown drain fetch={drained['fetch']:,} process={drained['process']:,} write={drained['write']:,}")
         else:
-            fetch_queue.join()
-            for _ in range(max(1, int(args.event_process_workers))):
-                process_queue.put_sentinel()
-            process_queue.join()
-            for _ in range(max(1, int(args.event_write_workers))):
-                write_queue.put_sentinel()
-            write_queue.join()
+            join_and_stop_pipelines(args=args, build_state=build_state, pipelines=pipelines)
         for thread in threads:
             thread.join(timeout=max(1.0, float(args.shutdown_timeout_seconds)))
 
@@ -605,18 +776,19 @@ def run(
             for item in build_state.errors:
                 append_jsonl(errors_path, item)
             build_state.status = "error"
-            write_json_atomic(cache_root / "manifest.json", root_manifest(args=args, months=months, status="error", jobs=len(jobs), expected_units=event_stats.expected_units, state=build_state))
+            write_json_atomic(cache_root / "manifest.json", root_manifest(args=args, months=months, status="error", jobs=total_jobs, expected_units=expected_units, state=build_state))
             raise RuntimeError(f"Daily-index streaming cache failed with {len(build_state.errors):,} error(s). See {errors_path}.")
         if stop_event.is_set():
             build_state.status = "interrupted"
-            write_json_atomic(cache_root / "manifest.json", root_manifest(args=args, months=months, status="interrupted", jobs=len(jobs), expected_units=event_stats.expected_units, state=build_state))
+            write_json_atomic(cache_root / "manifest.json", root_manifest(args=args, months=months, status="interrupted", jobs=total_jobs, expected_units=expected_units, state=build_state))
             return 130
 
-        write_package_manifests(cache_root=cache_root, units_by_package=units_by_package, parts=build_state.completed_parts)
+        write_package_manifests(cache_root=cache_root, units_by_package=units_by_package, parts=build_state.completed_parts, data_groups=build_state.data_groups)
+        write_global_manifests(cache_root=cache_root, months=months, parts=build_state.completed_parts, data_groups=build_state.data_groups)
         build_state.status = "complete"
-        write_json_atomic(cache_root / "manifest.json", root_manifest(args=args, months=months, status="complete", jobs=len(jobs), expected_units=event_stats.expected_units, state=build_state))
-        append_jsonl(report_path, {"event": "complete", "parts": len(build_state.completed_parts), "written_units": event_stats.written_units, "utc": utc_now()})
-        build_state.message(f"complete parts={len(build_state.completed_parts):,} written_rows={event_stats.written_units:,}")
+        write_json_atomic(cache_root / "manifest.json", root_manifest(args=args, months=months, status="complete", jobs=total_jobs, expected_units=expected_units, state=build_state))
+        append_jsonl(report_path, {"event": "complete", "parts": len(build_state.completed_parts), "written_units": sum(modality.written_units for modality in build_state.modalities.values()), "utc": utc_now()})
+        build_state.message(f"complete parts={len(build_state.completed_parts):,} written_units={sum(modality.written_units for modality in build_state.modalities.values()):,}")
         return 0
 
 
@@ -717,6 +889,112 @@ def event_write_worker(slot: WorkerSlot, write_queue: PayloadQueue, state: Build
             slot.status = "done"
         except Exception as exc:  # noqa: BLE001
             state.add_error(worker=f"Write {slot.worker_id:02d}", error=exc, job_id=getattr(getattr(payload, "job", None), "job_id", ""))
+            stop_event.set()
+        finally:
+            write_queue.task_done()
+
+
+def generic_fetch_worker(
+    slot: WorkerSlot,
+    data_group: str,
+    args: argparse.Namespace,
+    client_opts: Mapping[str, str],
+    config: Any,
+    fetch_queue: "queue.Queue[ModalityJob | None]",
+    process_queue: PayloadQueue,
+    state: BuildState,
+    stop_event: threading.Event,
+    active_queries: ActiveQueries,
+    query_slots: threading.Semaphore,
+) -> None:
+    stats = state.modality(MODALITY_BY_DATA_GROUP[data_group])
+    while not stop_event.is_set():
+        try:
+            job = fetch_queue.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        try:
+            if job is None:
+                slot.status = "idle"
+                slot.current_job = "-"
+                return
+            slot.started_at = time.perf_counter()
+            slot.status = "fetching"
+            slot.current_job = generic_job_label(job)
+            slot.total = max(1, int(job.expected_rows))
+            payload = fetch_generic_modality(args=args, client_opts=client_opts, config=config, job=job, active_queries=active_queries, query_slots=query_slots)
+            slot.completed = max(1, payload.row_count)
+            slot.rate = slot.completed / max(0.001, payload.seconds)
+            process_queue.put(payload, payload.estimated_bytes, stop_event)
+            stats.fetched_units += progress_units_for_job(job)
+            stats.fetch_done += 1
+            slot.status = "done"
+        except Exception as exc:  # noqa: BLE001
+            state.add_error(worker=f"{MODALITY_BY_DATA_GROUP[data_group]} Fetch {slot.worker_id:02d}", error=exc, job_id=getattr(job, "job_id", ""))
+            stop_event.set()
+        finally:
+            fetch_queue.task_done()
+
+
+def generic_process_worker(slot: WorkerSlot, data_group: str, process_queue: PayloadQueue, write_queue: PayloadQueue, state: BuildState, stop_event: threading.Event) -> None:
+    stats = state.modality(MODALITY_BY_DATA_GROUP[data_group])
+    while not stop_event.is_set():
+        try:
+            payload = process_queue.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        try:
+            if payload is None:
+                slot.status = "idle"
+                slot.current_job = "-"
+                return
+            slot.started_at = time.perf_counter()
+            slot.status = "processing"
+            slot.current_job = generic_job_label(payload.job)
+            slot.total = max(1, payload.row_count)
+            processed = process_generic_modality(payload)
+            slot.completed = max(1, sum(int(frame.height) for frame in processed.frames.values()))
+            slot.rate = slot.completed / max(0.001, processed.process_seconds)
+            write_queue.put(processed, processed.estimated_bytes, stop_event)
+            stats.processed_units += progress_units_for_job(processed.job)
+            stats.process_done += 1
+            slot.status = "done"
+        except Exception as exc:  # noqa: BLE001
+            state.add_error(worker=f"{MODALITY_BY_DATA_GROUP[data_group]} Process {slot.worker_id:02d}", error=exc, job_id=getattr(getattr(payload, "job", None), "job_id", ""))
+            stop_event.set()
+        finally:
+            process_queue.task_done()
+
+
+def generic_write_worker(slot: WorkerSlot, data_group: str, write_queue: PayloadQueue, state: BuildState, stop_event: threading.Event, writer_slots: threading.Semaphore) -> None:
+    stats = state.modality(MODALITY_BY_DATA_GROUP[data_group])
+    while not stop_event.is_set():
+        try:
+            payload = write_queue.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        try:
+            if payload is None:
+                slot.status = "idle"
+                slot.current_job = "-"
+                return
+            slot.started_at = time.perf_counter()
+            slot.status = "writing"
+            slot.current_job = generic_job_label(payload.job)
+            slot.total = max(1, int(payload.audit.get("row_count", 0)))
+            with writer_slots:
+                parts = write_generic_payload(state.cache_root, payload)
+            rows = sum(max(1, int(part.row_count)) for part in parts)
+            bytes_written = sum(int(part.bytes_written) for part in parts)
+            slot.completed = rows
+            slot.rate = bytes_written / max(0.001, sum(float(part.write_seconds) for part in parts))
+            for part in parts:
+                state.add_part(part)
+            stats.written_units += progress_units_for_job(payload.job)
+            stats.write_done += 1
+            slot.status = "done"
+        except Exception as exc:  # noqa: BLE001
+            state.add_error(worker=f"{MODALITY_BY_DATA_GROUP[data_group]} Write {slot.worker_id:02d}", error=exc, job_id=getattr(getattr(payload, "job", None), "job_id", ""))
             stop_event.set()
         finally:
             write_queue.task_done()
@@ -864,6 +1142,151 @@ def write_event_payload(cache_root: Path, payload: ProcessedPayload) -> WrittenP
     return written
 
 
+def fetch_generic_modality(
+    *,
+    args: argparse.Namespace,
+    client_opts: Mapping[str, str],
+    config: Any,
+    job: ModalityJob,
+    active_queries: ActiveQueries,
+    query_slots: threading.Semaphore,
+) -> GenericFetchedPayload:
+    started = time.perf_counter()
+    query_id = f"{QUERY_ID_PREFIX}{job.data_group}_{threading.get_ident()}_{uuid.uuid4().hex}"
+    active_queries.register(query_id, generic_job_label(job))
+    try:
+        with query_slots:
+            frames = query_generic_frames(args=args, client_opts=client_opts, config=config, job=job, query_id=query_id)
+    finally:
+        active_queries.unregister(query_id)
+    seconds = time.perf_counter() - started
+    rows = sum(int(frame.height) for frame in frames.values())
+    estimated = sum(frame_estimated_bytes(frame) for frame in frames.values())
+    return GenericFetchedPayload(job=job, frames=frames, row_count=rows, estimated_bytes=estimated, query_id=query_id, seconds=seconds)
+
+
+def query_generic_frames(*, args: argparse.Namespace, client_opts: Mapping[str, str], config: Any, job: ModalityJob, query_id: str) -> dict[str, Any]:
+    window = cache_month_window(job.month)
+    if job.data_group == "intraday_labels":
+        event_job = EventFetchJob(
+            modality="events",
+            job_id=job.job_id,
+            month=job.month,
+            ticker=job.ticker,
+            kind="origin",
+            part_id=job.part_id,
+            ordinal_start=job.ordinal_start,
+            ordinal_end=job.ordinal_end,
+            expected_rows=max(0, int(job.ordinal_end) - int(job.ordinal_start) + 1),
+        )
+        return {"events": query_polars(client_opts=client_opts, query=event_query(args=args, job=event_job), query_id=query_id, retries=int(args.clickhouse_query_retries), backoff_seconds=float(args.clickhouse_query_retry_backoff_seconds))}
+    if job.data_group == "macro_bars":
+        symbols = tuple(config.global_symbols) if job.scope == "global" else (job.ticker,)
+        return {"macro_bars": _query_daily_bars(args, client_opts, config, window, symbols=symbols)}
+    if job.data_group == "news":
+        if job.scope == "global":
+            return {"market_news_embeddings": _query_market_news(args, client_opts, config, window)}
+        return {"news_embeddings": _query_ticker_news(args, client_opts, config, window, job.ticker)}
+    if job.data_group == "sec":
+        return {"sec_embeddings": _query_sec_tokens(args, client_opts, config, window, job.ticker)}
+    if job.data_group == "xbrl":
+        if bool(args.skip_xbrl):
+            return {"xbrl": polars().DataFrame()}
+        return {"xbrl": _query_xbrl(args, client_opts, config, window, job.ticker)}
+    if job.data_group == "corporate_actions":
+        if bool(args.skip_corporate_actions):
+            return {"corporate_actions": polars().DataFrame()}
+        return {"corporate_actions": _query_corporate_actions(args, client_opts, config, window, job.ticker)}
+    raise ValueError(f"Unsupported generic data group: {job.data_group}")
+
+
+def process_generic_modality(payload: GenericFetchedPayload) -> GenericProcessedPayload:
+    started = time.perf_counter()
+    job = payload.job
+    frames = dict(payload.frames)
+    if job.data_group == "intraday_labels":
+        events = frames.get("events")
+        if events is None:
+            raise RuntimeError(f"{job.job_id} missing intraday event source frame.")
+        frames = {
+            "intraday_base_bars": _build_intraday_base_bars(events),
+            "intraday_condition_events": _build_intraday_condition_events(events),
+        }
+    audit = {
+        "row_count": sum(int(frame.height) for frame in frames.values()),
+        "frames": {name: int(frame.height) for name, frame in frames.items()},
+    }
+    return GenericProcessedPayload(
+        job=job,
+        frames=frames,
+        audit=audit,
+        estimated_bytes=sum(frame_estimated_bytes(frame) for frame in frames.values()),
+        fetch_query_id=payload.query_id,
+        fetch_seconds=payload.seconds,
+        process_seconds=time.perf_counter() - started,
+    )
+
+
+def write_generic_payload(cache_root: Path, payload: GenericProcessedPayload) -> list[WrittenPart]:
+    started = time.perf_counter()
+    job = payload.job
+    output_root = generic_output_dir(cache_root=cache_root, job=job)
+    output_root.mkdir(parents=True, exist_ok=True)
+    parts: list[WrittenPart] = []
+    for name, frame in payload.frames.items():
+        file_name = generic_output_file_name(job, name)
+        path = output_root / file_name
+        result = write_parquet(frame, path)
+        meta_path = output_root / f"{file_name}.json"
+        metadata = {
+            "cache_version": "daily_index_streaming_cache_v1",
+            "modality": job.modality,
+            "data_group": job.data_group,
+            "month": job.month,
+            "ticker": job.ticker,
+            "scope": job.scope,
+            "part_id": job.part_id,
+            "job_id": job.job_id,
+            "frame": name,
+            "rows": result["rows"],
+            "path": rel_path(path, cache_root),
+            "fetch_query_id": payload.fetch_query_id,
+            "fetch_seconds": payload.fetch_seconds,
+            "process_seconds": payload.process_seconds,
+            "created_at_utc": utc_now(),
+        }
+        write_json_atomic(meta_path, metadata)
+        row_count = int(result["rows"])
+        parts.append(
+            WrittenPart(
+                modality=job.modality,
+                month=job.month,
+                ticker=job.ticker,
+                kind=job.scope,
+                part_id=job.part_id,
+                job_id=job.job_id,
+                event_path=rel_path(path, cache_root),
+                origin_path="",
+                metadata_path=rel_path(meta_path, cache_root),
+                event_rows=0,
+                origin_rows=0,
+                context_rows=0,
+                ordinal_min=0,
+                ordinal_max=0,
+                timestamp_min_us=0,
+                timestamp_max_us=0,
+                bytes_written=int(result["bytes"]) + int(meta_path.stat().st_size),
+                fetch_query_id=payload.fetch_query_id,
+                fetch_seconds=payload.fetch_seconds,
+                process_seconds=payload.process_seconds,
+                write_seconds=time.perf_counter() - started,
+                row_count=row_count,
+                output_paths={name: rel_path(path, cache_root)},
+            )
+        )
+    return parts
+
+
 def query_event_daily_units(
     *,
     args: argparse.Namespace,
@@ -985,6 +1408,48 @@ def build_event_jobs(args: argparse.Namespace, units: list[EventDailyUnit]) -> t
     return jobs, by_package
 
 
+def build_modality_jobs(
+    *,
+    args: argparse.Namespace,
+    units_by_package: Mapping[tuple[str, str], list[EventDailyUnit]],
+    data_groups: tuple[str, ...],
+) -> dict[str, list[ModalityJob]]:
+    groups = set(data_groups)
+    jobs: dict[str, list[ModalityJob]] = {group: [] for group in groups if group != "events"}
+    for group in sorted(jobs):
+        part_id = 0
+        months_seen: set[str] = set()
+        for (month, ticker), units in sorted(units_by_package.items()):
+            ordered = sorted(units, key=lambda item: (item.source_date, item.first_ordinal))
+            origin_first = int(ordered[0].first_ordinal)
+            origin_last = int(ordered[-1].last_ordinal)
+            expected_rows = sum(int(unit.event_count) for unit in ordered)
+            if group == "news" and month not in months_seen:
+                part_id += 1
+                jobs[group].append(ModalityJob(modality=MODALITY_BY_DATA_GROUP[group], data_group=group, job_id=f"{month}|__GLOBAL__|news", month=month, ticker="__GLOBAL__", scope="global", part_id=part_id, expected_rows=1))
+                months_seen.add(month)
+            if group == "macro_bars" and month not in months_seen:
+                part_id += 1
+                jobs[group].append(ModalityJob(modality=MODALITY_BY_DATA_GROUP[group], data_group=group, job_id=f"{month}|__GLOBAL__|macro", month=month, ticker="__GLOBAL__", scope="global", part_id=part_id, expected_rows=1))
+                months_seen.add(month)
+            part_id += 1
+            jobs[group].append(
+                ModalityJob(
+                    modality=MODALITY_BY_DATA_GROUP[group],
+                    data_group=group,
+                    job_id=f"{month}|{ticker}|{group}",
+                    month=month,
+                    ticker=ticker,
+                    scope="ticker",
+                    part_id=part_id,
+                    expected_rows=expected_rows if group == "intraday_labels" else 1,
+                    ordinal_start=origin_first,
+                    ordinal_end=origin_last,
+                )
+            )
+    return jobs
+
+
 def event_query(*, args: argparse.Namespace, job: EventFetchJob) -> str:
     table = events_source_table(args=args, job=job)
     date_filter = ""
@@ -1096,32 +1561,59 @@ def transient_clickhouse_error(exc: BaseException) -> bool:
     return any(marker in text for marker in ("IncompleteRead", "ProtocolError", "RemoteDisconnected", "Connection reset", "timed out", "Connection broken"))
 
 
-def write_package_manifests(*, cache_root: Path, units_by_package: Mapping[tuple[str, str], list[EventDailyUnit]], parts: list[WrittenPart]) -> None:
+def write_package_manifests(*, cache_root: Path, units_by_package: Mapping[tuple[str, str], list[EventDailyUnit]], parts: list[WrittenPart], data_groups: tuple[str, ...]) -> None:
     parts_by_package: dict[tuple[str, str], list[WrittenPart]] = defaultdict(list)
     for part in parts:
-        parts_by_package[(part.month, part.ticker)].append(part)
+        if part.ticker != "__GLOBAL__":
+            parts_by_package[(part.month, part.ticker)].append(part)
     for (month, ticker), units in units_by_package.items():
         package = package_dir(cache_root=cache_root, month=month, ticker=ticker)
         package.mkdir(parents=True, exist_ok=True)
         write_parquet(polars().DataFrame([asdict(unit) for unit in units]), package / "daily_index.parquet")
         package_parts = sorted(parts_by_package.get((month, ticker), []), key=lambda item: item.part_id)
+        event_parts = [part for part in package_parts if part.modality == "events"]
+        modality_parts = [part for part in package_parts if part.modality != "events"]
         manifest = {
             "cache_version": "daily_index_streaming_cache_v1",
             "month": month,
             "ticker": ticker,
-            "data_groups": ["events"],
+            "data_groups": list(data_groups),
             "daily_units": len(units),
             "expected_origin_rows": sum(int(unit.event_count) for unit in units),
-            "written_event_rows": sum(int(part.event_rows) for part in package_parts),
-            "written_origin_rows": sum(int(part.origin_rows) for part in package_parts),
-            "written_context_rows": sum(int(part.context_rows) for part in package_parts),
+            "written_event_rows": sum(int(part.event_rows) for part in event_parts),
+            "written_origin_rows": sum(int(part.origin_rows) for part in event_parts),
+            "written_context_rows": sum(int(part.context_rows) for part in event_parts),
+            "written_modality_rows": {name: sum(int(part.row_count) for part in modality_parts if part.modality == name) for name in sorted({part.modality for part in modality_parts})},
             "origin_first_ordinal": min(int(unit.first_ordinal) for unit in units),
             "origin_last_ordinal": max(int(unit.last_ordinal) for unit in units),
-            "parts": [asdict(part) for part in package_parts],
+            "parts": [asdict(part) for part in event_parts],
+            "modality_parts": [asdict(part) for part in modality_parts],
             "audit_status": "pass",
             "completed_at_utc": utc_now(),
         }
         write_json_atomic(package / "manifest.json", manifest)
+
+
+def write_global_manifests(*, cache_root: Path, months: tuple[str, ...], parts: list[WrittenPart], data_groups: tuple[str, ...]) -> None:
+    parts_by_month: dict[str, list[WrittenPart]] = defaultdict(list)
+    for part in parts:
+        if part.ticker == "__GLOBAL__":
+            parts_by_month[part.month].append(part)
+    for month in months:
+        global_dir = cache_root / f"month={month}" / "global"
+        global_dir.mkdir(parents=True, exist_ok=True)
+        month_parts = sorted(parts_by_month.get(month, []), key=lambda item: (item.modality, item.part_id, item.event_path))
+        manifest = {
+            "cache_version": "daily_index_streaming_cache_v1",
+            "month": month,
+            "scope": "global",
+            "data_groups": list(data_groups),
+            "written_modality_rows": {name: sum(int(part.row_count) for part in month_parts if part.modality == name) for name in sorted({part.modality for part in month_parts})},
+            "modality_parts": [asdict(part) for part in month_parts],
+            "audit_status": "pass",
+            "completed_at_utc": utc_now(),
+        }
+        write_json_atomic(global_dir / "manifest.json", manifest)
 
 
 def root_manifest(*, args: argparse.Namespace, months: tuple[str, ...], status: str, jobs: int, expected_units: int, state: BuildState | None = None) -> dict[str, Any]:
@@ -1145,13 +1637,22 @@ def root_manifest(*, args: argparse.Namespace, months: tuple[str, ...], status: 
         "updated_at_utc": utc_now(),
     }
     if state is not None:
-        event_stats = state.modalities.get("Events")
         payload["summary"] = {
             "parts": len(state.completed_parts),
             "errors": len(state.errors),
-            "fetched_units": int(event_stats.fetched_units if event_stats else 0),
-            "processed_units": int(event_stats.processed_units if event_stats else 0),
-            "written_units": int(event_stats.written_units if event_stats else 0),
+            "modalities": {
+                name: {
+                    "expected_units": int(stats.expected_units),
+                    "fetched_units": int(stats.fetched_units),
+                    "processed_units": int(stats.processed_units),
+                    "written_units": int(stats.written_units),
+                    "fetch_jobs": int(stats.fetch_jobs),
+                    "fetch_done": int(stats.fetch_done),
+                    "process_done": int(stats.process_done),
+                    "write_done": int(stats.write_done),
+                }
+                for name, stats in sorted(state.modalities.items())
+            },
         }
     return payload
 
@@ -1211,6 +1712,77 @@ def add_workers(modality: ModalityStats, process_name: str, count: int) -> None:
         modality.workers.append(WorkerSlot(process_name=process_name, worker_id=index + 1))
 
 
+def normalize_data_groups(value: str) -> tuple[str, ...]:
+    raw = [item.strip().lower() for item in str(value).split(",") if item.strip()]
+    groups: list[str] = []
+    for item in raw:
+        canonical = DATA_GROUP_ALIASES.get(item)
+        if canonical is None:
+            raise ValueError(f"Unsupported data group {item!r}. Supported groups: {', '.join(sorted(set(DATA_GROUP_ALIASES.values())))}")
+        if canonical not in groups:
+            groups.append(canonical)
+    return tuple(groups or ("events",))
+
+
+def initialize_modality_stats(build_state: BuildState, *, args: argparse.Namespace, data_groups: tuple[str, ...]) -> None:
+    for group in data_groups:
+        name = MODALITY_BY_DATA_GROUP[group]
+        stats = ModalityStats(name=name)
+        add_workers(stats, "Fetch", worker_count(args, group, "fetch"))
+        add_workers(stats, "Process", worker_count(args, group, "process"))
+        add_workers(stats, "Write", worker_count(args, group, "write"))
+        build_state.modalities[name] = stats
+
+
+def worker_count(args: argparse.Namespace, data_group: str, stage: str) -> int:
+    prefix = {
+        "events": "event",
+        "intraday_labels": "label",
+        "macro_bars": "macro",
+        "news": "news",
+        "sec": "sec",
+        "xbrl": "xbrl",
+        "corporate_actions": "corporate",
+    }[data_group]
+    return max(1, int(getattr(args, f"{prefix}_{stage}_workers")))
+
+
+def progress_units_for_job(job: ModalityJob) -> int:
+    return max(1, int(job.expected_rows))
+
+
+def update_queue_depths(*, build_state: BuildState, pipelines: Mapping[str, PipelineQueues]) -> None:
+    for group, pipe in pipelines.items():
+        stats = build_state.modalities[MODALITY_BY_DATA_GROUP[group]]
+        stats.fetch_queue_depth = pipe.fetch_queue.qsize()
+        stats.process_queue_depth = pipe.process_queue.depth
+        stats.write_queue_depth = pipe.write_queue.depth
+
+
+def all_modalities_complete(build_state: BuildState) -> bool:
+    return all(stats.write_done >= stats.fetch_jobs for stats in build_state.modalities.values())
+
+
+def drain_pipelines(pipelines: Mapping[str, PipelineQueues]) -> dict[str, int]:
+    totals = {"fetch": 0, "process": 0, "write": 0}
+    for pipe in pipelines.values():
+        totals["fetch"] += drain_standard_queue(pipe.fetch_queue)
+        totals["process"] += pipe.process_queue.drain()
+        totals["write"] += pipe.write_queue.drain()
+    return totals
+
+
+def join_and_stop_pipelines(*, args: argparse.Namespace, build_state: BuildState, pipelines: Mapping[str, PipelineQueues]) -> None:
+    for group, pipe in pipelines.items():
+        pipe.fetch_queue.join()
+        for _ in range(worker_count(args, group, "process")):
+            pipe.process_queue.put_sentinel()
+        pipe.process_queue.join()
+        for _ in range(worker_count(args, group, "write")):
+            pipe.write_queue.put_sentinel()
+        pipe.write_queue.join()
+
+
 def parse_months(args: argparse.Namespace) -> tuple[str, ...]:
     values = [str(item).strip() for item in args.month if str(item).strip()]
     if values:
@@ -1262,6 +1834,34 @@ def ticker_filter_sql(text: str) -> str:
 def package_dir(*, cache_root: Path, month: str, ticker: str) -> Path:
     upper = str(ticker).upper()
     return cache_root / f"month={month}" / f"ticker={upper}"
+
+
+def generic_output_dir(*, cache_root: Path, job: ModalityJob) -> Path:
+    if job.scope == "global":
+        base = cache_root / f"month={job.month}" / "global"
+    else:
+        base = package_dir(cache_root=cache_root, month=job.month, ticker=job.ticker)
+    folder = {
+        "intraday_labels": "intraday_labels",
+        "macro_bars": "global_macro_bars" if job.scope == "global" else "macro_bars",
+        "news": "market_news_embeddings" if job.scope == "global" else "news_embeddings",
+        "sec": "sec_embeddings",
+        "xbrl": "xbrl",
+        "corporate_actions": "corporate_actions",
+    }[job.data_group]
+    return base / folder
+
+
+def generic_output_file_name(job: ModalityJob, frame_name: str) -> str:
+    stem = safe_token(frame_name)
+    if job.scope == "global":
+        return f"{stem}_part_{job.part_id:06d}.parquet"
+    return f"{stem}_part_{job.part_id:06d}_{safe_token(job.ticker)}.parquet"
+
+
+def generic_job_label(job: ModalityJob) -> str:
+    target = "__GLOBAL__" if job.scope == "global" else job.ticker
+    return f"{job.month} {target} {job.data_group}"
 
 
 def write_parquet(frame: Any, path: Path) -> dict[str, int]:

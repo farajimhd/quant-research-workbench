@@ -113,29 +113,28 @@ cache_root/
         part_000000.parquet
       global_macro_bars/
         part_000000.parquet
-    ticker_hash=XX/
-      ticker=ABC/
-        manifest.json
-        daily_index.parquet
-        events/
-          part_000000.parquet
-          part_000001.parquet
-        origins/
-          part_000000.parquet
-        intraday_labels/
-          part_000000.parquet
-        macro_bars/
-          part_000000.parquet
-        news_embeddings/
-          part_000000.parquet
-        sec_embeddings/
-          part_000000.parquet
-        xbrl/
-          part_000000.parquet
-        corporate_actions/
-          part_000000.parquet
-        context_indices/
-          part_000000.parquet
+    ticker=ABC/
+      manifest.json
+      daily_index.parquet
+      events/
+        part_000000.parquet
+        part_000001.parquet
+      origins/
+        part_000000.parquet
+      intraday_labels/
+        part_000000.parquet
+      macro_bars/
+        part_000000.parquet
+      news_embeddings/
+        part_000000.parquet
+      sec_embeddings/
+        part_000000.parquet
+      xbrl/
+        part_000000.parquet
+      corporate_actions/
+        part_000000.parquet
+      context_indices/
+        part_000000.parquet
 ```
 
 Files are immutable. Writers must write to a temporary path first and then
@@ -877,7 +876,7 @@ cache_root/month=YYYY-MM/manifest.json
 Every ticker/month writes:
 
 ```text
-cache_root/month=YYYY-MM/ticker_hash=XX/ticker=ABC/manifest.json
+cache_root/month=YYYY-MM/ticker=ABC/manifest.json
 ```
 
 Ticker manifest fields:
@@ -965,15 +964,15 @@ Build this in small, verifiable steps:
 10. Add full cache audit script.
 11. Update loader to consume the new cache manifest.
 
-The first implementation should support:
+The multi-modality implementation supports:
 
 ```text
---data-groups events
+--data-groups events,intraday_labels,macro_bars,news,sec,xbrl,corporate_actions
 --month 2019-09
 --tickers AAPL,MSFT
 ```
 
-before attempting a full six-month multi-modality build.
+Use a small ticker/month smoke before attempting a full six-month build.
 
 ## Non-Goals
 
@@ -993,7 +992,7 @@ Before considering the builder usable:
 
 1. A one-ticker smoke build passes audit.
 2. A multi-ticker one-day build passes audit.
-3. A one-month events-only build passes audit.
+3. A one-month multi-modality build passes audit.
 4. Ctrl+C leaves resumable state.
 5. Resume skips only audited-complete outputs.
 6. Terminal panels do not blink and preserve fixed worker rows.

@@ -24,7 +24,7 @@ the ticker/month cache and loader.
 | Component | File | Purpose |
 | --- | --- | --- |
 | Ticker/month cache builder | `run_build_ticker_month_cache.py` | Builds reusable SSD packages from ClickHouse. |
-| Daily-index streaming cache builder | `run_build_daily_index_streaming_cache.py` | New daily-index driven fetch/process/write cache builder. The first implementation supports the Events modality. |
+| Daily-index streaming cache builder | `run_build_daily_index_streaming_cache.py` | Daily-index driven fetch/process/write cache builder for events, intraday label sources, macro bars, news/SEC embeddings, XBRL, and corporate actions. |
 | Ticker/month cache audit | `audit_ticker_month_cache.py` | Audits completed SSD cache packages. |
 | Ticker/month data loader | `ticker_month_dataset.py` | Reads SSD packages and materializes trainer batches. |
 | Loader profiler | `run_profile_ticker_month_loader.py` | Measures loader speed, memory, and output shapes. |
@@ -66,21 +66,17 @@ cache_root/
         market_news_embeddings.parquet
         global_daily_bars.parquet
         category_references.parquet
-      ticker_hash=XX/
-        ticker=ABC/
-          manifest.json
-          events_part_00000.parquet
-          origins_part_00000.parquet
-          event_window_index_part_00000.parquet
-          ranges_part_00000.parquet
-          corporate_action_daily_labels_part_00000.parquet
-          daily_bars.parquet
-          ticker_news_embeddings.parquet
-          sec_filing_embeddings.parquet
-          xbrl.parquet
-          corporate_actions.parquet
-          intraday_base_bars.parquet
-          intraday_condition_events.parquet
+      ticker=ABC/
+        manifest.json
+        daily_index.parquet
+        events/
+        origins/
+        intraday_labels/
+        macro_bars/
+        news_embeddings/
+        sec_embeddings/
+        xbrl/
+        corporate_actions/
 ```
 
 Very liquid tickers can be physically split into multiple ordinal-bounded
