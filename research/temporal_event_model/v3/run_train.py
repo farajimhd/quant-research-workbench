@@ -8,12 +8,12 @@ from pathlib import Path
 
 
 DEFAULT_ARGS: dict[str, str | int | float | bool] = {
-    "cache-root": "D:/market-data/prepared/daily_index_streaming_cache/train_201902_201912_daily_index",
+    "cache-root": "D:/market-data/prepared/daily_index_streaming_cache/events_daily_index_2019-02",
     "output-root": "D:/TradingML/runtimes/temporal_event_model/v3/train",
-    "dataset-id": "temporal_v3_201902_201912_v1",
+    "dataset-id": "temporal_v3_201902_daily_index_v1",
     "split": "train",
     "val-split": "validation",
-    "months": "2019-02,2019-03",
+    "months": "2019-02",
     "batch-size": 256,
     "max-steps": 1000,
     "max-origins-per-epoch": 1000000,

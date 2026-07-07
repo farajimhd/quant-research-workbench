@@ -9,11 +9,20 @@
   forwards any override arguments to `train.py`.
 - `train.py` contains the stateful trainer, checkpointing, W&B logging, local
   JSONL metrics, Rich progress panels, and model artifact export.
+- `run_profile_training.py` profiles the real training loop on the daily-index
+  cache. It runs warmup and measured batches, records loader/model/memory
+  timings, exports model artifacts, and checkpoints profiler + loader state so
+  it can resume after interruption.
 - `test_smoke.py` runs a small CPU shape/loss/artifact smoke test.
 - `plot_dummy_batch_shapes.ipynb` creates a dummy batch, prints nested tensor
   shapes, runs a forward pass, and prints losses.
+- `plot_cache_batch_inspection.ipynb` loads one real cached batch, converts it
+  through the v3 adapter, and prints all input/output shapes, availability
+  masks, identities, and loss metrics.
 - `plot_model_diagram.ipynb` exports the same model artifacts that a run writes
   under `artifacts/model`.
+- `plot_training_profile.ipynb` reads a profiler JSONL report and plots timing,
+  throughput, memory, and slow loader stages.
 
 ## Default Training Command
 
@@ -37,6 +46,61 @@ For a one-step trainer smoke:
 
 ```powershell
 python research\temporal_event_model\v3\train.py --dummy-data --wandb-mode disabled --progress-layout text --batch-size 2 --max-steps 1 --validation-steps 1 --validation-batches 1 --d-model 32 --event-layers 1 --event-heads 4 --fusion-layers 1 --fusion-heads 4 --output-root C:\tmp\temporal_v3_train_smoke
+```
+
+## Training Profiler
+
+Default workstation profile command:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_profile_training.py
+```
+
+The no-arg profiler defaults to:
+
+```text
+cache_root: D:/market-data/prepared/daily_index_streaming_cache/events_daily_index_2019-02
+months: 2019-02
+batch_size: 128
+warmup_batches: 1
+measured_batches: 8
+read_workers: 4
+materialize_workers: 8
+loaded_parts_per_group: 8
+d_model: 256
+AMP dtype: bf16 when CUDA is available
+```
+
+The profiler writes:
+
+```text
+training_profile.jsonl
+training_profile_summary.json
+run_manifest.json
+config.json
+checkpoints/profile_checkpoint_latest.pt
+artifacts/model/*
+logs/fatal_error.txt, only when an exception occurs
+```
+
+Each JSONL row includes:
+
+- loader wait and host-to-device conversion time
+- forward, loss, backward, and optimizer time
+- CPU RSS and CUDA allocated/reserved/peak memory
+- loss and fast batch metrics
+- detailed loader stage timings from `DailyIndexTrainingBatch.profile`, such as
+  raw stream gather, label, text, XBRL, bar, corporate-action, payload load, and
+  materialization wait timings
+
+The profiler is restartable. It saves the model, optimizer, scaler, RNG, profiler
+state, and `AsyncDailyIndexBatchLoader.state_dict()` in
+`checkpoints/profile_checkpoint_latest.pt`. If the latest profile checkpoint
+exists, rerunning the same command resumes unless `--fresh-start` is passed.
+Resume explicitly with:
+
+```powershell
+python research\temporal_event_model\v3\run_profile_training.py --resume-checkpoint D:\TradingML\runtimes\temporal_event_model\v3\profile\<run>\checkpoints\profile_checkpoint_latest.pt
 ```
 
 ## Data Contract
