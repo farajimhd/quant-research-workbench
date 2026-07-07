@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+
+REPO_ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "research").exists() and (parent / "pipelines").exists())
+SCRIPT = REPO_ROOT / "pipelines" / "market_sip" / "events" / "clickhouse_build_intraday_base_bars.py"
+
+
+DEFAULTS = {
+    "database": "market_sip_compact",
+    "events_table": "events",
+    "intraday_base_bars_table": "intraday_base_bars_by_time_ticker",
+    "status_table": "intraday_base_bars_build_status",
+    "resolutions": "100ms,1s,5s,30s,60s",
+    "chunk_days": 1,
+    "max_threads": 32,
+    "max_memory_usage": "300G",
+    "output_root": r"D:\market-data\prepared\clickhouse_sip_ingest\intraday_base_bars",
+}
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Launcher for ClickHouse intraday base-bar build from compact events.")
+    parser.add_argument("--database", default=DEFAULTS["database"])
+    parser.add_argument("--events-table", default=DEFAULTS["events_table"])
+    parser.add_argument("--intraday-base-bars-table", default=DEFAULTS["intraday_base_bars_table"])
+    parser.add_argument("--status-table", default=DEFAULTS["status_table"])
+    parser.add_argument("--start-date", default="")
+    parser.add_argument("--end-date", default="")
+    parser.add_argument("--date", default="")
+    parser.add_argument("--resolutions", default=DEFAULTS["resolutions"])
+    parser.add_argument("--tickers", default="")
+    parser.add_argument("--chunk-days", type=int, default=DEFAULTS["chunk_days"])
+    parser.add_argument("--max-threads", type=int, default=DEFAULTS["max_threads"])
+    parser.add_argument("--max-memory-usage", default=DEFAULTS["max_memory_usage"])
+    parser.add_argument("--output-root", default=DEFAULTS["output_root"])
+    parser.add_argument("--storage-policy", default="")
+    parser.add_argument("--clickhouse-url", default="")
+    parser.add_argument("--user", default="")
+    parser.add_argument("--password", default="")
+    parser.add_argument("--replace-existing", action="store_true")
+    parser.add_argument("--adopt-existing-complete", action="store_true")
+    parser.add_argument("--no-audit", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--print-only", action="store_true")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    command = [
+        sys.executable,
+        str(SCRIPT),
+        "--database",
+        args.database,
+        "--events-table",
+        args.events_table,
+        "--intraday-base-bars-table",
+        args.intraday_base_bars_table,
+        "--status-table",
+        args.status_table,
+        "--resolutions",
+        args.resolutions,
+        "--chunk-days",
+        str(args.chunk_days),
+        "--max-threads",
+        str(args.max_threads),
+        "--max-memory-usage",
+        args.max_memory_usage,
+        "--output-root",
+        args.output_root,
+    ]
+    if args.date:
+        command.extend(["--date", args.date])
+    else:
+        command.extend(["--start-date", args.start_date, "--end-date", args.end_date])
+    if args.tickers:
+        command.extend(["--tickers", args.tickers])
+    if args.storage_policy:
+        command.extend(["--storage-policy", args.storage_policy])
+    if args.clickhouse_url:
+        command.extend(["--clickhouse-url", args.clickhouse_url])
+    if args.user:
+        command.extend(["--user", args.user])
+    if args.password:
+        command.extend(["--password", args.password])
+    if args.replace_existing:
+        command.append("--replace-existing")
+    if args.adopt_existing_complete:
+        command.append("--adopt-existing-complete")
+    if args.no_audit:
+        command.append("--no-audit")
+    if args.dry_run:
+        command.append("--dry-run")
+    print("COMMAND", " ".join(command), flush=True)
+    if args.print_only:
+        return 0
+    return subprocess.call(command)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
