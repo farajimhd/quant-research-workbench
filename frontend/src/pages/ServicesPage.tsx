@@ -373,6 +373,8 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
 
 function ServiceWorkGroupCard({ group }: { group: ServiceWorkGroup }) {
   const rows = group.rows.length ? group.rows : [{ detail: "No reported activity for this responsibility yet.", kind: "service", name: group.title, progress: "-", rows: "-", schedule: "-", status: "waiting" }];
+  const visibleRows = rows.slice(0, 8);
+  const hiddenCount = Math.max(0, rows.length - visibleRows.length);
   return (
     <section className={`service-work-card ${workStatusClass(group.status)}`}>
       <div className="service-work-card-header">
@@ -382,34 +384,42 @@ function ServiceWorkGroupCard({ group }: { group: ServiceWorkGroup }) {
         </div>
         <span className={`service-work-status ${workStatusClass(group.status)}`}>{displayName(group.status || "waiting")}</span>
       </div>
-      <div className="service-work-card-table-wrap">
-        <table className="service-work-card-table">
-          <thead>
-            <tr>
-              <th>Work</th>
-              <th>Status</th>
-              <th>Progress</th>
-              <th>Rows</th>
-              <th>Detail</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.slice(0, 6).map((row, index) => (
-              <tr key={`${row.kind}-${row.name}-${index}`}>
-                <td title={`${row.kind}: ${row.name}`}>
-                  <strong>{row.name}</strong>
-                  <span>{displayName(row.kind)}</span>
-                </td>
-                <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status || "waiting")}</span></td>
-                <td>{row.progress}</td>
-                <td>{row.rows}</td>
-                <td title={`${row.schedule !== "-" ? `${row.schedule}; ` : ""}${row.detail}`}>{row.detail}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="service-work-items">
+        {visibleRows.map((row, index) => (
+          <ServiceWorkItem row={row} key={`${row.kind}-${row.name}-${index}`} />
+        ))}
+        {hiddenCount ? <div className="service-work-more">+ {hiddenCount} more reported item{hiddenCount === 1 ? "" : "s"}</div> : null}
       </div>
     </section>
+  );
+}
+
+function ServiceWorkItem({ row }: { row: ServiceWorkRow }) {
+  const metrics = [
+    row.progress !== "-" ? { label: "Progress", value: row.progress } : null,
+    row.rows !== "-" ? { label: "Rows", value: row.rows } : null,
+    row.schedule !== "-" ? { label: "Schedule", value: row.schedule } : null,
+  ].filter((item): item is { label: string; value: string } => Boolean(item));
+  return (
+    <article className={`service-work-item ${workStatusClass(row.status)}`}>
+      <div className="service-work-item-top">
+        <div className="service-work-item-title">
+          <strong title={row.name}>{row.name}</strong>
+          <span>{displayName(row.kind)}</span>
+        </div>
+        <span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status || "waiting")}</span>
+      </div>
+      {metrics.length ? (
+        <div className="service-work-item-metrics">
+          {metrics.map((metric) => (
+            <span key={metric.label} title={metric.value}>
+              {metric.label} <strong>{metric.value}</strong>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <p className="service-work-item-detail" title={row.detail}>{row.detail}</p>
+    </article>
   );
 }
 
