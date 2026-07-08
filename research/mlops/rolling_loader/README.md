@@ -119,9 +119,10 @@ are intentionally deferred.
 
 Scanner days are market-wide operations. `--workers` controls visible worker
 slots and scheduling, but `--max-active-day-builds` limits how many full-day
-scanner builds can run at the same time. The default is `1` to prevent the OS
-from killing the process when several days try to scan all ticker bars
-concurrently.
+scanner builds can run at the same time. The default is `0`, which resolves to
+`min(workers, 4)`. This keeps concurrency after the lazy/streaming scanner
+rewrite while avoiding the old failure mode where many full days were
+concatenated eagerly in memory.
 
 Rebuild scanner artifacts from an existing cache, or run a scanner-only smoke
 test, with:
@@ -131,7 +132,18 @@ python research\mlops\rolling_loader\run_build_daily_scanner_cache.py `
   --cache-root D:\market-data\prepared\daily_index_streaming_cache\<cache_id> `
   --month 2019-09 `
   --workers 8 `
-  --max-active-day-builds 1 `
+  --overwrite
+```
+
+For a workstation run that has enough RAM and fast SSD bandwidth, explicitly
+raise the active-day cap:
+
+```powershell
+python research\mlops\rolling_loader\run_build_daily_scanner_cache.py `
+  --cache-root D:\market-data\prepared\daily_index_streaming_cache\<cache_id> `
+  --month 2019-09 `
+  --workers 8 `
+  --max-active-day-builds 8 `
   --overwrite
 ```
 

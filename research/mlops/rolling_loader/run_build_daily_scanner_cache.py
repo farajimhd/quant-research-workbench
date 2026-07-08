@@ -259,10 +259,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-active-day-builds",
         type=int,
-        default=1,
+        default=0,
         help=(
             "Maximum number of market-wide scanner days to materialize at once. "
-            "Keep this low because each day scans all ticker intraday bars."
+            "Use 0 for auto=min(workers, 4)."
         ),
     )
     parser.add_argument("--overwrite", action="store_true")
@@ -275,6 +275,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     return run(args)
+
+
+def resolve_active_day_builds(args: argparse.Namespace) -> int:
+    workers = max(1, int(args.workers))
+    requested = int(args.max_active_day_builds)
+    if requested <= 0:
+        return max(1, min(workers, 4))
+    return max(1, min(workers, requested))
 
 
 def run(args: argparse.Namespace) -> int:
@@ -300,7 +308,8 @@ def run(args: argparse.Namespace) -> int:
         emit_text=str(args.progress_layout) == "text",
     )
     stop_event = threading.Event()
-    day_build_slots = threading.Semaphore(max(1, int(args.max_active_day_builds)))
+    active_day_builds = resolve_active_day_builds(args)
+    day_build_slots = threading.Semaphore(active_day_builds)
     work_queue: queue.Queue[tuple[str, list[Path]] | None] = queue.Queue()
     for source_date, files in sorted(grouped.items()):
         work_queue.put((source_date, files))
@@ -308,7 +317,7 @@ def run(args: argparse.Namespace) -> int:
         work_queue.put(None)
     state.message(
         f"planned month={args.month} days={len(grouped):,} files={len(jobs):,} "
-        f"workers={len(state.workers):,} active_day_builds={max(1, int(args.max_active_day_builds)):,} cache={cache_root}"
+        f"workers={len(state.workers):,} active_day_builds={active_day_builds:,} cache={cache_root}"
     )
     threads: list[threading.Thread] = []
     try:
