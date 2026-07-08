@@ -36,7 +36,7 @@ cache_root/
       sec_embeddings/*.parquet
       xbrl/*.parquet
       corporate_actions/*.parquet
-      scanner/*.parquet              # optional day-level scanner artifacts
+      scanner/scanner_YYYY-MM-DD.parquet
     global/
       manifest.json
       global_macro_bars/*.parquet
@@ -75,9 +75,9 @@ For each loaded part group it:
 3. Materializes raw event streams from saved sequential event rows.
 4. Builds intraday labels from compact base bars and condition-event rows.
 5. Performs as-of lookup for text embeddings, XBRL, daily bars, and corporate actions.
-6. Emits optional scanner context tensors. Existing caches that do not yet
-   contain scanner artifacts emit padded, fully masked scanner tensors unless
-   `scanner_required=True`.
+6. Reads optional offline scanner artifacts and emits scanner context tensors.
+   Existing caches that do not yet contain scanner artifacts emit padded, fully
+   masked scanner tensors unless `scanner_required=True`.
 7. Emits `DailyIndexTrainingBatch`.
 
 The loader preserves state through `state_dict()` / `load_state_dict()`. The
@@ -95,19 +95,27 @@ scanner snapshot time and must obey:
 scanner_snapshot_timestamp_us <= origin_timestamp_us
 ```
 
-The intended builder flow is:
+Scanner is intentionally built as a second offline step after the main
+daily-index cache:
 
 1. Load all intraday bars for a day.
-2. Rank every closed `100ms` bar timestamp across the market.
+2. Rank every closed scanner bucket across the market.
 3. Select leaders for:
    - `top_gainers`
    - `top_volume_large_cap`
    - `top_volume_mid_cap`
    - `top_volume_small_cap`
    - `top_volume_penny`
-4. For those leaders and for the origin ticker, aggregate trailing bars:
-   `100ms`, `1m`, `5m`, `15m`, `30m`, `1h`, and `day_to_now`.
-5. Save scanner snapshots as a day/global artifact.
+4. Save one row per ticker/scanner bucket with rank columns and compact bar
+   columns for `1s`, `5s`, `30s`, and `1m`.
+5. Save scanner snapshots under
+   `month=YYYY-MM/global/scanner/scanner_YYYY-MM-DD.parquet`.
+
+Build scanner artifacts from an existing cache with:
+
+```powershell
+python research\mlops\rolling_loader\run_build_daily_scanner_cache.py --cache-root D:\market-data\prepared\daily_index_streaming_cache\<cache_id> --month 2019-09 --overwrite
+```
 
 The loader output shape is:
 
@@ -121,7 +129,7 @@ The loader output shape is:
 | `scanner_inputs["origin_rank"]` | `[B,G]` | Origin ticker rank in each scanner group. |
 | `scanner_inputs["origin_in_topk"]` | `[B,G]` | Whether the origin ticker is one of the leaders. |
 
-`G=5`, `K=5`, `H=7`, bar families are `trade`, `quote_bid`, `quote_ask`, and
+`G=5`, `K=5`, `H=4`, bar families are `trade`, `quote_bid`, `quote_ask`, and
 `F` is padded to the max bar-family feature width. This gives the model both
 market-leader context and explicit origin-ticker identity/comparison features.
 

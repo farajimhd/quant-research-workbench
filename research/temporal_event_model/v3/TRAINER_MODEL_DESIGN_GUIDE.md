@@ -467,7 +467,7 @@ Default dimensions:
 | `D` | 5 | Corporate-action daily horizons: `+1d`, `+2d`, `+3d`, `+7d`, `+28d`. |
 | `G` | 5 | Scanner groups: top gainers and top volume for large/mid/small/penny stocks. |
 | `K` | 5 | Scanner leaders per group. |
-| `S` | 7 | Scanner horizons: `100ms`, `1m`, `5m`, `15m`, `30m`, `1h`, `day_to_now`. |
+| `S` | 4 | Scanner horizons: `1s`, `5s`, `30s`, `1m`. |
 | `ticker_news_items` | 8 | Latest as-of ticker news items. |
 | `market_news_items` | 16 | Latest as-of market/news items. |
 | `sec_filing_items` | 4 | Latest as-of SEC filing text items. |

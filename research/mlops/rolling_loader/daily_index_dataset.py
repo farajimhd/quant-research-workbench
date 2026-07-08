@@ -93,7 +93,7 @@ DEFAULT_SCANNER_GROUPS = (
     "top_volume_small_cap",
     "top_volume_penny",
 )
-DEFAULT_SCANNER_HORIZONS = ("100ms", "1m", "5m", "15m", "30m", "1h", "day_to_now")
+DEFAULT_SCANNER_HORIZONS = ("1s", "5s", "30s", "1m")
 SCANNER_NUMERIC_FEATURE_KEYS = (
     "rank_score",
     "rank_percentile",
@@ -413,6 +413,18 @@ class IntradayCompactLabelIndex:
     condition_events: dict[tuple[str, str], tuple[np.ndarray, dict[str, np.ndarray]]]
     ticker_news_by_date: dict[str, np.ndarray]
     sec_filing_by_date: dict[str, np.ndarray]
+
+
+@dataclass(slots=True)
+class ScannerArtifactIndex:
+    source_date: np.ndarray
+    bucket: np.ndarray
+    ticker: np.ndarray
+    ticker_id: np.ndarray
+    timestamp_us: np.ndarray
+    row_by_key: dict[tuple[str, int, str], int]
+    leaders_by_key: dict[tuple[str, int, str], np.ndarray]
+    columns: dict[str, np.ndarray]
 
 
 @dataclass(slots=True)
@@ -743,6 +755,12 @@ class DailyIndexPartReader:
                 if cache_key not in self._global_context_cache:
                     self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
                 loaded.context["global_daily_bars"] = self._global_context_cache[cache_key]
+            if "scanner_context" in self.data_groups:
+                scanner_path = _scanner_context_file(_month_global_dir(plan.package_dir), str(plan.source_date))
+                cache_key = (scanner_path, "scanner_context")
+                if cache_key not in self._global_context_cache:
+                    self._global_context_cache[cache_key] = pl.read_parquet(scanner_path) if scanner_path.exists() else pl.DataFrame()
+                loaded.context["scanner_context"] = self._global_context_cache[cache_key]
             if "xbrl" in self.data_groups:
                 global_path = _month_global_dir(plan.package_dir) / "category_references.parquet"
                 cache_key = (global_path, "category_references")
@@ -763,6 +781,8 @@ class DailyIndexBatchMaterializer:
         self._label_index_lock = threading.Lock()
         self._intraday_compact_label_cache: dict[int, IntradayCompactLabelIndex] = {}
         self._intraday_compact_label_lock = threading.Lock()
+        self._scanner_artifact_index_cache: dict[int, ScannerArtifactIndex] = {}
+        self._scanner_artifact_index_lock = threading.Lock()
         self._bar_index_cache: dict[int, DailyBarContextIndex] = {}
         self._bar_index_lock = threading.Lock()
         self._xbrl_index_cache: dict[tuple[int, int], XbrlContextIndex] = {}
@@ -798,6 +818,8 @@ class DailyIndexBatchMaterializer:
             self._text_index_cache.clear()
         with self._label_index_lock:
             self._label_index_cache.clear()
+        with self._scanner_artifact_index_lock:
+            self._scanner_artifact_index_cache.clear()
 
     def materialize(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> DailyIndexTrainingBatch:
         start = time.perf_counter()
@@ -1798,37 +1820,148 @@ class DailyIndexBatchMaterializer:
         return out, profile
 
     def _materialize_scanner_inputs(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[dict[str, np.ndarray], dict[str, float | int]]:
-        sample_count = int(len(refs))
-        group_count = max(1, int(len(self.config.scanner_groups)))
-        top_k = max(1, int(self.config.scanner_top_k))
-        horizon_count = max(1, int(len(self.config.scanner_horizons)))
-        family_count = int(len(BAR_FAMILY_KEYS))
-        max_feature_width = int(max(len(BAR_FAMILY_FEATURE_KEYS[family]) for family in BAR_FAMILY_KEYS))
-        time_width = int(len(BAR_TIME_FEATURE_COLUMNS))
-        numeric_width = int(len(SCANNER_NUMERIC_FEATURE_KEYS))
-        if self.config.scanner_required and "scanner_context" not in self.config.data_groups:
-            raise RuntimeError("scanner_required=True but scanner_context is not enabled in data_groups.")
-        payload = {
-            "leader_values": np.zeros((sample_count, group_count, top_k, horizon_count, family_count, max_feature_width), dtype=np.float32),
-            "leader_mask": np.zeros((sample_count, group_count, top_k), dtype=np.bool_),
-            "leader_time_features": np.zeros((sample_count, group_count, top_k, horizon_count, time_width), dtype=np.float32),
-            "leader_ticker_id": np.zeros((sample_count, group_count, top_k), dtype=np.int64),
-            "leader_rank": np.zeros((sample_count, group_count, top_k), dtype=np.int64),
-            "origin_values": np.zeros((sample_count, group_count, horizon_count, family_count, max_feature_width), dtype=np.float32),
-            "origin_mask": np.zeros((sample_count, group_count), dtype=np.bool_),
-            "origin_time_features": np.zeros((sample_count, group_count, horizon_count, time_width), dtype=np.float32),
-            "origin_rank": np.zeros((sample_count, group_count), dtype=np.int64),
-            "origin_in_topk": np.zeros((sample_count, group_count), dtype=np.bool_),
-            "origin_topk_position": np.full((sample_count, group_count), -1, dtype=np.int64),
-            "numeric_features": np.zeros((sample_count, group_count, numeric_width), dtype=np.float32),
-            "group_names": np.asarray(tuple(self.config.scanner_groups), dtype=object),
-            "horizons": np.asarray(tuple(self.config.scanner_horizons), dtype=object),
-            "family_names": np.asarray(tuple(BAR_FAMILY_KEYS), dtype=object),
-            "feature_names": np.asarray(tuple(BAR_FAMILY_FEATURE_KEYS["quote_bid"]), dtype=object),
-            "numeric_feature_names": np.asarray(SCANNER_NUMERIC_FEATURE_KEYS, dtype=object),
-            "time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
+        payload = _empty_scanner_payload(len(refs), self.config)
+        if "scanner_context" not in self.config.data_groups or not refs:
+            return payload, {"scanner_zero_fallback": int(1)}
+        frame = None
+        for part in parts:
+            candidate = part.context.get("scanner_context")
+            if candidate is not None and int(getattr(candidate, "height", 0) or 0) > 0:
+                frame = candidate
+                break
+        if frame is None:
+            if self.config.scanner_required:
+                dates = sorted({str(part.plan.source_date) for part in parts})
+                raise RuntimeError(f"scanner_required=True but no scanner artifact was loaded for dates {dates}.")
+            return payload, {"scanner_zero_fallback": int(1), "scanner_artifact_rows": int(0)}
+        index_start = time.perf_counter()
+        index = self._scanner_artifact_index(frame)
+        profile: dict[str, float | int] = {
+            "scanner_index_seconds": time.perf_counter() - index_start,
+            "scanner_artifact_rows": int(index.bucket.shape[0]),
+            "scanner_zero_fallback": int(0),
         }
-        return payload, {"scanner_zero_fallback": int(1)}
+        if index.bucket.shape[0] <= 0:
+            return payload, profile
+        gather_start = time.perf_counter()
+        group_names = tuple(str(group) for group in self.config.scanner_groups)
+        horizons = tuple(str(horizon) for horizon in self.config.scanner_horizons)
+        top_k = max(1, int(self.config.scanner_top_k))
+        origin_timestamps = _identity_arrays(parts, refs)[2]
+        available = 0
+        for output_row, ref in enumerate(refs):
+            part = parts[int(ref.part_index)]
+            origin_row = int(ref.origin_row)
+            origin_date = str(part.origins.get_column("origin_local_date")[origin_row])[:10] if part.origins is not None and "origin_local_date" in part.origins.columns else str(part.plan.source_date)[:10]
+            origin_session_us = int(part.origin_array("origin_local_session_us")[origin_row]) if part.origins is not None and "origin_local_session_us" in part.origins.columns else 0
+            scanner_resolution_us = int(index.columns.get("scanner_resolution_us", np.asarray([1_000_000], dtype=np.int64))[0])
+            bucket = (max(0, origin_session_us - 1) // max(1, scanner_resolution_us))
+            origin_ticker = str(part.plan.ticker)
+            origin_key = (origin_date, int(bucket), origin_ticker)
+            origin_artifact_row = index.row_by_key.get(origin_key)
+            for group_index, group_name in enumerate(group_names):
+                leader_rows = index.leaders_by_key.get((origin_date, int(bucket), group_name))
+                if leader_rows is None or leader_rows.size == 0:
+                    continue
+                for leader_position, artifact_row in enumerate(leader_rows[:top_k]):
+                    artifact_row = int(artifact_row)
+                    payload["leader_ticker_id"][output_row, group_index, leader_position] = int(index.ticker_id[artifact_row])
+                    payload["leader_rank"][output_row, group_index, leader_position] = int(index.columns[f"{group_name}_rank"][artifact_row])
+                    payload["leader_mask"][output_row, group_index, leader_position] = True
+                    _fill_scanner_values_from_artifact_row(
+                        payload["leader_values"][output_row, group_index, leader_position],
+                        payload["leader_time_features"][output_row, group_index, leader_position],
+                        index=index,
+                        artifact_row=artifact_row,
+                        horizons=horizons,
+                        origin_timestamp_us=int(origin_timestamps[output_row]),
+                    )
+                if origin_artifact_row is not None:
+                    origin_artifact_row = int(origin_artifact_row)
+                    payload["origin_mask"][output_row, group_index] = True
+                    rank = int(index.columns.get(f"{group_name}_rank", np.full(index.bucket.shape, -1, dtype=np.int32))[origin_artifact_row])
+                    score = float(index.columns.get(f"{group_name}_score", np.zeros(index.bucket.shape, dtype=np.float32))[origin_artifact_row])
+                    percentile = float(index.columns.get(f"{group_name}_percentile", np.zeros(index.bucket.shape, dtype=np.float32))[origin_artifact_row])
+                    payload["origin_rank"][output_row, group_index] = rank
+                    payload["origin_in_topk"][output_row, group_index] = bool(0 <= rank < top_k)
+                    payload["origin_topk_position"][output_row, group_index] = rank if 0 <= rank < top_k else -1
+                    payload["numeric_features"][output_row, group_index] = np.asarray(
+                        [score, percentile, float(0 <= rank < top_k), float(rank if rank >= 0 else -1), float(rank), percentile],
+                        dtype=np.float32,
+                    )
+                    _fill_scanner_values_from_artifact_row(
+                        payload["origin_values"][output_row, group_index],
+                        payload["origin_time_features"][output_row, group_index],
+                        index=index,
+                        artifact_row=origin_artifact_row,
+                        horizons=horizons,
+                        origin_timestamp_us=int(origin_timestamps[output_row]),
+                    )
+                available += 1
+        profile["scanner_gather_seconds"] = time.perf_counter() - gather_start
+        profile["scanner_available_samples"] = int(payload["leader_mask"].reshape((len(refs), -1)).any(axis=1).sum()) if refs else 0
+        profile["scanner_group_hits"] = int(available)
+        return payload, profile
+
+    def _scanner_artifact_index(self, frame: Any) -> ScannerArtifactIndex:
+        key = id(frame)
+        with self._scanner_artifact_index_lock:
+            cached = self._scanner_artifact_index_cache.get(key)
+            if cached is not None:
+                return cached
+        pl = _polars()
+        if int(getattr(frame, "height", 0) or 0) <= 0:
+            index = ScannerArtifactIndex(
+                source_date=np.asarray([], dtype=object),
+                bucket=np.zeros((0,), dtype=np.int64),
+                ticker=np.asarray([], dtype=object),
+                ticker_id=np.zeros((0,), dtype=np.int64),
+                timestamp_us=np.zeros((0,), dtype=np.int64),
+                row_by_key={},
+                leaders_by_key={},
+                columns={},
+            )
+            with self._scanner_artifact_index_lock:
+                self._scanner_artifact_index_cache[key] = index
+            return index
+        source_date = np.asarray(frame.get_column("source_date").to_numpy(), dtype=object)
+        source_date = np.asarray([str(value)[:10] for value in source_date], dtype=object)
+        bucket = frame.get_column("scanner_bucket").to_numpy().astype(np.int64, copy=False)
+        ticker = np.asarray(frame.get_column("ticker").to_numpy(), dtype=object)
+        ticker_id = frame.get_column("ticker_id").to_numpy().astype(np.int64, copy=False) if "ticker_id" in frame.columns else np.zeros((int(frame.height),), dtype=np.int64)
+        timestamp_us = frame.get_column("scanner_timestamp_us").to_numpy().astype(np.int64, copy=False)
+        row_by_key = {(str(source_date[i]), int(bucket[i]), str(ticker[i])): int(i) for i in range(int(frame.height))}
+        columns = {
+            name: frame.get_column(name).to_numpy()
+            for name in frame.columns
+            if name not in {"source_date", "ticker", "ticker_id"}
+        }
+        leaders_by_key: dict[tuple[str, int, str], np.ndarray] = {}
+        for group_name in self.config.scanner_groups:
+            rank_col = f"{group_name}_rank"
+            if rank_col not in frame.columns:
+                continue
+            ranked = (
+                frame.with_row_index("_artifact_row")
+                .filter((pl.col(rank_col) >= 0) & (pl.col(rank_col) < int(self.config.scanner_top_k)))
+                .sort(["source_date", "scanner_bucket", rank_col])
+            )
+            for part_key, group in ranked.partition_by(["source_date", "scanner_bucket"], as_dict=True, maintain_order=True).items():
+                date_value, bucket_value = part_key
+                leaders_by_key[(str(date_value)[:10], int(bucket_value), str(group_name))] = group.get_column("_artifact_row").to_numpy().astype(np.int64, copy=False)
+        index = ScannerArtifactIndex(
+            source_date=source_date,
+            bucket=bucket,
+            ticker=ticker,
+            ticker_id=ticker_id,
+            timestamp_us=timestamp_us,
+            row_by_key=row_by_key,
+            leaders_by_key=leaders_by_key,
+            columns=columns,
+        )
+        with self._scanner_artifact_index_lock:
+            self._scanner_artifact_index_cache[key] = index
+        return index
 
     def _daily_bar_context_index(self, frame: Any) -> DailyBarContextIndex:
         key = id(frame)
@@ -2226,9 +2359,11 @@ class AsyncDailyIndexBatchLoader:
         plans = self._epoch_plans(int(self.state.epoch))
         ready = _ReadyBatchBuffer(batch_size=int(self.config.batch_size), drop_last=bool(self.config.drop_last_batch))
         with ThreadPoolExecutor(max_workers=max(1, int(self.config.read_workers)), thread_name_prefix="tmc-load") as read_pool:
-            for group_start in range(int(self.state.package_position), len(plans), group_size):
+            group_start = int(self.state.package_position)
+            while group_start < len(plans):
                 self.state.package_position = int(group_start)
-                group_plans = plans[group_start : group_start + group_size]
+                group_end = self._next_group_end(plans, group_start, group_size)
+                group_plans = plans[group_start:group_end]
                 group_profile: dict[str, float] = {}
                 stage_start = time.perf_counter()
                 loaded_origins = list(read_pool.map(self.reader.load_origins, group_plans))
@@ -2253,6 +2388,7 @@ class AsyncDailyIndexBatchLoader:
                 if not refs:
                     self.state.origin_cursor = 0
                     self.state.package_position = int(group_start) + len(group_plans)
+                    group_start = int(group_end)
                     continue
                 active_part_indices = sorted({int(ref.part_index) for ref in refs})
                 part_index_map = {old_index: new_index for new_index, old_index in enumerate(active_part_indices)}
@@ -2303,6 +2439,7 @@ class AsyncDailyIndexBatchLoader:
                 self.state.package_position = int(group_start) + len(group_plans)
                 if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
                     return
+                group_start = int(group_end)
             for batch in ready.flush():
                 if batch.sample_count == 0:
                     continue
@@ -2360,6 +2497,9 @@ class AsyncDailyIndexBatchLoader:
         if self.config.shuffle_parts:
             random.Random(_stable_int_seed("packages", self.state.seed, epoch, self.dataset_plan_id)).shuffle(plans)
         return plans
+
+    def _next_group_end(self, plans: Sequence[DailyIndexPartPlan], group_start: int, group_size: int) -> int:
+        return min(len(plans), int(group_start) + max(1, int(group_size)))
 
     def _record_emitted_batch(self, batch: DailyIndexTrainingBatch) -> None:
         samples = int(batch.sample_count)
@@ -2528,6 +2668,24 @@ def _global_context_file(global_dir: Path, key: str) -> Path:
     return Path(global_dir) / path
 
 
+def _scanner_context_file(global_dir: Path, source_date: str) -> Path:
+    date_text = str(source_date)[:10]
+    manifest_path = Path(global_dir) / "manifest.json"
+    if manifest_path.exists():
+        files = _package_context_files_from_manifest(read_json(manifest_path))
+        value = files.get(f"scanner_context_{date_text}") or files.get("scanner_context")
+        if value:
+            path = Path(str(value))
+            if path.is_absolute():
+                return path
+            if str(path).startswith("month="):
+                month_dir = Path(global_dir).parent
+                cache_root = month_dir.parent if month_dir.name.startswith("month=") else Path(global_dir).parent
+                return cache_root / path
+            return Path(global_dir) / path
+    return Path(global_dir) / "scanner" / f"scanner_{date_text}.parquet"
+
+
 def _package_context_files(package_dir: Path) -> dict[str, str]:
     manifest_path = package_dir / "manifest.json"
     manifest = read_json(manifest_path)
@@ -2594,7 +2752,10 @@ def _package_context_files_from_manifest(manifest: Mapping[str, Any]) -> dict[st
             "corporate_actions",
             "intraday_base_bars",
             "intraday_condition_events",
+            "scanner_context",
         }:
+            out[normalized] = str(value)
+        elif str(normalized).startswith("scanner_context_"):
             out[normalized] = str(value)
     return out
 
@@ -3259,6 +3420,76 @@ def _concat_text_inputs(items: Sequence[Mapping[str, Mapping[str, np.ndarray]]])
             for field in sorted(fields)
         }
     return out
+
+
+def _empty_scanner_payload(sample_count: int, config: DailyIndexLoaderConfig) -> dict[str, np.ndarray]:
+    sample_count = max(0, int(sample_count))
+    group_count = max(1, int(len(config.scanner_groups)))
+    top_k = max(1, int(config.scanner_top_k))
+    horizon_count = max(1, int(len(config.scanner_horizons)))
+    family_count = int(len(BAR_FAMILY_KEYS))
+    max_feature_width = int(max(len(BAR_FAMILY_FEATURE_KEYS[family]) for family in BAR_FAMILY_KEYS))
+    time_width = int(len(BAR_TIME_FEATURE_COLUMNS))
+    numeric_width = int(len(SCANNER_NUMERIC_FEATURE_KEYS))
+    return {
+        "leader_values": np.zeros((sample_count, group_count, top_k, horizon_count, family_count, max_feature_width), dtype=np.float32),
+        "leader_mask": np.zeros((sample_count, group_count, top_k), dtype=np.bool_),
+        "leader_time_features": np.zeros((sample_count, group_count, top_k, horizon_count, time_width), dtype=np.float32),
+        "leader_ticker_id": np.zeros((sample_count, group_count, top_k), dtype=np.int64),
+        "leader_rank": np.zeros((sample_count, group_count, top_k), dtype=np.int64),
+        "origin_values": np.zeros((sample_count, group_count, horizon_count, family_count, max_feature_width), dtype=np.float32),
+        "origin_mask": np.zeros((sample_count, group_count), dtype=np.bool_),
+        "origin_time_features": np.zeros((sample_count, group_count, horizon_count, time_width), dtype=np.float32),
+        "origin_rank": np.zeros((sample_count, group_count), dtype=np.int64),
+        "origin_in_topk": np.zeros((sample_count, group_count), dtype=np.bool_),
+        "origin_topk_position": np.full((sample_count, group_count), -1, dtype=np.int64),
+        "numeric_features": np.zeros((sample_count, group_count, numeric_width), dtype=np.float32),
+        "group_names": np.asarray(tuple(config.scanner_groups), dtype=object),
+        "horizons": np.asarray(tuple(config.scanner_horizons), dtype=object),
+        "family_names": np.asarray(tuple(BAR_FAMILY_KEYS), dtype=object),
+        "feature_names": np.asarray(tuple(BAR_FAMILY_FEATURE_KEYS["quote_bid"]), dtype=object),
+        "numeric_feature_names": np.asarray(SCANNER_NUMERIC_FEATURE_KEYS, dtype=object),
+        "time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
+    }
+
+
+def _fill_scanner_values_from_artifact_row(
+    values: np.ndarray,
+    time_features: np.ndarray,
+    *,
+    index: ScannerArtifactIndex,
+    artifact_row: int,
+    horizons: Sequence[str],
+    origin_timestamp_us: int,
+) -> None:
+    row = int(artifact_row)
+    for horizon_index, horizon in enumerate(horizons):
+        horizon_token = _scanner_column_token(horizon)
+        timestamp_col = f"{horizon_token}_timestamp_us"
+        scanner_timestamp_us = int(index.timestamp_us[row])
+        if timestamp_col in index.columns:
+            scanner_timestamp_us = int(index.columns[timestamp_col][row])
+        any_available = False
+        for family_index, family in enumerate(BAR_FAMILY_KEYS):
+            available_col = f"{family}_{horizon_token}_available"
+            if available_col in index.columns and not bool(index.columns[available_col][row]):
+                continue
+            for feature_index, feature_name in enumerate(BAR_FAMILY_FEATURE_KEYS[family]):
+                column = f"{family}_{horizon_token}_{feature_name}"
+                if column in index.columns and feature_index < values.shape[-1]:
+                    values[horizon_index, family_index, feature_index] = np.float32(index.columns[column][row])
+                    any_available = True
+        if any_available:
+            absolute = _absolute_utc_time_feature_matrix(np.asarray([scanner_timestamp_us], dtype=np.int64))[0]
+            age_days = max(0.0, (float(origin_timestamp_us) - float(scanner_timestamp_us)) / 86_400_000_000.0)
+            time_features[horizon_index] = np.concatenate(
+                [absolute, np.asarray([age_days, math.log1p(age_days)], dtype=np.float32)],
+                axis=0,
+            ).astype(np.float32, copy=False)
+
+
+def _scanner_column_token(value: str) -> str:
+    return str(value).strip().lower().replace("-", "_").replace(" ", "_")
 
 
 def _concat_bar_inputs(batches: Sequence[DailyIndexTrainingBatch]) -> dict[str, dict[str, np.ndarray]]:

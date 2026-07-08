@@ -12,6 +12,7 @@ DEFAULT_DATA_GROUPS = (
     "intraday_labels",
     "corporate_action_labels",
     "intraday_bars",
+    "scanner_context",
     "daily_bars",
     "global_daily_bars",
     "ticker_news_embeddings",
@@ -94,7 +95,7 @@ SCANNER_GROUPS = (
     "top_volume_small_cap",
     "top_volume_penny",
 )
-SCANNER_HORIZONS = ("100ms", "1m", "5m", "15m", "30m", "1h", "day_to_now")
+SCANNER_HORIZONS = ("1s", "5s", "30s", "1m")
 SCANNER_NUMERIC_FEATURES = (
     "rank_score",
     "rank_percentile",

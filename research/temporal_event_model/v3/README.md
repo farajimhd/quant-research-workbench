@@ -130,8 +130,9 @@ Labels are grouped by task:
 
 - `scanner_inputs`: global market-leader context. The model receives top-K
   scanner leaders and origin-ticker comparison bars for `top_gainers`,
-  large/mid/small/penny-volume groups across `100ms`, `1m`, `5m`, `15m`,
-  `30m`, `1h`, and `day_to_now` horizons.
+  large/mid/small/penny-volume groups across `1s`, `5s`, `30s`, and `1m`
+  scanner horizons. These tensors are read from scanner artifacts built after
+  the main daily-index cache.
 - `bar_inputs["ticker_intraday_bars"]`: backward same-session intraday context
   bars for `trade`, `quote_bid`, and `quote_ask`, aligned to the same horizon
   list as intraday labels but clipped backward to the session start.
