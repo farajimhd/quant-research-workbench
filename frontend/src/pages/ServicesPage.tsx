@@ -1,9 +1,10 @@
-import { Activity, AlertTriangle, CalendarDays, CheckCircle2, Clock3, Loader2, MapPin, RadioTower, RefreshCcw, WifiOff } from "lucide-react";
+import { Activity, AlertTriangle, CalendarDays, CheckCircle2, Clock3, Loader2, MapPin, RadioTower, RefreshCcw, Settings2, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api } from "../api/client";
 import { Button } from "../app/components/Button";
 import { DataTable } from "../app/components/DataTable";
+import { Modal } from "../app/components/Modal";
 import { displayName, formatCell, formatCompactNumber } from "../app/format";
 
 export type ServicePageMode = "dashboard" | ServiceId;
@@ -187,6 +188,7 @@ function ServiceFact({ label, value }: { label: string; value: string }) {
 }
 
 function ServiceDetail({ pageError, service }: { pageError: string; service: ServiceStatusPayload }) {
+  const [configOpen, setConfigOpen] = useState(false);
   const snapshot = service.snapshot ?? {};
   const metrics = service.metrics ?? {};
   const runtimeRows = objectRows(snapshot.runtime, metrics);
@@ -211,15 +213,23 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
             </div>
             <div className="service-focus-content">
               <strong className="service-focus-phase">{phaseText(service)}</strong>
+            </div>
+            <div className="service-focus-meta">
               <span className="service-focus-runtime">{runtimeText(service)}</span>
+              <button className="service-focus-config-button" onClick={() => setConfigOpen(true)} type="button">
+                <Settings2 size={14} />
+                Configuration
+              </button>
             </div>
             <p className="service-focus-message">{currentMessage(service) || "No current operation message reported."}</p>
           </div>
         </Panel>
-        <Panel title="Run Configuration">
-          <ServiceConfigurationPanel service={service} />
-        </Panel>
       </section>
+      {configOpen ? (
+        <Modal className="service-config-modal-panel" onClose={() => setConfigOpen(false)} title={`${service.registry.label} Run Configuration`}>
+          <ServiceConfigurationPanel service={service} />
+        </Modal>
+      ) : null}
       <ServiceErrorLogPanel pageError={pageError} service={service} />
       <Panel title="Coverage">
         <KeyValueList rows={coverageRows.length ? coverageRows : [{ key: "status", value: "not reported" }]} />

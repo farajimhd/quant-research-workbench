@@ -819,8 +819,8 @@ button {
   background: var(--surface);
   border-left: 4px solid var(--badge-muted-border);
   display: grid;
-  gap: 12px;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   height: 174px;
   padding: 14px 16px;
 }
@@ -893,6 +893,35 @@ button {
   font-weight: 430;
 }
 
+.service-focus-meta {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.service-focus-config-button {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface) 74%, transparent);
+  border: 1px solid color-mix(in oklab, var(--border) 82%, transparent);
+  border-radius: 6px;
+  color: var(--foreground);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 520;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+}
+
+.service-focus-config-button:hover {
+  background: var(--surface);
+  border-color: color-mix(in oklab, var(--primary) 24%, var(--border));
+}
+
 .service-focus-message {
   border-top: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
   color: var(--muted-foreground);
@@ -905,6 +934,18 @@ button {
   padding-top: 10px;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.service-config-modal-panel {
+  max-height: min(760px, calc(100vh - 56px));
+  max-width: min(1180px, calc(100vw - 72px));
+  width: min(1180px, calc(100vw - 72px));
+}
+
+.service-config-modal-panel .service-config-panel {
+  max-height: calc(100vh - 134px);
+  overflow: auto;
+  padding: 14px;
 }
 
 .service-log-panel {
