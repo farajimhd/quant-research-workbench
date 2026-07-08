@@ -502,14 +502,63 @@ button {
   white-space: nowrap;
 }
 
-.services-top-tile.market-neutral {
+.services-top-tile.market-open {
+  background: color-mix(in oklab, var(--badge-success-bg) 78%, var(--surface));
+  border-color: var(--badge-success-border);
+}
+
+.services-top-tile.market-open svg,
+.services-top-tile.market-open strong {
+  color: var(--badge-success-fg);
+}
+
+.services-top-tile.market-extended {
+  background: color-mix(in oklab, var(--badge-info-bg) 78%, var(--surface));
+  border-color: var(--badge-info-border);
+}
+
+.services-top-tile.market-extended svg,
+.services-top-tile.market-extended strong {
+  color: var(--badge-info-fg);
+}
+
+.services-top-tile.market-closed {
   background: color-mix(in oklab, var(--surface-alt) 85%, var(--surface));
   border-color: var(--badge-muted-border);
 }
 
-.services-top-tile.market-neutral svg,
-.services-top-tile.market-neutral span,
-.services-top-tile.market-neutral strong {
+.services-top-tile.market-closed svg,
+.services-top-tile.market-closed strong {
+  color: var(--badge-muted-fg);
+}
+
+.services-top-tile.market-holiday {
+  background: color-mix(in oklab, var(--badge-warning-bg) 78%, var(--surface));
+  border-color: var(--badge-warning-border);
+}
+
+.services-top-tile.market-holiday svg,
+.services-top-tile.market-holiday strong {
+  color: var(--badge-warning-fg);
+}
+
+.services-top-tile.market-warning {
+  background: color-mix(in oklab, var(--badge-danger-bg) 76%, var(--surface));
+  border-color: var(--badge-danger-border);
+}
+
+.services-top-tile.market-warning svg,
+.services-top-tile.market-warning strong {
+  color: var(--badge-danger-fg);
+}
+
+.services-top-tile.market-unknown {
+  background: color-mix(in oklab, var(--badge-muted-bg) 76%, var(--surface));
+  border-color: var(--badge-muted-border);
+}
+
+.services-top-tile.market-unknown svg,
+.services-top-tile.market-unknown strong {
   color: var(--badge-muted-fg);
 }
 
