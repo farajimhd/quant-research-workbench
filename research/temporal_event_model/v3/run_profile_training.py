@@ -96,6 +96,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coverage-max-skip-batches", type=int, default=512, help="Maximum batches to scan while seeking a fully covered profile batch.")
     parser.add_argument("--coverage-required-keys", default="auto", help="Comma-separated input_availability keys to require, or auto from --data-groups.")
     parser.add_argument("--coverage-auto-ticker-limit", type=int, default=256, help="When tickers are not provided, restrict profiling to context-rich tickers that can exercise required sparse modalities.")
+    parser.add_argument("--profile-production-paths", action=argparse.BooleanOptionalAction, default=True, help="Also profile production cache-encode and cached-token fusion/head inference paths.")
+    parser.add_argument("--profile-production-batches", type=int, default=2, help="Measured batches to run production-path profiling on.")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
     return parser.parse_args()
 
@@ -200,6 +202,7 @@ def main() -> int:
                 batch_number=batch_number,
                 coverage_gate=coverage_gate,
                 auditor=auditor,
+                profile_production=bool(args.profile_production_paths and phase == "measure" and int(state.get("measured_batches", 0)) < max(0, int(args.profile_production_batches))),
             )
             if first_summary and not first_batch_summary:
                 first_batch_summary = first_summary
@@ -254,6 +257,7 @@ def _run_profile_batch(
     batch_number: int,
     coverage_gate: Mapping[str, Any],
     auditor: DailyIndexBatchAuditor | None = None,
+    profile_production: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
@@ -339,6 +343,13 @@ def _run_profile_batch(
         torch.cuda.synchronize()
     optimizer_seconds = time.perf_counter() - optimizer_start
     total_seconds = time.perf_counter() - step_start
+    production_profile = _profile_production_paths(
+        model=model,
+        batch=batch,
+        config=config,
+        device=device,
+        enabled=bool(profile_production),
+    )
     row: dict[str, Any] = {
         "utc": _now_iso(),
         "phase": phase,
@@ -363,6 +374,7 @@ def _run_profile_batch(
     }
     row.update({f"loss/{key.removeprefix('train/')}": value for key, value in loss_result.metrics.items() if isinstance(value, (int, float))})
     row.update({f"model/{key}_seconds": float(value) for key, value in model_profile.items()})
+    row.update({f"production/{key}": value for key, value in production_profile.items() if isinstance(value, (int, float))})
     row.update({f"loader/{key}": value for key, value in batch.profile.items() if isinstance(value, (int, float))})
     row.update({f"coverage/{key}": value for key, value in coverage.items()})
     row.update({f"audit/{key}": value for key, value in audit_metrics.items() if isinstance(value, (int, float, bool))})
@@ -370,6 +382,55 @@ def _run_profile_batch(
     row.update(prediction_metrics(batch, output, prefix="batch"))
     first_summary = _batch_shape_summary(batch) if int(batch_number) == 1 else {}
     return row, first_summary
+
+
+def _profile_production_paths(
+    *,
+    model: torch.nn.Module,
+    batch: Any,
+    config: ExperimentConfig,
+    device: torch.device,
+    enabled: bool,
+) -> dict[str, float]:
+    if not enabled:
+        return {}
+    core_model = _unwrap_model(model)
+    if not hasattr(core_model, "encode_modality_tokens_with_timings") or not hasattr(core_model, "predict_from_modality_tokens_with_timings"):
+        return {"production_path_available": 0.0}
+    was_training = bool(model.training)
+    model.eval()
+    if core_model is not model:
+        core_model.eval()
+    timings: dict[str, float] = {"production_path_available": 1.0}
+    amp_dtype = _amp_dtype(config.train.amp_dtype)
+    try:
+        with torch.inference_mode():
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=bool(config.train.amp and device.type == "cuda")):
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                started = time.perf_counter()
+                tokens, encode_timings = core_model.encode_modality_tokens_with_timings(batch.x, sync_cuda=device.type == "cuda")  # type: ignore[attr-defined]
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                timings["cache_encode_wall_seconds"] = time.perf_counter() - started
+                timings.update({f"cache_encode/{key}_seconds": float(value) for key, value in encode_timings.items()})
+
+                started = time.perf_counter()
+                output, cached_timings = core_model.predict_from_modality_tokens_with_timings(tokens, sync_cuda=device.type == "cuda")  # type: ignore[attr-defined]
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                timings["cached_predict_wall_seconds"] = time.perf_counter() - started
+                timings.update({f"cached_predict/{key}_seconds": float(value) for key, value in cached_timings.items()})
+                timings["cached_predict_samples_per_second"] = float(batch.sample_count / max(timings["cached_predict_wall_seconds"], 1e-9))
+                timings["cache_encode_samples_per_second"] = float(batch.sample_count / max(timings["cache_encode_wall_seconds"], 1e-9))
+                timings["cached_modality_tokens"] = float(output.modality_tokens.shape[1])
+                timings["cached_token_dim"] = float(output.modality_tokens.shape[2])
+    finally:
+        if was_training:
+            model.train()
+            if core_model is not model:
+                core_model.train()
+    return timings
 
 
 def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:

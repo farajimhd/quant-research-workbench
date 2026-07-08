@@ -29,6 +29,8 @@ DEFAULT_SWEEP: dict[str, str | int | float | bool] = {
     "audit-profile-batches": 1,
     "audit-samples-per-batch": 4,
     "audit-rest-samples": 0,
+    "profile-production-paths": True,
+    "profile-production-batches": 1,
     "progress-layout": "text",
 }
 
@@ -166,6 +168,9 @@ def _summarize_run(*, sweep_root: Path, run_name: str, status: int, elapsed: flo
         "step_seconds": float(averages.get("step_seconds", 0.0) or 0.0),
         "loader_wait_seconds": float(averages.get("loader_wait_seconds", 0.0) or 0.0),
         "forward_seconds": float(averages.get("forward_seconds", 0.0) or 0.0),
+        "production_cache_encode_seconds": float(averages.get("production/cache_encode_wall_seconds", 0.0) or 0.0),
+        "production_cached_predict_seconds": float(averages.get("production/cached_predict_wall_seconds", 0.0) or 0.0),
+        "production_cached_predict_samples_per_second": float(averages.get("production/cached_predict_samples_per_second", 0.0) or 0.0),
         "backward_seconds": float(averages.get("backward_seconds", 0.0) or 0.0),
         "loss": float(averages.get("loss", 0.0) or 0.0),
         "gpu_memory_peak_gib_p95": float(p95.get("gpu_memory_peak_gib", 0.0) or 0.0),

@@ -19,6 +19,20 @@ from research.temporal_event_model.v3.config import (
 )
 
 
+MODALITY_TOKEN_NAMES = (
+    "events",
+    "ticker_intraday_bars",
+    "ticker_daily_bars",
+    "global_daily_bars",
+    "ticker_news",
+    "market_news",
+    "sec_filings",
+    "xbrl",
+    "corporate_actions",
+    "scanner_context",
+)
+
+
 @dataclass(slots=True)
 class TemporalModelOutput:
     future_bar_values: dict[str, torch.Tensor]
@@ -75,57 +89,135 @@ class TemporalEventModelV3(nn.Module):
 
     def _forward_impl(self, x: Mapping[str, Any], *, profile: bool = False, sync_cuda: bool = False) -> tuple[TemporalModelOutput, dict[str, float]]:
         timings: dict[str, float] = {}
+        token_map = self._encode_modality_token_map(x, profile=profile, sync_cuda=sync_cuda, timings=timings)
+        output, head_timings = self._predict_from_token_map(
+            token_map,
+            profile=profile,
+            sync_cuda=sync_cuda,
+            timing_prefix="",
+        )
+        timings.update(head_timings)
+        if profile:
+            timings["total_forward"] = sum(float(value) for value in timings.values())
+        return output, timings
+
+    def _encode_modality_token_map(
+        self,
+        x: Mapping[str, Any],
+        *,
+        profile: bool = False,
+        sync_cuda: bool = False,
+        timings: dict[str, float] | None = None,
+    ) -> dict[str, torch.Tensor]:
+        timings = timings if timings is not None else {}
 
         def timed(name: str, fn: Any) -> Any:
             if not profile:
                 return fn()
-            if sync_cuda and torch.cuda.is_available():
-                torch.cuda.synchronize()
+            _sync_if_requested(sync_cuda)
             started = time.perf_counter()
             value = fn()
-            if sync_cuda and torch.cuda.is_available():
-                torch.cuda.synchronize()
+            _sync_if_requested(sync_cuda)
             timings[name] = time.perf_counter() - started
             return value
 
-        event_token = timed("event_encoder", lambda: self.event_encoder(x))
-        batch_size = int(event_token.shape[0])
-        device = event_token.device
-        tokens = [
-            event_token,
-            timed("intraday_bar_encoder", lambda: self.intraday_bar_encoder(x.get("bar_inputs", {}).get("ticker_intraday_bars", {}))),
-            timed("ticker_daily_bar_encoder", lambda: self.ticker_bar_encoder(x.get("bar_inputs", {}).get("ticker_daily_bars", {}))),
-            timed("global_daily_bar_encoder", lambda: self.global_bar_encoder(x.get("bar_inputs", {}).get("global_daily_bars", {}))),
-            timed("ticker_news_encoder", lambda: self.text_encoder(x.get("text_inputs", {}).get("ticker_news", {}), group="ticker_news")),
-            timed("market_news_encoder", lambda: self.text_encoder(x.get("text_inputs", {}).get("market_news", {}), group="market_news")),
-            timed("sec_filing_encoder", lambda: self.text_encoder(x.get("text_inputs", {}).get("sec_filings", {}), group="sec_filings")),
-            timed("xbrl_encoder", lambda: self.xbrl_encoder(x.get("xbrl_inputs", {}))),
-            timed("corporate_action_encoder", lambda: self.corporate_action_encoder(x.get("corporate_action_inputs", {}))),
-            timed("scanner_encoder", lambda: self.scanner_encoder(x.get("scanner_inputs", {}))),
-        ]
-        def fuse() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            aligned = [_align_token(token, batch_size=batch_size, device=device) for token in tokens]
-            modality = torch.stack(aligned, dim=1)
-            modality = modality + self.modality_embedding[: modality.shape[1]].unsqueeze(0)
-            fused_tokens = self.fusion_norm(self.fusion(modality))
-            pooled_tokens = fused_tokens.mean(dim=1)
-            return modality, fused_tokens, pooled_tokens, pooled_tokens
+        bars = x.get("bar_inputs", {})
+        text = x.get("text_inputs", {})
+        return {
+            "events": timed("event_encoder", lambda: self.event_encoder(x)),
+            "ticker_intraday_bars": timed("intraday_bar_encoder", lambda: self.intraday_bar_encoder(bars.get("ticker_intraday_bars", {}))),
+            "ticker_daily_bars": timed("ticker_daily_bar_encoder", lambda: self.ticker_bar_encoder(bars.get("ticker_daily_bars", {}))),
+            "global_daily_bars": timed("global_daily_bar_encoder", lambda: self.global_bar_encoder(bars.get("global_daily_bars", {}))),
+            "ticker_news": timed("ticker_news_encoder", lambda: self.text_encoder(text.get("ticker_news", {}), group="ticker_news")),
+            "market_news": timed("market_news_encoder", lambda: self.text_encoder(text.get("market_news", {}), group="market_news")),
+            "sec_filings": timed("sec_filing_encoder", lambda: self.text_encoder(text.get("sec_filings", {}), group="sec_filings")),
+            "xbrl": timed("xbrl_encoder", lambda: self.xbrl_encoder(x.get("xbrl_inputs", {}))),
+            "corporate_actions": timed("corporate_action_encoder", lambda: self.corporate_action_encoder(x.get("corporate_action_inputs", {}))),
+            "scanner_context": timed("scanner_encoder", lambda: self.scanner_encoder(x.get("scanner_inputs", {}))),
+        }
 
-        modality_tokens, fused, pooled, _ = timed("fusion", fuse)
+    def _predict_from_token_map(
+        self,
+        tokens: Mapping[str, torch.Tensor],
+        *,
+        profile: bool = False,
+        sync_cuda: bool = False,
+        timing_prefix: str = "",
+    ) -> tuple[TemporalModelOutput, dict[str, float]]:
+        timings: dict[str, float] = {}
+
+        def timed(name: str, fn: Any) -> Any:
+            if not profile:
+                return fn()
+            _sync_if_requested(sync_cuda)
+            started = time.perf_counter()
+            value = fn()
+            _sync_if_requested(sync_cuda)
+            timings[f"{timing_prefix}{name}"] = time.perf_counter() - started
+            return value
+
+        modality_tokens = timed("stack_cached_tokens", lambda: self._stack_modality_tokens(tokens))
+        fused, pooled = timed("fusion", lambda: self._fuse_modality_tokens(modality_tokens))
         intraday = timed("intraday_query", lambda: self.intraday_query_mlp(pooled[:, None, :] + self.intraday_queries[None, :, :]))
         daily = timed("daily_query", lambda: self.daily_query_mlp(pooled[:, None, :] + self.daily_queries[None, :, :]))
         future_bar_values = timed("future_bar_heads", lambda: {family: head(intraday) for family, head in self.future_bar_heads.items()})
         intraday_logits = timed("intraday_classification_heads", lambda: {name: head(intraday).squeeze(-1) for name, head in self.intraday_heads.items()})
         corporate_logits = timed("corporate_action_heads", lambda: {name: head(daily).squeeze(-1) for name, head in self.corporate_action_heads.items()})
-        output = TemporalModelOutput(
-            future_bar_values=future_bar_values,
-            intraday_logits=intraday_logits,
-            corporate_action_logits=corporate_logits,
-            modality_tokens=modality_tokens,
-            fused_tokens=fused,
+        return (
+            TemporalModelOutput(
+                future_bar_values=future_bar_values,
+                intraday_logits=intraday_logits,
+                corporate_action_logits=corporate_logits,
+                modality_tokens=modality_tokens,
+                fused_tokens=fused,
+            ),
+            timings,
         )
-        if profile:
-            timings["total_forward"] = sum(float(value) for value in timings.values())
+
+    def _stack_modality_tokens(self, tokens: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        reference = _first_tensor(tokens)
+        if reference is None:
+            raise RuntimeError("No modality tokens were provided.")
+        batch_size = int(reference.shape[0])
+        device = reference.device
+        aligned = [
+            _align_token(tokens.get(name), batch_size=batch_size, device=device, width=int(self.config.d_model))
+            for name in MODALITY_TOKEN_NAMES
+        ]
+        modality = torch.stack(aligned, dim=1)
+        return modality + self.modality_embedding[: modality.shape[1]].unsqueeze(0)
+
+    def _fuse_modality_tokens(self, modality_tokens: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        fused_tokens = self.fusion_norm(self.fusion(modality_tokens))
+        return fused_tokens, fused_tokens.mean(dim=1)
+
+    def encode_modality_tokens(self, x: Mapping[str, Any]) -> dict[str, torch.Tensor]:
+        """Encode every production-cacheable modality token.
+
+        Production should cache these named ``[B, d_model]`` tensors and call
+        :meth:`predict_from_modality_tokens` whenever the forecast head needs to
+        refresh without recomputing unchanged encoders.
+        """
+        return self._encode_modality_token_map(x)
+
+    def encode_modality_tokens_with_timings(self, x: Mapping[str, Any], *, sync_cuda: bool = False) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
+        timings: dict[str, float] = {}
+        tokens = self._encode_modality_token_map(x, profile=True, sync_cuda=bool(sync_cuda), timings=timings)
+        timings["cache_encode_total"] = sum(float(value) for value in timings.values())
+        return tokens, timings
+
+    def predict_from_modality_tokens(self, tokens: Mapping[str, torch.Tensor]) -> TemporalModelOutput:
+        return self._predict_from_token_map(tokens)[0]
+
+    def predict_from_modality_tokens_with_timings(
+        self,
+        tokens: Mapping[str, torch.Tensor],
+        *,
+        sync_cuda: bool = False,
+        timing_prefix: str = "cached_",
+    ) -> tuple[TemporalModelOutput, dict[str, float]]:
+        output, timings = self._predict_from_token_map(tokens, profile=True, sync_cuda=bool(sync_cuda), timing_prefix=str(timing_prefix))
+        timings[f"{timing_prefix}total"] = sum(float(value) for value in timings.values())
         return output, timings
 
     @torch.inference_mode()
@@ -153,6 +245,14 @@ class TemporalEventModelV3(nn.Module):
     @torch.inference_mode()
     def encode_xbrl(self, x: Mapping[str, Any]) -> torch.Tensor:
         return self.xbrl_encoder(x.get("xbrl_inputs", {}))
+
+    @torch.inference_mode()
+    def encode_corporate_actions(self, x: Mapping[str, Any]) -> torch.Tensor:
+        return self.corporate_action_encoder(x.get("corporate_action_inputs", {}))
+
+    @torch.inference_mode()
+    def encode_scanner(self, x: Mapping[str, Any]) -> torch.Tensor:
+        return self.scanner_encoder(x.get("scanner_inputs", {}))
 
 
 class EventEncoder(nn.Module):
@@ -588,14 +688,36 @@ def _zero_like_batch(payload: Mapping[str, Any], width: int) -> torch.Tensor:
     return torch.zeros(1, int(width), dtype=torch.float32)
 
 
-def _align_token(token: torch.Tensor, *, batch_size: int, device: torch.device) -> torch.Tensor:
+def _align_token(token: torch.Tensor | None, *, batch_size: int, device: torch.device, width: int) -> torch.Tensor:
+    if token is None or not torch.is_tensor(token) or token.numel() == 0:
+        return torch.zeros(int(batch_size), int(width), dtype=torch.float32, device=device)
+    if token.ndim != 2:
+        token = token.reshape(token.shape[0], -1)
+    if token.shape[-1] != int(width):
+        token = _pad_or_trim_last(token, int(width))
     if token.shape[0] == int(batch_size) and token.device == device:
         return token
     if token.shape[0] == 1 and int(batch_size) > 1:
         token = token.expand(int(batch_size), -1)
     elif token.shape[0] != int(batch_size):
-        token = torch.zeros(int(batch_size), token.shape[-1], dtype=token.dtype, device=token.device)
+        token = torch.zeros(int(batch_size), int(width), dtype=token.dtype, device=token.device)
     return token.to(device=device, non_blocking=True)
+
+
+def _first_tensor(tokens: Mapping[str, torch.Tensor]) -> torch.Tensor | None:
+    for name in MODALITY_TOKEN_NAMES:
+        token = tokens.get(name)
+        if torch.is_tensor(token) and token.ndim >= 2 and token.shape[0] > 0:
+            return token
+    for token in tokens.values():
+        if torch.is_tensor(token) and token.ndim >= 2 and token.shape[0] > 0:
+            return token
+    return None
+
+
+def _sync_if_requested(sync_cuda: bool) -> None:
+    if sync_cuda and torch.cuda.is_available():
+        torch.cuda.synchronize()
 
 
 def _init_weights(module: nn.Module) -> None:

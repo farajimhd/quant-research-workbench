@@ -663,7 +663,58 @@ Default implementation choice:
   tokens, and horizon query tokens. Run a compact fusion transformer. Decode
   only from query tokens.
 - Production caching: cache modality encoder outputs keyed by the modality cache
-  state. Recompute fusion/head outputs more often than expensive encoders.
+  state. Qwen is outside v3 and is served by `text_embed_gateway`; the model
+  receives the same precomputed Qwen embeddings in training and production.
+  Recompute fusion/head outputs more often than expensive encoders.
+
+### Production Cache API
+
+The implemented v3 model must support two equivalent execution paths:
+
+```text
+training/full forward:
+  batch x -> all modality encoders -> modality-token fusion -> heads
+
+production cached inference:
+  changed modality x -> encode_modality_tokens(...)
+  cached modality token dict -> predict_from_modality_tokens(...) -> heads
+```
+
+The cached token dict contains one `[B,d_model]` tensor per modality. The stable
+modality names and order are:
+
+| Position | Token name | Source encoder | Production cache invalidation key |
+| ---: | --- | --- | --- |
+| 0 | `events` | raw event-stream encoder | ticker, origin ordinal/timestamp, event-stream context state, model fingerprint |
+| 1 | `ticker_intraday_bars` | backward same-session intraday bar encoder | ticker, origin timestamp, intraday-bar artifact state, model fingerprint |
+| 2 | `ticker_daily_bars` | ticker daily-bar encoder | ticker, daily bar as-of date, model fingerprint |
+| 3 | `global_daily_bars` | global/macro daily-bar encoder | global symbol set, as-of date, model fingerprint |
+| 4 | `ticker_news` | cached Qwen ticker-news embedding encoder | ticker, latest selected news embedding ids/timestamps, model fingerprint |
+| 5 | `market_news` | cached Qwen market-news embedding encoder | latest selected market/news embedding ids/timestamps, model fingerprint |
+| 6 | `sec_filings` | cached Qwen SEC embedding encoder | ticker/CIK, latest selected filing embedding ids/timestamps, model fingerprint |
+| 7 | `xbrl` | XBRL numeric/category/time encoder | ticker/CIK, latest selected XBRL row ids/timestamps, model fingerprint |
+| 8 | `corporate_actions` | corporate-action context encoder | ticker, latest available corporate-action rows, model fingerprint |
+| 9 | `scanner_context` | scanner leader/origin comparison encoder | origin timestamp, scanner artifact state, model fingerprint |
+
+The cache stores raw encoder outputs before learned modality-position embedding.
+`predict_from_modality_tokens()` is responsible for stacking tokens in the
+stable order, adding the learned modality embeddings, running the fusion
+transformer, and decoding all heads. Missing or stale modality tokens must be
+represented by a zero token plus the same availability/mask convention used in
+training; production must not silently reuse a token whose model/config
+fingerprint differs from the active head.
+
+The profiler must report both paths:
+
+| Field group | Meaning |
+| --- | --- |
+| `model/*_seconds` | Normal training forward path, including all encoders and heads. |
+| `production/cache_encode_*` | Time to refresh cacheable modality tokens from raw batch inputs. |
+| `production/cached_predict_*` | Time to run fusion and heads from cached modality tokens only. |
+
+This split is required because production does not run every encoder on every
+forecast. It reuses context embeddings when only the head/fusion output needs to
+refresh.
 
 ### Time Encoding Contract
 

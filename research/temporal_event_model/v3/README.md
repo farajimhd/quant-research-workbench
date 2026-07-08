@@ -11,8 +11,8 @@
   JSONL metrics, Rich progress panels, and model artifact export.
 - `run_profile_training.py` profiles the real training loop on the daily-index
   cache. It runs warmup and measured batches, records loader/model/memory
-  timings, exports model artifacts, and checkpoints profiler + loader state so
-  it can resume after interruption.
+  timings, records the production cache path, exports model artifacts, and
+  checkpoints profiler + loader state so it can resume after interruption.
 - `run_sweep_training_profile.py` runs a grid of training-profile jobs across
   model presets and batch sizes, then writes consolidated CSV/JSONL results for
   throughput, memory, loss, checkpoint, audit, and modality-coverage behavior.
@@ -102,6 +102,7 @@ Each JSONL row includes:
 
 - loader wait and host-to-device conversion time
 - forward, loss, backward, and optimizer time
+- production cache encoding time and cached-token fusion/head inference time
 - CPU RSS and CUDA allocated/reserved/peak memory
 - loss and fast batch metrics
 - detailed loader stage timings from `DailyIndexTrainingBatch.profile`, such as
@@ -134,6 +135,27 @@ global bars, ticker news, market news, SEC, XBRL, corporate actions, scanner,
 fusion, query heads, output heads, loss, backward, optimizer, checkpoint, and
 loader/materialization stages.
 
+The profiler also runs the production API for the first measured batches by
+default:
+
+```text
+encode_modality_tokens_with_timings(batch.x)
+predict_from_modality_tokens_with_timings(cached_tokens)
+```
+
+Those rows are written under `production/*`. The key timing fields are:
+
+```text
+production/cache_encode_wall_seconds
+production/cached_predict_wall_seconds
+production/cache_encode_samples_per_second
+production/cached_predict_samples_per_second
+```
+
+This measures the deployment split where expensive modality encoders refresh
+only when their source context changes and the live forecast path runs fusion
+plus heads from cached modality tokens.
+
 ## Model/Batch Sweep
 
 Default workstation sweep:
@@ -152,6 +174,47 @@ The sweep writes `sweep_results.csv` and `sweep_results.jsonl` under its sweep
 run folder. Use it to compare samples/s, loader wait, forward/backward time,
 peak memory, loss behavior, checkpointing, audit status, and whether all
 requested modalities are exercised.
+
+The sweep includes production-path fields in `sweep_results.csv`, including
+`production_cache_encode_seconds`, `production_cached_predict_seconds`, and
+`production_cached_predict_samples_per_second`.
+
+## Production Encoder Cache Contract
+
+Qwen is not part of the v3 model. Historical training and live production both
+consume the same stored Qwen embedding tensors produced by
+`text_embed_gateway`. The v3 text encoder only projects and pools those
+embeddings into model tokens.
+
+The model exposes a production-safe two-stage API:
+
+```python
+tokens = model.encode_modality_tokens(batch_x)
+output = model.predict_from_modality_tokens(tokens)
+```
+
+`tokens` is a dict of `[B, d_model]` tensors with this stable order:
+
+```text
+events
+ticker_intraday_bars
+ticker_daily_bars
+global_daily_bars
+ticker_news
+market_news
+sec_filings
+xbrl
+corporate_actions
+scanner_context
+```
+
+Production should cache these named modality tokens with enough metadata to
+invalidate them safely: model checkpoint/config fingerprint, ticker, origin or
+context state key, source cache timestamps, and modality name. When a modality
+is unchanged, production can reuse its token and call
+`predict_from_modality_tokens()` to run only the fusion transformer and heads.
+Missing modality tokens are aligned as zero tokens, matching the masked-zero
+training convention.
 
 The profiler is restartable. It saves the model, optimizer, scaler, RNG, profiler
 state, and `AsyncDailyIndexBatchLoader.state_dict()` in

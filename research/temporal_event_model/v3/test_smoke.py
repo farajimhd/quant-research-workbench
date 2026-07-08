@@ -37,13 +37,31 @@ def main() -> int:
     )
     batch = make_dummy_temporal_batch(model_config=config, batch_size=2, device="cpu")
     model = TemporalEventModelV3(config)
+    model.eval()
     output = model(batch.x)
+    tokens, encode_timings = model.encode_modality_tokens_with_timings(batch.x)
+    cached_output, cached_timings = model.predict_from_modality_tokens_with_timings(tokens)
     result = compute_loss(output, batch)
     assert torch.isfinite(result.loss), result.metrics
     assert output.future_bar_values["trade"].shape == (2, config.intraday_horizons, 6)
     assert output.future_bar_values["quote_bid"].shape == (2, config.intraday_horizons, 9)
     assert output.future_bar_values["quote_ask"].shape == (2, config.intraday_horizons, 9)
     assert output.modality_tokens.shape == (2, 10, config.d_model)
+    assert set(tokens) == {
+        "events",
+        "ticker_intraday_bars",
+        "ticker_daily_bars",
+        "global_daily_bars",
+        "ticker_news",
+        "market_news",
+        "sec_filings",
+        "xbrl",
+        "corporate_actions",
+        "scanner_context",
+    }
+    assert encode_timings and cached_timings
+    assert cached_output.modality_tokens.shape == output.modality_tokens.shape
+    assert torch.allclose(cached_output.fused_tokens, output.fused_tokens, atol=1e-5, rtol=1e-5)
     metrics = {}
     metrics.update(fast_batch_metrics(batch, output))
     metrics.update(prediction_metrics(batch, output))
