@@ -78,6 +78,30 @@ For each loaded part group it:
 
 The loader preserves state through `state_dict()` / `load_state_dict()`. The state includes manifest fingerprint, epoch, RNG state, and seen-sample accounting so benchmark and validation subsets can be repeated.
 
+## Time Feature Contract
+
+All absolute time features emitted by this package use UTC. New York session
+fields are only added where the event/session interpretation requires them.
+
+The loader materialization path validates time-bearing payloads before emitting a
+`DailyIndexTrainingBatch`:
+
+| Payload | Required time tensor | Width | Meaning |
+| --- | --- | ---: | --- |
+| `raw_event_stream` | event columns named in `EVENT_TIME_FEATURE_COLUMNS` | 12 | UTC cyclic features, `years_since_2000`, and NY-session fields per event row. |
+| text embeddings | `item_time_features` | 10 | availability/published/accepted UTC features plus delta/age from origin. |
+| XBRL | `time_features` | 10 | XBRL availability UTC features plus delta/age from origin. |
+| XBRL | `period_end_time_features` | 7 | period-end date features plus age from origin. |
+| corporate actions | `time_features` | 10 | availability UTC features plus delta/age from origin. |
+| corporate actions | `effective_time_features` | 10 | effective-date UTC features plus delta/age from origin. |
+| bars | `*_time_features` | 9 | bar-start UTC features plus bar age from origin. |
+
+`DailyIndexLoaderConfig.validate_time_feature_contract` is enabled by default.
+When enabled, mismatched widths, missing required time tensors, or mismatched
+time-feature-name metadata raise immediately. This keeps the v3 model path from
+silently treating time as an ordinary numeric feature or sending a modality to
+the wrong time role.
+
 ## Common Builder Command
 
 ```powershell

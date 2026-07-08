@@ -12,6 +12,7 @@ from research.temporal_event_model.v3.config import (
     BAR_FEATURE_DIMS,
     CORPORATE_ACTION_FLAGS,
     DEFAULT_EVENT_FEATURE_NAMES,
+    EVENT_TIME_FEATURE_NAMES,
     EXTERNAL_ARRIVAL_FLAGS,
     INTRADAY_EVENT_FLAGS,
     LoaderConfig,
@@ -46,6 +47,7 @@ def batch_to_torch(
         "bar_inputs": _nested_arrays_to_torch(batch.bar_inputs, device=device, non_blocking=non_blocking),
         "input_availability": _array_dict_to_torch(batch.input_availability, device=device, non_blocking=non_blocking),
     }
+    _validate_time_feature_contract(x, model_config)
     y = {
         "future_bar_values": _array_dict_to_torch(batch.future_bar_values, device=device, non_blocking=non_blocking),
         "future_bar_masks": _array_dict_to_torch(batch.future_bar_masks, device=device, dtype=torch.bool, non_blocking=non_blocking),
@@ -79,9 +81,9 @@ def make_dummy_temporal_batch(
     raw[..., 0] = torch.randint(0, 64, (b, config.event_stream_length), device=device).float()
     mask = torch.ones(b, config.event_stream_length, dtype=torch.bool, device=device)
     text_inputs = {
-        "ticker_news": _dummy_text(b, config.ticker_news_items, config.ticker_news_chunks, config.text_embedding_dim, device),
-        "market_news": _dummy_text(b, config.market_news_items, config.market_news_chunks, config.text_embedding_dim, device),
-        "sec_filings": _dummy_text(b, config.sec_filing_items, config.sec_filing_chunks, config.text_embedding_dim, device),
+        "ticker_news": _dummy_text(b, config.ticker_news_items, config.ticker_news_chunks, config.text_embedding_dim, config.text_time_feature_count, device),
+        "market_news": _dummy_text(b, config.market_news_items, config.market_news_chunks, config.text_embedding_dim, config.text_time_feature_count, device),
+        "sec_filings": _dummy_text(b, config.sec_filing_items, config.sec_filing_chunks, config.text_embedding_dim, config.text_time_feature_count, device),
     }
     bar_inputs = {
         "ticker_intraday_bars": _dummy_bars(b, config.intraday_horizons, config.bar_feature_count, config.bar_time_feature_count, device),
@@ -186,6 +188,51 @@ def loader_config_from_v3(config: LoaderConfig) -> Any:
     )
 
 
+def _validate_time_feature_contract(x: Mapping[str, Any], config: ModelConfig) -> None:
+    event_names = tuple(str(value) for value in x.get("event_feature_names", ()))
+    missing_event_times = [name for name in EVENT_TIME_FEATURE_NAMES if name not in event_names]
+    if missing_event_times:
+        raise RuntimeError(f"Batch raw event stream is missing event time features: {', '.join(missing_event_times)}")
+    raw = x.get("raw_event_stream")
+    if torch.is_tensor(raw) and raw.ndim == 3 and len(event_names) != int(raw.shape[-1]):
+        raise RuntimeError(f"Batch event_feature_names has {len(event_names)} entries but raw_event_stream width is {int(raw.shape[-1])}.")
+
+    for group, payload in (x.get("text_inputs") or {}).items():
+        if isinstance(payload, Mapping) and _payload_has_rows(payload, "embeddings"):
+            _assert_time_dim(payload, "item_time_features", int(config.text_time_feature_count), f"text_inputs.{group}.item_time_features")
+
+    xbrl = x.get("xbrl_inputs") or {}
+    if isinstance(xbrl, Mapping) and _payload_has_rows(xbrl, "value"):
+        _assert_time_dim(xbrl, "time_features", int(config.xbrl_time_feature_count), "xbrl_inputs.time_features")
+        _assert_time_dim(xbrl, "period_end_time_features", int(config.xbrl_period_time_feature_count), "xbrl_inputs.period_end_time_features")
+
+    corporate = x.get("corporate_action_inputs") or {}
+    if isinstance(corporate, Mapping) and _payload_has_rows(corporate, "numeric_features"):
+        _assert_time_dim(corporate, "time_features", int(config.corporate_action_time_dim), "corporate_action_inputs.time_features")
+        _assert_time_dim(corporate, "effective_time_features", int(config.corporate_action_effective_time_dim), "corporate_action_inputs.effective_time_features")
+
+    for group, payload in (x.get("bar_inputs") or {}).items():
+        if not isinstance(payload, Mapping):
+            continue
+        for family in BAR_FAMILIES:
+            values_key = f"{family}_values"
+            if _payload_has_rows(payload, values_key):
+                _assert_time_dim(payload, f"{family}_time_features", int(config.bar_time_feature_count), f"bar_inputs.{group}.{family}_time_features")
+
+
+def _payload_has_rows(payload: Mapping[str, Any], key: str) -> bool:
+    value = payload.get(key)
+    return torch.is_tensor(value) and value.numel() > 0
+
+
+def _assert_time_dim(payload: Mapping[str, Any], key: str, expected: int, label: str) -> None:
+    value = payload.get(key)
+    if not torch.is_tensor(value):
+        raise RuntimeError(f"Missing required time tensor: {label}.")
+    if value.ndim < 1 or int(value.shape[-1]) != int(expected):
+        raise RuntimeError(f"{label} width is {int(value.shape[-1]) if value.ndim else 0}, expected {int(expected)}.")
+
+
 def validation_loader_config_from_v3(config: LoaderConfig) -> Any:
     val = loader_config_from_v3(config)
     return type(val)(
@@ -264,12 +311,12 @@ def _pad_or_trim_axis(array: np.ndarray, *, axis: int, size: int) -> np.ndarray:
     return np.concatenate([array, pad], axis=axis)
 
 
-def _dummy_text(batch: int, items: int, chunks: int, dim: int, device: torch.device) -> dict[str, torch.Tensor]:
+def _dummy_text(batch: int, items: int, chunks: int, dim: int, time_features: int, device: torch.device) -> dict[str, torch.Tensor]:
     return {
         "embeddings": torch.randn(batch, items, chunks, dim, device=device),
         "item_mask": torch.ones(batch, items, dtype=torch.bool, device=device),
         "chunk_mask": torch.ones(batch, items, chunks, dtype=torch.bool, device=device),
-        "item_time_features": torch.randn(batch, items, 13, device=device),
+        "item_time_features": torch.randn(batch, items, time_features, device=device),
     }
 
 

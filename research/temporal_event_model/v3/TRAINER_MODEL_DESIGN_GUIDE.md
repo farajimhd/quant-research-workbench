@@ -461,6 +461,8 @@ Default dimensions:
 | `d_model` | 256 | Hidden width for every modality token and fusion layer. |
 | `event_stream_length` | 1024 | Raw event rows ending at each origin. |
 | `event_feature_count` | 24 | Raw event feature columns consumed by the event numeric projection. |
+| `time_encoder_dim` | 32 | Shared role-aware time embedding width injected into each modality before pooling. |
+| `time_feature_input_dim` | 12 | Maximum raw time-feature width accepted by `TimeFeatureEncoder`; smaller time roles are right-padded inside the encoder. |
 | `H` | 26 | Intraday future/backward bar horizons. |
 | `D` | 5 | Corporate-action daily horizons: `+1d`, `+2d`, `+3d`, `+7d`, `+28d`. |
 | `ticker_news_items` | 8 | Latest as-of ticker news items. |
@@ -474,6 +476,7 @@ Current forward path:
 ```text
 loader batch
   -> batch_to_torch(...)
+  -> validate required time-feature tensors and widths
   -> EventEncoder(raw_event_stream, raw_event_mask)
   -> BarContextEncoder(ticker_intraday_bars)
   -> BarContextEncoder(ticker_daily_bars)
@@ -535,6 +538,15 @@ Important current behavior:
 - No z-score normalization is currently applied inside the model. The only
   implemented normalizations/transforms are the explicit transforms listed in
   the encoder and loss tables below.
+- Time features are not treated as ordinary value columns in the current
+  encoders. Each time-bearing row/item routes its raw time features through the
+  shared role-aware `TimeFeatureEncoder`, then concatenates the resulting
+  `[*, 32]` time embedding with that row/item value projection before pooling.
+  The roles are `event`, `bar_start`, `text_available`, `xbrl_available`,
+  `xbrl_period_end`, `corporate_available`, and `corporate_effective`.
+- `batch_to_torch` and the rolling loader validate required time-feature
+  widths before the tensors reach the model. A malformed time tensor should
+  raise early instead of being silently interpreted as a generic feature.
 - Price targets are normalized in the loss, not in the loader: future price
   levels are converted to basis-point deltas versus the origin reference price.
 - Size/count targets are transformed in the loss with `log1p`.
@@ -543,15 +555,15 @@ Important current behavior:
 
 | Encoder | Input representation | Implemented transform | Output |
 | --- | --- | --- | --- |
-| `EventEncoder` | `raw_event_stream float32 [B,1024,24]`, `raw_event_mask bool [B,1024]`, and `event_feature_names` | Numeric path: `nan_to_num(raw_event_stream)` then `Linear(24,256)`. Categorical path extracts `event_meta`, price-scale bits, tape bits, exchanges, and `condition_token_1..5`; embeds each category; condition token embeddings are averaged. Numeric and categorical paths are concatenated, passed through MLP, plus learned position embedding, then a 4-layer TransformerEncoder and masked mean. No z-score or price decoding is applied inside this encoder. | One event modality token `[B,256]`. |
-| `BarContextEncoder` for `ticker_intraday_bars` | Family payloads `trade_values [B,H,6]`, `quote_bid_values [B,H,9]`, `quote_ask_values [B,H,9]`, family masks, family time features `[B,H,9]` | For each family, value features are padded/trimmed to width 9, concatenated with time features, projected by MLP, plus learned family embedding. Family/horizon rows are flattened and masked-mean pooled. No price normalization or z-score is applied here. | One intraday-bar modality token `[B,256]`. |
-| `BarContextEncoder` for `ticker_daily_bars` | Same family payload pattern with daily offsets `O=8`: `[B,O,*]` | Same as intraday bars. Raw completed daily bar values and time features are projected directly. | One ticker-daily-bar modality token `[B,256]`. |
-| `BarContextEncoder` for `global_daily_bars` | Same family payload pattern with symbols and offsets: `[B,S,O,*]` | Same as ticker bars. Symbol ids are not currently embedded by `model.py`; the current encoder consumes flattened family values, masks, and time features. | One global-daily-bar modality token `[B,256]`. |
-| `TextContextEncoder` for ticker news | `embeddings [B,8,2,1024]`, `chunk_mask [B,8,2]`, `item_mask [B,8]`, `item_time_features [B,8,13]` | Each Qwen chunk embedding is `LayerNorm(1024) -> Linear(1024,256) -> GELU -> Dropout`. Chunks are masked-mean pooled into items. Item vectors are concatenated with item time features and passed through MLP. Items are masked-mean pooled. The model does not run Qwen and does not z-score embeddings. | One ticker-news modality token `[B,256]`. |
+| `EventEncoder` | `raw_event_stream float32 [B,1024,24]`, `raw_event_mask bool [B,1024]`, and `event_feature_names` | Event timestamp/session columns are extracted by name and encoded by `TimeFeatureEncoder(role="event")`. Those columns are zeroed in the generic numeric path so time is not double-counted as ordinary numeric input. Categorical path extracts `event_meta`, price-scale bits, tape bits, exchanges, and `condition_token_1..5`; embeds each category; condition token embeddings are averaged. Numeric, categorical, and time paths are concatenated, passed through MLP, plus learned position embedding, then a 4-layer TransformerEncoder and masked mean. No z-score or price decoding is applied inside this encoder. | One event modality token `[B,256]`. |
+| `BarContextEncoder` for `ticker_intraday_bars` | Family payloads `trade_values [B,H,6]`, `quote_bid_values [B,H,9]`, `quote_ask_values [B,H,9]`, family masks, family time features `[B,H,9]` | For each family, value features are padded/trimmed to width 9. Family time features are validated and encoded by `TimeFeatureEncoder(role="bar_start")`. Value projection and time embedding are concatenated, projected by MLP, plus learned family embedding. Family/horizon rows are flattened and masked-mean pooled. No price normalization or z-score is applied here. | One intraday-bar modality token `[B,256]`. |
+| `BarContextEncoder` for `ticker_daily_bars` | Same family payload pattern with daily offsets `O=8`: `[B,O,*]` | Same as intraday bars, using the `bar_start` time role. Raw completed daily bar values and encoded bar-start/age time are projected directly. | One ticker-daily-bar modality token `[B,256]`. |
+| `BarContextEncoder` for `global_daily_bars` | Same family payload pattern with symbols and offsets: `[B,S,O,*]` | Same as ticker bars, using the `bar_start` time role. Symbol ids are not currently embedded by `model.py`; the current encoder consumes flattened family values, masks, and encoded time features. | One global-daily-bar modality token `[B,256]`. |
+| `TextContextEncoder` for ticker news | `embeddings [B,8,2,1024]`, `chunk_mask [B,8,2]`, `item_mask [B,8]`, `item_time_features [B,8,10]` | Each Qwen chunk embedding is `LayerNorm(1024) -> Linear(1024,256) -> GELU -> Dropout`. Chunks are masked-mean pooled into items. Item time features are validated and encoded by `TimeFeatureEncoder(role="text_available")`. Item vectors are concatenated with the time embedding and passed through MLP. Items are masked-mean pooled. The model does not run Qwen and does not z-score embeddings. | One ticker-news modality token `[B,256]`. |
 | `TextContextEncoder` for market news | `embeddings [B,16,2,1024]`, masks, item time features | Same text encoder and transforms as ticker news. | One market-news modality token `[B,256]`. |
 | `TextContextEncoder` for SEC filings | `embeddings [B,4,8,1024]`, masks, item time features | Same text encoder and transforms as ticker news. | One SEC-text modality token `[B,256]`. |
-| `XbrlEncoder` | `value [B,4096]`, `mask [B,4096]`, `mapping_confidence`, availability time features `[B,4096,13]`, period-end time features `[B,4096,7]`, and category id fields | Numeric row input is `value`, `log1p(abs(value))`, and mapping confidence. Time features are appended. Fiscal/category ids are embedded with a hash embedding and concatenated. Row MLP projects each row, then masked mean pools rows. No z-score or per-tag/unit normalization is currently applied. | One XBRL modality token `[B,256]`. |
-| `CorporateActionEncoder` | `numeric_features [B,128,13]`, `mask [B,128]`, availability time features `[B,128,13]`, effective time features `[B,128,13]`, action/dividend/currency/frequency ids | Numeric corporate-action features are concatenated with availability/effective time features and four category embeddings, passed through row MLP, then masked mean pooled. No z-score is currently applied. IPO-like action types can participate as historical context if present in the corporate-action input rows, but IPO is not a prediction target. | One corporate-action modality token `[B,256]`. |
+| `XbrlEncoder` | `value [B,4096]`, `mask [B,4096]`, `mapping_confidence`, availability time features `[B,4096,10]`, period-end time features `[B,4096,7]`, and category id fields | Numeric row input is `value`, `log1p(abs(value))`, and mapping confidence. Availability time uses `TimeFeatureEncoder(role="xbrl_available")`; period-end time uses `TimeFeatureEncoder(role="xbrl_period_end")`. Fiscal/category ids are embedded with a hash embedding and concatenated. Row MLP projects each row, then masked mean pools rows. No z-score or per-tag/unit normalization is currently applied. | One XBRL modality token `[B,256]`. |
+| `CorporateActionEncoder` | `numeric_features [B,128,13]`, `mask [B,128]`, availability time features `[B,128,10]`, effective time features `[B,128,10]`, action/dividend/currency/frequency ids | Numeric corporate-action features are concatenated with `TimeFeatureEncoder(role="corporate_available")`, `TimeFeatureEncoder(role="corporate_effective")`, and four category embeddings, passed through row MLP, then masked mean pooled. No z-score is currently applied. IPO-like action types can participate as historical context if present in the corporate-action input rows, but IPO is not a prediction target. | One corporate-action modality token `[B,256]`. |
 
 ### Current Output Heads And Target Transforms
 

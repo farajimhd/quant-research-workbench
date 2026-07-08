@@ -4,6 +4,7 @@ import json
 import math
 from dataclasses import asdict, fields, is_dataclass
 from pathlib import Path
+from types import MethodType
 from typing import Any, Callable, Mapping
 
 import torch
@@ -141,15 +142,16 @@ def _try_torchinfo(
         input_data = args if args else (kwargs,)
         original_forward = model.forward
 
-        def tensor_forward(*forward_args: Any, **forward_kwargs: Any) -> torch.Tensor:
-            tensor = _first_tensor(original_forward(*forward_args, **forward_kwargs))
-            if tensor is None:
-                device = next(model.parameters(), torch.empty(0)).device
-                return torch.zeros((), device=device)
-            return tensor
+        def _summary_forward(self: torch.nn.Module, *forward_args: Any, **forward_kwargs: Any) -> torch.Tensor:
+            patched_args = tuple(_inject_summary_metadata(self, value) for value in forward_args)
+            output = original_forward(*patched_args, **forward_kwargs)
+            tensor = _first_tensor(output)
+            if tensor is not None:
+                return tensor
+            return torch.zeros((), device=_first_model_device(self))
 
         try:
-            model.forward = tensor_forward  # type: ignore[method-assign]
+            model.forward = MethodType(_summary_forward, model)  # type: ignore[method-assign]
             text = str(summary(model, input_data=input_data, verbose=0, depth=4))
         finally:
             model.forward = original_forward  # type: ignore[method-assign]
@@ -214,6 +216,25 @@ def _first_tensor(value: Any) -> torch.Tensor | None:
             if tensor is not None:
                 return tensor
     return None
+
+
+def _inject_summary_metadata(model: torch.nn.Module, value: Any) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    out = dict(value)
+    if "raw_event_stream" in out and "event_feature_names" not in out:
+        config = getattr(model, "config", None)
+        names = getattr(config, "event_feature_names", None)
+        if names is not None:
+            out["event_feature_names"] = tuple(str(name) for name in names)
+    return out
+
+
+def _first_model_device(model: torch.nn.Module) -> torch.device:
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return torch.device("cpu")
 
 
 def _sanitize_torchinfo_input(value: Any) -> Any:

@@ -267,6 +267,7 @@ class DailyIndexLoaderConfig:
     materialize_chunk_size: int = 0
     drop_last_batch: bool = False
     preserve_batch_order: bool = True
+    validate_time_feature_contract: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -859,6 +860,15 @@ class DailyIndexBatchMaterializer:
             external_context = _external_context_summary(parts)
         profile["context_seconds"] = time.perf_counter() - context_start
         profile["materialize_seconds"] = time.perf_counter() - start
+        if self.config.validate_time_feature_contract:
+            _validate_materialized_time_feature_contract(
+                raw_stream=raw_stream,
+                raw_stream_feature_names=raw_stream_feature_names,
+                text_inputs=text_inputs,
+                xbrl_inputs=xbrl_inputs,
+                corporate_action_inputs=corporate_inputs,
+                bar_inputs=bar_inputs,
+            )
         return DailyIndexTrainingBatch(
             ticker=tickers,
             origin_ordinal=ordinals,
@@ -2363,6 +2373,7 @@ def normalize_loader_config(config: DailyIndexLoaderConfig) -> DailyIndexLoaderC
         materialize_chunk_size=max(0, int(config.materialize_chunk_size)),
         drop_last_batch=bool(config.drop_last_batch),
         preserve_batch_order=bool(config.preserve_batch_order),
+        validate_time_feature_contract=bool(config.validate_time_feature_contract),
     )
 
 
@@ -3211,6 +3222,80 @@ def _concat_optional_arrays(items: Sequence[np.ndarray]) -> np.ndarray:
     if not arrays:
         return items[0] if items else np.asarray([])
     return np.concatenate(arrays, axis=0)
+
+
+def _validate_materialized_time_feature_contract(
+    *,
+    raw_stream: np.ndarray,
+    raw_stream_feature_names: Sequence[str],
+    text_inputs: Mapping[str, Mapping[str, Any]],
+    xbrl_inputs: Mapping[str, Any],
+    corporate_action_inputs: Mapping[str, Any],
+    bar_inputs: Mapping[str, Mapping[str, Any]],
+) -> None:
+    if getattr(raw_stream, "size", 0):
+        names = tuple(str(name) for name in raw_stream_feature_names)
+        if int(raw_stream.shape[-1]) != len(names):
+            raise RuntimeError(f"Raw event stream width {int(raw_stream.shape[-1])} does not match feature-name count {len(names)}.")
+        missing = [name for name in EVENT_TIME_FEATURE_COLUMNS if name not in names]
+        if missing:
+            raise RuntimeError(f"Raw event stream is missing event time features: {', '.join(missing)}")
+
+    for group, payload in text_inputs.items():
+        if _payload_array_has_rows(payload, "embeddings"):
+            _assert_payload_time_array(payload, "item_time_features", len(TEXT_ITEM_TIME_FEATURE_COLUMNS), f"text_inputs.{group}.item_time_features")
+            names = tuple(str(name) for name in payload.get("item_time_feature_names", ()))
+            if names and names != TEXT_ITEM_TIME_FEATURE_COLUMNS:
+                raise RuntimeError(f"text_inputs.{group}.item_time_feature_names does not match the loader time-feature contract.")
+
+    if _payload_array_has_rows(xbrl_inputs, "value"):
+        _assert_payload_time_array(xbrl_inputs, "time_features", len(XBRL_TIME_FEATURE_COLUMNS), "xbrl_inputs.time_features")
+        _assert_payload_time_array(xbrl_inputs, "period_end_time_features", len(XBRL_PERIOD_END_TIME_FEATURE_COLUMNS), "xbrl_inputs.period_end_time_features")
+        names = tuple(str(name) for name in xbrl_inputs.get("time_feature_names", ()))
+        if names and names != XBRL_TIME_FEATURE_COLUMNS:
+            raise RuntimeError("xbrl_inputs.time_feature_names does not match the loader time-feature contract.")
+        period_names = tuple(str(name) for name in xbrl_inputs.get("period_end_time_feature_names", ()))
+        if period_names and period_names != XBRL_PERIOD_END_TIME_FEATURE_COLUMNS:
+            raise RuntimeError("xbrl_inputs.period_end_time_feature_names does not match the loader time-feature contract.")
+
+    if _payload_array_has_rows(corporate_action_inputs, "numeric_features"):
+        _assert_payload_time_array(corporate_action_inputs, "time_features", len(CORPORATE_ACTION_TIME_FEATURE_COLUMNS), "corporate_action_inputs.time_features")
+        _assert_payload_time_array(
+            corporate_action_inputs,
+            "effective_time_features",
+            len(CORPORATE_ACTION_EFFECTIVE_TIME_FEATURE_COLUMNS),
+            "corporate_action_inputs.effective_time_features",
+        )
+        names = tuple(str(name) for name in corporate_action_inputs.get("time_feature_names", ()))
+        if names and names != CORPORATE_ACTION_TIME_FEATURE_COLUMNS:
+            raise RuntimeError("corporate_action_inputs.time_feature_names does not match the loader time-feature contract.")
+        effective_names = tuple(str(name) for name in corporate_action_inputs.get("effective_time_feature_names", ()))
+        if effective_names and effective_names != CORPORATE_ACTION_EFFECTIVE_TIME_FEATURE_COLUMNS:
+            raise RuntimeError("corporate_action_inputs.effective_time_feature_names does not match the loader time-feature contract.")
+
+    for group, payload in bar_inputs.items():
+        if _payload_array_has_rows(payload, "values"):
+            _assert_payload_time_array(payload, "time_features", len(BAR_TIME_FEATURE_COLUMNS), f"bar_inputs.{group}.time_features")
+        names = tuple(str(name) for name in payload.get("time_feature_names", ()))
+        if names and names != BAR_TIME_FEATURE_COLUMNS:
+            raise RuntimeError(f"bar_inputs.{group}.time_feature_names does not match the loader time-feature contract.")
+        for family in BAR_FAMILY_KEYS:
+            if _payload_array_has_rows(payload, f"{family}_values"):
+                _assert_payload_time_array(payload, f"{family}_time_features", len(BAR_TIME_FEATURE_COLUMNS), f"bar_inputs.{group}.{family}_time_features")
+
+
+def _payload_array_has_rows(payload: Mapping[str, Any], key: str) -> bool:
+    value = payload.get(key)
+    return isinstance(value, np.ndarray) and value.size > 0
+
+
+def _assert_payload_time_array(payload: Mapping[str, Any], key: str, expected_width: int, label: str) -> None:
+    value = payload.get(key)
+    if not isinstance(value, np.ndarray):
+        raise RuntimeError(f"Missing required time feature array: {label}.")
+    if value.ndim < 1 or int(value.shape[-1]) != int(expected_width):
+        width = int(value.shape[-1]) if value.ndim else 0
+        raise RuntimeError(f"{label} width is {width}, expected {int(expected_width)}.")
 
 
 def _merge_external_context(batches: Sequence[DailyIndexTrainingBatch]) -> dict[str, Any]:

@@ -46,6 +46,29 @@ DEFAULT_EVENT_FEATURE_NAMES = (
     "is_premarket",
     "is_afterhours",
 )
+EVENT_TIME_FEATURE_NAMES = (
+    "utc_second_of_day_sin",
+    "utc_second_of_day_cos",
+    "utc_day_of_week_sin",
+    "utc_day_of_week_cos",
+    "utc_day_of_year_sin",
+    "utc_day_of_year_cos",
+    "years_since_2000",
+    "session_second",
+    "session_progress",
+    "is_regular_hours",
+    "is_premarket",
+    "is_afterhours",
+)
+TIME_ROLE_NAMES = (
+    "event",
+    "bar_start",
+    "text_available",
+    "xbrl_available",
+    "xbrl_period_end",
+    "corporate_available",
+    "corporate_effective",
+)
 INTRADAY_EVENT_FLAGS = (
     "condition_halt_pause_flag",
     "condition_resume_flag",
@@ -103,6 +126,9 @@ class ModelConfig:
     fusion_layers: int = 3
     fusion_heads: int = 8
     dropout: float = 0.05
+    time_encoder_dim: int = 32
+    time_feature_input_dim: int = len(EVENT_TIME_FEATURE_NAMES)
+    event_time_feature_count: int = len(EVENT_TIME_FEATURE_NAMES)
     text_embedding_dim: int = 1024
     ticker_news_items: int = 8
     market_news_items: int = 16
@@ -110,6 +136,7 @@ class ModelConfig:
     ticker_news_chunks: int = 2
     market_news_chunks: int = 2
     sec_filing_chunks: int = 8
+    text_time_feature_count: int = 10
     xbrl_max_items: int = 4096
     corporate_action_max_items: int = 128
     ticker_bar_offsets: int = 8
@@ -117,11 +144,11 @@ class ModelConfig:
     global_bar_offsets: int = 3
     bar_feature_count: int = 10
     bar_time_feature_count: int = 9
-    xbrl_time_feature_count: int = 13
+    xbrl_time_feature_count: int = 10
     xbrl_period_time_feature_count: int = 7
     corporate_action_numeric_dim: int = 13
-    corporate_action_time_dim: int = 13
-    corporate_action_effective_time_dim: int = 13
+    corporate_action_time_dim: int = 10
+    corporate_action_effective_time_dim: int = 10
     intraday_horizons: int = len(DEFAULT_INTRADAY_LABEL_HORIZONS)
     corporate_action_days: tuple[int, ...] = (1, 2, 3, 7, 28)
     event_feature_names: tuple[str, ...] = DEFAULT_EVENT_FEATURE_NAMES
