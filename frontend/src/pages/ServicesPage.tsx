@@ -296,6 +296,7 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
           <ServiceConfigurationPanel service={service} />
         </Modal>
       ) : null}
+      <ServiceWorkPlanPanel service={service} />
       <ServiceErrorLogPanel pageError={pageError} service={service} />
       <Panel title="Coverage">
         <KeyValueList rows={coverageRows.length ? coverageRows : [{ key: "status", value: "not reported" }]} />
@@ -319,6 +320,78 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
         <DataTable rows={recentRows} empty="No recent items reported." />
       </Panel>
     </>
+  );
+}
+
+type ServiceWorkRow = {
+  detail: string;
+  kind: string;
+  name: string;
+  progress: string;
+  rows: string;
+  schedule: string;
+  status: string;
+};
+
+function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
+  const rows = serviceWorkRows(service);
+  const counts = rows.reduce(
+    (summary, row) => {
+      const status = workStatusClass(row.status);
+      summary.total += 1;
+      if (status === "running") summary.running += 1;
+      else if (status === "ok") summary.healthy += 1;
+      else if (status === "warn" || status === "error") summary.needsAttention += 1;
+      return summary;
+    },
+    { healthy: 0, needsAttention: 0, running: 0, total: 0 },
+  );
+  return (
+    <Panel className="service-work-plan-panel" title="Service Work Plan">
+      <div className="service-work-plan-summary">
+        <WorkPlanSummaryItem label="Configured" value={String(counts.total)} />
+        <WorkPlanSummaryItem label="Running" value={String(counts.running)} />
+        <WorkPlanSummaryItem label="Healthy" value={String(counts.healthy)} />
+        <WorkPlanSummaryItem label="Needs Attention" value={String(counts.needsAttention)} tone={counts.needsAttention ? "warn" : "ok"} />
+      </div>
+      <div className="service-work-plan-table-wrap">
+        <table className="service-work-plan-table">
+          <thead>
+            <tr>
+              <th>Task</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Progress</th>
+              <th>Rows</th>
+              <th>Schedule</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(rows.length ? rows : [{ detail: "This service has not reported configured task or source work yet.", kind: "service", name: service.registry.label, progress: "-", rows: "-", schedule: "-", status: "waiting" }]).map((row, index) => (
+              <tr key={`${row.kind}-${row.name}-${index}`}>
+                <td title={row.name}>{row.name}</td>
+                <td>{displayName(row.kind)}</td>
+                <td><span className={`service-work-status ${workStatusClass(row.status)}`}>{displayName(row.status || "waiting")}</span></td>
+                <td>{row.progress}</td>
+                <td>{row.rows}</td>
+                <td title={row.schedule}>{row.schedule}</td>
+                <td title={row.detail}>{row.detail}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  );
+}
+
+function WorkPlanSummaryItem({ label, tone = "", value }: { label: string; tone?: string; value: string }) {
+  return (
+    <div className={tone ? `service-work-plan-summary-item ${tone}` : "service-work-plan-summary-item"}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 
@@ -1048,6 +1121,100 @@ function runtimeText(service: ServiceStatusPayload) {
   const keys = ["poll_runs", "processed_rows", "written_rows", "feed_items", "ingest_events", "embedding_rows_written", "cycles"];
   const found = keys.find((key) => record[key] !== undefined && record[key] !== null && record[key] !== "");
   return found ? `${displayName(found)} ${formatCompactNumber(record[found])}` : "-";
+}
+
+function serviceWorkRows(service: ServiceStatusPayload): ServiceWorkRow[] {
+  const snapshot = service.snapshot ?? {};
+  const rows: ServiceWorkRow[] = [];
+  rows.push(...arrayRows(snapshot.tasks).map((row) => serviceWorkRow(row, "task")));
+  rows.push(...arrayRows(snapshot.task_table_progress).map((row) => serviceWorkRow(row, "table")));
+  rows.push(...arrayRows(snapshot.queues).map((row) => serviceWorkRow(row, "queue")));
+  rows.push(...arrayRows(snapshot.sources_sinks).map((row) => serviceWorkRow(row, "source")));
+  rows.push(...arrayRows(snapshot.configured_tables).map((row) => serviceWorkRow(row, "configured table")));
+  return dedupeWorkRows(rows).sort((a, b) => workStatusRank(a.status) - workStatusRank(b.status) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+}
+
+function serviceWorkRow(row: Record<string, unknown>, fallbackKind: string): ServiceWorkRow {
+  const name = firstString(row, ["name", "task", "work", "item", "source", "sink", "table", "database", "label", "area"]) || fallbackKind;
+  const kind = firstString(row, ["kind", "type", "category", "role"]) || fallbackKind;
+  const status = firstString(row, ["status", "state", "phase", "result"]) || "waiting";
+  const progress = workProgressText(row);
+  const rows = firstString(row, ["rows", "row_count", "processed_rows", "written_rows", "done", "completed", "count"]) || "-";
+  const schedule = firstString(row, ["schedule", "cadence", "frequency", "interval", "next", "next_run", "next_poll", "window"]) || "-";
+  const detail = firstString(row, ["detail", "details", "message", "description", "notes", "last", "latest"]) || compactWorkDetail(row);
+  return {
+    detail,
+    kind,
+    name,
+    progress,
+    rows: rows === "" ? "-" : rows,
+    schedule,
+    status,
+  };
+}
+
+function firstString(row: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = row[key];
+    if (value === undefined || value === null || value === "") continue;
+    return formatValue(key, value);
+  }
+  return "";
+}
+
+function workProgressText(row: Record<string, unknown>) {
+  const progress = row.progress ?? row.percent ?? row.progress_pct ?? row.completion_pct;
+  if (progress !== undefined && progress !== null && progress !== "") {
+    const value = typeof progress === "number" && progress <= 1 ? `${Math.round(progress * 100)}%` : formatValue("progress", progress);
+    return value;
+  }
+  const done = row.done ?? row.completed ?? row.processed ?? row.finished;
+  const total = row.total ?? row.expected ?? row.target ?? row.targets;
+  if (done !== undefined && total !== undefined && done !== "" && total !== "") return `${formatValue("done", done)} / ${formatValue("total", total)}`;
+  return "-";
+}
+
+function compactWorkDetail(row: Record<string, unknown>) {
+  const omitted = new Set(["area", "category", "completed", "completion_pct", "count", "database", "done", "expected", "finished", "interval", "item", "kind", "label", "name", "next", "next_poll", "next_run", "percent", "phase", "processed", "processed_rows", "progress", "progress_pct", "result", "role", "row_count", "rows", "schedule", "sink", "source", "state", "status", "table", "target", "targets", "task", "total", "type", "window", "work", "written_rows"]);
+  const parts = Object.entries(row)
+    .filter(([key, value]) => !omitted.has(key) && value !== undefined && value !== null && value !== "")
+    .slice(0, 4)
+    .map(([key, value]) => `${displayName(key)} ${formatValue(key, value)}`);
+  return parts.length ? parts.join("; ") : "-";
+}
+
+function dedupeWorkRows(rows: ServiceWorkRow[]) {
+  const seen = new Set<string>();
+  const output: ServiceWorkRow[] = [];
+  for (const row of rows) {
+    const key = `${row.kind}|${row.name}|${row.status}|${row.detail}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(row);
+  }
+  return output;
+}
+
+function normalizedStatus(status: string) {
+  return String(status || "").toLowerCase().replace(/[^a-z0-9]+/g, "_");
+}
+
+function workStatusClass(status: string) {
+  const normalized = normalizedStatus(status);
+  if (/failed|error|blocked|critical/.test(normalized)) return "error";
+  if (/warn|degraded|retry/.test(normalized)) return "warn";
+  if (/running|working|active|queued|pending|loading|polling/.test(normalized)) return "running";
+  if (/complete|completed|ok|ready|success|idle/.test(normalized)) return "ok";
+  return "waiting";
+}
+
+function workStatusRank(status: string) {
+  const className = workStatusClass(status);
+  if (className === "error") return 0;
+  if (className === "warn") return 1;
+  if (className === "running") return 2;
+  if (className === "waiting") return 3;
+  return 4;
 }
 
 function objectRows(...values: unknown[]) {

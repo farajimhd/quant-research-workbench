@@ -983,6 +983,159 @@ button {
   -webkit-line-clamp: 2;
 }
 
+.service-work-plan-panel {
+  min-height: 188px;
+}
+
+.service-work-plan-summary {
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 10px 12px;
+}
+
+.service-work-plan-summary-item {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.service-work-plan-summary-item span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 620;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.service-work-plan-summary-item strong {
+  color: var(--foreground);
+  font-size: 15px;
+  font-weight: 620;
+}
+
+.service-work-plan-summary-item.ok {
+  background: color-mix(in oklab, var(--badge-success-bg) 48%, var(--surface));
+  border-color: var(--badge-success-border);
+}
+
+.service-work-plan-summary-item.warn {
+  background: color-mix(in oklab, var(--badge-warning-bg) 48%, var(--surface));
+  border-color: var(--badge-warning-border);
+}
+
+.service-work-plan-table-wrap {
+  max-height: 260px;
+  min-width: 0;
+  overflow: auto;
+}
+
+.service-work-plan-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.35;
+  min-width: 1180px;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.service-work-plan-table th,
+.service-work-plan-table td {
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  padding: 7px 10px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-work-plan-table th {
+  background: color-mix(in oklab, var(--surface-alt) 78%, var(--surface));
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 680;
+  letter-spacing: 0.045em;
+  position: sticky;
+  text-transform: uppercase;
+  top: 0;
+  z-index: 1;
+}
+
+.service-work-plan-table th:nth-child(1),
+.service-work-plan-table td:nth-child(1) {
+  width: 210px;
+}
+
+.service-work-plan-table th:nth-child(2),
+.service-work-plan-table td:nth-child(2) {
+  width: 120px;
+}
+
+.service-work-plan-table th:nth-child(3),
+.service-work-plan-table td:nth-child(3) {
+  width: 120px;
+}
+
+.service-work-plan-table th:nth-child(4),
+.service-work-plan-table td:nth-child(4) {
+  width: 120px;
+}
+
+.service-work-plan-table th:nth-child(5),
+.service-work-plan-table td:nth-child(5) {
+  width: 105px;
+}
+
+.service-work-plan-table th:nth-child(6),
+.service-work-plan-table td:nth-child(6) {
+  width: 180px;
+}
+
+.service-work-status {
+  border: 1px solid var(--badge-muted-border);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 680;
+  line-height: 1;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 4px 7px;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.service-work-status.ok {
+  background: var(--badge-success-bg);
+  border-color: var(--badge-success-border);
+  color: var(--badge-success-fg);
+}
+
+.service-work-status.running {
+  background: var(--badge-info-bg);
+  border-color: var(--badge-info-border);
+  color: var(--badge-info-fg);
+}
+
+.service-work-status.warn,
+.service-work-status.waiting {
+  background: var(--badge-warning-bg);
+  border-color: var(--badge-warning-border);
+  color: var(--badge-warning-fg);
+}
+
+.service-work-status.error {
+  background: var(--badge-danger-bg);
+  border-color: var(--badge-danger-border);
+  color: var(--badge-danger-fg);
+}
+
 .service-db-state-wrap {
   height: 135px;
   min-width: 0;
