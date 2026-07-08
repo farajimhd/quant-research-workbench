@@ -24,6 +24,7 @@ type ServiceStatusPayload = {
   errors: Record<string, unknown>;
   header: Record<string, unknown>;
   health: Record<string, unknown>;
+  logs?: ServiceLogPayload;
   metrics: Record<string, unknown>;
   online: boolean;
   recent: unknown;
@@ -35,6 +36,22 @@ type ServiceStatusPayload = {
 type ServicesStatusPayload = {
   checked_at_utc: string;
   services: ServiceStatusPayload[];
+};
+
+type ServiceLogPayload = {
+  error?: string;
+  path?: string;
+  rows?: ServiceRuntimeLogRow[];
+};
+
+type ServiceRuntimeLogRow = {
+  detail?: string;
+  event?: string;
+  level?: string;
+  line?: number;
+  source?: string;
+  title?: string;
+  ts_utc?: string;
 };
 
 const SERVICE_IDS: ServiceId[] = ["qmd", "news", "sec", "text-embed", "reference", "ibkr"];
@@ -259,18 +276,23 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
 function ServiceErrorLogPanel({ pageError, service }: { pageError: string; service: ServiceStatusPayload }) {
   const items = collectErrorLogItems(pageError, service);
   const activeItems = items.filter((item) => item.status === "active" || item.status === "retrying");
+  const logPath = service.logs?.path || "";
+  const logError = service.logs?.error || "";
   return (
     <Panel title="Errors And Logs">
       <div className={`service-log-panel ${activeItems.length ? "has-active" : ""}`}>
         <div className="service-log-summary">
           <ServiceStatusBadge online={service.online} status={activeItems.length ? "degraded" : "running"} />
           <div>
-            <strong>{activeItems.length ? `${activeItems.length} active issue${activeItems.length === 1 ? "" : "s"}` : "No active service errors"}</strong>
-            <p>{activeItems.length ? "Errors and warnings are kept here so the page layout does not move when they change." : "Recent service checks did not report active errors or warnings."}</p>
+            <strong>{items.length ? `${items.length} log row${items.length === 1 ? "" : "s"} loaded` : "No service log rows reported"}</strong>
+            <p>
+              {logPath ? `Source: ${logPath}` : "No saved runtime log path was reported by this service."}
+              {logError ? ` (${logError})` : ""}
+            </p>
           </div>
         </div>
         <div className="service-log-list">
-          {(items.length ? items : [{ detail: "No errors or warnings reported.", key: "service", status: "clear" as const, title: "Clear" }]).slice(0, 12).map((item, index) => (
+          {(items.length ? items : [{ detail: "No errors or warnings reported.", key: "service", status: "clear" as const, title: "Clear" }]).map((item, index) => (
             <div className={`service-log-item ${item.status}`} key={`${item.key}-${index}`}>
               <div className="service-log-item-top">
                 <span>{displayName(item.key)}</span>
@@ -391,13 +413,15 @@ type ServiceLogItem = {
   detail: string;
   key: string;
   meta?: string;
-  status: "active" | "clear" | "resolved" | "retrying";
+  status: "active" | "clear" | "log" | "resolved" | "retrying";
   title: string;
 };
 
 function collectErrorLogItems(pageError: string, service: ServiceStatusPayload) {
   const items: ServiceLogItem[] = [];
   if (pageError) items.push({ detail: pageError, key: "dashboard_api", status: "active", title: "Dashboard API error" });
+  for (const record of runtimeLogRows(service.logs)) items.push(record);
+  if (service.logs?.error) items.push({ detail: service.logs.error, key: "runtime_log", status: "retrying", title: "Runtime log read error" });
 
   for (const [key, value] of Object.entries(service.errors ?? {})) {
     if (isEmptyErrorValue(value)) continue;
@@ -483,6 +507,32 @@ function errorLikePayloadRows(value: unknown, source: string): ServiceLogItem[] 
     }
   }
   return rows;
+}
+
+function runtimeLogRows(logs: ServiceLogPayload | undefined): ServiceLogItem[] {
+  if (!logs?.rows?.length) return [];
+  return logs.rows.map((row) => {
+    const status = logLevelToStatus(row.level || row.event || row.title || "");
+    const event = row.event || row.level || "log";
+    const ts = row.ts_utc ? formatLogTime(row.ts_utc) : "";
+    const line = typeof row.line === "number" ? `line ${row.line}` : "";
+    const meta = [ts, row.source, line].filter(Boolean).join(" · ");
+    return {
+      detail: row.detail || "-",
+      key: [event, row.source, row.line].filter(Boolean).join(":"),
+      meta,
+      status,
+      title: row.title || event,
+    };
+  });
+}
+
+function logLevelToStatus(value: string): ServiceLogItem["status"] {
+  const text = value.toLowerCase();
+  if (/(critical|exception|fail|error|traceback)/.test(text)) return "active";
+  if (/(warn|retry|timeout|degraded)/.test(text)) return "retrying";
+  if (/(resolved|complete|success|succeeded|ok)/.test(text)) return "resolved";
+  return "log";
 }
 
 function dedupeLogItems(items: ServiceLogItem[]) {
@@ -669,6 +719,12 @@ function formatTime(value: string) {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return value;
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(parsed));
+}
+
+function formatLogTime(value: string) {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return value;
+  return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(parsed));
 }
 
 function formatZoneTime(value: Date, timeZone: string) {

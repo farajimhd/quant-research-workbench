@@ -6,6 +6,7 @@ import re
 import shutil
 import urllib.error
 import urllib.request
+from collections import deque
 from functools import lru_cache
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
@@ -115,6 +116,7 @@ EXCHANGE_TIME_ZONE = "America/New_York"
 PORTFOLIO_CHART_TIMEFRAMES = ["30m", "1h", "2h", "4h", "1d"]
 DEBUG_SESSIONS: dict[str, StepBacktestDebugger] = {}
 SERVICE_STATUS_TIMEOUT_SECONDS = 1.8
+SERVICE_LOG_TAIL_LIMIT = 160
 
 SERVICE_REGISTRY: dict[str, dict[str, str]] = {
     "qmd": {
@@ -941,6 +943,204 @@ def fetch_service_json(base_url: str, path: str) -> tuple[dict[str, Any] | list[
     return None, f"Unexpected JSON payload from {path}"
 
 
+def service_runtime_logs(*payloads: Any, service_id: str = "", limit: int = SERVICE_LOG_TAIL_LIMIT) -> dict[str, Any]:
+    log_path = find_runtime_log_path(*payloads) or latest_service_log_path(service_id)
+    if not log_path:
+        return {"path": "", "rows": [], "error": ""}
+    path = Path(log_path)
+    if not path.exists():
+        return {"path": str(path), "rows": [], "error": "log file not found"}
+    if not path.is_file():
+        return {"path": str(path), "rows": [], "error": "log path is not a file"}
+    rows: deque[dict[str, Any]] = deque(maxlen=max(1, min(limit, 500)))
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    rows.append(
+                        normalize_runtime_log_row(
+                            {"event": "unparsed_log_line", "message": text, "line_number": line_number},
+                            source_path=path,
+                            line_number=line_number,
+                        )
+                    )
+                    continue
+                if isinstance(payload, dict):
+                    rows.append(normalize_runtime_log_row(payload, source_path=path, line_number=line_number))
+    except OSError as exc:
+        return {"path": str(path), "rows": [], "error": f"{type(exc).__name__}: {exc}"}
+    return {"path": str(path), "rows": list(rows), "error": ""}
+
+
+def latest_service_log_path(service_id: str) -> str:
+    candidates: list[Path] = []
+    for root in service_log_roots(service_id):
+        if not root.exists() or not root.is_dir():
+            continue
+        for pattern in ("*.jsonl", "*.log"):
+            try:
+                candidates.extend(path for path in root.rglob(pattern) if path.is_file())
+            except OSError:
+                continue
+    if not candidates:
+        return ""
+    latest = max(candidates, key=safe_mtime)
+    return str(latest) if safe_mtime(latest) >= 0 else ""
+
+
+def safe_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return -1.0
+
+
+def service_log_roots(service_id: str) -> list[Path]:
+    data_roots = service_data_roots()
+    roots_by_service: dict[str, list[Path]] = {
+        "qmd": [PROJECT_ROOT / ".tmp" / "qmd-gateway"],
+        "news": env_paths("NEWS_GATEWAY_LOG_ROOT_WIN") + [root / "prepared" / "news_gateway" / "logs" for root in data_roots],
+        "sec": env_paths("SEC_GATEWAY_LOG_ROOT_WIN") + [root / "prepared" / "sec_gateway" / "logs" for root in data_roots],
+        "text-embed": env_paths("TEXT_EMBED_GATEWAY_LOG_ROOT_WIN") + [root / "prepared" / "text_embed_gateway" / "logs" for root in data_roots],
+        "reference": reference_log_roots(data_roots),
+        "ibkr": env_paths("IBKR_GATEWAY_LOG_ROOT") + [PROJECT_ROOT / "tmp" / "ibkr_gateway_supervisor"],
+    }
+    seen: set[str] = set()
+    roots: list[Path] = []
+    for root in roots_by_service.get(service_id, []):
+        normalized = str(root)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        roots.append(root)
+    return roots
+
+
+def reference_log_roots(data_roots: list[Path]) -> list[Path]:
+    roots = env_paths("REFERENCE_GATEWAY_LOG_ROOT_WIN")
+    for prepared_root in env_paths("REFERENCE_GATEWAY_PREPARED_ROOT_WIN"):
+        roots.append(prepared_root / "reference_gateway" / "logs")
+    roots.extend(root / "prepared" / "reference_gateway" / "logs" for root in data_roots)
+    return roots
+
+
+def service_data_roots() -> list[Path]:
+    roots = env_paths(
+        "NEWS_GATEWAY_DATA_ROOT_WIN",
+        "SEC_DATA_ROOT_WIN",
+        "TEXT_EMBED_GATEWAY_DATA_ROOT_WIN",
+        "REFERENCE_GATEWAY_DATA_ROOT_WIN",
+    )
+    roots.extend([Path(r"\\DESKTOP-SAAI85T\Workstation-D\market-data"), Path("D:/market-data")])
+    return roots
+
+
+def env_paths(*names: str) -> list[Path]:
+    paths: list[Path] = []
+    for name in names:
+        value = os.environ.get(name)
+        if value and value.strip():
+            paths.append(Path(value.strip()))
+    return paths
+
+
+def find_runtime_log_path(*payloads: Any) -> str:
+    keys = {
+        "run_log_path",
+        "runtime_log_path",
+        "log_path",
+        "event_log_path",
+        "events_log_path",
+    }
+    for payload in payloads:
+        found = find_first_string_by_key(payload, keys)
+        if found:
+            return found
+    return ""
+
+
+def find_first_string_by_key(value: Any, keys: set[str]) -> str:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = str(key).lower()
+            if normalized in keys and isinstance(item, str) and item.strip():
+                return item.strip()
+        for item in value.values():
+            found = find_first_string_by_key(item, keys)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = find_first_string_by_key(item, keys)
+            if found:
+                return found
+    return ""
+
+
+def normalize_runtime_log_row(row: dict[str, Any], *, source_path: Path, line_number: int) -> dict[str, Any]:
+    event = str(row.get("event") or row.get("type") or row.get("name") or "log")
+    ts_utc = str(row.get("ts_utc") or row.get("timestamp_utc") or row.get("updated_at_utc") or row.get("created_at_utc") or "")
+    level = str(row.get("level") or row.get("status") or infer_runtime_log_level(event, row)).lower()
+    title = str(row.get("title") or row.get("message") or row.get("phase") or event)
+    detail = runtime_log_detail(row)
+    return {
+        "ts_utc": ts_utc,
+        "level": level,
+        "event": event,
+        "title": redact_log_text(title),
+        "detail": redact_log_text(detail),
+        "source": source_path.name,
+        "line": line_number,
+    }
+
+
+def infer_runtime_log_level(event: str, row: dict[str, Any]) -> str:
+    text = " ".join(str(value) for value in [event, row.get("status", ""), row.get("error_type", ""), row.get("error_message", "")]).lower()
+    if any(token in text for token in ("critical", "exception", "failed", "failure", "error", "traceback")):
+        return "error"
+    if any(token in text for token in ("warning", "warn", "retry", "timeout", "degraded")):
+        return "warning"
+    if any(token in text for token in ("resolved", "completed", "success", "succeeded", "ok")):
+        return "resolved"
+    return "info"
+
+
+def runtime_log_detail(row: dict[str, Any]) -> str:
+    preferred = ["error_message", "detail", "details", "message", "reason", "status", "phase", "rows", "elapsed_seconds"]
+    parts: list[str] = []
+    for key in preferred:
+        value = row.get(key)
+        if value is None or value == "":
+            continue
+        parts.append(f"{key}={compact_runtime_log_value(value)}")
+    if parts:
+        return "; ".join(parts)
+    compact = {key: value for key, value in row.items() if key not in {"ts_utc", "event", "run_id"}}
+    return compact_runtime_log_value(compact) if compact else "-"
+
+
+def compact_runtime_log_value(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        try:
+            text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+        except TypeError:
+            text = str(value)
+    else:
+        text = str(value)
+    return text if len(text) <= 800 else text[:800] + "...<truncated>"
+
+
+def redact_log_text(value: str) -> str:
+    text = str(value)
+    text = re.sub(r"([?&](?:apiKey|apikey|api_key|token|key|password)=)[^&'\"\s)]+", r"\1redacted", text, flags=re.IGNORECASE)
+    return re.sub(r"((?:apiKey|apikey|api_key|token|key|password)['\"]?\s*[:=]\s*['\"]?)[^'\"&\s,)]+", r"\1redacted", text, flags=re.IGNORECASE)
+
+
 def service_unreachable_error(error_text: str | None) -> bool:
     if not error_text:
         return False
@@ -994,6 +1194,7 @@ def service_status_payload(service_id: str, *, include_recent: bool = True) -> d
         status = "ONLINE" if online else "NOT_STARTED"
     elif not online:
         status = "NOT_STARTED"
+    runtime_logs = service_runtime_logs(normalized_snapshot, metrics, recent_payload, health_payload, service_id=service_id)
     return {
         "registry": {
             "id": service["id"],
@@ -1010,6 +1211,7 @@ def service_status_payload(service_id: str, *, include_recent: bool = True) -> d
         "health": health_payload if isinstance(health_payload, dict) else {},
         "metrics": metrics if isinstance(metrics, dict) else {},
         "recent": recent_payload if recent_payload is not None else {},
+        "logs": runtime_logs,
         "errors": {
             "snapshot": snapshot_error,
             "health": health_error,
