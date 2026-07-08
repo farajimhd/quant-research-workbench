@@ -36,6 +36,18 @@ Useful overrides:
 python research\temporal_event_model\v3\run_train.py -- --months 2019-02,2019-03,2019-04 --batch-size 512 --max-steps 10000
 ```
 
+The trainer builds an explicit day schedule from the selected cache manifests.
+The schedule does not need to be calendar-contiguous:
+
+```powershell
+python research\temporal_event_model\v3\run_train.py -- --training-days 2019-02-01,2020-08-12,2023-02-05
+```
+
+If `--validation-days` is omitted, the trainer reserves validation day(s) from
+the discovered training schedule using `--validation-reserve-policy` and removes
+them from training. The saved validation plan is deterministic unless
+`--refresh-validation-plan` is passed.
+
 For a local shape smoke:
 
 ```powershell
@@ -116,6 +128,10 @@ utc/session time features
 
 Labels are grouped by task:
 
+- `scanner_inputs`: global market-leader context. The model receives top-K
+  scanner leaders and origin-ticker comparison bars for `top_gainers`,
+  large/mid/small/penny-volume groups across `100ms`, `1m`, `5m`, `15m`,
+  `30m`, `1h`, and `day_to_now` horizons.
 - `bar_inputs["ticker_intraday_bars"]`: backward same-session intraday context
   bars for `trade`, `quote_bid`, and `quote_ask`, aligned to the same horizon
   list as intraday labels but clipped backward to the session start.
@@ -150,8 +166,21 @@ Checkpoints include:
 
 - model, optimizer, scaler, and RNG state
 - train and validation loader state
+- file-based day schedule and training ledger snapshots
 - model card payload with dataset id, period/months, sample counts, data groups,
   latest metrics, and run root
+
+State files are written under `run_dir/state/`:
+
+```text
+day_schedule.csv
+validation_plan.csv
+training_ledger_latest.csv
+```
+
+The ledger is keyed by `epoch_index`, `schedule_index`, and `day`. Metrics use
+`samples_seen` as the primary x-axis so runs remain comparable when batch size
+changes.
 
 Resume with:
 

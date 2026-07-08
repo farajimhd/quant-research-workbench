@@ -17,6 +17,8 @@ from research.temporal_event_model.v3.config import (
     INTRADAY_EVENT_FLAGS,
     LoaderConfig,
     ModelConfig,
+    SCANNER_GROUPS,
+    SCANNER_HORIZONS,
 )
 
 
@@ -45,6 +47,7 @@ def batch_to_torch(
         "xbrl_inputs": _array_dict_to_torch(batch.xbrl_inputs, device=device, non_blocking=non_blocking),
         "corporate_action_inputs": _array_dict_to_torch(batch.corporate_action_inputs, device=device, non_blocking=non_blocking),
         "bar_inputs": _nested_arrays_to_torch(batch.bar_inputs, device=device, non_blocking=non_blocking),
+        "scanner_inputs": _array_dict_to_torch(batch.scanner_inputs, device=device, non_blocking=non_blocking),
         "input_availability": _array_dict_to_torch(batch.input_availability, device=device, non_blocking=non_blocking),
     }
     _validate_time_feature_contract(x, model_config)
@@ -115,6 +118,7 @@ def make_dummy_temporal_batch(
         "currency_id": torch.zeros(b, config.corporate_action_max_items, dtype=torch.long, device=device),
         "frequency_id": torch.zeros(b, config.corporate_action_max_items, dtype=torch.long, device=device),
     }
+    scanner_inputs = _dummy_scanner(b, config, device)
     y = {
         "future_bar_values": {
             family: torch.rand(b, h, BAR_FEATURE_DIMS[family], device=device) * 100.0
@@ -143,6 +147,7 @@ def make_dummy_temporal_batch(
         "xbrl_inputs": xbrl_inputs,
         "corporate_action_inputs": corporate_inputs,
         "bar_inputs": bar_inputs,
+        "scanner_inputs": scanner_inputs,
         "input_availability": {},
     }
     identity = {
@@ -176,6 +181,10 @@ def loader_config_from_v3(config: LoaderConfig) -> Any:
         materialize_workers=config.materialize_workers,
         materialize_chunk_size=config.materialize_chunk_size,
         max_origins_per_epoch=config.max_origins_per_epoch,
+        scanner_groups=SCANNER_GROUPS,
+        scanner_horizons=SCANNER_HORIZONS,
+        scanner_top_k=5,
+        days=config.training_days,
         sample_fraction=config.sample_fraction,
         sample_hash_modulus=config.sample_hash_modulus,
         sample_hash_buckets=config.sample_hash_buckets,
@@ -219,6 +228,11 @@ def _validate_time_feature_contract(x: Mapping[str, Any], config: ModelConfig) -
             if _payload_has_rows(payload, values_key):
                 _assert_time_dim(payload, f"{family}_time_features", int(config.bar_time_feature_count), f"bar_inputs.{group}.{family}_time_features")
 
+    scanner = x.get("scanner_inputs") or {}
+    if isinstance(scanner, Mapping) and _payload_has_rows(scanner, "leader_values"):
+        _assert_time_dim(scanner, "leader_time_features", int(config.bar_time_feature_count), "scanner_inputs.leader_time_features")
+        _assert_time_dim(scanner, "origin_time_features", int(config.bar_time_feature_count), "scanner_inputs.origin_time_features")
+
 
 def _payload_has_rows(payload: Mapping[str, Any], key: str) -> bool:
     value = payload.get(key)
@@ -245,6 +259,7 @@ def validation_loader_config_from_v3(config: LoaderConfig) -> Any:
             "randomize_seed": False,
             "shuffle_parts": False,
             "shuffle_within_loaded_group": False,
+            "days": config.validation_days or config.training_days,
         }
     )
 
@@ -331,6 +346,28 @@ def _dummy_bars(batch: int, offsets: int, features: int, time_features: int, dev
         payload[f"{family}_mask"] = torch.ones(batch, offsets, dtype=torch.bool, device=device)
         payload[f"{family}_time_features"] = torch.randn(batch, offsets, time_features, device=device)
     return payload
+
+
+def _dummy_scanner(batch: int, config: ModelConfig, device: torch.device) -> dict[str, torch.Tensor]:
+    groups = int(config.scanner_groups)
+    top_k = int(config.scanner_top_k)
+    horizons = int(config.scanner_horizons)
+    families = len(BAR_FAMILIES)
+    width = max(BAR_FEATURE_DIMS.values())
+    return {
+        "leader_values": torch.randn(batch, groups, top_k, horizons, families, width, device=device),
+        "leader_mask": torch.ones(batch, groups, top_k, dtype=torch.bool, device=device),
+        "leader_time_features": torch.randn(batch, groups, top_k, horizons, config.bar_time_feature_count, device=device),
+        "leader_ticker_id": torch.zeros(batch, groups, top_k, dtype=torch.long, device=device),
+        "leader_rank": torch.arange(top_k, dtype=torch.long, device=device).view(1, 1, top_k).expand(batch, groups, top_k),
+        "origin_values": torch.randn(batch, groups, horizons, families, width, device=device),
+        "origin_mask": torch.ones(batch, groups, dtype=torch.bool, device=device),
+        "origin_time_features": torch.randn(batch, groups, horizons, config.bar_time_feature_count, device=device),
+        "origin_rank": torch.zeros(batch, groups, dtype=torch.long, device=device),
+        "origin_in_topk": torch.ones(batch, groups, dtype=torch.bool, device=device),
+        "origin_topk_position": torch.zeros(batch, groups, dtype=torch.long, device=device),
+        "numeric_features": torch.randn(batch, groups, config.scanner_numeric_dim, device=device),
+    }
 
 
 def _dummy_global_bars(batch: int, symbols: int, offsets: int, features: int, time_features: int, device: torch.device) -> dict[str, torch.Tensor]:

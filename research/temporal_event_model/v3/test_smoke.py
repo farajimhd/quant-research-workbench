@@ -43,7 +43,7 @@ def main() -> int:
     assert output.future_bar_values["trade"].shape == (2, config.intraday_horizons, 6)
     assert output.future_bar_values["quote_bid"].shape == (2, config.intraday_horizons, 9)
     assert output.future_bar_values["quote_ask"].shape == (2, config.intraday_horizons, 9)
-    assert output.modality_tokens.shape == (2, 9, config.d_model)
+    assert output.modality_tokens.shape == (2, 10, config.d_model)
     metrics = {}
     metrics.update(fast_batch_metrics(batch, output))
     metrics.update(prediction_metrics(batch, output))

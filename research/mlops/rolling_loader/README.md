@@ -36,6 +36,7 @@ cache_root/
       sec_embeddings/*.parquet
       xbrl/*.parquet
       corporate_actions/*.parquet
+      scanner/*.parquet              # optional day-level scanner artifacts
     global/
       manifest.json
       global_macro_bars/*.parquet
@@ -74,9 +75,55 @@ For each loaded part group it:
 3. Materializes raw event streams from saved sequential event rows.
 4. Builds intraday labels from compact base bars and condition-event rows.
 5. Performs as-of lookup for text embeddings, XBRL, daily bars, and corporate actions.
-6. Emits `DailyIndexTrainingBatch`.
+6. Emits optional scanner context tensors. Existing caches that do not yet
+   contain scanner artifacts emit padded, fully masked scanner tensors unless
+   `scanner_required=True`.
+7. Emits `DailyIndexTrainingBatch`.
 
-The loader preserves state through `state_dict()` / `load_state_dict()`. The state includes manifest fingerprint, epoch, RNG state, and seen-sample accounting so benchmark and validation subsets can be repeated.
+The loader preserves state through `state_dict()` / `load_state_dict()`. The
+state includes manifest fingerprint, epoch, RNG state, and seen-sample
+accounting so benchmark and validation subsets can be repeated. Training jobs
+can additionally pass `days=(...)` to restrict a loader to an explicit
+non-contiguous schedule discovered from the cache.
+
+## Scanner Context Contract
+
+Scanner context is a global day-level market-leader modality. It is keyed by
+scanner snapshot time and must obey:
+
+```text
+scanner_snapshot_timestamp_us <= origin_timestamp_us
+```
+
+The intended builder flow is:
+
+1. Load all intraday bars for a day.
+2. Rank every closed `100ms` bar timestamp across the market.
+3. Select leaders for:
+   - `top_gainers`
+   - `top_volume_large_cap`
+   - `top_volume_mid_cap`
+   - `top_volume_small_cap`
+   - `top_volume_penny`
+4. For those leaders and for the origin ticker, aggregate trailing bars:
+   `100ms`, `1m`, `5m`, `15m`, `30m`, `1h`, and `day_to_now`.
+5. Save scanner snapshots as a day/global artifact.
+
+The loader output shape is:
+
+| Field | Shape | Meaning |
+| --- | --- | --- |
+| `scanner_inputs["leader_values"]` | `[B,G,K,H,3,F]` | Top-K leader bars by scanner group, horizon, and bar family. |
+| `scanner_inputs["leader_mask"]` | `[B,G,K]` | True when a leader slot exists. |
+| `scanner_inputs["leader_time_features"]` | `[B,G,K,H,9]` | Bar-end/start time features for leader bars. |
+| `scanner_inputs["origin_values"]` | `[B,G,H,3,F]` | Origin ticker bars for comparison with each scanner group. |
+| `scanner_inputs["origin_mask"]` | `[B,G]` | True when origin ticker scanner comparison is available. |
+| `scanner_inputs["origin_rank"]` | `[B,G]` | Origin ticker rank in each scanner group. |
+| `scanner_inputs["origin_in_topk"]` | `[B,G]` | Whether the origin ticker is one of the leaders. |
+
+`G=5`, `K=5`, `H=7`, bar families are `trade`, `quote_bid`, `quote_ask`, and
+`F` is padded to the max bar-family feature width. This gives the model both
+market-leader context and explicit origin-ticker identity/comparison features.
 
 ## Time Feature Contract
 
@@ -95,6 +142,7 @@ The loader materialization path validates time-bearing payloads before emitting 
 | corporate actions | `time_features` | 10 | availability UTC features plus delta/age from origin. |
 | corporate actions | `effective_time_features` | 10 | effective-date UTC features plus delta/age from origin. |
 | bars | `*_time_features` | 9 | bar-start UTC features plus bar age from origin. |
+| scanner context | `leader_time_features`, `origin_time_features` | 9 | scanner bar time features for leader and origin-comparison rows. |
 
 `DailyIndexLoaderConfig.validate_time_feature_contract` is enabled by default.
 When enabled, mismatched widths, missing required time tensors, or mismatched

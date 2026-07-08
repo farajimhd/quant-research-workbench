@@ -85,6 +85,23 @@ BAR_INPUT_GROUP_TO_KEY = {
     "global_daily_bars": "global_daily_bars",
     "intraday_bars": "ticker_intraday_bars",
 }
+SCANNER_CONTEXT_GROUPS = {"scanner_context"}
+DEFAULT_SCANNER_GROUPS = (
+    "top_gainers",
+    "top_volume_large_cap",
+    "top_volume_mid_cap",
+    "top_volume_small_cap",
+    "top_volume_penny",
+)
+DEFAULT_SCANNER_HORIZONS = ("100ms", "1m", "5m", "15m", "30m", "1h", "day_to_now")
+SCANNER_NUMERIC_FEATURE_KEYS = (
+    "rank_score",
+    "rank_percentile",
+    "origin_is_leader",
+    "origin_topk_position",
+    "origin_rank",
+    "origin_rank_percentile",
+)
 BAR_FEATURE_KEYS: tuple[str, ...] = (
     "open",
     "close",
@@ -172,6 +189,9 @@ METADATA_PAYLOAD_FIELDS = {
     "effective_time_feature_names",
     "offsets",
     "symbols",
+    "group_names",
+    "horizons",
+    "family_names",
 }
 LABEL_VALUE_DTYPES: dict[str, np.dtype] = {
     "label_resolution_us": np.dtype(np.uint64),
@@ -268,6 +288,11 @@ class DailyIndexLoaderConfig:
     drop_last_batch: bool = False
     preserve_batch_order: bool = True
     validate_time_feature_contract: bool = True
+    scanner_groups: tuple[str, ...] = DEFAULT_SCANNER_GROUPS
+    scanner_horizons: tuple[str, ...] = DEFAULT_SCANNER_HORIZONS
+    scanner_top_k: int = 5
+    scanner_required: bool = False
+    days: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +311,7 @@ class DailyIndexPartPlan:
     origin_ordinal_end: int
     fetch_ordinal_start: int
     fetch_ordinal_end: int
+    source_date: str = ""
 
 
 @dataclass(slots=True)
@@ -482,6 +508,7 @@ class DailyIndexTrainingBatch:
     future_intraday_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32))
     future_intraday_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
     input_availability: dict[str, np.ndarray] = field(default_factory=dict)
+    scanner_inputs: dict[str, np.ndarray] = field(default_factory=dict)
     text_inputs: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
     xbrl_inputs: dict[str, np.ndarray] = field(default_factory=dict)
     corporate_action_inputs: dict[str, np.ndarray] = field(default_factory=dict)
@@ -574,6 +601,7 @@ class DailyIndexCacheIndex:
             raise FileNotFoundError(f"Missing daily-index cache root: {root}")
         selected_months = set(_selected_months(self.config, self.root_manifest))
         selected_tickers = {str(ticker) for ticker in self.config.tickers}
+        selected_days = {str(day)[:10] for day in self.config.days if str(day).strip()}
         plans: list[DailyIndexPartPlan] = []
         for package_dir in self._candidate_package_dirs(root, selected_months, selected_tickers):
             if not package_dir.is_dir():
@@ -603,6 +631,8 @@ class DailyIndexCacheIndex:
                 if origin_count <= 0:
                     continue
                 source_date = _source_date_from_part(part)
+                if selected_days and source_date not in selected_days:
+                    continue
                 files = {
                     **package_files,
                     **intraday_files_by_date.get(source_date, {}),
@@ -625,6 +655,7 @@ class DailyIndexCacheIndex:
                         origin_ordinal_end=int(part.get("ordinal_max") or 0),
                         fetch_ordinal_start=int(part.get("ordinal_min") or 0),
                         fetch_ordinal_end=int(part.get("ordinal_max") or 0),
+                        source_date=str(source_date),
                     )
                 )
         if not plans:
@@ -854,6 +885,16 @@ class DailyIndexBatchMaterializer:
             availability["corporate_actions_available"] = corporate_mask.reshape((len(refs), -1)).any(axis=1)
         profile.update(corporate_profile)
         profile["corporate_action_seconds"] = time.perf_counter() - corporate_start
+        scanner_start = time.perf_counter()
+        scanner_inputs, scanner_profile = self._materialize_scanner_inputs(parts, refs)
+        scanner_mask = scanner_inputs.get("leader_mask")
+        origin_mask = scanner_inputs.get("origin_mask")
+        if scanner_mask is not None:
+            availability["scanner_context_available"] = scanner_mask.reshape((len(refs), -1)).any(axis=1)
+        elif origin_mask is not None:
+            availability["scanner_context_available"] = origin_mask.reshape((len(refs), -1)).any(axis=1)
+        profile.update(scanner_profile)
+        profile["scanner_seconds"] = time.perf_counter() - scanner_start
         external_context = {}
         context_start = time.perf_counter()
         if self.config.include_external_context:
@@ -868,6 +909,7 @@ class DailyIndexBatchMaterializer:
                 xbrl_inputs=xbrl_inputs,
                 corporate_action_inputs=corporate_inputs,
                 bar_inputs=bar_inputs,
+                scanner_inputs=scanner_inputs,
             )
         return DailyIndexTrainingBatch(
             ticker=tickers,
@@ -892,6 +934,7 @@ class DailyIndexBatchMaterializer:
             future_intraday_bars=future_bars,
             future_intraday_bar_mask=future_mask,
             input_availability=availability,
+            scanner_inputs=scanner_inputs,
             text_inputs=text_inputs,
             xbrl_inputs=xbrl_inputs,
             corporate_action_inputs=corporate_inputs,
@@ -1754,6 +1797,39 @@ class DailyIndexBatchMaterializer:
             out[key] = payload
         return out, profile
 
+    def _materialize_scanner_inputs(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[dict[str, np.ndarray], dict[str, float | int]]:
+        sample_count = int(len(refs))
+        group_count = max(1, int(len(self.config.scanner_groups)))
+        top_k = max(1, int(self.config.scanner_top_k))
+        horizon_count = max(1, int(len(self.config.scanner_horizons)))
+        family_count = int(len(BAR_FAMILY_KEYS))
+        max_feature_width = int(max(len(BAR_FAMILY_FEATURE_KEYS[family]) for family in BAR_FAMILY_KEYS))
+        time_width = int(len(BAR_TIME_FEATURE_COLUMNS))
+        numeric_width = int(len(SCANNER_NUMERIC_FEATURE_KEYS))
+        if self.config.scanner_required and "scanner_context" not in self.config.data_groups:
+            raise RuntimeError("scanner_required=True but scanner_context is not enabled in data_groups.")
+        payload = {
+            "leader_values": np.zeros((sample_count, group_count, top_k, horizon_count, family_count, max_feature_width), dtype=np.float32),
+            "leader_mask": np.zeros((sample_count, group_count, top_k), dtype=np.bool_),
+            "leader_time_features": np.zeros((sample_count, group_count, top_k, horizon_count, time_width), dtype=np.float32),
+            "leader_ticker_id": np.zeros((sample_count, group_count, top_k), dtype=np.int64),
+            "leader_rank": np.zeros((sample_count, group_count, top_k), dtype=np.int64),
+            "origin_values": np.zeros((sample_count, group_count, horizon_count, family_count, max_feature_width), dtype=np.float32),
+            "origin_mask": np.zeros((sample_count, group_count), dtype=np.bool_),
+            "origin_time_features": np.zeros((sample_count, group_count, horizon_count, time_width), dtype=np.float32),
+            "origin_rank": np.zeros((sample_count, group_count), dtype=np.int64),
+            "origin_in_topk": np.zeros((sample_count, group_count), dtype=np.bool_),
+            "origin_topk_position": np.full((sample_count, group_count), -1, dtype=np.int64),
+            "numeric_features": np.zeros((sample_count, group_count, numeric_width), dtype=np.float32),
+            "group_names": np.asarray(tuple(self.config.scanner_groups), dtype=object),
+            "horizons": np.asarray(tuple(self.config.scanner_horizons), dtype=object),
+            "family_names": np.asarray(tuple(BAR_FAMILY_KEYS), dtype=object),
+            "feature_names": np.asarray(tuple(BAR_FAMILY_FEATURE_KEYS["quote_bid"]), dtype=object),
+            "numeric_feature_names": np.asarray(SCANNER_NUMERIC_FEATURE_KEYS, dtype=object),
+            "time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
+        }
+        return payload, {"scanner_zero_fallback": int(1)}
+
     def _daily_bar_context_index(self, frame: Any) -> DailyBarContextIndex:
         key = id(frame)
         with self._bar_index_lock:
@@ -2374,6 +2450,11 @@ def normalize_loader_config(config: DailyIndexLoaderConfig) -> DailyIndexLoaderC
         drop_last_batch=bool(config.drop_last_batch),
         preserve_batch_order=bool(config.preserve_batch_order),
         validate_time_feature_contract=bool(config.validate_time_feature_contract),
+        scanner_groups=tuple(str(group) for group in config.scanner_groups),
+        scanner_horizons=tuple(str(horizon) for horizon in config.scanner_horizons),
+        scanner_top_k=max(1, int(config.scanner_top_k)),
+        scanner_required=bool(config.scanner_required),
+        days=tuple(str(day)[:10] for day in config.days if str(day).strip()),
     )
 
 
@@ -3064,6 +3145,7 @@ def _concat_training_batches(batches: Sequence[DailyIndexTrainingBatch]) -> Dail
     intraday_labels = _concat_dict_arrays(batch.intraday_labels for batch in nonempty)
     corporate_action_labels = _concat_dict_arrays(batch.corporate_action_labels for batch in nonempty)
     availability = _concat_dict_arrays(batch.input_availability for batch in nonempty)
+    scanner_inputs = _concat_dict_arrays(batch.scanner_inputs for batch in nonempty)
     xbrl_inputs = _concat_dict_arrays(batch.xbrl_inputs for batch in nonempty)
     corporate_action_inputs = _concat_dict_arrays(batch.corporate_action_inputs for batch in nonempty)
     profile = {
@@ -3098,6 +3180,7 @@ def _concat_training_batches(batches: Sequence[DailyIndexTrainingBatch]) -> Dail
         future_intraday_bars=_concat_optional_arrays([batch.future_intraday_bars for batch in nonempty]),
         future_intraday_bar_mask=_concat_optional_arrays([batch.future_intraday_bar_mask for batch in nonempty]),
         input_availability=availability,
+        scanner_inputs=scanner_inputs,
         text_inputs=_concat_text_inputs(batch.text_inputs for batch in nonempty),
         xbrl_inputs=xbrl_inputs,
         corporate_action_inputs=corporate_action_inputs,
@@ -3134,6 +3217,7 @@ def _slice_training_batch(batch: DailyIndexTrainingBatch, start: int, end: int) 
         future_intraday_bars=batch.future_intraday_bars[start:end] if batch.future_intraday_bars.shape[0] else batch.future_intraday_bars,
         future_intraday_bar_mask=batch.future_intraday_bar_mask[start:end] if batch.future_intraday_bar_mask.shape[0] else batch.future_intraday_bar_mask,
         input_availability={key: value[start:end] for key, value in batch.input_availability.items()},
+        scanner_inputs={key: (value if key in METADATA_PAYLOAD_FIELDS else _slice_batch_payload_field(value, start, end, int(batch.sample_count))) for key, value in batch.scanner_inputs.items()},
         text_inputs={name: {key: (value if key in METADATA_PAYLOAD_FIELDS else _slice_batch_payload_field(value, start, end, int(batch.sample_count))) for key, value in payload.items()} for name, payload in batch.text_inputs.items()},
         xbrl_inputs={key: (value if key in METADATA_PAYLOAD_FIELDS else _slice_batch_payload_field(value, start, end, int(batch.sample_count))) for key, value in batch.xbrl_inputs.items()},
         corporate_action_inputs={key: (value if key in METADATA_PAYLOAD_FIELDS else _slice_batch_payload_field(value, start, end, int(batch.sample_count))) for key, value in batch.corporate_action_inputs.items()},
@@ -3232,6 +3316,7 @@ def _validate_materialized_time_feature_contract(
     xbrl_inputs: Mapping[str, Any],
     corporate_action_inputs: Mapping[str, Any],
     bar_inputs: Mapping[str, Mapping[str, Any]],
+    scanner_inputs: Mapping[str, Any],
 ) -> None:
     if getattr(raw_stream, "size", 0):
         names = tuple(str(name) for name in raw_stream_feature_names)
@@ -3282,6 +3367,13 @@ def _validate_materialized_time_feature_contract(
         for family in BAR_FAMILY_KEYS:
             if _payload_array_has_rows(payload, f"{family}_values"):
                 _assert_payload_time_array(payload, f"{family}_time_features", len(BAR_TIME_FEATURE_COLUMNS), f"bar_inputs.{group}.{family}_time_features")
+
+    if _payload_array_has_rows(scanner_inputs, "leader_values"):
+        _assert_payload_time_array(scanner_inputs, "leader_time_features", len(BAR_TIME_FEATURE_COLUMNS), "scanner_inputs.leader_time_features")
+        _assert_payload_time_array(scanner_inputs, "origin_time_features", len(BAR_TIME_FEATURE_COLUMNS), "scanner_inputs.origin_time_features")
+        names = tuple(str(name) for name in scanner_inputs.get("time_feature_names", ()))
+        if names and names != BAR_TIME_FEATURE_COLUMNS:
+            raise RuntimeError("scanner_inputs.time_feature_names does not match the loader time-feature contract.")
 
 
 def _payload_array_has_rows(payload: Mapping[str, Any], key: str) -> bool:
@@ -3567,7 +3659,8 @@ def _dataset_plan_id(config: DailyIndexLoaderConfig, manifest_fingerprint: str) 
 
 
 def _part_key(plan: DailyIndexPartPlan) -> str:
-    return f"{plan.month}|{plan.ticker}|{int(plan.part_id)}"
+    day = str(plan.source_date or "")
+    return f"{plan.month}|{day}|{plan.ticker}|{int(plan.part_id)}"
 
 
 def _cached_horizons(parts: Sequence[LoadedDailyIndexPart], *, config: DailyIndexLoaderConfig | None = None) -> tuple[str, ...]:

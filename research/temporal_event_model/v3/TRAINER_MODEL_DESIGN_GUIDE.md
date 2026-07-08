@@ -465,6 +465,9 @@ Default dimensions:
 | `time_feature_input_dim` | 12 | Maximum raw time-feature width accepted by `TimeFeatureEncoder`; smaller time roles are right-padded inside the encoder. |
 | `H` | 26 | Intraday future/backward bar horizons. |
 | `D` | 5 | Corporate-action daily horizons: `+1d`, `+2d`, `+3d`, `+7d`, `+28d`. |
+| `G` | 5 | Scanner groups: top gainers and top volume for large/mid/small/penny stocks. |
+| `K` | 5 | Scanner leaders per group. |
+| `S` | 7 | Scanner horizons: `100ms`, `1m`, `5m`, `15m`, `30m`, `1h`, `day_to_now`. |
 | `ticker_news_items` | 8 | Latest as-of ticker news items. |
 | `market_news_items` | 16 | Latest as-of market/news items. |
 | `sec_filing_items` | 4 | Latest as-of SEC filing text items. |
@@ -486,10 +489,11 @@ loader batch
   -> TextContextEncoder(sec_filings)
   -> XbrlEncoder(xbrl_inputs)
   -> CorporateActionEncoder(corporate_action_inputs)
-  -> stack 9 modality tokens [B, 9, 256]
+  -> ScannerContextEncoder(scanner_inputs)
+  -> stack 10 modality tokens [B, 10, 256]
   -> add learned modality embeddings
   -> 3-layer fusion TransformerEncoder
-  -> mean pool across 9 fused modality tokens
+  -> mean pool across 10 fused modality tokens
   -> intraday query MLP for H=26 intraday horizons
   -> daily query MLP for D=5 corporate-action horizons
   -> typed output heads
@@ -508,8 +512,9 @@ flowchart LR
   B --> SEC["TextContextEncoder: sec_filings"]
   B --> X["XbrlEncoder"]
   B --> CA["CorporateActionEncoder"]
+  B --> SC["ScannerContextEncoder"]
 
-  E --> F["Fusion Transformer over 9 tokens"]
+  E --> F["Fusion Transformer over 10 tokens"]
   IB --> F
   DB --> F
   GB --> F
@@ -518,6 +523,7 @@ flowchart LR
   SEC --> F
   X --> F
   CA --> F
+  SC --> F
 
   F --> P["Mean pool fused modality tokens"]
   P --> IQ["Intraday queries H=26"]
@@ -543,7 +549,8 @@ Important current behavior:
   shared role-aware `TimeFeatureEncoder`, then concatenates the resulting
   `[*, 32]` time embedding with that row/item value projection before pooling.
   The roles are `event`, `bar_start`, `text_available`, `xbrl_available`,
-  `xbrl_period_end`, `corporate_available`, and `corporate_effective`.
+  `xbrl_period_end`, `corporate_available`, `corporate_effective`, and
+  `scanner_bar_end`.
 - `batch_to_torch` and the rolling loader validate required time-feature
   widths before the tensors reach the model. A malformed time tensor should
   raise early instead of being silently interpreted as a generic feature.
@@ -564,6 +571,7 @@ Important current behavior:
 | `TextContextEncoder` for SEC filings | `embeddings [B,4,8,1024]`, masks, item time features | Same text encoder and transforms as ticker news. | One SEC-text modality token `[B,256]`. |
 | `XbrlEncoder` | `value [B,4096]`, `mask [B,4096]`, `mapping_confidence`, availability time features `[B,4096,10]`, period-end time features `[B,4096,7]`, and category id fields | Numeric row input is `value`, `log1p(abs(value))`, and mapping confidence. Availability time uses `TimeFeatureEncoder(role="xbrl_available")`; period-end time uses `TimeFeatureEncoder(role="xbrl_period_end")`. Fiscal/category ids are embedded with a hash embedding and concatenated. Row MLP projects each row, then masked mean pools rows. No z-score or per-tag/unit normalization is currently applied. | One XBRL modality token `[B,256]`. |
 | `CorporateActionEncoder` | `numeric_features [B,128,13]`, `mask [B,128]`, availability time features `[B,128,10]`, effective time features `[B,128,10]`, action/dividend/currency/frequency ids | Numeric corporate-action features are concatenated with `TimeFeatureEncoder(role="corporate_available")`, `TimeFeatureEncoder(role="corporate_effective")`, and four category embeddings, passed through row MLP, then masked mean pooled. No z-score is currently applied. IPO-like action types can participate as historical context if present in the corporate-action input rows, but IPO is not a prediction target. | One corporate-action modality token `[B,256]`. |
+| `ScannerContextEncoder` | `leader_values [B,G,K,S,3,F]`, `leader_mask [B,G,K]`, `leader_time_features [B,G,K,S,9]`, origin-comparison tensors `origin_values [B,G,S,3,F]`, `origin_mask [B,G]`, rank/top-k fields, and scanner numeric features `[B,G,6]` | Leader and origin rows use padded trade/bid/ask bar-family values plus `TimeFeatureEncoder(role="scanner_bar_end")`. Rank ids and scanner-group ids are embedded. Leader rows, origin rows, and numeric comparison rows are masked-pooled separately and fused by MLP. Older caches without scanner artifacts emit masked zeros unless strict scanner mode is enabled in the loader. | One scanner modality token `[B,256]`. |
 
 ### Current Output Heads And Target Transforms
 
@@ -1091,6 +1099,50 @@ compare identical validation batches.
 
 ## Stateful Trainer Contract
 
+Training is schedule-based. A schedule is an ordered list of cache days, not
+necessarily a contiguous calendar range. The trainer discovers available days
+from selected monthly cache manifests, then applies one of:
+
+- explicit `--training-days`;
+- all discovered days after month/period filtering;
+- an explicit validation day list;
+- or validation reservation from the training day schedule when no separate
+  validation cache/day list is provided.
+
+Epoch means one full pass through the configured day schedule. The ledger key is
+therefore:
+
+```text
+epoch_index
+schedule_index
+day
+```
+
+No SQLite or live database is used during training. The run writes file-based
+state under `run_dir/state/`:
+
+```text
+day_schedule.csv
+validation_plan.csv
+training_ledger_latest.csv
+```
+
+`day_schedule.csv` stores the ordered training days and discovered sample counts.
+`validation_plan.csv` stores the deterministic validation day policy, liquid
+ticker list, random ticker count, and seed. `training_ledger_latest.csv` stores
+visited samples and visit count per `epoch_index/schedule_index/day`.
+
+Resume policy is conservative: the checkpoint stores loader state and the
+matching ledger snapshot. If a run is restarted from a checkpoint, the ledger is
+restored from that checkpoint so bookkeeping and checkpoint state stay aligned.
+For future strict daily resume, an incomplete day should be restarted from the
+beginning rather than trying to replay from an arbitrary origin inside the day.
+
+Metrics and logs use `samples_seen` as the primary x-axis. Every metric row
+should include `samples_seen`, `global_step`, `epoch_index`, `schedule_index`,
+and current-day sample progress so runs with different batch sizes remain
+comparable.
+
 Each checkpoint must contain enough state to resume the same run without
 changing data order:
 
@@ -1105,6 +1157,9 @@ samples_seen
 best_metric_state
 train_loader.state_dict()
 validation_loader.state_dict()
+day_schedule
+training_ledger_snapshot
+validation_plan
 python RNG state
 numpy RNG state
 torch RNG state

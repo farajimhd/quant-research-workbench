@@ -6,10 +6,11 @@ import os
 import random
 import sys
 import time
+import csv
 import traceback
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping, Sequence
 
 import numpy as np
 import torch
@@ -26,7 +27,7 @@ from research.mlops.model_artifacts import append_checkpoint_model_card, paramet
 from research.mlops.paths import RunPaths, default_run_root
 from research.mlops.wandb_utils import init_wandb as mlops_init_wandb
 from research.temporal_event_model.v3 import MODEL_FAMILY, MODEL_VERSION
-from research.temporal_event_model.v3.config import ExperimentConfig, LoaderConfig, ModelConfig, TrainConfig, default_run_name, to_dict
+from research.temporal_event_model.v3.config import BAR_FAMILIES, BAR_FEATURE_DIMS, ExperimentConfig, LoaderConfig, ModelConfig, TrainConfig, default_run_name, to_dict
 from research.temporal_event_model.v3.data import TemporalBatch, batch_to_torch, loader_config_from_v3, make_dummy_temporal_batch, validation_loader_config_from_v3
 from research.temporal_event_model.v3.losses import compute_loss
 from research.temporal_event_model.v3.metrics import MetricWindow, fast_batch_metrics, prediction_metrics, wandb_metric_key
@@ -62,6 +63,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-hash-modulus", type=int, default=0)
     parser.add_argument("--sample-hash-buckets", default="")
     parser.add_argument("--val-sample-hash-buckets", default="")
+    parser.add_argument("--training-days", default="", help="Comma-separated YYYY-MM-DD schedule. Empty discovers all cache days.")
+    parser.add_argument("--validation-days", default="", help="Comma-separated YYYY-MM-DD validation days. Empty reserves from training schedule.")
+    parser.add_argument("--validation-reserve-policy", choices=("last_n_days", "first_n_days", "random_n_days_seeded"), default=default_loader.validation_reserve_policy)
+    parser.add_argument("--validation-reserve-days", type=int, default=default_loader.validation_reserve_days)
+    parser.add_argument("--validation-origins-per-day", type=int, default=default_loader.validation_origins_per_day)
+    parser.add_argument("--validation-random-ticker-count", type=int, default=default_loader.validation_random_ticker_count)
+    parser.add_argument("--validation-liquid-tickers", default=",".join(default_loader.validation_liquid_tickers))
+    parser.add_argument("--refresh-validation-plan", action="store_true")
     parser.add_argument("--read-workers", type=int, default=default_loader.read_workers)
     parser.add_argument("--materialize-workers", type=int, default=default_loader.materialize_workers)
     parser.add_argument("--loaded-parts-per-group", type=int, default=default_loader.loaded_parts_per_group)
@@ -103,6 +112,8 @@ def main() -> int:
     load_env_files(discover_env_files(REPO_ROOT), verbose=True)
     args = parse_args()
     config = config_from_args(args)
+    if not args.dummy_data:
+        _configure_day_schedules(config)
     run_name = default_run_name(config)
     config.train.run_name = run_name
     run_root = Path(args.output_root) / run_name if args.output_root else default_run_root(MODEL_FAMILY, MODEL_VERSION, JOB_TYPE, run_name)
@@ -119,7 +130,10 @@ def main() -> int:
     scaler = torch.amp.GradScaler("cuda", enabled=bool(config.train.amp and config.train.amp_dtype in {"fp16", "float16"} and device.type == "cuda"))
     train_loader = None if args.dummy_data else _make_loader(config.loader, validation=False)
     validation_loader = None if args.dummy_data or args.disable_validation else _make_loader(config.loader, validation=True, optional=True)
+    ledger = TrainingLedger(paths.run_root / "state", config=config, train_loader=train_loader)
     start_step = _restore_if_requested(args, model, optimizer, scaler, train_loader, validation_loader, device)
+    if start_step and args.resume_checkpoint:
+        _restore_ledger_from_checkpoint(Path(args.resume_checkpoint), ledger, device)
     wandb_run = _init_wandb(args, config, paths)
     metric_logger = JsonlMetricLogger(paths.metrics_path, wandb_run, wandb_key_mapper=wandb_metric_key)
     write_run_manifest(
@@ -209,7 +223,7 @@ def main() -> int:
                         "train/loader_wait_seconds": float(loader_wait),
                         "train/gpu_step_seconds": float(gpu_seconds),
                         "train/samples_per_second": float(batch.sample_count / max(time.perf_counter() - step_start, 1e-9)),
-                        "train/samples_seen_total": float(step * int(config.loader.batch_size)),
+                        "train/samples_seen_total": float((train_loader.state.seen_origins_total if train_loader is not None else step * int(config.loader.batch_size))),
                         "train/materialize_seconds": float(batch.profile.get("materialize_seconds", 0.0)),
                         "train/gpu_memory_allocated_gib": _gpu_memory_gib(device),
                         "train/cpu_rss_gib": _rss_gib(),
@@ -217,6 +231,7 @@ def main() -> int:
                 )
                 if train_loader is not None:
                     summary = train_loader.summary()
+                    ledger.update_batch(batch, loader_summary=summary)
                     metrics.update(
                         {
                             "loader/epoch": float(summary.get("epoch", 0)),
@@ -226,6 +241,10 @@ def main() -> int:
                             "loader/emitted_samples": float(summary.get("emitted_samples", 0)),
                             "loader/seen_origins_total": float(summary.get("seen_origins_total", 0)),
                             "loader/seen_origins_this_epoch": float(summary.get("seen_origins_this_epoch", 0)),
+                            "schedule/day_index": float(ledger.current_day_index),
+                            "schedule/day_count": float(max(ledger.day_count, 1)),
+                            "schedule/current_day_samples_seen": float(ledger.current_day_seen),
+                            "schedule/current_day_sample_count": float(max(ledger.current_day_total, 1)),
                         }
                     )
                 if step % int(config.train.fast_summary_steps) == 0:
@@ -249,6 +268,7 @@ def main() -> int:
                         step=step,
                         train_loader=train_loader,
                         validation_loader=validation_loader,
+                        ledger=ledger,
                         train_metrics=metrics,
                         val_metrics=val_metrics,
                         run_paths=paths,
@@ -259,7 +279,7 @@ def main() -> int:
             final_metrics = val_metrics or {}
             checkpointer.maybe_save(
                 step=int(config.train.max_steps),
-                payload_factory=lambda: checkpoint_payload(model, optimizer, scaler, config, int(config.train.max_steps), train_loader, validation_loader, {}, final_metrics, paths),
+                payload_factory=lambda: checkpoint_payload(model, optimizer, scaler, config, int(config.train.max_steps), train_loader, validation_loader, ledger, {}, final_metrics, paths),
                 train_metrics={"train/loss": progress.loss},
                 val_metrics=final_metrics,
                 force=True,
@@ -302,6 +322,7 @@ def checkpoint_payload(
     step: int,
     train_loader: Any,
     validation_loader: Any,
+    ledger: "TrainingLedger",
     train_metrics: dict[str, float],
     val_metrics: dict[str, float],
     run_paths: RunPaths,
@@ -318,6 +339,9 @@ def checkpoint_payload(
         "batches_seen": int(train_loader.state.emitted_batches if train_loader is not None else step),
         "loader_state": train_loader.state_dict() if train_loader is not None else {},
         "validation_loader_state": validation_loader.state_dict() if validation_loader is not None else {},
+        "training_schedule": ledger.schedule_payload(),
+        "training_ledger": ledger.snapshot(),
+        "training_ledger_path": str(ledger.ledger_path),
         "objective": {"loss": "unweighted active-task masked mean", "manual_loss_weights": "disabled_by_default"},
         "data_groups": list(config.loader.data_groups),
         "latest_train_metrics": dict(train_metrics),
@@ -335,6 +359,8 @@ def checkpoint_payload(
         "rng_state": checkpoint_rng_state(),
         "train_loader_state": train_loader.state_dict() if train_loader is not None else {},
         "validation_loader_state": validation_loader.state_dict() if validation_loader is not None else {},
+        "training_schedule": ledger.schedule_payload(),
+        "training_ledger": ledger.snapshot(),
         "model_card": model_card,
     }
 
@@ -371,6 +397,14 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         sample_hash_modulus=int(args.sample_hash_modulus),
         sample_hash_buckets=tuple(int(v) for v in _split_csv(args.sample_hash_buckets)),
         val_sample_hash_buckets=tuple(int(v) for v in _split_csv(args.val_sample_hash_buckets)),
+        training_days=tuple(str(day)[:10] for day in _split_csv(args.training_days)),
+        validation_days=tuple(str(day)[:10] for day in _split_csv(args.validation_days)),
+        validation_reserve_policy=str(args.validation_reserve_policy),
+        validation_reserve_days=int(args.validation_reserve_days),
+        validation_origins_per_day=int(args.validation_origins_per_day),
+        validation_random_ticker_count=int(args.validation_random_ticker_count),
+        validation_liquid_tickers=_split_csv(args.validation_liquid_tickers),
+        refresh_validation_plan=bool(args.refresh_validation_plan),
     )
     train = TrainConfig(
         run_name=str(args.run_name),
@@ -401,6 +435,181 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         fresh_start=bool(args.fresh_start),
     )
     return ExperimentConfig(model=model, loader=loader, train=train)
+
+
+def _configure_day_schedules(config: ExperimentConfig) -> None:
+    from research.mlops.rolling_loader.daily_index_dataset import DailyIndexCacheIndex
+
+    probe = loader_config_from_v3(config.loader)
+    index = DailyIndexCacheIndex(type(probe)(**{**asdict(probe), "days": ()}))
+    discovered = sorted({str(plan.source_date)[:10] for plan in index.parts if str(plan.source_date).strip()})
+    explicit_train = tuple(str(day)[:10] for day in config.loader.training_days if str(day).strip())
+    train_days = [day for day in (explicit_train or tuple(discovered)) if day in set(discovered)]
+    if not train_days:
+        raise RuntimeError(f"No training days found in cache {config.loader.cache_root}.")
+    explicit_val = tuple(str(day)[:10] for day in config.loader.validation_days if str(day).strip())
+    if explicit_val:
+        validation_days = [day for day in explicit_val if day in set(discovered)]
+    else:
+        validation_days = _reserve_validation_days(
+            train_days,
+            policy=str(config.loader.validation_reserve_policy),
+            count=int(config.loader.validation_reserve_days),
+            seed=int(config.loader.seed),
+        )
+        train_days = [day for day in train_days if day not in set(validation_days)]
+    if not train_days:
+        raise RuntimeError("Validation reservation consumed all training days; reduce --validation-reserve-days or pass --validation-days.")
+    config.loader.training_days = tuple(train_days)
+    config.loader.validation_days = tuple(validation_days)
+    config.loader.shuffle_parts = False
+    config.loader.shuffle_within_loaded_group = False
+
+
+def _reserve_validation_days(days: Sequence[str], *, policy: str, count: int, seed: int) -> list[str]:
+    days = list(dict.fromkeys(str(day)[:10] for day in days if str(day).strip()))
+    count = max(0, min(int(count), len(days) - 1 if len(days) > 1 else 0))
+    if count <= 0:
+        return []
+    if policy == "first_n_days":
+        return days[:count]
+    if policy == "random_n_days_seeded":
+        selected = list(days)
+        random.Random(int(seed)).shuffle(selected)
+        return sorted(selected[:count])
+    return days[-count:]
+
+
+class TrainingLedger:
+    def __init__(self, state_dir: Path, *, config: ExperimentConfig, train_loader: Any) -> None:
+        self.state_dir = Path(state_dir)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.ledger_path = self.state_dir / "training_ledger_latest.csv"
+        self.schedule_path = self.state_dir / "day_schedule.csv"
+        self.validation_plan_path = self.state_dir / "validation_plan.csv"
+        self.rows: dict[tuple[int, int, str], dict[str, Any]] = {}
+        self.current_day_index = 0
+        self.current_day_seen = 0
+        self.current_day_total = 0
+        self.train_days = tuple(config.loader.training_days)
+        self._train_day_index = {day: index for index, day in enumerate(self.train_days)}
+        self.validation_days = tuple(config.loader.validation_days)
+        self.day_totals = self._day_totals(train_loader)
+        self.day_count = len(self.train_days)
+        self._write_schedule(config)
+        self.flush()
+
+    def update_batch(self, batch: TemporalBatch, *, loader_summary: Mapping[str, Any]) -> None:
+        epoch = int(loader_summary.get("epoch", 0) or 0)
+        keys = np.asarray(batch.identity.get("source_part_key", []), dtype=object)
+        if keys.size <= 0:
+            return
+        day_counts: dict[str, int] = {}
+        for key in keys.astype(str, copy=False):
+            day = _day_from_part_key(str(key))
+            if day:
+                day_counts[day] = int(day_counts.get(day, 0)) + 1
+        for day, count in day_counts.items():
+            schedule_index = int(self._train_day_index.get(day, -1))
+            row_key = (epoch, schedule_index, day)
+            row = self.rows.setdefault(
+                row_key,
+                {
+                    "epoch_index": epoch,
+                    "schedule_index": schedule_index,
+                    "day": day,
+                    "day_sample_count": int(self.day_totals.get(day, 0)),
+                    "visited_samples": 0,
+                    "visit_count": 0,
+                    "completed": False,
+                },
+            )
+            row["visited_samples"] = int(row.get("visited_samples", 0)) + int(count)
+            row["visit_count"] = int(row.get("visit_count", 0)) + 1
+            row["completed"] = bool(int(row["day_sample_count"]) > 0 and int(row["visited_samples"]) >= int(row["day_sample_count"]))
+            self.current_day_index = max(0, int(schedule_index))
+            self.current_day_seen = int(row["visited_samples"])
+            self.current_day_total = int(row["day_sample_count"])
+        self.flush()
+
+    def flush(self) -> None:
+        fields = ("epoch_index", "schedule_index", "day", "day_sample_count", "visited_samples", "visit_count", "completed")
+        with self.ledger_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            for _, row in sorted(self.rows.items()):
+                writer.writerow({field: row.get(field, "") for field in fields})
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "ledger_path": str(self.ledger_path),
+            "schedule_path": str(self.schedule_path),
+            "validation_plan_path": str(self.validation_plan_path),
+            "rows": [dict(row) for _, row in sorted(self.rows.items())],
+        }
+
+    def load_snapshot(self, value: Mapping[str, Any]) -> None:
+        self.rows.clear()
+        for row in value.get("rows") or ():
+            day = str(row.get("day") or "")
+            epoch = int(row.get("epoch_index") or 0)
+            schedule_index = int(row.get("schedule_index") or -1)
+            self.rows[(epoch, schedule_index, day)] = dict(row)
+        self.flush()
+
+    def schedule_payload(self) -> dict[str, Any]:
+        return {
+            "train_days": list(self.train_days),
+            "validation_days": list(self.validation_days),
+            "day_totals": dict(self.day_totals),
+            "schedule_path": str(self.schedule_path),
+            "validation_plan_path": str(self.validation_plan_path),
+        }
+
+    def _day_totals(self, train_loader: Any) -> dict[str, int]:
+        totals: dict[str, int] = {day: 0 for day in self.train_days}
+        if train_loader is None:
+            return totals
+        for plan in train_loader.index.parts:
+            day = str(getattr(plan, "source_date", "") or "")[:10]
+            if day in totals:
+                totals[day] += int(plan.origin_count)
+        return totals
+
+    def _write_schedule(self, config: ExperimentConfig) -> None:
+        with self.schedule_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=("schedule_index", "day", "sample_count"))
+            writer.writeheader()
+            for index, day in enumerate(self.train_days):
+                writer.writerow({"schedule_index": index, "day": day, "sample_count": int(self.day_totals.get(day, 0))})
+        with self.validation_plan_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=("validation_day", "origins_per_day", "liquid_tickers", "random_ticker_count", "seed"))
+            writer.writeheader()
+            for day in self.validation_days:
+                writer.writerow(
+                    {
+                        "validation_day": day,
+                        "origins_per_day": int(config.loader.validation_origins_per_day),
+                        "liquid_tickers": ",".join(config.loader.validation_liquid_tickers),
+                        "random_ticker_count": int(config.loader.validation_random_ticker_count),
+                        "seed": int(config.loader.seed),
+                    }
+                )
+
+
+def _restore_ledger_from_checkpoint(path: Path, ledger: TrainingLedger, device: torch.device) -> None:
+    if not path.exists():
+        return
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    if isinstance(ckpt.get("training_ledger"), Mapping):
+        ledger.load_snapshot(ckpt["training_ledger"])
+
+
+def _day_from_part_key(key: str) -> str:
+    for token in str(key).split("|"):
+        if len(token) >= 10 and token[4:5] == "-" and token[7:8] == "-":
+            return token[:10]
+    return ""
 
 
 def _make_loader(config: LoaderConfig, *, validation: bool, optional: bool = False) -> Any:
@@ -513,6 +722,8 @@ def _input_contract(config: ModelConfig) -> dict[str, Any]:
         "sec_filing_embeddings": [None, config.sec_filing_items, config.sec_filing_chunks, config.text_embedding_dim],
         "xbrl_value": [None, config.xbrl_max_items],
         "corporate_actions": [None, config.corporate_action_max_items],
+        "scanner_leader_values": [None, config.scanner_groups, config.scanner_top_k, config.scanner_horizons, len(BAR_FAMILIES), max(BAR_FEATURE_DIMS.values())],
+        "scanner_origin_values": [None, config.scanner_groups, config.scanner_horizons, len(BAR_FAMILIES), max(BAR_FEATURE_DIMS.values())],
     }
 
 

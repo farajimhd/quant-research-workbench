@@ -40,7 +40,8 @@ class TemporalEventModelV3(nn.Module):
         self.text_encoder = TextContextEncoder(config, time_encoder)
         self.xbrl_encoder = XbrlEncoder(config, time_encoder)
         self.corporate_action_encoder = CorporateActionEncoder(config, time_encoder)
-        self.modality_embedding = nn.Parameter(torch.zeros(9, d))
+        self.scanner_encoder = ScannerContextEncoder(config, time_encoder)
+        self.modality_embedding = nn.Parameter(torch.zeros(10, d))
         fusion_layer = nn.TransformerEncoderLayer(
             d_model=d,
             nhead=int(config.fusion_heads),
@@ -79,6 +80,7 @@ class TemporalEventModelV3(nn.Module):
             self.text_encoder(x.get("text_inputs", {}).get("sec_filings", {}), group="sec_filings"),
             self.xbrl_encoder(x.get("xbrl_inputs", {})),
             self.corporate_action_encoder(x.get("corporate_action_inputs", {})),
+            self.scanner_encoder(x.get("scanner_inputs", {})),
         ]
         tokens = [_align_token(token, batch_size=batch_size, device=device) for token in tokens]
         modality_tokens = torch.stack(tokens, dim=1)
@@ -347,6 +349,83 @@ class CorporateActionEncoder(nn.Module):
         return masked_mean(self.row_proj(row), mask.bool(), dim=1)
 
 
+class ScannerContextEncoder(nn.Module):
+    def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder") -> None:
+        super().__init__()
+        d = int(config.d_model)
+        self.time_encoder = time_encoder
+        self.time_feature_count = int(config.bar_time_feature_count)
+        self.value_width = max(BAR_FEATURE_DIMS.values())
+        self.family_count = len(BAR_FAMILIES)
+        self.group_embedding = nn.Embedding(max(1, int(config.scanner_groups)), d)
+        self.rank_embedding = HashEmbedding(4096, 8)
+        row_dim = self.value_width * self.family_count + int(config.time_encoder_dim) + 8
+        self.leader_proj = MLP(row_dim, d, d, dropout=float(config.dropout))
+        origin_dim = self.value_width * self.family_count + int(config.time_encoder_dim)
+        self.origin_proj = MLP(origin_dim, d, d, dropout=float(config.dropout))
+        self.numeric_proj = MLP(int(config.scanner_numeric_dim), d, d, dropout=float(config.dropout))
+        self.out = MLP(d * 3, d, d, dropout=float(config.dropout))
+        self.out_dim = d
+
+    def forward(self, payload: Mapping[str, Any]) -> torch.Tensor:
+        leader_values = payload.get("leader_values")
+        if not torch.is_tensor(leader_values) or leader_values.numel() == 0:
+            return _zero_like_batch(payload, self.out_dim)
+        leader_mask = payload.get("leader_mask")
+        leader_time = payload.get("leader_time_features")
+        leader_rank = payload.get("leader_rank")
+        origin_values = payload.get("origin_values")
+        origin_mask = payload.get("origin_mask")
+        origin_time = payload.get("origin_time_features")
+        numeric = payload.get("numeric_features")
+        if not torch.is_tensor(leader_mask):
+            leader_mask = torch.ones(leader_values.shape[:3], dtype=torch.bool, device=leader_values.device)
+        if not torch.is_tensor(leader_rank):
+            leader_rank = torch.zeros(leader_values.shape[:3], dtype=torch.long, device=leader_values.device)
+        leader_time = _required_time_features(
+            leader_time,
+            reference=leader_values[..., 0, 0],
+            width=self.time_feature_count,
+            name="scanner.leader_time_features",
+        )
+        leader_value = _pad_or_trim_last(leader_values.float(), self.value_width).reshape(*leader_values.shape[:4], -1)
+        leader_time_token = self.time_encoder(leader_time, role="scanner_bar_end")
+        rank_token = self.rank_embedding(leader_rank.long()).unsqueeze(3).expand(*leader_value.shape[:4], -1)
+        leader_rows = self.leader_proj(torch.cat([leader_value, leader_time_token, rank_token], dim=-1))
+        group_ids = torch.arange(leader_values.shape[1], device=leader_values.device).clamp(max=self.group_embedding.num_embeddings - 1)
+        leader_rows = leader_rows + self.group_embedding(group_ids)[None, :, None, None, :]
+        leader_token = masked_mean(
+            leader_rows.reshape(leader_rows.shape[0], -1, leader_rows.shape[-1]),
+            leader_mask.unsqueeze(-1).expand(*leader_mask.shape, leader_values.shape[3]).reshape(leader_values.shape[0], -1).bool(),
+            dim=1,
+        )
+        if not torch.is_tensor(origin_values) or origin_values.numel() == 0:
+            origin_token = torch.zeros_like(leader_token)
+        else:
+            if not torch.is_tensor(origin_mask):
+                origin_mask = torch.ones(origin_values.shape[:2], dtype=torch.bool, device=origin_values.device)
+            origin_time = _required_time_features(
+                origin_time,
+                reference=origin_values[..., 0, 0],
+                width=self.time_feature_count,
+                name="scanner.origin_time_features",
+            )
+            origin_value = _pad_or_trim_last(origin_values.float(), self.value_width).reshape(*origin_values.shape[:3], -1)
+            origin_rows = self.origin_proj(torch.cat([origin_value, self.time_encoder(origin_time, role="scanner_bar_end")], dim=-1))
+            origin_rows = origin_rows + self.group_embedding(group_ids)[None, :, None, :]
+            origin_token = masked_mean(
+                origin_rows.reshape(origin_rows.shape[0], -1, origin_rows.shape[-1]),
+                origin_mask.unsqueeze(-1).expand(*origin_mask.shape, origin_values.shape[2]).reshape(origin_values.shape[0], -1).bool(),
+                dim=1,
+            )
+        if torch.is_tensor(numeric) and numeric.numel() > 0:
+            numeric_rows = self.numeric_proj(numeric.float())
+            numeric_token = masked_mean(numeric_rows, torch.ones(numeric_rows.shape[:2], dtype=torch.bool, device=numeric_rows.device), dim=1)
+        else:
+            numeric_token = torch.zeros_like(leader_token)
+        return self.out(torch.cat([leader_token, origin_token, numeric_token], dim=-1))
+
+
 class TimeFeatureEncoder(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -497,6 +576,7 @@ def build_model_mermaid() -> str:
   B --> SF["SEC embedding encoder"]
   B --> X["XBRL set encoder"]
   B --> CA["Corporate-action set encoder"]
+  B --> SC["Scanner leader-context encoder"]
   E --> F["Fusion transformer"]
   IB --> F
   TB --> F
@@ -506,6 +586,7 @@ def build_model_mermaid() -> str:
   SF --> F
   X --> F
   CA --> F
+  SC --> F
   F --> IQ["Intraday horizon queries"]
   F --> DQ["Daily corporate-action queries"]
   IQ --> PB["Trade/bid/ask bar heads"]

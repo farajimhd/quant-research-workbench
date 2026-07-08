@@ -68,6 +68,7 @@ TIME_ROLE_NAMES = (
     "xbrl_period_end",
     "corporate_available",
     "corporate_effective",
+    "scanner_bar_end",
 )
 INTRADAY_EVENT_FLAGS = (
     "condition_halt_pause_flag",
@@ -86,6 +87,22 @@ CORPORATE_ACTION_FLAGS = (
 )
 BAR_FAMILIES = ("trade", "quote_bid", "quote_ask")
 BAR_FEATURE_DIMS = {"trade": 6, "quote_bid": 9, "quote_ask": 9}
+SCANNER_GROUPS = (
+    "top_gainers",
+    "top_volume_large_cap",
+    "top_volume_mid_cap",
+    "top_volume_small_cap",
+    "top_volume_penny",
+)
+SCANNER_HORIZONS = ("100ms", "1m", "5m", "15m", "30m", "1h", "day_to_now")
+SCANNER_NUMERIC_FEATURES = (
+    "rank_score",
+    "rank_percentile",
+    "origin_is_leader",
+    "origin_topk_position",
+    "origin_rank",
+    "origin_rank_percentile",
+)
 DEFAULT_INTRADAY_LABEL_HORIZONS = (
     "100ms",
     "200ms",
@@ -149,6 +166,10 @@ class ModelConfig:
     corporate_action_numeric_dim: int = 13
     corporate_action_time_dim: int = 10
     corporate_action_effective_time_dim: int = 10
+    scanner_groups: int = len(SCANNER_GROUPS)
+    scanner_top_k: int = 5
+    scanner_horizons: int = len(SCANNER_HORIZONS)
+    scanner_numeric_dim: int = len(SCANNER_NUMERIC_FEATURES)
     intraday_horizons: int = len(DEFAULT_INTRADAY_LABEL_HORIZONS)
     corporate_action_days: tuple[int, ...] = (1, 2, 3, 7, 28)
     event_feature_names: tuple[str, ...] = DEFAULT_EVENT_FEATURE_NAMES
@@ -156,6 +177,7 @@ class ModelConfig:
     use_xbrl: bool = True
     use_bars: bool = True
     use_corporate_actions: bool = True
+    use_scanner: bool = True
 
 
 @dataclass(slots=True)
@@ -185,6 +207,14 @@ class LoaderConfig:
     sample_hash_modulus: int = 0
     sample_hash_buckets: tuple[int, ...] = ()
     val_sample_hash_buckets: tuple[int, ...] = ()
+    training_days: tuple[str, ...] = ()
+    validation_days: tuple[str, ...] = ()
+    validation_reserve_policy: str = "last_n_days"
+    validation_reserve_days: int = 1
+    validation_origins_per_day: int = 256
+    validation_random_ticker_count: int = 64
+    validation_liquid_tickers: tuple[str, ...] = ("SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA")
+    refresh_validation_plan: bool = False
     randomize_seed: bool = False
     shuffle_parts: bool = True
     shuffle_within_loaded_group: bool = True

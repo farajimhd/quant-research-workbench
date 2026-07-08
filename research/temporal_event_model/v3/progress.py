@@ -31,6 +31,10 @@ class TemporalProgressState:
     availability: dict[str, float] = field(default_factory=dict)
     task_losses: dict[str, float] = field(default_factory=dict)
     validation_metrics: dict[str, float] = field(default_factory=dict)
+    day_index: int = 0
+    day_count: int = 0
+    current_day_samples_seen: int = 0
+    current_day_sample_count: int = 0
     last_checkpoint: str = ""
     last_message: str = ""
 
@@ -96,6 +100,10 @@ class TemporalTrainingReporter:
         s.cpu_rss_gib = float(metrics.get("train/cpu_rss_gib", s.cpu_rss_gib))
         s.task_losses = {key.replace("train/loss_", ""): float(value) for key, value in metrics.items() if key.startswith("train/loss_")}
         s.availability = {key: float(value) for key, value in metrics.items() if key.endswith("_available_fraction") or key.endswith("_valid_fraction")}
+        s.day_index = int(metrics.get("schedule/day_index", s.day_index))
+        s.day_count = int(metrics.get("schedule/day_count", s.day_count))
+        s.current_day_samples_seen = int(metrics.get("schedule/current_day_samples_seen", s.current_day_samples_seen))
+        s.current_day_sample_count = int(metrics.get("schedule/current_day_sample_count", s.current_day_sample_count))
         if validation_metrics:
             s.validation_metrics = {key: float(value) for key, value in validation_metrics.items()}
             if "val/loss" in validation_metrics:
@@ -136,6 +144,7 @@ class TemporalTrainingReporter:
         summary.add_row(f"run: {s.run_name}", f"dataset: {s.dataset_id}")
         summary.add_row(f"device: {s.device} {s.precision}", f"params: {s.model_parameters:,}")
         summary.add_row(f"step: {s.step:,}", f"samples: {s.samples_seen:,}")
+        summary.add_row(f"days: {s.day_index + 1:,}/{max(s.day_count, 1):,}", f"day samples: {s.current_day_samples_seen:,}/{max(s.current_day_sample_count, 1):,}")
         summary.add_row(f"out: {s.output_dir}", f"elapsed: {_duration(time.perf_counter() - self.started)}")
 
         losses = Table(title="Loss", box=box.SIMPLE_HEAVY, expand=True)
