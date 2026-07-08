@@ -95,8 +95,11 @@ scanner snapshot time and must obey:
 scanner_snapshot_timestamp_us <= origin_timestamp_us
 ```
 
-Scanner is intentionally built as a second offline step after the main
-daily-index cache:
+Scanner is intentionally built after the main daily-index cache because it
+needs all tickers for a day. `run_build_daily_index_streaming_cache.py` runs
+this step automatically after a successful cache build by default. Use
+`--no-build-scanner` only for a targeted cache/debug run where scanner artifacts
+are intentionally deferred.
 
 1. Load all intraday bars for a day.
 2. Rank every closed scanner bucket across the market.
@@ -111,10 +114,14 @@ daily-index cache:
 5. Save scanner snapshots under
    `month=YYYY-MM/global/scanner/scanner_YYYY-MM-DD.parquet`.
 
-Build scanner artifacts from an existing cache with:
+Rebuild scanner artifacts from an existing cache, or run a scanner-only smoke
+test, with:
 
 ```powershell
-python research\mlops\rolling_loader\run_build_daily_scanner_cache.py --cache-root D:\market-data\prepared\daily_index_streaming_cache\<cache_id> --month 2019-09 --overwrite
+python research\mlops\rolling_loader\run_build_daily_scanner_cache.py `
+  --cache-root D:\market-data\prepared\daily_index_streaming_cache\<cache_id> `
+  --month 2019-09 `
+  --overwrite
 ```
 
 The loader output shape is:

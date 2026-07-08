@@ -763,6 +763,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Show one Rich dashboard row per worker. By default panels use compact per-stage rows so all modalities fit on screen.",
     )
+    parser.add_argument("--build-scanner", action=argparse.BooleanOptionalAction, default=True, help="Build offline daily scanner artifacts after a successful cache build.")
+    parser.add_argument("--scanner-workers", type=int, default=8, help="Worker count for the post-build scanner artifact step.")
+    parser.add_argument("--scanner-resolution-us", type=int, default=1_000_000, help="Base scanner snapshot resolution.")
+    parser.add_argument("--scanner-horizons", default="1s,5s,30s,1m", help="Comma-separated scanner context horizons.")
+    parser.add_argument("--scanner-top-k", type=int, default=5, help="Top-K scanner leaders per scanner group.")
+    parser.add_argument("--scanner-overwrite", action=argparse.BooleanOptionalAction, default=True, help="Replace scanner artifacts when the cache builder finalizes.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--replace-existing", action="store_true")
     parser.add_argument("--shutdown-timeout-seconds", type=float, default=15.0)
@@ -984,11 +990,51 @@ def run(
 
         write_package_manifests(cache_root=cache_root, units_by_package=units_by_package, parts=build_state.completed_parts, data_groups=build_state.data_groups)
         write_global_manifests(cache_root=cache_root, months=months, parts=build_state.completed_parts, data_groups=build_state.data_groups)
+        if bool(args.build_scanner):
+            if "intraday_labels" not in data_groups:
+                build_state.message("scanner build skipped because intraday_labels are not in data-groups")
+            else:
+                build_state.status = "building_scanner"
+                write_json_atomic(cache_root / "manifest.json", root_manifest(args=args, months=months, status="building_scanner", jobs=total_jobs, expected_units=expected_units, state=build_state))
+                try:
+                    run_post_build_scanner_cache(args=args, cache_root=cache_root, months=months, build_state=build_state)
+                except Exception as exc:  # noqa: BLE001
+                    build_state.add_error(worker="Scanner", job_id="scanner", error=exc)
+                    for item in build_state.errors:
+                        append_jsonl(errors_path, item)
+                    build_state.status = "error"
+                    write_json_atomic(cache_root / "manifest.json", root_manifest(args=args, months=months, status="error", jobs=total_jobs, expected_units=expected_units, state=build_state))
+                    raise RuntimeError(f"Post-build scanner cache failed. See {errors_path}.") from exc
         build_state.status = "complete"
         write_json_atomic(cache_root / "manifest.json", root_manifest(args=args, months=months, status="complete", jobs=total_jobs, expected_units=expected_units, state=build_state))
         append_jsonl(report_path, {"event": "complete", "parts": len(build_state.completed_parts), "written_units": sum(modality.written_units for modality in build_state.modalities.values()), "utc": utc_now()})
         build_state.message(f"complete parts={len(build_state.completed_parts):,} written_units={sum(modality.written_units for modality in build_state.modalities.values()):,}")
         return 0
+
+
+def run_post_build_scanner_cache(*, args: argparse.Namespace, cache_root: Path, months: tuple[str, ...], build_state: BuildState) -> None:
+    from research.mlops.rolling_loader.run_build_daily_scanner_cache import run as run_scanner_cache
+
+    for month in months:
+        build_state.message(f"scanner build start month={month} workers={int(args.scanner_workers):,}")
+        scanner_args = argparse.Namespace(
+            cache_root=Path(cache_root),
+            month=str(month),
+            source_date="",
+            tickers=str(args.tickers or ""),
+            scanner_resolution_us=int(args.scanner_resolution_us),
+            horizons=str(args.scanner_horizons),
+            top_k=int(args.scanner_top_k),
+            workers=int(args.scanner_workers),
+            overwrite=bool(args.scanner_overwrite),
+            progress_layout="text",
+            progress_refresh_per_second=float(args.progress_refresh_per_second),
+            progress_screen=False,
+        )
+        result = int(run_scanner_cache(scanner_args))
+        if result != 0:
+            raise RuntimeError(f"Scanner builder returned exit code {result} for month={month}.")
+        build_state.message(f"scanner build complete month={month}")
 
 
 def event_fetch_worker(
