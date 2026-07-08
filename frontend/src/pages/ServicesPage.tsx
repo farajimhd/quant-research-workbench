@@ -326,41 +326,42 @@ function ServiceDatabaseTableState({ service }: { service: ServiceStatusPayload 
           <col className="service-db-state-col-status" />
           <col className="service-db-state-col-role" />
           <col className="service-db-state-col-table" />
+          <col className="service-db-state-col-latest" />
+          <col className="service-db-state-col-count" />
           <col className="service-db-state-col-count" />
           <col className="service-db-state-col-count" />
           <col className="service-db-state-col-count" />
           {years.map((year) => <col className="service-db-state-col-year" key={year} />)}
-          <col className="service-db-state-col-count" />
-          <col className="service-db-state-col-latest" />
         </colgroup>
         <thead>
           <tr>
             <th>Status</th>
             <th>Role</th>
             <th>Table</th>
+            <th>Latest</th>
+            <th>Total</th>
             <th>Today</th>
             <th>7d</th>
             <th>30d</th>
             {years.map((year) => <th key={year}>{year}</th>)}
-            <th>Total</th>
-            <th>Latest</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row, index) => (
             <tr className={`service-db-state-row ${tableStateClass(row.status)}`} key={`${row.database}.${row.table}.${index}`}>
-              <td><span>{displayName(row.status || "unknown")}</span></td>
+              <td><span className="service-db-state-status">{displayName(row.status || "unknown")}</span></td>
               <td title={row.role || ""}>{row.role || "-"}</td>
               <td title={`${row.database || "-"}.${row.table || "-"}${row.time_column && row.time_column !== "-" ? ` by ${row.time_column}` : ""}`}>
                 <span className={`service-db-name ${databaseClass(row.database)}`}>{row.database || "-"}</span>
-                <span className="service-db-table-name">.{row.table || "-"}</span>
+                <span className="service-db-dot">.</span>
+                <span className="service-db-table-name">{row.table || "-"}</span>
               </td>
+              <td title={row.latest_update || ""}>{shortTableTimestamp(row.latest_update)}</td>
+              <td>{row.rows || "-"}</td>
               <td>{row.rows_today || "-"}</td>
               <td>{row.rows_last_week || "-"}</td>
               <td>{row.rows_last_month || "-"}</td>
               {years.map((year) => <td key={year}>{row[`rows_${year}`] || "-"}</td>)}
-              <td>{row.rows || "-"}</td>
-              <td title={row.latest_update || ""}>{shortTableTimestamp(row.latest_update)}</td>
             </tr>
           ))}
         </tbody>

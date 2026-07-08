@@ -1013,7 +1013,7 @@ button {
   background: color-mix(in oklab, var(--badge-danger-bg) 45%, var(--surface));
 }
 
-.service-db-state-row span {
+.service-db-state-status {
   border: 1px solid var(--border);
   border-radius: 999px;
   display: inline-flex;
@@ -1024,35 +1024,39 @@ button {
   text-transform: uppercase;
 }
 
-.service-db-state-row.ok span {
+.service-db-state-row.ok .service-db-state-status {
   background: var(--badge-success-bg);
   border-color: var(--badge-success-border);
   color: var(--badge-success-fg);
 }
 
-.service-db-state-row.empty span {
+.service-db-state-row.empty .service-db-state-status {
   background: var(--badge-warning-bg);
   border-color: var(--badge-warning-border);
   color: var(--badge-warning-fg);
 }
 
-.service-db-state-row.error span {
+.service-db-state-row.error .service-db-state-status {
   background: var(--badge-danger-bg);
   border-color: var(--badge-danger-border);
   color: var(--badge-danger-fg);
 }
 
 .service-db-state-row .service-db-name {
-  background: color-mix(in oklab, var(--muted) 65%, var(--surface));
+  background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface));
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 5px 0 0 5px;
   color: var(--foreground);
-  display: inline;
+  display: inline-flex;
   font-size: 11px;
   font-weight: 720;
   letter-spacing: 0;
-  padding: 0 4px;
+  line-height: 1.45;
+  max-width: 88px;
+  overflow: hidden;
+  padding: 1px 5px;
   text-transform: none;
+  vertical-align: middle;
 }
 
 .service-db-state-row .service-db-name.q-live {
@@ -1074,9 +1078,34 @@ button {
 }
 
 .service-db-table-name {
-  color: var(--muted-foreground);
+  background: color-mix(in oklab, var(--surface-alt) 58%, var(--surface));
+  border: 1px solid var(--border);
+  border-left: 0;
+  border-radius: 0 5px 5px 0;
+  color: var(--foreground);
+  display: inline-flex;
   font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 11px;
+  font-weight: 520;
+  line-height: 1.45;
+  max-width: 112px;
+  overflow: hidden;
+  padding: 1px 5px;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.service-db-dot {
+  background: color-mix(in oklab, var(--surface-alt) 58%, var(--surface));
+  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  color: var(--muted-foreground);
+  display: inline-flex;
+  font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 1px 0;
+  vertical-align: middle;
 }
 
 .service-db-state-empty {
