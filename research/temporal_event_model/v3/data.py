@@ -357,11 +357,13 @@ def _dummy_scanner(batch: int, config: ModelConfig, device: torch.device) -> dic
     return {
         "leader_values": torch.randn(batch, groups, top_k, horizons, families, width, device=device),
         "leader_mask": torch.ones(batch, groups, top_k, dtype=torch.bool, device=device),
+        "leader_horizon_mask": torch.ones(batch, groups, top_k, horizons, dtype=torch.bool, device=device),
         "leader_time_features": torch.randn(batch, groups, top_k, horizons, config.bar_time_feature_count, device=device),
         "leader_ticker_id": torch.zeros(batch, groups, top_k, dtype=torch.long, device=device),
         "leader_rank": torch.arange(top_k, dtype=torch.long, device=device).view(1, 1, top_k).expand(batch, groups, top_k),
         "origin_values": torch.randn(batch, groups, horizons, families, width, device=device),
         "origin_mask": torch.ones(batch, groups, dtype=torch.bool, device=device),
+        "origin_horizon_mask": torch.ones(batch, groups, horizons, dtype=torch.bool, device=device),
         "origin_time_features": torch.randn(batch, groups, horizons, config.bar_time_feature_count, device=device),
         "origin_rank": torch.zeros(batch, groups, dtype=torch.long, device=device),
         "origin_in_topk": torch.ones(batch, groups, dtype=torch.bool, device=device),

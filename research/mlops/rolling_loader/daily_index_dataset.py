@@ -1868,7 +1868,7 @@ class DailyIndexBatchMaterializer:
                     payload["leader_ticker_id"][output_row, group_index, leader_position] = int(index.ticker_id[artifact_row])
                     payload["leader_rank"][output_row, group_index, leader_position] = int(index.columns[f"{group_name}_rank"][artifact_row])
                     payload["leader_mask"][output_row, group_index, leader_position] = True
-                    _fill_scanner_values_from_artifact_row(
+                    payload["leader_horizon_mask"][output_row, group_index, leader_position] = _fill_scanner_values_from_artifact_row(
                         payload["leader_values"][output_row, group_index, leader_position],
                         payload["leader_time_features"][output_row, group_index, leader_position],
                         index=index,
@@ -1889,7 +1889,7 @@ class DailyIndexBatchMaterializer:
                         [score, percentile, float(0 <= rank < top_k), float(rank if rank >= 0 else -1), float(rank), percentile],
                         dtype=np.float32,
                     )
-                    _fill_scanner_values_from_artifact_row(
+                    payload["origin_horizon_mask"][output_row, group_index] = _fill_scanner_values_from_artifact_row(
                         payload["origin_values"][output_row, group_index],
                         payload["origin_time_features"][output_row, group_index],
                         index=index,
@@ -3434,11 +3434,13 @@ def _empty_scanner_payload(sample_count: int, config: DailyIndexLoaderConfig) ->
     return {
         "leader_values": np.zeros((sample_count, group_count, top_k, horizon_count, family_count, max_feature_width), dtype=np.float32),
         "leader_mask": np.zeros((sample_count, group_count, top_k), dtype=np.bool_),
+        "leader_horizon_mask": np.zeros((sample_count, group_count, top_k, horizon_count), dtype=np.bool_),
         "leader_time_features": np.zeros((sample_count, group_count, top_k, horizon_count, time_width), dtype=np.float32),
         "leader_ticker_id": np.zeros((sample_count, group_count, top_k), dtype=np.int64),
         "leader_rank": np.zeros((sample_count, group_count, top_k), dtype=np.int64),
         "origin_values": np.zeros((sample_count, group_count, horizon_count, family_count, max_feature_width), dtype=np.float32),
         "origin_mask": np.zeros((sample_count, group_count), dtype=np.bool_),
+        "origin_horizon_mask": np.zeros((sample_count, group_count, horizon_count), dtype=np.bool_),
         "origin_time_features": np.zeros((sample_count, group_count, horizon_count, time_width), dtype=np.float32),
         "origin_rank": np.zeros((sample_count, group_count), dtype=np.int64),
         "origin_in_topk": np.zeros((sample_count, group_count), dtype=np.bool_),
@@ -3461,8 +3463,9 @@ def _fill_scanner_values_from_artifact_row(
     artifact_row: int,
     horizons: Sequence[str],
     origin_timestamp_us: int,
-) -> None:
+) -> np.ndarray:
     row = int(artifact_row)
+    horizon_mask = np.zeros((len(horizons),), dtype=np.bool_)
     for horizon_index, horizon in enumerate(horizons):
         horizon_token = _scanner_column_token(horizon)
         timestamp_col = f"{horizon_token}_timestamp_us"
@@ -3480,12 +3483,14 @@ def _fill_scanner_values_from_artifact_row(
                     values[horizon_index, family_index, feature_index] = np.float32(index.columns[column][row])
                     any_available = True
         if any_available:
+            horizon_mask[horizon_index] = True
             absolute = _absolute_utc_time_feature_matrix(np.asarray([scanner_timestamp_us], dtype=np.int64))[0]
             age_days = max(0.0, (float(origin_timestamp_us) - float(scanner_timestamp_us)) / 86_400_000_000.0)
             time_features[horizon_index] = np.concatenate(
                 [absolute, np.asarray([age_days, math.log1p(age_days)], dtype=np.float32)],
                 axis=0,
             ).astype(np.float32, copy=False)
+    return horizon_mask
 
 
 def _scanner_column_token(value: str) -> str:

@@ -374,12 +374,18 @@ class ScannerContextEncoder(nn.Module):
         leader_mask = payload.get("leader_mask")
         leader_time = payload.get("leader_time_features")
         leader_rank = payload.get("leader_rank")
+        leader_horizon_mask = payload.get("leader_horizon_mask")
         origin_values = payload.get("origin_values")
         origin_mask = payload.get("origin_mask")
+        origin_horizon_mask = payload.get("origin_horizon_mask")
         origin_time = payload.get("origin_time_features")
         numeric = payload.get("numeric_features")
         if not torch.is_tensor(leader_mask):
             leader_mask = torch.ones(leader_values.shape[:3], dtype=torch.bool, device=leader_values.device)
+        if not torch.is_tensor(leader_horizon_mask):
+            leader_horizon_mask = leader_mask.unsqueeze(-1).expand(*leader_mask.shape, leader_values.shape[3])
+        else:
+            leader_horizon_mask = leader_horizon_mask.to(device=leader_values.device, dtype=torch.bool) & leader_mask.unsqueeze(-1).bool()
         if not torch.is_tensor(leader_rank):
             leader_rank = torch.zeros(leader_values.shape[:3], dtype=torch.long, device=leader_values.device)
         leader_time = _required_time_features(
@@ -396,7 +402,7 @@ class ScannerContextEncoder(nn.Module):
         leader_rows = leader_rows + self.group_embedding(group_ids)[None, :, None, None, :]
         leader_token = masked_mean(
             leader_rows.reshape(leader_rows.shape[0], -1, leader_rows.shape[-1]),
-            leader_mask.unsqueeze(-1).expand(*leader_mask.shape, leader_values.shape[3]).reshape(leader_values.shape[0], -1).bool(),
+            leader_horizon_mask.reshape(leader_values.shape[0], -1).bool(),
             dim=1,
         )
         if not torch.is_tensor(origin_values) or origin_values.numel() == 0:
@@ -404,6 +410,10 @@ class ScannerContextEncoder(nn.Module):
         else:
             if not torch.is_tensor(origin_mask):
                 origin_mask = torch.ones(origin_values.shape[:2], dtype=torch.bool, device=origin_values.device)
+            if not torch.is_tensor(origin_horizon_mask):
+                origin_horizon_mask = origin_mask.unsqueeze(-1).expand(*origin_mask.shape, origin_values.shape[2])
+            else:
+                origin_horizon_mask = origin_horizon_mask.to(device=origin_values.device, dtype=torch.bool) & origin_mask.unsqueeze(-1).bool()
             origin_time = _required_time_features(
                 origin_time,
                 reference=origin_values[..., 0, 0],
@@ -415,12 +425,16 @@ class ScannerContextEncoder(nn.Module):
             origin_rows = origin_rows + self.group_embedding(group_ids)[None, :, None, :]
             origin_token = masked_mean(
                 origin_rows.reshape(origin_rows.shape[0], -1, origin_rows.shape[-1]),
-                origin_mask.unsqueeze(-1).expand(*origin_mask.shape, origin_values.shape[2]).reshape(origin_values.shape[0], -1).bool(),
+                origin_horizon_mask.reshape(origin_values.shape[0], -1).bool(),
                 dim=1,
             )
         if torch.is_tensor(numeric) and numeric.numel() > 0:
             numeric_rows = self.numeric_proj(numeric.float())
-            numeric_token = masked_mean(numeric_rows, torch.ones(numeric_rows.shape[:2], dtype=torch.bool, device=numeric_rows.device), dim=1)
+            if not torch.is_tensor(origin_mask):
+                numeric_mask = torch.ones(numeric_rows.shape[:2], dtype=torch.bool, device=numeric_rows.device)
+            else:
+                numeric_mask = origin_mask.to(device=numeric_rows.device, dtype=torch.bool)
+            numeric_token = masked_mean(numeric_rows, numeric_mask, dim=1)
         else:
             numeric_token = torch.zeros_like(leader_token)
         return self.out(torch.cat([leader_token, origin_token, numeric_token], dim=-1))

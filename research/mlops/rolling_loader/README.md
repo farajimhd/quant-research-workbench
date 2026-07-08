@@ -130,9 +130,11 @@ The loader output shape is:
 | --- | --- | --- |
 | `scanner_inputs["leader_values"]` | `[B,G,K,H,3,F]` | Top-K leader bars by scanner group, horizon, and bar family. |
 | `scanner_inputs["leader_mask"]` | `[B,G,K]` | True when a leader slot exists. |
+| `scanner_inputs["leader_horizon_mask"]` | `[B,G,K,H]` | True when that leader has at least one real bar family for the horizon. False means the zero values are padding. |
 | `scanner_inputs["leader_time_features"]` | `[B,G,K,H,9]` | Bar-end/start time features for leader bars. |
 | `scanner_inputs["origin_values"]` | `[B,G,H,3,F]` | Origin ticker bars for comparison with each scanner group. |
 | `scanner_inputs["origin_mask"]` | `[B,G]` | True when origin ticker scanner comparison is available. |
+| `scanner_inputs["origin_horizon_mask"]` | `[B,G,H]` | True when the origin ticker has at least one real bar family for the horizon. False means the zero values are padding. |
 | `scanner_inputs["origin_rank"]` | `[B,G]` | Origin ticker rank in each scanner group. |
 | `scanner_inputs["origin_in_topk"]` | `[B,G]` | Whether the origin ticker is one of the leaders. |
 
