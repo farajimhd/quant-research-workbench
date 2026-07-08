@@ -988,21 +988,24 @@ button {
 }
 
 .service-work-plan-summary {
+  background: color-mix(in oklab, var(--surface-alt) 45%, var(--surface));
   border-bottom: 1px solid var(--border);
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  padding: 10px 12px;
+  padding: 8px 12px;
 }
 
 .service-work-plan-summary-item {
-  background: var(--surface-alt);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
-  display: grid;
-  gap: 2px;
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
   min-width: 0;
-  padding: 8px 10px;
+  padding: 7px 9px;
 }
 
 .service-work-plan-summary-item span {
@@ -1015,8 +1018,13 @@ button {
 
 .service-work-plan-summary-item strong {
   color: var(--foreground);
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 620;
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .service-work-plan-summary-item.ok {
@@ -1029,20 +1037,62 @@ button {
   border-color: var(--badge-warning-border);
 }
 
-.service-work-plan-groups {
+.service-work-plan-layout {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(3, minmax(360px, 1fr));
+  grid-template-columns: minmax(0, 1fr) 360px;
   padding: 12px;
 }
 
+.service-work-live-section,
+.service-work-setup-panel {
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.service-work-section-header {
+  align-items: end;
+  background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface));
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.service-work-section-header h3 {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 620;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.service-work-section-header p {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.3;
+  margin: 0;
+  max-width: 520px;
+}
+
+.service-work-plan-groups {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 10px;
+}
+
 .service-work-card {
-  background: color-mix(in oklab, var(--surface) 88%, var(--surface-alt));
+  background: var(--surface);
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 8px;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  min-height: 238px;
+  min-height: 206px;
   min-width: 0;
   overflow: hidden;
 }
@@ -1071,7 +1121,7 @@ button {
   gap: 10px;
   justify-content: space-between;
   min-width: 0;
-  padding: 12px 14px 10px;
+  padding: 10px 12px;
 }
 
 .service-work-card-header h3 {
@@ -1085,7 +1135,7 @@ button {
 .service-work-card-header p {
   color: var(--muted-foreground);
   display: -webkit-box;
-  font-size: 11px;
+  font-size: 10.5px;
   line-height: 1.35;
   margin: 5px 0 0;
   overflow: hidden;
@@ -1093,14 +1143,54 @@ button {
   -webkit-line-clamp: 2;
 }
 
+.service-work-card-status-stack {
+  align-items: flex-end;
+  display: grid;
+  flex: 0 0 auto;
+  gap: 5px;
+  justify-items: end;
+}
+
+.service-work-card-status-stack small {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 520;
+  white-space: nowrap;
+}
+
+.service-work-card-stats {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.service-work-card-stats span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 580;
+  padding: 6px 10px;
+}
+
+.service-work-card-stats span + span {
+  border-left: 1px solid var(--border);
+}
+
+.service-work-card-stats strong {
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 680;
+}
+
 .service-work-items {
   align-content: start;
   display: grid;
-  gap: 8px;
-  max-height: 360px;
+  gap: 7px;
+  max-height: 300px;
   min-height: 0;
   overflow: auto;
-  padding: 10px;
+  padding: 8px;
 }
 
 .service-work-item {
@@ -1108,9 +1198,9 @@ button {
   border: 1px solid var(--surface-border);
   border-radius: 7px;
   display: grid;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
-  padding: 9px 10px;
+  padding: 8px 9px;
 }
 
 .service-work-item.ok {
@@ -1150,7 +1240,9 @@ button {
   font-weight: 620;
   line-height: 1.25;
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .service-work-item-title span {
@@ -1189,13 +1281,65 @@ button {
 .service-work-item-detail {
   color: var(--muted-foreground);
   display: -webkit-box;
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.35;
   margin: 0;
   overflow: hidden;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+}
+
+.service-work-setup-list {
+  display: grid;
+  gap: 7px;
+  max-height: 585px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.service-work-setup-row {
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  border-radius: 7px;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px;
+}
+
+.service-work-setup-row > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.service-work-setup-row strong {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 610;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-work-setup-row span:not(.service-work-mini-status) {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 520;
+}
+
+.service-work-setup-row p {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  grid-column: 1 / -1;
+  line-height: 1.35;
+  margin: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
 }
 
 .service-work-more {
@@ -2100,6 +2244,10 @@ button {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .service-work-plan-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .service-work-plan-groups {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -2112,6 +2260,7 @@ button {
   .service-primary-grid,
   .service-config-summary,
   .service-config-items,
+  .service-work-plan-layout,
   .service-work-plan-groups,
   .service-two-column {
     grid-template-columns: minmax(0, 1fr);

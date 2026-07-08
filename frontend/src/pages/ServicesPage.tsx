@@ -326,24 +326,32 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
 type ServiceWorkRow = {
   detail: string;
   kind: string;
+  lastAt: string;
+  lastAtMs?: number;
   name: string;
   progress: string;
+  reportKind: "live" | "setup";
   rows: string;
   schedule: string;
   status: string;
 };
 
 type ServiceWorkGroup = {
+  activeCount: number;
+  completedCount: number;
   description: string;
   id: string;
+  lastAt: string;
   rows: ServiceWorkRow[];
   status: string;
   title: string;
+  warningCount: number;
 };
 
 function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
   const groups = serviceWorkGroups(service);
-  const counts = groups.reduce(
+  const setupRows = serviceSetupRows(service);
+  const liveCounts = groups.reduce(
     (summary, row) => {
       const status = workStatusClass(row.status);
       summary.total += 1;
@@ -354,25 +362,36 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
     },
     { healthy: 0, needsAttention: 0, running: 0, total: 0 },
   );
+  const latestLiveAt = latestWorkTimestamp(groups.flatMap((group) => group.rows));
+  const setupProblems = setupRows.filter((row) => ["error", "warn"].includes(workStatusClass(row.status))).length;
   return (
     <Panel className="service-work-plan-panel" title="Service Work Plan">
       <div className="service-work-plan-summary">
-        <WorkPlanSummaryItem label="Responsibilities" value={String(counts.total)} />
-        <WorkPlanSummaryItem label="Active" value={String(counts.running)} />
-        <WorkPlanSummaryItem label="Healthy" value={String(counts.healthy)} />
-        <WorkPlanSummaryItem label="Needs Attention" value={String(counts.needsAttention)} tone={counts.needsAttention ? "warn" : "ok"} />
+        <WorkPlanSummaryItem label="Live Areas" value={String(liveCounts.total)} />
+        <WorkPlanSummaryItem label="Active Now" value={String(liveCounts.running)} />
+        <WorkPlanSummaryItem label="Last Live Report" value={latestLiveAt || "-"} />
+        <WorkPlanSummaryItem label="Setup Issues" value={String(setupProblems)} tone={setupProblems ? "warn" : "ok"} />
       </div>
-      <div className="service-work-plan-groups">
-        {groups.map((group) => (
-          <ServiceWorkGroupCard group={group} key={group.id} />
-        ))}
+      <div className="service-work-plan-layout">
+        <section className="service-work-live-section">
+          <div className="service-work-section-header">
+            <h3>Live Responsibility Reports</h3>
+            <p>Runtime work only. Static setup rows are kept out of this section.</p>
+          </div>
+          <div className="service-work-plan-groups">
+            {groups.map((group) => (
+              <ServiceWorkGroupCard group={group} key={group.id} />
+            ))}
+          </div>
+        </section>
+        <ServiceSetupContractPanel rows={setupRows} />
       </div>
     </Panel>
   );
 }
 
 function ServiceWorkGroupCard({ group }: { group: ServiceWorkGroup }) {
-  const rows = group.rows.length ? group.rows : [{ detail: "No reported activity for this responsibility yet.", kind: "service", name: group.title, progress: "-", rows: "-", schedule: "-", status: "waiting" }];
+  const rows = group.rows.length ? group.rows : [{ detail: "No live report has been received for this responsibility in the current snapshot.", kind: "service", lastAt: "-", name: group.title, progress: "-", reportKind: "live" as const, rows: "-", schedule: "-", status: "not reported" }];
   const visibleRows = rows.slice(0, 8);
   const hiddenCount = Math.max(0, rows.length - visibleRows.length);
   return (
@@ -382,7 +401,15 @@ function ServiceWorkGroupCard({ group }: { group: ServiceWorkGroup }) {
           <h3>{group.title}</h3>
           <p>{group.description}</p>
         </div>
-        <span className={`service-work-status ${workStatusClass(group.status)}`}>{displayName(group.status || "waiting")}</span>
+        <div className="service-work-card-status-stack">
+          <span className={`service-work-status ${workStatusClass(group.status)}`}>{displayName(group.status || "waiting")}</span>
+          <small>{group.lastAt ? `Last ${group.lastAt}` : "No live timestamp"}</small>
+        </div>
+      </div>
+      <div className="service-work-card-stats">
+        <span>Active <strong>{group.activeCount}</strong></span>
+        <span>Done <strong>{group.completedCount}</strong></span>
+        <span>Warn <strong>{group.warningCount}</strong></span>
       </div>
       <div className="service-work-items">
         {visibleRows.map((row, index) => (
@@ -396,6 +423,7 @@ function ServiceWorkGroupCard({ group }: { group: ServiceWorkGroup }) {
 
 function ServiceWorkItem({ row }: { row: ServiceWorkRow }) {
   const metrics = [
+    row.lastAt !== "-" ? { label: "Last", value: row.lastAt } : null,
     row.progress !== "-" ? { label: "Progress", value: row.progress } : null,
     row.rows !== "-" ? { label: "Rows", value: row.rows } : null,
     row.schedule !== "-" ? { label: "Schedule", value: row.schedule } : null,
@@ -420,6 +448,32 @@ function ServiceWorkItem({ row }: { row: ServiceWorkRow }) {
       ) : null}
       <p className="service-work-item-detail" title={row.detail}>{row.detail}</p>
     </article>
+  );
+}
+
+function ServiceSetupContractPanel({ rows }: { rows: ServiceWorkRow[] }) {
+  const visibleRows = rows.slice(0, 12);
+  const hiddenCount = Math.max(0, rows.length - visibleRows.length);
+  return (
+    <aside className="service-work-setup-panel">
+      <div className="service-work-section-header">
+        <h3>Setup / Contracts</h3>
+        <p>Static contracts, dependency checks, and configured table expectations.</p>
+      </div>
+      <div className="service-work-setup-list">
+        {(visibleRows.length ? visibleRows : [{ detail: "No setup or contract rows reported.", kind: "setup", lastAt: "-", name: "Setup contract", progress: "-", reportKind: "setup" as const, rows: "-", schedule: "-", status: "not reported" }]).map((row, index) => (
+          <div className={`service-work-setup-row ${workStatusClass(row.status)}`} key={`${row.kind}-${row.name}-${index}`}>
+            <div>
+              <strong title={row.name}>{row.name}</strong>
+              <span>{displayName(row.kind)}</span>
+            </div>
+            <span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span>
+            <p title={row.detail}>{row.detail}</p>
+          </div>
+        ))}
+        {hiddenCount ? <div className="service-work-more">+ {hiddenCount} more setup row{hiddenCount === 1 ? "" : "s"}</div> : null}
+      </div>
+    </aside>
   );
 }
 
@@ -1163,13 +1217,19 @@ function runtimeText(service: ServiceStatusPayload) {
 function serviceWorkRows(service: ServiceStatusPayload): ServiceWorkRow[] {
   const snapshot = service.snapshot ?? {};
   const rows: ServiceWorkRow[] = [];
-  rows.push(...arrayRows(snapshot.dependencies).map((row) => serviceWorkRow(row, "preflight")));
-  if (isRecord(snapshot.coverage)) rows.push(serviceWorkRow({ ...snapshot.coverage, name: "coverage manifest" }, "coverage"));
-  rows.push(...arrayRows(snapshot.tasks).map((row) => serviceWorkRow(row, "task")));
-  rows.push(...arrayRows(snapshot.task_table_progress).map((row) => serviceWorkRow(row, "table")));
-  rows.push(...arrayRows(snapshot.queues).map((row) => serviceWorkRow(row, "queue")));
-  rows.push(...arrayRows(snapshot.sources_sinks).map((row) => serviceWorkRow(row, "source")));
-  rows.push(...arrayRows(snapshot.configured_tables).map((row) => serviceWorkRow(row, "configured table")));
+  if (isRecord(snapshot.coverage)) rows.push(serviceWorkRow({ ...snapshot.coverage, name: "coverage manifest" }, "coverage", "live"));
+  rows.push(...arrayRows(snapshot.tasks).map((row) => serviceWorkRow(row, "task", "live")));
+  rows.push(...arrayRows(snapshot.task_table_progress).map((row) => serviceWorkRow(row, "table", "live")));
+  rows.push(...arrayRows(snapshot.queues).map((row) => serviceWorkRow(row, "queue", "live")));
+  rows.push(...arrayRows(snapshot.sources_sinks).map((row) => serviceWorkRow(row, "source", "live")));
+  return dedupeWorkRows(rows).sort((a, b) => workStatusRank(a.status) - workStatusRank(b.status) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+}
+
+function serviceSetupRows(service: ServiceStatusPayload): ServiceWorkRow[] {
+  const snapshot = service.snapshot ?? {};
+  const rows: ServiceWorkRow[] = [];
+  rows.push(...arrayRows(snapshot.dependencies).map((row) => serviceWorkRow(row, "dependency", "setup")));
+  rows.push(...arrayRows(snapshot.configured_tables).map((row) => serviceWorkRow(row, "configured table", "setup")));
   return dedupeWorkRows(rows).sort((a, b) => workStatusRank(a.status) - workStatusRank(b.status) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
 }
 
@@ -1184,11 +1244,15 @@ function serviceWorkGroups(service: ServiceStatusPayload): ServiceWorkGroup[] {
     group.rows.push(row);
   }
   return groups.map((group) => ({
+    activeCount: countRowsByStatus(group.rows, "running"),
+    completedCount: countRowsByStatus(group.rows, "ok"),
     description: group.description,
     id: group.id,
+    lastAt: latestWorkTimestamp(group.rows),
     rows: group.rows,
     status: groupStatus(group.rows),
     title: group.title,
+    warningCount: group.rows.filter((row) => ["warn", "error"].includes(workStatusClass(row.status))).length,
   }));
 }
 
@@ -1396,23 +1460,47 @@ function groupStatus(rows: ServiceWorkRow[]) {
   return "ok";
 }
 
-function serviceWorkRow(row: Record<string, unknown>, fallbackKind: string): ServiceWorkRow {
+function serviceWorkRow(row: Record<string, unknown>, fallbackKind: string, reportKind: ServiceWorkRow["reportKind"]): ServiceWorkRow {
   const name = firstString(row, ["name", "task", "work", "item", "source", "sink", "table", "database", "label", "area"]) || fallbackKind;
   const kind = firstString(row, ["kind", "type", "category", "role"]) || fallbackKind;
   const status = firstString(row, ["status", "state", "phase", "result"]) || "waiting";
   const progress = workProgressText(row);
   const rows = firstString(row, ["rows", "row_count", "processed_rows", "written_rows", "done", "completed", "count"]) || "-";
   const schedule = firstString(row, ["schedule", "cadence", "frequency", "interval", "next", "next_run", "next_poll", "window"]) || "-";
-  const detail = firstString(row, ["detail", "details", "message", "description", "notes", "last", "latest"]) || compactWorkDetail(row);
+  const lastTimestamp = firstTimestamp(row);
+  const detail = humanizeWorkDetail(firstString(row, ["detail", "details", "message", "description", "notes", "last", "latest"]) || compactWorkDetail(row));
   return {
     detail,
     kind,
+    lastAt: lastTimestamp.label,
+    lastAtMs: lastTimestamp.value,
     name,
     progress,
+    reportKind,
     rows: rows === "" ? "-" : rows,
     schedule,
     status,
   };
+}
+
+function countRowsByStatus(rows: ServiceWorkRow[], className: ReturnType<typeof workStatusClass>) {
+  return rows.filter((row) => workStatusClass(row.status) === className).length;
+}
+
+function latestWorkTimestamp(rows: ServiceWorkRow[]) {
+  const latest = rows
+    .map((row) => ({ label: row.lastAt, value: row.lastAtMs }))
+    .filter((item) => item.label && item.label !== "-" && item.value !== undefined)
+    .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))[0];
+  return latest?.label ?? "";
+}
+
+function firstTimestamp(row: Record<string, unknown>) {
+  const raw = firstString(row, ["updated_at_utc", "last_seen_at_utc", "last_run_at_utc", "completed_at_utc", "started_at_utc", "last_poll_at_utc", "checked_at_utc", "ts_utc", "time_utc", "updated_at", "last_seen", "last_run", "completed_at", "started_at", "last_poll_at", "checked_at", "time", "since"]);
+  if (!raw || raw === "-") return { label: "-", value: undefined };
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) return { label: raw.length > 28 ? `${raw.slice(0, 25)}...` : raw, value: undefined };
+  return { label: formatLogTime(raw), value: parsed };
 }
 
 function firstString(row: Record<string, unknown>, keys: string[]) {
@@ -1443,6 +1531,35 @@ function compactWorkDetail(row: Record<string, unknown>) {
     .slice(0, 4)
     .map(([key, value]) => `${displayName(key)} ${formatValue(key, value)}`);
   return parts.length ? parts.join("; ") : "-";
+}
+
+function humanizeWorkDetail(value: string) {
+  if (!value || value === "-") return "-";
+  const normalized = value
+    .replace(/\\\\DESKTOP-SAAI85T\\Workstation-D\\market-data/gi, "Workstation-D:/market-data")
+    .replace(/D:\\TradingCodes\\quant-research-workbench/gi, "repo:")
+    .replace(/\s+/g, " ")
+    .trim();
+  const segments = normalized.split(/;\s*/).filter(Boolean);
+  const readable = segments.length > 1
+    ? segments.slice(0, 4).map((segment) => {
+        const match = segment.match(/^([^=]{1,40})=(.*)$/);
+        if (!match) return segment;
+        return `${displayName(match[1].trim())}: ${shortenWorkValue(match[2].trim())}`;
+      }).join(" · ")
+    : shortenWorkValue(normalized);
+  return readable.length > 220 ? `${readable.slice(0, 217)}...` : readable;
+}
+
+function shortenWorkValue(value: string) {
+  if (!value) return "-";
+  if (value.length <= 120) return value;
+  const slashParts = value.split(/[\\/]/).filter(Boolean);
+  if (slashParts.length >= 3) {
+    const tail = slashParts.slice(-3).join("/");
+    return `.../${tail}`;
+  }
+  return `${value.slice(0, 117)}...`;
 }
 
 function dedupeWorkRows(rows: ServiceWorkRow[]) {
