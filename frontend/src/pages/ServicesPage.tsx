@@ -291,18 +291,31 @@ function ServiceErrorLogPanel({ pageError, service }: { pageError: string; servi
             </p>
           </div>
         </div>
-        <div className="service-log-list">
-          {(items.length ? items : [{ detail: "No errors or warnings reported.", key: "service", status: "clear" as const, title: "Clear" }]).map((item, index) => (
-            <div className={`service-log-item ${item.status}`} key={`${item.key}-${index}`}>
-              <div className="service-log-item-top">
-                <span>{displayName(item.key)}</span>
-                <small>{displayName(item.status)}</small>
-              </div>
-              <strong title={item.title}>{item.title}</strong>
-              <p title={item.detail}>{item.detail}</p>
-              {item.meta ? <small className="service-log-meta">{item.meta}</small> : null}
-            </div>
-          ))}
+        <div className="service-log-table-wrap">
+          <table className="service-log-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Status</th>
+                <th>Source</th>
+                <th>Event</th>
+                <th>Message</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(items.length ? items : [{ detail: "No errors or warnings reported.", key: "service", status: "clear" as const, title: "Clear" }]).map((item, index) => (
+                <tr className={`service-log-row ${item.status}`} key={`${item.key}-${index}`}>
+                  <td className="service-log-time" title={item.time || item.meta || ""}>{item.time || "-"}</td>
+                  <td><span className={`service-log-status ${item.status}`}>{displayName(item.status)}</span></td>
+                  <td title={item.source || item.meta || ""}>{item.source || "-"}</td>
+                  <td title={displayName(item.event || item.key)}>{displayName(item.event || item.key)}</td>
+                  <td title={item.title}>{item.title}</td>
+                  <td title={item.detail}>{item.detail}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     </Panel>
@@ -411,9 +424,13 @@ type ConfigGroup = {
 
 type ServiceLogItem = {
   detail: string;
+  event?: string;
   key: string;
   meta?: string;
+  occurredAtMs?: number;
+  source?: string;
   status: "active" | "clear" | "log" | "resolved" | "retrying";
+  time?: string;
   title: string;
 };
 
@@ -442,7 +459,7 @@ function collectErrorLogItems(pageError: string, service: ServiceStatusPayload) 
   for (const row of errorLikePayloadRows(service.metrics, "metrics")) items.push(row);
 
   for (const row of nonZeroErrorCounters(errorState)) items.push(row);
-  const deduped = dedupeLogItems(items);
+  const deduped = sortLogItems(dedupeLogItems(items));
   if (!deduped.length) deduped.push({ detail: "No errors or warnings reported.", key: "service", status: "clear", title: "Clear" });
   return deduped;
 }
@@ -454,6 +471,7 @@ function errorRecordRows(value: unknown, fallbackStatus: "active" | "resolved"):
     const status = rawStatus.includes("retry") ? "retrying" : rawStatus.includes("resolved") ? "resolved" : fallbackStatus;
     const severity = String(record.severity || record.category || "error");
     const title = String(record.message || record.safe_detail || record.error_id || "Service error");
+    const rawTime = String(record.last_seen_utc || record.resolved_at_utc || record.created_at_utc || record.ts_utc || "");
     const metaParts = [
       record.phase ? `phase=${record.phase}` : "",
       record.task ? `task=${record.task}` : "",
@@ -467,7 +485,10 @@ function errorRecordRows(value: unknown, fallbackStatus: "active" | "resolved"):
       detail: String(record.safe_detail || record.message || record.error_id || "-"),
       key: severity,
       meta: metaParts.join("  "),
+      occurredAtMs: parseLogTime(rawTime),
+      source: String(record.provider || record.phase || "service"),
       status,
+      time: rawTime ? formatLogTime(rawTime) : "",
       title,
     };
   });
@@ -499,11 +520,11 @@ function errorLikePayloadRows(value: unknown, source: string): ServiceLogItem[] 
         if (isRecord(entry)) {
           rows.push(...errorRecordRows([entry], normalized.includes("resolved") ? "resolved" : "active"));
         } else {
-          rows.push({ detail: formatValue(key, entry), key, meta: `source=${source}`, status: "active", title: displayName(key) });
+          rows.push({ detail: formatValue(key, entry), key, meta: `source=${source}`, source, status: "active", title: displayName(key) });
         }
       }
     } else {
-      rows.push({ detail: formatValue(key, item), key, meta: `source=${source}`, status: "active", title: displayName(key) });
+      rows.push({ detail: formatValue(key, item), key, meta: `source=${source}`, source, status: "active", title: displayName(key) });
     }
   }
   return rows;
@@ -516,12 +537,16 @@ function runtimeLogRows(logs: ServiceLogPayload | undefined): ServiceLogItem[] {
     const event = row.event || row.level || "log";
     const ts = row.ts_utc ? formatLogTime(row.ts_utc) : "";
     const line = typeof row.line === "number" ? `line ${row.line}` : "";
-    const meta = [ts, row.source, line].filter(Boolean).join(" · ");
+    const meta = [ts, row.source, line].filter(Boolean).join(" | ");
     return {
       detail: row.detail || "-",
+      event,
       key: [event, row.source, row.line].filter(Boolean).join(":"),
       meta,
+      occurredAtMs: parseLogTime(row.ts_utc || ""),
+      source: row.source || "",
       status,
+      time: ts,
       title: row.title || event,
     };
   });
@@ -545,6 +570,23 @@ function dedupeLogItems(items: ServiceLogItem[]) {
     rows.push(item);
   }
   return rows;
+}
+
+function sortLogItems(items: ServiceLogItem[]) {
+  return [...items].sort((a, b) => {
+    const aTime = a.occurredAtMs ?? -1;
+    const bTime = b.occurredAtMs ?? -1;
+    if (aTime !== bTime) return bTime - aTime;
+    return statusPriority(a.status) - statusPriority(b.status);
+  });
+}
+
+function statusPriority(status: ServiceLogItem["status"]) {
+  if (status === "active") return 0;
+  if (status === "retrying") return 1;
+  if (status === "resolved") return 2;
+  if (status === "log") return 3;
+  return 4;
 }
 
 function isEmptyErrorValue(value: unknown) {
@@ -725,6 +767,11 @@ function formatLogTime(value: string) {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return value;
   return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(parsed));
+}
+
+function parseLogTime(value: string) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function formatZoneTime(value: Date, timeZone: string) {
