@@ -107,6 +107,7 @@ from src.strategies.registry import (
     strategy_chart_presentation,
     strategy_version_description,
 )
+from research.mlops.clickhouse import default_clickhouse_password, default_clickhouse_url, default_clickhouse_user, sql_string
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -117,6 +118,56 @@ PORTFOLIO_CHART_TIMEFRAMES = ["30m", "1h", "2h", "4h", "1d"]
 DEBUG_SESSIONS: dict[str, StepBacktestDebugger] = {}
 SERVICE_STATUS_TIMEOUT_SECONDS = 1.8
 SERVICE_LOG_TAIL_LIMIT = 160
+SERVICE_TABLE_STATE_LIMIT = 32
+
+SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
+    "qmd": [
+        {"database": "q_live", "table": "events", "role": "live events"},
+        {"database": "q_live", "table": "live_market_bars", "role": "1d bars"},
+        {"database": "q_live", "table": "live_symbol_market_event_v1", "role": "market state"},
+        {"database": "q_live", "table": "qmd_live_event_coverage_v1", "role": "coverage"},
+        {"database": "q_live", "table": "qmd_flatfile_event_coverage_v1", "role": "flatfile coverage"},
+        {"database": "q_live", "table": "qmd_gap_fill_symbol_universe_v1", "role": "gap symbols"},
+    ],
+    "news": [
+        {"database": "q_live", "table": "benzinga_news_normalized_v1", "role": "normalized news"},
+        {"database": "q_live", "table": "benzinga_news_ticker_v1", "role": "ticker links"},
+        {"database": "q_live", "table": "benzinga_news_coverage_manifest_v1", "role": "coverage"},
+    ],
+    "sec": [
+        {"database": "q_live", "table": "sec_filing_v2", "role": "filings"},
+        {"database": "q_live", "table": "sec_filing_document_v2", "role": "documents"},
+        {"database": "q_live", "table": "sec_filing_text_v2", "role": "filing text"},
+        {"database": "q_live", "table": "sec_xbrl_company_fact_v1", "role": "company facts"},
+        {"database": "q_live", "table": "sec_xbrl_frame_observation_v1", "role": "frame facts"},
+        {"database": "q_live", "table": "sec_coverage_manifest_v1", "role": "coverage"},
+    ],
+    "text-embed": [
+        {"database": "market_sip_compact", "table": "news_text_tokens", "role": "news tokens"},
+        {"database": "market_sip_compact", "table": "news_text_embeddings", "role": "news embeddings"},
+        {"database": "market_sip_compact", "table": "sec_filing_text_context", "role": "sec context"},
+        {"database": "market_sip_compact", "table": "sec_filing_text_tokens", "role": "sec tokens"},
+        {"database": "market_sip_compact", "table": "sec_filing_text_embeddings", "role": "sec embeddings"},
+        {"database": "market_sip_compact", "table": "text_embedding_coverage_v1", "role": "coverage"},
+    ],
+    "reference": [
+        {"database": "q_live", "table": "id_issuer_v1", "role": "issuers"},
+        {"database": "q_live", "table": "id_security_v1", "role": "securities"},
+        {"database": "q_live", "table": "id_listing_v1", "role": "listings"},
+        {"database": "q_live", "table": "id_symbol_v1", "role": "symbols"},
+        {"database": "q_live", "table": "id_mapping_issue_v1", "role": "issues"},
+        {"database": "q_live", "table": "id_sec_market_bridge_v1", "role": "sec bridge"},
+        {"database": "q_live", "table": "feature_tradable_universe_v1", "role": "tradable universe"},
+        {"database": "q_live", "table": "market_reference_alert_v1", "role": "alerts"},
+        {"database": "q_live", "table": "market_reference_source_schedule_v1", "role": "source schedule"},
+        {"database": "q_live", "table": "market_reference_publication_coverage_v1", "role": "publication coverage"},
+        {"database": "q_live", "table": "market_security_borrow_v1", "role": "borrow"},
+        {"database": "q_live", "table": "market_short_volume_v1", "role": "short volume"},
+    ],
+    "ibkr": [
+        {"database": "q_live", "table": "ibkr_gateway_supervisor_event_v1", "role": "supervisor events"},
+    ],
+}
 
 SERVICE_REGISTRY: dict[str, dict[str, str]] = {
     "qmd": {
@@ -1162,6 +1213,123 @@ def service_unreachable_error(error_text: str | None) -> bool:
     )
 
 
+def service_database_table_state(service_id: str) -> dict[str, Any]:
+    targets = SERVICE_DATABASE_TABLES.get(service_id, [])
+    if not targets:
+        return {"rows": [], "error": ""}
+    try:
+        stats = clickhouse_table_stats(targets)
+    except Exception as exc:
+        return {
+            "rows": [
+                {
+                    "database": "-",
+                    "table": "-",
+                    "role": "database check",
+                    "status": "error",
+                    "rows": "-",
+                    "bytes": "-",
+                    "latest_update": "-",
+                    "detail": redact_log_text(f"{type(exc).__name__}: {exc}"),
+                }
+            ],
+            "error": redact_log_text(f"{type(exc).__name__}: {exc}"),
+        }
+
+    rows: list[dict[str, Any]] = []
+    for target in targets[:SERVICE_TABLE_STATE_LIMIT]:
+        key = (target["database"], target["table"])
+        stat = stats.get(key)
+        rows.append(
+            {
+                "database": target["database"],
+                "table": target["table"],
+                "role": target.get("role", ""),
+                "status": table_state_status(stat),
+                "rows": format_int(stat["rows"]) if stat else "-",
+                "bytes": format_bytes(stat["bytes_on_disk"]) if stat else "-",
+                "latest_update": stat["latest_update"] if stat else "-",
+                "engine": stat["engine"] if stat else "-",
+            }
+        )
+    return {"rows": rows, "error": ""}
+
+
+def clickhouse_table_stats(targets: list[dict[str, str]]) -> dict[tuple[str, str], dict[str, Any]]:
+    pairs = ", ".join(f"({sql_string(target['database'])}, {sql_string(target['table'])})" for target in targets)
+    if not pairs:
+        return {}
+    query = f"""
+        SELECT
+            t.database,
+            t.name AS table,
+            t.engine,
+            toUInt64(ifNull(sum(p.rows), 0)) AS rows,
+            toUInt64(ifNull(sum(p.bytes_on_disk), 0)) AS bytes_on_disk,
+            ifNull(toString(max(p.modification_time)), '') AS latest_update
+        FROM system.tables AS t
+        LEFT JOIN system.parts AS p
+            ON p.database = t.database
+           AND p.table = t.name
+           AND p.active
+        WHERE (t.database, t.name) IN ({pairs})
+        GROUP BY
+            t.database,
+            t.name,
+            t.engine
+        FORMAT TSV
+    """
+    stats: dict[tuple[str, str], dict[str, Any]] = {}
+    for line in clickhouse_status_query(query).splitlines():
+        database, table, engine, rows, bytes_on_disk, latest_update = (line.split("\t") + ["", "", "", "", "", ""])[:6]
+        stats[(database, table)] = {
+            "database": database,
+            "table": table,
+            "engine": engine,
+            "rows": int(rows or "0"),
+            "bytes_on_disk": int(bytes_on_disk or "0"),
+            "latest_update": latest_update or "-",
+        }
+    return stats
+
+
+def clickhouse_status_query(sql: str) -> str:
+    req = urllib.request.Request(default_clickhouse_url().rstrip("/") + "/", data=sql.encode("utf-8"), method="POST")
+    user = default_clickhouse_user()
+    password = default_clickhouse_password()
+    if user:
+        req.add_header("X-ClickHouse-User", user)
+    if password:
+        req.add_header("X-ClickHouse-Key", password)
+    try:
+        with urllib.request.urlopen(req, timeout=SERVICE_STATUS_TIMEOUT_SECONDS) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"ClickHouse HTTP {exc.code} {exc.reason}: {body}") from exc
+
+
+def table_state_status(stat: dict[str, Any] | None) -> str:
+    if stat is None:
+        return "missing"
+    if int(stat.get("rows") or 0) <= 0:
+        return "empty"
+    return "ok"
+
+
+def format_int(value: int) -> str:
+    return f"{int(value):,}"
+
+
+def format_bytes(value: int) -> str:
+    size = float(value)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{value} B"
+
+
 def service_status_payload(service_id: str, *, include_recent: bool = True) -> dict[str, Any]:
     service = SERVICE_REGISTRY.get(service_id)
     if service is None:
@@ -1195,6 +1363,7 @@ def service_status_payload(service_id: str, *, include_recent: bool = True) -> d
     elif not online:
         status = "NOT_STARTED"
     runtime_logs = service_runtime_logs(normalized_snapshot, metrics, recent_payload, health_payload, service_id=service_id)
+    database_tables = service_database_table_state(service_id)
     return {
         "registry": {
             "id": service["id"],
@@ -1212,6 +1381,7 @@ def service_status_payload(service_id: str, *, include_recent: bool = True) -> d
         "metrics": metrics if isinstance(metrics, dict) else {},
         "recent": recent_payload if recent_payload is not None else {},
         "logs": runtime_logs,
+        "database_tables": database_tables,
         "errors": {
             "snapshot": snapshot_error,
             "health": health_error,

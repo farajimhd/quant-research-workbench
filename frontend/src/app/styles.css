@@ -780,7 +780,7 @@ button {
 
 .service-primary-grid {
   align-items: start;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(320px, 0.35fr) minmax(0, 0.65fr);
 }
 
 .service-two-column {
@@ -811,6 +811,10 @@ button {
 }
 
 .service-focus-panel {
+  height: 174px;
+}
+
+.service-database-state-panel {
   height: 174px;
 }
 
@@ -934,6 +938,129 @@ button {
   padding-top: 10px;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.service-db-state-wrap {
+  height: 135px;
+  min-width: 0;
+  overflow: auto;
+}
+
+.service-db-state-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.3;
+  min-width: 760px;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.service-db-state-table th,
+.service-db-state-table td {
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  padding: 6px 8px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-db-state-table th {
+  background: color-mix(in oklab, var(--surface-alt) 78%, var(--surface));
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  position: sticky;
+  text-transform: uppercase;
+  top: 0;
+  z-index: 1;
+}
+
+.service-db-state-table th:nth-child(1),
+.service-db-state-table td:nth-child(1) {
+  width: 92px;
+}
+
+.service-db-state-table th:nth-child(2),
+.service-db-state-table td:nth-child(2) {
+  width: 150px;
+}
+
+.service-db-state-table th:nth-child(4),
+.service-db-state-table td:nth-child(4) {
+  width: 110px;
+}
+
+.service-db-state-table th:nth-child(5),
+.service-db-state-table td:nth-child(5) {
+  width: 132px;
+}
+
+.service-db-state-row.ok {
+  background: color-mix(in oklab, var(--badge-success-bg) 35%, var(--surface));
+}
+
+.service-db-state-row.empty {
+  background: color-mix(in oklab, var(--badge-warning-bg) 35%, var(--surface));
+}
+
+.service-db-state-row.error {
+  background: color-mix(in oklab, var(--badge-danger-bg) 45%, var(--surface));
+}
+
+.service-db-state-row span {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  text-transform: uppercase;
+}
+
+.service-db-state-row.ok span {
+  background: var(--badge-success-bg);
+  border-color: var(--badge-success-border);
+  color: var(--badge-success-fg);
+}
+
+.service-db-state-row.empty span {
+  background: var(--badge-warning-bg);
+  border-color: var(--badge-warning-border);
+  color: var(--badge-warning-fg);
+}
+
+.service-db-state-row.error span {
+  background: var(--badge-danger-bg);
+  border-color: var(--badge-danger-border);
+  color: var(--badge-danger-fg);
+}
+
+.service-db-state-empty {
+  color: var(--muted-foreground);
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+}
+
+.service-db-state-empty strong {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.service-db-state-empty span,
+.service-db-state-error {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.service-db-state-empty.error strong,
+.service-db-state-error {
+  color: var(--danger);
 }
 
 .modal-panel.service-config-modal-panel {

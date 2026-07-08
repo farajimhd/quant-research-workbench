@@ -21,6 +21,7 @@ type ServiceRegistry = {
 type ServiceStatusPayload = {
   checked_at_utc: string;
   current_operation: Record<string, unknown>;
+  database_tables?: ServiceDatabaseTablePayload;
   errors: Record<string, unknown>;
   header: Record<string, unknown>;
   health: Record<string, unknown>;
@@ -36,6 +37,23 @@ type ServiceStatusPayload = {
 type ServicesStatusPayload = {
   checked_at_utc: string;
   services: ServiceStatusPayload[];
+};
+
+type ServiceDatabaseTablePayload = {
+  error?: string;
+  rows?: ServiceDatabaseTableRow[];
+};
+
+type ServiceDatabaseTableRow = {
+  bytes?: string;
+  database?: string;
+  detail?: string;
+  engine?: string;
+  latest_update?: string;
+  role?: string;
+  rows?: string;
+  status?: string;
+  table?: string;
 };
 
 type ServiceLogPayload = {
@@ -216,7 +234,7 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
   const taskRows = arrayRows(snapshot.tasks);
   const progressRows = arrayRows(snapshot.task_table_progress);
   const queueRows = arrayRows(snapshot.queues);
-  const tableRows = arrayRows(snapshot.configured_tables);
+  const configuredTableRows = arrayRows(snapshot.configured_tables);
   const recentRows = recentRowsFromPayload(service.recent);
   const focusStatus = statusInfo(service);
   return (
@@ -241,6 +259,9 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
             <p className="service-focus-message">{currentMessage(service) || "No current operation message reported."}</p>
           </div>
         </Panel>
+        <Panel className="service-database-state-panel" title="Database Table State">
+          <ServiceDatabaseTableState service={service} />
+        </Panel>
       </section>
       {configOpen ? (
         <Modal className="service-config-modal-panel" onClose={() => setConfigOpen(false)} title={`${service.registry.label} Run Configuration`}>
@@ -264,12 +285,60 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
       </section>
       <section className="service-two-column">
         <Panel title="Sources And Sinks"><DataTable rows={sourceRows} empty="No source coverage reported." /></Panel>
-        <Panel title="Configured Tables"><DataTable rows={tableRows} empty="No configured tables reported." /></Panel>
+        <Panel title="Configured Tables"><DataTable rows={configuredTableRows} empty="No configured tables reported." /></Panel>
       </section>
       <Panel title="Recent Items">
         <DataTable rows={recentRows} empty="No recent items reported." />
       </Panel>
     </>
+  );
+}
+
+function ServiceDatabaseTableState({ service }: { service: ServiceStatusPayload }) {
+  const rows = service.database_tables?.rows ?? [];
+  const error = service.database_tables?.error || "";
+  if (error && !rows.length) {
+    return (
+      <div className="service-db-state-empty error">
+        <strong>Database table state unavailable</strong>
+        <span>{error}</span>
+      </div>
+    );
+  }
+  if (!rows.length) {
+    return (
+      <div className="service-db-state-empty">
+        <strong>No direct database table contract reported.</strong>
+        <span>This service has no table state configured for the dashboard.</span>
+      </div>
+    );
+  }
+  return (
+    <div className="service-db-state-wrap">
+      <table className="service-db-state-table">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Role</th>
+            <th>Table</th>
+            <th>Rows</th>
+            <th>Latest</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr className={`service-db-state-row ${tableStateClass(row.status)}`} key={`${row.database}.${row.table}.${index}`}>
+              <td><span>{displayName(row.status || "unknown")}</span></td>
+              <td title={row.role || ""}>{row.role || "-"}</td>
+              <td title={`${row.database || "-"}.${row.table || "-"}`}>{row.database || "-"}.{row.table || "-"}</td>
+              <td>{row.rows || "-"}</td>
+              <td title={row.latest_update || ""}>{shortTableTimestamp(row.latest_update)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {error ? <p className="service-db-state-error">{error}</p> : null}
+    </div>
   );
 }
 
@@ -666,6 +735,21 @@ function statusPriority(status: ServiceLogItem["status"]) {
   if (status === "resolved") return 2;
   if (status === "log") return 3;
   return 4;
+}
+
+function tableStateClass(status: string | undefined) {
+  const normalized = String(status || "unknown").toLowerCase();
+  if (normalized === "ok") return "ok";
+  if (normalized === "empty") return "empty";
+  if (normalized === "missing" || normalized === "error") return "error";
+  return "unknown";
+}
+
+function shortTableTimestamp(value: string | undefined) {
+  if (!value || value === "-") return "-";
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return value;
+  return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(parsed));
 }
 
 function logStatusFilterOptions(items: ServiceLogItem[]): Array<{ count: number; status: ServiceLogStatusFilter }> {
