@@ -419,8 +419,8 @@ button {
 
 .services-header h1 {
   font-family: var(--font-display);
-  font-size: 28px;
-  font-weight: 650;
+  font-size: 25px;
+  font-weight: 560;
   line-height: 1.15;
   margin: 3px 0 6px;
 }
@@ -458,13 +458,13 @@ button {
 
 .services-top-tile {
   align-items: start;
-  background: color-mix(in oklab, var(--surface-alt) 68%, var(--surface));
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   display: grid;
   gap: 2px 9px;
   grid-template-columns: 18px minmax(0, 1fr);
-  min-height: 74px;
+  min-height: 68px;
   padding: 10px 12px;
 }
 
@@ -477,16 +477,16 @@ button {
 .services-top-tile span {
   color: var(--muted-foreground);
   font-size: 11px;
-  font-weight: 750;
-  letter-spacing: 0.06em;
+  font-weight: 560;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 .services-top-tile strong {
   color: var(--foreground);
   font-family: var(--font-mono);
-  font-size: 18px;
-  font-weight: 650;
+  font-size: 17px;
+  font-weight: 500;
   line-height: 1.15;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -521,26 +521,26 @@ button {
 
 .services-card-grid {
   display: grid;
-  gap: 14px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .service-card {
   background: var(--surface);
   border: 1px solid var(--surface-border);
-  border-left: 4px solid var(--badge-muted-border);
+  border-top: 3px solid var(--badge-muted-border);
   border-radius: 8px;
   color: var(--foreground);
   display: grid;
-  gap: 11px;
-  min-height: 226px;
-  padding: 14px 15px;
+  gap: 9px;
+  min-height: 168px;
+  padding: 12px;
   text-align: left;
 }
 
 .service-card:hover {
-  background: color-mix(in oklab, var(--primary) 3%, var(--surface));
-  border-color: color-mix(in oklab, var(--primary) 22%, var(--surface-border));
+  background: color-mix(in oklab, var(--primary) 1.5%, var(--surface));
+  border-color: color-mix(in oklab, var(--primary) 14%, var(--surface-border));
 }
 
 .service-card-topline,
@@ -559,7 +559,7 @@ button {
   color: var(--muted-foreground);
   display: flex;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 520;
   gap: 8px;
   min-width: 0;
   text-transform: uppercase;
@@ -571,8 +571,8 @@ button {
 }
 
 .service-card h2 {
-  font-size: 20px;
-  font-weight: 720;
+  font-size: 18px;
+  font-weight: 560;
   line-height: 1.15;
   margin: 0;
 }
@@ -582,7 +582,7 @@ button {
   font-size: 13px;
   line-height: 1.42;
   margin: 0;
-  min-height: 38px;
+  min-height: 36px;
   overflow: hidden;
 }
 
@@ -602,21 +602,21 @@ button {
 
 .service-card-facts div,
 .service-detail-summary div {
-  background: var(--surface-alt);
+  background: color-mix(in oklab, var(--surface-alt) 70%, var(--surface));
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
   display: grid;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
-  padding: 7px 9px;
+  padding: 6px 8px;
 }
 
 .service-card-facts span,
 .service-detail-summary span {
   color: var(--muted-foreground);
   font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.05em;
+  font-weight: 560;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
@@ -624,7 +624,7 @@ button {
 .service-detail-summary strong {
   color: var(--foreground);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 430;
   line-height: 1.2;
   max-width: 100%;
   overflow: hidden;
@@ -634,26 +634,26 @@ button {
 
 .service-card.running,
 .service-card.idle {
-  border-left-color: var(--badge-success-border);
+  border-top-color: var(--badge-success-border);
 }
 
 .service-card.working,
 .service-card.catching-up,
 .service-card.preflight,
 .service-card.starting {
-  border-left-color: var(--badge-info-border);
+  border-top-color: var(--badge-info-border);
 }
 
 .service-card.degraded,
 .service-card.blocked,
 .service-card.unknown {
-  border-left-color: var(--badge-warning-border);
+  border-top-color: var(--badge-warning-border);
 }
 
 .service-card.failed,
 .service-card.not-started,
 .service-card.stopping {
-  border-left-color: var(--badge-danger-border);
+  border-top-color: var(--badge-danger-border);
 }
 
 .service-status-badge {
@@ -661,13 +661,24 @@ button {
   border-radius: 999px;
   color: var(--badge-muted-fg);
   display: inline-flex;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 560;
+  letter-spacing: 0.03em;
   line-height: 1;
-  padding: 6px 8px;
+  padding: 5px 8px;
   text-transform: uppercase;
   white-space: nowrap;
+}
+
+.service-status-badge::before {
+  background: currentColor;
+  border-radius: 999px;
+  content: "";
+  height: 6px;
+  opacity: 0.75;
+  width: 6px;
 }
 
 .service-status-badge.running {
@@ -728,7 +739,7 @@ button {
 
 .service-panel-header h2 {
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 560;
   margin: 0;
 }
 
@@ -741,6 +752,7 @@ button {
 .service-focus strong {
   display: block;
   font-size: 16px;
+  font-weight: 560;
   margin-bottom: 4px;
 }
 
@@ -786,7 +798,7 @@ button {
   }
 
   .services-card-grid {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .service-detail-summary {
