@@ -502,6 +502,16 @@ button {
   white-space: nowrap;
 }
 
+.services-top-tile.market-time {
+  background: color-mix(in oklab, var(--badge-info-bg) 48%, var(--surface));
+  border-color: color-mix(in oklab, var(--badge-info-border) 72%, var(--border));
+}
+
+.services-top-tile.market-time svg,
+.services-top-tile.market-time strong {
+  color: var(--badge-info-fg);
+}
+
 .services-top-tile.market-open {
   background: color-mix(in oklab, var(--badge-success-bg) 78%, var(--surface));
   border-color: var(--badge-success-border);
@@ -770,7 +780,7 @@ button {
 
 .service-primary-grid {
   align-items: start;
-  grid-template-columns: minmax(320px, 0.65fr) minmax(0, 1.35fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .service-two-column {
@@ -800,37 +810,108 @@ button {
   margin: 0;
 }
 
+.service-focus-panel {
+  min-height: 208px;
+}
+
 .service-focus {
-  align-items: flex-start;
-  gap: 12px;
+  align-items: stretch;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 208px;
   padding: 14px;
 }
 
-.service-focus-body {
+.service-focus-status-row,
+.service-focus-main {
+  align-items: center;
   display: grid;
   gap: 10px;
   min-width: 0;
-  width: 100%;
 }
 
-.service-focus strong {
+.service-focus-status-row {
+  grid-template-columns: auto minmax(190px, 0.45fr);
+}
+
+.service-focus-main {
+  align-content: start;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.38fr);
+  padding-top: 14px;
+}
+
+.service-focus-phase {
+  color: var(--foreground);
   display: block;
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 560;
-  margin-bottom: 0;
+  line-height: 1.2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.service-focus p {
-  color: var(--muted-foreground);
-  font-size: 13px;
-  line-height: 1.45;
-  margin: 0;
-}
-
-.service-focus-facts {
+.service-focus-status-row > div,
+.service-focus-main > div {
+  background: color-mix(in oklab, var(--surface-alt) 70%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 6px;
   display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.service-focus-status-row > div span,
+.service-focus-main > div span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 560;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.service-focus-status-row > div strong,
+.service-focus-main > div strong {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 430;
+  line-height: 1.2;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-focus-message {
+  background: color-mix(in oklab, var(--surface-alt) 68%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  min-height: 62px;
+  padding: 8px 10px;
+}
+
+.service-focus-message span {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 10px;
+  font-weight: 560;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.service-focus-message p {
+  color: var(--muted-foreground);
+  display: -webkit-box;
+  font-size: 13px;
+  line-height: 1.35;
+  margin: 0;
+  max-width: 100%;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .service-log-panel {

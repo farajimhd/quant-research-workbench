@@ -126,7 +126,7 @@ function ServicesTopSummary({ now, services }: { now: Date; services: ServiceSta
   const counts = countStatuses(services);
   const market = fleetMarketStatus(services);
   const tiles = [
-    { label: "ET", value: formatZoneTime(now, "America/New_York"), sub: formatZoneDate(now, "America/New_York"), icon: Clock3 },
+    { label: "ET", value: formatZoneTime(now, "America/New_York"), sub: formatZoneDate(now, "America/New_York"), icon: Clock3, className: "market-time" },
     { label: "Vancouver", value: formatZoneTime(now, "America/Vancouver"), sub: formatZoneDate(now, "America/Vancouver"), icon: MapPin },
     { label: "UTC", value: formatZoneTime(now, "UTC"), sub: formatZoneDate(now, "UTC"), icon: CalendarDays },
     { label: "Market", value: market.status, sub: market.detail, icon: Activity, className: marketTileClass(market.status, market.detail) },
@@ -202,17 +202,19 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
   return (
     <>
       <section className="service-primary-grid">
-        <Panel title="Current Focus">
+        <Panel className="service-focus-panel" title="">
           <div className="service-focus">
-            <ServiceStatusBadge status={service.status} online={service.online} />
-            <div className="service-focus-body">
-              <strong>{phaseText(service)}</strong>
+            <div className="service-focus-status-row">
+              <ServiceStatusBadge status={service.status} online={service.online} />
+              <ServiceFact label="Checked" value={service.checked_at_utc ? formatTime(service.checked_at_utc) : "-"} />
+            </div>
+            <div className="service-focus-main">
+              <strong className="service-focus-phase">{phaseText(service)}</strong>
+              <ServiceFact label="Runtime" value={runtimeText(service)} />
+            </div>
+            <div className="service-focus-message">
+              <span>Message</span>
               <p>{currentMessage(service) || "No current operation message reported."}</p>
-              <div className="service-focus-facts">
-                <ServiceFact label="Status" value={statusInfo(service).label} />
-                <ServiceFact label="Checked" value={service.checked_at_utc ? formatTime(service.checked_at_utc) : "-"} />
-                <ServiceFact label="Runtime" value={runtimeText(service)} />
-              </div>
             </div>
           </div>
         </Panel>
@@ -322,12 +324,14 @@ function ConfigItemView({ item }: { item: ConfigItem }) {
   );
 }
 
-function Panel({ children, title }: { children: ReactNode; title: string }) {
+function Panel({ children, className = "", title }: { children: ReactNode; className?: string; title: string }) {
   return (
-    <section className="service-panel">
-      <div className="service-panel-header">
-        <h2>{title}</h2>
-      </div>
+    <section className={`service-panel ${className}`}>
+      {title ? (
+        <div className="service-panel-header">
+          <h2>{title}</h2>
+        </div>
+      ) : null}
       {children}
     </section>
   );
