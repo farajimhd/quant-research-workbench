@@ -261,7 +261,7 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
 
 function ServiceErrorLogPanel({ pageError, service }: { pageError: string; service: ServiceStatusPayload }) {
   const items = collectErrorLogItems(pageError, service);
-  const activeItems = items.filter((item) => item.status !== "clear");
+  const activeItems = items.filter((item) => item.status === "active" || item.status === "retrying");
   return (
     <Panel title="Errors And Logs">
       <div className={`service-log-panel ${activeItems.length ? "has-active" : ""}`}>
@@ -273,10 +273,15 @@ function ServiceErrorLogPanel({ pageError, service }: { pageError: string; servi
           </div>
         </div>
         <div className="service-log-list">
-          {(items.length ? items : [{ key: "state", status: "clear", value: "No errors or warnings reported." }]).slice(0, 8).map((item) => (
-            <div className={`service-log-item ${item.status}`} key={`${item.key}-${item.value}`}>
-              <span>{displayName(item.key)}</span>
-              <strong>{formatValue(item.key, item.value)}</strong>
+          {(items.length ? items : [{ detail: "No errors or warnings reported.", key: "service", status: "clear" as const, title: "Clear" }]).slice(0, 12).map((item, index) => (
+            <div className={`service-log-item ${item.status}`} key={`${item.key}-${index}`}>
+              <div className="service-log-item-top">
+                <span>{displayName(item.key)}</span>
+                <small>{displayName(item.status)}</small>
+              </div>
+              <strong title={item.title}>{item.title}</strong>
+              <p title={item.detail}>{item.detail}</p>
+              {item.meta ? <small className="service-log-meta">{item.meta}</small> : null}
             </div>
           ))}
         </div>
@@ -364,17 +369,126 @@ type ConfigGroup = {
   title: string;
 };
 
+type ServiceLogItem = {
+  detail: string;
+  key: string;
+  meta?: string;
+  status: "active" | "clear" | "resolved" | "retrying";
+  title: string;
+};
+
 function collectErrorLogItems(pageError: string, service: ServiceStatusPayload) {
-  const items: Array<{ key: string; status: "active" | "clear"; value: unknown }> = [];
-  if (pageError) items.push({ key: "dashboard_api", status: "active", value: pageError });
-  for (const row of objectRows(service.snapshot?.error_state, service.errors)) {
-    const value = formatValue(row.key, row.value);
-    const normalized = value.toLowerCase();
-    const clear = !value || value === "-" || normalized === "ok" || normalized === "none" || normalized === "false" || normalized.includes("no active errors");
-    items.push({ key: row.key, status: clear ? "clear" : "active", value: row.value });
+  const items: ServiceLogItem[] = [];
+  if (pageError) items.push({ detail: pageError, key: "dashboard_api", status: "active", title: "Dashboard API error" });
+
+  for (const [key, value] of Object.entries(service.errors ?? {})) {
+    if (isEmptyErrorValue(value)) continue;
+    items.push({ detail: formatValue(key, value), key, status: "active", title: "Service endpoint error" });
   }
-  if (!items.length) items.push({ key: "service", status: "clear", value: "No errors or warnings reported." });
-  return items;
+
+  const errorState = isRecord(service.snapshot?.error_state) ? service.snapshot.error_state : {};
+  for (const record of errorRecordRows(errorState.latest_active_errors, "active")) items.push(record);
+  for (const record of errorRecordRows(errorState.latest_resolved_errors, "resolved")) items.push(record);
+
+  const warningState = isRecord(service.snapshot?.warnings_errors) ? service.snapshot.warnings_errors : {};
+  for (const [key, value] of Object.entries(warningState)) {
+    if (isEmptyErrorValue(value)) continue;
+    items.push({ detail: formatValue(key, value), key, status: "active", title: displayName(key) });
+  }
+
+  for (const row of errorLikePayloadRows(service.snapshot?.service_specific, "service_specific")) items.push(row);
+  for (const row of errorLikePayloadRows(service.metrics, "metrics")) items.push(row);
+
+  for (const row of nonZeroErrorCounters(errorState)) items.push(row);
+  const deduped = dedupeLogItems(items);
+  if (!deduped.length) deduped.push({ detail: "No errors or warnings reported.", key: "service", status: "clear", title: "Clear" });
+  return deduped;
+}
+
+function errorRecordRows(value: unknown, fallbackStatus: "active" | "resolved"): ServiceLogItem[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord).map((record) => {
+    const rawStatus = String(record.status || fallbackStatus).toLowerCase();
+    const status = rawStatus.includes("retry") ? "retrying" : rawStatus.includes("resolved") ? "resolved" : fallbackStatus;
+    const severity = String(record.severity || record.category || "error");
+    const title = String(record.message || record.safe_detail || record.error_id || "Service error");
+    const metaParts = [
+      record.phase ? `phase=${record.phase}` : "",
+      record.task ? `task=${record.task}` : "",
+      record.provider ? `provider=${record.provider}` : "",
+      record.table ? `table=${record.table}` : "",
+      record.item_id ? `item=${record.item_id}` : "",
+      record.last_seen_utc ? `last=${record.last_seen_utc}` : "",
+      record.resolved_at_utc ? `resolved=${record.resolved_at_utc}` : "",
+    ].filter(Boolean);
+    return {
+      detail: String(record.safe_detail || record.message || record.error_id || "-"),
+      key: severity,
+      meta: metaParts.join("  "),
+      status,
+      title,
+    };
+  });
+}
+
+function nonZeroErrorCounters(errorState: Record<string, unknown>): ServiceLogItem[] {
+  const counterKeys = ["active_critical_count", "active_error_count", "active_warning_count", "retrying_count", "retry_exhausted_count", "manual_action_count"];
+  return counterKeys.flatMap((key) => {
+    const value = Number(errorState[key] ?? 0);
+    if (!Number.isFinite(value) || value <= 0) return [];
+    return [{
+      detail: `${displayName(key)} = ${formatCompactNumber(value)}`,
+      key,
+      status: key === "retrying_count" ? "retrying" as const : "active" as const,
+      title: "Non-zero error counter without detailed records",
+    }];
+  });
+}
+
+function errorLikePayloadRows(value: unknown, source: string): ServiceLogItem[] {
+  if (!isRecord(value)) return [];
+  const rows: ServiceLogItem[] = [];
+  for (const [key, item] of Object.entries(value)) {
+    const normalized = key.toLowerCase();
+    if (!/error|warning|failure|fail/.test(normalized) || isEmptyErrorValue(item)) continue;
+    if (Array.isArray(item)) {
+      for (const entry of item) {
+        if (isEmptyErrorValue(entry)) continue;
+        if (isRecord(entry)) {
+          rows.push(...errorRecordRows([entry], normalized.includes("resolved") ? "resolved" : "active"));
+        } else {
+          rows.push({ detail: formatValue(key, entry), key, meta: `source=${source}`, status: "active", title: displayName(key) });
+        }
+      }
+    } else {
+      rows.push({ detail: formatValue(key, item), key, meta: `source=${source}`, status: "active", title: displayName(key) });
+    }
+  }
+  return rows;
+}
+
+function dedupeLogItems(items: ServiceLogItem[]) {
+  const seen = new Set<string>();
+  const rows: ServiceLogItem[] = [];
+  for (const item of items) {
+    const key = `${item.status}|${item.key}|${item.title}|${item.detail}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(item);
+  }
+  return rows;
+}
+
+function isEmptyErrorValue(value: unknown) {
+  if (value === undefined || value === null || value === "" || value === false) return true;
+  if (typeof value === "number") return value === 0;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return !normalized || normalized === "-" || normalized === "ok" || normalized === "none" || normalized === "false" || normalized === "[]" || normalized.includes("no active errors");
+  }
+  if (isRecord(value)) return Object.keys(value).length === 0;
+  return false;
 }
 
 function configurationGroups(service: ServiceStatusPayload): ConfigGroup[] {

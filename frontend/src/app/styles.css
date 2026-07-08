@@ -720,7 +720,8 @@ button {
 }
 
 .service-primary-grid {
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.9fr);
+  align-items: start;
+  grid-template-columns: minmax(320px, 0.65fr) minmax(0, 1.35fr);
 }
 
 .service-two-column {
@@ -813,19 +814,17 @@ button {
 .service-log-list {
   display: grid;
   gap: 6px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
 }
 
 .service-log-item {
-  align-items: baseline;
   background: color-mix(in oklab, var(--surface-alt) 62%, var(--surface));
   border: 1px solid var(--border);
   border-radius: 6px;
   display: grid;
-  gap: 8px;
-  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 5px;
   min-width: 0;
-  padding: 7px 9px;
+  padding: 9px 10px;
 }
 
 .service-log-item.active {
@@ -833,7 +832,27 @@ button {
   border-color: var(--badge-danger-border);
 }
 
-.service-log-item span {
+.service-log-item.retrying {
+  background: var(--badge-warning-bg);
+  border-color: var(--badge-warning-border);
+}
+
+.service-log-item.resolved {
+  background: var(--badge-success-bg);
+  border-color: var(--badge-success-border);
+}
+
+.service-log-item-top {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.service-log-item-top span,
+.service-log-item-top small,
+.service-log-meta {
   color: var(--muted-foreground);
   font-size: 11px;
   letter-spacing: 0.03em;
@@ -842,9 +861,24 @@ button {
 
 .service-log-item strong {
   color: var(--foreground);
-  font-size: 12.5px;
-  font-weight: 430;
+  font-size: 13px;
+  font-weight: 520;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-log-item p {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  line-height: 1.35;
+  margin: 0;
+  max-height: 3.4em;
+  overflow: hidden;
+}
+
+.service-log-meta {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -853,6 +887,7 @@ button {
 .service-config-panel {
   display: grid;
   gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
   padding: 12px;
 }
 
@@ -875,13 +910,14 @@ button {
 .service-config-items {
   display: grid;
   gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
 }
 
 .service-config-item {
   align-items: baseline;
   display: grid;
   gap: 10px;
-  grid-template-columns: 140px minmax(0, 1fr);
+  grid-template-columns: 120px minmax(0, 1fr);
   min-width: 0;
 }
 
