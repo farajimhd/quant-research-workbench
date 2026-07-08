@@ -255,7 +255,7 @@ numeric value in the model guide/config instead of reusing a symbolic length.
 | `O` | Number of completed daily-bar offsets requested for ticker/global bar context. |
 | `S` | Number of configured global symbols in global daily-bar context. |
 | `H` | Number of intraday future horizons in `future_intraday_bar_horizons`. |
-| `D` | Number of daily corporate-action label horizons in `corporate_action_label_days`. |
+| `D` | Number of daily corporate-action label horizons in `corporate_action_label_days`; current default is `D=5` for `+1d,+2d,+3d,+7d,+28d`. |
 | `F` | Number of raw event fields in loader-level event tensors before the model adapter splits them into atomic event inputs. |
 | `I` | Number of as-of external-context items selected for a text group; the value is group-specific, for example ticker news, market news, or SEC filings. |
 | `C` | Number of text chunks per external-context item; the value is group-specific. |
@@ -431,12 +431,12 @@ by `future_intraday_bar_horizons`; corporate-action query tokens are keyed by
 | `luld_limit_state_logit` | `condition_luld_limit_state_flag` | `[B, H]` | bool target | masked BCE-with-logits |
 | `ticker_news_arrival_logit` | `ticker_news_arrival_flag` | `[B, H]` | bool target | masked BCE-with-logits |
 | `sec_filing_arrival_logit` | `sec_filing_arrival_flag` | `[B, H]` | bool target | masked BCE-with-logits |
-| `future_split_logit` | `future_split_flag` | `[B, D]` | bool target | daily BCE-with-logits |
-| `future_reverse_split_logit` | `future_reverse_split_flag` | `[B, D]` | bool target | daily BCE-with-logits |
-| `future_forward_split_logit` | `future_forward_split_flag` | `[B, D]` | bool target | daily BCE-with-logits |
-| `future_dividend_ex_logit` | `future_dividend_ex_flag` | `[B, D]` | bool target | daily BCE-with-logits |
-| `future_special_dividend_ex_logit` | `future_special_dividend_ex_flag` | `[B, D]` | bool target | daily BCE-with-logits |
-| `future_any_corporate_action_logit` | `future_any_corporate_action_flag` | `[B, D]` | bool target | daily BCE-with-logits |
+| `future_split_logit` | `future_split_flag` | `[B, D=5]` | bool target at `+1d,+2d,+3d,+7d,+28d` | daily BCE-with-logits |
+| `future_reverse_split_logit` | `future_reverse_split_flag` | `[B, D=5]` | bool target at `+1d,+2d,+3d,+7d,+28d` | daily BCE-with-logits |
+| `future_forward_split_logit` | `future_forward_split_flag` | `[B, D=5]` | bool target at `+1d,+2d,+3d,+7d,+28d` | daily BCE-with-logits |
+| `future_dividend_ex_logit` | `future_dividend_ex_flag` | `[B, D=5]` | bool target at `+1d,+2d,+3d,+7d,+28d` | daily BCE-with-logits |
+| `future_special_dividend_ex_logit` | `future_special_dividend_ex_flag` | `[B, D=5]` | bool target at `+1d,+2d,+3d,+7d,+28d` | daily BCE-with-logits |
+| `future_any_corporate_action_logit` | `future_any_corporate_action_flag` | `[B, D=5]` | bool target at `+1d,+2d,+3d,+7d,+28d` | daily BCE-with-logits |
 
 Do not train redundant mid-price labels by default. If an experiment wants a
 mid or spread target, it should be derived explicitly in the model adapter and
@@ -447,6 +447,148 @@ setting.
 
 The v3 model is a set of independent encoders plus a fusion transformer and
 horizon heads.
+
+### Current Implemented Architecture
+
+This section describes the code that is currently implemented in
+`research/temporal_event_model/v3/model.py`, `data.py`, and `losses.py`.
+It is intentionally more concrete than the research design notes below.
+
+Default dimensions:
+
+| Name | Current value | Meaning |
+| --- | ---: | --- |
+| `d_model` | 256 | Hidden width for every modality token and fusion layer. |
+| `event_stream_length` | 1024 | Raw event rows ending at each origin. |
+| `event_feature_count` | 24 | Raw event feature columns consumed by the event numeric projection. |
+| `H` | 26 | Intraday future/backward bar horizons. |
+| `D` | 5 | Corporate-action daily horizons: `+1d`, `+2d`, `+3d`, `+7d`, `+28d`. |
+| `ticker_news_items` | 8 | Latest as-of ticker news items. |
+| `market_news_items` | 16 | Latest as-of market/news items. |
+| `sec_filing_items` | 4 | Latest as-of SEC filing text items. |
+| `xbrl_max_items` | 4096 | Latest as-of XBRL rows. |
+| `corporate_action_max_items` | 128 | Latest as-of corporate-action rows. |
+
+Current forward path:
+
+```text
+loader batch
+  -> batch_to_torch(...)
+  -> EventEncoder(raw_event_stream, raw_event_mask)
+  -> BarContextEncoder(ticker_intraday_bars)
+  -> BarContextEncoder(ticker_daily_bars)
+  -> BarContextEncoder(global_daily_bars)
+  -> TextContextEncoder(ticker_news)
+  -> TextContextEncoder(market_news)
+  -> TextContextEncoder(sec_filings)
+  -> XbrlEncoder(xbrl_inputs)
+  -> CorporateActionEncoder(corporate_action_inputs)
+  -> stack 9 modality tokens [B, 9, 256]
+  -> add learned modality embeddings
+  -> 3-layer fusion TransformerEncoder
+  -> mean pool across 9 fused modality tokens
+  -> intraday query MLP for H=26 intraday horizons
+  -> daily query MLP for D=5 corporate-action horizons
+  -> typed output heads
+```
+
+Current model diagram:
+
+```mermaid
+flowchart LR
+  B["Daily-index loader batch"] --> E["EventEncoder"]
+  B --> IB["BarContextEncoder: ticker_intraday_bars"]
+  B --> DB["BarContextEncoder: ticker_daily_bars"]
+  B --> GB["BarContextEncoder: global_daily_bars"]
+  B --> TN["TextContextEncoder: ticker_news"]
+  B --> MN["TextContextEncoder: market_news"]
+  B --> SEC["TextContextEncoder: sec_filings"]
+  B --> X["XbrlEncoder"]
+  B --> CA["CorporateActionEncoder"]
+
+  E --> F["Fusion Transformer over 9 tokens"]
+  IB --> F
+  DB --> F
+  GB --> F
+  TN --> F
+  MN --> F
+  SEC --> F
+  X --> F
+  CA --> F
+
+  F --> P["Mean pool fused modality tokens"]
+  P --> IQ["Intraday queries H=26"]
+  P --> DQ["Daily corporate queries D=5"]
+  IQ --> FB["Future trade/bid/ask bar heads"]
+  IQ --> IL["Condition and arrival logits"]
+  DQ --> CL["Corporate-action logits"]
+```
+
+Important current behavior:
+
+- The model currently compresses each modality to exactly one `[B, 256]` token
+  before fusion.
+- `input_availability` is emitted by the loader and passed to torch, but the
+  current `model.py` does not yet use it as a fusion mask or missing-modality
+  token selector. Missing modality tensors are therefore represented by their
+  zero/masked pooled encoder output plus the learned modality embedding.
+- No z-score normalization is currently applied inside the model. The only
+  implemented normalizations/transforms are the explicit transforms listed in
+  the encoder and loss tables below.
+- Price targets are normalized in the loss, not in the loader: future price
+  levels are converted to basis-point deltas versus the origin reference price.
+- Size/count targets are transformed in the loss with `log1p`.
+
+### Current Encoder Contracts
+
+| Encoder | Input representation | Implemented transform | Output |
+| --- | --- | --- | --- |
+| `EventEncoder` | `raw_event_stream float32 [B,1024,24]`, `raw_event_mask bool [B,1024]`, and `event_feature_names` | Numeric path: `nan_to_num(raw_event_stream)` then `Linear(24,256)`. Categorical path extracts `event_meta`, price-scale bits, tape bits, exchanges, and `condition_token_1..5`; embeds each category; condition token embeddings are averaged. Numeric and categorical paths are concatenated, passed through MLP, plus learned position embedding, then a 4-layer TransformerEncoder and masked mean. No z-score or price decoding is applied inside this encoder. | One event modality token `[B,256]`. |
+| `BarContextEncoder` for `ticker_intraday_bars` | Family payloads `trade_values [B,H,6]`, `quote_bid_values [B,H,9]`, `quote_ask_values [B,H,9]`, family masks, family time features `[B,H,9]` | For each family, value features are padded/trimmed to width 9, concatenated with time features, projected by MLP, plus learned family embedding. Family/horizon rows are flattened and masked-mean pooled. No price normalization or z-score is applied here. | One intraday-bar modality token `[B,256]`. |
+| `BarContextEncoder` for `ticker_daily_bars` | Same family payload pattern with daily offsets `O=8`: `[B,O,*]` | Same as intraday bars. Raw completed daily bar values and time features are projected directly. | One ticker-daily-bar modality token `[B,256]`. |
+| `BarContextEncoder` for `global_daily_bars` | Same family payload pattern with symbols and offsets: `[B,S,O,*]` | Same as ticker bars. Symbol ids are not currently embedded by `model.py`; the current encoder consumes flattened family values, masks, and time features. | One global-daily-bar modality token `[B,256]`. |
+| `TextContextEncoder` for ticker news | `embeddings [B,8,2,1024]`, `chunk_mask [B,8,2]`, `item_mask [B,8]`, `item_time_features [B,8,13]` | Each Qwen chunk embedding is `LayerNorm(1024) -> Linear(1024,256) -> GELU -> Dropout`. Chunks are masked-mean pooled into items. Item vectors are concatenated with item time features and passed through MLP. Items are masked-mean pooled. The model does not run Qwen and does not z-score embeddings. | One ticker-news modality token `[B,256]`. |
+| `TextContextEncoder` for market news | `embeddings [B,16,2,1024]`, masks, item time features | Same text encoder and transforms as ticker news. | One market-news modality token `[B,256]`. |
+| `TextContextEncoder` for SEC filings | `embeddings [B,4,8,1024]`, masks, item time features | Same text encoder and transforms as ticker news. | One SEC-text modality token `[B,256]`. |
+| `XbrlEncoder` | `value [B,4096]`, `mask [B,4096]`, `mapping_confidence`, availability time features `[B,4096,13]`, period-end time features `[B,4096,7]`, and category id fields | Numeric row input is `value`, `log1p(abs(value))`, and mapping confidence. Time features are appended. Fiscal/category ids are embedded with a hash embedding and concatenated. Row MLP projects each row, then masked mean pools rows. No z-score or per-tag/unit normalization is currently applied. | One XBRL modality token `[B,256]`. |
+| `CorporateActionEncoder` | `numeric_features [B,128,13]`, `mask [B,128]`, availability time features `[B,128,13]`, effective time features `[B,128,13]`, action/dividend/currency/frequency ids | Numeric corporate-action features are concatenated with availability/effective time features and four category embeddings, passed through row MLP, then masked mean pooled. No z-score is currently applied. IPO-like action types can participate as historical context if present in the corporate-action input rows, but IPO is not a prediction target. | One corporate-action modality token `[B,256]`. |
+
+### Current Output Heads And Target Transforms
+
+The model uses separate query sets:
+
+| Query set | Shape | Heads |
+| --- | --- | --- |
+| Intraday queries | `[B,H=26,256]` | future bar regression heads plus condition/news/SEC arrival classification heads. |
+| Daily corporate-action queries | `[B,D=5,256]` | one binary head per corporate-action target at `+1d,+2d,+3d,+7d,+28d`. |
+
+Current output heads:
+
+| Output group | Model output | Target | Current loss transform |
+| --- | --- | --- | --- |
+| Future trade bars | `future_bar_values["trade"] [B,H,6]` | `future_bar_values["trade"]` | Price fields `open,close,high,low` are converted in `losses.py` to bps deltas versus the origin trade price decoded from the last event's scale bits. Size is `log1p(max(size_sum,0))`; count is `log1p(event_count)`. Masked Smooth L1. |
+| Future quote bid bars | `future_bar_values["quote_bid"] [B,H,9]` | `future_bar_values["quote_bid"]` | Price fields are converted to bps deltas versus the origin bid reference decoded from event prices. Quote size fields use `log1p`; event count uses `log1p`. Masked Smooth L1. |
+| Future quote ask bars | `future_bar_values["quote_ask"] [B,H,9]` | `future_bar_values["quote_ask"]` | Price fields are converted to bps deltas versus the origin ask reference decoded from event prices. Quote size fields use `log1p`; event count uses `log1p`. Masked Smooth L1. |
+| Intraday condition flags | one logit tensor `[B,H]` per `condition_halt_pause_flag`, `condition_resume_flag`, `condition_news_risk_flag`, `condition_luld_limit_state_flag` | `intraday_labels[...]` | Masked BCE-with-logits using `intraday_labels.available`. |
+| External arrival flags | one logit tensor `[B,H]` per `ticker_news_arrival_flag`, `sec_filing_arrival_flag` | `intraday_labels[...]` | Masked BCE-with-logits using `intraday_labels.available`. |
+| Corporate-action daily flags | one logit tensor `[B,D=5]` per `future_split_flag`, `future_reverse_split_flag`, `future_forward_split_flag`, `future_dividend_ex_flag`, `future_special_dividend_ex_flag`, `future_any_corporate_action_flag` | `corporate_action_labels[...]` | Dense BCE-with-logits. A false value is a valid target meaning no such event in that horizon. |
+
+### Current Versus Intended Gaps
+
+The current implementation is intentionally compact and efficient, but several
+items below are design targets rather than implemented behavior:
+
+- The guide's atomic tables mention optional normalization/z-scoring. Current
+  `model.py` does not apply z-score normalization to event, bar, XBRL, or
+  corporate-action inputs.
+- The current fusion path does not consume `input_availability` as an attention
+  mask. This should be added if missing modalities start to behave like
+  misleading learned modality embeddings.
+- Each modality is reduced to one token before fusion. This is efficient but
+  limits item-level cross-attention. A later version can preserve selected
+  item tokens for news, XBRL, corporate actions, or bars when speed allows.
+- Global daily-bar symbol ids and offset ids are documented in the atomic
+  input table, but the current `BarContextEncoder` does not embed them.
 
 ### Research-Backed Architecture Choice
 
