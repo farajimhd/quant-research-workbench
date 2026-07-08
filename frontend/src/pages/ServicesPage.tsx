@@ -333,9 +333,17 @@ type ServiceWorkRow = {
   status: string;
 };
 
+type ServiceWorkGroup = {
+  description: string;
+  id: string;
+  rows: ServiceWorkRow[];
+  status: string;
+  title: string;
+};
+
 function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
-  const rows = serviceWorkRows(service);
-  const counts = rows.reduce(
+  const groups = serviceWorkGroups(service);
+  const counts = groups.reduce(
     (summary, row) => {
       const status = workStatusClass(row.status);
       summary.total += 1;
@@ -349,40 +357,59 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
   return (
     <Panel className="service-work-plan-panel" title="Service Work Plan">
       <div className="service-work-plan-summary">
-        <WorkPlanSummaryItem label="Configured" value={String(counts.total)} />
-        <WorkPlanSummaryItem label="Running" value={String(counts.running)} />
+        <WorkPlanSummaryItem label="Responsibilities" value={String(counts.total)} />
+        <WorkPlanSummaryItem label="Active" value={String(counts.running)} />
         <WorkPlanSummaryItem label="Healthy" value={String(counts.healthy)} />
         <WorkPlanSummaryItem label="Needs Attention" value={String(counts.needsAttention)} tone={counts.needsAttention ? "warn" : "ok"} />
       </div>
-      <div className="service-work-plan-table-wrap">
-        <table className="service-work-plan-table">
+      <div className="service-work-plan-groups">
+        {groups.map((group) => (
+          <ServiceWorkGroupCard group={group} key={group.id} />
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function ServiceWorkGroupCard({ group }: { group: ServiceWorkGroup }) {
+  const rows = group.rows.length ? group.rows : [{ detail: "No reported activity for this responsibility yet.", kind: "service", name: group.title, progress: "-", rows: "-", schedule: "-", status: "waiting" }];
+  return (
+    <section className={`service-work-card ${workStatusClass(group.status)}`}>
+      <div className="service-work-card-header">
+        <div>
+          <h3>{group.title}</h3>
+          <p>{group.description}</p>
+        </div>
+        <span className={`service-work-status ${workStatusClass(group.status)}`}>{displayName(group.status || "waiting")}</span>
+      </div>
+      <div className="service-work-card-table-wrap">
+        <table className="service-work-card-table">
           <thead>
             <tr>
-              <th>Task</th>
-              <th>Type</th>
+              <th>Work</th>
               <th>Status</th>
               <th>Progress</th>
               <th>Rows</th>
-              <th>Schedule</th>
               <th>Detail</th>
             </tr>
           </thead>
           <tbody>
-            {(rows.length ? rows : [{ detail: "This service has not reported configured task or source work yet.", kind: "service", name: service.registry.label, progress: "-", rows: "-", schedule: "-", status: "waiting" }]).map((row, index) => (
+            {rows.slice(0, 6).map((row, index) => (
               <tr key={`${row.kind}-${row.name}-${index}`}>
-                <td title={row.name}>{row.name}</td>
-                <td>{displayName(row.kind)}</td>
-                <td><span className={`service-work-status ${workStatusClass(row.status)}`}>{displayName(row.status || "waiting")}</span></td>
+                <td title={`${row.kind}: ${row.name}`}>
+                  <strong>{row.name}</strong>
+                  <span>{displayName(row.kind)}</span>
+                </td>
+                <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status || "waiting")}</span></td>
                 <td>{row.progress}</td>
                 <td>{row.rows}</td>
-                <td title={row.schedule}>{row.schedule}</td>
-                <td title={row.detail}>{row.detail}</td>
+                <td title={`${row.schedule !== "-" ? `${row.schedule}; ` : ""}${row.detail}`}>{row.detail}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-    </Panel>
+    </section>
   );
 }
 
@@ -1126,12 +1153,237 @@ function runtimeText(service: ServiceStatusPayload) {
 function serviceWorkRows(service: ServiceStatusPayload): ServiceWorkRow[] {
   const snapshot = service.snapshot ?? {};
   const rows: ServiceWorkRow[] = [];
+  rows.push(...arrayRows(snapshot.dependencies).map((row) => serviceWorkRow(row, "preflight")));
+  if (isRecord(snapshot.coverage)) rows.push(serviceWorkRow({ ...snapshot.coverage, name: "coverage manifest" }, "coverage"));
   rows.push(...arrayRows(snapshot.tasks).map((row) => serviceWorkRow(row, "task")));
   rows.push(...arrayRows(snapshot.task_table_progress).map((row) => serviceWorkRow(row, "table")));
   rows.push(...arrayRows(snapshot.queues).map((row) => serviceWorkRow(row, "queue")));
   rows.push(...arrayRows(snapshot.sources_sinks).map((row) => serviceWorkRow(row, "source")));
   rows.push(...arrayRows(snapshot.configured_tables).map((row) => serviceWorkRow(row, "configured table")));
   return dedupeWorkRows(rows).sort((a, b) => workStatusRank(a.status) - workStatusRank(b.status) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+}
+
+function serviceWorkGroups(service: ServiceStatusPayload): ServiceWorkGroup[] {
+  const rows = serviceWorkRows(service);
+  const specs = serviceResponsibilitySpecs(service.registry.id);
+  const groups = specs.map((spec) => ({ ...spec, rows: [] as ServiceWorkRow[], status: "waiting" }));
+  const fallback = groups[groups.length - 1];
+  for (const row of rows) {
+    const text = workRowSearchText(row);
+    const group = groups.find((candidate) => candidate.match.some((pattern) => pattern.test(text))) ?? fallback;
+    group.rows.push(row);
+  }
+  return groups.map((group) => ({
+    description: group.description,
+    id: group.id,
+    rows: group.rows,
+    status: groupStatus(group.rows),
+    title: group.title,
+  }));
+}
+
+type ServiceResponsibilitySpec = {
+  description: string;
+  id: string;
+  match: RegExp[];
+  title: string;
+};
+
+function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibilitySpec[] {
+  const common = {
+    other: {
+      description: "Additional reported work that does not map cleanly to a primary responsibility.",
+      id: "other",
+      match: [/./],
+      title: "Other Reported Work",
+    },
+    preflight: {
+      description: "Dependency checks, provider reachability, credentials, storage, and market-calendar readiness.",
+      id: "preflight",
+      match: [/preflight|dependenc|config|health|clickhouse|artifact|storage|market status|calendar|credential|auth/],
+      title: "Preflight And Dependencies",
+    },
+  } satisfies Record<string, ServiceResponsibilitySpec>;
+
+  const specs: Record<ServiceId, ServiceResponsibilitySpec[]> = {
+    news: [
+      common.preflight,
+      {
+        description: "Coverage bootstrap, gap detection, gap fill, and historical catch-up for Benzinga news.",
+        id: "coverage",
+        match: [/coverage|manifest|gap|backfill|catch.?up|initial|bootstrap|historical/],
+        title: "Coverage, Gap Fill, Backfill",
+      },
+      {
+        description: "Benzinga polling cadence, raw item intake, duplicate handling, and live news memory updates.",
+        id: "live",
+        match: [/poll|benzinga|provider|news|raw|duplicate|skip|live|latest/],
+        title: "Live Benzinga Update",
+      },
+      {
+        description: "URL handling, external text/PDF enrichment, canonicalization, ticker links, and quality flags.",
+        id: "processing",
+        match: [/enrich|canonical|normaliz|url|pdf|extract|text|ticker|quality|process|article/],
+        title: "Enrichment And Canonical Rows",
+      },
+      {
+        description: "Database publishing for normalized rows, ticker links, coverage rows, and runtime logs.",
+        id: "publish",
+        match: [/publish|insert|write|database|table|sink|clickhouse|persist/],
+        title: "Database Publishing",
+      },
+      common.other,
+    ],
+    sec: [
+      common.preflight,
+      {
+        description: "SEC coverage manifest, current-day gaps, historical archive backfill, and bulk catch-up state.",
+        id: "coverage",
+        match: [/coverage|manifest|gap|backfill|catch.?up|archive|bulk|submissions|companyfacts|initial|historical/],
+        title: "Coverage, Gap Fill, Backfill",
+      },
+      {
+        description: "SEC current feed polling, rate-limit aware retries, filing discovery, and duplicate suppression.",
+        id: "live",
+        match: [/poll|feed|rss|current|live|filing|accession|duplicate|skip|sec/],
+        title: "Live SEC Feed Update",
+      },
+      {
+        description: "Filing text extraction, document parsing, XBRL companyfacts/frames, and canonical filing rows.",
+        id: "processing",
+        match: [/xbrl|companyfact|frame|document|filing text|parse|extract|text|normaliz|canonical|process/],
+        title: "Filing Text And XBRL Processing",
+      },
+      {
+        description: "Database writes, audit checks, integrity warnings, and repair status for SEC tables.",
+        id: "publish",
+        match: [/publish|insert|write|database|table|audit|integrity|repair|orphan|persist/],
+        title: "Database Publishing And Audit",
+      },
+      common.other,
+    ],
+    qmd: [
+      common.preflight,
+      {
+        description: "Massive websocket subscriptions, trade/quote event intake, connection health, and live stream state.",
+        id: "live",
+        match: [/websocket|subscription|ingest|trade|quote|event|connection|disconnect|massive|live|luld/],
+        title: "Live Market Event Ingest",
+      },
+      {
+        description: "Recent q_live coverage, REST repair, current-session head/tail fill, and three-market-day gap repair.",
+        id: "gap_fill",
+        match: [/coverage|manifest|gap|repair|backfill|rest|recent|q_live|head|tail|maintenance/],
+        title: "Recent Live Gap Repair",
+      },
+      {
+        description: "Streaming bars, scanner state, market condition state, and downstream event publication.",
+        id: "processing",
+        match: [/bar|scanner|condition|halt|resume|state|publish|fanout|broadcast|compact/],
+        title: "Bars, State, And Broadcast",
+      },
+      {
+        description: "ClickHouse persistence for live market events and live bars, including writer queues and flush state.",
+        id: "persist",
+        match: [/clickhouse|persist|insert|write|database|table|writer|flush|sink/],
+        title: "Database Persistence",
+      },
+      common.other,
+    ],
+    reference: [
+      common.preflight,
+      {
+        description: "Low-frequency provider sync for Massive, IBKR, FINRA, SEC-derived mappings, presentation assets, and publications.",
+        id: "source_sync",
+        match: [/source|sync|massive|ibkr|finra|sec|ticker|listing|issuer|exchange|asset|borrow|short|split|dividend|ipo/],
+        title: "Reference Source Sync",
+      },
+      {
+        description: "Integrity audit, issue detection, deterministic resolution, tradability blocking, and human-review queues.",
+        id: "integrity",
+        match: [/audit|issue|resolve|resolution|tradable|block|guard|integrity|warning|error|review/],
+        title: "Integrity And Issue Resolution",
+      },
+      {
+        description: "Derived scanner/tradability publications, alerts, and reference facts maintained from canonical source tables.",
+        id: "publication",
+        match: [/publication|publish|fact|alert|scanner|snapshot|view|bridge|sec_market_bridge/],
+        title: "Publications, Facts, Alerts",
+      },
+      {
+        description: "After-hours maintenance, schema checks, rebuilds, historical gap fill, and source-specific repair work.",
+        id: "maintenance",
+        match: [/maintenance|gap|backfill|historical|rebuild|schema|policy|after.?hours|repair/],
+        title: "Maintenance And Gap Fill",
+      },
+      common.other,
+    ],
+    "text-embed": [
+      common.preflight,
+      {
+        description: "Source coverage checks, lookback windows, pending text discovery, and historical gap scan.",
+        id: "coverage",
+        match: [/coverage|gap|lookback|source|scan|pending|historical|backfill|manifest/],
+        title: "Source Coverage And Gap Scan",
+      },
+      {
+        description: "Text extraction, chunking, tokenization, queue depth, batching, and model input preparation.",
+        id: "processing",
+        match: [/extract|chunk|token|queue|batch|pending|text|prepare|process/],
+        title: "Extraction And Tokenization",
+      },
+      {
+        description: "Embedding inference, vector writes, publication state, and downstream table persistence.",
+        id: "embedding",
+        match: [/embed|embedding|vector|model|gpu|vllm|inference|write|publish|insert|database|table/],
+        title: "Embedding Inference And Writes",
+      },
+      {
+        description: "Retry handling, stale work recovery, audit state, and failed-row repair.",
+        id: "recovery",
+        match: [/retry|error|failure|failed|repair|audit|warning|stale|recover/],
+        title: "Recovery And Audit",
+      },
+      common.other,
+    ],
+    ibkr: [
+      common.preflight,
+      {
+        description: "Client Portal authentication, brokerage session health, account discovery, and API reachability.",
+        id: "session",
+        match: [/auth|session|client portal|iserver|account|portfolio|broker|gateway|login|connected/],
+        title: "Broker Session And Accounts",
+      },
+      {
+        description: "Keepalive tickles, websocket or endpoint health, reconnect handling, and active failure recovery.",
+        id: "connectivity",
+        match: [/keepalive|tickle|connection|connect|disconnect|health|recover|retry|heartbeat/],
+        title: "Connectivity And Recovery",
+      },
+      {
+        description: "Contract lookup, conid validation, account routing readiness, and order-path guardrails.",
+        id: "routing",
+        match: [/contract|conid|route|routing|order|account|security|stock|secdef/],
+        title: "Contract And Routing Readiness",
+      },
+      common.other,
+    ],
+  };
+  return specs[serviceId];
+}
+
+function workRowSearchText(row: ServiceWorkRow) {
+  return `${row.name} ${row.kind} ${row.status} ${row.progress} ${row.rows} ${row.schedule} ${row.detail}`.toLowerCase();
+}
+
+function groupStatus(rows: ServiceWorkRow[]) {
+  if (!rows.length) return "waiting";
+  const statuses = rows.map((row) => workStatusClass(row.status));
+  if (statuses.includes("error")) return "error";
+  if (statuses.includes("warn")) return "warning";
+  if (statuses.includes("running")) return "running";
+  if (statuses.includes("waiting")) return "waiting";
+  return "ok";
 }
 
 function serviceWorkRow(row: Record<string, unknown>, fallbackKind: string): ServiceWorkRow {
