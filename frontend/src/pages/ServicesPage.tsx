@@ -129,7 +129,7 @@ function ServicesTopSummary({ now, services }: { now: Date; services: ServiceSta
     { label: "ET", value: formatZoneTime(now, "America/New_York"), sub: formatZoneDate(now, "America/New_York"), icon: Clock3 },
     { label: "Vancouver", value: formatZoneTime(now, "America/Vancouver"), sub: formatZoneDate(now, "America/Vancouver"), icon: MapPin },
     { label: "UTC", value: formatZoneTime(now, "UTC"), sub: formatZoneDate(now, "UTC"), icon: CalendarDays },
-    { label: "Market", value: market.status, sub: market.detail, icon: Activity, className: marketTileClass(market.status, market.detail) },
+    { label: "Market", value: market.status, sub: market.detail, icon: Activity, className: "market-neutral" },
     { label: "Fleet", value: `${counts.online}/${services.length || 0} online`, sub: `${counts.active} active, ${counts.degraded} degraded, ${counts.offline} not started`, icon: RadioTower },
   ];
   return (
@@ -661,22 +661,19 @@ function fleetMarketStatus(services: ServiceStatusPayload[]) {
     const value = candidates.find((candidate) => typeof candidate === "string" && candidate.trim());
     if (value) {
       const source = String(service.metrics?.market_status_source || service.header?.market_status_source || service.registry.label);
-      return { status: String(value), detail: source || service.registry.label };
+      return { status: String(value), detail: marketSourceLabel(source || service.registry.label) };
     }
   }
   return { status: "not reported", detail: "No gateway has reported market state yet" };
 }
 
-function marketTileClass(status: string, detail: string) {
-  const statusText = status.toLowerCase().replaceAll("_", "-");
-  const detailText = detail.toLowerCase().replaceAll("_", "-");
-  if (!statusText.trim() || statusText.includes("not reported") || statusText.includes("unknown")) return "market-unknown";
-  if (statusText.includes("error") || statusText.includes("degraded") || statusText.includes("blocked") || detailText.includes("error")) return "market-warning";
-  if (statusText.includes("pre-market") || statusText.includes("premarket") || statusText.includes("after-hours") || statusText.includes("after hours") || statusText.includes("extended")) return "market-extended";
-  if (statusText.includes("open") || statusText.includes("regular")) return "market-open";
-  if (statusText.includes("holiday")) return "market-holiday";
-  if (statusText.includes("closed") || statusText.includes("close")) return "market-closed";
-  return "market-unknown";
+function marketSourceLabel(source: string) {
+  const normalized = source.toLowerCase();
+  if (normalized === "massive_market_calendar") return "Massive status + calendar";
+  if (normalized === "massive_status") return "Massive status";
+  if (normalized === "local_clock") return "Local clock";
+  if (normalized === "disabled") return "Market status disabled";
+  return displayName(source);
 }
 
 type StatusInfo = {
