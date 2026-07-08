@@ -101,18 +101,27 @@ this step automatically after a successful cache build by default. Use
 `--no-build-scanner` only for a targeted cache/debug run where scanner artifacts
 are intentionally deferred.
 
-1. Load all intraday bars for a day.
-2. Rank every closed scanner bucket across the market.
-3. Select leaders for:
+1. Discover intraday bar parquet files for a day and skip empty files from
+   Parquet metadata.
+2. Lazily scan the valid intraday bar files. The builder does not concatenate
+   the full market day into one eager in-memory table.
+3. Rank every closed scanner bucket across the market.
+4. Select leaders for:
    - `top_gainers`
    - `top_volume_large_cap`
    - `top_volume_mid_cap`
    - `top_volume_small_cap`
    - `top_volume_penny`
-4. Save one row per ticker/scanner bucket with rank columns and compact bar
+5. Save one row per ticker/scanner bucket with rank columns and compact bar
    columns for `1s`, `5s`, `30s`, and `1m`.
-5. Save scanner snapshots under
+6. Save scanner snapshots under
    `month=YYYY-MM/global/scanner/scanner_YYYY-MM-DD.parquet`.
+
+Scanner days are market-wide operations. `--workers` controls visible worker
+slots and scheduling, but `--max-active-day-builds` limits how many full-day
+scanner builds can run at the same time. The default is `1` to prevent the OS
+from killing the process when several days try to scan all ticker bars
+concurrently.
 
 Rebuild scanner artifacts from an existing cache, or run a scanner-only smoke
 test, with:
@@ -121,6 +130,8 @@ test, with:
 python research\mlops\rolling_loader\run_build_daily_scanner_cache.py `
   --cache-root D:\market-data\prepared\daily_index_streaming_cache\<cache_id> `
   --month 2019-09 `
+  --workers 8 `
+  --max-active-day-builds 1 `
   --overwrite
 ```
 

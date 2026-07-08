@@ -256,6 +256,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--horizons", default=",".join(DEFAULT_SCANNER_HORIZONS))
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument(
+        "--max-active-day-builds",
+        type=int,
+        default=1,
+        help=(
+            "Maximum number of market-wide scanner days to materialize at once. "
+            "Keep this low because each day scans all ticker intraday bars."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text"), default="auto")
     parser.add_argument("--progress-refresh-per-second", type=float, default=1.0)
@@ -291,18 +300,26 @@ def run(args: argparse.Namespace) -> int:
         emit_text=str(args.progress_layout) == "text",
     )
     stop_event = threading.Event()
+    day_build_slots = threading.Semaphore(max(1, int(args.max_active_day_builds)))
     work_queue: queue.Queue[tuple[str, list[Path]] | None] = queue.Queue()
     for source_date, files in sorted(grouped.items()):
         work_queue.put((source_date, files))
     for _ in state.workers:
         work_queue.put(None)
-    state.message(f"planned month={args.month} days={len(grouped):,} files={len(jobs):,} cache={cache_root}")
+    state.message(
+        f"planned month={args.month} days={len(grouped):,} files={len(jobs):,} "
+        f"workers={len(state.workers):,} active_day_builds={max(1, int(args.max_active_day_builds)):,} cache={cache_root}"
+    )
     threads: list[threading.Thread] = []
     try:
         with ScannerDashboard(state, refresh_per_second=args.progress_refresh_per_second, progress_screen=args.progress_screen, progress_layout=args.progress_layout):
             state.status = "running"
             for slot in state.workers:
-                thread = threading.Thread(target=scanner_worker, name=f"scanner-{slot.worker_id:02d}", args=(slot, args, month_dir, work_queue, state, stop_event))
+                thread = threading.Thread(
+                    target=scanner_worker,
+                    name=f"scanner-{slot.worker_id:02d}",
+                    args=(slot, args, month_dir, work_queue, state, stop_event, day_build_slots),
+                )
                 thread.start()
                 threads.append(thread)
             while any(thread.is_alive() for thread in threads):
@@ -351,6 +368,7 @@ def scanner_worker(
     work_queue: "queue.Queue[tuple[str, list[Path]] | None]",
     state: ScannerBuildState,
     stop_event: threading.Event,
+    day_build_slots: threading.Semaphore,
 ) -> None:
     while not stop_event.is_set():
         try:
@@ -372,7 +390,19 @@ def scanner_worker(
             slot.completed = 0
             slot.rows = 0
             slot.bytes_written = 0
-            result = build_day_scanner(args=args, month_dir=month_dir, source_date=source_date, files=files, slot=slot)
+            slot.stage = "wait"
+            slot.current = "waiting for day build memory slot"
+            acquired = False
+            while not stop_event.is_set():
+                acquired = day_build_slots.acquire(timeout=0.5)
+                if acquired:
+                    break
+            if not acquired:
+                return
+            try:
+                result = build_day_scanner(args=args, month_dir=month_dir, source_date=source_date, files=files, slot=slot)
+            finally:
+                day_build_slots.release()
             state.add_result(result)
             slot.status = "done"
             slot.stage = "done"
@@ -467,36 +497,24 @@ def build_day_scanner(
     import polars as pl
 
     started = time.perf_counter()
-    frames: list[Any] = []
-    empty_files = 0
     read_started = time.perf_counter()
-    for index, path in enumerate(files, start=1):
-        if slot is not None:
-            slot.stage = "read"
-            slot.current = path.name
-            slot.completed = index - 1
-            slot.total = max(1, len(files))
-        frame = pl.read_parquet(path)
-        if frame.width <= 0 or frame.height <= 0:
-            empty_files += 1
-            if slot is not None:
-                slot.completed = index
-                slot.current = f"skip empty {path.name}"
-            continue
-        frames.append(frame)
-        if slot is not None:
-            slot.completed = index
-            slot.rows += int(frame.height)
-    base = pl.concat(frames, how="diagonal_relaxed", rechunk=True) if frames else pl.DataFrame()
+    if slot is not None:
+        slot.stage = "metadata"
+        slot.current = "filtering empty parquet files"
+        slot.completed = 0
+        slot.total = max(1, len(files))
+    valid_files, empty_files, source_rows = filter_nonempty_intraday_files(files, slot=slot)
     if slot is not None:
         slot.stage = "process"
-        slot.current = f"concat {len(frames):,} files in {format_seconds(time.perf_counter() - read_started)}"
+        slot.current = f"lazy scan {len(valid_files):,} files in {format_seconds(time.perf_counter() - read_started)}"
         slot.completed = 0
-        slot.total = max(1, int(base.height))
-    if base.height <= 0:
-        frame = pl.DataFrame()
+        slot.total = max(1, int(source_rows or len(valid_files)))
+        slot.rows = int(source_rows)
+    if not valid_files:
+        scanner_frame = pl.DataFrame()
     else:
-        frame = build_scanner_frame(
+        base = pl.scan_parquet([str(path) for path in valid_files])
+        scanner_frame = build_scanner_frame(
             base=base,
             source_date=source_date,
             scanner_resolution_us=int(args.scanner_resolution_us),
@@ -504,29 +522,107 @@ def build_day_scanner(
             top_k=int(args.top_k),
         )
     if slot is not None:
-        slot.completed = int(base.height)
-        slot.rows = int(frame.height)
+        slot.completed = int(source_rows)
         slot.stage = "write"
         slot.current = f"scanner_{source_date}.parquet"
     output = month_dir / "global" / "scanner" / f"scanner_{source_date}.parquet"
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists() and not bool(args.overwrite):
         raise FileExistsError(f"Scanner artifact already exists: {output}. Pass --overwrite to replace it.")
-    tmp = output.with_name(f"{output.name}.{time.time_ns()}.tmp")
-    frame.write_parquet(tmp, compression="zstd")
-    tmp.replace(output)
+    rows_written = write_scanner_parquet(scanner_frame, output)
     if slot is not None:
         slot.bytes_written = int(output.stat().st_size)
-        slot.rate = int(frame.height) / max(0.001, time.perf_counter() - started)
+        slot.rows = int(rows_written)
+        slot.rate = int(rows_written) / max(0.001, time.perf_counter() - started)
     return {
         "source_date": source_date,
         "files": len(files),
         "empty_files": int(empty_files),
-        "rows": int(frame.height),
+        "source_rows": int(source_rows),
+        "rows": int(rows_written),
         "bytes": int(output.stat().st_size),
         "seconds": time.perf_counter() - started,
         "path": str(output),
     }
+
+
+def filter_nonempty_intraday_files(files: list[Path], *, slot: ScannerWorkerSlot | None = None) -> tuple[list[Path], int, int]:
+    valid: list[Path] = []
+    empty_files = 0
+    rows = 0
+    for index, path in enumerate(files, start=1):
+        if slot is not None:
+            slot.stage = "metadata"
+            slot.current = path.name
+            slot.completed = index - 1
+            slot.total = max(1, len(files))
+        metadata = parquet_file_metadata(path)
+        if metadata["columns"] <= 0 or metadata["rows"] <= 0:
+            empty_files += 1
+            if slot is not None:
+                slot.completed = index
+                slot.current = f"skip empty {path.name}"
+            continue
+        valid.append(path)
+        rows += metadata["rows"]
+        if slot is not None:
+            slot.completed = index
+            slot.rows = rows
+    return valid, empty_files, rows
+
+
+def parquet_file_metadata(path: Path) -> dict[str, int]:
+    try:
+        import pyarrow.parquet as pq
+
+        parquet_file = pq.ParquetFile(path)
+        return {"rows": int(parquet_file.metadata.num_rows), "columns": len(parquet_file.schema_arrow)}
+    except Exception:  # noqa: BLE001
+        try:
+            import polars as pl
+
+            schema_frame = pl.read_parquet(path, n_rows=0)
+            if schema_frame.width <= 0:
+                return {"rows": 0, "columns": 0}
+            return {"rows": 1, "columns": int(schema_frame.width)}
+        except Exception:  # noqa: BLE001
+            return {"rows": 0, "columns": 0}
+
+
+def collect_lazy_frame(frame: Any) -> Any:
+    try:
+        return frame.collect(engine="streaming")
+    except TypeError:
+        try:
+            return frame.collect(streaming=True)
+        except TypeError:
+            return frame.collect()
+
+
+def write_scanner_parquet(frame: Any, output: Path) -> int:
+    tmp = output.with_name(f"{output.stem}.{time.time_ns()}.tmp.parquet")
+    if hasattr(frame, "sink_parquet"):
+        try:
+            frame.sink_parquet(tmp, compression="zstd")
+            tmp.replace(output)
+            return int(parquet_file_metadata(output)["rows"])
+        except TypeError:
+            try:
+                frame.sink_parquet(tmp)
+                tmp.replace(output)
+                return int(parquet_file_metadata(output)["rows"])
+            except Exception:
+                if tmp.exists():
+                    tmp.unlink()
+                raise
+        except Exception:
+            if tmp.exists():
+                tmp.unlink()
+            raise
+    materialized = collect_lazy_frame(frame) if hasattr(frame, "collect") else frame
+    materialized.write_parquet(tmp, compression="zstd")
+    tmp.replace(output)
+    return int(materialized.height)
 
 
 def build_scanner_frame(*, base: Any, source_date: str, scanner_resolution_us: int, horizons: tuple[str, ...], top_k: int) -> Any:
@@ -577,10 +673,13 @@ def build_scanner_frame(*, base: Any, source_date: str, scanner_resolution_us: i
             .select(["ticker", "scanner_bucket", f"{group_name}_rank", f"{group_name}_score", f"{group_name}_percentile"])
         )
         out = out.join(ranked, on=["ticker", "scanner_bucket"], how="left")
-    rank_columns = [column for column in out.columns if column.endswith("_rank")]
-    for column in rank_columns:
+    for column in [f"{group_name}_rank" for group_name in DEFAULT_SCANNER_GROUPS]:
         out = out.with_columns(pl.col(column).fill_null(-1).cast(pl.Int32))
-    for column in [column for column in out.columns if column.endswith("_score") or column.endswith("_percentile")]:
+    for column in [
+        column
+        for group_name in DEFAULT_SCANNER_GROUPS
+        for column in (f"{group_name}_score", f"{group_name}_percentile")
+    ]:
         out = out.with_columns(pl.col(column).fill_null(0.0).cast(pl.Float32))
     for horizon in horizons:
         out = add_horizon_columns(out=out, base=base, source_date=source_date, horizon=horizon, scanner_resolution_us=scanner_resolution_us)
@@ -596,11 +695,13 @@ def add_horizon_columns(*, out: Any, base: Any, source_date: str, horizon: str, 
     scanner_end_us = (pl.col("scanner_bucket").cast(pl.Int64) + 1) * int(scanner_resolution_us)
     join_bucket_expr = ((scanner_end_us // int(resolution_us)) - 1).clip(lower_bound=int(SESSION_START_US // int(resolution_us))).alias("_join_bucket")
     out = out.with_columns(join_bucket_expr)
+    timestamp_added = False
     for family in BAR_FAMILY_KEYS:
-        include_timestamp = f"{token}_timestamp_us" not in out.columns
+        include_timestamp = not timestamp_added
         select_columns = ["ticker", "_join_bucket", *BAR_FAMILY_FEATURE_KEYS[family]]
         if include_timestamp:
             select_columns.insert(2, "last_event_timestamp_us")
+            timestamp_added = True
         source = (
             base.filter(
                 (pl.col("local_date").cast(pl.Utf8).str.slice(0, 10) == source_date[:10])
@@ -619,7 +720,7 @@ def add_horizon_columns(*, out: Any, base: Any, source_date: str, horizon: str, 
         out = out.with_columns(pl.col(f"{family}_{token}_open").is_not_null().alias(f"{family}_{token}_available"))
         for feature in BAR_FAMILY_FEATURE_KEYS[family]:
             out = out.with_columns(pl.col(f"{family}_{token}_{feature}").fill_null(0.0).cast(pl.Float32))
-    if f"{token}_timestamp_us" in out.columns:
+    if timestamp_added:
         out = out.with_columns(pl.col(f"{token}_timestamp_us").fill_null(pl.col("scanner_timestamp_us")).cast(pl.Int64))
     return out.drop("_join_bucket")
 
