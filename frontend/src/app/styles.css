@@ -1181,6 +1181,35 @@ button {
   vertical-align: middle;
 }
 
+.service-db-total-cell,
+.service-db-today-cell {
+  font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.service-db-total-cell {
+  color: var(--foreground);
+  font-weight: 680;
+}
+
+.service-db-today-cell {
+  color: var(--badge-info-fg);
+  font-weight: 760;
+}
+
+.service-db-today-cell::before {
+  background: var(--badge-info-bg);
+  border: 1px solid var(--badge-info-border);
+  border-radius: 999px;
+  content: "";
+  display: inline-block;
+  height: 6px;
+  margin-right: 5px;
+  vertical-align: 1px;
+  width: 6px;
+}
+
 .service-db-state-empty {
   color: var(--muted-foreground);
   display: grid;
