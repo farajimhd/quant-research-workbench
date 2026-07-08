@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -136,10 +136,29 @@ def _try_torchinfo(
         from torchinfo import summary  # type: ignore
 
         args, kwargs = dummy_input_factory()
+        args = tuple(item for value in args if (item := _sanitize_torchinfo_input(value)) is not None)
+        kwargs = dict(_sanitize_torchinfo_input(kwargs))
         input_data = args if args else (kwargs,)
-        text = str(summary(model, input_data=input_data, verbose=0, depth=4))
+        original_forward = model.forward
+
+        def tensor_forward(*forward_args: Any, **forward_kwargs: Any) -> torch.Tensor:
+            tensor = _first_tensor(original_forward(*forward_args, **forward_kwargs))
+            if tensor is None:
+                device = next(model.parameters(), torch.empty(0)).device
+                return torch.zeros((), device=device)
+            return tensor
+
+        try:
+            model.forward = tensor_forward  # type: ignore[method-assign]
+            text = str(summary(model, input_data=input_data, verbose=0, depth=4))
+        finally:
+            model.forward = original_forward  # type: ignore[method-assign]
         summary_path.write_text(text + "\n", encoding="utf-8")
         training_summary_path.write_text(text + "\n", encoding="utf-8")
+        try:
+            error_path.unlink()
+        except FileNotFoundError:
+            pass
     except Exception as exc:  # noqa: BLE001
         error_path.write_text(repr(exc) + "\n", encoding="utf-8")
 
@@ -171,3 +190,45 @@ def finite_float(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return float(default)
     return out if math.isfinite(out) else float(default)
+
+
+def _first_tensor(value: Any) -> torch.Tensor | None:
+    if torch.is_tensor(value):
+        return value
+    if is_dataclass(value):
+        for field in fields(value):
+            field_value = getattr(value, field.name)
+            tensor = _first_tensor(field_value)
+            if tensor is not None:
+                return tensor
+        return None
+    if isinstance(value, Mapping):
+        for field_value in value.values():
+            tensor = _first_tensor(field_value)
+            if tensor is not None:
+                return tensor
+        return None
+    if isinstance(value, (list, tuple)):
+        for field_value in value:
+            tensor = _first_tensor(field_value)
+            if tensor is not None:
+                return tensor
+    return None
+
+
+def _sanitize_torchinfo_input(value: Any) -> Any:
+    if torch.is_tensor(value):
+        return value
+    if isinstance(value, Mapping):
+        return {
+            key: item
+            for key, raw_item in value.items()
+            if (item := _sanitize_torchinfo_input(raw_item)) is not None
+        }
+    if isinstance(value, tuple):
+        items = tuple(item for raw_item in value if (item := _sanitize_torchinfo_input(raw_item)) is not None)
+        return items if items else None
+    if isinstance(value, list):
+        items = [item for raw_item in value if (item := _sanitize_torchinfo_input(raw_item)) is not None]
+        return items if items else None
+    return None

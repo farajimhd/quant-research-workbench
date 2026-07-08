@@ -65,6 +65,8 @@ class DailyIndexBatchAuditConfig:
     rest_samples: int = 0
     massive_base_url: str = "https://api.massive.com"
     massive_api_key_env: str = "MASSIVE_API_KEY"
+    required_availability_keys: tuple[str, ...] = ()
+    required_availability_min_fraction: float = 0.0
 
 
 @dataclass(slots=True)
@@ -84,8 +86,20 @@ class DailyIndexBatchAuditor:
         if int(self.config.max_batches) <= 0 or self.audited_batches >= int(self.config.max_batches):
             return {"audit_enabled": True, "audit_checked": 0, "audit_skipped_reason": "batch_limit_reached"}
         started = time.perf_counter()
+        coverage_failures = self._required_availability_failures(batch)
+        if coverage_failures and self.config.strict:
+            raise RuntimeError(f"Daily-index batch audit coverage failed for batch={batch_number}: {coverage_failures}")
         sample_indices = self._sample_indices(batch, batch_number=batch_number)
         records: list[dict[str, Any]] = []
+        if coverage_failures:
+            records.append(
+                {
+                    "utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+                    "identity": {"batch": int(batch_number), "sample_index": -1},
+                    "checks": [_check("required_modality_coverage", "fail", "required batch availability is missing", {"failures": coverage_failures})],
+                    "summary": {"checked": 1, "failed": 1, "skipped": 0},
+                }
+            )
         for sample_index in sample_indices:
             record = self._audit_sample(batch, sample_index=int(sample_index), batch_number=int(batch_number))
             records.append(record)
@@ -115,6 +129,26 @@ class DailyIndexBatchAuditor:
             preview = [record for record in records if int(record["summary"]["failed"]) > 0][:3]
             raise RuntimeError(f"Daily-index batch audit failed for batch={batch_number}: {json.dumps(preview, default=str)[:4000]}")
         return summary
+
+    def _required_availability_failures(self, batch: Any) -> dict[str, float]:
+        required = tuple(str(key) for key in self.config.required_availability_keys or ())
+        if not required:
+            return {}
+        sample_count = max(1, int(getattr(batch, "sample_count", 0) or 0))
+        minimum = max(0.0, min(1.0, float(self.config.required_availability_min_fraction)))
+        availability = getattr(batch, "input_availability", {}) or {}
+        failures: dict[str, float] = {}
+        for key in required:
+            arr = np.asarray(availability.get(key, []))
+            if arr.size == 0:
+                fraction = 0.0
+            elif arr.shape[:1] == (sample_count,):
+                fraction = float(np.mean(arr.reshape((sample_count, -1)).any(axis=1).astype(np.float32)))
+            else:
+                fraction = float(bool(np.any(arr)))
+            if fraction < minimum:
+                failures[key] = fraction
+        return failures
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -515,13 +549,18 @@ class DailyIndexBatchAuditor:
                 "limit": "1",
                 "apiKey": api_key,
             }
-            url = f"{self.config.massive_base_url.rstrip('/')}/v3/trades/{parse.quote(ticker)}?{parse.urlencode(params)}"
-            req = request.Request(url, method="GET")
-            with request.urlopen(req, timeout=10) as response:
-                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+            base = self.config.massive_base_url.rstrip("/")
+            responses: dict[str, dict[str, Any]] = {}
+            for endpoint in ("trades", "quotes"):
+                url = f"{base}/v3/{endpoint}/{parse.quote(ticker)}?{parse.urlencode(params)}"
+                req = request.Request(url, method="GET")
+                with request.urlopen(req, timeout=10) as response:
+                    responses[endpoint] = json.loads(response.read().decode("utf-8", errors="replace"))
             self.rest_checked += 1
-            status = "pass" if str(payload.get("status", "")).upper() in {"OK", "DELAYED"} else "fail"
-            checks.append(_check("massive_rest_spot_check", status, "Massive trade endpoint returned a parseable response near origin", {"status": payload.get("status"), "resultsCount": payload.get("resultsCount")}))
+            statuses = {endpoint: str(payload.get("status", "")).upper() for endpoint, payload in responses.items()}
+            ok = bool(statuses) and all(status in {"OK", "DELAYED"} for status in statuses.values())
+            counts = {endpoint: payload.get("resultsCount") for endpoint, payload in responses.items()}
+            checks.append(_check("massive_rest_spot_check", "pass" if ok else "fail", "Massive quote and trade endpoints returned parseable responses near origin", {"statuses": statuses, "resultsCount": counts}))
         except Exception as exc:  # noqa: BLE001
             checks.append(_check("massive_rest_spot_check", "fail" if self.config.strict else "skip", f"Massive REST check error: {exc!r}"))
 

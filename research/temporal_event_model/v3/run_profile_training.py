@@ -86,9 +86,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audit-database", default="market_sip_compact")
     parser.add_argument("--audit-events-table", default="events")
     parser.add_argument("--audit-source-event-limit", type=int, default=250_000)
-    parser.add_argument("--audit-rest-samples", type=int, default=0, help="Optional Massive REST spot checks across the profile audit. Default 0 keeps profiling local/ClickHouse-only.")
+    parser.add_argument("--audit-rest-samples", type=int, default=2, help="Massive REST spot checks across the profile audit. Set 0 to keep profiling local/ClickHouse-only.")
     parser.add_argument("--audit-massive-base-url", default="https://api.massive.com")
     parser.add_argument("--audit-massive-api-key-env", default="MASSIVE_API_KEY")
+    parser.add_argument("--coverage-mode", choices=("off", "require-requested"), default="require-requested", help="Require measured batches to contain real payloads for every requested input modality.")
+    parser.add_argument("--coverage-min-fraction", type=float, default=1e-9, help="Minimum per-batch available fraction for each required modality. Default means at least one sample.")
+    parser.add_argument("--coverage-max-skip-batches", type=int, default=512, help="Maximum batches to scan while seeking a fully covered profile batch.")
+    parser.add_argument("--coverage-required-keys", default="auto", help="Comma-separated input_availability keys to require, or auto from --data-groups.")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
     return parser.parse_args()
 
@@ -170,6 +174,7 @@ def main() -> int:
     rows: list[dict[str, Any]] = _load_existing_measured_rows(report_path) if resumed else []
     first_batch_summary: dict[str, Any] = {}
     reporter = _ProfileReporter(args.progress_layout, total_batches=total_batches, run_root=paths.run_root)
+    coverage_gate = _make_coverage_gate(args, config)
     auditor = _make_batch_auditor(args, audit_report_path=audit_report_path, audit_summary_path=audit_summary_path)
     try:
         reporter.start()
@@ -185,6 +190,7 @@ def main() -> int:
                 device=device,
                 phase=phase,
                 batch_number=batch_number,
+                coverage_gate=coverage_gate,
                 auditor=auditor,
             )
             if first_summary and not first_batch_summary:
@@ -238,14 +244,34 @@ def _run_profile_batch(
     device: torch.device,
     phase: str,
     batch_number: int,
+    coverage_gate: Mapping[str, Any],
     auditor: DailyIndexBatchAuditor | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
+    seek_start = time.perf_counter()
+    skipped_batches = 0
+    missing_coverage: dict[str, float] = {}
+    while True:
+        load_start = time.perf_counter()
+        raw_batch = next(raw_iter)
+        loader_wait = time.perf_counter() - load_start
+        coverage = _batch_coverage(raw_batch)
+        ok, missing_coverage = _coverage_ok(coverage, coverage_gate)
+        if ok:
+            break
+        skipped_batches += 1
+        if skipped_batches > int(coverage_gate.get("max_skip_batches", 0)):
+            required = ", ".join(str(key) for key in coverage_gate.get("required_keys", ()))
+            observed = ", ".join(f"{key}={value:.4f}" for key, value in sorted(coverage.items()))
+            missing = ", ".join(f"{key}={value:.4f}" for key, value in sorted(missing_coverage.items()))
+            raise RuntimeError(
+                "Could not find a fully covered profile batch. "
+                f"required=[{required}] missing=[{missing}] observed_last_batch=[{observed}] "
+                f"after_skipped_batches={skipped_batches:,}. Select a cache/month/ticker slice with these contexts or lower coverage requirements."
+            )
+    seek_seconds = time.perf_counter() - seek_start
     step_start = time.perf_counter()
-    load_start = time.perf_counter()
-    raw_batch = next(raw_iter)
-    loader_wait = time.perf_counter() - load_start
     audit_metrics: dict[str, Any] = {}
     if auditor is not None:
         audit_metrics = auditor.audit_batch(raw_batch, batch_number=int(batch_number), phase=str(phase))
@@ -300,6 +326,8 @@ def _run_profile_batch(
         "loss": float(loss.detach().float().cpu()),
         "active_task_count": float(loss_result.metrics.get("train/active_task_count", 0.0)),
         "loader_wait_seconds": float(loader_wait),
+        "coverage_seek_seconds": float(seek_seconds),
+        "coverage_skipped_batches": int(skipped_batches),
         "host_to_device_seconds": float(host_to_device),
         "forward_seconds": float(forward_seconds),
         "loss_seconds": float(loss_seconds),
@@ -314,6 +342,7 @@ def _run_profile_batch(
     }
     row.update({f"loss/{key.removeprefix('train/')}": value for key, value in loss_result.metrics.items() if isinstance(value, (int, float))})
     row.update({f"loader/{key}": value for key, value in batch.profile.items() if isinstance(value, (int, float))})
+    row.update({f"coverage/{key}": value for key, value in coverage.items()})
     row.update({f"audit/{key}": value for key, value in audit_metrics.items() if isinstance(value, (int, float, bool))})
     row.update(fast_batch_metrics(batch, output, prefix="batch"))
     row.update(prediction_metrics(batch, output, prefix="batch"))
@@ -371,8 +400,73 @@ def _make_loader(config: LoaderConfig) -> Any:
     return AsyncDailyIndexBatchLoader(loader_config_from_v3(config))
 
 
+def _make_coverage_gate(args: argparse.Namespace, config: ExperimentConfig) -> dict[str, Any]:
+    required_keys = _coverage_required_keys(args.coverage_required_keys, config.loader.data_groups)
+    if str(args.coverage_mode) == "off":
+        required_keys = ()
+    return {
+        "enabled": bool(required_keys),
+        "required_keys": tuple(required_keys),
+        "min_fraction": max(0.0, min(1.0, float(args.coverage_min_fraction))),
+        "max_skip_batches": max(0, int(args.coverage_max_skip_batches)),
+    }
+
+
+def _coverage_required_keys(value: str, data_groups: tuple[str, ...]) -> tuple[str, ...]:
+    text = str(value or "").strip()
+    if text and text.lower() != "auto":
+        return _split_csv(text)
+    group_to_key = {
+        "events": "event_context_available",
+        "intraday_labels": "intraday_labels_available",
+        "intraday_bars": "ticker_intraday_bars_available",
+        "daily_bars": "ticker_daily_bars_available",
+        "global_daily_bars": "global_daily_bars_available",
+        "ticker_news_embeddings": "ticker_news_available",
+        "market_news_embeddings": "market_news_available",
+        "sec_filing_embeddings": "sec_filings_available",
+        "xbrl": "xbrl_available",
+        "corporate_actions": "corporate_actions_available",
+    }
+    required: list[str] = []
+    for group in data_groups:
+        key = group_to_key.get(str(group))
+        if key and key not in required:
+            required.append(key)
+    return tuple(required)
+
+
+def _batch_coverage(raw_batch: Any) -> dict[str, float]:
+    out: dict[str, float] = {}
+    sample_count = max(1, int(getattr(raw_batch, "sample_count", 0) or 0))
+    for key, value in getattr(raw_batch, "input_availability", {}).items():
+        arr = np.asarray(value)
+        if arr.size == 0:
+            out[str(key)] = 0.0
+            continue
+        if arr.shape[:1] == (sample_count,):
+            reduced = arr.reshape((sample_count, -1)).any(axis=1)
+            out[str(key)] = float(np.mean(reduced.astype(np.float32)))
+        else:
+            out[str(key)] = float(bool(np.any(arr)))
+    return out
+
+
+def _coverage_ok(coverage: Mapping[str, float], gate: Mapping[str, Any]) -> tuple[bool, dict[str, float]]:
+    if not bool(gate.get("enabled", False)):
+        return True, {}
+    minimum = float(gate.get("min_fraction", 0.0))
+    missing = {
+        str(key): float(coverage.get(str(key), 0.0))
+        for key in tuple(gate.get("required_keys", ()))
+        if float(coverage.get(str(key), 0.0)) < minimum
+    }
+    return not missing, missing
+
+
 def _make_batch_auditor(args: argparse.Namespace, *, audit_report_path: Path, audit_summary_path: Path) -> DailyIndexBatchAuditor:
     enabled = int(args.audit_profile_batches) > 0 and int(args.audit_samples_per_batch) > 0
+    coverage_gate = _make_coverage_gate(args, _config_from_args(args))
     return DailyIndexBatchAuditor(
         DailyIndexBatchAuditConfig(
             enabled=enabled,
@@ -391,6 +485,8 @@ def _make_batch_auditor(args: argparse.Namespace, *, audit_report_path: Path, au
             rest_samples=max(0, int(args.audit_rest_samples)),
             massive_base_url=str(args.audit_massive_base_url),
             massive_api_key_env=str(args.audit_massive_api_key_env),
+            required_availability_keys=tuple(str(key) for key in coverage_gate.get("required_keys", ())),
+            required_availability_min_fraction=float(coverage_gate.get("min_fraction", 0.0)),
         )
     )
 

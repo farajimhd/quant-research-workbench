@@ -66,6 +66,13 @@ def main() -> int:
         assert (artifact_dir / "model_details.json").exists()
         assert (artifact_dir / "model_summary.txt").exists()
         assert (artifact_dir / "model_architecture.mmd").exists()
+        try:
+            import torchinfo  # noqa: F401
+        except ModuleNotFoundError:
+            pass
+        else:
+            assert (artifact_dir / "model_summary_torchinfo.txt").exists()
+            assert not (artifact_dir / "model_summary_torchinfo_error.txt").exists()
     print("temporal_event_model v3 smoke passed", flush=True)
     return 0
 
