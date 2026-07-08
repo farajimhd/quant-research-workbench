@@ -502,16 +502,21 @@ button {
   white-space: nowrap;
 }
 
-.services-alert,
+.services-alert-slot,
 .services-loading {
   align-items: center;
-  border: 1px solid var(--badge-warning-border);
+  border: 1px solid var(--badge-success-border);
   border-radius: 8px;
-  color: var(--badge-warning-fg);
+  color: var(--badge-success-fg);
   display: flex;
   gap: 8px;
   min-height: 38px;
   padding: 0 12px;
+}
+
+.services-alert-slot.has-error {
+  border-color: var(--badge-warning-border);
+  color: var(--badge-warning-fg);
 }
 
 .services-loading {
@@ -586,8 +591,7 @@ button {
   overflow: hidden;
 }
 
-.service-card-facts,
-.service-detail-summary {
+.service-card-facts {
   display: grid;
   gap: 8px;
 }
@@ -596,12 +600,8 @@ button {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.service-detail-summary {
-  grid-template-columns: 1.1fr 2fr repeat(3, minmax(120px, 0.8fr));
-}
-
 .service-card-facts div,
-.service-detail-summary div {
+.service-focus-facts div {
   background: color-mix(in oklab, var(--surface-alt) 70%, var(--surface));
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -612,7 +612,7 @@ button {
 }
 
 .service-card-facts span,
-.service-detail-summary span {
+.service-focus-facts span {
   color: var(--muted-foreground);
   font-size: 10px;
   font-weight: 560;
@@ -621,7 +621,7 @@ button {
 }
 
 .service-card-facts strong,
-.service-detail-summary strong {
+.service-focus-facts strong {
   color: var(--foreground);
   font-size: 12px;
   font-weight: 430;
@@ -713,10 +713,17 @@ button {
   color: var(--badge-danger-fg);
 }
 
-.service-focus-grid,
+.service-primary-grid,
 .service-two-column {
   display: grid;
   gap: 12px;
+}
+
+.service-primary-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.9fr);
+}
+
+.service-two-column {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
@@ -749,11 +756,18 @@ button {
   padding: 14px;
 }
 
+.service-focus-body {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+}
+
 .service-focus strong {
   display: block;
   font-size: 16px;
   font-weight: 560;
-  margin-bottom: 4px;
+  margin-bottom: 0;
 }
 
 .service-focus p {
@@ -761,6 +775,143 @@ button {
   font-size: 13px;
   line-height: 1.45;
   margin: 0;
+}
+
+.service-focus-facts {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.service-log-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.service-log-summary {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.service-log-summary strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 560;
+  margin-bottom: 3px;
+}
+
+.service-log-summary p {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.service-log-list {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.service-log-item {
+  align-items: baseline;
+  background: color-mix(in oklab, var(--surface-alt) 62%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 150px minmax(0, 1fr);
+  min-width: 0;
+  padding: 7px 9px;
+}
+
+.service-log-item.active {
+  background: var(--badge-danger-bg);
+  border-color: var(--badge-danger-border);
+}
+
+.service-log-item span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.service-log-item strong {
+  color: var(--foreground);
+  font-size: 12.5px;
+  font-weight: 430;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-config-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.service-config-group {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  min-width: 0;
+  padding: 9px;
+}
+
+.service-config-group h3 {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 560;
+  letter-spacing: 0.04em;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.service-config-items {
+  display: grid;
+  gap: 6px;
+}
+
+.service-config-item {
+  align-items: baseline;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 140px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.service-config-item span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.service-config-item strong {
+  color: var(--foreground);
+  font-size: 12.5px;
+  font-weight: 430;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-config-more {
+  margin-top: 8px;
+}
+
+.service-config-more summary {
+  color: var(--primary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.service-config-more .service-config-items {
+  margin-top: 7px;
 }
 
 .service-key-values {
@@ -800,18 +951,13 @@ button {
   .services-card-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .service-detail-summary {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 760px) {
   .services-header,
   .services-top-summary,
   .service-card-facts,
-  .service-detail-summary,
-  .service-focus-grid,
+  .service-primary-grid,
   .service-two-column {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -823,6 +969,13 @@ button {
   .service-key-values div {
     grid-template-columns: minmax(0, 1fr);
     padding: 7px 0;
+  }
+
+  .service-focus-facts,
+  .service-log-list,
+  .service-config-item,
+  .service-log-item {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

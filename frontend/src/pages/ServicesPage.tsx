@@ -116,9 +116,21 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
         </div>
         <ServicesTopSummary now={now} services={services} />
       </section>
-      {error ? <div className="services-alert"><ShieldAlert size={16} />{error}</div> : null}
+      <div className={`services-alert-slot ${error ? "has-error" : ""}`} aria-live="polite">
+        {error ? (
+          <>
+            <ShieldAlert size={16} />
+            <span>{error}</span>
+          </>
+        ) : (
+          <>
+            <CheckCircle2 size={16} />
+            <span>No dashboard API errors reported.</span>
+          </>
+        )}
+      </div>
       {loading && !payload ? <div className="services-loading"><Loader2 size={18} /> Loading service status.</div> : null}
-      {selected ? <ServiceDetail service={selected} /> : <ServicesDashboard services={services} onNavigate={onNavigate} />}
+      {selected ? <ServiceDetail pageError={error} service={selected} /> : <ServicesDashboard services={services} onNavigate={onNavigate} />}
     </div>
   );
 }
@@ -187,44 +199,44 @@ function ServiceFact({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ServiceDetail({ service }: { service: ServiceStatusPayload }) {
+function ServiceDetail({ pageError, service }: { pageError: string; service: ServiceStatusPayload }) {
   const snapshot = service.snapshot ?? {};
   const metrics = service.metrics ?? {};
   const runtimeRows = objectRows(snapshot.runtime, metrics);
   const dailyRows = objectRows(snapshot.daily_summary);
   const coverageRows = objectRows(snapshot.coverage);
-  const configRows = objectRows(snapshot.configuration);
   const dependencyRows = arrayRows(snapshot.dependencies);
   const sourceRows = arrayRows(snapshot.sources_sinks);
   const taskRows = arrayRows(snapshot.tasks);
   const progressRows = arrayRows(snapshot.task_table_progress);
   const queueRows = arrayRows(snapshot.queues);
   const tableRows = arrayRows(snapshot.configured_tables);
-  const errorRows = objectRows(snapshot.error_state, service.errors);
   const recentRows = recentRowsFromPayload(service.recent);
   return (
     <>
-      <section className="service-detail-summary">
-        <ServiceFact label="Status" value={statusInfo(service).label} />
-        <ServiceFact label="Endpoint" value={service.registry.base_url} />
-        <ServiceFact label="Runtime Rows" value={String(runtimeRows.length)} />
-        <ServiceFact label="Task Rows" value={String(taskRows.length + progressRows.length)} />
-        <ServiceFact label="Recent Rows" value={String(recentRows.length)} />
-      </section>
-      <section className="service-focus-grid">
+      <section className="service-primary-grid">
         <Panel title="Current Focus">
           <div className="service-focus">
             <ServiceStatusBadge status={service.status} online={service.online} />
-            <div>
+            <div className="service-focus-body">
               <strong>{phaseText(service)}</strong>
               <p>{currentMessage(service) || "No current operation message reported."}</p>
+              <div className="service-focus-facts">
+                <ServiceFact label="Status" value={statusInfo(service).label} />
+                <ServiceFact label="Checked" value={service.checked_at_utc ? formatTime(service.checked_at_utc) : "-"} />
+                <ServiceFact label="Runtime" value={runtimeText(service)} />
+              </div>
             </div>
           </div>
         </Panel>
-        <Panel title="Coverage">
-          <KeyValueList rows={coverageRows.length ? coverageRows : [{ key: "status", value: "not reported" }]} />
+        <Panel title="Run Configuration">
+          <ServiceConfigurationPanel service={service} />
         </Panel>
       </section>
+      <ServiceErrorLogPanel pageError={pageError} service={service} />
+      <Panel title="Coverage">
+        <KeyValueList rows={coverageRows.length ? coverageRows : [{ key: "status", value: "not reported" }]} />
+      </Panel>
       <section className="service-two-column">
         <Panel title="Runtime Counters"><DataTable rows={runtimeRows} columns={["key", "value"]} empty="No runtime counters reported." /></Panel>
         <Panel title="Daily Summary"><DataTable rows={dailyRows} columns={["key", "value"]} empty="No daily summary reported." /></Panel>
@@ -240,16 +252,81 @@ function ServiceDetail({ service }: { service: ServiceStatusPayload }) {
         <Panel title="Sources And Sinks"><DataTable rows={sourceRows} empty="No source coverage reported." /></Panel>
         <Panel title="Configured Tables"><DataTable rows={tableRows} empty="No configured tables reported." /></Panel>
       </section>
-      <Panel title="Errors And Warnings">
-        <DataTable rows={errorRows} columns={["key", "value"]} empty="No errors or warnings reported." />
-      </Panel>
       <Panel title="Recent Items">
         <DataTable rows={recentRows} empty="No recent items reported." />
       </Panel>
-      <Panel title="Configuration">
-        <DataTable rows={configRows} columns={["key", "value"]} empty="No public configuration reported." />
-      </Panel>
     </>
+  );
+}
+
+function ServiceErrorLogPanel({ pageError, service }: { pageError: string; service: ServiceStatusPayload }) {
+  const items = collectErrorLogItems(pageError, service);
+  const activeItems = items.filter((item) => item.status !== "clear");
+  return (
+    <Panel title="Errors And Logs">
+      <div className={`service-log-panel ${activeItems.length ? "has-active" : ""}`}>
+        <div className="service-log-summary">
+          <ServiceStatusBadge online={service.online} status={activeItems.length ? "degraded" : "running"} />
+          <div>
+            <strong>{activeItems.length ? `${activeItems.length} active issue${activeItems.length === 1 ? "" : "s"}` : "No active service errors"}</strong>
+            <p>{activeItems.length ? "Errors and warnings are kept here so the page layout does not move when they change." : "Recent service checks did not report active errors or warnings."}</p>
+          </div>
+        </div>
+        <div className="service-log-list">
+          {(items.length ? items : [{ key: "state", status: "clear", value: "No errors or warnings reported." }]).slice(0, 8).map((item) => (
+            <div className={`service-log-item ${item.status}`} key={`${item.key}-${item.value}`}>
+              <span>{displayName(item.key)}</span>
+              <strong>{formatValue(item.key, item.value)}</strong>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function ServiceConfigurationPanel({ service }: { service: ServiceStatusPayload }) {
+  const groups = configurationGroups(service);
+  return (
+    <div className="service-config-panel">
+      {groups.map((group) => (
+        <ConfigGroupView group={group} key={group.title} />
+      ))}
+    </div>
+  );
+}
+
+function ConfigGroupView({ group }: { group: ConfigGroup }) {
+  const visible = group.rows.slice(0, 5);
+  const hidden = group.rows.slice(5);
+  return (
+    <section className="service-config-group">
+      <h3>{group.title}</h3>
+      <div className="service-config-items">
+        {visible.map((item) => (
+          <ConfigItemView item={item} key={item.key} />
+        ))}
+      </div>
+      {hidden.length ? (
+        <details className="service-config-more">
+          <summary>Show {hidden.length} more</summary>
+          <div className="service-config-items">
+            {hidden.map((item) => (
+              <ConfigItemView item={item} key={item.key} />
+            ))}
+          </div>
+        </details>
+      ) : null}
+    </section>
+  );
+}
+
+function ConfigItemView({ item }: { item: ConfigItem }) {
+  return (
+    <div className="service-config-item">
+      <span>{displayName(item.key)}</span>
+      <strong title={formatValue(item.key, item.value)}>{formatValue(item.key, item.value)}</strong>
+    </div>
   );
 }
 
@@ -275,6 +352,68 @@ function KeyValueList({ rows }: { rows: Array<{ key: string; value: unknown }> }
       ))}
     </dl>
   );
+}
+
+type ConfigItem = {
+  key: string;
+  value: unknown;
+};
+
+type ConfigGroup = {
+  rows: ConfigItem[];
+  title: string;
+};
+
+function collectErrorLogItems(pageError: string, service: ServiceStatusPayload) {
+  const items: Array<{ key: string; status: "active" | "clear"; value: unknown }> = [];
+  if (pageError) items.push({ key: "dashboard_api", status: "active", value: pageError });
+  for (const row of objectRows(service.snapshot?.error_state, service.errors)) {
+    const value = formatValue(row.key, row.value);
+    const normalized = value.toLowerCase();
+    const clear = !value || value === "-" || normalized === "ok" || normalized === "none" || normalized === "false" || normalized.includes("no active errors");
+    items.push({ key: row.key, status: clear ? "clear" : "active", value: row.value });
+  }
+  if (!items.length) items.push({ key: "service", status: "clear", value: "No errors or warnings reported." });
+  return items;
+}
+
+function configurationGroups(service: ServiceStatusPayload): ConfigGroup[] {
+  const rawItems = new Map<string, ConfigItem>();
+  const add = (key: string, value: unknown) => {
+    if (value === undefined || value === null || value === "") return;
+    if (!rawItems.has(key)) rawItems.set(key, { key, value });
+  };
+
+  add("service", service.registry.label);
+  add("kind", service.registry.kind);
+  add("endpoint", service.registry.base_url);
+
+  const snapshot = service.snapshot ?? {};
+  if (isRecord(snapshot.configuration)) {
+    for (const [key, value] of Object.entries(snapshot.configuration)) add(key, value);
+  }
+
+  const grouped = new Map<string, ConfigItem[]>();
+  for (const item of rawItems.values()) {
+    const title = configGroupTitle(item.key);
+    grouped.set(title, [...(grouped.get(title) ?? []), item]);
+  }
+
+  const order = ["Service", "Run Mode", "Connection", "Schedule And Market", "Database", "Storage", "Other Parameters"];
+  return order
+    .map((title) => ({ title, rows: grouped.get(title) ?? [] }))
+    .filter((group) => group.rows.length > 0);
+}
+
+function configGroupTitle(key: string) {
+  const normalized = key.toLowerCase();
+  if (/^service$|^kind$/.test(normalized)) return "Service";
+  if (/mode|execute|daemon|profile|env|policy/.test(normalized)) return "Run Mode";
+  if (/endpoint|bind|host|port|url|client|server/.test(normalized)) return "Connection";
+  if (/poll|interval|lookback|schedule|market|session|window|cadence|timezone|holiday/.test(normalized)) return "Schedule And Market";
+  if (/database|table|clickhouse|schema/.test(normalized)) return "Database";
+  if (/root|path|artifact|storage|log|report|folder|directory/.test(normalized)) return "Storage";
+  return "Other Parameters";
 }
 
 function ServiceIcon({ service }: { service: ServiceStatusPayload }) {
