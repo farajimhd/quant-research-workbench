@@ -108,9 +108,11 @@ from src.strategies.registry import (
     strategy_version_description,
 )
 from research.mlops.clickhouse import default_clickhouse_password, default_clickhouse_url, default_clickhouse_user, sql_string
+from research.mlops.env import discover_env_files, load_env_files
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_env_files(discover_env_files(PROJECT_ROOT), verbose=False)
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 CHART_DISPLAY_ITEMS_NONE = "__none__"
 EXCHANGE_TIME_ZONE = "America/New_York"
