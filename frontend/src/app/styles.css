@@ -936,16 +936,16 @@ button {
   -webkit-line-clamp: 2;
 }
 
-.service-config-modal-panel {
+.modal-panel.service-config-modal-panel {
   max-height: min(760px, calc(100vh - 56px));
   max-width: min(1180px, calc(100vw - 72px));
   width: min(1180px, calc(100vw - 72px));
 }
 
-.service-config-modal-panel .service-config-panel {
+.modal-panel.service-config-modal-panel .service-config-panel {
   max-height: calc(100vh - 134px);
   overflow: auto;
-  padding: 14px;
+  padding: 2px 2px 4px;
 }
 
 .service-log-panel {
@@ -1050,44 +1050,103 @@ button {
 
 .service-config-panel {
   display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 14px;
   padding: 12px;
+}
+
+.service-config-summary {
+  background: color-mix(in oklab, var(--surface-alt) 72%, var(--surface));
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  display: grid;
+  gap: 0;
+  grid-template-columns: 1.2fr 0.8fr 1fr 0.55fr;
+  overflow: hidden;
+}
+
+.service-config-summary div {
+  border-right: 1px solid var(--border);
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.service-config-summary div:last-child {
+  border-right: 0;
+}
+
+.service-config-summary span,
+.service-config-group-header span {
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  font-weight: 560;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.service-config-summary strong {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 520;
+  line-height: 1.25;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-config-sections {
+  display: grid;
+  gap: 12px;
 }
 
 .service-config-group {
   border: 1px solid var(--border);
   border-radius: 7px;
   min-width: 0;
-  padding: 9px;
+  overflow: hidden;
+}
+
+.service-config-group-header {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 62%, var(--surface));
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 12px;
 }
 
 .service-config-group h3 {
-  color: var(--muted-foreground);
-  font-size: 11px;
+  color: var(--foreground);
+  font-size: 13px;
   font-weight: 560;
-  letter-spacing: 0.04em;
-  margin: 0 0 8px;
-  text-transform: uppercase;
+  margin: 0;
 }
 
 .service-config-items {
   display: grid;
-  gap: 6px;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .service-config-item {
   align-items: baseline;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 62%, transparent);
+  border-right: 1px solid color-mix(in oklab, var(--border) 62%, transparent);
   display: grid;
-  gap: 10px;
-  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 12px;
+  grid-template-columns: minmax(136px, 0.42fr) minmax(0, 1fr);
+  min-height: 34px;
   min-width: 0;
+  padding: 8px 12px;
 }
 
 .service-config-item span {
   color: var(--muted-foreground);
   font-size: 12px;
+  line-height: 1.25;
 }
 
 .service-config-item strong {
@@ -1100,18 +1159,25 @@ button {
   white-space: nowrap;
 }
 
-.service-config-more {
-  margin-top: 8px;
+.service-config-item.long strong {
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 
-.service-config-more summary {
-  color: var(--primary);
-  cursor: pointer;
+.service-config-item.boolean strong {
+  background: var(--badge-muted-bg);
+  border: 1px solid var(--badge-muted-border);
+  border-radius: 999px;
+  display: inline-flex;
+  justify-self: start;
+  line-height: 1;
+  padding: 4px 8px;
+}
+
+.service-config-item.number strong {
+  font-family: "Roboto Mono", monospace;
   font-size: 12px;
-}
-
-.service-config-more .service-config-items {
-  margin-top: 7px;
 }
 
 .service-key-values {
@@ -1158,8 +1224,20 @@ button {
   .services-top-summary,
   .service-card-facts,
   .service-primary-grid,
+  .service-config-summary,
+  .service-config-items,
   .service-two-column {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .modal-panel.service-config-modal-panel {
+    max-width: calc(100vw - 32px);
+    width: calc(100vw - 32px);
+  }
+
+  .service-config-summary div {
+    border-bottom: 1px solid var(--border);
+    border-right: 0;
   }
 
   .services-header-actions {

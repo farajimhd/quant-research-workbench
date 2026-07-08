@@ -289,45 +289,64 @@ function ServiceErrorLogPanel({ pageError, service }: { pageError: string; servi
 
 function ServiceConfigurationPanel({ service }: { service: ServiceStatusPayload }) {
   const groups = configurationGroups(service);
+  const totalSettings = groups.reduce((total, group) => total + group.rows.length, 0);
+  const findValue = (patterns: RegExp[]) => {
+    for (const group of groups) {
+      for (const row of group.rows) {
+        if (patterns.some((pattern) => pattern.test(row.key.toLowerCase()))) return formatValue(row.key, row.value);
+      }
+    }
+    return "-";
+  };
   return (
     <div className="service-config-panel">
-      {groups.map((group) => (
-        <ConfigGroupView group={group} key={group.title} />
-      ))}
+      <div className="service-config-summary">
+        <ConfigSummaryItem label="Service" value={service.registry.label} />
+        <ConfigSummaryItem label="Mode" value={findValue([/mode/, /profile/, /execute/, /daemon/])} />
+        <ConfigSummaryItem label="Database" value={findValue([/database/, /clickhouse/])} />
+        <ConfigSummaryItem label="Settings" value={String(totalSettings)} />
+      </div>
+      <div className="service-config-sections">
+        {groups.map((group) => (
+          <ConfigGroupView group={group} key={group.title} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ConfigSummaryItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <strong title={value}>{value || "-"}</strong>
     </div>
   );
 }
 
 function ConfigGroupView({ group }: { group: ConfigGroup }) {
-  const visible = group.rows.slice(0, 5);
-  const hidden = group.rows.slice(5);
   return (
     <section className="service-config-group">
-      <h3>{group.title}</h3>
+      <div className="service-config-group-header">
+        <h3>{group.title}</h3>
+        <span>{group.rows.length} setting{group.rows.length === 1 ? "" : "s"}</span>
+      </div>
       <div className="service-config-items">
-        {visible.map((item) => (
+        {group.rows.map((item) => (
           <ConfigItemView item={item} key={item.key} />
         ))}
       </div>
-      {hidden.length ? (
-        <details className="service-config-more">
-          <summary>Show {hidden.length} more</summary>
-          <div className="service-config-items">
-            {hidden.map((item) => (
-              <ConfigItemView item={item} key={item.key} />
-            ))}
-          </div>
-        </details>
-      ) : null}
     </section>
   );
 }
 
 function ConfigItemView({ item }: { item: ConfigItem }) {
+  const value = formatValue(item.key, item.value);
+  const valueType = typeof item.value === "boolean" ? "boolean" : typeof item.value === "number" ? "number" : value.length > 48 ? "long" : "text";
   return (
-    <div className="service-config-item">
+    <div className={`service-config-item ${valueType}`}>
       <span>{displayName(item.key)}</span>
-      <strong title={formatValue(item.key, item.value)}>{formatValue(item.key, item.value)}</strong>
+      <strong title={value}>{value}</strong>
     </div>
   );
 }
