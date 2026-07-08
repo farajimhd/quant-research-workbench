@@ -378,7 +378,10 @@ def scanner_worker(
             slot.stage = "done"
             slot.completed = slot.total
             slot.current = str(result["path"])
-            state.message(f"day {source_date} rows={int(result['rows']):,} files={int(result['files']):,} bytes={int(result['bytes']):,} seconds={float(result['seconds']):.1f}")
+            state.message(
+                f"day {source_date} rows={int(result['rows']):,} files={int(result['files']):,} "
+                f"empty={int(result.get('empty_files') or 0):,} bytes={int(result['bytes']):,} seconds={float(result['seconds']):.1f}"
+            )
         except Exception as exc:  # noqa: BLE001
             state.add_error(worker=slot.worker_id, source_date=getattr(slot, "source_date", ""), error=exc)
             stop_event.set()
@@ -465,6 +468,7 @@ def build_day_scanner(
 
     started = time.perf_counter()
     frames: list[Any] = []
+    empty_files = 0
     read_started = time.perf_counter()
     for index, path in enumerate(files, start=1):
         if slot is not None:
@@ -473,11 +477,17 @@ def build_day_scanner(
             slot.completed = index - 1
             slot.total = max(1, len(files))
         frame = pl.read_parquet(path)
+        if frame.width <= 0 or frame.height <= 0:
+            empty_files += 1
+            if slot is not None:
+                slot.completed = index
+                slot.current = f"skip empty {path.name}"
+            continue
         frames.append(frame)
         if slot is not None:
             slot.completed = index
             slot.rows += int(frame.height)
-    base = pl.concat(frames, how="vertical_relaxed") if frames else pl.DataFrame()
+    base = pl.concat(frames, how="diagonal_relaxed", rechunk=True) if frames else pl.DataFrame()
     if slot is not None:
         slot.stage = "process"
         slot.current = f"concat {len(frames):,} files in {format_seconds(time.perf_counter() - read_started)}"
@@ -511,6 +521,7 @@ def build_day_scanner(
     return {
         "source_date": source_date,
         "files": len(files),
+        "empty_files": int(empty_files),
         "rows": int(frame.height),
         "bytes": int(output.stat().st_size),
         "seconds": time.perf_counter() - started,
