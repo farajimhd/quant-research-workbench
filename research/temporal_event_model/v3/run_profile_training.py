@@ -18,10 +18,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from research.mlops.checkpoints import atomic_torch_save
+from research.mlops.clickhouse import default_clickhouse_password, default_clickhouse_url, default_clickhouse_user
 from research.mlops.env import discover_env_files, load_env_files
 from research.mlops.manifest import write_run_manifest
 from research.mlops.model_artifacts import parameter_summary, write_model_artifacts
 from research.mlops.paths import RunPaths, default_run_root
+from research.mlops.rolling_loader.daily_index_batch_audit import DailyIndexBatchAuditConfig, DailyIndexBatchAuditor
 from research.temporal_event_model.v3 import MODEL_FAMILY, MODEL_VERSION
 from research.temporal_event_model.v3.config import ExperimentConfig, LoaderConfig, ModelConfig, TrainConfig, default_run_name, to_dict
 from research.temporal_event_model.v3.data import batch_to_torch, loader_config_from_v3, make_dummy_temporal_batch
@@ -73,6 +75,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fresh-start", action="store_true")
     parser.add_argument("--skip-model-artifacts", action="store_true")
     parser.add_argument("--report-name", default="training_profile.jsonl")
+    parser.add_argument("--audit-profile-batches", type=int, default=2, help="Measured profile batches to audit. Set 0 to disable.")
+    parser.add_argument("--audit-samples-per-batch", type=int, default=10)
+    parser.add_argument("--audit-strict", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--audit-report-name", default="training_profile_batch_audit.jsonl")
+    parser.add_argument("--audit-summary-name", default="training_profile_batch_audit_summary.json")
+    parser.add_argument("--audit-clickhouse-url", default=default_clickhouse_url())
+    parser.add_argument("--audit-clickhouse-user", default=default_clickhouse_user())
+    parser.add_argument("--audit-clickhouse-password", default=default_clickhouse_password())
+    parser.add_argument("--audit-database", default="market_sip_compact")
+    parser.add_argument("--audit-events-table", default="events")
+    parser.add_argument("--audit-source-event-limit", type=int, default=250_000)
+    parser.add_argument("--audit-rest-samples", type=int, default=0, help="Optional Massive REST spot checks across the profile audit. Default 0 keeps profiling local/ClickHouse-only.")
+    parser.add_argument("--audit-massive-base-url", default="https://api.massive.com")
+    parser.add_argument("--audit-massive-api-key-env", default="MASSIVE_API_KEY")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
     return parser.parse_args()
 
@@ -86,10 +102,12 @@ def main() -> int:
     paths = RunPaths.create(run_root)
     report_path = paths.run_root / str(args.report_name)
     summary_path = paths.run_root / "training_profile_summary.json"
+    audit_report_path = paths.run_root / str(args.audit_report_name)
+    audit_summary_path = paths.run_root / str(args.audit_summary_name)
     checkpoint_path = paths.checkpoints_dir / "profile_checkpoint_latest.pt"
     error_path = paths.logs_dir / "fatal_error.txt"
     if args.fresh_start:
-        for stale_path in (report_path, summary_path, checkpoint_path, error_path):
+        for stale_path in (report_path, summary_path, audit_report_path, audit_summary_path, checkpoint_path, error_path):
             try:
                 stale_path.unlink()
             except FileNotFoundError:
@@ -152,6 +170,7 @@ def main() -> int:
     rows: list[dict[str, Any]] = _load_existing_measured_rows(report_path) if resumed else []
     first_batch_summary: dict[str, Any] = {}
     reporter = _ProfileReporter(args.progress_layout, total_batches=total_batches, run_root=paths.run_root)
+    auditor = _make_batch_auditor(args, audit_report_path=audit_report_path, audit_summary_path=audit_summary_path)
     try:
         reporter.start()
         while int(state["batch_index"]) < total_batches:
@@ -166,6 +185,7 @@ def main() -> int:
                 device=device,
                 phase=phase,
                 batch_number=batch_number,
+                auditor=auditor,
             )
             if first_summary and not first_batch_summary:
                 first_batch_summary = first_summary
@@ -179,7 +199,7 @@ def main() -> int:
             if _should_checkpoint(args, state, total_batches):
                 _save_profile_checkpoint(checkpoint_path, model, optimizer, scaler, loader, config, state)
                 state["last_checkpoint"] = str(checkpoint_path)
-        summary = _summary_payload(config, args, rows, state, first_batch_summary, paths.run_root, model_parameters=model_parameters)
+        summary = _summary_payload(config, args, rows, state, first_batch_summary, paths.run_root, model_parameters=model_parameters, audit_summary=auditor.summary())
         _write_json(summary_path, summary)
         _save_profile_checkpoint(checkpoint_path, model, optimizer, scaler, loader, config, state)
         reporter.finish(summary)
@@ -187,7 +207,7 @@ def main() -> int:
     except KeyboardInterrupt:
         state["interrupted_at"] = _now_iso()
         _save_profile_checkpoint(checkpoint_path, model, optimizer, scaler, loader, config, state)
-        _write_json(summary_path, _summary_payload(config, args, rows, state, first_batch_summary, paths.run_root, status="interrupted", model_parameters=model_parameters))
+        _write_json(summary_path, _summary_payload(config, args, rows, state, first_batch_summary, paths.run_root, status="interrupted", model_parameters=model_parameters, audit_summary=auditor.summary()))
         reporter.message(f"Interrupt received. Saved restart checkpoint: {checkpoint_path}")
         return 130
     except Exception as exc:  # noqa: BLE001
@@ -195,7 +215,7 @@ def main() -> int:
         state["failed_at"] = _now_iso()
         state["error"] = repr(exc)
         _save_profile_checkpoint(checkpoint_path, model, optimizer, scaler, loader, config, state)
-        _write_json(summary_path, _summary_payload(config, args, rows, state, first_batch_summary, paths.run_root, status="error", model_parameters=model_parameters))
+        _write_json(summary_path, _summary_payload(config, args, rows, state, first_batch_summary, paths.run_root, status="error", model_parameters=model_parameters, audit_summary=auditor.summary()))
         reporter.message(f"ERROR: {exc!r}")
         raise
     finally:
@@ -218,6 +238,7 @@ def _run_profile_batch(
     device: torch.device,
     phase: str,
     batch_number: int,
+    auditor: DailyIndexBatchAuditor | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
@@ -225,6 +246,9 @@ def _run_profile_batch(
     load_start = time.perf_counter()
     raw_batch = next(raw_iter)
     loader_wait = time.perf_counter() - load_start
+    audit_metrics: dict[str, Any] = {}
+    if auditor is not None:
+        audit_metrics = auditor.audit_batch(raw_batch, batch_number=int(batch_number), phase=str(phase))
     convert_start = time.perf_counter()
     batch = batch_to_torch(raw_batch, model_config=config.model, device=device)
     if device.type == "cuda":
@@ -290,6 +314,7 @@ def _run_profile_batch(
     }
     row.update({f"loss/{key.removeprefix('train/')}": value for key, value in loss_result.metrics.items() if isinstance(value, (int, float))})
     row.update({f"loader/{key}": value for key, value in batch.profile.items() if isinstance(value, (int, float))})
+    row.update({f"audit/{key}": value for key, value in audit_metrics.items() if isinstance(value, (int, float, bool))})
     row.update(fast_batch_metrics(batch, output, prefix="batch"))
     row.update(prediction_metrics(batch, output, prefix="batch"))
     first_summary = _batch_shape_summary(batch) if int(batch_number) == 1 else {}
@@ -346,6 +371,30 @@ def _make_loader(config: LoaderConfig) -> Any:
     return AsyncDailyIndexBatchLoader(loader_config_from_v3(config))
 
 
+def _make_batch_auditor(args: argparse.Namespace, *, audit_report_path: Path, audit_summary_path: Path) -> DailyIndexBatchAuditor:
+    enabled = int(args.audit_profile_batches) > 0 and int(args.audit_samples_per_batch) > 0
+    return DailyIndexBatchAuditor(
+        DailyIndexBatchAuditConfig(
+            enabled=enabled,
+            strict=bool(args.audit_strict),
+            max_batches=max(0, int(args.audit_profile_batches)),
+            samples_per_batch=max(0, int(args.audit_samples_per_batch)),
+            seed=int(args.seed),
+            report_path=audit_report_path if enabled else None,
+            summary_path=audit_summary_path if enabled else None,
+            clickhouse_url=str(args.audit_clickhouse_url),
+            clickhouse_user=str(args.audit_clickhouse_user),
+            clickhouse_password=str(args.audit_clickhouse_password),
+            database=str(args.audit_database),
+            events_table=str(args.audit_events_table),
+            source_event_limit=max(1_024, int(args.audit_source_event_limit)),
+            rest_samples=max(0, int(args.audit_rest_samples)),
+            massive_base_url=str(args.audit_massive_base_url),
+            massive_api_key_env=str(args.audit_massive_api_key_env),
+        )
+    )
+
+
 def _profile_run_name(config: ExperimentConfig, args: argparse.Namespace) -> str:
     if args.run_name:
         return str(args.run_name)
@@ -396,6 +445,7 @@ def _summary_payload(
     *,
     status: str = "complete",
     model_parameters: Mapping[str, Any] | None = None,
+    audit_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     numeric_keys = sorted({key for row in rows for key, value in row.items() if isinstance(value, (int, float))})
     averages = {key: float(np.mean([float(row[key]) for row in rows if key in row])) for key in numeric_keys}
@@ -411,6 +461,7 @@ def _summary_payload(
         "measured_batches": int(state.get("measured_batches", len(rows))),
         "measured_samples": int(state.get("measured_samples", sum(int(row.get("samples", 0)) for row in rows))),
         "model_parameters": dict(model_parameters or {}),
+        "audit": dict(audit_summary or {}),
         "averages": averages,
         "p95": p95,
         "first_batch": dict(first_batch_summary),
