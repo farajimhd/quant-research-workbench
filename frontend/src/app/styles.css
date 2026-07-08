@@ -811,40 +811,75 @@ button {
 }
 
 .service-focus-panel {
-  min-height: 208px;
+  height: 174px;
 }
 
 .service-focus {
   align-items: stretch;
+  background: var(--surface);
+  border-left: 4px solid var(--badge-muted-border);
   display: grid;
-  grid-template-rows: auto 1fr auto;
-  height: 208px;
-  padding: 14px;
+  gap: 12px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 174px;
+  padding: 14px 16px;
 }
 
-.service-focus-status-row,
-.service-focus-main {
+.service-focus.running,
+.service-focus.idle {
+  background: color-mix(in oklab, var(--badge-success-bg) 38%, var(--surface));
+  border-left-color: var(--badge-success-border);
+}
+
+.service-focus.catching-up,
+.service-focus.preflight,
+.service-focus.starting,
+.service-focus.working {
+  background: color-mix(in oklab, var(--badge-info-bg) 38%, var(--surface));
+  border-left-color: var(--badge-info-border);
+}
+
+.service-focus.degraded,
+.service-focus.blocked,
+.service-focus.unknown {
+  background: color-mix(in oklab, var(--badge-warning-bg) 34%, var(--surface));
+  border-left-color: var(--badge-warning-border);
+}
+
+.service-focus.failed,
+.service-focus.not-started,
+.service-focus.stopping {
+  background: color-mix(in oklab, var(--badge-danger-bg) 34%, var(--surface));
+  border-left-color: var(--badge-danger-border);
+}
+
+.service-focus-top {
   align-items: center;
-  display: grid;
+  display: flex;
   gap: 10px;
+  justify-content: space-between;
   min-width: 0;
 }
 
-.service-focus-status-row {
-  grid-template-columns: auto minmax(190px, 0.45fr);
+.service-focus-top span {
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 430;
 }
 
-.service-focus-main {
-  align-content: start;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.38fr);
-  padding-top: 14px;
+.service-focus-content {
+  align-content: center;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
 }
 
 .service-focus-phase {
   color: var(--foreground);
   display: block;
-  font-size: 18px;
-  font-weight: 560;
+  font-size: 20px;
+  font-weight: 590;
   line-height: 1.2;
   min-width: 0;
   overflow: hidden;
@@ -852,57 +887,14 @@ button {
   white-space: nowrap;
 }
 
-.service-focus-status-row > div,
-.service-focus-main > div {
-  background: color-mix(in oklab, var(--surface-alt) 70%, var(--surface));
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-  padding: 6px 8px;
-}
-
-.service-focus-status-row > div span,
-.service-focus-main > div span {
+.service-focus-runtime {
   color: var(--muted-foreground);
-  font-size: 10px;
-  font-weight: 560;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.service-focus-status-row > div strong,
-.service-focus-main > div strong {
-  color: var(--foreground);
   font-size: 12px;
   font-weight: 430;
-  line-height: 1.2;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .service-focus-message {
-  background: color-mix(in oklab, var(--surface-alt) 68%, var(--surface));
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  min-height: 62px;
-  padding: 8px 10px;
-}
-
-.service-focus-message span {
-  color: var(--muted-foreground);
-  display: block;
-  font-size: 10px;
-  font-weight: 560;
-  letter-spacing: 0.04em;
-  margin-bottom: 4px;
-  text-transform: uppercase;
-}
-
-.service-focus-message p {
+  border-top: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
   color: var(--muted-foreground);
   display: -webkit-box;
   font-size: 13px;
@@ -910,6 +902,7 @@ button {
   margin: 0;
   max-width: 100%;
   overflow: hidden;
+  padding-top: 10px;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }

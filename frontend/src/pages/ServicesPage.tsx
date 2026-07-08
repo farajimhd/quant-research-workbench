@@ -199,23 +199,21 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
   const queueRows = arrayRows(snapshot.queues);
   const tableRows = arrayRows(snapshot.configured_tables);
   const recentRows = recentRowsFromPayload(service.recent);
+  const focusStatus = statusInfo(service);
   return (
     <>
       <section className="service-primary-grid">
         <Panel className="service-focus-panel" title="">
-          <div className="service-focus">
-            <div className="service-focus-status-row">
+          <div className={`service-focus ${focusStatus.className}`}>
+            <div className="service-focus-top">
               <ServiceStatusBadge status={service.status} online={service.online} />
-              <ServiceFact label="Checked" value={service.checked_at_utc ? formatTime(service.checked_at_utc) : "-"} />
+              <span>{service.checked_at_utc ? `Checked ${formatTime(service.checked_at_utc)}` : "Not checked yet"}</span>
             </div>
-            <div className="service-focus-main">
+            <div className="service-focus-content">
               <strong className="service-focus-phase">{phaseText(service)}</strong>
-              <ServiceFact label="Runtime" value={runtimeText(service)} />
+              <span className="service-focus-runtime">{runtimeText(service)}</span>
             </div>
-            <div className="service-focus-message">
-              <span>Message</span>
-              <p>{currentMessage(service) || "No current operation message reported."}</p>
-            </div>
+            <p className="service-focus-message">{currentMessage(service) || "No current operation message reported."}</p>
           </div>
         </Panel>
         <Panel title="Run Configuration">
