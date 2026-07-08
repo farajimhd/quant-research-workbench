@@ -351,7 +351,10 @@ function ServiceDatabaseTableState({ service }: { service: ServiceStatusPayload 
             <tr className={`service-db-state-row ${tableStateClass(row.status)}`} key={`${row.database}.${row.table}.${index}`}>
               <td><span>{displayName(row.status || "unknown")}</span></td>
               <td title={row.role || ""}>{row.role || "-"}</td>
-              <td title={`${row.database || "-"}.${row.table || "-"}${row.time_column && row.time_column !== "-" ? ` by ${row.time_column}` : ""}`}>{row.database || "-"}.{row.table || "-"}</td>
+              <td title={`${row.database || "-"}.${row.table || "-"}${row.time_column && row.time_column !== "-" ? ` by ${row.time_column}` : ""}`}>
+                <span className={`service-db-name ${databaseClass(row.database)}`}>{row.database || "-"}</span>
+                <span className="service-db-table-name">.{row.table || "-"}</span>
+              </td>
               <td>{row.rows_today || "-"}</td>
               <td>{row.rows_last_week || "-"}</td>
               <td>{row.rows_last_month || "-"}</td>
@@ -768,6 +771,14 @@ function tableStateClass(status: string | undefined) {
   if (normalized === "empty") return "empty";
   if (normalized === "missing" || normalized === "error") return "error";
   return "unknown";
+}
+
+function databaseClass(database: string | undefined) {
+  const normalized = String(database || "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  if (normalized === "q-live") return "q-live";
+  if (normalized === "market-sip-compact") return "market-sip-compact";
+  if (normalized === "sec-core") return "sec-core";
+  return "default";
 }
 
 function shortTableTimestamp(value: string | undefined) {

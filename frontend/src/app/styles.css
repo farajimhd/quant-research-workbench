@@ -950,7 +950,7 @@ button {
   border-collapse: collapse;
   font-size: 12px;
   line-height: 1.3;
-  min-width: 1580px;
+  min-width: 1460px;
   table-layout: fixed;
   width: 100%;
 }
@@ -978,15 +978,15 @@ button {
 }
 
 .service-db-state-col-status {
-  width: 92px;
+  width: 74px;
 }
 
 .service-db-state-col-role {
-  width: 150px;
+  width: 122px;
 }
 
 .service-db-state-col-table {
-  width: 250px;
+  width: 198px;
 }
 
 .service-db-state-col-count {
@@ -1040,6 +1040,43 @@ button {
   background: var(--badge-danger-bg);
   border-color: var(--badge-danger-border);
   color: var(--badge-danger-fg);
+}
+
+.service-db-state-row .service-db-name {
+  background: color-mix(in oklab, var(--muted) 65%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--foreground);
+  display: inline;
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: 0;
+  padding: 0 4px;
+  text-transform: none;
+}
+
+.service-db-state-row .service-db-name.q-live {
+  background: var(--badge-success-bg);
+  border-color: var(--badge-success-border);
+  color: var(--badge-success-fg);
+}
+
+.service-db-state-row .service-db-name.market-sip-compact {
+  background: var(--badge-info-bg);
+  border-color: var(--badge-info-border);
+  color: var(--badge-info-fg);
+}
+
+.service-db-state-row .service-db-name.sec-core {
+  background: var(--badge-warning-bg);
+  border-color: var(--badge-warning-border);
+  color: var(--badge-warning-fg);
+}
+
+.service-db-table-name {
+  color: var(--muted-foreground);
+  font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
 }
 
 .service-db-state-empty {
