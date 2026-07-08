@@ -309,13 +309,27 @@ class DailyIndexBatchAuditor:
 
     def _check_identity_contract(self, batch: Any, sample_index: int, identity: Mapping[str, Any], checks: list[dict[str, Any]]) -> None:
         sample_count = int(getattr(batch, "sample_count", 0) or 0)
+        ticker_rows = int(getattr(batch, "ticker", np.asarray([])).shape[0])
+        ordinal_rows = int(getattr(batch, "origin_ordinal", np.asarray([])).shape[0])
+        timestamp_rows = int(getattr(batch, "origin_timestamp_us", np.asarray([])).shape[0])
         ok = 0 <= int(sample_index) < sample_count
-        ok = ok and int(batch.ticker.shape[0]) == sample_count and int(batch.origin_ordinal.shape[0]) == sample_count and int(batch.origin_timestamp_us.shape[0]) == sample_count
+        ok = ok and ticker_rows == sample_count and ordinal_rows == sample_count and timestamp_rows == sample_count
         source_part_key = str(identity.get("source_part_key", ""))
+        parsed_ticker = ""
         if source_part_key:
-            parts = source_part_key.split("|")
-            ok = ok and len(parts) >= 3 and str(identity["ticker"]) == parts[1]
-        checks.append(_check("identity_contract", "pass" if ok else "fail", "batch identity arrays align with sampled row"))
+            parsed_ticker = _ticker_from_source_part_key(source_part_key)
+            ok = ok and bool(parsed_ticker) and str(identity["ticker"]) == parsed_ticker
+        details = {
+            "sample_count": sample_count,
+            "sample_index": int(sample_index),
+            "ticker_rows": ticker_rows,
+            "ordinal_rows": ordinal_rows,
+            "timestamp_rows": timestamp_rows,
+            "source_part_key": source_part_key,
+            "source_part_key_ticker": parsed_ticker,
+            "identity_ticker": str(identity.get("ticker", "")),
+        }
+        checks.append(_check("identity_contract", "pass" if ok else "fail", "batch identity arrays align with sampled row", details))
 
     def _check_source_event_window(self, rows: Sequence[Mapping[str, Any]], origin_ordinal: int, origin_timestamp_us: int, expected_length: int, checks: list[dict[str, Any]]) -> None:
         if expected_length <= 0:
@@ -700,6 +714,27 @@ def _candidate_years_for_part(source_part_key: str, fallback_year: int) -> tuple
     except Exception:
         pass
     return (year,)
+
+
+def _ticker_from_source_part_key(source_part_key: str) -> str:
+    parts = str(source_part_key or "").split("|")
+    if len(parts) >= 4 and _looks_like_source_date(parts[1]):
+        return str(parts[2])
+    if len(parts) >= 3:
+        return str(parts[1])
+    return ""
+
+
+def _looks_like_source_date(value: str) -> bool:
+    text = str(value or "")
+    return (
+        len(text) == 10
+        and text[4] == "-"
+        and text[7] == "-"
+        and text[:4].isdigit()
+        and text[5:7].isdigit()
+        and text[8:].isdigit()
+    )
 
 
 def _timestamp_year_guess_from_part(source_part_key: str) -> int:
