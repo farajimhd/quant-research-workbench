@@ -1027,7 +1027,7 @@ button {
 .service-log-table-wrap {
   border: 1px solid var(--border);
   border-radius: 7px;
-  max-height: 520px;
+  max-height: 180px;
   min-width: 0;
   overflow: auto;
 }
