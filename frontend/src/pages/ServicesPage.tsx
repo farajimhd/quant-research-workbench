@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, CalendarDays, CheckCircle2, Clock3, Loader2, MapPin, RadioTower, RefreshCcw, ShieldAlert, WifiOff } from "lucide-react";
+import { Activity, AlertTriangle, CalendarDays, CheckCircle2, Clock3, Loader2, MapPin, RadioTower, RefreshCcw, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api } from "../api/client";
@@ -116,19 +116,6 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
         </div>
         <ServicesTopSummary now={now} services={services} />
       </section>
-      <div className={`services-alert-slot ${error ? "has-error" : ""}`} aria-live="polite">
-        {error ? (
-          <>
-            <ShieldAlert size={16} />
-            <span>{error}</span>
-          </>
-        ) : (
-          <>
-            <CheckCircle2 size={16} />
-            <span>No dashboard API errors reported.</span>
-          </>
-        )}
-      </div>
       {loading && !payload ? <div className="services-loading"><Loader2 size={18} /> Loading service status.</div> : null}
       {selected ? <ServiceDetail pageError={error} service={selected} /> : <ServicesDashboard services={services} onNavigate={onNavigate} />}
     </div>

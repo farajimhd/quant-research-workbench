@@ -502,26 +502,15 @@ button {
   white-space: nowrap;
 }
 
-.services-alert-slot,
 .services-loading {
   align-items: center;
-  border: 1px solid var(--badge-success-border);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  color: var(--badge-success-fg);
+  color: var(--muted-foreground);
   display: flex;
   gap: 8px;
   min-height: 38px;
   padding: 0 12px;
-}
-
-.services-alert-slot.has-error {
-  border-color: var(--badge-warning-border);
-  color: var(--badge-warning-fg);
-}
-
-.services-loading {
-  border-color: var(--border);
-  color: var(--muted-foreground);
 }
 
 .services-card-grid {
