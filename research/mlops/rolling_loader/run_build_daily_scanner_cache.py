@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import queue
+import re
 import sys
 import threading
 import time
@@ -387,6 +388,11 @@ def scanner_worker(
 
 def discover_day_jobs(*, month_dir: Path, source_date: str, tickers: tuple[str, ...]) -> list[tuple[str, Path]]:
     selected_tickers = {ticker.upper() for ticker in tickers}
+    file_jobs = discover_day_jobs_from_files(month_dir=month_dir, source_date=source_date, selected_tickers=selected_tickers)
+    if file_jobs:
+        return file_jobs
+
+    cache_root = month_dir.parent
     out: list[tuple[str, Path]] = []
     for manifest_path in sorted(month_dir.glob("ticker=*/manifest.json")):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -402,12 +408,49 @@ def discover_day_jobs(*, month_dir: Path, source_date: str, tickers: tuple[str, 
                 continue
             if source_date and day != source_date[:10]:
                 continue
-            path = Path(str(path_text))
-            if not path.is_absolute():
-                path = package_dir / path
+            path = resolve_manifest_path(path_text=str(path_text), cache_root=cache_root, month_dir=month_dir, package_dir=package_dir)
             if path.exists():
                 out.append((day, path))
     return out
+
+
+def discover_day_jobs_from_files(*, month_dir: Path, source_date: str, selected_tickers: set[str]) -> list[tuple[str, Path]]:
+    out: list[tuple[str, Path]] = []
+    for path in sorted(month_dir.glob("ticker=*/intraday_labels/intraday_base_bars_*.parquet")):
+        ticker_dir = path.parent.parent.name
+        ticker = ticker_dir.removeprefix("ticker=").upper()
+        if selected_tickers and ticker not in selected_tickers:
+            continue
+        day = source_date_from_intraday_path(path)
+        if not day:
+            continue
+        if source_date and day != source_date[:10]:
+            continue
+        out.append((day, path))
+    return out
+
+
+def source_date_from_intraday_path(path: Path) -> str:
+    match = re.search(r"intraday_base_bars_part_\d+_(\d{4})_(\d{2})_(\d{2})_", path.name)
+    if not match:
+        return ""
+    return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+
+
+def resolve_manifest_path(*, path_text: str, cache_root: Path, month_dir: Path, package_dir: Path) -> Path:
+    path = Path(str(path_text))
+    if path.is_absolute():
+        return path
+
+    candidates = [
+        cache_root / path,
+        month_dir / path,
+        package_dir / path,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def build_day_scanner(
