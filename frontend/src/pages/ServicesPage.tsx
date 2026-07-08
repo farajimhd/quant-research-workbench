@@ -129,7 +129,7 @@ function ServicesTopSummary({ now, services }: { now: Date; services: ServiceSta
     { label: "ET", value: formatZoneTime(now, "America/New_York"), sub: formatZoneDate(now, "America/New_York"), icon: Clock3 },
     { label: "Vancouver", value: formatZoneTime(now, "America/Vancouver"), sub: formatZoneDate(now, "America/Vancouver"), icon: MapPin },
     { label: "UTC", value: formatZoneTime(now, "UTC"), sub: formatZoneDate(now, "UTC"), icon: CalendarDays },
-    { label: "Market", value: market.status, sub: market.detail, icon: Activity },
+    { label: "Market", value: market.status, sub: market.detail, icon: Activity, className: marketTileClass(market.status, market.detail) },
     { label: "Fleet", value: `${counts.online}/${services.length || 0} online`, sub: `${counts.active} active, ${counts.degraded} degraded, ${counts.offline} not started`, icon: RadioTower },
   ];
   return (
@@ -137,7 +137,7 @@ function ServicesTopSummary({ now, services }: { now: Date; services: ServiceSta
       {tiles.map((tile) => {
         const Icon = tile.icon;
         return (
-          <div className="services-top-tile" key={tile.label}>
+          <div className={`services-top-tile ${tile.className ?? ""}`} key={tile.label}>
             <Icon size={16} />
             <span>{tile.label}</span>
             <strong>{tile.value}</strong>
@@ -665,6 +665,17 @@ function fleetMarketStatus(services: ServiceStatusPayload[]) {
     }
   }
   return { status: "not reported", detail: "No gateway has reported market state yet" };
+}
+
+function marketTileClass(status: string, detail: string) {
+  const text = `${status} ${detail}`.toLowerCase().replaceAll("_", "-");
+  if (!text.trim() || text.includes("not reported") || text.includes("unknown")) return "market-unknown";
+  if (text.includes("error") || text.includes("degraded") || text.includes("blocked")) return "market-warning";
+  if (text.includes("holiday")) return "market-holiday";
+  if (text.includes("pre-market") || text.includes("premarket") || text.includes("after-hours") || text.includes("after hours") || text.includes("extended")) return "market-extended";
+  if (text.includes("open") || text.includes("regular")) return "market-open";
+  if (text.includes("closed") || text.includes("close")) return "market-closed";
+  return "market-unknown";
 }
 
 type StatusInfo = {
