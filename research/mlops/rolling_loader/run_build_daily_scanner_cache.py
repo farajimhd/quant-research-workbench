@@ -96,6 +96,13 @@ class ScannerBuildState:
             )
             self.status = "error"
 
+    def mark_interrupted(self, *, worker: int | None = None, source_date: str = "") -> None:
+        with self._lock:
+            self.status = "interrupted"
+            detail = f" worker={worker}" if worker is not None else ""
+            day = f" day={source_date}" if source_date else ""
+            self.messages.append(f"{time.strftime('%H:%M:%S')} interrupt received{detail}{day}; stopping scanner workers")
+
 
 class ScannerDashboard:
     def __init__(self, state: ScannerBuildState, *, refresh_per_second: float, progress_screen: bool, progress_layout: str) -> None:
@@ -338,11 +345,13 @@ def run(args: argparse.Namespace) -> int:
             for thread in threads:
                 thread.join(timeout=2.0)
     except KeyboardInterrupt:
-        state.status = "interrupted"
-        state.message("interrupt received; stopping scanner workers")
+        state.mark_interrupted()
         stop_event.set()
         for thread in threads:
             thread.join(timeout=2.0)
+        return 130
+    if state.status == "interrupted":
+        stop_event.set()
         return 130
     if state.errors:
         raise RuntimeError(f"Scanner cache failed with {len(state.errors):,} error(s): {state.errors[-1]['error']}")
@@ -421,6 +430,10 @@ def scanner_worker(
                 f"day {source_date} rows={int(result['rows']):,} files={int(result['files']):,} "
                 f"empty={int(result.get('empty_files') or 0):,} bytes={int(result['bytes']):,} seconds={float(result['seconds']):.1f}"
             )
+        except KeyboardInterrupt:
+            state.mark_interrupted(worker=slot.worker_id, source_date=getattr(slot, "source_date", ""))
+            stop_event.set()
+            return
         except Exception as exc:  # noqa: BLE001
             state.add_error(worker=slot.worker_id, source_date=getattr(slot, "source_date", ""), error=exc)
             stop_event.set()
@@ -620,18 +633,23 @@ def write_scanner_parquet(frame: Any, output: Path) -> int:
                 frame.sink_parquet(tmp)
                 tmp.replace(output)
                 return int(parquet_file_metadata(output)["rows"])
-            except Exception:
+            except BaseException:
                 if tmp.exists():
                     tmp.unlink()
                 raise
-        except Exception:
+        except BaseException:
             if tmp.exists():
                 tmp.unlink()
             raise
-    materialized = collect_lazy_frame(frame) if hasattr(frame, "collect") else frame
-    materialized.write_parquet(tmp, compression="zstd")
-    tmp.replace(output)
-    return int(materialized.height)
+    try:
+        materialized = collect_lazy_frame(frame) if hasattr(frame, "collect") else frame
+        materialized.write_parquet(tmp, compression="zstd")
+        tmp.replace(output)
+        return int(materialized.height)
+    except BaseException:
+        if tmp.exists():
+            tmp.unlink()
+        raise
 
 
 def build_scanner_frame(*, base: Any, source_date: str, scanner_resolution_us: int, horizons: tuple[str, ...], top_k: int) -> Any:
