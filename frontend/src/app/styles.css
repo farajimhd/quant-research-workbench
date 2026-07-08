@@ -950,7 +950,7 @@ button {
   border-collapse: collapse;
   font-size: 12px;
   line-height: 1.3;
-  min-width: 760px;
+  min-width: 1580px;
   table-layout: fixed;
   width: 100%;
 }
@@ -977,23 +977,27 @@ button {
   z-index: 1;
 }
 
-.service-db-state-table th:nth-child(1),
-.service-db-state-table td:nth-child(1) {
+.service-db-state-col-status {
   width: 92px;
 }
 
-.service-db-state-table th:nth-child(2),
-.service-db-state-table td:nth-child(2) {
+.service-db-state-col-role {
   width: 150px;
 }
 
-.service-db-state-table th:nth-child(4),
-.service-db-state-table td:nth-child(4) {
-  width: 110px;
+.service-db-state-col-table {
+  width: 250px;
 }
 
-.service-db-state-table th:nth-child(5),
-.service-db-state-table td:nth-child(5) {
+.service-db-state-col-count {
+  width: 88px;
+}
+
+.service-db-state-col-year {
+  width: 78px;
+}
+
+.service-db-state-col-latest {
   width: 132px;
 }
 

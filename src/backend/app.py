@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import time
 import urllib.error
 import urllib.request
 from collections import deque
@@ -107,7 +108,7 @@ from src.strategies.registry import (
     strategy_chart_presentation,
     strategy_version_description,
 )
-from research.mlops.clickhouse import default_clickhouse_password, default_clickhouse_url, default_clickhouse_user, sql_string
+from research.mlops.clickhouse import default_clickhouse_password, default_clickhouse_url, default_clickhouse_user, quote_ident, sql_string
 from research.mlops.env import discover_env_files, load_env_files
 
 
@@ -121,6 +122,31 @@ DEBUG_SESSIONS: dict[str, StepBacktestDebugger] = {}
 SERVICE_STATUS_TIMEOUT_SECONDS = 1.8
 SERVICE_LOG_TAIL_LIMIT = 160
 SERVICE_TABLE_STATE_LIMIT = 32
+SERVICE_TABLE_STATE_CACHE_SECONDS = 30.0
+SERVICE_TABLE_STATE_START_YEAR = 2019
+SERVICE_TABLE_TIME_COLUMN_CANDIDATES = (
+    "published_at_utc",
+    "accepted_at_utc",
+    "observed_at_utc",
+    "source_timestamp_utc",
+    "event_time",
+    "sip_timestamp_utc",
+    "timestamp_utc",
+    "created_at_utc",
+    "updated_at_utc",
+    "started_at_utc",
+    "coverage_start_utc",
+    "last_started_at_utc",
+    "updated_at",
+    "source_archive_date",
+    "filing_date",
+    "trade_date",
+    "universe_date",
+    "coverage_start_date",
+    "period_end_date",
+    "list_date",
+)
+_SERVICE_TABLE_STATE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
     "qmd": [
@@ -1219,10 +1245,13 @@ def service_database_table_state(service_id: str) -> dict[str, Any]:
     targets = SERVICE_DATABASE_TABLES.get(service_id, [])
     if not targets:
         return {"rows": [], "error": ""}
+    cached_at, cached_payload = _SERVICE_TABLE_STATE_CACHE.get(service_id, (0.0, {}))
+    if cached_payload and time.monotonic() - cached_at < SERVICE_TABLE_STATE_CACHE_SECONDS:
+        return cached_payload
     try:
         stats = clickhouse_table_stats(targets)
     except Exception as exc:
-        return {
+        payload = {
             "rows": [
                 {
                     "database": "-",
@@ -1237,6 +1266,8 @@ def service_database_table_state(service_id: str) -> dict[str, Any]:
             ],
             "error": redact_log_text(f"{type(exc).__name__}: {exc}"),
         }
+        _SERVICE_TABLE_STATE_CACHE[service_id] = (time.monotonic(), payload)
+        return payload
 
     rows: list[dict[str, Any]] = []
     for target in targets[:SERVICE_TABLE_STATE_LIMIT]:
@@ -1252,9 +1283,19 @@ def service_database_table_state(service_id: str) -> dict[str, Any]:
                 "bytes": format_bytes(stat["bytes_on_disk"]) if stat else "-",
                 "latest_update": stat["latest_update"] if stat else "-",
                 "engine": stat["engine"] if stat else "-",
+                "time_column": stat.get("time_column", "-") if stat else "-",
+                "rows_today": format_optional_int(stat.get("rows_today")) if stat else "-",
+                "rows_last_week": format_optional_int(stat.get("rows_last_week")) if stat else "-",
+                "rows_last_month": format_optional_int(stat.get("rows_last_month")) if stat else "-",
+                **{
+                    f"rows_{year}": format_optional_int(stat.get(f"rows_{year}")) if stat else "-"
+                    for year in service_table_state_years()
+                },
             }
         )
-    return {"rows": rows, "error": ""}
+    payload = {"rows": rows, "error": ""}
+    _SERVICE_TABLE_STATE_CACHE[service_id] = (time.monotonic(), payload)
+    return payload
 
 
 def clickhouse_table_stats(targets: list[dict[str, str]]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -1292,7 +1333,100 @@ def clickhouse_table_stats(targets: list[dict[str, str]]) -> dict[tuple[str, str
             "bytes_on_disk": int(bytes_on_disk or "0"),
             "latest_update": latest_update or "-",
         }
+    columns = clickhouse_table_columns(targets)
+    buckets = clickhouse_table_count_buckets(targets, columns)
+    for key, values in buckets.items():
+        if key in stats:
+            stats[key].update(values)
     return stats
+
+
+def clickhouse_table_columns(targets: list[dict[str, str]]) -> dict[tuple[str, str], set[str]]:
+    pairs = ", ".join(f"({sql_string(target['database'])}, {sql_string(target['table'])})" for target in targets)
+    if not pairs:
+        return {}
+    query = f"""
+        SELECT
+            database,
+            table,
+            groupArray(name) AS names
+        FROM system.columns
+        WHERE (database, table) IN ({pairs})
+        GROUP BY
+            database,
+            table
+        FORMAT TSV
+    """
+    columns: dict[tuple[str, str], set[str]] = {}
+    for line in clickhouse_status_query(query).splitlines():
+        database, table, raw_names = (line.split("\t") + ["", "", ""])[:3]
+        names = {name.strip().strip("'") for name in raw_names.strip("[]").split(",") if name.strip()}
+        columns[(database, table)] = names
+    return columns
+
+
+def clickhouse_table_count_buckets(
+    targets: list[dict[str, str]],
+    columns: dict[tuple[str, str], set[str]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    selects: list[str] = []
+    years = service_table_state_years()
+    for target in targets:
+        key = (target["database"], target["table"])
+        time_column = table_time_column(columns.get(key, set()))
+        if not time_column:
+            continue
+        date_expr = f"toDate({quote_ident(time_column)})"
+        year_exprs = ",\n                ".join(
+            f"toUInt64(countIf(toYear({date_expr}) = {year})) AS rows_{year}" for year in years
+        )
+        selects.append(
+            f"""
+            SELECT
+                {sql_string(target["database"])} AS database,
+                {sql_string(target["table"])} AS table,
+                {sql_string(time_column)} AS time_column,
+                toUInt64(countIf({date_expr} = today())) AS rows_today,
+                toUInt64(countIf({date_expr} >= today() - 7)) AS rows_last_week,
+                toUInt64(countIf({date_expr} >= today() - 30)) AS rows_last_month,
+                {year_exprs}
+            FROM {quote_ident(target["database"])}.{quote_ident(target["table"])}
+            """
+        )
+    if not selects:
+        return {}
+    query = "\nUNION ALL\n".join(selects) + "\nFORMAT TSV"
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    try:
+        lines = clickhouse_status_query(query).splitlines()
+    except Exception:
+        return buckets
+    for line in lines:
+        fields = line.split("\t")
+        if len(fields) < 6 + len(years):
+            continue
+        database, table, time_column = fields[:3]
+        values: dict[str, Any] = {
+            "time_column": time_column,
+            "rows_today": int(fields[3] or "0"),
+            "rows_last_week": int(fields[4] or "0"),
+            "rows_last_month": int(fields[5] or "0"),
+        }
+        for offset, year in enumerate(years, start=6):
+            values[f"rows_{year}"] = int(fields[offset] or "0")
+        buckets[(database, table)] = values
+    return buckets
+
+
+def table_time_column(columns: set[str]) -> str:
+    for candidate in SERVICE_TABLE_TIME_COLUMN_CANDIDATES:
+        if candidate in columns:
+            return candidate
+    return ""
+
+
+def service_table_state_years() -> list[int]:
+    return list(range(date.today().year, SERVICE_TABLE_STATE_START_YEAR - 1, -1))
 
 
 def clickhouse_status_query(sql: str) -> str:
@@ -1321,6 +1455,12 @@ def table_state_status(stat: dict[str, Any] | None) -> str:
 
 def format_int(value: int) -> str:
     return f"{int(value):,}"
+
+
+def format_optional_int(value: Any) -> str:
+    if value is None:
+        return "-"
+    return format_int(int(value))
 
 
 def format_bytes(value: int) -> str:

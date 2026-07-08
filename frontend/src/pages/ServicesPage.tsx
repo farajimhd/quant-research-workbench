@@ -52,8 +52,13 @@ type ServiceDatabaseTableRow = {
   latest_update?: string;
   role?: string;
   rows?: string;
+  rows_last_month?: string;
+  rows_last_week?: string;
+  rows_today?: string;
   status?: string;
   table?: string;
+  time_column?: string;
+  [key: string]: string | undefined;
 };
 
 type ServiceLogPayload = {
@@ -297,6 +302,7 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
 function ServiceDatabaseTableState({ service }: { service: ServiceStatusPayload }) {
   const rows = service.database_tables?.rows ?? [];
   const error = service.database_tables?.error || "";
+  const years = serviceTableStateYears();
   if (error && !rows.length) {
     return (
       <div className="service-db-state-empty error">
@@ -316,12 +322,27 @@ function ServiceDatabaseTableState({ service }: { service: ServiceStatusPayload 
   return (
     <div className="service-db-state-wrap">
       <table className="service-db-state-table">
+        <colgroup>
+          <col className="service-db-state-col-status" />
+          <col className="service-db-state-col-role" />
+          <col className="service-db-state-col-table" />
+          <col className="service-db-state-col-count" />
+          <col className="service-db-state-col-count" />
+          <col className="service-db-state-col-count" />
+          {years.map((year) => <col className="service-db-state-col-year" key={year} />)}
+          <col className="service-db-state-col-count" />
+          <col className="service-db-state-col-latest" />
+        </colgroup>
         <thead>
           <tr>
             <th>Status</th>
             <th>Role</th>
             <th>Table</th>
-            <th>Rows</th>
+            <th>Today</th>
+            <th>7d</th>
+            <th>30d</th>
+            {years.map((year) => <th key={year}>{year}</th>)}
+            <th>Total</th>
             <th>Latest</th>
           </tr>
         </thead>
@@ -330,7 +351,11 @@ function ServiceDatabaseTableState({ service }: { service: ServiceStatusPayload 
             <tr className={`service-db-state-row ${tableStateClass(row.status)}`} key={`${row.database}.${row.table}.${index}`}>
               <td><span>{displayName(row.status || "unknown")}</span></td>
               <td title={row.role || ""}>{row.role || "-"}</td>
-              <td title={`${row.database || "-"}.${row.table || "-"}`}>{row.database || "-"}.{row.table || "-"}</td>
+              <td title={`${row.database || "-"}.${row.table || "-"}${row.time_column && row.time_column !== "-" ? ` by ${row.time_column}` : ""}`}>{row.database || "-"}.{row.table || "-"}</td>
+              <td>{row.rows_today || "-"}</td>
+              <td>{row.rows_last_week || "-"}</td>
+              <td>{row.rows_last_month || "-"}</td>
+              {years.map((year) => <td key={year}>{row[`rows_${year}`] || "-"}</td>)}
               <td>{row.rows || "-"}</td>
               <td title={row.latest_update || ""}>{shortTableTimestamp(row.latest_update)}</td>
             </tr>
@@ -750,6 +775,15 @@ function shortTableTimestamp(value: string | undefined) {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return value;
   return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(parsed));
+}
+
+function serviceTableStateYears() {
+  const currentYear = new Date().getFullYear();
+  const years: number[] = [];
+  for (let year = currentYear; year >= 2019; year -= 1) {
+    years.push(year);
+  }
+  return years;
 }
 
 function logStatusFilterOptions(items: ServiceLogItem[]): Array<{ count: number; status: ServiceLogStatusFilter }> {
