@@ -668,13 +668,14 @@ function fleetMarketStatus(services: ServiceStatusPayload[]) {
 }
 
 function marketTileClass(status: string, detail: string) {
-  const text = `${status} ${detail}`.toLowerCase().replaceAll("_", "-");
-  if (!text.trim() || text.includes("not reported") || text.includes("unknown")) return "market-unknown";
-  if (text.includes("error") || text.includes("degraded") || text.includes("blocked")) return "market-warning";
-  if (text.includes("holiday")) return "market-holiday";
-  if (text.includes("pre-market") || text.includes("premarket") || text.includes("after-hours") || text.includes("after hours") || text.includes("extended")) return "market-extended";
-  if (text.includes("open") || text.includes("regular")) return "market-open";
-  if (text.includes("closed") || text.includes("close")) return "market-closed";
+  const statusText = status.toLowerCase().replaceAll("_", "-");
+  const detailText = detail.toLowerCase().replaceAll("_", "-");
+  if (!statusText.trim() || statusText.includes("not reported") || statusText.includes("unknown")) return "market-unknown";
+  if (statusText.includes("error") || statusText.includes("degraded") || statusText.includes("blocked") || detailText.includes("error")) return "market-warning";
+  if (statusText.includes("pre-market") || statusText.includes("premarket") || statusText.includes("after-hours") || statusText.includes("after hours") || statusText.includes("extended")) return "market-extended";
+  if (statusText.includes("open") || statusText.includes("regular")) return "market-open";
+  if (statusText.includes("holiday")) return "market-holiday";
+  if (statusText.includes("closed") || statusText.includes("close")) return "market-closed";
   return "market-unknown";
 }
 
