@@ -811,8 +811,15 @@ class DailyIndexBatchMaterializer:
             "intraday_labels_available": future_mask.any(axis=1) if future_mask.size else np.zeros((len(refs),), dtype=np.bool_),
         }
         if corporate_labels:
-            any_corporate = corporate_labels.get("future_any_corporate_action_flag")
-            availability["corporate_action_labels_available"] = any_corporate.any(axis=1) if any_corporate is not None and any_corporate.size else np.zeros((len(refs),), dtype=np.bool_)
+            label_arrays = [
+                value
+                for value in corporate_labels.values()
+                if isinstance(value, np.ndarray) and value.ndim == 2 and int(value.shape[0]) == int(len(refs))
+            ]
+            labels_valid = bool(label_arrays) and all(int(value.shape[1]) > 0 for value in label_arrays)
+            availability["corporate_action_labels_available"] = (
+                np.ones((len(refs),), dtype=np.bool_) if labels_valid else np.zeros((len(refs),), dtype=np.bool_)
+            )
         text_start = time.perf_counter()
         text_inputs, text_profile = self._materialize_text_inputs(parts, refs)
         for key, value in text_inputs.items():
