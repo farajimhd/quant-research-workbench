@@ -46,6 +46,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-id", default=default_loader.dataset_id)
     parser.add_argument("--split", default=default_loader.split)
     parser.add_argument("--months", default="2019-02")
+    parser.add_argument("--start-utc", default=default_loader.start_utc)
+    parser.add_argument("--end-utc", default=default_loader.end_utc)
     parser.add_argument("--tickers", default="")
     parser.add_argument("--data-groups", default=",".join(default_loader.data_groups))
     parser.add_argument("--intraday-label-horizons", default=",".join(default_loader.intraday_label_horizons))
@@ -93,6 +95,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coverage-min-fraction", type=float, default=1e-9, help="Minimum per-batch available fraction for each required modality. Default means at least one sample.")
     parser.add_argument("--coverage-max-skip-batches", type=int, default=512, help="Maximum batches to scan while seeking a fully covered profile batch.")
     parser.add_argument("--coverage-required-keys", default="auto", help="Comma-separated input_availability keys to require, or auto from --data-groups.")
+    parser.add_argument("--coverage-auto-ticker-limit", type=int, default=256, help="When tickers are not provided, restrict profiling to context-rich tickers that can exercise required sparse modalities.")
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default="auto")
     return parser.parse_args()
 
@@ -101,6 +104,12 @@ def main() -> int:
     load_env_files(discover_env_files(REPO_ROOT), verbose=True)
     args = parse_args()
     config = _config_from_args(args)
+    coverage_gate = _make_coverage_gate(args, config)
+    selected_tickers, coverage_start_utc = _auto_coverage_plan(args, config, coverage_gate)
+    if selected_tickers:
+        config.loader.tickers = selected_tickers
+    if coverage_start_utc and not config.loader.start_utc:
+        config.loader.start_utc = coverage_start_utc
     config.train.run_name = _profile_run_name(config, args)
     run_root = Path(args.output_root) / config.train.run_name if args.output_root else default_run_root(MODEL_FAMILY, MODEL_VERSION, JOB_TYPE, config.train.run_name)
     paths = RunPaths.create(run_root)
@@ -174,7 +183,6 @@ def main() -> int:
     rows: list[dict[str, Any]] = _load_existing_measured_rows(report_path) if resumed else []
     first_batch_summary: dict[str, Any] = {}
     reporter = _ProfileReporter(args.progress_layout, total_batches=total_batches, run_root=paths.run_root)
-    coverage_gate = _make_coverage_gate(args, config)
     auditor = _make_batch_auditor(args, audit_report_path=audit_report_path, audit_summary_path=audit_summary_path)
     try:
         reporter.start()
@@ -254,7 +262,16 @@ def _run_profile_batch(
     missing_coverage: dict[str, float] = {}
     while True:
         load_start = time.perf_counter()
-        raw_batch = next(raw_iter)
+        try:
+            raw_batch = next(raw_iter)
+        except StopIteration as exc:
+            required = ", ".join(str(key) for key in coverage_gate.get("required_keys", ()))
+            missing = ", ".join(f"{key}={value:.4f}" for key, value in sorted(missing_coverage.items()))
+            raise RuntimeError(
+                "Loader ended before a fully covered profile batch was found. "
+                f"required=[{required}] missing=[{missing}] skipped_batches={skipped_batches:,}. "
+                "Use a cache/month/ticker slice with all requested contexts or reduce coverage requirements."
+            ) from exc
         loader_wait = time.perf_counter() - load_start
         coverage = _batch_coverage(raw_batch)
         ok, missing_coverage = _coverage_ok(coverage, coverage_gate)
@@ -364,6 +381,8 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
     loader = LoaderConfig(
         cache_root=Path(args.cache_root),
         split=str(args.split),
+        start_utc=str(args.start_utc),
+        end_utc=str(args.end_utc),
         months=_split_csv(args.months),
         tickers=_split_csv(args.tickers),
         batch_size=int(args.batch_size),
@@ -410,6 +429,102 @@ def _make_coverage_gate(args: argparse.Namespace, config: ExperimentConfig) -> d
         "min_fraction": max(0.0, min(1.0, float(args.coverage_min_fraction))),
         "max_skip_batches": max(0, int(args.coverage_max_skip_batches)),
     }
+
+
+def _auto_coverage_plan(args: argparse.Namespace, config: ExperimentConfig, gate: Mapping[str, Any]) -> tuple[tuple[str, ...], str]:
+    if str(args.tickers or "").strip():
+        return (), ""
+    if not bool(gate.get("enabled", False)):
+        return (), ""
+    limit = max(0, int(args.coverage_auto_ticker_limit))
+    if limit <= 0:
+        return (), ""
+    required_groups = _manifest_groups_for_availability_keys(tuple(str(key) for key in gate.get("required_keys", ())))
+    if not required_groups:
+        return (), ""
+    sparse_groups = tuple(group for group in required_groups if group in {"News Embeddings", "SEC Embeddings", "XBRL", "Corporate Actions"})
+    candidates: list[tuple[int, int, str]] = []
+    for month in config.loader.months or ():
+        month_dir = Path(config.loader.cache_root) / f"month={month}"
+        if not month_dir.exists():
+            continue
+        for manifest_path in month_dir.glob("ticker=*/manifest.json"):
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            ticker = str(manifest.get("ticker") or manifest_path.parent.name.split("=", 1)[-1])
+            rows = dict(manifest.get("written_modality_rows") or {})
+            if all(int(rows.get(group, 0) or 0) > 0 for group in required_groups):
+                score = sum(int(rows.get(group, 0) or 0) for group in required_groups)
+                available_start = _ticker_sparse_available_start_us(manifest_path.parent, sparse_groups)
+                if sparse_groups and available_start <= 0:
+                    continue
+                candidates.append((int(available_start), int(score), ticker))
+    ranked = sorted(candidates, key=lambda item: (item[0], -item[1], item[2]))
+    selected = tuple(ticker for _available_start, _score, ticker in ranked[:limit])
+    auto_start_utc = ""
+    if ranked and sparse_groups:
+        auto_start_us = int(ranked[0][0]) + 1_000_000
+        auto_start_utc = datetime.fromtimestamp(auto_start_us / 1_000_000, tz=timezone.utc).isoformat(timespec="seconds")
+    return selected, auto_start_utc
+
+
+def _ticker_sparse_available_start_us(package_dir: Path, required_groups: tuple[str, ...]) -> int:
+    if not required_groups:
+        return 0
+    group_to_folder = {
+        "News Embeddings": "news_embeddings",
+        "SEC Embeddings": "sec_embeddings",
+        "XBRL": "xbrl",
+        "Corporate Actions": "corporate_actions",
+    }
+    group_to_timestamp = {
+        "News Embeddings": "timestamp_us",
+        "SEC Embeddings": "timestamp_us",
+        "XBRL": "timestamp_us",
+        "Corporate Actions": "available_timestamp_us",
+    }
+    starts: list[int] = []
+    try:
+        import polars as pl  # type: ignore
+    except Exception:
+        return 0
+    for group in required_groups:
+        folder = group_to_folder.get(group)
+        column = group_to_timestamp.get(group)
+        if not folder or not column:
+            continue
+        best = 0
+        for path in (package_dir / folder).glob("*.parquet"):
+            try:
+                frame = pl.scan_parquet(path).select(pl.col(column).min().alias("min_ts")).collect()
+                value = frame.item(0, "min_ts") if int(frame.height) else None
+                ts = int(value or 0)
+            except Exception:
+                ts = 0
+            if ts > 0 and (best <= 0 or ts < best):
+                best = ts
+        if best <= 0:
+            return 0
+        starts.append(best)
+    return max(starts) if starts else 0
+
+
+def _manifest_groups_for_availability_keys(keys: tuple[str, ...]) -> tuple[str, ...]:
+    key_to_group = {
+        "ticker_news_available": "News Embeddings",
+        "sec_filings_available": "SEC Embeddings",
+        "xbrl_available": "XBRL",
+        "corporate_actions_available": "Corporate Actions",
+        "ticker_daily_bars_available": "Macro Bars",
+    }
+    groups: list[str] = []
+    for key in keys:
+        group = key_to_group.get(str(key))
+        if group and group not in groups:
+            groups.append(group)
+    return tuple(groups)
 
 
 def _coverage_required_keys(value: str, data_groups: tuple[str, ...]) -> tuple[str, ...]:

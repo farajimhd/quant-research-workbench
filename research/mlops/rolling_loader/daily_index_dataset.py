@@ -2415,7 +2415,18 @@ def _global_context_file(global_dir: Path, key: str) -> Path:
         return Path(global_dir) / f"{key}.parquet"
     files = _package_context_files_from_manifest(read_json(manifest_path))
     value = files.get(str(key))
-    return Path(global_dir) / value if value else Path(global_dir) / f"{key}.parquet"
+    if not value and str(key) == "global_daily_bars":
+        value = files.get("daily_bars")
+    if not value:
+        return Path(global_dir) / f"{key}.parquet"
+    path = Path(str(value))
+    if path.is_absolute():
+        return path
+    if str(path).startswith("month="):
+        month_dir = Path(global_dir).parent
+        cache_root = month_dir.parent if month_dir.name.startswith("month=") else Path(global_dir).parent
+        return cache_root / path
+    return Path(global_dir) / path
 
 
 def _package_context_files(package_dir: Path) -> dict[str, str]:
