@@ -411,9 +411,9 @@ button {
   align-items: flex-start;
   border: 1px solid var(--surface-border);
   border-radius: 10px;
-  display: flex;
+  display: grid;
   gap: 20px;
-  justify-content: space-between;
+  grid-template-columns: minmax(0, 1fr) auto;
   padding: 18px 20px;
 }
 
@@ -438,11 +438,67 @@ button {
   display: flex;
   flex-shrink: 0;
   gap: 10px;
+  justify-content: flex-end;
 }
 
 .services-refresh-note {
   color: var(--muted-foreground);
   font-size: 13px;
+  white-space: nowrap;
+}
+
+.services-top-summary {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 10px;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  padding-top: 14px;
+}
+
+.services-top-tile {
+  align-items: start;
+  background: color-mix(in oklab, var(--surface-alt) 68%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 2px 9px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  min-height: 74px;
+  padding: 10px 12px;
+}
+
+.services-top-tile svg {
+  color: var(--primary);
+  grid-row: span 3;
+  margin-top: 2px;
+}
+
+.services-top-tile span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.services-top-tile strong {
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.services-top-tile small {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -465,19 +521,20 @@ button {
 
 .services-card-grid {
   display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .service-card {
   background: var(--surface);
   border: 1px solid var(--surface-border);
+  border-left: 4px solid var(--badge-muted-border);
   border-radius: 8px;
   color: var(--foreground);
   display: grid;
-  gap: 10px;
-  min-height: 180px;
-  padding: 14px;
+  gap: 11px;
+  min-height: 226px;
+  padding: 14px 15px;
   text-align: left;
 }
 
@@ -487,50 +544,116 @@ button {
 }
 
 .service-card-topline,
-.service-card-meta,
 .service-focus {
   align-items: center;
   display: flex;
 }
 
 .service-card-topline {
+  gap: 12px;
   justify-content: space-between;
+}
+
+.service-card-title-lockup {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 8px;
+  min-width: 0;
+  text-transform: uppercase;
 }
 
 .service-card-icon {
   color: var(--primary);
+  flex: 0 0 auto;
 }
 
 .service-card h2 {
-  font-size: 18px;
-  font-weight: 650;
+  font-size: 20px;
+  font-weight: 720;
+  line-height: 1.15;
   margin: 0;
 }
 
-.service-card p {
+.service-card-message {
   color: var(--muted-foreground);
   font-size: 13px;
-  line-height: 1.4;
+  line-height: 1.42;
   margin: 0;
-  min-height: 54px;
+  min-height: 38px;
+  overflow: hidden;
 }
 
-.service-card-meta {
-  color: var(--muted-foreground);
-  flex-wrap: wrap;
-  font-size: 12px;
-  gap: 6px;
+.service-card-facts,
+.service-detail-summary {
+  display: grid;
+  gap: 8px;
 }
 
-.service-card-meta span {
+.service-card-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.service-detail-summary {
+  grid-template-columns: 1.1fr 2fr repeat(3, minmax(120px, 0.8fr));
+}
+
+.service-card-facts div,
+.service-detail-summary div {
   background: var(--surface-alt);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 7px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 7px 9px;
+}
+
+.service-card-facts span,
+.service-detail-summary span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.service-card-facts strong,
+.service-detail-summary strong {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
   max-width: 100%;
   overflow: hidden;
-  padding: 3px 8px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.service-card.running,
+.service-card.idle {
+  border-left-color: var(--badge-success-border);
+}
+
+.service-card.working,
+.service-card.catching-up,
+.service-card.preflight,
+.service-card.starting {
+  border-left-color: var(--badge-info-border);
+}
+
+.service-card.degraded,
+.service-card.blocked,
+.service-card.unknown {
+  border-left-color: var(--badge-warning-border);
+}
+
+.service-card.failed,
+.service-card.not-started,
+.service-card.stopping {
+  border-left-color: var(--badge-danger-border);
 }
 
 .service-status-badge {
@@ -554,7 +677,9 @@ button {
 }
 
 .service-status-badge.catching-up,
-.service-status-badge.preflight {
+.service-status-badge.preflight,
+.service-status-badge.starting,
+.service-status-badge.working {
   background: var(--badge-info-bg);
   border-color: var(--badge-info-border);
   color: var(--badge-info-fg);
@@ -562,6 +687,7 @@ button {
 
 .service-status-badge.degraded,
 .service-status-badge.idle,
+.service-status-badge.blocked,
 .service-status-badge.unknown {
   background: var(--badge-warning-bg);
   border-color: var(--badge-warning-border);
@@ -569,7 +695,8 @@ button {
 }
 
 .service-status-badge.failed,
-.service-status-badge.offline {
+.service-status-badge.not-started,
+.service-status-badge.stopping {
   background: var(--badge-danger-bg);
   border-color: var(--badge-danger-border);
   color: var(--badge-danger-fg);
@@ -651,6 +778,40 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 1280px) {
+  .services-top-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .services-card-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .service-detail-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .services-header,
+  .services-top-summary,
+  .service-card-facts,
+  .service-detail-summary,
+  .service-focus-grid,
+  .service-two-column {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .services-header-actions {
+    justify-content: flex-start;
+  }
+
+  .service-key-values div {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 7px 0;
+  }
 }
 
 .tab-cache-panel {

@@ -1,10 +1,9 @@
-import { AlertTriangle, CheckCircle2, Loader2, RadioTower, RefreshCcw, ShieldAlert } from "lucide-react";
+import { Activity, AlertTriangle, CalendarDays, CheckCircle2, Clock3, Loader2, MapPin, RadioTower, RefreshCcw, ShieldAlert, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { api } from "../api/client";
 import { Button } from "../app/components/Button";
 import { DataTable } from "../app/components/DataTable";
-import { MetricStrip, type MetricItem } from "../app/components/MetricStrip";
 import { displayName, formatCell, formatCompactNumber } from "../app/format";
 
 export type ServicePageMode = "dashboard" | ServiceId;
@@ -44,7 +43,13 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
   const [selectedPayload, setSelectedPayload] = useState<ServiceStatusPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [now, setNow] = useState(() => new Date());
   const serviceId = mode === "dashboard" ? null : mode;
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,7 +104,7 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
 
   return (
     <div className="services-page">
-      <div className="services-header">
+      <section className="services-header">
         <div>
           <span className="page-kicker">Services</span>
           <h1>{selected ? selected.registry.label : "Service Dashboard"}</h1>
@@ -109,7 +114,8 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
           <span className="services-refresh-note">Updated {payload?.checked_at_utc ? formatTime(payload.checked_at_utc) : "-"}</span>
           <Button onClick={() => window.location.reload()} variant="secondary"><RefreshCcw size={15} /> Refresh</Button>
         </div>
-      </div>
+        <ServicesTopSummary now={now} services={services} />
+      </section>
       {error ? <div className="services-alert"><ShieldAlert size={16} />{error}</div> : null}
       {loading && !payload ? <div className="services-loading"><Loader2 size={18} /> Loading service status.</div> : null}
       {selected ? <ServiceDetail service={selected} /> : <ServicesDashboard services={services} onNavigate={onNavigate} />}
@@ -117,39 +123,67 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
   );
 }
 
-function ServicesDashboard({ onNavigate, services }: { onNavigate: (mode: ServicePageMode) => void; services: ServiceStatusPayload[] }) {
+function ServicesTopSummary({ now, services }: { now: Date; services: ServiceStatusPayload[] }) {
   const counts = countStatuses(services);
-  const metrics: MetricItem[] = [
-    { label: "Services", value: services.length, kind: "number" },
-    { label: "Online", value: counts.online, kind: "number" },
-    { label: "Active", value: counts.active, kind: "number" },
-    { label: "Degraded", value: counts.degraded, kind: "number" },
-    { label: "Offline", value: counts.offline, kind: "number" },
+  const market = fleetMarketStatus(services);
+  const tiles = [
+    { label: "ET", value: formatZoneTime(now, "America/New_York"), sub: formatZoneDate(now, "America/New_York"), icon: Clock3 },
+    { label: "Vancouver", value: formatZoneTime(now, "America/Vancouver"), sub: formatZoneDate(now, "America/Vancouver"), icon: MapPin },
+    { label: "UTC", value: formatZoneTime(now, "UTC"), sub: formatZoneDate(now, "UTC"), icon: CalendarDays },
+    { label: "Market", value: market.status, sub: market.detail, icon: Activity },
+    { label: "Fleet", value: `${counts.online}/${services.length || 0} online`, sub: `${counts.active} active, ${counts.degraded} degraded, ${counts.offline} not started`, icon: RadioTower },
   ];
   return (
+    <div className="services-top-summary" aria-label="Service fleet summary">
+      {tiles.map((tile) => {
+        const Icon = tile.icon;
+        return (
+          <div className="services-top-tile" key={tile.label}>
+            <Icon size={16} />
+            <span>{tile.label}</span>
+            <strong>{tile.value}</strong>
+            <small>{tile.sub || "-"}</small>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ServicesDashboard({ onNavigate, services }: { onNavigate: (mode: ServicePageMode) => void; services: ServiceStatusPayload[] }) {
+  return (
     <>
-      <MetricStrip items={metrics} />
       <section className="services-card-grid">
         {services.map((service) => (
-          <button className="service-card" key={service.registry.id} onClick={() => onNavigate(service.registry.id)} type="button">
+          <button className={`service-card ${statusInfo(service).className}`} key={service.registry.id} onClick={() => onNavigate(service.registry.id)} type="button">
             <div className="service-card-topline">
-              <ServiceIcon service={service} />
+              <div className="service-card-title-lockup">
+                <ServiceIcon service={service} />
+                <span>{displayName(service.registry.kind)}</span>
+              </div>
               <ServiceStatusBadge status={service.status} online={service.online} />
             </div>
             <h2>{service.registry.label}</h2>
-            <p>{currentMessage(service) || service.registry.description}</p>
-            <div className="service-card-meta">
-              <span>{displayName(service.registry.kind)}</span>
-              <span>{phaseText(service)}</span>
-              <span>{coverageText(service)}</span>
+            <p className="service-card-message">{cardMessage(service)}</p>
+            <div className="service-card-facts">
+              <ServiceFact label="Endpoint" value={service.registry.base_url} />
+              <ServiceFact label="Phase" value={phaseText(service)} />
+              <ServiceFact label="Runtime" value={runtimeText(service)} />
+              <ServiceFact label="Coverage" value={coverageText(service)} />
             </div>
           </button>
         ))}
       </section>
-      <Panel title="Fleet Focus">
-        <DataTable rows={services.map(serviceSummaryRow)} columns={["service", "status", "phase", "message", "coverage", "runtime", "endpoint"]} empty="No services configured." />
-      </Panel>
     </>
+  );
+}
+
+function ServiceFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <strong title={value}>{value || "-"}</strong>
+    </div>
   );
 }
 
@@ -168,16 +202,15 @@ function ServiceDetail({ service }: { service: ServiceStatusPayload }) {
   const tableRows = arrayRows(snapshot.configured_tables);
   const errorRows = objectRows(snapshot.error_state, service.errors);
   const recentRows = recentRowsFromPayload(service.recent);
-  const detailMetrics: MetricItem[] = [
-    { label: "Status", value: service.online ? service.status : "OFFLINE", kind: "status" },
-    { label: "Runtime Rows", value: runtimeRows.length, kind: "number" },
-    { label: "Task Rows", value: taskRows.length + progressRows.length, kind: "number" },
-    { label: "Recent Rows", value: recentRows.length, kind: "number" },
-    { label: "Endpoint", value: service.registry.base_url },
-  ];
   return (
     <>
-      <MetricStrip items={detailMetrics} />
+      <section className="service-detail-summary">
+        <ServiceFact label="Status" value={statusInfo(service).label} />
+        <ServiceFact label="Endpoint" value={service.registry.base_url} />
+        <ServiceFact label="Runtime Rows" value={String(runtimeRows.length)} />
+        <ServiceFact label="Task Rows" value={String(taskRows.length + progressRows.length)} />
+        <ServiceFact label="Recent Rows" value={String(recentRows.length)} />
+      </section>
       <section className="service-focus-grid">
         <Panel title="Current Focus">
           <div className="service-focus">
@@ -245,13 +278,14 @@ function KeyValueList({ rows }: { rows: Array<{ key: string; value: unknown }> }
 }
 
 function ServiceIcon({ service }: { service: ServiceStatusPayload }) {
-  const Icon = service.online ? (String(service.status).toLowerCase().includes("degraded") ? AlertTriangle : CheckCircle2) : RadioTower;
+  const info = statusInfo(service);
+  const Icon = info.className === "not-started" ? WifiOff : info.className === "degraded" || info.className === "failed" || info.className === "blocked" ? AlertTriangle : CheckCircle2;
   return <Icon className="service-card-icon" size={20} />;
 }
 
 function ServiceStatusBadge({ online, status }: { online: boolean; status: string }) {
-  const normalized = online ? statusClass(status) : "offline";
-  return <span className={`service-status-badge ${normalized}`}>{online ? statusLabel(status) : "Offline"}</span>;
+  const info = statusInfo({ online, status } as ServiceStatusPayload);
+  return <span className={`service-status-badge ${info.className}`} title={info.description}>{info.label}</span>;
 }
 
 function sortServices(services: ServiceStatusPayload[]) {
@@ -261,27 +295,15 @@ function sortServices(services: ServiceStatusPayload[]) {
 function countStatuses(services: ServiceStatusPayload[]) {
   return services.reduce(
     (counts, service) => {
-      const status = statusClass(service.status);
+      const status = statusInfo(service).className;
       if (!service.online) counts.offline += 1;
       else counts.online += 1;
-      if (status === "running" || status === "catching-up" || status === "preflight") counts.active += 1;
-      if (status === "degraded" || status === "failed") counts.degraded += 1;
+      if (status === "running" || status === "working" || status === "catching-up" || status === "preflight" || status === "starting") counts.active += 1;
+      if (status === "degraded" || status === "failed" || status === "blocked") counts.degraded += 1;
       return counts;
     },
     { active: 0, degraded: 0, offline: 0, online: 0 },
   );
-}
-
-function serviceSummaryRow(service: ServiceStatusPayload) {
-  return {
-    service: service.registry.label,
-    status: service.online ? statusLabel(service.status) : "Offline",
-    phase: phaseText(service),
-    message: currentMessage(service) || "-",
-    coverage: coverageText(service),
-    runtime: runtimeText(service),
-    endpoint: service.registry.base_url,
-  };
 }
 
 function phaseText(service: ServiceStatusPayload) {
@@ -290,6 +312,15 @@ function phaseText(service: ServiceStatusPayload) {
 
 function currentMessage(service: ServiceStatusPayload) {
   return String(service.current_operation?.message || service.current_operation?.next_action || service.errors?.snapshot || "");
+}
+
+function cardMessage(service: ServiceStatusPayload) {
+  if (!service.online) return offlineReason(service) || "Service endpoint is not responding.";
+  return currentMessage(service) || service.registry.description;
+}
+
+function offlineReason(service: ServiceStatusPayload) {
+  return String(service.errors?.snapshot || service.errors?.health || service.errors?.metrics || "");
 }
 
 function coverageText(service: ServiceStatusPayload) {
@@ -369,17 +400,53 @@ function formatTime(value: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(parsed));
 }
 
-function statusClass(status: string) {
-  const text = String(status || "").toLowerCase().replaceAll("_", "-");
-  if (text.includes("fail") || text.includes("blocked")) return "failed";
-  if (text.includes("degraded") || text.includes("warning")) return "degraded";
-  if (text.includes("catch") || text.includes("gap") || text.includes("repair")) return "catching-up";
-  if (text.includes("preflight") || text.includes("starting")) return "preflight";
-  if (text.includes("idle") || text.includes("waiting")) return "idle";
-  if (text.includes("running") || text.includes("ok") || text.includes("healthy") || text.includes("online")) return "running";
-  return "unknown";
+function formatZoneTime(value: Date, timeZone: string) {
+  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone }).format(value);
 }
 
-function statusLabel(status: string) {
-  return status ? String(status).replaceAll("_", " ").replaceAll("-", " ").toUpperCase() : "UNKNOWN";
+function formatZoneDate(value: Date, timeZone: string) {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "2-digit", year: "numeric", timeZone }).format(value);
+}
+
+function fleetMarketStatus(services: ServiceStatusPayload[]) {
+  for (const service of services) {
+    const candidates = [
+      service.header?.market_status,
+      service.header?.market_session,
+      service.metrics?.market_status,
+      service.metrics?.current_market_session,
+      service.snapshot?.runtime && isRecord(service.snapshot.runtime) ? service.snapshot.runtime.market_status : "",
+      service.snapshot?.runtime && isRecord(service.snapshot.runtime) ? service.snapshot.runtime.current_market_session : "",
+    ];
+    const value = candidates.find((candidate) => typeof candidate === "string" && candidate.trim());
+    if (value) {
+      const source = String(service.metrics?.market_status_source || service.header?.market_status_source || service.registry.label);
+      return { status: String(value), detail: source || service.registry.label };
+    }
+  }
+  return { status: "not reported", detail: "No gateway has reported market state yet" };
+}
+
+type StatusInfo = {
+  className: string;
+  description: string;
+  label: string;
+};
+
+function statusInfo(service: Pick<ServiceStatusPayload, "online" | "status">): StatusInfo {
+  if (!service.online) {
+    return { className: "not-started", description: "The service API endpoint is not reachable or timed out.", label: "NOT STARTED" };
+  }
+  const text = String(service.status || "").toLowerCase().replaceAll("_", "-");
+  if (text.includes("start")) return { className: "starting", description: "The service is starting and has not completed initialization.", label: "STARTING" };
+  if (text.includes("preflight")) return { className: "preflight", description: "The service is checking dependencies before operational work.", label: "PREFLIGHT" };
+  if (text.includes("catch") || text.includes("gap") || text.includes("repair")) return { className: "catching-up", description: "The service is filling coverage gaps or repairing recent data.", label: "CATCHING UP" };
+  if (text.includes("work") || text.includes("queue") || text.includes("processing")) return { className: "working", description: "The service is actively processing background work.", label: "WORKING" };
+  if (text.includes("degraded") || text.includes("warn")) return { className: "degraded", description: "The service is reachable but has warnings or reduced capability.", label: "DEGRADED" };
+  if (text.includes("block")) return { className: "blocked", description: "The service is blocked by policy, dependency, or required manual action.", label: "BLOCKED" };
+  if (text.includes("stop")) return { className: "stopping", description: "The service is shutting down.", label: "STOPPING" };
+  if (text.includes("fail") || text.includes("error") || text.includes("critical")) return { className: "failed", description: "The service reports an active critical failure.", label: "FAILED" };
+  if (text.includes("idle") || text.includes("waiting")) return { className: "idle", description: "The service is healthy and waiting for the next scheduled task.", label: "IDLE" };
+  if (text.includes("run") || text.includes("ok") || text.includes("healthy") || text.includes("online")) return { className: "running", description: "The service is healthy and running.", label: "RUNNING" };
+  return { className: "unknown", description: "The service is reachable but did not report a standard status.", label: service.status ? String(service.status).toUpperCase() : "UNKNOWN" };
 }

@@ -941,6 +941,27 @@ def fetch_service_json(base_url: str, path: str) -> tuple[dict[str, Any] | list[
     return None, f"Unexpected JSON payload from {path}"
 
 
+def service_unreachable_error(error_text: str | None) -> bool:
+    if not error_text:
+        return False
+    normalized = error_text.lower()
+    return any(
+        token in normalized
+        for token in (
+            "urlerror",
+            "timed out",
+            "timeout",
+            "connection refused",
+            "actively refused",
+            "no connection could be made",
+            "connection reset",
+            "failed to establish",
+            "winerror 10061",
+            "winerror 10060",
+        )
+    )
+
+
 def service_status_payload(service_id: str, *, include_recent: bool = True) -> dict[str, Any]:
     service = SERVICE_REGISTRY.get(service_id)
     if service is None:
@@ -959,7 +980,10 @@ def service_status_payload(service_id: str, *, include_recent: bool = True) -> d
     recent_error: str | None = None
     if include_recent and snapshot_error is None and service.get("recent_path"):
         recent_payload, recent_error = fetch_service_json(base_url, service["recent_path"])
-    online = snapshot_error is None or health_error is None or metrics_error is None
+    unreachable = service_unreachable_error(snapshot_error) or (
+        snapshot_error is not None and service_unreachable_error(health_error) and service_unreachable_error(metrics_error)
+    )
+    online = not unreachable and (snapshot_error is None or health_error is None or metrics_error is None)
     normalized_snapshot = snapshot if isinstance(snapshot, dict) else {}
     header = normalized_snapshot.get("header") if isinstance(normalized_snapshot.get("header"), dict) else {}
     current_operation = normalized_snapshot.get("current_operation") if isinstance(normalized_snapshot.get("current_operation"), dict) else {}
@@ -967,7 +991,9 @@ def service_status_payload(service_id: str, *, include_recent: bool = True) -> d
     health_status = health_payload.get("service_status") if isinstance(health_payload, dict) else ""
     status = str(header.get("status") or health_status or "")
     if not status:
-        status = "ONLINE" if online else "OFFLINE"
+        status = "ONLINE" if online else "NOT_STARTED"
+    elif not online:
+        status = "NOT_STARTED"
     return {
         "registry": {
             "id": service["id"],
