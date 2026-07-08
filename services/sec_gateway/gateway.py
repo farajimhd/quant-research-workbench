@@ -58,6 +58,9 @@ class SecGatewayMetrics:
     failed_filings: int = 0
     last_poll_at_utc: str = ""
     last_error: str = ""
+    last_error_status: str = ""
+    last_error_seen_at_utc: str = ""
+    last_error_resolved_at_utc: str = ""
     last_accession: str = ""
     last_form_type: str = ""
     gap_status: str = "not_started"
@@ -215,7 +218,7 @@ class SecGateway:
             self._log("service_started")
         except Exception as exc:
             self.logger.exception("service_start_failed", exc)
-            self.metrics.last_error = repr(exc)
+            self._record_error(exc)
             self._set_phase("failed", repr(exc))
             raise
 
@@ -343,7 +346,7 @@ class SecGateway:
         except Exception as exc:  # noqa: BLE001
             self.metrics.live_worker_failures += 1
             self.metrics.failed_filings += 1
-            self.metrics.last_error = repr(exc)
+            self._record_error(exc)
             self.metrics.last_worker_message = f"Worker {worker_index} failed {job.item.accession_number}: {exc!r}"
             self._live_coverage_errors += 1
             self._write_live_coverage_status(status="running")
@@ -379,6 +382,7 @@ class SecGateway:
             f"Worker {worker_index} completed {outcome.item.accession_number}: "
             f"{'skipped existing' if result.skipped_existing else 'written'}."
         )
+        self._resolve_last_error(reason="live_job_completed")
         self._remember(outcome.item, result)
         self._log("live_job_completed", worker_index=worker_index, poll_id=outcome.poll_id, accession_number=outcome.item.accession_number, result=asdict(result))
         if not result.skipped_existing:
@@ -592,7 +596,7 @@ class SecGateway:
                 await self._poll_once()
             except Exception as exc:  # noqa: BLE001
                 self.metrics.poll_failures += 1
-                self.metrics.last_error = repr(exc)
+                self._record_error(exc)
                 self.logger.exception("poll_failed", exc)
                 cooldown_remaining, cooldown_reason = self._limiter.cooldown_status()
                 if cooldown_remaining > 0:
@@ -659,6 +663,8 @@ class SecGateway:
             f"Poll queued={queued:,}, skipped_existing={skipped:,}, active_duplicates={duplicate_active:,}."
         )
         self._set_phase("polling", self.metrics.last_worker_message)
+        if queued == 0:
+            self._resolve_last_error(reason="poll_complete")
         self._log("poll_complete", poll_id=poll_id, feed_items=len(items), queued=queued, skipped_existing=skipped, duplicate_active=duplicate_active, failed=failed)
 
     def _finalize_live_coverage(self) -> None:
@@ -760,6 +766,7 @@ class SecGateway:
         except Exception as exc:  # noqa: BLE001
             self.metrics.audit_status = "failed"
             self.metrics.audit_message = repr(exc)
+            self._record_error(exc)
             self.logger.exception("write_database_audit_failed", exc, reason=reason)
             return
         self.metrics.audit_status = "ok" if audit.ok else "warn"
@@ -869,6 +876,19 @@ class SecGateway:
         self.metrics.current_phase = phase
         self.metrics.current_phase_message = message
         self._log("phase", phase=phase, message=message)
+
+    def _record_error(self, exc: BaseException) -> None:
+        self.metrics.last_error = repr(exc)
+        self.metrics.last_error_status = "active"
+        self.metrics.last_error_seen_at_utc = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        self.metrics.last_error_resolved_at_utc = ""
+
+    def _resolve_last_error(self, *, reason: str) -> None:
+        if not self.metrics.last_error or self.metrics.last_error_status == "resolved":
+            return
+        self.metrics.last_error_status = "resolved"
+        self.metrics.last_error_resolved_at_utc = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        self._log("last_error_resolved", reason=reason, last_error=self.metrics.last_error)
 
     def _log(self, event: str, **payload: Any) -> None:
         self.logger.event(event, **payload)

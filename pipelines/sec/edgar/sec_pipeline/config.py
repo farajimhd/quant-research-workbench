@@ -126,16 +126,25 @@ def resolve_data_root() -> Path:
     explicit = env_string("SEC_GATEWAY_DATA_ROOT_WIN", env_string("SEC_DATA_ROOT_WIN", ""))
     if explicit:
         path = Path(explicit)
-        if path.exists():
+        if path_exists(path):
             return path
         raise RuntimeError(f"configured SEC data root does not exist: {path}")
     if os.environ.get("COMPUTERNAME", "").strip().upper() == WORKSTATION_COMPUTER_NAME:
-        if DEFAULT_DATA_ROOT_WIN.exists():
+        if path_exists(DEFAULT_DATA_ROOT_WIN):
             return DEFAULT_DATA_ROOT_WIN
         raise RuntimeError("Workstation SEC data root D:/market-data is not available.")
-    if WORKSTATION_SHARE_DATA_ROOT_WIN.exists():
+    if path_exists(WORKSTATION_SHARE_DATA_ROOT_WIN):
         return WORKSTATION_SHARE_DATA_ROOT_WIN
+    if path_exists(DEFAULT_DATA_ROOT_WIN):
+        return DEFAULT_DATA_ROOT_WIN
     raise RuntimeError(
         "Workstation market-data root is not available. Start on the workstation, mount "
         "\\\\DESKTOP-SAAI85T\\Workstation-D\\market-data, or set SEC_GATEWAY_DATA_ROOT_WIN."
     )
+
+
+def path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False

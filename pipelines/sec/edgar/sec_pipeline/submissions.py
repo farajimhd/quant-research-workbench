@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient
+from pipelines.sec.edgar.sec_pipeline.http import SecHttpClient, SecHttpError
 
 
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
@@ -47,7 +47,12 @@ class SecSubmissionsClient:
         self._cache_lock = threading.RLock()
 
     def fetch_recent_filing(self, *, cik: str, accession_number: str) -> SecSubmissionFiling | None:
-        payload, source_sha = self.fetch_payload(cik=cik)
+        try:
+            payload, source_sha = self.fetch_payload(cik=cik)
+        except SecHttpError as exc:
+            if exc.status == 404:
+                return None
+            raise
         return find_recent_filing(payload, source_sha=source_sha, accession_number=accession_number)
 
     def fetch_payload(self, *, cik: str) -> tuple[dict[str, Any], str]:

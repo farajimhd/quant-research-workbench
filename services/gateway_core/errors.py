@@ -82,6 +82,7 @@ def classify_exception(exc: BaseException | str, *, service: str, phase: str = "
 def error_summary_from_metrics(metrics: dict[str, Any], *, service: str) -> dict[str, Any]:
     summary = ErrorSummary()
     last_error = str(metrics.get("last_error") or "").strip()
+    last_error_status = str(metrics.get("last_error_status") or "").lower()
     phase = str(metrics.get("current_phase") or "").lower()
     failed_phase = phase == "failed"
     provider_cooldown = float(metrics.get("sec_request_cooldown_remaining_seconds") or metrics.get("provider_cooldown_remaining_seconds") or 0.0)
@@ -90,7 +91,18 @@ def error_summary_from_metrics(metrics: dict[str, Any], *, service: str) -> dict
     failed_rows = int(metrics.get("failed_rows") or metrics.get("failed_filings") or 0)
     if last_error:
         record = classify_exception(last_error, service=service, phase=str(metrics.get("current_phase") or ""), task="runtime")
-        if failed_phase:
+        if last_error_status == "resolved":
+            summary.resolved_this_run_count = 1
+            summary.latest_resolved_errors.append(
+                GatewayErrorRecord(
+                    **{
+                        **record.public_dict(),
+                        "status": "resolved",
+                        "resolved_at_utc": str(metrics.get("last_error_resolved_at_utc") or datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")),
+                    }
+                ).public_dict()
+            )
+        elif failed_phase:
             summary.active_critical_count = 1
             record = GatewayErrorRecord(**{**record.public_dict(), "severity": "critical"})
             summary.latest_active_errors.append(record.public_dict())

@@ -358,6 +358,11 @@ It finds the accession in `filings.recent` and uses that row to canonicalize:
 - filing items
 - XBRL / inline-XBRL flags
 
+If SEC returns `404` for the submissions JSON while the accession text is
+available, the gateway treats submissions metadata as temporarily missing and
+continues with metadata parsed from the accession text. The live filing job is
+not failed solely because the submissions JSON is unavailable.
+
 For filings that submissions or the accession document set identifies as
 XBRL-bearing, the gateway then fetches:
 
