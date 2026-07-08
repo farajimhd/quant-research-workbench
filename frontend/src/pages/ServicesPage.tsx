@@ -351,6 +351,8 @@ type ServiceWorkGroup = {
 function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
   const groups = serviceWorkGroups(service);
   const setupRows = serviceSetupRows(service);
+  const dependencyRows = setupRows.filter((row) => row.kind.toLowerCase().includes("depend"));
+  const contractRows = setupRows.filter((row) => !row.kind.toLowerCase().includes("depend"));
   const liveCounts = groups.reduce(
     (summary, row) => {
       const status = workStatusClass(row.status);
@@ -376,104 +378,105 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
         <section className="service-work-live-section">
           <div className="service-work-section-header">
             <h3>Live Responsibility Reports</h3>
-            <p>Runtime work only. Static setup rows are kept out of this section.</p>
+            <p>Runtime data work only. Each row is a service responsibility with latest report, timing, and row counts.</p>
           </div>
-          <div className="service-work-plan-groups">
-            {groups.map((group) => (
-              <ServiceWorkGroupCard group={group} key={group.id} />
-            ))}
-          </div>
+          <ServiceWorkRuntimeTable groups={groups} />
         </section>
-        <ServiceSetupContractPanel rows={setupRows} />
+        <aside className="service-work-static-panel">
+          <ServiceCollapsedWorkSection
+            description="Provider reachability, auth, storage, ClickHouse, and environment checks. These are setup checks, not active data work."
+            rows={dependencyRows}
+            title="Preflight"
+          />
+          <ServiceCollapsedWorkSection
+            description="Configured tables and static contracts this dashboard expects the service to maintain or read."
+            rows={contractRows}
+            title="Setup / Contracts"
+          />
+        </aside>
       </div>
     </Panel>
   );
 }
 
-function ServiceWorkGroupCard({ group }: { group: ServiceWorkGroup }) {
-  const rows = group.rows.length ? group.rows : [{ detail: "No live report has been received for this responsibility in the current snapshot.", kind: "service", lastAt: "-", name: group.title, progress: "-", reportKind: "live" as const, rows: "-", schedule: "-", status: "not reported" }];
-  const visibleRows = rows.slice(0, 8);
-  const hiddenCount = Math.max(0, rows.length - visibleRows.length);
+function ServiceWorkRuntimeTable({ groups }: { groups: ServiceWorkGroup[] }) {
   return (
-    <section className={`service-work-card ${workStatusClass(group.status)}`}>
-      <div className="service-work-card-header">
-        <div>
-          <h3>{group.title}</h3>
-          <p>{group.description}</p>
-        </div>
-        <div className="service-work-card-status-stack">
-          <span className={`service-work-status ${workStatusClass(group.status)}`}>{displayName(group.status || "waiting")}</span>
-          <small>{group.lastAt ? `Last ${group.lastAt}` : "No live timestamp"}</small>
-        </div>
-      </div>
-      <div className="service-work-card-stats">
-        <span>Active <strong>{group.activeCount}</strong></span>
-        <span>Done <strong>{group.completedCount}</strong></span>
-        <span>Warn <strong>{group.warningCount}</strong></span>
-      </div>
-      <div className="service-work-items">
-        {visibleRows.map((row, index) => (
-          <ServiceWorkItem row={row} key={`${row.kind}-${row.name}-${index}`} />
-        ))}
-        {hiddenCount ? <div className="service-work-more">+ {hiddenCount} more reported item{hiddenCount === 1 ? "" : "s"}</div> : null}
-      </div>
-    </section>
+    <div className="service-work-runtime-table-wrap">
+      <table className="service-work-runtime-table">
+        <thead>
+          <tr>
+            <th>Responsibility</th>
+            <th>Status</th>
+            <th>Last</th>
+            <th>Activity</th>
+            <th>Latest Work</th>
+            <th>Progress</th>
+            <th>Rows</th>
+            <th>Readable Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          {groups.map((group) => {
+            const row = groupPrimaryRow(group);
+            return (
+              <tr className={workStatusClass(group.status)} key={group.id}>
+                <td>
+                  <strong>{group.title}</strong>
+                  <span>{group.description}</span>
+                </td>
+                <td><span className={`service-work-status ${workStatusClass(group.status)}`}>{displayName(group.status || "waiting")}</span></td>
+                <td>{group.lastAt || "-"}</td>
+                <td>
+                  <span className="service-work-activity-counts">
+                    <strong>{group.activeCount}</strong> active
+                    <strong>{group.completedCount}</strong> done
+                    <strong>{group.warningCount}</strong> warn
+                  </span>
+                </td>
+                <td title={row.name}>{row.name}</td>
+                <td>{row.progress}</td>
+                <td>{row.rows}</td>
+                <td title={row.detail}>{row.detail}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
-function ServiceWorkItem({ row }: { row: ServiceWorkRow }) {
-  const metrics = [
-    row.lastAt !== "-" ? { label: "Last", value: row.lastAt } : null,
-    row.progress !== "-" ? { label: "Progress", value: row.progress } : null,
-    row.rows !== "-" ? { label: "Rows", value: row.rows } : null,
-    row.schedule !== "-" ? { label: "Schedule", value: row.schedule } : null,
-  ].filter((item): item is { label: string; value: string } => Boolean(item));
-  return (
-    <article className={`service-work-item ${workStatusClass(row.status)}`}>
-      <div className="service-work-item-top">
-        <div className="service-work-item-title">
-          <strong title={row.name}>{row.name}</strong>
-          <span>{displayName(row.kind)}</span>
-        </div>
-        <span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status || "waiting")}</span>
-      </div>
-      {metrics.length ? (
-        <div className="service-work-item-metrics">
-          {metrics.map((metric) => (
-            <span key={metric.label} title={metric.value}>
-              {metric.label} <strong>{metric.value}</strong>
-            </span>
-          ))}
-        </div>
-      ) : null}
-      <p className="service-work-item-detail" title={row.detail}>{row.detail}</p>
-    </article>
-  );
+function groupPrimaryRow(group: ServiceWorkGroup): ServiceWorkRow {
+  return group.rows[0] ?? { detail: "No live report received in the current snapshot.", kind: "service", lastAt: "-", name: "No live report", progress: "-", reportKind: "live", rows: "-", schedule: "-", status: "not reported" };
 }
 
-function ServiceSetupContractPanel({ rows }: { rows: ServiceWorkRow[] }) {
-  const visibleRows = rows.slice(0, 12);
+function ServiceCollapsedWorkSection({ description, rows, title }: { description: string; rows: ServiceWorkRow[]; title: string }) {
+  const issueCount = rows.filter((row) => ["error", "warn"].includes(workStatusClass(row.status))).length;
+  const visibleRows = rows.slice(0, 10);
   const hiddenCount = Math.max(0, rows.length - visibleRows.length);
   return (
-    <aside className="service-work-setup-panel">
-      <div className="service-work-section-header">
-        <h3>Setup / Contracts</h3>
-        <p>Static contracts, dependency checks, and configured table expectations.</p>
-      </div>
-      <div className="service-work-setup-list">
-        {(visibleRows.length ? visibleRows : [{ detail: "No setup or contract rows reported.", kind: "setup", lastAt: "-", name: "Setup contract", progress: "-", reportKind: "setup" as const, rows: "-", schedule: "-", status: "not reported" }]).map((row, index) => (
-          <div className={`service-work-setup-row ${workStatusClass(row.status)}`} key={`${row.kind}-${row.name}-${index}`}>
+    <details className={`service-work-collapsed ${issueCount ? "has-issues" : ""}`}>
+      <summary>
+        <span>
+          <strong>{title}</strong>
+          <small>{description}</small>
+        </span>
+        <em>{rows.length} rows / {issueCount} issues</em>
+      </summary>
+      <div className="service-work-static-list">
+        {(visibleRows.length ? visibleRows : [{ detail: "No rows reported for this setup area.", kind: "setup", lastAt: "-", name: title, progress: "-", reportKind: "setup" as const, rows: "-", schedule: "-", status: "not reported" }]).map((row, index) => (
+          <div className={`service-work-static-row ${workStatusClass(row.status)}`} key={`${row.kind}-${row.name}-${index}`}>
             <div>
               <strong title={row.name}>{row.name}</strong>
               <span>{displayName(row.kind)}</span>
+              <p title={row.detail}>{row.detail}</p>
             </div>
             <span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span>
-            <p title={row.detail}>{row.detail}</p>
           </div>
         ))}
-        {hiddenCount ? <div className="service-work-more">+ {hiddenCount} more setup row{hiddenCount === 1 ? "" : "s"}</div> : null}
+        {hiddenCount ? <div className="service-work-more">+ {hiddenCount} more row{hiddenCount === 1 ? "" : "s"}</div> : null}
       </div>
-    </aside>
+    </details>
   );
 }
 
@@ -1222,7 +1225,9 @@ function serviceWorkRows(service: ServiceStatusPayload): ServiceWorkRow[] {
   rows.push(...arrayRows(snapshot.task_table_progress).map((row) => serviceWorkRow(row, "table", "live")));
   rows.push(...arrayRows(snapshot.queues).map((row) => serviceWorkRow(row, "queue", "live")));
   rows.push(...arrayRows(snapshot.sources_sinks).map((row) => serviceWorkRow(row, "source", "live")));
-  return dedupeWorkRows(rows).sort((a, b) => workStatusRank(a.status) - workStatusRank(b.status) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  return dedupeWorkRows(rows)
+    .filter((row) => !isSetupLikeWorkRow(row))
+    .sort((a, b) => workStatusRank(a.status) - workStatusRank(b.status) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
 }
 
 function serviceSetupRows(service: ServiceStatusPayload): ServiceWorkRow[] {
@@ -1230,7 +1235,13 @@ function serviceSetupRows(service: ServiceStatusPayload): ServiceWorkRow[] {
   const rows: ServiceWorkRow[] = [];
   rows.push(...arrayRows(snapshot.dependencies).map((row) => serviceWorkRow(row, "dependency", "setup")));
   rows.push(...arrayRows(snapshot.configured_tables).map((row) => serviceWorkRow(row, "configured table", "setup")));
+  rows.push(...arrayRows(snapshot.tasks).map((row) => serviceWorkRow(row, "task", "setup")).filter(isSetupLikeWorkRow));
   return dedupeWorkRows(rows).sort((a, b) => workStatusRank(a.status) - workStatusRank(b.status) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+}
+
+function isSetupLikeWorkRow(row: ServiceWorkRow) {
+  const text = workRowSearchText(row);
+  return /preflight|dependenc|configured table|config contract|startup check|schema check|credential|auth|artifact storage/.test(text);
 }
 
 function serviceWorkGroups(service: ServiceStatusPayload): ServiceWorkGroup[] {
@@ -1271,17 +1282,10 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
       match: [/./],
       title: "Other Reported Work",
     },
-    preflight: {
-      description: "Dependency checks, provider reachability, credentials, storage, and market-calendar readiness.",
-      id: "preflight",
-      match: [/preflight|dependenc|config|health|clickhouse|artifact|storage|market status|calendar|credential|auth/],
-      title: "Preflight And Dependencies",
-    },
   } satisfies Record<string, ServiceResponsibilitySpec>;
 
   const specs: Record<ServiceId, ServiceResponsibilitySpec[]> = {
     news: [
-      common.preflight,
       {
         description: "Coverage bootstrap, gap detection, gap fill, and historical catch-up for Benzinga news.",
         id: "coverage",
@@ -1309,7 +1313,6 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
       common.other,
     ],
     sec: [
-      common.preflight,
       {
         description: "SEC coverage manifest, current-day gaps, historical archive backfill, and bulk catch-up state.",
         id: "coverage",
@@ -1337,7 +1340,6 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
       common.other,
     ],
     qmd: [
-      common.preflight,
       {
         description: "Massive websocket subscriptions, trade/quote event intake, connection health, and live stream state.",
         id: "live",
@@ -1365,7 +1367,6 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
       common.other,
     ],
     reference: [
-      common.preflight,
       {
         description: "Low-frequency provider sync for Massive, IBKR, FINRA, SEC-derived mappings, presentation assets, and publications.",
         id: "source_sync",
@@ -1393,7 +1394,6 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
       common.other,
     ],
     "text-embed": [
-      common.preflight,
       {
         description: "Source coverage checks, lookback windows, pending text discovery, and historical gap scan.",
         id: "coverage",
@@ -1421,7 +1421,6 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
       common.other,
     ],
     ibkr: [
-      common.preflight,
       {
         description: "Client Portal authentication, brokerage session health, account discovery, and API reachability.",
         id: "session",
@@ -1546,7 +1545,7 @@ function humanizeWorkDetail(value: string) {
         const match = segment.match(/^([^=]{1,40})=(.*)$/);
         if (!match) return segment;
         return `${displayName(match[1].trim())}: ${shortenWorkValue(match[2].trim())}`;
-      }).join(" · ")
+      }).join(" / ")
     : shortenWorkValue(normalized);
   return readable.length > 220 ? `${readable.slice(0, 217)}...` : readable;
 }
