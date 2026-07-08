@@ -357,13 +357,13 @@ function ServiceErrorLogPanel({ pageError, service }: { pageError: string; servi
 }
 
 function ServiceLogDetailModal({ item }: { item: ServiceLogItem }) {
+  const detailRows = unpackLogDetail(item.detail);
   const rows = [
     { key: "time", value: item.time || "-" },
     { key: "status", value: displayName(item.status) },
     { key: "source", value: item.source || "-" },
     { key: "event", value: displayName(item.event || item.key) },
     { key: "message", value: item.title || "-" },
-    { key: "detail", value: item.detail || "-" },
     { key: "metadata", value: item.meta || "-" },
     { key: "row_key", value: item.key || "-" },
   ];
@@ -381,6 +381,20 @@ function ServiceLogDetailModal({ item }: { item: ServiceLogItem }) {
           </div>
         ))}
       </dl>
+      <section className="service-log-detail-fields">
+        <div className="service-log-detail-section-title">
+          <span>Detail Fields</span>
+          <strong>{detailRows.length}</strong>
+        </div>
+        <dl className="service-log-detail-grid">
+          {(detailRows.length ? detailRows : [{ key: "detail", value: item.detail || "-" }]).map((row) => (
+            <div className="wide" key={row.key}>
+              <dt>{displayName(row.key)}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
     </div>
   );
 }
@@ -663,6 +677,60 @@ function logStatusFilterOptions(items: ServiceLogItem[]): Array<{ count: number;
     { status: "all", count: counts.get("all") ?? 0 },
     ...statuses.filter((status) => (counts.get(status) ?? 0) > 0).map((status) => ({ status, count: counts.get(status) ?? 0 })),
   ];
+}
+
+function unpackLogDetail(value: string): Array<{ key: string; value: string }> {
+  const text = value.trim();
+  if (!text || text === "-") return [];
+  const parsed = parseMaybeJson(text);
+  if (isRecord(parsed)) return objectLogRows(parsed);
+  if (Array.isArray(parsed)) return parsed.map((item, index) => ({ key: `item_${index + 1}`, value: formatLogDetailValue(item) }));
+
+  const segments = text.split(/;\s+(?=[A-Za-z0-9_. -]+=)/).map((segment) => segment.trim()).filter(Boolean);
+  const rows: Array<{ key: string; value: string }> = [];
+  for (const segment of segments) {
+    const match = segment.match(/^([^=]{1,80})=(.*)$/s);
+    if (!match) continue;
+    const key = match[1].trim();
+    const rawValue = match[2].trim();
+    const parsedValue = parseMaybeJson(rawValue);
+    if (isRecord(parsedValue)) {
+      for (const nested of objectLogRows(parsedValue, key)) rows.push(nested);
+    } else if (Array.isArray(parsedValue)) {
+      rows.push({ key, value: formatLogDetailValue(parsedValue) });
+    } else {
+      rows.push({ key, value: rawValue || "-" });
+    }
+  }
+  return rows;
+}
+
+function objectLogRows(record: Record<string, unknown>, prefix = ""): Array<{ key: string; value: string }> {
+  return Object.entries(record).map(([key, value]) => ({
+    key: prefix ? `${prefix}.${key}` : key,
+    value: formatLogDetailValue(value),
+  }));
+}
+
+function parseMaybeJson(value: string): unknown {
+  const text = value.trim();
+  if (!/^[{[]/.test(text)) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function formatLogDetailValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function isEmptyErrorValue(value: unknown) {
