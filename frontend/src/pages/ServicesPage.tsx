@@ -275,9 +275,13 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
 
 function ServiceErrorLogPanel({ pageError, service }: { pageError: string; service: ServiceStatusPayload }) {
   const items = collectErrorLogItems(pageError, service);
+  const [statusFilter, setStatusFilter] = useState<ServiceLogStatusFilter>("all");
+  const [selectedLog, setSelectedLog] = useState<ServiceLogItem | null>(null);
+  const filteredItems = statusFilter === "all" ? items : items.filter((item) => item.status === statusFilter);
   const activeItems = items.filter((item) => item.status === "active" || item.status === "retrying");
   const logPath = service.logs?.path || "";
   const logError = service.logs?.error || "";
+  const tableRows = filteredItems.length ? filteredItems : [{ detail: "No log rows match the selected status filter.", key: "service", status: "clear" as const, title: "No matching rows" }];
   return (
     <Panel title="Errors And Logs">
       <div className={`service-log-panel ${activeItems.length ? "has-active" : ""}`}>
@@ -290,6 +294,19 @@ function ServiceErrorLogPanel({ pageError, service }: { pageError: string; servi
               {logError ? ` (${logError})` : ""}
             </p>
           </div>
+        </div>
+        <div className="service-log-filter" aria-label="Filter service logs by status">
+          {logStatusFilterOptions(items).map((option) => (
+            <button
+              className={statusFilter === option.status ? "active" : ""}
+              key={option.status}
+              onClick={() => setStatusFilter(option.status)}
+              type="button"
+            >
+              <span>{displayName(option.status)}</span>
+              <strong>{option.count}</strong>
+            </button>
+          ))}
         </div>
         <div className="service-log-table-wrap">
           <table className="service-log-table">
@@ -304,8 +321,20 @@ function ServiceErrorLogPanel({ pageError, service }: { pageError: string; servi
               </tr>
             </thead>
             <tbody>
-              {(items.length ? items : [{ detail: "No errors or warnings reported.", key: "service", status: "clear" as const, title: "Clear" }]).map((item, index) => (
-                <tr className={`service-log-row ${item.status}`} key={`${item.key}-${index}`}>
+              {tableRows.map((item, index) => (
+                <tr
+                  className={`service-log-row ${item.status}`}
+                  key={`${item.key}-${index}`}
+                  onClick={() => setSelectedLog(item)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setSelectedLog(item);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
                   <td className="service-log-time" title={item.time || item.meta || ""}>{item.time || "-"}</td>
                   <td><span className={`service-log-status ${item.status}`}>{displayName(item.status)}</span></td>
                   <td title={item.source || item.meta || ""}>{item.source || "-"}</td>
@@ -318,7 +347,41 @@ function ServiceErrorLogPanel({ pageError, service }: { pageError: string; servi
           </table>
         </div>
       </div>
+      {selectedLog ? (
+        <Modal className="service-log-detail-modal-panel" onClose={() => setSelectedLog(null)} title="Service Log Row">
+          <ServiceLogDetailModal item={selectedLog} />
+        </Modal>
+      ) : null}
     </Panel>
+  );
+}
+
+function ServiceLogDetailModal({ item }: { item: ServiceLogItem }) {
+  const rows = [
+    { key: "time", value: item.time || "-" },
+    { key: "status", value: displayName(item.status) },
+    { key: "source", value: item.source || "-" },
+    { key: "event", value: displayName(item.event || item.key) },
+    { key: "message", value: item.title || "-" },
+    { key: "detail", value: item.detail || "-" },
+    { key: "metadata", value: item.meta || "-" },
+    { key: "row_key", value: item.key || "-" },
+  ];
+  return (
+    <div className="service-log-detail">
+      <div className={`service-log-detail-status ${item.status}`}>
+        <span>{displayName(item.status)}</span>
+        <strong>{item.title || displayName(item.event || item.key)}</strong>
+      </div>
+      <dl className="service-log-detail-grid">
+        {rows.map((row) => (
+          <div className={row.key === "detail" || row.key === "message" ? "wide" : ""} key={row.key}>
+            <dt>{displayName(row.key)}</dt>
+            <dd>{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   );
 }
 
@@ -433,6 +496,8 @@ type ServiceLogItem = {
   time?: string;
   title: string;
 };
+
+type ServiceLogStatusFilter = ServiceLogItem["status"] | "all";
 
 function collectErrorLogItems(pageError: string, service: ServiceStatusPayload) {
   const items: ServiceLogItem[] = [];
@@ -587,6 +652,17 @@ function statusPriority(status: ServiceLogItem["status"]) {
   if (status === "resolved") return 2;
   if (status === "log") return 3;
   return 4;
+}
+
+function logStatusFilterOptions(items: ServiceLogItem[]): Array<{ count: number; status: ServiceLogStatusFilter }> {
+  const statuses: ServiceLogItem["status"][] = ["active", "retrying", "resolved", "log", "clear"];
+  const counts = new Map<ServiceLogStatusFilter, number>([["all", items.length]]);
+  for (const status of statuses) counts.set(status, 0);
+  for (const item of items) counts.set(item.status, (counts.get(item.status) ?? 0) + 1);
+  return [
+    { status: "all", count: counts.get("all") ?? 0 },
+    ...statuses.filter((status) => (counts.get(status) ?? 0) > 0).map((status) => ({ status, count: counts.get(status) ?? 0 })),
+  ];
 }
 
 function isEmptyErrorValue(value: unknown) {
