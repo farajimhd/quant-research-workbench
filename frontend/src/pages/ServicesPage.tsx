@@ -351,8 +351,8 @@ type ServiceWorkGroup = {
 function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
   const groups = serviceWorkGroups(service);
   const setupRows = serviceSetupRows(service);
-  const dependencyRows = setupRows.filter((row) => row.kind.toLowerCase().includes("depend"));
-  const contractRows = setupRows.filter((row) => !row.kind.toLowerCase().includes("depend"));
+  const dependencyRows = setupRows.filter((row) => isPreflightSetupRow(row));
+  const contractRows = setupRows.filter((row) => !isPreflightSetupRow(row));
   const liveCounts = groups.reduce(
     (summary, row) => {
       const status = workStatusClass(row.status);
@@ -378,9 +378,9 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
         <section className="service-work-live-section">
           <div className="service-work-section-header">
             <h3>Live Responsibility Reports</h3>
-            <p>Runtime data work only. Each row is a service responsibility with latest report, timing, and row counts.</p>
+            <p>Runtime data work only. Each responsibility keeps its own subtask progress report.</p>
           </div>
-          <ServiceWorkRuntimeTable groups={groups} />
+          <ServiceWorkResponsibilityGrid groups={groups} />
         </section>
         <aside className="service-work-static-panel">
           <ServiceCollapsedWorkSection
@@ -399,55 +399,73 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
   );
 }
 
-function ServiceWorkRuntimeTable({ groups }: { groups: ServiceWorkGroup[] }) {
+function ServiceWorkResponsibilityGrid({ groups }: { groups: ServiceWorkGroup[] }) {
+  const visibleGroups = groups.filter((group) => group.id !== "other" || group.rows.length);
   return (
-    <div className="service-work-runtime-table-wrap">
-      <table className="service-work-runtime-table">
+    <div className="service-work-responsibility-grid">
+      {visibleGroups.map((group) => (
+        <ServiceWorkResponsibilityCard group={group} key={group.id} />
+      ))}
+    </div>
+  );
+}
+
+function ServiceWorkResponsibilityCard({ group }: { group: ServiceWorkGroup }) {
+  const latestRow = groupPrimaryRow(group);
+  return (
+    <section className={`service-work-responsibility-card ${workStatusClass(group.status)}`}>
+      <div className="service-work-responsibility-header">
+        <div>
+          <h3>{group.title}</h3>
+          <p>{group.description}</p>
+        </div>
+        <span className={`service-work-status ${workStatusClass(group.status)}`}>{displayName(group.status || "waiting")}</span>
+      </div>
+      <div className="service-work-responsibility-metrics">
+        <span><small>Last</small><strong>{group.lastAt || "-"}</strong></span>
+        <span><small>Active</small><strong>{group.activeCount}</strong></span>
+        <span><small>Done</small><strong>{group.completedCount}</strong></span>
+        <span><small>Warn</small><strong>{group.warningCount}</strong></span>
+        <span className="wide" title={latestRow.detail}><small>Current</small><strong>{latestRow.name}</strong></span>
+      </div>
+      <ServiceWorkSubtaskTable rows={group.rows} title={group.title} />
+    </section>
+  );
+}
+
+function ServiceWorkSubtaskTable({ rows, title }: { rows: ServiceWorkRow[]; title: string }) {
+  const tableRows = rows.length ? rows : [{ detail: "No subtask report has been received in the current service snapshot.", kind: "service", lastAt: "-", name: title, progress: "-", reportKind: "live" as const, rows: "-", schedule: "-", status: "not reported" }];
+  return (
+    <div className="service-work-subtask-table-wrap">
+      <table className="service-work-subtask-table">
         <thead>
           <tr>
-            <th>Responsibility</th>
+            <th>Subtask</th>
             <th>Status</th>
             <th>Last</th>
-            <th>Activity</th>
-            <th>Latest Work</th>
             <th>Progress</th>
             <th>Rows</th>
             <th>Readable Detail</th>
           </tr>
         </thead>
         <tbody>
-          {groups.map((group) => {
-            const row = groupPrimaryRow(group);
-            return (
-              <tr className={workStatusClass(group.status)} key={group.id}>
-                <td>
-                  <strong>{group.title}</strong>
-                  <span>{group.description}</span>
-                </td>
-                <td><span className={`service-work-status ${workStatusClass(group.status)}`}>{displayName(group.status || "waiting")}</span></td>
-                <td>{group.lastAt || "-"}</td>
-                <td>
-                  <span className="service-work-activity-counts">
-                    <strong>{group.activeCount}</strong> active
-                    <strong>{group.completedCount}</strong> done
-                    <strong>{group.warningCount}</strong> warn
-                  </span>
-                </td>
-                <td title={row.name}>{row.name}</td>
-                <td>{row.progress}</td>
-                <td>{row.rows}</td>
-                <td title={row.detail}>{row.detail}</td>
-              </tr>
-            );
-          })}
+          {tableRows.map((row, index) => (
+            <tr className={workStatusClass(row.status)} key={`${row.kind}-${row.name}-${index}`}>
+              <td>
+                <strong title={row.name}>{row.name}</strong>
+                <span>{displayName(row.kind)}</span>
+              </td>
+              <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status || "waiting")}</span></td>
+              <td>{row.lastAt}</td>
+              <td>{row.progress}</td>
+              <td>{row.rows}</td>
+              <td title={row.detail}>{row.detail}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
   );
-}
-
-function groupPrimaryRow(group: ServiceWorkGroup): ServiceWorkRow {
-  return group.rows[0] ?? { detail: "No live report received in the current snapshot.", kind: "service", lastAt: "-", name: "No live report", progress: "-", reportKind: "live", rows: "-", schedule: "-", status: "not reported" };
 }
 
 function ServiceCollapsedWorkSection({ description, rows, title }: { description: string; rows: ServiceWorkRow[]; title: string }) {
@@ -478,6 +496,11 @@ function ServiceCollapsedWorkSection({ description, rows, title }: { description
       </div>
     </details>
   );
+}
+
+function groupPrimaryRow(group: ServiceWorkGroup): ServiceWorkRow {
+  const sortedRows = [...group.rows].sort((a, b) => workStatusRank(a.status) - workStatusRank(b.status) || (b.lastAtMs ?? 0) - (a.lastAtMs ?? 0));
+  return sortedRows[0] ?? { detail: "No subtask report received in the current snapshot.", kind: "service", lastAt: "-", name: "No live report", progress: "-", reportKind: "live", rows: "-", schedule: "-", status: "not reported" };
 }
 
 function WorkPlanSummaryItem({ label, tone = "", value }: { label: string; tone?: string; value: string }) {
@@ -1242,6 +1265,11 @@ function serviceSetupRows(service: ServiceStatusPayload): ServiceWorkRow[] {
 function isSetupLikeWorkRow(row: ServiceWorkRow) {
   const text = workRowSearchText(row);
   return /preflight|dependenc|configured table|config contract|startup check|schema check|credential|auth|artifact storage/.test(text);
+}
+
+function isPreflightSetupRow(row: ServiceWorkRow) {
+  const text = workRowSearchText(row);
+  return /preflight|dependenc|clickhouse|artifact|provider|credential|auth|storage|market status|calendar|health/.test(text);
 }
 
 function serviceWorkGroups(service: ServiceStatusPayload): ServiceWorkGroup[] {
