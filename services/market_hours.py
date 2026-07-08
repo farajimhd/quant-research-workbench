@@ -174,7 +174,7 @@ class MassiveMarketHoursClient:
             return MarketHoursSnapshot(
                 active_collection_window=False,
                 session="closed",
-                source="massive_status_holidays",
+                source="massive_market_calendar",
                 reason="market_holiday_closed",
                 checked_at_utc=status.fetched_at_utc,
                 local_time_et=local.isoformat(timespec="seconds"),
@@ -194,7 +194,7 @@ class MassiveMarketHoursClient:
                 return MarketHoursSnapshot(
                     active_collection_window=False,
                     session="closed",
-                    source="massive_status_holidays",
+                    source="massive_market_calendar",
                     reason="market_holiday_early_close_elapsed",
                     checked_at_utc=status.fetched_at_utc,
                     local_time_et=local.isoformat(timespec="seconds"),
@@ -212,7 +212,7 @@ class MassiveMarketHoursClient:
         return MarketHoursSnapshot(
             active_collection_window=active,
             session=market_status_session(status),
-            source="massive_status_holidays" if holidays else "massive_status",
+            source="massive_market_calendar" if holidays else "massive_status",
             reason="massive_status_active" if active else "massive_status_closed",
             checked_at_utc=status.fetched_at_utc,
             local_time_et=local.isoformat(timespec="seconds"),
