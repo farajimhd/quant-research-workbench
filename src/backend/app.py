@@ -1298,6 +1298,47 @@ def service_database_table_state(service_id: str) -> dict[str, Any]:
     return payload
 
 
+def service_database_table_preview(service_id: str, database: str, table: str, limit: int = 20) -> dict[str, Any]:
+    target = service_database_table_target(service_id, database, table)
+    columns = clickhouse_table_columns([target])
+    time_column = table_time_column(columns.get((database, table), set()))
+    order_clause = f"\n        ORDER BY {quote_ident(time_column)} DESC" if time_column else ""
+    safe_limit = max(1, min(limit, 100))
+    query = f"""
+        SELECT *
+        FROM {quote_ident(database)}.{quote_ident(table)}
+        {order_clause}
+        LIMIT {safe_limit}
+        FORMAT JSONEachRow
+    """
+    rows: list[dict[str, Any]] = []
+    for line in clickhouse_status_query(query).splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        rows.append({key: preview_cell_value(value) for key, value in row.items()})
+    return {
+        "database": database,
+        "limit": safe_limit,
+        "order_by": time_column or "",
+        "rows": rows,
+        "table": table,
+    }
+
+
+def service_database_table_target(service_id: str, database: str, table: str) -> dict[str, str]:
+    for target in SERVICE_DATABASE_TABLES.get(service_id, []):
+        if target["database"] == database and target["table"] == table:
+            return target
+    raise HTTPException(status_code=404, detail="Table is not configured for this service")
+
+
+def preview_cell_value(value: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
 def clickhouse_table_stats(targets: list[dict[str, str]]) -> dict[tuple[str, str], dict[str, Any]]:
     pairs = ", ".join(f"({sql_string(target['database'])}, {sql_string(target['table'])})" for target in targets)
     if not pairs:
@@ -1551,6 +1592,11 @@ def services_status(include_recent: bool = False) -> dict[str, Any]:
 @app.get("/api/services/{service_id}/status")
 def service_status(service_id: str, include_recent: bool = True) -> dict[str, Any]:
     return service_status_payload(service_id, include_recent=include_recent)
+
+
+@app.get("/api/services/{service_id}/tables/{database}/{table}/preview")
+def service_table_preview(service_id: str, database: str, table: str, limit: int = 20) -> dict[str, Any]:
+    return service_database_table_preview(service_id, database, table, limit)
 
 
 @app.get("/api/config/defaults")

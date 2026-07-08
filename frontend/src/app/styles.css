@@ -950,7 +950,7 @@ button {
   border-collapse: collapse;
   font-size: 12px;
   line-height: 1.3;
-  min-width: 1460px;
+  min-width: 1520px;
   table-layout: fixed;
   width: 100%;
 }
@@ -963,6 +963,14 @@ button {
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.service-db-state-table tbody tr {
+  cursor: pointer;
+}
+
+.service-db-state-table tbody tr:hover {
+  background: color-mix(in oklab, var(--badge-info-bg) 28%, var(--surface));
 }
 
 .service-db-state-table th {
@@ -986,7 +994,7 @@ button {
 }
 
 .service-db-state-col-table {
-  width: 198px;
+  width: 260px;
 }
 
 .service-db-state-col-count {
@@ -1052,7 +1060,7 @@ button {
   font-weight: 720;
   letter-spacing: 0;
   line-height: 1.45;
-  max-width: 88px;
+  max-width: 92px;
   overflow: hidden;
   padding: 1px 5px;
   text-transform: none;
@@ -1088,11 +1096,76 @@ button {
   font-size: 11px;
   font-weight: 520;
   line-height: 1.45;
-  max-width: 112px;
+  max-width: 158px;
   overflow: hidden;
   padding: 1px 5px;
   text-overflow: ellipsis;
   vertical-align: middle;
+}
+
+.modal-panel.service-table-preview-modal-panel {
+  max-height: min(820px, calc(100vh - 56px));
+  max-width: min(1440px, calc(100vw - 56px));
+  width: min(1440px, calc(100vw - 56px));
+}
+
+.service-table-preview {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+}
+
+.service-table-preview-header {
+  align-items: start;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+
+.service-table-preview-kicker {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.service-table-preview h3 {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.service-table-preview p {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  margin: 3px 0 0;
+}
+
+.service-table-preview-loading {
+  background: var(--badge-info-bg);
+  border: 1px solid var(--badge-info-border);
+  border-radius: 999px;
+  color: var(--badge-info-fg);
+  font-size: 11px;
+  font-weight: 650;
+  padding: 3px 8px;
+}
+
+.service-table-preview-error {
+  background: var(--badge-danger-bg);
+  border: 1px solid var(--badge-danger-border);
+  border-radius: 8px;
+  color: var(--badge-danger-fg);
+  font-size: 12px;
+  line-height: 1.35;
+  padding: 9px 11px;
 }
 
 .service-db-dot {
