@@ -38,15 +38,19 @@ MODEL_PRESETS: dict[str, dict[str, int]] = {
     "tiny": {"d-model": 128, "event-layers": 2, "event-heads": 4, "fusion-layers": 2, "fusion-heads": 4},
     "small": {"d-model": 256, "event-layers": 4, "event-heads": 8, "fusion-layers": 3, "fusion-heads": 8},
     "medium": {"d-model": 384, "event-layers": 6, "event-heads": 8, "fusion-layers": 4, "fusion-heads": 8},
+    "large": {"d-model": 512, "event-layers": 8, "event-heads": 8, "fusion-layers": 6, "fusion-heads": 8},
 }
+
+DEFAULT_MODEL_BATCH_GRID = "tiny:256,512,768;small:128,256,384;medium:64,128,256;large:32,64,128"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run temporal v3 training-profile sweeps across model and batch sizes.")
     parser.add_argument("--output-root", default=str(DEFAULT_SWEEP["output-root"]))
     parser.add_argument("--cache-root", default=str(DEFAULT_SWEEP["cache-root"]))
-    parser.add_argument("--models", default="tiny,small", help=f"Comma-separated presets from {','.join(MODEL_PRESETS)}.")
+    parser.add_argument("--models", default="", help=f"Comma-separated presets from {','.join(MODEL_PRESETS)}. Used only when --model-batch-grid is empty.")
     parser.add_argument("--batch-sizes", default="64,128,256")
+    parser.add_argument("--model-batch-grid", default=DEFAULT_MODEL_BATCH_GRID, help="Semicolon-separated preset:batch,batch grid. Example: tiny:256,512;small:128,256. Empty falls back to --models and --batch-sizes.")
     parser.add_argument("--batches", type=int, default=int(DEFAULT_SWEEP["batches"]))
     parser.add_argument("--warmup-batches", type=int, default=int(DEFAULT_SWEEP["warmup-batches"]))
     parser.add_argument("--max-runs", type=int, default=0)
@@ -66,11 +70,12 @@ def main() -> int:
     overrides = list(args.overrides)
     if overrides and overrides[0] == "--":
         overrides = overrides[1:]
-    for model_name in _split_csv(args.models):
+    grid = _model_batch_grid(str(args.model_batch_grid), fallback_models=str(args.models), fallback_batch_sizes=str(args.batch_sizes))
+    for model_name, batch_sizes in grid:
         preset = MODEL_PRESETS.get(model_name)
         if preset is None:
             raise SystemExit(f"Unknown model preset {model_name!r}; choose from {sorted(MODEL_PRESETS)}")
-        for batch_size in [int(value) for value in _split_csv(args.batch_sizes)]:
+        for batch_size in batch_sizes:
             run_index += 1
             if args.max_runs and run_index > int(args.max_runs):
                 break
@@ -194,6 +199,27 @@ def _write_outputs(root: Path, rows: list[dict[str, Any]]) -> None:
 
 def _split_csv(value: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in str(value or "").split(",") if part.strip())
+
+
+def _model_batch_grid(value: str, *, fallback_models: str, fallback_batch_sizes: str) -> list[tuple[str, list[int]]]:
+    text = str(value or "").strip()
+    if not text:
+        return [(model, [int(size) for size in _split_csv(fallback_batch_sizes)]) for model in _split_csv(fallback_models or "tiny,small")]
+    grid: list[tuple[str, list[int]]] = []
+    for chunk in text.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if ":" not in chunk:
+            raise SystemExit(f"Invalid --model-batch-grid item {chunk!r}; expected preset:batch,batch")
+        model_name, sizes_text = chunk.split(":", 1)
+        sizes = [int(size) for size in _split_csv(sizes_text)]
+        if not sizes:
+            raise SystemExit(f"Invalid --model-batch-grid item {chunk!r}; no batch sizes.")
+        grid.append((model_name.strip(), sizes))
+    if not grid:
+        raise SystemExit("--model-batch-grid resolved to an empty grid.")
+    return grid
 
 
 if __name__ == "__main__":

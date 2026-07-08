@@ -8,7 +8,7 @@ import random
 import secrets
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -293,6 +293,7 @@ class DailyIndexLoaderConfig:
     scanner_horizons: tuple[str, ...] = DEFAULT_SCANNER_HORIZONS
     scanner_top_k: int = 5
     scanner_required: bool = False
+    scanner_index_cache_entries: int = 8
     days: tuple[str, ...] = ()
 
 
@@ -323,6 +324,7 @@ class LoadedDailyIndexPart:
     windows: Any | None = None
     labels: Any | None = None
     context: dict[str, Any] = field(default_factory=dict)
+    context_paths: dict[str, Path] = field(default_factory=dict)
     _event_arrays: dict[str, np.ndarray] = field(default_factory=dict, init=False, repr=False)
     _event_matrices: dict[tuple[str, ...], np.ndarray] = field(default_factory=dict, init=False, repr=False)
     _origin_arrays: dict[str, np.ndarray] = field(default_factory=dict, init=False, repr=False)
@@ -769,6 +771,7 @@ class DailyIndexPartReader:
                 if cache_key not in self._global_context_cache:
                     self._global_context_cache[cache_key] = pl.read_parquet(scanner_path) if scanner_path.exists() else pl.DataFrame()
                 loaded.context["scanner_context"] = self._global_context_cache[cache_key]
+                loaded.context_paths["scanner_context"] = scanner_path
             if "xbrl" in self.data_groups:
                 global_path = _month_global_dir(plan.package_dir) / "category_references.parquet"
                 cache_key = (global_path, "category_references")
@@ -779,6 +782,9 @@ class DailyIndexPartReader:
 
 
 class DailyIndexBatchMaterializer:
+    _shared_scanner_artifact_index_cache: OrderedDict[str, ScannerArtifactIndex] = OrderedDict()
+    _shared_scanner_artifact_index_lock = threading.Lock()
+
     def __init__(self, config: DailyIndexLoaderConfig) -> None:
         self.config = normalize_loader_config(config)
         self.context_lags = tuple(index * int(self.config.context_stride_events) for index in range(int(self.config.context_chunks)))
@@ -789,7 +795,7 @@ class DailyIndexBatchMaterializer:
         self._label_index_lock = threading.Lock()
         self._intraday_compact_label_cache: dict[int, IntradayCompactLabelIndex] = {}
         self._intraday_compact_label_lock = threading.Lock()
-        self._scanner_artifact_index_cache: dict[int, ScannerArtifactIndex] = {}
+        self._scanner_artifact_index_cache: OrderedDict[str, ScannerArtifactIndex] = OrderedDict()
         self._scanner_artifact_index_lock = threading.Lock()
         self._bar_index_cache: dict[int, DailyBarContextIndex] = {}
         self._bar_index_lock = threading.Lock()
@@ -1831,25 +1837,35 @@ class DailyIndexBatchMaterializer:
         payload = _empty_scanner_payload(len(refs), self.config)
         if "scanner_context" not in self.config.data_groups or not refs:
             return payload, {"scanner_zero_fallback": int(1)}
-        frame = None
-        for part in parts:
+        indexes_by_part: dict[int, ScannerArtifactIndex] = {}
+        rows_by_part = _rows_by_part(refs)
+        artifact_rows = 0
+        missing_dates: set[str] = set()
+        index_start = time.perf_counter()
+        for part_index, part in enumerate(parts):
             candidate = part.context.get("scanner_context")
-            if candidate is not None and int(getattr(candidate, "height", 0) or 0) > 0:
-                frame = candidate
-                break
-        if frame is None:
+            if candidate is None or int(getattr(candidate, "height", 0) or 0) <= 0:
+                if int(part_index) in rows_by_part:
+                    missing_dates.add(str(part.plan.source_date))
+                continue
+            path = part.context_paths.get("scanner_context")
+            index = self._scanner_artifact_index(candidate, cache_key=str(path.resolve()) if path else f"frame:{id(candidate)}")
+            indexes_by_part[id(part)] = index
+            artifact_rows = max(artifact_rows, int(index.bucket.shape[0]))
+        index_seconds = time.perf_counter() - index_start
+        if not indexes_by_part:
             if self.config.scanner_required:
                 dates = sorted({str(part.plan.source_date) for part in parts})
                 raise RuntimeError(f"scanner_required=True but no scanner artifact was loaded for dates {dates}.")
             return payload, {"scanner_zero_fallback": int(1), "scanner_artifact_rows": int(0)}
-        index_start = time.perf_counter()
-        index = self._scanner_artifact_index(frame)
         profile: dict[str, float | int] = {
-            "scanner_index_seconds": time.perf_counter() - index_start,
-            "scanner_artifact_rows": int(index.bucket.shape[0]),
+            "scanner_index_seconds": float(index_seconds),
+            "scanner_artifact_rows": int(artifact_rows),
             "scanner_zero_fallback": int(0),
+            "scanner_index_cache_entries": int(len(indexes_by_part)),
+            "scanner_missing_artifact_dates": int(len(missing_dates)),
         }
-        if index.bucket.shape[0] <= 0:
+        if artifact_rows <= 0:
             return payload, profile
         gather_start = time.perf_counter()
         group_names = tuple(str(group) for group in self.config.scanner_groups)
@@ -1859,6 +1875,9 @@ class DailyIndexBatchMaterializer:
         available = 0
         for output_row, ref in enumerate(refs):
             part = parts[int(ref.part_index)]
+            index = indexes_by_part.get(id(part))
+            if index is None or index.bucket.shape[0] <= 0:
+                continue
             origin_row = int(ref.origin_row)
             origin_date = str(part.origins.get_column("origin_local_date")[origin_row])[:10] if part.origins is not None and "origin_local_date" in part.origins.columns else str(part.plan.source_date)[:10]
             origin_session_us = int(part.origin_array("origin_local_session_us")[origin_row]) if part.origins is not None and "origin_local_session_us" in part.origins.columns else 0
@@ -1911,15 +1930,45 @@ class DailyIndexBatchMaterializer:
         profile["scanner_group_hits"] = int(available)
         return payload, profile
 
-    def _scanner_artifact_index(self, frame: Any) -> ScannerArtifactIndex:
-        key = id(frame)
+    def _scanner_artifact_index(self, frame: Any, *, cache_key: str | None = None) -> ScannerArtifactIndex:
+        key = str(cache_key or f"frame:{id(frame)}")
+        cache_limit = max(0, int(self.config.scanner_index_cache_entries))
         with self._scanner_artifact_index_lock:
             cached = self._scanner_artifact_index_cache.get(key)
             if cached is not None:
+                self._scanner_artifact_index_cache.move_to_end(key)
                 return cached
+        if cache_key and cache_limit > 0:
+            with self._shared_scanner_artifact_index_lock:
+                cached = self._shared_scanner_artifact_index_cache.get(key)
+                if cached is not None:
+                    self._shared_scanner_artifact_index_cache.move_to_end(key)
+                    self._remember_scanner_artifact_index(key, cached, cache_limit)
+                    return cached
+                index = self._build_scanner_artifact_index(frame)
+                self._shared_scanner_artifact_index_cache[key] = index
+                self._shared_scanner_artifact_index_cache.move_to_end(key)
+                while len(self._shared_scanner_artifact_index_cache) > cache_limit:
+                    self._shared_scanner_artifact_index_cache.popitem(last=False)
+                self._remember_scanner_artifact_index(key, index, cache_limit)
+                return index
+        index = self._build_scanner_artifact_index(frame)
+        self._remember_scanner_artifact_index(key, index, cache_limit)
+        return index
+
+    def _remember_scanner_artifact_index(self, key: str, index: ScannerArtifactIndex, cache_limit: int) -> None:
+        if cache_limit <= 0:
+            return
+        with self._scanner_artifact_index_lock:
+            self._scanner_artifact_index_cache[key] = index
+            self._scanner_artifact_index_cache.move_to_end(key)
+            while len(self._scanner_artifact_index_cache) > cache_limit:
+                self._scanner_artifact_index_cache.popitem(last=False)
+
+    def _build_scanner_artifact_index(self, frame: Any) -> ScannerArtifactIndex:
         pl = _polars()
         if int(getattr(frame, "height", 0) or 0) <= 0:
-            index = ScannerArtifactIndex(
+            return ScannerArtifactIndex(
                 source_date=np.asarray([], dtype=object),
                 bucket=np.zeros((0,), dtype=np.int64),
                 ticker=np.asarray([], dtype=object),
@@ -1929,9 +1978,6 @@ class DailyIndexBatchMaterializer:
                 leaders_by_key={},
                 columns={},
             )
-            with self._scanner_artifact_index_lock:
-                self._scanner_artifact_index_cache[key] = index
-            return index
         source_date = np.asarray(frame.get_column("source_date").to_numpy(), dtype=object)
         source_date = np.asarray([str(value)[:10] for value in source_date], dtype=object)
         bucket = frame.get_column("scanner_bucket").to_numpy().astype(np.int64, copy=False)
@@ -1957,7 +2003,7 @@ class DailyIndexBatchMaterializer:
             for part_key, group in ranked.partition_by(["source_date", "scanner_bucket"], as_dict=True, maintain_order=True).items():
                 date_value, bucket_value = part_key
                 leaders_by_key[(str(date_value)[:10], int(bucket_value), str(group_name))] = group.get_column("_artifact_row").to_numpy().astype(np.int64, copy=False)
-        index = ScannerArtifactIndex(
+        return ScannerArtifactIndex(
             source_date=source_date,
             bucket=bucket,
             ticker=ticker,
@@ -1967,9 +2013,6 @@ class DailyIndexBatchMaterializer:
             leaders_by_key=leaders_by_key,
             columns=columns,
         )
-        with self._scanner_artifact_index_lock:
-            self._scanner_artifact_index_cache[key] = index
-        return index
 
     def _daily_bar_context_index(self, frame: Any) -> DailyBarContextIndex:
         key = id(frame)
@@ -2602,6 +2645,7 @@ def normalize_loader_config(config: DailyIndexLoaderConfig) -> DailyIndexLoaderC
         scanner_horizons=tuple(str(horizon) for horizon in config.scanner_horizons),
         scanner_top_k=max(1, int(config.scanner_top_k)),
         scanner_required=bool(config.scanner_required),
+        scanner_index_cache_entries=max(0, int(config.scanner_index_cache_entries)),
         days=tuple(str(day)[:10] for day in config.days if str(day).strip()),
     )
 

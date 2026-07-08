@@ -164,10 +164,25 @@ Default workstation sweep:
 python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_sweep_training_profile.py
 ```
 
+The default sweep uses a per-model batch grid instead of one shared batch list:
+
+```text
+tiny:   256,512,768
+small:  128,256,384
+medium: 64,128,256
+large:  32,64,128
+```
+
 Useful shorter smoke:
 
 ```powershell
-python research\temporal_event_model\v3\run_sweep_training_profile.py --models tiny --batch-sizes 64,128 --max-runs 2
+python research\temporal_event_model\v3\run_sweep_training_profile.py --model-batch-grid "tiny:64,128" --max-runs 2
+```
+
+To override the full grid:
+
+```powershell
+python research\temporal_event_model\v3\run_sweep_training_profile.py --model-batch-grid "tiny:512,1024;medium:128,256"
 ```
 
 The sweep writes `sweep_results.csv` and `sweep_results.jsonl` under its sweep
@@ -243,7 +258,10 @@ Labels are grouped by task:
   scanner leaders and origin-ticker comparison bars for `top_gainers`,
   large/mid/small/penny-volume groups across `1s`, `5s`, `30s`, and `1m`
   scanner horizons. These tensors are read from scanner artifacts built after
-  the main daily-index cache.
+  the main daily-index cache. Scanner artifact indexes are shared across async
+  materializer workers and bounded to 8 cached day artifacts by default, so the
+  loader does not rebuild the same day index for every batch and does not retain
+  an unbounded scanner history during long chronological training.
 - `bar_inputs["ticker_intraday_bars"]`: backward same-session intraday context
   bars for `trade`, `quote_bid`, and `quote_ask`, aligned to the same horizon
   list as intraday labels but clipped backward to the session start.
