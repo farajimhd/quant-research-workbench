@@ -386,9 +386,9 @@ function ServiceDatabaseTableState({ service }: { service: ServiceStatusPayload 
                 <td title={row.latest_update || ""}>{shortTableTimestamp(row.latest_update)}</td>
                 <td className="service-db-total-cell">{row.rows || "-"}</td>
                 <td className="service-db-today-cell">{row.rows_today || "-"}</td>
-                <td>{row.rows_last_week || "-"}</td>
-                <td>{row.rows_last_month || "-"}</td>
-                {years.map((year) => <td key={year}>{row[`rows_${year}`] || "-"}</td>)}
+                <td className="service-db-muted-count-cell">{row.rows_last_week || "-"}</td>
+                <td className="service-db-muted-count-cell">{row.rows_last_month || "-"}</td>
+                {years.map((year) => <td className="service-db-muted-count-cell" key={year}>{row[`rows_${year}`] || "-"}</td>)}
               </tr>
             ))}
           </tbody>

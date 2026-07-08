@@ -1182,25 +1182,35 @@ button {
 }
 
 .service-db-total-cell,
-.service-db-today-cell {
+.service-db-today-cell,
+.service-db-muted-count-cell {
   font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
 }
 
 .service-db-total-cell {
   color: var(--foreground);
+  font-size: 11.5px;
   font-weight: 680;
 }
 
 .service-db-today-cell {
-  color: var(--badge-info-fg);
+  border-left: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+  color: var(--badge-success-fg);
+  font-size: 11.5px;
   font-weight: 760;
+  padding-left: 14px !important;
+}
+
+.service-db-muted-count-cell {
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  font-weight: 430;
 }
 
 .service-db-today-cell::before {
-  background: var(--badge-info-bg);
-  border: 1px solid var(--badge-info-border);
+  background: var(--badge-success-fg);
+  border: 1px solid var(--badge-success-border);
   border-radius: 999px;
   content: "";
   display: inline-block;
