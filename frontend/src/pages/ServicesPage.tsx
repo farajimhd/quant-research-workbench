@@ -90,6 +90,7 @@ const SERVICE_IDS: ServiceId[] = ["qmd", "news", "sec", "text-embed", "reference
 export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNavigate: (mode: ServicePageMode) => void }) {
   const [payload, setPayload] = useState<ServicesStatusPayload | null>(null);
   const [selectedPayload, setSelectedPayload] = useState<ServiceStatusPayload | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [now, setNow] = useState(() => new Date());
@@ -126,10 +127,12 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
   useEffect(() => {
     if (!serviceId) {
       setSelectedPayload(null);
+      setDetailLoading(false);
       return;
     }
     let cancelled = false;
-    async function loadDetail() {
+    async function loadDetail(showLoading = false) {
+      if (showLoading) setDetailLoading(true);
       try {
         const next = await api<ServiceStatusPayload>(`/api/services/${serviceId}/status`);
         if (!cancelled) setSelectedPayload(next);
@@ -138,18 +141,21 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
           const fallback = payload?.services.find((service) => service.registry.id === serviceId) ?? null;
           setSelectedPayload(fallback ? { ...fallback, errors: { ...fallback.errors, detail: exc instanceof Error ? exc.message : String(exc) } } : null);
         }
+      } finally {
+        if (!cancelled && showLoading) setDetailLoading(false);
       }
     }
-    void loadDetail();
-    const timer = window.setInterval(loadDetail, 5000);
+    void loadDetail(true);
+    const timer = window.setInterval(() => void loadDetail(false), 5000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [payload, serviceId]);
+  }, [serviceId]);
 
   const services = useMemo(() => sortServices(payload?.services ?? []), [payload]);
-  const selected = serviceId ? selectedPayload ?? services.find((service) => service.registry.id === serviceId) ?? null : null;
+  const selectedPayloadForMode = selectedPayload?.registry.id === serviceId ? selectedPayload : null;
+  const selected = serviceId ? selectedPayloadForMode ?? services.find((service) => service.registry.id === serviceId) ?? null : null;
 
   return (
     <div className="services-page">
@@ -166,7 +172,16 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
         <ServicesTopSummary now={now} services={services} />
       </section>
       {loading && !payload ? <div className="services-loading"><Loader2 size={18} /> Loading service status.</div> : null}
-      {selected ? <ServiceDetail pageError={error} service={selected} /> : <ServicesDashboard services={services} onNavigate={onNavigate} />}
+      {selected ? (
+        <div className={`service-detail-shell ${detailLoading ? "is-loading" : ""}`}>
+          <ServiceDetail pageError={error} service={selected} />
+          {detailLoading ? <div className="service-detail-loading"><Loader2 size={20} /> Loading {selected.registry.label}</div> : null}
+        </div>
+      ) : serviceId && detailLoading ? (
+        <div className="services-loading"><Loader2 size={18} /> Loading service detail.</div>
+      ) : (
+        <ServicesDashboard services={services} onNavigate={onNavigate} />
+      )}
     </div>
   );
 }

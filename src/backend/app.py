@@ -1027,10 +1027,13 @@ def service_runtime_logs(*payloads: Any, service_id: str = "", limit: int = SERV
     if not log_path:
         return {"path": "", "rows": [], "error": ""}
     path = Path(log_path)
-    if not path.exists():
-        return {"path": str(path), "rows": [], "error": "log file not found"}
-    if not path.is_file():
-        return {"path": str(path), "rows": [], "error": "log path is not a file"}
+    try:
+        if not path.exists():
+            return {"path": str(path), "rows": [], "error": "log file not found"}
+        if not path.is_file():
+            return {"path": str(path), "rows": [], "error": "log path is not a file"}
+    except OSError as exc:
+        return {"path": str(path), "rows": [], "error": f"{type(exc).__name__}: {exc}"}
     rows: deque[dict[str, Any]] = deque(maxlen=max(1, min(limit, 500)))
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
@@ -1059,7 +1062,10 @@ def service_runtime_logs(*payloads: Any, service_id: str = "", limit: int = SERV
 def latest_service_log_path(service_id: str) -> str:
     candidates: list[Path] = []
     for root in service_log_roots(service_id):
-        if not root.exists() or not root.is_dir():
+        try:
+            if not root.exists() or not root.is_dir():
+                continue
+        except OSError:
             continue
         for pattern in ("*.jsonl", "*.log"):
             try:
@@ -1513,7 +1519,7 @@ def format_bytes(value: int) -> str:
     return f"{value} B"
 
 
-def service_status_payload(service_id: str, *, include_recent: bool = True) -> dict[str, Any]:
+def service_status_payload(service_id: str, *, include_database_tables: bool = True, include_recent: bool = True) -> dict[str, Any]:
     service = SERVICE_REGISTRY.get(service_id)
     if service is None:
         raise HTTPException(status_code=404, detail="Unknown service")
@@ -1546,7 +1552,7 @@ def service_status_payload(service_id: str, *, include_recent: bool = True) -> d
     elif not online:
         status = "NOT_STARTED"
     runtime_logs = service_runtime_logs(normalized_snapshot, metrics, recent_payload, health_payload, service_id=service_id)
-    database_tables = service_database_table_state(service_id)
+    database_tables = service_database_table_state(service_id) if include_database_tables else {"rows": [], "error": ""}
     return {
         "registry": {
             "id": service["id"],
@@ -1581,8 +1587,11 @@ def health() -> dict[str, Any]:
 
 
 @app.get("/api/services/status")
-def services_status(include_recent: bool = False) -> dict[str, Any]:
-    services = [service_status_payload(service_id, include_recent=include_recent) for service_id in SERVICE_REGISTRY]
+def services_status(include_recent: bool = False, include_database_tables: bool = False) -> dict[str, Any]:
+    services = [
+        service_status_payload(service_id, include_database_tables=include_database_tables, include_recent=include_recent)
+        for service_id in SERVICE_REGISTRY
+    ]
     return {
         "checked_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "services": services,
@@ -1590,8 +1599,8 @@ def services_status(include_recent: bool = False) -> dict[str, Any]:
 
 
 @app.get("/api/services/{service_id}/status")
-def service_status(service_id: str, include_recent: bool = True) -> dict[str, Any]:
-    return service_status_payload(service_id, include_recent=include_recent)
+def service_status(service_id: str, include_database_tables: bool = True, include_recent: bool = True) -> dict[str, Any]:
+    return service_status_payload(service_id, include_database_tables=include_database_tables, include_recent=include_recent)
 
 
 @app.get("/api/services/{service_id}/tables/{database}/{table}/preview")
