@@ -199,15 +199,17 @@ def resolve_data_root() -> Path:
     explicit = os.environ.get("NEWS_GATEWAY_DATA_ROOT_WIN", "").strip()
     if explicit:
         path = Path(explicit)
-        if path.exists():
+        if path_exists(path):
             return path
         raise RuntimeError(f"NEWS_GATEWAY_DATA_ROOT_WIN does not exist: {path}")
     if is_workstation_host():
-        if WORKSTATION_DATA_ROOT_WIN.exists():
+        if path_exists(WORKSTATION_DATA_ROOT_WIN):
             return WORKSTATION_DATA_ROOT_WIN
         raise RuntimeError("Workstation data root D:/market-data is not available. Create it or set NEWS_GATEWAY_DATA_ROOT_WIN.")
-    if WORKSTATION_SHARE_DATA_ROOT_WIN.exists():
+    if path_exists(WORKSTATION_SHARE_DATA_ROOT_WIN):
         return WORKSTATION_SHARE_DATA_ROOT_WIN
+    if path_exists(WORKSTATION_DATA_ROOT_WIN):
+        return WORKSTATION_DATA_ROOT_WIN
     raise RuntimeError(
         "Workstation market-data root is not available. Start the service on the workstation, "
         "mount \\\\DESKTOP-SAAI85T\\Workstation-D\\market-data, or set NEWS_GATEWAY_DATA_ROOT_WIN."
@@ -224,6 +226,13 @@ def parse_bind(value: str) -> tuple[str, int]:
         return text, 8796
     host, port_text = text.rsplit(":", 1)
     return host, int(port_text)
+
+
+def path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
 
 
 def env_string(name: str, default: str) -> str:

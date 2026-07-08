@@ -690,17 +690,23 @@ function collectErrorLogItems(pageError: string, service: ServiceStatusPayload) 
   }
 
   const errorState = isRecord(service.snapshot?.error_state) ? service.snapshot.error_state : {};
+  const hasCanonicalErrorState = Object.keys(errorState).length > 0;
   for (const record of errorRecordRows(errorState.latest_active_errors, "active")) items.push(record);
   for (const record of errorRecordRows(errorState.latest_resolved_errors, "resolved")) items.push(record);
 
+  const serviceSpecific = isRecord(service.snapshot?.service_specific) ? service.snapshot.service_specific : {};
+  const lastErrorStatus = String(serviceSpecific.last_error_status ?? service.metrics?.last_error_status ?? "").toLowerCase();
   const warningState = isRecord(service.snapshot?.warnings_errors) ? service.snapshot.warnings_errors : {};
   for (const [key, value] of Object.entries(warningState)) {
     if (isEmptyErrorValue(value)) continue;
-    items.push({ detail: formatValue(key, value), key, status: "active", title: displayName(key) });
+    const status = key === "last_error" && lastErrorStatus === "resolved" ? "resolved" : "active";
+    items.push({ detail: formatValue(key, value), key, status, title: displayName(key) });
   }
 
-  for (const row of errorLikePayloadRows(service.snapshot?.service_specific, "service_specific")) items.push(row);
-  for (const row of errorLikePayloadRows(service.metrics, "metrics")) items.push(row);
+  if (!hasCanonicalErrorState) {
+    for (const row of errorLikePayloadRows(service.snapshot?.service_specific, "service_specific")) items.push(row);
+    for (const row of errorLikePayloadRows(service.metrics, "metrics")) items.push(row);
+  }
 
   for (const row of nonZeroErrorCounters(errorState)) items.push(row);
   const deduped = sortLogItems(dedupeLogItems(items));
@@ -777,7 +783,8 @@ function errorLikePayloadRows(value: unknown, source: string): ServiceLogItem[] 
 function runtimeLogRows(logs: ServiceLogPayload | undefined): ServiceLogItem[] {
   if (!logs?.rows?.length) return [];
   return logs.rows.map((row) => {
-    const status = logLevelToStatus(row.level || row.event || row.title || "");
+    const severityStatus = logLevelToStatus(row.level || row.event || row.title || "");
+    const status = severityStatus === "resolved" ? "resolved" : "log";
     const event = row.event || row.level || "log";
     const ts = row.ts_utc ? formatLogTime(row.ts_utc) : "";
     const line = typeof row.line === "number" ? `line ${row.line}` : "";

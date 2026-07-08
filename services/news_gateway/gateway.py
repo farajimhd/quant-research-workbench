@@ -69,6 +69,9 @@ class GatewayMetrics:
     raw_saved: int = 0
     last_poll_at_utc: str = ""
     last_error: str = ""
+    last_error_status: str = ""
+    last_error_seen_at_utc: str = ""
+    last_error_resolved_at_utc: str = ""
     gap_status: str = "not_started"
     gap_message: str = ""
     manual_gap_fill_command: str = ""
@@ -325,7 +328,7 @@ class NewsGateway:
             )
         except PreflightError as exc:
             self._record_preflight_report(exc.report)
-            self.metrics.last_error = repr(exc)
+            self._record_error(exc)
             self.logger.exception("preflight_failed", exc, report=exc.report.public_dict())
             raise
         self._record_preflight_report(report)
@@ -344,6 +347,22 @@ class NewsGateway:
         self.metrics.current_phase_started_at_utc = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         self._log_event("phase_changed", phase=phase, message=message)
         self._print_status(f"news_gateway_phase={phase} message={message}")
+
+    def _record_error(self, exc: BaseException) -> None:
+        self._record_error_message(repr(exc))
+
+    def _record_error_message(self, message: str) -> None:
+        self.metrics.last_error = message
+        self.metrics.last_error_status = "active"
+        self.metrics.last_error_seen_at_utc = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        self.metrics.last_error_resolved_at_utc = ""
+
+    def _resolve_last_error(self, *, reason: str) -> None:
+        if not self.metrics.last_error or self.metrics.last_error_status == "resolved":
+            return
+        self.metrics.last_error_status = "resolved"
+        self.metrics.last_error_resolved_at_utc = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        self._log_event("last_error_resolved", reason=reason, last_error=self.metrics.last_error)
 
     async def _refresh_memory_metrics(self) -> None:
         stats = await self.state.stats()
@@ -580,10 +599,11 @@ class NewsGateway:
         if return_code == 0:
             self.metrics.gap_status = "auto_completed"
             self.metrics.gap_message = f"Workstation gap-fill script completed: {script_path}"
+            self._resolve_last_error(reason="workstation_gap_fill_completed")
         else:
             self.metrics.gap_status = "failed"
             self.metrics.gap_message = f"Workstation gap-fill script failed with exit code {return_code}: {script_path}"
-            self.metrics.last_error = self.metrics.gap_message
+            self._record_error_message(self.metrics.gap_message)
 
     async def _poll_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -660,7 +680,7 @@ class NewsGateway:
                     )
                 except Exception as exc:  # noqa: BLE001
                     failed += 1
-                    self.metrics.last_error = repr(exc)
+                    self._record_error(exc)
                     self.logger.exception(
                         "item_processing_failed",
                         exc,
@@ -696,6 +716,7 @@ class NewsGateway:
                         skipped_existing=0,
                     )
                     self._set_phase("polling", "No provider rows in the last poll; waiting for the next scheduled poll.")
+                    self._resolve_last_error(reason="poll_completed_no_provider_rows")
                 self.metrics.provider_rows += len(fetch_result.items)
                 self.metrics.processed_rows += len(processed)
                 self.metrics.failed_rows += failed
@@ -757,7 +778,7 @@ class NewsGateway:
             self.metrics.written_rows += write_summary.normalized_rows_inserted
             self.metrics.skipped_existing += write_summary.skipped_existing
             if fetch_result.saturated:
-                self.metrics.last_error = "Benzinga provider response saturated; coverage was not advanced for this window."
+                self._record_error_message("Benzinga provider response saturated; coverage was not advanced for this window.")
             self.metrics.last_cycle_status = "ok" if failed == 0 and not fetch_result.saturated else "completed_with_errors"
             self.metrics.last_cycle_provider_rows = len(fetch_result.items)
             self.metrics.last_cycle_processed_rows = len(processed)
@@ -802,6 +823,7 @@ class NewsGateway:
                     written_rows=write_summary.normalized_rows_inserted,
                     skipped_existing=write_summary.skipped_existing,
                 )
+                self._resolve_last_error(reason="poll_completed")
             return {
                 "status": self.metrics.last_cycle_status,
                 "start_utc": start_utc.isoformat().replace("+00:00", "Z"),
@@ -818,7 +840,7 @@ class NewsGateway:
             }
         except Exception as exc:  # noqa: BLE001
             self.metrics.poll_failures += 1
-            self.metrics.last_error = repr(exc)
+            self._record_error(exc)
             self.metrics.last_cycle_status = "failed"
             self.metrics.last_cycle_wall_seconds = time.perf_counter() - started
             self.logger.exception(
@@ -920,7 +942,7 @@ class NewsGateway:
                 raise
             except Exception as exc:  # noqa: BLE001
                 self.metrics.background_failed_batches += 1
-                self.metrics.last_error = repr(exc)
+                self._record_error(exc)
                 self.logger.exception("background_batch_failed_uncaught", exc, worker_index=worker_index)
             finally:
                 self._background_queue.task_done()
@@ -988,6 +1010,7 @@ class NewsGateway:
                     written_rows=write_summary.normalized_rows_inserted,
                     skipped_existing=write_summary.skipped_existing,
                 )
+                self._resolve_last_error(reason="background_batch_completed")
             self.metrics.background_last_message = (
                 f"Background batch {batch.poll_id} complete: "
                 f"articles={len(final_items):,}, inserted={write_summary.normalized_rows_inserted:,}, "
@@ -1217,7 +1240,7 @@ class NewsGateway:
                 f"Background news drain timed out with pending_batches={self._background_queue.qsize():,} "
                 f"active_batches={self.metrics.background_active_batches:,}; shutdown will cancel remaining workers."
             )
-            self.metrics.last_error = warning
+            self._record_error_message(warning)
             self.metrics.background_last_message = warning
             self._set_phase("shutdown_background_timeout", warning)
             self._log_event(
@@ -1261,7 +1284,7 @@ class NewsGateway:
                 f"Graceful worker wait timed out with {len(pending):,} task(s) still active; "
                 "pending database publish tasks will still be drained before shutdown completes."
             )
-            self.metrics.last_error = warning
+            self._record_error_message(warning)
             self._set_phase("shutdown_worker_wait_timeout", warning)
             self._log_event("shutdown_worker_wait_timeout", done=len(done), pending=len(pending), timeout_seconds=timeout)
             self._print_status(warning)
