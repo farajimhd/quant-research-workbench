@@ -3,6 +3,7 @@
 import datetime as dt
 import hashlib
 import json
+import math
 import random
 import secrets
 import threading
@@ -739,7 +740,14 @@ class DailyIndexPartReader:
             loaded.context["intraday_bars"] = pl.read_parquet(_plan_file_path(plan, plan.files["intraday_context_bars"]))
         if need_corporate_labels and "corporate_action_daily_labels" in plan.files:
             loaded.context["corporate_action_daily_labels"] = pl.read_parquet(_plan_file_path(plan, plan.files["corporate_action_daily_labels"]))
-        if self.include_external_context or bool(TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS).union(INTRADAY_BAR_CONTEXT_GROUPS).union(XBRL_CONTEXT_GROUPS).union(CORPORATE_ACTION_CONTEXT_GROUPS).intersection(self.data_groups)):
+        if self.include_external_context or bool(
+            TEXT_CONTEXT_GROUPS.union(BAR_CONTEXT_GROUPS)
+            .union(INTRADAY_BAR_CONTEXT_GROUPS)
+            .union(XBRL_CONTEXT_GROUPS)
+            .union(CORPORATE_ACTION_CONTEXT_GROUPS)
+            .union(SCANNER_CONTEXT_GROUPS)
+            .intersection(self.data_groups)
+        ):
             for key, filename in _package_context_files(plan.package_dir).items():
                 if key in self.data_groups:
                     loaded.context[key] = pl.read_parquet(_plan_file_path(plan, filename))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -67,38 +68,65 @@ class TemporalEventModelV3(nn.Module):
         self.apply(_init_weights)
 
     def forward(self, x: Mapping[str, Any]) -> TemporalModelOutput:
-        event_token = self.event_encoder(x)
+        return self._forward_impl(x)[0]
+
+    def forward_with_timings(self, x: Mapping[str, Any], *, sync_cuda: bool = False) -> tuple[TemporalModelOutput, dict[str, float]]:
+        return self._forward_impl(x, profile=True, sync_cuda=bool(sync_cuda))
+
+    def _forward_impl(self, x: Mapping[str, Any], *, profile: bool = False, sync_cuda: bool = False) -> tuple[TemporalModelOutput, dict[str, float]]:
+        timings: dict[str, float] = {}
+
+        def timed(name: str, fn: Any) -> Any:
+            if not profile:
+                return fn()
+            if sync_cuda and torch.cuda.is_available():
+                torch.cuda.synchronize()
+            started = time.perf_counter()
+            value = fn()
+            if sync_cuda and torch.cuda.is_available():
+                torch.cuda.synchronize()
+            timings[name] = time.perf_counter() - started
+            return value
+
+        event_token = timed("event_encoder", lambda: self.event_encoder(x))
         batch_size = int(event_token.shape[0])
         device = event_token.device
         tokens = [
             event_token,
-            self.intraday_bar_encoder(x.get("bar_inputs", {}).get("ticker_intraday_bars", {})),
-            self.ticker_bar_encoder(x.get("bar_inputs", {}).get("ticker_daily_bars", {})),
-            self.global_bar_encoder(x.get("bar_inputs", {}).get("global_daily_bars", {})),
-            self.text_encoder(x.get("text_inputs", {}).get("ticker_news", {}), group="ticker_news"),
-            self.text_encoder(x.get("text_inputs", {}).get("market_news", {}), group="market_news"),
-            self.text_encoder(x.get("text_inputs", {}).get("sec_filings", {}), group="sec_filings"),
-            self.xbrl_encoder(x.get("xbrl_inputs", {})),
-            self.corporate_action_encoder(x.get("corporate_action_inputs", {})),
-            self.scanner_encoder(x.get("scanner_inputs", {})),
+            timed("intraday_bar_encoder", lambda: self.intraday_bar_encoder(x.get("bar_inputs", {}).get("ticker_intraday_bars", {}))),
+            timed("ticker_daily_bar_encoder", lambda: self.ticker_bar_encoder(x.get("bar_inputs", {}).get("ticker_daily_bars", {}))),
+            timed("global_daily_bar_encoder", lambda: self.global_bar_encoder(x.get("bar_inputs", {}).get("global_daily_bars", {}))),
+            timed("ticker_news_encoder", lambda: self.text_encoder(x.get("text_inputs", {}).get("ticker_news", {}), group="ticker_news")),
+            timed("market_news_encoder", lambda: self.text_encoder(x.get("text_inputs", {}).get("market_news", {}), group="market_news")),
+            timed("sec_filing_encoder", lambda: self.text_encoder(x.get("text_inputs", {}).get("sec_filings", {}), group="sec_filings")),
+            timed("xbrl_encoder", lambda: self.xbrl_encoder(x.get("xbrl_inputs", {}))),
+            timed("corporate_action_encoder", lambda: self.corporate_action_encoder(x.get("corporate_action_inputs", {}))),
+            timed("scanner_encoder", lambda: self.scanner_encoder(x.get("scanner_inputs", {}))),
         ]
-        tokens = [_align_token(token, batch_size=batch_size, device=device) for token in tokens]
-        modality_tokens = torch.stack(tokens, dim=1)
-        modality_tokens = modality_tokens + self.modality_embedding[: modality_tokens.shape[1]].unsqueeze(0)
-        fused = self.fusion_norm(self.fusion(modality_tokens))
-        pooled = fused.mean(dim=1)
-        intraday = self.intraday_query_mlp(pooled[:, None, :] + self.intraday_queries[None, :, :])
-        daily = self.daily_query_mlp(pooled[:, None, :] + self.daily_queries[None, :, :])
-        future_bar_values = {family: head(intraday) for family, head in self.future_bar_heads.items()}
-        intraday_logits = {name: head(intraday).squeeze(-1) for name, head in self.intraday_heads.items()}
-        corporate_logits = {name: head(daily).squeeze(-1) for name, head in self.corporate_action_heads.items()}
-        return TemporalModelOutput(
+        def fuse() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            aligned = [_align_token(token, batch_size=batch_size, device=device) for token in tokens]
+            modality = torch.stack(aligned, dim=1)
+            modality = modality + self.modality_embedding[: modality.shape[1]].unsqueeze(0)
+            fused_tokens = self.fusion_norm(self.fusion(modality))
+            pooled_tokens = fused_tokens.mean(dim=1)
+            return modality, fused_tokens, pooled_tokens, pooled_tokens
+
+        modality_tokens, fused, pooled, _ = timed("fusion", fuse)
+        intraday = timed("intraday_query", lambda: self.intraday_query_mlp(pooled[:, None, :] + self.intraday_queries[None, :, :]))
+        daily = timed("daily_query", lambda: self.daily_query_mlp(pooled[:, None, :] + self.daily_queries[None, :, :]))
+        future_bar_values = timed("future_bar_heads", lambda: {family: head(intraday) for family, head in self.future_bar_heads.items()})
+        intraday_logits = timed("intraday_classification_heads", lambda: {name: head(intraday).squeeze(-1) for name, head in self.intraday_heads.items()})
+        corporate_logits = timed("corporate_action_heads", lambda: {name: head(daily).squeeze(-1) for name, head in self.corporate_action_heads.items()})
+        output = TemporalModelOutput(
             future_bar_values=future_bar_values,
             intraday_logits=intraday_logits,
             corporate_action_logits=corporate_logits,
             modality_tokens=modality_tokens,
             fused_tokens=fused,
         )
+        if profile:
+            timings["total_forward"] = sum(float(value) for value in timings.values())
+        return output, timings
 
     @torch.inference_mode()
     def encode_events(self, x: Mapping[str, Any]) -> torch.Tensor:

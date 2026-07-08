@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from research.temporal_event_model.v3.config import BAR_FAMILIES, CORPORATE_ACTION_FLAGS, EXTERNAL_ARRIVAL_FLAGS, INTRADAY_EVENT_FLAGS
-from research.temporal_event_model.v3.losses import _origin_prices
+from research.temporal_event_model.v3.losses import _column, _decode_price, _origin_prices
 from research.temporal_event_model.v3.model import TemporalModelOutput
 
 
@@ -107,6 +107,110 @@ def prediction_metrics(batch: Any, output: TemporalModelOutput, *, prefix: str =
             metrics[f"{prefix}/{name}_bce"] = float(F.binary_cross_entropy_with_logits(pred, target).cpu())
             metrics[f"{prefix}/{name}_positive_rate"] = float(target.float().mean().cpu())
     return metrics
+
+
+@torch.no_grad()
+def cohort_metrics(batch: Any, output: TemporalModelOutput, *, prefix: str = "train", min_count: int = 32) -> dict[str, float]:
+    cohorts = batch_cohort_flags(batch)
+    if not cohorts:
+        return {}
+    metrics: dict[str, float] = {}
+    for name, mask in cohorts.items():
+        if not torch.is_tensor(mask):
+            continue
+        mask = mask.bool()
+        count_true = int(mask.sum().detach().cpu())
+        count_false = int((~mask).sum().detach().cpu())
+        metrics[f"{prefix}/cohort/{name}/true_count"] = float(count_true)
+        metrics[f"{prefix}/cohort/{name}/false_count"] = float(count_false)
+        if count_true >= int(min_count):
+            metrics.update(_cohort_prediction_metrics(batch, output, prefix=prefix, cohort_name=name, cohort_mask=mask, suffix="true"))
+        if count_false >= int(min_count):
+            metrics.update(_cohort_prediction_metrics(batch, output, prefix=prefix, cohort_name=name, cohort_mask=~mask, suffix="false"))
+    return metrics
+
+
+@torch.no_grad()
+def batch_cohort_flags(batch: Any) -> dict[str, torch.Tensor]:
+    x = batch.x
+    events = x.get("raw_event_stream")
+    if not torch.is_tensor(events):
+        return {}
+    device = events.device
+    names = tuple(str(v) for v in x.get("event_feature_names", ()))
+    mask = x.get("raw_event_mask")
+    if not torch.is_tensor(mask):
+        mask = torch.ones(events.shape[:2], dtype=torch.bool, device=device)
+    event_count = mask.sum(dim=1)
+    last = _last_event_rows(events, mask)
+    primary = _column(last, names, "price_primary_int", 1).float()
+    secondary = _column(last, names, "price_secondary_int", 2).float()
+    meta = _column(last, names, "event_meta", 0).long()
+    primary = _decode_price(primary, ((meta >> 1) & 1))
+    secondary = _decode_price(secondary, ((meta >> 2) & 1))
+    mid = ((primary + secondary) * 0.5).clamp(min=1e-6)
+    spread_bps = ((primary - secondary).abs() / mid) * 10_000.0
+    size_primary = _column(last, names, "size_primary", 3).float()
+    size_secondary = _column(last, names, "size_secondary", 4).float()
+    flags: dict[str, torch.Tensor] = {
+        "liquid_event_count_asof": event_count >= torch.quantile(event_count.float(), 0.75),
+        "illiquid_event_count_asof": event_count <= torch.quantile(event_count.float(), 0.25),
+        "wide_spread_asof": spread_bps >= torch.quantile(spread_bps.float(), 0.75),
+        "high_size_asof": (size_primary + size_secondary) >= torch.quantile((size_primary + size_secondary).float(), 0.75),
+    }
+    for column in ("is_regular_hours", "is_premarket", "is_afterhours"):
+        if column in names:
+            flags[column] = _column(last, names, column, 0).float() > 0.5
+    for group_name, payload in (x.get("text_inputs") or {}).items():
+        chunk_mask = payload.get("chunk_mask") if isinstance(payload, Mapping) else None
+        if torch.is_tensor(chunk_mask):
+            flags[f"{group_name}_available"] = chunk_mask.reshape(chunk_mask.shape[0], -1).any(dim=1)
+    xbrl_mask = (x.get("xbrl_inputs") or {}).get("mask")
+    if torch.is_tensor(xbrl_mask):
+        flags["xbrl_available"] = xbrl_mask.reshape(xbrl_mask.shape[0], -1).any(dim=1)
+    corporate_mask = (x.get("corporate_action_inputs") or {}).get("mask")
+    if torch.is_tensor(corporate_mask):
+        flags["corporate_action_context_available"] = corporate_mask.reshape(corporate_mask.shape[0], -1).any(dim=1)
+    scanner_mask = (x.get("scanner_inputs") or {}).get("leader_mask")
+    if torch.is_tensor(scanner_mask):
+        flags["scanner_context_available"] = scanner_mask.reshape(scanner_mask.shape[0], -1).any(dim=1)
+    labels = batch.y.get("intraday_labels", {})
+    for label_name in (*INTRADAY_EVENT_FLAGS, *EXTERNAL_ARRIVAL_FLAGS):
+        value = labels.get(label_name)
+        if torch.is_tensor(value):
+            flags[f"future_{label_name}"] = value.to(device=device).bool().reshape(value.shape[0], -1).any(dim=1)
+    return {key: value.to(device=device, dtype=torch.bool) for key, value in flags.items() if torch.is_tensor(value)}
+
+
+def _cohort_prediction_metrics(batch: Any, output: TemporalModelOutput, *, prefix: str, cohort_name: str, cohort_mask: torch.Tensor, suffix: str) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    origin = _origin_prices(batch.x)
+    for family in BAR_FAMILIES:
+        pred = output.future_bar_values.get(family)
+        target = batch.y.get("future_bar_values", {}).get(family)
+        mask = batch.y.get("future_bar_masks", {}).get(family)
+        if pred is None or not torch.is_tensor(target) or not torch.is_tensor(mask):
+            continue
+        target = target.to(device=pred.device, dtype=pred.dtype)
+        valid = mask.to(device=pred.device, dtype=torch.bool) & cohort_mask.to(device=pred.device).unsqueeze(1)
+        width = min(4, pred.shape[-1], target.shape[-1])
+        if width <= 0 or not bool(valid.any()):
+            continue
+        base_key = "trade" if family == "trade" else "ask" if family == "quote_ask" else "bid"
+        base = origin[base_key].to(device=pred.device, dtype=pred.dtype)
+        normalized_target = ((target[..., :width] - base[:, None, None]) / base.clamp(min=1e-6)[:, None, None]) * 10_000.0
+        error = pred[..., :width] - normalized_target
+        expanded = valid.unsqueeze(-1).expand_as(error)
+        metrics[f"{prefix}/cohort/{cohort_name}/{suffix}/price_mae_{family}_bps"] = float(error[expanded].abs().mean().cpu())
+    return metrics
+
+
+def _last_event_rows(events: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    if mask.any(dim=1).all():
+        last_index = mask.long().sum(dim=1).clamp(min=1) - 1
+        rows = torch.arange(events.shape[0], device=events.device)
+        return events[rows, last_index]
+    return events[:, -1]
 
 
 def wandb_metric_key(key: str) -> str:

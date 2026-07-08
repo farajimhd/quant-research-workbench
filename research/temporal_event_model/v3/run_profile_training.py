@@ -301,7 +301,11 @@ def _run_profile_batch(
     amp_dtype = _amp_dtype(config.train.amp_dtype)
     forward_start = time.perf_counter()
     with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=bool(config.train.amp and device.type == "cuda")):
-        output = model(batch.x)
+        if int(batch_number) == 1 and hasattr(model, "forward_with_timings"):
+            output, model_profile = model.forward_with_timings(batch.x, sync_cuda=device.type == "cuda")  # type: ignore[attr-defined]
+        else:
+            output = model(batch.x)
+            model_profile = {}
     if device.type == "cuda":
         torch.cuda.synchronize()
     forward_seconds = time.perf_counter() - forward_start
@@ -358,6 +362,7 @@ def _run_profile_batch(
         "gpu_memory_peak_gib": _gpu_memory_peak_gib(device),
     }
     row.update({f"loss/{key.removeprefix('train/')}": value for key, value in loss_result.metrics.items() if isinstance(value, (int, float))})
+    row.update({f"model/{key}_seconds": float(value) for key, value in model_profile.items()})
     row.update({f"loader/{key}": value for key, value in batch.profile.items() if isinstance(value, (int, float))})
     row.update({f"coverage/{key}": value for key, value in coverage.items()})
     row.update({f"audit/{key}": value for key, value in audit_metrics.items() if isinstance(value, (int, float, bool))})

@@ -1000,17 +1000,19 @@ default unless there is a clear diagnostic need.
 
 Metrics should be emitted to Rich terminal, JSONL, and W&B, but not every
 metric should be calculated every optimizer step. Loss is the high-frequency
-signal. Expensive metrics are aggregated from buffered predictions at a slower
-cadence so training does not stall on validation-style analysis.
+signal and is computed every batch. Expensive metrics are aggregated from
+buffered predictions at a slower sample-count cadence so training does not
+stall on validation-style analysis and so runs remain comparable when batch
+size changes.
 
 Default metric cadence:
 
 | Cadence | Default | Purpose | Metric families |
 | --- | ---: | --- | --- |
-| Step | every optimizer step | smooth training loop and detect immediate failures | total loss, raw task losses, learning rate, step timing |
-| Fast train summary | every 25 steps | cheap diagnostics from already-computed batch tensors | valid fractions, positive rates, availability fractions, throughput |
-| Train metric window | every 250 steps | regression/classification metrics from a rolling prediction buffer | MAE, RMSE, sign accuracy, BCE/AUC where valid |
-| Validation | every 2,000 steps or epoch end | deterministic validation loader metrics | same grouped metrics as train window with `val/` prefix |
+| Batch loss | every batch | smooth training loop and detect immediate failures | total loss, raw task losses, learning rate, batch timing |
+| Fast train summary | every 25,000 samples by default | cheap diagnostics from already-computed batch tensors | valid fractions, positive rates, availability fractions, throughput |
+| Train metric window | every 250,000 samples by default | regression/classification metrics from a rolling prediction buffer | MAE, RMSE, sign accuracy, BCE/AUC where valid |
+| Validation | every 2,000,000 samples by default or epoch end | deterministic validation loader metrics | same grouped metrics as train window with `val/` prefix |
 | Full audit metrics | manual or end of run | expensive cohort and rare-label diagnostics | all cohorts, sparse corporate-action and halt/LULD slices |
 
 W&B grouping rules:
@@ -1031,8 +1033,8 @@ W&B grouping rules:
 
 | Panel | Keys | Cadence | Notes |
 | --- | --- | --- | --- |
-| `loss/core` | `train/loss`, `train/loss_ema`, `train/active_task_count`, `train/grad_norm`, `train/learning_rate`, `train/loss_scale`, `train/skipped_step`, `train/nan_guard_triggered` | step | Keep this as the first dashboard panel. |
-| `loss/task` | `train/loss_price`, `train/loss_event_count`, `train/loss_event_size`, `train/loss_event_state`, `train/loss_external_arrival`, `train/loss_corporate_action` | step | Raw task losses only by default. Loss weighting metrics belong only in explicit ablation runs. |
+| `loss/core` | `train/loss`, `train/loss_ema`, `train/active_task_count`, `train/grad_norm`, `train/learning_rate`, `train/loss_scale`, `train/skipped_step`, `train/nan_guard_triggered` | every batch | Keep this as the first dashboard panel. |
+| `loss/task` | `train/loss_price`, `train/loss_event_count`, `train/loss_event_size`, `train/loss_event_state`, `train/loss_external_arrival`, `train/loss_corporate_action` | every batch | Raw task losses only by default. Loss weighting metrics belong only in explicit ablation runs. |
 | `train/speed` | `train/samples_per_second`, `train/tokens_or_events_per_second`, `train/step_seconds`, `train/gpu_step_seconds`, `train/loader_wait_seconds`, `train/materialize_seconds`, `train/host_to_device_seconds`, `train/backward_seconds`, `train/optimizer_seconds` | fast train summary | All timing values should be moving averages. |
 | `train/memory` | `train/gpu_memory_allocated_gib`, `train/gpu_memory_reserved_gib`, `train/gpu_memory_peak_gib`, `train/cpu_rss_gib`, `train/loader_rss_gib`, `train/pinned_memory_gib` | fast train summary | Record memory after synchronization only at summary cadence. |
 | `data/loader_state` | `loader/epoch`, `loader/package_position`, `loader/origin_cursor`, `loader/emitted_batches`, `loader/emitted_samples`, `loader/seen_origins_total`, `loader/seen_origins_this_epoch`, `loader/replay_seed`, `loader/cache_manifest_changed` | fast train summary | String identifiers stay in JSONL/run manifest, not W&B scalar panels. |
@@ -1048,6 +1050,35 @@ W&B grouping rules:
 | `val/cohorts_price` | selected headline price metrics for `cohort_liquid_asof`, `cohort_wide_spread_asof`, `cohort_high_vol_asof`, and `cohort_afterhours_origin` | validation or full audit | Keep to one or two headline metrics per cohort to avoid panel overload. |
 | `val/cohorts_context` | selected headline metrics for `cohort_news_context_available`, `cohort_sec_context_available`, `cohort_xbrl_context_available` | validation or full audit | Used to verify whether sparse modalities help. |
 
+### Detailed Timing Metrics
+
+Detailed timing is enabled only on the first training batch and at
+validation/profile cadence. It must not run on every batch because CUDA
+synchronization around every encoder would slow training.
+
+The trainer logs these timing families to JSONL and W&B when collected:
+
+| Prefix | What it measures |
+| --- | --- |
+| `profile/model/event_encoder_seconds` | Raw event stream encoder including event time features and transformer. |
+| `profile/model/intraday_bar_encoder_seconds` | Backward intraday bar context encoder. |
+| `profile/model/ticker_daily_bar_encoder_seconds` | Ticker daily bar context encoder. |
+| `profile/model/global_daily_bar_encoder_seconds` | Global/macro daily bar context encoder. |
+| `profile/model/ticker_news_encoder_seconds` | Ticker-news Qwen-embedding context encoder. |
+| `profile/model/market_news_encoder_seconds` | Market-news Qwen-embedding context encoder. |
+| `profile/model/sec_filing_encoder_seconds` | SEC-filing Qwen-embedding context encoder. |
+| `profile/model/xbrl_encoder_seconds` | XBRL numeric/category/time context encoder. |
+| `profile/model/corporate_action_encoder_seconds` | Corporate-action context encoder. |
+| `profile/model/scanner_encoder_seconds` | Scanner leader/origin comparison encoder. |
+| `profile/model/fusion_seconds` | Modality-token transformer fusion. |
+| `profile/model/*_heads_seconds` | Query and prediction heads. |
+| `profile/val_model/*` | Same model timings collected during validation. |
+
+The training/profiler rows also include loader wait, host-to-device conversion,
+loss calculation, backward pass, optimizer step, checkpoint write messages,
+CPU RSS, and CUDA allocated/reserved/peak memory. Use these timing families to
+find bottlenecks before changing model architecture or loader materialization.
+
 Diagnostic cohort metrics:
 
 The trainer should support cheap boolean cohort flags for slicing every major
@@ -1059,17 +1090,16 @@ never be fed to the model, sample plan, loss weighting, or sampler.
 
 | Cohort flag | Source | Definition sketch | Metric value |
 | --- | --- | --- | --- |
-| `cohort_liquid_asof` | `raw_event_stream`, ticker daily bars | high recent event count or trade/quote count in the as-of context; threshold from train split quantiles | separates liquid vs illiquid names without lookahead |
-| `cohort_wide_spread_asof` | last valid quote in `raw_event_stream` | last valid ask-bid spread in bps above configured/quantile threshold | shows whether price heads fail on costly/wide-spread regimes |
-| `cohort_high_vol_asof` | as-of event prices or recent daily bars | realized price range/return volatility in context above train split threshold | separates calm vs volatile contexts |
-| `cohort_afterhours_origin` | `origin_timestamp_us` session features | origin in premarket/after-hours vs regular session | checks session-specific degradation |
-| `cohort_news_context_available` | text masks | ticker or market news context mask has at least one valid item | compares text-context vs no-text samples |
-| `cohort_sec_context_available` | SEC text mask | SEC filing context mask has at least one valid item | checks SEC-path value and sparse-context behavior |
-| `cohort_xbrl_context_available` | XBRL mask | XBRL mask has at least one valid row | checks fundamental-context availability effects |
-| `cohort_future_large_move` | price labels only | absolute future bid/ask or trade move exceeds threshold for a horizon | outcome-conditioned diagnostic for tail-move performance only |
-| `cohort_future_event_rich` | future bar labels only | future horizon event count above threshold | outcome-conditioned diagnostic for active future windows only |
-| `cohort_future_news_or_sec` | arrival labels only | ticker-news or SEC-arrival flag positive in horizon | outcome-conditioned diagnostic for event-arrival regimes only |
-| `cohort_future_halt_luld` | condition labels only | halt/pause or LULD flag positive in horizon | sparse safety diagnostic; report only when enough positives exist |
+| `liquid_event_count_asof` | `raw_event_stream` mask | event count in the as-of context above the batch 75th percentile | separates active/liquid windows without lookahead |
+| `illiquid_event_count_asof` | `raw_event_stream` mask | event count in the as-of context below the batch 25th percentile | shows whether sparse windows lag |
+| `wide_spread_asof` | last valid event bid/ask-like prices | last valid primary/secondary spread in bps above the batch 75th percentile | shows whether price heads fail on costly/wide-spread regimes |
+| `high_size_asof` | last valid event sizes | latest displayed/traded size proxy above the batch 75th percentile | separates high-participation windows |
+| `is_regular_hours`, `is_premarket`, `is_afterhours` | event session flags | origin event session state from the raw event stream | checks session-specific degradation |
+| `ticker_news_available`, `market_news_available`, `sec_filings_available` | text masks | context mask has at least one valid embedding item | compares text-context vs no-text samples |
+| `xbrl_available` | XBRL mask | XBRL mask has at least one valid row | checks fundamental-context availability effects |
+| `corporate_action_context_available` | corporate-action context mask | corporate-action context has at least one valid historical/as-of row | checks corporate-action context value |
+| `scanner_context_available` | scanner leader mask | scanner artifact produced at least one valid leader slot | checks market-leader context value |
+| `future_<condition_or_arrival_flag>` | intraday labels only | any future horizon has the named condition/arrival flag | outcome-conditioned diagnostic only; never feed to model/loss weighting |
 
 For each major regression or classification metric, emit aggregate and cohort
 forms when the cohort has enough samples:

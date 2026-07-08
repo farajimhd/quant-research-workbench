@@ -19,7 +19,7 @@ REPO_ROOT = next(parent for parent in Path(__file__).resolve().parents if (paren
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy
+from research.mlops.checkpoints import AsyncCheckpointManager, CheckpointPolicy, to_cpu_payload
 from research.mlops.env import discover_env_files, load_env_files
 from research.mlops.manifest import write_run_manifest
 from research.mlops.metrics import JsonlMetricLogger
@@ -30,7 +30,7 @@ from research.temporal_event_model.v3 import MODEL_FAMILY, MODEL_VERSION
 from research.temporal_event_model.v3.config import BAR_FAMILIES, BAR_FEATURE_DIMS, ExperimentConfig, LoaderConfig, ModelConfig, TrainConfig, default_run_name, to_dict
 from research.temporal_event_model.v3.data import TemporalBatch, batch_to_torch, loader_config_from_v3, make_dummy_temporal_batch, validation_loader_config_from_v3
 from research.temporal_event_model.v3.losses import compute_loss
-from research.temporal_event_model.v3.metrics import MetricWindow, fast_batch_metrics, prediction_metrics, wandb_metric_key
+from research.temporal_event_model.v3.metrics import MetricWindow, cohort_metrics, fast_batch_metrics, prediction_metrics, wandb_metric_key
 from research.temporal_event_model.v3.model import TemporalEventModelV3, build_model_mermaid
 from research.temporal_event_model.v3.progress import TemporalProgressState, TemporalTrainingReporter
 
@@ -88,14 +88,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--amp-dtype", choices=("bf16", "fp16", "float16", "bfloat16", "float32"), default=default_train.amp_dtype)
     parser.add_argument("--compile-model", action="store_true")
-    parser.add_argument("--logging-steps", type=int, default=default_train.logging_steps)
-    parser.add_argument("--fast-summary-steps", type=int, default=default_train.fast_summary_steps)
-    parser.add_argument("--train-metric-window-steps", type=int, default=default_train.train_metric_window_steps)
-    parser.add_argument("--validation-steps", type=int, default=default_train.validation_steps)
+    parser.add_argument("--logging-samples", type=int, default=default_train.logging_samples)
+    parser.add_argument("--fast-summary-samples", type=int, default=default_train.fast_summary_samples)
+    parser.add_argument("--train-metric-window-samples", type=int, default=default_train.train_metric_window_samples)
+    parser.add_argument("--validation-samples", type=int, default=default_train.validation_samples)
     parser.add_argument("--validation-batches", type=int, default=default_train.validation_batches)
     parser.add_argument("--disable-validation", action="store_true")
-    parser.add_argument("--checkpoint-latest-steps", type=int, default=default_train.checkpoint_latest_steps)
-    parser.add_argument("--checkpoint-archive-steps", type=int, default=default_train.checkpoint_archive_steps)
+    parser.add_argument("--checkpoint-latest-samples", type=int, default=default_train.checkpoint_latest_samples)
+    parser.add_argument("--checkpoint-archive-samples", type=int, default=default_train.checkpoint_archive_samples)
+    parser.add_argument("--detail-profile-samples", type=int, default=default_train.detail_profile_samples)
+    parser.add_argument("--logging-steps", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--fast-summary-steps", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--train-metric-window-steps", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--validation-steps", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--checkpoint-latest-steps", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--checkpoint-archive-steps", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default=default_train.progress_layout)
     parser.add_argument("--wandb-project", default=default_train.wandb_project)
     parser.add_argument("--wandb-entity", default=default_train.wandb_entity)
@@ -165,8 +172,8 @@ def main() -> int:
         paths.checkpoints_dir,
         paths.checkpoint_manifest_path,
         CheckpointPolicy(
-            latest_steps=int(config.train.checkpoint_latest_steps),
-            archive_steps=int(config.train.checkpoint_archive_steps),
+            latest_steps=0,
+            archive_steps=0,
             save_best_train=bool(config.train.checkpoint_best_train),
             save_best_val=bool(config.train.checkpoint_best_val),
             monitor_train_key="train/loss",
@@ -185,6 +192,7 @@ def main() -> int:
     train_window = MetricWindow(max_batches=32)
     train_iter = _batch_iterator(config, train_loader, device=device, dummy=bool(args.dummy_data))
     val_metrics: dict[str, float] = {}
+    cadence = SampleCadence()
     try:
         with reporter if reporter is not None else _NullReporter() as active_reporter:
             checkpointer.set_message_callback(active_reporter.message)
@@ -195,9 +203,15 @@ def main() -> int:
                 loader_wait = time.perf_counter() - loader_start
                 optimizer.zero_grad(set_to_none=True)
                 amp_dtype = _amp_dtype(config.train.amp_dtype)
+                prior_samples_seen = int(train_loader.state.seen_origins_total if train_loader is not None else (step - 1) * int(config.loader.batch_size))
+                detail_profile_due = step == int(start_step) + 1 or cadence.due("detail_profile", prior_samples_seen + int(batch.sample_count), int(config.train.detail_profile_samples))
                 gpu_start = time.perf_counter()
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=bool(config.train.amp and device.type == "cuda")):
-                    output = model(batch.x)
+                    if detail_profile_due and hasattr(model, "forward_with_timings"):
+                        output, model_profile = model.forward_with_timings(batch.x, sync_cuda=device.type == "cuda")  # type: ignore[attr-defined]
+                    else:
+                        output = model(batch.x)
+                        model_profile = {}
                     loss_result = compute_loss(output, batch)
                     loss = loss_result.loss
                 if scaler.is_enabled():
@@ -215,6 +229,7 @@ def main() -> int:
                 if device.type == "cuda":
                     torch.cuda.synchronize()
                 gpu_seconds = time.perf_counter() - gpu_start
+                samples_seen_total = int(train_loader.state.seen_origins_total if train_loader is not None else step * int(config.loader.batch_size))
                 metrics = dict(loss_result.metrics)
                 metrics.update(
                     {
@@ -223,15 +238,19 @@ def main() -> int:
                         "train/loader_wait_seconds": float(loader_wait),
                         "train/gpu_step_seconds": float(gpu_seconds),
                         "train/samples_per_second": float(batch.sample_count / max(time.perf_counter() - step_start, 1e-9)),
-                        "train/samples_seen_total": float((train_loader.state.seen_origins_total if train_loader is not None else step * int(config.loader.batch_size))),
+                        "train/samples_seen_total": float(samples_seen_total),
+                        "train/global_step": float(step),
                         "train/materialize_seconds": float(batch.profile.get("materialize_seconds", 0.0)),
                         "train/gpu_memory_allocated_gib": _gpu_memory_gib(device),
                         "train/cpu_rss_gib": _rss_gib(),
                     }
                 )
+                metrics.update({f"profile/model/{key}_seconds": float(value) for key, value in model_profile.items()})
                 if train_loader is not None:
                     summary = train_loader.summary()
                     ledger.update_batch(batch, loader_summary=summary)
+                    samples_seen_total = int(summary.get("seen_origins_total", samples_seen_total))
+                    metrics["train/samples_seen_total"] = float(samples_seen_total)
                     metrics.update(
                         {
                             "loader/epoch": float(summary.get("epoch", 0)),
@@ -247,20 +266,26 @@ def main() -> int:
                             "schedule/current_day_sample_count": float(max(ledger.current_day_total, 1)),
                         }
                     )
-                if step % int(config.train.fast_summary_steps) == 0:
+                if cadence.due("fast_summary", samples_seen_total, int(config.train.fast_summary_samples)):
                     metrics.update(fast_batch_metrics(batch, output, prefix="train"))
-                if step % int(config.train.train_metric_window_steps) == 0:
+                if cadence.due("train_metric_window", samples_seen_total, int(config.train.train_metric_window_samples)):
                     train_window.add(prediction_metrics(batch, output, prefix="train"))
+                    train_window.add(cohort_metrics(batch, output, prefix="train"))
                     metrics.update(train_window.mean())
                 metric_logger.log(metrics, step)
-                if step % int(config.train.validation_steps) == 0 and (validation_loader is not None or args.dummy_data):
-                    val_metrics = run_validation(model, config, validation_loader, device=device, dummy=bool(args.dummy_data))
+                validation_due = cadence.due("validation", samples_seen_total, int(config.train.validation_samples))
+                if validation_due and (validation_loader is not None or args.dummy_data):
+                    val_metrics = run_validation(model, config, validation_loader, device=device, dummy=bool(args.dummy_data), profile_detail=True)
                     metric_logger.log(val_metrics, step)
-                if reporter is not None and step % int(config.train.logging_steps) == 0:
+                if reporter is not None and cadence.due("logging", samples_seen_total, int(config.train.logging_samples)):
                     active_reporter.update(metrics, step=step, validation_metrics=val_metrics)
-                checkpointer.maybe_save(
-                    step=step,
-                    payload_factory=lambda step=step, metrics=metrics, val_metrics=val_metrics: checkpoint_payload(
+                checkpoint_due = cadence.checkpoint_reasons(samples_seen_total, latest=int(config.train.checkpoint_latest_samples), archive=int(config.train.checkpoint_archive_samples))
+                if checkpoint_due:
+                    save_checkpoint_reasons(
+                        checkpointer,
+                        step=samples_seen_total,
+                        reasons=checkpoint_due,
+                        payload_factory=lambda step=step, metrics=metrics, val_metrics=val_metrics: checkpoint_payload(
                         model=model,
                         optimizer=optimizer,
                         scaler=scaler,
@@ -273,9 +298,9 @@ def main() -> int:
                         val_metrics=val_metrics,
                         run_paths=paths,
                     ),
-                    train_metrics=metrics,
-                    val_metrics=val_metrics,
-                )
+                        train_metrics=metrics,
+                        val_metrics=val_metrics,
+                    )
             final_metrics = val_metrics or {}
             checkpointer.maybe_save(
                 step=int(config.train.max_steps),
@@ -296,7 +321,7 @@ def main() -> int:
 
 
 @torch.no_grad()
-def run_validation(model: torch.nn.Module, config: ExperimentConfig, validation_loader: Any, *, device: torch.device, dummy: bool) -> dict[str, float]:
+def run_validation(model: torch.nn.Module, config: ExperimentConfig, validation_loader: Any, *, device: torch.device, dummy: bool, profile_detail: bool = False) -> dict[str, float]:
     if validation_loader is None and not dummy:
         return {}
     model.eval()
@@ -304,11 +329,17 @@ def run_validation(model: torch.nn.Module, config: ExperimentConfig, validation_
     iterator = _batch_iterator(config, validation_loader, device=device, dummy=dummy)
     for _ in range(max(1, int(config.train.validation_batches))):
         batch = next(iterator)
-        output = model(batch.x)
+        if profile_detail and hasattr(model, "forward_with_timings"):
+            output, model_profile = model.forward_with_timings(batch.x, sync_cuda=device.type == "cuda")  # type: ignore[attr-defined]
+        else:
+            output = model(batch.x)
+            model_profile = {}
         loss = compute_loss(output, batch)
         row = {key.replace("train/", "val/"): value for key, value in loss.metrics.items()}
         row.update(prediction_metrics(batch, output, prefix="val"))
+        row.update(cohort_metrics(batch, output, prefix="val"))
         row.update(fast_batch_metrics(batch, output, prefix="val"))
+        row.update({f"profile/val_model/{key}_seconds": float(value) for key, value in model_profile.items()})
         metrics.append(row)
     model.train()
     return _mean_metrics(metrics)
@@ -418,13 +449,14 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         amp_dtype=str(args.amp_dtype),
         compile_model=bool(args.compile_model),
         seed=int(args.seed),
-        logging_steps=int(args.logging_steps),
-        fast_summary_steps=int(args.fast_summary_steps),
-        train_metric_window_steps=int(args.train_metric_window_steps),
-        validation_steps=int(args.validation_steps),
+        logging_samples=_sample_arg(args.logging_samples, args.logging_steps, config_value=0, batch_size=int(args.batch_size)),
+        fast_summary_samples=_sample_arg(args.fast_summary_samples, args.fast_summary_steps, config_value=TrainConfig.fast_summary_samples, batch_size=int(args.batch_size)),
+        train_metric_window_samples=_sample_arg(args.train_metric_window_samples, args.train_metric_window_steps, config_value=TrainConfig.train_metric_window_samples, batch_size=int(args.batch_size)),
+        validation_samples=_sample_arg(args.validation_samples, args.validation_steps, config_value=TrainConfig.validation_samples, batch_size=int(args.batch_size)),
         validation_batches=int(args.validation_batches),
-        checkpoint_latest_steps=int(args.checkpoint_latest_steps),
-        checkpoint_archive_steps=int(args.checkpoint_archive_steps),
+        checkpoint_latest_samples=_sample_arg(args.checkpoint_latest_samples, args.checkpoint_latest_steps, config_value=TrainConfig.checkpoint_latest_samples, batch_size=int(args.batch_size)),
+        checkpoint_archive_samples=_sample_arg(args.checkpoint_archive_samples, args.checkpoint_archive_steps, config_value=TrainConfig.checkpoint_archive_samples, batch_size=int(args.batch_size)),
+        detail_profile_samples=max(0, int(args.detail_profile_samples)),
         progress_layout=str(args.progress_layout),
         wandb_project=str(args.wandb_project),
         wandb_entity=str(args.wandb_entity),
@@ -435,6 +467,14 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         fresh_start=bool(args.fresh_start),
     )
     return ExperimentConfig(model=model, loader=loader, train=train)
+
+
+def _sample_arg(sample_value: int, legacy_steps: int, *, config_value: int, batch_size: int) -> int:
+    if int(legacy_steps or 0) > 0:
+        return max(1, int(legacy_steps) * max(1, int(batch_size)))
+    if int(sample_value or 0) > 0:
+        return int(sample_value)
+    return int(config_value)
 
 
 def _configure_day_schedules(config: ExperimentConfig) -> None:
@@ -478,6 +518,64 @@ def _reserve_validation_days(days: Sequence[str], *, policy: str, count: int, se
         random.Random(int(seed)).shuffle(selected)
         return sorted(selected[:count])
     return days[-count:]
+
+
+class SampleCadence:
+    def __init__(self) -> None:
+        self.last: dict[str, int] = {}
+
+    def due(self, name: str, samples_seen: int, interval: int) -> bool:
+        samples_seen = max(0, int(samples_seen))
+        interval = int(interval)
+        if interval <= 0:
+            self.last[name] = samples_seen
+            return True
+        previous = int(self.last.get(name, 0))
+        if samples_seen <= 0:
+            return False
+        if previous <= 0 or samples_seen // interval > previous // interval:
+            self.last[name] = samples_seen
+            return True
+        return False
+
+    def checkpoint_reasons(self, samples_seen: int, *, latest: int, archive: int) -> tuple[str, ...]:
+        reasons: list[str] = []
+        if self.due("checkpoint_latest", samples_seen, latest):
+            reasons.append("latest")
+        if self.due("checkpoint_archive", samples_seen, archive):
+            reasons.append("archive")
+        return tuple(reasons)
+
+
+def save_checkpoint_reasons(
+    checkpointer: AsyncCheckpointManager,
+    *,
+    step: int,
+    reasons: Sequence[str],
+    payload_factory: Any,
+    train_metrics: dict[str, float],
+    val_metrics: dict[str, float],
+) -> None:
+    payload = payload_factory()
+    checkpointer.maybe_save(step=int(step), payload=payload, train_metrics=train_metrics, val_metrics=val_metrics)
+    destinations: list[tuple[Path, str]] = []
+    if "latest" in reasons:
+        destinations.append((checkpointer.checkpoint_dir / "checkpoint_latest.pt", "latest"))
+    if "archive" in reasons:
+        destinations.append((checkpointer.checkpoint_dir / f"checkpoint_sample_{int(step):012d}.pt", "archive"))
+    if not destinations:
+        return
+    checkpointer._enqueue(  # noqa: SLF001
+        to_cpu_payload(payload),
+        destinations,
+        {
+            "step": int(step),
+            "samples_seen": int(step),
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "train_loss": train_metrics.get(checkpointer.policy.monitor_train_key),
+            "val_loss": val_metrics.get(checkpointer.policy.monitor_val_key),
+        },
+    )
 
 
 class TrainingLedger:
