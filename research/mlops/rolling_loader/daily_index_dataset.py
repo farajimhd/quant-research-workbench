@@ -2462,6 +2462,8 @@ class AsyncDailyIndexBatchLoader:
         self.cache_manifest_fingerprint = _cache_plan_fingerprint(self.index.root_manifest, self.index.parts)
         self.dataset_plan_id = _dataset_plan_id(self.config, self.cache_manifest_fingerprint)
         seed = secrets.randbits(63) if self.config.randomize_seed else int(self.config.seed)
+        ticker_packages = len({str(plan.package_dir) for plan in self.index.parts})
+        ticker_count = len({str(plan.ticker) for plan in self.index.parts})
         self.state = DailyIndexLoaderState(
             dataset_plan_id=self.dataset_plan_id,
             cache_manifest_fingerprint=self.cache_manifest_fingerprint,
@@ -2478,7 +2480,9 @@ class AsyncDailyIndexBatchLoader:
         self._telemetry_lock = threading.Lock()
         self._telemetry: dict[str, Any] = {
             "loader_phase": "initialized",
-            "package_count": int(self.state.package_count),
+            "part_count": int(len(self.index.parts)),
+            "ticker_package_count": int(ticker_packages),
+            "ticker_count": int(ticker_count),
             "total_available_origins": int(self.state.total_available_origins),
             "chronological_time_window_seconds": float(self.config.time_window_seconds),
             "batch_size": int(self.config.batch_size),
@@ -2676,6 +2680,7 @@ class AsyncDailyIndexBatchLoader:
                     chronological_day_count=int(len(days)),
                     current_source_date=str(source_date),
                     day_package_count=int(len(day_plans)),
+                    day_ticker_count=int(len({plan.ticker for plan in day_plans})),
                     payload_cache_parts=int(len(payload_cache)),
                 )
                 if previous_day_key is not None and not _chronological_days_are_adjacent(previous_day_key, source_date, days):
@@ -2701,6 +2706,7 @@ class AsyncDailyIndexBatchLoader:
                 self._update_telemetry(
                     loader_phase="day_planned",
                     current_source_date=str(source_date),
+                    day_ticker_count=int(len({plan.ticker for plan in day_plans})),
                     day_refs_total=int(day_total_refs),
                     day_refs_remaining_before_window=int(day_total_refs),
                     day_start_timestamp_us=int(day_window_start),
@@ -2983,6 +2989,9 @@ class AsyncDailyIndexBatchLoader:
     def summary(self) -> dict[str, Any]:
         out = self.state.to_dict()
         out["epoch_fraction"] = float(self.state.package_position) / max(float(len(self.index.parts)), 1.0)
+        out["part_count"] = int(len(self.index.parts))
+        out["ticker_package_count"] = int(len({str(plan.package_dir) for plan in self.index.parts}))
+        out["ticker_count"] = int(len({str(plan.ticker) for plan in self.index.parts}))
         out["config"] = {
             "batch_size": int(self.config.batch_size),
             "event_output_mode": str(self.config.event_output_mode),
