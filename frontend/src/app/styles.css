@@ -1156,30 +1156,11 @@ button {
   background: var(--surface);
   border: 1px solid var(--surface-border);
   border-radius: 8px;
-  box-shadow: inset 3px 0 0 var(--service-work-accent, var(--border-strong));
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   min-height: 212px;
   min-width: 0;
   overflow: hidden;
-}
-
-.service-work-responsibility-card.ok {
-  --service-work-accent: var(--success);
-}
-
-.service-work-responsibility-card.active,
-.service-work-responsibility-card.running {
-  --service-work-accent: color-mix(in oklab, var(--success) 78%, var(--info));
-}
-
-.service-work-responsibility-card.warn,
-.service-work-responsibility-card.waiting {
-  --service-work-accent: var(--warning);
-}
-
-.service-work-responsibility-card.error {
-  --service-work-accent: var(--danger);
 }
 
 .service-work-responsibility-card.news-live-card {
