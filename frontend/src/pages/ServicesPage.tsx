@@ -440,6 +440,24 @@ type NewsPublishHistoryRow = {
   wallSeconds?: number;
 };
 
+type NewsEnrichmentHistoryRow = {
+  articleCount: number;
+  detail: string;
+  enrichedUrls: number;
+  event: string;
+  failedArticles: number;
+  fetchTasks: number;
+  mode: string;
+  pollId: string;
+  providerArticleId: string;
+  queueSize: number;
+  status: string;
+  time: string;
+  title: string;
+  wallSeconds: number;
+  worker: string;
+};
+
 type NewsDailyHistogramDatum = {
   broadOrNoneRows: number;
   bucketUtc: string;
@@ -528,6 +546,8 @@ function ServiceWorkResponsibilityGrid({ groups, newsPollHistory, service }: { g
         <NewsBenzingaLiveCard group={group} history={newsPollHistory} key={group.id} service={service} />
       ) : group.id === "publish" && service.registry.id === "news" ? (
         <NewsDatabasePublishingCard group={group} key={group.id} service={service} />
+      ) : group.id === "processing" && service.registry.id === "news" ? (
+        <NewsEnrichmentCanonicalCard group={group} key={group.id} service={service} />
       ) : (
         <ServiceWorkResponsibilityCard group={group} key={group.id} />
       ))}
@@ -597,6 +617,38 @@ function NewsDatabasePublishingCard({ group, service }: { group: ServiceWorkGrou
         <span className={failedJobs > 0 ? "metric-bad" : ""}><small>Failed Jobs</small><strong>{formatCompactNumber(failedJobs)}</strong></span>
       </div>
       <NewsPublishHistoryTable rows={history} />
+    </section>
+  );
+}
+
+function NewsEnrichmentCanonicalCard({ group, service }: { group: ServiceWorkGroup; service: ServiceStatusPayload }) {
+  const metrics = serviceMetricsRecord(service);
+  const history = newsEnrichmentHistoryRows(service);
+  const pendingArticles = numericMetric(metrics, ["background_pending_articles"]);
+  const activeBatches = numericMetric(metrics, ["background_active_batches"]);
+  const completedArticles = numericMetric(metrics, ["background_completed_articles"]);
+  const enrichedUrls = numericMetric(metrics, ["background_enriched_urls"]);
+  const failedArticles = numericMetric(metrics, ["background_failed_articles"]);
+  const fetchTasks = numericMetric(metrics, ["background_fetch_tasks"]);
+  const status = failedArticles > 0 ? "warning" : activeBatches > 0 || pendingArticles > 0 ? "running" : completedArticles > 0 ? "complete" : group.status;
+  return (
+    <section className={`service-work-responsibility-card news-publish-card news-enrichment-card ${workStatusClass(status)}`}>
+      <div className="service-work-responsibility-header">
+        <div>
+          <h3>{group.title}</h3>
+          <p>{group.description}</p>
+        </div>
+        <span className={`service-work-status ${workStatusClass(status)}`}>{displayName(status || "idle")}</span>
+      </div>
+      <div className="news-live-summary news-publish-summary">
+        <span className={pendingArticles > 0 ? "metric-warn" : ""}><small>Pending</small><strong>{formatCompactNumber(pendingArticles)}</strong></span>
+        <span><small>Active</small><strong>{formatCompactNumber(activeBatches)}</strong></span>
+        <span className={completedArticles > 0 ? "metric-good" : ""}><small>Done</small><strong>{formatCompactNumber(completedArticles)}</strong></span>
+        <span className={enrichedUrls > 0 ? "metric-good" : ""}><small>URL Text</small><strong>{formatCompactNumber(enrichedUrls)}</strong></span>
+        <span><small>Fetch Tasks</small><strong>{formatCompactNumber(fetchTasks)}</strong></span>
+        <span className={failedArticles > 0 ? "metric-bad" : ""}><small>Failed</small><strong>{formatCompactNumber(failedArticles)}</strong></span>
+      </div>
+      <NewsEnrichmentHistoryTable rows={history} />
     </section>
   );
 }
@@ -773,6 +825,63 @@ function NewsPublishHistoryTable({ rows }: { rows: NewsPublishHistoryRow[] }) {
   );
 }
 
+function NewsEnrichmentHistoryTable({ rows }: { rows: NewsEnrichmentHistoryRow[] }) {
+  const [selectedRow, setSelectedRow] = useState<NewsEnrichmentHistoryRow | null>(null);
+  return (
+    <>
+      <div className="news-publish-history-table-wrap">
+        <table className="news-publish-history-table news-enrichment-history-table">
+          <thead>
+            <tr>
+              <th title="When the enrichment event was logged, shown in your local browser timezone.">Time</th>
+              <th title="Background enrichment status for this batch or article.">Status</th>
+              <th title="Queue, active worker, completed batch, or failed article stage.">Stage</th>
+              <th title="Articles included in this background batch.">Articles</th>
+              <th title="External URL/PDF fetch tasks discovered for the batch.">URLs</th>
+              <th title="External URLs that produced extracted text.">Text</th>
+              <th title="Articles that failed enrichment and were published with fallback flags.">Failed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(rows.length ? rows : [null]).map((row, index) => row ? (
+              <tr
+                className={workStatusClass(row.status)}
+                key={`${row.event}-${row.pollId}-${row.time}-${index}`}
+                onClick={() => setSelectedRow(row)}
+                tabIndex={0}
+                title={row.detail || "Open enrichment detail"}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelectedRow(row);
+                  }
+                }}
+              >
+                <td title={row.time}>{formatLogTime(row.time)}</td>
+                <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span></td>
+                <td title={row.title}>{row.title}</td>
+                <td>{formatCompactNumber(row.articleCount)}</td>
+                <td>{formatCompactNumber(row.fetchTasks)}</td>
+                <td>{formatCompactNumber(row.enrichedUrls)}</td>
+                <td>{formatCompactNumber(row.failedArticles)}</td>
+              </tr>
+            ) : (
+              <tr key={`empty-${index}`}>
+                <td colSpan={7}>No background enrichment event has been observed by this dashboard yet.</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {selectedRow ? (
+        <Modal className="news-publish-detail-modal-panel" onClose={() => setSelectedRow(null)} title="News Enrichment Detail">
+          <NewsEnrichmentDetailModal row={selectedRow} />
+        </Modal>
+      ) : null}
+    </>
+  );
+}
+
 function NewsPublishDetailModal({ row }: { row: NewsPublishHistoryRow }) {
   const statusClass = workStatusClass(row.status);
   return (
@@ -829,6 +938,72 @@ function NewsPublishDetailModal({ row }: { row: NewsPublishHistoryRow }) {
         <div className="wide">
           <dt>Quality Flags</dt>
           <dd>{row.qualityFlags.length ? row.qualityFlags.join(", ") : "-"}</dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
+function NewsEnrichmentDetailModal({ row }: { row: NewsEnrichmentHistoryRow }) {
+  const statusClass = workStatusClass(row.status);
+  return (
+    <div className="news-publish-detail">
+      <div className={`news-publish-detail-status ${statusClass}`}>
+        <span>{displayName(row.status)}</span>
+        <strong>{row.title || "Background enrichment event"}</strong>
+      </div>
+      <dl className="service-log-detail-grid">
+        <div>
+          <dt>Logged At</dt>
+          <dd>{row.time ? formatLogTime(row.time) : "-"}</dd>
+        </div>
+        <div>
+          <dt>Event</dt>
+          <dd>{displayName(row.event)}</dd>
+        </div>
+        <div>
+          <dt>Mode</dt>
+          <dd>{displayName(row.mode)}</dd>
+        </div>
+        <div>
+          <dt>Poll ID</dt>
+          <dd>{row.pollId || "-"}</dd>
+        </div>
+        <div>
+          <dt>Worker</dt>
+          <dd>{row.worker || "-"}</dd>
+        </div>
+        <div>
+          <dt>Queue Size</dt>
+          <dd>{formatCompactNumber(row.queueSize)}</dd>
+        </div>
+        <div>
+          <dt>Articles</dt>
+          <dd>{formatCompactNumber(row.articleCount)}</dd>
+        </div>
+        <div>
+          <dt>Fetch Tasks</dt>
+          <dd>{formatCompactNumber(row.fetchTasks)}</dd>
+        </div>
+        <div>
+          <dt>Extracted URL Text</dt>
+          <dd>{formatCompactNumber(row.enrichedUrls)}</dd>
+        </div>
+        <div>
+          <dt>Failed Articles</dt>
+          <dd>{formatCompactNumber(row.failedArticles)}</dd>
+        </div>
+        <div>
+          <dt>Runtime</dt>
+          <dd>{row.wallSeconds ? formatSeconds(row.wallSeconds) : "-"}</dd>
+        </div>
+        <div>
+          <dt>Provider Article ID</dt>
+          <dd>{row.providerArticleId || "-"}</dd>
+        </div>
+        <div className="wide">
+          <dt>Detail</dt>
+          <dd>{row.detail || "-"}</dd>
         </div>
       </dl>
     </div>
@@ -965,9 +1140,116 @@ function newsPublishHistoryRows(service: ServiceStatusPayload): NewsPublishHisto
     .slice(0, 50);
 }
 
+function newsEnrichmentHistoryRows(service: ServiceStatusPayload): NewsEnrichmentHistoryRow[] {
+  return (service.logs?.rows ?? [])
+    .filter((row) => isNewsEnrichmentLogEvent(row.event || ""))
+    .map(newsEnrichmentHistoryRow)
+    .sort((a, b) => (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0))
+    .slice(0, 50);
+}
+
 function isNewsPublishLogEvent(event: string) {
   return event === "publish_completed"
     || event === "publish_failed";
+}
+
+function isNewsEnrichmentLogEvent(event: string) {
+  return event === "background_batch_queued"
+    || event === "background_batch_started"
+    || event === "background_batch_completed"
+    || event === "background_article_enrichment_failed"
+    || event === "background_batch_failed_uncaught"
+    || event === "shutdown_waiting_for_background_news"
+    || event === "shutdown_background_drained"
+    || event === "shutdown_background_timeout";
+}
+
+function newsEnrichmentHistoryRow(logRow: ServiceRuntimeLogRow): NewsEnrichmentHistoryRow {
+  const fields = isRecord(logRow.fields) ? logRow.fields : {};
+  const event = logRow.event || "background";
+  const status = enrichmentEventVisualStatus(event);
+  const articleCount = numericMetric(fields, ["article_count", "processed_rows", "pending_articles"]);
+  const failedArticles = numericMetric(fields, ["article_failures", "failed_articles"]);
+  const enrichedUrls = numericMetric(fields, ["enriched_urls"]);
+  const fetchTasks = numericMetric(fields, ["fetch_task_count", "url_tasks"]);
+  const queueSize = numericMetric(fields, ["queue_size", "pending_batches"]);
+  const pollId = stringMetric(fields, ["poll_id"]);
+  return {
+    articleCount,
+    detail: enrichmentEventDetail(event, fields),
+    enrichedUrls,
+    event,
+    failedArticles,
+    fetchTasks,
+    mode: stringMetric(fields, ["coverage_mode"]),
+    pollId,
+    providerArticleId: stringMetric(fields, ["provider_article_id"]),
+    queueSize,
+    status,
+    time: logRow.ts_utc || "",
+    title: enrichmentEventTitle(event, fields),
+    wallSeconds: numericMetric(fields, ["wall_seconds"]),
+    worker: stringMetric(fields, ["worker_index"]),
+  };
+}
+
+function enrichmentEventVisualStatus(event: string) {
+  if (event.includes("failed") || event.includes("timeout")) return "failed";
+  if (event.includes("started") || event.includes("waiting")) return "running";
+  if (event.includes("queued")) return "queued";
+  if (event.includes("completed") || event.includes("drained")) return "complete";
+  return "observed";
+}
+
+function enrichmentEventTitle(event: string, fields: Record<string, unknown>) {
+  if (event === "background_batch_queued") return "queued batch";
+  if (event === "background_batch_started") return `worker ${stringMetric(fields, ["worker_index"]) || "-"} active`;
+  if (event === "background_batch_completed") return "completed batch";
+  if (event === "background_article_enrichment_failed") return "article failed";
+  if (event === "background_batch_failed_uncaught") return "batch failed";
+  if (event === "shutdown_waiting_for_background_news") return "shutdown drain";
+  if (event === "shutdown_background_drained") return "queue drained";
+  if (event === "shutdown_background_timeout") return "drain timeout";
+  return displayName(event);
+}
+
+function enrichmentEventDetail(event: string, fields: Record<string, unknown>) {
+  if (event === "background_batch_completed") {
+    return [
+      `articles=${formatCompactNumber(numericMetric(fields, ["article_count"]))}`,
+      `inserted=${formatCompactNumber(numericMetric(fields, ["normalized_rows_inserted"]))}`,
+      `skipped=${formatCompactNumber(numericMetric(fields, ["skipped_existing"]))}`,
+      `ticker_links=${formatCompactNumber(numericMetric(fields, ["ticker_rows_inserted"]))}`,
+      `text_urls=${formatCompactNumber(numericMetric(fields, ["enriched_urls"]))}`,
+    ].join("; ");
+  }
+  if (event === "background_batch_started") {
+    return [
+      `poll=${shortPollId(stringMetric(fields, ["poll_id"]))}`,
+      `articles=${formatCompactNumber(numericMetric(fields, ["article_count"]))}`,
+      `queue=${formatCompactNumber(numericMetric(fields, ["queue_size"]))}`,
+    ].join("; ");
+  }
+  if (event === "background_batch_queued") {
+    return [
+      `poll=${shortPollId(stringMetric(fields, ["poll_id"]))}`,
+      `articles=${formatCompactNumber(numericMetric(fields, ["article_count"]))}`,
+      `url_tasks=${formatCompactNumber(numericMetric(fields, ["fetch_task_count"]))}`,
+      `queue=${formatCompactNumber(numericMetric(fields, ["queue_size"]))}`,
+    ].join("; ");
+  }
+  if (event === "background_article_enrichment_failed") {
+    return [
+      `poll=${shortPollId(stringMetric(fields, ["poll_id"]))}`,
+      `provider_article_id=${stringMetric(fields, ["provider_article_id"]) || "-"}`,
+      `canonical=${shortPollId(stringMetric(fields, ["canonical_news_id"]))}`,
+    ].join("; ");
+  }
+  return Object.entries(fields)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .slice(0, 5)
+    .map(([key, value]) => `${displayName(key)}=${formatCell(key, value)}`)
+    .join("; ");
 }
 
 function newsPublishItemHistoryRow(logRow: ServiceRuntimeLogRow, fields: Record<string, unknown>, item: Record<string, unknown>, index: number): NewsPublishHistoryRow {
