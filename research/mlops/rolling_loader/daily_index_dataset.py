@@ -2807,6 +2807,13 @@ class AsyncDailyIndexBatchLoader:
                         DailyIndexSampleRef(part_index=int(part_index_map[int(ref.part_index)]), origin_row=int(ref.origin_row))
                         for ref in window_refs
                     ]
+                    self._update_telemetry(loader_phase="cache_warm")
+                    warm_profile = event_cache.warm(loaded_parts, remapped_refs)
+                    self._update_telemetry(
+                        loader_phase="cache_warmed",
+                        **warm_profile,
+                        **event_cache.telemetry_snapshot(),
+                    )
                     materialized = _materialize_chronological_bounded(
                         mat_pool,
                         self.materializer,
@@ -2836,6 +2843,7 @@ class AsyncDailyIndexBatchLoader:
                             "origin_cache_limit": int(len(active_plans)),
                             "payload_cache_parts": int(len(payload_cache)),
                             "payload_cache_limit": int(payload_cache_limit),
+                            **warm_profile,
                             **event_cache.telemetry_snapshot(),
                             **self.materializer.telemetry_snapshot(),
                         },
@@ -4412,6 +4420,41 @@ class _RollingEventStreamCache:
             "event_cache_estimated_bytes": int(ticker_count * (event_stream_bytes + ordinal_bytes)),
         }
 
+    def warm(
+        self,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+    ) -> dict[str, float | int]:
+        start = time.perf_counter()
+        first_ref_by_ticker: dict[str, DailyIndexSampleRef] = {}
+        for ref in refs:
+            part = parts[int(ref.part_index)]
+            ticker = str(part.plan.ticker)
+            if ticker not in first_ref_by_ticker:
+                first_ref_by_ticker[ticker] = ref
+        rebuilt = 0
+        appended = 0
+        reused = 0
+        for ticker, ref in first_ref_by_ticker.items():
+            part = parts[int(ref.part_index)]
+            origin_row = int(ref.origin_row)
+            _, did_rebuild, appended_rows = self._ensure_state(part=part, origin_row=origin_row)
+            if did_rebuild:
+                rebuilt += 1
+            elif appended_rows > 0:
+                appended += 1
+            else:
+                reused += 1
+            if ticker not in self._state_by_ticker:
+                raise RuntimeError(f"Chronological event cache did not warm ticker {ticker}.")
+        return {
+            "event_cache_warm_seconds": time.perf_counter() - start,
+            "event_cache_warm_tickers": int(len(first_ref_by_ticker)),
+            "event_cache_warm_rebuilds": int(rebuilt),
+            "event_cache_warm_appends": int(appended),
+            "event_cache_warm_reused": int(reused),
+        }
+
     def materialize(
         self,
         parts: Sequence[LoadedDailyIndexPart],
@@ -4423,30 +4466,10 @@ class _RollingEventStreamCache:
         appended = 0
         for output_row, ref in enumerate(refs):
             part = parts[int(ref.part_index)]
-            ticker = str(part.plan.ticker)
             origin_row = int(ref.origin_row)
-            origin_ordinal = int(part.origin_array("origin_ordinal").astype(np.int64, copy=False)[origin_row])
-            event_offset = int(part.origin_array("event_row_offset").astype(np.int64, copy=False)[origin_row])
-            matrix = part.event_matrix(self.columns)
-            ordinals = part.event_array("ordinal").astype(np.int64, copy=False)
-            if event_offset < 0 or event_offset >= int(ordinals.shape[0]):
-                raise RuntimeError(f"Chronological event cache offset is out of bounds for {_part_key(part.plan)}.")
-            if int(ordinals[event_offset]) != origin_ordinal:
-                raise RuntimeError(f"Chronological event cache origin offset is misaligned for {_part_key(part.plan)}.")
-            state = self._state_by_ticker.get(ticker)
-            if state is None or not state.can_append(origin_ordinal):
-                state = _RollingEventTickerState.from_part(
-                    ticker=ticker,
-                    stream_length=self.stream_length,
-                    matrix=matrix,
-                    ordinals=ordinals,
-                    event_offset=event_offset,
-                    part_key=_part_key(part.plan),
-                )
-                self._state_by_ticker[ticker] = state
-                rebuilt += 1
-            else:
-                appended += state.append_until(matrix=matrix, ordinals=ordinals, event_offset=event_offset, part_key=_part_key(part.plan))
+            state, did_rebuild, appended_rows = self._ensure_state(part=part, origin_row=origin_row)
+            rebuilt += int(bool(did_rebuild))
+            appended += int(appended_rows)
             out[output_row] = state.snapshot()
         return out, self.columns, {
             "raw_stream_rolling_seconds": time.perf_counter() - start,
@@ -4454,6 +4477,36 @@ class _RollingEventStreamCache:
             "raw_stream_rolling_appends": int(appended),
             "raw_stream_rolling_ticker_states": int(len(self._state_by_ticker)),
         }
+
+    def _ensure_state(
+        self,
+        *,
+        part: LoadedDailyIndexPart,
+        origin_row: int,
+    ) -> tuple["_RollingEventTickerState", bool, int]:
+        ticker = str(part.plan.ticker)
+        origin_ordinal = int(part.origin_array("origin_ordinal").astype(np.int64, copy=False)[int(origin_row)])
+        event_offset = int(part.origin_array("event_row_offset").astype(np.int64, copy=False)[int(origin_row)])
+        matrix = part.event_matrix(self.columns)
+        ordinals = part.event_array("ordinal").astype(np.int64, copy=False)
+        if event_offset < 0 or event_offset >= int(ordinals.shape[0]):
+            raise RuntimeError(f"Chronological event cache offset is out of bounds for {_part_key(part.plan)}.")
+        if int(ordinals[event_offset]) != origin_ordinal:
+            raise RuntimeError(f"Chronological event cache origin offset is misaligned for {_part_key(part.plan)}.")
+        state = self._state_by_ticker.get(ticker)
+        if state is None or not state.can_append(origin_ordinal):
+            state = _RollingEventTickerState.from_part(
+                ticker=ticker,
+                stream_length=self.stream_length,
+                matrix=matrix,
+                ordinals=ordinals,
+                event_offset=event_offset,
+                part_key=_part_key(part.plan),
+            )
+            self._state_by_ticker[ticker] = state
+            return state, True, 0
+        appended = state.append_until(matrix=matrix, ordinals=ordinals, event_offset=event_offset, part_key=_part_key(part.plan))
+        return state, False, int(appended)
 
 
 @dataclass(slots=True)
