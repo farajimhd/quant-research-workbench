@@ -11,6 +11,7 @@ import threading
 import time
 import csv
 import traceback
+import _thread
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -40,11 +41,23 @@ from research.temporal_event_model.v3.progress import TemporalProgressState, Tem
 
 JOB_TYPE = "train"
 _INTERRUPT_REQUESTED = False
+_INTERRUPT_COUNT = 0
+_INTERRUPT_REASON = "console interrupt"
+_INTERRUPT_LOCK = threading.Lock()
 
 
 def _handle_interrupt(signum: int, _frame: Any) -> None:
-    global _INTERRUPT_REQUESTED
-    _INTERRUPT_REQUESTED = True
+    global _INTERRUPT_REQUESTED, _INTERRUPT_COUNT
+    with _INTERRUPT_LOCK:
+        _INTERRUPT_REQUESTED = True
+        _INTERRUPT_COUNT += 1
+        count = int(_INTERRUPT_COUNT)
+        reason = str(_INTERRUPT_REASON or f"signal {signum}")
+    if count <= 1:
+        print(f"\nInterrupt received ({reason}); cancelling training. Press Ctrl+C again to force exit.", file=sys.stderr, flush=True)
+    else:
+        print("\nSecond interrupt received; forcing process exit now.", file=sys.stderr, flush=True)
+        os._exit(130)
     raise KeyboardInterrupt
 
 
@@ -52,6 +65,37 @@ def _install_interrupt_handlers() -> None:
     signal.signal(signal.SIGINT, _handle_interrupt)
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _handle_interrupt)
+
+
+def _set_interrupt_reason(reason: str) -> None:
+    global _INTERRUPT_REASON
+    with _INTERRUPT_LOCK:
+        _INTERRUPT_REASON = str(reason)
+
+
+def _start_stop_file_monitor(stop_paths: Sequence[Path], *, poll_seconds: float = 1.0) -> tuple[threading.Event, threading.Thread]:
+    stop_event = threading.Event()
+    paths = tuple(Path(path) for path in stop_paths)
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+
+    def monitor() -> None:
+        while not stop_event.wait(max(0.1, float(poll_seconds))):
+            for path in paths:
+                if path.exists():
+                    _set_interrupt_reason(f"stop file {path}")
+                    print(f"\nStop file detected: {path}; interrupting training.", file=sys.stderr, flush=True)
+                    _thread.interrupt_main()
+                    return
+
+    thread = threading.Thread(target=monitor, name="temporal-v3-stop-file-monitor", daemon=True)
+    thread.start()
+    return stop_event, thread
 
 
 def parse_args() -> argparse.Namespace:
@@ -157,6 +201,7 @@ def main() -> int:
     config.train.run_name = run_name
     run_root = Path(args.output_root) / run_name if args.output_root else default_run_root(MODEL_FAMILY, MODEL_VERSION, JOB_TYPE, run_name)
     paths = RunPaths.create(run_root)
+    stop_monitor_stop, stop_monitor_thread = _start_stop_file_monitor((paths.logs_dir / "STOP", paths.run_root / "STOP"))
     _write_config(paths, config)
     set_seed(int(config.train.seed))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -238,6 +283,7 @@ def main() -> int:
         with reporter if reporter is not None else _NullReporter() as active_reporter:
             checkpointer.set_message_callback(active_reporter.message)
             active_reporter.message("Trainer initialized; waiting for first training batch.")
+            active_reporter.message(f"Graceful stop file: {paths.logs_dir / 'STOP'}")
             if train_loader is not None:
                 initial_metrics = _scoped_loader_metrics(
                     role="train",
@@ -476,6 +522,9 @@ def main() -> int:
         (paths.logs_dir / "fatal_error.txt").write_text("".join(traceback.format_exception(exc)), encoding="utf-8")
         raise
     finally:
+        stop_monitor_stop.set()
+        if stop_monitor_thread.is_alive():
+            stop_monitor_thread.join(timeout=1.0)
         _cancel_loader(train_loader)
         _cancel_loader(validation_loader)
         _cancel_iterator(train_iter)

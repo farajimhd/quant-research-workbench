@@ -408,6 +408,25 @@ run_manifest.json
 Optional `torchinfo` and `torchview` files are written when those packages are
 installed. If not, the corresponding `*_error.txt` files explain why.
 
+## Stopping A Run
+
+The trainer handles console interrupts in two stages:
+
+- first `Ctrl+C`: request graceful cancellation, close loader/prefetch workers,
+  flush logs, and write `logs/interrupted.txt`;
+- second `Ctrl+C`: force process exit with code `130`.
+
+If Windows terminal control events do not reach the Python process, create an
+empty stop file in either of these paths:
+
+```text
+<run_dir>/STOP
+<run_dir>/logs/STOP
+```
+
+The trainer polls these files once per second and raises the same graceful
+interrupt path used by `Ctrl+C`.
+
 ## Stateful Training
 
 Checkpoints include:
