@@ -1036,9 +1036,31 @@ button {
 .service-focus-meta {
   align-items: center;
   display: flex;
-  gap: 12px;
+  gap: 10px;
   justify-content: space-between;
   min-width: 0;
+}
+
+.service-focus-run {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  font-size: 11px;
+  gap: 5px 10px;
+  min-width: 0;
+}
+
+.service-focus-run span {
+  min-width: 0;
+}
+
+.service-focus-actions {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
 }
 
 .service-focus-config-button {
@@ -1130,10 +1152,15 @@ button {
   border-color: var(--badge-warning-border);
 }
 
+.service-work-plan-summary-item.active {
+  background: color-mix(in oklab, var(--badge-info-bg) 44%, var(--surface));
+  border-color: color-mix(in oklab, var(--badge-info-border) 72%, var(--border));
+}
+
 .service-work-plan-layout {
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-columns: minmax(0, 1fr);
   padding: 12px;
 }
 
@@ -1168,10 +1195,6 @@ button {
 
 .news-service-work-and-rows-grid .service-work-responsibility-grid {
   grid-template-columns: minmax(0, 1fr);
-}
-
-.news-service-work-and-rows-grid .service-work-static-panel {
-  align-self: stretch;
 }
 
 .news-today-searchbar {
@@ -1512,8 +1535,7 @@ button {
   font-weight: 560;
 }
 
-.service-work-live-section,
-.service-work-static-panel {
+.service-work-live-section {
   border: 1px solid var(--surface-border);
   border-radius: 8px;
   min-width: 0;
@@ -2673,127 +2695,6 @@ button {
   padding: 10px;
 }
 
-.service-work-static-panel {
-  align-self: start;
-  background: color-mix(in oklab, var(--surface-alt) 35%, var(--surface));
-  display: grid;
-  gap: 8px;
-  padding: 8px;
-}
-
-.service-work-collapsed {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.service-work-collapsed.has-issues {
-  border-color: var(--badge-warning-border);
-}
-
-.service-work-collapsed summary {
-  align-items: center;
-  cursor: pointer;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto;
-  list-style: none;
-  padding: 10px;
-}
-
-.service-work-collapsed summary::-webkit-details-marker {
-  display: none;
-}
-
-.service-work-collapsed summary span {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.service-work-collapsed summary strong {
-  color: var(--foreground);
-  font-size: 12.5px;
-  font-weight: 620;
-}
-
-.service-work-collapsed summary small {
-  color: var(--muted-foreground);
-  font-size: 10.5px;
-  line-height: 1.35;
-}
-
-.service-work-collapsed summary em {
-  color: var(--muted-foreground);
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 560;
-  white-space: nowrap;
-}
-
-.service-work-static-list {
-  border-top: 1px solid var(--border);
-  display: grid;
-  gap: 6px;
-  max-height: 340px;
-  overflow: auto;
-  padding: 8px;
-}
-
-.service-work-static-row {
-  background: var(--surface);
-  border: 1px solid var(--surface-border);
-  border-radius: 7px;
-  display: grid;
-  gap: 6px;
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding: 8px;
-}
-
-.service-work-static-row > div {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.service-work-static-row strong {
-  color: var(--foreground);
-  font-size: 12px;
-  font-weight: 610;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.service-work-static-row span:not(.service-work-mini-status) {
-  color: var(--muted-foreground);
-  font-size: 10px;
-  font-weight: 520;
-}
-
-.service-work-static-row p {
-  color: var(--muted-foreground);
-  font-size: 11px;
-  grid-column: 1 / -1;
-  line-height: 1.35;
-  margin: 0;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  display: -webkit-box;
-}
-
-.service-work-more {
-  color: var(--muted-foreground);
-  font-size: 11px;
-  font-weight: 560;
-  padding: 2px 4px 4px;
-  text-align: center;
-}
-
 .service-work-status {
   border: 1px solid var(--badge-muted-border);
   border-radius: 999px;
@@ -3207,6 +3108,17 @@ button {
   max-height: calc(100vh - 134px);
   overflow: auto;
   padding: 2px 2px 4px;
+}
+
+.modal-panel.service-dependencies-modal-panel {
+  max-height: min(800px, calc(100vh - 56px));
+  max-width: min(1220px, calc(100vw - 72px));
+  width: min(1220px, calc(100vw - 72px));
+}
+
+.modal-panel.service-dependencies-modal-panel .service-dependencies-panel {
+  max-height: calc(100vh - 134px);
+  overflow: auto;
 }
 
 .modal-panel.service-log-detail-modal-panel {
@@ -3668,33 +3580,101 @@ button {
   font-size: 12px;
 }
 
-.service-key-values {
-  display: grid;
-  gap: 0;
-  margin: 0;
-  padding: 4px 12px 10px;
-}
-
-.service-key-values div {
-  align-items: baseline;
-  border-bottom: 1px solid color-mix(in oklab, var(--border) 55%, transparent);
+.service-dependencies-panel {
   display: grid;
   gap: 12px;
-  grid-template-columns: 180px minmax(0, 1fr);
-  min-height: 32px;
+  padding: 12px;
 }
 
-.service-key-values dt {
+.service-dependencies-summary {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.service-dependencies-summary div {
+  background: color-mix(in oklab, var(--surface-alt) 48%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.service-dependencies-summary span {
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-.service-key-values dd {
-  font-size: 13px;
-  margin: 0;
+.service-dependencies-summary strong {
+  color: var(--foreground);
+  font-size: 15px;
+  font-weight: 620;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.service-dependencies-sections {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.service-dependencies-section {
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.service-dependencies-section-header {
+  align-items: flex-start;
+  background: color-mix(in oklab, var(--surface-alt) 62%, var(--surface));
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 11px 12px;
+}
+
+.service-dependencies-section-header h3 {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 620;
+  margin: 0 0 4px;
+}
+
+.service-dependencies-section-header p {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.service-dependencies-section-header span {
+  background: color-mix(in oklab, var(--surface) 72%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 650;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+.service-dependencies-section .data-table-shell {
+  border: 0;
+  border-radius: 0;
+  max-height: 260px;
+  overflow: auto;
 }
 
 @media (max-width: 1280px) {
@@ -3754,6 +3734,11 @@ button {
     width: calc(100vw - 32px);
   }
 
+  .modal-panel.service-dependencies-modal-panel {
+    max-width: calc(100vw - 32px);
+    width: calc(100vw - 32px);
+  }
+
   .modal-panel.service-log-detail-modal-panel {
     max-width: calc(100vw - 32px);
     width: calc(100vw - 32px);
@@ -3764,13 +3749,13 @@ button {
     border-right: 0;
   }
 
-  .services-header-actions {
-    justify-content: flex-start;
+  .service-dependencies-summary,
+  .service-dependencies-sections {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .service-key-values div {
-    grid-template-columns: minmax(0, 1fr);
-    padding: 7px 0;
+  .services-header-actions {
+    justify-content: flex-start;
   }
 
   .service-focus-facts,

@@ -5,7 +5,7 @@ import { api } from "../api/client";
 import { Button } from "../app/components/Button";
 import { DataTable } from "../app/components/DataTable";
 import { Modal } from "../app/components/Modal";
-import { displayName, formatCell, formatCompactNumber } from "../app/format";
+import { displayName, formatCell, formatCompactNumber, formatDuration } from "../app/format";
 
 export type ServicePageMode = "dashboard" | ServiceId;
 export type ServiceId = "ibkr" | "news" | "qmd" | "reference" | "sec" | "text-embed";
@@ -306,19 +306,9 @@ function ServiceFact({ label, value }: { label: string; value: string }) {
 
 function ServiceDetail({ pageError, service }: { pageError: string; service: ServiceStatusPayload }) {
   const [configOpen, setConfigOpen] = useState(false);
-  const snapshot = service.snapshot ?? {};
-  const metrics = service.metrics ?? {};
-  const runtimeRows = objectRows(snapshot.runtime, metrics);
-  const dailyRows = objectRows(snapshot.daily_summary);
-  const coverageRows = objectRows(snapshot.coverage);
-  const dependencyRows = arrayRows(snapshot.dependencies);
-  const sourceRows = arrayRows(snapshot.sources_sinks);
-  const taskRows = arrayRows(snapshot.tasks);
-  const progressRows = arrayRows(snapshot.task_table_progress);
-  const queueRows = arrayRows(snapshot.queues);
-  const configuredTableRows = arrayRows(snapshot.configured_tables);
-  const recentRows = recentRowsFromPayload(service.recent);
+  const [dependenciesOpen, setDependenciesOpen] = useState(false);
   const focusStatus = statusInfo(service);
+  const runTiming = serviceRunTiming(service);
   return (
     <>
       <section className="service-primary-grid">
@@ -332,11 +322,21 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
               <strong className="service-focus-phase">{phaseText(service)}</strong>
             </div>
             <div className="service-focus-meta">
-              <span className="service-focus-runtime">{runtimeText(service)}</span>
-              <button className="service-focus-config-button" onClick={() => setConfigOpen(true)} type="button">
-                <Settings2 size={14} />
-                Configuration
-              </button>
+              <div className="service-focus-run">
+                <span className="service-focus-runtime">{runtimeText(service)}</span>
+                <span>Started {runTiming.started}</span>
+                <span>Duration {runTiming.duration}</span>
+              </div>
+              <div className="service-focus-actions">
+                <button className="service-focus-config-button" onClick={() => setConfigOpen(true)} type="button">
+                  <Settings2 size={14} />
+                  Configuration
+                </button>
+                <button className="service-focus-config-button" onClick={() => setDependenciesOpen(true)} type="button">
+                  <CheckCircle2 size={14} />
+                  Dependencies
+                </button>
+              </div>
             </div>
             <p className="service-focus-message">{currentMessage(service) || "No current operation message reported."}</p>
           </div>
@@ -350,29 +350,13 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
           <ServiceConfigurationPanel service={service} />
         </Modal>
       ) : null}
+      {dependenciesOpen ? (
+        <Modal className="service-dependencies-modal-panel" onClose={() => setDependenciesOpen(false)} title={`${service.registry.label} Dependencies`}>
+          <ServiceDependenciesPanel service={service} />
+        </Modal>
+      ) : null}
       {service.registry.id === "news" ? <NewsServiceWorkAndRows service={service} /> : <ServiceWorkPlanPanel service={service} />}
       <ServiceErrorLogPanel pageError={pageError} service={service} />
-      <Panel title="Coverage">
-        <KeyValueList rows={coverageRows.length ? coverageRows : [{ key: "status", value: "not reported" }]} />
-      </Panel>
-      <section className="service-two-column">
-        <Panel title="Runtime Counters"><DataTable rows={runtimeRows} columns={["key", "value"]} empty="No runtime counters reported." /></Panel>
-        <Panel title="Daily Summary"><DataTable rows={dailyRows} columns={["key", "value"]} empty="No daily summary reported." /></Panel>
-      </section>
-      <Panel title="Tasks And Table Progress">
-        <DataTable rows={[...taskRows, ...progressRows]} empty="No tasks reported." />
-      </Panel>
-      <section className="service-two-column">
-        <Panel title="Dependencies"><DataTable rows={dependencyRows} empty="No dependencies reported." /></Panel>
-        <Panel title="Queues"><DataTable rows={queueRows} empty="No queues reported." /></Panel>
-      </section>
-      <section className="service-two-column">
-        <Panel title="Sources And Sinks"><DataTable rows={sourceRows} empty="No source coverage reported." /></Panel>
-        <Panel title="Configured Tables"><DataTable rows={configuredTableRows} empty="No configured tables reported." /></Panel>
-      </section>
-      <Panel title="Recent Items">
-        <DataTable rows={recentRows} empty="No recent items reported." />
-      </Panel>
     </>
   );
 }
@@ -903,34 +887,19 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
   const groups = serviceWorkGroups(service);
   const visibleGroups = visibleServiceWorkGroups(groups, service.registry.id);
   const newsPollHistory = useNewsPollHistory(service);
-  const setupRows = serviceSetupRows(service);
-  const dependencyRows = setupRows.filter((row) => isPreflightSetupRow(row));
-  const contractRows = setupRows.filter((row) => !isPreflightSetupRow(row));
   const liveCounts = serviceWorkPlanSummary(visibleGroups);
   return (
     <Panel className="service-work-plan-panel" title="Service Work Plan">
       <div className="service-work-plan-summary">
-        <WorkPlanSummaryItem label="Live Areas" value={String(liveCounts.total)} />
-        <WorkPlanSummaryItem label="Active Now" value={String(liveCounts.running)} />
-        <WorkPlanSummaryItem label="Healthy" value={String(liveCounts.healthy)} tone={liveCounts.healthy ? "ok" : undefined} />
-        <WorkPlanSummaryItem label="Needs Attention" value={String(liveCounts.needsAttention)} tone={liveCounts.needsAttention ? "warn" : "ok"} />
+        <WorkPlanSummaryItem label="Areas" value={String(liveCounts.areas)} />
+        <WorkPlanSummaryItem label="Active Tasks" value={formatCompactNumber(liveCounts.activeTasks)} tone={liveCounts.activeTasks ? "active" : undefined} />
+        <WorkPlanSummaryItem label="Completed Tasks" value={formatCompactNumber(liveCounts.completedTasks)} tone={liveCounts.completedTasks ? "ok" : undefined} />
+        <WorkPlanSummaryItem label="Warnings / Errors" value={formatCompactNumber(liveCounts.warningTasks)} tone={liveCounts.warningTasks ? "warn" : "ok"} />
       </div>
       <div className="service-work-plan-layout">
         <section className="service-work-live-section">
           <ServiceWorkResponsibilityGrid groups={visibleGroups} newsPollHistory={newsPollHistory} service={service} />
         </section>
-        <aside className="service-work-static-panel">
-          <ServiceCollapsedWorkSection
-            description="Provider reachability, auth, storage, ClickHouse, and environment checks. These are setup checks, not active data work."
-            rows={dependencyRows}
-            title="Preflight"
-          />
-          <ServiceCollapsedWorkSection
-            description="Configured tables and static contracts this dashboard expects the service to maintain or read."
-            rows={contractRows}
-            title="Setup / Contracts"
-          />
-        </aside>
       </div>
     </Panel>
   );
@@ -1725,36 +1694,6 @@ function ServiceWorkSubtaskTable({ rows, title }: { rows: ServiceWorkRow[]; titl
   );
 }
 
-function ServiceCollapsedWorkSection({ description, rows, title }: { description: string; rows: ServiceWorkRow[]; title: string }) {
-  const issueCount = rows.filter((row) => ["error", "warn"].includes(workStatusClass(row.status))).length;
-  const visibleRows = rows.slice(0, 10);
-  const hiddenCount = Math.max(0, rows.length - visibleRows.length);
-  return (
-    <details className={`service-work-collapsed ${issueCount ? "has-issues" : ""}`}>
-      <summary>
-        <span>
-          <strong>{title}</strong>
-          <small>{description}</small>
-        </span>
-        <em>{rows.length} rows / {issueCount} issues</em>
-      </summary>
-      <div className="service-work-static-list">
-        {(visibleRows.length ? visibleRows : [{ detail: "No rows reported for this setup area.", kind: "setup", lastAt: "-", name: title, progress: "-", reportKind: "setup" as const, rows: "-", schedule: "-", status: "not reported" }]).map((row, index) => (
-          <div className={`service-work-static-row ${workStatusClass(row.status)}`} key={`${row.kind}-${row.name}-${index}`}>
-            <div>
-              <strong title={row.name}>{row.name}</strong>
-              <span>{displayName(row.kind)}</span>
-              <p title={row.detail}>{row.detail}</p>
-            </div>
-            <span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span>
-          </div>
-        ))}
-        {hiddenCount ? <div className="service-work-more">+ {hiddenCount} more row{hiddenCount === 1 ? "" : "s"}</div> : null}
-      </div>
-    </details>
-  );
-}
-
 function groupPrimaryRow(group: ServiceWorkGroup): ServiceWorkRow {
   const sortedRows = [...group.rows].sort((a, b) => workStatusRank(a.status) - workStatusRank(b.status) || (b.lastAtMs ?? 0) - (a.lastAtMs ?? 0));
   return sortedRows[0] ?? { detail: "No subtask report received in the current snapshot.", kind: "service", lastAt: "-", name: "No live report", progress: "-", reportKind: "live", rows: "-", schedule: "-", status: "not reported" };
@@ -1810,7 +1749,7 @@ function newsCoverageHistoryRows(service: ServiceStatusPayload): NewsCoverageHis
     .filter((row) => isNewsCoverageLogEvent(row.event || ""))
     .map(newsCoverageHistoryRow)
     .sort((a, b) => (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0));
-  if (rows.length) return rows.slice(0, 50);
+  if (rows.length) return compactNewsCoverageHistoryRows(rows).slice(0, 50);
   const metrics = serviceMetricsRecord(service);
   const gapStatus = stringMetric(metrics, ["gap_status"]);
   const gapMessage = stringMetric(metrics, ["gap_message"]);
@@ -1837,6 +1776,26 @@ function newsCoverageHistoryRows(service: ServiceStatusPayload): NewsCoverageHis
     totalChunks: numericMetric(metrics, ["gap_fill_total_chunks"]),
     window: "-",
   }];
+}
+
+function compactNewsCoverageHistoryRows(rows: NewsCoverageHistoryRow[]) {
+  const seen = new Set<string>();
+  const compactRows: NewsCoverageHistoryRow[] = [];
+  for (const row of rows) {
+    const key = [
+      row.event,
+      row.stage,
+      row.status,
+      row.startUtc || "-",
+      row.endUtc || "-",
+      row.window || "-",
+      row.script || "",
+    ].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    compactRows.push(row);
+  }
+  return compactRows;
 }
 
 function isNewsPublishLogEvent(event: string) {
@@ -2720,17 +2679,13 @@ function visibleServiceWorkGroups(groups: ServiceWorkGroup[], serviceId: Service
 function serviceWorkPlanSummary(groups: ServiceWorkGroup[]) {
   return groups.reduce(
     (summary, group) => {
-      const normalized = normalizedStatus(group.status);
-      const status = workStatusClass(group.status);
-      summary.total += 1;
-      if (status === "active") summary.running += 1;
-      else if (status === "ok") summary.healthy += 1;
-      else if ((status === "warn" || status === "error") && normalized !== "waiting" && normalized !== "not_reported") {
-        summary.needsAttention += 1;
-      }
+      summary.areas += 1;
+      summary.activeTasks += group.activeCount;
+      summary.completedTasks += group.completedCount;
+      summary.warningTasks += group.warningCount;
       return summary;
     },
-    { healthy: 0, needsAttention: 0, running: 0, total: 0 },
+    { activeTasks: 0, areas: 0, completedTasks: 0, warningTasks: 0 },
   );
 }
 
@@ -3217,6 +3172,88 @@ function ServiceConfigurationPanel({ service }: { service: ServiceStatusPayload 
   );
 }
 
+function ServiceDependenciesPanel({ service }: { service: ServiceStatusPayload }) {
+  const snapshot = service.snapshot ?? {};
+  const dependencyRows = arrayRows(snapshot.dependencies);
+  const queueRows = arrayRows(snapshot.queues);
+  const sourceRows = arrayRows(snapshot.sources_sinks);
+  const configuredTableRows = arrayRows(snapshot.configured_tables);
+  const setupRows = serviceSetupRows(service).map((row) => ({
+    detail: row.detail,
+    last: row.lastAt,
+    name: row.name,
+    progress: row.progress,
+    rows: row.rows,
+    status: displayName(row.status),
+    type: displayName(row.kind),
+  }));
+  const sections = [
+    {
+      description: "Provider reachability, credentials, storage, ClickHouse, and other dependency checks reported by the service.",
+      empty: "No dependency checks reported.",
+      rows: dependencyRows,
+      title: "Dependency Checks",
+    },
+    {
+      description: "Setup contracts inferred from configured tables and startup validation rows.",
+      empty: "No setup or contract rows reported.",
+      rows: setupRows,
+      title: "Setup Contracts",
+    },
+    {
+      description: "Internal queue depth, active workers, pending work, and drain state.",
+      empty: "No queues reported.",
+      rows: queueRows,
+      title: "Queues",
+    },
+    {
+      description: "External providers, input sources, output sinks, and their last reported state.",
+      empty: "No sources or sinks reported.",
+      rows: sourceRows,
+      title: "Sources And Sinks",
+    },
+    {
+      description: "Database tables the service expects to read, write, or validate.",
+      empty: "No configured tables reported.",
+      rows: configuredTableRows,
+      title: "Configured Tables",
+    },
+  ];
+  const issueCount = sections.reduce((total, section) => total + section.rows.filter((row) => dependencyModalRowHasIssue(row)).length, 0);
+  const rowCount = sections.reduce((total, section) => total + section.rows.length, 0);
+  return (
+    <div className="service-dependencies-panel">
+      <div className="service-dependencies-summary">
+        <ConfigSummaryItem label="Sections" value={String(sections.length)} />
+        <ConfigSummaryItem label="Rows" value={formatCompactNumber(rowCount)} />
+        <ConfigSummaryItem label="Issues" value={formatCompactNumber(issueCount)} />
+        <ConfigSummaryItem label="Service" value={service.registry.label} />
+      </div>
+      <div className="service-dependencies-sections">
+        {sections.map((section) => (
+          <section className="service-dependencies-section" key={section.title}>
+            <div className="service-dependencies-section-header">
+              <div>
+                <h3>{section.title}</h3>
+                <p>{section.description}</p>
+              </div>
+              <span>{section.rows.length} row{section.rows.length === 1 ? "" : "s"}</span>
+            </div>
+            <DataTable empty={section.empty} rows={section.rows} />
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function dependencyModalRowHasIssue(row: Record<string, unknown>) {
+  return ["status", "state", "result", "level"].some((key) => {
+    const value = normalizedStatus(String(row[key] || ""));
+    return /failed|error|warn|degraded|blocked|unreachable/.test(value);
+  });
+}
+
 function ConfigSummaryItem({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -3263,19 +3300,6 @@ function Panel({ children, className = "", title }: { children: ReactNode; class
       ) : null}
       {children}
     </section>
-  );
-}
-
-function KeyValueList({ rows }: { rows: Array<{ key: string; value: unknown }> }) {
-  return (
-    <dl className="service-key-values">
-      {rows.slice(0, 8).map((row) => (
-        <div key={row.key}>
-          <dt>{displayName(row.key)}</dt>
-          <dd>{formatValue(row.key, row.value)}</dd>
-        </div>
-      ))}
-    </dl>
   );
 }
 
@@ -3675,6 +3699,24 @@ function runtimeText(service: ServiceStatusPayload) {
   return found ? `${displayName(found)} ${formatCompactNumber(record[found])}` : "-";
 }
 
+function serviceRunTiming(service: ServiceStatusPayload) {
+  const metrics = serviceMetricsRecord(service);
+  const startedAt = stringMetric(metrics, ["started_at_utc", "service_started_at_utc", "run_started_at_utc", "gateway_started_at_utc"])
+    || stringMetric(service.current_operation ?? {}, ["started_at", "started_at_utc", "since"]);
+  const elapsedSeconds = numericMetric(metrics, ["elapsed_seconds", "uptime_seconds", "process_uptime_seconds", "runtime_seconds"]);
+  const elapsedMs = numericMetric(metrics, ["process_uptime_ms", "uptime_ms", "elapsed_ms"]);
+  const parsedStart = Date.parse(startedAt);
+  const parsedNow = Date.parse(service.checked_at_utc);
+  const derivedSeconds = Number.isFinite(parsedStart)
+    ? Math.max(0, ((Number.isFinite(parsedNow) ? parsedNow : Date.now()) - parsedStart) / 1000)
+    : 0;
+  const durationSeconds = elapsedSeconds || (elapsedMs ? elapsedMs / 1000 : 0) || derivedSeconds;
+  return {
+    duration: durationSeconds ? formatDuration(durationSeconds) : "-",
+    started: startedAt ? formatLogTime(startedAt) : "-",
+  };
+}
+
 function serviceWorkRows(service: ServiceStatusPayload): ServiceWorkRow[] {
   const snapshot = service.snapshot ?? {};
   const rows: ServiceWorkRow[] = [];
@@ -3753,11 +3795,6 @@ function serviceSetupRows(service: ServiceStatusPayload): ServiceWorkRow[] {
 function isSetupLikeWorkRow(row: ServiceWorkRow) {
   const text = workRowSearchText(row);
   return /preflight|dependenc|configured table|config contract|startup check|schema check|credential|auth|artifact storage/.test(text);
-}
-
-function isPreflightSetupRow(row: ServiceWorkRow) {
-  const text = workRowSearchText(row);
-  return /preflight|dependenc|clickhouse|artifact|provider|credential|auth|storage|market status|calendar|health/.test(text);
 }
 
 function serviceWorkGroups(service: ServiceStatusPayload): ServiceWorkGroup[] {
@@ -4113,33 +4150,9 @@ function workStatusRank(status: string) {
   return 4;
 }
 
-function objectRows(...values: unknown[]) {
-  const rows: Array<{ key: string; value: unknown }> = [];
-  for (const value of values) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      if (item === undefined || item === null || item === "") continue;
-      if (typeof item === "object") rows.push({ key, value: compactJson(item) });
-      else rows.push({ key, value: item });
-    }
-  }
-  return rows;
-}
-
 function arrayRows(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item)).map(normalizeRow);
-}
-
-function recentRowsFromPayload(value: unknown) {
-  if (Array.isArray(value)) return value.filter(isRecord).map(normalizeRow);
-  if (!value || typeof value !== "object") return [];
-  const record = value as Record<string, unknown>;
-  for (const key of ["rows", "items", "recent", "events", "filings", "news", "snapshots"]) {
-    const rows = record[key];
-    if (Array.isArray(rows)) return rows.filter(isRecord).map(normalizeRow);
-  }
-  return objectRows(record);
 }
 
 function normalizeRow(row: Record<string, unknown>) {
