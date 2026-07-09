@@ -541,7 +541,7 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
   const liveBadge = newsLiveBadge(service, history);
   return (
     <section className={`service-work-responsibility-card news-live-card ${workStatusClass(group.status)}`}>
-      <div className="news-live-card-header">
+      <div className="service-work-responsibility-header news-live-card-header">
         <div>
           <h3>{group.title}</h3>
           <p>{group.description}</p>
@@ -865,12 +865,18 @@ function newsPollHistorySummary(rows: NewsPollHistoryRow[]) {
 
 function newsPublishHistoryRows(service: ServiceStatusPayload): NewsPublishHistoryRow[] {
   return (service.logs?.rows ?? [])
-    .filter((row) => row.event === "publish_started" || row.event === "publish_completed" || row.event === "publish_failed")
+    .filter((row) => (
+      row.event === "publish_started"
+      || row.event === "publish_completed"
+      || row.event === "publish_failed"
+      || row.event === "background_batch_completed"
+      || row.event === "poll_completed"
+    ))
     .map((row) => {
       const fields = isRecord(row.fields) ? row.fields : {};
       const items = Array.isArray(fields.items) ? fields.items.filter(isRecord) : [];
       const firstItem = items[0] ?? {};
-      const processedRows = numericMetric(fields, ["processed_rows"]);
+      const processedRows = numericMetric(fields, ["processed_rows", "article_count"]);
       const insertedRows = numericMetric(fields, ["normalized_rows_inserted"]);
       const tickerRows = numericMetric(fields, ["ticker_rows_inserted", "ticker_count"]);
       const skippedRows = numericMetric(fields, ["skipped_existing"]);
@@ -891,7 +897,7 @@ function newsPublishHistoryRows(service: ServiceStatusPayload): NewsPublishHisto
         status: event.includes("failed") ? "failed" : event.includes("completed") ? "complete" : "running",
         tickerRows,
         tickers: publishTickerLabel(fields, firstItem),
-        title: stringMetric(firstItem, ["title"]) || stringMetric(fields, ["title_sample"]) || shortPollId(stringMetric(fields, ["poll_id"])),
+        title: publishTitleLabel(event, fields, firstItem),
         time: row.ts_utc || "",
       };
     })
@@ -901,9 +907,10 @@ function newsPublishHistoryRows(service: ServiceStatusPayload): NewsPublishHisto
 }
 
 function newsPublishSummary(rows: NewsPublishHistoryRow[]) {
-  return rows.reduce(
+  const completedRows = rows.filter((row) => row.event === "publish_completed" || row.event === "background_batch_completed");
+  const fallbackRows = completedRows.length ? completedRows : rows.filter((row) => row.event === "poll_completed");
+  return fallbackRows.reduce(
     (totals, row) => {
-      if (!row.event.includes("completed")) return totals;
       return {
         insertedRows: totals.insertedRows + row.insertedRows,
         skippedRows: totals.skippedRows + row.skippedRows,
@@ -939,8 +946,17 @@ function publishEnrichmentLabel(fields: Record<string, unknown>, firstItem: Reco
   const needs = Boolean(firstItem.requires_enrichment ?? fields.requires_enrichment_count);
   const hasPdf = Boolean(firstItem.has_pdf ?? fields.pdf_count);
   const flags = Array.isArray(firstItem.quality_flags) ? firstItem.quality_flags.map(String).filter(Boolean).slice(0, 2) : [];
-  const parts = [needs ? "needs" : "inline", status || "", hasPdf ? "pdf" : "", ...flags].filter(Boolean);
+  const enrichedUrls = numericMetric(fields, ["enriched_urls"]);
+  const parts = [needs ? "needs" : "inline", status || "", hasPdf ? "pdf" : "", enrichedUrls ? `${formatCompactNumber(enrichedUrls)} urls` : "", ...flags].filter(Boolean);
   return parts.length ? parts.join(" / ") : "-";
+}
+
+function publishTitleLabel(event: string, fields: Record<string, unknown>, firstItem: Record<string, unknown>) {
+  const title = stringMetric(firstItem, ["title"]) || stringMetric(fields, ["title_sample"]);
+  if (title) return title;
+  if (event === "poll_completed") return `poll ${shortPollId(stringMetric(fields, ["poll_id"]))}`;
+  if (event === "background_batch_completed") return `${formatCompactNumber(numericMetric(fields, ["article_count"]))} enriched article rows`;
+  return shortPollId(stringMetric(fields, ["poll_id"]));
 }
 
 function shortPollId(value: string) {
