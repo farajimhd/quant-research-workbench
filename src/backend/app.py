@@ -1181,7 +1181,32 @@ def normalize_runtime_log_row(row: dict[str, Any], *, source_path: Path, line_nu
         "detail": redact_log_text(detail),
         "source": source_path.name,
         "line": line_number,
+        "fields": runtime_log_public_fields(event, row),
     }
+
+
+def runtime_log_public_fields(event: str, row: dict[str, Any]) -> dict[str, Any]:
+    if event != "poll_completed":
+        return {}
+    allowed = {
+        "coverage_mode",
+        "duplicate_news_rows",
+        "failed_rows",
+        "input_duplicate_ids_total",
+        "normalized_rows_inserted",
+        "pages",
+        "poll_id",
+        "processed_rows",
+        "provider_rows",
+        "saturated",
+        "skipped_existing",
+        "start_utc",
+        "status",
+        "ticker_rows_inserted",
+        "unique_news_rows",
+        "wall_seconds",
+    }
+    return {key: value for key, value in row.items() if key in allowed and value not in (None, "")}
 
 
 def infer_runtime_log_level(event: str, row: dict[str, Any]) -> str:

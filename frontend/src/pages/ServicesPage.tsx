@@ -79,6 +79,7 @@ type ServiceLogPayload = {
 type ServiceRuntimeLogRow = {
   detail?: string;
   event?: string;
+  fields?: Record<string, unknown>;
   level?: string;
   line?: number;
   source?: string;
@@ -664,15 +665,82 @@ function useNewsPollHistory(service: ServiceStatusPayload) {
       setHistory([]);
       return;
     }
+    const logRows = newsPollHistoryRowsFromLogs(service);
     const row = newsPollHistoryRow(service);
-    if (!row) return;
+    const incoming = row ? [row, ...logRows] : logRows;
+    if (!incoming.length) return;
     setHistory((current) => {
-      if (current[0]?.signature === row.signature) return current;
-      if (current.some((item) => item.signature === row.signature)) return current;
-      return [row, ...current].slice(0, 50);
+      const merged = mergeNewsPollHistory(incoming, current);
+      return historiesEqual(merged, current) ? current : merged;
     });
   }, [service]);
   return history;
+}
+
+function newsPollHistoryRowsFromLogs(service: ServiceStatusPayload): NewsPollHistoryRow[] {
+  return (service.logs?.rows ?? [])
+    .filter((row) => row.event === "poll_completed" && isRecord(row.fields))
+    .map((row) => newsPollHistoryRowFromLog(row, service.checked_at_utc))
+    .filter((row): row is NewsPollHistoryRow => Boolean(row));
+}
+
+function newsPollHistoryRowFromLog(row: ServiceRuntimeLogRow, checkedAt: string): NewsPollHistoryRow | null {
+  const fields = row.fields;
+  if (!isRecord(fields)) return null;
+  const pollId = stringMetric(fields, ["poll_id"]);
+  const pollRunMatch = pollId.match(/(\d+)$/);
+  const pollRun = pollRunMatch ? Number(pollRunMatch[1]) : 0;
+  const pollAt = row.ts_utc || stringMetric(fields, ["start_utc"]) || checkedAt;
+  const providerRows = numericMetric(fields, ["provider_rows"]);
+  const processedRows = numericMetric(fields, ["processed_rows"]);
+  const uniqueRows = numericMetric(fields, ["unique_news_rows"]);
+  const duplicateRows = numericMetric(fields, ["duplicate_news_rows", "input_duplicate_ids_total"]);
+  const writtenRows = numericMetric(fields, ["normalized_rows_inserted"]);
+  const skippedExisting = numericMetric(fields, ["skipped_existing"]);
+  const failedRows = numericMetric(fields, ["failed_rows"]);
+  const wallSeconds = numericMetric(fields, ["wall_seconds"]);
+  const status = stringMetric(fields, ["status"]) || row.level || "observed";
+  const signature = [
+    pollId || pollRun,
+    pollAt,
+    providerRows,
+    processedRows,
+    uniqueRows,
+    writtenRows,
+    skippedExisting,
+    failedRows,
+    status,
+  ].join("|");
+  return {
+    checkedAt,
+    duplicateRows,
+    failedRows,
+    pollAt,
+    pollRun,
+    processedRows,
+    providerRows,
+    signature,
+    skippedExisting,
+    status,
+    uniqueRows,
+    wallSeconds,
+    writtenRows,
+  };
+}
+
+function mergeNewsPollHistory(...sets: NewsPollHistoryRow[][]) {
+  const bySignature = new Map<string, NewsPollHistoryRow>();
+  for (const rows of sets) {
+    for (const row of rows) bySignature.set(row.signature, row);
+  }
+  return Array.from(bySignature.values())
+    .sort((a, b) => (Date.parse(b.pollAt) || 0) - (Date.parse(a.pollAt) || 0))
+    .slice(0, 50);
+}
+
+function historiesEqual(left: NewsPollHistoryRow[], right: NewsPollHistoryRow[]) {
+  if (left.length !== right.length) return false;
+  return left.every((row, index) => row.signature === right[index]?.signature);
 }
 
 function newsPollHistoryRow(service: ServiceStatusPayload): NewsPollHistoryRow | null {
