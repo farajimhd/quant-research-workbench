@@ -909,6 +909,7 @@ class DailyIndexBatchMaterializer:
         raw_stream_override: np.ndarray | None = None,
         raw_stream_feature_names_override: Sequence[str] | None = None,
         profile_override: Mapping[str, float | int] | None = None,
+        context_override: "_RollingContextBatch | None" = None,
     ) -> DailyIndexTrainingBatch:
         start = time.perf_counter()
         if not refs:
@@ -972,7 +973,12 @@ class DailyIndexBatchMaterializer:
                 np.ones((len(refs),), dtype=np.bool_) if labels_valid else np.zeros((len(refs),), dtype=np.bool_)
             )
         text_start = time.perf_counter()
-        text_inputs, text_profile = self._materialize_text_inputs(parts, refs)
+        if context_override is not None and context_override.text_inputs is not None:
+            text_inputs = context_override.text_inputs
+            text_profile = dict(context_override.profile)
+            text_profile["text_rolling_override"] = int(1)
+        else:
+            text_inputs, text_profile = self._materialize_text_inputs(parts, refs)
         for key, value in text_inputs.items():
             chunk_mask = value.get("chunk_mask")
             if chunk_mask is not None:
@@ -980,16 +986,25 @@ class DailyIndexBatchMaterializer:
         profile.update(text_profile)
         profile["text_seconds"] = time.perf_counter() - text_start
         xbrl_start = time.perf_counter()
-        xbrl_inputs, xbrl_profile = self._materialize_xbrl_inputs(parts, refs)
+        if context_override is not None and context_override.xbrl_inputs is not None:
+            xbrl_inputs = context_override.xbrl_inputs
+            xbrl_profile = {"xbrl_rolling_override": int(1)}
+        else:
+            xbrl_inputs, xbrl_profile = self._materialize_xbrl_inputs(parts, refs)
         xbrl_mask = xbrl_inputs.get("mask")
         if xbrl_mask is not None:
             availability["xbrl_available"] = xbrl_mask.reshape((len(refs), -1)).any(axis=1)
         profile.update(xbrl_profile)
         profile["xbrl_seconds"] = time.perf_counter() - xbrl_start
         bar_start = time.perf_counter()
-        bar_inputs, bar_profile = self._materialize_bar_inputs(parts, refs)
-        intraday_bar_inputs, intraday_bar_profile = self._materialize_intraday_bar_inputs(parts, refs)
-        bar_inputs.update(intraday_bar_inputs)
+        if context_override is not None and context_override.bar_inputs is not None:
+            bar_inputs = context_override.bar_inputs
+            bar_profile = {"bar_rolling_override": int(1)}
+            intraday_bar_profile: dict[str, float | int] = {"intraday_bar_rolling_override": int(1)}
+        else:
+            bar_inputs, bar_profile = self._materialize_bar_inputs(parts, refs)
+            intraday_bar_inputs, intraday_bar_profile = self._materialize_intraday_bar_inputs(parts, refs)
+            bar_inputs.update(intraday_bar_inputs)
         for key, value in bar_inputs.items():
             bar_mask = value.get("mask")
             if bar_mask is not None:
@@ -998,14 +1013,22 @@ class DailyIndexBatchMaterializer:
         profile.update(intraday_bar_profile)
         profile["bar_seconds"] = time.perf_counter() - bar_start
         corporate_start = time.perf_counter()
-        corporate_inputs, corporate_profile = self._materialize_corporate_action_inputs(parts, refs)
+        if context_override is not None and context_override.corporate_action_inputs is not None:
+            corporate_inputs = context_override.corporate_action_inputs
+            corporate_profile = {"corporate_action_rolling_override": int(1)}
+        else:
+            corporate_inputs, corporate_profile = self._materialize_corporate_action_inputs(parts, refs)
         corporate_mask = corporate_inputs.get("mask")
         if corporate_mask is not None:
             availability["corporate_actions_available"] = corporate_mask.reshape((len(refs), -1)).any(axis=1)
         profile.update(corporate_profile)
         profile["corporate_action_seconds"] = time.perf_counter() - corporate_start
         scanner_start = time.perf_counter()
-        scanner_inputs, scanner_profile = self._materialize_scanner_inputs(parts, refs)
+        if context_override is not None and context_override.scanner_inputs is not None:
+            scanner_inputs = context_override.scanner_inputs
+            scanner_profile = {"scanner_rolling_override": int(1)}
+        else:
+            scanner_inputs, scanner_profile = self._materialize_scanner_inputs(parts, refs)
         scanner_mask = scanner_inputs.get("leader_mask")
         origin_mask = scanner_inputs.get("origin_mask")
         if scanner_mask is not None:
@@ -2666,6 +2689,7 @@ class AsyncDailyIndexBatchLoader:
         read_pool = ThreadPoolExecutor(max_workers=max(1, int(self.config.read_workers)), thread_name_prefix="tmc-chron-load")
         mat_pool = ThreadPoolExecutor(max_workers=max(1, int(self.config.materialize_workers)), thread_name_prefix="tmc-chron-materialize")
         event_cache = _RollingEventStreamCache(config=self.config)
+        context_cache = _RollingContextTensorCache(config=self.config)
         payload_cache: OrderedDict[str, LoadedDailyIndexPart] = OrderedDict()
         payload_cache_limit = max(1, int(self.config.loaded_parts_per_group))
         window_us = max(1, int(float(self.config.time_window_seconds) * 1_000_000.0))
@@ -2689,6 +2713,7 @@ class AsyncDailyIndexBatchLoader:
                 if previous_day_key is not None and not _chronological_days_are_adjacent(previous_day_key, source_date, days):
                     event_cache.clear()
                     self.materializer.clear_text_context_cache()
+                    context_cache.clear()
                     payload_cache.clear()
                     self._update_telemetry(loader_phase="cache_reset", payload_cache_parts=0)
                 previous_day_key = source_date
@@ -2838,10 +2863,13 @@ class AsyncDailyIndexBatchLoader:
                     ]
                     self._update_telemetry(loader_phase="cache_warm")
                     warm_profile = event_cache.warm(loaded_parts, remapped_refs)
+                    context_warm_profile = context_cache.warm(self.materializer, loaded_parts, remapped_refs)
                     self._update_telemetry(
                         loader_phase="cache_warmed",
                         **warm_profile,
+                        **context_warm_profile,
                         **event_cache.telemetry_snapshot(),
+                        **context_cache.telemetry_snapshot(),
                     )
                     materialized = _materialize_chronological_bounded(
                         mat_pool,
@@ -2849,6 +2877,7 @@ class AsyncDailyIndexBatchLoader:
                         loaded_parts,
                         _batched_refs(remapped_refs, materialize_size),
                         event_cache=event_cache,
+                        context_cache=context_cache,
                         preserve_order=True,
                         stop_event=self._stop_event,
                         telemetry_callback=self._update_telemetry,
@@ -2876,6 +2905,7 @@ class AsyncDailyIndexBatchLoader:
                             **day_warm_profile,
                             **cursor_window_profile,
                             **event_cache.telemetry_snapshot(),
+                            **context_cache.telemetry_snapshot(),
                             **self.materializer.telemetry_snapshot(),
                         },
                     )
@@ -2888,12 +2918,14 @@ class AsyncDailyIndexBatchLoader:
                         for batch in ready.add(chunk):
                             batch.profile.update(ready.telemetry())
                             batch.profile.update(event_cache.telemetry_snapshot())
+                            batch.profile.update(context_cache.telemetry_snapshot())
                             batch.profile.update(self.materializer.telemetry_snapshot())
                             self._update_telemetry(
                                 loader_phase="batch_ready",
                                 ready_buffer_chunks=int(ready.telemetry().get("ready_buffer_chunks", 0)),
                                 ready_buffer_samples=int(ready.telemetry().get("ready_buffer_samples", 0)),
                                 **event_cache.telemetry_snapshot(),
+                                **context_cache.telemetry_snapshot(),
                                 **self.materializer.telemetry_snapshot(),
                             )
                             batch = self._apply_epoch_sample_cap(batch)
@@ -3883,6 +3915,16 @@ class _ReadyBatchBuffer:
         }
 
 
+@dataclass(slots=True)
+class _RollingContextBatch:
+    text_inputs: dict[str, dict[str, np.ndarray]] | None = None
+    xbrl_inputs: dict[str, np.ndarray] | None = None
+    corporate_action_inputs: dict[str, np.ndarray] | None = None
+    bar_inputs: dict[str, dict[str, np.ndarray]] | None = None
+    scanner_inputs: dict[str, np.ndarray] | None = None
+    profile: dict[str, float | int] = field(default_factory=dict)
+
+
 def _concat_training_batches(batches: Sequence[DailyIndexTrainingBatch]) -> DailyIndexTrainingBatch:
     nonempty = [batch for batch in batches if batch.sample_count > 0]
     if not nonempty:
@@ -4109,6 +4151,18 @@ def _slice_batch_payload_field(value: np.ndarray, start: int, end: int, sample_c
     if isinstance(value, np.ndarray) and value.shape[:1] and int(value.shape[0]) == int(sample_count):
         return value[start:end]
     return value
+
+
+def _nested_array_nbytes(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, np.ndarray):
+        return int(value.nbytes)
+    if isinstance(value, Mapping):
+        return int(sum(_nested_array_nbytes(item) for item in value.values()))
+    if isinstance(value, (list, tuple)):
+        return int(sum(_nested_array_nbytes(item) for item in value))
+    return 0
 
 
 def _slice_profile(profile: Mapping[str, float | int], source_samples: int, output_samples: int) -> dict[str, float | int]:
@@ -4369,6 +4423,7 @@ def _materialize_chronological_bounded(
     batches: Iterator[list[DailyIndexSampleRef]],
     *,
     event_cache: "_RollingEventStreamCache",
+    context_cache: "_RollingContextTensorCache | None" = None,
     preserve_order: bool = True,
     stop_event: threading.Event | None = None,
     day_profile: Mapping[str, float | int] | None = None,
@@ -4391,9 +4446,11 @@ def _materialize_chronological_bounded(
             except StopIteration:
                 return
             raw_stream, names, profile = event_cache.materialize(loaded, refs)
+            context_override = context_cache.materialize(materializer, loaded, refs) if context_cache is not None else None
             merged_profile = {
                 **dict(day_profile or {}),
                 **profile,
+                **(context_override.profile if context_override is not None else {}),
                 "prefetch_materialize_max_pending_batches": int(max_pending),
                 "prefetch_materialize_pending_batches": int(len(pending_ordered)),
                 "prefetch_materialize_startup_pending_batches": int(startup_pending),
@@ -4405,6 +4462,7 @@ def _materialize_chronological_bounded(
                 raw_stream_override=raw_stream,
                 raw_stream_feature_names_override=names,
                 profile_override=merged_profile,
+                context_override=context_override,
             )
             pending_ordered.append(future)
             pending_all.add(future)
@@ -4464,6 +4522,332 @@ def _materialize_chronological_bounded(
         for future in pending_all:
             future.cancel()
         raise
+
+
+class _RollingContextTensorCache:
+    def __init__(self, *, config: DailyIndexLoaderConfig) -> None:
+        self.config = config
+        self.capacity = max(1, int(config.ticker_cache_capacity))
+        self._state_by_key: dict[tuple[str, str], _RollingContextState] = {}
+        self._global_state_by_key: dict[str, _RollingContextState] = {}
+        self._evictions = 0
+        self._last_evicted_key = ""
+        self._last_window_refs = 0
+        self._last_window_tickers = 0
+        self._last_context_seconds = 0.0
+        self._last_context_bytes = 0
+        self._last_warm_tickers = 0
+
+    def clear(self) -> None:
+        self._state_by_key.clear()
+        self._global_state_by_key.clear()
+        self._last_evicted_key = ""
+        self._last_window_refs = 0
+        self._last_window_tickers = 0
+        self._last_context_seconds = 0.0
+        self._last_context_bytes = 0
+
+    def telemetry_snapshot(self) -> dict[str, int | float]:
+        ticker_state_count = int(len({ticker for ticker, _group in self._state_by_key}))
+        context_state_count = int(len(self._state_by_key))
+        global_state_count = int(len(self._global_state_by_key))
+        estimated_bytes = int(sum(int(state.estimated_bytes) for state in self._state_by_key.values()))
+        estimated_bytes += int(sum(int(state.estimated_bytes) for state in self._global_state_by_key.values()))
+        return {
+            "context_cache_ticker_states": int(ticker_state_count),
+            "context_cache_modality_states": int(context_state_count),
+            "context_cache_global_states": int(global_state_count),
+            "context_cache_capacity": int(self.capacity),
+            "context_cache_evictions": int(self._evictions),
+            "context_cache_estimated_bytes": int(estimated_bytes),
+            "context_cache_last_context_bytes": int(self._last_context_bytes),
+            "context_cache_last_window_refs": int(self._last_window_refs),
+            "context_cache_last_window_tickers": int(self._last_window_tickers),
+            "context_cache_last_warm_tickers": int(self._last_warm_tickers),
+            "context_cache_last_seconds": float(self._last_context_seconds),
+        }
+
+    def warm(
+        self,
+        materializer: DailyIndexBatchMaterializer,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+    ) -> dict[str, float | int]:
+        start = time.perf_counter()
+        first_ref_by_ticker: dict[str, DailyIndexSampleRef] = {}
+        for ref in refs:
+            ticker = str(parts[int(ref.part_index)].plan.ticker)
+            if ticker not in first_ref_by_ticker:
+                first_ref_by_ticker[ticker] = ref
+        self._last_warm_tickers = int(len(first_ref_by_ticker))
+        protected = set(first_ref_by_ticker)
+        for ticker, ref in first_ref_by_ticker.items():
+            part = parts[int(ref.part_index)]
+            origin_ts = int(part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[int(ref.origin_row)])
+            source_date = str(part.plan.source_date)
+            for group in self._ticker_context_groups():
+                self._touch_ticker_state(
+                    ticker=ticker,
+                    group=group,
+                    source_date=source_date,
+                    timestamp_us=origin_ts,
+                    estimated_bytes=0,
+                )
+        evicted = self._trim_capacity(protected_tickers=protected)
+        return {
+            "context_cache_warm_seconds": time.perf_counter() - start,
+            "context_cache_warm_tickers": int(len(first_ref_by_ticker)),
+            "context_cache_warm_evictions": int(evicted),
+            **self.telemetry_snapshot(),
+        }
+
+    def materialize(
+        self,
+        materializer: DailyIndexBatchMaterializer,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+    ) -> _RollingContextBatch:
+        start = time.perf_counter()
+        profile: dict[str, float | int] = {"rolling_context_rows": int(len(refs))}
+        text_inputs: dict[str, dict[str, np.ndarray]] | None = None
+        xbrl_inputs: dict[str, np.ndarray] | None = None
+        corporate_inputs: dict[str, np.ndarray] | None = None
+        bar_inputs: dict[str, dict[str, np.ndarray]] | None = None
+        scanner_inputs: dict[str, np.ndarray] | None = None
+
+        if TEXT_CONTEXT_GROUPS.intersection(set(self.config.data_groups)):
+            section_start = time.perf_counter()
+            text_inputs, text_profile = materializer._materialize_text_inputs(parts, refs)
+            profile.update({f"rolling_{key}": value for key, value in text_profile.items()})
+            profile["rolling_text_seconds"] = time.perf_counter() - section_start
+        if "xbrl" in self.config.data_groups:
+            section_start = time.perf_counter()
+            xbrl_inputs, xbrl_profile = materializer._materialize_xbrl_inputs(parts, refs)
+            profile.update({f"rolling_{key}": value for key, value in xbrl_profile.items()})
+            profile["rolling_xbrl_seconds"] = time.perf_counter() - section_start
+        if "corporate_actions" in self.config.data_groups:
+            section_start = time.perf_counter()
+            corporate_inputs, corporate_profile = materializer._materialize_corporate_action_inputs(parts, refs)
+            profile.update({f"rolling_{key}": value for key, value in corporate_profile.items()})
+            profile["rolling_corporate_action_seconds"] = time.perf_counter() - section_start
+        if BAR_CONTEXT_GROUPS.union(INTRADAY_BAR_CONTEXT_GROUPS).intersection(set(self.config.data_groups)):
+            section_start = time.perf_counter()
+            bar_inputs, bar_profile = materializer._materialize_bar_inputs(parts, refs)
+            intraday_bar_inputs, intraday_bar_profile = materializer._materialize_intraday_bar_inputs(parts, refs)
+            bar_inputs.update(intraday_bar_inputs)
+            profile.update({f"rolling_{key}": value for key, value in bar_profile.items()})
+            profile.update({f"rolling_{key}": value for key, value in intraday_bar_profile.items()})
+            profile["rolling_bar_seconds"] = time.perf_counter() - section_start
+        if "scanner_context" in self.config.data_groups:
+            section_start = time.perf_counter()
+            scanner_inputs, scanner_profile = materializer._materialize_scanner_inputs(parts, refs)
+            profile.update({f"rolling_{key}": value for key, value in scanner_profile.items()})
+            profile["rolling_scanner_seconds"] = time.perf_counter() - section_start
+
+        context_bytes = _nested_array_nbytes(text_inputs)
+        context_bytes += _nested_array_nbytes(xbrl_inputs)
+        context_bytes += _nested_array_nbytes(corporate_inputs)
+        context_bytes += _nested_array_nbytes(bar_inputs)
+        context_bytes += _nested_array_nbytes(scanner_inputs)
+        self._commit_states(
+            parts,
+            refs,
+            text_inputs=text_inputs,
+            xbrl_inputs=xbrl_inputs,
+            corporate_action_inputs=corporate_inputs,
+            bar_inputs=bar_inputs,
+            scanner_inputs=scanner_inputs,
+            context_bytes=context_bytes,
+        )
+        elapsed = time.perf_counter() - start
+        self._last_context_seconds = float(elapsed)
+        self._last_context_bytes = int(context_bytes)
+        profile.update(
+            {
+                "rolling_context_seconds": float(elapsed),
+                "rolling_context_estimated_bytes": int(context_bytes),
+                **self.telemetry_snapshot(),
+            }
+        )
+        return _RollingContextBatch(
+            text_inputs=text_inputs,
+            xbrl_inputs=xbrl_inputs,
+            corporate_action_inputs=corporate_inputs,
+            bar_inputs=bar_inputs,
+            scanner_inputs=scanner_inputs,
+            profile=profile,
+        )
+
+    def _commit_states(
+        self,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+        *,
+        text_inputs: Mapping[str, Any] | None,
+        xbrl_inputs: Mapping[str, Any] | None,
+        corporate_action_inputs: Mapping[str, Any] | None,
+        bar_inputs: Mapping[str, Any] | None,
+        scanner_inputs: Mapping[str, Any] | None,
+        context_bytes: int,
+    ) -> None:
+        if not refs:
+            return
+        tickers, _ordinals, timestamps = _identity_arrays(parts, refs)
+        unique_tickers = tuple(dict.fromkeys(str(ticker) for ticker in tickers))
+        self._last_window_refs = int(len(refs))
+        self._last_window_tickers = int(len(unique_tickers))
+        per_ticker_bytes = max(0, int(context_bytes) // max(1, int(len(unique_tickers))))
+        last_source_by_ticker: dict[str, str] = {}
+        last_timestamp_by_ticker: dict[str, int] = {}
+        for ref in refs:
+            part = parts[int(ref.part_index)]
+            ticker = str(part.plan.ticker)
+            origin_ts = int(part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[int(ref.origin_row)])
+            last_source_by_ticker[ticker] = str(part.plan.source_date)
+            last_timestamp_by_ticker[ticker] = int(origin_ts)
+        for ticker in unique_tickers:
+            source_date = last_source_by_ticker.get(ticker, "")
+            timestamp_us = int(last_timestamp_by_ticker.get(ticker, 0))
+            for group in self._groups_present_for_ticker(
+                text_inputs=text_inputs,
+                xbrl_inputs=xbrl_inputs,
+                corporate_action_inputs=corporate_action_inputs,
+                bar_inputs=bar_inputs,
+            ):
+                self._touch_ticker_state(
+                    ticker=ticker,
+                    group=group,
+                    source_date=source_date,
+                    timestamp_us=timestamp_us,
+                    estimated_bytes=per_ticker_bytes,
+                )
+        if text_inputs and "market_news" in text_inputs:
+            self._touch_global_state("market_news", int(timestamps[-1]), int(_nested_array_nbytes(text_inputs.get("market_news"))))
+        if bar_inputs and "global_daily_bars" in bar_inputs:
+            self._touch_global_state("global_daily_bars", int(timestamps[-1]), int(_nested_array_nbytes(bar_inputs.get("global_daily_bars"))))
+        if scanner_inputs:
+            self._touch_global_state("scanner_context", int(timestamps[-1]), int(_nested_array_nbytes(scanner_inputs)))
+        self._trim_capacity(protected_tickers=set(unique_tickers))
+
+    def _ticker_context_groups(self) -> tuple[str, ...]:
+        groups: list[str] = []
+        if "ticker_news_embeddings" in self.config.data_groups:
+            groups.append("ticker_news")
+        if "sec_filing_embeddings" in self.config.data_groups:
+            groups.append("sec_filings")
+        if "xbrl" in self.config.data_groups:
+            groups.append("xbrl")
+        if "corporate_actions" in self.config.data_groups:
+            groups.append("corporate_actions")
+        if "daily_bars" in self.config.data_groups:
+            groups.append("ticker_daily_bars")
+        if "intraday_bars" in self.config.data_groups:
+            groups.append("ticker_intraday_bars")
+        return tuple(groups)
+
+    def _groups_present_for_ticker(
+        self,
+        *,
+        text_inputs: Mapping[str, Any] | None,
+        xbrl_inputs: Mapping[str, Any] | None,
+        corporate_action_inputs: Mapping[str, Any] | None,
+        bar_inputs: Mapping[str, Any] | None,
+    ) -> tuple[str, ...]:
+        groups: list[str] = []
+        if text_inputs:
+            for key in ("ticker_news", "sec_filings"):
+                if key in text_inputs:
+                    groups.append(key)
+        if xbrl_inputs:
+            groups.append("xbrl")
+        if corporate_action_inputs:
+            groups.append("corporate_actions")
+        if bar_inputs:
+            for key in ("ticker_daily_bars", "ticker_intraday_bars"):
+                if key in bar_inputs:
+                    groups.append(key)
+        return tuple(groups)
+
+    def _touch_ticker_state(
+        self,
+        *,
+        ticker: str,
+        group: str,
+        source_date: str,
+        timestamp_us: int,
+        estimated_bytes: int,
+    ) -> None:
+        key = (str(ticker), str(group))
+        current = self._state_by_key.get(key)
+        if current is None:
+            self._state_by_key[key] = _RollingContextState(
+                key=f"{ticker}:{group}",
+                group=str(group),
+                source_date=str(source_date),
+                timestamp_us=int(timestamp_us),
+                estimated_bytes=max(0, int(estimated_bytes)),
+            )
+            return
+        current.source_date = str(source_date)
+        current.timestamp_us = int(timestamp_us)
+        current.estimated_bytes = max(int(current.estimated_bytes), max(0, int(estimated_bytes)))
+
+    def _touch_global_state(self, group: str, timestamp_us: int, estimated_bytes: int) -> None:
+        key = str(group)
+        current = self._global_state_by_key.get(key)
+        if current is None:
+            self._global_state_by_key[key] = _RollingContextState(
+                key=key,
+                group=key,
+                source_date="global",
+                timestamp_us=int(timestamp_us),
+                estimated_bytes=max(0, int(estimated_bytes)),
+            )
+            return
+        current.timestamp_us = int(timestamp_us)
+        current.estimated_bytes = max(int(current.estimated_bytes), max(0, int(estimated_bytes)))
+
+    def _trim_capacity(self, *, protected_tickers: set[str]) -> int:
+        resident_tickers = {ticker for ticker, _group in self._state_by_key}
+        if len(resident_tickers) <= int(self.capacity):
+            return 0
+        evicted = 0
+        while len({ticker for ticker, _group in self._state_by_key}) > int(self.capacity):
+            candidates: dict[str, _RollingContextState] = {}
+            for (ticker, _group), state in self._state_by_key.items():
+                if ticker in protected_tickers:
+                    continue
+                existing = candidates.get(ticker)
+                if existing is None or (str(state.source_date), int(state.timestamp_us), str(ticker)) < (
+                    str(existing.source_date),
+                    int(existing.timestamp_us),
+                    str(ticker),
+                ):
+                    candidates[ticker] = state
+            if not candidates:
+                raise RuntimeError(
+                    "Ticker context cache capacity exceeded and every resident ticker is protected: "
+                    f"capacity={int(self.capacity):,} resident={len(resident_tickers):,} protected={len(protected_tickers):,}."
+                )
+            victim_ticker = min(
+                candidates,
+                key=lambda ticker: (str(candidates[ticker].source_date), int(candidates[ticker].timestamp_us), str(ticker)),
+            )
+            for key in [key for key in self._state_by_key if key[0] == victim_ticker]:
+                self._state_by_key.pop(key, None)
+            self._evictions += 1
+            evicted += 1
+            self._last_evicted_key = str(victim_ticker)
+        return int(evicted)
+
+
+@dataclass(slots=True)
+class _RollingContextState:
+    key: str
+    group: str
+    source_date: str
+    timestamp_us: int
+    estimated_bytes: int
 
 
 class _RollingEventStreamCache:
