@@ -4684,7 +4684,9 @@ def _load_active_payloads(
     payload_cache_limit: int,
     stop_event: threading.Event | None,
 ) -> list[LoadedDailyIndexPart]:
-    missing = [index for index in active_indices if _part_key(loaded_origins[int(index)].plan) not in payload_cache]
+    active_keys = tuple(_part_key(loaded_origins[int(index)].plan) for index in active_indices)
+    protected_keys = set(active_keys)
+    missing = [index for index, key in zip(active_indices, active_keys, strict=True) if key not in payload_cache]
     if missing:
         futures = [
             read_pool.submit(reader.load_payload, loaded_origins[int(index)])
@@ -4699,17 +4701,30 @@ def _load_active_payloads(
             key = _part_key(loaded.plan)
             payload_cache[key] = loaded
             payload_cache.move_to_end(key)
-            while len(payload_cache) > max(1, int(payload_cache_limit)):
-                payload_cache.popitem(last=False)
+            _trim_payload_cache(payload_cache, limit=payload_cache_limit, protected_keys=protected_keys)
     out: list[LoadedDailyIndexPart] = []
-    for index in active_indices:
-        key = _part_key(loaded_origins[int(index)].plan)
-        loaded = payload_cache[key]
+    for index, key in zip(active_indices, active_keys, strict=True):
+        loaded = payload_cache.get(key)
+        if loaded is None:
+            raise RuntimeError(f"Active payload was not loaded or was evicted unexpectedly: {key}")
         loaded.origins = loaded_origins[int(index)].origins
         loaded._origin_arrays.clear()
         payload_cache.move_to_end(key)
         out.append(loaded)
+    _trim_payload_cache(payload_cache, limit=payload_cache_limit, protected_keys=protected_keys)
     return out
+
+
+def _trim_payload_cache(payload_cache: OrderedDict[str, LoadedDailyIndexPart], *, limit: int, protected_keys: set[str]) -> None:
+    target = max(1, int(limit))
+    if len(payload_cache) <= target:
+        return
+    for key in list(payload_cache.keys()):
+        if len(payload_cache) <= target:
+            break
+        if key in protected_keys:
+            continue
+        payload_cache.pop(key, None)
 
 
 def _chronological_days_are_adjacent(previous: str, current: str, days: Sequence[tuple[str, Sequence[DailyIndexPartPlan]]]) -> bool:
