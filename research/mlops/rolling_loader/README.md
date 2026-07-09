@@ -202,6 +202,20 @@ The canonical future target tensors are `future_bar_values["trade"]`,
 their matching masks. The older single-family `future_intraday_bars` projection
 is not populated by the daily-index v3 loader path.
 
+The loader emits the same family structure for backward intraday context,
+ticker daily context, and global daily context:
+
+| Group | Family value tensors | Family mask tensors | Family time tensors |
+| --- | --- | --- | --- |
+| `bar_inputs["ticker_intraday_bars"]` | `trade_values [B,H,6]`, `quote_bid_values [B,H,9]`, `quote_ask_values [B,H,9]` | each `[B,H]` | each `[B,H,9]` |
+| `bar_inputs["ticker_daily_bars"]` | `trade_values [B,O,6]`, `quote_bid_values [B,O,9]`, `quote_ask_values [B,O,9]` | each `[B,O]` | each `[B,O,9]` |
+| `bar_inputs["global_daily_bars"]` | `trade_values [B,S,O,6]`, `quote_bid_values [B,S,O,9]`, `quote_ask_values [B,S,O,9]` | each `[B,S,O]` | each `[B,S,O,9]` |
+
+Trade feature order is `open, close, high, low, size_sum, event_count`. Quote
+bid/ask feature order is `open, close, high, low, size_open, size_close,
+size_high, size_low, event_count`. A zero value with mask false is missing or
+padded, never a real zero-price bar.
+
 ## Time Feature Contract
 
 All absolute time features emitted by this package use UTC. New York session

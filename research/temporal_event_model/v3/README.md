@@ -383,12 +383,22 @@ Labels are grouped by task:
 - `bar_inputs["ticker_intraday_bars"]`: backward same-session intraday context
   bars for `trade`, `quote_bid`, and `quote_ask`, aligned to the same horizon
   list as intraday labels but clipped backward to the session start.
+- `bar_inputs["ticker_daily_bars"]` and `bar_inputs["global_daily_bars"]`:
+  completed daily context bars with the same `trade`, `quote_bid`, and
+  `quote_ask` family schema. Each family carries matching value, mask, and
+  9-column bar-start/age time-feature tensors.
 - `future_bar_values`: separate `trade`, `quote_bid`, and `quote_ask` regression heads.
 - `intraday_labels`: halt/resume/news-risk/LULD and future news/SEC arrival flags.
 - `corporate_action_labels`: daily corporate-action classification horizons.
 
 Losses are unweighted by default. Each active task contributes one masked mean
 term; the final loss is the mean of active task losses.
+
+The v3 bar encoder projects each family row together with its
+`TimeFeatureEncoder(role="bar_start")` embedding, adds family, bar-group,
+horizon/offset, and global-symbol-slot embeddings, then uses four latent query
+tokens to attend over valid bar rows. The loader output remains raw decoded bar
+values; no price normalization or z-score is applied in the default model path.
 
 ## Run Artifacts
 

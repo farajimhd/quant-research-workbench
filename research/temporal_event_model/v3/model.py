@@ -49,9 +49,9 @@ class TemporalEventModelV3(nn.Module):
         d = int(config.d_model)
         time_encoder = TimeFeatureEncoder(config)
         self.event_encoder = EventEncoder(config, time_encoder)
-        self.intraday_bar_encoder = BarContextEncoder(config, time_encoder)
-        self.ticker_bar_encoder = BarContextEncoder(config, time_encoder)
-        self.global_bar_encoder = BarContextEncoder(config, time_encoder)
+        self.intraday_bar_encoder = BarContextEncoder(config, time_encoder, group="ticker_intraday_bars")
+        self.ticker_bar_encoder = BarContextEncoder(config, time_encoder, group="ticker_daily_bars")
+        self.global_bar_encoder = BarContextEncoder(config, time_encoder, group="global_daily_bars")
         self.text_encoder = TextContextEncoder(config, time_encoder)
         self.xbrl_encoder = XbrlEncoder(config, time_encoder)
         self.corporate_action_encoder = CorporateActionEncoder(config, time_encoder)
@@ -323,16 +323,42 @@ class EventEncoder(nn.Module):
 
 
 class BarContextEncoder(nn.Module):
-    def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder") -> None:
+    def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder", *, group: str) -> None:
         super().__init__()
         d = int(config.d_model)
         h = _side_hidden_dim(config)
+        item_dim = max(8, int(config.bar_item_dim))
+        latent_count = max(1, int(config.bar_latents))
+        attention_heads = max(1, int(config.bar_attention_heads))
+        if item_dim % attention_heads != 0:
+            raise ValueError(f"bar_item_dim={item_dim} must be divisible by bar_attention_heads={attention_heads}.")
+        self.group = str(group)
+        self.group_to_id = {"ticker_intraday_bars": 0, "ticker_daily_bars": 1, "global_daily_bars": 2}
         self.time_encoder = time_encoder
         self.time_feature_count = int(config.bar_time_feature_count)
-        max_family_width = max(BAR_FEATURE_DIMS.values())
-        feature_dim = int(max_family_width) + int(config.time_encoder_dim)
-        self.family_embedding = nn.Embedding(len(BAR_FAMILIES), d)
-        self.proj = MLP(feature_dim, h, d, dropout=float(config.dropout))
+        self.value_width = max(BAR_FEATURE_DIMS.values())
+        self.item_dim = item_dim
+        self.latent_count = latent_count
+        feature_dim = int(self.value_width) + int(config.time_encoder_dim)
+        self.value_proj = MLP(feature_dim, max(item_dim, h), item_dim, dropout=float(config.dropout))
+        self.family_embedding = nn.Embedding(len(BAR_FAMILIES), item_dim)
+        self.group_embedding = nn.Embedding(len(self.group_to_id), item_dim)
+        position_count = max(1, int(config.intraday_horizons), int(config.ticker_bar_offsets), int(config.global_bar_offsets))
+        self.position_embedding = nn.Embedding(position_count, item_dim)
+        self.symbol_embedding = nn.Embedding(max(1, int(config.global_symbols)), item_dim)
+        self.token_norm = nn.LayerNorm(item_dim)
+        self.latent_queries = nn.Parameter(torch.randn(latent_count, item_dim) * 0.02)
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim=item_dim,
+            num_heads=attention_heads,
+            dropout=float(config.dropout),
+            batch_first=True,
+        )
+        self.attention_norm = nn.LayerNorm(item_dim)
+        self.latent_ffn = MLP(item_dim, max(item_dim, h), item_dim, dropout=float(config.dropout))
+        self.latent_ffn_norm = nn.LayerNorm(item_dim)
+        self.out_proj = MLP(item_dim, h, d, dropout=float(config.dropout))
+        self.out_dim = d
 
     def forward(self, payload: Mapping[str, Any]) -> torch.Tensor:
         family_tokens: list[torch.Tensor] = []
@@ -342,31 +368,64 @@ class BarContextEncoder(nn.Module):
             if not torch.is_tensor(values) or values.numel() == 0:
                 continue
             mask = payload.get(f"{family}_mask")
-            time_features = payload.get(f"{family}_time_features")
             if not torch.is_tensor(mask):
                 mask = torch.ones(values.shape[:-1], dtype=torch.bool, device=values.device)
+            else:
+                mask = mask.to(device=values.device, dtype=torch.bool)
+            if tuple(mask.shape) != tuple(values.shape[:-1]):
+                raise RuntimeError(f"{self.group}.{family}_mask shape {tuple(mask.shape)} does not match values prefix {tuple(values.shape[:-1])}.")
             time_features = _required_time_features(
-                time_features,
+                payload.get(f"{family}_time_features"),
                 reference=values,
                 width=self.time_feature_count,
-                name=f"{family}_time_features",
+                name=f"{self.group}.{family}_time_features",
             )
             time_token = self.time_encoder(time_features, role="bar_start")
-            row = torch.cat(
-                [
-                    _pad_or_trim_last(values.float(), max(BAR_FEATURE_DIMS.values())),
-                    time_token,
-                ],
-                dim=-1,
-            )
-            token = self.proj(row) + self.family_embedding.weight[family_index]
+            row = torch.cat([_pad_or_trim_last(values.float(), self.value_width), time_token], dim=-1)
+            token = self.value_proj(row)
+            token = token + self.family_embedding.weight[family_index].view(*((1,) * (token.ndim - 1)), -1)
+            token = token + self.group_embedding.weight[self.group_to_id.get(self.group, 0)].view(*((1,) * (token.ndim - 1)), -1)
+            token = token + self._position_embeddings(token)
+            token = self.token_norm(token)
             family_tokens.append(token.reshape(token.shape[0], -1, token.shape[-1]))
-            family_masks.append(mask.reshape(mask.shape[0], -1).bool())
+            family_masks.append(mask.reshape(mask.shape[0], -1))
         if not family_tokens:
-            return _zero_like_batch(payload, self.proj.out_dim)
+            return _zero_like_batch(payload, self.out_dim)
         tokens = torch.cat(family_tokens, dim=1)
         masks = torch.cat(family_masks, dim=1)
-        return masked_mean(tokens, masks, dim=1)
+        if tokens.shape[1] <= 0:
+            return _zero_like_batch(payload, self.out_dim)
+        tokens = tokens * masks.unsqueeze(-1).to(dtype=tokens.dtype)
+        has_tokens = masks.any(dim=1)
+        safe_mask = masks.clone()
+        safe_mask[:, 0] = safe_mask[:, 0] | ~has_tokens
+        tokens = tokens.clone()
+        tokens[:, 0, :] = torch.where(has_tokens[:, None], tokens[:, 0, :], torch.zeros_like(tokens[:, 0, :]))
+        queries = self.latent_queries.unsqueeze(0).expand(tokens.shape[0], -1, -1)
+        attended, _ = self.cross_attention(
+            queries,
+            tokens,
+            tokens,
+            key_padding_mask=~safe_mask,
+            need_weights=False,
+        )
+        latents = self.attention_norm(queries + attended)
+        latents = self.latent_ffn_norm(latents + self.latent_ffn(latents))
+        out = self.out_proj(latents.mean(dim=1))
+        return out * has_tokens.unsqueeze(-1).to(dtype=out.dtype)
+
+    def _position_embeddings(self, token: torch.Tensor) -> torch.Tensor:
+        device = token.device
+        if token.ndim == 3:
+            positions = torch.arange(token.shape[1], device=device).clamp(max=self.position_embedding.num_embeddings - 1)
+            return self.position_embedding(positions).view(1, token.shape[1], self.item_dim)
+        if token.ndim == 4:
+            symbols = torch.arange(token.shape[1], device=device).clamp(max=self.symbol_embedding.num_embeddings - 1)
+            positions = torch.arange(token.shape[2], device=device).clamp(max=self.position_embedding.num_embeddings - 1)
+            symbol_token = self.symbol_embedding(symbols).view(1, token.shape[1], 1, self.item_dim)
+            position_token = self.position_embedding(positions).view(1, 1, token.shape[2], self.item_dim)
+            return symbol_token + position_token
+        raise RuntimeError(f"{self.group} bar tensor rank {token.ndim} is unsupported; expected [B,N,F] or [B,S,O,F].")
 
 
 class TextContextEncoder(nn.Module):

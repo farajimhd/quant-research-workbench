@@ -176,6 +176,9 @@ class ModelConfig:
     global_bar_offsets: int = 3
     bar_feature_count: int = 10
     bar_time_feature_count: int = 9
+    bar_item_dim: int = 128
+    bar_latents: int = 4
+    bar_attention_heads: int = 4
     xbrl_time_feature_count: int = 10
     xbrl_period_time_feature_count: int = 7
     xbrl_item_dim: int = 64

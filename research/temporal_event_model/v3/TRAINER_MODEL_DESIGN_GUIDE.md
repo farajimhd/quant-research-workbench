@@ -497,6 +497,9 @@ Default dimensions:
 | `text_item_dim` | 128 | Internal text chunk/item token width before attention pooling. |
 | `text_latents` | 4 | Learned text latent/query tokens per text group. |
 | `text_attention_heads` | 4 | Cross-attention heads for text latent pooling. |
+| `bar_item_dim` | 128 | Internal trade/bid/ask bar row width before attention pooling. |
+| `bar_latents` | 4 | Learned bar latent/query tokens per bar group. |
+| `bar_attention_heads` | 4 | Cross-attention heads for bar latent pooling. |
 | `xbrl_max_items` | 4096 | Latest as-of XBRL rows. |
 | `xbrl_item_dim` | 64 | Internal XBRL item width before attention pooling. |
 | `xbrl_latents` | 8 | Learned XBRL latent/query tokens used to attend over the 4096 item slots. |
@@ -634,14 +637,34 @@ Important current behavior:
 - Target values are not transformed in the loss. Future price, size, and count
   labels stay in the raw units emitted by the loader/cache.
 
+Bar inputs use one shared loader time-feature contract for intraday, ticker
+daily, and global daily bars:
+
+| Column | Meaning |
+| --- | --- |
+| `bar_start_utc_second_of_day_sin` | UTC sine encoding of the bar start second of day. |
+| `bar_start_utc_second_of_day_cos` | UTC cosine encoding of the bar start second of day. |
+| `bar_start_utc_day_of_week_sin` | UTC sine encoding of the bar start weekday. |
+| `bar_start_utc_day_of_week_cos` | UTC cosine encoding of the bar start weekday. |
+| `bar_start_utc_day_of_year_sin` | UTC sine encoding of the bar start day of year. |
+| `bar_start_utc_day_of_year_cos` | UTC cosine encoding of the bar start day of year. |
+| `bar_start_years_since_2000` | Continuous UTC year offset for the bar start. |
+| `bar_age_days` | Non-negative age from origin timestamp to the selected bar start. |
+| `bar_age_days_log1p` | `log1p(bar_age_days)` for a smooth long-age scale. |
+
+The loader emits these as family-aligned tensors:
+`trade_time_features`, `quote_bid_time_features`, and
+`quote_ask_time_features`. The model validates the width and sends each row to
+`TimeFeatureEncoder(role="bar_start")`.
+
 ### Current Encoder Contracts
 
 | Encoder | Input representation | Implemented transform | Output |
 | --- | --- | --- | --- |
 | `EventEncoder` | `raw_event_stream float32 [B,1024,24]`, `raw_event_mask bool [B,1024]`, and `event_feature_names` | Event timestamp/session columns are extracted by name and encoded by `TimeFeatureEncoder(role="event")`. Those columns are zeroed in the generic numeric path so time is not double-counted as ordinary numeric input. Categorical path extracts `event_meta`, price-scale bits, tape bits, exchanges, and `condition_token_1..5`; embeds each category; condition token embeddings are averaged. Numeric, categorical, and time paths are concatenated, passed through MLP, plus learned position embedding, then a 4-layer TransformerEncoder and masked mean. No z-score or price decoding is applied inside this encoder. | One event modality token `[B,256]`. |
-| `BarContextEncoder` for `ticker_intraday_bars` | Family payloads `trade_values [B,H,6]`, `quote_bid_values [B,H,9]`, `quote_ask_values [B,H,9]`, family masks, family time features `[B,H,9]` | For each family, value features are padded/trimmed to width 9. Family time features are validated and encoded by `TimeFeatureEncoder(role="bar_start")`. Value projection and time embedding are concatenated, projected by MLP, plus learned family embedding. Family/horizon rows are flattened and masked-mean pooled. No price normalization or z-score is applied here. | One intraday-bar modality token `[B,256]`. |
-| `BarContextEncoder` for `ticker_daily_bars` | Same family payload pattern with daily offsets `O=8`: `[B,O,*]` | Same as intraday bars, using the `bar_start` time role. Raw completed daily bar values and encoded bar-start/age time are projected directly. | One ticker-daily-bar modality token `[B,256]`. |
-| `BarContextEncoder` for `global_daily_bars` | Same family payload pattern with symbols and offsets: `[B,S,O,*]` | Same as ticker bars, using the `bar_start` time role. Symbol ids are not currently embedded by `model.py`; the current encoder consumes flattened family values, masks, and encoded time features. | One global-daily-bar modality token `[B,256]`. |
+| `BarContextEncoder` for `ticker_intraday_bars` | Family payloads `trade_values [B,H,6]`, `quote_bid_values [B,H,9]`, `quote_ask_values [B,H,9]`, family masks `[B,H]`, and family time features `[B,H,9]` | For each family, value features are padded to width 9 and concatenated with `TimeFeatureEncoder(role="bar_start")` output. The resulting row is projected to `bar_item_dim=128`, then learned family, bar-group, and horizon-position embeddings are added. `bar_latents=4` learned query tokens use 4-head cross-attention over valid family/horizon rows. No price normalization or z-score is applied here. | One intraday-bar modality token `[B,256]`. |
+| `BarContextEncoder` for `ticker_daily_bars` | Same family payload pattern with daily offsets `O=8`: `[B,O,*]`, masks `[B,O]`, time features `[B,O,9]` | Same attention encoder as intraday bars. The position embedding represents the configured daily offset slot. Raw completed daily bar values and encoded bar-start/age time are projected directly. | One ticker-daily-bar modality token `[B,256]`. |
+| `BarContextEncoder` for `global_daily_bars` | Same family payload pattern with symbols and offsets: `[B,S,O,*]`, masks `[B,S,O]`, time features `[B,S,O,9]` | Same attention encoder as ticker bars, with an additional learned global-symbol slot embedding plus offset-position embedding. The model uses the stable symbol slot/order emitted by the loader, not the string symbol value. | One global-daily-bar modality token `[B,256]`. |
 | `TextContextEncoder` for ticker news | `embeddings [B,8,2,1024]`, `chunk_mask [B,8,2]`, `item_mask [B,8]`, `item_time_features [B,8,10]` | Each Qwen chunk embedding is `LayerNorm(1024) -> Linear(1024,128) -> GELU -> Dropout`. `item_time_features[b,i,:]` is validated, encoded by `TimeFeatureEncoder(role="text_available")`, projected to `text_item_dim=128`, and broadcast to every chunk token for item `i`. Group, item-position, and chunk-position embeddings are added. `text_latents=4` learned group-specific query tokens use 4-head cross-attention over all valid chunk tokens. The model does not run Qwen and does not z-score embeddings. | One ticker-news modality token `[B,256]`. |
 | `TextContextEncoder` for market news | `embeddings [B,16,2,1024]`, masks, item time features | Same attention encoder as ticker news, with a different group embedding and group-specific latent queries. | One market-news modality token `[B,256]`. |
 | `TextContextEncoder` for SEC filings | `embeddings [B,4,8,1024]`, masks, item time features | Same attention encoder as ticker news, with SEC-specific group embedding and latent queries. Each filing chunk receives the filing item's accepted/published time features before attention. | One SEC-text modality token `[B,256]`. |
