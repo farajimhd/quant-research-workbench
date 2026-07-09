@@ -1172,40 +1172,100 @@ button {
   align-self: stretch;
 }
 
-.news-today-summary {
+.news-today-searchbar {
+  align-items: center;
   background: color-mix(in oklab, var(--surface-alt) 55%, var(--surface));
   border-bottom: 1px solid var(--border);
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-}
-
-.news-today-summary span {
-  border-right: 1px solid var(--border);
-  display: grid;
-  gap: 2px;
+  gap: 10px;
+  grid-template-columns: minmax(280px, 1fr) auto;
   min-width: 0;
   padding: 8px 10px;
 }
 
-.news-today-summary span:last-child {
-  border-right: 0;
+.news-today-search-field {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid color-mix(in oklab, var(--border) 82%, transparent);
+  border-radius: 8px;
+  color: var(--muted-foreground);
+  display: flex;
+  gap: 7px;
+  min-height: 34px;
+  min-width: 0;
+  padding: 0 8px;
 }
 
-.news-today-summary small {
+.news-today-search-field input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 520;
+}
+
+.news-today-search-field input::placeholder {
+  color: color-mix(in oklab, var(--muted-foreground) 72%, transparent);
+}
+
+.news-today-search-field button {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--muted-foreground);
-  font-size: 9px;
-  font-weight: 650;
+  cursor: pointer;
+  padding: 0;
+}
+
+.news-today-search-field button:hover {
+  background: color-mix(in oklab, var(--foreground) 6%, transparent);
+  color: var(--foreground);
+}
+
+.news-today-compact-stats {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.news-today-compact-stats span {
+  display: grid;
+  min-width: 74px;
+  gap: 2px;
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--surface) 78%, transparent);
+  padding: 5px 8px;
+}
+
+.news-today-compact-stats small {
+  color: var(--muted-foreground);
+  font-size: 8.5px;
+  font-weight: 680;
   letter-spacing: 0.035em;
+  line-height: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   text-transform: uppercase;
   white-space: nowrap;
 }
 
-.news-today-summary strong {
+.news-today-compact-stats strong {
   color: var(--foreground);
-  font-size: 12.5px;
-  font-weight: 610;
+  font-size: 12px;
+  font-weight: 640;
+  line-height: 1.1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3658,6 +3718,14 @@ button {
 
   .news-live-summary {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .news-today-searchbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .news-today-compact-stats {
+    justify-content: flex-start;
   }
 }
 

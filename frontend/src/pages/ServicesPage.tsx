@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, CalendarDays, CheckCircle2, Clock3, Loader2, MapPin, RadioTower, RefreshCcw, Settings2, WifiOff } from "lucide-react";
+import { Activity, AlertTriangle, CalendarDays, CheckCircle2, Clock3, Loader2, MapPin, RadioTower, RefreshCcw, Search, Settings2, WifiOff, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import { api } from "../api/client";
@@ -619,12 +619,17 @@ function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: News
   const [detail, setDetail] = useState<NewsDetailPayload | null>(null);
   const [detailError, setDetailError] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const [selectedRow, setSelectedRow] = useState<NewsTodayRow | null>(null);
   const rows = state.rows;
   const summary = state.summary;
+  const filteredRows = useMemo(() => newsTodayFilteredRows(rows, searchQuery), [rows, searchQuery]);
   const showingLabel = summary.totalRows > summary.loadedRows
     ? `Showing ${formatCompactNumber(summary.loadedRows)} of ${formatCompactNumber(summary.totalRows)} rows`
     : `${formatCompactNumber(summary.totalRows)} rows loaded`;
+  const searchLabel = searchQuery.trim()
+    ? `Filtered ${formatCompactNumber(filteredRows.length)} of ${formatCompactNumber(summary.loadedRows)} loaded rows`
+    : showingLabel;
 
   async function openNews(row: NewsTodayRow) {
     setSelectedRow(row);
@@ -643,16 +648,31 @@ function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: News
 
   return (
     <Panel className="news-today-panel" title="Today's Inserted News">
-      <div className="news-today-summary">
-        <span><small>Today</small><strong>{formatCompactNumber(summary.totalRows)}</strong></span>
-        <span><small>Loaded</small><strong>{formatCompactNumber(summary.loadedRows)}</strong></span>
-        <span><small>One Ticker</small><strong>{formatCompactNumber(summary.oneTickerRows)}</strong></span>
-        <span><small>With Ticker</small><strong>{formatCompactNumber(summary.withTicker)}</strong></span>
-        <span><small>Latest</small><strong>{summary.latest ? formatLogTime(summary.latest) : "-"}</strong></span>
+      <div className="news-today-searchbar">
+        <label className="news-today-search-field">
+          <Search size={14} />
+          <input
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search ticker, title, source, flag, author, URL, or article id"
+            type="search"
+            value={searchQuery}
+          />
+          {searchQuery ? (
+            <button aria-label="Clear inserted news search" onClick={() => setSearchQuery("")} type="button">
+              <X size={14} />
+            </button>
+          ) : null}
+        </label>
+        <div className="news-today-compact-stats">
+          <span><small>Today</small><strong>{formatCompactNumber(summary.totalRows)}</strong></span>
+          <span><small>Loaded</small><strong>{formatCompactNumber(summary.loadedRows)}</strong></span>
+          <span><small>1 ticker</small><strong>{formatCompactNumber(summary.oneTickerRows)}</strong></span>
+          <span><small>Latest</small><strong>{summary.latest ? formatLogTime(summary.latest) : "-"}</strong></span>
+        </div>
       </div>
       <div className="news-today-meta">
         <span>{state.windowStartUtc ? `Window ${formatLogTime(state.windowStartUtc)} -> ${formatLogTime(state.windowEndUtc)}` : "Today, market timezone"}</span>
-        {state.error ? <strong>{state.error}</strong> : <strong>{state.loading ? "Loading rows..." : showingLabel}</strong>}
+        {state.error ? <strong>{state.error}</strong> : <strong>{state.loading ? "Loading rows..." : searchLabel}</strong>}
       </div>
       <div className="news-today-table-wrap">
         <table className="news-today-table">
@@ -672,7 +692,7 @@ function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: News
             </tr>
           </thead>
           <tbody>
-            {(rows.length ? rows : [null]).map((row, index) => row ? (
+            {(filteredRows.length ? filteredRows : [null]).map((row, index) => row ? (
               <tr
                 className={newsTodayRowTone(row)}
                 key={`${row.canonicalNewsId}-${index}`}
@@ -717,7 +737,13 @@ function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: News
               </tr>
             ) : (
               <tr key={`empty-${index}`}>
-                <td colSpan={6}>{state.loading ? "Loading today's inserted news rows..." : "No inserted news rows found for today's market date."}</td>
+                <td colSpan={6}>
+                  {state.loading
+                    ? "Loading today's inserted news rows..."
+                    : searchQuery.trim()
+                      ? "No loaded news rows match this search."
+                      : "No inserted news rows found for today's market date."}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -2543,6 +2569,41 @@ function newsTodayRowFromPayload(row: Record<string, unknown>): NewsTodayRow {
     title: stringMetric(row, ["title"]),
     urlDomain: stringMetric(row, ["url_domain"]),
   };
+}
+
+function newsTodayFilteredRows(rows: NewsTodayRow[], query: string) {
+  const terms = query.toLowerCase().split(/\s+/).map((term) => term.trim()).filter(Boolean);
+  if (!terms.length) return rows;
+  return rows.filter((row) => {
+    const haystack = newsTodaySearchText(row);
+    return terms.every((term) => haystack.includes(term));
+  });
+}
+
+function newsTodaySearchText(row: NewsTodayRow) {
+  return [
+    row.articleUrl,
+    row.author,
+    row.canonicalNewsId,
+    row.downloadedAtUtc,
+    row.externalFetchStatus,
+    row.normalizedTitle,
+    row.pdfExtractStatus,
+    row.providerArticleId,
+    row.publishedAtUtc,
+    row.textPreview,
+    row.title,
+    row.urlDomain,
+    formatLogTime(row.publishedAtUtc),
+    newsTodayTickerLabel(row),
+    newsTodayTextLabel(row),
+    newsTodayFlagLabel(row),
+    row.channels.join(" "),
+    row.contentQualityFlags.join(" "),
+    row.providerTags.join(" "),
+    row.tickerLinkSample.join(" "),
+    row.tickers.join(" "),
+  ].join(" ").toLowerCase();
 }
 
 function newsTodaySummaryFromPayload(summaryPayload: unknown, rows: NewsTodayRow[]): NewsTodaySummary {
