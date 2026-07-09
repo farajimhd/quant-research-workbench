@@ -532,10 +532,10 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
       />
       <div className="news-live-summary">
         <span><small>Polls</small><strong>{formatCompactNumber(numericMetric(metrics, ["poll_runs"]))}</strong></span>
-        <span><small>Avg Provider</small><strong>{formatCompactNumber(summary.avgProviderRows)}</strong></span>
+        <span><small>Avg Fetched</small><strong>{formatCompactNumber(summary.avgProviderRows)}</strong></span>
         <span><small>Avg Unique</small><strong>{formatCompactNumber(summary.avgUniqueRows)}</strong></span>
+        <span><small>Avg Duplicate</small><strong>{formatCompactNumber(summary.avgDuplicateRows)}</strong></span>
         <span><small>Avg Runtime</small><strong>{formatSeconds(summary.avgWallSeconds)}</strong></span>
-        <span><small>Written 50 Polls</small><strong>{formatCompactNumber(summary.writtenRows)}</strong></span>
         <span><small>Pending</small><strong>{formatCompactNumber(backgroundPending)}</strong></span>
       </div>
       <NewsPollHistoryTable rows={history} />
@@ -627,10 +627,9 @@ function NewsPollHistoryTable({ rows }: { rows: NewsPollHistoryRow[] }) {
           <tr>
             <th title="Gateway poll run number. Higher values are newer polls.">Poll</th>
             <th title="When this poll completed, shown in your local browser timezone.">Time</th>
-            <th title="Rows returned by the Benzinga provider before duplicate filtering.">Provider</th>
+            <th title="Rows returned by the Benzinga provider before duplicate filtering.">Fetched</th>
             <th title="Provider rows that were new within this poll batch.">Unique</th>
             <th title="Rows repeated inside the provider response or already represented in the batch.">Duplicate</th>
-            <th title="Normalized news rows inserted into ClickHouse by this poll.">Written</th>
             <th title="Rows skipped because they already existed in the database.">Skipped</th>
             <th title="Rows that failed processing or persistence in this poll.">Failed</th>
             <th title="Total wall-clock runtime for this poll in seconds.">Sec</th>
@@ -644,14 +643,13 @@ function NewsPollHistoryTable({ rows }: { rows: NewsPollHistoryRow[] }) {
               <td>{formatCompactNumber(row.providerRows)}</td>
               <td>{formatCompactNumber(row.uniqueRows)}</td>
               <td>{formatCompactNumber(row.duplicateRows)}</td>
-              <td>{formatCompactNumber(row.writtenRows)}</td>
               <td>{formatCompactNumber(row.skippedExisting)}</td>
               <td>{formatCompactNumber(row.failedRows)}</td>
               <td>{formatSeconds(row.wallSeconds)}</td>
             </tr>
           ) : (
             <tr key={`empty-${index}`}>
-              <td colSpan={9}>No poll has been observed by this dashboard yet.</td>
+              <td colSpan={8}>No poll has been observed by this dashboard yet.</td>
             </tr>
           ))}
         </tbody>
@@ -759,16 +757,16 @@ function newsPollHistorySummary(rows: NewsPollHistoryRow[]) {
     (totals, row) => ({
       providerRows: totals.providerRows + row.providerRows,
       uniqueRows: totals.uniqueRows + row.uniqueRows,
+      duplicateRows: totals.duplicateRows + row.duplicateRows,
       wallSeconds: totals.wallSeconds + row.wallSeconds,
-      writtenRows: totals.writtenRows + row.writtenRows,
     }),
-    { providerRows: 0, uniqueRows: 0, wallSeconds: 0, writtenRows: 0 },
+    { duplicateRows: 0, providerRows: 0, uniqueRows: 0, wallSeconds: 0 },
   );
   return {
+    avgDuplicateRows: sum.duplicateRows / count,
     avgProviderRows: sum.providerRows / count,
     avgUniqueRows: sum.uniqueRows / count,
     avgWallSeconds: sum.wallSeconds / count,
-    writtenRows: sum.writtenRows,
   };
 }
 
@@ -1151,8 +1149,8 @@ function ServiceDatabaseTableState({ service }: { service: ServiceStatusPayload 
             <col className="service-db-state-col-latest" />
             <col className="service-db-state-col-count" />
             <col className="service-db-state-col-count" />
-            <col className="service-db-state-col-count" />
-            <col className="service-db-state-col-count" />
+            <col className="service-db-state-col-recent" />
+            <col className="service-db-state-col-recent" />
             {years.map((year) => <col className="service-db-state-col-year" key={year} />)}
           </colgroup>
           <thead>

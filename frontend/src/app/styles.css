@@ -1549,7 +1549,7 @@ button {
   border-collapse: collapse;
   font-size: 11px;
   line-height: 1.25;
-  min-width: 900px;
+  min-width: 760px;
   table-layout: fixed;
   width: 100%;
 }
@@ -1623,9 +1623,7 @@ button {
 }
 
 .news-poll-history-table th:nth-child(8),
-.news-poll-history-table td:nth-child(8),
-.news-poll-history-table th:nth-child(9),
-.news-poll-history-table td:nth-child(9) {
+.news-poll-history-table td:nth-child(8) {
   width: 64px;
 }
 
@@ -1853,7 +1851,7 @@ button {
   border-collapse: collapse;
   font-size: 12px;
   line-height: 1.3;
-  min-width: 1680px;
+  min-width: 1120px;
   table-layout: fixed;
   width: 100%;
 }
@@ -1889,27 +1887,31 @@ button {
 }
 
 .service-db-state-col-status {
-  width: 74px;
+  width: 64px;
 }
 
 .service-db-state-col-role {
-  width: 122px;
+  width: 110px;
 }
 
 .service-db-state-col-table {
-  width: 420px;
+  width: 360px;
 }
 
 .service-db-state-col-count {
-  width: 88px;
+  width: 82px;
+}
+
+.service-db-state-col-recent {
+  width: 58px;
 }
 
 .service-db-state-col-year {
-  width: 78px;
+  width: 50px;
 }
 
 .service-db-state-col-latest {
-  width: 132px;
+  width: 112px;
 }
 
 .service-db-state-row.ok {
@@ -2107,7 +2109,7 @@ button {
 
 .service-db-muted-count-cell {
   color: var(--muted-foreground);
-  font-size: 10.5px;
+  font-size: 9.5px;
   font-weight: 430;
 }
 
