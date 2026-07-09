@@ -201,10 +201,12 @@ xlarge: 64,96,128
 ```
 
 The `large` and `xlarge` presets spend most extra capacity on the event
-encoder and fusion transformer. Side encoders still emit `[B,d_model]`
-modality tokens, but their internal hidden width is capped by
-`--side-encoder-dim` so text/XBRL/scanner/corporate paths do not dominate
-runtime or parameter count.
+encoder and fusion transformer. Each modality now has an optional internal
+output width (`--event-d-model`, `--bar-d-model`, `--text-d-model`,
+`--xbrl-d-model`, `--corporate-action-d-model`, `--scanner-d-model`) and a
+small adapter into `--fusion-d-model`. A value of `0` preserves the old behavior
+by falling back to `--d-model`. The sweep presets keep sparse side encoders
+smaller while letting events and fusion grow.
 
 XBRL category ids are deterministic dense ids from
 `training_category_reference`. The XBRL encoder uses separate embedding tables
@@ -264,7 +266,9 @@ tokens = model.encode_modality_tokens(batch_x)
 output = model.predict_from_modality_tokens(tokens)
 ```
 
-`tokens` is a dict of `[B, d_model]` tensors with this stable order:
+`tokens` is a dict of `[B, fusion_d_model]` tensors with this stable order.
+The raw modality encoders may use different widths internally; production
+caches the post-adapter fusion-width tokens.
 
 ```text
 events

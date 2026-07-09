@@ -68,6 +68,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prefetch-scanner-indexes", action=argparse.BooleanOptionalAction, default=default_loader.prefetch_scanner_indexes)
     parser.add_argument("--scanner-prefetch-workers", type=int, default=default_loader.scanner_prefetch_workers)
     parser.add_argument("--d-model", type=int, default=default_model.d_model)
+    parser.add_argument("--fusion-d-model", type=int, default=default_model.fusion_d_model, help="Fusion token width. 0 means use --d-model.")
+    parser.add_argument("--event-d-model", type=int, default=default_model.event_d_model, help="Event encoder output width before fusion adapter. 0 means use --d-model.")
+    parser.add_argument("--bar-d-model", type=int, default=default_model.bar_d_model, help="Bar encoder output width before fusion adapter. 0 means use --d-model.")
+    parser.add_argument("--text-d-model", type=int, default=default_model.text_d_model, help="Text encoder output width before fusion adapter. 0 means use --d-model.")
+    parser.add_argument("--xbrl-d-model", type=int, default=default_model.xbrl_d_model, help="XBRL encoder output width before fusion adapter. 0 means use --d-model.")
+    parser.add_argument("--corporate-action-d-model", type=int, default=default_model.corporate_action_d_model, help="Corporate-action encoder output width before fusion adapter. 0 means use --d-model.")
+    parser.add_argument("--scanner-d-model", type=int, default=default_model.scanner_d_model, help="Scanner encoder output width before fusion adapter. 0 means use --d-model.")
     parser.add_argument("--event-layers", type=int, default=default_model.event_layers)
     parser.add_argument("--event-heads", type=int, default=default_model.event_heads)
     parser.add_argument("--fusion-layers", type=int, default=default_model.fusion_layers)
@@ -446,6 +453,13 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
     intraday_label_horizons = _split_csv(args.intraday_label_horizons)
     model = ModelConfig(
         d_model=int(args.d_model),
+        fusion_d_model=int(args.fusion_d_model),
+        event_d_model=int(args.event_d_model),
+        bar_d_model=int(args.bar_d_model),
+        text_d_model=int(args.text_d_model),
+        xbrl_d_model=int(args.xbrl_d_model),
+        corporate_action_d_model=int(args.corporate_action_d_model),
+        scanner_d_model=int(args.scanner_d_model),
         event_layers=int(args.event_layers),
         event_heads=int(args.event_heads),
         fusion_layers=int(args.fusion_layers),

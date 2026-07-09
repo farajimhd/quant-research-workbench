@@ -46,7 +46,7 @@ class TemporalEventModelV3(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config
-        d = int(config.d_model)
+        d = _fusion_dim(config)
         time_encoder = TimeFeatureEncoder(config)
         self.event_encoder = EventEncoder(config, time_encoder)
         self.intraday_bar_encoder = BarContextEncoder(config, time_encoder, group="ticker_intraday_bars")
@@ -56,7 +56,21 @@ class TemporalEventModelV3(nn.Module):
         self.xbrl_encoder = XbrlEncoder(config, time_encoder)
         self.corporate_action_encoder = CorporateActionEncoder(config, time_encoder)
         self.scanner_encoder = ScannerContextEncoder(config, time_encoder)
-        self.modality_embedding = nn.Parameter(torch.zeros(10, d))
+        self.modality_adapters = nn.ModuleDict(
+            {
+                "events": _fusion_adapter(self.event_encoder.out_dim, d, dropout=float(config.dropout)),
+                "ticker_intraday_bars": _fusion_adapter(self.intraday_bar_encoder.out_dim, d, dropout=float(config.dropout)),
+                "ticker_daily_bars": _fusion_adapter(self.ticker_bar_encoder.out_dim, d, dropout=float(config.dropout)),
+                "global_daily_bars": _fusion_adapter(self.global_bar_encoder.out_dim, d, dropout=float(config.dropout)),
+                "ticker_news": _fusion_adapter(self.text_encoder.out_dim, d, dropout=float(config.dropout)),
+                "market_news": _fusion_adapter(self.text_encoder.out_dim, d, dropout=float(config.dropout)),
+                "sec_filings": _fusion_adapter(self.text_encoder.out_dim, d, dropout=float(config.dropout)),
+                "xbrl": _fusion_adapter(self.xbrl_encoder.out_dim, d, dropout=float(config.dropout)),
+                "corporate_actions": _fusion_adapter(self.corporate_action_encoder.out_dim, d, dropout=float(config.dropout)),
+                "scanner_context": _fusion_adapter(self.scanner_encoder.out_dim, d, dropout=float(config.dropout)),
+            }
+        )
+        self.modality_embedding = nn.Parameter(torch.zeros(len(MODALITY_TOKEN_NAMES), d))
         fusion_layer = nn.TransformerEncoderLayer(
             d_model=d,
             nhead=int(config.fusion_heads),
@@ -124,16 +138,16 @@ class TemporalEventModelV3(nn.Module):
         bars = x.get("bar_inputs", {})
         text = x.get("text_inputs", {})
         return {
-            "events": timed("event_encoder", lambda: self.event_encoder(x)),
-            "ticker_intraday_bars": timed("intraday_bar_encoder", lambda: self.intraday_bar_encoder(bars.get("ticker_intraday_bars", {}))),
-            "ticker_daily_bars": timed("ticker_daily_bar_encoder", lambda: self.ticker_bar_encoder(bars.get("ticker_daily_bars", {}))),
-            "global_daily_bars": timed("global_daily_bar_encoder", lambda: self.global_bar_encoder(bars.get("global_daily_bars", {}))),
-            "ticker_news": timed("ticker_news_encoder", lambda: self.text_encoder(text.get("ticker_news", {}), group="ticker_news")),
-            "market_news": timed("market_news_encoder", lambda: self.text_encoder(text.get("market_news", {}), group="market_news")),
-            "sec_filings": timed("sec_filing_encoder", lambda: self.text_encoder(text.get("sec_filings", {}), group="sec_filings")),
-            "xbrl": timed("xbrl_encoder", lambda: self.xbrl_encoder(x.get("xbrl_inputs", {}))),
-            "corporate_actions": timed("corporate_action_encoder", lambda: self.corporate_action_encoder(x.get("corporate_action_inputs", {}))),
-            "scanner_context": timed("scanner_encoder", lambda: self.scanner_encoder(x.get("scanner_inputs", {}))),
+            "events": timed("event_encoder", lambda: self._adapt_modality("events", self.event_encoder(x))),
+            "ticker_intraday_bars": timed("intraday_bar_encoder", lambda: self._adapt_modality("ticker_intraday_bars", self.intraday_bar_encoder(bars.get("ticker_intraday_bars", {})))),
+            "ticker_daily_bars": timed("ticker_daily_bar_encoder", lambda: self._adapt_modality("ticker_daily_bars", self.ticker_bar_encoder(bars.get("ticker_daily_bars", {})))),
+            "global_daily_bars": timed("global_daily_bar_encoder", lambda: self._adapt_modality("global_daily_bars", self.global_bar_encoder(bars.get("global_daily_bars", {})))),
+            "ticker_news": timed("ticker_news_encoder", lambda: self._adapt_modality("ticker_news", self.text_encoder(text.get("ticker_news", {}), group="ticker_news"))),
+            "market_news": timed("market_news_encoder", lambda: self._adapt_modality("market_news", self.text_encoder(text.get("market_news", {}), group="market_news"))),
+            "sec_filings": timed("sec_filing_encoder", lambda: self._adapt_modality("sec_filings", self.text_encoder(text.get("sec_filings", {}), group="sec_filings"))),
+            "xbrl": timed("xbrl_encoder", lambda: self._adapt_modality("xbrl", self.xbrl_encoder(x.get("xbrl_inputs", {})))),
+            "corporate_actions": timed("corporate_action_encoder", lambda: self._adapt_modality("corporate_actions", self.corporate_action_encoder(x.get("corporate_action_inputs", {})))),
+            "scanner_context": timed("scanner_encoder", lambda: self._adapt_modality("scanner_context", self.scanner_encoder(x.get("scanner_inputs", {})))),
         }
 
     def _predict_from_token_map(
@@ -181,11 +195,14 @@ class TemporalEventModelV3(nn.Module):
         batch_size = int(reference.shape[0])
         device = reference.device
         aligned = [
-            _align_token(tokens.get(name), batch_size=batch_size, device=device, width=int(self.config.d_model))
+            _align_token(tokens.get(name), batch_size=batch_size, device=device, width=_fusion_dim(self.config))
             for name in MODALITY_TOKEN_NAMES
         ]
         modality = torch.stack(aligned, dim=1)
         return modality + self.modality_embedding[: modality.shape[1]].unsqueeze(0)
+
+    def _adapt_modality(self, name: str, token: torch.Tensor) -> torch.Tensor:
+        return self.modality_adapters[str(name)](token)
 
     def _fuse_modality_tokens(self, modality_tokens: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         fused_tokens = self.fusion_norm(self.fusion(modality_tokens))
@@ -222,55 +239,71 @@ class TemporalEventModelV3(nn.Module):
 
     @torch.inference_mode()
     def encode_events(self, x: Mapping[str, Any]) -> torch.Tensor:
-        return self.event_encoder(x)
+        return self._adapt_modality("events", self.event_encoder(x))
 
     @torch.inference_mode()
     def encode_bars(self, x: Mapping[str, Any]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         bars = x.get("bar_inputs", {})
         return (
-            self.intraday_bar_encoder(bars.get("ticker_intraday_bars", {})),
-            self.ticker_bar_encoder(bars.get("ticker_daily_bars", {})),
-            self.global_bar_encoder(bars.get("global_daily_bars", {})),
+            self._adapt_modality("ticker_intraday_bars", self.intraday_bar_encoder(bars.get("ticker_intraday_bars", {}))),
+            self._adapt_modality("ticker_daily_bars", self.ticker_bar_encoder(bars.get("ticker_daily_bars", {}))),
+            self._adapt_modality("global_daily_bars", self.global_bar_encoder(bars.get("global_daily_bars", {}))),
         )
 
     @torch.inference_mode()
     def encode_text(self, x: Mapping[str, Any]) -> dict[str, torch.Tensor]:
         text = x.get("text_inputs", {})
         return {
-            "ticker_news": self.text_encoder(text.get("ticker_news", {}), group="ticker_news"),
-            "market_news": self.text_encoder(text.get("market_news", {}), group="market_news"),
-            "sec_filings": self.text_encoder(text.get("sec_filings", {}), group="sec_filings"),
+            "ticker_news": self._adapt_modality("ticker_news", self.text_encoder(text.get("ticker_news", {}), group="ticker_news")),
+            "market_news": self._adapt_modality("market_news", self.text_encoder(text.get("market_news", {}), group="market_news")),
+            "sec_filings": self._adapt_modality("sec_filings", self.text_encoder(text.get("sec_filings", {}), group="sec_filings")),
         }
 
     @torch.inference_mode()
     def encode_xbrl(self, x: Mapping[str, Any]) -> torch.Tensor:
-        return self.xbrl_encoder(x.get("xbrl_inputs", {}))
+        return self._adapt_modality("xbrl", self.xbrl_encoder(x.get("xbrl_inputs", {})))
 
     @torch.inference_mode()
     def encode_corporate_actions(self, x: Mapping[str, Any]) -> torch.Tensor:
-        return self.corporate_action_encoder(x.get("corporate_action_inputs", {}))
+        return self._adapt_modality("corporate_actions", self.corporate_action_encoder(x.get("corporate_action_inputs", {})))
 
     @torch.inference_mode()
     def encode_scanner(self, x: Mapping[str, Any]) -> torch.Tensor:
-        return self.scanner_encoder(x.get("scanner_inputs", {}))
+        return self._adapt_modality("scanner_context", self.scanner_encoder(x.get("scanner_inputs", {})))
 
 
 class EventEncoder(nn.Module):
     def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder") -> None:
         super().__init__()
         self.config = config
-        d = int(config.d_model)
+        d = _event_dim(config)
         self.time_feature_count = int(config.event_time_feature_count)
         self.time_encoder = time_encoder
-        self.event_type = nn.Embedding(2, 8)
-        self.price_scale = nn.Embedding(2, 8)
-        self.tape = nn.Embedding(8, 8)
-        self.condition = HashEmbedding(256, 8)
-        self.exchange = HashEmbedding(256, 8)
-        categorical_dim = 8 + 8 + 8 + 8 + 8 + 8 + 8
-        self.numeric = nn.Linear(int(config.event_feature_count), d)
-        self.input_mlp = MLP(d + categorical_dim + int(config.time_encoder_dim), d, d, dropout=float(config.dropout))
+        category_dim = max(2, int(getattr(config, "event_category_dim", 16)))
+        condition_dim = max(2, int(getattr(config, "event_condition_dim", 16)))
+        numeric_dim = max(4, int(getattr(config, "event_numeric_dim", 64)))
+        self.event_type = nn.Embedding(2, category_dim)
+        self.price_scale = nn.Embedding(2, category_dim)
+        self.tape = nn.Embedding(8, category_dim)
+        self.condition = nn.Embedding(max(2, int(getattr(config, "event_condition_vocab_size", 256))), condition_dim, padding_idx=0)
+        self.exchange = nn.Embedding(max(2, int(getattr(config, "event_exchange_vocab_size", 256))), category_dim, padding_idx=0)
+        categorical_dim = 6 * category_dim + condition_dim
+        self.numeric_norm = nn.LayerNorm(4)
+        self.numeric = MLP(4, max(numeric_dim, d // 4, 16), numeric_dim, dropout=float(config.dropout))
+        self.input_mlp = MLP(numeric_dim + categorical_dim + int(config.time_encoder_dim), max(d, numeric_dim + categorical_dim), d, dropout=float(config.dropout))
         self.position = nn.Embedding(int(config.event_stream_length), d)
+        self.local_conv: nn.Module | None
+        if bool(getattr(config, "event_use_local_conv", True)):
+            self.local_conv = nn.Sequential(
+                nn.Conv1d(d, d, kernel_size=5, padding=2, groups=d),
+                nn.GELU(),
+                nn.Conv1d(d, d, kernel_size=1),
+                nn.Dropout(float(config.dropout)),
+            )
+            self.local_conv_norm = nn.LayerNorm(d)
+        else:
+            self.local_conv = None
+            self.local_conv_norm = nn.Identity()
         layer = nn.TransformerEncoderLayer(
             d_model=d,
             nhead=int(config.event_heads),
@@ -282,6 +315,7 @@ class EventEncoder(nn.Module):
         )
         self.encoder = nn.TransformerEncoder(layer, num_layers=int(config.event_layers))
         self.norm = nn.LayerNorm(d)
+        self.out_dim = d
 
     def forward(self, x: Mapping[str, Any]) -> torch.Tensor:
         events = x["raw_event_stream"].float()
@@ -292,13 +326,18 @@ class EventEncoder(nn.Module):
         primary_scale = ((meta >> 1) & 1).clamp(0, 1)
         secondary_scale = ((meta >> 2) & 1).clamp(0, 1)
         tape = ((meta >> 3) & 7).clamp(0, 7)
-        exchange_primary = _feature(events, x, "exchange_primary", 5).long()
-        exchange_secondary = _feature(events, x, "exchange_secondary", 6).long()
-        condition_tokens = [
-            _feature(events, x, f"condition_token_{index}", 6 + index).long()
-            for index in range(1, 6)
-        ]
-        condition_emb = torch.stack([self.condition(token) for token in condition_tokens], dim=0).mean(dim=0)
+        exchange_primary = _bounded_ids(_feature(events, x, "exchange_primary", 5), self.exchange.num_embeddings)
+        exchange_secondary = _bounded_ids(_feature(events, x, "exchange_secondary", 6), self.exchange.num_embeddings)
+        condition_tokens = torch.stack(
+            [
+                _bounded_ids(_feature(events, x, f"condition_token_{index}", 6 + index), self.condition.num_embeddings)
+                for index in range(1, 6)
+            ],
+            dim=-1,
+        )
+        condition_values = self.condition(condition_tokens)
+        condition_mask = condition_tokens.ne(0).unsqueeze(-1).to(dtype=condition_values.dtype)
+        condition_emb = (condition_values * condition_mask).sum(dim=-2) / condition_mask.sum(dim=-2).clamp(min=1.0)
         cat = torch.cat(
             [
                 self.event_type((meta & 1).clamp(0, 1)),
@@ -313,10 +352,24 @@ class EventEncoder(nn.Module):
         )
         positions = torch.arange(events.shape[1], device=events.device).clamp(max=self.position.num_embeddings - 1)
         time_features = _named_features(events, x, EVENT_TIME_FEATURE_NAMES, width=self.time_feature_count)
-        numeric_events = _zero_named_features(events, x, EVENT_TIME_FEATURE_NAMES)
+        numeric_events = torch.stack(
+            [
+                _feature(events, x, "price_primary_int", 1),
+                _feature(events, x, "price_secondary_int", 2),
+                _feature(events, x, "size_primary", 3),
+                _feature(events, x, "size_secondary", 4),
+            ],
+            dim=-1,
+        )
         time_token = self.time_encoder(time_features, role="event")
-        token = self.input_mlp(torch.cat([self.numeric(torch.nan_to_num(numeric_events)), cat, time_token], dim=-1))
+        numeric_token = self.numeric(self.numeric_norm(torch.nan_to_num(numeric_events.float())))
+        token = self.input_mlp(torch.cat([numeric_token, cat, time_token], dim=-1))
         token = token + self.position(positions)[None, :, :]
+        token = token * mask.bool().unsqueeze(-1).to(dtype=token.dtype)
+        if self.local_conv is not None:
+            mixed = self.local_conv(token.transpose(1, 2)).transpose(1, 2)
+            token = self.local_conv_norm(token + mixed)
+            token = token * mask.bool().unsqueeze(-1).to(dtype=token.dtype)
         encoded = self.encoder(token, src_key_padding_mask=~mask.bool())
         encoded = self.norm(encoded)
         return masked_mean(encoded, mask.bool(), dim=1)
@@ -344,7 +397,7 @@ class BarRowEncoder(nn.Module):
 class BarContextEncoder(nn.Module):
     def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder", *, group: str) -> None:
         super().__init__()
-        d = int(config.d_model)
+        d = _bar_dim(config)
         h = _side_hidden_dim(config)
         item_dim = max(8, int(config.bar_item_dim))
         latent_count = max(1, int(config.bar_latents))
@@ -453,7 +506,7 @@ class BarContextEncoder(nn.Module):
 class TextContextEncoder(nn.Module):
     def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder") -> None:
         super().__init__()
-        d = int(config.d_model)
+        d = _text_dim(config)
         h = _side_hidden_dim(config)
         item_dim = max(8, int(config.text_item_dim))
         latent_count = max(1, int(config.text_latents))
@@ -540,7 +593,7 @@ class TextContextEncoder(nn.Module):
 class XbrlEncoder(nn.Module):
     def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder") -> None:
         super().__init__()
-        d = int(config.d_model)
+        d = _xbrl_dim(config)
         h = _side_hidden_dim(config)
         item_dim = max(8, int(config.xbrl_item_dim))
         latent_count = max(1, int(config.xbrl_latents))
@@ -641,14 +694,36 @@ class XbrlEncoder(nn.Module):
 class CorporateActionEncoder(nn.Module):
     def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder") -> None:
         super().__init__()
-        d = int(config.d_model)
+        d = _corporate_action_dim(config)
         h = _side_hidden_dim(config)
+        item_dim = max(8, int(getattr(config, "corporate_action_item_dim", 64)))
+        category_dim = max(2, int(getattr(config, "corporate_action_category_dim", 8)))
+        latent_count = max(1, int(getattr(config, "corporate_action_latents", 4)))
+        attention_heads = max(1, int(getattr(config, "corporate_action_attention_heads", 4)))
+        if item_dim % attention_heads != 0:
+            raise ValueError(f"corporate_action_item_dim={item_dim} must be divisible by corporate_action_attention_heads={attention_heads}.")
         self.time_encoder = time_encoder
         self.time_feature_count = int(config.corporate_action_time_dim)
         self.effective_time_feature_count = int(config.corporate_action_effective_time_dim)
-        self.cat = HashEmbedding(2048, 8)
-        numeric_dim = int(config.corporate_action_numeric_dim) + 2 * int(config.time_encoder_dim) + 4 * 8
-        self.row_proj = MLP(numeric_dim, h, d, dropout=float(config.dropout))
+        self.item_dim = item_dim
+        self.action_type_embedding = nn.Embedding(max(2, int(getattr(config, "corporate_action_action_type_vocab_size", 16))), category_dim, padding_idx=0)
+        self.dividend_type_embedding = nn.Embedding(max(2, int(getattr(config, "corporate_action_dividend_type_vocab_size", 16))), category_dim, padding_idx=0)
+        self.currency_embedding = nn.Embedding(max(2, int(getattr(config, "corporate_action_currency_vocab_size", 64))), category_dim, padding_idx=0)
+        self.frequency_embedding = nn.Embedding(max(2, int(getattr(config, "corporate_action_frequency_vocab_size", 64))), category_dim, padding_idx=0)
+        self.numeric_norm = nn.LayerNorm(int(config.corporate_action_numeric_dim))
+        row_dim = int(config.corporate_action_numeric_dim) + 2 * int(config.time_encoder_dim) + 4 * category_dim
+        self.row_proj = MLP(row_dim, max(item_dim, h), item_dim, dropout=float(config.dropout))
+        self.latent_queries = nn.Parameter(torch.randn(latent_count, item_dim) * 0.02)
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim=item_dim,
+            num_heads=attention_heads,
+            dropout=float(config.dropout),
+            batch_first=True,
+        )
+        self.attention_norm = nn.LayerNorm(item_dim)
+        self.latent_ffn = MLP(item_dim, max(item_dim, h), item_dim, dropout=float(config.dropout))
+        self.latent_ffn_norm = nn.LayerNorm(item_dim)
+        self.out_proj = MLP(item_dim, h, d, dropout=float(config.dropout))
         self.out_dim = d
 
     def forward(self, payload: Mapping[str, Any]) -> torch.Tensor:
@@ -672,15 +747,42 @@ class CorporateActionEncoder(nn.Module):
         )
         time_token = self.time_encoder(time_features, role="corporate_available")
         effective_token = self.time_encoder(effective, role="corporate_effective")
-        cats = torch.cat([self.cat(_payload_ids(payload, key, numeric[..., 0])) for key in ("action_type_id", "dividend_type_id", "currency_id", "frequency_id")], dim=-1)
-        row = torch.cat([numeric.float(), time_token, effective_token, cats], dim=-1)
-        return masked_mean(self.row_proj(row), mask.bool(), dim=1)
+        cats = torch.cat(
+            [
+                _safe_category_embedding(self.action_type_embedding, _payload_ids(payload, "action_type_id", numeric[..., 0])),
+                _safe_category_embedding(self.dividend_type_embedding, _payload_ids(payload, "dividend_type_id", numeric[..., 0])),
+                _safe_category_embedding(self.currency_embedding, _payload_ids(payload, "currency_id", numeric[..., 0])),
+                _safe_category_embedding(self.frequency_embedding, _payload_ids(payload, "frequency_id", numeric[..., 0])),
+            ],
+            dim=-1,
+        )
+        row = torch.cat([self.numeric_norm(torch.nan_to_num(numeric.float())), time_token, effective_token, cats], dim=-1)
+        items = self.row_proj(row)
+        item_mask = mask.to(device=items.device, dtype=torch.bool)
+        items = items * item_mask.unsqueeze(-1).to(dtype=items.dtype)
+        has_items = item_mask.any(dim=1)
+        safe_mask = item_mask.clone()
+        safe_mask[:, 0] = safe_mask[:, 0] | ~has_items
+        items = items.clone()
+        items[:, 0, :] = torch.where(has_items[:, None], items[:, 0, :], torch.zeros_like(items[:, 0, :]))
+        queries = self.latent_queries.unsqueeze(0).expand(items.shape[0], -1, -1)
+        attended, _ = self.cross_attention(
+            queries,
+            items,
+            items,
+            key_padding_mask=~safe_mask,
+            need_weights=False,
+        )
+        latents = self.attention_norm(queries + attended)
+        latents = self.latent_ffn_norm(latents + self.latent_ffn(latents))
+        out = self.out_proj(latents.mean(dim=1))
+        return out * has_items.unsqueeze(-1).to(dtype=out.dtype)
 
 
 class ScannerContextEncoder(nn.Module):
     def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder") -> None:
         super().__init__()
-        d = int(config.d_model)
+        d = _scanner_dim(config)
         h = _side_hidden_dim(config)
         item_dim = max(8, int(getattr(config, "scanner_item_dim", config.bar_item_dim)))
         latent_count = max(1, int(getattr(config, "scanner_latents", config.bar_latents)))
@@ -903,14 +1005,64 @@ class MLP(nn.Module):
 def _side_hidden_dim(config: ModelConfig) -> int:
     value = int(getattr(config, "side_encoder_dim", 0) or 0)
     if value <= 0:
-        return int(config.d_model)
+        return _fusion_dim(config)
     return max(16, int(value))
+
+
+def _positive_config_dim(config: ModelConfig, name: str, fallback: int) -> int:
+    value = int(getattr(config, name, 0) or 0)
+    return value if value > 0 else int(fallback)
+
+
+def _fusion_dim(config: ModelConfig) -> int:
+    return _positive_config_dim(config, "fusion_d_model", int(config.d_model))
+
+
+def _event_dim(config: ModelConfig) -> int:
+    return _positive_config_dim(config, "event_d_model", int(config.d_model))
+
+
+def _bar_dim(config: ModelConfig) -> int:
+    return _positive_config_dim(config, "bar_d_model", int(config.d_model))
+
+
+def _text_dim(config: ModelConfig) -> int:
+    return _positive_config_dim(config, "text_d_model", int(config.d_model))
+
+
+def _xbrl_dim(config: ModelConfig) -> int:
+    return _positive_config_dim(config, "xbrl_d_model", int(config.d_model))
+
+
+def _corporate_action_dim(config: ModelConfig) -> int:
+    return _positive_config_dim(config, "corporate_action_d_model", int(config.d_model))
+
+
+def _scanner_dim(config: ModelConfig) -> int:
+    return _positive_config_dim(config, "scanner_d_model", int(config.d_model))
+
+
+def _fusion_adapter(in_dim: int, out_dim: int, *, dropout: float) -> nn.Module:
+    if int(in_dim) == int(out_dim):
+        return nn.Identity()
+    return nn.Sequential(
+        nn.LayerNorm(int(in_dim)),
+        nn.Linear(int(in_dim), int(out_dim)),
+        nn.GELU(),
+        nn.Dropout(float(dropout)),
+        nn.LayerNorm(int(out_dim)),
+    )
 
 
 def _safe_category_embedding(embedding: nn.Embedding, ids: torch.Tensor) -> torch.Tensor:
     clean = ids.long().clamp(min=0)
     clean = torch.where(clean < int(embedding.num_embeddings), clean, torch.zeros_like(clean))
     return embedding(clean)
+
+
+def _bounded_ids(ids: torch.Tensor, num_embeddings: int) -> torch.Tensor:
+    clean = ids.long().clamp(min=0)
+    return torch.where(clean < int(num_embeddings), clean, torch.zeros_like(clean))
 
 
 def masked_mean(x: torch.Tensor, mask: torch.Tensor, *, dim: int) -> torch.Tensor:
@@ -1050,6 +1202,9 @@ def _init_weights(module: nn.Module) -> None:
             nn.init.zeros_(module.bias)
     elif isinstance(module, nn.Embedding):
         nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        if module.padding_idx is not None:
+            with torch.no_grad():
+                module.weight[int(module.padding_idx)].zero_()
 
 
 def build_model_mermaid() -> str:
@@ -1064,16 +1219,17 @@ def build_model_mermaid() -> str:
   B --> X["XBRL set encoder"]
   B --> CA["Corporate-action set encoder"]
   B --> SC["Scanner leader-context encoder"]
-  E --> F["Fusion transformer"]
-  IB --> F
-  TB --> F
-  GB --> F
-  TN --> F
-  MN --> F
-  SF --> F
-  X --> F
-  CA --> F
-  SC --> F
+  E --> A["Modality adapters to fusion width"]
+  IB --> A
+  TB --> A
+  GB --> A
+  TN --> A
+  MN --> A
+  SF --> A
+  X --> A
+  CA --> A
+  SC --> A
+  A --> F["Fusion transformer"]
   F --> IQ["Intraday horizon queries"]
   F --> DQ["Daily corporate-action queries"]
   IQ --> PB["Trade/bid/ask bar heads"]

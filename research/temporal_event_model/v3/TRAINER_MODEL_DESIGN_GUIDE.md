@@ -289,7 +289,9 @@ numeric value in the model guide/config instead of reusing a symbolic length.
 | `T_ca` | Number of corporate-action availability-time features. |
 | `T_ca_eff` | Number of corporate-action effective-time features. |
 | `F_ca` | Number of corporate-action numeric feature dimensions. |
-| `d_model` | Model hidden width after each modality-specific projection. |
+| `d_model` | Backward-compatible default hidden width. |
+| `D_fusion` | Effective fusion width, equal to `fusion_d_model` when set, otherwise `d_model`. |
+| `D_event`, `D_bar`, `D_text`, `D_xbrl`, `D_ca`, `D_scanner` | Effective modality output widths before their adapters; each falls back to `d_model` when its explicit config value is `0`. |
 
 Event raw storage and adapter chain:
 
@@ -485,10 +487,16 @@ Default dimensions:
 
 | Name | Current value | Meaning |
 | --- | ---: | --- |
-| `d_model` | 256 | Hidden width for every modality token and fusion layer. |
-| `side_encoder_dim` | 0 by default | Internal hidden width for side encoders. `0` means use `d_model`; sweep large presets cap this so extra capacity goes mainly to event/fusion paths. |
+| `d_model` | 256 | Backward-compatible default hidden width used when a modality-specific width is `0`. |
+| `fusion_d_model` | 0 by default | Fusion token width. `0` means use `d_model`. Cached production tokens are `[B,fusion_d_model]` after adapter projection. |
+| `event_d_model` | 0 by default | Event encoder output width before its fusion adapter. Large presets set this higher than fusion width. |
+| `bar_d_model`, `text_d_model`, `xbrl_d_model`, `corporate_action_d_model`, `scanner_d_model` | 0 by default | Per-modality output widths before fusion adapters. `0` means use `d_model`; sweep presets cap sparse side modalities below event/fusion capacity. |
+| `side_encoder_dim` | 0 by default | Internal hidden width for side encoder MLPs. `0` means use `fusion_d_model`/`d_model`. |
 | `event_stream_length` | 1024 | Raw event rows ending at each origin. |
-| `event_feature_count` | 24 | Raw event feature columns consumed by the event numeric projection. |
+| `event_feature_count` | 24 | Raw event feature columns available to the model. The event numeric branch consumes only raw price/size fields by name; time and categorical fields have separate branches. |
+| `event_numeric_dim` | 64 | Projected width for `price_primary_int`, `price_secondary_int`, `size_primary`, and `size_secondary`. |
+| `event_category_dim` | 16 | Embedding width for event type, price-scale bits, tape, and exchange ids. |
+| `event_condition_dim` | 16 | Mask-aware pooled embedding width for `condition_token_1..5`. |
 | `time_encoder_dim` | 32 | Shared role-aware time embedding width injected into each modality before pooling. |
 | `time_feature_input_dim` | 12 | Maximum raw time-feature width accepted by `TimeFeatureEncoder`; smaller time roles are right-padded inside the encoder. |
 | `H` | 26 | Intraday future/backward bar horizons. |
@@ -513,6 +521,9 @@ Default dimensions:
 | `xbrl_latents` | 8 | Learned XBRL latent/query tokens used to attend over the 4096 item slots. |
 | `xbrl_attention_heads` | 4 | Cross-attention heads for XBRL latent pooling. |
 | `corporate_action_max_items` | 128 | Latest as-of corporate-action rows. |
+| `corporate_action_item_dim` | 64 | Corporate-action row token width before latent attention pooling. |
+| `corporate_action_latents` | 4 | Learned corporate-action query tokens used to pool sparse action rows. |
+| `corporate_action_attention_heads` | 4 | Cross-attention heads for corporate-action latent pooling. |
 
 Current forward path:
 
@@ -530,7 +541,8 @@ loader batch
   -> XbrlEncoder(xbrl_inputs)
   -> CorporateActionEncoder(corporate_action_inputs)
   -> ScannerContextEncoder(scanner_inputs)
-  -> stack 10 modality tokens [B, 10, d_model]
+  -> per-modality adapters to fusion_d_model
+  -> stack 10 modality tokens [B, 10, fusion_d_model]
   -> add learned modality embeddings
   -> fusion TransformerEncoder
   -> mean pool across 10 fused modality tokens
@@ -544,11 +556,12 @@ Sizing rule:
 - Event and fusion encoders are the primary capacity paths because they see the
   dense event stream and learn cross-modality interactions.
 - Text, XBRL, corporate-action, bar, and scanner encoders are side paths. They
-  always output `[B,d_model]` tokens for fusion, but their internal MLP hidden
-  width can be capped with `side_encoder_dim`.
-- Large profile presets should therefore increase `d_model`, `event_layers`,
-  and `fusion_layers` first, while keeping `side_encoder_dim` moderate unless a
-  side modality is proven to be the bottleneck or underfit.
+  can use smaller output widths and lighter internal item widths, then adapt to
+  the common fusion width.
+- Large profile presets should therefore increase `event_d_model`,
+  `fusion_d_model`, `event_layers`, and `fusion_layers` first, while keeping
+  sparse side widths moderate unless a side modality is proven to be the
+  bottleneck or underfit.
 
 Loader replay rule:
 
@@ -677,16 +690,16 @@ sends each row to `TimeFeatureEncoder(role="bar_start")` and
 
 | Encoder | Input representation | Implemented transform | Output |
 | --- | --- | --- | --- |
-| `EventEncoder` | `raw_event_stream float32 [B,1024,24]`, `raw_event_mask bool [B,1024]`, and `event_feature_names` | Event timestamp/session columns are extracted by name and encoded by `TimeFeatureEncoder(role="event")`. Those columns are zeroed in the generic numeric path so time is not double-counted as ordinary numeric input. Categorical path extracts `event_meta`, price-scale bits, tape bits, exchanges, and `condition_token_1..5`; embeds each category; condition token embeddings are averaged. Numeric, categorical, and time paths are concatenated, passed through MLP, plus learned position embedding, then a 4-layer TransformerEncoder and masked mean. No z-score or price decoding is applied inside this encoder. | One event modality token `[B,256]`. |
-| `BarContextEncoder` for `ticker_intraday_bars` | Family payloads `trade_values [B,H,6]`, `quote_bid_values [B,H,9]`, `quote_ask_values [B,H,9]`, family masks `[B,H]`, family start-time tensors `[B,H,9]`, and family end-time tensors `[B,H,9]` | For each family, `BarRowEncoder` pads value features to width 9 and concatenates `TimeFeatureEncoder(role="bar_start")` and `TimeFeatureEncoder(role="bar_end")` outputs. The row is projected to `bar_item_dim=128`, then learned family, bar-group, and horizon-position embeddings are added. `bar_latents=4` learned query tokens use 4-head cross-attention over valid family/horizon rows. No price normalization or z-score is applied here. | One intraday-bar modality token `[B,256]`. |
-| `BarContextEncoder` for `ticker_daily_bars` | Same family payload pattern with daily offsets `O=8`: `[B,O,*]`, masks `[B,O]`, start-time tensors `[B,O,9]`, and end-time tensors `[B,O,9]` | Same shared `BarRowEncoder` and attention encoder as intraday bars. The position embedding represents the configured daily offset slot. Raw completed daily bar values and encoded bar-start/bar-end age time are projected directly. | One ticker-daily-bar modality token `[B,256]`. |
-| `BarContextEncoder` for `global_daily_bars` | Same family payload pattern with symbols and offsets: `[B,S,O,*]`, masks `[B,S,O]`, start-time tensors `[B,S,O,9]`, and end-time tensors `[B,S,O,9]` | Same shared bar row encoder as ticker bars, with an additional learned global-symbol slot embedding plus offset-position embedding. The model uses the stable symbol slot/order emitted by the loader, not the string symbol value. | One global-daily-bar modality token `[B,256]`. |
-| `TextContextEncoder` for ticker news | `embeddings [B,8,2,1024]`, `chunk_mask [B,8,2]`, `item_mask [B,8]`, `item_time_features [B,8,10]` | Each Qwen chunk embedding is `LayerNorm(1024) -> Linear(1024,128) -> GELU -> Dropout`. `item_time_features[b,i,:]` is validated, encoded by `TimeFeatureEncoder(role="text_available")`, projected to `text_item_dim=128`, and broadcast to every chunk token for item `i`. Group, item-position, and chunk-position embeddings are added. `text_latents=4` learned group-specific query tokens use 4-head cross-attention over all valid chunk tokens. The model does not run Qwen and does not z-score embeddings. | One ticker-news modality token `[B,256]`. |
-| `TextContextEncoder` for market news | `embeddings [B,16,2,1024]`, masks, item time features | Same attention encoder as ticker news, with a different group embedding and group-specific latent queries. | One market-news modality token `[B,256]`. |
-| `TextContextEncoder` for SEC filings | `embeddings [B,4,8,1024]`, masks, item time features | Same attention encoder as ticker news, with SEC-specific group embedding and latent queries. Each filing chunk receives the filing item's accepted/published time features before attention. | One SEC-text modality token `[B,256]`. |
-| `XbrlEncoder` | `value [B,4096]`, `mask [B,4096]`, scalar fields `mapping_confidence`, `fiscal_year`, `period_end_days`, `age_days`, `timestamp_us`, XBRL scalar time helper fields, availability time features `[B,4096,10]`, period-end time features `[B,4096,7]`, and category id fields | Each index `i` is one aligned XBRL item slot: `value[b,i]`, `time_features[b,i,:]`, `period_end_time_features[b,i,:]`, ids, and mask all refer to the same item. Scalar item input is the raw emitted scalar set listed above, LayerNormed together; the previous synthetic `log1p(abs(value))` duplicate is not part of the current contract. Availability time uses `TimeFeatureEncoder(role="xbrl_available")`; period-end time uses `TimeFeatureEncoder(role="xbrl_period_end")`, with role-specific raw widths padded inside the shared time encoder. Category ids are dense ids from `training_category_reference`; id `0` is missing/unknown, and ids outside the configured table are treated as unknown rather than modulo-hashed. Item features project to `xbrl_item_dim=64`; `xbrl_latents=8` learned query tokens use 4-head cross-attention over the 4096 masked item slots, then the latent summary is projected to `d_model`. No z-score or per-tag/unit normalization is currently applied. | One XBRL modality token `[B,d_model]`. |
-| `CorporateActionEncoder` | `numeric_features [B,128,13]`, `mask [B,128]`, availability time features `[B,128,10]`, effective time features `[B,128,10]`, action/dividend/currency/frequency ids | Numeric corporate-action features are concatenated with `TimeFeatureEncoder(role="corporate_available")`, `TimeFeatureEncoder(role="corporate_effective")`, and four category embeddings, passed through row MLP, then masked mean pooled. No z-score is currently applied. IPO-like action types can participate as historical context if present in the corporate-action input rows, but IPO is not a prediction target. | One corporate-action modality token `[B,256]`. |
-| `ScannerContextEncoder` | `leader_values [B,G,K,S,3,F]`, `leader_mask [B,G,K]`, `leader_horizon_mask [B,G,K,S]`, `leader_start_time_features [B,G,K,S,9]`, `leader_end_time_features [B,G,K,S,9]`, origin-comparison tensors `origin_values [B,G,S,3,F]`, `origin_start_time_features [B,G,S,9]`, `origin_end_time_features [B,G,S,9]`, rank/top-k fields, and scanner numeric features `[B,G,6]` | Scanner leader and origin bars use the same `BarRowEncoder` as normal bar context, so trade/bid/ask values are padded to width 9 and combined with `bar_start` and `bar_end` time embeddings. Scanner then adds scanner-group, horizon, top-K, rank, ticker-id, and row-type embeddings and uses `scanner_latents=4` learned query tokens with 4-head cross-attention over leader, origin, and numeric scanner rows. The result is not merged into the normal bar encoder; it remains a separate scanner modality token for fusion. Zero value plus false scanner mask is missing/padded, not a real zero bar. Older caches without scanner artifacts emit masked zeros unless strict scanner mode is enabled in the loader. | One scanner modality token `[B,256]`. |
+| `EventEncoder` | `raw_event_stream float32 [B,1024,24]`, `raw_event_mask bool [B,1024]`, and `event_feature_names` | Numeric branch extracts only `price_primary_int`, `price_secondary_int`, `size_primary`, and `size_secondary` by name, applies row `LayerNorm(4)`, and projects to `event_numeric_dim`. Time branch extracts the UTC/session event time columns and encodes them with `TimeFeatureEncoder(role="event")`. Categorical branch extracts event type, price-scale bits, tape bits, exchanges, and `condition_token_1..5`; exchange/category ids outside the configured vocabulary map to id `0`; condition token embeddings are mask-averaged over nonzero tokens. Numeric, categorical, and time branches pass through a nonlinear input MLP, learned position embedding, optional local depthwise temporal convolution, TransformerEncoder, and masked mean. No target-style price transform or price decoding is applied inside this encoder. | One event token `[B,event_d_model or d_model]`, then adapter to `[B,fusion_d_model or d_model]`. |
+| `BarContextEncoder` for `ticker_intraday_bars` | Family payloads `trade_values [B,H,6]`, `quote_bid_values [B,H,9]`, `quote_ask_values [B,H,9]`, family masks `[B,H]`, family start-time tensors `[B,H,9]`, and family end-time tensors `[B,H,9]` | For each family, `BarRowEncoder` pads value features to width 9 and concatenates `TimeFeatureEncoder(role="bar_start")` and `TimeFeatureEncoder(role="bar_end")` outputs. The row is projected to `bar_item_dim=128`, then learned family, bar-group, and horizon-position embeddings are added. `bar_latents=4` learned query tokens use 4-head cross-attention over valid family/horizon rows. No price normalization or z-score is applied here. | One intraday-bar token `[B,bar_d_model or d_model]`, then adapter to fusion width. |
+| `BarContextEncoder` for `ticker_daily_bars` | Same family payload pattern with daily offsets `O=8`: `[B,O,*]`, masks `[B,O]`, start-time tensors `[B,O,9]`, and end-time tensors `[B,O,9]` | Same shared `BarRowEncoder` and attention encoder as intraday bars. The position embedding represents the configured daily offset slot. Raw completed daily bar values and encoded bar-start/bar-end age time are projected directly. | One ticker-daily-bar token `[B,bar_d_model or d_model]`, then adapter to fusion width. |
+| `BarContextEncoder` for `global_daily_bars` | Same family payload pattern with symbols and offsets: `[B,S,O,*]`, masks `[B,S,O]`, start-time tensors `[B,S,O,9]`, and end-time tensors `[B,S,O,9]` | Same shared bar row encoder as ticker bars, with an additional learned global-symbol slot embedding plus offset-position embedding. The model uses the stable symbol slot/order emitted by the loader, not the string symbol value. | One global-daily-bar token `[B,bar_d_model or d_model]`, then adapter to fusion width. |
+| `TextContextEncoder` for ticker news | `embeddings [B,8,2,1024]`, `chunk_mask [B,8,2]`, `item_mask [B,8]`, `item_time_features [B,8,10]` | Each Qwen chunk embedding is `LayerNorm(1024) -> Linear(1024,128) -> GELU -> Dropout`. `item_time_features[b,i,:]` is validated, encoded by `TimeFeatureEncoder(role="text_available")`, projected to `text_item_dim=128`, and broadcast to every chunk token for item `i`. Group, item-position, and chunk-position embeddings are added. `text_latents=4` learned group-specific query tokens use 4-head cross-attention over all valid chunk tokens. The model does not run Qwen and does not z-score embeddings. | One ticker-news token `[B,text_d_model or d_model]`, then adapter to fusion width. |
+| `TextContextEncoder` for market news | `embeddings [B,16,2,1024]`, masks, item time features | Same attention encoder as ticker news, with a different group embedding and group-specific latent queries. | One market-news token `[B,text_d_model or d_model]`, then adapter to fusion width. |
+| `TextContextEncoder` for SEC filings | `embeddings [B,4,8,1024]`, masks, item time features | Same attention encoder as ticker news, with SEC-specific group embedding and latent queries. Each filing chunk receives the filing item's accepted/published time features before attention. | One SEC-text token `[B,text_d_model or d_model]`, then adapter to fusion width. |
+| `XbrlEncoder` | `value [B,4096]`, `mask [B,4096]`, scalar fields `mapping_confidence`, `fiscal_year`, `period_end_days`, `age_days`, `timestamp_us`, XBRL scalar time helper fields, availability time features `[B,4096,10]`, period-end time features `[B,4096,7]`, and category id fields | Each index `i` is one aligned XBRL item slot: `value[b,i]`, `time_features[b,i,:]`, `period_end_time_features[b,i,:]`, ids, and mask all refer to the same item. Scalar item input is the raw emitted scalar set listed above, LayerNormed together; the previous synthetic `log1p(abs(value))` duplicate is not part of the current contract. Availability time uses `TimeFeatureEncoder(role="xbrl_available")`; period-end time uses `TimeFeatureEncoder(role="xbrl_period_end")`, with role-specific raw widths padded inside the shared time encoder. Category ids are dense ids from `training_category_reference`; id `0` is missing/unknown, and ids outside the configured table are treated as unknown rather than modulo-hashed. Item features project to `xbrl_item_dim=64`; `xbrl_latents=8` learned query tokens use 4-head cross-attention over the 4096 masked item slots. No z-score or per-tag/unit normalization is currently applied. | One XBRL token `[B,xbrl_d_model or d_model]`, then adapter to fusion width. |
+| `CorporateActionEncoder` | `numeric_features [B,128,13]`, `mask [B,128]`, availability time features `[B,128,10]`, effective time features `[B,128,10]`, action/dividend/currency/frequency ids | Numeric corporate-action features are LayerNormed, concatenated with `TimeFeatureEncoder(role="corporate_available")`, `TimeFeatureEncoder(role="corporate_effective")`, and four separate dense-id embeddings for action type, dividend type, currency, and frequency. Out-of-range ids map to `0=missing/unknown`. Row features project to `corporate_action_item_dim=64`; `corporate_action_latents=4` learned query tokens use 4-head cross-attention over valid sparse rows. IPO-like action types can participate as historical context if present, but IPO is not a prediction target. | One corporate-action token `[B,corporate_action_d_model or d_model]`, then adapter to fusion width. |
+| `ScannerContextEncoder` | `leader_values [B,G,K,S,3,F]`, `leader_mask [B,G,K]`, `leader_horizon_mask [B,G,K,S]`, `leader_start_time_features [B,G,K,S,9]`, `leader_end_time_features [B,G,K,S,9]`, origin-comparison tensors `origin_values [B,G,S,3,F]`, `origin_start_time_features [B,G,S,9]`, `origin_end_time_features [B,G,S,9]`, rank/top-k fields, and scanner numeric features `[B,G,6]` | Scanner leader and origin bars use the same `BarRowEncoder` as normal bar context, so trade/bid/ask values are padded to width 9 and combined with `bar_start` and `bar_end` time embeddings. Scanner then adds scanner-group, horizon, top-K, rank, ticker-id, and row-type embeddings and uses `scanner_latents=4` learned query tokens with 4-head cross-attention over leader, origin, and numeric scanner rows. The result is not merged into the normal bar encoder; it remains a separate scanner modality token for fusion. Zero value plus false scanner mask is missing/padded, not a real zero bar. Older caches without scanner artifacts emit masked zeros unless strict scanner mode is enabled in the loader. | One scanner token `[B,scanner_d_model or d_model]`, then adapter to fusion width. |
 
 ### Current Output Heads And Target Transforms
 
@@ -713,9 +726,10 @@ Current output heads:
 The current implementation is intentionally compact and efficient, but several
 items below are design targets rather than implemented behavior:
 
-- The guide's atomic tables mention optional normalization/z-scoring. Current
-  `model.py` does not apply z-score normalization to event, bar, XBRL, or
-  corporate-action inputs.
+- The model uses lightweight in-model `LayerNorm` preprocessing on event
+  numeric fields, XBRL scalar fields, and corporate-action numeric fields. It
+  does not use dataset-wide z-score statistics or target-style price
+  transforms.
 - The current fusion path does not consume `input_availability` as an attention
   mask. This should be added if missing modalities start to behave like
   misleading learned modality embeddings.
@@ -795,8 +809,8 @@ production cached inference:
   cached modality token dict -> predict_from_modality_tokens(...) -> heads
 ```
 
-The cached token dict contains one `[B,d_model]` tensor per modality. The stable
-modality names and order are:
+The cached token dict contains one post-adapter `[B,fusion_d_model]` tensor per
+modality. The stable modality names and order are:
 
 | Position | Token name | Source encoder | Production cache invalidation key |
 | ---: | --- | --- | --- |
@@ -811,13 +825,14 @@ modality names and order are:
 | 8 | `corporate_actions` | corporate-action context encoder | ticker, latest available corporate-action rows, model fingerprint |
 | 9 | `scanner_context` | scanner leader/origin comparison encoder | origin timestamp, scanner artifact state, model fingerprint |
 
-The cache stores raw encoder outputs before learned modality-position embedding.
-`predict_from_modality_tokens()` is responsible for stacking tokens in the
-stable order, adding the learned modality embeddings, running the fusion
-transformer, and decoding all heads. Missing or stale modality tokens must be
-represented by a zero token plus the same availability/mask convention used in
-training; production must not silently reuse a token whose model/config
-fingerprint differs from the active head.
+The cache stores encoder outputs after the modality-specific adapter and before
+the learned modality-position embedding. `predict_from_modality_tokens()` is
+responsible for stacking tokens in the stable order, adding the learned
+modality embeddings, running the fusion transformer, and decoding all heads.
+Missing or stale modality tokens must be represented by a zero token plus the
+same availability/mask convention used in training; production must not
+silently reuse a token whose model/config fingerprint differs from the active
+head.
 
 The profiler must report both paths:
 

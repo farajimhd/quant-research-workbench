@@ -38,10 +38,10 @@ DEFAULT_SWEEP: dict[str, str | int | float | bool] = {
 }
 
 MODEL_PRESETS: dict[str, dict[str, int]] = {
-    "small": {"d-model": 256, "event-layers": 4, "event-heads": 8, "fusion-layers": 4, "fusion-heads": 8, "side-encoder-dim": 192},
-    "medium": {"d-model": 384, "event-layers": 8, "event-heads": 8, "fusion-layers": 6, "fusion-heads": 8, "side-encoder-dim": 192},
-    "large": {"d-model": 512, "event-layers": 12, "event-heads": 16, "fusion-layers": 8, "fusion-heads": 16, "side-encoder-dim": 192},
-    "xlarge": {"d-model": 768, "event-layers": 12, "event-heads": 16, "fusion-layers": 10, "fusion-heads": 16, "side-encoder-dim": 256},
+    "small": {"d-model": 256, "fusion-d-model": 256, "event-d-model": 320, "bar-d-model": 192, "text-d-model": 128, "xbrl-d-model": 128, "corporate-action-d-model": 128, "scanner-d-model": 192, "event-layers": 4, "event-heads": 8, "fusion-layers": 4, "fusion-heads": 8, "side-encoder-dim": 192},
+    "medium": {"d-model": 384, "fusion-d-model": 384, "event-d-model": 512, "bar-d-model": 256, "text-d-model": 160, "xbrl-d-model": 160, "corporate-action-d-model": 128, "scanner-d-model": 256, "event-layers": 8, "event-heads": 8, "fusion-layers": 6, "fusion-heads": 8, "side-encoder-dim": 192},
+    "large": {"d-model": 512, "fusion-d-model": 512, "event-d-model": 768, "bar-d-model": 320, "text-d-model": 192, "xbrl-d-model": 192, "corporate-action-d-model": 160, "scanner-d-model": 320, "event-layers": 12, "event-heads": 16, "fusion-layers": 8, "fusion-heads": 16, "side-encoder-dim": 192},
+    "xlarge": {"d-model": 768, "fusion-d-model": 768, "event-d-model": 1024, "bar-d-model": 384, "text-d-model": 256, "xbrl-d-model": 256, "corporate-action-d-model": 192, "scanner-d-model": 384, "event-layers": 12, "event-heads": 16, "fusion-layers": 10, "fusion-heads": 16, "side-encoder-dim": 256},
 }
 
 DEFAULT_MODEL_BATCH_GRID = "small:384,512,768;medium:256,320,384;large:128,192,256;xlarge:64,96,128"

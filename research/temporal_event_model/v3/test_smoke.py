@@ -26,6 +26,13 @@ from research.temporal_event_model.v3.train import _input_contract, _output_cont
 def main() -> int:
     config = ModelConfig(
         d_model=32,
+        fusion_d_model=40,
+        event_d_model=48,
+        bar_d_model=32,
+        text_d_model=24,
+        xbrl_d_model=24,
+        corporate_action_d_model=24,
+        scanner_d_model=32,
         event_stream_length=128,
         event_layers=1,
         event_heads=4,
@@ -46,7 +53,7 @@ def main() -> int:
     assert output.future_bar_values["trade"].shape == (2, config.intraday_horizons, 6)
     assert output.future_bar_values["quote_bid"].shape == (2, config.intraday_horizons, 9)
     assert output.future_bar_values["quote_ask"].shape == (2, config.intraday_horizons, 9)
-    assert output.modality_tokens.shape == (2, 10, config.d_model)
+    assert output.modality_tokens.shape == (2, 10, config.fusion_d_model)
     assert set(tokens) == {
         "events",
         "ticker_intraday_bars",
