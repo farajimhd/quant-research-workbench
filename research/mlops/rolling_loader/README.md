@@ -13,7 +13,7 @@ Older materialized-cache, indexed-daily, replay, and ticker-month builder trials
 | `daily_index_context.py` | Daily-index context queries and vectorized intraday bar/condition extraction used by the builder. |
 | `daily_index_dataset.py` | Reads daily-index cache packages and materializes trainer batches. |
 | `DAILY_INDEX_STREAMING_CACHE_DESIGN.md` | Design contract for the builder, cache layout, concurrency, and terminal reporting. |
-| `CACHE_FIRST_CHRONOLOGICAL_LOADER_DESIGN.md` | Proposed cache-first chronological loader contract with ticker cache capacity, windowed origins, and detailed profiling requirements. |
+| `CACHE_FIRST_CHRONOLOGICAL_LOADER_DESIGN.md` | Active cache-first chronological loader contract with ticker cache capacity, rolling context state, windowed origins, and detailed profiling requirements. |
 
 ## Cache Layout
 
@@ -69,32 +69,35 @@ The builder uses separate fetch, process, and write worker pools for each modali
 
 `AsyncDailyIndexBatchLoader` reads the root manifest, discovers `month=.../ticker=.../manifest.json` packages, and creates one `DailyIndexPartPlan` per event part.
 
-The next loader rewrite is specified in
-`CACHE_FIRST_CHRONOLOGICAL_LOADER_DESIGN.md`. That design keeps warmed
-production-like ticker caches capped at 15,000 resident tickers, loads only
-small chronological origin windows, carries cache state across adjacent days,
-and profiles every cache, origin-window, and batch-assembly stage by time and
-RSS memory.
+The active chronological loader is specified in
+`CACHE_FIRST_CHRONOLOGICAL_LOADER_DESIGN.md`. It keeps warmed production-like
+ticker caches capped at 15,000 resident tickers, loads only small chronological
+origin windows, carries event and sparse context state across adjacent days, and
+profiles cache, origin-window, and batch-assembly stages by time and memory.
 
 The active v3 chronological loader now exposes these cache-first controls:
 
 | Argument | Default | Meaning |
 | --- | ---: | --- |
-| `--ticker-cache-capacity` | `15000` | Maximum resident rolling event ticker states. |
+| `--ticker-cache-capacity` | `15000` | Maximum resident rolling event/context ticker states. |
 | `--origin-cursor-chunk-rows` | `4096` | Per-ticker origin rows loaded per cursor chunk. |
 | `--warm-all-ticker-caches` | on | Warm each day's ticker event caches before replaying origin windows. Use `--no-warm-all-ticker-caches` only for targeted smoke tests. |
 
-For each loaded part group it:
+In chronological replay it:
 
-1. Loads origins first.
-2. Loads requested payload groups only.
-3. Materializes raw event streams from saved sequential event rows.
-4. Builds intraday labels from compact base bars and condition-event rows.
-5. Performs as-of lookup for text embeddings, XBRL, daily bars, and corporate actions.
-6. Reads optional offline scanner artifacts and emits scanner context tensors.
+1. Builds per-ticker origin cursors and loads only the current time window.
+2. Warms rolling event cache state from saved prior context rows.
+3. Warms rolling context state for requested non-event modalities.
+4. Advances event and context caches in timestamp order for each window.
+5. Emits raw event streams from the rolling event cache.
+6. Emits text, XBRL, corporate-action, bar, and scanner tensors from rolling
+   context snapshots. Sparse ticker/global contexts carry forward when no new
+   row is available and refresh relative time features for the current origin.
+7. Builds intraday and corporate-action labels from label/context payloads.
+8. Reads optional offline scanner artifacts and emits scanner context tensors.
    Existing caches that do not yet contain scanner artifacts emit padded, fully
    masked scanner tensors unless `scanner_required=True`.
-7. Emits `DailyIndexTrainingBatch`.
+9. Emits `DailyIndexTrainingBatch`.
 
 The loader preserves state through `state_dict()` / `load_state_dict()`. The
 state includes manifest fingerprint, epoch, RNG state, and seen-sample
