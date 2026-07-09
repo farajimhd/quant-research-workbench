@@ -1269,6 +1269,7 @@ class DailyIndexBatchMaterializer:
         shape = (batch, max_items)
         out: dict[str, np.ndarray] = {
             "mask": np.zeros(shape, dtype=np.bool_),
+            "timestamp_us": np.zeros(shape, dtype=np.int64),
             "value": np.zeros(shape, dtype=np.float32),
             "fiscal_year": np.zeros(shape, dtype=np.int16),
             "age_days": np.zeros(shape, dtype=np.float32),
@@ -1338,6 +1339,7 @@ class DailyIndexBatchMaterializer:
                 out[key][rows] = values
             selected_timestamps = index.timestamps_us[safe_indices]
             selected_timestamps[~selected_mask] = 0
+            out["timestamp_us"][rows] = selected_timestamps
             origins = np.broadcast_to(origin_timestamps[rows, None], selected_timestamps.shape)
             timestamp_features = _timestamp_feature_arrays(selected_timestamps, origins)
             for key, values in timestamp_features.items():
@@ -4165,6 +4167,110 @@ def _nested_array_nbytes(value: Any) -> int:
     return 0
 
 
+def _snapshot_batch_row(value: Any, row: int, sample_count: int) -> Any:
+    if isinstance(value, np.ndarray):
+        if value.dtype != object and value.shape[:1] and int(value.shape[0]) == int(sample_count):
+            return value[int(row)].copy()
+        return value
+    if isinstance(value, Mapping):
+        return {key: _snapshot_batch_row(item, row, sample_count) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_snapshot_batch_row(item, row, sample_count) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_snapshot_batch_row(item, row, sample_count) for item in value)
+    return value
+
+
+def _restore_batch_row(target: Any, snapshot: Any, row: int, sample_count: int) -> None:
+    if isinstance(target, np.ndarray):
+        if target.dtype != object and target.shape[:1] and int(target.shape[0]) == int(sample_count):
+            target[int(row)] = snapshot
+        return
+    if isinstance(target, Mapping) and isinstance(snapshot, Mapping):
+        for key, item in target.items():
+            if key in snapshot:
+                _restore_batch_row(item, snapshot[key], row, sample_count)
+        return
+    if isinstance(target, list) and isinstance(snapshot, list):
+        for item, saved in zip(target, snapshot):
+            _restore_batch_row(item, saved, row, sample_count)
+
+
+def _refresh_text_payload_time_features(payload: Mapping[str, Any], row: int, origin_timestamp_us: int) -> None:
+    timestamps = payload.get("item_timestamp_us")
+    features = payload.get("item_time_features")
+    if not isinstance(timestamps, np.ndarray) or not isinstance(features, np.ndarray):
+        return
+    if not timestamps.shape[:1] or int(row) >= int(timestamps.shape[0]):
+        return
+    selected = timestamps[int(row)].astype(np.int64, copy=False)
+    origins = np.full(selected.shape, int(origin_timestamp_us), dtype=np.int64)
+    relative = _relative_time_feature_matrix(selected, origins)
+    if features.shape[-1] >= int(relative.shape[-1]):
+        features[int(row), ..., -int(relative.shape[-1]) :] = relative
+
+
+def _refresh_xbrl_payload_time_features(payload: Mapping[str, Any], row: int, origin_timestamp_us: int) -> None:
+    timestamps = payload.get("timestamp_us")
+    mask = payload.get("mask")
+    if not isinstance(timestamps, np.ndarray) or not isinstance(mask, np.ndarray):
+        return
+    selected = timestamps[int(row)].astype(np.int64, copy=False)
+    selected_mask = mask[int(row)].astype(np.bool_, copy=False)
+    origins = np.full(selected.shape, int(origin_timestamp_us), dtype=np.int64)
+    timestamp_features = _timestamp_feature_arrays(selected, origins)
+    for key, values in timestamp_features.items():
+        target = payload.get(key)
+        if isinstance(target, np.ndarray) and target.shape[:1]:
+            target[int(row)] = values.astype(target.dtype, copy=False)
+    time_features = payload.get("time_features")
+    if isinstance(time_features, np.ndarray) and time_features.shape[:1]:
+        absolute = time_features[int(row), :, : len(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)]
+        relative = _relative_time_feature_matrix(selected, origins)
+        refreshed = np.concatenate([absolute, relative], axis=-1).astype(np.float32, copy=False)
+        refreshed[~selected_mask] = 0.0
+        time_features[int(row)] = refreshed
+    age_days = payload.get("age_days")
+    if isinstance(age_days, np.ndarray) and age_days.shape[:1]:
+        age_days[int(row)] = (
+            np.maximum(0.0, (float(origin_timestamp_us) - selected.astype(np.float64)) / 86_400_000_000.0).astype(np.float32)
+            * selected_mask
+        )
+    period_days = payload.get("period_end_days")
+    period_features = payload.get("period_end_time_features")
+    if isinstance(period_days, np.ndarray) and isinstance(period_features, np.ndarray) and period_features.shape[:1]:
+        absolute_width = len(XBRL_PERIOD_END_TIME_FEATURE_COLUMNS) - 2
+        absolute = period_features[int(row), :, :absolute_width]
+        origin_days = float(origin_timestamp_us) / 86_400_000_000.0
+        period_age_days = np.maximum(0.0, origin_days - period_days[int(row)].astype(np.float64)).astype(np.float32)
+        relative = np.stack([period_age_days, np.log1p(period_age_days.astype(np.float64)).astype(np.float32)], axis=-1)
+        refreshed = np.concatenate([absolute, relative], axis=-1).astype(np.float32, copy=False)
+        refreshed[~selected_mask] = 0.0
+        period_features[int(row)] = refreshed
+
+
+def _refresh_corporate_action_payload_time_features(payload: Mapping[str, Any], row: int, origin_timestamp_us: int) -> None:
+    mask = payload.get("mask")
+    available = payload.get("available_timestamp_us")
+    effective = payload.get("effective_timestamp_us")
+    if not isinstance(mask, np.ndarray) or not isinstance(available, np.ndarray) or not isinstance(effective, np.ndarray):
+        return
+    selected_mask = mask[int(row)].astype(np.bool_, copy=False)
+    origins = np.full(available[int(row)].shape, int(origin_timestamp_us), dtype=np.int64)
+    time_features = payload.get("time_features")
+    if isinstance(time_features, np.ndarray) and time_features.shape[:1]:
+        absolute = time_features[int(row), :, : len(CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS)]
+        refreshed = np.concatenate([absolute, _relative_time_feature_matrix(available[int(row)], origins)], axis=-1).astype(np.float32, copy=False)
+        refreshed[~selected_mask] = 0.0
+        time_features[int(row)] = refreshed
+    effective_time_features = payload.get("effective_time_features")
+    if isinstance(effective_time_features, np.ndarray) and effective_time_features.shape[:1]:
+        absolute = effective_time_features[int(row), :, : len(CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS)]
+        refreshed = np.concatenate([absolute, _relative_time_feature_matrix(effective[int(row)], origins)], axis=-1).astype(np.float32, copy=False)
+        refreshed[~selected_mask] = 0.0
+        effective_time_features[int(row)] = refreshed
+
+
 def _slice_profile(profile: Mapping[str, float | int], source_samples: int, output_samples: int) -> dict[str, float | int]:
     out: dict[str, float | int] = {"samples": int(output_samples)}
     if int(source_samples) <= 0:
@@ -4644,6 +4750,17 @@ class _RollingContextTensorCache:
             profile.update({f"rolling_{key}": value for key, value in scanner_profile.items()})
             profile["rolling_scanner_seconds"] = time.perf_counter() - section_start
 
+        carry_start = time.perf_counter()
+        carry_profile = self._apply_sparse_carryover(
+            parts,
+            refs,
+            text_inputs=text_inputs,
+            xbrl_inputs=xbrl_inputs,
+            corporate_action_inputs=corporate_inputs,
+        )
+        profile.update(carry_profile)
+        profile["rolling_sparse_carryover_seconds"] = time.perf_counter() - carry_start
+
         context_bytes = _nested_array_nbytes(text_inputs)
         context_bytes += _nested_array_nbytes(xbrl_inputs)
         context_bytes += _nested_array_nbytes(corporate_inputs)
@@ -4728,6 +4845,132 @@ class _RollingContextTensorCache:
         if scanner_inputs:
             self._touch_global_state("scanner_context", int(timestamps[-1]), int(_nested_array_nbytes(scanner_inputs)))
         self._trim_capacity(protected_tickers=set(unique_tickers))
+
+    def _apply_sparse_carryover(
+        self,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+        *,
+        text_inputs: dict[str, dict[str, np.ndarray]] | None,
+        xbrl_inputs: dict[str, np.ndarray] | None,
+        corporate_action_inputs: dict[str, np.ndarray] | None,
+    ) -> dict[str, int]:
+        if not refs:
+            return {}
+        carried = 0
+        updated = 0
+        tickers, _ordinals, timestamps = _identity_arrays(parts, refs)
+        sample_count = int(len(refs))
+        if text_inputs:
+            for row in range(sample_count):
+                ticker = str(tickers[row])
+                origin_ts = int(timestamps[row])
+                for key, group in (("ticker_news", "ticker_news"), ("sec_filings", "sec_filings")):
+                    payload = text_inputs.get(key)
+                    if not payload:
+                        continue
+                    state_key = (ticker, group)
+                    mask = payload.get("chunk_mask")
+                    available = bool(np.asarray(mask[row]).any()) if isinstance(mask, np.ndarray) and mask.shape[:1] else False
+                    if available:
+                        self._store_payload_state(state_key, group=group, payload=_snapshot_batch_row(payload, row, sample_count))
+                        updated += 1
+                    elif self._restore_payload_state(state_key, payload, row, sample_count):
+                        _refresh_text_payload_time_features(payload, row, origin_ts)
+                        carried += 1
+                payload = text_inputs.get("market_news")
+                if payload:
+                    state_key = ("__global__", "market_news")
+                    mask = payload.get("chunk_mask")
+                    available = bool(np.asarray(mask[row]).any()) if isinstance(mask, np.ndarray) and mask.shape[:1] else False
+                    if available:
+                        self._store_payload_state(state_key, group="market_news", payload=_snapshot_batch_row(payload, row, sample_count), global_state=True)
+                        updated += 1
+                    elif self._restore_payload_state(state_key, payload, row, sample_count, global_state=True):
+                        _refresh_text_payload_time_features(payload, row, origin_ts)
+                        carried += 1
+        if xbrl_inputs:
+            mask = xbrl_inputs.get("mask")
+            for row in range(sample_count):
+                ticker = str(tickers[row])
+                origin_ts = int(timestamps[row])
+                state_key = (ticker, "xbrl")
+                available = bool(np.asarray(mask[row]).any()) if isinstance(mask, np.ndarray) and mask.shape[:1] else False
+                if available:
+                    self._store_payload_state(state_key, group="xbrl", payload=_snapshot_batch_row(xbrl_inputs, row, sample_count))
+                    updated += 1
+                elif self._restore_payload_state(state_key, xbrl_inputs, row, sample_count):
+                    _refresh_xbrl_payload_time_features(xbrl_inputs, row, origin_ts)
+                    carried += 1
+        if corporate_action_inputs:
+            mask = corporate_action_inputs.get("mask")
+            for row in range(sample_count):
+                ticker = str(tickers[row])
+                origin_ts = int(timestamps[row])
+                state_key = (ticker, "corporate_actions")
+                available = bool(np.asarray(mask[row]).any()) if isinstance(mask, np.ndarray) and mask.shape[:1] else False
+                if available:
+                    self._store_payload_state(state_key, group="corporate_actions", payload=_snapshot_batch_row(corporate_action_inputs, row, sample_count))
+                    updated += 1
+                elif self._restore_payload_state(state_key, corporate_action_inputs, row, sample_count):
+                    _refresh_corporate_action_payload_time_features(corporate_action_inputs, row, origin_ts)
+                    carried += 1
+        return {
+            "rolling_sparse_context_carried_rows": int(carried),
+            "rolling_sparse_context_updated_rows": int(updated),
+        }
+
+    def _store_payload_state(
+        self,
+        state_key: tuple[str, str],
+        *,
+        group: str,
+        payload: Any,
+        global_state: bool = False,
+    ) -> None:
+        if global_state:
+            state = self._global_state_by_key.get(str(state_key[1]))
+            if state is None:
+                self._global_state_by_key[str(state_key[1])] = _RollingContextState(
+                    key=str(state_key[1]),
+                    group=str(group),
+                    source_date="global",
+                    timestamp_us=0,
+                    estimated_bytes=int(_nested_array_nbytes(payload)),
+                    payload=payload,
+                )
+                return
+            state.payload = payload
+            state.estimated_bytes = max(int(state.estimated_bytes), int(_nested_array_nbytes(payload)))
+            return
+        state = self._state_by_key.get((str(state_key[0]), str(state_key[1])))
+        if state is None:
+            self._state_by_key[(str(state_key[0]), str(state_key[1]))] = _RollingContextState(
+                key=f"{state_key[0]}:{state_key[1]}",
+                group=str(group),
+                source_date="",
+                timestamp_us=0,
+                estimated_bytes=int(_nested_array_nbytes(payload)),
+                payload=payload,
+            )
+            return
+        state.payload = payload
+        state.estimated_bytes = max(int(state.estimated_bytes), int(_nested_array_nbytes(payload)))
+
+    def _restore_payload_state(
+        self,
+        state_key: tuple[str, str],
+        payload: Any,
+        row: int,
+        sample_count: int,
+        *,
+        global_state: bool = False,
+    ) -> bool:
+        state = self._global_state_by_key.get(str(state_key[1])) if global_state else self._state_by_key.get((str(state_key[0]), str(state_key[1])))
+        if state is None or state.payload is None:
+            return False
+        _restore_batch_row(payload, state.payload, int(row), int(sample_count))
+        return True
 
     def _ticker_context_groups(self) -> tuple[str, ...]:
         groups: list[str] = []
@@ -4848,6 +5091,7 @@ class _RollingContextState:
     source_date: str
     timestamp_us: int
     estimated_bytes: int
+    payload: Any | None = None
 
 
 class _RollingEventStreamCache:
