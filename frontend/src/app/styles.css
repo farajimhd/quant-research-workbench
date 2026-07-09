@@ -1556,7 +1556,8 @@ button {
 }
 
 .news-publish-card .news-publish-history-table-wrap {
-  height: 100%;
+  height: 220px;
+  max-height: 220px;
   min-height: 220px;
 }
 
