@@ -122,6 +122,25 @@ PORTFOLIO_CHART_TIMEFRAMES = ["30m", "1h", "2h", "4h", "1d"]
 DEBUG_SESSIONS: dict[str, StepBacktestDebugger] = {}
 SERVICE_STATUS_TIMEOUT_SECONDS = 1.8
 SERVICE_LOG_TAIL_LIMIT = 160
+SERVICE_DASHBOARD_LOG_LIMIT = 360
+
+SERVICE_DASHBOARD_LOG_EVENTS = {
+    "background_article_enrichment_failed",
+    "background_batch_completed",
+    "background_batch_failed_uncaught",
+    "background_batch_queued",
+    "background_batch_started",
+    "live_url_download_not_downloaded",
+    "poll_completed",
+    "publish_completed",
+    "publish_failed",
+    "publish_started",
+    "shutdown_background_drained",
+    "shutdown_background_timeout",
+    "shutdown_waiting_for_background_news",
+    "shutdown_waiting_for_publish",
+    "shutdown_publish_drained",
+}
 SERVICE_TABLE_STATE_LIMIT = 32
 SERVICE_TABLE_STATE_CACHE_SECONDS = 30.0
 SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS = 20.0
@@ -1039,6 +1058,7 @@ def service_runtime_logs(*payloads: Any, service_id: str = "", limit: int = SERV
     except OSError as exc:
         return {"path": str(path), "rows": [], "error": f"{type(exc).__name__}: {exc}"}
     rows: deque[dict[str, Any]] = deque(maxlen=max(1, min(limit, 500)))
+    dashboard_rows: deque[dict[str, Any]] = deque(maxlen=max(1, min(max(limit, SERVICE_DASHBOARD_LOG_LIMIT), 500)))
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             for line_number, line in enumerate(handle, start=1):
@@ -1048,19 +1068,25 @@ def service_runtime_logs(*payloads: Any, service_id: str = "", limit: int = SERV
                 try:
                     payload = json.loads(text)
                 except json.JSONDecodeError:
-                    rows.append(
-                        normalize_runtime_log_row(
-                            {"event": "unparsed_log_line", "message": text, "line_number": line_number},
-                            source_path=path,
-                            line_number=line_number,
-                        )
+                    normalized = normalize_runtime_log_row(
+                        {"event": "unparsed_log_line", "message": text, "line_number": line_number},
+                        source_path=path,
+                        line_number=line_number,
                     )
+                    rows.append(normalized)
                     continue
                 if isinstance(payload, dict):
-                    rows.append(normalize_runtime_log_row(payload, source_path=path, line_number=line_number))
+                    normalized = normalize_runtime_log_row(payload, source_path=path, line_number=line_number)
+                    rows.append(normalized)
+                    if str(normalized.get("event") or "") in SERVICE_DASHBOARD_LOG_EVENTS:
+                        dashboard_rows.append(normalized)
     except OSError as exc:
         return {"path": str(path), "rows": [], "error": f"{type(exc).__name__}: {exc}"}
-    return {"path": str(path), "rows": list(rows), "error": ""}
+    merged: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in [*dashboard_rows, *rows]:
+        merged[(str(row.get("source") or ""), int(row.get("line") or 0))] = row
+    merged_rows = sorted(merged.values(), key=lambda item: (str(item.get("source") or ""), int(item.get("line") or 0)))
+    return {"path": str(path), "rows": merged_rows[-500:], "error": ""}
 
 
 def latest_service_log_path(service_id: str) -> str:
@@ -1212,9 +1238,20 @@ def runtime_log_public_fields(event: str, row: dict[str, Any]) -> dict[str, Any]
         "active_jobs",
         "article_count",
         "article_failures",
+        "canonical_news_id",
+        "canonical_news_id_sample",
         "coverage_mode",
+        "domain_sample",
         "enriched_count",
         "enriched_urls",
+        "enrichment_canonical_news_id_sample",
+        "enrichment_domain_sample",
+        "enrichment_provider_article_id_sample",
+        "enrichment_title_sample",
+        "enrichment_url_sample",
+        "error_type",
+        "fetch_task_count",
+        "http_status",
         "input_duplicate_ids_total",
         "items",
         "items_logged",
@@ -1224,24 +1261,41 @@ def runtime_log_public_fields(event: str, row: dict[str, Any]) -> dict[str, Any]
         "pending_rows",
         "poll_id",
         "processed_rows",
+        "provider_article_id",
+        "provider_article_id_sample",
         "published_at_end_utc",
         "published_at_start_utc",
+        "queue_size",
         "requires_enrichment_count",
         "saturated",
         "skipped_existing",
+        "status",
+        "status_reason",
         "ticker_count",
         "ticker_rows_inserted",
         "ticker_sample",
         "title_sample",
+        "url_hash",
+        "url_sample",
         "wall_seconds",
         "worker_index",
     }
     allowed_by_event = {
         "poll_completed": poll_allowed,
+        "background_article_enrichment_failed": publish_allowed,
+        "background_batch_completed": publish_allowed,
+        "background_batch_failed_uncaught": publish_allowed,
+        "background_batch_queued": publish_allowed,
+        "background_batch_started": publish_allowed,
+        "live_url_download_not_downloaded": publish_allowed,
         "publish_started": publish_allowed,
         "publish_completed": publish_allowed,
         "publish_failed": publish_allowed,
-        "background_batch_completed": publish_allowed,
+        "shutdown_background_drained": publish_allowed,
+        "shutdown_background_timeout": publish_allowed,
+        "shutdown_publish_drained": publish_allowed,
+        "shutdown_waiting_for_background_news": publish_allowed,
+        "shutdown_waiting_for_publish": publish_allowed,
     }
     allowed = allowed_by_event.get(event)
     if not allowed:
