@@ -711,6 +711,8 @@ class DailyIndexPartReader:
         self.data_groups = set(str(group) for group in data_groups)
         self.include_external_context = bool(include_external_context)
         self._global_context_cache: dict[tuple[Path, str], Any] = {}
+        self._global_context_cache_order: deque[tuple[Path, str]] = deque()
+        self._scanner_context_cache_limit = 2
 
     def load(self, plan: DailyIndexPartPlan) -> LoadedDailyIndexPart:
         return self.load_payload(self.load_origins(plan))
@@ -772,6 +774,7 @@ class DailyIndexPartReader:
                 cache_key = (scanner_path, "scanner_context")
                 if cache_key not in self._global_context_cache:
                     self._global_context_cache[cache_key] = pl.read_parquet(scanner_path) if scanner_path.exists() else pl.DataFrame()
+                    self._remember_global_context_cache_key(cache_key)
                 loaded.context["scanner_context"] = self._global_context_cache[cache_key]
                 loaded.context_paths["scanner_context"] = scanner_path
             if "xbrl" in self.data_groups:
@@ -781,6 +784,15 @@ class DailyIndexPartReader:
                     self._global_context_cache[cache_key] = pl.read_parquet(global_path) if global_path.exists() else pl.DataFrame()
                 loaded.context["category_references"] = self._global_context_cache[cache_key]
         return loaded
+
+    def _remember_global_context_cache_key(self, cache_key: tuple[Path, str]) -> None:
+        if cache_key[1] != "scanner_context":
+            return
+        self._global_context_cache_order.append(cache_key)
+        while len(self._global_context_cache_order) > max(1, int(self._scanner_context_cache_limit)):
+            old_key = self._global_context_cache_order.popleft()
+            if old_key != cache_key:
+                self._global_context_cache.pop(old_key, None)
 
 
 class DailyIndexBatchMaterializer:
@@ -2393,6 +2405,8 @@ class AsyncDailyIndexBatchLoader:
             package_count=len(self.index.parts),
         )
         self._scanner_prefetched = False
+        self._scanner_prefetch_profile: dict[str, float | int] = {}
+        self._scanner_prefetch_lock = threading.Lock()
 
     def iter_batches(self) -> Iterator[DailyIndexTrainingBatch]:
         if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
@@ -2524,7 +2538,8 @@ class AsyncDailyIndexBatchLoader:
 
     def prefetch_scanner_indexes(self) -> dict[str, float | int]:
         if self._scanner_prefetched:
-            return {}
+            with self._scanner_prefetch_lock:
+                return dict(self._scanner_prefetch_profile)
         self._scanner_prefetched = True
         if "scanner_context" not in self.config.data_groups or not bool(self.config.prefetch_scanner_indexes):
             return {"scanner_prefetch_enabled": int(0)}
@@ -2537,35 +2552,58 @@ class AsyncDailyIndexBatchLoader:
         )
         if not scanner_paths:
             return {"scanner_prefetch_enabled": int(1), "scanner_prefetch_files": int(0)}
-        pl = _polars()
         started = time.perf_counter()
         workers = max(1, int(self.config.scanner_prefetch_workers))
-        built = 0
-        missing = 0
-
-        def build(path: Path) -> bool:
-            if not path.exists():
-                return False
-            frame = pl.read_parquet(path)
-            if int(getattr(frame, "height", 0) or 0) <= 0:
-                return False
-            self.materializer._scanner_artifact_index(frame, cache_key=str(path.resolve()))  # noqa: SLF001
-            return True
-
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tmc-scanner-prefetch") as pool:
-            for ok in pool.map(build, scanner_paths):
-                if ok:
-                    built += 1
-                else:
-                    missing += 1
-        return {
+        profile: dict[str, float | int] = {
             "scanner_prefetch_enabled": int(1),
-            "scanner_prefetch_seconds": float(time.perf_counter() - started),
+            "scanner_prefetch_async": int(1),
+            "scanner_prefetch_started": int(1),
             "scanner_prefetch_files": int(len(scanner_paths)),
-            "scanner_prefetch_built": int(built),
-            "scanner_prefetch_missing": int(missing),
             "scanner_prefetch_workers": int(workers),
         }
+        with self._scanner_prefetch_lock:
+            self._scanner_prefetch_profile = dict(profile)
+
+        def run_background() -> None:
+            pl = _polars()
+            built = 0
+            missing = 0
+
+            def build(path: Path) -> bool:
+                if not path.exists():
+                    return False
+                frame = pl.read_parquet(path)
+                if int(getattr(frame, "height", 0) or 0) <= 0:
+                    return False
+                self.materializer._scanner_artifact_index(frame, cache_key=str(path.resolve()))  # noqa: SLF001
+                return True
+
+            try:
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tmc-scanner-prefetch") as pool:
+                    for ok in pool.map(build, scanner_paths):
+                        if ok:
+                            built += 1
+                        else:
+                            missing += 1
+                update: dict[str, float | int] = {
+                    **profile,
+                    "scanner_prefetch_seconds": float(time.perf_counter() - started),
+                    "scanner_prefetch_built": int(built),
+                    "scanner_prefetch_missing": int(missing),
+                    "scanner_prefetch_done": int(1),
+                }
+            except Exception as exc:  # noqa: BLE001
+                update = {
+                    **profile,
+                    "scanner_prefetch_seconds": float(time.perf_counter() - started),
+                    "scanner_prefetch_done": int(0),
+                    "scanner_prefetch_failed": int(1),
+                }
+            with self._scanner_prefetch_lock:
+                self._scanner_prefetch_profile = update
+
+        threading.Thread(target=run_background, name="tmc-scanner-prefetch-bg", daemon=True).start()
+        return profile
 
     def summary(self) -> dict[str, Any]:
         out = self.state.to_dict()
@@ -2588,6 +2626,8 @@ class AsyncDailyIndexBatchLoader:
         plans = list(self.index.parts)
         if self.config.shuffle_parts:
             random.Random(_stable_int_seed("packages", self.state.seed, epoch, self.dataset_plan_id)).shuffle(plans)
+        else:
+            plans.sort(key=lambda plan: (str(plan.source_date), str(plan.month), str(plan.ticker), int(plan.part_id)))
         return plans
 
     def _next_group_end(self, plans: Sequence[DailyIndexPartPlan], group_start: int, group_size: int) -> int:
