@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import math
 import os
 import queue
 import random
@@ -167,11 +169,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=default_model.dropout)
     parser.add_argument("--learning-rate", type=float, default=default_train.learning_rate)
     parser.add_argument("--weight-decay", type=float, default=default_train.weight_decay)
+    parser.add_argument("--scheduler", choices=("none", "cosine"), default=default_train.scheduler)
+    parser.add_argument("--scheduler-eta-min", type=float, default=default_train.scheduler_eta_min)
+    parser.add_argument("--scheduler-t-max-samples", type=int, default=default_train.scheduler_t_max_samples, help="Cosine schedule length in samples. 0 means use --max-samples after resolution.")
     parser.add_argument("--grad-clip-norm", type=float, default=default_train.grad_clip_norm)
     parser.add_argument("--seed", type=int, default=default_train.seed)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--amp-dtype", choices=("bf16", "fp16", "float16", "bfloat16", "float32"), default=default_train.amp_dtype)
-    parser.add_argument("--compile-model", action="store_true")
+    parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=default_train.compile_model)
     parser.add_argument("--logging-samples", type=int, default=default_train.logging_samples)
     parser.add_argument("--fast-summary-samples", type=int, default=default_train.fast_summary_samples)
     parser.add_argument("--train-metric-window-samples", type=int, default=default_train.train_metric_window_samples)
@@ -220,14 +225,14 @@ def main() -> int:
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision("high")
     model = TemporalEventModelV3(config.model).to(device)
-    if bool(config.train.compile_model):
-        model = torch.compile(model)  # type: ignore[assignment]
+    model = maybe_compile_model(model, bool(config.train.compile_model))
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(config.train.learning_rate), weight_decay=float(config.train.weight_decay))
+    scheduler = build_scheduler(optimizer, config.train)
     scaler = torch.amp.GradScaler("cuda", enabled=bool(config.train.amp and config.train.amp_dtype in {"fp16", "float16"} and device.type == "cuda"))
     train_loader = None if args.dummy_data else _make_loader(config.loader, validation=False)
     validation_loader = None if args.dummy_data or args.disable_validation else _make_loader(config.loader, validation=True, optional=True)
     ledger = TrainingLedger(paths.run_root / "state", config=config, train_loader=train_loader)
-    start_samples = _restore_if_requested(args, model, optimizer, scaler, train_loader, validation_loader, device)
+    start_samples = _restore_if_requested(args, model, optimizer, scheduler, scaler, train_loader, validation_loader, device)
     if start_samples and args.resume_checkpoint:
         _restore_ledger_from_checkpoint(Path(args.resume_checkpoint), ledger, device)
     wandb_run = _init_wandb(args, config, paths)
@@ -381,13 +386,16 @@ def main() -> int:
                         model_profile = {}
                     loss_result = compute_loss(output, batch)
                     loss = loss_result.loss
+                amp_step_skipped = False
                 if scaler.is_enabled():
+                    scale_before = float(scaler.get_scale())
                     scaler.scale(loss).backward()
                     if float(config.train.grad_clip_norm) > 0:
                         scaler.unscale_(optimizer)
                         torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.train.grad_clip_norm))
                     scaler.step(optimizer)
                     scaler.update()
+                    amp_step_skipped = float(scaler.get_scale()) < scale_before
                 else:
                     loss.backward()
                     if float(config.train.grad_clip_norm) > 0:
@@ -397,6 +405,10 @@ def main() -> int:
                     torch.cuda.synchronize()
                 gpu_seconds = time.perf_counter() - gpu_start
                 samples_seen_total = int(prior_samples_seen) + int(batch.sample_count)
+                scheduler_metrics: dict[str, float] = {}
+                if scheduler is not None and not amp_step_skipped:
+                    scheduler.step(samples_seen_total)
+                    scheduler_metrics = scheduler.metrics()
                 metrics = dict(loss_result.metrics)
                 metrics.update(
                     {
@@ -411,8 +423,10 @@ def main() -> int:
                         "train/materialize_seconds": float(batch.profile.get("materialize_seconds", 0.0)),
                         "train/gpu_memory_allocated_gib": _gpu_memory_gib(device),
                         "train/cpu_rss_gib": _rss_gib(),
+                        "train/amp_step_skipped": float(amp_step_skipped),
                     }
                 )
+                metrics.update(scheduler_metrics)
                 metrics.update({f"profile/model/{key}_seconds": float(value) for key, value in model_profile.items()})
                 if train_loader is not None:
                     summary = _effective_loader_summary(train_loader, train_iter)
@@ -493,19 +507,20 @@ def main() -> int:
                         step=samples_seen_total,
                         reasons=checkpoint_due,
                         payload_factory=lambda step=samples_seen_total, metrics=metrics, val_metrics=val_metrics: checkpoint_payload(
-                        model=model,
-                        optimizer=optimizer,
-                        scaler=scaler,
-                        config=config,
-                        step=step,
-                        train_loader=train_loader,
-                        validation_loader=validation_loader,
-                        ledger=ledger,
-                        train_metrics=metrics,
-                        val_metrics=val_metrics,
-                        run_paths=paths,
-                        train_loader_state_override=_effective_loader_state(train_loader, train_iter),
-                    ),
+                            model=model,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            scaler=scaler,
+                            config=config,
+                            step=step,
+                            train_loader=train_loader,
+                            validation_loader=validation_loader,
+                            ledger=ledger,
+                            train_metrics=metrics,
+                            val_metrics=val_metrics,
+                            run_paths=paths,
+                            train_loader_state_override=_effective_loader_state(train_loader, train_iter),
+                        ),
                         train_metrics=metrics,
                         val_metrics=val_metrics,
                     )
@@ -513,7 +528,7 @@ def main() -> int:
             final_samples = int(samples_seen_total)
             checkpointer.maybe_save(
                 step=final_samples,
-                payload_factory=lambda: checkpoint_payload(model, optimizer, scaler, config, final_samples, train_loader, validation_loader, ledger, {}, final_metrics, paths, train_loader_state_override=_effective_loader_state(train_loader, train_iter)),
+                payload_factory=lambda: checkpoint_payload(model, optimizer, scheduler, scaler, config, final_samples, train_loader, validation_loader, ledger, {}, final_metrics, paths, train_loader_state_override=_effective_loader_state(train_loader, train_iter)),
                 train_metrics={"train/loss": progress.loss},
                 val_metrics=final_metrics,
                 force=True,
@@ -579,6 +594,7 @@ def run_validation(model: torch.nn.Module, config: ExperimentConfig, validation_
 def checkpoint_payload(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
+    scheduler: SampleCosineScheduler | None,
     scaler: torch.amp.GradScaler,
     config: ExperimentConfig,
     step: int,
@@ -610,6 +626,13 @@ def checkpoint_payload(
         "training_ledger_path": str(ledger.ledger_path),
         "objective": {"loss": "unweighted active-task masked mean", "manual_loss_weights": "disabled_by_default"},
         "data_groups": list(config.loader.data_groups),
+        "scheduler": {
+            "type": config.train.scheduler,
+            "eta_min": float(config.train.scheduler_eta_min),
+            "t_max_samples": int(config.train.scheduler_t_max_samples),
+            "last_progress": float(scheduler.last_progress) if scheduler is not None else 0.0,
+            "last_lr": float(optimizer.param_groups[0]["lr"]) if optimizer.param_groups else 0.0,
+        },
         "latest_train_metrics": dict(train_metrics),
         "latest_validation_metrics": dict(val_metrics),
         "run_root": str(run_paths.run_root),
@@ -619,6 +642,7 @@ def checkpoint_payload(
     return {
         "model": _unwrap_model(model).state_dict(),
         "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler is not None else None,
         "scaler": scaler.state_dict() if scaler.is_enabled() else None,
         "config": to_dict(config),
         "sample_clock": int(step),
@@ -868,6 +892,7 @@ def _scoped_loader_metrics(
 
 
 def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
+    train_defaults = TrainConfig()
     model = ModelConfig(
         d_model=int(args.d_model),
         fusion_d_model=int(args.fusion_d_model),
@@ -938,18 +963,21 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         epochs=int(args.epochs),
         learning_rate=float(args.learning_rate),
         weight_decay=float(args.weight_decay),
+        scheduler=str(args.scheduler),
+        scheduler_eta_min=max(0.0, float(args.scheduler_eta_min)),
+        scheduler_t_max_samples=max(0, int(args.scheduler_t_max_samples)),
         grad_clip_norm=float(args.grad_clip_norm),
         amp=bool(args.amp),
         amp_dtype=str(args.amp_dtype),
         compile_model=bool(args.compile_model),
         seed=int(args.seed),
         logging_samples=_sample_arg(args.logging_samples, args.logging_steps, config_value=0, batch_size=int(args.batch_size)),
-        fast_summary_samples=_sample_arg(args.fast_summary_samples, args.fast_summary_steps, config_value=TrainConfig.fast_summary_samples, batch_size=int(args.batch_size)),
-        train_metric_window_samples=_sample_arg(args.train_metric_window_samples, args.train_metric_window_steps, config_value=TrainConfig.train_metric_window_samples, batch_size=int(args.batch_size)),
-        validation_samples=_sample_arg(args.validation_samples, args.validation_steps, config_value=TrainConfig.validation_samples, batch_size=int(args.batch_size)),
+        fast_summary_samples=_sample_arg(args.fast_summary_samples, args.fast_summary_steps, config_value=train_defaults.fast_summary_samples, batch_size=int(args.batch_size)),
+        train_metric_window_samples=_sample_arg(args.train_metric_window_samples, args.train_metric_window_steps, config_value=train_defaults.train_metric_window_samples, batch_size=int(args.batch_size)),
+        validation_samples=_sample_arg(args.validation_samples, args.validation_steps, config_value=train_defaults.validation_samples, batch_size=int(args.batch_size)),
         validation_batches=int(args.validation_batches),
-        checkpoint_latest_samples=_sample_arg(args.checkpoint_latest_samples, args.checkpoint_latest_steps, config_value=TrainConfig.checkpoint_latest_samples, batch_size=int(args.batch_size)),
-        checkpoint_archive_samples=_sample_arg(args.checkpoint_archive_samples, args.checkpoint_archive_steps, config_value=TrainConfig.checkpoint_archive_samples, batch_size=int(args.batch_size)),
+        checkpoint_latest_samples=_sample_arg(args.checkpoint_latest_samples, args.checkpoint_latest_steps, config_value=train_defaults.checkpoint_latest_samples, batch_size=int(args.batch_size)),
+        checkpoint_archive_samples=_sample_arg(args.checkpoint_archive_samples, args.checkpoint_archive_steps, config_value=train_defaults.checkpoint_archive_samples, batch_size=int(args.batch_size)),
         detail_profile_samples=max(0, int(args.detail_profile_samples)),
         progress_layout=str(args.progress_layout),
         loader_telemetry_log_seconds=max(0.0, float(args.loader_telemetry_log_seconds)),
@@ -985,6 +1013,9 @@ def _resolve_sample_limits(config: ExperimentConfig, args: argparse.Namespace) -
         int(config.loader.max_origins_per_epoch) <= 0 or int(config.loader.max_origins_per_epoch) > int(config.train.max_samples)
     ):
         config.loader.max_origins_per_epoch = int(config.train.max_samples)
+    if str(config.train.scheduler) != "none" and int(config.train.scheduler_t_max_samples) <= 0:
+        fallback = int(config.train.max_samples) or int(config.loader.max_origins_per_epoch) or max(1, int(config.loader.batch_size)) * 1000
+        config.train.scheduler_t_max_samples = max(1, int(fallback))
 
 
 def _configure_day_schedules(config: ExperimentConfig) -> None:
@@ -1472,7 +1503,16 @@ def _effective_loader_summary(loader: Any, iterator: Any) -> Mapping[str, Any]:
     return summary
 
 
-def _restore_if_requested(args: argparse.Namespace, model: torch.nn.Module, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, train_loader: Any, validation_loader: Any, device: torch.device) -> int:
+def _restore_if_requested(
+    args: argparse.Namespace,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: SampleCosineScheduler | None,
+    scaler: torch.amp.GradScaler,
+    train_loader: Any,
+    validation_loader: Any,
+    device: torch.device,
+) -> int:
     resume_text = str(args.resume_checkpoint or "").strip()
     if args.fresh_start:
         resume_text = ""
@@ -1491,6 +1531,12 @@ def _restore_if_requested(args: argparse.Namespace, model: torch.nn.Module, opti
     ckpt = torch.load(path, map_location=device, weights_only=False)
     _unwrap_model(model).load_state_dict(ckpt["model"])
     optimizer.load_state_dict(ckpt["optimizer"])
+    samples_seen = int(ckpt.get("samples_seen", ckpt.get("step", 0)) or 0)
+    if scheduler is not None:
+        if ckpt.get("scheduler") is not None:
+            scheduler.load_state_dict(ckpt["scheduler"])
+        else:
+            scheduler.step(samples_seen)
     if ckpt.get("scaler") and scaler.is_enabled():
         scaler.load_state_dict(ckpt["scaler"])
     restore_checkpoint_rng_state(ckpt.get("rng_state"))
@@ -1498,7 +1544,7 @@ def _restore_if_requested(args: argparse.Namespace, model: torch.nn.Module, opti
         train_loader.load_state_dict(ckpt["train_loader_state"])
     if validation_loader is not None and ckpt.get("validation_loader_state"):
         validation_loader.load_state_dict(ckpt["validation_loader_state"])
-    return int(ckpt.get("samples_seen", ckpt.get("step", 0)) or 0)
+    return samples_seen
 
 
 def checkpoint_rng_state() -> dict[str, Any]:
@@ -1599,6 +1645,86 @@ def _rss_gib() -> float:
         return 0.0
 
 
+class SampleCosineScheduler:
+    """Cosine annealing keyed to samples_seen instead of optimizer step count."""
+
+    def __init__(self, optimizer: torch.optim.Optimizer, *, t_max_samples: int, eta_min: float) -> None:
+        self.optimizer = optimizer
+        self.base_lrs = [float(group.get("lr", 0.0)) for group in optimizer.param_groups]
+        self.t_max_samples = max(1, int(t_max_samples))
+        self.eta_min = max(0.0, float(eta_min))
+        self.last_samples_seen = 0
+        self.last_progress = 0.0
+        self.last_lrs = list(self.base_lrs)
+        self.step(0)
+
+    def step(self, samples_seen: int) -> list[float]:
+        self.last_samples_seen = max(0, int(samples_seen))
+        self.last_progress = min(1.0, self.last_samples_seen / max(1, self.t_max_samples))
+        cosine = 0.5 * (1.0 + math.cos(math.pi * self.last_progress))
+        lrs: list[float] = []
+        for base_lr, group in zip(self.base_lrs, self.optimizer.param_groups):
+            eta = min(float(base_lr), self.eta_min)
+            lr = eta + (float(base_lr) - eta) * cosine
+            group["lr"] = float(lr)
+            lrs.append(float(lr))
+        self.last_lrs = lrs
+        return lrs
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "type": "sample_cosine",
+            "base_lrs": list(self.base_lrs),
+            "t_max_samples": int(self.t_max_samples),
+            "eta_min": float(self.eta_min),
+            "last_samples_seen": int(self.last_samples_seen),
+            "last_progress": float(self.last_progress),
+            "last_lrs": list(self.last_lrs),
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        if state.get("base_lrs"):
+            base_lrs = [float(value) for value in state.get("base_lrs", [])]
+            if len(base_lrs) == len(self.optimizer.param_groups):
+                self.base_lrs = base_lrs
+        if int(state.get("t_max_samples", 0) or 0) > 0:
+            self.t_max_samples = max(1, int(state["t_max_samples"]))
+        self.eta_min = max(0.0, float(state.get("eta_min", self.eta_min)))
+        self.step(int(state.get("last_samples_seen", 0) or 0))
+
+    def metrics(self) -> dict[str, float]:
+        return {
+            "train/lr_scheduler_progress": float(self.last_progress),
+            "train/lr_scheduler_t_max_samples": float(self.t_max_samples),
+            "train/lr_scheduler_eta_min": float(self.eta_min),
+        }
+
+
+def build_scheduler(optimizer: torch.optim.Optimizer, train_config: TrainConfig) -> SampleCosineScheduler | None:
+    if str(train_config.scheduler) == "none":
+        return None
+    if str(train_config.scheduler) != "cosine":
+        raise ValueError(f"Unsupported scheduler: {train_config.scheduler!r}")
+    return SampleCosineScheduler(
+        optimizer,
+        t_max_samples=max(1, int(train_config.scheduler_t_max_samples)),
+        eta_min=max(0.0, float(train_config.scheduler_eta_min)),
+    )
+
+
+def maybe_compile_model(model: torch.nn.Module, enabled: bool) -> torch.nn.Module:
+    if not enabled:
+        return model
+    if not hasattr(torch, "compile"):
+        print("WARN --compile-model requested, but this PyTorch build does not expose torch.compile.", flush=True)
+        return model
+    if torch.cuda.is_available() and importlib.util.find_spec("triton") is None:
+        print("WARN --compile-model requested, but Triton is unavailable; continuing without torch.compile.", flush=True)
+        return model
+    print("Compiling model with torch.compile...", flush=True)
+    return torch.compile(model)  # type: ignore[return-value]
+
+
 def _split_csv(value: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in str(value or "").split(",") if part.strip())
 
@@ -1613,7 +1739,7 @@ class _NullReporter:
     def message(self, text: str) -> None:
         print(text, flush=True)
 
-    def update(self, metrics: dict[str, float], *, step: int, validation_metrics: dict[str, float] | None = None) -> None:
+    def update(self, metrics: dict[str, float], *, step: int, validation_metrics: dict[str, float] | None = None, record_history: bool = True) -> None:
         return None
 
 

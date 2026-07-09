@@ -290,10 +290,13 @@ class TrainConfig:
     epochs: int = 1
     learning_rate: float = 3e-4
     weight_decay: float = 0.01
+    scheduler: str = "cosine"
+    scheduler_eta_min: float = 1e-6
+    scheduler_t_max_samples: int = 0
     grad_clip_norm: float = 1.0
     amp: bool = True
     amp_dtype: str = "bf16"
-    compile_model: bool = False
+    compile_model: bool = True
     seed: int = 17
     logging_samples: int = 0
     fast_summary_samples: int = 25_000

@@ -92,6 +92,9 @@ materialize_chunk_size: 256
 prefetch_batches: 32
 time_window_seconds: 5.0
 scanner_prefetch_workers: 8
+learning_rate: 2e-4
+scheduler: cosine over samples_seen to eta_min=1e-6
+compile_model: true
 ```
 
 The xlarge launcher can target another monthly cache with:

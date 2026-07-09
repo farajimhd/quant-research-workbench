@@ -1373,6 +1373,13 @@ should include `samples_seen`, `sample_clock`, `update_count`, `epoch_index`, `s
 and current-day sample progress so runs with different batch sizes remain
 comparable.
 
+Learning-rate scheduling follows the same rule. The default v3 full-training
+scheduler is cosine annealing keyed to `samples_seen`, not optimizer update
+count. `scheduler_t_max_samples=0` means resolve the cosine horizon to the
+configured `max_samples` before the run config is written. The scheduler state
+and current LR must be stored in checkpoints and model cards so resume continues
+the same LR curve.
+
 Each checkpoint must contain enough state to resume the same run without
 changing data order:
 
@@ -1442,6 +1449,7 @@ Reuse the v20 training engineering style where practical:
 - failure traceback bundle
 - bf16 AMP support
 - optional model compile
+- sample-clock cosine LR scheduler, with `scheduler.state_dict()` checkpointed
 - model artifact export at run start
 - periodic validation
 - loader throughput profiling
