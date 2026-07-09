@@ -440,6 +440,20 @@ type NewsPublishHistoryRow = {
   wallSeconds?: number;
 };
 
+type NewsEnrichmentArticleRow = {
+  canonicalNewsId: string;
+  domainSample: string[];
+  externalFetchStatus: string;
+  hasPdf: boolean;
+  providerArticleId: string;
+  publishedAt: string;
+  requiresEnrichment: boolean;
+  tickers: string;
+  title: string;
+  urlCount: number;
+  urlSample: string[];
+};
+
 type NewsEnrichmentHistoryRow = {
   articleCount: number;
   detail: string;
@@ -456,6 +470,7 @@ type NewsEnrichmentHistoryRow = {
   time: string;
   title: string;
   titleSample: string[];
+  items: NewsEnrichmentArticleRow[];
   urlSample: string[];
   wallSeconds: number;
   worker: string;
@@ -1139,6 +1154,46 @@ function NewsEnrichmentDetailModal({ row }: { row: NewsEnrichmentHistoryRow }) {
           <dd>{row.detail || "-"}</dd>
         </div>
       </dl>
+      {row.items.length ? (
+        <section className="news-enrichment-relation-section">
+          <div className="news-enrichment-relation-heading">
+            <span>Article Relation</span>
+            <strong>{formatCompactNumber(row.items.length)} item{row.items.length === 1 ? "" : "s"}</strong>
+          </div>
+          <div className="news-enrichment-relation-table-wrap">
+            <table className="news-enrichment-relation-table">
+              <thead>
+                <tr>
+                  <th>Title</th>
+                  <th>URLs</th>
+                  <th>Tickers</th>
+                  <th>Provider ID</th>
+                  <th>Fetch</th>
+                </tr>
+              </thead>
+              <tbody>
+                {row.items.map((item, index) => (
+                  <tr key={`${item.canonicalNewsId || item.providerArticleId || item.title}-${index}`}>
+                    <td title={item.title}>{item.title || "-"}</td>
+                    <td title={item.urlSample.join(" | ") || item.domainSample.join(", ")}>
+                      {newsEnrichmentArticleUrlLabel(item)}
+                    </td>
+                    <td>{item.tickers || "-"}</td>
+                    <td title={item.providerArticleId || item.canonicalNewsId}>
+                      {item.providerArticleId || shortPollId(item.canonicalNewsId) || "-"}
+                    </td>
+                    <td>
+                      <span className={`service-work-mini-status ${item.requiresEnrichment ? "active" : "idle"}`}>
+                        {item.externalFetchStatus ? displayName(item.externalFetchStatus) : item.requiresEnrichment ? "needed" : "not needed"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -1599,9 +1654,22 @@ function newsEnrichmentHistoryRow(logRow: ServiceRuntimeLogRow): NewsEnrichmentH
   const fetchTasks = numericMetric(fields, ["fetch_task_count", "url_tasks"]);
   const queueSize = numericMetric(fields, ["queue_size", "pending_batches"]);
   const pollId = stringMetric(fields, ["poll_id"]);
-  const titleSample = stringArrayMetric(fields, ["enrichment_title_sample", "title_sample"]);
-  const urlSample = stringArrayMetric(fields, ["enrichment_url_sample", "url_sample"]);
-  const domainSample = stringArrayMetric(fields, ["enrichment_domain_sample", "domain_sample"]);
+  const items = newsEnrichmentArticleRows(fields);
+  const itemTitles = items.map((item) => item.title).filter(Boolean);
+  const itemUrls = items.flatMap((item) => item.urlSample).filter(Boolean);
+  const itemDomains = items.flatMap((item) => item.domainSample).filter(Boolean);
+  const titleSample = uniqueStringSample([
+    ...stringArrayMetric(fields, ["enrichment_title_sample", "title_sample"]),
+    ...itemTitles,
+  ], 8);
+  const urlSample = uniqueStringSample([
+    ...stringArrayMetric(fields, ["enrichment_url_sample", "url_sample"]),
+    ...itemUrls,
+  ], 12);
+  const domainSample = uniqueStringSample([
+    ...stringArrayMetric(fields, ["enrichment_domain_sample", "domain_sample"]),
+    ...itemDomains,
+  ], 8);
   return {
     articleCount,
     detail: enrichmentEventDetail(event, fields),
@@ -1618,6 +1686,7 @@ function newsEnrichmentHistoryRow(logRow: ServiceRuntimeLogRow): NewsEnrichmentH
     time: logRow.ts_utc || "",
     title: enrichmentEventTitle(event, fields),
     titleSample,
+    items,
     urlSample,
     wallSeconds: numericMetric(fields, ["wall_seconds"]),
     worker: stringMetric(fields, ["worker_index"]),
@@ -1625,6 +1694,8 @@ function newsEnrichmentHistoryRow(logRow: ServiceRuntimeLogRow): NewsEnrichmentH
 }
 
 function enrichmentUrlLabel(row: NewsEnrichmentHistoryRow) {
+  const itemWithUrl = row.items.find((item) => item.domainSample.length || item.urlSample.length);
+  if (itemWithUrl) return newsEnrichmentArticleUrlLabel(itemWithUrl);
   if (row.domainSample.length) {
     const label = row.domainSample.slice(0, 2).join(", ");
     const extra = Math.max(0, row.domainSample.length - 2);
@@ -1635,6 +1706,44 @@ function enrichmentUrlLabel(row: NewsEnrichmentHistoryRow) {
     return label.length > 34 ? `${label.slice(0, 31)}...` : label;
   }
   return row.fetchTasks ? `${formatCompactNumber(row.fetchTasks)} tasks` : "-";
+}
+
+function newsEnrichmentArticleRows(fields: Record<string, unknown>): NewsEnrichmentArticleRow[] {
+  const rawItems = Array.isArray(fields.items) ? fields.items.filter(isRecord) : [];
+  return rawItems
+    .map(newsEnrichmentArticleRow)
+    .filter((item) => item.title || item.urlSample.length || item.domainSample.length || item.providerArticleId || item.canonicalNewsId);
+}
+
+function newsEnrichmentArticleRow(item: Record<string, unknown>): NewsEnrichmentArticleRow {
+  const urlSample = uniqueStringSample(stringArrayMetric(item, ["url_sample", "enrichment_url_sample", "source_url", "url"]), 8);
+  const domainSample = uniqueStringSample(stringArrayMetric(item, ["domain_sample", "enrichment_domain_sample"]), 8);
+  return {
+    canonicalNewsId: stringMetric(item, ["canonical_news_id"]),
+    domainSample,
+    externalFetchStatus: stringMetric(item, ["external_fetch_status", "source_text_status"]),
+    hasPdf: Boolean(item.has_pdf),
+    providerArticleId: stringMetric(item, ["provider_article_id"]),
+    publishedAt: stringMetric(item, ["published_at_utc", "published_utc", "published"]),
+    requiresEnrichment: Boolean(item.requires_enrichment),
+    tickers: publishTickerLabel({}, item),
+    title: stringMetric(item, ["title", "headline"]),
+    urlCount: numericMetric(item, ["url_count"]) || urlSample.length,
+    urlSample,
+  };
+}
+
+function newsEnrichmentArticleUrlLabel(item: NewsEnrichmentArticleRow) {
+  if (item.domainSample.length) {
+    const label = item.domainSample.slice(0, 2).join(", ");
+    const extra = Math.max(0, item.domainSample.length - 2);
+    return extra ? `${label} +${extra}` : label;
+  }
+  if (item.urlSample.length) {
+    const label = item.urlSample[0].replace(/^https?:\/\//i, "").replace(/^www\./i, "");
+    return label.length > 42 ? `${label.slice(0, 39)}...` : label;
+  }
+  return item.urlCount ? `${formatCompactNumber(item.urlCount)} URLs` : "-";
 }
 
 function enrichmentEventVisualStatus(event: string) {
@@ -2025,6 +2134,10 @@ function stringArrayMetric(record: Record<string, unknown>, keys: string[]) {
     if (value !== undefined && value !== null && String(value).trim()) return [String(value).trim()];
   }
   return [];
+}
+
+function uniqueStringSample(values: string[], limit: number) {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).slice(0, limit);
 }
 
 function newsHistogramBarHeight(totalRows: number, maxRows: number) {

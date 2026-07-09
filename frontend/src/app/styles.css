@@ -1763,6 +1763,91 @@ button {
   width: 58px;
 }
 
+.news-enrichment-relation-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 14px;
+  overflow: hidden;
+}
+
+.news-enrichment-relation-heading {
+  align-items: center;
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+
+.news-enrichment-relation-heading span {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.news-enrichment-relation-heading strong {
+  color: var(--text);
+  font-size: 0.86rem;
+}
+
+.news-enrichment-relation-table-wrap {
+  max-height: 280px;
+  overflow: auto;
+}
+
+.news-enrichment-relation-table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.news-enrichment-relation-table th,
+.news-enrichment-relation-table td {
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  padding: 9px 10px;
+  text-align: left;
+  text-overflow: ellipsis;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.news-enrichment-relation-table th {
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.news-enrichment-relation-table th:nth-child(1),
+.news-enrichment-relation-table td:nth-child(1) {
+  width: auto;
+}
+
+.news-enrichment-relation-table th:nth-child(2),
+.news-enrichment-relation-table td:nth-child(2) {
+  width: 210px;
+}
+
+.news-enrichment-relation-table th:nth-child(3),
+.news-enrichment-relation-table td:nth-child(3) {
+  width: 120px;
+}
+
+.news-enrichment-relation-table th:nth-child(4),
+.news-enrichment-relation-table td:nth-child(4) {
+  width: 150px;
+}
+
+.news-enrichment-relation-table th:nth-child(5),
+.news-enrichment-relation-table td:nth-child(5) {
+  width: 120px;
+}
+
 .news-coverage-card .news-publish-history-table-wrap {
   height: 220px;
   max-height: 220px;
@@ -1772,7 +1857,7 @@ button {
 .news-coverage-history-table th:nth-child(1),
 .news-coverage-history-table td:nth-child(1) {
   text-align: left;
-  width: 112px;
+  width: 136px;
 }
 
 .news-coverage-history-table th:nth-child(2),
@@ -1790,7 +1875,7 @@ button {
 .news-coverage-history-table th:nth-child(4),
 .news-coverage-history-table td:nth-child(4) {
   text-align: left;
-  width: 150px;
+  width: 230px;
 }
 
 .news-coverage-history-table th:nth-child(5),

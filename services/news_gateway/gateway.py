@@ -1069,6 +1069,7 @@ class NewsGateway:
         domains: list[str] = []
         provider_article_ids: list[str] = []
         canonical_news_ids: list[str] = []
+        item_rows: list[dict[str, Any]] = []
         for item in items[:12]:
             result = item.initial_item.result
             row = result.normalized_row or {}
@@ -1081,22 +1082,33 @@ class NewsGateway:
                 provider_article_ids.append(provider_article_id)
             if canonical_news_id:
                 canonical_news_ids.append(canonical_news_id)
-            for task in result.url_resolution.fetch_tasks[:4] if result.url_resolution else []:
-                if not isinstance(task, dict):
-                    continue
-                url = str(task.get("url") or task.get("canonical_url") or "").strip()
-                if not url:
-                    continue
-                urls.append(url[:260])
-                domain = urlparse(url).netloc.lower().removeprefix("www.")
-                if domain:
-                    domains.append(domain)
+            url_tasks = result.url_resolution.fetch_tasks if result.url_resolution else []
+            attachments = result.url_resolution.attachments if result.url_resolution else []
+            item_url_sample, item_domain_sample = self._news_url_log_samples(url_tasks, attachments, limit=6)
+            urls.extend(item_url_sample[:4])
+            domains.extend(item_domain_sample)
+            item_rows.append(
+                {
+                    "canonical_news_id": canonical_news_id,
+                    "provider_article_id": provider_article_id,
+                    "published_at_utc": str(row.get("published_at_utc") or row.get("published_utc") or row.get("published") or ""),
+                    "tickers": self._news_ticker_sample(result.ticker_links or []),
+                    "title": title,
+                    "url_sample": item_url_sample,
+                    "domain_sample": item_domain_sample,
+                    "url_count": len(item_url_sample),
+                    "requires_enrichment": bool(url_tasks or row.get("requires_enrichment")),
+                    "external_fetch_status": str(row.get("external_fetch_status") or row.get("source_text_status") or ""),
+                    "has_pdf": self._news_has_pdf(url_tasks, attachments),
+                }
+            )
         return {
             "enrichment_title_sample": titles[:6],
             "enrichment_url_sample": urls[:10],
             "enrichment_domain_sample": sorted(set(domains))[:8],
             "enrichment_provider_article_id_sample": provider_article_ids[:8],
             "enrichment_canonical_news_id_sample": canonical_news_ids[:8],
+            "items": item_rows,
         }
 
     def _enrich_live_item(self, live_item: LiveNewsPayload) -> list[dict[str, Any]]:
@@ -1276,6 +1288,7 @@ class NewsGateway:
             flags = [flags]
         url_tasks = result.url_resolution.fetch_tasks if result.url_resolution else []
         attachments = result.url_resolution.attachments if result.url_resolution else []
+        url_sample, domain_sample = self._news_url_log_samples(url_tasks, attachments, limit=6)
         title = str(row.get("title") or row.get("headline") or "")[:180]
         return {
             "canonical_news_id": canonical_news_id,
@@ -1286,12 +1299,51 @@ class NewsGateway:
             "published_at_utc": str(row.get("published_at_utc") or row.get("published_utc") or row.get("published") or ""),
             "tickers": tickers[:8],
             "title": title,
+            "url_sample": url_sample,
+            "domain_sample": domain_sample,
+            "url_count": len(url_sample),
             "requires_enrichment": bool(url_tasks or row.get("requires_enrichment")),
             "external_fetch_status": str(row.get("external_fetch_status") or row.get("source_text_status") or ""),
-            "has_pdf": any(str(task.get("content_type") or task.get("url") or "").lower().find("pdf") >= 0 for task in url_tasks if isinstance(task, dict))
-            or any(str(attachment.get("content_type") or attachment.get("url") or "").lower().find("pdf") >= 0 for attachment in attachments if isinstance(attachment, dict)),
+            "has_pdf": self._news_has_pdf(url_tasks, attachments),
             "quality_flags": [str(flag)[:80] for flag in flags[:6]],
         }
+
+    def _news_url_log_samples(self, url_tasks: list[Any], attachments: list[Any], *, limit: int) -> tuple[list[str], list[str]]:
+        urls: list[str] = []
+        domains: list[str] = []
+        for source in [*url_tasks, *attachments]:
+            if not isinstance(source, dict):
+                continue
+            url = str(
+                source.get("url")
+                or source.get("canonical_url")
+                or source.get("resolved_url")
+                or source.get("source_url")
+                or source.get("href")
+                or ""
+            ).strip()
+            if not url:
+                continue
+            urls.append(url[:260])
+            domain = urlparse(url).netloc.lower().removeprefix("www.")
+            if domain:
+                domains.append(domain)
+        return list(dict.fromkeys(urls))[:limit], sorted(set(domains))[:limit]
+
+    def _news_ticker_sample(self, ticker_links: list[Any]) -> list[str]:
+        tickers = {
+            str(link.get("ticker") or link.get("symbol") or "").strip().upper()
+            for link in ticker_links
+            if isinstance(link, dict) and str(link.get("ticker") or link.get("symbol") or "").strip()
+        }
+        return sorted(tickers)[:8]
+
+    def _news_has_pdf(self, url_tasks: list[Any], attachments: list[Any]) -> bool:
+        return any(
+            "pdf" in str(item.get("content_type") or item.get("url") or item.get("canonical_url") or "").lower()
+            for item in [*url_tasks, *attachments]
+            if isinstance(item, dict)
+        )
 
     def _publish_item_status(self, canonical_news_id: str, summary: NewsBatchWriteSummary | None) -> str:
         if summary is None:
