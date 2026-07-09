@@ -51,6 +51,7 @@ DEFAULT_ARGS: dict[str, str | int | float | bool] = {
     "checkpoint-latest-samples": 1_000_000,
     "checkpoint-archive-samples": 5_000_000,
     "progress-layout": "rich",
+    "loader-telemetry-log-seconds": 1.0,
     "wandb-project": "temporal-event-model-v3",
     "wandb-mode": "auto",
 }

@@ -12,6 +12,7 @@ import time
 import csv
 import traceback
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -128,6 +129,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-latest-steps", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--checkpoint-archive-steps", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default=default_train.progress_layout)
+    parser.add_argument("--loader-telemetry-log-seconds", type=float, default=default_train.loader_telemetry_log_seconds, help="Minimum seconds between loader cache telemetry JSONL snapshots. 0 logs every panel poll.")
     parser.add_argument("--wandb-project", default=default_train.wandb_project)
     parser.add_argument("--wandb-entity", default=default_train.wandb_entity)
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default=default_train.wandb_mode)
@@ -219,6 +221,7 @@ def main() -> int:
         max_samples=int(config.train.max_samples),
     )
     reporter = None if config.train.progress_layout == "none" else TemporalTrainingReporter(layout=config.train.progress_layout, state=progress)
+    loader_telemetry_logger = LoaderTelemetryJsonlLogger(paths.logs_dir / "loader_cache_telemetry.jsonl", interval_seconds=float(config.train.loader_telemetry_log_seconds))
     train_window = MetricWindow(max_batches=32)
     train_iter = _batch_iterator(config, train_loader, device=device, dummy=bool(args.dummy_data))
     val_metrics: dict[str, float] = {}
@@ -231,12 +234,15 @@ def main() -> int:
             checkpointer.set_message_callback(active_reporter.message)
             active_reporter.message("Trainer initialized; waiting for first training batch.")
             if train_loader is not None:
-                active_reporter.update(_loader_state_metrics(summary=train_loader.summary(), batch_profile={}), step=0, validation_metrics=val_metrics)
+                active_reporter.update(_loader_state_metrics(summary=train_loader.summary(), batch_profile={}, batch_size=int(config.loader.batch_size)), step=0, validation_metrics=val_metrics)
                 if hasattr(active_reporter, "set_loader_metrics_provider") and hasattr(train_loader, "telemetry_snapshot"):
                     active_reporter.set_loader_metrics_provider(
-                        lambda loader=train_loader, iterator=train_iter: _loader_state_metrics(
-                            summary=loader.summary(),
-                            batch_profile={**loader.telemetry_snapshot(), **_iterator_telemetry(iterator)},
+                        lambda loader=train_loader, iterator=train_iter, telemetry_logger=loader_telemetry_logger, reporter=active_reporter: _loader_telemetry_provider(
+                            loader=loader,
+                            iterator=iterator,
+                            telemetry_logger=telemetry_logger,
+                            reporter=reporter,
+                            batch_size=int(config.loader.batch_size),
                         )
                     )
             update_count = int(train_loader.state.emitted_batches if train_loader is not None else 0)
@@ -271,7 +277,7 @@ def main() -> int:
                             "train/samples_clock": float(prior_samples_seen),
                             "train/gpu_memory_allocated_gib": _gpu_memory_gib(device),
                             "train/cpu_rss_gib": _rss_gib(),
-                            **_loader_state_metrics(summary=_effective_loader_summary(train_loader, train_iter), batch_profile=batch.profile),
+                            **_loader_state_metrics(summary=_effective_loader_summary(train_loader, train_iter), batch_profile=batch.profile, batch_size=int(config.loader.batch_size)),
                         },
                         step=prior_samples_seen,
                         validation_metrics=val_metrics,
@@ -339,7 +345,7 @@ def main() -> int:
                             "schedule/current_day_sample_count": float(max(ledger.current_day_total, 1)),
                         }
                     )
-                    metrics.update(_loader_state_metrics(summary=summary, batch_profile=batch.profile))
+                    metrics.update(_loader_state_metrics(summary=summary, batch_profile=batch.profile, batch_size=int(config.loader.batch_size)))
                 if cadence.due("fast_summary", samples_seen_total, int(config.train.fast_summary_samples)):
                     metrics.update(fast_batch_metrics(batch, output, prefix="train"))
                 if cadence.due("train_metric_window", samples_seen_total, int(config.train.train_metric_window_samples)):
@@ -497,7 +503,7 @@ def checkpoint_payload(
     }
 
 
-def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[str, Any]) -> dict[str, Any]:
+def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[str, Any], batch_size: int = 0) -> dict[str, Any]:
     metrics: dict[str, Any] = {
         "loader/state/epoch": float(summary.get("epoch", 0) or 0),
         "loader/state/package_position": float(summary.get("package_position", 0) or 0),
@@ -568,6 +574,12 @@ def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[
         if not isinstance(value, (int, float)):
             continue
         metrics[target] = float(value) / (1024.0 * 1024.0) if source == "event_cache_estimated_bytes" else float(value)
+    raw_ready_batches = metrics.get("loader/prefetch/raw_queue_size")
+    ready_samples = metrics.get("loader/cache/ready_buffer_samples")
+    if isinstance(raw_ready_batches, (int, float)):
+        metrics["loader/cache/ready_batches"] = float(raw_ready_batches)
+    elif isinstance(ready_samples, (int, float)) and int(batch_size) > 0:
+        metrics["loader/cache/ready_batches"] = float(ready_samples) / float(max(1, int(batch_size)))
     status_mapping = {
         "loader_phase": "loader/status/phase",
         "current_source_date": "loader/status/current_day",
@@ -649,6 +661,7 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         checkpoint_archive_samples=_sample_arg(args.checkpoint_archive_samples, args.checkpoint_archive_steps, config_value=TrainConfig.checkpoint_archive_samples, batch_size=int(args.batch_size)),
         detail_profile_samples=max(0, int(args.detail_profile_samples)),
         progress_layout=str(args.progress_layout),
+        loader_telemetry_log_seconds=max(0.0, float(args.loader_telemetry_log_seconds)),
         wandb_project=str(args.wandb_project),
         wandb_entity=str(args.wandb_entity),
         wandb_mode=str(args.wandb_mode),
@@ -750,6 +763,50 @@ class SampleCadence:
         if self.due("checkpoint_archive", samples_seen, archive):
             reasons.append("archive")
         return tuple(reasons)
+
+
+class LoaderTelemetryJsonlLogger:
+    def __init__(self, path: Path, *, interval_seconds: float) -> None:
+        self.path = path
+        self.interval_seconds = max(0.0, float(interval_seconds))
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._last_log = 0.0
+        self._lock = threading.Lock()
+
+    def log(self, metrics: Mapping[str, Any], *, step: int, force: bool = False) -> None:
+        now = time.perf_counter()
+        with self._lock:
+            if not force and self.interval_seconds > 0 and now - self._last_log < self.interval_seconds:
+                return
+            self._last_log = now
+            row = {
+                "step": int(step),
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                **dict(metrics),
+            }
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+
+
+def _loader_telemetry_provider(
+    *,
+    loader: Any,
+    iterator: Any,
+    telemetry_logger: LoaderTelemetryJsonlLogger,
+    reporter: TemporalTrainingReporter,
+    batch_size: int,
+) -> Mapping[str, Any]:
+    metrics = _loader_state_metrics(
+        summary=loader.summary(),
+        batch_profile={**loader.telemetry_snapshot(), **_iterator_telemetry(iterator)},
+        batch_size=int(batch_size),
+    )
+    trainer_phase = reporter.state.trainer_status.get("phase") if hasattr(reporter, "state") else None
+    if trainer_phase:
+        metrics["train/status/phase"] = str(trainer_phase)
+    step = int(getattr(reporter.state, "samples_clock", 0) or 0)
+    telemetry_logger.log(metrics, step=step)
+    return metrics
 
 
 def save_checkpoint_reasons(

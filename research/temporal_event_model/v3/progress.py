@@ -325,7 +325,9 @@ class TemporalTrainingReporter:
                     f"{_timestamp_us_text(s.loader_window.get('start_timestamp_us'))} -> {_timestamp_us_text(s.loader_window.get('end_timestamp_us'))}",
                 )
             )
-        ready_batches = s.loader_prefetch.get("raw_queue_size")
+        ready_batches = s.loader_cache.get("ready_batches")
+        if ready_batches is None:
+            ready_batches = s.loader_prefetch.get("raw_queue_size")
         if ready_batches is None:
             ready_samples = s.loader_cache.get("ready_buffer_samples")
             ready_batches = float(ready_samples) / float(max(1, int(s.batch_size))) if ready_samples is not None else None

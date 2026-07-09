@@ -265,6 +265,7 @@ class TrainConfig:
     checkpoint_best_train: bool = True
     checkpoint_best_val: bool = True
     progress_layout: str = "auto"
+    loader_telemetry_log_seconds: float = 1.0
     wandb_project: str = "temporal-event-model-v3"
     wandb_entity: str = "mehdifaraji"
     wandb_mode: str = "online"
