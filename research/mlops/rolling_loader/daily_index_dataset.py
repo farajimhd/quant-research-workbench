@@ -298,6 +298,9 @@ class DailyIndexLoaderConfig:
     days: tuple[str, ...] = ()
     chronological_replay: bool = False
     time_window_seconds: float = 1.0
+    ticker_cache_capacity: int = 15_000
+    origin_cursor_chunk_rows: int = 4096
+    warm_all_ticker_caches: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -2712,7 +2715,42 @@ class AsyncDailyIndexBatchLoader:
                     day_start_timestamp_us=int(day_window_start),
                     day_end_timestamp_us=int(day_window_end),
                     materialize_chunk_size=int(materialize_size),
+                    event_cache_capacity=int(self.config.ticker_cache_capacity),
+                    origin_cursor_chunk_rows=int(self.config.origin_cursor_chunk_rows),
+                    warm_all_ticker_caches=int(bool(self.config.warm_all_ticker_caches)),
                 )
+                cursor_start = time.perf_counter()
+                cursors = _build_day_origin_cursors(day_plans, chunk_rows=int(self.config.origin_cursor_chunk_rows))
+                cursor_profile = _load_origin_cursor_initial_chunks(
+                    read_pool=read_pool,
+                    cursors=cursors,
+                    stop_event=self._stop_event,
+                )
+                self._update_telemetry(
+                    loader_phase="origin_cursors_ready",
+                    **cursor_profile,
+                    **event_cache.telemetry_snapshot(),
+                )
+                day_warm_profile: dict[str, float | int] = {
+                    "cache_first_cursor_build_seconds": time.perf_counter() - cursor_start,
+                    **cursor_profile,
+                }
+                if bool(self.config.warm_all_ticker_caches):
+                    self._update_telemetry(loader_phase="cache_warm_event", event_cache_warm_tickers=0, event_cache_warm_total_tickers=int(len(cursors)))
+                    warm_profile = _warm_event_cache_for_day(
+                        read_pool=read_pool,
+                        event_cache=event_cache,
+                        cursors=cursors,
+                        first_timestamp_us=int(window_start),
+                        stop_event=self._stop_event,
+                        telemetry_callback=self._update_telemetry,
+                    )
+                    day_warm_profile.update(warm_profile)
+                    self._update_telemetry(
+                        loader_phase="cache_warmed_day",
+                        **warm_profile,
+                        **event_cache.telemetry_snapshot(),
+                    )
                 while window_start < int(day_window_end):
                     if self._stop_event.is_set():
                         return
@@ -2725,26 +2763,13 @@ class AsyncDailyIndexBatchLoader:
                         window_end_timestamp_us=int(window_end),
                         day_refs_remaining_before_window=int(max(0, int(day_total_refs) - int(emitted_from_day))),
                     )
-                    active_plans = [
-                        plan
-                        for plan in day_plans
-                        if _plan_intersects_window(plan, start_us=int(window_start), end_us=int(window_end))
-                    ]
-                    if not active_plans:
-                        self.state.chronological_origin_cursor = 0
-                        self._update_telemetry(loader_phase="window_empty", window_active_parts=0, window_active_tickers=0)
-                        window_start = int(window_end)
-                        continue
                     self._update_telemetry(
                         loader_phase="origin_read",
-                        window_active_parts=int(len(active_plans)),
-                        window_active_tickers=int(len({plan.ticker for plan in active_plans})),
+                        origin_cursor_count=int(len(cursors)),
                     )
                     origin_window_start = time.perf_counter()
-                    loaded_origins = _load_window_origins(
-                        read_pool=read_pool,
-                        reader=self.reader,
-                        plans=active_plans,
+                    loaded_origins, cursor_window_profile = _load_window_origins_from_cursors(
+                        cursors=cursors,
                         start_us=int(window_start),
                         end_us=int(window_end),
                         stop_event=self._stop_event,
@@ -2753,12 +2778,12 @@ class AsyncDailyIndexBatchLoader:
                     origin_rows = int(sum(int(part.origins.height) for part in loaded_origins if part.origins is not None))
                     self._update_telemetry(
                         loader_phase="origin_ready",
-                        origin_cache_parts=int(len(loaded_origins)),
-                        origin_rows=int(origin_rows),
                         origin_window_load_seconds=float(origin_window_load_seconds),
+                        **cursor_window_profile,
                     )
                     if not loaded_origins:
                         self.state.chronological_origin_cursor = 0
+                        self._update_telemetry(loader_phase="window_empty", window_active_parts=0, window_active_tickers=0)
                         window_start = int(window_end)
                         continue
                     self._update_telemetry(loader_phase="sample_refs")
@@ -2771,7 +2796,11 @@ class AsyncDailyIndexBatchLoader:
                         end_us=int(window_end),
                     )
                     if window_refs:
+                        sort_start = time.perf_counter()
                         window_refs.sort(key=lambda ref: _ref_sort_key(loaded_origins, ref))
+                        origin_window_sort_seconds = time.perf_counter() - sort_start
+                    else:
+                        origin_window_sort_seconds = 0.0
                     if int(self.state.chronological_origin_cursor) > 0:
                         window_refs = window_refs[int(self.state.chronological_origin_cursor) :]
                     if not window_refs:
@@ -2840,10 +2869,12 @@ class AsyncDailyIndexBatchLoader:
                             "day_refs_remaining_before_window": int(max(0, int(day_total_refs) - int(emitted_from_day))),
                             "origin_window_load_seconds": float(origin_window_load_seconds),
                             "origin_cache_parts": int(len(loaded_origins)),
-                            "origin_cache_limit": int(len(active_plans)),
+                            "origin_cache_limit": int(len(cursors)),
                             "payload_cache_parts": int(len(payload_cache)),
                             "payload_cache_limit": int(payload_cache_limit),
-                            **warm_profile,
+                            "origin_window_sort_seconds": float(origin_window_sort_seconds),
+                            **day_warm_profile,
+                            **cursor_window_profile,
                             **event_cache.telemetry_snapshot(),
                             **self.materializer.telemetry_snapshot(),
                         },
@@ -3017,6 +3048,9 @@ class AsyncDailyIndexBatchLoader:
             "randomize_seed": bool(self.config.randomize_seed),
             "chronological_replay": bool(self.config.chronological_replay),
             "time_window_seconds": float(self.config.time_window_seconds),
+            "ticker_cache_capacity": int(self.config.ticker_cache_capacity),
+            "origin_cursor_chunk_rows": int(self.config.origin_cursor_chunk_rows),
+            "warm_all_ticker_caches": bool(self.config.warm_all_ticker_caches),
         }
         return out
 
@@ -3130,6 +3164,9 @@ def normalize_loader_config(config: DailyIndexLoaderConfig) -> DailyIndexLoaderC
         days=tuple(str(day)[:10] for day in config.days if str(day).strip()),
         chronological_replay=bool(config.chronological_replay),
         time_window_seconds=max(0.001, float(config.time_window_seconds)),
+        ticker_cache_capacity=max(1, int(config.ticker_cache_capacity)),
+        origin_cursor_chunk_rows=max(1, int(config.origin_cursor_chunk_rows)),
+        warm_all_ticker_caches=bool(config.warm_all_ticker_caches),
     )
 
 
@@ -3757,6 +3794,15 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _process_rss_mib() -> float:
+    try:
+        import psutil  # type: ignore
+
+        return float(psutil.Process().memory_info().rss) / (1024.0 * 1024.0)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
 def _sample_refs_for_loaded_parts(
     loaded: Sequence[LoadedDailyIndexPart],
     *,
@@ -3858,7 +3904,7 @@ def _concat_training_batches(batches: Sequence[DailyIndexTrainingBatch]) -> Dail
             if key == "samples":
                 continue
             if isinstance(value, (int, float)):
-                profile[key] = float(profile.get(key, 0.0)) + float(value)
+                profile[key] = _merge_profile_metric(str(key), profile.get(key), value)
     return DailyIndexTrainingBatch(
         ticker=np.concatenate([batch.ticker for batch in nonempty], axis=0),
         origin_ordinal=np.concatenate([batch.origin_ordinal for batch in nonempty], axis=0),
@@ -4074,8 +4120,29 @@ def _slice_profile(profile: Mapping[str, float | int], source_samples: int, outp
         if key == "samples":
             continue
         if isinstance(value, (int, float)):
-            out[key] = float(value) * scale
+            out[key] = float(value) * scale if _profile_metric_should_scale(str(key)) else value
     return out
+
+
+def _merge_profile_metric(key: str, current: Any, value: float | int) -> float | int:
+    if current is None:
+        return value
+    if _profile_metric_should_scale(key):
+        return float(current) + float(value)
+    if key.endswith("_start_timestamp_us") or key.endswith("/start_timestamp_us") or "window_start_timestamp_us" in key:
+        return min(int(current), int(value))
+    if key.endswith("_end_timestamp_us") or key.endswith("/end_timestamp_us") or "window_end_timestamp_us" in key:
+        return max(int(current), int(value))
+    return value
+
+
+def _profile_metric_should_scale(key: str) -> bool:
+    key = str(key)
+    return (
+        key.endswith("_seconds")
+        or key.endswith("/seconds")
+        or key in {"materialize_wait_seconds", "materialize_seconds", "event_seconds", "label_seconds", "text_seconds", "xbrl_seconds"}
+    )
 
 
 def _concat_optional_arrays(items: Sequence[np.ndarray]) -> np.ndarray:
@@ -4404,10 +4471,14 @@ class _RollingEventStreamCache:
         self.config = config
         self.stream_length = max(1, int(config.event_stream_length))
         self.columns = tuple(str(column) for column in _event_columns_for_output(config))
+        self.capacity = max(1, int(config.ticker_cache_capacity))
         self._state_by_ticker: dict[str, _RollingEventTickerState] = {}
+        self._evictions = 0
+        self._last_evicted_ticker = ""
 
     def clear(self) -> None:
         self._state_by_ticker.clear()
+        self._last_evicted_ticker = ""
 
     def telemetry_snapshot(self) -> dict[str, int]:
         ticker_count = int(len(self._state_by_ticker))
@@ -4415,6 +4486,8 @@ class _RollingEventStreamCache:
         ordinal_bytes = int(self.stream_length * np.dtype(np.int64).itemsize)
         return {
             "event_cache_ticker_states": ticker_count,
+            "event_cache_capacity": int(self.capacity),
+            "event_cache_evictions": int(self._evictions),
             "event_cache_stream_rows_per_ticker": int(self.stream_length),
             "event_cache_feature_count": int(len(self.columns)),
             "event_cache_estimated_bytes": int(ticker_count * (event_stream_bytes + ordinal_bytes)),
@@ -4435,6 +4508,7 @@ class _RollingEventStreamCache:
         rebuilt = 0
         appended = 0
         reused = 0
+        protected_tickers = set(first_ref_by_ticker)
         for ticker, ref in first_ref_by_ticker.items():
             part = parts[int(ref.part_index)]
             origin_row = int(ref.origin_row)
@@ -4447,12 +4521,15 @@ class _RollingEventStreamCache:
                 reused += 1
             if ticker not in self._state_by_ticker:
                 raise RuntimeError(f"Chronological event cache did not warm ticker {ticker}.")
+        evicted = self._trim_capacity(protected_tickers=protected_tickers)
         return {
             "event_cache_warm_seconds": time.perf_counter() - start,
             "event_cache_warm_tickers": int(len(first_ref_by_ticker)),
             "event_cache_warm_rebuilds": int(rebuilt),
             "event_cache_warm_appends": int(appended),
             "event_cache_warm_reused": int(reused),
+            "event_cache_warm_evictions": int(evicted),
+            "event_cache_protected_tickers": int(len(protected_tickers)),
         }
 
     def materialize(
@@ -4464,6 +4541,7 @@ class _RollingEventStreamCache:
         out = np.empty((len(refs), self.stream_length, len(self.columns)), dtype=np.float32)
         rebuilt = 0
         appended = 0
+        protected_tickers = {str(parts[int(ref.part_index)].plan.ticker) for ref in refs}
         for output_row, ref in enumerate(refs):
             part = parts[int(ref.part_index)]
             origin_row = int(ref.origin_row)
@@ -4471,11 +4549,14 @@ class _RollingEventStreamCache:
             rebuilt += int(bool(did_rebuild))
             appended += int(appended_rows)
             out[output_row] = state.snapshot()
+        evicted = self._trim_capacity(protected_tickers=protected_tickers)
         return out, self.columns, {
             "raw_stream_rolling_seconds": time.perf_counter() - start,
             "raw_stream_rolling_rebuilds": int(rebuilt),
             "raw_stream_rolling_appends": int(appended),
             "raw_stream_rolling_ticker_states": int(len(self._state_by_ticker)),
+            "raw_stream_rolling_evictions": int(evicted),
+            "event_cache_protected_tickers": int(len(protected_tickers)),
         }
 
     def _ensure_state(
@@ -4486,6 +4567,7 @@ class _RollingEventStreamCache:
     ) -> tuple["_RollingEventTickerState", bool, int]:
         ticker = str(part.plan.ticker)
         origin_ordinal = int(part.origin_array("origin_ordinal").astype(np.int64, copy=False)[int(origin_row)])
+        origin_timestamp_us = int(part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[int(origin_row)])
         event_offset = int(part.origin_array("event_row_offset").astype(np.int64, copy=False)[int(origin_row)])
         matrix = part.event_matrix(self.columns)
         ordinals = part.event_array("ordinal").astype(np.int64, copy=False)
@@ -4502,11 +4584,36 @@ class _RollingEventStreamCache:
                 ordinals=ordinals,
                 event_offset=event_offset,
                 part_key=_part_key(part.plan),
+                source_date=str(part.plan.source_date),
+                timestamp_us=int(origin_timestamp_us),
             )
             self._state_by_ticker[ticker] = state
             return state, True, 0
         appended = state.append_until(matrix=matrix, ordinals=ordinals, event_offset=event_offset, part_key=_part_key(part.plan))
+        state.touch(source_date=str(part.plan.source_date), timestamp_us=int(origin_timestamp_us))
         return state, False, int(appended)
+
+    def _trim_capacity(self, *, protected_tickers: set[str]) -> int:
+        if len(self._state_by_ticker) <= int(self.capacity):
+            return 0
+        evicted = 0
+        while len(self._state_by_ticker) > int(self.capacity):
+            candidates = [
+                state
+                for ticker, state in self._state_by_ticker.items()
+                if ticker not in protected_tickers
+            ]
+            if not candidates:
+                raise RuntimeError(
+                    "Ticker event cache capacity exceeded and every resident ticker is protected: "
+                    f"capacity={int(self.capacity):,} resident={len(self._state_by_ticker):,} protected={len(protected_tickers):,}."
+                )
+            victim = min(candidates, key=lambda state: (str(state.last_used_source_date), int(state.last_used_timestamp_us), str(state.ticker)))
+            self._state_by_ticker.pop(str(victim.ticker), None)
+            self._evictions += 1
+            evicted += 1
+            self._last_evicted_ticker = str(victim.ticker)
+        return int(evicted)
 
 
 @dataclass(slots=True)
@@ -4515,6 +4622,8 @@ class _RollingEventTickerState:
     stream: np.ndarray
     ordinals: np.ndarray
     last_ordinal: int
+    last_used_source_date: str
+    last_used_timestamp_us: int
 
     @classmethod
     def from_part(
@@ -4526,6 +4635,8 @@ class _RollingEventTickerState:
         ordinals: np.ndarray,
         event_offset: int,
         part_key: str,
+        source_date: str,
+        timestamp_us: int,
     ) -> "_RollingEventTickerState":
         start = int(event_offset) - int(stream_length) + 1
         if start < 0:
@@ -4540,6 +4651,8 @@ class _RollingEventTickerState:
             stream=np.asarray(matrix[start : int(event_offset) + 1], dtype=np.float32).copy(),
             ordinals=window_ordinals.copy(),
             last_ordinal=int(window_ordinals[-1]),
+            last_used_source_date=str(source_date),
+            last_used_timestamp_us=int(timestamp_us),
         )
 
     def can_append(self, origin_ordinal: int) -> bool:
@@ -4571,6 +4684,10 @@ class _RollingEventTickerState:
             self.ordinals[-count:] = append_ordinals
         self.last_ordinal = int(target_ordinal)
         return count
+
+    def touch(self, *, source_date: str, timestamp_us: int) -> None:
+        self.last_used_source_date = str(source_date)
+        self.last_used_timestamp_us = int(timestamp_us)
 
     def snapshot(self) -> np.ndarray:
         return self.stream
@@ -4654,6 +4771,303 @@ def _plan_intersects_window(plan: DailyIndexPartPlan, *, start_us: int, end_us: 
     if plan_start <= 0 or plan_end <= 0:
         return True
     return int(plan_start) < int(end_us) and int(plan_end) >= int(start_us)
+
+
+@dataclass(slots=True)
+class _OriginTickerCursor:
+    plan: DailyIndexPartPlan
+    chunk_rows: int
+    next_file_row: int = 0
+    chunk: Any | None = None
+    row_pos: int = 0
+    exhausted: bool = False
+    chunks_loaded: int = 0
+    rows_loaded: int = 0
+
+    def load_next_chunk(self) -> int:
+        if self.exhausted:
+            return 0
+        pl = _polars()
+        origin_path = _plan_file_path(self.plan, self.plan.files["origins"])
+        frame = (
+            pl.scan_parquet(str(origin_path))
+            .slice(int(self.next_file_row), max(1, int(self.chunk_rows)))
+            .collect()
+        )
+        rows = int(frame.height)
+        self.chunk = frame
+        self.row_pos = 0
+        self.next_file_row += rows
+        self.chunks_loaded += int(rows > 0)
+        self.rows_loaded += rows
+        if rows <= 0 or rows < int(self.chunk_rows):
+            self.exhausted = True
+        return rows
+
+    def _ensure_chunk(self) -> bool:
+        while self.chunk is None or int(self.row_pos) >= int(self.chunk.height):
+            if self.exhausted:
+                return False
+            self.load_next_chunk()
+            if self.chunk is not None and int(self.chunk.height) > 0:
+                return True
+        return True
+
+    def _timestamp_array(self) -> np.ndarray:
+        if self.chunk is None:
+            return np.asarray([], dtype=np.int64)
+        return self.chunk.get_column("origin_timestamp_us").to_numpy().astype(np.int64, copy=False)
+
+    def advance_to(self, timestamp_us: int) -> bool:
+        target = int(timestamp_us)
+        while self._ensure_chunk():
+            ts = self._timestamp_array()
+            if int(self.row_pos) >= int(ts.shape[0]):
+                continue
+            local = int(np.searchsorted(ts[int(self.row_pos) :], target, side="left"))
+            self.row_pos += local
+            if int(self.row_pos) < int(ts.shape[0]):
+                return True
+        return False
+
+    def seed_origin(self, start_us: int, *, min_event_offset: int = 0) -> Any | None:
+        if not self.advance_to(int(start_us)):
+            return None
+        if self.chunk is None:
+            return None
+        min_offset = max(0, int(min_event_offset))
+        while self._ensure_chunk():
+            if self.chunk is None:
+                return None
+            offsets = self.chunk.get_column("event_row_offset").to_numpy().astype(np.int64, copy=False)
+            while int(self.row_pos) < int(offsets.shape[0]) and int(offsets[int(self.row_pos)]) < min_offset:
+                self.row_pos += 1
+            if int(self.row_pos) < int(offsets.shape[0]):
+                return self.chunk.slice(int(self.row_pos), 1)
+        return None
+
+    def pop_window(self, *, start_us: int, end_us: int) -> Any | None:
+        pl = _polars()
+        frames: list[Any] = []
+        if not self.advance_to(int(start_us)):
+            return None
+        while self._ensure_chunk():
+            ts = self._timestamp_array()
+            if int(self.row_pos) >= int(ts.shape[0]):
+                continue
+            current_ts = int(ts[int(self.row_pos)])
+            if current_ts >= int(end_us):
+                break
+            start = int(self.row_pos)
+            local_end = int(np.searchsorted(ts[start:], int(end_us), side="left"))
+            stop = start + local_end
+            if stop > start:
+                frames.append(self.chunk.slice(start, stop - start))
+                self.row_pos = stop
+            if stop < int(ts.shape[0]):
+                break
+        if not frames:
+            return None
+        return frames[0] if len(frames) == 1 else pl.concat(frames, how="vertical")
+
+    def telemetry(self) -> dict[str, int]:
+        current_rows = int(self.chunk.height) if self.chunk is not None else 0
+        return {
+            "origin_cursor_chunks_loaded": int(self.chunks_loaded),
+            "origin_cursor_rows_loaded": int(self.rows_loaded),
+            "origin_cursor_current_rows": int(current_rows),
+            "origin_cursor_next_file_row": int(self.next_file_row),
+        }
+
+
+def _build_day_origin_cursors(
+    plans: Sequence[DailyIndexPartPlan],
+    *,
+    chunk_rows: int,
+) -> list[_OriginTickerCursor]:
+    return [_OriginTickerCursor(plan=plan, chunk_rows=max(1, int(chunk_rows))) for plan in plans]
+
+
+def _load_origin_cursor_initial_chunks(
+    *,
+    read_pool: ThreadPoolExecutor,
+    cursors: Sequence[_OriginTickerCursor],
+    stop_event: threading.Event | None,
+) -> dict[str, float | int]:
+    start = time.perf_counter()
+    rss_before = _process_rss_mib()
+    futures = [read_pool.submit(cursor.load_next_chunk) for cursor in cursors]
+    rows = 0
+    chunks = 0
+    try:
+        for future in futures:
+            if stop_event is not None and stop_event.is_set():
+                raise KeyboardInterrupt()
+            loaded_rows = int(future.result())
+            rows += loaded_rows
+            chunks += int(loaded_rows > 0)
+    except BaseException:
+        if stop_event is not None:
+            stop_event.set()
+        for future in futures:
+            future.cancel()
+        raise
+    rss_after = _process_rss_mib()
+    return {
+        "origin_cursor_initial_seconds": time.perf_counter() - start,
+        "origin_cursor_count": int(len(cursors)),
+        "origin_cursor_initial_chunks": int(chunks),
+        "origin_cursor_rows_loaded": int(rows),
+        "origin_cursor_chunk_rows": int(cursors[0].chunk_rows) if cursors else 0,
+        "origin_cursor_rss_before_mib": float(rss_before),
+        "origin_cursor_rss_after_mib": float(rss_after),
+        "origin_cursor_rss_delta_mib": float(rss_after - rss_before),
+    }
+
+
+def _load_window_origins_from_cursors(
+    *,
+    cursors: Sequence[_OriginTickerCursor],
+    start_us: int,
+    end_us: int,
+    stop_event: threading.Event | None,
+) -> tuple[list[LoadedDailyIndexPart], dict[str, float | int]]:
+    start = time.perf_counter()
+    rss_before = _process_rss_mib()
+    loaded_parts: list[LoadedDailyIndexPart] = []
+    cursor_rows_loaded_before = int(sum(cursor.rows_loaded for cursor in cursors))
+    for cursor in cursors:
+        if stop_event is not None and stop_event.is_set():
+            raise KeyboardInterrupt()
+        frame = cursor.pop_window(start_us=int(start_us), end_us=int(end_us))
+        if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+            continue
+        loaded = LoadedDailyIndexPart(plan=cursor.plan)
+        loaded.origins = frame
+        loaded_parts.append(loaded)
+    rows = int(sum(int(part.origins.height) for part in loaded_parts if part.origins is not None))
+    cursor_rows_loaded_after = int(sum(cursor.rows_loaded for cursor in cursors))
+    rss_after = _process_rss_mib()
+    return loaded_parts, {
+        "origin_window_cursor_seconds": time.perf_counter() - start,
+        "origin_cache_parts": int(len(loaded_parts)),
+        "origin_rows": int(rows),
+        "origin_cursor_count": int(len(cursors)),
+        "origin_cursor_rows_loaded": int(cursor_rows_loaded_after),
+        "origin_cursor_rows_loaded_for_window": int(cursor_rows_loaded_after - cursor_rows_loaded_before),
+        "origin_window_rss_before_mib": float(rss_before),
+        "origin_window_rss_after_mib": float(rss_after),
+        "origin_window_rss_delta_mib": float(rss_after - rss_before),
+    }
+
+
+def _load_event_seed_part(plan: DailyIndexPartPlan, origin_frame: Any, stream_length: int) -> LoadedDailyIndexPart:
+    pl = _polars()
+    loaded = LoadedDailyIndexPart(plan=plan)
+    if origin_frame is None or int(getattr(origin_frame, "height", 0) or 0) <= 0:
+        raise RuntimeError(f"Cannot warm event cache without an origin seed for {_part_key(plan)}.")
+    event_offset = int(origin_frame.get_column("event_row_offset").to_numpy()[0])
+    stream_length = max(1, int(stream_length))
+    slice_start = max(0, int(event_offset) - int(stream_length) + 1)
+    slice_len = int(event_offset) - int(slice_start) + 1
+    loaded.events = (
+        pl.scan_parquet(str(_plan_file_path(plan, plan.files["events"])))
+        .slice(int(slice_start), int(slice_len))
+        .collect()
+    )
+    adjusted = origin_frame.with_columns((pl.col("event_row_offset").cast(pl.Int64) - int(slice_start)).alias("event_row_offset"))
+    loaded.origins = adjusted
+    return loaded
+
+
+def _warm_event_cache_for_day(
+    *,
+    read_pool: ThreadPoolExecutor,
+    event_cache: "_RollingEventStreamCache",
+    cursors: Sequence[_OriginTickerCursor],
+    first_timestamp_us: int,
+    stop_event: threading.Event | None,
+    telemetry_callback: Callable[..., None] | None = None,
+) -> dict[str, float | int]:
+    start = time.perf_counter()
+    rss_before = _process_rss_mib()
+    seed_items: list[tuple[DailyIndexPartPlan, Any]] = []
+    for cursor in cursors:
+        seed = cursor.seed_origin(int(first_timestamp_us), min_event_offset=int(event_cache.stream_length) - 1)
+        if seed is not None and int(getattr(seed, "height", 0) or 0) > 0:
+            seed_items.append((cursor.plan, seed))
+    total = int(len(seed_items))
+    if total <= 0:
+        return {
+            "cache_first_day_warm_seconds": time.perf_counter() - start,
+            "event_cache_warm_tickers": 0,
+            "event_cache_warm_rows": 0,
+            "event_cache_warm_evictions": 0,
+        }
+    max_pending = max(1, int(getattr(read_pool, "_max_workers", 1)) * 2)
+    pending: set[Future[LoadedDailyIndexPart]] = set()
+    next_index = 0
+    warmed = 0
+    event_rows = 0
+    rebuilds = 0
+    appends = 0
+    reused = 0
+    evictions = 0
+
+    def submit_until_full() -> None:
+        nonlocal next_index
+        while next_index < total and len(pending) < max_pending:
+            plan, origin_frame = seed_items[next_index]
+            pending.add(read_pool.submit(_load_event_seed_part, plan, origin_frame, int(event_cache.stream_length)))
+            next_index += 1
+
+    try:
+        submit_until_full()
+        while pending:
+            if stop_event is not None and stop_event.is_set():
+                raise KeyboardInterrupt()
+            done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+            if not done:
+                if telemetry_callback is not None:
+                    telemetry_callback(loader_phase="cache_warm_event", event_cache_warm_tickers=int(warmed), event_cache_warm_total_tickers=int(total))
+                continue
+            for future in done:
+                loaded = future.result()
+                profile = event_cache.warm([loaded], [DailyIndexSampleRef(part_index=0, origin_row=0)])
+                warmed += 1
+                event_rows += int(loaded.events.height) if loaded.events is not None else 0
+                rebuilds += int(profile.get("event_cache_warm_rebuilds", 0) or 0)
+                appends += int(profile.get("event_cache_warm_appends", 0) or 0)
+                reused += int(profile.get("event_cache_warm_reused", 0) or 0)
+                evictions += int(profile.get("event_cache_warm_evictions", 0) or 0)
+                loaded.events = None
+                loaded.origins = None
+                loaded._event_arrays.clear()
+                loaded._event_matrices.clear()
+                loaded._origin_arrays.clear()
+            if telemetry_callback is not None:
+                telemetry_callback(loader_phase="cache_warm_event", event_cache_warm_tickers=int(warmed), event_cache_warm_total_tickers=int(total))
+            submit_until_full()
+    except BaseException:
+        if stop_event is not None:
+            stop_event.set()
+        for future in pending:
+            future.cancel()
+        raise
+    rss_after = _process_rss_mib()
+    return {
+        "cache_first_day_warm_seconds": time.perf_counter() - start,
+        "event_cache_warm_tickers": int(warmed),
+        "event_cache_warm_total_tickers": int(total),
+        "event_cache_warm_rows": int(event_rows),
+        "event_cache_warm_rebuilds": int(rebuilds),
+        "event_cache_warm_appends": int(appends),
+        "event_cache_warm_reused": int(reused),
+        "event_cache_warm_evictions": int(evictions),
+        "event_cache_warm_rss_before_mib": float(rss_before),
+        "event_cache_warm_rss_after_mib": float(rss_after),
+        "event_cache_warm_rss_delta_mib": float(rss_after - rss_before),
+    }
 
 
 def _load_window_origins(

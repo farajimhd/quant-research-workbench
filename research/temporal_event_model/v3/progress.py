@@ -381,9 +381,15 @@ def _timestamp_us_text(value: Any) -> str:
         timestamp_us = int(float(value))
     except (TypeError, ValueError, OverflowError):
         return "--"
-    if timestamp_us <= 0:
+    # Training metrics are sometimes averaged before rendering. A valid market
+    # timestamp in microseconds should be around 1e15-2e15 for this dataset;
+    # large averaged/accumulated values must not crash Rich rendering.
+    if timestamp_us <= 0 or timestamp_us < 946_684_800_000_000 or timestamp_us > 4_102_444_800_000_000:
         return "--"
-    return dt.datetime.fromtimestamp(timestamp_us / 1_000_000.0, tz=dt.timezone.utc).strftime("%H:%M:%S")
+    try:
+        return dt.datetime.fromtimestamp(timestamp_us / 1_000_000.0, tz=dt.timezone.utc).strftime("%H:%M:%S")
+    except (OSError, OverflowError, ValueError):
+        return "--"
 
 
 def _format_metric_value(label: str, value: Any) -> str:
@@ -496,16 +502,34 @@ def _cache_state_table(metrics: Mapping[str, Any], *, empty_phase: str) -> Any:
             ("trainer phase", metrics.get("trainer_phase")),
             ("current day", metrics.get("current_day")),
             ("event tickers", metrics.get("event_tickers")),
+            ("ticker cap", metrics.get("event_ticker_capacity")),
+            ("protected", metrics.get("event_protected_tickers")),
+            ("evictions", metrics.get("event_evictions")),
             ("event rows/ticker", metrics.get("event_rows_per_ticker")),
             ("event features", metrics.get("event_feature_count")),
             ("event MiB", metrics.get("event_estimated_mib")),
+            ("day warm sec", metrics.get("day_warm_seconds")),
             ("event warm sec", metrics.get("event_warm_seconds")),
             ("event warm tickers", metrics.get("event_warm_tickers")),
+            ("event warm total", metrics.get("event_warm_total_tickers")),
+            ("event warm rows", metrics.get("event_warm_rows")),
+            ("warm RSS MiB", metrics.get("event_warm_rss_delta_mib")),
             ("event warm rebuilds", metrics.get("event_warm_rebuilds")),
             ("event warm appends", metrics.get("event_warm_appends")),
             ("event warm reused", metrics.get("event_warm_reused")),
+            ("event warm evict", metrics.get("event_warm_evictions")),
+            ("cursor count", metrics.get("origin_cursor_count")),
+            ("cursor chunk rows", metrics.get("origin_cursor_chunk_rows")),
+            ("cursor init sec", metrics.get("origin_cursor_initial_seconds")),
+            ("cursor chunks", metrics.get("origin_cursor_initial_chunks")),
+            ("cursor rows", metrics.get("origin_cursor_rows_loaded")),
+            ("cursor new rows", metrics.get("origin_cursor_rows_loaded_for_window")),
+            ("cursor RSS MiB", metrics.get("origin_cursor_rss_delta_mib")),
             ("origin parts", metrics.get("origin_parts")),
             ("origin rows", metrics.get("origin_rows")),
+            ("origin cursor sec", metrics.get("origin_window_cursor_seconds")),
+            ("origin sort sec", metrics.get("origin_window_sort_seconds")),
+            ("origin RSS MiB", metrics.get("origin_window_rss_delta_mib")),
             ("payload parts", metrics.get("payload_parts")),
             ("payload limit", metrics.get("payload_limit")),
             ("ready batches", metrics.get("ready_batches")),

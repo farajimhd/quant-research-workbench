@@ -73,6 +73,14 @@ capacity is:
 ticker_cache_capacity = 15_000
 ```
 
+CLI/config controls:
+
+| Setting | Default | Meaning |
+| --- | ---: | --- |
+| `ticker_cache_capacity` / `--ticker-cache-capacity` | `15_000` | Maximum resident rolling event ticker states. |
+| `origin_cursor_chunk_rows` / `--origin-cursor-chunk-rows` | `4_096` | Per-ticker origin rows loaded into the moving cursor at a time. |
+| `warm_all_ticker_caches` / `--warm-all-ticker-caches` | `true` | Warm each day ticker's rolling event cache before replaying origin windows. |
+
 Each `TickerState` must track:
 
 | Field | Meaning |
@@ -310,6 +318,19 @@ Profiling should also produce rolling summaries for terminal panels:
 
 All metrics and logs are keyed by samples seen, not by optimizer step. Expensive
 validation/audit metrics must run at a lower frequency than training loss.
+
+Current implementation note:
+
+- The event stream path is cache-first and capacity-bound. It warms day ticker
+  event caches from saved prior context, then reuses or single-ticker rebuilds
+  when a new/evicted ticker appears in a replay window.
+- Origin rows are loaded through per-ticker cursors in small chunks and popped
+  into `1s`/`5s` chronological windows. The loader no longer rescans every
+  active origin parquet for every window.
+- Sparse context tensors still use the existing vectorized as-of materializers
+  over the active window payloads. Their timing and cache-index counts are
+  profiled separately so the next optimization can replace them with persistent
+  production-like sparse caches without changing the trainer batch contract.
 
 ## Back-of-Envelope Memory Target
 

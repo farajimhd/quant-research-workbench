@@ -76,6 +76,14 @@ small chronological origin windows, carries cache state across adjacent days,
 and profiles every cache, origin-window, and batch-assembly stage by time and
 RSS memory.
 
+The active v3 chronological loader now exposes these cache-first controls:
+
+| Argument | Default | Meaning |
+| --- | ---: | --- |
+| `--ticker-cache-capacity` | `15000` | Maximum resident rolling event ticker states. |
+| `--origin-cursor-chunk-rows` | `4096` | Per-ticker origin rows loaded per cursor chunk. |
+| `--warm-all-ticker-caches` | on | Warm each day's ticker event caches before replaying origin windows. Use `--no-warm-all-ticker-caches` only for targeted smoke tests. |
+
 For each loaded part group it:
 
 1. Loads origins first.

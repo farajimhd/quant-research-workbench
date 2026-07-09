@@ -219,6 +219,9 @@ class LoaderConfig:
     prefetch_batches: int = 1
     chronological_replay: bool = True
     time_window_seconds: float = 1.0
+    ticker_cache_capacity: int = 15_000
+    origin_cursor_chunk_rows: int = 4096
+    warm_all_ticker_caches: bool = True
     scanner_index_cache_entries: int = 4
     prefetch_scanner_indexes: bool = True
     scanner_prefetch_workers: int = 4

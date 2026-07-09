@@ -304,6 +304,9 @@ The default v3 loader path is chronological replay:
 ```text
 chronological_replay: true
 time_window_seconds: 1.0
+ticker_cache_capacity: 15000
+origin_cursor_chunk_rows: 4096
+warm_all_ticker_caches: true
 ```
 
 The loader walks configured cache days in timestamp order. If the selected days
@@ -313,12 +316,19 @@ state from the builder-saved lookback context before emitting origins for that
 day.
 
 Events are treated as a rolling cache, not as a fresh per-origin gather. The
-first origin initializes a fixed `[event_stream_length, event_feature_count]`
-event tensor from the saved prior context plus the current origin event. Each
-later origin for that ticker appends the new event row, drops the oldest row,
-and copies the current cache snapshot into the batch row. This mirrors
-production, where events arrive from QMD and the ticker event cache advances by
-one event at a time.
+day warm-up initializes resident ticker event caches from the builder-saved
+prior context. During replay, the current origin event is appended before the
+sample is emitted, the oldest row is dropped, and the current cache snapshot is
+copied into the batch row. This mirrors production, where events arrive from
+QMD and the ticker event cache advances one event at a time. If an evicted or
+new ticker appears, its single-ticker cache is rebuilt from the saved package
+before that origin is emitted.
+
+Origin rows are not materialized as one full-day table. The loader keeps
+per-ticker origin cursors, loads `origin_cursor_chunk_rows` rows per ticker, and
+pops only the current `time_window_seconds` rows into a sorted replay window.
+This avoids repeatedly scanning all origin parquet files and avoids retaining a
+full day of origins in memory.
 
 Sparse contexts follow the same production contract conceptually: ticker news,
 market news, SEC embeddings, XBRL, corporate actions, daily/global bars, and
@@ -336,8 +346,10 @@ load before training can start.
 Training logs lightweight loader/cache state without scanning payloads:
 
 - `loader/cache/*`: event rolling-cache ticker count, estimated event-cache MiB,
-  payload-cache parts, ready-buffer samples, and materializer index-cache
-  counts for text, labels, scanner, bars, XBRL, and corporate actions.
+  ticker cache capacity, protected ticker count, evictions, day warm timing,
+  origin-cursor rows/chunks/RSS deltas, payload-cache parts, ready-buffer
+  samples, and materializer index-cache counts for text, labels, scanner, bars,
+  XBRL, and corporate actions.
 - `loader/window/*`: active replay-window refs, tickers, parts, total day refs,
   remaining day refs, and configured window seconds.
 - `loader/prefetch/*`: materialization queue depth and maximum pending batches.

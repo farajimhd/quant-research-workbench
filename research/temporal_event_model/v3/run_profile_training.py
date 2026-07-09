@@ -61,6 +61,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--materialize-chunk-size", type=int, default=0)
     parser.add_argument("--chronological-replay", action=argparse.BooleanOptionalAction, default=default_loader.chronological_replay)
     parser.add_argument("--time-window-seconds", type=float, default=default_loader.time_window_seconds)
+    parser.add_argument("--ticker-cache-capacity", type=int, default=default_loader.ticker_cache_capacity)
+    parser.add_argument("--origin-cursor-chunk-rows", type=int, default=default_loader.origin_cursor_chunk_rows)
+    parser.add_argument("--warm-all-ticker-caches", action=argparse.BooleanOptionalAction, default=default_loader.warm_all_ticker_caches)
     parser.add_argument("--scanner-index-cache-entries", type=int, default=default_loader.scanner_index_cache_entries)
     parser.add_argument("--prefetch-scanner-indexes", action=argparse.BooleanOptionalAction, default=default_loader.prefetch_scanner_indexes)
     parser.add_argument("--scanner-prefetch-workers", type=int, default=default_loader.scanner_prefetch_workers)
@@ -469,6 +472,9 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         materialize_chunk_size=int(args.materialize_chunk_size),
         chronological_replay=bool(args.chronological_replay),
         time_window_seconds=float(args.time_window_seconds),
+        ticker_cache_capacity=int(args.ticker_cache_capacity),
+        origin_cursor_chunk_rows=int(args.origin_cursor_chunk_rows),
+        warm_all_ticker_caches=bool(args.warm_all_ticker_caches),
         scanner_index_cache_entries=int(args.scanner_index_cache_entries),
         prefetch_scanner_indexes=bool(args.prefetch_scanner_indexes),
         scanner_prefetch_workers=int(args.scanner_prefetch_workers),
