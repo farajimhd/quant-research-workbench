@@ -608,6 +608,11 @@ function NewsDailyHistogram({
       priceLineVisible: false,
       priceFormat: { type: "volume" },
     });
+    chart.priceScale("right").applyOptions({
+      borderVisible: false,
+      scaleMargins: { bottom: 0, top: 0.08 },
+      visible: false,
+    });
     chartRef.current = chart;
     singleSeriesRef.current = singleSeries;
     broadSeriesRef.current = broadSeries;
@@ -655,8 +660,8 @@ function NewsDailyHistogram({
     const broadSeries = broadSeriesRef.current;
     const chart = chartRef.current;
     if (!singleSeries || !broadSeries || !chart) return;
-    singleSeries.setData(displayData.map((row) => ({ time: newsBucketChartTime(row.bucketUtc), value: row.singleTickerRows })));
-    broadSeries.setData(displayData.map((row) => ({ time: newsBucketChartTime(row.bucketUtc), value: row.broadOrNoneRows })));
+    singleSeries.setData(displayData.map((row) => newsHistogramSeriesPoint(row.bucketUtc, row.singleTickerRows)));
+    broadSeries.setData(displayData.map((row) => newsHistogramSeriesPoint(row.bucketUtc, row.broadOrNoneRows)));
     setNewsHistogramVisibleRange(chart, effectiveWindowStartUtc, effectiveWindowEndUtc);
   }, [binSeconds, displayData, effectiveWindowEndUtc, effectiveWindowStartUtc]);
 
@@ -1030,6 +1035,11 @@ function newsBucketChartTime(bucketUtc: string): Time {
   const parsed = Date.parse(bucketUtc);
   const seconds = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : Math.floor(Date.now() / 1000);
   return seconds as Time;
+}
+
+function newsHistogramSeriesPoint(bucketUtc: string, value: number): { time: Time; value?: number } {
+  const time = newsBucketChartTime(bucketUtc);
+  return value > 0 ? { time, value } : { time };
 }
 
 function setNewsHistogramVisibleRange(chart: IChartApi, windowStartUtc: string, windowEndUtc: string) {

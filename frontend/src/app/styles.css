@@ -1228,6 +1228,7 @@ button {
   border-bottom: 1px solid var(--border);
   display: grid;
   gap: 0;
+  overflow: hidden;
   padding: 0;
   position: relative;
 }
@@ -1327,6 +1328,7 @@ button {
 
 .news-live-histogram-chart {
   height: 144px;
+  margin-bottom: -1px;
   min-width: 0;
   width: 100%;
 }
