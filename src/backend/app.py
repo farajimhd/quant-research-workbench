@@ -157,7 +157,7 @@ SERVICE_TABLE_STATE_LIMIT = 32
 SERVICE_TABLE_STATE_CACHE_SECONDS = 30.0
 SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS = 20.0
 SERVICE_NEWS_HISTOGRAM_BIN_SECONDS = 900
-SERVICE_NEWS_TODAY_ROWS_LIMIT = 500
+SERVICE_NEWS_TODAY_ROWS_LIMIT = 5000
 SERVICE_TABLE_STATE_START_YEAR = 2019
 SERVICE_TABLE_TIME_COLUMN_CANDIDATES = (
     "published_at_utc",
@@ -1612,8 +1612,9 @@ def service_news_histogram() -> dict[str, Any]:
     return payload
 
 
-def service_news_today_rows(limit: int = 250) -> dict[str, Any]:
+def service_news_today_rows(limit: int = 250, sort: str = "desc") -> dict[str, Any]:
     safe_limit = max(1, min(limit, SERVICE_NEWS_TODAY_ROWS_LIMIT))
+    sort_direction = "ASC" if sort.strip().lower() == "asc" else "DESC"
     database = "q_live"
     normalized_table = "benzinga_news_normalized_v1"
     ticker_table = "benzinga_news_ticker_v1"
@@ -1624,6 +1625,38 @@ def service_news_today_rows(limit: int = 250) -> dict[str, Any]:
     window_end_utc = window_end_et.astimezone(UTC)
     window_start_sql = f"toDateTime64({sql_string(window_start_utc.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
     window_end_sql = f"toDateTime64({sql_string(window_end_utc.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
+    summary_query = f"""
+        WITH
+            {window_start_sql} AS window_start,
+            {window_end_sql} AS window_end,
+            ticker_counts AS
+            (
+                SELECT
+                    canonical_news_id,
+                    toUInt64(countDistinct(nullIf(ticker, ''))) AS ticker_link_count
+                FROM {quote_ident(database)}.{quote_ident(ticker_table)} FINAL
+                WHERE published_at_utc >= window_start
+                  AND published_at_utc < window_end
+                GROUP BY canonical_news_id
+            )
+        SELECT
+            toUInt64(count()) AS total_rows,
+            toUInt64(countIf(ifNull(t.ticker_link_count, toUInt64(0)) = 1)) AS one_ticker_rows,
+            toUInt64(countIf(ifNull(t.ticker_link_count, toUInt64(0)) > 1)) AS multi_ticker_rows,
+            toUInt64(countIf(ifNull(t.ticker_link_count, toUInt64(0)) = 0)) AS no_ticker_rows,
+            toUInt64(countIf(ifNull(t.ticker_link_count, toUInt64(0)) > 0)) AS with_ticker_rows,
+            toUInt64(countIf(n.has_external_text)) AS external_text_rows,
+            toUInt64(countIf(n.has_pdf)) AS pdf_rows,
+            formatDateTime(max(n.published_at_utc), '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS latest_published_at_utc
+        FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
+        LEFT JOIN ticker_counts AS t
+            ON t.canonical_news_id = n.canonical_news_id
+        WHERE n.published_at_utc >= window_start
+          AND n.published_at_utc < window_end
+        FORMAT JSONEachRow
+    """
+    summary_rows = [json.loads(line) for line in clickhouse_status_query(summary_query).splitlines() if line.strip()]
+    summary = summary_rows[0] if summary_rows else {}
     query = f"""
         WITH
             {window_start_sql} AS window_start,
@@ -1671,7 +1704,7 @@ def service_news_today_rows(limit: int = 250) -> dict[str, Any]:
             ON t.canonical_news_id = n.canonical_news_id
         WHERE n.published_at_utc >= window_start
           AND n.published_at_utc < window_end
-        ORDER BY n.published_at_utc DESC, n.provider_article_id DESC
+        ORDER BY n.published_at_utc {sort_direction}, n.provider_article_id {sort_direction}
         LIMIT {safe_limit}
         FORMAT JSONEachRow
     """
@@ -1683,6 +1716,18 @@ def service_news_today_rows(limit: int = 250) -> dict[str, Any]:
         "normalized_table": normalized_table,
         "rows": rows,
         "source": "clickhouse",
+        "sort": sort_direction.lower(),
+        "summary": {
+            "external_text_rows": int(summary.get("external_text_rows") or 0),
+            "latest_published_at_utc": str(summary.get("latest_published_at_utc") or ""),
+            "loaded_rows": len(rows),
+            "multi_ticker_rows": int(summary.get("multi_ticker_rows") or 0),
+            "no_ticker_rows": int(summary.get("no_ticker_rows") or 0),
+            "one_ticker_rows": int(summary.get("one_ticker_rows") or 0),
+            "pdf_rows": int(summary.get("pdf_rows") or 0),
+            "total_rows": int(summary.get("total_rows") or 0),
+            "with_ticker_rows": int(summary.get("with_ticker_rows") or 0),
+        },
         "ticker_table": ticker_table,
         "window_end_et": window_end_et.isoformat(),
         "window_end_utc": window_end_utc.isoformat().replace("+00:00", "Z"),
@@ -2074,8 +2119,8 @@ def news_service_histogram() -> dict[str, Any]:
 
 
 @app.get("/api/services/news/today")
-def news_service_today(limit: int = 250) -> dict[str, Any]:
-    return service_news_today_rows(limit)
+def news_service_today(limit: int = 250, sort: str = "desc") -> dict[str, Any]:
+    return service_news_today_rows(limit, sort)
 
 
 @app.get("/api/services/news/detail/{canonical_news_id}")

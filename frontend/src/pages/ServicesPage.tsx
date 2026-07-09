@@ -564,6 +564,8 @@ type NewsTodayRowsPayload = {
   limit?: number;
   normalized_table?: string;
   rows?: Array<Record<string, unknown>>;
+  sort?: string;
+  summary?: Record<string, unknown>;
   ticker_table?: string;
   window_end_utc?: string;
   window_start_utc?: string;
@@ -582,27 +584,47 @@ type NewsTodayRowsState = {
   error: string;
   loading: boolean;
   rows: NewsTodayRow[];
+  sort: NewsTodaySort;
+  summary: NewsTodaySummary;
   windowEndUtc: string;
   windowStartUtc: string;
 };
 
+type NewsTodaySort = "asc" | "desc";
+
+type NewsTodaySummary = {
+  externalText: number;
+  latest: string;
+  loadedRows: number;
+  multiTickerRows: number;
+  noTickerRows: number;
+  oneTickerRows: number;
+  pdfRows: number;
+  totalRows: number;
+  withTicker: number;
+};
+
 function NewsServiceWorkAndRows({ service }: { service: ServiceStatusPayload }) {
-  const todayNews = useNewsTodayRows(service.registry.id === "news");
+  const [todaySort, setTodaySort] = useState<NewsTodaySort>("desc");
+  const todayNews = useNewsTodayRows(service.registry.id === "news", todaySort);
   return (
     <section className="news-service-work-and-rows-grid">
       <ServiceWorkPlanPanel service={service} />
-      <NewsTodayRowsPanel state={todayNews} />
+      <NewsTodayRowsPanel onSortChange={setTodaySort} state={todayNews} />
     </section>
   );
 }
 
-function NewsTodayRowsPanel({ state }: { state: NewsTodayRowsState }) {
+function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsTodaySort) => void; state: NewsTodayRowsState }) {
   const [detail, setDetail] = useState<NewsDetailPayload | null>(null);
   const [detailError, setDetailError] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
   const [selectedRow, setSelectedRow] = useState<NewsTodayRow | null>(null);
   const rows = state.rows;
-  const summary = useMemo(() => newsTodayRowsSummary(rows), [rows]);
+  const summary = state.summary;
+  const showingLabel = summary.totalRows > summary.loadedRows
+    ? `Showing ${formatCompactNumber(summary.loadedRows)} of ${formatCompactNumber(summary.totalRows)} rows`
+    : `${formatCompactNumber(summary.totalRows)} rows loaded`;
 
   async function openNews(row: NewsTodayRow) {
     setSelectedRow(row);
@@ -622,21 +644,26 @@ function NewsTodayRowsPanel({ state }: { state: NewsTodayRowsState }) {
   return (
     <Panel className="news-today-panel" title="Today's Inserted News">
       <div className="news-today-summary">
-        <span><small>Rows</small><strong>{formatCompactNumber(rows.length)}</strong></span>
+        <span><small>Today</small><strong>{formatCompactNumber(summary.totalRows)}</strong></span>
+        <span><small>Loaded</small><strong>{formatCompactNumber(summary.loadedRows)}</strong></span>
+        <span><small>One Ticker</small><strong>{formatCompactNumber(summary.oneTickerRows)}</strong></span>
         <span><small>With Ticker</small><strong>{formatCompactNumber(summary.withTicker)}</strong></span>
-        <span><small>External Text</small><strong>{formatCompactNumber(summary.externalText)}</strong></span>
-        <span><small>PDF</small><strong>{formatCompactNumber(summary.pdfRows)}</strong></span>
         <span><small>Latest</small><strong>{summary.latest ? formatLogTime(summary.latest) : "-"}</strong></span>
       </div>
       <div className="news-today-meta">
         <span>{state.windowStartUtc ? `Window ${formatLogTime(state.windowStartUtc)} -> ${formatLogTime(state.windowEndUtc)}` : "Today, market timezone"}</span>
-        {state.error ? <strong>{state.error}</strong> : <strong>{state.loading ? "Loading rows..." : "Latest rows from ClickHouse"}</strong>}
+        {state.error ? <strong>{state.error}</strong> : <strong>{state.loading ? "Loading rows..." : showingLabel}</strong>}
       </div>
       <div className="news-today-table-wrap">
         <table className="news-today-table">
           <thead>
             <tr>
-              <th>Time</th>
+              <th aria-sort={state.sort === "desc" ? "descending" : "ascending"}>
+                <button className="news-today-sort-button" onClick={() => onSortChange(state.sort === "desc" ? "asc" : "desc")} type="button">
+                  <span>Time</span>
+                  <strong>{state.sort === "desc" ? "Newest" : "Oldest"}</strong>
+                </button>
+              </th>
               <th>Tickers</th>
               <th>Title</th>
               <th>Source</th>
@@ -647,6 +674,7 @@ function NewsTodayRowsPanel({ state }: { state: NewsTodayRowsState }) {
           <tbody>
             {(rows.length ? rows : [null]).map((row, index) => row ? (
               <tr
+                className={newsTodayRowTone(row)}
                 key={`${row.canonicalNewsId}-${index}`}
                 onClick={() => void openNews(row)}
                 onKeyDown={(event) => {
@@ -2426,23 +2454,26 @@ function useNewsDailyHistogram(enabled: boolean) {
   return payload;
 }
 
-function useNewsTodayRows(enabled: boolean): NewsTodayRowsState {
-  const [payload, setPayload] = useState<NewsTodayRowsState>({ error: "", loading: false, rows: [], windowEndUtc: "", windowStartUtc: "" });
+function useNewsTodayRows(enabled: boolean, sort: NewsTodaySort): NewsTodayRowsState {
+  const [payload, setPayload] = useState<NewsTodayRowsState>(() => defaultNewsTodayRowsState(sort));
   useEffect(() => {
     if (!enabled) {
-      setPayload({ error: "", loading: false, rows: [], windowEndUtc: "", windowStartUtc: "" });
+      setPayload(defaultNewsTodayRowsState(sort));
       return undefined;
     }
     let cancelled = false;
     async function load() {
       setPayload((current) => ({ ...current, loading: true }));
       try {
-        const response = await api<NewsTodayRowsPayload>("/api/services/news/today?limit=400");
+        const response = await api<NewsTodayRowsPayload>(`/api/services/news/today?limit=5000&sort=${sort}`);
         if (cancelled) return;
+        const rows = (response.rows || []).filter(isRecord).map(newsTodayRowFromPayload);
         setPayload({
           error: response.error || "",
           loading: false,
-          rows: (response.rows || []).filter(isRecord).map(newsTodayRowFromPayload),
+          rows,
+          sort: (response.sort === "asc" ? "asc" : "desc"),
+          summary: newsTodaySummaryFromPayload(response.summary, rows),
           windowEndUtc: response.window_end_utc || "",
           windowStartUtc: response.window_start_utc || "",
         });
@@ -2457,8 +2488,30 @@ function useNewsTodayRows(enabled: boolean): NewsTodayRowsState {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [enabled]);
+  }, [enabled, sort]);
   return payload;
+}
+
+function defaultNewsTodayRowsState(sort: NewsTodaySort): NewsTodayRowsState {
+  return {
+    error: "",
+    loading: false,
+    rows: [],
+    sort,
+    summary: {
+      externalText: 0,
+      latest: "",
+      loadedRows: 0,
+      multiTickerRows: 0,
+      noTickerRows: 0,
+      oneTickerRows: 0,
+      pdfRows: 0,
+      totalRows: 0,
+      withTicker: 0,
+    },
+    windowEndUtc: "",
+    windowStartUtc: "",
+  };
 }
 
 function newsTodayRowFromPayload(row: Record<string, unknown>): NewsTodayRow {
@@ -2492,16 +2545,46 @@ function newsTodayRowFromPayload(row: Record<string, unknown>): NewsTodayRow {
   };
 }
 
-function newsTodayRowsSummary(rows: NewsTodayRow[]) {
-  return rows.reduce(
-    (summary, row) => ({
-      externalText: summary.externalText + (row.hasExternalText ? 1 : 0),
-      latest: !summary.latest || Date.parse(row.publishedAtUtc) > Date.parse(summary.latest) ? row.publishedAtUtc : summary.latest,
-      pdfRows: summary.pdfRows + (row.hasPdf ? 1 : 0),
-      withTicker: summary.withTicker + ((row.tickers.length || row.tickerLinkCount) ? 1 : 0),
-    }),
-    { externalText: 0, latest: "", pdfRows: 0, withTicker: 0 },
+function newsTodaySummaryFromPayload(summaryPayload: unknown, rows: NewsTodayRow[]): NewsTodaySummary {
+  const fallback = rows.reduce(
+    (summary, row) => {
+      const tickerCount = row.tickerLinkCount || row.tickers.length;
+      return {
+        externalText: summary.externalText + (row.hasExternalText ? 1 : 0),
+        latest: !summary.latest || Date.parse(row.publishedAtUtc) > Date.parse(summary.latest) ? row.publishedAtUtc : summary.latest,
+        loadedRows: rows.length,
+        multiTickerRows: summary.multiTickerRows + (tickerCount > 1 ? 1 : 0),
+        noTickerRows: summary.noTickerRows + (tickerCount <= 0 ? 1 : 0),
+        oneTickerRows: summary.oneTickerRows + (tickerCount === 1 ? 1 : 0),
+        pdfRows: summary.pdfRows + (row.hasPdf ? 1 : 0),
+        totalRows: rows.length,
+        withTicker: summary.withTicker + (tickerCount > 0 ? 1 : 0),
+      };
+    },
+    {
+      externalText: 0,
+      latest: "",
+      loadedRows: rows.length,
+      multiTickerRows: 0,
+      noTickerRows: 0,
+      oneTickerRows: 0,
+      pdfRows: 0,
+      totalRows: rows.length,
+      withTicker: 0,
+    },
   );
+  if (!isRecord(summaryPayload)) return fallback;
+  return {
+    externalText: numericMetric(summaryPayload, ["external_text_rows"]) || fallback.externalText,
+    latest: stringMetric(summaryPayload, ["latest_published_at_utc"]) || fallback.latest,
+    loadedRows: numericMetric(summaryPayload, ["loaded_rows"]) || rows.length,
+    multiTickerRows: numericMetric(summaryPayload, ["multi_ticker_rows"]) || fallback.multiTickerRows,
+    noTickerRows: numericMetric(summaryPayload, ["no_ticker_rows"]) || fallback.noTickerRows,
+    oneTickerRows: numericMetric(summaryPayload, ["one_ticker_rows"]) || fallback.oneTickerRows,
+    pdfRows: numericMetric(summaryPayload, ["pdf_rows"]) || fallback.pdfRows,
+    totalRows: numericMetric(summaryPayload, ["total_rows"]) || fallback.totalRows,
+    withTicker: numericMetric(summaryPayload, ["with_ticker_rows"]) || fallback.withTicker,
+  };
 }
 
 function newsTodayTickerLabel(row: NewsTodayRow) {
@@ -2543,6 +2626,16 @@ function newsTodayFlagChips(row: NewsTodayRow) {
   const labels = flags.slice(0, 2);
   const extra = Math.max(0, flags.length - labels.length);
   return extra ? [...labels, `+${extra}`] : labels;
+}
+
+function newsTodayRowTone(row: NewsTodayRow) {
+  const tickerCount = row.tickerLinkCount || row.tickers.length;
+  if (row.hasPdf) return "has-pdf";
+  if (row.hasExternalText) return "has-external-text";
+  if (tickerCount > 1) return "multi-ticker";
+  if (tickerCount === 1) return "one-ticker";
+  if (row.isTitleOnly) return "title-only";
+  return "broad-news";
 }
 
 function orderedServiceWorkGroups(groups: ServiceWorkGroup[], serviceId: ServiceId) {
