@@ -2816,6 +2816,10 @@ class AsyncDailyIndexBatchLoader:
                         preserve_order=True,
                         stop_event=self._stop_event,
                         telemetry_callback=self._update_telemetry,
+                        startup_pending_chunks=max(
+                            1,
+                            (int(self.config.batch_size) + int(materialize_size) - 1) // max(1, int(materialize_size)),
+                        ),
                         day_profile={
                             "chronological_replay": int(1),
                             "chronological_day_load_seconds": time.perf_counter() - day_start,
@@ -4294,13 +4298,17 @@ def _materialize_chronological_bounded(
     stop_event: threading.Event | None = None,
     day_profile: Mapping[str, float | int] | None = None,
     telemetry_callback: Callable[..., None] | None = None,
+    startup_pending_chunks: int | None = None,
 ) -> Iterator[DailyIndexTrainingBatch]:
     max_pending = max(1, int(getattr(executor, "_max_workers", 1)))
+    startup_pending = min(max_pending, max(1, int(startup_pending_chunks or 2)))
     pending_ordered: deque[Future[DailyIndexTrainingBatch]] = deque()
     pending_all: set[Future[DailyIndexTrainingBatch]] = set()
+    yielded_chunks = 0
 
-    def submit_until_full() -> None:
-        while len(pending_ordered) < max_pending:
+    def submit_until_full(target_pending: int) -> None:
+        target = max(1, min(max_pending, int(target_pending)))
+        while len(pending_ordered) < target:
             if stop_event is not None and stop_event.is_set():
                 raise KeyboardInterrupt()
             try:
@@ -4313,6 +4321,7 @@ def _materialize_chronological_bounded(
                 **profile,
                 "prefetch_materialize_max_pending_batches": int(max_pending),
                 "prefetch_materialize_pending_batches": int(len(pending_ordered)),
+                "prefetch_materialize_startup_pending_batches": int(startup_pending),
             }
             future = executor.submit(
                 materializer.materialize,
@@ -4332,7 +4341,7 @@ def _materialize_chronological_bounded(
                 )
 
     try:
-        submit_until_full()
+        submit_until_full(startup_pending)
         while pending_ordered:
             if stop_event is not None and stop_event.is_set():
                 raise KeyboardInterrupt()
@@ -4353,6 +4362,7 @@ def _materialize_chronological_bounded(
                         prefetch_materialize_max_pending_batches=int(max_pending),
                         prefetch_materialize_pending_batches=int(len(pending_ordered)),
                     )
+                yielded_chunks += 1
                 yield batch
             else:
                 done, _ = wait(set(pending_ordered), timeout=0.2, return_when=FIRST_COMPLETED)
@@ -4370,8 +4380,9 @@ def _materialize_chronological_bounded(
                             prefetch_materialize_max_pending_batches=int(max_pending),
                             prefetch_materialize_pending_batches=int(len(pending_ordered)),
                         )
+                    yielded_chunks += 1
                     yield future.result()
-            submit_until_full()
+            submit_until_full(max_pending if yielded_chunks >= startup_pending else startup_pending)
     except BaseException:
         if stop_event is not None:
             stop_event.set()

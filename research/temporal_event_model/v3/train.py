@@ -236,12 +236,29 @@ def main() -> int:
             checkpointer.set_message_callback(active_reporter.message)
             active_reporter.message("Trainer initialized; waiting for first training batch.")
             if train_loader is not None:
-                active_reporter.update(_loader_state_metrics(summary=train_loader.summary(), batch_profile={}, batch_size=int(config.loader.batch_size)), step=0, validation_metrics=val_metrics)
+                initial_metrics = _scoped_loader_metrics(
+                    role="train",
+                    loader=train_loader,
+                    iterator=train_iter,
+                    batch_size=int(config.loader.batch_size),
+                    trainer_phase="initializing",
+                )
+                initial_metrics.update(
+                    _scoped_loader_metrics(
+                        role="validation",
+                        loader=validation_loader,
+                        iterator=None,
+                        batch_size=int(config.loader.batch_size),
+                        trainer_phase="idle",
+                    )
+                )
+                active_reporter.update(initial_metrics, step=0, validation_metrics=val_metrics)
                 if hasattr(active_reporter, "set_loader_metrics_provider") and hasattr(train_loader, "telemetry_snapshot"):
                     active_reporter.set_loader_metrics_provider(
-                        lambda loader=train_loader, iterator=train_iter, telemetry_logger=loader_telemetry_logger, cache_logger=cache_state_logger, reporter=active_reporter: _loader_telemetry_provider(
-                            loader=loader,
-                            iterator=iterator,
+                        lambda train=train_loader, validation=validation_loader, iterator=train_iter, telemetry_logger=loader_telemetry_logger, cache_logger=cache_state_logger, reporter=active_reporter: _loader_telemetry_provider(
+                            train_loader=train,
+                            train_iterator=iterator,
+                            validation_loader=validation,
                             telemetry_logger=telemetry_logger,
                             cache_state_logger=cache_logger,
                             reporter=reporter,
@@ -281,6 +298,14 @@ def main() -> int:
                             "train/gpu_memory_allocated_gib": _gpu_memory_gib(device),
                             "train/cpu_rss_gib": _rss_gib(),
                             **_loader_state_metrics(summary=_effective_loader_summary(train_loader, train_iter), batch_profile=batch.profile, batch_size=int(config.loader.batch_size)),
+                            **_scoped_loader_metrics(
+                                role="train",
+                                loader=train_loader,
+                                iterator=train_iter,
+                                batch_size=int(config.loader.batch_size),
+                                trainer_phase="gpu_training",
+                                batch_profile=batch.profile,
+                            ),
                         },
                         step=prior_samples_seen,
                         validation_metrics=val_metrics,
@@ -349,6 +374,16 @@ def main() -> int:
                         }
                     )
                     metrics.update(_loader_state_metrics(summary=summary, batch_profile=batch.profile, batch_size=int(config.loader.batch_size)))
+                    metrics.update(
+                        _scoped_loader_metrics(
+                            role="train",
+                            loader=train_loader,
+                            iterator=train_iter,
+                            batch_size=int(config.loader.batch_size),
+                            trainer_phase="training",
+                            batch_profile=batch.profile,
+                        )
+                    )
                 if cadence.due("fast_summary", samples_seen_total, int(config.train.fast_summary_samples)):
                     metrics.update(fast_batch_metrics(batch, output, prefix="train"))
                 if cadence.due("train_metric_window", samples_seen_total, int(config.train.train_metric_window_samples)):
@@ -358,9 +393,36 @@ def main() -> int:
                 metric_logger.log(metrics, samples_seen_total)
                 validation_due = cadence.due("validation", samples_seen_total, int(config.train.validation_samples))
                 if validation_due and (validation_loader is not None or args.dummy_data):
-                    active_reporter.update({"train/status/phase": "validation", "train/update_count": float(update_count)}, step=samples_seen_total, validation_metrics=val_metrics, record_history=False)
+                    active_reporter.update(
+                        {
+                            "train/status/phase": "validation",
+                            "train/update_count": float(update_count),
+                            **_scoped_loader_metrics(
+                                role="validation",
+                                loader=validation_loader,
+                                iterator=None,
+                                batch_size=int(config.loader.batch_size),
+                                trainer_phase="validation",
+                            ),
+                        },
+                        step=samples_seen_total,
+                        validation_metrics=val_metrics,
+                        record_history=False,
+                    )
                     val_metrics = run_validation(model, config, validation_loader, device=device, dummy=bool(args.dummy_data), profile_detail=True)
                     metric_logger.log(val_metrics, samples_seen_total)
+                    active_reporter.update(
+                        _scoped_loader_metrics(
+                            role="validation",
+                            loader=validation_loader,
+                            iterator=None,
+                            batch_size=int(config.loader.batch_size),
+                            trainer_phase="validation_complete",
+                        ),
+                        step=samples_seen_total,
+                        validation_metrics=val_metrics,
+                        record_history=False,
+                    )
                 if reporter is not None and cadence.due("logging", samples_seen_total, int(config.train.logging_samples)):
                     active_reporter.update(metrics, step=samples_seen_total, validation_metrics=val_metrics)
                 checkpoint_due = cadence.checkpoint_reasons(samples_seen_total, latest=int(config.train.checkpoint_latest_samples), archive=int(config.train.checkpoint_archive_samples))
@@ -633,6 +695,46 @@ def _cache_state_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _prefix_metrics(role: str, metrics: Mapping[str, Any]) -> dict[str, Any]:
+    role_prefix = str(role).strip("/")
+    return {f"{role_prefix}/{key}": value for key, value in metrics.items()}
+
+
+def _scoped_loader_metrics(
+    *,
+    role: str,
+    loader: Any,
+    iterator: Any | None,
+    batch_size: int,
+    trainer_phase: str | None,
+    batch_profile: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    role_name = str(role).strip("/") or "loader"
+    if loader is None:
+        base = {
+            "loader/status/phase": "disabled",
+            "cache/state/loader_phase": "disabled",
+            "cache/state/trainer_phase": str(trainer_phase or "idle"),
+        }
+        return _prefix_metrics(role_name, base)
+    summary = _effective_loader_summary(loader, iterator) if iterator is not None else loader.summary()
+    profile: dict[str, Any] = {}
+    if hasattr(loader, "telemetry_snapshot"):
+        try:
+            profile.update(dict(loader.telemetry_snapshot()))
+        except Exception as exc:  # noqa: BLE001
+            profile["loader_phase"] = f"telemetry_error:{type(exc).__name__}"
+    if batch_profile:
+        profile.update(dict(batch_profile))
+    base = _loader_state_metrics(summary=summary, batch_profile=profile, batch_size=int(batch_size))
+    if "loader/status/phase" not in base:
+        base["loader/status/phase"] = "idle"
+    cache = _cache_state_metrics(base)
+    cache.setdefault("cache/state/loader_phase", base.get("loader/status/phase", "idle"))
+    cache["cache/state/trainer_phase"] = str(trainer_phase or "idle")
+    return _prefix_metrics(role_name, {**base, **cache})
+
+
 def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
     model = ModelConfig(
         d_model=int(args.d_model),
@@ -833,26 +935,36 @@ class LoaderTelemetryJsonlLogger:
 
 def _loader_telemetry_provider(
     *,
-    loader: Any,
-    iterator: Any,
+    train_loader: Any,
+    train_iterator: Any,
+    validation_loader: Any,
     telemetry_logger: LoaderTelemetryJsonlLogger,
     cache_state_logger: LoaderTelemetryJsonlLogger,
     reporter: TemporalTrainingReporter,
     batch_size: int,
 ) -> Mapping[str, Any]:
-    metrics = _loader_state_metrics(
-        summary=loader.summary(),
-        batch_profile={**loader.telemetry_snapshot(), **_iterator_telemetry(iterator)},
-        batch_size=int(batch_size),
-    )
     trainer_phase = reporter.state.trainer_status.get("phase") if hasattr(reporter, "state") else None
-    if trainer_phase:
-        metrics["train/status/phase"] = str(trainer_phase)
-    cache_metrics = _cache_state_metrics(metrics)
+    metrics = _scoped_loader_metrics(
+        role="train",
+        loader=train_loader,
+        iterator=train_iterator,
+        batch_size=int(batch_size),
+        trainer_phase=str(trainer_phase or "idle"),
+        batch_profile=_iterator_telemetry(train_iterator),
+    )
+    metrics.update(
+        _scoped_loader_metrics(
+            role="validation",
+            loader=validation_loader,
+            iterator=None,
+            batch_size=int(batch_size),
+            trainer_phase=str(trainer_phase or "idle"),
+        )
+    )
     step = int(getattr(reporter.state, "samples_clock", 0) or 0)
     telemetry_logger.log(metrics, step=step)
-    cache_state_logger.log(cache_metrics, step=step)
-    return {**metrics, **cache_metrics}
+    cache_state_logger.log({key: value for key, value in metrics.items() if "/cache/state/" in key}, step=step)
+    return metrics
 
 
 def save_checkpoint_reasons(

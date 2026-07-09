@@ -43,6 +43,10 @@ class TemporalProgressState:
     loader_status: dict[str, Any] = field(default_factory=dict)
     trainer_status: dict[str, Any] = field(default_factory=dict)
     cache_state: dict[str, Any] = field(default_factory=dict)
+    train_loader_state: dict[str, Any] = field(default_factory=dict)
+    train_cache_state: dict[str, Any] = field(default_factory=dict)
+    validation_loader_state: dict[str, Any] = field(default_factory=dict)
+    validation_cache_state: dict[str, Any] = field(default_factory=dict)
     day_index: int = 0
     day_count: int = 0
     current_day_samples_seen: int = 0
@@ -184,6 +188,19 @@ class TemporalTrainingReporter:
         cache_state = {key.replace("cache/state/", ""): value for key, value in metrics.items() if key.startswith("cache/state/")}
         if cache_state:
             s.cache_state = cache_state
+            s.train_cache_state = cache_state
+        train_loader_state = {key.replace("train/loader/", ""): value for key, value in metrics.items() if key.startswith("train/loader/")}
+        if train_loader_state:
+            s.train_loader_state = train_loader_state
+        train_cache_state = {key.replace("train/cache/state/", ""): value for key, value in metrics.items() if key.startswith("train/cache/state/")}
+        if train_cache_state:
+            s.train_cache_state = train_cache_state
+        validation_loader_state = {key.replace("validation/loader/", ""): value for key, value in metrics.items() if key.startswith("validation/loader/")}
+        if validation_loader_state:
+            s.validation_loader_state = validation_loader_state
+        validation_cache_state = {key.replace("validation/cache/state/", ""): value for key, value in metrics.items() if key.startswith("validation/cache/state/")}
+        if validation_cache_state:
+            s.validation_cache_state = validation_cache_state
         s.day_index = int(metrics.get("schedule/day_index", s.day_index))
         s.day_count = int(metrics.get("schedule/day_count", s.day_count))
         s.current_day_samples_seen = int(metrics.get("schedule/current_day_samples_seen", s.current_day_samples_seen))
@@ -314,79 +331,10 @@ class TemporalTrainingReporter:
         memory.add_row("GPU allocated", f"{s.gpu_memory_gib:.2f}")
         memory.add_row("process RSS", f"{s.cpu_rss_gib:.2f}")
 
-        loader_progress = Table.grid(expand=False, padding=(0, 1))
-        loader_progress.add_column("Metric", justify="right", no_wrap=True)
-        loader_progress.add_column("Value", justify="left", no_wrap=True)
-        loader_progress.add_column("Metric", justify="right", no_wrap=True)
-        loader_progress.add_column("Value", justify="left", no_wrap=True)
-        progress_rows: list[tuple[str, str]] = [("phase", str(s.loader_status.get("phase", "waiting")))]
-        if s.loader_status.get("current_day"):
-            progress_rows.append(("day", str(s.loader_status.get("current_day"))))
-        if s.loader_window.get("start_timestamp_us") is not None or s.loader_window.get("end_timestamp_us") is not None:
-            progress_rows.append(
-                (
-                    "window UTC",
-                    f"{_timestamp_us_text(s.loader_window.get('start_timestamp_us'))} -> {_timestamp_us_text(s.loader_window.get('end_timestamp_us'))}",
-                )
-            )
-        progress_items = [
-            ("total origins", s.loader_cache.get("total_available_origins")),
-            ("ticker folders", s.loader_cache.get("ticker_package_count")),
-            ("unique tickers", s.loader_cache.get("ticker_count")),
-            ("origin parts", s.loader_cache.get("part_count")),
-            ("day parts", s.loader_window.get("day_package_count")),
-            ("day tickers", s.loader_window.get("day_ticker_count")),
-            ("day refs", s.loader_window.get("day_refs_total")),
-            ("day remaining", s.loader_window.get("day_refs_remaining_before_window")),
-            ("window refs", s.loader_window.get("active_refs")),
-            ("window parts", s.loader_window.get("active_parts")),
-            ("window tickers", s.loader_window.get("active_tickers")),
-            ("window seconds", s.loader_window.get("seconds")),
-            ("chrono cursor", s.loader_state.get("chronological_origin_cursor")),
-        ]
-        progress_rows.extend(_formatted_metric_rows(progress_items))
-        _add_two_column_rows(loader_progress, progress_rows)
-
-        cache_state = Table.grid(expand=False, padding=(0, 1))
-        cache_state.add_column("Cache", justify="right", no_wrap=True)
-        cache_state.add_column("State", justify="left", no_wrap=True)
-        cache_state.add_column("Cache", justify="right", no_wrap=True)
-        cache_state.add_column("State", justify="left", no_wrap=True)
-        cache_rows = _formatted_metric_rows(
-            [
-                ("loader phase", s.cache_state.get("loader_phase")),
-                ("trainer phase", s.cache_state.get("trainer_phase")),
-                ("current day", s.cache_state.get("current_day")),
-                ("event tickers", s.cache_state.get("event_tickers")),
-                ("event rows/ticker", s.cache_state.get("event_rows_per_ticker")),
-                ("event features", s.cache_state.get("event_feature_count")),
-                ("event MiB", s.cache_state.get("event_estimated_mib")),
-                ("origin parts", s.cache_state.get("origin_parts")),
-                ("origin rows", s.cache_state.get("origin_rows")),
-                ("payload parts", s.cache_state.get("payload_parts")),
-                ("payload limit", s.cache_state.get("payload_limit")),
-                ("ready batches", s.cache_state.get("ready_batches")),
-                ("ready samples", s.cache_state.get("ready_samples")),
-                ("ready chunks", s.cache_state.get("ready_chunks")),
-                ("raw ready", s.cache_state.get("raw_ready_batches")),
-                ("raw limit", s.cache_state.get("raw_ready_limit")),
-                ("raw produced", s.cache_state.get("raw_produced_batches")),
-                ("raw consumed", s.cache_state.get("raw_consumed_batches")),
-                ("raw thread", s.cache_state.get("raw_thread_alive")),
-                ("mat pending", s.cache_state.get("materialize_pending_batches")),
-                ("mat max", s.cache_state.get("materialize_max_pending_batches")),
-                ("text idx", s.cache_state.get("text_index_entries")),
-                ("label idx", s.cache_state.get("label_index_entries")),
-                ("scanner idx", s.cache_state.get("scanner_index_entries")),
-                ("bar idx", s.cache_state.get("bar_index_entries")),
-                ("xbrl idx", s.cache_state.get("xbrl_index_entries")),
-                ("xbrl cats", s.cache_state.get("xbrl_category_entries")),
-                ("corp idx", s.cache_state.get("corporate_action_index_entries")),
-            ]
-        )
-        if not cache_rows:
-            cache_rows = [("waiting", "--")]
-        _add_two_column_rows(cache_state, cache_rows)
+        train_loader_progress = _loader_progress_table(s.train_loader_state or _legacy_loader_state(s), empty_phase="waiting")
+        train_cache_state = _cache_state_table(s.train_cache_state or s.cache_state, empty_phase="waiting")
+        validation_loader_progress = _loader_progress_table(s.validation_loader_state, empty_phase="idle")
+        validation_cache_state = _cache_state_table(s.validation_cache_state, empty_phase="idle")
 
         retained_messages = list(self.messages) if self.messages else [s.last_message or "waiting for first update"]
         retained_messages.extend([""] * max(0, self.messages.maxlen - len(retained_messages)))
@@ -403,8 +351,10 @@ class TemporalTrainingReporter:
             Panel(Align.center(task_losses), title="Task Losses", border_style="green"),
             Panel(Align.center(availability), title="Data Availability", border_style="blue"),
             Panel(Align.center(profile), title="Batch Profile", border_style="yellow"),
-            Panel(Align.center(loader_progress), title="Loader Progress", border_style="green"),
-            Panel(Align.center(cache_state), title="Cache State", border_style="yellow"),
+            Panel(Align.center(train_loader_progress), title="Training Loader", border_style="green"),
+            Panel(Align.center(train_cache_state), title="Training Cache State", border_style="yellow"),
+            Panel(Align.center(validation_loader_progress), title="Validation Loader", border_style="green"),
+            Panel(Align.center(validation_cache_state), title="Validation Cache State", border_style="yellow"),
             Panel(Align.center(memory), title="Memory", border_style="cyan", height=6),
             Panel(messages, title="Messages", border_style="blue", height=9),
             Text("\n" * self._bottom_padding_lines),
@@ -475,3 +425,102 @@ def _add_two_column_rows(table: Any, rows: list[tuple[str, str]]) -> None:
             table.add_row(left_label, left_value, right_label, right_value)
         else:
             table.add_row(left_label, left_value, "", "")
+
+
+def _legacy_loader_state(state: TemporalProgressState) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    metrics.update({f"cache/{key}": value for key, value in state.loader_cache.items()})
+    metrics.update({f"window/{key}": value for key, value in state.loader_window.items()})
+    metrics.update({f"prefetch/{key}": value for key, value in state.loader_prefetch.items()})
+    metrics.update({f"state/{key}": value for key, value in state.loader_state.items()})
+    metrics.update({f"status/{key}": value for key, value in state.loader_status.items()})
+    return metrics
+
+
+def _loader_progress_table(metrics: Mapping[str, Any], *, empty_phase: str) -> Any:
+    from rich.table import Table
+
+    table = Table.grid(expand=False, padding=(0, 1))
+    table.add_column("Metric", justify="right", no_wrap=True)
+    table.add_column("Value", justify="left", no_wrap=True)
+    table.add_column("Metric", justify="right", no_wrap=True)
+    table.add_column("Value", justify="left", no_wrap=True)
+    rows: list[tuple[str, str]] = [("phase", str(metrics.get("status/phase", empty_phase)))]
+    if metrics.get("status/current_day"):
+        rows.append(("day", str(metrics.get("status/current_day"))))
+    if metrics.get("window/start_timestamp_us") is not None or metrics.get("window/end_timestamp_us") is not None:
+        rows.append(
+            (
+                "window UTC",
+                f"{_timestamp_us_text(metrics.get('window/start_timestamp_us'))} -> {_timestamp_us_text(metrics.get('window/end_timestamp_us'))}",
+            )
+        )
+    rows.extend(
+        _formatted_metric_rows(
+            [
+                ("total origins", metrics.get("cache/total_available_origins")),
+                ("ticker folders", metrics.get("cache/ticker_package_count")),
+                ("unique tickers", metrics.get("cache/ticker_count")),
+                ("origin parts", metrics.get("cache/part_count")),
+                ("day parts", metrics.get("window/day_package_count")),
+                ("day tickers", metrics.get("window/day_ticker_count")),
+                ("day refs", metrics.get("window/day_refs_total")),
+                ("day remaining", metrics.get("window/day_refs_remaining_before_window")),
+                ("window refs", metrics.get("window/active_refs")),
+                ("window parts", metrics.get("window/active_parts")),
+                ("window tickers", metrics.get("window/active_tickers")),
+                ("window seconds", metrics.get("window/seconds")),
+                ("epoch", metrics.get("state/epoch")),
+                ("day position", metrics.get("state/chronological_day_position")),
+                ("chrono cursor", metrics.get("state/chronological_origin_cursor")),
+                ("emitted batches", metrics.get("state/emitted_batches")),
+                ("emitted samples", metrics.get("state/emitted_samples")),
+            ]
+        )
+    )
+    _add_two_column_rows(table, rows)
+    return table
+
+
+def _cache_state_table(metrics: Mapping[str, Any], *, empty_phase: str) -> Any:
+    from rich.table import Table
+
+    table = Table.grid(expand=False, padding=(0, 1))
+    table.add_column("Cache", justify="right", no_wrap=True)
+    table.add_column("State", justify="left", no_wrap=True)
+    table.add_column("Cache", justify="right", no_wrap=True)
+    table.add_column("State", justify="left", no_wrap=True)
+    rows = _formatted_metric_rows(
+        [
+            ("loader phase", metrics.get("loader_phase", empty_phase)),
+            ("trainer phase", metrics.get("trainer_phase")),
+            ("current day", metrics.get("current_day")),
+            ("event tickers", metrics.get("event_tickers")),
+            ("event rows/ticker", metrics.get("event_rows_per_ticker")),
+            ("event features", metrics.get("event_feature_count")),
+            ("event MiB", metrics.get("event_estimated_mib")),
+            ("origin parts", metrics.get("origin_parts")),
+            ("origin rows", metrics.get("origin_rows")),
+            ("payload parts", metrics.get("payload_parts")),
+            ("payload limit", metrics.get("payload_limit")),
+            ("ready batches", metrics.get("ready_batches")),
+            ("ready samples", metrics.get("ready_samples")),
+            ("ready chunks", metrics.get("ready_chunks")),
+            ("raw ready", metrics.get("raw_ready_batches")),
+            ("raw limit", metrics.get("raw_ready_limit")),
+            ("raw produced", metrics.get("raw_produced_batches")),
+            ("raw consumed", metrics.get("raw_consumed_batches")),
+            ("raw thread", metrics.get("raw_thread_alive")),
+            ("mat pending", metrics.get("materialize_pending_batches")),
+            ("mat max", metrics.get("materialize_max_pending_batches")),
+            ("text idx", metrics.get("text_index_entries")),
+            ("label idx", metrics.get("label_index_entries")),
+            ("scanner idx", metrics.get("scanner_index_entries")),
+            ("bar idx", metrics.get("bar_index_entries")),
+            ("xbrl idx", metrics.get("xbrl_index_entries")),
+            ("xbrl cats", metrics.get("xbrl_category_entries")),
+            ("corp idx", metrics.get("corporate_action_index_entries")),
+        ]
+    )
+    _add_two_column_rows(table, rows or [("phase", empty_phase)])
+    return table
