@@ -149,7 +149,7 @@ SERVICE_TABLE_TIME_COLUMN_CANDIDATES = (
     "list_date",
 )
 _SERVICE_TABLE_STATE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_SERVICE_NEWS_HISTOGRAM_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
+_SERVICE_NEWS_HISTOGRAM_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
     "qmd": [
@@ -1362,18 +1362,20 @@ def service_database_table_preview(service_id: str, database: str, table: str, l
 
 def service_news_histogram() -> dict[str, Any]:
     safe_bin_seconds = SERVICE_NEWS_HISTOGRAM_BIN_SECONDS
-    cached_at, cached_payload = _SERVICE_NEWS_HISTOGRAM_CACHE.get(safe_bin_seconds, (0.0, {}))
-    if cached_payload and time.monotonic() - cached_at < SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS:
-        return cached_payload
 
     database = "q_live"
     normalized_table = "benzinga_news_normalized_v1"
     ticker_table = "benzinga_news_ticker_v1"
     market_now = datetime.now(UTC).astimezone(ZoneInfo(EXCHANGE_TIME_ZONE))
     window_start_et = market_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    window_end_et = market_now.replace(hour=12, minute=0, second=0, microsecond=0)
+    window_end_et = window_start_et + timedelta(days=1)
     window_start_utc = window_start_et.astimezone(UTC)
     window_end_utc = window_end_et.astimezone(UTC)
+    cache_key = f"{window_start_et.date().isoformat()}:{safe_bin_seconds}"
+    cached_at, cached_payload = _SERVICE_NEWS_HISTOGRAM_CACHE.get(cache_key, (0.0, {}))
+    if cached_payload and time.monotonic() - cached_at < SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS:
+        return cached_payload
+
     bin_count = int((window_end_utc - window_start_utc).total_seconds() // safe_bin_seconds)
     window_start_sql = f"toDateTime64({sql_string(window_start_utc.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
     window_end_sql = f"toDateTime64({sql_string(window_end_utc.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
@@ -1446,7 +1448,7 @@ def service_news_histogram() -> dict[str, Any]:
         "window_start_et": window_start_et.isoformat(),
         "window_start_utc": window_start_utc.isoformat().replace("+00:00", "Z"),
     }
-    _SERVICE_NEWS_HISTOGRAM_CACHE[safe_bin_seconds] = (time.monotonic(), payload)
+    _SERVICE_NEWS_HISTOGRAM_CACHE[cache_key] = (time.monotonic(), payload)
     return payload
 
 
