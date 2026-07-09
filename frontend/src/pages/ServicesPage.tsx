@@ -588,7 +588,7 @@ function NewsDailyHistogram({
       autoSize: false,
       height: 144,
       layout: { background: { color: "transparent" }, textColor: "#667085" },
-      rightPriceScale: { borderVisible: false, scaleMargins: { bottom: 0.08, top: 0.18 } },
+      rightPriceScale: { borderVisible: false, scaleMargins: { bottom: 0, top: 0.08 }, visible: false },
       timeScale: { borderVisible: false, fixLeftEdge: true, fixRightEdge: true, timeVisible: false, visible: false },
       grid: { horzLines: { color: "rgba(16,24,40,0.06)" }, vertLines: { color: "rgba(16,24,40,0.04)" } },
       crosshair: { horzLine: { visible: false }, vertLine: { visible: false } },

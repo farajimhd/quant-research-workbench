@@ -1227,8 +1227,8 @@ button {
 .news-live-histogram {
   border-bottom: 1px solid var(--border);
   display: grid;
-  gap: 6px;
-  padding: 8px 10px 0;
+  gap: 0;
+  padding: 0;
   position: relative;
 }
 
@@ -1238,6 +1238,7 @@ button {
   gap: 12px;
   justify-content: space-between;
   min-width: 0;
+  padding: 8px 10px 4px;
 }
 
 .news-live-histogram-label span {
