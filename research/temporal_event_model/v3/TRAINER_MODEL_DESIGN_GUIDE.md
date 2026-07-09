@@ -416,15 +416,15 @@ by `future_intraday_bar_horizons`; corporate-action query tokens are keyed by
 
 | Model output atom | Target source | Output shape | Target transform | Loss |
 | --- | --- | --- | --- | --- |
-| `trade_bar_delta_bps` | `future_bar_values["trade"][..., open/close/high/low]` | `[B, H, 4]` | decoded future trade OHLC to bps/ticks vs origin reference | masked Huber/MAE |
-| `trade_size_log1p` | `future_bar_values["trade"][..., size_sum]` | `[B, H]` | `log1p(max(size_sum, 0))` | masked Huber/MAE |
-| `trade_event_count_log1p` | `future_bar_values["trade"][..., event_count]` | `[B, H]` | `log1p(event_count)` or Poisson target | masked Huber/Poisson |
-| `quote_bid_bar_delta_bps` | `future_bar_values["quote_bid"][..., open/close/high/low]` | `[B, H, 4]` | decoded future bid OHLC to bps/ticks vs origin reference | masked Huber/MAE |
-| `quote_bid_size_log1p` | `future_bar_values["quote_bid"][..., size_open/size_close/size_high/size_low]` | `[B, H, 4]` | `log1p(max(size, 0))` | masked Huber/MAE |
-| `quote_bid_event_count_log1p` | `future_bar_values["quote_bid"][..., event_count]` | `[B, H]` | `log1p(event_count)` or Poisson target | masked Huber/Poisson |
-| `quote_ask_bar_delta_bps` | `future_bar_values["quote_ask"][..., open/close/high/low]` | `[B, H, 4]` | decoded future ask OHLC to bps/ticks vs origin reference | masked Huber/MAE |
-| `quote_ask_size_log1p` | `future_bar_values["quote_ask"][..., size_open/size_close/size_high/size_low]` | `[B, H, 4]` | `log1p(max(size, 0))` | masked Huber/MAE |
-| `quote_ask_event_count_log1p` | `future_bar_values["quote_ask"][..., event_count]` | `[B, H]` | `log1p(event_count)` or Poisson target | masked Huber/Poisson |
+| `trade_bar_price` | `future_bar_values["trade"][..., open/close/high/low]` | `[B, H, 4]` | none; raw loader price/tick units | masked Huber/MAE |
+| `trade_size` | `future_bar_values["trade"][..., size_sum]` | `[B, H]` | none; raw loader size units | masked Huber/MAE |
+| `trade_event_count` | `future_bar_values["trade"][..., event_count]` | `[B, H]` | none; raw loader count units | masked Huber/MAE |
+| `quote_bid_bar_price` | `future_bar_values["quote_bid"][..., open/close/high/low]` | `[B, H, 4]` | none; raw loader bid price/tick units | masked Huber/MAE |
+| `quote_bid_size` | `future_bar_values["quote_bid"][..., size_open/size_close/size_high/size_low]` | `[B, H, 4]` | none; raw loader size units | masked Huber/MAE |
+| `quote_bid_event_count` | `future_bar_values["quote_bid"][..., event_count]` | `[B, H]` | none; raw loader count units | masked Huber/MAE |
+| `quote_ask_bar_price` | `future_bar_values["quote_ask"][..., open/close/high/low]` | `[B, H, 4]` | none; raw loader ask price/tick units | masked Huber/MAE |
+| `quote_ask_size` | `future_bar_values["quote_ask"][..., size_open/size_close/size_high/size_low]` | `[B, H, 4]` | none; raw loader size units | masked Huber/MAE |
+| `quote_ask_event_count` | `future_bar_values["quote_ask"][..., event_count]` | `[B, H]` | none; raw loader count units | masked Huber/MAE |
 | `halt_pause_logit` | `condition_halt_pause_flag` | `[B, H]` | bool target | masked BCE-with-logits |
 | `resume_logit` | `condition_resume_flag` | `[B, H]` | bool target | masked BCE-with-logits |
 | `news_risk_logit` | `condition_news_risk_flag` | `[B, H]` | bool target | masked BCE-with-logits |
@@ -554,9 +554,8 @@ Important current behavior:
 - `batch_to_torch` and the rolling loader validate required time-feature
   widths before the tensors reach the model. A malformed time tensor should
   raise early instead of being silently interpreted as a generic feature.
-- Price targets are normalized in the loss, not in the loader: future price
-  levels are converted to basis-point deltas versus the origin reference price.
-- Size/count targets are transformed in the loss with `log1p`.
+- Target values are not transformed in the loss. Future price, size, and count
+  labels stay in the raw units emitted by the loader/cache.
 
 ### Current Encoder Contracts
 
@@ -586,9 +585,9 @@ Current output heads:
 
 | Output group | Model output | Target | Current loss transform |
 | --- | --- | --- | --- |
-| Future trade bars | `future_bar_values["trade"] [B,H,6]` | `future_bar_values["trade"]` | Price fields `open,close,high,low` are converted in `losses.py` to bps deltas versus the origin trade price decoded from the last event's scale bits. Size is `log1p(max(size_sum,0))`; count is `log1p(event_count)`. Masked Smooth L1. |
-| Future quote bid bars | `future_bar_values["quote_bid"] [B,H,9]` | `future_bar_values["quote_bid"]` | Price fields are converted to bps deltas versus the origin bid reference decoded from event prices. Quote size fields use `log1p`; event count uses `log1p`. Masked Smooth L1. |
-| Future quote ask bars | `future_bar_values["quote_ask"] [B,H,9]` | `future_bar_values["quote_ask"]` | Price fields are converted to bps deltas versus the origin ask reference decoded from event prices. Quote size fields use `log1p`; event count uses `log1p`. Masked Smooth L1. |
+| Future trade bars | `future_bar_values["trade"] [B,H,6]` | `future_bar_values["trade"]` | No target transform. Price, size, and count fields are compared in raw loader/cache units with masked Smooth L1. |
+| Future quote bid bars | `future_bar_values["quote_bid"] [B,H,9]` | `future_bar_values["quote_bid"]` | No target transform. Bid price, bid size, and count fields are compared in raw loader/cache units with masked Smooth L1. |
+| Future quote ask bars | `future_bar_values["quote_ask"] [B,H,9]` | `future_bar_values["quote_ask"]` | No target transform. Ask price, ask size, and count fields are compared in raw loader/cache units with masked Smooth L1. |
 | Intraday condition flags | one logit tensor `[B,H]` per `condition_halt_pause_flag`, `condition_resume_flag`, `condition_news_risk_flag`, `condition_luld_limit_state_flag` | `intraday_labels[...]` | Masked BCE-with-logits using `intraday_labels.available`. |
 | External arrival flags | one logit tensor `[B,H]` per `ticker_news_arrival_flag`, `sec_filing_arrival_flag` | `intraday_labels[...]` | Masked BCE-with-logits using `intraday_labels.available`. |
 | Corporate-action daily flags | one logit tensor `[B,D=5]` per `future_split_flag`, `future_reverse_split_flag`, `future_forward_split_flag`, `future_dividend_ex_flag`, `future_special_dividend_ex_flag`, `future_any_corporate_action_flag` | `corporate_action_labels[...]` | Dense BCE-with-logits. A false value is a valid target meaning no such event in that horizon. |
@@ -915,11 +914,11 @@ family. It is not the canonical v3 target contract.
 
 `H` is `len(future_intraday_bar_horizons)`. Price-like targets arrive from the
 loader as decoded `float32` price levels; the ticker-month builder has already
-applied the scale bits packed in each source event's `event_meta`. These decoded
-levels must still be converted to normalized deltas before loss calculation,
-preferably in bps or ticks relative to the origin/as-of bid, ask, or mid. Size
-and count targets should be trained in a positive, scale-stable space such as
-`log1p`.
+applied the scale bits packed in each source event's `event_meta`. The default
+v3 objective does not transform these targets: price, size, and count fields are
+trained in the same raw units emitted by the loader/cache. Any normalized target
+space must be introduced only as an explicit ablation with its own run manifest
+flag and metric names.
 
 Intraday future labels are grid-aligned, not exact origin-relative windows. The
 builder skips the origin's current partial bucket and emits
@@ -1007,9 +1006,9 @@ valid counts, positive rates for binary labels, and the active task count.
 Bar price loss:
 
 - target shapes: trade `[B, H, 4]`, quote_bid `[B, H, 4]`, quote_ask `[B, H, 4]`
-- prediction shapes: same family/field shapes in normalized bps/tick space
+- prediction shapes: same family/field shapes in raw loader/cache units
 - masks: `future_bar_masks[family] [B, H]`
-- default loss: Huber in normalized bps/tick space
+- default loss: Huber in raw loader/cache units
 - no default family, field, or horizon weights
 - `future_intraday_bars` is compatibility output and should not add a duplicate loss
 
@@ -1017,10 +1016,10 @@ Event-count and size losses:
 
 - target shapes: trade size/count from `[B, H, 6]`; quote bid/ask size state and count from `[B, H, 9]`
 - masks: `future_bar_masks[family] [B, H]`
-- event count: Poisson NLL, log-MAE, or Huber on `log1p(count)`
-- size sums: Huber on `log1p(size)`
-- count and size predictions must be non-negative after the head transform,
-  for example with `softplus`, unless the loss is applied in log space
+- event count: Huber on the raw loader count field
+- size sums/state fields: Huber on raw loader size/state fields
+- count and size heads are not forced through a target transform; any output
+  constraint should be an explicit model-head design choice.
 
 Binary event-state and arrival losses:
 
@@ -1090,10 +1089,10 @@ W&B grouping rules:
 | `train/memory` | `train/gpu_memory_allocated_gib`, `train/gpu_memory_reserved_gib`, `train/gpu_memory_peak_gib`, `train/cpu_rss_gib`, `train/loader_rss_gib`, `train/pinned_memory_gib` | fast train summary | Record memory after synchronization only at summary cadence. |
 | `data/loader_state` | `loader/epoch`, `loader/package_position`, `loader/origin_cursor`, `loader/emitted_batches`, `loader/emitted_samples`, `loader/seen_origins_total`, `loader/seen_origins_this_epoch`, `loader/replay_seed`, `loader/cache_manifest_changed` | fast train summary | String identifiers stay in JSONL/run manifest, not W&B scalar panels. |
 | `data/availability` | `data/event_window_valid_fraction`, `data/daily_bars_available_fraction`, `data/global_bars_available_fraction`, `data/ticker_news_available_fraction`, `data/market_news_available_fraction`, `data/sec_filings_available_fraction`, `data/xbrl_available_fraction`, `data/corporate_action_available_fraction`, `data/label_available_fraction` | fast train summary | Use masks from the emitted batch, not post-hoc DB checks. |
-| `labels/distribution` | `labels/price_target_mean_bps`, `labels/price_target_std_bps`, `labels/price_target_abs_p95_bps`, `labels/event_count_mean`, `labels/event_count_p95`, `labels/event_state_positive_rate`, `labels/news_arrival_positive_rate`, `labels/sec_arrival_positive_rate`, `labels/corporate_action_positive_rate` | fast train summary | These are target diagnostics, not model quality metrics. |
-| `train/price_intraday` | `train/price_mae_bid_bps/<h>`, `train/price_mae_ask_bps/<h>`, `train/price_rmse_bid_bps/<h>`, `train/price_rmse_ask_bps/<h>`, `train/price_sign_acc_bid/<h>`, `train/price_sign_acc_ask/<h>` | train metric window | Split into separate panels for short, medium, and long intraday horizons if needed. |
+| `labels/distribution` | `labels/price_target_mean`, `labels/price_target_std`, `labels/price_target_abs_p95`, `labels/event_count_mean`, `labels/event_count_p95`, `labels/event_state_positive_rate`, `labels/news_arrival_positive_rate`, `labels/sec_arrival_positive_rate`, `labels/corporate_action_positive_rate` | fast train summary | These are target diagnostics, not model quality metrics. |
+| `train/price_intraday` | `train/price_mae_bid/<h>`, `train/price_mae_ask/<h>`, `train/price_rmse_bid/<h>`, `train/price_rmse_ask/<h>`, `train/price_sign_acc_bid/<h>`, `train/price_sign_acc_ask/<h>` | train metric window | Split into separate panels for short, medium, and long intraday horizons if needed. |
 | `val/price_intraday` | same as `train/price_intraday` with `val/` prefix | validation | This is usually the main model-quality panel. |
-| `train/bar_activity` | `train/event_count_mae/<h>`, `train/event_count_log_mae/<h>`, `train/size_primary_log_mae/<h>`, `train/size_secondary_log_mae/<h>`, `train/label_valid_fraction/<h>` | train metric window | Keep count/size metrics separate from price metrics. |
+| `train/bar_activity` | `train/event_count_mae/<h>`, `train/size_primary_mae/<h>`, `train/size_secondary_mae/<h>`, `train/label_valid_fraction/<h>` | train metric window | Keep count/size metrics separate from price metrics. |
 | `val/bar_activity` | same as `train/bar_activity` with `val/` prefix | validation | Compare against train for overfit and sparse-horizon drift. |
 | `train/event_state` | `train/halt_bce/<h>`, `train/halt_auc/<h>`, `train/luld_bce/<h>`, `train/luld_auc/<h>`, `train/news_arrival_bce/<h>`, `train/news_arrival_auc/<h>`, `train/sec_arrival_bce/<h>`, `train/sec_arrival_auc/<h>` | train metric window | AUC is logged only when positives and negatives are both present. |
 | `val/event_state` | same as `train/event_state` with `val/` prefix | validation | Rare labels should also report valid count in JSONL. |
@@ -1156,9 +1155,9 @@ For each major regression or classification metric, emit aggregate and cohort
 forms when the cohort has enough samples:
 
 ```text
-val/mae_bid_bps
-val/mae_bid_bps/cohort_liquid_asof/true
-val/mae_bid_bps/cohort_liquid_asof/false
+val/mae_bid
+val/mae_bid/cohort_liquid_asof/true
+val/mae_bid/cohort_liquid_asof/false
 val/sign_accuracy_ask/cohort_wide_spread_asof/true
 val/event_state_auc/cohort_future_halt_luld/true
 ```

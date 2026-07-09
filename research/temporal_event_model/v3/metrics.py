@@ -80,14 +80,14 @@ def prediction_metrics(batch: Any, output: TemporalModelOutput, *, prefix: str =
             continue
         base_key = "trade" if family == "trade" else "ask" if family == "quote_ask" else "bid"
         base = origin[base_key].to(device=pred.device, dtype=pred.dtype)
-        normalized_target = ((target[..., :width] - base[:, None, None]) / base.clamp(min=1e-6)[:, None, None]) * 10_000.0
-        error = pred[..., :width] - normalized_target
+        target_price = target[..., :width]
+        error = pred[..., :width] - target_price
         expanded = mask.unsqueeze(-1).expand_as(error)
-        metrics[f"{prefix}/price_mae_{family}_bps"] = float(error[expanded].abs().mean().cpu())
-        metrics[f"{prefix}/price_rmse_{family}_bps"] = float(torch.sqrt((error[expanded] ** 2).mean()).cpu())
+        metrics[f"{prefix}/price_mae_{family}"] = float(error[expanded].abs().mean().cpu())
+        metrics[f"{prefix}/price_rmse_{family}"] = float(torch.sqrt((error[expanded] ** 2).mean()).cpu())
         if width >= 2:
-            sign_pred = torch.sign(pred[..., 1])
-            sign_target = torch.sign(normalized_target[..., 1])
+            sign_pred = torch.sign(pred[..., 1] - base[:, None])
+            sign_target = torch.sign(target_price[..., 1] - base[:, None])
             metrics[f"{prefix}/price_sign_acc_{family}"] = float((sign_pred[mask] == sign_target[mask]).float().mean().cpu())
     for name in (*INTRADAY_EVENT_FLAGS, *EXTERNAL_ARRIVAL_FLAGS):
         pred = output.intraday_logits.get(name)
@@ -198,10 +198,10 @@ def _cohort_prediction_metrics(batch: Any, output: TemporalModelOutput, *, prefi
             continue
         base_key = "trade" if family == "trade" else "ask" if family == "quote_ask" else "bid"
         base = origin[base_key].to(device=pred.device, dtype=pred.dtype)
-        normalized_target = ((target[..., :width] - base[:, None, None]) / base.clamp(min=1e-6)[:, None, None]) * 10_000.0
-        error = pred[..., :width] - normalized_target
+        target_price = target[..., :width]
+        error = pred[..., :width] - target_price
         expanded = valid.unsqueeze(-1).expand_as(error)
-        metrics[f"{prefix}/cohort/{cohort_name}/{suffix}/price_mae_{family}_bps"] = float(error[expanded].abs().mean().cpu())
+        metrics[f"{prefix}/cohort/{cohort_name}/{suffix}/price_mae_{family}"] = float(error[expanded].abs().mean().cpu())
     return metrics
 
 

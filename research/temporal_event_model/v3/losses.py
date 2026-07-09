@@ -17,13 +17,11 @@ class LossResult:
 
 
 def compute_loss(output: TemporalModelOutput, batch: Any) -> LossResult:
-    x = batch.x
     y = batch.y
     device = output.modality_tokens.device
     losses: list[torch.Tensor] = []
     metrics: dict[str, float] = {}
 
-    origin = _origin_prices(x)
     price_terms: list[torch.Tensor] = []
     count_terms: list[torch.Tensor] = []
     size_terms: list[torch.Tensor] = []
@@ -37,19 +35,18 @@ def compute_loss(output: TemporalModelOutput, batch: Any) -> LossResult:
         mask = mask.to(device=device, dtype=torch.bool)
         price_width = min(4, pred.shape[-1], target.shape[-1])
         if price_width:
-            base = origin["trade" if family == "trade" else "ask" if family == "quote_ask" else "bid"].to(device=device, dtype=pred.dtype)
-            price_target = ((target[..., :price_width] - base[:, None, None]) / base.clamp(min=1e-6)[:, None, None]) * 10_000.0
+            price_target = target[..., :price_width]
             price_loss = masked_huber(pred[..., :price_width], price_target, mask.unsqueeze(-1).expand_as(price_target))
             if price_loss is not None:
                 price_terms.append(price_loss)
         if target.shape[-1] > 4 and pred.shape[-1] > 4:
             size_end = min(target.shape[-1] - 1, pred.shape[-1])
             if size_end > 4:
-                size_target = torch.log1p(target[..., 4:size_end].clamp(min=0))
+                size_target = target[..., 4:size_end]
                 size_loss = masked_huber(pred[..., 4:size_end], size_target, mask.unsqueeze(-1).expand_as(size_target))
                 if size_loss is not None:
                     size_terms.append(size_loss)
-            count_target = torch.log1p(target[..., -1].clamp(min=0))
+            count_target = target[..., -1]
             count_loss = masked_huber(pred[..., -1], count_target, mask)
             if count_loss is not None:
                 count_terms.append(count_loss)
