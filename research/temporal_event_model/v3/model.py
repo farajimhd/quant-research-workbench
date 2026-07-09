@@ -411,6 +411,24 @@ class XbrlEncoder(nn.Module):
         self.time_encoder = time_encoder
         self.time_feature_count = int(config.xbrl_time_feature_count)
         self.period_time_feature_count = int(config.xbrl_period_time_feature_count)
+        self.scalar_keys = (
+            "value",
+            "mapping_confidence",
+            "fiscal_year",
+            "period_end_days",
+            "age_days",
+            "timestamp_us",
+            "time_delta_seconds",
+            "time_delta_seconds_log1p_signed",
+            "time_age_seconds_log1p",
+            "time_utc_second_of_day_sin",
+            "time_utc_second_of_day_cos",
+            "time_utc_day_of_week_sin",
+            "time_utc_day_of_week_cos",
+            "time_utc_day_of_year_sin",
+            "time_utc_day_of_year_cos",
+            "time_years_since_2000",
+        )
         self.category_keys = ("fiscal_period_id", "calendar_period_id", "taxonomy_id", "tag_id", "unit_id", "form_id", "row_kind_id", "location_id")
         category_dim = max(1, int(config.xbrl_category_embedding_dim))
         category_sizes = dict(getattr(config, "xbrl_category_vocab_sizes", {}) or {})
@@ -420,7 +438,8 @@ class XbrlEncoder(nn.Module):
                 for key in self.category_keys
             }
         )
-        numeric_dim = 3 + 2 * int(config.time_encoder_dim) + len(self.category_keys) * category_dim
+        self.scalar_norm = nn.LayerNorm(len(self.scalar_keys))
+        numeric_dim = len(self.scalar_keys) + 2 * int(config.time_encoder_dim) + len(self.category_keys) * category_dim
         self.row_proj = MLP(numeric_dim, h, d, dropout=float(config.dropout))
         self.out_dim = d
 
@@ -431,9 +450,6 @@ class XbrlEncoder(nn.Module):
             return _zero_like_batch(payload, self.out_dim)
         if not torch.is_tensor(mask):
             mask = torch.ones(value.shape, dtype=torch.bool, device=value.device)
-        confidence = payload.get("mapping_confidence")
-        if not torch.is_tensor(confidence):
-            confidence = torch.zeros_like(value)
         time_features = _required_time_features(payload.get("time_features"), reference=value, width=self.time_feature_count, name="xbrl.time_features")
         period_features = _required_time_features(
             payload.get("period_end_time_features"),
@@ -444,7 +460,8 @@ class XbrlEncoder(nn.Module):
         time_token = self.time_encoder(time_features, role="xbrl_available")
         period_token = self.time_encoder(period_features, role="xbrl_period_end")
         cats = torch.cat([_safe_category_embedding(self.category_embeddings[key], _payload_ids(payload, key, value)) for key in self.category_keys], dim=-1)
-        row = torch.cat([value.float().unsqueeze(-1), torch.log1p(value.float().abs()).unsqueeze(-1), confidence.float().unsqueeze(-1), time_token, period_token, cats], dim=-1)
+        scalars = self.scalar_norm(torch.stack([_payload_scalar(payload, key, value) for key in self.scalar_keys], dim=-1))
+        row = torch.cat([scalars, time_token, period_token, cats], dim=-1)
         projected = self.row_proj(row)
         return masked_mean(projected, mask.bool(), dim=1)
 
@@ -695,6 +712,19 @@ def _payload_ids(payload: Mapping[str, Any], key: str, reference: torch.Tensor) 
     if torch.is_tensor(value):
         return value.long()
     return torch.zeros_like(reference, dtype=torch.long)
+
+
+def _payload_scalar(payload: Mapping[str, Any], key: str, reference: torch.Tensor) -> torch.Tensor:
+    value = payload.get(key)
+    if not torch.is_tensor(value):
+        return torch.zeros_like(reference, dtype=torch.float32)
+    out = value.to(device=reference.device, dtype=torch.float32)
+    if out.shape != reference.shape:
+        if out.numel() == reference.numel():
+            out = out.reshape(reference.shape)
+        else:
+            return torch.zeros_like(reference, dtype=torch.float32)
+    return torch.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def _pad_or_trim_last(value: torch.Tensor, width: int) -> torch.Tensor:

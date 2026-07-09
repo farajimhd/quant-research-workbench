@@ -183,6 +183,11 @@ XBRL inputs:
 ```text
 xbrl_value              [B, 4096]
 xbrl_mask               [B, 4096]
+xbrl_fiscal_year        [B, 4096]
+xbrl_period_end_days    [B, 4096]
+xbrl_age_days           [B, 4096]
+xbrl_timestamp_us       [B, 4096]
+xbrl_time_delta_seconds [B, 4096]
 xbrl_time_features      [B, 4096, xbrl_time_features]
 xbrl_period_end_time_features [B, 4096, xbrl_period_time_features]
 xbrl_category_ids       field-specific [B, 4096]
@@ -195,6 +200,14 @@ XBRL time is split into two channels:
 availability time: source timestamp_us, used for as-of/no-lookahead selection
 period time:       period_end_date/fiscal period, describes the accounting period
 ```
+
+Availability time and period-end time are intentionally different raw feature
+contracts. Availability rows have UTC timestamp features plus relative
+origin-delta helpers, so they are 10-wide. Period-end rows are date/accounting
+period features plus age helpers, so they are 7-wide. Both routes still pass
+through the shared role-aware `TimeFeatureEncoder`; the encoder pads smaller
+time roles to `time_feature_input_dim` before projection and uses a role
+embedding to distinguish `xbrl_available` from `xbrl_period_end`.
 
 Labels:
 
@@ -394,13 +407,16 @@ This yields `float32/bf16 [B, 1024, d_model]` before the event encoder.
 | `text_item_time_features` | text item time features | per text group `float32 [B, I, T_text]` | availability/publish/accepted time features from loader | none; already follows the time-feature contract | text time adapter |
 | `text_item_mask` | text item mask | per text group `bool [B, I]` | true for available text items | none | text item pooling mask |
 | `text_chunk_mask` | text chunk mask | per text group `bool [B, I, C]` | true for available text chunks | none | text chunk pooling mask |
-| `xbrl_value` | `xbrl_inputs["value"]` | `float32 [B, 4096]` | raw XBRL numeric value from loader | optional signed `log1p(abs(value))`, clipping, and/or tag/unit normalization | XBRL numeric projection |
-| `xbrl_fiscal_year` | `xbrl_inputs["fiscal_year"]` | `int16/float32 [B, 4096]` | fiscal year from loader | optional numeric standardization or category conversion by v3 adapter config | XBRL encoder |
-| `xbrl_period_end_days` | `xbrl_inputs["period_end_days"]` | `float32 [B, 4096]` | raw period-end age/distance field from loader | optional clipping/log-age transform | XBRL numeric/time projection |
+| `xbrl_value` | `xbrl_inputs["value"]` | `float32 [B, 4096]` | raw XBRL numeric value from loader | none in current model; scalar row values are LayerNormed together before row MLP | XBRL scalar projection |
+| `xbrl_fiscal_year` | `xbrl_inputs["fiscal_year"]` | `int16/float32 [B, 4096]` | fiscal year from loader | no standalone transform; included in XBRL scalar LayerNorm input | XBRL scalar projection |
+| `xbrl_period_end_days` | `xbrl_inputs["period_end_days"]` | `float32 [B, 4096]` | raw period-end day value from loader | no standalone transform; included in XBRL scalar LayerNorm input | XBRL scalar/time projection |
+| `xbrl_age_days` | `xbrl_inputs["age_days"]` | `float32 [B, 4096]` | age from origin to XBRL availability timestamp | no standalone transform; included in XBRL scalar LayerNorm input | XBRL scalar/time projection |
+| `xbrl_timestamp_us` | `xbrl_inputs["timestamp_us"]` | `int64/float32 [B, 4096]` | XBRL availability timestamp used for as-of selection | no standalone transform; included in XBRL scalar LayerNorm input and also represented by `xbrl_time_features` | XBRL scalar/time projection |
+| `xbrl_time_delta_seconds` | `time_delta_seconds` plus scalar helper fields | `float32 [B, 4096]` each | signed origin-relative helper fields emitted by the loader | no standalone transform; included in XBRL scalar LayerNorm input and also represented by `xbrl_time_features` | XBRL scalar/time projection |
 | `xbrl_category_ids` | XBRL category id fields | field-specific `int64 [B, 4096]` | persisted category ids; id `0=missing/unknown` | none beyond missing/unknown id handling | XBRL categorical embeddings |
 | `xbrl_mapping_confidence` | `xbrl_inputs["mapping_confidence"]` | `float32 [B, 4096]` | raw confidence score from loader | optional clipping to valid range | XBRL numeric projection |
 | `xbrl_time_features` | XBRL availability time features | `float32 [B, 4096, T_xbrl]` | availability time features from loader | none; already follows the time-feature contract | XBRL availability time adapter |
-| `xbrl_period_end_time_features` | XBRL period-end time features | `float32 [B, 4096, T_period]` | period-end time features from loader | none; already follows the time-feature contract | XBRL period time adapter |
+| `xbrl_period_end_time_features` | XBRL period-end time features | `float32 [B, 4096, T_period]` | period-end date/age features from loader | none; validated as 7-wide and padded to the shared time encoder width inside `TimeFeatureEncoder` | XBRL period time adapter |
 | `xbrl_mask` | `xbrl_inputs["mask"]` | `bool [B, 4096]` | true for available XBRL rows | none | XBRL set mask |
 | `corporate_action_category_ids` | action/dividend/currency/frequency ids | field-specific `int64 [B, 128]` | persisted category ids; id `0=missing/unknown` | none beyond missing/unknown id handling | corporate-action categorical embeddings |
 | `corporate_action_numeric` | corporate numeric feature tensor | `float32 [B, 128, F_ca]` | raw split factors, log factors, cash amount, and indicator flags from loader | optional clipping/standardization for numeric fields only | corporate-action numeric projection |
@@ -618,7 +634,7 @@ Important current behavior:
 | `TextContextEncoder` for ticker news | `embeddings [B,8,2,1024]`, `chunk_mask [B,8,2]`, `item_mask [B,8]`, `item_time_features [B,8,10]` | Each Qwen chunk embedding is `LayerNorm(1024) -> Linear(1024,256) -> GELU -> Dropout`. Chunks are masked-mean pooled into items. Item time features are validated and encoded by `TimeFeatureEncoder(role="text_available")`. Item vectors are concatenated with the time embedding and passed through MLP. Items are masked-mean pooled. The model does not run Qwen and does not z-score embeddings. | One ticker-news modality token `[B,256]`. |
 | `TextContextEncoder` for market news | `embeddings [B,16,2,1024]`, masks, item time features | Same text encoder and transforms as ticker news. | One market-news modality token `[B,256]`. |
 | `TextContextEncoder` for SEC filings | `embeddings [B,4,8,1024]`, masks, item time features | Same text encoder and transforms as ticker news. | One SEC-text modality token `[B,256]`. |
-| `XbrlEncoder` | `value [B,4096]`, `mask [B,4096]`, `mapping_confidence`, availability time features `[B,4096,10]`, period-end time features `[B,4096,7]`, and category id fields | Numeric row input is `value`, `log1p(abs(value))`, and mapping confidence. Availability time uses `TimeFeatureEncoder(role="xbrl_available")`; period-end time uses `TimeFeatureEncoder(role="xbrl_period_end")`. Fiscal/category ids are dense ids from `training_category_reference`; each XBRL category field has its own deterministic embedding table, id `0` is missing/unknown, and ids outside the configured table are treated as unknown rather than modulo-hashed. Row MLP projects each row, then masked mean pools rows. No z-score or per-tag/unit normalization is currently applied. | One XBRL modality token `[B,d_model]`. |
+| `XbrlEncoder` | `value [B,4096]`, `mask [B,4096]`, scalar fields `mapping_confidence`, `fiscal_year`, `period_end_days`, `age_days`, `timestamp_us`, XBRL scalar time helper fields, availability time features `[B,4096,10]`, period-end time features `[B,4096,7]`, and category id fields | The current implementation is not attention. It is a per-row MLP followed by masked mean pooling. Scalar row input is the raw emitted scalar set listed above, LayerNormed together before the row MLP; the previous synthetic `log1p(abs(value))` duplicate is not part of the current contract. Availability time uses `TimeFeatureEncoder(role="xbrl_available")`; period-end time uses `TimeFeatureEncoder(role="xbrl_period_end")`, with role-specific raw widths padded inside the shared time encoder. Fiscal/category ids are dense ids from `training_category_reference`; each XBRL category field has its own deterministic embedding table, id `0` is missing/unknown, and ids outside the configured table are treated as unknown rather than modulo-hashed. No z-score or per-tag/unit normalization is currently applied. | One XBRL modality token `[B,d_model]`. |
 | `CorporateActionEncoder` | `numeric_features [B,128,13]`, `mask [B,128]`, availability time features `[B,128,10]`, effective time features `[B,128,10]`, action/dividend/currency/frequency ids | Numeric corporate-action features are concatenated with `TimeFeatureEncoder(role="corporate_available")`, `TimeFeatureEncoder(role="corporate_effective")`, and four category embeddings, passed through row MLP, then masked mean pooled. No z-score is currently applied. IPO-like action types can participate as historical context if present in the corporate-action input rows, but IPO is not a prediction target. | One corporate-action modality token `[B,256]`. |
 | `ScannerContextEncoder` | `leader_values [B,G,K,S,3,F]`, `leader_mask [B,G,K]`, `leader_horizon_mask [B,G,K,S]`, `leader_time_features [B,G,K,S,9]`, origin-comparison tensors `origin_values [B,G,S,3,F]`, `origin_mask [B,G]`, `origin_horizon_mask [B,G,S]`, rank/top-k fields, and scanner numeric features `[B,G,6]` | Leader and origin rows use padded trade/bid/ask bar-family values plus `TimeFeatureEncoder(role="scanner_bar_end")`. Rank ids and scanner-group ids are embedded. Leader rows are pooled with `leader_horizon_mask`, origin rows are pooled with `origin_horizon_mask`, and numeric comparison rows are pooled only where `origin_mask` is true. Zero value plus false scanner mask is missing/padded, not a real zero bar. Older caches without scanner artifacts emit masked zeros unless strict scanner mode is enabled in the loader. | One scanner modality token `[B,256]`. |
 
