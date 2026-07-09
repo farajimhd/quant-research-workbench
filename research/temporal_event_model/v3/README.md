@@ -167,11 +167,17 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_e
 The default sweep uses a per-model batch grid instead of one shared batch list:
 
 ```text
-tiny:   256,512,768
-small:  128,256,384
-medium: 64,128,256
-large:  32,64,128
+small:  384,512,768
+medium: 256,320,384
+large:  128,192,256
+xlarge: 64,96,128
 ```
+
+The `large` and `xlarge` presets spend most extra capacity on the event
+encoder and fusion transformer. Side encoders still emit `[B,d_model]`
+modality tokens, but their internal hidden width is capped by
+`--side-encoder-dim` so text/XBRL/scanner/corporate paths do not dominate
+runtime or parameter count.
 
 Useful shorter smoke:
 
@@ -190,9 +196,26 @@ run folder. Use it to compare samples/s, loader wait, forward/backward time,
 peak memory, loss behavior, checkpointing, audit status, and whether all
 requested modalities are exercised.
 
+The CSV contains both `wall_clock_samples_per_second` and
+`samples_per_second`. Use wall-clock speed to judge end-to-end feasibility;
+use the steady samples/s field to compare model-step behavior after warmup and
+prefetch effects.
+
 The sweep includes production-path fields in `sweep_results.csv`, including
 `production_cache_encode_seconds`, `production_cached_predict_seconds`, and
 `production_cached_predict_samples_per_second`.
+
+Scanner context is prefetched by default before batch materialization:
+
+```text
+--prefetch-scanner-indexes
+--scanner-prefetch-workers 8
+--scanner-index-cache-entries 64
+```
+
+This moves scanner parquet indexing out of the first measured training batch
+and keeps a full month of daily scanner indexes resident for chronological
+training.
 
 ## Production Encoder Cache Contract
 

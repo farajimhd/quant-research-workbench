@@ -326,12 +326,13 @@ class BarContextEncoder(nn.Module):
     def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder") -> None:
         super().__init__()
         d = int(config.d_model)
+        h = _side_hidden_dim(config)
         self.time_encoder = time_encoder
         self.time_feature_count = int(config.bar_time_feature_count)
         max_family_width = max(BAR_FEATURE_DIMS.values())
         feature_dim = int(max_family_width) + int(config.time_encoder_dim)
         self.family_embedding = nn.Embedding(len(BAR_FAMILIES), d)
-        self.proj = MLP(feature_dim, d, d, dropout=float(config.dropout))
+        self.proj = MLP(feature_dim, h, d, dropout=float(config.dropout))
 
     def forward(self, payload: Mapping[str, Any]) -> torch.Tensor:
         family_tokens: list[torch.Tensor] = []
@@ -372,10 +373,11 @@ class TextContextEncoder(nn.Module):
     def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder") -> None:
         super().__init__()
         d = int(config.d_model)
+        h = _side_hidden_dim(config)
         self.time_encoder = time_encoder
         self.time_feature_count = int(config.text_time_feature_count)
-        self.chunk_proj = nn.Sequential(nn.LayerNorm(int(config.text_embedding_dim)), nn.Linear(int(config.text_embedding_dim), d), nn.GELU(), nn.Dropout(float(config.dropout)))
-        self.item_proj = MLP(d + int(config.time_encoder_dim), d, d, dropout=float(config.dropout))
+        self.chunk_proj = nn.Sequential(nn.LayerNorm(int(config.text_embedding_dim)), nn.Linear(int(config.text_embedding_dim), h), nn.GELU(), nn.Dropout(float(config.dropout)))
+        self.item_proj = MLP(h + int(config.time_encoder_dim), h, d, dropout=float(config.dropout))
 
     def forward(self, payload: Mapping[str, Any], *, group: str) -> torch.Tensor:
         embeddings = payload.get("embeddings")
@@ -405,12 +407,13 @@ class XbrlEncoder(nn.Module):
     def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder") -> None:
         super().__init__()
         d = int(config.d_model)
+        h = _side_hidden_dim(config)
         self.time_encoder = time_encoder
         self.time_feature_count = int(config.xbrl_time_feature_count)
         self.period_time_feature_count = int(config.xbrl_period_time_feature_count)
         self.cat = HashEmbedding(8192, 8)
         numeric_dim = 3 + 2 * int(config.time_encoder_dim) + 8 * 8
-        self.row_proj = MLP(numeric_dim, d, d, dropout=float(config.dropout))
+        self.row_proj = MLP(numeric_dim, h, d, dropout=float(config.dropout))
         self.out_dim = d
 
     def forward(self, payload: Mapping[str, Any]) -> torch.Tensor:
@@ -443,12 +446,13 @@ class CorporateActionEncoder(nn.Module):
     def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder") -> None:
         super().__init__()
         d = int(config.d_model)
+        h = _side_hidden_dim(config)
         self.time_encoder = time_encoder
         self.time_feature_count = int(config.corporate_action_time_dim)
         self.effective_time_feature_count = int(config.corporate_action_effective_time_dim)
         self.cat = HashEmbedding(2048, 8)
         numeric_dim = int(config.corporate_action_numeric_dim) + 2 * int(config.time_encoder_dim) + 4 * 8
-        self.row_proj = MLP(numeric_dim, d, d, dropout=float(config.dropout))
+        self.row_proj = MLP(numeric_dim, h, d, dropout=float(config.dropout))
         self.out_dim = d
 
     def forward(self, payload: Mapping[str, Any]) -> torch.Tensor:
@@ -481,6 +485,7 @@ class ScannerContextEncoder(nn.Module):
     def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder") -> None:
         super().__init__()
         d = int(config.d_model)
+        h = _side_hidden_dim(config)
         self.time_encoder = time_encoder
         self.time_feature_count = int(config.bar_time_feature_count)
         self.value_width = max(BAR_FEATURE_DIMS.values())
@@ -488,11 +493,11 @@ class ScannerContextEncoder(nn.Module):
         self.group_embedding = nn.Embedding(max(1, int(config.scanner_groups)), d)
         self.rank_embedding = HashEmbedding(4096, 8)
         row_dim = self.value_width * self.family_count + int(config.time_encoder_dim) + 8
-        self.leader_proj = MLP(row_dim, d, d, dropout=float(config.dropout))
+        self.leader_proj = MLP(row_dim, h, d, dropout=float(config.dropout))
         origin_dim = self.value_width * self.family_count + int(config.time_encoder_dim)
-        self.origin_proj = MLP(origin_dim, d, d, dropout=float(config.dropout))
-        self.numeric_proj = MLP(int(config.scanner_numeric_dim), d, d, dropout=float(config.dropout))
-        self.out = MLP(d * 3, d, d, dropout=float(config.dropout))
+        self.origin_proj = MLP(origin_dim, h, d, dropout=float(config.dropout))
+        self.numeric_proj = MLP(int(config.scanner_numeric_dim), h, d, dropout=float(config.dropout))
+        self.out = MLP(d * 3, h, d, dropout=float(config.dropout))
         self.out_dim = d
 
     def forward(self, payload: Mapping[str, Any]) -> torch.Tensor:
@@ -616,6 +621,13 @@ class MLP(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
+
+
+def _side_hidden_dim(config: ModelConfig) -> int:
+    value = int(getattr(config, "side_encoder_dim", 0) or 0)
+    if value <= 0:
+        return int(config.d_model)
+    return max(16, int(value))
 
 
 def masked_mean(x: torch.Tensor, mask: torch.Tensor, *, dim: int) -> torch.Tensor:

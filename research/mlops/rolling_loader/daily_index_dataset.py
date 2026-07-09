@@ -291,7 +291,9 @@ class DailyIndexLoaderConfig:
     scanner_horizons: tuple[str, ...] = DEFAULT_SCANNER_HORIZONS
     scanner_top_k: int = 5
     scanner_required: bool = False
-    scanner_index_cache_entries: int = 8
+    scanner_index_cache_entries: int = 64
+    prefetch_scanner_indexes: bool = True
+    scanner_prefetch_workers: int = 4
     days: tuple[str, ...] = ()
 
 
@@ -1945,7 +1947,13 @@ class DailyIndexBatchMaterializer:
                     self._shared_scanner_artifact_index_cache.move_to_end(key)
                     self._remember_scanner_artifact_index(key, cached, cache_limit)
                     return cached
-                index = self._build_scanner_artifact_index(frame)
+            index = self._build_scanner_artifact_index(frame)
+            with self._shared_scanner_artifact_index_lock:
+                cached = self._shared_scanner_artifact_index_cache.get(key)
+                if cached is not None:
+                    self._shared_scanner_artifact_index_cache.move_to_end(key)
+                    self._remember_scanner_artifact_index(key, cached, cache_limit)
+                    return cached
                 self._shared_scanner_artifact_index_cache[key] = index
                 self._shared_scanner_artifact_index_cache.move_to_end(key)
                 while len(self._shared_scanner_artifact_index_cache) > cache_limit:
@@ -2384,10 +2392,12 @@ class AsyncDailyIndexBatchLoader:
             total_available_origins=sum(int(plan.origin_count) for plan in self.index.parts),
             package_count=len(self.index.parts),
         )
+        self._scanner_prefetched = False
 
     def iter_batches(self) -> Iterator[DailyIndexTrainingBatch]:
         if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
             return
+        startup_profile = self.prefetch_scanner_indexes()
         start_us = _parse_timestamp_us(self.config.start_utc) if self.config.start_utc else None
         end_us = _parse_timestamp_us(self.config.end_utc) if self.config.end_utc else None
         group_size = max(1, int(self.config.loaded_parts_per_group))
@@ -2456,6 +2466,8 @@ class AsyncDailyIndexBatchLoader:
                                 if not group_profile_attached:
                                     for key, value in group_profile.items():
                                         batch.profile[key] = float(batch.profile.get(key, 0.0)) + float(value)
+                                    for key, value in startup_profile.items():
+                                        batch.profile[key] = float(batch.profile.get(key, 0.0)) + float(value)
                                     group_profile_attached = True
                                 batch = self._apply_epoch_sample_cap(batch)
                                 if batch.sample_count == 0:
@@ -2509,6 +2521,51 @@ class AsyncDailyIndexBatchLoader:
         state.total_available_origins = sum(int(plan.origin_count) for plan in self.index.parts)
         state.package_count = len(self.index.parts)
         self.state = state
+
+    def prefetch_scanner_indexes(self) -> dict[str, float | int]:
+        if self._scanner_prefetched:
+            return {}
+        self._scanner_prefetched = True
+        if "scanner_context" not in self.config.data_groups or not bool(self.config.prefetch_scanner_indexes):
+            return {"scanner_prefetch_enabled": int(0)}
+        scanner_paths = sorted(
+            {
+                _scanner_context_file(_month_global_dir(plan.package_dir), str(plan.source_date))
+                for plan in self.index.parts
+                if str(plan.source_date).strip()
+            }
+        )
+        if not scanner_paths:
+            return {"scanner_prefetch_enabled": int(1), "scanner_prefetch_files": int(0)}
+        pl = _polars()
+        started = time.perf_counter()
+        workers = max(1, int(self.config.scanner_prefetch_workers))
+        built = 0
+        missing = 0
+
+        def build(path: Path) -> bool:
+            if not path.exists():
+                return False
+            frame = pl.read_parquet(path)
+            if int(getattr(frame, "height", 0) or 0) <= 0:
+                return False
+            self.materializer._scanner_artifact_index(frame, cache_key=str(path.resolve()))  # noqa: SLF001
+            return True
+
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tmc-scanner-prefetch") as pool:
+            for ok in pool.map(build, scanner_paths):
+                if ok:
+                    built += 1
+                else:
+                    missing += 1
+        return {
+            "scanner_prefetch_enabled": int(1),
+            "scanner_prefetch_seconds": float(time.perf_counter() - started),
+            "scanner_prefetch_files": int(len(scanner_paths)),
+            "scanner_prefetch_built": int(built),
+            "scanner_prefetch_missing": int(missing),
+            "scanner_prefetch_workers": int(workers),
+        }
 
     def summary(self) -> dict[str, Any]:
         out = self.state.to_dict()
@@ -2630,6 +2687,8 @@ def normalize_loader_config(config: DailyIndexLoaderConfig) -> DailyIndexLoaderC
         scanner_top_k=max(1, int(config.scanner_top_k)),
         scanner_required=bool(config.scanner_required),
         scanner_index_cache_entries=max(0, int(config.scanner_index_cache_entries)),
+        prefetch_scanner_indexes=bool(config.prefetch_scanner_indexes),
+        scanner_prefetch_workers=max(1, int(config.scanner_prefetch_workers)),
         days=tuple(str(day)[:10] for day in config.days if str(day).strip()),
     )
 

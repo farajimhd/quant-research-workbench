@@ -19,9 +19,12 @@ DEFAULT_SWEEP: dict[str, str | int | float | bool] = {
     "batches": 4,
     "warmup-batches": 1,
     "max-origins-per-epoch": 200000,
-    "read-workers": 4,
-    "materialize-workers": 8,
-    "loaded-parts-per-group": 8,
+    "read-workers": 8,
+    "materialize-workers": 16,
+    "loaded-parts-per-group": 16,
+    "scanner-index-cache-entries": 64,
+    "prefetch-scanner-indexes": True,
+    "scanner-prefetch-workers": 8,
     "amp": True,
     "amp-dtype": "bf16",
     "fresh-start": True,
@@ -35,13 +38,13 @@ DEFAULT_SWEEP: dict[str, str | int | float | bool] = {
 }
 
 MODEL_PRESETS: dict[str, dict[str, int]] = {
-    "tiny": {"d-model": 128, "event-layers": 2, "event-heads": 4, "fusion-layers": 2, "fusion-heads": 4},
-    "small": {"d-model": 256, "event-layers": 4, "event-heads": 8, "fusion-layers": 3, "fusion-heads": 8},
-    "medium": {"d-model": 384, "event-layers": 6, "event-heads": 8, "fusion-layers": 4, "fusion-heads": 8},
-    "large": {"d-model": 512, "event-layers": 8, "event-heads": 8, "fusion-layers": 6, "fusion-heads": 8},
+    "small": {"d-model": 256, "event-layers": 4, "event-heads": 8, "fusion-layers": 4, "fusion-heads": 8, "side-encoder-dim": 192},
+    "medium": {"d-model": 384, "event-layers": 8, "event-heads": 8, "fusion-layers": 6, "fusion-heads": 8, "side-encoder-dim": 192},
+    "large": {"d-model": 512, "event-layers": 12, "event-heads": 16, "fusion-layers": 8, "fusion-heads": 16, "side-encoder-dim": 192},
+    "xlarge": {"d-model": 768, "event-layers": 12, "event-heads": 16, "fusion-layers": 10, "fusion-heads": 16, "side-encoder-dim": 256},
 }
 
-DEFAULT_MODEL_BATCH_GRID = "tiny:256,512,768;small:128,256,384;medium:64,128,256;large:32,64,128"
+DEFAULT_MODEL_BATCH_GRID = "small:384,512,768;medium:256,320,384;large:128,192,256;xlarge:64,96,128"
 
 
 def parse_args() -> argparse.Namespace:
@@ -164,14 +167,20 @@ def _summarize_run(*, sweep_root: Path, run_name: str, status: int, elapsed: flo
             summary = {}
     averages = summary.get("averages") if isinstance(summary.get("averages"), dict) else {}
     p95 = summary.get("p95") if isinstance(summary.get("p95"), dict) else {}
+    measured_samples = int(summary.get("measured_samples", 0) or 0)
     return {
         "run_name": run_name,
         "status": int(status),
         "elapsed_seconds": float(elapsed),
-        "measured_samples": int(summary.get("measured_samples", 0) or 0),
+        "measured_samples": int(measured_samples),
+        "wall_clock_samples_per_second": float(measured_samples / max(float(elapsed), 1e-9)),
         "samples_per_second": float(averages.get("samples_per_second", 0.0) or 0.0),
         "step_seconds": float(averages.get("step_seconds", 0.0) or 0.0),
         "loader_wait_seconds": float(averages.get("loader_wait_seconds", 0.0) or 0.0),
+        "scanner_prefetch_seconds": float(averages.get("scanner_prefetch_seconds", 0.0) or 0.0),
+        "scanner_prefetch_built": float(averages.get("scanner_prefetch_built", 0.0) or 0.0),
+        "scanner_index_seconds": float(averages.get("loader/scanner_index_seconds", 0.0) or 0.0),
+        "scanner_gather_seconds": float(averages.get("loader/scanner_gather_seconds", 0.0) or 0.0),
         "forward_seconds": float(averages.get("forward_seconds", 0.0) or 0.0),
         "production_cache_encode_seconds": float(averages.get("production/cache_encode_wall_seconds", 0.0) or 0.0),
         "production_cached_predict_seconds": float(averages.get("production/cached_predict_wall_seconds", 0.0) or 0.0),

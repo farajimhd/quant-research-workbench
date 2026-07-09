@@ -75,11 +75,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--materialize-workers", type=int, default=default_loader.materialize_workers)
     parser.add_argument("--loaded-parts-per-group", type=int, default=default_loader.loaded_parts_per_group)
     parser.add_argument("--materialize-chunk-size", type=int, default=default_loader.materialize_chunk_size)
+    parser.add_argument("--scanner-index-cache-entries", type=int, default=default_loader.scanner_index_cache_entries)
+    parser.add_argument("--prefetch-scanner-indexes", action=argparse.BooleanOptionalAction, default=default_loader.prefetch_scanner_indexes)
+    parser.add_argument("--scanner-prefetch-workers", type=int, default=default_loader.scanner_prefetch_workers)
     parser.add_argument("--d-model", type=int, default=default_model.d_model)
     parser.add_argument("--event-layers", type=int, default=default_model.event_layers)
     parser.add_argument("--event-heads", type=int, default=default_model.event_heads)
     parser.add_argument("--fusion-layers", type=int, default=default_model.fusion_layers)
     parser.add_argument("--fusion-heads", type=int, default=default_model.fusion_heads)
+    parser.add_argument("--side-encoder-dim", type=int, default=default_model.side_encoder_dim, help="Hidden width used inside side encoders. 0 means use d_model.")
     parser.add_argument("--dropout", type=float, default=default_model.dropout)
     parser.add_argument("--learning-rate", type=float, default=default_train.learning_rate)
     parser.add_argument("--weight-decay", type=float, default=default_train.weight_decay)
@@ -403,6 +407,7 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         event_heads=int(args.event_heads),
         fusion_layers=int(args.fusion_layers),
         fusion_heads=int(args.fusion_heads),
+        side_encoder_dim=int(args.side_encoder_dim),
         dropout=float(args.dropout),
     )
     loader = LoaderConfig(
@@ -423,6 +428,9 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         materialize_workers=int(args.materialize_workers),
         loaded_parts_per_group=int(args.loaded_parts_per_group),
         materialize_chunk_size=int(args.materialize_chunk_size),
+        scanner_index_cache_entries=int(args.scanner_index_cache_entries),
+        prefetch_scanner_indexes=bool(args.prefetch_scanner_indexes),
+        scanner_prefetch_workers=int(args.scanner_prefetch_workers),
         max_origins_per_epoch=int(args.max_origins_per_epoch),
         sample_fraction=float(args.sample_fraction),
         sample_hash_modulus=int(args.sample_hash_modulus),

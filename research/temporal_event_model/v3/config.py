@@ -143,6 +143,7 @@ class ModelConfig:
     event_heads: int = 8
     fusion_layers: int = 3
     fusion_heads: int = 8
+    side_encoder_dim: int = 0
     dropout: float = 0.05
     time_encoder_dim: int = 32
     time_feature_input_dim: int = len(EVENT_TIME_FEATURE_NAMES)
@@ -203,6 +204,9 @@ class LoaderConfig:
     read_workers: int = 4
     materialize_workers: int = 4
     materialize_chunk_size: int = 0
+    scanner_index_cache_entries: int = 64
+    prefetch_scanner_indexes: bool = True
+    scanner_prefetch_workers: int = 4
     max_origins_per_epoch: int = 1_000_000
     sample_fraction: float = 1.0
     sample_hash_modulus: int = 0

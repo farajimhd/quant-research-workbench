@@ -460,6 +460,7 @@ Default dimensions:
 | Name | Current value | Meaning |
 | --- | ---: | --- |
 | `d_model` | 256 | Hidden width for every modality token and fusion layer. |
+| `side_encoder_dim` | 0 by default | Internal hidden width for side encoders. `0` means use `d_model`; sweep large presets cap this so extra capacity goes mainly to event/fusion paths. |
 | `event_stream_length` | 1024 | Raw event rows ending at each origin. |
 | `event_feature_count` | 24 | Raw event feature columns consumed by the event numeric projection. |
 | `time_encoder_dim` | 32 | Shared role-aware time embedding width injected into each modality before pooling. |
@@ -491,14 +492,36 @@ loader batch
   -> XbrlEncoder(xbrl_inputs)
   -> CorporateActionEncoder(corporate_action_inputs)
   -> ScannerContextEncoder(scanner_inputs)
-  -> stack 10 modality tokens [B, 10, 256]
+  -> stack 10 modality tokens [B, 10, d_model]
   -> add learned modality embeddings
-  -> 3-layer fusion TransformerEncoder
+  -> fusion TransformerEncoder
   -> mean pool across 10 fused modality tokens
   -> intraday query MLP for H=26 intraday horizons
   -> daily query MLP for D=5 corporate-action horizons
   -> typed output heads
 ```
+
+Sizing rule:
+
+- Event and fusion encoders are the primary capacity paths because they see the
+  dense event stream and learn cross-modality interactions.
+- Text, XBRL, corporate-action, bar, and scanner encoders are side paths. They
+  always output `[B,d_model]` tokens for fusion, but their internal MLP hidden
+  width can be capped with `side_encoder_dim`.
+- Large profile presets should therefore increase `d_model`, `event_layers`,
+  and `fusion_layers` first, while keeping `side_encoder_dim` moderate unless a
+  side modality is proven to be the bottleneck or underfit.
+
+Loader scanner rule:
+
+- Daily scanner parquet artifacts are indexed before training starts when
+  `prefetch_scanner_indexes=True`.
+- `scanner_index_cache_entries` must be large enough to hold the active
+  training window, normally at least the number of trading days in the month.
+- Scanner prefetch time is startup cost and should be read separately from
+  steady `loader/scanner_index_seconds`; if steady scanner indexing is still
+  high, the cache is evicting or the run is using more scanner dates than the
+  configured index-cache capacity.
 
 Current model diagram:
 
