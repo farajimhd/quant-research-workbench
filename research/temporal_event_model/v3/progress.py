@@ -306,13 +306,17 @@ class TemporalTrainingReporter:
         loader_cache = Table.grid(expand=False, padding=(0, 1))
         loader_cache.add_column("Metric", justify="right", no_wrap=True)
         loader_cache.add_column("Value", justify="left", no_wrap=True)
-        loader_cache.add_row("phase", str(s.loader_status.get("phase", "waiting")))
+        loader_cache.add_column("Metric", justify="right", no_wrap=True)
+        loader_cache.add_column("Value", justify="left", no_wrap=True)
+        formatted_cache_rows: list[tuple[str, str]] = [("phase", str(s.loader_status.get("phase", "waiting")))]
         if s.loader_status.get("current_day"):
-            loader_cache.add_row("day", str(s.loader_status.get("current_day")))
+            formatted_cache_rows.append(("day", str(s.loader_status.get("current_day"))))
         if s.loader_window.get("start_timestamp_us") is not None or s.loader_window.get("end_timestamp_us") is not None:
-            loader_cache.add_row(
-                "window UTC",
-                f"{_timestamp_us_text(s.loader_window.get('start_timestamp_us'))} -> {_timestamp_us_text(s.loader_window.get('end_timestamp_us'))}",
+            formatted_cache_rows.append(
+                (
+                    "window UTC",
+                    f"{_timestamp_us_text(s.loader_window.get('start_timestamp_us'))} -> {_timestamp_us_text(s.loader_window.get('end_timestamp_us'))}",
+                )
             )
         cache_rows = [
             ("total origins", s.loader_cache.get("total_available_origins")),
@@ -349,7 +353,6 @@ class TemporalTrainingReporter:
             ("max pending", s.loader_prefetch.get("materialize_max_pending_batches")),
             ("chrono cursor", s.loader_state.get("chronological_origin_cursor")),
         ]
-        visible_cache_rows = 2
         for label, value in cache_rows:
             if value is None:
                 continue
@@ -357,10 +360,18 @@ class TemporalTrainingReporter:
                 rendered_value = f"{value:,.2f}"
             else:
                 rendered_value = f"{value:,.0f}"
-            loader_cache.add_row(label, rendered_value)
-            visible_cache_rows += 1
-        if visible_cache_rows <= 0:
-            loader_cache.add_row("waiting", "--")
+            formatted_cache_rows.append((label, rendered_value))
+        if not formatted_cache_rows:
+            formatted_cache_rows.append(("waiting", "--"))
+        left_count = (len(formatted_cache_rows) + 1) // 2
+        left_rows = formatted_cache_rows[:left_count]
+        right_rows = formatted_cache_rows[left_count:]
+        for index, (left_label, left_value) in enumerate(left_rows):
+            if index < len(right_rows):
+                right_label, right_value = right_rows[index]
+                loader_cache.add_row(left_label, left_value, right_label, right_value)
+            else:
+                loader_cache.add_row(left_label, left_value, "", "")
 
         retained_messages = list(self.messages) if self.messages else [s.last_message or "waiting for first update"]
         retained_messages.extend([""] * max(0, self.messages.maxlen - len(retained_messages)))
