@@ -2395,8 +2395,11 @@ button {
 
 .news-full-detail {
   display: grid;
+  flex: 1 1 auto;
   gap: 10px;
-  overflow: auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  min-height: 0;
+  overflow: hidden;
   padding: 12px;
 }
 
@@ -2405,6 +2408,8 @@ button {
   border: 1px solid var(--border);
   border-radius: 10px;
   display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  min-height: 0;
   overflow: visible;
 }
 
@@ -2537,7 +2542,7 @@ button {
   border-top: 1px solid var(--border);
   display: grid;
   grid-template-columns: minmax(0, 1.42fr) minmax(340px, 0.58fr);
-  min-height: 300px;
+  min-height: 0;
 }
 
 .news-full-readable-main {
@@ -2579,8 +2584,10 @@ button {
 
 .news-full-readable-body {
   font-size: 15px;
+  height: 100%;
   line-height: 1.66;
-  max-height: 370px;
+  max-height: none;
+  min-height: 0;
   overflow: auto;
   padding: 18px 22px 20px;
 }
@@ -2643,6 +2650,7 @@ button {
   display: grid;
   grid-auto-rows: max-content;
   min-width: 0;
+  overflow: auto;
 }
 
 .news-full-readable-side section {
@@ -2721,6 +2729,52 @@ button {
   background: color-mix(in oklab, var(--badge-danger-bg) 70%, var(--surface));
   border-color: var(--badge-danger-border);
   color: var(--danger);
+}
+
+.news-full-technical-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.news-full-technical-section > summary {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface-alt) 74%, var(--surface));
+  cursor: pointer;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  list-style: none;
+  min-height: 36px;
+  padding: 8px 12px;
+}
+
+.news-full-technical-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.news-full-technical-section > summary span {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.news-full-technical-section > summary strong {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.news-full-technical-content {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+  max-height: min(320px, 34vh);
+  overflow: auto;
+  padding: 10px;
 }
 
 .news-full-text-metrics {

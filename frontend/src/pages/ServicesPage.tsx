@@ -759,7 +759,7 @@ function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDet
   const qualityFlags = stringArrayMetric(dbRow, ["content_quality_flags"]).length ? stringArrayMetric(dbRow, ["content_quality_flags"]) : row.contentQualityFlags;
   const textCandidates = newsDetailTextCandidates(dbRow, row);
   const primaryText = textCandidates[0] ?? { label: "No Body Text", value: row.textPreview || "No readable body text was returned for this news row." };
-  const articleBlocks = newsArticleBlocks(primaryText.value);
+  const articleBlocks = newsArticleBlocks(primaryText.value, title, stringMetric(dbRow, ["teaser"]) || row.textPreview);
   const statRows = [
     { label: "Full text", value: numericMetric(dbRow, ["full_text_chars"]) || row.fullTextChars },
     { label: "Body", value: numericMetric(dbRow, ["body_chars"]) || row.bodyChars },
@@ -859,30 +859,38 @@ function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDet
       </article>
       {loading ? <div className="news-full-detail-notice">Loading complete row from ClickHouse...</div> : null}
       {error ? <div className="news-full-detail-notice error">{error}</div> : null}
-      <section className="news-full-text-metrics">
-        {(statRows.length ? statRows : [{ label: "Reported text", value: "No text length metadata reported." }]).map((item) => (
-          <div key={item.label}>
-            <span>{item.label}</span>
-            <strong>{item.value}</strong>
-          </div>
-        ))}
-      </section>
-      {textCandidates.slice(1).map((section) => (
-        <details className="news-full-text-section" key={section.label}>
-          <summary>{section.label}</summary>
-          <pre>{section.value}</pre>
-        </details>
-      ))}
-      {tickerRows.length ? (
-        <section className="news-full-table-section">
-          <h4>Ticker Relations</h4>
-          <DataTable fitToContent rows={tickerRows.map(normalizeRow)} />
-        </section>
-      ) : null}
-      <section className="news-full-table-section">
-        <h4>Actual Database Values</h4>
-        <NewsMetadataTable rows={remainingRows} />
-      </section>
+      <details className="news-full-technical-section">
+        <summary>
+          <span>Technical details</span>
+          <strong>Raw fields, alternate text, ticker links</strong>
+        </summary>
+        <div className="news-full-technical-content">
+          <section className="news-full-text-metrics">
+            {(statRows.length ? statRows : [{ label: "Reported text", value: "No text length metadata reported." }]).map((item) => (
+              <div key={item.label}>
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+              </div>
+            ))}
+          </section>
+          {textCandidates.slice(1).map((section) => (
+            <details className="news-full-text-section" key={section.label}>
+              <summary>{section.label}</summary>
+              <pre>{section.value}</pre>
+            </details>
+          ))}
+          {tickerRows.length ? (
+            <section className="news-full-table-section">
+              <h4>Ticker Relations</h4>
+              <DataTable fitToContent rows={tickerRows.map(normalizeRow)} />
+            </section>
+          ) : null}
+          <section className="news-full-table-section">
+            <h4>Actual Database Values</h4>
+            <NewsMetadataTable rows={remainingRows} />
+          </section>
+        </div>
+      </details>
     </div>
   );
 }
@@ -906,10 +914,10 @@ function newsDetailTickers(dbRow: Record<string, unknown>, tickerRows: Record<st
 
 function newsDetailTextCandidates(dbRow: Record<string, unknown>, row: NewsTodayRow) {
   const candidates = [
-    { label: "Normalized full text", value: stringMetric(dbRow, ["normalized_full_text"]) },
     { label: "Provider body", value: stringMetric(dbRow, ["body_text"]) },
     { label: "External source text", value: stringMetric(dbRow, ["external_text"]) },
     { label: "PDF extracted text", value: stringMetric(dbRow, ["pdf_text"]) },
+    { label: "Normalized full text", value: stringMetric(dbRow, ["normalized_full_text"]) },
     { label: "Teaser", value: stringMetric(dbRow, ["teaser"]) },
     { label: "List preview", value: row.textPreview },
   ];
@@ -935,8 +943,8 @@ function cleanNewsArticleText(value: string) {
 
 type NewsArticleBlock = { items: string[]; kind: "list"; text?: never } | { items?: never; kind: "lead" | "paragraph" | "subhead"; text: string };
 
-function newsArticleBlocks(value: string): NewsArticleBlock[] {
-  const cleaned = cleanNewsArticleText(value);
+function newsArticleBlocks(value: string, title = "", teaser = ""): NewsArticleBlock[] {
+  const cleaned = dedupeNewsBodySentences(stripNewsBodyLeadNoise(cleanNewsArticleText(value), title, teaser));
   if (!cleaned) return [{ kind: "paragraph", text: "No readable body text was returned for this news row." }];
   const paragraphBlocks = cleaned.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
   const blocks = paragraphBlocks.length > 1 ? paragraphBlocks : splitLongNewsParagraph(cleaned);
@@ -947,6 +955,38 @@ function newsArticleBlocks(value: string): NewsArticleBlock[] {
     if (isNewsSubhead(block)) return { kind: "subhead", text: block.replace(/:$/, "") };
     return { kind: "paragraph", text: block };
   });
+}
+
+function stripNewsBodyLeadNoise(value: string, title: string, teaser: string) {
+  let stripped = value.trim();
+  for (const candidate of [title, teaser].map(cleanNewsArticleText).filter((item) => item.length > 8).sort((a, b) => b.length - a.length)) {
+    const escaped = escapeRegExp(candidate);
+    stripped = stripped.replace(new RegExp(`^${escaped}[\\s:.-]*`, "i"), "").trim();
+  }
+  return stripped;
+}
+
+function dedupeNewsBodySentences(value: string) {
+  return value
+    .split(/\n{2,}/)
+    .map((paragraph) => {
+      const seen = new Set<string>();
+      const sentences = paragraph.split(/(?<=[.!?])\s+(?=[A-Z0-9"'])/).map((item) => item.trim()).filter(Boolean);
+      const deduped = sentences.filter((sentence) => {
+        const key = sentence.toLowerCase().replace(/[^a-z0-9]+/g, "");
+        if (key.length < 48) return true;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      return deduped.join(" ");
+    })
+    .join("\n\n")
+    .trim();
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function splitLongNewsParagraph(value: string) {
