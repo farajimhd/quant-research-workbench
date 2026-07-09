@@ -367,8 +367,22 @@ type NewsPollHistoryRow = {
 };
 
 type NewsDailyHistogramDatum = {
-  day: string;
-  value: number;
+  broadOrNoneRows: number;
+  bucketUtc: string;
+  singleTickerRows: number;
+  totalRows: number;
+};
+
+type NewsHistogramPayload = {
+  bin_seconds: number;
+  error?: string;
+  rows: Array<{
+    broad_or_none_rows?: number;
+    bucket_utc?: string;
+    single_ticker_rows?: number;
+    total_rows?: number;
+  }>;
+  source?: string;
 };
 
 function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
@@ -434,7 +448,9 @@ function ServiceWorkResponsibilityGrid({ groups, newsPollHistory, service }: { g
 
 function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkGroup; history: NewsPollHistoryRow[]; service: ServiceStatusPayload }) {
   const metrics = serviceMetricsRecord(service);
-  const histogramData = newsDailyHistogramData(service, history);
+  const binSeconds = newsHistogramBinSeconds(service);
+  const histogram = useNewsDailyHistogram(service.registry.id === "news", binSeconds);
+  const histogramData = histogram.rows;
   const latestPoll = history[0];
   const backgroundPending = numericMetric(metrics, ["background_pending_articles", "publish_pending_rows", "background_queue_size"]);
   return (
@@ -446,7 +462,7 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
         </div>
         <span className={`service-work-status ${workStatusClass(group.status)}`}>{displayName(group.status || "waiting")}</span>
       </div>
-      <NewsDailyHistogram data={histogramData} />
+      <NewsDailyHistogram binSeconds={binSeconds} data={histogramData} error={histogram.error} />
       <div className="news-live-summary">
         <span><small>Polls</small><strong>{formatCompactNumber(numericMetric(metrics, ["poll_runs"]))}</strong></span>
         <span><small>Last Provider</small><strong>{formatCompactNumber(latestPoll?.providerRows ?? numericMetric(metrics, ["last_cycle_provider_rows"]))}</strong></span>
@@ -460,10 +476,11 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
   );
 }
 
-function NewsDailyHistogram({ data }: { data: NewsDailyHistogramDatum[] }) {
+function NewsDailyHistogram({ binSeconds, data, error }: { binSeconds: number; data: NewsDailyHistogramDatum[]; error: string }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const singleSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const broadSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -480,14 +497,21 @@ function NewsDailyHistogram({ data }: { data: NewsDailyHistogramDatum[] }) {
       handleScroll: false,
       width: Math.max(280, element.clientWidth),
     });
-    const series = chart.addHistogramSeries({
-      color: "#2e90fa",
+    const singleSeries = chart.addHistogramSeries({
+      color: "#17b26a",
+      lastValueVisible: false,
+      priceLineVisible: false,
+      priceFormat: { type: "volume" },
+    });
+    const broadSeries = chart.addHistogramSeries({
+      color: "#f79009",
       lastValueVisible: false,
       priceLineVisible: false,
       priceFormat: { type: "volume" },
     });
     chartRef.current = chart;
-    seriesRef.current = series;
+    singleSeriesRef.current = singleSeries;
+    broadSeriesRef.current = broadSeries;
     const resizeObserver = new ResizeObserver((entries) => {
       const width = Math.floor(entries[0]?.contentRect.width ?? element.clientWidth);
       chart.applyOptions({ width: Math.max(280, width) });
@@ -498,25 +522,36 @@ function NewsDailyHistogram({ data }: { data: NewsDailyHistogramDatum[] }) {
       resizeObserver.disconnect();
       chart.remove();
       chartRef.current = null;
-      seriesRef.current = null;
+      singleSeriesRef.current = null;
+      broadSeriesRef.current = null;
     };
   }, []);
 
   useEffect(() => {
-    const series = seriesRef.current;
+    const singleSeries = singleSeriesRef.current;
+    const broadSeries = broadSeriesRef.current;
     const chart = chartRef.current;
-    if (!series || !chart) return;
-    series.setData(data.map((row) => ({ time: dayToChartTime(row.day), value: row.value })));
+    if (!singleSeries || !broadSeries || !chart) return;
+    const offset = Math.max(1, Math.floor(binSeconds / 3));
+    singleSeries.setData(data.map((row) => ({ time: newsBucketChartTime(row.bucketUtc, offset), value: row.singleTickerRows })));
+    broadSeries.setData(data.map((row) => ({ time: newsBucketChartTime(row.bucketUtc, offset * 2), value: row.broadOrNoneRows })));
     chart.timeScale().fitContent();
-  }, [data]);
+  }, [binSeconds, data]);
 
-  const total = data.reduce((sum, row) => sum + row.value, 0);
+  const singleTotal = data.reduce((sum, row) => sum + row.singleTickerRows, 0);
+  const broadTotal = data.reduce((sum, row) => sum + row.broadOrNoneRows, 0);
+  const total = singleTotal + broadTotal;
   return (
     <div className="news-live-histogram">
       <div className="news-live-histogram-label">
-        <span>News by day</span>
-        <strong>{formatCompactNumber(total)} rows</strong>
+        <span>Today from DB / {formatCompactNumber(binSeconds)}s bins</span>
+        <div className="news-live-histogram-legend">
+          <span className="single">1 ticker <strong>{formatCompactNumber(singleTotal)}</strong></span>
+          <span className="broad">0 or 2+ tickers <strong>{formatCompactNumber(broadTotal)}</strong></span>
+          <span>total <strong>{formatCompactNumber(total)}</strong></span>
+        </div>
       </div>
+      {error ? <div className="news-live-histogram-error">{error}</div> : null}
       <div className="news-live-histogram-chart" ref={containerRef} />
     </div>
   );
@@ -743,6 +778,44 @@ function historiesEqual(left: NewsPollHistoryRow[], right: NewsPollHistoryRow[])
   return left.every((row, index) => row.signature === right[index]?.signature);
 }
 
+function useNewsDailyHistogram(enabled: boolean, binSeconds: number) {
+  const [payload, setPayload] = useState<{ error: string; rows: NewsDailyHistogramDatum[] }>({ error: "", rows: [] });
+  useEffect(() => {
+    if (!enabled) {
+      setPayload({ error: "", rows: [] });
+      return undefined;
+    }
+    let cancelled = false;
+    async function load() {
+      try {
+        const response = await api<NewsHistogramPayload>(`/api/services/news/histogram?bin_seconds=${encodeURIComponent(binSeconds)}`);
+        if (cancelled) return;
+        setPayload({
+          error: response.error || "",
+          rows: (response.rows || [])
+            .map((row) => ({
+              broadOrNoneRows: Number(row.broad_or_none_rows || 0),
+              bucketUtc: String(row.bucket_utc || ""),
+              singleTickerRows: Number(row.single_ticker_rows || 0),
+              totalRows: Number(row.total_rows || 0),
+            }))
+            .filter((row) => row.bucketUtc),
+        });
+      } catch (exc) {
+        if (cancelled) return;
+        setPayload({ error: exc instanceof Error ? exc.message : String(exc), rows: [] });
+      }
+    }
+    void load();
+    const timer = window.setInterval(() => void load(), 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [binSeconds, enabled]);
+  return payload;
+}
+
 function newsPollHistoryRow(service: ServiceStatusPayload): NewsPollHistoryRow | null {
   const metrics = serviceMetricsRecord(service);
   const pollRun = numericMetric(metrics, ["poll_runs"]);
@@ -795,6 +868,15 @@ function serviceMetricsRecord(service: ServiceStatusPayload) {
   };
 }
 
+function serviceConfigRecord(service: ServiceStatusPayload) {
+  return isRecord(service.snapshot?.configuration) ? service.snapshot.configuration : {};
+}
+
+function newsHistogramBinSeconds(service: ServiceStatusPayload) {
+  const config = serviceConfigRecord(service);
+  return Math.max(1, Math.min(3600, Math.round(numericMetric(config, ["market_status_refresh_seconds"]) || 10)));
+}
+
 function numericMetric(record: Record<string, unknown>, keys: string[]) {
   for (const key of keys) {
     const value = Number(record[key]);
@@ -811,43 +893,10 @@ function stringMetric(record: Record<string, unknown>, keys: string[]) {
   return "";
 }
 
-function newsDailyHistogramData(service: ServiceStatusPayload, history: NewsPollHistoryRow[]): NewsDailyHistogramDatum[] {
-  const counts = new Map<string, number>();
-  for (const row of recentRowsFromPayload(service.recent)) {
-    const timestamp = stringFromRow(row, ["published_at_utc", "published", "published_utc", "created_at_utc", "updated_at_utc"]);
-    const day = utcDay(timestamp);
-    if (day) counts.set(day, (counts.get(day) ?? 0) + 1);
-  }
-  if (!counts.size) {
-    for (const row of history) {
-      const day = utcDay(row.pollAt || row.checkedAt);
-      if (day) counts.set(day, (counts.get(day) ?? 0) + row.providerRows);
-    }
-  }
-  const today = utcDay(new Date().toISOString());
-  if (today && !counts.has(today)) counts.set(today, 0);
-  return Array.from(counts.entries())
-    .map(([day, value]) => ({ day, value }))
-    .sort((a, b) => a.day.localeCompare(b.day))
-    .slice(-14);
-}
-
-function stringFromRow(row: Record<string, unknown>, keys: string[]) {
-  for (const key of keys) {
-    const value = row[key];
-    if (value !== undefined && value !== null && String(value).trim()) return String(value);
-  }
-  return "";
-}
-
-function utcDay(value: string) {
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed)) return "";
-  return new Date(parsed).toISOString().slice(0, 10);
-}
-
-function dayToChartTime(day: string): Time {
-  return Math.floor(Date.parse(`${day}T00:00:00Z`) / 1000) as Time;
+function newsBucketChartTime(bucketUtc: string, offsetSeconds: number): Time {
+  const parsed = Date.parse(bucketUtc);
+  const seconds = Number.isFinite(parsed) ? Math.floor(parsed / 1000) + offsetSeconds : Math.floor(Date.now() / 1000);
+  return seconds as Time;
 }
 
 function WorkPlanSummaryItem({ label, tone = "", value }: { label: string; tone?: string; value: string }) {

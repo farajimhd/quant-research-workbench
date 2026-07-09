@@ -123,6 +123,7 @@ SERVICE_STATUS_TIMEOUT_SECONDS = 1.8
 SERVICE_LOG_TAIL_LIMIT = 160
 SERVICE_TABLE_STATE_LIMIT = 32
 SERVICE_TABLE_STATE_CACHE_SECONDS = 30.0
+SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS = 20.0
 SERVICE_TABLE_STATE_START_YEAR = 2019
 SERVICE_TABLE_TIME_COLUMN_CANDIDATES = (
     "published_at_utc",
@@ -147,6 +148,7 @@ SERVICE_TABLE_TIME_COLUMN_CANDIDATES = (
     "list_date",
 )
 _SERVICE_TABLE_STATE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_SERVICE_NEWS_HISTOGRAM_CACHE: dict[int, tuple[float, dict[str, Any]]] = {}
 
 SERVICE_DATABASE_TABLES: dict[str, list[dict[str, str]]] = {
     "qmd": [
@@ -1357,6 +1359,68 @@ def service_database_table_preview(service_id: str, database: str, table: str, l
     }
 
 
+def service_news_histogram(bin_seconds: int = 10) -> dict[str, Any]:
+    safe_bin_seconds = max(1, min(int(bin_seconds or 10), 3600))
+    cached_at, cached_payload = _SERVICE_NEWS_HISTOGRAM_CACHE.get(safe_bin_seconds, (0.0, {}))
+    if cached_payload and time.monotonic() - cached_at < SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS:
+        return cached_payload
+
+    database = "q_live"
+    normalized_table = "benzinga_news_normalized_v1"
+    ticker_table = "benzinga_news_ticker_v1"
+    query = f"""
+        WITH
+            toDateTime64(toStartOfDay(now('UTC')), 6, 'UTC') AS day_start,
+            day_start + INTERVAL 1 DAY AS day_end,
+            ticker_counts AS
+            (
+                SELECT
+                    canonical_news_id,
+                    toUInt64(countDistinct(nullIf(ticker, ''))) AS ticker_count
+                FROM {quote_ident(database)}.{quote_ident(ticker_table)} FINAL
+                WHERE published_at_utc >= day_start
+                  AND published_at_utc < day_end
+                GROUP BY canonical_news_id
+            )
+        SELECT
+            formatDateTime(toStartOfInterval(n.published_at_utc, INTERVAL {safe_bin_seconds} SECOND), '%Y-%m-%dT%H:%i:%S.000Z', 'UTC') AS bucket_utc,
+            toUInt64(countIf(ifNull(t.ticker_count, toUInt64(0)) = 1)) AS single_ticker_rows,
+            toUInt64(countIf(ifNull(t.ticker_count, toUInt64(0)) != 1)) AS broad_or_none_rows,
+            toUInt64(count()) AS total_rows
+        FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
+        LEFT JOIN ticker_counts AS t
+            ON t.canonical_news_id = n.canonical_news_id
+        WHERE n.published_at_utc >= day_start
+          AND n.published_at_utc < day_end
+        GROUP BY bucket_utc
+        ORDER BY bucket_utc
+        FORMAT JSONEachRow
+    """
+    rows: list[dict[str, Any]] = []
+    for line in clickhouse_status_query(query).splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        rows.append(
+            {
+                "bucket_utc": str(row.get("bucket_utc") or ""),
+                "single_ticker_rows": int(row.get("single_ticker_rows") or 0),
+                "broad_or_none_rows": int(row.get("broad_or_none_rows") or 0),
+                "total_rows": int(row.get("total_rows") or 0),
+            }
+        )
+    payload = {
+        "bin_seconds": safe_bin_seconds,
+        "database": database,
+        "normalized_table": normalized_table,
+        "ticker_table": ticker_table,
+        "rows": rows,
+        "source": "clickhouse",
+    }
+    _SERVICE_NEWS_HISTOGRAM_CACHE[safe_bin_seconds] = (time.monotonic(), payload)
+    return payload
+
+
 def service_database_table_target(service_id: str, database: str, table: str) -> dict[str, str]:
     for target in SERVICE_DATABASE_TABLES.get(service_id, []):
         if target["database"] == database and target["table"] == table:
@@ -1631,6 +1695,11 @@ def service_status(service_id: str, include_database_tables: bool = True, includ
 @app.get("/api/services/{service_id}/tables/{database}/{table}/preview")
 def service_table_preview(service_id: str, database: str, table: str, limit: int = 20) -> dict[str, Any]:
     return service_database_table_preview(service_id, database, table, limit)
+
+
+@app.get("/api/services/news/histogram")
+def news_service_histogram(bin_seconds: int = 10) -> dict[str, Any]:
+    return service_news_histogram(bin_seconds)
 
 
 @app.get("/api/config/defaults")
