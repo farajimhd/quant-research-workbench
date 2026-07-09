@@ -297,7 +297,7 @@ class TrainConfig:
     validation_batches: int = 8
     checkpoint_latest_samples: int = 250_000
     checkpoint_archive_samples: int = 2_000_000
-    detail_profile_samples: int = 0
+    detail_profile_samples: int = 250_000
     checkpoint_best_train: bool = True
     checkpoint_best_val: bool = True
     progress_layout: str = "auto"

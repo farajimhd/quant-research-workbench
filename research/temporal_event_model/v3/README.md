@@ -240,6 +240,12 @@ The sweep includes production-path fields in `sweep_results.csv`, including
 `production_cache_encode_seconds`, `production_cached_predict_seconds`, and
 `production_cached_predict_samples_per_second`.
 
+Full training records detailed model-section timings on the first batch and
+then every `detail_profile_samples` samples. The default is 250,000 samples, so
+normal loss/optimizer steps are not forced through CUDA-synchronized section
+timing every batch. Validation still runs a detailed timing pass when
+validation is executed.
+
 Scanner context is prefetched by default before batch materialization:
 
 ```text

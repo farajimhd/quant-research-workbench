@@ -1237,8 +1237,9 @@ W&B grouping rules:
 
 ### Detailed Timing Metrics
 
-Detailed timing is enabled only on the first training batch and at
-validation/profile cadence. It must not run on every batch because CUDA
+Detailed timing is enabled only on the first training batch, every
+`detail_profile_samples` samples, and at validation/profile cadence. The
+default is 250,000 samples. It must not run on every batch because CUDA
 synchronization around every encoder would slow training.
 
 The trainer logs these timing families to JSONL and W&B when collected:
