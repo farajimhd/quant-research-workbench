@@ -640,7 +640,6 @@ class NewsGateway:
             )
             self._set_phase(f"{coverage_mode}_process", f"Processing {len(fetch_result.items):,} provider row(s).")
             processed: list[ProcessedNewsItem] = []
-            pending_memory_rows: list[dict[str, Any]] = []
             live_items: list[LiveNewsPayload] = []
             failed = 0
             for payload in fetch_result.items:
@@ -656,7 +655,6 @@ class NewsGateway:
                     )
                     processed.append(item)
                     if coverage_mode == "live":
-                        pending_memory_rows.append(self._pending_memory_row(item.result.normalized_row))
                         live_items.append(
                             LiveNewsPayload(
                                 payload=payload,
@@ -689,11 +687,23 @@ class NewsGateway:
                         provider_article_id=str(payload.get("id") or payload.get("article_id") or ""),
                     )
             if coverage_mode == "live":
-                unique_rows, duplicate_rows = self._count_run_unique_news(processed)
-                if pending_memory_rows:
-                    await self.state.upsert_rows(pending_memory_rows)
+                unique_processed, duplicate_rows = self._split_run_unique_news(processed)
+                unique_rows = len(unique_processed)
+                unique_canonical_ids = {
+                    str(item.result.canonical_news_id or "")
+                    for item in unique_processed
+                    if str(item.result.canonical_news_id or "")
+                }
+                unique_live_items = [
+                    item
+                    for item in live_items
+                    if str(item.initial_item.result.canonical_news_id or "") in unique_canonical_ids
+                ]
+                unique_memory_rows = [self._pending_memory_row(item.result.normalized_row) for item in unique_processed]
+                if unique_memory_rows:
+                    await self.state.upsert_rows(unique_memory_rows)
                     await self._refresh_memory_metrics()
-                if live_items:
+                if unique_live_items:
                     await self._enqueue_background_batch(
                         BackgroundNewsBatch(
                             poll_id=poll_id,
@@ -703,7 +713,7 @@ class NewsGateway:
                             saturated=fetch_result.saturated,
                             pages=fetch_result.pages,
                             provider_rows=len(fetch_result.items),
-                            items=live_items,
+                            items=unique_live_items,
                         )
                     )
                 elif failed == 0 and not fetch_result.saturated:
@@ -711,13 +721,17 @@ class NewsGateway:
                         start_utc,
                         end_utc,
                         coverage_mode=coverage_mode,
-                        provider_rows=0,
-                        processed_rows=0,
+                        provider_rows=len(fetch_result.items),
+                        processed_rows=len(processed),
                         written_rows=0,
-                        skipped_existing=0,
+                        skipped_existing=duplicate_rows,
                     )
-                    self._set_phase("polling", "No provider rows in the last poll; waiting for the next scheduled poll.")
-                    self._resolve_last_error(reason="poll_completed_no_provider_rows")
+                    if fetch_result.items:
+                        self._set_phase("polling", "Poll contained only already-seen news; waiting for the next scheduled poll.")
+                        self._resolve_last_error(reason="poll_completed_duplicate_only")
+                    else:
+                        self._set_phase("polling", "No provider rows in the last poll; waiting for the next scheduled poll.")
+                        self._resolve_last_error(reason="poll_completed_no_provider_rows")
                 self.metrics.provider_rows += len(fetch_result.items)
                 self.metrics.processed_rows += len(processed)
                 self.metrics.failed_rows += failed
@@ -738,7 +752,7 @@ class NewsGateway:
                     start_utc=start_utc,
                     end_utc=end_utc,
                     provider_rows=len(fetch_result.items),
-                    queued_items=len(live_items),
+                    queued_items=len(unique_live_items),
                     unique_news_rows=unique_rows,
                     duplicate_news_rows=duplicate_rows,
                     failed_rows=failed,
@@ -757,7 +771,7 @@ class NewsGateway:
                     "failed_rows": failed,
                     "pages": fetch_result.pages,
                     "saturated": fetch_result.saturated,
-                    "queued_items": len(live_items),
+                    "queued_items": len(unique_live_items),
                     "wall_seconds": self.metrics.last_cycle_wall_seconds,
                 }
             write_summary = await self._publish_processed(processed, poll_id=poll_id, coverage_mode=coverage_mode)
@@ -1246,7 +1260,11 @@ class NewsGateway:
         return "inserted"
 
     def _count_run_unique_news(self, processed: list[ProcessedNewsItem]) -> tuple[int, int]:
-        unique_rows = 0
+        unique_items, duplicate_rows = self._split_run_unique_news(processed)
+        return len(unique_items), duplicate_rows
+
+    def _split_run_unique_news(self, processed: list[ProcessedNewsItem]) -> tuple[list[ProcessedNewsItem], int]:
+        unique_items: list[ProcessedNewsItem] = []
         duplicate_rows = 0
         for item in processed:
             canonical_id = str(item.result.canonical_news_id or "")
@@ -1256,8 +1274,8 @@ class NewsGateway:
                 duplicate_rows += 1
             else:
                 self._seen_canonical_news_ids.add(canonical_id)
-                unique_rows += 1
-        return unique_rows, duplicate_rows
+                unique_items.append(item)
+        return unique_items, duplicate_rows
 
     def _live_cycle_status(self, provider_rows: int, failed_rows: int, saturated: bool) -> str:
         if failed_rows or saturated:

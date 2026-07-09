@@ -882,11 +882,8 @@ function newsPublishHistoryRows(service: ServiceStatusPayload): NewsPublishHisto
 }
 
 function isNewsPublishLogEvent(event: string) {
-  return event === "publish_started"
-    || event === "publish_completed"
-    || event === "publish_failed"
-    || event === "background_batch_completed"
-    || event === "poll_completed";
+  return event === "publish_completed"
+    || event === "publish_failed";
 }
 
 function newsPublishItemHistoryRow(logRow: ServiceRuntimeLogRow, fields: Record<string, unknown>, item: Record<string, unknown>, index: number): NewsPublishHistoryRow {

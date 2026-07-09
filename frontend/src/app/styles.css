@@ -1167,6 +1167,10 @@ button {
   min-height: 356px;
 }
 
+.service-work-responsibility-card.news-publish-card {
+  min-height: 356px;
+}
+
 .service-work-responsibility-header {
   align-items: start;
   border-bottom: 1px solid var(--border);
@@ -1549,6 +1553,11 @@ button {
 
 .news-publish-history-table {
   min-width: 920px;
+}
+
+.news-publish-card .news-publish-history-table-wrap {
+  height: 100%;
+  min-height: 220px;
 }
 
 .news-poll-history-table th,
