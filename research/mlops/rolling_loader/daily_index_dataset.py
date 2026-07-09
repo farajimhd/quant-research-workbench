@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import datetime as dt
+import gc
 import hashlib
 import json
 import math
@@ -2448,6 +2449,7 @@ class AsyncDailyIndexBatchLoader:
                 self.state.package_position = int(group_start)
                 group_end = self._next_group_end(plans, group_start, group_size)
                 group_plans = plans[group_start:group_end]
+                group_plan_count = len(group_plans)
                 group_profile: dict[str, float] = {}
                 stage_start = time.perf_counter()
                 loaded_origins = _collect_ordered_futures(read_pool, self.reader.load_origins, group_plans, stop_event=self._stop_event)
@@ -2527,8 +2529,13 @@ class AsyncDailyIndexBatchLoader:
                         mat_pool.shutdown(wait=False, cancel_futures=True)
                 finally:
                     self.materializer.clear_text_context_cache()
+                    loaded = []
+                    loaded_origins = []
+                    refs = []
+                    group_plans = []
+                    gc.collect()
                 self.state.origin_cursor = 0
-                self.state.package_position = int(group_start) + len(group_plans)
+                self.state.package_position = int(group_start) + int(group_plan_count)
                 if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
                     return
                 group_start = int(group_end)

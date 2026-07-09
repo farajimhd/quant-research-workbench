@@ -93,7 +93,7 @@ class TemporalTrainingReporter:
                     refresh_per_second=self.refresh_per_second,
                     transient=False,
                     auto_refresh=False,
-                    screen=False,
+                    screen=True,
                     vertical_overflow="visible",
                 )
                 self._live.start()

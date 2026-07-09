@@ -72,6 +72,24 @@ For the full February 2019 large-model run on the workstation:
 python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_train_feb2019_large_bs512.py
 ```
 
+That launcher uses bounded CPU-side staging:
+
+```text
+batch_size: 512
+read_workers: 4
+materialize_workers: 4
+loaded_parts_per_group: 2
+materialize_chunk_size: 128
+scanner_index_cache_entries: 4
+scanner_prefetch_workers: 2
+```
+
+This is intentional. A batch size 512 v3 batch is roughly 0.5 GiB of tensor
+payload before model activations, optimizer state, queued loader chunks, Polars
+frames, and checkpoint copies. Loading many ticker/day packages and full
+materialized chunks ahead of the trainer can exhaust system RAM even when the
+final batch tensor itself would fit on the GPU.
+
 ## Training Profiler
 
 Default workstation profile command:
