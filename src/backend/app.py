@@ -1190,9 +1190,7 @@ def normalize_runtime_log_row(row: dict[str, Any], *, source_path: Path, line_nu
 
 
 def runtime_log_public_fields(event: str, row: dict[str, Any]) -> dict[str, Any]:
-    if event != "poll_completed":
-        return {}
-    allowed = {
+    poll_allowed = {
         "coverage_mode",
         "duplicate_news_rows",
         "failed_rows",
@@ -1210,6 +1208,44 @@ def runtime_log_public_fields(event: str, row: dict[str, Any]) -> dict[str, Any]
         "unique_news_rows",
         "wall_seconds",
     }
+    publish_allowed = {
+        "active_jobs",
+        "article_count",
+        "article_failures",
+        "coverage_mode",
+        "enriched_count",
+        "enriched_urls",
+        "input_duplicate_ids_total",
+        "items",
+        "items_logged",
+        "items_total",
+        "normalized_rows_inserted",
+        "pdf_count",
+        "pending_rows",
+        "poll_id",
+        "processed_rows",
+        "published_at_end_utc",
+        "published_at_start_utc",
+        "requires_enrichment_count",
+        "saturated",
+        "skipped_existing",
+        "ticker_count",
+        "ticker_rows_inserted",
+        "ticker_sample",
+        "title_sample",
+        "wall_seconds",
+        "worker_index",
+    }
+    allowed_by_event = {
+        "poll_completed": poll_allowed,
+        "publish_started": publish_allowed,
+        "publish_completed": publish_allowed,
+        "publish_failed": publish_allowed,
+        "background_batch_completed": publish_allowed,
+    }
+    allowed = allowed_by_event.get(event)
+    if not allowed:
+        return {}
     return {key: value for key, value in row.items() if key in allowed and value not in (None, "")}
 
 
