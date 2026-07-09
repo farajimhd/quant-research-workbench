@@ -322,6 +322,25 @@ class EventEncoder(nn.Module):
         return masked_mean(encoded, mask.bool(), dim=1)
 
 
+class BarRowEncoder(nn.Module):
+    def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder", *, item_dim: int) -> None:
+        super().__init__()
+        h = _side_hidden_dim(config)
+        self.time_encoder = time_encoder
+        self.value_width = max(BAR_FEATURE_DIMS.values())
+        self.item_dim = int(item_dim)
+        feature_dim = int(self.value_width) + 2 * int(config.time_encoder_dim)
+        self.value_proj = MLP(feature_dim, max(item_dim, h), item_dim, dropout=float(config.dropout))
+        self.family_embedding = nn.Embedding(len(BAR_FAMILIES), item_dim)
+
+    def forward(self, values: torch.Tensor, start_time_features: torch.Tensor, end_time_features: torch.Tensor, *, family_index: int) -> torch.Tensor:
+        start_token = self.time_encoder(start_time_features, role="bar_start")
+        end_token = self.time_encoder(end_time_features, role="bar_end")
+        row = torch.cat([_pad_or_trim_last(values.float(), self.value_width), start_token, end_token], dim=-1)
+        token = self.value_proj(row)
+        return token + self.family_embedding.weight[int(family_index)].view(*((1,) * (token.ndim - 1)), -1)
+
+
 class BarContextEncoder(nn.Module):
     def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder", *, group: str) -> None:
         super().__init__()
@@ -334,14 +353,10 @@ class BarContextEncoder(nn.Module):
             raise ValueError(f"bar_item_dim={item_dim} must be divisible by bar_attention_heads={attention_heads}.")
         self.group = str(group)
         self.group_to_id = {"ticker_intraday_bars": 0, "ticker_daily_bars": 1, "global_daily_bars": 2}
-        self.time_encoder = time_encoder
         self.time_feature_count = int(config.bar_time_feature_count)
-        self.value_width = max(BAR_FEATURE_DIMS.values())
         self.item_dim = item_dim
         self.latent_count = latent_count
-        feature_dim = int(self.value_width) + int(config.time_encoder_dim)
-        self.value_proj = MLP(feature_dim, max(item_dim, h), item_dim, dropout=float(config.dropout))
-        self.family_embedding = nn.Embedding(len(BAR_FAMILIES), item_dim)
+        self.row_encoder = BarRowEncoder(config, time_encoder, item_dim=item_dim)
         self.group_embedding = nn.Embedding(len(self.group_to_id), item_dim)
         position_count = max(1, int(config.intraday_horizons), int(config.ticker_bar_offsets), int(config.global_bar_offsets))
         self.position_embedding = nn.Embedding(position_count, item_dim)
@@ -374,16 +389,23 @@ class BarContextEncoder(nn.Module):
                 mask = mask.to(device=values.device, dtype=torch.bool)
             if tuple(mask.shape) != tuple(values.shape[:-1]):
                 raise RuntimeError(f"{self.group}.{family}_mask shape {tuple(mask.shape)} does not match values prefix {tuple(values.shape[:-1])}.")
-            time_features = _required_time_features(
-                payload.get(f"{family}_time_features"),
+            start_time_features = _payload_time_features(
+                payload,
+                f"{family}_start_time_features",
+                f"{family}_time_features",
                 reference=values,
                 width=self.time_feature_count,
-                name=f"{self.group}.{family}_time_features",
+                name=f"{self.group}.{family}_start_time_features",
             )
-            time_token = self.time_encoder(time_features, role="bar_start")
-            row = torch.cat([_pad_or_trim_last(values.float(), self.value_width), time_token], dim=-1)
-            token = self.value_proj(row)
-            token = token + self.family_embedding.weight[family_index].view(*((1,) * (token.ndim - 1)), -1)
+            end_time_features = _payload_time_features(
+                payload,
+                f"{family}_end_time_features",
+                f"{family}_time_features",
+                reference=values,
+                width=self.time_feature_count,
+                name=f"{self.group}.{family}_end_time_features",
+            )
+            token = self.row_encoder(values, start_time_features, end_time_features, family_index=family_index)
             token = token + self.group_embedding.weight[self.group_to_id.get(self.group, 0)].view(*((1,) * (token.ndim - 1)), -1)
             token = token + self._position_embeddings(token)
             token = self.token_norm(token)
@@ -660,18 +682,33 @@ class ScannerContextEncoder(nn.Module):
         super().__init__()
         d = int(config.d_model)
         h = _side_hidden_dim(config)
-        self.time_encoder = time_encoder
+        item_dim = max(8, int(getattr(config, "scanner_item_dim", config.bar_item_dim)))
+        latent_count = max(1, int(getattr(config, "scanner_latents", config.bar_latents)))
+        attention_heads = max(1, int(getattr(config, "scanner_attention_heads", config.bar_attention_heads)))
+        if item_dim % attention_heads != 0:
+            raise ValueError(f"scanner_item_dim={item_dim} must be divisible by scanner_attention_heads={attention_heads}.")
         self.time_feature_count = int(config.bar_time_feature_count)
-        self.value_width = max(BAR_FEATURE_DIMS.values())
-        self.family_count = len(BAR_FAMILIES)
-        self.group_embedding = nn.Embedding(max(1, int(config.scanner_groups)), d)
-        self.rank_embedding = HashEmbedding(4096, 8)
-        row_dim = self.value_width * self.family_count + int(config.time_encoder_dim) + 8
-        self.leader_proj = MLP(row_dim, h, d, dropout=float(config.dropout))
-        origin_dim = self.value_width * self.family_count + int(config.time_encoder_dim)
-        self.origin_proj = MLP(origin_dim, h, d, dropout=float(config.dropout))
-        self.numeric_proj = MLP(int(config.scanner_numeric_dim), h, d, dropout=float(config.dropout))
-        self.out = MLP(d * 3, h, d, dropout=float(config.dropout))
+        self.item_dim = item_dim
+        self.row_encoder = BarRowEncoder(config, time_encoder, item_dim=item_dim)
+        self.group_embedding = nn.Embedding(max(1, int(config.scanner_groups)), item_dim)
+        self.horizon_embedding = nn.Embedding(max(1, int(config.scanner_horizons)), item_dim)
+        self.topk_embedding = nn.Embedding(max(1, int(config.scanner_top_k)), item_dim)
+        self.row_type_embedding = nn.Embedding(3, item_dim)
+        self.rank_embedding = HashEmbedding(4096, item_dim)
+        self.ticker_embedding = HashEmbedding(262_144, item_dim)
+        self.numeric_proj = MLP(int(config.scanner_numeric_dim), h, item_dim, dropout=float(config.dropout))
+        self.token_norm = nn.LayerNorm(item_dim)
+        self.latent_queries = nn.Parameter(torch.randn(latent_count, item_dim) * 0.02)
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim=item_dim,
+            num_heads=attention_heads,
+            dropout=float(config.dropout),
+            batch_first=True,
+        )
+        self.attention_norm = nn.LayerNorm(item_dim)
+        self.latent_ffn = MLP(item_dim, max(item_dim, h), item_dim, dropout=float(config.dropout))
+        self.latent_ffn_norm = nn.LayerNorm(item_dim)
+        self.out_proj = MLP(item_dim, h, d, dropout=float(config.dropout))
         self.out_dim = d
 
     def forward(self, payload: Mapping[str, Any]) -> torch.Tensor:
@@ -679,72 +716,138 @@ class ScannerContextEncoder(nn.Module):
         if not torch.is_tensor(leader_values) or leader_values.numel() == 0:
             return _zero_like_batch(payload, self.out_dim)
         leader_mask = payload.get("leader_mask")
-        leader_time = payload.get("leader_time_features")
         leader_rank = payload.get("leader_rank")
         leader_horizon_mask = payload.get("leader_horizon_mask")
         origin_values = payload.get("origin_values")
         origin_mask = payload.get("origin_mask")
         origin_horizon_mask = payload.get("origin_horizon_mask")
-        origin_time = payload.get("origin_time_features")
         numeric = payload.get("numeric_features")
         if not torch.is_tensor(leader_mask):
             leader_mask = torch.ones(leader_values.shape[:3], dtype=torch.bool, device=leader_values.device)
+        else:
+            leader_mask = leader_mask.to(device=leader_values.device, dtype=torch.bool)
         if not torch.is_tensor(leader_horizon_mask):
             leader_horizon_mask = leader_mask.unsqueeze(-1).expand(*leader_mask.shape, leader_values.shape[3])
         else:
             leader_horizon_mask = leader_horizon_mask.to(device=leader_values.device, dtype=torch.bool) & leader_mask.unsqueeze(-1).bool()
         if not torch.is_tensor(leader_rank):
             leader_rank = torch.zeros(leader_values.shape[:3], dtype=torch.long, device=leader_values.device)
-        leader_time = _required_time_features(
-            leader_time,
-            reference=leader_values[..., 0, 0],
-            width=self.time_feature_count,
-            name="scanner.leader_time_features",
-        )
-        leader_value = _pad_or_trim_last(leader_values.float(), self.value_width).reshape(*leader_values.shape[:4], -1)
-        leader_time_token = self.time_encoder(leader_time, role="scanner_bar_end")
-        rank_token = self.rank_embedding(leader_rank.long()).unsqueeze(3).expand(*leader_value.shape[:4], -1)
-        leader_rows = self.leader_proj(torch.cat([leader_value, leader_time_token, rank_token], dim=-1))
-        group_ids = torch.arange(leader_values.shape[1], device=leader_values.device).clamp(max=self.group_embedding.num_embeddings - 1)
-        leader_rows = leader_rows + self.group_embedding(group_ids)[None, :, None, None, :]
-        leader_token = masked_mean(
-            leader_rows.reshape(leader_rows.shape[0], -1, leader_rows.shape[-1]),
-            leader_horizon_mask.reshape(leader_values.shape[0], -1).bool(),
-            dim=1,
-        )
-        if not torch.is_tensor(origin_values) or origin_values.numel() == 0:
-            origin_token = torch.zeros_like(leader_token)
         else:
+            leader_rank = leader_rank.to(device=leader_values.device, dtype=torch.long)
+
+        tokens: list[torch.Tensor] = []
+        masks: list[torch.Tensor] = []
+        group_ids = torch.arange(leader_values.shape[1], device=leader_values.device).clamp(max=self.group_embedding.num_embeddings - 1)
+        leader_start = _payload_time_features(payload, "leader_start_time_features", "leader_time_features", reference=leader_values[..., 0, 0], width=self.time_feature_count, name="scanner.leader_start_time_features")
+        leader_end = _payload_time_features(payload, "leader_end_time_features", "leader_time_features", reference=leader_values[..., 0, 0], width=self.time_feature_count, name="scanner.leader_end_time_features")
+        leader_ticker = payload.get("leader_ticker_id")
+        if not torch.is_tensor(leader_ticker):
+            leader_ticker = torch.zeros(leader_values.shape[:3], dtype=torch.long, device=leader_values.device)
+        else:
+            leader_ticker = leader_ticker.to(device=leader_values.device, dtype=torch.long)
+        for family_index, _family in enumerate(BAR_FAMILIES):
+            family_values = leader_values[..., family_index, :]
+            family_token = self.row_encoder(family_values, leader_start, leader_end, family_index=family_index)
+            family_token = family_token + self._scanner_position_embeddings(
+                values=family_values,
+                row_type=0,
+                group_ids=group_ids,
+                rank_ids=leader_rank,
+                ticker_ids=leader_ticker,
+            )
+            tokens.append(self.token_norm(family_token).reshape(family_token.shape[0], -1, self.item_dim))
+            masks.append(leader_horizon_mask.reshape(leader_values.shape[0], -1))
+
+        if torch.is_tensor(origin_values) and origin_values.numel() > 0:
             if not torch.is_tensor(origin_mask):
                 origin_mask = torch.ones(origin_values.shape[:2], dtype=torch.bool, device=origin_values.device)
+            else:
+                origin_mask = origin_mask.to(device=origin_values.device, dtype=torch.bool)
             if not torch.is_tensor(origin_horizon_mask):
                 origin_horizon_mask = origin_mask.unsqueeze(-1).expand(*origin_mask.shape, origin_values.shape[2])
             else:
                 origin_horizon_mask = origin_horizon_mask.to(device=origin_values.device, dtype=torch.bool) & origin_mask.unsqueeze(-1).bool()
-            origin_time = _required_time_features(
-                origin_time,
-                reference=origin_values[..., 0, 0],
-                width=self.time_feature_count,
-                name="scanner.origin_time_features",
-            )
-            origin_value = _pad_or_trim_last(origin_values.float(), self.value_width).reshape(*origin_values.shape[:3], -1)
-            origin_rows = self.origin_proj(torch.cat([origin_value, self.time_encoder(origin_time, role="scanner_bar_end")], dim=-1))
-            origin_rows = origin_rows + self.group_embedding(group_ids)[None, :, None, :]
-            origin_token = masked_mean(
-                origin_rows.reshape(origin_rows.shape[0], -1, origin_rows.shape[-1]),
-                origin_horizon_mask.reshape(origin_values.shape[0], -1).bool(),
-                dim=1,
-            )
+            origin_start = _payload_time_features(payload, "origin_start_time_features", "origin_time_features", reference=origin_values[..., 0, 0], width=self.time_feature_count, name="scanner.origin_start_time_features")
+            origin_end = _payload_time_features(payload, "origin_end_time_features", "origin_time_features", reference=origin_values[..., 0, 0], width=self.time_feature_count, name="scanner.origin_end_time_features")
+            origin_rank = payload.get("origin_rank")
+            if not torch.is_tensor(origin_rank):
+                origin_rank = torch.zeros(origin_values.shape[:2], dtype=torch.long, device=origin_values.device)
+            else:
+                origin_rank = origin_rank.to(device=origin_values.device, dtype=torch.long)
+            for family_index, _family in enumerate(BAR_FAMILIES):
+                family_values = origin_values[..., family_index, :]
+                family_token = self.row_encoder(family_values, origin_start, origin_end, family_index=family_index)
+                family_token = family_token + self._scanner_position_embeddings(
+                    values=family_values,
+                    row_type=1,
+                    group_ids=group_ids,
+                    rank_ids=origin_rank,
+                    ticker_ids=None,
+                )
+                tokens.append(self.token_norm(family_token).reshape(family_token.shape[0], -1, self.item_dim))
+                masks.append(origin_horizon_mask.reshape(origin_values.shape[0], -1))
+        elif not torch.is_tensor(origin_mask):
+            origin_mask = torch.zeros(leader_values.shape[:2], dtype=torch.bool, device=leader_values.device)
+
         if torch.is_tensor(numeric) and numeric.numel() > 0:
-            numeric_rows = self.numeric_proj(numeric.float())
+            numeric = numeric.to(device=leader_values.device, dtype=torch.float32)
+            numeric_rows = self.numeric_proj(numeric)
             if not torch.is_tensor(origin_mask):
                 numeric_mask = torch.ones(numeric_rows.shape[:2], dtype=torch.bool, device=numeric_rows.device)
             else:
                 numeric_mask = origin_mask.to(device=numeric_rows.device, dtype=torch.bool)
-            numeric_token = masked_mean(numeric_rows, numeric_mask, dim=1)
+            numeric_rows = numeric_rows + self.group_embedding(group_ids)[None, :, :] + self.row_type_embedding.weight[2].view(1, 1, -1)
+            tokens.append(self.token_norm(numeric_rows).reshape(numeric_rows.shape[0], -1, self.item_dim))
+            masks.append(numeric_mask.reshape(numeric_rows.shape[0], -1))
+
+        all_tokens = torch.cat(tokens, dim=1)
+        all_masks = torch.cat(masks, dim=1).bool()
+        all_tokens = all_tokens * all_masks.unsqueeze(-1).to(dtype=all_tokens.dtype)
+        has_tokens = all_masks.any(dim=1)
+        safe_mask = all_masks.clone()
+        safe_mask[:, 0] = safe_mask[:, 0] | ~has_tokens
+        all_tokens = all_tokens.clone()
+        all_tokens[:, 0, :] = torch.where(has_tokens[:, None], all_tokens[:, 0, :], torch.zeros_like(all_tokens[:, 0, :]))
+        queries = self.latent_queries.unsqueeze(0).expand(all_tokens.shape[0], -1, -1)
+        attended, _ = self.cross_attention(
+            queries,
+            all_tokens,
+            all_tokens,
+            key_padding_mask=~safe_mask,
+            need_weights=False,
+        )
+        latents = self.attention_norm(queries + attended)
+        latents = self.latent_ffn_norm(latents + self.latent_ffn(latents))
+        out = self.out_proj(latents.mean(dim=1))
+        return out * has_tokens.unsqueeze(-1).to(dtype=out.dtype)
+
+    def _scanner_position_embeddings(
+        self,
+        *,
+        values: torch.Tensor,
+        row_type: int,
+        group_ids: torch.Tensor,
+        rank_ids: torch.Tensor,
+        ticker_ids: torch.Tensor | None,
+    ) -> torch.Tensor:
+        device = values.device
+        group_token = self.group_embedding(group_ids).view(1, values.shape[1], *([1] * (values.ndim - 3)), self.item_dim)
+        horizon_positions = torch.arange(values.shape[-2], device=device).clamp(max=self.horizon_embedding.num_embeddings - 1)
+        if values.ndim == 5:
+            horizon_token = self.horizon_embedding(horizon_positions).view(1, 1, 1, values.shape[3], self.item_dim)
         else:
-            numeric_token = torch.zeros_like(leader_token)
-        return self.out(torch.cat([leader_token, origin_token, numeric_token], dim=-1))
+            horizon_token = self.horizon_embedding(horizon_positions).view(1, 1, values.shape[2], self.item_dim)
+        row_token = self.row_type_embedding.weight[int(row_type)].view(*([1] * (values.ndim - 1)), self.item_dim)
+        token = group_token + horizon_token + row_token
+        if values.ndim == 5:
+            topk_positions = torch.arange(values.shape[2], device=device).clamp(max=self.topk_embedding.num_embeddings - 1)
+            token = token + self.topk_embedding(topk_positions).view(1, 1, values.shape[2], 1, self.item_dim)
+            token = token + self.rank_embedding(rank_ids.long()).unsqueeze(3)
+            if ticker_ids is not None:
+                token = token + self.ticker_embedding(ticker_ids.long()).unsqueeze(3)
+        else:
+            token = token + self.rank_embedding(rank_ids.long()).unsqueeze(2)
+        return token
 
 
 class TimeFeatureEncoder(nn.Module):
@@ -855,6 +958,21 @@ def _required_time_features(value: Any, *, reference: torch.Tensor, width: int, 
     if value.shape[-1] != int(width):
         raise RuntimeError(f"{name} width is {int(value.shape[-1])}, expected {int(width)}.")
     return value.float()
+
+
+def _payload_time_features(
+    payload: Mapping[str, Any],
+    key: str,
+    fallback_key: str,
+    *,
+    reference: torch.Tensor,
+    width: int,
+    name: str,
+) -> torch.Tensor:
+    value = payload.get(key)
+    if not torch.is_tensor(value):
+        value = payload.get(fallback_key)
+    return _required_time_features(value, reference=reference, width=width, name=name)
 
 
 def _payload_ids(payload: Mapping[str, Any], key: str, reference: torch.Tensor) -> torch.Tensor:

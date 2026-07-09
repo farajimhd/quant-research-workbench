@@ -235,11 +235,17 @@ def _validate_time_feature_contract(x: Mapping[str, Any], config: ModelConfig) -
             values_key = f"{family}_values"
             if _payload_has_rows(payload, values_key):
                 _assert_time_dim(payload, f"{family}_time_features", int(config.bar_time_feature_count), f"bar_inputs.{group}.{family}_time_features")
+                _assert_time_dim(payload, f"{family}_start_time_features", int(config.bar_time_feature_count), f"bar_inputs.{group}.{family}_start_time_features")
+                _assert_time_dim(payload, f"{family}_end_time_features", int(config.bar_time_feature_count), f"bar_inputs.{group}.{family}_end_time_features")
 
     scanner = x.get("scanner_inputs") or {}
     if isinstance(scanner, Mapping) and _payload_has_rows(scanner, "leader_values"):
         _assert_time_dim(scanner, "leader_time_features", int(config.bar_time_feature_count), "scanner_inputs.leader_time_features")
+        _assert_time_dim(scanner, "leader_start_time_features", int(config.bar_time_feature_count), "scanner_inputs.leader_start_time_features")
+        _assert_time_dim(scanner, "leader_end_time_features", int(config.bar_time_feature_count), "scanner_inputs.leader_end_time_features")
         _assert_time_dim(scanner, "origin_time_features", int(config.bar_time_feature_count), "scanner_inputs.origin_time_features")
+        _assert_time_dim(scanner, "origin_start_time_features", int(config.bar_time_feature_count), "scanner_inputs.origin_start_time_features")
+        _assert_time_dim(scanner, "origin_end_time_features", int(config.bar_time_feature_count), "scanner_inputs.origin_end_time_features")
 
 
 def _payload_has_rows(payload: Mapping[str, Any], key: str) -> bool:
@@ -348,11 +354,15 @@ def _dummy_bars(batch: int, offsets: int, features: int, time_features: int, dev
         "values": torch.randn(batch, offsets, features, device=device),
         "mask": torch.ones(batch, offsets, dtype=torch.bool, device=device),
         "time_features": torch.randn(batch, offsets, time_features, device=device),
+        "start_time_features": torch.randn(batch, offsets, time_features, device=device),
+        "end_time_features": torch.randn(batch, offsets, time_features, device=device),
     }
     for family, dim in BAR_FEATURE_DIMS.items():
         payload[f"{family}_values"] = torch.randn(batch, offsets, dim, device=device)
         payload[f"{family}_mask"] = torch.ones(batch, offsets, dtype=torch.bool, device=device)
         payload[f"{family}_time_features"] = torch.randn(batch, offsets, time_features, device=device)
+        payload[f"{family}_start_time_features"] = torch.randn(batch, offsets, time_features, device=device)
+        payload[f"{family}_end_time_features"] = torch.randn(batch, offsets, time_features, device=device)
     return payload
 
 
@@ -367,12 +377,16 @@ def _dummy_scanner(batch: int, config: ModelConfig, device: torch.device) -> dic
         "leader_mask": torch.ones(batch, groups, top_k, dtype=torch.bool, device=device),
         "leader_horizon_mask": torch.ones(batch, groups, top_k, horizons, dtype=torch.bool, device=device),
         "leader_time_features": torch.randn(batch, groups, top_k, horizons, config.bar_time_feature_count, device=device),
+        "leader_start_time_features": torch.randn(batch, groups, top_k, horizons, config.bar_time_feature_count, device=device),
+        "leader_end_time_features": torch.randn(batch, groups, top_k, horizons, config.bar_time_feature_count, device=device),
         "leader_ticker_id": torch.zeros(batch, groups, top_k, dtype=torch.long, device=device),
         "leader_rank": torch.arange(top_k, dtype=torch.long, device=device).view(1, 1, top_k).expand(batch, groups, top_k),
         "origin_values": torch.randn(batch, groups, horizons, families, width, device=device),
         "origin_mask": torch.ones(batch, groups, dtype=torch.bool, device=device),
         "origin_horizon_mask": torch.ones(batch, groups, horizons, dtype=torch.bool, device=device),
         "origin_time_features": torch.randn(batch, groups, horizons, config.bar_time_feature_count, device=device),
+        "origin_start_time_features": torch.randn(batch, groups, horizons, config.bar_time_feature_count, device=device),
+        "origin_end_time_features": torch.randn(batch, groups, horizons, config.bar_time_feature_count, device=device),
         "origin_rank": torch.zeros(batch, groups, dtype=torch.long, device=device),
         "origin_in_topk": torch.ones(batch, groups, dtype=torch.bool, device=device),
         "origin_topk_position": torch.zeros(batch, groups, dtype=torch.long, device=device),
@@ -385,9 +399,13 @@ def _dummy_global_bars(batch: int, symbols: int, offsets: int, features: int, ti
         "values": torch.randn(batch, symbols, offsets, features, device=device),
         "mask": torch.ones(batch, symbols, offsets, dtype=torch.bool, device=device),
         "time_features": torch.randn(batch, symbols, offsets, time_features, device=device),
+        "start_time_features": torch.randn(batch, symbols, offsets, time_features, device=device),
+        "end_time_features": torch.randn(batch, symbols, offsets, time_features, device=device),
     }
     for family, dim in BAR_FEATURE_DIMS.items():
         payload[f"{family}_values"] = torch.randn(batch, symbols, offsets, dim, device=device)
         payload[f"{family}_mask"] = torch.ones(batch, symbols, offsets, dtype=torch.bool, device=device)
         payload[f"{family}_time_features"] = torch.randn(batch, symbols, offsets, time_features, device=device)
+        payload[f"{family}_start_time_features"] = torch.randn(batch, symbols, offsets, time_features, device=device)
+        payload[f"{family}_end_time_features"] = torch.randn(batch, symbols, offsets, time_features, device=device)
     return payload

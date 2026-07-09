@@ -14,6 +14,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 import numpy as np
 
@@ -21,6 +22,7 @@ from research.mlops.clickhouse_events import encode_unified_event_windows
 from research.mlops.compact_events import EVENT_BYTES, HEADER_BYTES
 from research.mlops.data.contracts import BAR_FAMILY_FEATURE_KEYS, BAR_FAMILY_KEYS, FUTURE_BAR_FEATURE_KEYS
 from research.mlops.rolling_loader.daily_index_cache import (
+    BAR_END_TIME_FEATURE_COLUMNS,
     BAR_START_TIME_FEATURE_COLUMNS,
     CONTEXT_AVAILABLE_TIME_FEATURE_COLUMNS,
     CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS,
@@ -182,6 +184,8 @@ CORPORATE_ACTION_LABEL_DTYPES: dict[str, np.dtype] = {
 }
 BAR_RELATIVE_TIME_FEATURE_COLUMNS: tuple[str, ...] = ("bar_age_days", "bar_age_days_log1p")
 BAR_TIME_FEATURE_COLUMNS: tuple[str, ...] = (*BAR_START_TIME_FEATURE_COLUMNS, *BAR_RELATIVE_TIME_FEATURE_COLUMNS)
+BAR_END_RELATIVE_TIME_FEATURE_COLUMNS: tuple[str, ...] = ("bar_end_age_days", "bar_end_age_days_log1p")
+BAR_END_FEATURE_COLUMNS: tuple[str, ...] = (*BAR_END_TIME_FEATURE_COLUMNS, *BAR_END_RELATIVE_TIME_FEATURE_COLUMNS)
 METADATA_PAYLOAD_FIELDS = {
     "feature_names",
     "numeric_feature_names",
@@ -444,7 +448,8 @@ class DailyBarContextIndex:
     families: tuple[str, ...]
     bar_start_ms_by_family_symbol: dict[str, dict[str, np.ndarray]]
     values_by_family_symbol: dict[str, dict[str, np.ndarray]]
-    time_features_by_family_symbol: dict[str, dict[str, np.ndarray]]
+    start_time_features_by_family_symbol: dict[str, dict[str, np.ndarray]]
+    end_time_features_by_family_symbol: dict[str, dict[str, np.ndarray]]
 
 
 @dataclass(slots=True)
@@ -1480,6 +1485,7 @@ class DailyIndexBatchMaterializer:
         values = np.zeros((batch, horizon_count, len(BAR_FEATURE_KEYS)), dtype=np.float32)
         mask = np.zeros((batch, horizon_count), dtype=np.bool_)
         time_features = np.zeros((batch, horizon_count, len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
+        end_time_features = np.zeros((batch, horizon_count, len(BAR_END_FEATURE_COLUMNS)), dtype=np.float32)
         family_values = {
             family: np.zeros((batch, horizon_count, len(BAR_SOURCE_FEATURE_KEYS[family])), dtype=np.float32)
             for family in BAR_FAMILY_KEYS
@@ -1492,13 +1498,17 @@ class DailyIndexBatchMaterializer:
             family: np.zeros((batch, horizon_count, len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
             for family in BAR_FAMILY_KEYS
         }
+        family_end_time_features = {
+            family: np.zeros((batch, horizon_count, len(BAR_END_FEATURE_COLUMNS)), dtype=np.float32)
+            for family in BAR_FAMILY_KEYS
+        }
         profile: dict[str, float | int] = {
             "intraday_bar_lookup_seconds": 0.0,
             "intraday_bar_gather_seconds": 0.0,
             "intraday_bar_compact_seconds": 0.0,
         }
         if horizon_count <= 0 or batch <= 0:
-            return {key: _intraday_bar_payload(values, mask, time_features, family_values, family_masks, family_time_features, horizons)}, profile
+            return {key: _intraday_bar_payload(values, mask, time_features, end_time_features, family_values, family_masks, family_time_features, family_end_time_features, horizons)}, profile
         origin_timestamps = _identity_arrays(parts, refs)[2]
         for part_index, rows in _rows_by_part(refs).items():
             part = parts[int(part_index)]
@@ -1518,6 +1528,8 @@ class DailyIndexBatchMaterializer:
                         family_values=family_values,
                         family_masks=family_masks,
                         family_time_features=family_time_features,
+                        end_time_features=end_time_features,
+                        family_end_time_features=family_end_time_features,
                     )
                     profile["intraday_bar_compact_seconds"] = float(profile["intraday_bar_compact_seconds"]) + (time.perf_counter() - compact_start)
                     continue
@@ -1543,13 +1555,19 @@ class DailyIndexBatchMaterializer:
             source_indices = label_index.label_rows[origin_rows[found]]
             gather_start = time.perf_counter()
             start_ts = _label_column_matrix_for_rows(frame, "context_grid_start_timestamp_us", source_indices, horizon_count, np.dtype(np.int64))
+            if "context_grid_end_timestamp_us" in frame.columns:
+                end_ts = _label_column_matrix_for_rows(frame, "context_grid_end_timestamp_us", source_indices, horizon_count, np.dtype(np.int64))
+            else:
+                specs = _intraday_horizon_specs(horizons)
+                horizon_us = np.asarray([int(spec[1]) for spec in specs], dtype=np.int64)
+                end_ts = np.minimum(start_ts + horizon_us[None, :], origin_timestamps[output_rows, None].astype(np.int64, copy=False))
             selected_mask = _label_column_matrix_for_rows(frame, "available", source_indices, horizon_count, np.dtype(np.bool_))
-            absolute_time = _absolute_utc_time_feature_matrix(start_ts.reshape(-1)).reshape((int(output_rows.shape[0]), horizon_count, -1))
-            age_days = np.maximum(0.0, (origin_timestamps[output_rows, None].astype(np.float64) - start_ts.astype(np.float64)) / 86_400_000_000.0).astype(np.float32)
-            relative_time = np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)
-            gathered_time = np.concatenate([absolute_time, relative_time], axis=-1).astype(np.float32, copy=False)
+            gathered_time = _bar_time_feature_matrix(start_ts, origin_timestamps[output_rows, None])
+            gathered_end_time = _bar_end_time_feature_matrix(end_ts, origin_timestamps[output_rows, None])
             gathered_time[~selected_mask] = 0.0
+            gathered_end_time[~selected_mask] = 0.0
             time_features[output_rows] = gathered_time
+            end_time_features[output_rows] = gathered_end_time
             mask[output_rows] = selected_mask
             for family in BAR_FAMILY_KEYS:
                 fields = BAR_SOURCE_FEATURE_KEYS[family]
@@ -1566,13 +1584,16 @@ class DailyIndexBatchMaterializer:
                 family_time = gathered_time.copy()
                 family_time[~family_mask] = 0.0
                 family_time_features[family][output_rows] = family_time
+                family_end_time = gathered_end_time.copy()
+                family_end_time[~family_mask] = 0.0
+                family_end_time_features[family][output_rows] = family_end_time
                 if family == "trade":
                     trade_fields = list(fields)
                     for output_field, source_field in (("open", "open"), ("close", "close"), ("high", "high"), ("low", "low"), ("size_sum", "size_sum"), ("event_count", "event_count")):
                         if output_field in BAR_FEATURE_KEYS and source_field in trade_fields:
                             values[output_rows, :, BAR_FEATURE_KEYS.index(output_field)] = family_values[family][output_rows, :, trade_fields.index(source_field)]
             profile["intraday_bar_gather_seconds"] = float(profile["intraday_bar_gather_seconds"]) + (time.perf_counter() - gather_start)
-        payload = _intraday_bar_payload(values, mask, time_features, family_values, family_masks, family_time_features, horizons)
+        payload = _intraday_bar_payload(values, mask, time_features, end_time_features, family_values, family_masks, family_time_features, family_end_time_features, horizons)
         return {key: payload}, profile
 
     def _materialize_intraday_bar_inputs_from_compact(
@@ -1588,6 +1609,8 @@ class DailyIndexBatchMaterializer:
         family_values: dict[str, np.ndarray],
         family_masks: dict[str, np.ndarray],
         family_time_features: dict[str, np.ndarray],
+        end_time_features: np.ndarray,
+        family_end_time_features: dict[str, np.ndarray],
     ) -> None:
         horizon_count = int(len(horizons))
         if horizon_count <= 0 or rows.shape[0] <= 0:
@@ -1622,8 +1645,9 @@ class DailyIndexBatchMaterializer:
             grid_start_session_us = first_bucket * int(resolution_us)
             grid_end_session_us = (last_bucket + 1) * int(resolution_us)
             grid_start_ts = local_midnight_us + grid_start_session_us
+            grid_end_ts = local_midnight_us + grid_end_session_us
             labels_out["label_grid_start_timestamp_us"][out_rows, horizon_index] = grid_start_ts.astype(np.int64, copy=False)
-            labels_out["label_grid_end_timestamp_us"][out_rows, horizon_index] = (local_midnight_us + grid_end_session_us).astype(np.int64, copy=False)
+            labels_out["label_grid_end_timestamp_us"][out_rows, horizon_index] = grid_end_ts.astype(np.int64, copy=False)
             for family in BAR_FAMILY_KEYS:
                 self._fill_compact_bar_family(
                     compact_index,
@@ -1642,14 +1666,12 @@ class DailyIndexBatchMaterializer:
                 selected_mask |= labels_out[f"{family}_available"][out_rows, horizon_index].astype(np.bool_, copy=False)
             if not bool(selected_mask.any()):
                 continue
-            absolute_time = _absolute_utc_time_feature_matrix(grid_start_ts).astype(np.float32, copy=False)
-            age_days = np.maximum(0.0, (origin_timestamps.astype(np.float64) - grid_start_ts.astype(np.float64)) / 86_400_000_000.0).astype(np.float32)
-            gathered_time = np.concatenate(
-                [absolute_time, np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)],
-                axis=-1,
-            ).astype(np.float32, copy=False)
+            gathered_time = _bar_time_feature_matrix(grid_start_ts, origin_timestamps).astype(np.float32, copy=False)
+            gathered_end_time = _bar_end_time_feature_matrix(grid_end_ts, origin_timestamps).astype(np.float32, copy=False)
             gathered_time[~selected_mask] = 0.0
+            gathered_end_time[~selected_mask] = 0.0
             time_features[out_rows, horizon_index] = gathered_time
+            end_time_features[out_rows, horizon_index] = gathered_end_time
             mask[out_rows, horizon_index] = selected_mask
             for family in BAR_FAMILY_KEYS:
                 fields = BAR_SOURCE_FEATURE_KEYS[family]
@@ -1658,6 +1680,9 @@ class DailyIndexBatchMaterializer:
                 family_time = gathered_time.copy()
                 family_time[~rows_family_mask] = 0.0
                 family_time_features[family][out_rows, horizon_index] = family_time
+                family_end_time = gathered_end_time.copy()
+                family_end_time[~rows_family_mask] = 0.0
+                family_end_time_features[family][out_rows, horizon_index] = family_end_time
                 for field_index, field_name in enumerate(fields):
                     source_key = f"{family}_{field_name}"
                     if source_key in labels_out:
@@ -1797,6 +1822,7 @@ class DailyIndexBatchMaterializer:
                 values = np.zeros((len(refs), int(offsets.shape[0]), len(BAR_FEATURE_KEYS)), dtype=np.float32)
                 mask = np.zeros((len(refs), int(offsets.shape[0])), dtype=np.bool_)
                 time_features = np.zeros((len(refs), int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
+                end_time_features = np.zeros((len(refs), int(offsets.shape[0]), len(BAR_END_FEATURE_COLUMNS)), dtype=np.float32)
                 family_values = {
                     family: np.zeros((len(refs), int(offsets.shape[0]), len(BAR_SOURCE_FEATURE_KEYS[family])), dtype=np.float32)
                     for family in BAR_FAMILY_KEYS
@@ -1807,6 +1833,10 @@ class DailyIndexBatchMaterializer:
                 }
                 family_time_features = {
                     family: np.zeros((len(refs), int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
+                    for family in BAR_FAMILY_KEYS
+                }
+                family_end_time_features = {
+                    family: np.zeros((len(refs), int(offsets.shape[0]), len(BAR_END_FEATURE_COLUMNS)), dtype=np.float32)
                     for family in BAR_FAMILY_KEYS
                 }
                 for part_index, rows in grouped_rows.items():
@@ -1832,24 +1862,30 @@ class DailyIndexBatchMaterializer:
                         gathered = index.values_by_family_symbol[family][symbol][safe_selected]
                         gathered[~selected_mask] = 0.0
                         selected_starts = starts_by_symbol[symbol][safe_selected]
-                        absolute_time = index.time_features_by_family_symbol[family][symbol][safe_selected]
-                        age_days = np.maximum(0.0, (origin_timestamps_ms[rows, None].astype(np.float64) - selected_starts.astype(np.float64)) / 86_400_000.0).astype(np.float32)
-                        relative_time = np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)
-                        gathered_time = np.concatenate([absolute_time, relative_time], axis=-1).astype(np.float32, copy=False)
+                        gathered_time = _bar_time_feature_matrix(selected_starts.astype(np.int64, copy=False) * 1000, origin_timestamps_ms[rows, None].astype(np.int64, copy=False) * 1000)
+                        selected_ends = selected_starts + 86_400_000
+                        gathered_end_time = _bar_end_time_feature_matrix(selected_ends.astype(np.int64, copy=False) * 1000, origin_timestamps_ms[rows, None].astype(np.int64, copy=False) * 1000)
                         gathered_time[~selected_mask] = 0.0
+                        gathered_end_time[~selected_mask] = 0.0
                         family_values[family][rows] = gathered[:, :, BAR_SOURCE_FEATURE_COLUMNS[family]]
                         family_masks[family][rows] = selected_mask
                         family_time_features[family][rows] = gathered_time
+                        family_end_time_features[family][rows] = gathered_end_time
                         if family == "trade":
                             values[rows] = gathered
                             mask[rows] = selected_mask
                             time_features[rows] = gathered_time
+                            end_time_features[rows] = gathered_end_time
                         profile["bar_gather_seconds"] = float(profile["bar_gather_seconds"]) + (time.perf_counter() - gather_start)
                 payload = {
                     "values": values,
                     "mask": mask,
                     "time_features": time_features,
+                    "start_time_features": time_features,
+                    "end_time_features": end_time_features,
                     "time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
+                    "start_time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
+                    "end_time_feature_names": np.asarray(BAR_END_FEATURE_COLUMNS, dtype=object),
                     "offsets": offsets.astype(np.int32, copy=False),
                     "feature_names": np.asarray(BAR_FEATURE_KEYS, dtype=object),
                 }
@@ -1857,6 +1893,8 @@ class DailyIndexBatchMaterializer:
                     payload[f"{family}_values"] = family_values[family]
                     payload[f"{family}_mask"] = family_masks[family]
                     payload[f"{family}_time_features"] = family_time_features[family]
+                    payload[f"{family}_start_time_features"] = family_time_features[family]
+                    payload[f"{family}_end_time_features"] = family_end_time_features[family]
                     payload[f"{family}_feature_names"] = np.asarray(BAR_SOURCE_FEATURE_KEYS[family], dtype=object)
                 out[key] = payload
                 continue
@@ -1864,9 +1902,11 @@ class DailyIndexBatchMaterializer:
             values = np.zeros((len(refs), 0, int(offsets.shape[0]), len(BAR_FEATURE_KEYS)), dtype=np.float32)
             mask = np.zeros((len(refs), 0, int(offsets.shape[0])), dtype=np.bool_)
             time_features = np.zeros((len(refs), 0, int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
+            end_time_features = np.zeros((len(refs), 0, int(offsets.shape[0]), len(BAR_END_FEATURE_COLUMNS)), dtype=np.float32)
             family_values: dict[str, np.ndarray] = {}
             family_masks: dict[str, np.ndarray] = {}
             family_time_features: dict[str, np.ndarray] = {}
+            family_end_time_features: dict[str, np.ndarray] = {}
             symbol_array = np.asarray([], dtype=object)
             for part_index, rows in grouped_rows.items():
                 part = parts[int(part_index)]
@@ -1881,6 +1921,7 @@ class DailyIndexBatchMaterializer:
                     values = np.zeros((len(refs), len(symbols), int(offsets.shape[0]), len(BAR_FEATURE_KEYS)), dtype=np.float32)
                     mask = np.zeros((len(refs), len(symbols), int(offsets.shape[0])), dtype=np.bool_)
                     time_features = np.zeros((len(refs), len(symbols), int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
+                    end_time_features = np.zeros((len(refs), len(symbols), int(offsets.shape[0]), len(BAR_END_FEATURE_COLUMNS)), dtype=np.float32)
                     family_values = {
                         family: np.zeros((len(refs), len(symbols), int(offsets.shape[0]), len(BAR_SOURCE_FEATURE_KEYS[family])), dtype=np.float32)
                         for family in BAR_FAMILY_KEYS
@@ -1891,6 +1932,10 @@ class DailyIndexBatchMaterializer:
                     }
                     family_time_features = {
                         family: np.zeros((len(refs), len(symbols), int(offsets.shape[0]), len(BAR_TIME_FEATURE_COLUMNS)), dtype=np.float32)
+                        for family in BAR_FAMILY_KEYS
+                    }
+                    family_end_time_features = {
+                        family: np.zeros((len(refs), len(symbols), int(offsets.shape[0]), len(BAR_END_FEATURE_COLUMNS)), dtype=np.float32)
                         for family in BAR_FAMILY_KEYS
                     }
                     symbol_array = np.asarray(symbols, dtype=object)
@@ -1907,24 +1952,30 @@ class DailyIndexBatchMaterializer:
                         gathered = index.values_by_family_symbol[family][symbol][safe_selected]
                         gathered[~selected_mask] = 0.0
                         selected_starts = starts_by_symbol[symbol][safe_selected]
-                        absolute_time = index.time_features_by_family_symbol[family][symbol][safe_selected]
-                        age_days = np.maximum(0.0, (origin_timestamps_ms[rows, None].astype(np.float64) - selected_starts.astype(np.float64)) / 86_400_000.0).astype(np.float32)
-                        relative_time = np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)
-                        gathered_time = np.concatenate([absolute_time, relative_time], axis=-1).astype(np.float32, copy=False)
+                        gathered_time = _bar_time_feature_matrix(selected_starts.astype(np.int64, copy=False) * 1000, origin_timestamps_ms[rows, None].astype(np.int64, copy=False) * 1000)
+                        selected_ends = selected_starts + 86_400_000
+                        gathered_end_time = _bar_end_time_feature_matrix(selected_ends.astype(np.int64, copy=False) * 1000, origin_timestamps_ms[rows, None].astype(np.int64, copy=False) * 1000)
                         gathered_time[~selected_mask] = 0.0
+                        gathered_end_time[~selected_mask] = 0.0
                         family_values[family][rows, symbol_index] = gathered[:, :, BAR_SOURCE_FEATURE_COLUMNS[family]]
                         family_masks[family][rows, symbol_index] = selected_mask
                         family_time_features[family][rows, symbol_index] = gathered_time
+                        family_end_time_features[family][rows, symbol_index] = gathered_end_time
                         if family == "trade":
                             values[rows, symbol_index] = gathered
                             mask[rows, symbol_index] = selected_mask
                             time_features[rows, symbol_index] = gathered_time
+                            end_time_features[rows, symbol_index] = gathered_end_time
                 profile["bar_gather_seconds"] = float(profile["bar_gather_seconds"]) + (time.perf_counter() - gather_start)
             payload = {
                 "values": values,
                 "mask": mask,
                 "time_features": time_features,
+                "start_time_features": time_features,
+                "end_time_features": end_time_features,
                 "time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
+                "start_time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
+                "end_time_feature_names": np.asarray(BAR_END_FEATURE_COLUMNS, dtype=object),
                 "offsets": offsets.astype(np.int32, copy=False),
                 "symbols": symbol_array,
                 "feature_names": np.asarray(BAR_FEATURE_KEYS, dtype=object),
@@ -1937,6 +1988,8 @@ class DailyIndexBatchMaterializer:
                 payload[f"{family}_values"] = family_values.get(family, empty_family_values)
                 payload[f"{family}_mask"] = family_masks.get(family, np.zeros_like(mask))
                 payload[f"{family}_time_features"] = family_time_features.get(family, np.zeros_like(time_features))
+                payload[f"{family}_start_time_features"] = family_time_features.get(family, np.zeros_like(time_features))
+                payload[f"{family}_end_time_features"] = family_end_time_features.get(family, np.zeros_like(end_time_features))
                 payload[f"{family}_feature_names"] = np.asarray(BAR_SOURCE_FEATURE_KEYS[family], dtype=object)
             out[key] = payload
         return out, profile
@@ -2006,6 +2059,8 @@ class DailyIndexBatchMaterializer:
                     payload["leader_horizon_mask"][output_row, group_index, leader_position] = _fill_scanner_values_from_artifact_row(
                         payload["leader_values"][output_row, group_index, leader_position],
                         payload["leader_time_features"][output_row, group_index, leader_position],
+                        payload["leader_start_time_features"][output_row, group_index, leader_position],
+                        payload["leader_end_time_features"][output_row, group_index, leader_position],
                         index=index,
                         artifact_row=artifact_row,
                         horizons=horizons,
@@ -2027,6 +2082,8 @@ class DailyIndexBatchMaterializer:
                     payload["origin_horizon_mask"][output_row, group_index] = _fill_scanner_values_from_artifact_row(
                         payload["origin_values"][output_row, group_index],
                         payload["origin_time_features"][output_row, group_index],
+                        payload["origin_start_time_features"][output_row, group_index],
+                        payload["origin_end_time_features"][output_row, group_index],
                         index=index,
                         artifact_row=origin_artifact_row,
                         horizons=horizons,
@@ -3769,6 +3826,30 @@ def _absolute_utc_time_feature_matrix(timestamps_us: np.ndarray) -> np.ndarray:
     ).astype(np.float32, copy=False)
 
 
+def _bar_time_feature_matrix(timestamps_us: np.ndarray, origins_us: np.ndarray) -> np.ndarray:
+    source = np.asarray(timestamps_us, dtype=np.int64)
+    origin = np.asarray(origins_us, dtype=np.int64)
+    source, origin = np.broadcast_arrays(source, origin)
+    absolute = _absolute_utc_time_feature_matrix(source.reshape(-1)).reshape((*source.shape, -1))
+    age_days = np.maximum(0.0, (origin.astype(np.float64) - source.astype(np.float64)) / 86_400_000_000.0).astype(np.float32)
+    return np.concatenate(
+        [absolute, np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)],
+        axis=-1,
+    ).astype(np.float32, copy=False)
+
+
+def _bar_end_time_feature_matrix(timestamps_us: np.ndarray, origins_us: np.ndarray) -> np.ndarray:
+    source = np.asarray(timestamps_us, dtype=np.int64)
+    origin = np.asarray(origins_us, dtype=np.int64)
+    source, origin = np.broadcast_arrays(source, origin)
+    absolute = _absolute_utc_time_feature_matrix(source.reshape(-1)).reshape((*source.shape, -1))
+    age_days = np.maximum(0.0, (origin.astype(np.float64) - source.astype(np.float64)) / 86_400_000_000.0).astype(np.float32)
+    return np.concatenate(
+        [absolute, np.stack([age_days, np.log1p(age_days.astype(np.float64)).astype(np.float32)], axis=-1)],
+        axis=-1,
+    ).astype(np.float32, copy=False)
+
+
 def _relative_time_feature_matrix(timestamps_us: np.ndarray, origins_us: np.ndarray) -> np.ndarray:
     source = np.asarray(timestamps_us, dtype=np.int64)
     origin = np.asarray(origins_us, dtype=np.int64)
@@ -4067,12 +4148,16 @@ def _empty_scanner_payload(sample_count: int, config: DailyIndexLoaderConfig) ->
         "leader_mask": np.zeros((sample_count, group_count, top_k), dtype=np.bool_),
         "leader_horizon_mask": np.zeros((sample_count, group_count, top_k, horizon_count), dtype=np.bool_),
         "leader_time_features": np.zeros((sample_count, group_count, top_k, horizon_count, time_width), dtype=np.float32),
+        "leader_start_time_features": np.zeros((sample_count, group_count, top_k, horizon_count, time_width), dtype=np.float32),
+        "leader_end_time_features": np.zeros((sample_count, group_count, top_k, horizon_count, len(BAR_END_FEATURE_COLUMNS)), dtype=np.float32),
         "leader_ticker_id": np.zeros((sample_count, group_count, top_k), dtype=np.int64),
         "leader_rank": np.zeros((sample_count, group_count, top_k), dtype=np.int64),
         "origin_values": np.zeros((sample_count, group_count, horizon_count, family_count, max_feature_width), dtype=np.float32),
         "origin_mask": np.zeros((sample_count, group_count), dtype=np.bool_),
         "origin_horizon_mask": np.zeros((sample_count, group_count, horizon_count), dtype=np.bool_),
         "origin_time_features": np.zeros((sample_count, group_count, horizon_count, time_width), dtype=np.float32),
+        "origin_start_time_features": np.zeros((sample_count, group_count, horizon_count, time_width), dtype=np.float32),
+        "origin_end_time_features": np.zeros((sample_count, group_count, horizon_count, len(BAR_END_FEATURE_COLUMNS)), dtype=np.float32),
         "origin_rank": np.zeros((sample_count, group_count), dtype=np.int64),
         "origin_in_topk": np.zeros((sample_count, group_count), dtype=np.bool_),
         "origin_topk_position": np.full((sample_count, group_count), -1, dtype=np.int64),
@@ -4083,12 +4168,16 @@ def _empty_scanner_payload(sample_count: int, config: DailyIndexLoaderConfig) ->
         "feature_names": np.asarray(tuple(BAR_FAMILY_FEATURE_KEYS["quote_bid"]), dtype=object),
         "numeric_feature_names": np.asarray(SCANNER_NUMERIC_FEATURE_KEYS, dtype=object),
         "time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
+        "start_time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
+        "end_time_feature_names": np.asarray(BAR_END_FEATURE_COLUMNS, dtype=object),
     }
 
 
 def _fill_scanner_values_from_artifact_row(
     values: np.ndarray,
     time_features: np.ndarray,
+    start_time_features: np.ndarray,
+    end_time_features: np.ndarray,
     *,
     index: ScannerArtifactIndex,
     artifact_row: int,
@@ -4115,13 +4204,40 @@ def _fill_scanner_values_from_artifact_row(
                     any_available = True
         if any_available:
             horizon_mask[horizon_index] = True
-            absolute = _absolute_utc_time_feature_matrix(np.asarray([scanner_timestamp_us], dtype=np.int64))[0]
-            age_days = max(0.0, (float(origin_timestamp_us) - float(scanner_timestamp_us)) / 86_400_000_000.0)
-            time_features[horizon_index] = np.concatenate(
-                [absolute, np.asarray([age_days, math.log1p(age_days)], dtype=np.float32)],
-                axis=0,
-            ).astype(np.float32, copy=False)
+            start_us, end_us = _scanner_horizon_start_end_us(index=index, row=row, horizon=horizon)
+            if start_us <= 0 or end_us <= 0:
+                end_us = int(scanner_timestamp_us)
+                start_us = max(0, int(end_us) - int(_duration_us(horizon)))
+            start_features = _bar_time_feature_matrix(np.asarray([start_us], dtype=np.int64), np.asarray([origin_timestamp_us], dtype=np.int64))[0]
+            end_features = _bar_end_time_feature_matrix(np.asarray([end_us], dtype=np.int64), np.asarray([origin_timestamp_us], dtype=np.int64))[0]
+            time_features[horizon_index] = start_features
+            start_time_features[horizon_index] = start_features
+            end_time_features[horizon_index] = end_features
     return horizon_mask
+
+
+def _scanner_horizon_start_end_us(*, index: ScannerArtifactIndex, row: int, horizon: str) -> tuple[int, int]:
+    try:
+        source_date = str(index.source_date[int(row)])[:10]
+        local_midnight_us = _ny_local_midnight_utc_us(source_date)
+        scanner_resolution_values = index.columns.get("scanner_resolution_us")
+        scanner_resolution_us = int(scanner_resolution_values[int(row)]) if scanner_resolution_values is not None and int(scanner_resolution_values.shape[0]) > int(row) else 1_000_000
+        scanner_bucket = int(index.bucket[int(row)])
+        horizon_us = _duration_us(str(horizon))
+        resolution_us = _intraday_label_resolution_us(str(horizon), int(horizon_us))
+        scanner_end_session_us = (scanner_bucket + 1) * max(1, int(scanner_resolution_us))
+        join_bucket = max(int(SESSION_START_US // int(resolution_us)), int(scanner_end_session_us // int(resolution_us)) - 1)
+        start_us = int(local_midnight_us) + int(join_bucket) * int(resolution_us)
+        end_us = int(local_midnight_us) + int(join_bucket + 1) * int(resolution_us)
+        return start_us, end_us
+    except Exception:
+        return 0, 0
+
+
+def _ny_local_midnight_utc_us(source_date: str) -> int:
+    local_date = dt.date.fromisoformat(str(source_date)[:10])
+    local_midnight = dt.datetime.combine(local_date, dt.time(0, 0), tzinfo=ZoneInfo("America/New_York"))
+    return int(local_midnight.astimezone(dt.timezone.utc).timestamp() * 1_000_000)
 
 
 def _scanner_column_token(value: str) -> str:
@@ -4365,19 +4481,39 @@ def _validate_materialized_time_feature_contract(
     for group, payload in bar_inputs.items():
         if _payload_array_has_rows(payload, "values"):
             _assert_payload_time_array(payload, "time_features", len(BAR_TIME_FEATURE_COLUMNS), f"bar_inputs.{group}.time_features")
+            _assert_payload_time_array(payload, "start_time_features", len(BAR_TIME_FEATURE_COLUMNS), f"bar_inputs.{group}.start_time_features")
+            _assert_payload_time_array(payload, "end_time_features", len(BAR_END_FEATURE_COLUMNS), f"bar_inputs.{group}.end_time_features")
         names = tuple(str(name) for name in payload.get("time_feature_names", ()))
         if names and names != BAR_TIME_FEATURE_COLUMNS:
             raise RuntimeError(f"bar_inputs.{group}.time_feature_names does not match the loader time-feature contract.")
+        start_names = tuple(str(name) for name in payload.get("start_time_feature_names", ()))
+        if start_names and start_names != BAR_TIME_FEATURE_COLUMNS:
+            raise RuntimeError(f"bar_inputs.{group}.start_time_feature_names does not match the loader time-feature contract.")
+        end_names = tuple(str(name) for name in payload.get("end_time_feature_names", ()))
+        if end_names and end_names != BAR_END_FEATURE_COLUMNS:
+            raise RuntimeError(f"bar_inputs.{group}.end_time_feature_names does not match the loader time-feature contract.")
         for family in BAR_FAMILY_KEYS:
             if _payload_array_has_rows(payload, f"{family}_values"):
                 _assert_payload_time_array(payload, f"{family}_time_features", len(BAR_TIME_FEATURE_COLUMNS), f"bar_inputs.{group}.{family}_time_features")
+                _assert_payload_time_array(payload, f"{family}_start_time_features", len(BAR_TIME_FEATURE_COLUMNS), f"bar_inputs.{group}.{family}_start_time_features")
+                _assert_payload_time_array(payload, f"{family}_end_time_features", len(BAR_END_FEATURE_COLUMNS), f"bar_inputs.{group}.{family}_end_time_features")
 
     if _payload_array_has_rows(scanner_inputs, "leader_values"):
         _assert_payload_time_array(scanner_inputs, "leader_time_features", len(BAR_TIME_FEATURE_COLUMNS), "scanner_inputs.leader_time_features")
+        _assert_payload_time_array(scanner_inputs, "leader_start_time_features", len(BAR_TIME_FEATURE_COLUMNS), "scanner_inputs.leader_start_time_features")
+        _assert_payload_time_array(scanner_inputs, "leader_end_time_features", len(BAR_END_FEATURE_COLUMNS), "scanner_inputs.leader_end_time_features")
         _assert_payload_time_array(scanner_inputs, "origin_time_features", len(BAR_TIME_FEATURE_COLUMNS), "scanner_inputs.origin_time_features")
+        _assert_payload_time_array(scanner_inputs, "origin_start_time_features", len(BAR_TIME_FEATURE_COLUMNS), "scanner_inputs.origin_start_time_features")
+        _assert_payload_time_array(scanner_inputs, "origin_end_time_features", len(BAR_END_FEATURE_COLUMNS), "scanner_inputs.origin_end_time_features")
         names = tuple(str(name) for name in scanner_inputs.get("time_feature_names", ()))
         if names and names != BAR_TIME_FEATURE_COLUMNS:
             raise RuntimeError("scanner_inputs.time_feature_names does not match the loader time-feature contract.")
+        start_names = tuple(str(name) for name in scanner_inputs.get("start_time_feature_names", ()))
+        if start_names and start_names != BAR_TIME_FEATURE_COLUMNS:
+            raise RuntimeError("scanner_inputs.start_time_feature_names does not match the loader time-feature contract.")
+        end_names = tuple(str(name) for name in scanner_inputs.get("end_time_feature_names", ()))
+        if end_names and end_names != BAR_END_FEATURE_COLUMNS:
+            raise RuntimeError("scanner_inputs.end_time_feature_names does not match the loader time-feature contract.")
 
 
 def _payload_array_has_rows(payload: Mapping[str, Any], key: str) -> bool:
@@ -6091,16 +6227,22 @@ def _intraday_bar_payload(
     values: np.ndarray,
     mask: np.ndarray,
     time_features: np.ndarray,
+    end_time_features: np.ndarray,
     family_values: dict[str, np.ndarray],
     family_masks: dict[str, np.ndarray],
     family_time_features: dict[str, np.ndarray],
+    family_end_time_features: dict[str, np.ndarray],
     horizons: tuple[str, ...],
 ) -> dict[str, np.ndarray]:
     payload: dict[str, np.ndarray] = {
         "values": values,
         "mask": mask,
         "time_features": time_features,
+        "start_time_features": time_features,
+        "end_time_features": end_time_features,
         "time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
+        "start_time_feature_names": np.asarray(BAR_TIME_FEATURE_COLUMNS, dtype=object),
+        "end_time_feature_names": np.asarray(BAR_END_FEATURE_COLUMNS, dtype=object),
         "horizons": np.asarray(horizons, dtype=object),
         "feature_names": np.asarray(BAR_FEATURE_KEYS, dtype=object),
     }
@@ -6108,6 +6250,8 @@ def _intraday_bar_payload(
         payload[f"{family}_values"] = family_values[family]
         payload[f"{family}_mask"] = family_masks[family]
         payload[f"{family}_time_features"] = family_time_features[family]
+        payload[f"{family}_start_time_features"] = family_time_features[family]
+        payload[f"{family}_end_time_features"] = family_end_time_features[family]
         payload[f"{family}_feature_names"] = np.asarray(BAR_SOURCE_FEATURE_KEYS[family], dtype=object)
     return payload
 
@@ -6400,7 +6544,7 @@ def _bar_offsets_for_group(config: DailyIndexLoaderConfig, group: str) -> tuple[
 
 def _prepare_daily_bar_context_index(frame: Any) -> DailyBarContextIndex:
     if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
-        return DailyBarContextIndex(symbols=(), families=(), bar_start_ms_by_family_symbol={}, values_by_family_symbol={}, time_features_by_family_symbol={})
+        return DailyBarContextIndex(symbols=(), families=(), bar_start_ms_by_family_symbol={}, values_by_family_symbol={}, start_time_features_by_family_symbol={}, end_time_features_by_family_symbol={})
     missing = [column for column in ("sym", "bar_start_ms", *BAR_FEATURE_KEYS) if column not in getattr(frame, "columns", ())]
     if missing:
         raise RuntimeError(f"Daily bar context is missing required columns: {', '.join(missing)}")
@@ -6413,35 +6557,39 @@ def _prepare_daily_bar_context_index(frame: Any) -> DailyBarContextIndex:
         families = np.full((int(frame.height),), "trade", dtype=object)
     starts = frame.get_column("bar_start_ms").to_numpy().astype(np.int64, copy=False)
     values = frame.select(list(BAR_FEATURE_KEYS)).to_numpy().astype(np.float32, copy=False)
-    time_features = _cached_or_computed_time_feature_matrix(frame, BAR_START_TIME_FEATURE_COLUMNS, starts.astype(np.int64, copy=False) * 1000)
     order = np.lexsort((starts, symbols, families))
     families = families[order]
     symbols = symbols[order]
     starts = starts[order]
     values = values[order]
-    time_features = time_features[order]
+    start_time_features = _absolute_utc_time_feature_matrix(starts.astype(np.int64, copy=False) * 1000)
+    end_time_features = _absolute_utc_time_feature_matrix((starts.astype(np.int64, copy=False) + 86_400_000) * 1000)
     unique_symbols = tuple(str(symbol) for symbol in np.unique(symbols))
     unique_families = tuple(str(family) for family in np.unique(families))
     starts_by_family_symbol: dict[str, dict[str, np.ndarray]] = {}
     values_by_family_symbol: dict[str, dict[str, np.ndarray]] = {}
-    time_by_family_symbol: dict[str, dict[str, np.ndarray]] = {}
+    start_time_by_family_symbol: dict[str, dict[str, np.ndarray]] = {}
+    end_time_by_family_symbol: dict[str, dict[str, np.ndarray]] = {}
     for family in unique_families:
         starts_by_family_symbol[family] = {}
         values_by_family_symbol[family] = {}
-        time_by_family_symbol[family] = {}
+        start_time_by_family_symbol[family] = {}
+        end_time_by_family_symbol[family] = {}
         family_rows = families == family
         family_symbols = symbols[family_rows]
         for symbol in tuple(str(value) for value in np.unique(family_symbols)):
             rows = family_rows & (symbols == symbol)
             starts_by_family_symbol[family][symbol] = starts[rows]
             values_by_family_symbol[family][symbol] = values[rows]
-            time_by_family_symbol[family][symbol] = time_features[rows]
+            start_time_by_family_symbol[family][symbol] = start_time_features[rows]
+            end_time_by_family_symbol[family][symbol] = end_time_features[rows]
     return DailyBarContextIndex(
         symbols=unique_symbols,
         families=unique_families,
         bar_start_ms_by_family_symbol=starts_by_family_symbol,
         values_by_family_symbol=values_by_family_symbol,
-        time_features_by_family_symbol=time_by_family_symbol,
+        start_time_features_by_family_symbol=start_time_by_family_symbol,
+        end_time_features_by_family_symbol=end_time_by_family_symbol,
     )
 
 

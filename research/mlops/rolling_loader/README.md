@@ -173,10 +173,13 @@ The loader output shape is:
 | `scanner_inputs["leader_values"]` | `[B,G,K,H,3,F]` | Top-K leader bars by scanner group, horizon, and bar family. |
 | `scanner_inputs["leader_mask"]` | `[B,G,K]` | True when a leader slot exists. |
 | `scanner_inputs["leader_horizon_mask"]` | `[B,G,K,H]` | True when that leader has at least one real bar family for the horizon. False means the zero values are padding. |
-| `scanner_inputs["leader_time_features"]` | `[B,G,K,H,9]` | Bar-end/start time features for leader bars. |
+| `scanner_inputs["leader_start_time_features"]` | `[B,G,K,H,9]` | Bar-start UTC features plus age from origin for leader bars. |
+| `scanner_inputs["leader_end_time_features"]` | `[B,G,K,H,9]` | Bar-end UTC features plus age from origin for leader bars. |
 | `scanner_inputs["origin_values"]` | `[B,G,H,3,F]` | Origin ticker bars for comparison with each scanner group. |
 | `scanner_inputs["origin_mask"]` | `[B,G]` | True when origin ticker scanner comparison is available. |
 | `scanner_inputs["origin_horizon_mask"]` | `[B,G,H]` | True when the origin ticker has at least one real bar family for the horizon. False means the zero values are padding. |
+| `scanner_inputs["origin_start_time_features"]` | `[B,G,H,9]` | Bar-start UTC features plus age from origin for origin-comparison bars. |
+| `scanner_inputs["origin_end_time_features"]` | `[B,G,H,9]` | Bar-end UTC features plus age from origin for origin-comparison bars. |
 | `scanner_inputs["origin_rank"]` | `[B,G]` | Origin ticker rank in each scanner group. |
 | `scanner_inputs["origin_in_topk"]` | `[B,G]` | Whether the origin ticker is one of the leaders. |
 
@@ -207,9 +210,9 @@ ticker daily context, and global daily context:
 
 | Group | Family value tensors | Family mask tensors | Family time tensors |
 | --- | --- | --- | --- |
-| `bar_inputs["ticker_intraday_bars"]` | `trade_values [B,H,6]`, `quote_bid_values [B,H,9]`, `quote_ask_values [B,H,9]` | each `[B,H]` | each `[B,H,9]` |
-| `bar_inputs["ticker_daily_bars"]` | `trade_values [B,O,6]`, `quote_bid_values [B,O,9]`, `quote_ask_values [B,O,9]` | each `[B,O]` | each `[B,O,9]` |
-| `bar_inputs["global_daily_bars"]` | `trade_values [B,S,O,6]`, `quote_bid_values [B,S,O,9]`, `quote_ask_values [B,S,O,9]` | each `[B,S,O]` | each `[B,S,O,9]` |
+| `bar_inputs["ticker_intraday_bars"]` | `trade_values [B,H,6]`, `quote_bid_values [B,H,9]`, `quote_ask_values [B,H,9]` | each `[B,H]` | each has `*_start_time_features [B,H,9]` and `*_end_time_features [B,H,9]` |
+| `bar_inputs["ticker_daily_bars"]` | `trade_values [B,O,6]`, `quote_bid_values [B,O,9]`, `quote_ask_values [B,O,9]` | each `[B,O]` | each has `*_start_time_features [B,O,9]` and `*_end_time_features [B,O,9]` |
+| `bar_inputs["global_daily_bars"]` | `trade_values [B,S,O,6]`, `quote_bid_values [B,S,O,9]`, `quote_ask_values [B,S,O,9]` | each `[B,S,O]` | each has `*_start_time_features [B,S,O,9]` and `*_end_time_features [B,S,O,9]` |
 
 Trade feature order is `open, close, high, low, size_sum, event_count`. Quote
 bid/ask feature order is `open, close, high, low, size_open, size_close,
@@ -232,8 +235,10 @@ The loader materialization path validates time-bearing payloads before emitting 
 | XBRL | `period_end_time_features` | 7 | period-end date features plus age from origin. |
 | corporate actions | `time_features` | 10 | availability UTC features plus delta/age from origin. |
 | corporate actions | `effective_time_features` | 10 | effective-date UTC features plus delta/age from origin. |
-| bars | `*_time_features` | 9 | bar-start UTC features plus bar age from origin. |
-| scanner context | `leader_time_features`, `origin_time_features` | 9 | scanner bar time features for leader and origin-comparison rows. |
+| bars | `*_start_time_features` | 9 | bar-start UTC features plus bar-start age from origin. |
+| bars | `*_end_time_features` | 9 | bar-end UTC features plus bar-end age from origin. |
+| scanner context | `leader_start_time_features`, `origin_start_time_features` | 9 | scanner leader/origin bar-start UTC features plus age from origin. |
+| scanner context | `leader_end_time_features`, `origin_end_time_features` | 9 | scanner leader/origin bar-end UTC features plus age from origin. |
 
 `DailyIndexLoaderConfig.validate_time_feature_contract` is enabled by default.
 When enabled, mismatched widths, missing required time tensors, or mismatched

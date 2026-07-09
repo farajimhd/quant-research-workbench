@@ -80,6 +80,16 @@ BAR_START_TIME_FEATURE_COLUMNS: tuple[str, ...] = (
     "bar_start_years_since_2000",
 )
 
+BAR_END_TIME_FEATURE_COLUMNS: tuple[str, ...] = (
+    "bar_end_utc_second_of_day_sin",
+    "bar_end_utc_second_of_day_cos",
+    "bar_end_utc_day_of_week_sin",
+    "bar_end_utc_day_of_week_cos",
+    "bar_end_utc_day_of_year_sin",
+    "bar_end_utc_day_of_year_cos",
+    "bar_end_years_since_2000",
+)
+
 CONTEXT_EFFECTIVE_TIME_FEATURE_COLUMNS: tuple[str, ...] = (
     "effective_utc_second_of_day_sin",
     "effective_utc_second_of_day_cos",

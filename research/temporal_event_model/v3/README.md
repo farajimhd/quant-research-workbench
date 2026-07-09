@@ -386,7 +386,7 @@ Labels are grouped by task:
 - `bar_inputs["ticker_daily_bars"]` and `bar_inputs["global_daily_bars"]`:
   completed daily context bars with the same `trade`, `quote_bid`, and
   `quote_ask` family schema. Each family carries matching value, mask, and
-  9-column bar-start/age time-feature tensors.
+  separate 9-column bar-start/age and bar-end/age time-feature tensors.
 - `future_bar_values`: separate `trade`, `quote_bid`, and `quote_ask` regression heads.
 - `intraday_labels`: halt/resume/news-risk/LULD and future news/SEC arrival flags.
 - `corporate_action_labels`: daily corporate-action classification horizons.
@@ -394,11 +394,16 @@ Labels are grouped by task:
 Losses are unweighted by default. Each active task contributes one masked mean
 term; the final loss is the mean of active task losses.
 
-The v3 bar encoder projects each family row together with its
-`TimeFeatureEncoder(role="bar_start")` embedding, adds family, bar-group,
-horizon/offset, and global-symbol-slot embeddings, then uses four latent query
-tokens to attend over valid bar rows. The loader output remains raw decoded bar
-values; no price normalization or z-score is applied in the default model path.
+The v3 bar encoder uses one shared `BarRowEncoder` for ticker intraday bars,
+ticker daily bars, global daily bars, and scanner bars. Each trade/bid/ask row
+is projected from raw decoded bar values plus
+`TimeFeatureEncoder(role="bar_start")` and
+`TimeFeatureEncoder(role="bar_end")` embeddings. Normal bar groups add family,
+bar-group, horizon/offset, and global-symbol-slot embeddings before latent
+attention. Scanner uses the same row encoder and adds scanner group, rank,
+top-K, ticker-id, and row-type embeddings, but still emits a separate
+`scanner_context` modality token to the fusion transformer. No price
+normalization or z-score is applied in the default model path.
 
 ## Run Artifacts
 

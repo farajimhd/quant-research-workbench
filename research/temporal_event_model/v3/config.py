@@ -64,12 +64,12 @@ EVENT_TIME_FEATURE_NAMES = (
 TIME_ROLE_NAMES = (
     "event",
     "bar_start",
+    "bar_end",
     "text_available",
     "xbrl_available",
     "xbrl_period_end",
     "corporate_available",
     "corporate_effective",
-    "scanner_bar_end",
 )
 INTRADAY_EVENT_FLAGS = (
     "condition_halt_pause_flag",
@@ -193,6 +193,9 @@ class ModelConfig:
     scanner_top_k: int = 5
     scanner_horizons: int = len(SCANNER_HORIZONS)
     scanner_numeric_dim: int = len(SCANNER_NUMERIC_FEATURES)
+    scanner_item_dim: int = 128
+    scanner_latents: int = 4
+    scanner_attention_heads: int = 4
     intraday_horizons: int = len(DEFAULT_INTRADAY_LABEL_HORIZONS)
     corporate_action_days: tuple[int, ...] = (1, 2, 3, 7, 28)
     event_feature_names: tuple[str, ...] = DEFAULT_EVENT_FEATURE_NAMES
