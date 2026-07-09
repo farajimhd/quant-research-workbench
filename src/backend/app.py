@@ -124,7 +124,7 @@ SERVICE_LOG_TAIL_LIMIT = 160
 SERVICE_TABLE_STATE_LIMIT = 32
 SERVICE_TABLE_STATE_CACHE_SECONDS = 30.0
 SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS = 20.0
-SERVICE_NEWS_HISTOGRAM_BIN_SECONDS = 300
+SERVICE_NEWS_HISTOGRAM_BIN_SECONDS = 1500
 SERVICE_TABLE_STATE_START_YEAR = 2019
 SERVICE_TABLE_TIME_COLUMN_CANDIDATES = (
     "published_at_utc",
@@ -1376,7 +1376,7 @@ def service_news_histogram() -> dict[str, Any]:
     if cached_payload and time.monotonic() - cached_at < SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS:
         return cached_payload
 
-    bin_count = int((window_end_utc - window_start_utc).total_seconds() // safe_bin_seconds)
+    bin_count = int(((window_end_utc - window_start_utc).total_seconds() + safe_bin_seconds - 1) // safe_bin_seconds)
     window_start_sql = f"toDateTime64({sql_string(window_start_utc.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
     window_end_sql = f"toDateTime64({sql_string(window_end_utc.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
     query = f"""

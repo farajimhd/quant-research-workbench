@@ -89,6 +89,7 @@ type ServiceRuntimeLogRow = {
 
 const SERVICE_IDS: ServiceId[] = ["qmd", "news", "sec", "text-embed", "reference", "ibkr"];
 const EXCHANGE_TIME_ZONE = "America/New_York";
+const VANCOUVER_TIME_ZONE = "America/Vancouver";
 
 export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNavigate: (mode: ServicePageMode) => void }) {
   const [payload, setPayload] = useState<ServicesStatusPayload | null>(null);
@@ -522,7 +523,7 @@ function NewsDailyHistogram({
   const windowRef = useRef({ end: effectiveWindowEndUtc, start: effectiveWindowStartUtc });
   const singleSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const broadSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const [hover, setHover] = useState<{ broad: number; et: string; single: number; utc: string } | null>(null);
+  const [hover, setHover] = useState<{ broad: number; et: string; single: number; utc: string; van: string } | null>(null);
   dataRef.current = effectiveData;
   binSecondsRef.current = binSeconds;
   windowRef.current = { end: effectiveWindowEndUtc, start: effectiveWindowStartUtc };
@@ -578,6 +579,7 @@ function NewsDailyHistogram({
         et: formatZoneDateTime(new Date(Date.parse(bucket.bucketUtc)), EXCHANGE_TIME_ZONE),
         single: bucket.singleTickerRows,
         utc: formatUtcDateTime(bucket.bucketUtc),
+        van: formatZoneDateTime(new Date(Date.parse(bucket.bucketUtc)), VANCOUVER_TIME_ZONE),
       });
     });
     const resizeObserver = new ResizeObserver((entries) => {
@@ -612,7 +614,7 @@ function NewsDailyHistogram({
   return (
     <div className="news-live-histogram">
       <div className="news-live-histogram-label">
-        <span>Today from DB / 24h fixed axis / {formatCompactNumber(binSeconds)}s bins</span>
+        <span>Today from DB / 24h fixed axis / {binSeconds}s bins</span>
         <div className="news-live-histogram-legend">
           <span className="single">1 ticker <strong>{formatCompactNumber(singleTotal)}</strong></span>
           <span className="broad">0 or 2+ tickers <strong>{formatCompactNumber(broadTotal)}</strong></span>
@@ -622,6 +624,7 @@ function NewsDailyHistogram({
       {hover ? (
         <div className="news-live-histogram-hover">
           <strong>{hover.et}</strong>
+          <span>VAN {hover.van}</span>
           <span>UTC {hover.utc}</span>
           <span>1 ticker {formatCompactNumber(hover.single)}</span>
           <span>0 or 2+ {formatCompactNumber(hover.broad)}</span>
@@ -855,10 +858,10 @@ function historiesEqual(left: NewsPollHistoryRow[], right: NewsPollHistoryRow[])
 }
 
 function useNewsDailyHistogram(enabled: boolean) {
-  const [payload, setPayload] = useState<NewsDailyHistogramState>(() => defaultNewsHistogramWindow(300));
+  const [payload, setPayload] = useState<NewsDailyHistogramState>(() => defaultNewsHistogramWindow(1500));
   useEffect(() => {
     if (!enabled) {
-      setPayload(defaultNewsHistogramWindow(300));
+      setPayload(defaultNewsHistogramWindow(1500));
       return undefined;
     }
     let cancelled = false;
@@ -866,7 +869,7 @@ function useNewsDailyHistogram(enabled: boolean) {
       try {
         const response = await api<NewsHistogramPayload>("/api/services/news/histogram");
         if (cancelled) return;
-        const binSeconds = Number(response.bin_seconds || 300);
+        const binSeconds = Number(response.bin_seconds || 1500);
         const defaultWindow = defaultNewsHistogramWindow(binSeconds);
         const windowStartUtc = response.window_start_utc || defaultWindow.windowStartUtc;
         const windowEndUtc = response.window_end_utc || defaultWindow.windowEndUtc;
@@ -890,7 +893,7 @@ function useNewsDailyHistogram(enabled: boolean) {
         });
       } catch (exc) {
         if (cancelled) return;
-        setPayload({ ...defaultNewsHistogramWindow(300), error: exc instanceof Error ? exc.message : String(exc) });
+        setPayload({ ...defaultNewsHistogramWindow(1500), error: exc instanceof Error ? exc.message : String(exc) });
       }
     }
     void load();
@@ -992,7 +995,7 @@ function defaultNewsHistogramWindow(binSeconds: number): NewsDailyHistogramState
   const start = zonedDateTimeToUtc(year, month, day, 0, 0, EXCHANGE_TIME_ZONE);
   const nextDay = nextCalendarDate(year, month, day);
   const end = zonedDateTimeToUtc(nextDay.year, nextDay.month, nextDay.day, 0, 0, EXCHANGE_TIME_ZONE);
-  const totalBins = Math.max(0, Math.floor((end.getTime() - start.getTime()) / (binSeconds * 1000)));
+  const totalBins = Math.max(0, Math.ceil((end.getTime() - start.getTime()) / (binSeconds * 1000)));
   const elapsedBins = Math.max(0, Math.min(totalBins, Math.ceil((Date.now() - start.getTime()) / (binSeconds * 1000))));
   const rows = Array.from({ length: elapsedBins }, (_, index) => {
     const bucketUtc = new Date(start.getTime() + index * binSeconds * 1000).toISOString();
