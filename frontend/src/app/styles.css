@@ -1145,6 +1145,7 @@ button {
   display: grid;
   gap: 6px;
   padding: 8px 10px 0;
+  position: relative;
 }
 
 .news-live-histogram-label {
@@ -1218,6 +1219,7 @@ button {
   background: color-mix(in oklab, var(--surface-alt) 70%, var(--surface));
   border: 1px solid var(--border);
   border-radius: 6px;
+  box-shadow: 0 8px 20px rgb(15 23 42 / 10%);
   color: var(--muted-foreground);
   display: flex;
   flex-wrap: wrap;
@@ -1225,6 +1227,11 @@ button {
   gap: 8px;
   line-height: 1.2;
   padding: 5px 7px;
+  pointer-events: none;
+  position: absolute;
+  right: 12px;
+  top: 38px;
+  z-index: 3;
 }
 
 .news-live-histogram-hover strong {

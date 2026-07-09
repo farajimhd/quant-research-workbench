@@ -484,11 +484,12 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
 function NewsDailyHistogram({ binSeconds, data, error }: { binSeconds: number; data: NewsDailyHistogramDatum[]; error: string }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const dataRef = useRef<NewsDailyHistogramDatum[]>(data);
+  const effectiveData = useMemo(() => data.length ? data : defaultNewsHistogramData(binSeconds), [binSeconds, data]);
+  const dataRef = useRef<NewsDailyHistogramDatum[]>(effectiveData);
   const singleSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const broadSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const [hover, setHover] = useState<{ broad: number; et: string; single: number; utc: string } | null>(null);
-  dataRef.current = data;
+  dataRef.current = effectiveData;
 
   useEffect(() => {
     const element = containerRef.current;
@@ -546,7 +547,7 @@ function NewsDailyHistogram({ binSeconds, data, error }: { binSeconds: number; d
     const resizeObserver = new ResizeObserver((entries) => {
       const width = Math.floor(entries[0]?.contentRect.width ?? element.clientWidth);
       chart.applyOptions({ width: Math.max(280, width) });
-      chart.timeScale().fitContent();
+      setNewsHistogramVisibleRange(chart, dataRef.current, binSeconds);
     });
     resizeObserver.observe(element);
     return () => {
@@ -564,13 +565,13 @@ function NewsDailyHistogram({ binSeconds, data, error }: { binSeconds: number; d
     const chart = chartRef.current;
     if (!singleSeries || !broadSeries || !chart) return;
     const offset = Math.max(1, Math.floor(binSeconds / 3));
-    singleSeries.setData(data.map((row) => ({ time: newsBucketChartTime(row.bucketUtc, offset), value: row.singleTickerRows })));
-    broadSeries.setData(data.map((row) => ({ time: newsBucketChartTime(row.bucketUtc, offset * 2), value: row.broadOrNoneRows })));
-    chart.timeScale().fitContent();
-  }, [binSeconds, data]);
+    singleSeries.setData(effectiveData.map((row) => ({ time: newsBucketChartTime(row.bucketUtc, offset), value: row.singleTickerRows })));
+    broadSeries.setData(effectiveData.map((row) => ({ time: newsBucketChartTime(row.bucketUtc, offset * 2), value: row.broadOrNoneRows })));
+    setNewsHistogramVisibleRange(chart, effectiveData, binSeconds);
+  }, [binSeconds, effectiveData]);
 
-  const singleTotal = data.reduce((sum, row) => sum + row.singleTickerRows, 0);
-  const broadTotal = data.reduce((sum, row) => sum + row.broadOrNoneRows, 0);
+  const singleTotal = effectiveData.reduce((sum, row) => sum + row.singleTickerRows, 0);
+  const broadTotal = effectiveData.reduce((sum, row) => sum + row.broadOrNoneRows, 0);
   const total = singleTotal + broadTotal;
   return (
     <div className="news-live-histogram">
@@ -928,6 +929,59 @@ function newsBucketChartTime(bucketUtc: string, offsetSeconds: number): Time {
   const parsed = Date.parse(bucketUtc);
   const seconds = Number.isFinite(parsed) ? Math.floor(parsed / 1000) + offsetSeconds : Math.floor(Date.now() / 1000);
   return seconds as Time;
+}
+
+function setNewsHistogramVisibleRange(chart: IChartApi, rows: NewsDailyHistogramDatum[], binSeconds: number) {
+  if (!rows.length) return;
+  const first = Date.parse(rows[0].bucketUtc);
+  const last = Date.parse(rows[rows.length - 1].bucketUtc);
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return;
+  chart.timeScale().setVisibleRange({
+    from: Math.floor(first / 1000) as Time,
+    to: (Math.floor(last / 1000) + binSeconds) as Time,
+  });
+}
+
+function defaultNewsHistogramData(binSeconds: number): NewsDailyHistogramDatum[] {
+  const { day, month, year } = exchangeDateParts(new Date());
+  const start = zonedDateTimeToUtc(year, month, day, 0, 0, EXCHANGE_TIME_ZONE);
+  const bins = Math.floor((12 * 60 * 60) / binSeconds);
+  return Array.from({ length: bins }, (_, index) => {
+    const bucketUtc = new Date(start.getTime() + index * binSeconds * 1000).toISOString();
+    return { broadOrNoneRows: 0, bucketUtc, singleTickerRows: 0, totalRows: 0 };
+  });
+}
+
+function exchangeDateParts(value: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: EXCHANGE_TIME_ZONE,
+    year: "numeric",
+  }).formatToParts(value);
+  const part = (type: string) => Number(parts.find((item) => item.type === type)?.value || "0");
+  return { day: part("day"), month: part("month"), year: part("year") };
+}
+
+function zonedDateTimeToUtc(year: number, month: number, day: number, hour: number, minute: number, timeZone: string) {
+  const target = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  let utc = target;
+  for (let index = 0; index < 3; index += 1) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      day: "2-digit",
+      hour: "2-digit",
+      hourCycle: "h23",
+      minute: "2-digit",
+      month: "2-digit",
+      second: "2-digit",
+      timeZone,
+      year: "numeric",
+    }).formatToParts(new Date(utc));
+    const part = (type: string) => Number(parts.find((item) => item.type === type)?.value || "0");
+    const asUtc = Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"), part("second"), 0);
+    utc += target - asUtc;
+  }
+  return new Date(utc);
 }
 
 function newsHistogramBucketForTime(rows: NewsDailyHistogramDatum[], timestampSeconds: number, binSeconds: number) {
