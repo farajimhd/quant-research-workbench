@@ -88,6 +88,7 @@ type ServiceRuntimeLogRow = {
 };
 
 const SERVICE_IDS: ServiceId[] = ["qmd", "news", "sec", "text-embed", "reference", "ibkr"];
+const EXCHANGE_TIME_ZONE = "America/New_York";
 
 export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNavigate: (mode: ServicePageMode) => void }) {
   const [payload, setPayload] = useState<ServicesStatusPayload | null>(null);
@@ -376,6 +377,7 @@ type NewsDailyHistogramDatum = {
 type NewsHistogramPayload = {
   bin_seconds: number;
   error?: string;
+  market_timezone?: string;
   rows: Array<{
     broad_or_none_rows?: number;
     bucket_utc?: string;
@@ -383,6 +385,10 @@ type NewsHistogramPayload = {
     total_rows?: number;
   }>;
   source?: string;
+  window_end_et?: string;
+  window_end_utc?: string;
+  window_start_et?: string;
+  window_start_utc?: string;
 };
 
 function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
@@ -448,8 +454,7 @@ function ServiceWorkResponsibilityGrid({ groups, newsPollHistory, service }: { g
 
 function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkGroup; history: NewsPollHistoryRow[]; service: ServiceStatusPayload }) {
   const metrics = serviceMetricsRecord(service);
-  const binSeconds = newsHistogramBinSeconds(service);
-  const histogram = useNewsDailyHistogram(service.registry.id === "news", binSeconds);
+  const histogram = useNewsDailyHistogram(service.registry.id === "news");
   const histogramData = histogram.rows;
   const latestPoll = history[0];
   const backgroundPending = numericMetric(metrics, ["background_pending_articles", "publish_pending_rows", "background_queue_size"]);
@@ -462,7 +467,7 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
         </div>
         <span className={`service-work-status ${workStatusClass(group.status)}`}>{displayName(group.status || "waiting")}</span>
       </div>
-      <NewsDailyHistogram binSeconds={binSeconds} data={histogramData} error={histogram.error} />
+      <NewsDailyHistogram binSeconds={histogram.binSeconds} data={histogramData} error={histogram.error} />
       <div className="news-live-summary">
         <span><small>Polls</small><strong>{formatCompactNumber(numericMetric(metrics, ["poll_runs"]))}</strong></span>
         <span><small>Last Provider</small><strong>{formatCompactNumber(latestPoll?.providerRows ?? numericMetric(metrics, ["last_cycle_provider_rows"]))}</strong></span>
@@ -479,18 +484,21 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
 function NewsDailyHistogram({ binSeconds, data, error }: { binSeconds: number; data: NewsDailyHistogramDatum[]; error: string }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const dataRef = useRef<NewsDailyHistogramDatum[]>(data);
   const singleSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const broadSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const [hover, setHover] = useState<{ broad: number; et: string; single: number; utc: string } | null>(null);
+  dataRef.current = data;
 
   useEffect(() => {
     const element = containerRef.current;
     if (!element) return undefined;
     const chart = createChart(element, {
       autoSize: false,
-      height: 72,
+      height: 144,
       layout: { background: { color: "transparent" }, textColor: "#667085" },
       rightPriceScale: { borderVisible: false, scaleMargins: { bottom: 0.08, top: 0.18 } },
-      timeScale: { borderVisible: false, fixLeftEdge: true, fixRightEdge: true, timeVisible: false },
+      timeScale: { borderVisible: false, fixLeftEdge: true, fixRightEdge: true, timeVisible: false, visible: false },
       grid: { horzLines: { color: "rgba(16,24,40,0.06)" }, vertLines: { color: "rgba(16,24,40,0.04)" } },
       crosshair: { horzLine: { visible: false }, vertLine: { visible: false } },
       handleScale: false,
@@ -512,6 +520,29 @@ function NewsDailyHistogram({ binSeconds, data, error }: { binSeconds: number; d
     chartRef.current = chart;
     singleSeriesRef.current = singleSeries;
     broadSeriesRef.current = broadSeries;
+    chart.subscribeCrosshairMove((param) => {
+      if (!param.time) {
+        setHover(null);
+        return;
+      }
+      const timestampSeconds =
+        typeof param.time === "number"
+          ? param.time
+          : typeof param.time === "string"
+            ? Math.floor(Date.parse(param.time) / 1000)
+            : Date.UTC(param.time.year, param.time.month - 1, param.time.day) / 1000;
+      const bucket = newsHistogramBucketForTime(dataRef.current, timestampSeconds, binSeconds);
+      if (!bucket) {
+        setHover(null);
+        return;
+      }
+      setHover({
+        broad: bucket.broadOrNoneRows,
+        et: formatZoneDateTime(new Date(Date.parse(bucket.bucketUtc)), EXCHANGE_TIME_ZONE),
+        single: bucket.singleTickerRows,
+        utc: formatUtcDateTime(bucket.bucketUtc),
+      });
+    });
     const resizeObserver = new ResizeObserver((entries) => {
       const width = Math.floor(entries[0]?.contentRect.width ?? element.clientWidth);
       chart.applyOptions({ width: Math.max(280, width) });
@@ -551,6 +582,14 @@ function NewsDailyHistogram({ binSeconds, data, error }: { binSeconds: number; d
           <span>total <strong>{formatCompactNumber(total)}</strong></span>
         </div>
       </div>
+      {hover ? (
+        <div className="news-live-histogram-hover">
+          <strong>{hover.et}</strong>
+          <span>UTC {hover.utc}</span>
+          <span>1 ticker {formatCompactNumber(hover.single)}</span>
+          <span>0 or 2+ {formatCompactNumber(hover.broad)}</span>
+        </div>
+      ) : null}
       {error ? <div className="news-live-histogram-error">{error}</div> : null}
       <div className="news-live-histogram-chart" ref={containerRef} />
     </div>
@@ -778,19 +817,20 @@ function historiesEqual(left: NewsPollHistoryRow[], right: NewsPollHistoryRow[])
   return left.every((row, index) => row.signature === right[index]?.signature);
 }
 
-function useNewsDailyHistogram(enabled: boolean, binSeconds: number) {
-  const [payload, setPayload] = useState<{ error: string; rows: NewsDailyHistogramDatum[] }>({ error: "", rows: [] });
+function useNewsDailyHistogram(enabled: boolean) {
+  const [payload, setPayload] = useState<{ binSeconds: number; error: string; rows: NewsDailyHistogramDatum[] }>({ binSeconds: 300, error: "", rows: [] });
   useEffect(() => {
     if (!enabled) {
-      setPayload({ error: "", rows: [] });
+      setPayload({ binSeconds: 300, error: "", rows: [] });
       return undefined;
     }
     let cancelled = false;
     async function load() {
       try {
-        const response = await api<NewsHistogramPayload>(`/api/services/news/histogram?bin_seconds=${encodeURIComponent(binSeconds)}`);
+        const response = await api<NewsHistogramPayload>("/api/services/news/histogram");
         if (cancelled) return;
         setPayload({
+          binSeconds: Number(response.bin_seconds || 300),
           error: response.error || "",
           rows: (response.rows || [])
             .map((row) => ({
@@ -803,7 +843,7 @@ function useNewsDailyHistogram(enabled: boolean, binSeconds: number) {
         });
       } catch (exc) {
         if (cancelled) return;
-        setPayload({ error: exc instanceof Error ? exc.message : String(exc), rows: [] });
+        setPayload({ binSeconds: 300, error: exc instanceof Error ? exc.message : String(exc), rows: [] });
       }
     }
     void load();
@@ -812,7 +852,7 @@ function useNewsDailyHistogram(enabled: boolean, binSeconds: number) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [binSeconds, enabled]);
+  }, [enabled]);
   return payload;
 }
 
@@ -868,15 +908,6 @@ function serviceMetricsRecord(service: ServiceStatusPayload) {
   };
 }
 
-function serviceConfigRecord(service: ServiceStatusPayload) {
-  return isRecord(service.snapshot?.configuration) ? service.snapshot.configuration : {};
-}
-
-function newsHistogramBinSeconds(service: ServiceStatusPayload) {
-  const config = serviceConfigRecord(service);
-  return Math.max(1, Math.min(3600, Math.round(numericMetric(config, ["market_status_refresh_seconds"]) || 10)));
-}
-
 function numericMetric(record: Record<string, unknown>, keys: string[]) {
   for (const key of keys) {
     const value = Number(record[key]);
@@ -897,6 +928,24 @@ function newsBucketChartTime(bucketUtc: string, offsetSeconds: number): Time {
   const parsed = Date.parse(bucketUtc);
   const seconds = Number.isFinite(parsed) ? Math.floor(parsed / 1000) + offsetSeconds : Math.floor(Date.now() / 1000);
   return seconds as Time;
+}
+
+function newsHistogramBucketForTime(rows: NewsDailyHistogramDatum[], timestampSeconds: number, binSeconds: number) {
+  if (!rows.length) return null;
+  let best: NewsDailyHistogramDatum | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const row of rows) {
+    const parsed = Date.parse(row.bucketUtc);
+    if (!Number.isFinite(parsed)) continue;
+    const bucketStart = Math.floor(parsed / 1000);
+    if (timestampSeconds >= bucketStart && timestampSeconds < bucketStart + binSeconds) return row;
+    const distance = Math.min(Math.abs(bucketStart - timestampSeconds), Math.abs(bucketStart + binSeconds - timestampSeconds));
+    if (distance < bestDistance) {
+      best = row;
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 
 function WorkPlanSummaryItem({ label, tone = "", value }: { label: string; tone?: string; value: string }) {
@@ -2097,6 +2146,16 @@ function formatZoneTime(value: Date, timeZone: string) {
 
 function formatZoneDate(value: Date, timeZone: string) {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "2-digit", year: "numeric", timeZone }).format(value);
+}
+
+function formatZoneDateTime(value: Date, timeZone: string) {
+  return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false, timeZone }).format(value);
+}
+
+function formatUtcDateTime(value: string) {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return value || "-";
+  return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" }).format(new Date(parsed));
 }
 
 function fleetMarketStatus(services: ServiceStatusPayload[]) {
