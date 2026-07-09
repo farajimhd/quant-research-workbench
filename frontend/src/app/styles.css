@@ -698,10 +698,6 @@ button {
 }
 
 .service-card.running,
-.service-card.idle {
-  border-top-color: var(--badge-success-border);
-}
-
 .service-card.working,
 .service-card.catching-up,
 .service-card.preflight,
@@ -709,12 +705,16 @@ button {
   border-top-color: var(--badge-info-border);
 }
 
+.service-card.idle {
+  border-top-color: var(--badge-muted-border);
+}
+
 .service-card.degraded,
-.service-card.blocked,
 .service-card.unknown {
   border-top-color: var(--badge-warning-border);
 }
 
+.service-card.blocked,
 .service-card.failed,
 .service-card.not-started,
 .service-card.stopping {
@@ -746,12 +746,8 @@ button {
   width: 6px;
 }
 
-.service-status-badge.running {
-  background: var(--badge-success-bg);
-  border-color: var(--badge-success-border);
-  color: var(--badge-success-fg);
-}
-
+.service-status-badge.active,
+.service-status-badge.running,
 .service-status-badge.catching-up,
 .service-status-badge.preflight,
 .service-status-badge.starting,
@@ -761,15 +757,28 @@ button {
   color: var(--badge-info-fg);
 }
 
+.service-status-badge.ok {
+  background: var(--badge-success-bg);
+  border-color: var(--badge-success-border);
+  color: var(--badge-success-fg);
+}
+
+.service-status-badge.idle {
+  background: var(--badge-muted-bg);
+  border-color: var(--badge-muted-border);
+  color: var(--badge-muted-fg);
+}
+
+.service-status-badge.warn,
 .service-status-badge.degraded,
-.service-status-badge.idle,
-.service-status-badge.blocked,
 .service-status-badge.unknown {
   background: var(--badge-warning-bg);
   border-color: var(--badge-warning-border);
   color: var(--badge-warning-fg);
 }
 
+.service-status-badge.error,
+.service-status-badge.blocked,
 .service-status-badge.failed,
 .service-status-badge.not-started,
 .service-status-badge.stopping {
@@ -957,11 +966,6 @@ button {
 }
 
 .service-focus.running,
-.service-focus.idle {
-  background: color-mix(in oklab, var(--badge-success-bg) 38%, var(--surface));
-  border-left-color: var(--badge-success-border);
-}
-
 .service-focus.catching-up,
 .service-focus.preflight,
 .service-focus.starting,
@@ -970,13 +974,18 @@ button {
   border-left-color: var(--badge-info-border);
 }
 
+.service-focus.idle {
+  background: color-mix(in oklab, var(--badge-muted-bg) 38%, var(--surface));
+  border-left-color: var(--badge-muted-border);
+}
+
 .service-focus.degraded,
-.service-focus.blocked,
 .service-focus.unknown {
   background: color-mix(in oklab, var(--badge-warning-bg) 34%, var(--surface));
   border-left-color: var(--badge-warning-border);
 }
 
+.service-focus.blocked,
 .service-focus.failed,
 .service-focus.not-started,
 .service-focus.stopping {
@@ -1159,6 +1168,7 @@ button {
   border-left-color: var(--success);
 }
 
+.service-work-responsibility-card.active,
 .service-work-responsibility-card.running {
   border-left-color: var(--info);
 }
@@ -1603,6 +1613,17 @@ button {
   text-align: left;
 }
 
+.news-publish-history-table th:nth-child(4),
+.news-publish-history-table td:nth-child(4),
+.news-publish-history-table th:nth-child(5),
+.news-publish-history-table td:nth-child(5),
+.news-publish-history-table th:nth-child(6),
+.news-publish-history-table td:nth-child(6),
+.news-publish-history-table th:nth-child(7),
+.news-publish-history-table td:nth-child(7) {
+  text-align: left;
+}
+
 .news-poll-history-table th:nth-child(1),
 .news-poll-history-table td:nth-child(1) {
   width: 72px;
@@ -1641,21 +1662,37 @@ button {
 }
 
 .news-publish-history-table th:nth-child(2),
-.news-publish-history-table td:nth-child(2),
+.news-publish-history-table td:nth-child(2) {
+  text-align: left;
+  width: 118px;
+}
+
 .news-publish-history-table th:nth-child(3),
-.news-publish-history-table td:nth-child(3),
-.news-publish-history-table th:nth-child(4),
-.news-publish-history-table td:nth-child(4) {
+.news-publish-history-table td:nth-child(3) {
   text-align: left;
   width: 98px;
 }
 
+.news-publish-history-table th:nth-child(4),
+.news-publish-history-table td:nth-child(4) {
+  width: 112px;
+}
+
 .news-publish-history-table th:nth-child(5),
-.news-publish-history-table td:nth-child(5),
+.news-publish-history-table td:nth-child(5) {
+  width: 116px;
+}
+
 .news-publish-history-table th:nth-child(6),
-.news-publish-history-table td:nth-child(6),
+.news-publish-history-table td:nth-child(6) {
+  width: 148px;
+}
+
 .news-publish-history-table th:nth-child(7),
-.news-publish-history-table td:nth-child(7),
+.news-publish-history-table td:nth-child(7) {
+  width: 220px;
+}
+
 .news-publish-history-table th:nth-child(8),
 .news-publish-history-table td:nth-child(8),
 .news-publish-history-table th:nth-child(9),
@@ -1663,6 +1700,8 @@ button {
   width: 72px;
 }
 
+.news-poll-history-table tr.active,
+.news-publish-history-table tr.active,
 .news-poll-history-table tr.running,
 .news-publish-history-table tr.running {
   background: color-mix(in oklab, var(--badge-info-bg) 12%, transparent);
@@ -1678,6 +1717,11 @@ button {
 .news-poll-history-table tr.error,
 .news-publish-history-table tr.error {
   background: color-mix(in oklab, var(--badge-danger-bg) 13%, transparent);
+}
+
+.news-poll-history-table tr.idle,
+.news-publish-history-table tr.idle {
+  background: color-mix(in oklab, var(--badge-muted-bg) 14%, transparent);
 }
 
 .service-work-static-panel {
@@ -1822,10 +1866,17 @@ button {
   color: var(--badge-success-fg);
 }
 
+.service-work-status.active,
 .service-work-status.running {
   background: var(--badge-info-bg);
   border-color: var(--badge-info-border);
   color: var(--badge-info-fg);
+}
+
+.service-work-status.idle {
+  background: var(--badge-muted-bg);
+  border-color: var(--badge-muted-border);
+  color: var(--badge-muted-fg);
 }
 
 .service-work-status.warn,
@@ -1862,10 +1913,17 @@ button {
   color: var(--badge-success-fg);
 }
 
+.service-work-mini-status.active,
 .service-work-mini-status.running {
   background: var(--badge-info-bg);
   border-color: var(--badge-info-border);
   color: var(--badge-info-fg);
+}
+
+.service-work-mini-status.idle {
+  background: var(--badge-muted-bg);
+  border-color: var(--badge-muted-border);
+  color: var(--badge-muted-fg);
 }
 
 .service-work-mini-status.warn,

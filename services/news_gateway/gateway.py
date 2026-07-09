@@ -26,6 +26,7 @@ from pipelines.news.benzinga.core.coverage_manifest import (
     new_run_id,
     parse_clickhouse_datetime,
 )
+from pipelines.news.benzinga.core.clickhouse_writer import NewsBatchWriteSummary
 from pipelines.news.benzinga.news_benzinga_normalize import artifact_path_for_payload, parse_provider_datetime, write_raw_payload
 from pipelines.news.benzinga.news_pipeline.config import BenzingaPipelineConfig, ClickHouseTargetConfig
 from pipelines.news.benzinga.news_pipeline.pipeline import BenzingaNewsPipeline, ProcessedNewsItem
@@ -1098,6 +1099,13 @@ class NewsGateway:
 
     async def _publish_processed(self, processed: list[ProcessedNewsItem], *, poll_id: str, coverage_mode: str) -> Any:
         row_count = len(processed)
+        if row_count == 0:
+            self.metrics.publish_status = "idle" if not self._publish_tasks else "running"
+            self.metrics.publish_active_jobs = len(self._publish_tasks)
+            self.metrics.publish_last_message = f"No processed rows to publish for {coverage_mode} poll {poll_id}."
+            return self._empty_publish_summary()
+
+        publish_context = self._publish_log_context(processed)
         task = asyncio.create_task(
             asyncio.to_thread(self._write_processed, processed),
             name=f"benzinga-news-publish-{poll_id}",
@@ -1115,6 +1123,7 @@ class NewsGateway:
             coverage_mode=coverage_mode,
             processed_rows=row_count,
             active_jobs=len(self._publish_tasks),
+            **publish_context,
         )
         try:
             summary = await asyncio.shield(task)
@@ -1128,6 +1137,7 @@ class NewsGateway:
                 poll_id=poll_id,
                 coverage_mode=coverage_mode,
                 processed_rows=row_count,
+                **publish_context,
             )
             raise
         finally:
@@ -1156,8 +1166,65 @@ class NewsGateway:
             skipped_existing=getattr(summary, "skipped_existing", 0),
             input_duplicate_ids_total=len(getattr(summary, "input_duplicate_ids", []) or []),
             active_jobs=len(self._publish_tasks),
+            **publish_context,
         )
         return summary
+
+    def _empty_publish_summary(self) -> NewsBatchWriteSummary:
+        return NewsBatchWriteSummary(
+            status="no_rows",
+            execute=self.config.execute,
+            input_results=0,
+            normalized_rows_inserted=0,
+            ticker_rows_inserted=0,
+            skipped_existing=0,
+        )
+
+    def _publish_log_context(self, processed: list[ProcessedNewsItem]) -> dict[str, Any]:
+        items = [self._publish_item_log_payload(item) for item in processed[:8]]
+        tickers = sorted({ticker for item in items for ticker in item.get("tickers", []) if isinstance(ticker, str) and ticker})
+        published_values = [str(item.get("published_at_utc") or "") for item in items if item.get("published_at_utc")]
+        return {
+            "items": items,
+            "ticker_sample": tickers[:12],
+            "ticker_count": len(tickers),
+            "published_at_start_utc": min(published_values) if published_values else "",
+            "published_at_end_utc": max(published_values) if published_values else "",
+            "requires_enrichment_count": sum(1 for item in items if item.get("requires_enrichment")),
+            "enriched_count": sum(1 for item in items if str(item.get("external_fetch_status") or "").lower() in {"fetched", "enriched", "external_text"}),
+            "pdf_count": sum(1 for item in items if item.get("has_pdf")),
+            "title_sample": str(items[0].get("title") or "") if items else "",
+        }
+
+    def _publish_item_log_payload(self, item: ProcessedNewsItem) -> dict[str, Any]:
+        result = item.result
+        row = result.normalized_row or {}
+        ticker_links = result.ticker_links or []
+        tickers = sorted(
+            {
+                str(link.get("ticker") or link.get("symbol") or "").strip().upper()
+                for link in ticker_links
+                if isinstance(link, dict) and str(link.get("ticker") or link.get("symbol") or "").strip()
+            }
+        )
+        flags = row.get("content_quality_flags") or []
+        if not isinstance(flags, list):
+            flags = [flags]
+        url_tasks = result.url_resolution.fetch_tasks if result.url_resolution else []
+        attachments = result.url_resolution.attachments if result.url_resolution else []
+        title = str(row.get("title") or row.get("headline") or "")[:180]
+        return {
+            "canonical_news_id": result.canonical_news_id,
+            "provider_article_id": result.provider_article_id,
+            "published_at_utc": str(row.get("published_at_utc") or row.get("published_utc") or row.get("published") or ""),
+            "tickers": tickers[:8],
+            "title": title,
+            "requires_enrichment": bool(url_tasks or row.get("requires_enrichment")),
+            "external_fetch_status": str(row.get("external_fetch_status") or row.get("source_text_status") or ""),
+            "has_pdf": any(str(task.get("content_type") or task.get("url") or "").lower().find("pdf") >= 0 for task in url_tasks if isinstance(task, dict))
+            or any(str(attachment.get("content_type") or attachment.get("url") or "").lower().find("pdf") >= 0 for attachment in attachments if isinstance(attachment, dict)),
+            "quality_flags": [str(flag)[:80] for flag in flags[:6]],
+        }
 
     def _count_run_unique_news(self, processed: list[ProcessedNewsItem]) -> tuple[int, int]:
         unique_rows = 0

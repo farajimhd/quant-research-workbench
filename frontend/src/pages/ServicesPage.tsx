@@ -18,6 +18,8 @@ type ServiceRegistry = {
   label: string;
 };
 
+type ServiceStatusTone = "active" | "error" | "idle" | "ok" | "waiting" | "warn";
+
 type ServiceStatusPayload = {
   checked_at_utc: string;
   current_operation: Record<string, unknown>;
@@ -419,14 +421,18 @@ type NewsPollHistoryRow = {
 type NewsPublishHistoryRow = {
   activeJobs: number;
   coverageMode: string;
+  enrichment: string;
   event: string;
   insertedRows: number;
   pendingRows: number;
   pollId: string;
+  publishedAt: string;
   processedRows: number;
   skippedRows: number;
   status: string;
   tickerRows: number;
+  tickers: string;
+  title: string;
   time: string;
   wallSeconds?: number;
 };
@@ -473,7 +479,7 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
     (summary, row) => {
       const status = workStatusClass(row.status);
       summary.total += 1;
-      if (status === "running") summary.running += 1;
+      if (status === "active") summary.running += 1;
       else if (status === "ok") summary.healthy += 1;
       else if (status === "warn" || status === "error") summary.needsAttention += 1;
       return summary;
@@ -712,13 +718,13 @@ function NewsPublishHistoryTable({ rows }: { rows: NewsPublishHistoryRow[] }) {
           <tr>
             <th title="When the publish event was logged, shown in your local browser timezone.">Time</th>
             <th title="Publish lifecycle event reported by the news gateway.">Event</th>
-            <th title="Poll or gap-fill job that created this publish task.">Poll</th>
             <th title="Live, live-background, gap-fill, or coverage mode for this publish.">Mode</th>
-            <th title="Processed canonical rows passed to the database writer.">Rows</th>
+            <th title="Ticker sample from the rows passed to the database writer.">Tickers</th>
+            <th title="Published timestamp from the first item in this publish batch.">Published</th>
+            <th title="Whether the batch needed URL/PDF enrichment and its enrichment state.">Enrichment</th>
+            <th title="Processed canonical rows passed to the database writer.">News</th>
             <th title="Normalized news rows inserted into ClickHouse.">Inserted</th>
-            <th title="Ticker-link rows inserted into ClickHouse.">Tickers</th>
             <th title="Rows skipped because they already existed.">Skipped</th>
-            <th title="Active publish jobs after this event.">Active</th>
           </tr>
         </thead>
         <tbody>
@@ -726,17 +732,17 @@ function NewsPublishHistoryTable({ rows }: { rows: NewsPublishHistoryRow[] }) {
             <tr className={workStatusClass(row.status)} key={`${row.event}-${row.pollId}-${row.time}-${index}`}>
               <td title={row.time}>{formatLogTime(row.time)}</td>
               <td>{displayName(row.event)}</td>
-              <td title={row.pollId}>{shortPollId(row.pollId)}</td>
               <td>{displayName(row.coverageMode)}</td>
-              <td>{formatCompactNumber(row.processedRows)}</td>
+              <td title={row.tickers}>{row.tickers}</td>
+              <td title={row.publishedAt}>{row.publishedAt ? formatLogTime(row.publishedAt) : "-"}</td>
+              <td title={row.enrichment}>{row.enrichment}</td>
+              <td title={row.title}>{formatCompactNumber(row.processedRows)}{row.title ? ` - ${row.title}` : ""}</td>
               <td>{formatCompactNumber(row.insertedRows)}</td>
-              <td>{formatCompactNumber(row.tickerRows)}</td>
               <td>{formatCompactNumber(row.skippedRows)}</td>
-              <td>{formatCompactNumber(row.activeJobs)}</td>
             </tr>
           ) : (
             <tr key={`empty-${index}`}>
-              <td colSpan={9}>No publish event has been observed by this dashboard yet.</td>
+              <td colSpan={9}>No non-empty publish event has been observed by this dashboard yet.</td>
             </tr>
           ))}
         </tbody>
@@ -862,32 +868,48 @@ function newsPublishHistoryRows(service: ServiceStatusPayload): NewsPublishHisto
     .filter((row) => row.event === "publish_started" || row.event === "publish_completed" || row.event === "publish_failed")
     .map((row) => {
       const fields = isRecord(row.fields) ? row.fields : {};
+      const items = Array.isArray(fields.items) ? fields.items.filter(isRecord) : [];
+      const firstItem = items[0] ?? {};
+      const processedRows = numericMetric(fields, ["processed_rows"]);
+      const insertedRows = numericMetric(fields, ["normalized_rows_inserted"]);
+      const tickerRows = numericMetric(fields, ["ticker_rows_inserted", "ticker_count"]);
+      const skippedRows = numericMetric(fields, ["skipped_existing"]);
+      const hasUsefulPublishWork = processedRows > 0 || insertedRows > 0 || tickerRows > 0 || skippedRows > 0 || items.length > 0;
+      if (!hasUsefulPublishWork) return null;
       const event = row.event || "publish";
       return {
         activeJobs: numericMetric(fields, ["active_jobs"]),
         coverageMode: stringMetric(fields, ["coverage_mode"]),
+        enrichment: publishEnrichmentLabel(fields, firstItem),
         event,
-        insertedRows: numericMetric(fields, ["normalized_rows_inserted"]),
+        insertedRows,
         pendingRows: numericMetric(fields, ["pending_rows"]),
         pollId: stringMetric(fields, ["poll_id"]),
-        processedRows: numericMetric(fields, ["processed_rows"]),
-        skippedRows: numericMetric(fields, ["skipped_existing"]),
+        processedRows,
+        publishedAt: stringMetric(firstItem, ["published_at_utc"]) || stringMetric(fields, ["published_at_start_utc"]),
+        skippedRows,
         status: event.includes("failed") ? "failed" : event.includes("completed") ? "complete" : "running",
-        tickerRows: numericMetric(fields, ["ticker_rows_inserted"]),
+        tickerRows,
+        tickers: publishTickerLabel(fields, firstItem),
+        title: stringMetric(firstItem, ["title"]) || stringMetric(fields, ["title_sample"]) || shortPollId(stringMetric(fields, ["poll_id"])),
         time: row.ts_utc || "",
       };
     })
+    .filter((row): row is NewsPublishHistoryRow => Boolean(row))
     .sort((a, b) => (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0))
     .slice(0, 50);
 }
 
 function newsPublishSummary(rows: NewsPublishHistoryRow[]) {
   return rows.reduce(
-    (totals, row) => ({
-      insertedRows: totals.insertedRows + row.insertedRows,
-      skippedRows: totals.skippedRows + row.skippedRows,
-      tickerRows: totals.tickerRows + row.tickerRows,
-    }),
+    (totals, row) => {
+      if (!row.event.includes("completed")) return totals;
+      return {
+        insertedRows: totals.insertedRows + row.insertedRows,
+        skippedRows: totals.skippedRows + row.skippedRows,
+        tickerRows: totals.tickerRows + row.tickerRows,
+      };
+    },
     { insertedRows: 0, skippedRows: 0, tickerRows: 0 },
   );
 }
@@ -899,8 +921,26 @@ function newsLiveBadge(service: ServiceStatusPayload, history: NewsPollHistoryRo
   const failed = latest?.failedRows ?? numericMetric(metrics, ["last_cycle_failed_rows"]);
   if (failed > 0) return { className: "warn", label: "poll issues" };
   const fetched = latest?.providerRows ?? numericMetric(metrics, ["last_cycle_provider_rows"]);
-  if (fetched > 0) return { className: "running", label: "polling" };
-  return { className: "ok", label: "idle" };
+  if (fetched > 0) return { className: "active", label: "polling" };
+  return { className: "idle", label: "idle" };
+}
+
+function publishTickerLabel(fields: Record<string, unknown>, firstItem: Record<string, unknown>) {
+  const candidate = firstItem.tickers ?? fields.ticker_sample;
+  if (Array.isArray(candidate)) {
+    const labels = candidate.map((item) => String(item || "").trim()).filter(Boolean);
+    return labels.length ? labels.slice(0, 5).join(", ") : "-";
+  }
+  return stringMetric(firstItem, ["ticker", "symbol"]) || "-";
+}
+
+function publishEnrichmentLabel(fields: Record<string, unknown>, firstItem: Record<string, unknown>) {
+  const status = stringMetric(firstItem, ["external_fetch_status", "enrichment_status"]) || stringMetric(fields, ["external_fetch_status"]);
+  const needs = Boolean(firstItem.requires_enrichment ?? fields.requires_enrichment_count);
+  const hasPdf = Boolean(firstItem.has_pdf ?? fields.pdf_count);
+  const flags = Array.isArray(firstItem.quality_flags) ? firstItem.quality_flags.map(String).filter(Boolean).slice(0, 2) : [];
+  const parts = [needs ? "needs" : "inline", status || "", hasPdf ? "pdf" : "", ...flags].filter(Boolean);
+  return parts.length ? parts.join(" / ") : "-";
 }
 
 function shortPollId(value: string) {
@@ -1906,13 +1946,13 @@ function configGroupTitle(key: string) {
 
 function ServiceIcon({ service }: { service: ServiceStatusPayload }) {
   const info = statusInfo(service);
-  const Icon = info.className === "not-started" ? WifiOff : info.className === "degraded" || info.className === "failed" || info.className === "blocked" ? AlertTriangle : CheckCircle2;
+  const Icon = !service.online ? WifiOff : info.tone === "error" || info.tone === "warn" ? AlertTriangle : CheckCircle2;
   return <Icon className="service-card-icon" size={20} />;
 }
 
 function ServiceStatusBadge({ online, status }: { online: boolean; status: string }) {
   const info = statusInfo({ online, status } as ServiceStatusPayload);
-  return <span className={`service-status-badge ${info.className}`} title={info.description}>{info.label}</span>;
+  return <span className={`service-status-badge ${info.className} ${info.tone}`} title={info.description}>{info.label}</span>;
 }
 
 function sortServices(services: ServiceStatusPayload[]) {
@@ -1922,11 +1962,11 @@ function sortServices(services: ServiceStatusPayload[]) {
 function countStatuses(services: ServiceStatusPayload[]) {
   return services.reduce(
     (counts, service) => {
-      const status = statusInfo(service).className;
+      const info = statusInfo(service);
       if (!service.online) counts.offline += 1;
       else counts.online += 1;
-      if (status === "running" || status === "working" || status === "catching-up" || status === "preflight" || status === "starting") counts.active += 1;
-      if (status === "degraded" || status === "failed" || status === "blocked") counts.degraded += 1;
+      if (info.tone === "active") counts.active += 1;
+      if (info.tone === "warn" || info.tone === "error") counts.degraded += 1;
       return counts;
     },
     { active: 0, degraded: 0, offline: 0, online: 0 },
@@ -2062,7 +2102,7 @@ function serviceWorkGroups(service: ServiceStatusPayload): ServiceWorkGroup[] {
     group.rows.push(row);
   }
   return groups.map((group) => ({
-    activeCount: countRowsByStatus(group.rows, "running"),
+    activeCount: countRowsByStatus(group.rows, "active"),
     completedCount: countRowsByStatus(group.rows, "ok"),
     description: group.description,
     id: group.id,
@@ -2261,7 +2301,7 @@ function groupStatus(rows: ServiceWorkRow[]) {
   const statuses = rows.map((row) => workStatusClass(row.status));
   if (statuses.includes("error")) return "error";
   if (statuses.includes("warn")) return "warning";
-  if (statuses.includes("running")) return "running";
+  if (statuses.includes("active")) return "running";
   if (statuses.includes("waiting")) return "waiting";
   return "ok";
 }
@@ -2384,12 +2424,13 @@ function normalizedStatus(status: string) {
   return String(status || "").toLowerCase().replace(/[^a-z0-9]+/g, "_");
 }
 
-function workStatusClass(status: string) {
+function workStatusClass(status: string): ServiceStatusTone {
   const normalized = normalizedStatus(status);
-  if (/failed|error|blocked|critical/.test(normalized)) return "error";
-  if (/warn|degraded|retry/.test(normalized)) return "warn";
-  if (/running|working|active|queued|pending|loading|polling/.test(normalized)) return "running";
-  if (/complete|completed|ok|ready|success|idle/.test(normalized)) return "ok";
+  if (/failed|error|blocked|critical|offline|not_started|unreachable/.test(normalized)) return "error";
+  if (/warn|degraded|retry|queued|pending|waiting|attention/.test(normalized)) return "warn";
+  if (/running|working|active|loading|polling|publishing|processing|ingesting|syncing|repairing|catching_up|preflight|starting/.test(normalized)) return "active";
+  if (/complete|completed|ok|ready|success|healthy/.test(normalized)) return "ok";
+  if (/idle|noop|no_op|not_reported/.test(normalized)) return "idle";
   return "waiting";
 }
 
@@ -2397,8 +2438,9 @@ function workStatusRank(status: string) {
   const className = workStatusClass(status);
   if (className === "error") return 0;
   if (className === "warn") return 1;
-  if (className === "running") return 2;
+  if (className === "active") return 2;
   if (className === "waiting") return 3;
+  if (className === "idle") return 4;
   return 4;
 }
 
@@ -2536,22 +2578,24 @@ type StatusInfo = {
   className: string;
   description: string;
   label: string;
+  tone: ServiceStatusTone;
 };
 
 function statusInfo(service: Pick<ServiceStatusPayload, "online" | "status">): StatusInfo {
   if (!service.online) {
-    return { className: "not-started", description: "The service API endpoint is not reachable or timed out.", label: "NOT STARTED" };
+    return { className: "not-started", description: "The service API endpoint is not reachable or timed out.", label: "NOT STARTED", tone: "error" };
   }
   const text = String(service.status || "").toLowerCase().replaceAll("_", "-");
-  if (text.includes("start")) return { className: "starting", description: "The service is starting and has not completed initialization.", label: "STARTING" };
-  if (text.includes("preflight")) return { className: "preflight", description: "The service is checking dependencies before operational work.", label: "PREFLIGHT" };
-  if (text.includes("catch") || text.includes("gap") || text.includes("repair")) return { className: "catching-up", description: "The service is filling coverage gaps or repairing recent data.", label: "CATCHING UP" };
-  if (text.includes("work") || text.includes("queue") || text.includes("processing")) return { className: "working", description: "The service is actively processing background work.", label: "WORKING" };
-  if (text.includes("degraded") || text.includes("warn")) return { className: "degraded", description: "The service is reachable but has warnings or reduced capability.", label: "DEGRADED" };
-  if (text.includes("block")) return { className: "blocked", description: "The service is blocked by policy, dependency, or required manual action.", label: "BLOCKED" };
-  if (text.includes("stop")) return { className: "stopping", description: "The service is shutting down.", label: "STOPPING" };
-  if (text.includes("fail") || text.includes("error") || text.includes("critical")) return { className: "failed", description: "The service reports an active critical failure.", label: "FAILED" };
-  if (text.includes("idle") || text.includes("waiting")) return { className: "idle", description: "The service is healthy and waiting for the next scheduled task.", label: "IDLE" };
-  if (text.includes("run") || text.includes("ok") || text.includes("healthy") || text.includes("online")) return { className: "running", description: "The service is healthy and running.", label: "RUNNING" };
-  return { className: "unknown", description: "The service is reachable but did not report a standard status.", label: service.status ? String(service.status).toUpperCase() : "UNKNOWN" };
+  if (text.includes("not-start") || text.includes("offline") || text.includes("unreachable")) return { className: "not-started", description: "The service API endpoint is not reachable or timed out.", label: "NOT STARTED", tone: "error" };
+  if (text.includes("start")) return { className: "starting", description: "The service is starting and has not completed initialization.", label: "STARTING", tone: "active" };
+  if (text.includes("preflight")) return { className: "preflight", description: "The service is checking dependencies before operational work.", label: "PREFLIGHT", tone: "active" };
+  if (text.includes("catch") || text.includes("gap") || text.includes("repair")) return { className: "catching-up", description: "The service is filling coverage gaps or repairing recent data.", label: "CATCHING UP", tone: "active" };
+  if (text.includes("work") || text.includes("queue") || text.includes("processing")) return { className: "working", description: "The service is actively processing background work.", label: "WORKING", tone: "active" };
+  if (text.includes("degraded") || text.includes("warn")) return { className: "degraded", description: "The service is reachable but has warnings or reduced capability.", label: "DEGRADED", tone: "warn" };
+  if (text.includes("block")) return { className: "blocked", description: "The service is blocked by policy, dependency, or required manual action.", label: "BLOCKED", tone: "error" };
+  if (text.includes("stop")) return { className: "stopping", description: "The service is shutting down.", label: "STOPPING", tone: "warn" };
+  if (text.includes("fail") || text.includes("error") || text.includes("critical")) return { className: "failed", description: "The service reports an active critical failure.", label: "FAILED", tone: "error" };
+  if (text.includes("idle") || text.includes("waiting")) return { className: "idle", description: "The service is healthy and waiting for the next scheduled task.", label: "IDLE", tone: "idle" };
+  if (text.includes("run") || text.includes("ok") || text.includes("healthy") || text.includes("online")) return { className: "running", description: "The service is healthy and running.", label: "RUNNING", tone: "active" };
+  return { className: "unknown", description: "The service is reachable but did not report a standard status.", label: service.status ? String(service.status).toUpperCase() : "UNKNOWN", tone: "waiting" };
 }
