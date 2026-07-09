@@ -9,7 +9,7 @@ import secrets
 import threading
 import time
 from collections import OrderedDict, deque
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
@@ -2407,8 +2407,21 @@ class AsyncDailyIndexBatchLoader:
         self._scanner_prefetched = False
         self._scanner_prefetch_profile: dict[str, float | int] = {}
         self._scanner_prefetch_lock = threading.Lock()
+        self._scanner_prefetch_thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+
+    def cancel(self) -> None:
+        self._stop_event.set()
+
+    def close(self) -> None:
+        self.cancel()
+        thread = self._scanner_prefetch_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
 
     def iter_batches(self) -> Iterator[DailyIndexTrainingBatch]:
+        if self._stop_event.is_set():
+            return
         if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
             return
         startup_profile = self.prefetch_scanner_indexes()
@@ -2417,15 +2430,18 @@ class AsyncDailyIndexBatchLoader:
         group_size = max(1, int(self.config.loaded_parts_per_group))
         plans = self._epoch_plans(int(self.state.epoch))
         ready = _ReadyBatchBuffer(batch_size=int(self.config.batch_size), drop_last=bool(self.config.drop_last_batch))
-        with ThreadPoolExecutor(max_workers=max(1, int(self.config.read_workers)), thread_name_prefix="tmc-load") as read_pool:
+        read_pool = ThreadPoolExecutor(max_workers=max(1, int(self.config.read_workers)), thread_name_prefix="tmc-load")
+        try:
             group_start = int(self.state.package_position)
             while group_start < len(plans):
+                if self._stop_event.is_set():
+                    return
                 self.state.package_position = int(group_start)
                 group_end = self._next_group_end(plans, group_start, group_size)
                 group_plans = plans[group_start:group_end]
                 group_profile: dict[str, float] = {}
                 stage_start = time.perf_counter()
-                loaded_origins = list(read_pool.map(self.reader.load_origins, group_plans))
+                loaded_origins = _collect_ordered_futures(read_pool, self.reader.load_origins, group_plans, stop_event=self._stop_event)
                 group_profile["origin_load_seconds"] = time.perf_counter() - stage_start
                 stage_start = time.perf_counter()
                 refs = _sample_refs_for_loaded_parts(
@@ -2452,7 +2468,7 @@ class AsyncDailyIndexBatchLoader:
                 active_part_indices = sorted({int(ref.part_index) for ref in refs})
                 part_index_map = {old_index: new_index for new_index, old_index in enumerate(active_part_indices)}
                 stage_start = time.perf_counter()
-                loaded = list(read_pool.map(self.reader.load_payload, (loaded_origins[index] for index in active_part_indices)))
+                loaded = _collect_ordered_futures(read_pool, self.reader.load_payload, [loaded_origins[index] for index in active_part_indices], stop_event=self._stop_event)
                 group_profile["payload_load_seconds"] = time.perf_counter() - stage_start
                 refs = [
                     DailyIndexSampleRef(part_index=int(part_index_map[int(ref.part_index)]), origin_row=int(ref.origin_row))
@@ -2463,15 +2479,19 @@ class AsyncDailyIndexBatchLoader:
                 group_profile_attached = False
                 materialize_size = int(self.config.materialize_chunk_size) or int(self.config.batch_size)
                 try:
-                    with ThreadPoolExecutor(max_workers=max(1, int(self.config.materialize_workers)), thread_name_prefix="tmc-materialize") as mat_pool:
+                    mat_pool = ThreadPoolExecutor(max_workers=max(1, int(self.config.materialize_workers)), thread_name_prefix="tmc-materialize")
+                    try:
                         materialized = _materialize_bounded(
                             mat_pool,
                             self.materializer,
                             loaded,
                             _batched_refs(refs, materialize_size),
                             preserve_order=bool(self.config.preserve_batch_order),
+                            stop_event=self._stop_event,
                         )
                         for chunk in materialized:
+                            if self._stop_event.is_set():
+                                return
                             chunk_ready_start = time.perf_counter()
                             if chunk.sample_count == 0:
                                 continue
@@ -2494,6 +2514,8 @@ class AsyncDailyIndexBatchLoader:
                                     return
                                 if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
                                     return
+                    finally:
+                        mat_pool.shutdown(wait=False, cancel_futures=True)
                 finally:
                     self.materializer.clear_text_context_cache()
                 self.state.origin_cursor = 0
@@ -2518,6 +2540,8 @@ class AsyncDailyIndexBatchLoader:
             self.state.package_position = 0
             self.state.origin_cursor = 0
             self.state.seen_origins_this_epoch = 0
+        finally:
+            read_pool.shutdown(wait=False, cancel_futures=True)
 
     def state_dict(self) -> dict[str, Any]:
         return self.state.to_dict()
@@ -2602,7 +2626,8 @@ class AsyncDailyIndexBatchLoader:
             with self._scanner_prefetch_lock:
                 self._scanner_prefetch_profile = update
 
-        threading.Thread(target=run_background, name="tmc-scanner-prefetch-bg", daemon=True).start()
+        self._scanner_prefetch_thread = threading.Thread(target=run_background, name="tmc-scanner-prefetch-bg", daemon=True)
+        self._scanner_prefetch_thread.start()
         return profile
 
     def summary(self) -> dict[str, Any]:
@@ -3778,6 +3803,31 @@ def _count_batch_samples_for_part_keys(batch: DailyIndexTrainingBatch, part_keys
     return int(np.count_nonzero(np.isin(batch.source_part_key.astype(str, copy=False), list(part_keys))))
 
 
+def _collect_ordered_futures(
+    executor: ThreadPoolExecutor,
+    fn: Any,
+    items: Sequence[Any],
+    *,
+    stop_event: threading.Event | None = None,
+) -> list[Any]:
+    futures = [executor.submit(fn, item) for item in items]
+    pending = set(futures)
+    try:
+        while pending:
+            if stop_event is not None and stop_event.is_set():
+                raise KeyboardInterrupt()
+            done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+            for future in done:
+                future.result()
+        return [future.result() for future in futures]
+    except BaseException:
+        if stop_event is not None:
+            stop_event.set()
+        for future in futures:
+            future.cancel()
+        raise
+
+
 def _materialize_bounded(
     executor: ThreadPoolExecutor,
     materializer: DailyIndexBatchMaterializer,
@@ -3785,50 +3835,83 @@ def _materialize_bounded(
     batches: Iterator[list[DailyIndexSampleRef]],
     *,
     preserve_order: bool = True,
+    stop_event: threading.Event | None = None,
 ) -> Iterator[DailyIndexTrainingBatch]:
     max_pending = max(1, int(getattr(executor, "_max_workers", 1))) * 2
+    pending_all: set[Future[DailyIndexTrainingBatch]] = set()
     if preserve_order:
         pending_ordered: deque[Future[DailyIndexTrainingBatch]] = deque()
 
         def submit_until_full_ordered() -> None:
             while len(pending_ordered) < max_pending:
+                if stop_event is not None and stop_event.is_set():
+                    raise KeyboardInterrupt()
                 try:
                     refs = next(batches)
                 except StopIteration:
                     return
-                pending_ordered.append(executor.submit(materializer.materialize, loaded, refs))
+                future = executor.submit(materializer.materialize, loaded, refs)
+                pending_ordered.append(future)
+                pending_all.add(future)
 
-        submit_until_full_ordered()
-        while pending_ordered:
-            future = pending_ordered.popleft()
-            wait_start = time.perf_counter()
-            batch = future.result()
-            batch.profile["materialize_wait_seconds"] = float(batch.profile.get("materialize_wait_seconds", 0.0)) + (time.perf_counter() - wait_start)
-            yield batch
+        try:
             submit_until_full_ordered()
+            while pending_ordered:
+                if stop_event is not None and stop_event.is_set():
+                    raise KeyboardInterrupt()
+                future = pending_ordered[0]
+                wait_start = time.perf_counter()
+                while not future.done():
+                    if stop_event is not None and stop_event.is_set():
+                        raise KeyboardInterrupt()
+                    wait({future}, timeout=0.2)
+                pending_ordered.popleft()
+                pending_all.discard(future)
+                batch = future.result()
+                batch.profile["materialize_wait_seconds"] = float(batch.profile.get("materialize_wait_seconds", 0.0)) + (time.perf_counter() - wait_start)
+                yield batch
+                submit_until_full_ordered()
+        except BaseException:
+            if stop_event is not None:
+                stop_event.set()
+            for future in pending_all:
+                future.cancel()
+            raise
         return
 
     pending: set[Future[DailyIndexTrainingBatch]] = set()
 
     def submit_until_full() -> None:
         while len(pending) < max_pending:
+            if stop_event is not None and stop_event.is_set():
+                raise KeyboardInterrupt()
             try:
                 refs = next(batches)
             except StopIteration:
                 return
-            pending.add(executor.submit(materializer.materialize, loaded, refs))
+            future = executor.submit(materializer.materialize, loaded, refs)
+            pending.add(future)
+            pending_all.add(future)
 
-    submit_until_full()
-    while pending:
-        from concurrent.futures import FIRST_COMPLETED, wait
-
-        done, pending = wait(pending, return_when=FIRST_COMPLETED)
-        for future in done:
-            wait_start = time.perf_counter()
-            batch = future.result()
-            batch.profile["materialize_wait_seconds"] = float(batch.profile.get("materialize_wait_seconds", 0.0)) + (time.perf_counter() - wait_start)
-            yield batch
+    try:
         submit_until_full()
+        while pending:
+            if stop_event is not None and stop_event.is_set():
+                raise KeyboardInterrupt()
+            done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+            for future in done:
+                pending_all.discard(future)
+                wait_start = time.perf_counter()
+                batch = future.result()
+                batch.profile["materialize_wait_seconds"] = float(batch.profile.get("materialize_wait_seconds", 0.0)) + (time.perf_counter() - wait_start)
+                yield batch
+            submit_until_full()
+    except BaseException:
+        if stop_event is not None:
+            stop_event.set()
+        for future in pending_all:
+            future.cancel()
+        raise
 
 
 def _identity_arrays(parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

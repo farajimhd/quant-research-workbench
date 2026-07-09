@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import random
+import signal
 import sys
 import time
 import csv
@@ -35,6 +36,19 @@ from research.temporal_event_model.v3.model import TemporalEventModelV3, build_m
 from research.temporal_event_model.v3.progress import TemporalProgressState, TemporalTrainingReporter
 
 JOB_TYPE = "train"
+_INTERRUPT_REQUESTED = False
+
+
+def _handle_interrupt(signum: int, _frame: Any) -> None:
+    global _INTERRUPT_REQUESTED
+    _INTERRUPT_REQUESTED = True
+    raise KeyboardInterrupt
+
+
+def _install_interrupt_handlers() -> None:
+    signal.signal(signal.SIGINT, _handle_interrupt)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _handle_interrupt)
 
 
 def parse_args() -> argparse.Namespace:
@@ -121,6 +135,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    _install_interrupt_handlers()
     load_env_files(discover_env_files(REPO_ROOT), verbose=True)
     args = parse_args()
     config = config_from_args(args)
@@ -203,12 +218,16 @@ def main() -> int:
     train_iter = _batch_iterator(config, train_loader, device=device, dummy=bool(args.dummy_data))
     val_metrics: dict[str, float] = {}
     cadence = SampleCadence()
+    interrupted = False
+    exit_code = 0
     try:
         with reporter if reporter is not None else _NullReporter() as active_reporter:
             checkpointer.set_message_callback(active_reporter.message)
             active_reporter.message("Trainer initialized; waiting for first training batch.")
             update_count = int(train_loader.state.emitted_batches if train_loader is not None else 0)
             while True:
+                if _INTERRUPT_REQUESTED:
+                    raise KeyboardInterrupt
                 prior_total_samples = int(train_loader.state.seen_origins_total if train_loader is not None else update_count * int(config.loader.batch_size))
                 if int(config.train.max_samples) > 0 and prior_total_samples >= int(config.train.max_samples):
                     break
@@ -332,15 +351,27 @@ def main() -> int:
                 val_metrics=final_metrics,
                 force=True,
             )
+    except KeyboardInterrupt:
+        interrupted = True
+        exit_code = 130
+        _cancel_loader(train_loader)
+        _cancel_loader(validation_loader)
+        samples_seen = int(train_loader.state.seen_origins_total if train_loader is not None else 0)
+        message = f"Interrupt received; cancelling training at sample {samples_seen:,}."
+        print(message, flush=True)
+        paths.logs_dir.mkdir(parents=True, exist_ok=True)
+        (paths.logs_dir / "interrupted.txt").write_text(message + "\n", encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         paths.logs_dir.mkdir(parents=True, exist_ok=True)
         (paths.logs_dir / "fatal_error.txt").write_text("".join(traceback.format_exception(exc)), encoding="utf-8")
         raise
     finally:
-        checkpointer.close()
+        _cancel_loader(train_loader)
+        _cancel_loader(validation_loader)
+        checkpointer.close(wait=not interrupted, timeout=2.0 if interrupted else None)
         if wandb_run is not None:
             wandb_run.finish()
-    return 0
+    return exit_code
 
 
 @torch.no_grad()
@@ -775,6 +806,21 @@ def _batch_iterator(config: ExperimentConfig, loader: Any, *, device: torch.devi
         assert loader is not None
         for raw in loader.iter_batches():
             yield batch_to_torch(raw, model_config=config.model, device=device)
+
+
+def _cancel_loader(loader: Any) -> None:
+    if loader is None:
+        return
+    try:
+        close = getattr(loader, "close", None)
+        if callable(close):
+            close()
+            return
+        cancel = getattr(loader, "cancel", None)
+        if callable(cancel):
+            cancel()
+    except Exception:
+        return
 
 
 def _restore_if_requested(args: argparse.Namespace, model: torch.nn.Module, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, train_loader: Any, validation_loader: Any, device: torch.device) -> int:

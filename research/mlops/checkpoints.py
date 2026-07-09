@@ -102,9 +102,18 @@ class AsyncCheckpointManager:
         }
         self._enqueue(cpu_payload, reasons, event)
 
-    def close(self) -> None:
-        self.jobs.put(None)
-        self.worker.join()
+    def close(self, *, wait: bool = True, timeout: float | None = None) -> None:
+        try:
+            if wait:
+                self.jobs.put(None)
+            else:
+                self.jobs.put_nowait(None)
+        except queue.Full:
+            if wait:
+                self.jobs.put(None)
+            return
+        if wait:
+            self.worker.join(timeout=timeout)
 
     def _enqueue(self, payload: dict[str, Any], reasons: list[tuple[Path, str]], event: dict[str, Any]) -> None:
         while True:
@@ -164,7 +173,17 @@ def atomic_torch_save(payload: dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}.{time.time_ns()}")
     torch.save(payload, tmp)
+    last_exc: OSError | None = None
+    for attempt in range(25):
+        try:
+            os.replace(tmp, path)
+            return
+        except OSError as exc:
+            last_exc = exc
+            time.sleep(min(0.05 * (attempt + 1), 0.5))
     try:
-        os.replace(tmp, path)
-    except OSError:
         shutil.move(str(tmp), str(path))
+        return
+    except OSError as exc:
+        last_exc = exc
+    raise RuntimeError(f"Could not atomically replace checkpoint {path}") from last_exc
