@@ -41,6 +41,7 @@ class TemporalProgressState:
     loader_prefetch: dict[str, float] = field(default_factory=dict)
     loader_state: dict[str, float] = field(default_factory=dict)
     loader_status: dict[str, Any] = field(default_factory=dict)
+    trainer_status: dict[str, Any] = field(default_factory=dict)
     day_index: int = 0
     day_count: int = 0
     current_day_samples_seen: int = 0
@@ -173,7 +174,12 @@ class TemporalTrainingReporter:
         s.loader_window = {key.replace("loader/window/", ""): float(value) for key, value in metrics.items() if key.startswith("loader/window/")}
         s.loader_prefetch = {key.replace("loader/prefetch/", ""): float(value) for key, value in metrics.items() if key.startswith("loader/prefetch/")}
         s.loader_state = {key.replace("loader/state/", ""): float(value) for key, value in metrics.items() if key.startswith("loader/state/")}
-        s.loader_status = {key.replace("loader/status/", ""): value for key, value in metrics.items() if key.startswith("loader/status/")}
+        loader_status = {key.replace("loader/status/", ""): value for key, value in metrics.items() if key.startswith("loader/status/")}
+        if loader_status:
+            s.loader_status = loader_status
+        trainer_status = {key.replace("train/status/", ""): value for key, value in metrics.items() if key.startswith("train/status/")}
+        if trainer_status:
+            s.trainer_status = trainer_status
         s.day_index = int(metrics.get("schedule/day_index", s.day_index))
         s.day_count = int(metrics.get("schedule/day_count", s.day_count))
         s.current_day_samples_seen = int(metrics.get("schedule/current_day_samples_seen", s.current_day_samples_seen))
@@ -249,6 +255,7 @@ class TemporalTrainingReporter:
         max_samples_text = f"{s.samples_clock:,}/{s.max_samples:,}" if s.max_samples > 0 else f"{s.samples_clock:,}"
         summary.add_row(f"[bold]Samples[/] {max_samples_text}", f"[bold]Batch[/] {s.batch_size:,}")
         summary.add_row(f"[bold]Updates[/] {s.update_count:,}", f"[bold]Speed[/] {s.samples_per_second:,.1f}/s")
+        summary.add_row(f"[bold]Trainer[/] {s.trainer_status.get('phase', 'initializing')}", f"[bold]Loader[/] {s.loader_status.get('phase', 'waiting')}")
         summary.add_row(f"[bold]Epoch[/] {s.epoch}", f"[bold]Day[/] {s.day_index + 1:,}/{max(s.day_count, 1):,}")
         summary.add_row(f"[bold]Day samples[/] {s.current_day_samples_seen:,}/{max(s.current_day_sample_count, 1):,}", f"[bold]Batch avg[/] {avg_batch_seconds:.3f}s")
         summary.add_row(f"[bold]Elapsed[/] {self._format_duration(elapsed_seconds)}", f"[bold]ETA[/] {self._format_duration(eta_seconds)}")
@@ -318,6 +325,10 @@ class TemporalTrainingReporter:
                     f"{_timestamp_us_text(s.loader_window.get('start_timestamp_us'))} -> {_timestamp_us_text(s.loader_window.get('end_timestamp_us'))}",
                 )
             )
+        ready_batches = s.loader_prefetch.get("raw_queue_size")
+        if ready_batches is None:
+            ready_samples = s.loader_cache.get("ready_buffer_samples")
+            ready_batches = float(ready_samples) / float(max(1, int(s.batch_size))) if ready_samples is not None else None
         cache_rows = [
             ("total origins", s.loader_cache.get("total_available_origins")),
             ("ticker folders", s.loader_cache.get("ticker_package_count")),
@@ -333,6 +344,7 @@ class TemporalTrainingReporter:
             ("origin rows", s.loader_cache.get("origin_rows")),
             ("origin read sec", s.loader_cache.get("origin_window_load_seconds")),
             ("payload parts", s.loader_cache.get("payload_parts")),
+            ("ready batches", ready_batches),
             ("ready samples", s.loader_cache.get("ready_buffer_samples")),
             ("text idx", s.loader_cache.get("text_index_entries")),
             ("label idx", s.loader_cache.get("label_index_entries")),

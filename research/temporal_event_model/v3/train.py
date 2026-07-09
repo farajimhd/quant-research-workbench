@@ -252,14 +252,31 @@ def main() -> int:
                 update_count += 1
                 if update_count == 1:
                     active_reporter.message("Loading and materializing first training batch.")
+                active_reporter.update({"train/status/phase": "waiting_for_batch", "train/update_count": float(update_count)}, step=prior_total_samples, validation_metrics=val_metrics, record_history=False)
                 batch_start = time.perf_counter()
                 loader_start = time.perf_counter()
                 batch = next(train_iter)
                 loader_wait = time.perf_counter() - loader_start
+                if update_count <= 3 or update_count % 100 == 0:
+                    active_reporter.message(f"Batch {update_count:,} ready; starting GPU training.")
                 optimizer.zero_grad(set_to_none=True)
                 amp_dtype = _amp_dtype(config.train.amp_dtype)
                 prior_samples_seen = int(prior_total_samples)
                 detail_profile_due = update_count == 1 or cadence.due("detail_profile", prior_samples_seen + int(batch.sample_count), int(config.train.detail_profile_samples))
+                if train_loader is not None:
+                    active_reporter.update(
+                        {
+                            "train/status/phase": "gpu_training",
+                            "train/update_count": float(update_count),
+                            "train/samples_clock": float(prior_samples_seen),
+                            "train/gpu_memory_allocated_gib": _gpu_memory_gib(device),
+                            "train/cpu_rss_gib": _rss_gib(),
+                            **_loader_state_metrics(summary=_effective_loader_summary(train_loader, train_iter), batch_profile=batch.profile),
+                        },
+                        step=prior_samples_seen,
+                        validation_metrics=val_metrics,
+                        record_history=False,
+                    )
                 gpu_start = time.perf_counter()
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=bool(config.train.amp and device.type == "cuda")):
                     if detail_profile_due and hasattr(model, "forward_with_timings"):
@@ -332,6 +349,7 @@ def main() -> int:
                 metric_logger.log(metrics, samples_seen_total)
                 validation_due = cadence.due("validation", samples_seen_total, int(config.train.validation_samples))
                 if validation_due and (validation_loader is not None or args.dummy_data):
+                    active_reporter.update({"train/status/phase": "validation", "train/update_count": float(update_count)}, step=samples_seen_total, validation_metrics=val_metrics, record_history=False)
                     val_metrics = run_validation(model, config, validation_loader, device=device, dummy=bool(args.dummy_data), profile_detail=True)
                     metric_logger.log(val_metrics, samples_seen_total)
                 if reporter is not None and cadence.due("logging", samples_seen_total, int(config.train.logging_samples)):
@@ -716,7 +734,7 @@ class SampleCadence:
             self.last[name] = samples_seen
             return True
         previous = int(self.last.get(name, 0))
-        if samples_seen <= 0:
+        if samples_seen <= 0 or samples_seen < interval:
             return False
         if previous <= 0 or samples_seen // interval > previous // interval:
             self.last[name] = samples_seen
