@@ -1,6 +1,5 @@
-import { createChart, type IChartApi, type ISeriesApi, type Time } from "lightweight-charts";
 import { Activity, AlertTriangle, CalendarDays, CheckCircle2, Clock3, Loader2, MapPin, RadioTower, RefreshCcw, Settings2, WifiOff } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import { api } from "../api/client";
 import { Button } from "../app/components/Button";
@@ -558,8 +557,6 @@ function NewsDailyHistogram({
   windowEndUtc: string;
   windowStartUtc: string;
 }) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<IChartApi | null>(null);
   const defaultWindow = useMemo(() => defaultNewsHistogramWindow(binSeconds), [binSeconds]);
   const effectiveWindowStartUtc = windowStartUtc || defaultWindow.windowStartUtc;
   const effectiveWindowEndUtc = windowEndUtc || defaultWindow.windowEndUtc;
@@ -571,99 +568,8 @@ function NewsDailyHistogram({
     () => newsHistogramFullWindowRows(effectiveData, effectiveWindowStartUtc, effectiveWindowEndUtc, binSeconds),
     [binSeconds, effectiveData, effectiveWindowEndUtc, effectiveWindowStartUtc],
   );
-  const dataRef = useRef<NewsDailyHistogramDatum[]>(displayData);
-  const binSecondsRef = useRef(binSeconds);
-  const windowRef = useRef({ end: effectiveWindowEndUtc, start: effectiveWindowStartUtc });
-  const singleSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const broadSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const [hover, setHover] = useState<{ broad: number; et: string; single: number; utc: string; van: string } | null>(null);
-  dataRef.current = displayData;
-  binSecondsRef.current = binSeconds;
-  windowRef.current = { end: effectiveWindowEndUtc, start: effectiveWindowStartUtc };
-
-  useEffect(() => {
-    const element = containerRef.current;
-    if (!element) return undefined;
-    const chart = createChart(element, {
-      autoSize: false,
-      height: 144,
-      layout: { background: { color: "transparent" }, textColor: "#667085" },
-      rightPriceScale: { borderVisible: false, scaleMargins: { bottom: 0, top: 0.08 }, visible: false },
-      timeScale: { borderVisible: false, fixLeftEdge: true, fixRightEdge: true, timeVisible: false, visible: false },
-      grid: { horzLines: { color: "rgba(16,24,40,0.06)" }, vertLines: { color: "rgba(16,24,40,0.04)" } },
-      crosshair: { horzLine: { visible: false }, vertLine: { visible: false } },
-      handleScale: false,
-      handleScroll: false,
-      width: Math.max(280, element.clientWidth),
-    });
-    const singleSeries = chart.addHistogramSeries({
-      color: "#17b26a",
-      lastValueVisible: false,
-      priceLineVisible: false,
-      priceFormat: { type: "volume" },
-    });
-    const broadSeries = chart.addHistogramSeries({
-      color: "#f79009",
-      lastValueVisible: false,
-      priceLineVisible: false,
-      priceFormat: { type: "volume" },
-    });
-    chart.priceScale("right").applyOptions({
-      borderVisible: false,
-      scaleMargins: { bottom: 0, top: 0.08 },
-      visible: false,
-    });
-    chartRef.current = chart;
-    singleSeriesRef.current = singleSeries;
-    broadSeriesRef.current = broadSeries;
-    chart.subscribeCrosshairMove((param) => {
-      if (!param.time) {
-        setHover(null);
-        return;
-      }
-      const timestampSeconds =
-        typeof param.time === "number"
-          ? param.time
-          : typeof param.time === "string"
-            ? Math.floor(Date.parse(param.time) / 1000)
-            : Date.UTC(param.time.year, param.time.month - 1, param.time.day) / 1000;
-      const bucket = newsHistogramBucketForTime(dataRef.current, timestampSeconds, binSecondsRef.current);
-      if (!bucket) {
-        setHover(null);
-        return;
-      }
-      setHover({
-        broad: bucket.broadOrNoneRows,
-        et: formatZoneDateTime(new Date(Date.parse(bucket.bucketUtc)), EXCHANGE_TIME_ZONE),
-        single: bucket.singleTickerRows,
-        utc: formatUtcDateTime(bucket.bucketUtc),
-        van: formatZoneDateTime(new Date(Date.parse(bucket.bucketUtc)), VANCOUVER_TIME_ZONE),
-      });
-    });
-    const resizeObserver = new ResizeObserver((entries) => {
-      const width = Math.floor(entries[0]?.contentRect.width ?? element.clientWidth);
-      chart.applyOptions({ width: Math.max(280, width) });
-      setNewsHistogramVisibleRange(chart, windowRef.current.start, windowRef.current.end);
-    });
-    resizeObserver.observe(element);
-    return () => {
-      resizeObserver.disconnect();
-      chart.remove();
-      chartRef.current = null;
-      singleSeriesRef.current = null;
-      broadSeriesRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    const singleSeries = singleSeriesRef.current;
-    const broadSeries = broadSeriesRef.current;
-    const chart = chartRef.current;
-    if (!singleSeries || !broadSeries || !chart) return;
-    singleSeries.setData(displayData.map((row) => newsHistogramSeriesPoint(row.bucketUtc, row.singleTickerRows)));
-    broadSeries.setData(displayData.map((row) => newsHistogramSeriesPoint(row.bucketUtc, row.broadOrNoneRows)));
-    setNewsHistogramVisibleRange(chart, effectiveWindowStartUtc, effectiveWindowEndUtc);
-  }, [binSeconds, displayData, effectiveWindowEndUtc, effectiveWindowStartUtc]);
+  const maxTotal = useMemo(() => Math.max(1, ...displayData.map((row) => row.totalRows)), [displayData]);
 
   const singleTotal = effectiveData.reduce((sum, row) => sum + row.singleTickerRows, 0);
   const broadTotal = effectiveData.reduce((sum, row) => sum + row.broadOrNoneRows, 0);
@@ -688,7 +594,24 @@ function NewsDailyHistogram({
         </div>
       ) : null}
       {error ? <div className="news-live-histogram-error">{error}</div> : null}
-      <div className="news-live-histogram-chart" ref={containerRef} />
+      <div className="news-live-histogram-chart" onMouseLeave={() => setHover(null)}>
+        {displayData.map((row) => (
+          <div
+            aria-label={`${formatZoneDateTime(new Date(Date.parse(row.bucketUtc)), EXCHANGE_TIME_ZONE)}: ${row.singleTickerRows} one-ticker, ${row.broadOrNoneRows} broad`}
+            className={row.totalRows > 0 ? "news-live-histogram-bin has-data" : "news-live-histogram-bin"}
+            key={row.bucketUtc}
+            onMouseEnter={() => setHover(newsHistogramHover(row))}
+            style={{ "--bar-height": `${newsHistogramBarHeight(row.totalRows, maxTotal)}%` } as CSSProperties}
+          >
+            {row.totalRows > 0 ? (
+              <span className="news-live-histogram-stack">
+                <span className="news-live-histogram-segment broad" style={{ height: `${(row.broadOrNoneRows / row.totalRows) * 100}%` }} />
+                <span className="news-live-histogram-segment single" style={{ height: `${(row.singleTickerRows / row.totalRows) * 100}%` }} />
+              </span>
+            ) : null}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1031,29 +954,20 @@ function stringMetric(record: Record<string, unknown>, keys: string[]) {
   return "";
 }
 
-function newsBucketChartTime(bucketUtc: string): Time {
-  const parsed = Date.parse(bucketUtc);
-  const seconds = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : Math.floor(Date.now() / 1000);
-  return seconds as Time;
+function newsHistogramBarHeight(totalRows: number, maxRows: number) {
+  if (totalRows <= 0 || maxRows <= 0) return 0;
+  return Math.max(4, (totalRows / maxRows) * 100);
 }
 
-function newsHistogramSeriesPoint(bucketUtc: string, value: number): { time: Time; value?: number } {
-  const time = newsBucketChartTime(bucketUtc);
-  return value > 0 ? { time, value } : { time };
-}
-
-function setNewsHistogramVisibleRange(chart: IChartApi, windowStartUtc: string, windowEndUtc: string) {
-  const first = Date.parse(windowStartUtc);
-  const last = Date.parse(windowEndUtc);
-  if (!Number.isFinite(first) || !Number.isFinite(last) || last <= first) return;
-  try {
-    chart.timeScale().setVisibleRange({
-      from: Math.floor(first / 1000) as Time,
-      to: Math.floor(last / 1000) as Time,
-    });
-  } catch {
-    chart.timeScale().fitContent();
-  }
+function newsHistogramHover(row: NewsDailyHistogramDatum) {
+  const bucketDate = new Date(Date.parse(row.bucketUtc));
+  return {
+    broad: row.broadOrNoneRows,
+    et: formatZoneDateTime(bucketDate, EXCHANGE_TIME_ZONE),
+    single: row.singleTickerRows,
+    utc: formatUtcDateTime(row.bucketUtc),
+    van: formatZoneDateTime(bucketDate, VANCOUVER_TIME_ZONE),
+  };
 }
 
 function defaultNewsHistogramWindow(binSeconds: number): NewsDailyHistogramState {
@@ -1141,17 +1055,6 @@ function zonedDateTimeToUtc(year: number, month: number, day: number, hour: numb
     utc += target - asUtc;
   }
   return new Date(utc);
-}
-
-function newsHistogramBucketForTime(rows: NewsDailyHistogramDatum[], timestampSeconds: number, binSeconds: number) {
-  if (!rows.length) return null;
-  for (const row of rows) {
-    const parsed = Date.parse(row.bucketUtc);
-    if (!Number.isFinite(parsed)) continue;
-    const bucketStart = Math.floor(parsed / 1000);
-    if (timestampSeconds >= bucketStart && timestampSeconds < bucketStart + binSeconds) return row;
-  }
-  return null;
 }
 
 function WorkPlanSummaryItem({ label, tone = "", value }: { label: string; tone?: string; value: string }) {
