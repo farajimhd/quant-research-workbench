@@ -98,7 +98,12 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [now, setNow] = useState(() => new Date());
+  const payloadRef = useRef<ServicesStatusPayload | null>(null);
   const serviceId = mode === "dashboard" ? null : mode;
+
+  useEffect(() => {
+    payloadRef.current = payload;
+  }, [payload]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
@@ -135,25 +140,39 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
       return;
     }
     let cancelled = false;
-    async function loadDetail(showLoading = false) {
-      if (showLoading) setDetailLoading(true);
+    let fastInFlight = false;
+    let fullInFlight = false;
+    async function loadDetail(options: { full: boolean; showLoading?: boolean }) {
+      if (options.full ? fullInFlight : fastInFlight) return;
+      if (options.full) fullInFlight = true;
+      else fastInFlight = true;
+      if (options.showLoading) setDetailLoading(true);
       try {
-        const next = await api<ServiceStatusPayload>(`/api/services/${serviceId}/status`);
-        if (!cancelled) setSelectedPayload(next);
+        const query = options.full
+          ? "include_database_tables=true&include_recent=true&include_logs=true"
+          : "include_database_tables=false&include_recent=false&include_logs=false";
+        const next = await api<ServiceStatusPayload>(`/api/services/${serviceId}/status?${query}`);
+        if (!cancelled) {
+          setSelectedPayload((current) => mergeServiceDetailPayload(next, current, options.full));
+        }
       } catch (exc) {
         if (!cancelled) {
-          const fallback = payload?.services.find((service) => service.registry.id === serviceId) ?? null;
+          const fallback = payloadRef.current?.services.find((service) => service.registry.id === serviceId) ?? null;
           setSelectedPayload(fallback ? { ...fallback, errors: { ...fallback.errors, detail: exc instanceof Error ? exc.message : String(exc) } } : null);
         }
       } finally {
-        if (!cancelled && showLoading) setDetailLoading(false);
+        if (options.full) fullInFlight = false;
+        else fastInFlight = false;
+        if (!cancelled && options.showLoading) setDetailLoading(false);
       }
     }
-    void loadDetail(true);
-    const timer = window.setInterval(() => void loadDetail(false), 5000);
+    void loadDetail({ full: true, showLoading: true });
+    const fastTimer = window.setInterval(() => void loadDetail({ full: false }), 5000);
+    const fullTimer = window.setInterval(() => void loadDetail({ full: true }), 30000);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      window.clearInterval(fastTimer);
+      window.clearInterval(fullTimer);
     };
   }, [serviceId]);
 
@@ -162,7 +181,7 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
   const selected = serviceId ? selectedPayloadForMode ?? services.find((service) => service.registry.id === serviceId) ?? null : null;
 
   return (
-    <div className="services-page">
+    <div className={`services-page ${loading || detailLoading ? "is-page-loading" : ""}`}>
       <section className="services-header">
         <div>
           <span className="page-kicker">Services</span>
@@ -175,19 +194,30 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
         </div>
         <ServicesTopSummary now={now} services={services} />
       </section>
-      {loading && !payload ? <div className="services-loading"><Loader2 size={18} /> Loading service status.</div> : null}
       {selected ? (
-        <div className={`service-detail-shell ${detailLoading ? "is-loading" : ""}`}>
+        <div className="service-detail-shell">
           <ServiceDetail pageError={error} service={selected} />
-          {detailLoading ? <div className="service-detail-loading"><Loader2 size={20} /> Loading {selected.registry.label}</div> : null}
         </div>
-      ) : serviceId && detailLoading ? (
-        <div className="services-loading"><Loader2 size={18} /> Loading service detail.</div>
       ) : (
         <ServicesDashboard services={services} onNavigate={onNavigate} />
       )}
+      {loading || detailLoading ? (
+        <div className="services-page-loading-overlay" aria-label="Loading service data">
+          <Loader2 size={22} />
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function mergeServiceDetailPayload(next: ServiceStatusPayload, current: ServiceStatusPayload | null, full: boolean): ServiceStatusPayload {
+  if (full || current?.registry.id !== next.registry.id) return next;
+  return {
+    ...next,
+    database_tables: current.database_tables ?? next.database_tables,
+    logs: current.logs ?? next.logs,
+    recent: current.recent ?? next.recent,
+  };
 }
 
 function ServicesTopSummary({ now, services }: { now: Date; services: ServiceStatusPayload[] }) {
@@ -1019,7 +1049,8 @@ function elapsedNewsHistogramRows(rows: NewsDailyHistogramDatum[], windowStartUt
     if (!Number.isFinite(bucket)) return false;
     if (Number.isFinite(start) && bucket < start) return false;
     if (Number.isFinite(end) && bucket >= end) return false;
-    return bucket < cutoff;
+    if (bucket >= cutoff) return false;
+    return row.totalRows > 0 || row.singleTickerRows > 0 || row.broadOrNoneRows > 0;
   });
 }
 
@@ -1062,20 +1093,13 @@ function zonedDateTimeToUtc(year: number, month: number, day: number, hour: numb
 
 function newsHistogramBucketForTime(rows: NewsDailyHistogramDatum[], timestampSeconds: number, binSeconds: number) {
   if (!rows.length) return null;
-  let best: NewsDailyHistogramDatum | null = null;
-  let bestDistance = Number.POSITIVE_INFINITY;
   for (const row of rows) {
     const parsed = Date.parse(row.bucketUtc);
     if (!Number.isFinite(parsed)) continue;
     const bucketStart = Math.floor(parsed / 1000);
     if (timestampSeconds >= bucketStart && timestampSeconds < bucketStart + binSeconds) return row;
-    const distance = Math.min(Math.abs(bucketStart - timestampSeconds), Math.abs(bucketStart + binSeconds - timestampSeconds));
-    if (distance < bestDistance) {
-      best = row;
-      bestDistance = distance;
-    }
   }
-  return best;
+  return null;
 }
 
 function WorkPlanSummaryItem({ label, tone = "", value }: { label: string; tone?: string; value: string }) {

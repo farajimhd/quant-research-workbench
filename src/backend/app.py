@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
@@ -1639,7 +1640,7 @@ def format_bytes(value: int) -> str:
     return f"{value} B"
 
 
-def service_status_payload(service_id: str, *, include_database_tables: bool = True, include_recent: bool = True) -> dict[str, Any]:
+def service_status_payload(service_id: str, *, include_database_tables: bool = True, include_logs: bool = True, include_recent: bool = True) -> dict[str, Any]:
     service = SERVICE_REGISTRY.get(service_id)
     if service is None:
         raise HTTPException(status_code=404, detail="Unknown service")
@@ -1671,7 +1672,7 @@ def service_status_payload(service_id: str, *, include_database_tables: bool = T
         status = "ONLINE" if online else "NOT_STARTED"
     elif not online:
         status = "NOT_STARTED"
-    runtime_logs = service_runtime_logs(normalized_snapshot, metrics, recent_payload, health_payload, service_id=service_id)
+    runtime_logs = service_runtime_logs(normalized_snapshot, metrics, recent_payload, health_payload, service_id=service_id) if include_logs else {"path": "", "rows": [], "error": ""}
     database_tables = service_database_table_state(service_id) if include_database_tables else {"rows": [], "error": ""}
     return {
         "registry": {
@@ -1707,11 +1708,20 @@ def health() -> dict[str, Any]:
 
 
 @app.get("/api/services/status")
-def services_status(include_recent: bool = False, include_database_tables: bool = False) -> dict[str, Any]:
-    services = [
-        service_status_payload(service_id, include_database_tables=include_database_tables, include_recent=include_recent)
-        for service_id in SERVICE_REGISTRY
-    ]
+def services_status(include_recent: bool = False, include_database_tables: bool = False, include_logs: bool = False) -> dict[str, Any]:
+    service_ids = list(SERVICE_REGISTRY)
+    with ThreadPoolExecutor(max_workers=max(1, min(len(service_ids), 8))) as executor:
+        services = list(
+            executor.map(
+                lambda service_id: service_status_payload(
+                    service_id,
+                    include_database_tables=include_database_tables,
+                    include_logs=include_logs,
+                    include_recent=include_recent,
+                ),
+                service_ids,
+            )
+        )
     return {
         "checked_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "services": services,
@@ -1719,8 +1729,8 @@ def services_status(include_recent: bool = False, include_database_tables: bool 
 
 
 @app.get("/api/services/{service_id}/status")
-def service_status(service_id: str, include_database_tables: bool = True, include_recent: bool = True) -> dict[str, Any]:
-    return service_status_payload(service_id, include_database_tables=include_database_tables, include_recent=include_recent)
+def service_status(service_id: str, include_database_tables: bool = True, include_logs: bool = True, include_recent: bool = True) -> dict[str, Any]:
+    return service_status_payload(service_id, include_database_tables=include_database_tables, include_logs=include_logs, include_recent=include_recent)
 
 
 @app.get("/api/services/{service_id}/tables/{database}/{table}/preview")

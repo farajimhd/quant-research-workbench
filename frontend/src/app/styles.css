@@ -793,6 +793,39 @@ button {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.services-page {
+  position: relative;
+}
+
+.services-page.is-page-loading > :not(.services-page-loading-overlay) {
+  filter: blur(1.35px);
+  opacity: 0.58;
+  pointer-events: none;
+  transition: filter 140ms ease, opacity 140ms ease;
+}
+
+.services-page-loading-overlay {
+  align-items: center;
+  background: color-mix(in oklab, var(--surface) 80%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow-sm);
+  color: var(--primary);
+  display: inline-flex;
+  height: 42px;
+  justify-content: center;
+  left: 50%;
+  position: fixed;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 42px;
+  z-index: 20;
+}
+
+.services-page-loading-overlay svg {
+  animation: spin 0.9s linear infinite;
+}
+
 .service-detail-shell {
   display: grid;
   gap: 12px;
@@ -1089,7 +1122,7 @@ button {
 }
 
 .service-work-responsibility-card.news-live-card {
-  min-height: 430px;
+  min-height: 356px;
 }
 
 .service-work-responsibility-header {
@@ -1416,7 +1449,7 @@ button {
 }
 
 .news-poll-history-table-wrap {
-  height: 226px;
+  height: 124px;
   min-height: 0;
   min-width: 0;
   overflow: auto;
