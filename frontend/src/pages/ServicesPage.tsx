@@ -746,104 +746,124 @@ function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDet
   const dbRow = isRecord(detail?.row) ? detail.row : {};
   const tickerRows = Array.isArray(detail?.ticker_rows) ? detail.ticker_rows.filter(isRecord) : [];
   const title = stringMetric(dbRow, ["title", "normalized_title"]) || row.title || row.normalizedTitle || "Untitled news row";
-  const textSections = [
-    { label: "Teaser", value: stringMetric(dbRow, ["teaser"]) },
-    { label: "Provider Body", value: stringMetric(dbRow, ["body_text"]) },
-    { label: "External Text", value: stringMetric(dbRow, ["external_text"]) },
-    { label: "PDF Text", value: stringMetric(dbRow, ["pdf_text"]) },
-    { label: "Normalized Full Text", value: stringMetric(dbRow, ["normalized_full_text"]) },
-  ].filter((section) => section.value);
-  const metaRows = [
-    { label: "Published UTC", value: stringMetric(dbRow, ["published_at_utc"]) || row.publishedAtUtc },
-    { label: "Downloaded UTC", value: stringMetric(dbRow, ["downloaded_at_utc"]) || row.downloadedAtUtc },
-    { label: "Provider ID", value: stringMetric(dbRow, ["provider_article_id"]) || row.providerArticleId },
-    { label: "Canonical ID", value: stringMetric(dbRow, ["canonical_news_id"]) || row.canonicalNewsId },
-    { label: "Author", value: stringMetric(dbRow, ["author"]) || row.author },
-    { label: "Domain", value: stringMetric(dbRow, ["url_domain"]) || row.urlDomain },
-    { label: "Article URL", value: stringMetric(dbRow, ["article_url"]) || row.articleUrl },
-    { label: "Tickers", value: arrayValueLabel(dbRow.tickers) || newsTodayTickerLabel(row) },
-    { label: "Channels", value: arrayValueLabel(dbRow.channels) || row.channels.join(", ") },
-    { label: "Provider Tags", value: arrayValueLabel(dbRow.provider_tags) || row.providerTags.join(", ") },
-    { label: "Quality Flags", value: arrayValueLabel(dbRow.content_quality_flags) || row.contentQualityFlags.join(", ") },
-    { label: "External Fetch", value: stringMetric(dbRow, ["external_fetch_status", "external_fetch_error"]) || row.externalFetchStatus },
-    { label: "PDF Extract", value: stringMetric(dbRow, ["pdf_extract_status", "pdf_extract_error"]) || row.pdfExtractStatus },
-    { label: "Raw Artifact", value: stringMetric(dbRow, ["raw_artifact_path"]) },
-    { label: "Normalizer", value: stringMetric(dbRow, ["normalizer_version"]) },
-  ].filter((item) => item.value);
+  const publishedAt = stringMetric(dbRow, ["published_at_utc"]) || row.publishedAtUtc;
+  const downloadedAt = stringMetric(dbRow, ["downloaded_at_utc"]) || row.downloadedAtUtc;
+  const articleUrl = stringMetric(dbRow, ["article_url"]) || row.articleUrl;
+  const domain = stringMetric(dbRow, ["url_domain"]) || row.urlDomain || "benzinga";
+  const author = stringMetric(dbRow, ["author"]) || row.author || "Benzinga";
+  const canonicalId = stringMetric(dbRow, ["canonical_news_id"]) || row.canonicalNewsId;
+  const providerId = stringMetric(dbRow, ["provider_article_id"]) || row.providerArticleId;
+  const tickers = newsDetailTickers(dbRow, tickerRows, row);
+  const channels = stringArrayMetric(dbRow, ["channels"]).length ? stringArrayMetric(dbRow, ["channels"]) : row.channels;
+  const providerTags = stringArrayMetric(dbRow, ["provider_tags"]).length ? stringArrayMetric(dbRow, ["provider_tags"]) : row.providerTags;
+  const qualityFlags = stringArrayMetric(dbRow, ["content_quality_flags"]).length ? stringArrayMetric(dbRow, ["content_quality_flags"]) : row.contentQualityFlags;
+  const textCandidates = newsDetailTextCandidates(dbRow, row);
+  const primaryText = textCandidates[0] ?? { label: "No Body Text", value: row.textPreview || "No readable body text was returned for this news row." };
+  const paragraphs = newsArticleParagraphs(primaryText.value);
   const statRows = [
-    { label: "Full Text", value: numericMetric(dbRow, ["full_text_chars"]) || row.fullTextChars },
+    { label: "Full text", value: numericMetric(dbRow, ["full_text_chars"]) || row.fullTextChars },
     { label: "Body", value: numericMetric(dbRow, ["body_chars"]) || row.bodyChars },
     { label: "External", value: numericMetric(dbRow, ["external_chars"]) || row.externalChars },
     { label: "PDF", value: numericMetric(dbRow, ["pdf_chars"]) || row.pdfChars },
   ].filter((item) => item.value).map((item) => ({ ...item, value: `${formatCompactNumber(item.value)} chars` }));
-  const sourceRows = [
-    { label: "Provider", value: "Benzinga" },
-    { label: "Domain", value: stringMetric(dbRow, ["url_domain"]) || row.urlDomain || "-" },
-    { label: "Article URL", value: stringMetric(dbRow, ["article_url"]) || row.articleUrl || "-" },
-    { label: "External Fetch", value: stringMetric(dbRow, ["external_fetch_status", "external_fetch_error"]) || row.externalFetchStatus || "-" },
-    { label: "PDF Extract", value: stringMetric(dbRow, ["pdf_extract_status", "pdf_extract_error"]) || row.pdfExtractStatus || "-" },
+  const readableFacts = [
+    { label: "Provider article", value: providerId || "-" },
+    { label: "Canonical row", value: canonicalId || "-" },
+    { label: "Downloaded", value: downloadedAt ? formatReadableDateTime(downloadedAt, "UTC") : "-" },
+    { label: "Source domain", value: domain || "-" },
+    { label: "Author", value: author || "-" },
+    { label: "Channels", value: channels.length ? channels.join(", ") : "-" },
+    { label: "Provider tags", value: providerTags.length ? providerTags.join(", ") : "-" },
+    { label: "Text source", value: primaryText.label },
   ];
-  const hiddenKeys = new Set(["title", "normalized_title", "teaser", "body_text", "external_text", "pdf_text", "normalized_full_text"]);
+  const processingFacts = [
+    { label: "External fetch", value: displayName(stringMetric(dbRow, ["external_fetch_status", "external_fetch_error"]) || row.externalFetchStatus || "not reported") },
+    { label: "PDF extraction", value: displayName(stringMetric(dbRow, ["pdf_extract_status", "pdf_extract_error"]) || row.pdfExtractStatus || "not reported") },
+    { label: "Normalizer", value: stringMetric(dbRow, ["normalizer_version"]) || "-" },
+    { label: "Raw artifact", value: stringMetric(dbRow, ["raw_artifact_path"]) || "-" },
+  ];
   const remainingRows = Object.entries(dbRow)
-    .filter(([key]) => !hiddenKeys.has(key))
     .map(([key, value]) => ({ key, value: formatValue(key, value) }));
   return (
     <div className="news-full-detail">
-      <div className="news-full-detail-hero">
-        <div className="news-full-detail-kicker">
-          <span>{row.tickers.length ? row.tickers.join(", ") : "Market-wide"}</span>
-          <span>{formatLogTime(stringMetric(dbRow, ["published_at_utc"]) || row.publishedAtUtc)}</span>
+      <article className="news-full-article-card">
+        <header className="news-full-article-header">
+          <div className="news-full-article-meta-line">
+            <span className="news-full-provider-pill">Benzinga</span>
+            <span>{domain}</span>
+            <span>{tickers.length ? `${tickers.length} ticker${tickers.length === 1 ? "" : "s"}` : "Market-wide"}</span>
+            <span>{qualityFlags.length ? qualityFlags.slice(0, 3).map(displayName).join(" / ") : "No quality flags"}</span>
+          </div>
+          <h3>{title}</h3>
+          <p>{stringMetric(dbRow, ["teaser"]) || row.textPreview || "No summary text was returned for this news row."}</p>
+          <div className="news-full-ticker-row">
+            {(tickers.length ? tickers : ["No ticker linked"]).slice(0, 18).map((ticker) => (
+              <span className={tickers.length ? "news-full-ticker-chip" : "news-full-muted-chip"} key={ticker}>{ticker}</span>
+            ))}
+            {tickers.length > 18 ? <span className="news-full-muted-chip">+{tickers.length - 18} more</span> : null}
+          </div>
+        </header>
+        <div className="news-full-time-grid">
+          <NewsTimeCard label="Market time" timeZone={EXCHANGE_TIME_ZONE} value={publishedAt} />
+          <NewsTimeCard label="Vancouver" timeZone={VANCOUVER_TIME_ZONE} value={publishedAt} />
+          <NewsTimeCard label="UTC" timeZone="UTC" value={publishedAt} />
         </div>
-        <h3>{title}</h3>
-        <p>{row.textPreview || stringMetric(dbRow, ["teaser"]) || "No preview text reported."}</p>
-        <div className="news-full-detail-badges">
-          {[
-            row.hasExternalText ? "external text" : "",
-            row.hasPdf ? "pdf" : "",
-            row.isTitleOnly ? "title only" : "",
-            ...row.contentQualityFlags.slice(0, 4),
-          ].filter(Boolean).map((label) => <span key={label}>{label}</span>)}
+        <div className="news-full-readable-grid">
+          <section className="news-full-readable-main">
+            <div className="news-full-section-heading">
+              <span>Readable body</span>
+              <strong>{primaryText.label}</strong>
+            </div>
+            <div className="news-full-readable-body">
+              {paragraphs.map((paragraph, index) => <p key={`${primaryText.label}-${index}`}>{paragraph}</p>)}
+            </div>
+          </section>
+          <aside className="news-full-readable-side">
+            <section>
+              <h4>Article Context</h4>
+              <dl>
+                {readableFacts.map((item) => (
+                  <div key={item.label}>
+                    <dt>{item.label}</dt>
+                    <dd>{item.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+            <section>
+              <h4>Processing</h4>
+              <dl>
+                {processingFacts.map((item) => (
+                  <div className={item.label === "Raw artifact" ? "wide" : ""} key={item.label}>
+                    <dt>{item.label}</dt>
+                    <dd>{item.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          </aside>
         </div>
-      </div>
+        {articleUrl ? (
+          <a className="news-full-source-link" href={articleUrl} rel="noreferrer" target="_blank">
+            Open source article
+          </a>
+        ) : null}
+      </article>
       {loading ? <div className="news-full-detail-notice">Loading complete row from ClickHouse...</div> : null}
       {error ? <div className="news-full-detail-notice error">{error}</div> : null}
-      <div className="news-full-detail-overview">
-        <section>
-          <h4>Source And Processing</h4>
-          <dl>
-            {sourceRows.map((item) => (
-              <div className={item.label === "Article URL" ? "wide" : ""} key={item.label}>
-                <dt>{item.label}</dt>
-                <dd>{item.label === "Article URL" && item.value !== "-" ? <a href={item.value} rel="noreferrer" target="_blank">{item.value}</a> : item.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </section>
-        <section>
-          <h4>Text Size</h4>
-          <dl>
-            {(statRows.length ? statRows : [{ label: "Reported Text", value: "No text length metadata reported." }]).map((item) => (
-              <div key={item.label}>
-                <dt>{item.label}</dt>
-                <dd>{item.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </section>
-      </div>
-      <dl className="news-full-detail-meta">
-        {metaRows.map((item) => (
-          <div className={item.label === "Article URL" || item.label === "Raw Artifact" ? "wide" : ""} key={item.label}>
-            <dt>{item.label}</dt>
-            <dd>{item.value}</dd>
+      <section className="news-full-text-metrics">
+        {(statRows.length ? statRows : [{ label: "Reported text", value: "No text length metadata reported." }]).map((item) => (
+          <div key={item.label}>
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
           </div>
         ))}
-      </dl>
-      {textSections.map((section) => (
-        <section className="news-full-text-section" key={section.label}>
-          <h4>{section.label}</h4>
+      </section>
+      {textCandidates.slice(1).map((section) => (
+        <details className="news-full-text-section" key={section.label}>
+          <summary>{section.label}</summary>
           <pre>{section.value}</pre>
-        </section>
+        </details>
       ))}
       {tickerRows.length ? (
         <section className="news-full-table-section">
@@ -852,11 +872,76 @@ function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDet
         </section>
       ) : null}
       <section className="news-full-table-section">
-        <h4>All Metadata</h4>
+        <h4>Actual Database Values</h4>
         <NewsMetadataTable rows={remainingRows} />
       </section>
     </div>
   );
+}
+
+function NewsTimeCard({ label, timeZone, value }: { label: string; timeZone: string; value: string }) {
+  return (
+    <div className="news-full-time-card">
+      <span>{label}</span>
+      <strong>{value ? formatReadableDateTime(value, timeZone) : "-"}</strong>
+      <small>{timeZone === "UTC" ? "UTC" : timeZone.replace("America/", "")}</small>
+    </div>
+  );
+}
+
+function newsDetailTickers(dbRow: Record<string, unknown>, tickerRows: Record<string, unknown>[], row: NewsTodayRow) {
+  const relationTickers = tickerRows
+    .map((item) => stringMetric(item, ["ticker", "symbol", "primary_ticker", "normalized_ticker"]))
+    .filter(Boolean);
+  return uniqueStringSample([...stringArrayMetric(dbRow, ["tickers"]), ...row.tickers, ...row.tickerLinkSample, ...relationTickers], 48);
+}
+
+function newsDetailTextCandidates(dbRow: Record<string, unknown>, row: NewsTodayRow) {
+  const candidates = [
+    { label: "Normalized full text", value: stringMetric(dbRow, ["normalized_full_text"]) },
+    { label: "Provider body", value: stringMetric(dbRow, ["body_text"]) },
+    { label: "External source text", value: stringMetric(dbRow, ["external_text"]) },
+    { label: "PDF extracted text", value: stringMetric(dbRow, ["pdf_text"]) },
+    { label: "Teaser", value: stringMetric(dbRow, ["teaser"]) },
+    { label: "List preview", value: row.textPreview },
+  ];
+  return candidates
+    .map((candidate) => ({ ...candidate, value: cleanNewsArticleText(candidate.value) }))
+    .filter((candidate, index, all) => candidate.value && all.findIndex((item) => item.value === candidate.value) === index);
+}
+
+function cleanNewsArticleText(value: string) {
+  return value
+    .replace(/\r\n/g, "\n")
+    .replace(/\t/g, " ")
+    .replace(/[ \u00a0]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function newsArticleParagraphs(value: string) {
+  const cleaned = cleanNewsArticleText(value);
+  if (!cleaned) return ["No readable body text was returned for this news row."];
+  const paragraphBlocks = cleaned.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
+  const blocks = paragraphBlocks.length > 1 ? paragraphBlocks : splitLongNewsParagraph(cleaned);
+  return blocks.slice(0, 48);
+}
+
+function splitLongNewsParagraph(value: string) {
+  const sentences = value.split(/(?<=[.!?])\s+(?=[A-Z0-9"'])/).map((item) => item.trim()).filter(Boolean);
+  if (sentences.length <= 1) return [value];
+  const chunks: string[] = [];
+  let current = "";
+  for (const sentence of sentences) {
+    if (current && `${current} ${sentence}`.length > 720) {
+      chunks.push(current);
+      current = sentence;
+    } else {
+      current = current ? `${current} ${sentence}` : sentence;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
 }
 
 function NewsMetadataTable({ rows }: { rows: Array<{ key: string; value: string }> }) {
@@ -4224,6 +4309,22 @@ function formatZoneDate(value: Date, timeZone: string) {
 
 function formatZoneDateTime(value: Date, timeZone: string) {
   return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false, timeZone }).format(value);
+}
+
+function formatReadableDateTime(value: string, timeZone: string) {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return value || "-";
+  return new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "short",
+    second: "2-digit",
+    timeZone,
+    timeZoneName: "short",
+    weekday: "short",
+    year: "numeric",
+  }).format(new Date(parsed));
 }
 
 function formatUtcDateTime(value: string) {
