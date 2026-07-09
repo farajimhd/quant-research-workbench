@@ -4840,7 +4840,6 @@ class _RollingContextTensorCache:
             "context_cache_warm_seconds": time.perf_counter() - start,
             "context_cache_warm_tickers": int(len(first_ref_by_ticker)),
             "context_cache_warm_evictions": int(evicted),
-            **self.telemetry_snapshot(),
         }
 
     def materialize(
