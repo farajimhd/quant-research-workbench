@@ -702,7 +702,7 @@ button {
 .service-card.catching-up,
 .service-card.preflight,
 .service-card.starting {
-  border-top-color: var(--badge-info-border);
+  border-top-color: color-mix(in oklab, var(--badge-success-border) 78%, var(--badge-info-border));
 }
 
 .service-card.idle {
@@ -752,9 +752,9 @@ button {
 .service-status-badge.preflight,
 .service-status-badge.starting,
 .service-status-badge.working {
-  background: var(--badge-info-bg);
-  border-color: var(--badge-info-border);
-  color: var(--badge-info-fg);
+  background: color-mix(in oklab, var(--badge-success-bg) 82%, var(--badge-info-bg));
+  border-color: color-mix(in oklab, var(--badge-success-border) 78%, var(--badge-info-border));
+  color: color-mix(in oklab, var(--badge-success-fg) 88%, var(--badge-info-fg));
 }
 
 .service-status-badge.ok {
@@ -970,8 +970,8 @@ button {
 .service-focus.preflight,
 .service-focus.starting,
 .service-focus.working {
-  background: color-mix(in oklab, var(--badge-info-bg) 38%, var(--surface));
-  border-left-color: var(--badge-info-border);
+  background: color-mix(in oklab, var(--badge-success-bg) 34%, var(--surface));
+  border-left-color: color-mix(in oklab, var(--badge-success-border) 78%, var(--badge-info-border));
 }
 
 .service-focus.idle {
@@ -1155,8 +1155,8 @@ button {
 .service-work-responsibility-card {
   background: var(--surface);
   border: 1px solid var(--surface-border);
-  border-left: 3px solid var(--border-strong);
   border-radius: 8px;
+  box-shadow: inset 3px 0 0 var(--service-work-accent, var(--border-strong));
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   min-height: 212px;
@@ -1165,21 +1165,21 @@ button {
 }
 
 .service-work-responsibility-card.ok {
-  border-left-color: var(--success);
+  --service-work-accent: var(--success);
 }
 
 .service-work-responsibility-card.active,
 .service-work-responsibility-card.running {
-  border-left-color: var(--info);
+  --service-work-accent: color-mix(in oklab, var(--success) 78%, var(--info));
 }
 
 .service-work-responsibility-card.warn,
 .service-work-responsibility-card.waiting {
-  border-left-color: var(--warning);
+  --service-work-accent: var(--warning);
 }
 
 .service-work-responsibility-card.error {
-  border-left-color: var(--danger);
+  --service-work-accent: var(--danger);
 }
 
 .service-work-responsibility-card.news-live-card {
@@ -1708,7 +1708,7 @@ button {
 .news-publish-history-table tr.active,
 .news-poll-history-table tr.running,
 .news-publish-history-table tr.running {
-  background: color-mix(in oklab, var(--badge-info-bg) 12%, transparent);
+  background: color-mix(in oklab, var(--badge-success-bg) 16%, transparent);
 }
 
 .news-poll-history-table tr.warn,
@@ -1872,9 +1872,9 @@ button {
 
 .service-work-status.active,
 .service-work-status.running {
-  background: var(--badge-info-bg);
-  border-color: var(--badge-info-border);
-  color: var(--badge-info-fg);
+  background: color-mix(in oklab, var(--badge-success-bg) 82%, var(--badge-info-bg));
+  border-color: color-mix(in oklab, var(--badge-success-border) 78%, var(--badge-info-border));
+  color: color-mix(in oklab, var(--badge-success-fg) 88%, var(--badge-info-fg));
 }
 
 .service-work-status.idle {
@@ -1919,9 +1919,9 @@ button {
 
 .service-work-mini-status.active,
 .service-work-mini-status.running {
-  background: var(--badge-info-bg);
-  border-color: var(--badge-info-border);
-  color: var(--badge-info-fg);
+  background: color-mix(in oklab, var(--badge-success-bg) 82%, var(--badge-info-bg));
+  border-color: color-mix(in oklab, var(--badge-success-border) 78%, var(--badge-info-border));
+  color: color-mix(in oklab, var(--badge-success-fg) 88%, var(--badge-info-fg));
 }
 
 .service-work-mini-status.idle {

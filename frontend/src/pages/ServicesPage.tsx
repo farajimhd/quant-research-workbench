@@ -864,6 +864,7 @@ function newsPollHistorySummary(rows: NewsPollHistoryRow[]) {
 }
 
 function newsPublishHistoryRows(service: ServiceStatusPayload): NewsPublishHistoryRow[] {
+  const currentRow = newsCurrentPublishStateRow(service);
   return (service.logs?.rows ?? [])
     .filter((row) => (
       row.event === "publish_started"
@@ -880,7 +881,8 @@ function newsPublishHistoryRows(service: ServiceStatusPayload): NewsPublishHisto
       const insertedRows = numericMetric(fields, ["normalized_rows_inserted"]);
       const tickerRows = numericMetric(fields, ["ticker_rows_inserted", "ticker_count"]);
       const skippedRows = numericMetric(fields, ["skipped_existing"]);
-      const hasUsefulPublishWork = processedRows > 0 || insertedRows > 0 || tickerRows > 0 || skippedRows > 0 || items.length > 0;
+      const providerRows = numericMetric(fields, ["provider_rows"]);
+      const hasUsefulPublishWork = providerRows > 0 || processedRows > 0 || insertedRows > 0 || tickerRows > 0 || skippedRows > 0 || items.length > 0;
       if (!hasUsefulPublishWork) return null;
       const event = row.event || "publish";
       return {
@@ -902,8 +904,37 @@ function newsPublishHistoryRows(service: ServiceStatusPayload): NewsPublishHisto
       };
     })
     .filter((row): row is NewsPublishHistoryRow => Boolean(row))
+    .concat(currentRow ? [currentRow] : [])
     .sort((a, b) => (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0))
     .slice(0, 50);
+}
+
+function newsCurrentPublishStateRow(service: ServiceStatusPayload): NewsPublishHistoryRow | null {
+  const metrics = serviceMetricsRecord(service);
+  const status = stringMetric(metrics, ["publish_status"]) || "idle";
+  const activeJobs = numericMetric(metrics, ["publish_active_jobs"]);
+  const pendingRows = numericMetric(metrics, ["publish_pending_rows"]);
+  const failedJobs = numericMetric(metrics, ["publish_failed_jobs"]);
+  const completedJobs = numericMetric(metrics, ["publish_completed_jobs"]);
+  const message = stringMetric(metrics, ["publish_last_message"]) || (status === "idle" ? "Publisher is idle; no rows are waiting for database write." : "Current database publisher state.");
+  if (!status && !activeJobs && !pendingRows && !failedJobs && !completedJobs) return null;
+  return {
+    activeJobs,
+    coverageMode: "current",
+    enrichment: "-",
+    event: "publish_state",
+    insertedRows: numericMetric(metrics, ["last_cycle_written_rows"]),
+    pendingRows,
+    pollId: "current",
+    processedRows: pendingRows,
+    publishedAt: "",
+    skippedRows: numericMetric(metrics, ["last_cycle_skipped_existing"]),
+    status: failedJobs > 0 ? "warning" : activeJobs > 0 || pendingRows > 0 ? "running" : status,
+    tickerRows: 0,
+    tickers: "-",
+    title: message,
+    time: service.checked_at_utc || new Date().toISOString(),
+  };
 }
 
 function newsPublishSummary(rows: NewsPublishHistoryRow[]) {
