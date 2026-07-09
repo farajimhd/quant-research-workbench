@@ -607,6 +607,13 @@ quote_bid
 quote_ask
 ```
 
+Raw compact events keep packed `price_primary_int` and `price_secondary_int`
+columns plus scale bits in `event_meta`. Bar artifacts are different: their
+`open`, `close`, `high`, and `low` fields are decoded float price levels inside
+the family-specific `trade`, `quote_bid`, and `quote_ask` rows. Do not write
+decoded bar prices back under packed event names such as `price_primary_int` or
+`price_secondary_int`.
+
 For each family, preserve non-redundant raw bar values:
 
 ```text

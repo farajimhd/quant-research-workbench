@@ -198,8 +198,6 @@ LABEL_VALUE_DTYPES: dict[str, np.dtype] = {
     "label_resolution_us": np.dtype(np.uint64),
     "label_grid_start_timestamp_us": np.dtype(np.int64),
     "label_grid_end_timestamp_us": np.dtype(np.int64),
-    "price_primary_int": np.dtype(np.float32),
-    "price_secondary_int": np.dtype(np.float32),
     "size_primary_sum": np.dtype(np.float32),
     "size_secondary_sum": np.dtype(np.float32),
     "event_count": np.dtype(np.uint64),
@@ -520,6 +518,8 @@ class DailyIndexTrainingBatch:
     future_bar_values: dict[str, np.ndarray] = field(default_factory=dict)
     future_bar_masks: dict[str, np.ndarray] = field(default_factory=dict)
     future_bar_feature_names: dict[str, np.ndarray] = field(default_factory=dict)
+    # Deprecated compatibility projection. Daily-index v3 uses family-specific
+    # future_bar_values["trade"|"quote_bid"|"quote_ask"] instead.
     future_intraday_bars: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32))
     future_intraday_bar_mask: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.bool_))
     input_availability: dict[str, np.ndarray] = field(default_factory=dict)
@@ -2098,8 +2098,8 @@ class DailyIndexBatchMaterializer:
             family: np.asarray(fields, dtype=object)
             for family, fields in BAR_SOURCE_FEATURE_KEYS.items()
         }
-        bars = np.zeros((len(refs), horizon_count, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32)
-        mask = np.zeros((len(refs), horizon_count), dtype=np.bool_)
+        legacy_bars = np.zeros((len(refs), 0, len(FUTURE_BAR_FEATURE_KEYS)), dtype=np.float32)
+        legacy_mask = np.zeros((len(refs), 0), dtype=np.bool_)
         profile: dict[str, float | int] = {
             "label_index_seconds": 0.0,
             "label_lookup_seconds": 0.0,
@@ -2146,8 +2146,6 @@ class DailyIndexBatchMaterializer:
                 for key in labels_out:
                     values = label_values[key]
                     labels_out[key][int(output_row), : values.shape[0]] = values.astype(labels_out[key].dtype, copy=False)
-        available = labels_out["available"].astype(bool, copy=False)
-        mask[:, : available.shape[1]] = available
         for family, fields in BAR_SOURCE_FEATURE_KEYS.items():
             values = family_values[family]
             for field_index, field_name in enumerate(fields):
@@ -2158,17 +2156,7 @@ class DailyIndexBatchMaterializer:
             if available_key in labels_out:
                 family_masks[family][:, :] = labels_out[available_key].astype(bool, copy=False)
 
-        # Compatibility projection for older consumers. New code should use future_bar_values.
-        trade = family_values.get("trade")
-        trade_mask = family_masks.get("trade")
-        if trade is not None:
-            trade_fields = list(BAR_SOURCE_FEATURE_KEYS["trade"])
-            for output_field, source_field in (("open", "open"), ("close", "close"), ("high", "high"), ("low", "low"), ("volume", "size_sum")):
-                if output_field in FUTURE_BAR_FEATURE_KEYS and source_field in trade_fields:
-                    bars[:, :, FUTURE_BAR_FEATURE_KEYS.index(output_field)] = trade[:, :, trade_fields.index(source_field)]
-            if trade_mask is not None:
-                mask[:, :] = trade_mask
-        return labels_out, family_values, family_masks, family_feature_names, bars, mask, horizons, profile
+        return labels_out, family_values, family_masks, family_feature_names, legacy_bars, legacy_mask, horizons, profile
 
     def _materialize_intraday_labels_from_compact(
         self,
@@ -2230,10 +2218,6 @@ class DailyIndexBatchMaterializer:
                     resolution_us=int(resolution_us),
                     labels_out=labels_out,
                 )
-            quote_ask_close = labels_out["quote_ask_close"][out_rows, horizon_index]
-            quote_bid_close = labels_out["quote_bid_close"][out_rows, horizon_index]
-            labels_out["price_primary_int"][out_rows, horizon_index] = quote_ask_close
-            labels_out["price_secondary_int"][out_rows, horizon_index] = quote_bid_close
             labels_out["size_primary_sum"][out_rows, horizon_index] = (
                 labels_out["quote_ask_size_open"][out_rows, horizon_index] + labels_out["quote_ask_size_close"][out_rows, horizon_index]
             ).astype(np.float32, copy=False)

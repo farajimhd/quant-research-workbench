@@ -209,10 +209,11 @@ intraday_labels           dict[str, [B, H]]
 corporate_action_labels   dict[str, [B, D]]
 ```
 
-`future_intraday_bars [B,H,5]` remains a trade-family compatibility projection.
-Primary price targets should use family-specific trade, bid, and ask fields.
-Redundant mid-price targets should not be trained by default unless explicitly
-enabled for an ablation.
+The v3 target contract has exactly these three future bar families. It does not
+train the older single `future_intraday_bars [B,H,5]` projection. Primary price
+targets should use family-specific trade, bid, and ask fields. Redundant
+mid-price targets should not be trained by default unless explicitly enabled for
+an ablation.
 
 Intraday labels are future-only and session bounded. They are computed from
 events on the same New York trading date as the origin and do not cross the
@@ -908,9 +909,9 @@ future_bar_values["quote_ask"]      float32 [B, H, 9]
   mask                              future_bar_masks["quote_ask"] [B, H]
 ```
 
-`future_intraday_bars [B,H,5]` remains a loader compatibility projection with
-feature order `open, close, high, low, volume`, now projected from the `trade`
-family. It is not the canonical v3 target contract.
+The daily-index v3 loader does not populate the older single-family
+`future_intraday_bars [B,H,5]` projection. Use `future_bar_values` and
+`future_bar_masks` for all intraday future bar supervision.
 
 `H` is `len(future_intraday_bar_horizons)`. Price-like targets arrive from the
 loader as decoded `float32` price levels; the ticker-month builder has already
@@ -1010,7 +1011,7 @@ Bar price loss:
 - masks: `future_bar_masks[family] [B, H]`
 - default loss: Huber in raw loader/cache units
 - no default family, field, or horizon weights
-- `future_intraday_bars` is compatibility output and should not add a duplicate loss
+- no duplicate loss is computed from any single-family compatibility projection
 
 Event-count and size losses:
 

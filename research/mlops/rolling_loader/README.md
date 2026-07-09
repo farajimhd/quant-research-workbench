@@ -165,6 +165,24 @@ The loader output shape is:
 `F` is padded to the max bar-family feature width. This gives the model both
 market-leader context and explicit origin-ticker identity/comparison features.
 
+## Bar Family Contract
+
+Raw event streams keep the compact event fields `price_primary_int` and
+`price_secondary_int` plus the scale bits in `event_meta`. Intraday, scanner,
+daily, and macro bars do not expose those packed event names. They use decoded
+float price levels in exactly three families:
+
+```text
+trade
+quote_bid
+quote_ask
+```
+
+The canonical future target tensors are `future_bar_values["trade"]`,
+`future_bar_values["quote_bid"]`, and `future_bar_values["quote_ask"]` with
+their matching masks. The older single-family `future_intraday_bars` projection
+is not populated by the daily-index v3 loader path.
+
 ## Time Feature Contract
 
 All absolute time features emitted by this package use UTC. New York session
