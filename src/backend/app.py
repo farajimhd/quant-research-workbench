@@ -157,6 +157,7 @@ SERVICE_TABLE_STATE_LIMIT = 32
 SERVICE_TABLE_STATE_CACHE_SECONDS = 30.0
 SERVICE_NEWS_HISTOGRAM_CACHE_SECONDS = 20.0
 SERVICE_NEWS_HISTOGRAM_BIN_SECONDS = 900
+SERVICE_NEWS_TODAY_ROWS_LIMIT = 500
 SERVICE_TABLE_STATE_START_YEAR = 2019
 SERVICE_TABLE_TIME_COLUMN_CANDIDATES = (
     "published_at_utc",
@@ -1611,6 +1612,121 @@ def service_news_histogram() -> dict[str, Any]:
     return payload
 
 
+def service_news_today_rows(limit: int = 250) -> dict[str, Any]:
+    safe_limit = max(1, min(limit, SERVICE_NEWS_TODAY_ROWS_LIMIT))
+    database = "q_live"
+    normalized_table = "benzinga_news_normalized_v1"
+    ticker_table = "benzinga_news_ticker_v1"
+    market_now = datetime.now(UTC).astimezone(ZoneInfo(EXCHANGE_TIME_ZONE))
+    window_start_et = market_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    window_end_et = window_start_et + timedelta(days=1)
+    window_start_utc = window_start_et.astimezone(UTC)
+    window_end_utc = window_end_et.astimezone(UTC)
+    window_start_sql = f"toDateTime64({sql_string(window_start_utc.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
+    window_end_sql = f"toDateTime64({sql_string(window_end_utc.strftime('%Y-%m-%d %H:%M:%S.%f'))}, 6, 'UTC')"
+    query = f"""
+        WITH
+            {window_start_sql} AS window_start,
+            {window_end_sql} AS window_end,
+            ticker_counts AS
+            (
+                SELECT
+                    canonical_news_id,
+                    toUInt64(countDistinct(nullIf(ticker, ''))) AS ticker_link_count,
+                    arraySort(groupUniqArray(nullIf(ticker, ''))) AS ticker_link_sample
+                FROM {quote_ident(database)}.{quote_ident(ticker_table)} FINAL
+                WHERE published_at_utc >= window_start
+                  AND published_at_utc < window_end
+                GROUP BY canonical_news_id
+            )
+        SELECT
+            n.canonical_news_id,
+            n.provider_article_id,
+            formatDateTime(n.published_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS published_at_utc,
+            formatDateTime(n.downloaded_at_utc, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS downloaded_at_utc,
+            n.title,
+            n.normalized_title,
+            n.article_url,
+            n.url_domain,
+            n.author,
+            n.tickers,
+            n.channels,
+            n.provider_tags,
+            ifNull(t.ticker_link_count, toUInt64(0)) AS ticker_link_count,
+            ifNull(t.ticker_link_sample, []) AS ticker_link_sample,
+            n.has_body,
+            n.is_title_only,
+            n.has_external_text,
+            n.has_pdf,
+            n.external_fetch_status,
+            n.pdf_extract_status,
+            n.content_quality_flags,
+            lengthUTF8(n.body_text) AS body_chars,
+            lengthUTF8(n.external_text) AS external_chars,
+            lengthUTF8(n.pdf_text) AS pdf_chars,
+            lengthUTF8(n.normalized_full_text) AS full_text_chars,
+            substring(n.normalized_full_text, 1, 240) AS text_preview
+        FROM {quote_ident(database)}.{quote_ident(normalized_table)} AS n FINAL
+        LEFT JOIN ticker_counts AS t
+            ON t.canonical_news_id = n.canonical_news_id
+        WHERE n.published_at_utc >= window_start
+          AND n.published_at_utc < window_end
+        ORDER BY n.published_at_utc DESC, n.provider_article_id DESC
+        LIMIT {safe_limit}
+        FORMAT JSONEachRow
+    """
+    rows = [json.loads(line) for line in clickhouse_status_query(query).splitlines() if line.strip()]
+    return {
+        "database": database,
+        "limit": safe_limit,
+        "market_timezone": EXCHANGE_TIME_ZONE,
+        "normalized_table": normalized_table,
+        "rows": rows,
+        "source": "clickhouse",
+        "ticker_table": ticker_table,
+        "window_end_et": window_end_et.isoformat(),
+        "window_end_utc": window_end_utc.isoformat().replace("+00:00", "Z"),
+        "window_start_et": window_start_et.isoformat(),
+        "window_start_utc": window_start_utc.isoformat().replace("+00:00", "Z"),
+    }
+
+
+def service_news_detail(canonical_news_id: str) -> dict[str, Any]:
+    news_id = canonical_news_id.strip()
+    if not news_id:
+        raise HTTPException(status_code=400, detail="canonical_news_id is required")
+    database = "q_live"
+    normalized_table = "benzinga_news_normalized_v1"
+    ticker_table = "benzinga_news_ticker_v1"
+    news_id_sql = sql_string(news_id)
+    row_query = f"""
+        SELECT *
+        FROM {quote_ident(database)}.{quote_ident(normalized_table)} FINAL
+        WHERE canonical_news_id = {news_id_sql}
+        LIMIT 1
+        FORMAT JSONEachRow
+    """
+    rows = [json.loads(line) for line in clickhouse_status_query(row_query).splitlines() if line.strip()]
+    if not rows:
+        raise HTTPException(status_code=404, detail="News row not found")
+    ticker_query = f"""
+        SELECT *
+        FROM {quote_ident(database)}.{quote_ident(ticker_table)} FINAL
+        WHERE canonical_news_id = {news_id_sql}
+        ORDER BY ticker ASC
+        FORMAT JSONEachRow
+    """
+    ticker_rows = [json.loads(line) for line in clickhouse_status_query(ticker_query).splitlines() if line.strip()]
+    return {
+        "canonical_news_id": news_id,
+        "database": database,
+        "normalized_table": normalized_table,
+        "row": rows[0],
+        "ticker_rows": ticker_rows,
+        "ticker_table": ticker_table,
+    }
+
+
 def service_database_table_target(service_id: str, database: str, table: str) -> dict[str, str]:
     for target in SERVICE_DATABASE_TABLES.get(service_id, []):
         if target["database"] == database and target["table"] == table:
@@ -1955,6 +2071,16 @@ def service_table_preview(service_id: str, database: str, table: str, limit: int
 @app.get("/api/services/news/histogram")
 def news_service_histogram() -> dict[str, Any]:
     return service_news_histogram()
+
+
+@app.get("/api/services/news/today")
+def news_service_today(limit: int = 250) -> dict[str, Any]:
+    return service_news_today_rows(limit)
+
+
+@app.get("/api/services/news/detail/{canonical_news_id}")
+def news_service_detail(canonical_news_id: str) -> dict[str, Any]:
+    return service_news_detail(canonical_news_id)
 
 
 @app.get("/api/config/defaults")

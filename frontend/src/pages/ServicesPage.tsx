@@ -350,7 +350,7 @@ function ServiceDetail({ pageError, service }: { pageError: string; service: Ser
           <ServiceConfigurationPanel service={service} />
         </Modal>
       ) : null}
-      <ServiceWorkPlanPanel service={service} />
+      {service.registry.id === "news" ? <NewsServiceWorkAndRows service={service} /> : <ServiceWorkPlanPanel service={service} />}
       <ServiceErrorLogPanel pageError={pageError} service={service} />
       <Panel title="Coverage">
         <KeyValueList rows={coverageRows.length ? coverageRows : [{ key: "status", value: "not reported" }]} />
@@ -445,12 +445,15 @@ type NewsEnrichmentArticleRow = {
   domainSample: string[];
   externalFetchStatus: string;
   hasPdf: boolean;
+  preEnrichedRow: Record<string, unknown>;
   providerArticleId: string;
+  providerPayload: Record<string, unknown>;
   publishedAt: string;
   requiresEnrichment: boolean;
   tickers: string;
   title: string;
   urlCount: number;
+  urlResolution: Record<string, unknown>;
   urlSample: string[];
 };
 
@@ -526,6 +529,227 @@ type NewsHistogramPayload = {
   window_start_utc?: string;
 };
 
+type NewsTodayRow = {
+  articleUrl: string;
+  author: string;
+  bodyChars: number;
+  canonicalNewsId: string;
+  channels: string[];
+  contentQualityFlags: string[];
+  downloadedAtUtc: string;
+  externalChars: number;
+  externalFetchStatus: string;
+  fullTextChars: number;
+  hasBody: boolean;
+  hasExternalText: boolean;
+  hasPdf: boolean;
+  isTitleOnly: boolean;
+  normalizedTitle: string;
+  pdfChars: number;
+  pdfExtractStatus: string;
+  providerArticleId: string;
+  providerTags: string[];
+  publishedAtUtc: string;
+  textPreview: string;
+  tickerLinkCount: number;
+  tickerLinkSample: string[];
+  tickers: string[];
+  title: string;
+  urlDomain: string;
+};
+
+type NewsTodayRowsPayload = {
+  database?: string;
+  error?: string;
+  limit?: number;
+  normalized_table?: string;
+  rows?: Array<Record<string, unknown>>;
+  ticker_table?: string;
+  window_end_utc?: string;
+  window_start_utc?: string;
+};
+
+type NewsDetailPayload = {
+  canonical_news_id?: string;
+  database?: string;
+  normalized_table?: string;
+  row?: Record<string, unknown>;
+  ticker_rows?: Array<Record<string, unknown>>;
+  ticker_table?: string;
+};
+
+type NewsTodayRowsState = {
+  error: string;
+  loading: boolean;
+  rows: NewsTodayRow[];
+  windowEndUtc: string;
+  windowStartUtc: string;
+};
+
+function NewsServiceWorkAndRows({ service }: { service: ServiceStatusPayload }) {
+  const todayNews = useNewsTodayRows(service.registry.id === "news");
+  return (
+    <section className="news-service-work-and-rows-grid">
+      <ServiceWorkPlanPanel service={service} />
+      <NewsTodayRowsPanel state={todayNews} />
+    </section>
+  );
+}
+
+function NewsTodayRowsPanel({ state }: { state: NewsTodayRowsState }) {
+  const [detail, setDetail] = useState<NewsDetailPayload | null>(null);
+  const [detailError, setDetailError] = useState("");
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [selectedRow, setSelectedRow] = useState<NewsTodayRow | null>(null);
+  const rows = state.rows;
+  const summary = useMemo(() => newsTodayRowsSummary(rows), [rows]);
+
+  async function openNews(row: NewsTodayRow) {
+    setSelectedRow(row);
+    setDetail(null);
+    setDetailError("");
+    setDetailLoading(true);
+    try {
+      const payload = await api<NewsDetailPayload>(`/api/services/news/detail/${encodeURIComponent(row.canonicalNewsId)}`);
+      setDetail(payload);
+    } catch (exc) {
+      setDetailError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  return (
+    <Panel className="news-today-panel" title="Today's Inserted News">
+      <div className="news-today-summary">
+        <span><small>Rows</small><strong>{formatCompactNumber(rows.length)}</strong></span>
+        <span><small>With Ticker</small><strong>{formatCompactNumber(summary.withTicker)}</strong></span>
+        <span><small>External Text</small><strong>{formatCompactNumber(summary.externalText)}</strong></span>
+        <span><small>PDF</small><strong>{formatCompactNumber(summary.pdfRows)}</strong></span>
+        <span><small>Latest</small><strong>{summary.latest ? formatLogTime(summary.latest) : "-"}</strong></span>
+      </div>
+      <div className="news-today-meta">
+        <span>{state.windowStartUtc ? `Window ${formatLogTime(state.windowStartUtc)} -> ${formatLogTime(state.windowEndUtc)}` : "Today, market timezone"}</span>
+        {state.error ? <strong>{state.error}</strong> : <strong>{state.loading ? "Loading rows..." : "Latest rows from ClickHouse"}</strong>}
+      </div>
+      <div className="news-today-table-wrap">
+        <table className="news-today-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Tickers</th>
+              <th>Title</th>
+              <th>Source</th>
+              <th>Text</th>
+              <th>Flags</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(rows.length ? rows : [null]).map((row, index) => row ? (
+              <tr
+                key={`${row.canonicalNewsId}-${index}`}
+                onClick={() => void openNews(row)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    void openNews(row);
+                  }
+                }}
+                tabIndex={0}
+              >
+                <td title={row.publishedAtUtc}>{formatLogTime(row.publishedAtUtc)}</td>
+                <td title={newsTodayTickerLabel(row)}>{newsTodayTickerLabel(row)}</td>
+                <td title={row.title}>{row.title || row.normalizedTitle || "-"}</td>
+                <td title={row.articleUrl || row.urlDomain}>{row.urlDomain || "-"}</td>
+                <td title={newsTodayTextLabel(row)}>{newsTodayTextLabel(row)}</td>
+                <td title={row.contentQualityFlags.join(", ")}>{newsTodayFlagLabel(row)}</td>
+              </tr>
+            ) : (
+              <tr key={`empty-${index}`}>
+                <td colSpan={6}>{state.loading ? "Loading today's inserted news rows..." : "No inserted news rows found for today's market date."}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {selectedRow ? (
+        <Modal className="news-full-detail-modal-panel" onClose={() => { setSelectedRow(null); setDetail(null); setDetailError(""); }} title="Inserted News Detail">
+          <NewsTodayDetailModal detail={detail} error={detailError} loading={detailLoading} row={selectedRow} />
+        </Modal>
+      ) : null}
+    </Panel>
+  );
+}
+
+function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDetailPayload | null; error: string; loading: boolean; row: NewsTodayRow }) {
+  const dbRow = isRecord(detail?.row) ? detail.row : {};
+  const tickerRows = Array.isArray(detail?.ticker_rows) ? detail.ticker_rows.filter(isRecord) : [];
+  const title = stringMetric(dbRow, ["title", "normalized_title"]) || row.title || row.normalizedTitle || "Untitled news row";
+  const textSections = [
+    { label: "Teaser", value: stringMetric(dbRow, ["teaser"]) },
+    { label: "Provider Body", value: stringMetric(dbRow, ["body_text"]) },
+    { label: "External Text", value: stringMetric(dbRow, ["external_text"]) },
+    { label: "PDF Text", value: stringMetric(dbRow, ["pdf_text"]) },
+    { label: "Normalized Full Text", value: stringMetric(dbRow, ["normalized_full_text"]) },
+  ].filter((section) => section.value);
+  const metaRows = [
+    { label: "Published UTC", value: stringMetric(dbRow, ["published_at_utc"]) || row.publishedAtUtc },
+    { label: "Downloaded UTC", value: stringMetric(dbRow, ["downloaded_at_utc"]) || row.downloadedAtUtc },
+    { label: "Provider ID", value: stringMetric(dbRow, ["provider_article_id"]) || row.providerArticleId },
+    { label: "Canonical ID", value: stringMetric(dbRow, ["canonical_news_id"]) || row.canonicalNewsId },
+    { label: "Author", value: stringMetric(dbRow, ["author"]) || row.author },
+    { label: "Domain", value: stringMetric(dbRow, ["url_domain"]) || row.urlDomain },
+    { label: "Article URL", value: stringMetric(dbRow, ["article_url"]) || row.articleUrl },
+    { label: "Tickers", value: arrayValueLabel(dbRow.tickers) || newsTodayTickerLabel(row) },
+    { label: "Channels", value: arrayValueLabel(dbRow.channels) || row.channels.join(", ") },
+    { label: "Provider Tags", value: arrayValueLabel(dbRow.provider_tags) || row.providerTags.join(", ") },
+    { label: "Quality Flags", value: arrayValueLabel(dbRow.content_quality_flags) || row.contentQualityFlags.join(", ") },
+    { label: "External Fetch", value: stringMetric(dbRow, ["external_fetch_status", "external_fetch_error"]) || row.externalFetchStatus },
+    { label: "PDF Extract", value: stringMetric(dbRow, ["pdf_extract_status", "pdf_extract_error"]) || row.pdfExtractStatus },
+    { label: "Raw Artifact", value: stringMetric(dbRow, ["raw_artifact_path"]) },
+    { label: "Normalizer", value: stringMetric(dbRow, ["normalizer_version"]) },
+  ].filter((item) => item.value);
+  const hiddenKeys = new Set(["title", "normalized_title", "teaser", "body_text", "external_text", "pdf_text", "normalized_full_text"]);
+  const remainingRows = Object.entries(dbRow)
+    .filter(([key]) => !hiddenKeys.has(key))
+    .map(([key, value]) => ({ key, value: formatValue(key, value) }));
+  return (
+    <div className="news-full-detail">
+      <div className="news-full-detail-hero">
+        <span>{row.tickers.length ? row.tickers.join(", ") : "Market-wide"}</span>
+        <h3>{title}</h3>
+        <p>{row.textPreview || stringMetric(dbRow, ["teaser"]) || "No preview text reported."}</p>
+      </div>
+      {loading ? <div className="news-full-detail-notice">Loading complete row from ClickHouse...</div> : null}
+      {error ? <div className="news-full-detail-notice error">{error}</div> : null}
+      <dl className="news-full-detail-meta">
+        {metaRows.map((item) => (
+          <div className={item.label === "Article URL" || item.label === "Raw Artifact" ? "wide" : ""} key={item.label}>
+            <dt>{item.label}</dt>
+            <dd>{item.value}</dd>
+          </div>
+        ))}
+      </dl>
+      {textSections.map((section) => (
+        <section className="news-full-text-section" key={section.label}>
+          <h4>{section.label}</h4>
+          <pre>{section.value}</pre>
+        </section>
+      ))}
+      {tickerRows.length ? (
+        <section className="news-full-table-section">
+          <h4>Ticker Relations</h4>
+          <DataTable fitToContent rows={tickerRows.map(normalizeRow)} />
+        </section>
+      ) : null}
+      <section className="news-full-table-section">
+        <h4>All Metadata</h4>
+        <DataTable fitToContent rows={remainingRows} />
+      </section>
+    </div>
+  );
+}
+
 function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
   const groups = serviceWorkGroups(service);
   const newsPollHistory = useNewsPollHistory(service);
@@ -575,7 +799,7 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
 }
 
 function ServiceWorkResponsibilityGrid({ groups, newsPollHistory, service }: { groups: ServiceWorkGroup[]; newsPollHistory: NewsPollHistoryRow[]; service: ServiceStatusPayload }) {
-  const visibleGroups = groups.filter((group) => group.id !== "other" || group.rows.length);
+  const visibleGroups = orderedServiceWorkGroups(groups, service.registry.id).filter((group) => group.id !== "other" || group.rows.length);
   return (
     <div className="service-work-responsibility-grid">
       {visibleGroups.map((group) => group.id === "live" && service.registry.id === "news" ? (
@@ -1192,9 +1416,54 @@ function NewsEnrichmentDetailModal({ row }: { row: NewsEnrichmentHistoryRow }) {
               </tbody>
             </table>
           </div>
+          <div className="news-enrichment-debug-list">
+            {row.items.map((item, index) => (
+              <NewsEnrichmentArticleDebugCard item={item} key={`${item.canonicalNewsId || item.providerArticleId || item.title}-debug-${index}`} />
+            ))}
+          </div>
         </section>
       ) : null}
     </div>
+  );
+}
+
+function NewsEnrichmentArticleDebugCard({ item }: { item: NewsEnrichmentArticleRow }) {
+  return (
+    <article className="news-enrichment-debug-card">
+      <header>
+        <span>{item.tickers || "No ticker"}</span>
+        <strong>{item.title || "Untitled enrichment item"}</strong>
+      </header>
+      <dl className="news-enrichment-debug-meta">
+        <div><dt>Provider ID</dt><dd>{item.providerArticleId || "-"}</dd></div>
+        <div><dt>Canonical ID</dt><dd>{item.canonicalNewsId || "-"}</dd></div>
+        <div><dt>Published</dt><dd>{item.publishedAt ? formatLogTime(item.publishedAt) : "-"}</dd></div>
+        <div><dt>URL Count</dt><dd>{formatCompactNumber(item.urlCount)}</dd></div>
+        <div><dt>Fetch Status</dt><dd>{item.externalFetchStatus ? displayName(item.externalFetchStatus) : item.requiresEnrichment ? "needed" : "not needed"}</dd></div>
+        <div><dt>PDF</dt><dd>{item.hasPdf ? "yes" : "no"}</dd></div>
+      </dl>
+      <DebugObjectBlock title="URLs And Resolution" value={item.urlResolution} />
+      <DebugObjectBlock title="Pre-Enriched Normalized Row" value={item.preEnrichedRow} />
+      <DebugObjectBlock title="Raw Provider Payload" value={item.providerPayload} />
+    </article>
+  );
+}
+
+function DebugObjectBlock({ title, value }: { title: string; value: Record<string, unknown> }) {
+  const rows = Object.entries(value || {});
+  if (!rows.length) return null;
+  return (
+    <section className="debug-object-block">
+      <h4>{title}</h4>
+      <dl className="debug-object-grid">
+        {rows.map(([key, item]) => (
+          <div className={debugObjectValueWide(item) ? "wide" : ""} key={key}>
+            <dt>{displayName(key)}</dt>
+            <dd>{debugObjectValue(item)}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }
 
@@ -1723,12 +1992,15 @@ function newsEnrichmentArticleRow(item: Record<string, unknown>): NewsEnrichment
     domainSample,
     externalFetchStatus: stringMetric(item, ["external_fetch_status", "source_text_status"]),
     hasPdf: Boolean(item.has_pdf),
+    preEnrichedRow: isRecord(item.pre_enriched_row) ? item.pre_enriched_row : {},
     providerArticleId: stringMetric(item, ["provider_article_id"]),
+    providerPayload: isRecord(item.provider_payload) ? item.provider_payload : {},
     publishedAt: stringMetric(item, ["published_at_utc", "published_utc", "published"]),
     requiresEnrichment: Boolean(item.requires_enrichment),
     tickers: publishTickerLabel({}, item),
     title: stringMetric(item, ["title", "headline"]),
     urlCount: numericMetric(item, ["url_count"]) || urlSample.length,
+    urlResolution: isRecord(item.url_resolution) ? item.url_resolution : {},
     urlSample,
   };
 }
@@ -2059,6 +2331,121 @@ function useNewsDailyHistogram(enabled: boolean) {
   return payload;
 }
 
+function useNewsTodayRows(enabled: boolean): NewsTodayRowsState {
+  const [payload, setPayload] = useState<NewsTodayRowsState>({ error: "", loading: false, rows: [], windowEndUtc: "", windowStartUtc: "" });
+  useEffect(() => {
+    if (!enabled) {
+      setPayload({ error: "", loading: false, rows: [], windowEndUtc: "", windowStartUtc: "" });
+      return undefined;
+    }
+    let cancelled = false;
+    async function load() {
+      setPayload((current) => ({ ...current, loading: true }));
+      try {
+        const response = await api<NewsTodayRowsPayload>("/api/services/news/today?limit=400");
+        if (cancelled) return;
+        setPayload({
+          error: response.error || "",
+          loading: false,
+          rows: (response.rows || []).filter(isRecord).map(newsTodayRowFromPayload),
+          windowEndUtc: response.window_end_utc || "",
+          windowStartUtc: response.window_start_utc || "",
+        });
+      } catch (exc) {
+        if (cancelled) return;
+        setPayload((current) => ({ ...current, error: exc instanceof Error ? exc.message : String(exc), loading: false }));
+      }
+    }
+    void load();
+    const timer = window.setInterval(() => void load(), 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [enabled]);
+  return payload;
+}
+
+function newsTodayRowFromPayload(row: Record<string, unknown>): NewsTodayRow {
+  return {
+    articleUrl: stringMetric(row, ["article_url"]),
+    author: stringMetric(row, ["author"]),
+    bodyChars: numericMetric(row, ["body_chars"]),
+    canonicalNewsId: stringMetric(row, ["canonical_news_id"]),
+    channels: stringArrayMetric(row, ["channels"]),
+    contentQualityFlags: stringArrayMetric(row, ["content_quality_flags"]),
+    downloadedAtUtc: stringMetric(row, ["downloaded_at_utc"]),
+    externalChars: numericMetric(row, ["external_chars"]),
+    externalFetchStatus: stringMetric(row, ["external_fetch_status"]),
+    fullTextChars: numericMetric(row, ["full_text_chars"]),
+    hasBody: Boolean(Number(row.has_body || 0)),
+    hasExternalText: Boolean(Number(row.has_external_text || 0)),
+    hasPdf: Boolean(Number(row.has_pdf || 0)),
+    isTitleOnly: Boolean(Number(row.is_title_only || 0)),
+    normalizedTitle: stringMetric(row, ["normalized_title"]),
+    pdfChars: numericMetric(row, ["pdf_chars"]),
+    pdfExtractStatus: stringMetric(row, ["pdf_extract_status"]),
+    providerArticleId: stringMetric(row, ["provider_article_id"]),
+    providerTags: stringArrayMetric(row, ["provider_tags"]),
+    publishedAtUtc: stringMetric(row, ["published_at_utc"]),
+    textPreview: stringMetric(row, ["text_preview"]),
+    tickerLinkCount: numericMetric(row, ["ticker_link_count"]),
+    tickerLinkSample: stringArrayMetric(row, ["ticker_link_sample"]),
+    tickers: stringArrayMetric(row, ["tickers"]),
+    title: stringMetric(row, ["title"]),
+    urlDomain: stringMetric(row, ["url_domain"]),
+  };
+}
+
+function newsTodayRowsSummary(rows: NewsTodayRow[]) {
+  return rows.reduce(
+    (summary, row) => ({
+      externalText: summary.externalText + (row.hasExternalText ? 1 : 0),
+      latest: !summary.latest || Date.parse(row.publishedAtUtc) > Date.parse(summary.latest) ? row.publishedAtUtc : summary.latest,
+      pdfRows: summary.pdfRows + (row.hasPdf ? 1 : 0),
+      withTicker: summary.withTicker + ((row.tickers.length || row.tickerLinkCount) ? 1 : 0),
+    }),
+    { externalText: 0, latest: "", pdfRows: 0, withTicker: 0 },
+  );
+}
+
+function newsTodayTickerLabel(row: NewsTodayRow) {
+  const tickers = row.tickers.length ? row.tickers : row.tickerLinkSample;
+  if (!tickers.length) return "-";
+  const label = tickers.slice(0, 4).join(", ");
+  const extra = Math.max(0, tickers.length - 4);
+  return extra ? `${label} +${extra}` : label;
+}
+
+function newsTodayTextLabel(row: NewsTodayRow) {
+  const parts = [
+    row.bodyChars ? `body ${formatCompactNumber(row.bodyChars)}` : "",
+    row.externalChars ? `ext ${formatCompactNumber(row.externalChars)}` : "",
+    row.pdfChars ? `pdf ${formatCompactNumber(row.pdfChars)}` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" / ") : row.isTitleOnly ? "title only" : "-";
+}
+
+function newsTodayFlagLabel(row: NewsTodayRow) {
+  const flags = row.contentQualityFlags;
+  if (!flags.length) return "-";
+  const label = flags.slice(0, 2).join(", ");
+  const extra = Math.max(0, flags.length - 2);
+  return extra ? `${label} +${extra}` : label;
+}
+
+function orderedServiceWorkGroups(groups: ServiceWorkGroup[], serviceId: ServiceId) {
+  if (serviceId !== "news") return groups;
+  const order = new Map([
+    ["live", 0],
+    ["processing", 1],
+    ["publish", 2],
+    ["coverage", 3],
+    ["other", 4],
+  ]);
+  return [...groups].sort((left, right) => (order.get(left.id) ?? 50) - (order.get(right.id) ?? 50));
+}
+
 function newsPollHistoryRow(service: ServiceStatusPayload): NewsPollHistoryRow | null {
   const metrics = serviceMetricsRecord(service);
   const pollRun = numericMetric(metrics, ["poll_runs"]);
@@ -2134,6 +2521,11 @@ function stringArrayMetric(record: Record<string, unknown>, keys: string[]) {
     if (value !== undefined && value !== null && String(value).trim()) return [String(value).trim()];
   }
   return [];
+}
+
+function arrayValueLabel(value: unknown) {
+  if (!Array.isArray(value)) return "";
+  return value.map((item) => String(item || "").trim()).filter(Boolean).join(", ");
 }
 
 function uniqueStringSample(values: string[], limit: number) {
@@ -3486,6 +3878,22 @@ function formatValue(key: string, value: unknown) {
   if (typeof value === "number") return formatCell(key, value);
   if (typeof value === "string") return value || "-";
   return compactJson(value);
+}
+
+function debugObjectValue(value: unknown) {
+  if (Array.isArray(value)) {
+    if (!value.length) return "-";
+    if (value.every((item) => typeof item !== "object" || item === null)) return value.map(String).join(", ");
+    return JSON.stringify(value, null, 2);
+  }
+  if (isRecord(value)) return JSON.stringify(value, null, 2);
+  if (value === undefined || value === null || value === "") return "-";
+  return String(value);
+}
+
+function debugObjectValueWide(value: unknown) {
+  if (Array.isArray(value) || isRecord(value)) return true;
+  return String(value ?? "").length > 100;
 }
 
 function formatTime(value: string) {

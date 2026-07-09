@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -1100,6 +1101,10 @@ class NewsGateway:
                     "requires_enrichment": bool(url_tasks or row.get("requires_enrichment")),
                     "external_fetch_status": str(row.get("external_fetch_status") or row.get("source_text_status") or ""),
                     "has_pdf": self._news_has_pdf(url_tasks, attachments),
+                    "pre_enriched_row": self._news_debug_mapping(row),
+                    "provider_payload": self._news_debug_mapping(item.payload),
+                    "url_resolution": self._news_url_resolution_debug_payload(row, url_tasks, attachments),
+                    "text_lengths": self._news_text_lengths(row),
                 }
             )
         return {
@@ -1336,6 +1341,44 @@ class NewsGateway:
             if domain:
                 domains.append(domain)
         return list(dict.fromkeys(urls))[:limit], sorted(set(domains))[:limit]
+
+    def _news_url_resolution_debug_payload(self, row: dict[str, Any], url_tasks: list[Any], attachments: list[Any]) -> dict[str, Any]:
+        return {
+            "row_urls": [self._redact_debug_string(url) for url in self._news_row_urls(row)[:50]],
+            "fetch_tasks": [self._news_debug_mapping(task) for task in url_tasks[:50] if isinstance(task, dict)],
+            "attachments": [self._news_debug_mapping(attachment) for attachment in attachments[:50] if isinstance(attachment, dict)],
+            "fetch_task_count": len(url_tasks),
+            "attachment_count": len(attachments),
+        }
+
+    def _news_text_lengths(self, row: dict[str, Any]) -> dict[str, int]:
+        return {
+            key: len(str(row.get(key) or ""))
+            for key in ("title", "teaser", "body_text", "external_text", "pdf_text", "normalized_full_text")
+        }
+
+    def _news_debug_mapping(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): "redacted" if self._news_debug_secret_key(str(key)) else self._news_debug_mapping(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._news_debug_mapping(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._news_debug_mapping(item) for item in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return self._redact_debug_string(value) if isinstance(value, str) else value
+        return self._redact_debug_string(str(value))
+
+    def _news_debug_secret_key(self, key: str) -> bool:
+        normalized = key.lower()
+        return any(marker in normalized for marker in ("api_key", "apikey", "token", "secret", "password"))
+
+    def _redact_debug_string(self, value: str) -> str:
+        text = str(value)
+        text = re.sub(r"([?&](?:apiKey|apikey|api_key|token|key|password)=)[^&'\"\s)]+", r"\1redacted", text, flags=re.IGNORECASE)
+        return re.sub(r"((?:apiKey|apikey|api_key|token|key|password)['\"]?\s*[:=]\s*['\"]?)[^'\"&\s,)]+", r"\1redacted", text, flags=re.IGNORECASE)
 
     def _news_row_urls(self, row: dict[str, Any]) -> list[str]:
         urls: list[str] = []
