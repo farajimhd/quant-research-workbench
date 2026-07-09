@@ -411,8 +411,16 @@ class XbrlEncoder(nn.Module):
         self.time_encoder = time_encoder
         self.time_feature_count = int(config.xbrl_time_feature_count)
         self.period_time_feature_count = int(config.xbrl_period_time_feature_count)
-        self.cat = HashEmbedding(8192, 8)
-        numeric_dim = 3 + 2 * int(config.time_encoder_dim) + 8 * 8
+        self.category_keys = ("fiscal_period_id", "calendar_period_id", "taxonomy_id", "tag_id", "unit_id", "form_id", "row_kind_id", "location_id")
+        category_dim = max(1, int(config.xbrl_category_embedding_dim))
+        category_sizes = dict(getattr(config, "xbrl_category_vocab_sizes", {}) or {})
+        self.category_embeddings = nn.ModuleDict(
+            {
+                key: nn.Embedding(max(2, int(category_sizes.get(key, 1024))), category_dim, padding_idx=0)
+                for key in self.category_keys
+            }
+        )
+        numeric_dim = 3 + 2 * int(config.time_encoder_dim) + len(self.category_keys) * category_dim
         self.row_proj = MLP(numeric_dim, h, d, dropout=float(config.dropout))
         self.out_dim = d
 
@@ -435,8 +443,7 @@ class XbrlEncoder(nn.Module):
         )
         time_token = self.time_encoder(time_features, role="xbrl_available")
         period_token = self.time_encoder(period_features, role="xbrl_period_end")
-        cat_keys = ("fiscal_period_id", "calendar_period_id", "taxonomy_id", "tag_id", "unit_id", "form_id", "row_kind_id", "location_id")
-        cats = torch.cat([self.cat(_payload_ids(payload, key, value)) for key in cat_keys], dim=-1)
+        cats = torch.cat([_safe_category_embedding(self.category_embeddings[key], _payload_ids(payload, key, value)) for key in self.category_keys], dim=-1)
         row = torch.cat([value.float().unsqueeze(-1), torch.log1p(value.float().abs()).unsqueeze(-1), confidence.float().unsqueeze(-1), time_token, period_token, cats], dim=-1)
         projected = self.row_proj(row)
         return masked_mean(projected, mask.bool(), dim=1)
@@ -628,6 +635,12 @@ def _side_hidden_dim(config: ModelConfig) -> int:
     if value <= 0:
         return int(config.d_model)
     return max(16, int(value))
+
+
+def _safe_category_embedding(embedding: nn.Embedding, ids: torch.Tensor) -> torch.Tensor:
+    clean = ids.long().clamp(min=0)
+    clean = torch.where(clean < int(embedding.num_embeddings), clean, torch.zeros_like(clean))
+    return embedding(clean)
 
 
 def masked_mean(x: torch.Tensor, mask: torch.Tensor, *, dim: int) -> torch.Tensor:

@@ -104,6 +104,16 @@ SCANNER_NUMERIC_FEATURES = (
     "origin_rank",
     "origin_rank_percentile",
 )
+DEFAULT_XBRL_CATEGORY_VOCAB_SIZES = {
+    "fiscal_period_id": 256,
+    "calendar_period_id": 256,
+    "taxonomy_id": 4096,
+    "tag_id": 262144,
+    "unit_id": 8192,
+    "form_id": 2048,
+    "row_kind_id": 1024,
+    "location_id": 8192,
+}
 DEFAULT_INTRADAY_LABEL_HORIZONS = (
     "100ms",
     "200ms",
@@ -165,6 +175,8 @@ class ModelConfig:
     bar_time_feature_count: int = 9
     xbrl_time_feature_count: int = 10
     xbrl_period_time_feature_count: int = 7
+    xbrl_category_embedding_dim: int = 8
+    xbrl_category_vocab_sizes: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_XBRL_CATEGORY_VOCAB_SIZES))
     corporate_action_numeric_dim: int = 13
     corporate_action_time_dim: int = 10
     corporate_action_effective_time_dim: int = 10

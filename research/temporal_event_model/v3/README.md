@@ -179,6 +179,12 @@ modality tokens, but their internal hidden width is capped by
 `--side-encoder-dim` so text/XBRL/scanner/corporate paths do not dominate
 runtime or parameter count.
 
+XBRL category ids are deterministic dense ids from
+`training_category_reference`. The XBRL encoder uses separate embedding tables
+per field (`tag_id`, `taxonomy_id`, `unit_id`, and the rest), with id `0`
+reserved for missing/unknown. It does not hash or modulo category ids into a
+shared table.
+
 Useful shorter smoke:
 
 ```powershell
