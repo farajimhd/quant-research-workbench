@@ -179,7 +179,7 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
   const services = useMemo(() => sortServices(payload?.services ?? []), [payload]);
   const selectedPayloadForMode = selectedPayload?.registry.id === serviceId ? selectedPayload : null;
   const selected = serviceId ? selectedPayloadForMode ?? services.find((service) => service.registry.id === serviceId) ?? null : null;
-  const showBlockingLoader = loading || (detailLoading && !selected);
+  const showBlockingLoader = !selected && (loading || detailLoading);
 
   return (
     <div className={`services-page ${showBlockingLoader ? "is-page-loading" : ""}`}>
@@ -655,9 +655,8 @@ function NewsDailyHistogram({
     const broadSeries = broadSeriesRef.current;
     const chart = chartRef.current;
     if (!singleSeries || !broadSeries || !chart) return;
-    const offset = Math.max(1, Math.floor(binSeconds / 3));
-    singleSeries.setData(displayData.map((row) => ({ time: newsBucketChartTime(row.bucketUtc, offset), value: row.singleTickerRows })));
-    broadSeries.setData(displayData.map((row) => ({ time: newsBucketChartTime(row.bucketUtc, offset * 2), value: row.broadOrNoneRows })));
+    singleSeries.setData(displayData.map((row) => ({ time: newsBucketChartTime(row.bucketUtc), value: row.singleTickerRows })));
+    broadSeries.setData(displayData.map((row) => ({ time: newsBucketChartTime(row.bucketUtc), value: row.broadOrNoneRows })));
     setNewsHistogramVisibleRange(chart, effectiveWindowStartUtc, effectiveWindowEndUtc);
   }, [binSeconds, displayData, effectiveWindowEndUtc, effectiveWindowStartUtc]);
 
@@ -911,10 +910,10 @@ function historiesEqual(left: NewsPollHistoryRow[], right: NewsPollHistoryRow[])
 }
 
 function useNewsDailyHistogram(enabled: boolean) {
-  const [payload, setPayload] = useState<NewsDailyHistogramState>(() => defaultNewsHistogramWindow(1500));
+  const [payload, setPayload] = useState<NewsDailyHistogramState>(() => defaultNewsHistogramWindow(900));
   useEffect(() => {
     if (!enabled) {
-      setPayload(defaultNewsHistogramWindow(1500));
+      setPayload(defaultNewsHistogramWindow(900));
       return undefined;
     }
     let cancelled = false;
@@ -922,7 +921,7 @@ function useNewsDailyHistogram(enabled: boolean) {
       try {
         const response = await api<NewsHistogramPayload>("/api/services/news/histogram");
         if (cancelled) return;
-        const binSeconds = Number(response.bin_seconds || 1500);
+        const binSeconds = Number(response.bin_seconds || 900);
         const defaultWindow = defaultNewsHistogramWindow(binSeconds);
         const windowStartUtc = response.window_start_utc || defaultWindow.windowStartUtc;
         const windowEndUtc = response.window_end_utc || defaultWindow.windowEndUtc;
@@ -946,7 +945,7 @@ function useNewsDailyHistogram(enabled: boolean) {
         });
       } catch (exc) {
         if (cancelled) return;
-        setPayload({ ...defaultNewsHistogramWindow(1500), error: exc instanceof Error ? exc.message : String(exc) });
+        setPayload({ ...defaultNewsHistogramWindow(900), error: exc instanceof Error ? exc.message : String(exc) });
       }
     }
     void load();
@@ -1027,9 +1026,9 @@ function stringMetric(record: Record<string, unknown>, keys: string[]) {
   return "";
 }
 
-function newsBucketChartTime(bucketUtc: string, offsetSeconds: number): Time {
+function newsBucketChartTime(bucketUtc: string): Time {
   const parsed = Date.parse(bucketUtc);
-  const seconds = Number.isFinite(parsed) ? Math.floor(parsed / 1000) + offsetSeconds : Math.floor(Date.now() / 1000);
+  const seconds = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : Math.floor(Date.now() / 1000);
   return seconds as Time;
 }
 
