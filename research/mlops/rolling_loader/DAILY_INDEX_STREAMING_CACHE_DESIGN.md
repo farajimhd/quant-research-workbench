@@ -373,6 +373,45 @@ The loader should use the configured `event_context_rows` as the total event
 window length. `event_context_guard_rows` is optional extra prior history for
 diagnostics or future experiments and defaults to zero.
 
+### Training Replay Semantics
+
+The training loader should replay the saved cache chronologically, matching the
+production runtime:
+
+```text
+default time_window_seconds = 1.0
+event cache shape per ticker = [event_context_rows, event_feature_count]
+```
+
+At the first emitted origin for a ticker/day, the loader initializes the event
+cache from saved lookback rows:
+
+```text
+origin ordinal = N
+event_context_rows = 1,024
+cache rows = N - 1,023 ... N
+```
+
+For the next origin of the same ticker, the loader appends only newly arrived
+event rows, evicts the oldest rows, and snapshots the current fixed-size cache
+into the batch. It must not rebuild the full event window by gathering
+`N-1023...N` from scratch for every origin.
+
+If selected replay days are adjacent in the loader schedule, event and sparse
+context cache state can carry into the next day. If the schedule skips days,
+the loader must rebuild state from the saved context for the new day's first
+origin.
+
+Sparse context caches use availability/as-of timestamps. Low-frequency data
+such as news, SEC, XBRL, corporate actions, and daily/global bars can arrive
+while the market is closed or over a weekend. Those rows must be inserted into
+their ticker/global caches before any later origin timestamp is emitted. If
+there are fewer historical rows than the configured cache depth, remaining
+slots are zero with mask false.
+
+Scanner state is read in replay windows and prefetched for the next window. It
+is not a blocking month-wide load.
+
 ### Cross-Month and Cross-Year Context
 
 The first day of a month can require event context from the previous month or

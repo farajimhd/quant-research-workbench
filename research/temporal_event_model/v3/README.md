@@ -297,6 +297,40 @@ Resume explicitly with:
 python research\temporal_event_model\v3\run_profile_training.py --resume-checkpoint D:\TradingML\runtimes\temporal_event_model\v3\profile\<run>\checkpoints\profile_checkpoint_latest.pt
 ```
 
+## Chronological Replay Loader
+
+The default v3 loader path is chronological replay:
+
+```text
+chronological_replay: true
+time_window_seconds: 1.0
+```
+
+The loader walks configured cache days in timestamp order. If the selected days
+are consecutive in the replay schedule, in-memory cache state is carried into
+the next day. If the schedule jumps to a non-adjacent day, the loader rebuilds
+state from the builder-saved lookback context before emitting origins for that
+day.
+
+Events are treated as a rolling cache, not as a fresh per-origin gather. The
+first origin initializes a fixed `[event_stream_length, event_feature_count]`
+event tensor from the saved prior context plus the current origin event. Each
+later origin for that ticker appends the new event row, drops the oldest row,
+and copies the current cache snapshot into the batch row. This mirrors
+production, where events arrive from QMD and the ticker event cache advances by
+one event at a time.
+
+Sparse contexts follow the same production contract conceptually: ticker news,
+market news, SEC embeddings, XBRL, corporate actions, daily/global bars, and
+scanner state are as-of caches keyed by availability timestamp. Low-frequency
+items that arrive during market close or weekends are still visible to the next
+origin whose timestamp is after their availability time. Missing cache slots are
+zero with mask false.
+
+Scanner artifacts are consumed only for the active replay window and the next
+window is prefetched, so scanner data does not require a month-wide blocking
+load before training can start.
+
 ## Data Contract
 
 The trainer uses `AsyncDailyIndexBatchLoader` in `raw_stream` event mode.

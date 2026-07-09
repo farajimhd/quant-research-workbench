@@ -180,6 +180,8 @@ def loader_config_from_v3(config: LoaderConfig) -> Any:
         read_workers=config.read_workers,
         materialize_workers=config.materialize_workers,
         materialize_chunk_size=config.materialize_chunk_size,
+        chronological_replay=config.chronological_replay,
+        time_window_seconds=config.time_window_seconds,
         max_origins_per_epoch=config.max_origins_per_epoch,
         scanner_groups=SCANNER_GROUPS,
         scanner_horizons=SCANNER_HORIZONS,

@@ -512,16 +512,32 @@ Sizing rule:
   and `fusion_layers` first, while keeping `side_encoder_dim` moderate unless a
   side modality is proven to be the bottleneck or underfit.
 
+Loader replay rule:
+
+- v3 training uses chronological replay by default with
+  `time_window_seconds=1.0`.
+- Event input is a production-style rolling ticker cache. At the first origin
+  the loader fills `[B,1024,F]` from saved lookback context plus the origin
+  event. Later origins append only newly arrived events to the ticker cache and
+  evict the oldest rows before copying the cache snapshot to the batch.
+- If configured days are adjacent in replay order, event and sparse-context
+  cache state is carried into the next day. If the schedule jumps, state is
+  rebuilt from saved context before that day's first origin.
+- Low-frequency context updates are keyed by availability timestamp, not market
+  session. News, SEC, XBRL, corporate actions, and daily/global bars that arrive
+  overnight or on weekends must be visible to the next origin after their
+  availability timestamp.
+
 Loader scanner rule:
 
-- Daily scanner parquet artifacts are indexed before training starts when
-  `prefetch_scanner_indexes=True`.
-- `scanner_index_cache_entries` must be large enough to hold the active
-  training window, normally at least the number of trading days in the month.
-- Scanner prefetch time is startup cost and should be read separately from
-  steady `loader/scanner_index_seconds`; if steady scanner indexing is still
-  high, the cache is evicting or the run is using more scanner dates than the
-  configured index-cache capacity.
+- Scanner parquet artifacts are loaded for the active replay window and
+  prefetched for the next window. The loader should not do a blocking
+  month-wide scanner load for chronological training.
+- `scanner_index_cache_entries` bounds retained scanner day indexes. It should
+  be high enough to avoid rebuilding the active day while keeping memory
+  bounded.
+- Scanner prefetch and gather timings are logged separately so steady-state
+  stalls can be isolated from startup or next-window prefetch work.
 
 Current model diagram:
 

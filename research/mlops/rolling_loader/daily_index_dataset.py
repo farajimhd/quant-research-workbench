@@ -296,6 +296,8 @@ class DailyIndexLoaderConfig:
     prefetch_scanner_indexes: bool = True
     scanner_prefetch_workers: int = 4
     days: tuple[str, ...] = ()
+    chronological_replay: bool = False
+    time_window_seconds: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -556,6 +558,9 @@ class DailyIndexLoaderState:
     total_available_origins: int = 0
     planned_origins: int = 0
     package_count: int = 0
+    chronological_day_position: int = 0
+    chronological_origin_cursor: int = 0
+    chronological_window_start_us: int = 0
     seen_by_month: dict[str, int] = field(default_factory=dict)
     seen_by_part: dict[str, int] = field(default_factory=dict)
 
@@ -576,6 +581,9 @@ class DailyIndexLoaderState:
             "total_available_origins": int(self.total_available_origins),
             "planned_origins": int(self.planned_origins),
             "package_count": int(self.package_count),
+            "chronological_day_position": int(self.chronological_day_position),
+            "chronological_origin_cursor": int(self.chronological_origin_cursor),
+            "chronological_window_start_us": int(self.chronological_window_start_us),
             "seen_by_month": dict(self.seen_by_month),
             "seen_by_part": dict(self.seen_by_part),
         }
@@ -597,6 +605,9 @@ class DailyIndexLoaderState:
             "total_available_origins",
             "planned_origins",
             "package_count",
+            "chronological_day_position",
+            "chronological_origin_cursor",
+            "chronological_window_start_us",
         ):
             if key in value:
                 setattr(state, key, int(value[key] or 0))
@@ -859,7 +870,15 @@ class DailyIndexBatchMaterializer:
         with self._corporate_action_index_lock:
             self._corporate_action_index_cache.clear()
 
-    def materialize(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> DailyIndexTrainingBatch:
+    def materialize(
+        self,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+        *,
+        raw_stream_override: np.ndarray | None = None,
+        raw_stream_feature_names_override: Sequence[str] | None = None,
+        profile_override: Mapping[str, float | int] | None = None,
+    ) -> DailyIndexTrainingBatch:
         start = time.perf_counter()
         if not refs:
             return _empty_batch(self.config.event_output_mode)
@@ -884,7 +903,16 @@ class DailyIndexBatchMaterializer:
         elif output_mode == "raw_flat":
             raw_flat, raw_mask = self._materialize_raw_flat(parts, refs)
         elif output_mode == "raw_stream":
-            raw_stream, raw_stream_feature_names, raw_stream_profile = self._materialize_raw_stream(parts, refs)
+            if raw_stream_override is not None:
+                raw_stream = np.asarray(raw_stream_override, dtype=np.float32)
+                raw_stream_feature_names = tuple(str(value) for value in (raw_stream_feature_names_override or ()))
+                raw_stream_profile = dict(profile_override or {})
+                raw_stream_profile.setdefault("raw_stream_rows", int(len(refs)))
+                raw_stream_profile.setdefault("raw_stream_length", int(raw_stream.shape[1]) if raw_stream.ndim == 3 else 0)
+                raw_stream_profile.setdefault("raw_stream_feature_count", int(raw_stream.shape[2]) if raw_stream.ndim == 3 else 0)
+                raw_stream_profile.setdefault("raw_stream_rolling_override", int(1))
+            else:
+                raw_stream, raw_stream_feature_names, raw_stream_profile = self._materialize_raw_stream(parts, refs)
             raw_mask = np.ones((len(refs), int(raw_stream.shape[1])), dtype=np.bool_) if raw_stream.ndim == 3 else np.zeros((len(refs), 0), dtype=np.bool_)
             profile.update(raw_stream_profile)
         elif output_mode == "encoded_uint8":
@@ -2432,6 +2460,9 @@ class AsyncDailyIndexBatchLoader:
     def iter_batches(self) -> Iterator[DailyIndexTrainingBatch]:
         if self._stop_event.is_set():
             return
+        if bool(self.config.chronological_replay):
+            yield from self._iter_batches_chronological_replay()
+            return
         if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
             return
         startup_profile = self.prefetch_scanner_indexes()
@@ -2558,6 +2589,131 @@ class AsyncDailyIndexBatchLoader:
             self.state.seen_origins_this_epoch = 0
         finally:
             read_pool.shutdown(wait=False, cancel_futures=True)
+
+    def _iter_batches_chronological_replay(self) -> Iterator[DailyIndexTrainingBatch]:
+        if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
+            return
+        start_us = _parse_timestamp_us(self.config.start_utc) if self.config.start_utc else None
+        end_us = _parse_timestamp_us(self.config.end_utc) if self.config.end_utc else None
+        days = self._chronological_day_plans()
+        ready = _ReadyBatchBuffer(batch_size=int(self.config.batch_size), drop_last=bool(self.config.drop_last_batch))
+        read_pool = ThreadPoolExecutor(max_workers=max(1, int(self.config.read_workers)), thread_name_prefix="tmc-chron-load")
+        mat_pool = ThreadPoolExecutor(max_workers=max(1, int(self.config.materialize_workers)), thread_name_prefix="tmc-chron-materialize")
+        event_cache = _RollingEventStreamCache(config=self.config)
+        payload_cache: OrderedDict[str, LoadedDailyIndexPart] = OrderedDict()
+        payload_cache_limit = max(1, int(self.config.loaded_parts_per_group))
+        previous_day_key: str | None = None
+        try:
+            for day_position in range(int(self.state.chronological_day_position), len(days)):
+                if self._stop_event.is_set():
+                    return
+                source_date, day_plans = days[day_position]
+                self.state.chronological_day_position = int(day_position)
+                if previous_day_key is not None and not _chronological_days_are_adjacent(previous_day_key, source_date, days):
+                    event_cache.clear()
+                    self.materializer.clear_text_context_cache()
+                    payload_cache.clear()
+                previous_day_key = source_date
+                day_start = time.perf_counter()
+                loaded_origins = _collect_ordered_futures(read_pool, self.reader.load_origins, day_plans, stop_event=self._stop_event)
+                refs = _sample_refs_for_loaded_parts(
+                    loaded_origins,
+                    config=self.config,
+                    seed=int(self.state.seed),
+                    dataset_plan_id=self.dataset_plan_id,
+                    start_us=start_us,
+                    end_us=end_us,
+                )
+                refs.sort(key=lambda ref: _ref_sort_key(loaded_origins, ref))
+                if int(self.state.chronological_origin_cursor) > 0:
+                    refs = refs[int(self.state.chronological_origin_cursor) :]
+                if not refs:
+                    self.state.chronological_origin_cursor = 0
+                    self.state.chronological_window_start_us = 0
+                    continue
+                emitted_from_day = 0
+                materialize_size = int(self.config.materialize_chunk_size) or min(int(self.config.batch_size), 256)
+                for window_refs in _windowed_refs_by_time(loaded_origins, refs, time_window_seconds=float(self.config.time_window_seconds)):
+                    if self._stop_event.is_set():
+                        return
+                    if not window_refs:
+                        continue
+                    first_ts = int(_ref_origin_timestamp(loaded_origins, window_refs[0]))
+                    self.state.chronological_window_start_us = first_ts
+                    active_indices = sorted({int(ref.part_index) for ref in window_refs})
+                    loaded_parts = _load_active_payloads(
+                        read_pool=read_pool,
+                        reader=self.reader,
+                        loaded_origins=loaded_origins,
+                        active_indices=active_indices,
+                        payload_cache=payload_cache,
+                        payload_cache_limit=payload_cache_limit,
+                        stop_event=self._stop_event,
+                    )
+                    part_index_map = {old_index: new_index for new_index, old_index in enumerate(active_indices)}
+                    remapped_refs = [
+                        DailyIndexSampleRef(part_index=int(part_index_map[int(ref.part_index)]), origin_row=int(ref.origin_row))
+                        for ref in window_refs
+                    ]
+                    materialized = _materialize_chronological_bounded(
+                        mat_pool,
+                        self.materializer,
+                        loaded_parts,
+                        _batched_refs(remapped_refs, materialize_size),
+                        event_cache=event_cache,
+                        preserve_order=True,
+                        stop_event=self._stop_event,
+                        day_profile={
+                            "chronological_replay": int(1),
+                            "chronological_day_load_seconds": time.perf_counter() - day_start,
+                            "chronological_time_window_seconds": float(self.config.time_window_seconds),
+                        },
+                    )
+                    for chunk in materialized:
+                        if self._stop_event.is_set():
+                            return
+                        if chunk.sample_count == 0:
+                            continue
+                        for batch in ready.add(chunk):
+                            batch = self._apply_epoch_sample_cap(batch)
+                            if batch.sample_count == 0:
+                                return
+                            emitted_from_day += int(batch.sample_count)
+                            self.state.chronological_origin_cursor += int(batch.sample_count)
+                            self._record_emitted_batch(batch)
+                            yield batch
+                            if int(self.config.max_batches) > 0 and int(self.state.emitted_batches) >= int(self.config.max_batches):
+                                return
+                            if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
+                                return
+                self.state.chronological_origin_cursor = 0
+                self.state.chronological_window_start_us = 0
+            for batch in ready.flush():
+                batch = self._apply_epoch_sample_cap(batch)
+                if batch.sample_count == 0:
+                    return
+                self._record_emitted_batch(batch)
+                yield batch
+                if int(self.config.max_batches) > 0 and int(self.state.emitted_batches) >= int(self.config.max_batches):
+                    return
+                if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
+                    return
+            self.state.completed_epochs += 1
+            self.state.epoch += 1
+            self.state.chronological_day_position = 0
+            self.state.chronological_origin_cursor = 0
+            self.state.chronological_window_start_us = 0
+            self.state.seen_origins_this_epoch = 0
+        finally:
+            read_pool.shutdown(wait=False, cancel_futures=True)
+            mat_pool.shutdown(wait=False, cancel_futures=True)
+
+    def _chronological_day_plans(self) -> list[tuple[str, list[DailyIndexPartPlan]]]:
+        plans = sorted(self.index.parts, key=lambda plan: (str(plan.source_date), str(plan.month), str(plan.ticker), int(plan.part_id)))
+        days: OrderedDict[str, list[DailyIndexPartPlan]] = OrderedDict()
+        for plan in plans:
+            days.setdefault(str(plan.source_date), []).append(plan)
+        return list(days.items())
 
     def state_dict(self) -> dict[str, Any]:
         return self.state.to_dict()
@@ -2775,6 +2931,8 @@ def normalize_loader_config(config: DailyIndexLoaderConfig) -> DailyIndexLoaderC
         prefetch_scanner_indexes=bool(config.prefetch_scanner_indexes),
         scanner_prefetch_workers=max(1, int(config.scanner_prefetch_workers)),
         days=tuple(str(day)[:10] for day in config.days if str(day).strip()),
+        chronological_replay=bool(config.chronological_replay),
+        time_window_seconds=max(0.001, float(config.time_window_seconds)),
     )
 
 
@@ -3934,6 +4092,200 @@ def _materialize_bounded(
         raise
 
 
+def _materialize_chronological_bounded(
+    executor: ThreadPoolExecutor,
+    materializer: DailyIndexBatchMaterializer,
+    loaded: Sequence[LoadedDailyIndexPart],
+    batches: Iterator[list[DailyIndexSampleRef]],
+    *,
+    event_cache: "_RollingEventStreamCache",
+    preserve_order: bool = True,
+    stop_event: threading.Event | None = None,
+    day_profile: Mapping[str, float | int] | None = None,
+) -> Iterator[DailyIndexTrainingBatch]:
+    max_pending = max(1, int(getattr(executor, "_max_workers", 1)))
+    pending_ordered: deque[Future[DailyIndexTrainingBatch]] = deque()
+    pending_all: set[Future[DailyIndexTrainingBatch]] = set()
+
+    def submit_until_full() -> None:
+        while len(pending_ordered) < max_pending:
+            if stop_event is not None and stop_event.is_set():
+                raise KeyboardInterrupt()
+            try:
+                refs = next(batches)
+            except StopIteration:
+                return
+            raw_stream, names, profile = event_cache.materialize(loaded, refs)
+            merged_profile = {**dict(day_profile or {}), **profile}
+            future = executor.submit(
+                materializer.materialize,
+                loaded,
+                refs,
+                raw_stream_override=raw_stream,
+                raw_stream_feature_names_override=names,
+                profile_override=merged_profile,
+            )
+            pending_ordered.append(future)
+            pending_all.add(future)
+
+    try:
+        submit_until_full()
+        while pending_ordered:
+            if stop_event is not None and stop_event.is_set():
+                raise KeyboardInterrupt()
+            if preserve_order:
+                future = pending_ordered[0]
+                wait_start = time.perf_counter()
+                while not future.done():
+                    if stop_event is not None and stop_event.is_set():
+                        raise KeyboardInterrupt()
+                    wait({future}, timeout=0.2)
+                pending_ordered.popleft()
+                pending_all.discard(future)
+                batch = future.result()
+                batch.profile["materialize_wait_seconds"] = float(batch.profile.get("materialize_wait_seconds", 0.0)) + (time.perf_counter() - wait_start)
+                yield batch
+            else:
+                done, _ = wait(set(pending_ordered), timeout=0.2, return_when=FIRST_COMPLETED)
+                if not done:
+                    continue
+                for future in list(done):
+                    try:
+                        pending_ordered.remove(future)
+                    except ValueError:
+                        pass
+                    pending_all.discard(future)
+                    yield future.result()
+            submit_until_full()
+    except BaseException:
+        if stop_event is not None:
+            stop_event.set()
+        for future in pending_all:
+            future.cancel()
+        raise
+
+
+class _RollingEventStreamCache:
+    def __init__(self, *, config: DailyIndexLoaderConfig) -> None:
+        self.config = config
+        self.stream_length = max(1, int(config.event_stream_length))
+        self.columns = tuple(str(column) for column in _event_columns_for_output(config))
+        self._state_by_ticker: dict[str, _RollingEventTickerState] = {}
+
+    def clear(self) -> None:
+        self._state_by_ticker.clear()
+
+    def materialize(
+        self,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+    ) -> tuple[np.ndarray, tuple[str, ...], dict[str, float | int]]:
+        start = time.perf_counter()
+        out = np.empty((len(refs), self.stream_length, len(self.columns)), dtype=np.float32)
+        rebuilt = 0
+        appended = 0
+        for output_row, ref in enumerate(refs):
+            part = parts[int(ref.part_index)]
+            ticker = str(part.plan.ticker)
+            origin_row = int(ref.origin_row)
+            origin_ordinal = int(part.origin_array("origin_ordinal").astype(np.int64, copy=False)[origin_row])
+            event_offset = int(part.origin_array("event_row_offset").astype(np.int64, copy=False)[origin_row])
+            matrix = part.event_matrix(self.columns)
+            ordinals = part.event_array("ordinal").astype(np.int64, copy=False)
+            if event_offset < 0 or event_offset >= int(ordinals.shape[0]):
+                raise RuntimeError(f"Chronological event cache offset is out of bounds for {_part_key(part.plan)}.")
+            if int(ordinals[event_offset]) != origin_ordinal:
+                raise RuntimeError(f"Chronological event cache origin offset is misaligned for {_part_key(part.plan)}.")
+            state = self._state_by_ticker.get(ticker)
+            if state is None or not state.can_append(origin_ordinal):
+                state = _RollingEventTickerState.from_part(
+                    ticker=ticker,
+                    stream_length=self.stream_length,
+                    matrix=matrix,
+                    ordinals=ordinals,
+                    event_offset=event_offset,
+                    part_key=_part_key(part.plan),
+                )
+                self._state_by_ticker[ticker] = state
+                rebuilt += 1
+            else:
+                appended += state.append_until(matrix=matrix, ordinals=ordinals, event_offset=event_offset, part_key=_part_key(part.plan))
+            out[output_row] = state.snapshot()
+        return out, self.columns, {
+            "raw_stream_rolling_seconds": time.perf_counter() - start,
+            "raw_stream_rolling_rebuilds": int(rebuilt),
+            "raw_stream_rolling_appends": int(appended),
+            "raw_stream_rolling_ticker_states": int(len(self._state_by_ticker)),
+        }
+
+
+@dataclass(slots=True)
+class _RollingEventTickerState:
+    ticker: str
+    stream: np.ndarray
+    ordinals: np.ndarray
+    last_ordinal: int
+
+    @classmethod
+    def from_part(
+        cls,
+        *,
+        ticker: str,
+        stream_length: int,
+        matrix: np.ndarray,
+        ordinals: np.ndarray,
+        event_offset: int,
+        part_key: str,
+    ) -> "_RollingEventTickerState":
+        start = int(event_offset) - int(stream_length) + 1
+        if start < 0:
+            raise RuntimeError(f"Chronological event cache lacks lookback rows for {part_key}.")
+        window_ordinals = ordinals[start : int(event_offset) + 1].astype(np.int64, copy=False)
+        if int(window_ordinals.shape[0]) != int(stream_length):
+            raise RuntimeError(f"Chronological event cache built a short event stream for {part_key}.")
+        if int(stream_length) > 1 and not bool(np.all(np.diff(window_ordinals) == 1)):
+            raise RuntimeError(f"Chronological event cache crosses an ordinal gap for {part_key}.")
+        return cls(
+            ticker=str(ticker),
+            stream=np.asarray(matrix[start : int(event_offset) + 1], dtype=np.float32).copy(),
+            ordinals=window_ordinals.copy(),
+            last_ordinal=int(window_ordinals[-1]),
+        )
+
+    def can_append(self, origin_ordinal: int) -> bool:
+        return int(origin_ordinal) >= int(self.last_ordinal)
+
+    def append_until(self, *, matrix: np.ndarray, ordinals: np.ndarray, event_offset: int, part_key: str) -> int:
+        target_ordinal = int(ordinals[int(event_offset)])
+        if target_ordinal == int(self.last_ordinal):
+            return 0
+        if target_ordinal < int(self.last_ordinal):
+            raise RuntimeError(f"Chronological event cache moved backward for {part_key}.")
+        append_start = int(np.searchsorted(ordinals, int(self.last_ordinal) + 1, side="left"))
+        append_end = int(event_offset) + 1
+        if append_start >= append_end:
+            raise RuntimeError(f"Chronological event cache could not locate append rows for {part_key}.")
+        append_ordinals = ordinals[append_start:append_end].astype(np.int64, copy=False)
+        expected = np.arange(int(self.last_ordinal) + 1, int(target_ordinal) + 1, dtype=np.int64)
+        if not bool(np.array_equal(append_ordinals, expected)):
+            raise RuntimeError(f"Chronological event cache append crosses an ordinal gap for {part_key}.")
+        append_rows = np.asarray(matrix[append_start:append_end], dtype=np.float32)
+        count = int(append_rows.shape[0])
+        if count >= int(self.stream.shape[0]):
+            self.stream[:] = append_rows[-int(self.stream.shape[0]) :]
+            self.ordinals[:] = append_ordinals[-int(self.ordinals.shape[0]) :]
+        else:
+            self.stream[:-count] = self.stream[count:]
+            self.stream[-count:] = append_rows
+            self.ordinals[:-count] = self.ordinals[count:]
+            self.ordinals[-count:] = append_ordinals
+        self.last_ordinal = int(target_ordinal)
+        return count
+
+    def snapshot(self) -> np.ndarray:
+        return self.stream
+
+
 def _identity_arrays(parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     tickers = np.empty((len(refs),), dtype=object)
     ordinals = np.empty((len(refs),), dtype=np.int64)
@@ -3973,6 +4325,90 @@ def _rows_by_part(refs: Sequence[DailyIndexSampleRef]) -> dict[int, np.ndarray]:
 
 def _origin_rows_for_refs(refs: Sequence[DailyIndexSampleRef], rows: np.ndarray) -> np.ndarray:
     return np.fromiter((int(refs[int(row)].origin_row) for row in rows), dtype=np.int64, count=int(rows.shape[0]))
+
+
+def _ref_origin_timestamp(parts: Sequence[LoadedDailyIndexPart], ref: DailyIndexSampleRef) -> int:
+    part = parts[int(ref.part_index)]
+    return int(part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[int(ref.origin_row)])
+
+
+def _ref_sort_key(parts: Sequence[LoadedDailyIndexPart], ref: DailyIndexSampleRef) -> tuple[int, str, int]:
+    part = parts[int(ref.part_index)]
+    row = int(ref.origin_row)
+    timestamp_us = int(part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[row])
+    ordinal = int(part.origin_array("origin_ordinal").astype(np.int64, copy=False)[row])
+    return timestamp_us, str(part.plan.ticker), ordinal
+
+
+def _windowed_refs_by_time(
+    parts: Sequence[LoadedDailyIndexPart],
+    refs: Sequence[DailyIndexSampleRef],
+    *,
+    time_window_seconds: float,
+) -> Iterator[list[DailyIndexSampleRef]]:
+    if not refs:
+        return
+    window_us = max(1, int(float(time_window_seconds) * 1_000_000.0))
+    current: list[DailyIndexSampleRef] = []
+    window_start = int(_ref_origin_timestamp(parts, refs[0]))
+    window_end = window_start + window_us
+    for ref in refs:
+        ts = int(_ref_origin_timestamp(parts, ref))
+        if current and ts >= window_end:
+            yield current
+            current = []
+            window_start = ts
+            window_end = window_start + window_us
+        current.append(ref)
+    if current:
+        yield current
+
+
+def _load_active_payloads(
+    *,
+    read_pool: ThreadPoolExecutor,
+    reader: DailyIndexPartReader,
+    loaded_origins: Sequence[LoadedDailyIndexPart],
+    active_indices: Sequence[int],
+    payload_cache: OrderedDict[str, LoadedDailyIndexPart],
+    payload_cache_limit: int,
+    stop_event: threading.Event | None,
+) -> list[LoadedDailyIndexPart]:
+    missing = [index for index in active_indices if _part_key(loaded_origins[int(index)].plan) not in payload_cache]
+    if missing:
+        futures = [
+            read_pool.submit(reader.load_payload, loaded_origins[int(index)])
+            for index in missing
+        ]
+        for future in futures:
+            if stop_event is not None and stop_event.is_set():
+                for pending in futures:
+                    pending.cancel()
+                raise KeyboardInterrupt()
+            loaded = future.result()
+            key = _part_key(loaded.plan)
+            payload_cache[key] = loaded
+            payload_cache.move_to_end(key)
+            while len(payload_cache) > max(1, int(payload_cache_limit)):
+                payload_cache.popitem(last=False)
+    out: list[LoadedDailyIndexPart] = []
+    for index in active_indices:
+        key = _part_key(loaded_origins[int(index)].plan)
+        loaded = payload_cache[key]
+        payload_cache.move_to_end(key)
+        out.append(loaded)
+    return out
+
+
+def _chronological_days_are_adjacent(previous: str, current: str, days: Sequence[tuple[str, Sequence[DailyIndexPartPlan]]]) -> bool:
+    del days
+    try:
+        previous_day = dt.date.fromisoformat(str(previous)[:10])
+        current_day = dt.date.fromisoformat(str(current)[:10])
+    except ValueError:
+        return False
+    delta_days = (current_day - previous_day).days
+    return 1 <= int(delta_days) <= 3
 
 
 def _event_columns_for_output(config: DailyIndexLoaderConfig) -> tuple[str, ...]:
