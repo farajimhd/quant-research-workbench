@@ -13,6 +13,7 @@ Older materialized-cache, indexed-daily, replay, and ticker-month builder trials
 | `daily_index_context.py` | Daily-index context queries and vectorized intraday bar/condition extraction used by the builder. |
 | `daily_index_dataset.py` | Reads daily-index cache packages and materializes trainer batches. |
 | `DAILY_INDEX_STREAMING_CACHE_DESIGN.md` | Design contract for the builder, cache layout, concurrency, and terminal reporting. |
+| `CACHE_FIRST_CHRONOLOGICAL_LOADER_DESIGN.md` | Proposed cache-first chronological loader contract with ticker cache capacity, windowed origins, and detailed profiling requirements. |
 
 ## Cache Layout
 
@@ -67,6 +68,13 @@ The builder uses separate fetch, process, and write worker pools for each modali
 ## Loader Flow
 
 `AsyncDailyIndexBatchLoader` reads the root manifest, discovers `month=.../ticker=.../manifest.json` packages, and creates one `DailyIndexPartPlan` per event part.
+
+The next loader rewrite is specified in
+`CACHE_FIRST_CHRONOLOGICAL_LOADER_DESIGN.md`. That design keeps warmed
+production-like ticker caches capped at 15,000 resident tickers, loads only
+small chronological origin windows, carries cache state across adjacent days,
+and profiles every cache, origin-window, and batch-assembly stage by time and
+RSS memory.
 
 For each loaded part group it:
 
