@@ -574,8 +574,11 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
 function NewsDatabasePublishingCard({ group, service }: { group: ServiceWorkGroup; service: ServiceStatusPayload }) {
   const metrics = serviceMetricsRecord(service);
   const history = newsPublishHistoryRows(service);
-  const summary = newsPublishSummary(history);
   const status = String(metrics.publish_status || group.status || "idle");
+  const insertedRows = numericMetric(metrics, ["written_rows"]);
+  const tickerRows = numericMetric(metrics, ["ticker_rows_written"]);
+  const skippedRows = numericMetric(metrics, ["skipped_existing"]);
+  const failedJobs = numericMetric(metrics, ["publish_failed_jobs"]);
   return (
     <section className={`service-work-responsibility-card news-publish-card ${workStatusClass(status)}`}>
       <div className="service-work-responsibility-header">
@@ -588,10 +591,10 @@ function NewsDatabasePublishingCard({ group, service }: { group: ServiceWorkGrou
       <div className="news-live-summary news-publish-summary">
         <span><small>Active</small><strong>{formatCompactNumber(numericMetric(metrics, ["publish_active_jobs"]))}</strong></span>
         <span><small>Pending Rows</small><strong>{formatCompactNumber(numericMetric(metrics, ["publish_pending_rows"]))}</strong></span>
-        <span><small>Inserted</small><strong>{formatCompactNumber(summary.insertedRows)}</strong></span>
-        <span><small>Ticker Links</small><strong>{formatCompactNumber(summary.tickerRows)}</strong></span>
-        <span><small>Skipped</small><strong>{formatCompactNumber(summary.skippedRows)}</strong></span>
-        <span><small>Failed Jobs</small><strong>{formatCompactNumber(numericMetric(metrics, ["publish_failed_jobs"]))}</strong></span>
+        <span className={insertedRows > 0 ? "metric-good" : ""}><small>Inserted</small><strong>{formatCompactNumber(insertedRows)}</strong></span>
+        <span><small>Ticker Links</small><strong>{formatCompactNumber(tickerRows)}</strong></span>
+        <span className={skippedRows > 0 ? "metric-warn" : ""}><small>Skipped</small><strong>{formatCompactNumber(skippedRows)}</strong></span>
+        <span className={failedJobs > 0 ? "metric-bad" : ""}><small>Failed Jobs</small><strong>{formatCompactNumber(failedJobs)}</strong></span>
       </div>
       <NewsPublishHistoryTable rows={history} />
     </section>
@@ -1040,21 +1043,6 @@ function publishItemVisualStatus(status: string) {
   if (normalized.includes("inserted") || normalized.includes("dry_run")) return "complete";
   if (normalized.includes("skipped") || normalized.includes("duplicate") || normalized.includes("summary")) return "idle";
   return "waiting";
-}
-
-function newsPublishSummary(rows: NewsPublishHistoryRow[]) {
-  const completedRows = rows.filter((row) => row.event !== "pending" && row.event !== "failed");
-  const summaryRows = completedRows.length ? completedRows : rows;
-  return summaryRows.reduce(
-    (totals, row) => {
-      return {
-        insertedRows: totals.insertedRows + row.insertedRows,
-        skippedRows: totals.skippedRows + row.skippedRows,
-        tickerRows: totals.tickerRows + row.tickerRows,
-      };
-    },
-    { insertedRows: 0, skippedRows: 0, tickerRows: 0 },
-  );
 }
 
 function newsLiveBadge(service: ServiceStatusPayload, history: NewsPollHistoryRow[]) {

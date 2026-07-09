@@ -1383,6 +1383,30 @@ button {
   border-right: 0;
 }
 
+.news-live-summary span.metric-good {
+  background: color-mix(in oklab, var(--badge-success-bg) 58%, var(--surface));
+}
+
+.news-live-summary span.metric-good strong {
+  color: var(--badge-success-fg);
+}
+
+.news-live-summary span.metric-warn {
+  background: color-mix(in oklab, var(--badge-warning-bg) 62%, var(--surface));
+}
+
+.news-live-summary span.metric-warn strong {
+  color: var(--badge-warning-fg);
+}
+
+.news-live-summary span.metric-bad {
+  background: color-mix(in oklab, var(--badge-danger-bg) 66%, var(--surface));
+}
+
+.news-live-summary span.metric-bad strong {
+  color: var(--badge-danger-fg);
+}
+
 .news-live-summary small {
   color: var(--muted-foreground);
   font-size: 9px;

@@ -66,6 +66,7 @@ class GatewayMetrics:
     unique_news_rows: int = 0
     duplicate_news_rows: int = 0
     written_rows: int = 0
+    ticker_rows_written: int = 0
     skipped_existing: int = 0
     raw_saved: int = 0
     last_poll_at_utc: str = ""
@@ -791,6 +792,7 @@ class NewsGateway:
             self.metrics.unique_news_rows += unique_rows
             self.metrics.duplicate_news_rows += duplicate_rows
             self.metrics.written_rows += write_summary.normalized_rows_inserted
+            self.metrics.ticker_rows_written += write_summary.ticker_rows_inserted
             self.metrics.skipped_existing += write_summary.skipped_existing
             if fetch_result.saturated:
                 self._record_error_message("Benzinga provider response saturated; coverage was not advanced for this window.")
@@ -1010,6 +1012,7 @@ class NewsGateway:
             await self.state.upsert_rows([item.result.normalized_row for item in final_items])
             await self._refresh_memory_metrics()
             self.metrics.written_rows += write_summary.normalized_rows_inserted
+            self.metrics.ticker_rows_written += write_summary.ticker_rows_inserted
             self.metrics.skipped_existing += write_summary.skipped_existing
             self.metrics.background_completed_batches += 1
             self.metrics.background_completed_articles += len(final_items)
