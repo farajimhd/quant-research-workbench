@@ -81,6 +81,19 @@ For the full February 2019 xlarge batch-1024 run on the workstation:
 python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_train_month_xlarge_bs1024.py
 ```
 
+The xlarge launcher is tuned for the 128-core workstation loader path:
+
+```text
+batch_size: 1024
+read_workers: 16
+materialize_workers: 32
+loaded_parts_per_group: 32
+materialize_chunk_size: 256
+prefetch_batches: 32
+time_window_seconds: 5.0
+scanner_prefetch_workers: 8
+```
+
 The xlarge launcher can target another monthly cache with:
 
 ```powershell
