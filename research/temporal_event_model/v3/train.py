@@ -421,12 +421,14 @@ def run_validation(model: torch.nn.Module, config: ExperimentConfig, validation_
     try:
         for _ in range(max(1, int(config.train.validation_batches))):
             batch = next(iterator)
-            if profile_detail and hasattr(model, "forward_with_timings"):
-                output, model_profile = model.forward_with_timings(batch.x, sync_cuda=device.type == "cuda")  # type: ignore[attr-defined]
-            else:
-                output = model(batch.x)
-                model_profile = {}
-            loss = compute_loss(output, batch)
+            amp_dtype = _amp_dtype(config.train.amp_dtype)
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=bool(config.train.amp and device.type == "cuda")):
+                if profile_detail and hasattr(model, "forward_with_timings"):
+                    output, model_profile = model.forward_with_timings(batch.x, sync_cuda=device.type == "cuda")  # type: ignore[attr-defined]
+                else:
+                    output = model(batch.x)
+                    model_profile = {}
+                loss = compute_loss(output, batch)
             row = {key.replace("train/", "val/"): value for key, value in loss.metrics.items()}
             row.update(prediction_metrics(batch, output, prefix="val"))
             row.update(cohort_metrics(batch, output, prefix="val"))
