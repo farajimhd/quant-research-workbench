@@ -383,7 +383,7 @@ utc/session time features
 Labels are grouped by task:
 
 - `scanner_inputs`: global market-leader context. The model receives top-K
-  scanner leaders and origin-ticker comparison bars for `top_gainers`,
+  scanner leaders and origin comparison bars for `top_gainers`,
   large/mid/small/penny-volume groups across `1s`, `5s`, `30s`, and `1m`
   scanner horizons. These tensors are read from scanner artifacts built after
   the main daily-index cache. Scanner artifact indexes are shared across async
@@ -411,7 +411,7 @@ is projected from raw decoded bar values plus
 `TimeFeatureEncoder(role="bar_end")` embeddings. Normal bar groups add family,
 bar-group, horizon/offset, and global-symbol-slot embeddings before latent
 attention. Scanner uses the same row encoder and adds scanner group, rank,
-top-K, ticker-id, and row-type embeddings, but still emits a separate
+top-K, and row-type embeddings, but still emits a separate
 `scanner_context` modality token to the fusion transformer. No price
 normalization or z-score is applied in the default model path.
 

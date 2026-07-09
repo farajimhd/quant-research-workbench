@@ -797,7 +797,6 @@ class ScannerContextEncoder(nn.Module):
         self.topk_embedding = nn.Embedding(max(1, int(config.scanner_top_k)), item_dim)
         self.row_type_embedding = nn.Embedding(3, item_dim)
         self.rank_embedding = HashEmbedding(4096, item_dim)
-        self.ticker_embedding = HashEmbedding(262_144, item_dim)
         self.numeric_proj = MLP(int(config.scanner_numeric_dim), h, item_dim, dropout=float(config.dropout))
         self.token_norm = nn.LayerNorm(item_dim)
         self.latent_queries = nn.Parameter(torch.randn(latent_count, item_dim) * 0.02)
@@ -842,11 +841,6 @@ class ScannerContextEncoder(nn.Module):
         group_ids = torch.arange(leader_values.shape[1], device=leader_values.device).clamp(max=self.group_embedding.num_embeddings - 1)
         leader_start = _payload_time_features(payload, "leader_start_time_features", "leader_time_features", reference=leader_values[..., 0, 0], width=self.time_feature_count, name="scanner.leader_start_time_features")
         leader_end = _payload_time_features(payload, "leader_end_time_features", "leader_time_features", reference=leader_values[..., 0, 0], width=self.time_feature_count, name="scanner.leader_end_time_features")
-        leader_ticker = payload.get("leader_ticker_id")
-        if not torch.is_tensor(leader_ticker):
-            leader_ticker = torch.zeros(leader_values.shape[:3], dtype=torch.long, device=leader_values.device)
-        else:
-            leader_ticker = leader_ticker.to(device=leader_values.device, dtype=torch.long)
         for family_index, _family in enumerate(BAR_FAMILIES):
             family_values = leader_values[..., family_index, :]
             family_token = self.row_encoder(family_values, leader_start, leader_end, family_index=family_index)
@@ -855,7 +849,6 @@ class ScannerContextEncoder(nn.Module):
                 row_type=0,
                 group_ids=group_ids,
                 rank_ids=leader_rank,
-                ticker_ids=leader_ticker,
             )
             tokens.append(self.token_norm(family_token).reshape(family_token.shape[0], -1, self.item_dim))
             masks.append(leader_horizon_mask.reshape(leader_values.shape[0], -1))
@@ -884,7 +877,6 @@ class ScannerContextEncoder(nn.Module):
                     row_type=1,
                     group_ids=group_ids,
                     rank_ids=origin_rank,
-                    ticker_ids=None,
                 )
                 tokens.append(self.token_norm(family_token).reshape(family_token.shape[0], -1, self.item_dim))
                 masks.append(origin_horizon_mask.reshape(origin_values.shape[0], -1))
@@ -930,7 +922,6 @@ class ScannerContextEncoder(nn.Module):
         row_type: int,
         group_ids: torch.Tensor,
         rank_ids: torch.Tensor,
-        ticker_ids: torch.Tensor | None,
     ) -> torch.Tensor:
         device = values.device
         group_token = self.group_embedding(group_ids).view(1, values.shape[1], *([1] * (values.ndim - 3)), self.item_dim)
@@ -945,8 +936,6 @@ class ScannerContextEncoder(nn.Module):
             topk_positions = torch.arange(values.shape[2], device=device).clamp(max=self.topk_embedding.num_embeddings - 1)
             token = token + self.topk_embedding(topk_positions).view(1, 1, values.shape[2], 1, self.item_dim)
             token = token + self.rank_embedding(rank_ids.long()).unsqueeze(3)
-            if ticker_ids is not None:
-                token = token + self.ticker_embedding(ticker_ids.long()).unsqueeze(3)
         else:
             token = token + self.rank_embedding(rank_ids.long()).unsqueeze(2)
         return token
