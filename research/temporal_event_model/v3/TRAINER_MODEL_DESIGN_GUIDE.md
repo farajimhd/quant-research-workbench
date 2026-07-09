@@ -1374,11 +1374,14 @@ and current-day sample progress so runs with different batch sizes remain
 comparable.
 
 Learning-rate scheduling follows the same rule. The default v3 full-training
-scheduler is cosine annealing keyed to `samples_seen`, not optimizer update
-count. `scheduler_t_max_samples=0` means resolve the cosine horizon to the
-configured `max_samples` before the run config is written. The scheduler state
-and current LR must be stored in checkpoints and model cards so resume continues
-the same LR curve.
+scheduler is cosine restart annealing keyed to `samples_seen`, not optimizer
+update count. The current xlarge default starts at `learning_rate=1e-3`, decays
+inside each restart cycle to `scheduler_eta_min=1e-6`, and resets every
+`scheduler_cycle_samples=1_024_000` samples, which is 1000 batches at batch
+size 1024. After every `scheduler_decay_cycles=100` completed restart cycles,
+the next cycle peak LR is multiplied by `scheduler_decay_factor=0.95`. The
+scheduler state and current LR must be stored in checkpoints and model cards so
+resume continues the same restart cycle.
 
 Each checkpoint must contain enough state to resume the same run without
 changing data order:
@@ -1449,7 +1452,7 @@ Reuse the v20 training engineering style where practical:
 - failure traceback bundle
 - bf16 AMP support
 - optional model compile
-- sample-clock cosine LR scheduler, with `scheduler.state_dict()` checkpointed
+- sample-clock cosine restart LR scheduler, with `scheduler.state_dict()` checkpointed
 - model artifact export at run start
 - periodic validation
 - loader throughput profiling

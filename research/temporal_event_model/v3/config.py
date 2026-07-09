@@ -288,11 +288,14 @@ class TrainConfig:
     max_samples: int = 0
     max_steps: int = 0
     epochs: int = 1
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-3
     weight_decay: float = 0.01
     scheduler: str = "cosine"
     scheduler_eta_min: float = 1e-6
     scheduler_t_max_samples: int = 0
+    scheduler_cycle_samples: int = 1_024_000
+    scheduler_decay_cycles: int = 100
+    scheduler_decay_factor: float = 0.95
     grad_clip_norm: float = 1.0
     amp: bool = True
     amp_dtype: str = "bf16"

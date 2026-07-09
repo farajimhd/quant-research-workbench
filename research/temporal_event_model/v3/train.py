@@ -171,7 +171,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=default_train.weight_decay)
     parser.add_argument("--scheduler", choices=("none", "cosine"), default=default_train.scheduler)
     parser.add_argument("--scheduler-eta-min", type=float, default=default_train.scheduler_eta_min)
-    parser.add_argument("--scheduler-t-max-samples", type=int, default=default_train.scheduler_t_max_samples, help="Cosine schedule length in samples. 0 means use --max-samples after resolution.")
+    parser.add_argument("--scheduler-t-max-samples", type=int, default=default_train.scheduler_t_max_samples, help="Legacy alias for --scheduler-cycle-samples when nonzero.")
+    parser.add_argument("--scheduler-cycle-samples", type=int, default=default_train.scheduler_cycle_samples, help="Samples per cosine restart cycle.")
+    parser.add_argument("--scheduler-decay-cycles", type=int, default=default_train.scheduler_decay_cycles, help="Number of completed restart cycles before decaying the peak LR.")
+    parser.add_argument("--scheduler-decay-factor", type=float, default=default_train.scheduler_decay_factor, help="Peak LR multiplier after each decay cycle group.")
     parser.add_argument("--grad-clip-norm", type=float, default=default_train.grad_clip_norm)
     parser.add_argument("--seed", type=int, default=default_train.seed)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
@@ -629,8 +632,14 @@ def checkpoint_payload(
         "scheduler": {
             "type": config.train.scheduler,
             "eta_min": float(config.train.scheduler_eta_min),
+            "cycle_samples": int(config.train.scheduler_cycle_samples),
             "t_max_samples": int(config.train.scheduler_t_max_samples),
+            "decay_cycles": int(config.train.scheduler_decay_cycles),
+            "decay_factor": float(config.train.scheduler_decay_factor),
             "last_progress": float(scheduler.last_progress) if scheduler is not None else 0.0,
+            "last_cycle_index": int(scheduler.last_cycle_index) if scheduler is not None else 0,
+            "last_decay_group": int(scheduler.last_decay_group) if scheduler is not None else 0,
+            "last_peak_lr": float(scheduler.last_peak_lrs[0]) if scheduler is not None and scheduler.last_peak_lrs else 0.0,
             "last_lr": float(optimizer.param_groups[0]["lr"]) if optimizer.param_groups else 0.0,
         },
         "latest_train_metrics": dict(train_metrics),
@@ -966,6 +975,9 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         scheduler=str(args.scheduler),
         scheduler_eta_min=max(0.0, float(args.scheduler_eta_min)),
         scheduler_t_max_samples=max(0, int(args.scheduler_t_max_samples)),
+        scheduler_cycle_samples=max(0, int(args.scheduler_cycle_samples)),
+        scheduler_decay_cycles=max(1, int(args.scheduler_decay_cycles)),
+        scheduler_decay_factor=max(0.0, float(args.scheduler_decay_factor)),
         grad_clip_norm=float(args.grad_clip_norm),
         amp=bool(args.amp),
         amp_dtype=str(args.amp_dtype),
@@ -1013,9 +1025,12 @@ def _resolve_sample_limits(config: ExperimentConfig, args: argparse.Namespace) -
         int(config.loader.max_origins_per_epoch) <= 0 or int(config.loader.max_origins_per_epoch) > int(config.train.max_samples)
     ):
         config.loader.max_origins_per_epoch = int(config.train.max_samples)
-    if str(config.train.scheduler) != "none" and int(config.train.scheduler_t_max_samples) <= 0:
-        fallback = int(config.train.max_samples) or int(config.loader.max_origins_per_epoch) or max(1, int(config.loader.batch_size)) * 1000
-        config.train.scheduler_t_max_samples = max(1, int(fallback))
+    if str(config.train.scheduler) != "none":
+        if int(config.train.scheduler_cycle_samples) <= 0 and int(config.train.scheduler_t_max_samples) > 0:
+            config.train.scheduler_cycle_samples = int(config.train.scheduler_t_max_samples)
+        if int(config.train.scheduler_cycle_samples) <= 0:
+            config.train.scheduler_cycle_samples = max(1, int(config.loader.batch_size)) * 1000
+        config.train.scheduler_t_max_samples = int(config.train.scheduler_cycle_samples)
 
 
 def _configure_day_schedules(config: ExperimentConfig) -> None:
@@ -1646,39 +1661,68 @@ def _rss_gib() -> float:
 
 
 class SampleCosineScheduler:
-    """Cosine annealing keyed to samples_seen instead of optimizer step count."""
+    """Cosine restart schedule keyed to samples_seen instead of optimizer step count."""
 
-    def __init__(self, optimizer: torch.optim.Optimizer, *, t_max_samples: int, eta_min: float) -> None:
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        *,
+        cycle_samples: int,
+        eta_min: float,
+        decay_cycles: int,
+        decay_factor: float,
+    ) -> None:
         self.optimizer = optimizer
         self.base_lrs = [float(group.get("lr", 0.0)) for group in optimizer.param_groups]
-        self.t_max_samples = max(1, int(t_max_samples))
+        self.cycle_samples = max(1, int(cycle_samples))
         self.eta_min = max(0.0, float(eta_min))
+        self.decay_cycles = max(1, int(decay_cycles))
+        self.decay_factor = max(0.0, float(decay_factor))
         self.last_samples_seen = 0
         self.last_progress = 0.0
+        self.last_cycle_index = 0
+        self.last_cycle_position = 0
+        self.last_decay_group = 0
+        self.last_peak_lrs = list(self.base_lrs)
         self.last_lrs = list(self.base_lrs)
         self.step(0)
 
     def step(self, samples_seen: int) -> list[float]:
         self.last_samples_seen = max(0, int(samples_seen))
-        self.last_progress = min(1.0, self.last_samples_seen / max(1, self.t_max_samples))
+        self.last_cycle_index = self.last_samples_seen // self.cycle_samples
+        self.last_cycle_position = self.last_samples_seen % self.cycle_samples
+        self.last_decay_group = self.last_cycle_index // self.decay_cycles
+        self.last_progress = min(1.0, self.last_cycle_position / max(1, self.cycle_samples))
+        decay_multiplier = self.decay_factor ** self.last_decay_group
         cosine = 0.5 * (1.0 + math.cos(math.pi * self.last_progress))
         lrs: list[float] = []
+        peak_lrs: list[float] = []
         for base_lr, group in zip(self.base_lrs, self.optimizer.param_groups):
             eta = min(float(base_lr), self.eta_min)
-            lr = eta + (float(base_lr) - eta) * cosine
+            peak_lr = max(eta, float(base_lr) * decay_multiplier)
+            lr = eta + (peak_lr - eta) * cosine
             group["lr"] = float(lr)
+            peak_lrs.append(float(peak_lr))
             lrs.append(float(lr))
+        self.last_peak_lrs = peak_lrs
         self.last_lrs = lrs
         return lrs
 
     def state_dict(self) -> dict[str, Any]:
         return {
-            "type": "sample_cosine",
+            "type": "sample_cosine_restarts",
             "base_lrs": list(self.base_lrs),
-            "t_max_samples": int(self.t_max_samples),
+            "cycle_samples": int(self.cycle_samples),
+            "t_max_samples": int(self.cycle_samples),
             "eta_min": float(self.eta_min),
+            "decay_cycles": int(self.decay_cycles),
+            "decay_factor": float(self.decay_factor),
             "last_samples_seen": int(self.last_samples_seen),
             "last_progress": float(self.last_progress),
+            "last_cycle_index": int(self.last_cycle_index),
+            "last_cycle_position": int(self.last_cycle_position),
+            "last_decay_group": int(self.last_decay_group),
+            "last_peak_lrs": list(self.last_peak_lrs),
             "last_lrs": list(self.last_lrs),
         }
 
@@ -1687,16 +1731,26 @@ class SampleCosineScheduler:
             base_lrs = [float(value) for value in state.get("base_lrs", [])]
             if len(base_lrs) == len(self.optimizer.param_groups):
                 self.base_lrs = base_lrs
-        if int(state.get("t_max_samples", 0) or 0) > 0:
-            self.t_max_samples = max(1, int(state["t_max_samples"]))
+        cycle_samples = int(state.get("cycle_samples", state.get("t_max_samples", 0)) or 0)
+        if cycle_samples > 0:
+            self.cycle_samples = max(1, int(cycle_samples))
         self.eta_min = max(0.0, float(state.get("eta_min", self.eta_min)))
+        self.decay_cycles = max(1, int(state.get("decay_cycles", self.decay_cycles) or self.decay_cycles))
+        self.decay_factor = max(0.0, float(state.get("decay_factor", self.decay_factor)))
         self.step(int(state.get("last_samples_seen", 0) or 0))
 
     def metrics(self) -> dict[str, float]:
         return {
             "train/lr_scheduler_progress": float(self.last_progress),
-            "train/lr_scheduler_t_max_samples": float(self.t_max_samples),
+            "train/lr_scheduler_cycle_samples": float(self.cycle_samples),
+            "train/lr_scheduler_t_max_samples": float(self.cycle_samples),
             "train/lr_scheduler_eta_min": float(self.eta_min),
+            "train/lr_scheduler_cycle_index": float(self.last_cycle_index),
+            "train/lr_scheduler_cycle_position_samples": float(self.last_cycle_position),
+            "train/lr_scheduler_decay_cycles": float(self.decay_cycles),
+            "train/lr_scheduler_decay_factor": float(self.decay_factor),
+            "train/lr_scheduler_decay_group": float(self.last_decay_group),
+            "train/lr_scheduler_peak_lr": float(self.last_peak_lrs[0]) if self.last_peak_lrs else 0.0,
         }
 
 
@@ -1707,8 +1761,10 @@ def build_scheduler(optimizer: torch.optim.Optimizer, train_config: TrainConfig)
         raise ValueError(f"Unsupported scheduler: {train_config.scheduler!r}")
     return SampleCosineScheduler(
         optimizer,
-        t_max_samples=max(1, int(train_config.scheduler_t_max_samples)),
+        cycle_samples=max(1, int(train_config.scheduler_cycle_samples or train_config.scheduler_t_max_samples)),
         eta_min=max(0.0, float(train_config.scheduler_eta_min)),
+        decay_cycles=max(1, int(train_config.scheduler_decay_cycles)),
+        decay_factor=max(0.0, float(train_config.scheduler_decay_factor)),
     )
 
 
