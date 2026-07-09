@@ -408,9 +408,16 @@ class XbrlEncoder(nn.Module):
         super().__init__()
         d = int(config.d_model)
         h = _side_hidden_dim(config)
+        item_dim = max(8, int(config.xbrl_item_dim))
+        latent_count = max(1, int(config.xbrl_latents))
+        attention_heads = max(1, int(config.xbrl_attention_heads))
+        if item_dim % attention_heads != 0:
+            raise ValueError(f"xbrl_item_dim={item_dim} must be divisible by xbrl_attention_heads={attention_heads}.")
         self.time_encoder = time_encoder
         self.time_feature_count = int(config.xbrl_time_feature_count)
         self.period_time_feature_count = int(config.xbrl_period_time_feature_count)
+        self.item_dim = item_dim
+        self.latent_count = latent_count
         self.scalar_keys = (
             "value",
             "mapping_confidence",
@@ -440,7 +447,18 @@ class XbrlEncoder(nn.Module):
         )
         self.scalar_norm = nn.LayerNorm(len(self.scalar_keys))
         numeric_dim = len(self.scalar_keys) + 2 * int(config.time_encoder_dim) + len(self.category_keys) * category_dim
-        self.row_proj = MLP(numeric_dim, h, d, dropout=float(config.dropout))
+        self.item_proj = MLP(numeric_dim, h, item_dim, dropout=float(config.dropout))
+        self.latent_queries = nn.Parameter(torch.randn(latent_count, item_dim) * 0.02)
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim=item_dim,
+            num_heads=attention_heads,
+            dropout=float(config.dropout),
+            batch_first=True,
+        )
+        self.attention_norm = nn.LayerNorm(item_dim)
+        self.latent_ffn = MLP(item_dim, max(item_dim, h), item_dim, dropout=float(config.dropout))
+        self.latent_ffn_norm = nn.LayerNorm(item_dim)
+        self.out_proj = MLP(item_dim, h, d, dropout=float(config.dropout))
         self.out_dim = d
 
     def forward(self, payload: Mapping[str, Any]) -> torch.Tensor:
@@ -450,6 +468,8 @@ class XbrlEncoder(nn.Module):
             return _zero_like_batch(payload, self.out_dim)
         if not torch.is_tensor(mask):
             mask = torch.ones(value.shape, dtype=torch.bool, device=value.device)
+        else:
+            mask = mask.to(device=value.device, dtype=torch.bool)
         time_features = _required_time_features(payload.get("time_features"), reference=value, width=self.time_feature_count, name="xbrl.time_features")
         period_features = _required_time_features(
             payload.get("period_end_time_features"),
@@ -461,9 +481,27 @@ class XbrlEncoder(nn.Module):
         period_token = self.time_encoder(period_features, role="xbrl_period_end")
         cats = torch.cat([_safe_category_embedding(self.category_embeddings[key], _payload_ids(payload, key, value)) for key in self.category_keys], dim=-1)
         scalars = self.scalar_norm(torch.stack([_payload_scalar(payload, key, value) for key in self.scalar_keys], dim=-1))
-        row = torch.cat([scalars, time_token, period_token, cats], dim=-1)
-        projected = self.row_proj(row)
-        return masked_mean(projected, mask.bool(), dim=1)
+        item_features = torch.cat([scalars, time_token, period_token, cats], dim=-1)
+        items = self.item_proj(item_features)
+        items = items * mask.unsqueeze(-1).to(dtype=items.dtype)
+        has_items = mask.any(dim=1)
+        safe_mask = mask.clone()
+        safe_mask[:, 0] = safe_mask[:, 0] | ~has_items
+        items = items.clone()
+        items[:, 0, :] = torch.where(has_items[:, None], items[:, 0, :], torch.zeros_like(items[:, 0, :]))
+        queries = self.latent_queries.unsqueeze(0).expand(value.shape[0], -1, -1)
+        attended, _ = self.cross_attention(
+            queries,
+            items,
+            items,
+            key_padding_mask=~safe_mask,
+            need_weights=False,
+        )
+        latents = self.attention_norm(queries + attended)
+        latents = self.latent_ffn_norm(latents + self.latent_ffn(latents))
+        pooled = latents.mean(dim=1)
+        out = self.out_proj(pooled)
+        return out * has_items.unsqueeze(-1).to(dtype=out.dtype)
 
 
 class CorporateActionEncoder(nn.Module):

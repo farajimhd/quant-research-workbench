@@ -175,6 +175,9 @@ class ModelConfig:
     bar_time_feature_count: int = 9
     xbrl_time_feature_count: int = 10
     xbrl_period_time_feature_count: int = 7
+    xbrl_item_dim: int = 64
+    xbrl_latents: int = 8
+    xbrl_attention_heads: int = 4
     xbrl_category_embedding_dim: int = 8
     xbrl_category_vocab_sizes: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_XBRL_CATEGORY_VOCAB_SIZES))
     corporate_action_numeric_dim: int = 13

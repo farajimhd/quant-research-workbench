@@ -407,7 +407,7 @@ This yields `float32/bf16 [B, 1024, d_model]` before the event encoder.
 | `text_item_time_features` | text item time features | per text group `float32 [B, I, T_text]` | availability/publish/accepted time features from loader | none; already follows the time-feature contract | text time adapter |
 | `text_item_mask` | text item mask | per text group `bool [B, I]` | true for available text items | none | text item pooling mask |
 | `text_chunk_mask` | text chunk mask | per text group `bool [B, I, C]` | true for available text chunks | none | text chunk pooling mask |
-| `xbrl_value` | `xbrl_inputs["value"]` | `float32 [B, 4096]` | raw XBRL numeric value from loader | none in current model; scalar row values are LayerNormed together before row MLP | XBRL scalar projection |
+| `xbrl_value` | `xbrl_inputs["value"]` | `float32 [B, 4096]` | raw XBRL numeric value from loader | none in current model; scalar item values are LayerNormed together before item projection | XBRL scalar projection |
 | `xbrl_fiscal_year` | `xbrl_inputs["fiscal_year"]` | `int16/float32 [B, 4096]` | fiscal year from loader | no standalone transform; included in XBRL scalar LayerNorm input | XBRL scalar projection |
 | `xbrl_period_end_days` | `xbrl_inputs["period_end_days"]` | `float32 [B, 4096]` | raw period-end day value from loader | no standalone transform; included in XBRL scalar LayerNorm input | XBRL scalar/time projection |
 | `xbrl_age_days` | `xbrl_inputs["age_days"]` | `float32 [B, 4096]` | age from origin to XBRL availability timestamp | no standalone transform; included in XBRL scalar LayerNorm input | XBRL scalar/time projection |
@@ -490,6 +490,9 @@ Default dimensions:
 | `market_news_items` | 16 | Latest as-of market/news items. |
 | `sec_filing_items` | 4 | Latest as-of SEC filing text items. |
 | `xbrl_max_items` | 4096 | Latest as-of XBRL rows. |
+| `xbrl_item_dim` | 64 | Internal XBRL item width before attention pooling. |
+| `xbrl_latents` | 8 | Learned XBRL latent/query tokens used to attend over the 4096 item slots. |
+| `xbrl_attention_heads` | 4 | Cross-attention heads for XBRL latent pooling. |
 | `corporate_action_max_items` | 128 | Latest as-of corporate-action rows. |
 
 Current forward path:
@@ -634,7 +637,7 @@ Important current behavior:
 | `TextContextEncoder` for ticker news | `embeddings [B,8,2,1024]`, `chunk_mask [B,8,2]`, `item_mask [B,8]`, `item_time_features [B,8,10]` | Each Qwen chunk embedding is `LayerNorm(1024) -> Linear(1024,256) -> GELU -> Dropout`. Chunks are masked-mean pooled into items. Item time features are validated and encoded by `TimeFeatureEncoder(role="text_available")`. Item vectors are concatenated with the time embedding and passed through MLP. Items are masked-mean pooled. The model does not run Qwen and does not z-score embeddings. | One ticker-news modality token `[B,256]`. |
 | `TextContextEncoder` for market news | `embeddings [B,16,2,1024]`, masks, item time features | Same text encoder and transforms as ticker news. | One market-news modality token `[B,256]`. |
 | `TextContextEncoder` for SEC filings | `embeddings [B,4,8,1024]`, masks, item time features | Same text encoder and transforms as ticker news. | One SEC-text modality token `[B,256]`. |
-| `XbrlEncoder` | `value [B,4096]`, `mask [B,4096]`, scalar fields `mapping_confidence`, `fiscal_year`, `period_end_days`, `age_days`, `timestamp_us`, XBRL scalar time helper fields, availability time features `[B,4096,10]`, period-end time features `[B,4096,7]`, and category id fields | The current implementation is not attention. It is a per-row MLP followed by masked mean pooling. Scalar row input is the raw emitted scalar set listed above, LayerNormed together before the row MLP; the previous synthetic `log1p(abs(value))` duplicate is not part of the current contract. Availability time uses `TimeFeatureEncoder(role="xbrl_available")`; period-end time uses `TimeFeatureEncoder(role="xbrl_period_end")`, with role-specific raw widths padded inside the shared time encoder. Fiscal/category ids are dense ids from `training_category_reference`; each XBRL category field has its own deterministic embedding table, id `0` is missing/unknown, and ids outside the configured table are treated as unknown rather than modulo-hashed. No z-score or per-tag/unit normalization is currently applied. | One XBRL modality token `[B,d_model]`. |
+| `XbrlEncoder` | `value [B,4096]`, `mask [B,4096]`, scalar fields `mapping_confidence`, `fiscal_year`, `period_end_days`, `age_days`, `timestamp_us`, XBRL scalar time helper fields, availability time features `[B,4096,10]`, period-end time features `[B,4096,7]`, and category id fields | Each index `i` is one aligned XBRL item slot: `value[b,i]`, `time_features[b,i,:]`, `period_end_time_features[b,i,:]`, ids, and mask all refer to the same item. Scalar item input is the raw emitted scalar set listed above, LayerNormed together; the previous synthetic `log1p(abs(value))` duplicate is not part of the current contract. Availability time uses `TimeFeatureEncoder(role="xbrl_available")`; period-end time uses `TimeFeatureEncoder(role="xbrl_period_end")`, with role-specific raw widths padded inside the shared time encoder. Category ids are dense ids from `training_category_reference`; id `0` is missing/unknown, and ids outside the configured table are treated as unknown rather than modulo-hashed. Item features project to `xbrl_item_dim=64`; `xbrl_latents=8` learned query tokens use 4-head cross-attention over the 4096 masked item slots, then the latent summary is projected to `d_model`. No z-score or per-tag/unit normalization is currently applied. | One XBRL modality token `[B,d_model]`. |
 | `CorporateActionEncoder` | `numeric_features [B,128,13]`, `mask [B,128]`, availability time features `[B,128,10]`, effective time features `[B,128,10]`, action/dividend/currency/frequency ids | Numeric corporate-action features are concatenated with `TimeFeatureEncoder(role="corporate_available")`, `TimeFeatureEncoder(role="corporate_effective")`, and four category embeddings, passed through row MLP, then masked mean pooled. No z-score is currently applied. IPO-like action types can participate as historical context if present in the corporate-action input rows, but IPO is not a prediction target. | One corporate-action modality token `[B,256]`. |
 | `ScannerContextEncoder` | `leader_values [B,G,K,S,3,F]`, `leader_mask [B,G,K]`, `leader_horizon_mask [B,G,K,S]`, `leader_time_features [B,G,K,S,9]`, origin-comparison tensors `origin_values [B,G,S,3,F]`, `origin_mask [B,G]`, `origin_horizon_mask [B,G,S]`, rank/top-k fields, and scanner numeric features `[B,G,6]` | Leader and origin rows use padded trade/bid/ask bar-family values plus `TimeFeatureEncoder(role="scanner_bar_end")`. Rank ids and scanner-group ids are embedded. Leader rows are pooled with `leader_horizon_mask`, origin rows are pooled with `origin_horizon_mask`, and numeric comparison rows are pooled only where `origin_mask` is true. Zero value plus false scanner mask is missing/padded, not a real zero bar. Older caches without scanner artifacts emit masked zeros unless strict scanner mode is enabled in the loader. | One scanner modality token `[B,256]`. |
 
@@ -891,16 +894,17 @@ The model does not fine-tune Qwen in v3. Qwen inference is offline and cached.
 Input:
 
 ```text
-up to 4096 XBRL rows per sample
+up to 4096 latest as-of XBRL item slots per sample
 ```
 
 Design:
 
-- numeric projection for value, period/time features, confidence
+- item-wise numeric projection for value, fiscal fields, timestamp fields, period/time fields, confidence
 - category embeddings for taxonomy, tag, unit, form, row kind, and location
 - use separate time embeddings for accepted/availability time and period-end age
-- gated pooling or Perceiver-style latent cross-attention
-- avoid full 4096-row self-attention by default
+- project each aligned item slot to `xbrl_item_dim=64`
+- use `xbrl_latents=8` learned latent query tokens with `xbrl_attention_heads=4`
+- avoid full 4096-item self-attention; cross-attention cost is proportional to `4096 * 8`
 - output one XBRL modality token
 
 ### Corporate Action Encoder
