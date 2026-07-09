@@ -195,6 +195,8 @@ def main() -> int:
         precision=config.train.amp_dtype if config.train.amp else "float32",
         output_dir=str(paths.run_root),
         model_parameters=int(parameter_summary(_unwrap_model(model))["total_parameters"]),
+        batch_size=int(config.loader.batch_size),
+        max_samples=int(config.train.max_samples),
     )
     reporter = None if config.train.progress_layout == "none" else TemporalTrainingReporter(layout=config.train.progress_layout, state=progress)
     train_window = MetricWindow(max_batches=32)

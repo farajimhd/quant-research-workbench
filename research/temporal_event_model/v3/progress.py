@@ -14,6 +14,8 @@ class TemporalProgressState:
     precision: str
     output_dir: str
     model_parameters: int
+    batch_size: int = 0
+    max_samples: int = 0
     samples_clock: int = 0
     update_count: int = 0
     epoch: int = 0
@@ -53,6 +55,31 @@ class TemporalTrainingReporter:
         self._rich = False
         self._last_refresh = 0.0
         self._fallback_reason = ""
+        self._bottom_padding_lines = 4
+
+    @staticmethod
+    def _format_duration(seconds: float | None) -> str:
+        if seconds is None or seconds <= 0:
+            return "--"
+        seconds = float(seconds)
+        hours, remainder = divmod(int(seconds), 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return f"{hours:d}h {minutes:02d}m"
+        if minutes:
+            return f"{minutes:d}m {secs:02d}s"
+        return f"{secs:d}s"
+
+    @staticmethod
+    def _format_finish_time(seconds_from_now: float | None) -> str:
+        if seconds_from_now is None or seconds_from_now <= 0:
+            return "--"
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(time.time() + float(seconds_from_now)))
+
+    def _latest_batch_seconds(self) -> float:
+        if self.history:
+            return sum(self.history) / len(self.history)
+        return max(0.0, float(self.state.batch_seconds))
 
     def __enter__(self) -> "TemporalTrainingReporter":
         if self.layout in {"auto", "rich"}:
@@ -133,65 +160,117 @@ class TemporalTrainingReporter:
             print(self._text_line(), flush=True)
 
     def _render(self) -> Any:
+        from rich.align import Align
         from rich.console import Group
         from rich.panel import Panel
+        from rich.progress import BarColumn, Progress, TextColumn
         from rich.table import Table
         from rich.text import Text
-        from rich import box
 
         s = self.state
-        summary = Table.grid(expand=True)
-        summary.add_column(ratio=1)
-        summary.add_column(ratio=1)
-        summary.add_row(f"run: {s.run_name}", f"dataset: {s.dataset_id}")
-        summary.add_row(f"device: {s.device} {s.precision}", f"params: {s.model_parameters:,}")
-        summary.add_row(f"samples: {s.samples_clock:,}", f"updates: {s.update_count:,}")
-        summary.add_row(f"days: {s.day_index + 1:,}/{max(s.day_count, 1):,}", f"day samples: {s.current_day_samples_seen:,}/{max(s.current_day_sample_count, 1):,}")
-        summary.add_row(f"out: {s.output_dir}", f"elapsed: {_duration(time.perf_counter() - self.started)}")
+        elapsed_seconds = max(0.0, time.perf_counter() - self.started)
+        avg_batch_seconds = self._latest_batch_seconds()
+        samples_remaining = max(0, int(s.max_samples) - int(s.samples_clock)) if int(s.max_samples) > 0 else 0
+        eta_seconds = (samples_remaining / max(float(s.samples_per_second), 1e-9)) if samples_remaining > 0 and s.samples_per_second > 0 else None
 
-        losses = Table(title="Loss", box=box.SIMPLE_HEAVY, expand=True)
-        losses.add_column("metric")
-        losses.add_column("value", justify="right")
-        losses.add_row("loss", f"{s.loss:.6f}")
-        losses.add_row("active tasks", f"{s.active_task_count:.0f}")
-        losses.add_row("lr", f"{s.lr:.3e}")
-        for key, value in list(s.task_losses.items())[:10]:
-            losses.add_row(key, f"{value:.6f}")
+        overall = Progress(
+            TextColumn("[bold]Samples"),
+            BarColumn(bar_width=None),
+            TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
+            TextColumn("{task.percentage:>6.2f}%"),
+            expand=True,
+        )
+        overall_total = max(int(s.max_samples), int(s.samples_clock), 1)
+        overall.add_task("samples", total=overall_total, completed=min(int(s.samples_clock), overall_total))
 
-        speed = Table(title="Throughput", box=box.SIMPLE_HEAVY, expand=True)
-        speed.add_column("metric")
-        speed.add_column("value", justify="right")
-        for key, value in (
-            ("samples/s", s.samples_per_second),
-            ("batch sec", s.batch_seconds),
-            ("loader wait", s.loader_wait_seconds),
-            ("gpu batch", s.gpu_batch_seconds),
-            ("materialize", s.materialize_seconds),
-            ("gpu GiB", s.gpu_memory_gib),
-            ("rss GiB", s.cpu_rss_gib),
-        ):
-            speed.add_row(key, f"{value:.3f}")
+        day_progress = Progress(
+            TextColumn("[bold]Current Day"),
+            BarColumn(bar_width=None),
+            TextColumn("{task.completed:,.0f}/{task.total:,.0f}"),
+            TextColumn("{task.percentage:>6.2f}%"),
+            expand=True,
+        )
+        day_total = max(int(s.current_day_sample_count), int(s.current_day_samples_seen), 1)
+        day_progress.add_task("day", total=day_total, completed=min(int(s.current_day_samples_seen), day_total))
 
-        availability = Table(title="Data Availability", box=box.SIMPLE_HEAVY, expand=True)
-        availability.add_column("metric")
-        availability.add_column("fraction", justify="right")
-        for key, value in list(s.availability.items())[:12]:
-            availability.add_row(key.replace("train/", ""), f"{value:.3f}")
+        summary = Table.grid(expand=False, padding=(0, 4))
+        summary.add_column(justify="left", no_wrap=True)
+        summary.add_column(justify="left", no_wrap=True)
+        max_samples_text = f"{s.samples_clock:,}/{s.max_samples:,}" if s.max_samples > 0 else f"{s.samples_clock:,}"
+        summary.add_row(f"[bold]Samples[/] {max_samples_text}", f"[bold]Batch[/] {s.batch_size:,}")
+        summary.add_row(f"[bold]Updates[/] {s.update_count:,}", f"[bold]Speed[/] {s.samples_per_second:,.1f}/s")
+        summary.add_row(f"[bold]Epoch[/] {s.epoch}", f"[bold]Day[/] {s.day_index + 1:,}/{max(s.day_count, 1):,}")
+        summary.add_row(f"[bold]Day samples[/] {s.current_day_samples_seen:,}/{max(s.current_day_sample_count, 1):,}", f"[bold]Batch avg[/] {avg_batch_seconds:.3f}s")
+        summary.add_row(f"[bold]Elapsed[/] {self._format_duration(elapsed_seconds)}", f"[bold]ETA[/] {self._format_duration(eta_seconds)}")
+        summary.add_row(f"[bold]Finish[/] {self._format_finish_time(eta_seconds)}", f"[bold]Precision[/] {s.precision}")
+        summary.add_row(f"[bold]Run[/] {s.run_name}", f"[bold]Device[/] {s.device}")
+        summary.add_row(f"[bold]Dataset[/] {s.dataset_id}", f"[bold]Params[/] {s.model_parameters:,}")
 
-        validation = Table(title="Validation", box=box.SIMPLE_HEAVY, expand=True)
-        validation.add_column("metric")
-        validation.add_column("value", justify="right")
+        learning = Table.grid(expand=False, padding=(0, 1))
+        learning.add_column("Metric", justify="right", no_wrap=True)
+        learning.add_column("Value", justify="left", no_wrap=True)
+        learning.add_row("loss", f"{s.loss:.6f}")
+        learning.add_row("active tasks", f"{s.active_task_count:.0f}")
+        learning.add_row("learning rate", f"{s.lr:.3e}")
         if s.validation_loss is not None:
-            validation.add_row("val/loss", f"{s.validation_loss:.6f}")
-        for key, value in list(s.validation_metrics.items())[:12]:
-            validation.add_row(key, f"{value:.5f}")
+            learning.add_row("validation loss", f"{s.validation_loss:.6f}")
+        for key, value in list(s.validation_metrics.items())[:8]:
+            label = key.replace("val/", "")
+            if label != "loss":
+                learning.add_row(f"val {label}", f"{value:.5f}")
 
-        messages = Text("\n".join(self.messages) if self.messages else s.last_message or "No messages yet")
+        task_losses = Table.grid(expand=False, padding=(0, 1))
+        task_losses.add_column("Task", justify="right", no_wrap=True)
+        task_losses.add_column("Loss", justify="left", no_wrap=True)
+        if s.task_losses:
+            for key, value in list(s.task_losses.items())[:14]:
+                task_losses.add_row(key, f"{value:.6f}")
+        else:
+            task_losses.add_row("waiting", "--")
+
+        availability = Table.grid(expand=False, padding=(0, 1))
+        availability.add_column("Data", justify="right", no_wrap=True)
+        availability.add_column("Fraction", justify="left", no_wrap=True)
+        if s.availability:
+            for key, value in list(s.availability.items())[:14]:
+                availability.add_row(key.replace("train/", "").replace("_available_fraction", "").replace("_valid_fraction", ""), f"{value:.3f}")
+        else:
+            availability.add_row("waiting", "--")
+
+        profile = Table.grid(expand=False, padding=(0, 1))
+        profile.add_column("Stage", justify="right", no_wrap=True)
+        profile.add_column("Seconds", justify="left", no_wrap=True)
+        profile.add_row("batch total", f"{s.batch_seconds:.4f}")
+        profile.add_row("loader wait", f"{s.loader_wait_seconds:.4f}")
+        profile.add_row("materialize", f"{s.materialize_seconds:.4f}")
+        profile.add_row("GPU batch", f"{s.gpu_batch_seconds:.4f}")
+        non_loader = max(0.0, float(s.batch_seconds) - float(s.loader_wait_seconds))
+        profile.add_row("train compute", f"{non_loader:.4f}")
+
+        memory = Table.grid(expand=False, padding=(0, 1))
+        memory.add_column("Metric", justify="right", no_wrap=True)
+        memory.add_column("GiB", justify="left", no_wrap=True)
+        memory.add_row("GPU allocated", f"{s.gpu_memory_gib:.2f}")
+        memory.add_row("process RSS", f"{s.cpu_rss_gib:.2f}")
+
+        retained_messages = list(self.messages) if self.messages else [s.last_message or "waiting for first update"]
+        retained_messages.extend([""] * max(0, self.messages.maxlen - len(retained_messages)))
+        messages = Table.grid(expand=True)
+        messages.add_column(no_wrap=True, overflow="ellipsis")
+        for line in retained_messages[: self.messages.maxlen]:
+            messages.add_row(line)
+
         return Group(
-            Panel(summary, title="Temporal v3", border_style="cyan"),
-            Panel(Group(losses, speed), title="Training", border_style="green"),
-            Panel(Group(validation, availability), title="Metrics", border_style="magenta"),
-            Panel(messages, title="Messages", border_style="yellow"),
+            Panel(summary, title="Temporal v3 Training Run", border_style="cyan"),
+            overall,
+            day_progress,
+            Panel(Align.center(learning), title="Learning", border_style="magenta"),
+            Panel(Align.center(task_losses), title="Task Losses", border_style="green"),
+            Panel(Align.center(availability), title="Data Availability", border_style="blue"),
+            Panel(Align.center(profile), title="Batch Profile", border_style="yellow"),
+            Panel(Align.center(memory), title="Memory", border_style="cyan", height=6),
+            Panel(messages, title="Messages", border_style="blue", height=9),
+            Text("\n" * self._bottom_padding_lines),
         )
 
     def _text_line(self) -> str:
