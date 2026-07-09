@@ -238,7 +238,7 @@ npm --prefix frontend install
 Run the backend API:
 
 ```powershell
-uvicorn src.backend.app:app --reload --reload-dir src
+.\scripts\run_backend.ps1
 ```
 
 Run the React development server:
@@ -251,7 +251,7 @@ For a production-style local build:
 
 ```powershell
 npm --prefix frontend run build
-uvicorn src.backend.app:app
+.\scripts\run_backend.ps1 -NoReload
 ```
 
 Sidebar:
