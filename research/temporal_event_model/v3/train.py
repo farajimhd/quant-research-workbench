@@ -204,6 +204,7 @@ def main() -> int:
     try:
         with reporter if reporter is not None else _NullReporter() as active_reporter:
             checkpointer.set_message_callback(active_reporter.message)
+            active_reporter.message("Trainer initialized; waiting for first training batch.")
             update_count = int(train_loader.state.emitted_batches if train_loader is not None else 0)
             while True:
                 prior_total_samples = int(train_loader.state.seen_origins_total if train_loader is not None else update_count * int(config.loader.batch_size))
@@ -212,6 +213,8 @@ def main() -> int:
                 if int(config.train.max_samples) <= 0 and train_loader is not None and int(train_loader.state.completed_epochs) >= int(config.train.epochs):
                     break
                 update_count += 1
+                if update_count == 1:
+                    active_reporter.message("Loading and materializing first training batch.")
                 batch_start = time.perf_counter()
                 loader_start = time.perf_counter()
                 batch = next(train_iter)
