@@ -1033,6 +1033,7 @@ class NewsGateway:
                 input_duplicate_ids_total=len(getattr(write_summary, "input_duplicate_ids", []) or []),
                 saturated=batch.saturated,
                 wall_seconds=time.perf_counter() - started,
+                **self._publish_log_context(final_items, summary=write_summary),
             )
         finally:
             self.metrics.background_active_batches = max(0, self.metrics.background_active_batches - 1)
