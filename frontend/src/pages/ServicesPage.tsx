@@ -2630,12 +2630,25 @@ function newsTodayFlagChips(row: NewsTodayRow) {
 
 function newsTodayRowTone(row: NewsTodayRow) {
   const tickerCount = row.tickerLinkCount || row.tickers.length;
-  if (row.hasPdf) return "has-pdf";
-  if (row.hasExternalText) return "has-external-text";
-  if (tickerCount > 1) return "multi-ticker";
-  if (tickerCount === 1) return "one-ticker";
-  if (row.isTitleOnly) return "title-only";
-  return "broad-news";
+  const baseTone = row.hasPdf
+    ? "has-pdf"
+    : row.hasExternalText
+      ? "has-external-text"
+      : tickerCount > 1
+        ? "multi-ticker"
+        : tickerCount === 1
+          ? "one-ticker"
+          : row.isTitleOnly
+            ? "title-only"
+            : "broad-news";
+  return newsTodayIsRecent(row.publishedAtUtc) ? `${baseTone} recent-news` : baseTone;
+}
+
+function newsTodayIsRecent(publishedAtUtc: string) {
+  const publishedAtMs = Date.parse(publishedAtUtc);
+  if (!Number.isFinite(publishedAtMs)) return false;
+  const ageMs = Date.now() - publishedAtMs;
+  return ageMs >= 0 && ageMs <= 60 * 60 * 1000;
 }
 
 function orderedServiceWorkGroups(groups: ServiceWorkGroup[], serviceId: ServiceId) {

@@ -1336,12 +1336,20 @@ button {
   background: linear-gradient(90deg, color-mix(in oklab, var(--muted-foreground) 5%, transparent), transparent 28%);
 }
 
+.news-today-table tbody tr.recent-news {
+  background:
+    linear-gradient(90deg, color-mix(in oklab, #06b6d4 18%, transparent), transparent 36%),
+    color-mix(in oklab, #06b6d4 5%, var(--surface));
+  box-shadow: inset 3px 0 0 color-mix(in oklab, #0891b2 78%, var(--primary));
+}
+
 .news-today-table tbody tr.one-ticker:hover,
 .news-today-table tbody tr.multi-ticker:hover,
 .news-today-table tbody tr.has-external-text:hover,
 .news-today-table tbody tr.has-pdf:hover,
 .news-today-table tbody tr.title-only:hover,
-.news-today-table tbody tr.broad-news:hover {
+.news-today-table tbody tr.broad-news:hover,
+.news-today-table tbody tr.recent-news:hover {
   background-color: color-mix(in oklab, var(--accent) 8%, transparent);
 }
 
