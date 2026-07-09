@@ -331,6 +331,22 @@ Scanner artifacts are consumed only for the active replay window and the next
 window is prefetched, so scanner data does not require a month-wide blocking
 load before training can start.
 
+### Loader Telemetry
+
+Training logs lightweight loader/cache state without scanning payloads:
+
+- `loader/cache/*`: event rolling-cache ticker count, estimated event-cache MiB,
+  payload-cache parts, ready-buffer samples, and materializer index-cache
+  counts for text, labels, scanner, bars, XBRL, and corporate actions.
+- `loader/window/*`: active replay-window refs, tickers, parts, total day refs,
+  remaining day refs, and configured window seconds.
+- `loader/prefetch/*`: materialization queue depth and maximum pending batches.
+- `loader/state/*`: replay/checkpoint cursors such as chronological day
+  position, chronological origin cursor, emitted batches, and seen samples.
+
+These counters are derived from existing in-memory state and batch profiles, so
+they do not add ClickHouse calls, parquet scans, or tensor reductions.
+
 ## Data Contract
 
 The trainer uses `AsyncDailyIndexBatchLoader` in `raw_stream` event mode.

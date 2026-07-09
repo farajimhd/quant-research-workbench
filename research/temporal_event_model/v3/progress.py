@@ -34,6 +34,10 @@ class TemporalProgressState:
     availability: dict[str, float] = field(default_factory=dict)
     task_losses: dict[str, float] = field(default_factory=dict)
     validation_metrics: dict[str, float] = field(default_factory=dict)
+    loader_cache: dict[str, float] = field(default_factory=dict)
+    loader_window: dict[str, float] = field(default_factory=dict)
+    loader_prefetch: dict[str, float] = field(default_factory=dict)
+    loader_state: dict[str, float] = field(default_factory=dict)
     day_index: int = 0
     day_count: int = 0
     current_day_samples_seen: int = 0
@@ -129,6 +133,10 @@ class TemporalTrainingReporter:
         s.cpu_rss_gib = float(metrics.get("train/cpu_rss_gib", s.cpu_rss_gib))
         s.task_losses = {key.replace("train/loss_", ""): float(value) for key, value in metrics.items() if key.startswith("train/loss_")}
         s.availability = {key: float(value) for key, value in metrics.items() if key.endswith("_available_fraction") or key.endswith("_valid_fraction")}
+        s.loader_cache = {key.replace("loader/cache/", ""): float(value) for key, value in metrics.items() if key.startswith("loader/cache/")}
+        s.loader_window = {key.replace("loader/window/", ""): float(value) for key, value in metrics.items() if key.startswith("loader/window/")}
+        s.loader_prefetch = {key.replace("loader/prefetch/", ""): float(value) for key, value in metrics.items() if key.startswith("loader/prefetch/")}
+        s.loader_state = {key.replace("loader/state/", ""): float(value) for key, value in metrics.items() if key.startswith("loader/state/")}
         s.day_index = int(metrics.get("schedule/day_index", s.day_index))
         s.day_count = int(metrics.get("schedule/day_count", s.day_count))
         s.current_day_samples_seen = int(metrics.get("schedule/current_day_samples_seen", s.current_day_samples_seen))
@@ -253,6 +261,32 @@ class TemporalTrainingReporter:
         memory.add_row("GPU allocated", f"{s.gpu_memory_gib:.2f}")
         memory.add_row("process RSS", f"{s.cpu_rss_gib:.2f}")
 
+        loader_cache = Table.grid(expand=False, padding=(0, 1))
+        loader_cache.add_column("Metric", justify="right", no_wrap=True)
+        loader_cache.add_column("Value", justify="left", no_wrap=True)
+        cache_rows = [
+            ("event tickers", s.loader_cache.get("event_ticker_states")),
+            ("event cache MiB", s.loader_cache.get("event_estimated_mib")),
+            ("payload parts", s.loader_cache.get("payload_parts")),
+            ("ready samples", s.loader_cache.get("ready_buffer_samples")),
+            ("text idx", s.loader_cache.get("text_index_entries")),
+            ("label idx", s.loader_cache.get("label_index_entries")),
+            ("scanner idx", s.loader_cache.get("scanner_index_entries")),
+            ("window refs", s.loader_window.get("active_refs")),
+            ("window tickers", s.loader_window.get("active_tickers")),
+            ("pending batches", s.loader_prefetch.get("materialize_pending_batches")),
+            ("max pending", s.loader_prefetch.get("materialize_max_pending_batches")),
+            ("chrono cursor", s.loader_state.get("chronological_origin_cursor")),
+        ]
+        visible_cache_rows = 0
+        for label, value in cache_rows:
+            if value is None:
+                continue
+            loader_cache.add_row(label, f"{value:,.2f}" if label.endswith("MiB") else f"{value:,.0f}")
+            visible_cache_rows += 1
+        if visible_cache_rows <= 0:
+            loader_cache.add_row("waiting", "--")
+
         retained_messages = list(self.messages) if self.messages else [s.last_message or "waiting for first update"]
         retained_messages.extend([""] * max(0, self.messages.maxlen - len(retained_messages)))
         messages = Table.grid(expand=True)
@@ -268,6 +302,7 @@ class TemporalTrainingReporter:
             Panel(Align.center(task_losses), title="Task Losses", border_style="green"),
             Panel(Align.center(availability), title="Data Availability", border_style="blue"),
             Panel(Align.center(profile), title="Batch Profile", border_style="yellow"),
+            Panel(Align.center(loader_cache), title="Loader Cache", border_style="green"),
             Panel(Align.center(memory), title="Memory", border_style="cyan", height=6),
             Panel(messages, title="Messages", border_style="blue", height=9),
             Text("\n" * self._bottom_padding_lines),

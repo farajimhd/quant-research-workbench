@@ -539,6 +539,16 @@ Loader scanner rule:
 - Scanner prefetch and gather timings are logged separately so steady-state
   stalls can be isolated from startup or next-window prefetch work.
 
+Loader telemetry rule:
+
+- Training emits grouped loader telemetry under `loader/cache/*`,
+  `loader/window/*`, `loader/prefetch/*`, and `loader/state/*`.
+- These values must be counters or cheap estimates from existing in-memory
+  state: no extra parquet scans, ClickHouse queries, or tensor reductions.
+- The Rich terminal has a compact `Loader Cache` panel for event-cache ticker
+  states, estimated cache MiB, payload-cache size, materializer index-cache
+  entries, active window size, and pending materialization batches.
+
 Current model diagram:
 
 ```mermaid

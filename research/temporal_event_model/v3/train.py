@@ -309,6 +309,7 @@ def main() -> int:
                             "schedule/current_day_sample_count": float(max(ledger.current_day_total, 1)),
                         }
                     )
+                    metrics.update(_loader_state_metrics(summary=summary, batch_profile=batch.profile))
                 if cadence.due("fast_summary", samples_seen_total, int(config.train.fast_summary_samples)):
                     metrics.update(fast_batch_metrics(batch, output, prefix="train"))
                 if cadence.due("train_metric_window", samples_seen_total, int(config.train.train_metric_window_samples)):
@@ -453,6 +454,51 @@ def checkpoint_payload(
         "training_ledger": ledger.snapshot(),
         "model_card": model_card,
     }
+
+
+def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[str, Any]) -> dict[str, float]:
+    metrics: dict[str, float] = {
+        "loader/state/epoch": float(summary.get("epoch", 0) or 0),
+        "loader/state/package_position": float(summary.get("package_position", 0) or 0),
+        "loader/state/origin_cursor": float(summary.get("origin_cursor", 0) or 0),
+        "loader/state/chronological_day_position": float(summary.get("chronological_day_position", 0) or 0),
+        "loader/state/chronological_origin_cursor": float(summary.get("chronological_origin_cursor", 0) or 0),
+        "loader/state/emitted_batches": float(summary.get("emitted_batches", 0) or 0),
+        "loader/state/emitted_samples": float(summary.get("emitted_samples", 0) or 0),
+        "loader/state/seen_origins_total": float(summary.get("seen_origins_total", 0) or 0),
+        "loader/state/seen_origins_this_epoch": float(summary.get("seen_origins_this_epoch", 0) or 0),
+    }
+    mapping = {
+        "event_cache_ticker_states": "loader/cache/event_ticker_states",
+        "event_cache_stream_rows_per_ticker": "loader/cache/event_stream_rows_per_ticker",
+        "event_cache_feature_count": "loader/cache/event_feature_count",
+        "event_cache_estimated_bytes": "loader/cache/event_estimated_mib",
+        "payload_cache_parts": "loader/cache/payload_parts",
+        "payload_cache_limit": "loader/cache/payload_limit",
+        "ready_buffer_chunks": "loader/cache/ready_buffer_chunks",
+        "ready_buffer_samples": "loader/cache/ready_buffer_samples",
+        "materializer_text_index_cache_entries": "loader/cache/text_index_entries",
+        "materializer_label_index_cache_entries": "loader/cache/label_index_entries",
+        "materializer_scanner_index_cache_entries": "loader/cache/scanner_index_entries",
+        "materializer_bar_index_cache_entries": "loader/cache/bar_index_entries",
+        "materializer_xbrl_index_cache_entries": "loader/cache/xbrl_index_entries",
+        "materializer_xbrl_category_cache_entries": "loader/cache/xbrl_category_entries",
+        "materializer_corporate_action_index_cache_entries": "loader/cache/corporate_action_index_entries",
+        "window_active_refs": "loader/window/active_refs",
+        "window_active_parts": "loader/window/active_parts",
+        "window_active_tickers": "loader/window/active_tickers",
+        "day_refs_total": "loader/window/day_refs_total",
+        "day_refs_remaining_before_window": "loader/window/day_refs_remaining_before_window",
+        "chronological_time_window_seconds": "loader/window/seconds",
+        "prefetch_materialize_max_pending_batches": "loader/prefetch/materialize_max_pending_batches",
+        "prefetch_materialize_pending_batches": "loader/prefetch/materialize_pending_batches",
+    }
+    for source, target in mapping.items():
+        value = batch_profile.get(source)
+        if not isinstance(value, (int, float)):
+            continue
+        metrics[target] = float(value) / (1024.0 * 1024.0) if source == "event_cache_estimated_bytes" else float(value)
+    return metrics
 
 
 def config_from_args(args: argparse.Namespace) -> ExperimentConfig:

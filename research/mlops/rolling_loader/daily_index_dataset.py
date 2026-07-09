@@ -870,6 +870,30 @@ class DailyIndexBatchMaterializer:
         with self._corporate_action_index_lock:
             self._corporate_action_index_cache.clear()
 
+    def telemetry_snapshot(self) -> dict[str, int]:
+        with self._text_index_lock:
+            text_indexes = len(self._text_index_cache) + len(self._global_text_index_cache)
+        with self._label_index_lock:
+            label_indexes = len(self._label_index_cache) + len(self._compact_label_index_cache) + len(self._intraday_compact_label_cache)
+        with self._scanner_artifact_index_lock:
+            scanner_indexes = len(self._scanner_artifact_index_cache)
+        with self._bar_index_lock:
+            bar_indexes = len(self._bar_index_cache)
+        with self._xbrl_index_lock:
+            xbrl_indexes = len(self._xbrl_index_cache)
+            xbrl_categories = len(self._xbrl_category_cache)
+        with self._corporate_action_index_lock:
+            corporate_indexes = len(self._corporate_action_index_cache)
+        return {
+            "materializer_text_index_cache_entries": int(text_indexes),
+            "materializer_label_index_cache_entries": int(label_indexes),
+            "materializer_scanner_index_cache_entries": int(scanner_indexes),
+            "materializer_bar_index_cache_entries": int(bar_indexes),
+            "materializer_xbrl_index_cache_entries": int(xbrl_indexes),
+            "materializer_xbrl_category_cache_entries": int(xbrl_categories),
+            "materializer_corporate_action_index_cache_entries": int(corporate_indexes),
+        }
+
     def materialize(
         self,
         parts: Sequence[LoadedDailyIndexPart],
@@ -2538,6 +2562,7 @@ class AsyncDailyIndexBatchLoader:
                             if chunk.sample_count == 0:
                                 continue
                             for batch in ready.add(chunk):
+                                batch.profile.update(ready.telemetry())
                                 batch.profile["ready_concat_seconds"] = float(batch.profile.get("ready_concat_seconds", 0.0)) + (time.perf_counter() - chunk_ready_start)
                                 if not group_profile_attached:
                                     for key, value in group_profile.items():
@@ -2631,6 +2656,7 @@ class AsyncDailyIndexBatchLoader:
                     self.state.chronological_origin_cursor = 0
                     self.state.chronological_window_start_us = 0
                     continue
+                day_total_refs = len(refs) + int(self.state.chronological_origin_cursor)
                 emitted_from_day = 0
                 materialize_size = int(self.config.materialize_chunk_size) or min(int(self.config.batch_size), 256)
                 for window_refs in _windowed_refs_by_time(loaded_origins, refs, time_window_seconds=float(self.config.time_window_seconds)):
@@ -2639,6 +2665,7 @@ class AsyncDailyIndexBatchLoader:
                     if not window_refs:
                         continue
                     first_ts = int(_ref_origin_timestamp(loaded_origins, window_refs[0]))
+                    last_ts = int(_ref_origin_timestamp(loaded_origins, window_refs[-1]))
                     self.state.chronological_window_start_us = first_ts
                     active_indices = sorted({int(ref.part_index) for ref in window_refs})
                     loaded_parts = _load_active_payloads(
@@ -2667,6 +2694,17 @@ class AsyncDailyIndexBatchLoader:
                             "chronological_replay": int(1),
                             "chronological_day_load_seconds": time.perf_counter() - day_start,
                             "chronological_time_window_seconds": float(self.config.time_window_seconds),
+                            "window_active_refs": int(len(window_refs)),
+                            "window_active_parts": int(len(active_indices)),
+                            "window_active_tickers": int(len({loaded_origins[int(index)].plan.ticker for index in active_indices})),
+                            "window_start_timestamp_us": int(first_ts),
+                            "window_end_timestamp_us": int(last_ts),
+                            "day_refs_total": int(day_total_refs),
+                            "day_refs_remaining_before_window": int(len(refs) - int(emitted_from_day)),
+                            "payload_cache_parts": int(len(payload_cache)),
+                            "payload_cache_limit": int(payload_cache_limit),
+                            **event_cache.telemetry_snapshot(),
+                            **self.materializer.telemetry_snapshot(),
                         },
                     )
                     for chunk in materialized:
@@ -2675,6 +2713,9 @@ class AsyncDailyIndexBatchLoader:
                         if chunk.sample_count == 0:
                             continue
                         for batch in ready.add(chunk):
+                            batch.profile.update(ready.telemetry())
+                            batch.profile.update(event_cache.telemetry_snapshot())
+                            batch.profile.update(self.materializer.telemetry_snapshot())
                             batch = self._apply_epoch_sample_cap(batch)
                             if batch.sample_count == 0:
                                 return
@@ -2820,6 +2861,8 @@ class AsyncDailyIndexBatchLoader:
             "sample_hash_buckets": list(self.config.sample_hash_buckets),
             "max_origins_per_epoch": int(self.config.max_origins_per_epoch),
             "randomize_seed": bool(self.config.randomize_seed),
+            "chronological_replay": bool(self.config.chronological_replay),
+            "time_window_seconds": float(self.config.time_window_seconds),
         }
         return out
 
@@ -3633,6 +3676,12 @@ class _ReadyBatchBuffer:
         self._samples = 0
         yield combined
 
+    def telemetry(self) -> dict[str, int]:
+        return {
+            "ready_buffer_chunks": int(len(self._chunks)),
+            "ready_buffer_samples": int(self._samples),
+        }
+
 
 def _concat_training_batches(batches: Sequence[DailyIndexTrainingBatch]) -> DailyIndexTrainingBatch:
     nonempty = [batch for batch in batches if batch.sample_count > 0]
@@ -4116,7 +4165,12 @@ def _materialize_chronological_bounded(
             except StopIteration:
                 return
             raw_stream, names, profile = event_cache.materialize(loaded, refs)
-            merged_profile = {**dict(day_profile or {}), **profile}
+            merged_profile = {
+                **dict(day_profile or {}),
+                **profile,
+                "prefetch_materialize_max_pending_batches": int(max_pending),
+                "prefetch_materialize_pending_batches": int(len(pending_ordered)),
+            }
             future = executor.submit(
                 materializer.materialize,
                 loaded,
@@ -4174,6 +4228,17 @@ class _RollingEventStreamCache:
 
     def clear(self) -> None:
         self._state_by_ticker.clear()
+
+    def telemetry_snapshot(self) -> dict[str, int]:
+        ticker_count = int(len(self._state_by_ticker))
+        event_stream_bytes = int(self.stream_length * max(1, len(self.columns)) * np.dtype(np.float32).itemsize)
+        ordinal_bytes = int(self.stream_length * np.dtype(np.int64).itemsize)
+        return {
+            "event_cache_ticker_states": ticker_count,
+            "event_cache_stream_rows_per_ticker": int(self.stream_length),
+            "event_cache_feature_count": int(len(self.columns)),
+            "event_cache_estimated_bytes": int(ticker_count * (event_stream_bytes + ordinal_bytes)),
+        }
 
     def materialize(
         self,
