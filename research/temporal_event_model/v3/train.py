@@ -228,6 +228,13 @@ def main() -> int:
             active_reporter.message("Trainer initialized; waiting for first training batch.")
             if train_loader is not None:
                 active_reporter.update(_loader_state_metrics(summary=train_loader.summary(), batch_profile={}), step=0, validation_metrics=val_metrics)
+                if hasattr(active_reporter, "set_loader_metrics_provider") and hasattr(train_loader, "telemetry_snapshot"):
+                    active_reporter.set_loader_metrics_provider(
+                        lambda loader=train_loader: _loader_state_metrics(
+                            summary=loader.summary(),
+                            batch_profile=loader.telemetry_snapshot(),
+                        )
+                    )
             update_count = int(train_loader.state.emitted_batches if train_loader is not None else 0)
             while True:
                 if _INTERRUPT_REQUESTED:
@@ -458,8 +465,8 @@ def checkpoint_payload(
     }
 
 
-def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[str, Any]) -> dict[str, float]:
-    metrics: dict[str, float] = {
+def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[str, Any]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {
         "loader/state/epoch": float(summary.get("epoch", 0) or 0),
         "loader/state/package_position": float(summary.get("package_position", 0) or 0),
         "loader/state/origin_cursor": float(summary.get("origin_cursor", 0) or 0),
@@ -470,6 +477,7 @@ def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[
         "loader/state/seen_origins_total": float(summary.get("seen_origins_total", 0) or 0),
         "loader/state/seen_origins_this_epoch": float(summary.get("seen_origins_this_epoch", 0) or 0),
         "loader/cache/package_count": float(summary.get("package_count", 0) or 0),
+        "loader/cache/total_available_origins": float(summary.get("total_available_origins", 0) or 0),
     }
     summary_config = summary.get("config") if isinstance(summary.get("config"), Mapping) else {}
     if isinstance(summary_config, Mapping):
@@ -481,8 +489,12 @@ def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[
         "event_cache_estimated_bytes": "loader/cache/event_estimated_mib",
         "origin_cache_parts": "loader/cache/origin_parts",
         "origin_cache_limit": "loader/cache/origin_limit",
+        "origin_rows": "loader/cache/origin_rows",
+        "origin_window_load_seconds": "loader/cache/origin_window_load_seconds",
         "payload_cache_parts": "loader/cache/payload_parts",
         "payload_cache_limit": "loader/cache/payload_limit",
+        "package_count": "loader/cache/package_count",
+        "total_available_origins": "loader/cache/total_available_origins",
         "ready_buffer_chunks": "loader/cache/ready_buffer_chunks",
         "ready_buffer_samples": "loader/cache/ready_buffer_samples",
         "materializer_text_index_cache_entries": "loader/cache/text_index_entries",
@@ -497,6 +509,7 @@ def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[
         "window_active_tickers": "loader/window/active_tickers",
         "window_start_timestamp_us": "loader/window/start_timestamp_us",
         "window_end_timestamp_us": "loader/window/end_timestamp_us",
+        "day_package_count": "loader/window/day_package_count",
         "day_refs_total": "loader/window/day_refs_total",
         "day_refs_remaining_before_window": "loader/window/day_refs_remaining_before_window",
         "chronological_time_window_seconds": "loader/window/seconds",
@@ -508,6 +521,14 @@ def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[
         if not isinstance(value, (int, float)):
             continue
         metrics[target] = float(value) / (1024.0 * 1024.0) if source == "event_cache_estimated_bytes" else float(value)
+    status_mapping = {
+        "loader_phase": "loader/status/phase",
+        "current_source_date": "loader/status/current_day",
+    }
+    for source, target in status_mapping.items():
+        value = batch_profile.get(source)
+        if value is not None:
+            metrics[target] = str(value)
     return metrics
 
 

@@ -13,7 +13,7 @@ from collections import OrderedDict, deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 import numpy as np
 
@@ -2475,6 +2475,15 @@ class AsyncDailyIndexBatchLoader:
         self._scanner_prefetch_lock = threading.Lock()
         self._scanner_prefetch_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._telemetry_lock = threading.Lock()
+        self._telemetry: dict[str, Any] = {
+            "loader_phase": "initialized",
+            "package_count": int(self.state.package_count),
+            "total_available_origins": int(self.state.total_available_origins),
+            "chronological_time_window_seconds": float(self.config.time_window_seconds),
+            "batch_size": int(self.config.batch_size),
+            "loaded_parts_per_group": int(self.config.loaded_parts_per_group),
+        }
 
     def cancel(self) -> None:
         self._stop_event.set()
@@ -2484,6 +2493,27 @@ class AsyncDailyIndexBatchLoader:
         thread = self._scanner_prefetch_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
+
+    def telemetry_snapshot(self) -> dict[str, Any]:
+        with self._telemetry_lock:
+            out = dict(self._telemetry)
+        out.update(
+            {
+                "chronological_day_position": int(self.state.chronological_day_position),
+                "chronological_origin_cursor": int(self.state.chronological_origin_cursor),
+                "chronological_window_start_us": int(self.state.chronological_window_start_us),
+                "emitted_batches": int(self.state.emitted_batches),
+                "emitted_samples": int(self.state.emitted_samples),
+                "seen_origins_total": int(self.state.seen_origins_total),
+                "seen_origins_this_epoch": int(self.state.seen_origins_this_epoch),
+            }
+        )
+        return out
+
+    def _update_telemetry(self, **values: Any) -> None:
+        with self._telemetry_lock:
+            self._telemetry.update(values)
+            self._telemetry["loader_telemetry_updated_at"] = float(time.time())
 
     def iter_batches(self) -> Iterator[DailyIndexTrainingBatch]:
         if self._stop_event.is_set():
@@ -2634,20 +2664,31 @@ class AsyncDailyIndexBatchLoader:
         window_us = max(1, int(float(self.config.time_window_seconds) * 1_000_000.0))
         previous_day_key: str | None = None
         try:
+            self._update_telemetry(loader_phase="planning_days", chronological_day_count=int(len(days)))
             for day_position in range(int(self.state.chronological_day_position), len(days)):
                 if self._stop_event.is_set():
                     return
                 source_date, day_plans = days[day_position]
                 self.state.chronological_day_position = int(day_position)
+                self._update_telemetry(
+                    loader_phase="day_start",
+                    chronological_day_position=int(day_position),
+                    chronological_day_count=int(len(days)),
+                    current_source_date=str(source_date),
+                    day_package_count=int(len(day_plans)),
+                    payload_cache_parts=int(len(payload_cache)),
+                )
                 if previous_day_key is not None and not _chronological_days_are_adjacent(previous_day_key, source_date, days):
                     event_cache.clear()
                     self.materializer.clear_text_context_cache()
                     payload_cache.clear()
+                    self._update_telemetry(loader_phase="cache_reset", payload_cache_parts=0)
                 previous_day_key = source_date
                 day_start = time.perf_counter()
                 day_plans = sorted(day_plans, key=lambda plan: (_plan_timestamp_start_us(plan), str(plan.ticker), int(plan.part_id)))
                 day_bounds = _day_origin_timestamp_bounds(day_plans, start_us=start_us, end_us=end_us)
                 if day_bounds is None:
+                    self._update_telemetry(loader_phase="day_empty", current_source_date=str(source_date))
                     continue
                 day_window_start, day_window_end = day_bounds
                 if int(self.state.chronological_window_start_us) > 0:
@@ -2657,11 +2698,27 @@ class AsyncDailyIndexBatchLoader:
                 day_total_refs = int(sum(max(0, int(plan.origin_count)) for plan in day_plans))
                 emitted_from_day = 0
                 materialize_size = int(self.config.materialize_chunk_size) or min(int(self.config.batch_size), 256)
+                self._update_telemetry(
+                    loader_phase="day_planned",
+                    current_source_date=str(source_date),
+                    day_refs_total=int(day_total_refs),
+                    day_refs_remaining_before_window=int(day_total_refs),
+                    day_start_timestamp_us=int(day_window_start),
+                    day_end_timestamp_us=int(day_window_end),
+                    materialize_chunk_size=int(materialize_size),
+                )
                 while window_start < int(day_window_end):
                     if self._stop_event.is_set():
                         return
                     window_end = min(int(window_start) + int(window_us), int(day_window_end))
                     self.state.chronological_window_start_us = int(window_start)
+                    self._update_telemetry(
+                        loader_phase="window_plan",
+                        current_source_date=str(source_date),
+                        window_start_timestamp_us=int(window_start),
+                        window_end_timestamp_us=int(window_end),
+                        day_refs_remaining_before_window=int(max(0, int(day_total_refs) - int(emitted_from_day))),
+                    )
                     active_plans = [
                         plan
                         for plan in day_plans
@@ -2669,8 +2726,14 @@ class AsyncDailyIndexBatchLoader:
                     ]
                     if not active_plans:
                         self.state.chronological_origin_cursor = 0
+                        self._update_telemetry(loader_phase="window_empty", window_active_parts=0, window_active_tickers=0)
                         window_start = int(window_end)
                         continue
+                    self._update_telemetry(
+                        loader_phase="origin_read",
+                        window_active_parts=int(len(active_plans)),
+                        window_active_tickers=int(len({plan.ticker for plan in active_plans})),
+                    )
                     origin_window_start = time.perf_counter()
                     loaded_origins = _load_window_origins(
                         read_pool=read_pool,
@@ -2681,10 +2744,18 @@ class AsyncDailyIndexBatchLoader:
                         stop_event=self._stop_event,
                     )
                     origin_window_load_seconds = time.perf_counter() - origin_window_start
+                    origin_rows = int(sum(int(part.origins.height) for part in loaded_origins if part.origins is not None))
+                    self._update_telemetry(
+                        loader_phase="origin_ready",
+                        origin_cache_parts=int(len(loaded_origins)),
+                        origin_rows=int(origin_rows),
+                        origin_window_load_seconds=float(origin_window_load_seconds),
+                    )
                     if not loaded_origins:
                         self.state.chronological_origin_cursor = 0
                         window_start = int(window_end)
                         continue
+                    self._update_telemetry(loader_phase="sample_refs")
                     window_refs = _sample_refs_for_loaded_parts(
                         loaded_origins,
                         config=self.config,
@@ -2699,11 +2770,18 @@ class AsyncDailyIndexBatchLoader:
                         window_refs = window_refs[int(self.state.chronological_origin_cursor) :]
                     if not window_refs:
                         self.state.chronological_origin_cursor = 0
+                        self._update_telemetry(loader_phase="window_no_refs", window_active_refs=0)
                         window_start = int(window_end)
                         continue
                     first_ts = int(_ref_origin_timestamp(loaded_origins, window_refs[0]))
                     last_ts = int(_ref_origin_timestamp(loaded_origins, window_refs[-1]))
                     active_indices = sorted({int(ref.part_index) for ref in window_refs})
+                    self._update_telemetry(
+                        loader_phase="payload_load",
+                        window_active_refs=int(len(window_refs)),
+                        window_active_parts=int(len(active_indices)),
+                        window_active_tickers=int(len({loaded_origins[int(index)].plan.ticker for index in active_indices})),
+                    )
                     loaded_parts = _load_active_payloads(
                         read_pool=read_pool,
                         reader=self.reader,
@@ -2712,6 +2790,11 @@ class AsyncDailyIndexBatchLoader:
                         payload_cache=payload_cache,
                         payload_cache_limit=payload_cache_limit,
                         stop_event=self._stop_event,
+                    )
+                    self._update_telemetry(
+                        loader_phase="payload_ready",
+                        payload_cache_parts=int(len(payload_cache)),
+                        payload_cache_limit=int(payload_cache_limit),
                     )
                     part_index_map = {old_index: new_index for new_index, old_index in enumerate(active_indices)}
                     remapped_refs = [
@@ -2726,6 +2809,7 @@ class AsyncDailyIndexBatchLoader:
                         event_cache=event_cache,
                         preserve_order=True,
                         stop_event=self._stop_event,
+                        telemetry_callback=self._update_telemetry,
                         day_profile={
                             "chronological_replay": int(1),
                             "chronological_day_load_seconds": time.perf_counter() - day_start,
@@ -2746,6 +2830,7 @@ class AsyncDailyIndexBatchLoader:
                             **self.materializer.telemetry_snapshot(),
                         },
                     )
+                    self._update_telemetry(loader_phase="materialize")
                     for chunk in materialized:
                         if self._stop_event.is_set():
                             return
@@ -2755,6 +2840,13 @@ class AsyncDailyIndexBatchLoader:
                             batch.profile.update(ready.telemetry())
                             batch.profile.update(event_cache.telemetry_snapshot())
                             batch.profile.update(self.materializer.telemetry_snapshot())
+                            self._update_telemetry(
+                                loader_phase="batch_ready",
+                                ready_buffer_chunks=int(ready.telemetry().get("ready_buffer_chunks", 0)),
+                                ready_buffer_samples=int(ready.telemetry().get("ready_buffer_samples", 0)),
+                                **event_cache.telemetry_snapshot(),
+                                **self.materializer.telemetry_snapshot(),
+                            )
                             batch = self._apply_epoch_sample_cap(batch)
                             if batch.sample_count == 0:
                                 return
@@ -4192,6 +4284,7 @@ def _materialize_chronological_bounded(
     preserve_order: bool = True,
     stop_event: threading.Event | None = None,
     day_profile: Mapping[str, float | int] | None = None,
+    telemetry_callback: Callable[..., None] | None = None,
 ) -> Iterator[DailyIndexTrainingBatch]:
     max_pending = max(1, int(getattr(executor, "_max_workers", 1)))
     pending_ordered: deque[Future[DailyIndexTrainingBatch]] = deque()
@@ -4222,6 +4315,12 @@ def _materialize_chronological_bounded(
             )
             pending_ordered.append(future)
             pending_all.add(future)
+            if telemetry_callback is not None:
+                telemetry_callback(
+                    loader_phase="materialize_pending",
+                    prefetch_materialize_max_pending_batches=int(max_pending),
+                    prefetch_materialize_pending_batches=int(len(pending_ordered)),
+                )
 
     try:
         submit_until_full()
@@ -4239,6 +4338,12 @@ def _materialize_chronological_bounded(
                 pending_all.discard(future)
                 batch = future.result()
                 batch.profile["materialize_wait_seconds"] = float(batch.profile.get("materialize_wait_seconds", 0.0)) + (time.perf_counter() - wait_start)
+                if telemetry_callback is not None:
+                    telemetry_callback(
+                        loader_phase="materialize_done",
+                        prefetch_materialize_max_pending_batches=int(max_pending),
+                        prefetch_materialize_pending_batches=int(len(pending_ordered)),
+                    )
                 yield batch
             else:
                 done, _ = wait(set(pending_ordered), timeout=0.2, return_when=FIRST_COMPLETED)
@@ -4250,6 +4355,12 @@ def _materialize_chronological_bounded(
                     except ValueError:
                         pass
                     pending_all.discard(future)
+                    if telemetry_callback is not None:
+                        telemetry_callback(
+                            loader_phase="materialize_done",
+                            prefetch_materialize_max_pending_batches=int(max_pending),
+                            prefetch_materialize_pending_batches=int(len(pending_ordered)),
+                        )
                     yield future.result()
             submit_until_full()
     except BaseException:

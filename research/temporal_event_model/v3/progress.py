@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import datetime as dt
 import time
+import threading
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable, Mapping
 
 
 @dataclass(slots=True)
@@ -38,6 +40,7 @@ class TemporalProgressState:
     loader_window: dict[str, float] = field(default_factory=dict)
     loader_prefetch: dict[str, float] = field(default_factory=dict)
     loader_state: dict[str, float] = field(default_factory=dict)
+    loader_status: dict[str, Any] = field(default_factory=dict)
     day_index: int = 0
     day_count: int = 0
     current_day_samples_seen: int = 0
@@ -60,6 +63,11 @@ class TemporalTrainingReporter:
         self._last_refresh = 0.0
         self._fallback_reason = ""
         self._bottom_padding_lines = 4
+        self._state_lock = threading.RLock()
+        self._refresh_lock = threading.Lock()
+        self._loader_metrics_provider: Callable[[], Mapping[str, Any]] | None = None
+        self._loader_poll_stop = threading.Event()
+        self._loader_poll_thread: threading.Thread | None = None
 
     @staticmethod
     def _format_duration(seconds: float | None) -> str:
@@ -111,11 +119,39 @@ class TemporalTrainingReporter:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._loader_poll_stop.set()
+        if self._loader_poll_thread is not None and self._loader_poll_thread.is_alive():
+            self._loader_poll_thread.join(timeout=2.0)
         if self._live is not None:
             self.refresh(force=True)
             self._live.stop()
 
-    def update(self, metrics: dict[str, float], *, step: int, validation_metrics: dict[str, float] | None = None) -> None:
+    def set_loader_metrics_provider(self, provider: Callable[[], Mapping[str, Any]] | None) -> None:
+        self._loader_metrics_provider = provider
+        if provider is None or self._loader_poll_thread is not None:
+            return
+        self._loader_poll_stop.clear()
+        self._loader_poll_thread = threading.Thread(target=self._poll_loader_metrics, name="temporal-v3-loader-telemetry", daemon=True)
+        self._loader_poll_thread.start()
+
+    def _poll_loader_metrics(self) -> None:
+        while not self._loader_poll_stop.wait(self.min_refresh_interval):
+            provider = self._loader_metrics_provider
+            if provider is None:
+                continue
+            try:
+                metrics = dict(provider())
+            except Exception as exc:  # noqa: BLE001
+                self.message(f"Loader telemetry unavailable: {exc!r}")
+                continue
+            self.update(metrics, step=int(self.state.samples_clock), validation_metrics=None, record_history=False)
+
+    def update(self, metrics: Mapping[str, Any], *, step: int, validation_metrics: dict[str, float] | None = None, record_history: bool = True) -> None:
+        with self._state_lock:
+            self._apply_update(metrics, step=step, validation_metrics=validation_metrics, record_history=record_history)
+        self.refresh()
+
+    def _apply_update(self, metrics: Mapping[str, Any], *, step: int, validation_metrics: dict[str, float] | None, record_history: bool) -> None:
         s = self.state
         s.samples_clock = int(metrics.get("train/samples_clock", step))
         s.update_count = int(metrics.get("train/update_count", s.update_count))
@@ -137,6 +173,7 @@ class TemporalTrainingReporter:
         s.loader_window = {key.replace("loader/window/", ""): float(value) for key, value in metrics.items() if key.startswith("loader/window/")}
         s.loader_prefetch = {key.replace("loader/prefetch/", ""): float(value) for key, value in metrics.items() if key.startswith("loader/prefetch/")}
         s.loader_state = {key.replace("loader/state/", ""): float(value) for key, value in metrics.items() if key.startswith("loader/state/")}
+        s.loader_status = {key.replace("loader/status/", ""): value for key, value in metrics.items() if key.startswith("loader/status/")}
         s.day_index = int(metrics.get("schedule/day_index", s.day_index))
         s.day_count = int(metrics.get("schedule/day_count", s.day_count))
         s.current_day_samples_seen = int(metrics.get("schedule/current_day_samples_seen", s.current_day_samples_seen))
@@ -145,19 +182,23 @@ class TemporalTrainingReporter:
             s.validation_metrics = {key: float(value) for key, value in validation_metrics.items()}
             if "val/loss" in validation_metrics:
                 s.validation_loss = float(validation_metrics["val/loss"])
-        if s.batch_seconds > 0:
+        if record_history and s.batch_seconds > 0:
             self.history.append(s.batch_seconds)
-        self.refresh()
 
     def message(self, text: str) -> None:
-        self.state.last_message = str(text)
-        self.messages.append(f"{time.strftime('%H:%M:%S')} {text}")
+        with self._state_lock:
+            self.state.last_message = str(text)
+            self.messages.append(f"{time.strftime('%H:%M:%S')} {text}")
         if self._rich:
             self.refresh(force=True)
         else:
             print(text, flush=True)
 
     def refresh(self, *, force: bool = False) -> None:
+        with self._refresh_lock:
+            self._refresh_unlocked(force=force)
+
+    def _refresh_unlocked(self, *, force: bool = False) -> None:
         if self._rich and self._live is not None:
             now = time.perf_counter()
             if not force and now - self._last_refresh < self.min_refresh_interval:
@@ -175,7 +216,8 @@ class TemporalTrainingReporter:
         from rich.table import Table
         from rich.text import Text
 
-        s = self.state
+        with self._state_lock:
+            s = self.state
         elapsed_seconds = max(0.0, time.perf_counter() - self.started)
         avg_batch_seconds = self._latest_batch_seconds()
         samples_remaining = max(0, int(s.max_samples) - int(s.samples_clock)) if int(s.max_samples) > 0 else 0
@@ -264,16 +306,33 @@ class TemporalTrainingReporter:
         loader_cache = Table.grid(expand=False, padding=(0, 1))
         loader_cache.add_column("Metric", justify="right", no_wrap=True)
         loader_cache.add_column("Value", justify="left", no_wrap=True)
+        loader_cache.add_row("phase", str(s.loader_status.get("phase", "waiting")))
+        if s.loader_status.get("current_day"):
+            loader_cache.add_row("day", str(s.loader_status.get("current_day")))
+        if s.loader_window.get("start_timestamp_us") is not None or s.loader_window.get("end_timestamp_us") is not None:
+            loader_cache.add_row(
+                "window UTC",
+                f"{_timestamp_us_text(s.loader_window.get('start_timestamp_us'))} -> {_timestamp_us_text(s.loader_window.get('end_timestamp_us'))}",
+            )
         cache_rows = [
+            ("total origins", s.loader_cache.get("total_available_origins")),
             ("event tickers", s.loader_cache.get("event_ticker_states")),
             ("event cache MiB", s.loader_cache.get("event_estimated_mib")),
             ("packages", s.loader_cache.get("package_count")),
+            ("day packages", s.loader_window.get("day_package_count")),
+            ("day refs", s.loader_window.get("day_refs_total")),
+            ("day remaining", s.loader_window.get("day_refs_remaining_before_window")),
             ("origin parts", s.loader_cache.get("origin_parts")),
+            ("origin rows", s.loader_cache.get("origin_rows")),
+            ("origin read sec", s.loader_cache.get("origin_window_load_seconds")),
             ("payload parts", s.loader_cache.get("payload_parts")),
             ("ready samples", s.loader_cache.get("ready_buffer_samples")),
             ("text idx", s.loader_cache.get("text_index_entries")),
             ("label idx", s.loader_cache.get("label_index_entries")),
             ("scanner idx", s.loader_cache.get("scanner_index_entries")),
+            ("bar idx", s.loader_cache.get("bar_index_entries")),
+            ("xbrl idx", s.loader_cache.get("xbrl_index_entries")),
+            ("corp idx", s.loader_cache.get("corporate_action_index_entries")),
             ("window refs", s.loader_window.get("active_refs")),
             ("window parts", s.loader_window.get("active_parts")),
             ("window tickers", s.loader_window.get("active_tickers")),
@@ -282,11 +341,15 @@ class TemporalTrainingReporter:
             ("max pending", s.loader_prefetch.get("materialize_max_pending_batches")),
             ("chrono cursor", s.loader_state.get("chronological_origin_cursor")),
         ]
-        visible_cache_rows = 0
+        visible_cache_rows = 2
         for label, value in cache_rows:
             if value is None:
                 continue
-            loader_cache.add_row(label, f"{value:,.2f}" if label.endswith("MiB") else f"{value:,.0f}")
+            if label.endswith("MiB") or label.endswith("sec") or label == "window seconds":
+                rendered_value = f"{value:,.2f}"
+            else:
+                rendered_value = f"{value:,.0f}"
+            loader_cache.add_row(label, rendered_value)
             visible_cache_rows += 1
         if visible_cache_rows <= 0:
             loader_cache.add_row("waiting", "--")
@@ -326,3 +389,13 @@ def _duration(seconds: float) -> str:
     if minutes:
         return f"{minutes}m {secs:02d}s"
     return f"{secs}s"
+
+
+def _timestamp_us_text(value: Any) -> str:
+    try:
+        timestamp_us = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return "--"
+    if timestamp_us <= 0:
+        return "--"
+    return dt.datetime.fromtimestamp(timestamp_us / 1_000_000.0, tz=dt.timezone.utc).strftime("%H:%M:%S")
