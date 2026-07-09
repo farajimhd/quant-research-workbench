@@ -587,14 +587,18 @@ Loader replay rule:
 
 Loader scanner rule:
 
-- Scanner parquet artifacts are loaded for the active replay window and
-  prefetched for the next window. The loader should not do a blocking
-  month-wide scanner load for chronological training.
-- `scanner_index_cache_entries` bounds retained scanner day indexes. It should
-  be high enough to avoid rebuilding the active day while keeping memory
-  bounded.
+- Scanner parquet artifacts are day-level state, not per-window state. Before a
+  source date emits its first batch, the loader synchronously warms the scanner
+  index for that source date from `global/scanner/scanner_YYYY-MM-DD.parquet`.
+- While the current day is training, the loader asynchronously prefetches the
+  next chronological source date scanner index. Each 1s/5s replay window then
+  gathers by scanner bucket from the already-warmed day index.
+- The loader should not do a blocking month-wide scanner load for chronological
+  training. `scanner_index_cache_entries` bounds retained scanner day indexes;
+  it should hold at least the current and next day while keeping memory bounded.
 - Scanner prefetch and gather timings are logged separately so steady-state
-  stalls can be isolated from startup or next-window prefetch work.
+  stalls can be isolated from startup, current-day warmup, or next-day prefetch
+  work.
 
 Loader telemetry rule:
 

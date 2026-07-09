@@ -10,6 +10,9 @@
 - `run_train_feb2019_large_bs512.py` launches the full large-model February
   2019 cache run with batch size 512. It derives `max_samples` from the cache
   manifests and reserves the last cached day for validation by default.
+- `run_train_month_xlarge_bs1024.py` launches the full xlarge model over one
+  cached month with batch size 1024. It uses the same manifest-derived day plan
+  and validation reservation logic.
 - `train.py` contains the stateful trainer, checkpointing, W&B logging, local
   JSONL metrics, Rich progress panels, and model artifact export.
 - `run_profile_training.py` profiles the real training loop on the daily-index
@@ -72,7 +75,19 @@ For the full February 2019 large-model run on the workstation:
 python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_train_feb2019_large_bs512.py
 ```
 
-That launcher uses bounded CPU-side staging:
+For the full February 2019 xlarge batch-1024 run on the workstation:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_train_month_xlarge_bs1024.py
+```
+
+The xlarge launcher can target another monthly cache with:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_train_month_xlarge_bs1024.py --month 2019-03 --cache-root D:\market-data\prepared\daily_index_streaming_cache\events_daily_index_2019-03
+```
+
+The large bs512 launcher uses bounded CPU-side staging:
 
 ```text
 batch_size: 512
@@ -246,17 +261,18 @@ normal loss/optimizer steps are not forced through CUDA-synchronized section
 timing every batch. Validation still runs a detailed timing pass when
 validation is executed.
 
-Scanner context is prefetched by default before batch materialization:
+Scanner context is indexed by source date during chronological replay:
 
 ```text
 --prefetch-scanner-indexes
---scanner-prefetch-workers 8
---scanner-index-cache-entries 64
+--scanner-prefetch-workers 4
+--scanner-index-cache-entries 4
 ```
 
-This moves scanner parquet indexing out of the first measured training batch
-and keeps a full month of daily scanner indexes resident for chronological
-training.
+For each source date, the loader synchronously warms the current day scanner
+artifact before emitting that day's first batch, then asynchronously prefetches
+the next chronological day. The cache only needs the current and near-future
+scanner indexes, so training does not perform a blocking month-wide scanner load.
 
 ## Production Encoder Cache Contract
 
@@ -347,9 +363,10 @@ items that arrive during market close or weekends are still visible to the next
 origin whose timestamp is after their availability time. Missing cache slots are
 zero with mask false.
 
-Scanner artifacts are consumed only for the active replay window and the next
-window is prefetched, so scanner data does not require a month-wide blocking
-load before training can start.
+Scanner artifacts are consumed through day-level indexes. The current source
+date is warmed before first batch emission for that day, and the next source
+date is prefetched in the background. Each 1s/5s replay window then gathers by
+scanner bucket from the already-warmed day index.
 
 ### Loader Telemetry
 

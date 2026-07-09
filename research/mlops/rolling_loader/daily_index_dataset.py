@@ -882,6 +882,14 @@ class DailyIndexBatchMaterializer:
         with self._corporate_action_index_lock:
             self._corporate_action_index_cache.clear()
 
+    def has_scanner_artifact_index(self, cache_key: str) -> bool:
+        key = str(cache_key)
+        with self._scanner_artifact_index_lock:
+            if key in self._scanner_artifact_index_cache:
+                return True
+        with self._shared_scanner_artifact_index_lock:
+            return key in self._shared_scanner_artifact_index_cache
+
     def telemetry_snapshot(self) -> dict[str, int]:
         with self._text_index_lock:
             text_indexes = len(self._text_index_cache) + len(self._global_text_index_cache)
@@ -2561,6 +2569,8 @@ class AsyncDailyIndexBatchLoader:
         self._scanner_prefetch_profile: dict[str, float | int] = {}
         self._scanner_prefetch_lock = threading.Lock()
         self._scanner_prefetch_thread: threading.Thread | None = None
+        self._scanner_prefetch_threads: list[threading.Thread] = []
+        self._scanner_prefetch_inflight_paths: set[str] = set()
         self._stop_event = threading.Event()
         self._telemetry_lock = threading.Lock()
         self._telemetry: dict[str, Any] = {
@@ -2582,6 +2592,9 @@ class AsyncDailyIndexBatchLoader:
         thread = self._scanner_prefetch_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
+        for thread in list(self._scanner_prefetch_threads):
+            if thread.is_alive():
+                thread.join(timeout=2.0)
 
     def telemetry_snapshot(self) -> dict[str, Any]:
         with self._telemetry_lock:
@@ -2777,6 +2790,23 @@ class AsyncDailyIndexBatchLoader:
                     self._update_telemetry(loader_phase="cache_reset", payload_cache_parts=0)
                 previous_day_key = source_date
                 day_start = time.perf_counter()
+                self._update_telemetry(loader_phase="scanner_day_warm", current_source_date=str(source_date))
+                scanner_day_profile = self.ensure_scanner_indexes_for_plans(day_plans, reason="current_day")
+                self._update_telemetry(
+                    loader_phase="scanner_day_ready",
+                    current_source_date=str(source_date),
+                    **scanner_day_profile,
+                )
+                if day_position + 1 < len(days):
+                    next_source_date, next_day_plans = days[day_position + 1]
+                    scanner_next_profile = self.prefetch_scanner_indexes_for_plans(next_day_plans, reason="next_day")
+                    self._update_telemetry(
+                        loader_phase="scanner_next_prefetch",
+                        scanner_next_source_date=str(next_source_date),
+                        **scanner_next_profile,
+                    )
+                else:
+                    scanner_next_profile = {"scanner_next_day_prefetch_paths": int(0), "scanner_next_day_prefetch_total_paths": int(0)}
                 day_plans = sorted(day_plans, key=lambda plan: (_plan_timestamp_start_us(plan), str(plan.ticker), int(plan.part_id)))
                 day_bounds = _day_origin_timestamp_bounds(day_plans, start_us=start_us, end_us=end_us)
                 if day_bounds is None:
@@ -2818,6 +2848,8 @@ class AsyncDailyIndexBatchLoader:
                 day_warm_profile: dict[str, float | int] = {
                     "cache_first_cursor_build_seconds": time.perf_counter() - cursor_start,
                     **cursor_profile,
+                    **scanner_day_profile,
+                    **scanner_next_profile,
                 }
                 if bool(self.config.warm_all_ticker_caches):
                     self._update_telemetry(loader_phase="cache_warm_event", event_cache_warm_tickers=0, event_cache_warm_total_tickers=int(len(cursors)))
@@ -3028,6 +3060,114 @@ class AsyncDailyIndexBatchLoader:
         for plan in plans:
             days.setdefault(str(plan.source_date), []).append(plan)
         return list(days.items())
+
+    def ensure_scanner_indexes_for_plans(self, plans: Sequence[DailyIndexPartPlan], *, reason: str = "current_day") -> dict[str, float | int]:
+        paths = self._scanner_paths_for_plans(plans)
+        profile = self._build_scanner_indexes_for_paths(paths, reason=reason)
+        with self._scanner_prefetch_lock:
+            self._scanner_prefetch_profile = dict(profile)
+        return profile
+
+    def prefetch_scanner_indexes_for_plans(self, plans: Sequence[DailyIndexPartPlan], *, reason: str = "next_day") -> dict[str, float | int]:
+        if "scanner_context" not in self.config.data_groups or not bool(self.config.prefetch_scanner_indexes):
+            return {f"scanner_{reason}_prefetch_enabled": int(0)}
+        paths = self._scanner_paths_for_plans(plans)
+        candidates: list[Path] = []
+        with self._scanner_prefetch_lock:
+            for path in paths:
+                key = str(path.resolve())
+                if key in self._scanner_prefetch_inflight_paths:
+                    continue
+                if self.materializer.has_scanner_artifact_index(key):
+                    continue
+                self._scanner_prefetch_inflight_paths.add(key)
+                candidates.append(path)
+        profile: dict[str, float | int] = {
+            f"scanner_{reason}_prefetch_enabled": int(1),
+            f"scanner_{reason}_prefetch_async": int(1),
+            f"scanner_{reason}_prefetch_paths": int(len(candidates)),
+            f"scanner_{reason}_prefetch_total_paths": int(len(paths)),
+        }
+        if not candidates:
+            profile[f"scanner_{reason}_prefetch_done"] = int(1)
+            with self._scanner_prefetch_lock:
+                self._scanner_prefetch_profile = dict(profile)
+            return profile
+
+        def run_background() -> None:
+            try:
+                update = self._build_scanner_indexes_for_paths(candidates, reason=f"{reason}_prefetch")
+                update[f"scanner_{reason}_prefetch_done"] = int(1)
+            except Exception:  # noqa: BLE001
+                update = {
+                    **profile,
+                    f"scanner_{reason}_prefetch_done": int(0),
+                    f"scanner_{reason}_prefetch_failed": int(1),
+                }
+            finally:
+                with self._scanner_prefetch_lock:
+                    for path in candidates:
+                        self._scanner_prefetch_inflight_paths.discard(str(path.resolve()))
+                    self._scanner_prefetch_profile = dict(update)
+                self._update_telemetry(**update)
+
+        thread = threading.Thread(target=run_background, name=f"tmc-scanner-{reason}-prefetch", daemon=True)
+        self._scanner_prefetch_threads.append(thread)
+        thread.start()
+        with self._scanner_prefetch_lock:
+            self._scanner_prefetch_profile = dict(profile)
+        return profile
+
+    def _scanner_paths_for_plans(self, plans: Sequence[DailyIndexPartPlan]) -> list[Path]:
+        if "scanner_context" not in self.config.data_groups or not bool(self.config.prefetch_scanner_indexes):
+            return []
+        paths: dict[str, Path] = {}
+        for plan in plans:
+            source_date = str(plan.source_date or "")[:10]
+            if not source_date:
+                continue
+            path = _scanner_context_file(_month_global_dir(plan.package_dir), source_date)
+            paths[str(path.resolve())] = path
+        return [paths[key] for key in sorted(paths)]
+
+    def _build_scanner_indexes_for_paths(self, paths: Sequence[Path], *, reason: str) -> dict[str, float | int]:
+        started = time.perf_counter()
+        if "scanner_context" not in self.config.data_groups or not bool(self.config.prefetch_scanner_indexes):
+            return {f"scanner_{reason}_enabled": int(0)}
+        pl = _polars()
+        built = 0
+        reused = 0
+        missing = 0
+        empty = 0
+        failed = 0
+        for path in paths:
+            if self._stop_event.is_set():
+                break
+            key = str(path.resolve())
+            if self.materializer.has_scanner_artifact_index(key):
+                reused += 1
+                continue
+            if not path.exists():
+                missing += 1
+                continue
+            try:
+                frame = pl.read_parquet(path)
+                if int(getattr(frame, "height", 0) or 0) <= 0:
+                    empty += 1
+                    continue
+                self.materializer._scanner_artifact_index(frame, cache_key=key)  # noqa: SLF001
+                built += 1
+            except Exception:  # noqa: BLE001
+                failed += 1
+        return {
+            f"scanner_{reason}_seconds": float(time.perf_counter() - started),
+            f"scanner_{reason}_paths": int(len(paths)),
+            f"scanner_{reason}_built": int(built),
+            f"scanner_{reason}_reused": int(reused),
+            f"scanner_{reason}_missing": int(missing),
+            f"scanner_{reason}_empty": int(empty),
+            f"scanner_{reason}_failed": int(failed),
+        }
 
     def state_dict(self) -> dict[str, Any]:
         return self.state.to_dict()
