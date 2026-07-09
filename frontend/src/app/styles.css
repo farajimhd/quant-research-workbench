@@ -1203,9 +1203,6 @@ button {
 .news-live-card-header {
   align-items: start;
   border-bottom: 1px solid var(--border);
-  display: grid;
-  gap: 10px;
-  grid-template-columns: minmax(0, 1fr) auto;
   padding: 10px 12px 8px;
 }
 
@@ -1571,6 +1568,7 @@ button {
 .news-poll-history-table th {
   background: color-mix(in oklab, var(--surface-alt) 78%, var(--surface));
   color: var(--muted-foreground);
+  cursor: help;
   font-size: 9.5px;
   font-weight: 680;
   letter-spacing: 0.04em;
@@ -1580,14 +1578,21 @@ button {
   z-index: 1;
 }
 
+.news-poll-history-table th[title]::after {
+  color: color-mix(in oklab, var(--muted-foreground) 70%, transparent);
+  content: "?";
+  font-size: 8.5px;
+  font-weight: 700;
+  margin-left: 3px;
+  vertical-align: 1px;
+}
+
 .news-poll-history-table tbody tr {
   height: 31px;
 }
 
 .news-poll-history-table th:nth-child(2),
-.news-poll-history-table td:nth-child(2),
-.news-poll-history-table th:nth-child(3),
-.news-poll-history-table td:nth-child(3) {
+.news-poll-history-table td:nth-child(2) {
   text-align: left;
 }
 
@@ -1603,29 +1608,24 @@ button {
 
 .news-poll-history-table th:nth-child(3),
 .news-poll-history-table td:nth-child(3) {
-  width: 128px;
+  width: 96px;
 }
 
 .news-poll-history-table th:nth-child(4),
 .news-poll-history-table td:nth-child(4),
 .news-poll-history-table th:nth-child(5),
 .news-poll-history-table td:nth-child(5),
-.news-poll-history-table th:nth-child(7),
-.news-poll-history-table td:nth-child(7),
-.news-poll-history-table th:nth-child(8),
-.news-poll-history-table td:nth-child(8) {
-  width: 82px;
-}
-
 .news-poll-history-table th:nth-child(6),
-.news-poll-history-table td:nth-child(6) {
-  width: 96px;
+.news-poll-history-table td:nth-child(6),
+.news-poll-history-table th:nth-child(7),
+.news-poll-history-table td:nth-child(7) {
+  width: 86px;
 }
 
+.news-poll-history-table th:nth-child(8),
+.news-poll-history-table td:nth-child(8),
 .news-poll-history-table th:nth-child(9),
-.news-poll-history-table td:nth-child(9),
-.news-poll-history-table th:nth-child(10),
-.news-poll-history-table td:nth-child(10) {
+.news-poll-history-table td:nth-child(9) {
   width: 64px;
 }
 

@@ -513,7 +513,7 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
   const metrics = serviceMetricsRecord(service);
   const histogram = useNewsDailyHistogram(service.registry.id === "news");
   const histogramData = histogram.rows;
-  const latestPoll = history[0];
+  const summary = newsPollHistorySummary(history);
   const backgroundPending = numericMetric(metrics, ["background_pending_articles", "publish_pending_rows", "background_queue_size"]);
   return (
     <section className={`service-work-responsibility-card news-live-card ${workStatusClass(group.status)}`}>
@@ -522,7 +522,6 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
           <h3>{group.title}</h3>
           <p>{group.description}</p>
         </div>
-        <span className={`service-work-status ${workStatusClass(group.status)}`}>{displayName(group.status || "waiting")}</span>
       </div>
       <NewsDailyHistogram
         binSeconds={histogram.binSeconds}
@@ -533,11 +532,11 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
       />
       <div className="news-live-summary">
         <span><small>Polls</small><strong>{formatCompactNumber(numericMetric(metrics, ["poll_runs"]))}</strong></span>
-        <span><small>Last Provider</small><strong>{formatCompactNumber(latestPoll?.providerRows ?? numericMetric(metrics, ["last_cycle_provider_rows"]))}</strong></span>
-        <span><small>Last Unique</small><strong>{formatCompactNumber(latestPoll?.uniqueRows ?? numericMetric(metrics, ["last_cycle_unique_news_rows"]))}</strong></span>
-        <span><small>Written</small><strong>{formatCompactNumber(latestPoll?.writtenRows ?? numericMetric(metrics, ["last_cycle_written_rows"]))}</strong></span>
+        <span><small>Avg Provider</small><strong>{formatCompactNumber(summary.avgProviderRows)}</strong></span>
+        <span><small>Avg Unique</small><strong>{formatCompactNumber(summary.avgUniqueRows)}</strong></span>
+        <span><small>Avg Runtime</small><strong>{formatSeconds(summary.avgWallSeconds)}</strong></span>
+        <span><small>Written 50 Polls</small><strong>{formatCompactNumber(summary.writtenRows)}</strong></span>
         <span><small>Pending</small><strong>{formatCompactNumber(backgroundPending)}</strong></span>
-        <span><small>Status</small><strong>{displayName(String(latestPoll?.status || metrics.last_cycle_status || service.status || "-"))}</strong></span>
       </div>
       <NewsPollHistoryTable rows={history} />
     </section>
@@ -626,16 +625,15 @@ function NewsPollHistoryTable({ rows }: { rows: NewsPollHistoryRow[] }) {
       <table className="news-poll-history-table">
         <thead>
           <tr>
-            <th>Poll</th>
-            <th>Time</th>
-            <th>Status</th>
-            <th>Provider</th>
-            <th>Unique</th>
-            <th>Duplicate</th>
-            <th>Written</th>
-            <th>Skipped</th>
-            <th>Failed</th>
-            <th>Sec</th>
+            <th title="Gateway poll run number. Higher values are newer polls.">Poll</th>
+            <th title="When this poll completed, shown in your local browser timezone.">Time</th>
+            <th title="Rows returned by the Benzinga provider before duplicate filtering.">Provider</th>
+            <th title="Provider rows that were new within this poll batch.">Unique</th>
+            <th title="Rows repeated inside the provider response or already represented in the batch.">Duplicate</th>
+            <th title="Normalized news rows inserted into ClickHouse by this poll.">Written</th>
+            <th title="Rows skipped because they already existed in the database.">Skipped</th>
+            <th title="Rows that failed processing or persistence in this poll.">Failed</th>
+            <th title="Total wall-clock runtime for this poll in seconds.">Sec</th>
           </tr>
         </thead>
         <tbody>
@@ -643,18 +641,17 @@ function NewsPollHistoryTable({ rows }: { rows: NewsPollHistoryRow[] }) {
             <tr className={workStatusClass(row.status)} key={row.signature}>
               <td>{formatCompactNumber(row.pollRun)}</td>
               <td title={row.pollAt}>{formatLogTime(row.pollAt)}</td>
-              <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span></td>
               <td>{formatCompactNumber(row.providerRows)}</td>
               <td>{formatCompactNumber(row.uniqueRows)}</td>
               <td>{formatCompactNumber(row.duplicateRows)}</td>
               <td>{formatCompactNumber(row.writtenRows)}</td>
               <td>{formatCompactNumber(row.skippedExisting)}</td>
               <td>{formatCompactNumber(row.failedRows)}</td>
-              <td>{formatCompactNumber(row.wallSeconds)}</td>
+              <td>{formatSeconds(row.wallSeconds)}</td>
             </tr>
           ) : (
             <tr key={`empty-${index}`}>
-              <td colSpan={10}>No poll has been observed by this dashboard yet.</td>
+              <td colSpan={9}>No poll has been observed by this dashboard yet.</td>
             </tr>
           ))}
         </tbody>
@@ -754,6 +751,25 @@ function ServiceCollapsedWorkSection({ description, rows, title }: { description
 function groupPrimaryRow(group: ServiceWorkGroup): ServiceWorkRow {
   const sortedRows = [...group.rows].sort((a, b) => workStatusRank(a.status) - workStatusRank(b.status) || (b.lastAtMs ?? 0) - (a.lastAtMs ?? 0));
   return sortedRows[0] ?? { detail: "No subtask report received in the current snapshot.", kind: "service", lastAt: "-", name: "No live report", progress: "-", reportKind: "live", rows: "-", schedule: "-", status: "not reported" };
+}
+
+function newsPollHistorySummary(rows: NewsPollHistoryRow[]) {
+  const count = Math.max(1, rows.length);
+  const sum = rows.reduce(
+    (totals, row) => ({
+      providerRows: totals.providerRows + row.providerRows,
+      uniqueRows: totals.uniqueRows + row.uniqueRows,
+      wallSeconds: totals.wallSeconds + row.wallSeconds,
+      writtenRows: totals.writtenRows + row.writtenRows,
+    }),
+    { providerRows: 0, uniqueRows: 0, wallSeconds: 0, writtenRows: 0 },
+  );
+  return {
+    avgProviderRows: sum.providerRows / count,
+    avgUniqueRows: sum.uniqueRows / count,
+    avgWallSeconds: sum.wallSeconds / count,
+    writtenRows: sum.writtenRows,
+  };
 }
 
 function useNewsPollHistory(service: ServiceStatusPayload) {
@@ -981,6 +997,12 @@ function formatNewsBinDuration(binSeconds: number) {
     return `${formatCompactNumber(minutes)} minute${minutes === 1 ? "" : "s"}`;
   }
   return `${formatCompactNumber(binSeconds)} second${binSeconds === 1 ? "" : "s"}`;
+}
+
+function formatSeconds(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "-";
+  if (seconds < 10) return `${seconds.toFixed(1)}s`;
+  return `${Math.round(seconds)}s`;
 }
 
 function defaultNewsHistogramWindow(binSeconds: number): NewsDailyHistogramState {
