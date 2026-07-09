@@ -26,7 +26,7 @@ DEFAULT_ARGS: dict[str, str | int | float | bool] = {
     "read-workers": 8,
     "materialize-workers": 16,
     "loaded-parts-per-group": 16,
-    "scanner-index-cache-entries": 64,
+    "scanner-index-cache-entries": 4,
     "prefetch-scanner-indexes": True,
     "scanner-prefetch-workers": 8,
     "d-model": 512,

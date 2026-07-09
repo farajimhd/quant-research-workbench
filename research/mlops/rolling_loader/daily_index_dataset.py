@@ -291,7 +291,7 @@ class DailyIndexLoaderConfig:
     scanner_horizons: tuple[str, ...] = DEFAULT_SCANNER_HORIZONS
     scanner_top_k: int = 5
     scanner_required: bool = False
-    scanner_index_cache_entries: int = 64
+    scanner_index_cache_entries: int = 4
     prefetch_scanner_indexes: bool = True
     scanner_prefetch_workers: int = 4
     days: tuple[str, ...] = ()
@@ -844,10 +844,19 @@ class DailyIndexBatchMaterializer:
     def clear_text_context_cache(self) -> None:
         with self._text_index_lock:
             self._text_index_cache.clear()
+            self._global_text_index_cache.clear()
         with self._label_index_lock:
             self._label_index_cache.clear()
+            self._intraday_compact_label_cache.clear()
         with self._scanner_artifact_index_lock:
             self._scanner_artifact_index_cache.clear()
+        with self._bar_index_lock:
+            self._bar_index_cache.clear()
+        with self._xbrl_index_lock:
+            self._xbrl_index_cache.clear()
+            self._xbrl_category_cache.clear()
+        with self._corporate_action_index_lock:
+            self._corporate_action_index_cache.clear()
 
     def materialize(self, parts: Sequence[LoadedDailyIndexPart], refs: Sequence[DailyIndexSampleRef]) -> DailyIndexTrainingBatch:
         start = time.perf_counter()
@@ -2576,6 +2585,9 @@ class AsyncDailyIndexBatchLoader:
         )
         if not scanner_paths:
             return {"scanner_prefetch_enabled": int(1), "scanner_prefetch_files": int(0)}
+        cache_limit = max(1, int(self.config.scanner_index_cache_entries))
+        total_scanner_paths = len(scanner_paths)
+        scanner_paths = scanner_paths[:cache_limit]
         started = time.perf_counter()
         workers = max(1, int(self.config.scanner_prefetch_workers))
         profile: dict[str, float | int] = {
@@ -2583,6 +2595,7 @@ class AsyncDailyIndexBatchLoader:
             "scanner_prefetch_async": int(1),
             "scanner_prefetch_started": int(1),
             "scanner_prefetch_files": int(len(scanner_paths)),
+            "scanner_prefetch_total_files": int(total_scanner_paths),
             "scanner_prefetch_workers": int(workers),
         }
         with self._scanner_prefetch_lock:
@@ -3837,7 +3850,7 @@ def _materialize_bounded(
     preserve_order: bool = True,
     stop_event: threading.Event | None = None,
 ) -> Iterator[DailyIndexTrainingBatch]:
-    max_pending = max(1, int(getattr(executor, "_max_workers", 1))) * 2
+    max_pending = max(1, int(getattr(executor, "_max_workers", 1)))
     pending_all: set[Future[DailyIndexTrainingBatch]] = set()
     if preserve_order:
         pending_ordered: deque[Future[DailyIndexTrainingBatch]] = deque()

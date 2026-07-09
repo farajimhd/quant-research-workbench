@@ -632,15 +632,25 @@ def save_checkpoint_reasons(
     train_metrics: dict[str, float],
     val_metrics: dict[str, float],
 ) -> None:
-    payload = payload_factory()
-    checkpointer.maybe_save(step=int(step), payload=payload, train_metrics=train_metrics, val_metrics=val_metrics)
     destinations: list[tuple[Path, str]] = []
+    train_loss = train_metrics.get(checkpointer.policy.monitor_train_key)
+    val_loss = val_metrics.get(checkpointer.policy.monitor_val_key)
+    if train_loss is not None and checkpointer.policy.save_best_train and float(train_loss) < float(checkpointer.best_train_loss):
+        checkpointer.best_train_loss = float(train_loss)
+        destinations.append((checkpointer.checkpoint_dir / "checkpoint_best_train.pt", "best_train"))
+    if val_loss is not None and checkpointer.policy.save_best_val and float(val_loss) < float(checkpointer.best_val_loss):
+        checkpointer.best_val_loss = float(val_loss)
+        destinations.append((checkpointer.checkpoint_dir / "checkpoint_best_val.pt", "best_val"))
     if "latest" in reasons:
         destinations.append((checkpointer.checkpoint_dir / "checkpoint_latest.pt", "latest"))
     if "archive" in reasons:
         destinations.append((checkpointer.checkpoint_dir / f"checkpoint_sample_{int(step):012d}.pt", "archive"))
     if not destinations:
         return
+    if all(reason == "latest" for _, reason in destinations) and checkpointer.policy.skip_latest_if_busy and checkpointer.jobs.qsize() > 0:
+        checkpointer._message(f"Skipped latest checkpoint at {checkpointer.policy.clock_name} {int(step)}; checkpoint writer is still busy.")  # noqa: SLF001
+        return
+    payload = payload_factory()
     checkpointer._enqueue(  # noqa: SLF001
         to_cpu_payload(payload),
         destinations,
@@ -648,8 +658,8 @@ def save_checkpoint_reasons(
             "step": int(step),
             "samples_seen": int(step),
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "train_loss": train_metrics.get(checkpointer.policy.monitor_train_key),
-            "val_loss": val_metrics.get(checkpointer.policy.monitor_val_key),
+            "train_loss": train_loss,
+            "val_loss": val_loss,
         },
     )
 

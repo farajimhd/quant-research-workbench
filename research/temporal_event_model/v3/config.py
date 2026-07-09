@@ -216,7 +216,7 @@ class LoaderConfig:
     read_workers: int = 4
     materialize_workers: int = 4
     materialize_chunk_size: int = 0
-    scanner_index_cache_entries: int = 64
+    scanner_index_cache_entries: int = 4
     prefetch_scanner_indexes: bool = True
     scanner_prefetch_workers: int = 4
     max_origins_per_epoch: int = 1_000_000
