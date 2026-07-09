@@ -254,7 +254,7 @@ class LoaderConfig:
     read_workers: int = 4
     materialize_workers: int = 4
     materialize_chunk_size: int = 0
-    prefetch_batches: int = 10
+    prefetch_batches: int = 64
     chronological_replay: bool = True
     time_window_seconds: float = 1.0
     ticker_cache_capacity: int = 15_000

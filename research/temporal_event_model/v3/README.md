@@ -89,7 +89,7 @@ read_workers: 16
 materialize_workers: 32
 loaded_parts_per_group: 32
 materialize_chunk_size: 256
-prefetch_batches: 32
+prefetch_batches: 64
 time_window_seconds: 5.0
 scanner_prefetch_workers: 8
 learning_rate: 1e-3
