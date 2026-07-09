@@ -1763,6 +1763,52 @@ button {
   width: 58px;
 }
 
+.news-coverage-card .news-publish-history-table-wrap {
+  height: 220px;
+  max-height: 220px;
+  min-height: 220px;
+}
+
+.news-coverage-history-table th:nth-child(1),
+.news-coverage-history-table td:nth-child(1) {
+  text-align: left;
+  width: 112px;
+}
+
+.news-coverage-history-table th:nth-child(2),
+.news-coverage-history-table td:nth-child(2) {
+  text-align: left;
+  width: 92px;
+}
+
+.news-coverage-history-table th:nth-child(3),
+.news-coverage-history-table td:nth-child(3) {
+  text-align: left;
+  width: 120px;
+}
+
+.news-coverage-history-table th:nth-child(4),
+.news-coverage-history-table td:nth-child(4) {
+  text-align: left;
+  width: 150px;
+}
+
+.news-coverage-history-table th:nth-child(5),
+.news-coverage-history-table td:nth-child(5) {
+  width: 76px;
+}
+
+.news-coverage-history-table th:nth-child(6),
+.news-coverage-history-table td:nth-child(6) {
+  width: 66px;
+}
+
+.news-coverage-history-table th:nth-child(7),
+.news-coverage-history-table td:nth-child(7) {
+  text-align: left;
+  width: auto;
+}
+
 .news-poll-history-table tr.active,
 .news-publish-history-table tr.active,
 .news-poll-history-table tr.running,

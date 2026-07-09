@@ -461,6 +461,24 @@ type NewsEnrichmentHistoryRow = {
   worker: string;
 };
 
+type NewsCoverageHistoryRow = {
+  chunkCount: number;
+  detail: string;
+  endUtc: string;
+  event: string;
+  gapCount: number;
+  inFlight: number;
+  progress: string;
+  rows: number;
+  script: string;
+  stage: string;
+  startUtc: string;
+  status: string;
+  time: string;
+  totalChunks: number;
+  window: string;
+};
+
 type NewsDailyHistogramDatum = {
   broadOrNoneRows: number;
   bucketUtc: string;
@@ -551,6 +569,8 @@ function ServiceWorkResponsibilityGrid({ groups, newsPollHistory, service }: { g
         <NewsDatabasePublishingCard group={group} key={group.id} service={service} />
       ) : group.id === "processing" && service.registry.id === "news" ? (
         <NewsEnrichmentCanonicalCard group={group} key={group.id} service={service} />
+      ) : group.id === "coverage" && service.registry.id === "news" ? (
+        <NewsCoverageGapCard group={group} key={group.id} service={service} />
       ) : (
         <ServiceWorkResponsibilityCard group={group} key={group.id} />
       ))}
@@ -652,6 +672,47 @@ function NewsEnrichmentCanonicalCard({ group, service }: { group: ServiceWorkGro
         <span className={failedArticles > 0 ? "metric-bad" : ""}><small>Failed</small><strong>{formatCompactNumber(failedArticles)}</strong></span>
       </div>
       <NewsEnrichmentHistoryTable rows={history} />
+    </section>
+  );
+}
+
+function NewsCoverageGapCard({ group, service }: { group: ServiceWorkGroup; service: ServiceStatusPayload }) {
+  const metrics = serviceMetricsRecord(service);
+  const history = newsCoverageHistoryRows(service);
+  const gapStatus = stringMetric(metrics, ["gap_status"]) || group.status || "idle";
+  const totalChunks = numericMetric(metrics, ["gap_fill_total_chunks"]);
+  const flushedChunks = numericMetric(metrics, ["gap_fill_flushed_chunks"]);
+  const submittedChunks = numericMetric(metrics, ["gap_fill_submitted_chunks"]);
+  const inFlightChunks = numericMetric(metrics, ["gap_fill_in_flight_chunks"]);
+  const probeCompleted = numericMetric(metrics, ["bootstrap_probe_completed"]);
+  const probeTotal = numericMetric(metrics, ["bootstrap_probe_total"]);
+  const manualScript = stringMetric(metrics, ["manual_gap_fill_script_win"]);
+  const statusClass = coverageStatusClass(gapStatus, { inFlightChunks, totalChunks });
+  const latestGapCount = history.find((row) => row.gapCount > 0)?.gapCount ?? 0;
+  const latestScript = manualScript || history.find((row) => row.script)?.script || "";
+  const gapCount = numericMetric(metrics, ["gap_count", "gaps"]) || latestGapCount;
+  return (
+    <section className={`service-work-responsibility-card news-publish-card news-coverage-card ${statusClass}`}>
+      <div className="service-work-responsibility-header">
+        <div>
+          <h3>{group.title}</h3>
+          <p>{group.description}</p>
+        </div>
+        <span className={`service-work-status ${statusClass}`}>{coverageStatusLabel(gapStatus)}</span>
+      </div>
+      <div className="news-live-summary news-publish-summary news-coverage-summary">
+        <span className={statusClass === "ok" ? "metric-good" : statusClass === "error" ? "metric-bad" : statusClass === "warn" ? "metric-warn" : ""}>
+          <small>Status</small><strong>{coverageStatusLabel(gapStatus)}</strong>
+        </span>
+        <span><small>Gaps</small><strong>{formatCompactNumber(gapCount)}</strong></span>
+        <span className={totalChunks > 0 && flushedChunks >= totalChunks ? "metric-good" : totalChunks > 0 ? "metric-warn" : ""}>
+          <small>Chunks</small><strong>{totalChunks ? `${formatCompactNumber(flushedChunks)}/${formatCompactNumber(totalChunks)}` : "-"}</strong>
+        </span>
+        <span><small>In Flight</small><strong>{formatCompactNumber(inFlightChunks)}</strong></span>
+        <span><small>Probes</small><strong>{probeTotal ? `${formatCompactNumber(probeCompleted)}/${formatCompactNumber(probeTotal)}` : "-"}</strong></span>
+        <span className={latestScript ? "metric-warn" : ""}><small>Manual</small><strong>{latestScript ? "Ready" : "-"}</strong></span>
+      </div>
+      <NewsCoverageHistoryTable rows={history} />
     </section>
   );
 }
@@ -885,6 +946,63 @@ function NewsEnrichmentHistoryTable({ rows }: { rows: NewsEnrichmentHistoryRow[]
   );
 }
 
+function NewsCoverageHistoryTable({ rows }: { rows: NewsCoverageHistoryRow[] }) {
+  const [selectedRow, setSelectedRow] = useState<NewsCoverageHistoryRow | null>(null);
+  return (
+    <>
+      <div className="news-publish-history-table-wrap">
+        <table className="news-publish-history-table news-coverage-history-table">
+          <thead>
+            <tr>
+              <th title="When this coverage, gap-fill, or backfill event was logged.">Time</th>
+              <th title="Lifecycle status derived from the coverage event.">Status</th>
+              <th title="Coverage work stage, such as bootstrap, provider probe, or gap-fill.">Stage</th>
+              <th title="UTC window covered or inspected by this event.">Window</th>
+              <th title="Progress through chunks or provider probes.">Progress</th>
+              <th title="Rows observed, processed, or written by this coverage event.">Rows</th>
+              <th title="Readable summary of the coverage action.">Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(rows.length ? rows : [null]).map((row, index) => row ? (
+              <tr
+                className={workStatusClass(row.status)}
+                key={`${row.event}-${row.time}-${index}`}
+                onClick={() => setSelectedRow(row)}
+                tabIndex={0}
+                title={row.detail || "Open coverage detail"}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelectedRow(row);
+                  }
+                }}
+              >
+                <td title={row.time}>{formatLogTime(row.time)}</td>
+                <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span></td>
+                <td title={row.stage}>{row.stage}</td>
+                <td title={row.window}>{row.window}</td>
+                <td>{row.progress}</td>
+                <td>{formatCompactNumber(row.rows)}</td>
+                <td title={row.detail}>{row.detail}</td>
+              </tr>
+            ) : (
+              <tr key={`empty-${index}`}>
+                <td colSpan={7}>No coverage, gap-fill, or backfill event has been observed by this dashboard yet.</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {selectedRow ? (
+        <Modal className="news-publish-detail-modal-panel" onClose={() => setSelectedRow(null)} title="Coverage / Gap Fill Detail">
+          <NewsCoverageDetailModal row={selectedRow} />
+        </Modal>
+      ) : null}
+    </>
+  );
+}
+
 function NewsPublishDetailModal({ row }: { row: NewsPublishHistoryRow }) {
   const statusClass = workStatusClass(row.status);
   return (
@@ -1015,6 +1133,68 @@ function NewsEnrichmentDetailModal({ row }: { row: NewsEnrichmentHistoryRow }) {
         <div className="wide">
           <dt>Domains</dt>
           <dd>{row.domainSample.length ? row.domainSample.join(", ") : "-"}</dd>
+        </div>
+        <div className="wide">
+          <dt>Detail</dt>
+          <dd>{row.detail || "-"}</dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
+function NewsCoverageDetailModal({ row }: { row: NewsCoverageHistoryRow }) {
+  const statusClass = workStatusClass(row.status);
+  return (
+    <div className="news-publish-detail">
+      <div className={`news-publish-detail-status ${statusClass}`}>
+        <span>{displayName(row.status)}</span>
+        <strong>{row.stage || "Coverage event"}</strong>
+      </div>
+      <dl className="service-log-detail-grid">
+        <div>
+          <dt>Logged At</dt>
+          <dd>{row.time ? formatLogTime(row.time) : "-"}</dd>
+        </div>
+        <div>
+          <dt>Event</dt>
+          <dd>{displayName(row.event)}</dd>
+        </div>
+        <div>
+          <dt>Stage</dt>
+          <dd>{row.stage || "-"}</dd>
+        </div>
+        <div>
+          <dt>Status</dt>
+          <dd>{displayName(row.status)}</dd>
+        </div>
+        <div>
+          <dt>Window Start</dt>
+          <dd>{row.startUtc ? formatLogTime(row.startUtc) : "-"}</dd>
+        </div>
+        <div>
+          <dt>Window End</dt>
+          <dd>{row.endUtc ? formatLogTime(row.endUtc) : "-"}</dd>
+        </div>
+        <div>
+          <dt>Gaps</dt>
+          <dd>{formatCompactNumber(row.gapCount)}</dd>
+        </div>
+        <div>
+          <dt>Chunks</dt>
+          <dd>{row.totalChunks ? `${formatCompactNumber(row.chunkCount)}/${formatCompactNumber(row.totalChunks)}` : formatCompactNumber(row.chunkCount)}</dd>
+        </div>
+        <div>
+          <dt>In Flight</dt>
+          <dd>{formatCompactNumber(row.inFlight)}</dd>
+        </div>
+        <div>
+          <dt>Rows</dt>
+          <dd>{formatCompactNumber(row.rows)}</dd>
+        </div>
+        <div className="wide">
+          <dt>Script</dt>
+          <dd>{row.script || "-"}</dd>
         </div>
         <div className="wide">
           <dt>Detail</dt>
@@ -1163,6 +1343,40 @@ function newsEnrichmentHistoryRows(service: ServiceStatusPayload): NewsEnrichmen
     .slice(0, 50);
 }
 
+function newsCoverageHistoryRows(service: ServiceStatusPayload): NewsCoverageHistoryRow[] {
+  const rows = (service.logs?.rows ?? [])
+    .filter((row) => isNewsCoverageLogEvent(row.event || ""))
+    .map(newsCoverageHistoryRow)
+    .sort((a, b) => (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0));
+  if (rows.length) return rows.slice(0, 50);
+  const metrics = serviceMetricsRecord(service);
+  const gapStatus = stringMetric(metrics, ["gap_status"]);
+  const gapMessage = stringMetric(metrics, ["gap_message"]);
+  if (!gapStatus && !gapMessage) return [];
+  return [{
+    chunkCount: numericMetric(metrics, ["gap_fill_flushed_chunks"]),
+    detail: gapMessage || coverageStatusLabel(gapStatus),
+    endUtc: "",
+    event: "gap_status_snapshot",
+    gapCount: numericMetric(metrics, ["gap_count", "gaps"]),
+    inFlight: numericMetric(metrics, ["gap_fill_in_flight_chunks"]),
+    progress: coverageProgressLabel(
+      numericMetric(metrics, ["gap_fill_flushed_chunks"]),
+      numericMetric(metrics, ["gap_fill_total_chunks"]),
+      numericMetric(metrics, ["gap_fill_submitted_chunks"]),
+      numericMetric(metrics, ["gap_fill_in_flight_chunks"]),
+    ),
+    rows: 0,
+    script: stringMetric(metrics, ["manual_gap_fill_script_win"]),
+    stage: "current status",
+    startUtc: "",
+    status: gapStatus || "observed",
+    time: service.checked_at_utc || "",
+    totalChunks: numericMetric(metrics, ["gap_fill_total_chunks"]),
+    window: "-",
+  }];
+}
+
 function isNewsPublishLogEvent(event: string) {
   return event === "publish_completed"
     || event === "publish_failed";
@@ -1178,6 +1392,201 @@ function isNewsEnrichmentLogEvent(event: string) {
     || event === "shutdown_waiting_for_background_news"
     || event === "shutdown_background_drained"
     || event === "shutdown_background_timeout";
+}
+
+function isNewsCoverageLogEvent(event: string) {
+  return event === "startup_gap_plan"
+    || event === "gap_fill_started"
+    || event === "gap_fill_progress"
+    || event === "gap_fill_finished"
+    || event === "coverage_bootstrap_completed"
+    || event === "coverage_bootstrap_skipped"
+    || event === "coverage_manifest_compacted"
+    || event === "coverage_gap_provider_probe_plan"
+    || event === "coverage_gap_provider_probe_started"
+    || event === "coverage_gap_provider_probe_failed"
+    || event === "coverage_gap_provider_probe"
+    || event === "coverage_live_snapshot_written"
+    || event === "coverage_gap_snapshot_written";
+}
+
+function newsCoverageHistoryRow(logRow: ServiceRuntimeLogRow): NewsCoverageHistoryRow {
+  const fields = isRecord(logRow.fields) ? logRow.fields : {};
+  const event = logRow.event || "coverage";
+  const summary = isRecord(fields.summary) ? fields.summary : {};
+  const status = coverageEventVisualStatus(event, fields, logRow.level || "");
+  const startUtc = stringMetric(fields, ["start_utc", "first_start_utc"]) || stringMetric(summary, ["start_utc", "coverage_start_utc"]);
+  const endUtc = stringMetric(fields, ["end_utc", "last_end_utc"]) || stringMetric(summary, ["end_utc", "coverage_end_utc"]);
+  const chunkCount = numericMetric(fields, ["flushed", "chunks", "chunk_count", "poll_runs"]);
+  const totalChunks = numericMetric(fields, ["total_chunks", "chunks"]);
+  return {
+    chunkCount,
+    detail: coverageEventDetail(event, fields, summary, logRow.detail || ""),
+    endUtc,
+    event,
+    gapCount: numericMetric(fields, ["gaps", "gap_count"]) || numericMetric(summary, ["discovered_gap_intervals", "gap_count"]),
+    inFlight: numericMetric(fields, ["in_flight"]),
+    progress: coverageProgressLabel(
+      chunkCount,
+      totalChunks,
+      numericMetric(fields, ["submitted"]),
+      numericMetric(fields, ["in_flight"]),
+    ),
+    rows: coverageRowsCount(fields, summary),
+    script: stringMetric(fields, ["script"]),
+    stage: coverageEventStage(event, fields),
+    startUtc,
+    status,
+    time: logRow.ts_utc || "",
+    totalChunks,
+    window: coverageWindowLabel(startUtc, endUtc),
+  };
+}
+
+function coverageStatusClass(status: string, progress: { inFlightChunks: number; totalChunks: number }) {
+  const normalized = normalizedStatus(status);
+  if (/failed|error|manual_required|deferred|no_watermark/.test(normalized)) return "warn";
+  if (/auto_running|auto_started|workstation_auto|running|gap_fill|probe|bootstrap/.test(normalized)) return "active";
+  if (/auto_completed|covered|bootstrapped|complete|completed|skipped/.test(normalized)) return "ok";
+  if (progress.inFlightChunks > 0 || progress.totalChunks > 0) return "active";
+  return workStatusClass(status);
+}
+
+function coverageStatusLabel(status: string) {
+  if (!status) return "idle";
+  const normalized = normalizedStatus(status);
+  if (normalized === "covered_by_live_lookback") return "covered";
+  if (normalized === "manual_required_large_gap") return "manual required";
+  if (normalized === "workstation_deferred_large_gap_market_window") return "deferred";
+  if (normalized === "workstation_auto_started_large_gap") return "workstation running";
+  if (normalized === "coverage_bootstrapped") return "bootstrapped";
+  return displayName(status);
+}
+
+function coverageEventVisualStatus(event: string, fields: Record<string, unknown>, level: string) {
+  const explicit = stringMetric(fields, ["status"]);
+  const text = normalizedStatus(`${event} ${explicit} ${level}`);
+  if (/failed|error/.test(text)) return "failed";
+  if (/manual_required|deferred|positive|gap_requires_fill/.test(text)) return "warning";
+  if (/started|progress|running|probe/.test(text)) return "running";
+  if (/finished|completed|skipped|compacted|written|covered_empty|covered|bootstrapped/.test(text)) return "complete";
+  return explicit || "observed";
+}
+
+function coverageEventStage(event: string, fields: Record<string, unknown>) {
+  if (event === "startup_gap_plan") return "startup plan";
+  if (event === "gap_fill_started") return "gap-fill start";
+  if (event === "gap_fill_progress") return "gap-fill progress";
+  if (event === "gap_fill_finished") return "gap-fill finished";
+  if (event === "coverage_bootstrap_completed") return "bootstrap completed";
+  if (event === "coverage_bootstrap_skipped") return "bootstrap skipped";
+  if (event === "coverage_manifest_compacted") return "manifest compacted";
+  if (event === "coverage_gap_provider_probe_plan") return "probe plan";
+  if (event === "coverage_gap_provider_probe_started") return `probe ${formatCompactNumber(numericMetric(fields, ["probe_index"]))}`;
+  if (event === "coverage_gap_provider_probe_failed") return "probe failed";
+  if (event === "coverage_gap_provider_probe") return stringMetric(fields, ["decision"]) || "probe result";
+  if (event === "coverage_live_snapshot_written") return "live coverage";
+  if (event === "coverage_gap_snapshot_written") return "gap coverage";
+  return displayName(event);
+}
+
+function coverageEventDetail(event: string, fields: Record<string, unknown>, summary: Record<string, unknown>, fallback: string) {
+  if (event === "coverage_bootstrap_completed") {
+    return [
+      `chunk=${formatCompactNumber(numericMetric(summary, ["chunk_seconds"]))}s`,
+      `covered=${formatCompactNumber(numericMetric(summary, ["covered_intervals"]))}`,
+      `gaps=${formatCompactNumber(numericMetric(summary, ["discovered_gap_intervals"]))}`,
+      `unique_days=${formatCompactNumber(numericMetric(summary, ["discovered_gap_unique_days"]))}`,
+    ].join("; ");
+  }
+  if (event === "coverage_bootstrap_skipped") {
+    return `status=${stringMetric(summary, ["status"]) || stringMetric(fields, ["status"]) || "skipped"}; chunk=${formatCompactNumber(numericMetric(summary, ["chunk_seconds"]))}s`;
+  }
+  if (event === "startup_gap_plan") {
+    return [
+      `status=${coverageStatusLabel(stringMetric(fields, ["status"]))}`,
+      `gaps=${formatCompactNumber(numericMetric(fields, ["gaps", "gap_count"]))}`,
+      `days=${formatCompactNumber(numericMetric(fields, ["unique_gap_days"]))}`,
+      coverageDurationLabel(numericMetric(fields, ["total_gap_seconds"])),
+      stringMetric(fields, ["script"]) ? "script ready" : "",
+    ].filter(Boolean).join("; ");
+  }
+  if (event === "gap_fill_progress") {
+    return [
+      `flushed=${formatCompactNumber(numericMetric(fields, ["flushed"]))}/${formatCompactNumber(numericMetric(fields, ["total_chunks"]))}`,
+      `submitted=${formatCompactNumber(numericMetric(fields, ["submitted"]))}`,
+      `in_flight=${formatCompactNumber(numericMetric(fields, ["in_flight"]))}`,
+    ].join("; ");
+  }
+  if (event === "gap_fill_started") {
+    return [
+      `${formatCompactNumber(numericMetric(fields, ["chunks"]))} chunks`,
+      `${formatCompactNumber(numericMetric(fields, ["workers"]))} workers`,
+      `chunk=${formatCompactNumber(numericMetric(fields, ["chunk_minutes"]))}m`,
+    ].join("; ");
+  }
+  if (event === "coverage_gap_provider_probe" || event === "coverage_gap_provider_probe_started") {
+    return [
+      coverageProgressLabel(numericMetric(fields, ["probe_index"]), numericMetric(fields, ["probe_total"]), 0, 0),
+      `decision=${stringMetric(fields, ["decision"]) || "-"}`,
+      `rows=${formatCompactNumber(numericMetric(fields, ["rows_seen"]))}`,
+      `pages=${formatCompactNumber(numericMetric(fields, ["pages"]))}`,
+    ].join("; ");
+  }
+  if (event === "coverage_live_snapshot_written" || event === "coverage_gap_snapshot_written") {
+    return [
+      `status=${displayName(stringMetric(fields, ["status"]))}`,
+      `polls=${formatCompactNumber(numericMetric(fields, ["poll_runs"]))}`,
+      `provider=${formatCompactNumber(numericMetric(fields, ["provider_rows"]))}`,
+      `processed=${formatCompactNumber(numericMetric(fields, ["processed_rows"]))}`,
+      `written=${formatCompactNumber(numericMetric(fields, ["written_rows"]))}`,
+    ].join("; ");
+  }
+  if (event === "coverage_manifest_compacted") {
+    return [
+      `status=${stringMetric(summary, ["status"]) || "reported"}`,
+      `active=${formatCompactNumber(numericMetric(summary, ["active_intervals"]))}`,
+      `merged=${formatCompactNumber(numericMetric(summary, ["merged_intervals"]))}`,
+      `inserted=${formatCompactNumber(numericMetric(summary, ["inserted_rows"]))}`,
+    ].join("; ");
+  }
+  return fallback || Object.entries(fields)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .slice(0, 5)
+    .map(([key, value]) => `${displayName(key)}=${formatCell(key, value)}`)
+    .join("; ");
+}
+
+function coverageProgressLabel(done: number, total: number, submitted: number, inFlight: number) {
+  if (total > 0) return `${formatCompactNumber(done)}/${formatCompactNumber(total)}`;
+  if (submitted > 0 || inFlight > 0) return `${formatCompactNumber(submitted)} submitted`;
+  if (done > 0) return formatCompactNumber(done);
+  return "-";
+}
+
+function coverageRowsCount(fields: Record<string, unknown>, summary: Record<string, unknown>) {
+  return numericMetric(fields, ["written_rows", "processed_rows", "provider_rows", "rows_seen"])
+    || numericMetric(summary, ["non_empty_buckets", "covered_intervals", "rows"]);
+}
+
+function coverageWindowLabel(startUtc: string, endUtc: string) {
+  if (!startUtc && !endUtc) return "-";
+  const start = startUtc ? formatShortUtcWindowTime(startUtc) : "-";
+  const end = endUtc ? formatShortUtcWindowTime(endUtc) : "-";
+  return `${start} -> ${end}`;
+}
+
+function formatShortUtcWindowTime(value: string) {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return value;
+  return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(parsed));
+}
+
+function coverageDurationLabel(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86_400) return `${(seconds / 3600).toFixed(1)}h`;
+  return `${(seconds / 86_400).toFixed(1)}d`;
 }
 
 function newsEnrichmentHistoryRow(logRow: ServiceRuntimeLogRow): NewsEnrichmentHistoryRow {
