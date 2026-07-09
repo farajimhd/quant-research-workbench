@@ -1,5 +1,6 @@
+import { createChart, type IChartApi, type ISeriesApi, type Time } from "lightweight-charts";
 import { Activity, AlertTriangle, CalendarDays, CheckCircle2, Clock3, Loader2, MapPin, RadioTower, RefreshCcw, Settings2, WifiOff } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { api } from "../api/client";
 import { Button } from "../app/components/Button";
@@ -348,8 +349,30 @@ type ServiceWorkGroup = {
   warningCount: number;
 };
 
+type NewsPollHistoryRow = {
+  checkedAt: string;
+  duplicateRows: number;
+  failedRows: number;
+  pollAt: string;
+  pollRun: number;
+  processedRows: number;
+  providerRows: number;
+  signature: string;
+  skippedExisting: number;
+  status: string;
+  uniqueRows: number;
+  wallSeconds: number;
+  writtenRows: number;
+};
+
+type NewsDailyHistogramDatum = {
+  day: string;
+  value: number;
+};
+
 function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
   const groups = serviceWorkGroups(service);
+  const newsPollHistory = useNewsPollHistory(service);
   const setupRows = serviceSetupRows(service);
   const dependencyRows = setupRows.filter((row) => isPreflightSetupRow(row));
   const contractRows = setupRows.filter((row) => !isPreflightSetupRow(row));
@@ -376,11 +399,7 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
       </div>
       <div className="service-work-plan-layout">
         <section className="service-work-live-section">
-          <div className="service-work-section-header">
-            <h3>Live Responsibility Reports</h3>
-            <p>Runtime data work only. Each responsibility keeps its own subtask progress report.</p>
-          </div>
-          <ServiceWorkResponsibilityGrid groups={groups} />
+          <ServiceWorkResponsibilityGrid groups={groups} newsPollHistory={newsPollHistory} service={service} />
         </section>
         <aside className="service-work-static-panel">
           <ServiceCollapsedWorkSection
@@ -399,13 +418,148 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
   );
 }
 
-function ServiceWorkResponsibilityGrid({ groups }: { groups: ServiceWorkGroup[] }) {
+function ServiceWorkResponsibilityGrid({ groups, newsPollHistory, service }: { groups: ServiceWorkGroup[]; newsPollHistory: NewsPollHistoryRow[]; service: ServiceStatusPayload }) {
   const visibleGroups = groups.filter((group) => group.id !== "other" || group.rows.length);
   return (
     <div className="service-work-responsibility-grid">
-      {visibleGroups.map((group) => (
+      {visibleGroups.map((group) => group.id === "live" && service.registry.id === "news" ? (
+        <NewsBenzingaLiveCard group={group} history={newsPollHistory} key={group.id} service={service} />
+      ) : (
         <ServiceWorkResponsibilityCard group={group} key={group.id} />
       ))}
+    </div>
+  );
+}
+
+function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkGroup; history: NewsPollHistoryRow[]; service: ServiceStatusPayload }) {
+  const metrics = serviceMetricsRecord(service);
+  const histogramData = newsDailyHistogramData(service, history);
+  const latestPoll = history[0];
+  const backgroundPending = numericMetric(metrics, ["background_pending_articles", "publish_pending_rows", "background_queue_size"]);
+  return (
+    <section className={`service-work-responsibility-card news-live-card ${workStatusClass(group.status)}`}>
+      <div className="news-live-card-header">
+        <div>
+          <h3>{group.title}</h3>
+          <p>{group.description}</p>
+        </div>
+        <span className={`service-work-status ${workStatusClass(group.status)}`}>{displayName(group.status || "waiting")}</span>
+      </div>
+      <NewsDailyHistogram data={histogramData} />
+      <div className="news-live-summary">
+        <span><small>Polls</small><strong>{formatCompactNumber(numericMetric(metrics, ["poll_runs"]))}</strong></span>
+        <span><small>Last Provider</small><strong>{formatCompactNumber(latestPoll?.providerRows ?? numericMetric(metrics, ["last_cycle_provider_rows"]))}</strong></span>
+        <span><small>Last Unique</small><strong>{formatCompactNumber(latestPoll?.uniqueRows ?? numericMetric(metrics, ["last_cycle_unique_news_rows"]))}</strong></span>
+        <span><small>Written</small><strong>{formatCompactNumber(latestPoll?.writtenRows ?? numericMetric(metrics, ["last_cycle_written_rows"]))}</strong></span>
+        <span><small>Pending</small><strong>{formatCompactNumber(backgroundPending)}</strong></span>
+        <span><small>Status</small><strong>{displayName(String(latestPoll?.status || metrics.last_cycle_status || service.status || "-"))}</strong></span>
+      </div>
+      <NewsPollHistoryTable rows={history} />
+    </section>
+  );
+}
+
+function NewsDailyHistogram({ data }: { data: NewsDailyHistogramDatum[] }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return undefined;
+    const chart = createChart(element, {
+      autoSize: false,
+      height: 72,
+      layout: { background: { color: "transparent" }, textColor: "#667085" },
+      rightPriceScale: { borderVisible: false, scaleMargins: { bottom: 0.08, top: 0.18 } },
+      timeScale: { borderVisible: false, fixLeftEdge: true, fixRightEdge: true, timeVisible: false },
+      grid: { horzLines: { color: "rgba(16,24,40,0.06)" }, vertLines: { color: "rgba(16,24,40,0.04)" } },
+      crosshair: { horzLine: { visible: false }, vertLine: { visible: false } },
+      handleScale: false,
+      handleScroll: false,
+      width: Math.max(280, element.clientWidth),
+    });
+    const series = chart.addHistogramSeries({
+      color: "#2e90fa",
+      lastValueVisible: false,
+      priceLineVisible: false,
+      priceFormat: { type: "volume" },
+    });
+    chartRef.current = chart;
+    seriesRef.current = series;
+    const resizeObserver = new ResizeObserver((entries) => {
+      const width = Math.floor(entries[0]?.contentRect.width ?? element.clientWidth);
+      chart.applyOptions({ width: Math.max(280, width) });
+      chart.timeScale().fitContent();
+    });
+    resizeObserver.observe(element);
+    return () => {
+      resizeObserver.disconnect();
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const series = seriesRef.current;
+    const chart = chartRef.current;
+    if (!series || !chart) return;
+    series.setData(data.map((row) => ({ time: dayToChartTime(row.day), value: row.value })));
+    chart.timeScale().fitContent();
+  }, [data]);
+
+  const total = data.reduce((sum, row) => sum + row.value, 0);
+  return (
+    <div className="news-live-histogram">
+      <div className="news-live-histogram-label">
+        <span>News by day</span>
+        <strong>{formatCompactNumber(total)} rows</strong>
+      </div>
+      <div className="news-live-histogram-chart" ref={containerRef} />
+    </div>
+  );
+}
+
+function NewsPollHistoryTable({ rows }: { rows: NewsPollHistoryRow[] }) {
+  return (
+    <div className="news-poll-history-table-wrap">
+      <table className="news-poll-history-table">
+        <thead>
+          <tr>
+            <th>Poll</th>
+            <th>Time</th>
+            <th>Status</th>
+            <th>Provider</th>
+            <th>Unique</th>
+            <th>Duplicate</th>
+            <th>Written</th>
+            <th>Skipped</th>
+            <th>Failed</th>
+            <th>Sec</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(rows.length ? rows : [null]).map((row, index) => row ? (
+            <tr className={workStatusClass(row.status)} key={row.signature}>
+              <td>{formatCompactNumber(row.pollRun)}</td>
+              <td title={row.pollAt}>{formatLogTime(row.pollAt)}</td>
+              <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span></td>
+              <td>{formatCompactNumber(row.providerRows)}</td>
+              <td>{formatCompactNumber(row.uniqueRows)}</td>
+              <td>{formatCompactNumber(row.duplicateRows)}</td>
+              <td>{formatCompactNumber(row.writtenRows)}</td>
+              <td>{formatCompactNumber(row.skippedExisting)}</td>
+              <td>{formatCompactNumber(row.failedRows)}</td>
+              <td>{formatCompactNumber(row.wallSeconds)}</td>
+            </tr>
+          ) : (
+            <tr key={`empty-${index}`}>
+              <td colSpan={10}>No poll has been observed by this dashboard yet.</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -501,6 +655,131 @@ function ServiceCollapsedWorkSection({ description, rows, title }: { description
 function groupPrimaryRow(group: ServiceWorkGroup): ServiceWorkRow {
   const sortedRows = [...group.rows].sort((a, b) => workStatusRank(a.status) - workStatusRank(b.status) || (b.lastAtMs ?? 0) - (a.lastAtMs ?? 0));
   return sortedRows[0] ?? { detail: "No subtask report received in the current snapshot.", kind: "service", lastAt: "-", name: "No live report", progress: "-", reportKind: "live", rows: "-", schedule: "-", status: "not reported" };
+}
+
+function useNewsPollHistory(service: ServiceStatusPayload) {
+  const [history, setHistory] = useState<NewsPollHistoryRow[]>([]);
+  useEffect(() => {
+    if (service.registry.id !== "news") {
+      setHistory([]);
+      return;
+    }
+    const row = newsPollHistoryRow(service);
+    if (!row) return;
+    setHistory((current) => {
+      if (current[0]?.signature === row.signature) return current;
+      if (current.some((item) => item.signature === row.signature)) return current;
+      return [row, ...current].slice(0, 50);
+    });
+  }, [service]);
+  return history;
+}
+
+function newsPollHistoryRow(service: ServiceStatusPayload): NewsPollHistoryRow | null {
+  const metrics = serviceMetricsRecord(service);
+  const pollRun = numericMetric(metrics, ["poll_runs"]);
+  if (!pollRun) return null;
+  const pollAt = stringMetric(metrics, ["last_poll_at_utc"]) || service.checked_at_utc;
+  const providerRows = numericMetric(metrics, ["last_cycle_provider_rows"]);
+  const processedRows = numericMetric(metrics, ["last_cycle_processed_rows"]);
+  const uniqueRows = numericMetric(metrics, ["last_cycle_unique_news_rows"]);
+  const duplicateRows = numericMetric(metrics, ["last_cycle_duplicate_news_rows"]);
+  const writtenRows = numericMetric(metrics, ["last_cycle_written_rows"]);
+  const skippedExisting = numericMetric(metrics, ["last_cycle_skipped_existing"]);
+  const failedRows = numericMetric(metrics, ["last_cycle_failed_rows"]);
+  const wallSeconds = numericMetric(metrics, ["last_cycle_wall_seconds"]);
+  const status = stringMetric(metrics, ["last_cycle_status"]) || "observed";
+  const signature = [
+    pollRun,
+    pollAt,
+    providerRows,
+    processedRows,
+    uniqueRows,
+    writtenRows,
+    skippedExisting,
+    failedRows,
+    status,
+  ].join("|");
+  return {
+    checkedAt: service.checked_at_utc,
+    duplicateRows,
+    failedRows,
+    pollAt,
+    pollRun,
+    processedRows,
+    providerRows,
+    signature,
+    skippedExisting,
+    status,
+    uniqueRows,
+    wallSeconds,
+    writtenRows,
+  };
+}
+
+function serviceMetricsRecord(service: ServiceStatusPayload) {
+  const serviceSpecific = service.snapshot?.service_specific;
+  const runtime = service.snapshot?.runtime;
+  return {
+    ...(isRecord(runtime) ? runtime : {}),
+    ...(isRecord(service.metrics) ? service.metrics : {}),
+    ...(isRecord(serviceSpecific) ? serviceSpecific : {}),
+  };
+}
+
+function numericMetric(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = Number(record[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  return 0;
+}
+
+function stringMetric(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value);
+  }
+  return "";
+}
+
+function newsDailyHistogramData(service: ServiceStatusPayload, history: NewsPollHistoryRow[]): NewsDailyHistogramDatum[] {
+  const counts = new Map<string, number>();
+  for (const row of recentRowsFromPayload(service.recent)) {
+    const timestamp = stringFromRow(row, ["published_at_utc", "published", "published_utc", "created_at_utc", "updated_at_utc"]);
+    const day = utcDay(timestamp);
+    if (day) counts.set(day, (counts.get(day) ?? 0) + 1);
+  }
+  if (!counts.size) {
+    for (const row of history) {
+      const day = utcDay(row.pollAt || row.checkedAt);
+      if (day) counts.set(day, (counts.get(day) ?? 0) + row.providerRows);
+    }
+  }
+  const today = utcDay(new Date().toISOString());
+  if (today && !counts.has(today)) counts.set(today, 0);
+  return Array.from(counts.entries())
+    .map(([day, value]) => ({ day, value }))
+    .sort((a, b) => a.day.localeCompare(b.day))
+    .slice(-14);
+}
+
+function stringFromRow(row: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = row[key];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value);
+  }
+  return "";
+}
+
+function utcDay(value: string) {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return "";
+  return new Date(parsed).toISOString().slice(0, 10);
+}
+
+function dayToChartTime(day: string): Time {
+  return Math.floor(Date.parse(`${day}T00:00:00Z`) / 1000) as Time;
 }
 
 function WorkPlanSummaryItem({ label, tone = "", value }: { label: string; tone?: string; value: string }) {
@@ -1315,16 +1594,16 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
   const specs: Record<ServiceId, ServiceResponsibilitySpec[]> = {
     news: [
       {
-        description: "Coverage bootstrap, gap detection, gap fill, and historical catch-up for Benzinga news.",
-        id: "coverage",
-        match: [/coverage|manifest|gap|backfill|catch.?up|initial|bootstrap|historical/],
-        title: "Coverage, Gap Fill, Backfill",
-      },
-      {
         description: "Benzinga polling cadence, raw item intake, duplicate handling, and live news memory updates.",
         id: "live",
         match: [/poll|benzinga|provider|news|raw|duplicate|skip|live|latest/],
         title: "Live Benzinga Update",
+      },
+      {
+        description: "Coverage bootstrap, gap detection, gap fill, and historical catch-up for Benzinga news.",
+        id: "coverage",
+        match: [/coverage|manifest|gap|backfill|catch.?up|initial|bootstrap|historical/],
+        title: "Coverage, Gap Fill, Backfill",
       },
       {
         description: "URL handling, external text/PDF enrichment, canonicalization, ticker links, and quality flags.",
