@@ -77,6 +77,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scanner-d-model", type=int, default=default_model.scanner_d_model, help="Scanner encoder output width before fusion adapter. 0 means use --d-model.")
     parser.add_argument("--event-layers", type=int, default=default_model.event_layers)
     parser.add_argument("--event-heads", type=int, default=default_model.event_heads)
+    parser.add_argument("--event-encoder-type", choices=("latent", "transformer"), default=default_model.event_encoder_type)
+    parser.add_argument("--event-item-dim", type=int, default=default_model.event_item_dim)
+    parser.add_argument("--event-latents", type=int, default=default_model.event_latents)
+    parser.add_argument("--event-latent-layers", type=int, default=default_model.event_latent_layers)
+    parser.add_argument("--event-latent-heads", type=int, default=default_model.event_latent_heads)
     parser.add_argument("--fusion-layers", type=int, default=default_model.fusion_layers)
     parser.add_argument("--fusion-heads", type=int, default=default_model.fusion_heads)
     parser.add_argument("--side-encoder-dim", type=int, default=default_model.side_encoder_dim, help="Hidden width used inside side encoders. 0 means use d_model.")
@@ -462,6 +467,11 @@ def _config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         scanner_d_model=int(args.scanner_d_model),
         event_layers=int(args.event_layers),
         event_heads=int(args.event_heads),
+        event_encoder_type=str(args.event_encoder_type),
+        event_item_dim=int(args.event_item_dim),
+        event_latents=int(args.event_latents),
+        event_latent_layers=int(args.event_latent_layers),
+        event_latent_heads=int(args.event_latent_heads),
         fusion_layers=int(args.fusion_layers),
         fusion_heads=int(args.fusion_heads),
         side_encoder_dim=int(args.side_encoder_dim),

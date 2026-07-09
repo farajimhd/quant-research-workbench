@@ -494,6 +494,11 @@ Default dimensions:
 | `side_encoder_dim` | 0 by default | Internal hidden width for side encoder MLPs. `0` means use `fusion_d_model`/`d_model`. |
 | `event_stream_length` | 1024 | Raw event rows ending at each origin. |
 | `event_feature_count` | 24 | Raw event feature columns available to the model. The event numeric branch consumes only raw price/size fields by name; time and categorical fields have separate branches. |
+| `event_encoder_type` | `latent` | Default event encoder path. `latent` uses learned Perceiver-style event queries over the 1024 event rows. `transformer` keeps the legacy full self-attention path over all event rows for ablation. |
+| `event_item_dim` | 128 | Internal event row token width used by the latent event encoder before cross-attention. This is intentionally smaller than large `event_d_model` values to avoid the 1024-token attention memory cliff. |
+| `event_latents` | 64 | Learned event query tokens that cross-attend to the raw event row tokens. |
+| `event_latent_layers` | 4 | Transformer layers applied over the compact event latent tokens after cross-attention. |
+| `event_latent_heads` | 8 | Cross-attention and latent self-attention heads for the latent event encoder. |
 | `event_numeric_dim` | 64 | Projected width for `price_primary_int`, `price_secondary_int`, `size_primary`, and `size_secondary`. |
 | `event_category_dim` | 16 | Embedding width for event type, price-scale bits, tape, and exchange ids. |
 | `event_condition_dim` | 16 | Mask-aware pooled embedding width for `condition_token_1..5`. |
@@ -559,7 +564,8 @@ Sizing rule:
   can use smaller output widths and lighter internal item widths, then adapt to
   the common fusion width.
 - Large profile presets should therefore increase `event_d_model`,
-  `fusion_d_model`, `event_layers`, and `fusion_layers` first, while keeping
+  `fusion_d_model`, `event_latents`, `event_latent_layers`, and
+  `fusion_layers` first, while keeping
   sparse side widths moderate unless a side modality is proven to be the
   bottleneck or underfit.
 
@@ -690,7 +696,7 @@ sends each row to `TimeFeatureEncoder(role="bar_start")` and
 
 | Encoder | Input representation | Implemented transform | Output |
 | --- | --- | --- | --- |
-| `EventEncoder` | `raw_event_stream float32 [B,1024,24]`, `raw_event_mask bool [B,1024]`, and `event_feature_names` | Numeric branch extracts only `price_primary_int`, `price_secondary_int`, `size_primary`, and `size_secondary` by name, applies row `LayerNorm(4)`, and projects to `event_numeric_dim`. Time branch extracts the UTC/session event time columns and encodes them with `TimeFeatureEncoder(role="event")`. Categorical branch extracts event type, price-scale bits, tape bits, exchanges, and `condition_token_1..5`; exchange/category ids outside the configured vocabulary map to id `0`; condition token embeddings are mask-averaged over nonzero tokens. Numeric, categorical, and time branches pass through a nonlinear input MLP, learned position embedding, optional local depthwise temporal convolution, TransformerEncoder, and masked mean. No target-style price transform or price decoding is applied inside this encoder. | One event token `[B,event_d_model or d_model]`, then adapter to `[B,fusion_d_model or d_model]`. |
+| `EventEncoder` | `raw_event_stream float32 [B,1024,24]`, `raw_event_mask bool [B,1024]`, and `event_feature_names` | Numeric branch extracts only `price_primary_int`, `price_secondary_int`, `size_primary`, and `size_secondary` by name, applies row `LayerNorm(4)`, and projects to `event_numeric_dim`. Time branch extracts the UTC/session event time columns and encodes them with `TimeFeatureEncoder(role="event")`. Categorical branch extracts event type, price-scale bits, tape bits, exchanges, and `condition_token_1..5`; exchange/category ids outside the configured vocabulary map to id `0`; condition token embeddings are mask-averaged over nonzero tokens. Numeric, categorical, and time branches pass through a nonlinear input MLP, learned position embedding, and optional local depthwise temporal convolution. The default `event_encoder_type=latent` projects rows to `event_item_dim=128`, uses `event_latents=64` learned query tokens to cross-attend over valid event rows, applies `event_latent_layers=4` compact latent self-attention layers, then projects the latent mean to `event_d_model`. The legacy `event_encoder_type=transformer` instead runs full self-attention over all 1024 event rows and masked-means them. No target-style price transform or price decoding is applied inside this encoder. | One event token `[B,event_d_model or d_model]`, then adapter to `[B,fusion_d_model or d_model]`. |
 | `BarContextEncoder` for `ticker_intraday_bars` | Family payloads `trade_values [B,H,6]`, `quote_bid_values [B,H,9]`, `quote_ask_values [B,H,9]`, family masks `[B,H]`, family start-time tensors `[B,H,9]`, and family end-time tensors `[B,H,9]` | For each family, `BarRowEncoder` pads value features to width 9 and concatenates `TimeFeatureEncoder(role="bar_start")` and `TimeFeatureEncoder(role="bar_end")` outputs. The row is projected to `bar_item_dim=128`, then learned family, bar-group, and horizon-position embeddings are added. `bar_latents=4` learned query tokens use 4-head cross-attention over valid family/horizon rows. No price normalization or z-score is applied here. | One intraday-bar token `[B,bar_d_model or d_model]`, then adapter to fusion width. |
 | `BarContextEncoder` for `ticker_daily_bars` | Same family payload pattern with daily offsets `O=8`: `[B,O,*]`, masks `[B,O]`, start-time tensors `[B,O,9]`, and end-time tensors `[B,O,9]` | Same shared `BarRowEncoder` and attention encoder as intraday bars. The position embedding represents the configured daily offset slot. Raw completed daily bar values and encoded bar-start/bar-end age time are projected directly. | One ticker-daily-bar token `[B,bar_d_model or d_model]`, then adapter to fusion width. |
 | `BarContextEncoder` for `global_daily_bars` | Same family payload pattern with symbols and offsets: `[B,S,O,*]`, masks `[B,S,O]`, start-time tensors `[B,S,O,9]`, and end-time tensors `[B,S,O,9]` | Same shared bar row encoder as ticker bars, with an additional learned global-symbol slot embedding plus offset-position embedding. The model uses the stable symbol slot/order emitted by the loader, not the string symbol value. | One global-daily-bar token `[B,bar_d_model or d_model]`, then adapter to fusion width. |
@@ -775,11 +781,15 @@ Research basis:
 
 Default implementation choice:
 
-- Event input layers: unpack categorical ids, optionally decode/normalize raw
-  event numeric fields, embed/project all event atoms, combine them with a
-  nonlinear `EventInputMLP`, and emit `[B, 1024, d_model]` event tokens.
-- Event encoder: consume event tokens, run local temporal mixing plus
-  transformer/attention pooling, and emit 8-32 event latent tokens.
+- Event input layers: unpack categorical ids, project raw event numeric fields,
+  embed/project all event atoms, combine them with event time embeddings through
+  a nonlinear event input MLP, and emit `[B, 1024, event_item_dim]` row tokens
+  for the default latent path.
+- Event encoder: consume row tokens, run optional local temporal mixing, then
+  use `event_latents` learned query tokens to cross-attend over the full
+  1024-row event context. A compact latent transformer mixes only those learned
+  tokens and emits one event modality token. This avoids full `[1024 x 1024]`
+  event self-attention during normal v3 training.
 - Bar encoder: process ticker and global completed bars separately, emit 1-4
   ticker-bar tokens and 1-8 global-bar tokens.
 - Text encoders: project Qwen embeddings, pool chunks into items, then pool
@@ -1246,7 +1256,7 @@ The trainer logs these timing families to JSONL and W&B when collected:
 
 | Prefix | What it measures |
 | --- | --- |
-| `profile/model/event_encoder_seconds` | Raw event stream encoder including event time features and transformer. |
+| `profile/model/event_encoder_seconds` | Raw event stream encoder including event time features and latent/transformer event attention. |
 | `profile/model/intraday_bar_encoder_seconds` | Backward intraday bar context encoder. |
 | `profile/model/ticker_daily_bar_encoder_seconds` | Ticker daily bar context encoder. |
 | `profile/model/global_daily_bar_encoder_seconds` | Global/macro daily bar context encoder. |

@@ -83,6 +83,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--amp-dtype", default="bf16", choices=("bf16", "fp16", "float16", "fp32", "none"))
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--event-encoder-type", choices=("latent", "transformer"), default=ModelConfig().event_encoder_type)
+    parser.add_argument("--event-item-dim", type=int, default=ModelConfig().event_item_dim)
+    parser.add_argument("--event-latents", type=int, default=ModelConfig().event_latents)
+    parser.add_argument("--event-latent-layers", type=int, default=ModelConfig().event_latent_layers)
+    parser.add_argument("--event-latent-heads", type=int, default=ModelConfig().event_latent_heads)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
@@ -197,7 +202,7 @@ def _load_cached_batches(*, args: argparse.Namespace, max_batch_size: int, devic
     rows: list[dict[str, Any]] = []
     raw_batches = max(1, int(args.raw_batches))
     if bool(args.dummy_data):
-        base_config = _model_config_from_preset("small")
+        base_config = _model_config_from_preset("small", args=args)
         for index in range(raw_batches):
             started = time.perf_counter()
             batch = make_dummy_temporal_batch(model_config=base_config, batch_size=max_batch_size, device="cpu")
@@ -280,7 +285,7 @@ def _profile_combo(
     device: torch.device,
     run_index: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    model_config = _model_config_from_preset(model_name)
+    model_config = _model_config_from_preset(model_name, args=args)
     model = TemporalEventModelV3(model_config).to(device=device)
     model.train()
     compiled = False
@@ -562,11 +567,17 @@ def _sample_count(value: Any) -> int:
     return 0
 
 
-def _model_config_from_preset(name: str) -> ModelConfig:
+def _model_config_from_preset(name: str, *, args: argparse.Namespace | None = None) -> ModelConfig:
     config = ModelConfig()
     preset = MODEL_PRESETS.get(str(name), {})
     for key, value in preset.items():
         setattr(config, key.replace("-", "_"), int(value))
+    if args is not None:
+        config.event_encoder_type = str(args.event_encoder_type)
+        config.event_item_dim = int(args.event_item_dim)
+        config.event_latents = int(args.event_latents)
+        config.event_latent_layers = int(args.event_latent_layers)
+        config.event_latent_heads = int(args.event_latent_heads)
     return config
 
 

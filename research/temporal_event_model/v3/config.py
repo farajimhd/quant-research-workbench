@@ -158,6 +158,11 @@ class ModelConfig:
     event_feature_count: int = len(DEFAULT_EVENT_FEATURE_NAMES)
     event_layers: int = 4
     event_heads: int = 8
+    event_encoder_type: str = "latent"
+    event_item_dim: int = 128
+    event_latents: int = 64
+    event_latent_layers: int = 4
+    event_latent_heads: int = 8
     event_numeric_dim: int = 64
     event_category_dim: int = 16
     event_condition_dim: int = 16

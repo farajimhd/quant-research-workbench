@@ -276,7 +276,11 @@ class EventEncoder(nn.Module):
     def __init__(self, config: ModelConfig, time_encoder: "TimeFeatureEncoder") -> None:
         super().__init__()
         self.config = config
+        self.encoder_type = str(getattr(config, "event_encoder_type", "latent") or "latent").lower()
+        if self.encoder_type not in {"latent", "transformer"}:
+            raise ValueError("event_encoder_type must be 'latent' or 'transformer'.")
         d = _event_dim(config)
+        item_dim = d if self.encoder_type == "transformer" else max(8, int(getattr(config, "event_item_dim", 128)))
         self.time_feature_count = int(config.event_time_feature_count)
         self.time_encoder = time_encoder
         category_dim = max(2, int(getattr(config, "event_category_dim", 16)))
@@ -289,32 +293,71 @@ class EventEncoder(nn.Module):
         self.exchange = nn.Embedding(max(2, int(getattr(config, "event_exchange_vocab_size", 256))), category_dim, padding_idx=0)
         categorical_dim = 6 * category_dim + condition_dim
         self.numeric_norm = nn.LayerNorm(4)
-        self.numeric = MLP(4, max(numeric_dim, d // 4, 16), numeric_dim, dropout=float(config.dropout))
-        self.input_mlp = MLP(numeric_dim + categorical_dim + int(config.time_encoder_dim), max(d, numeric_dim + categorical_dim), d, dropout=float(config.dropout))
-        self.position = nn.Embedding(int(config.event_stream_length), d)
+        self.numeric = MLP(4, max(numeric_dim, item_dim // 4, 16), numeric_dim, dropout=float(config.dropout))
+        self.input_mlp = MLP(
+            numeric_dim + categorical_dim + int(config.time_encoder_dim),
+            max(item_dim, numeric_dim + categorical_dim),
+            item_dim,
+            dropout=float(config.dropout),
+        )
+        self.position = nn.Embedding(int(config.event_stream_length), item_dim)
         self.local_conv: nn.Module | None
         if bool(getattr(config, "event_use_local_conv", True)):
             self.local_conv = nn.Sequential(
-                nn.Conv1d(d, d, kernel_size=5, padding=2, groups=d),
+                nn.Conv1d(item_dim, item_dim, kernel_size=5, padding=2, groups=item_dim),
                 nn.GELU(),
-                nn.Conv1d(d, d, kernel_size=1),
+                nn.Conv1d(item_dim, item_dim, kernel_size=1),
                 nn.Dropout(float(config.dropout)),
             )
-            self.local_conv_norm = nn.LayerNorm(d)
+            self.local_conv_norm = nn.LayerNorm(item_dim)
         else:
             self.local_conv = None
             self.local_conv_norm = nn.Identity()
-        layer = nn.TransformerEncoderLayer(
-            d_model=d,
-            nhead=int(config.event_heads),
-            dim_feedforward=4 * d,
-            dropout=float(config.dropout),
-            batch_first=True,
-            norm_first=True,
-            activation="gelu",
-        )
-        self.encoder = nn.TransformerEncoder(layer, num_layers=int(config.event_layers))
-        self.norm = nn.LayerNorm(d)
+        self.item_dim = item_dim
+        if self.encoder_type == "transformer":
+            if item_dim % int(config.event_heads) != 0:
+                raise ValueError(f"event_d_model={item_dim} must be divisible by event_heads={int(config.event_heads)}.")
+            layer = nn.TransformerEncoderLayer(
+                d_model=item_dim,
+                nhead=int(config.event_heads),
+                dim_feedforward=4 * item_dim,
+                dropout=float(config.dropout),
+                batch_first=True,
+                norm_first=True,
+                activation="gelu",
+            )
+            self.encoder = nn.TransformerEncoder(layer, num_layers=int(config.event_layers))
+            self.norm = nn.LayerNorm(item_dim)
+            self.out_proj = nn.Identity()
+        else:
+            latent_count = max(1, int(getattr(config, "event_latents", 64)))
+            latent_heads = max(1, int(getattr(config, "event_latent_heads", 8)))
+            latent_layers = max(0, int(getattr(config, "event_latent_layers", 4)))
+            if item_dim % latent_heads != 0:
+                raise ValueError(f"event_item_dim={item_dim} must be divisible by event_latent_heads={latent_heads}.")
+            self.latent_queries = nn.Parameter(torch.randn(latent_count, item_dim) * 0.02)
+            self.cross_attention = nn.MultiheadAttention(
+                embed_dim=item_dim,
+                num_heads=latent_heads,
+                dropout=float(config.dropout),
+                batch_first=True,
+            )
+            self.attention_norm = nn.LayerNorm(item_dim)
+            if latent_layers > 0:
+                latent_layer = nn.TransformerEncoderLayer(
+                    d_model=item_dim,
+                    nhead=latent_heads,
+                    dim_feedforward=4 * item_dim,
+                    dropout=float(config.dropout),
+                    batch_first=True,
+                    norm_first=True,
+                    activation="gelu",
+                )
+                self.latent_encoder = nn.TransformerEncoder(latent_layer, num_layers=latent_layers)
+            else:
+                self.latent_encoder = nn.Identity()
+            self.norm = nn.LayerNorm(item_dim)
+            self.out_proj = MLP(item_dim, max(item_dim, d), d, dropout=float(config.dropout))
         self.out_dim = d
 
     def forward(self, x: Mapping[str, Any]) -> torch.Tensor:
@@ -370,9 +413,29 @@ class EventEncoder(nn.Module):
             mixed = self.local_conv(token.transpose(1, 2)).transpose(1, 2)
             token = self.local_conv_norm(token + mixed)
             token = token * mask.bool().unsqueeze(-1).to(dtype=token.dtype)
-        encoded = self.encoder(token, src_key_padding_mask=~mask.bool())
-        encoded = self.norm(encoded)
-        return masked_mean(encoded, mask.bool(), dim=1)
+        mask_bool = mask.bool()
+        if self.encoder_type == "transformer":
+            encoded = self.encoder(token, src_key_padding_mask=~mask_bool)
+            encoded = self.norm(encoded)
+            return self.out_proj(masked_mean(encoded, mask_bool, dim=1))
+
+        has_tokens = mask_bool.any(dim=1)
+        safe_mask = mask_bool.clone()
+        safe_mask[:, 0] = safe_mask[:, 0] | ~has_tokens
+        token = token.clone()
+        token[:, 0, :] = torch.where(has_tokens[:, None], token[:, 0, :], torch.zeros_like(token[:, 0, :]))
+        queries = self.latent_queries.unsqueeze(0).expand(token.shape[0], -1, -1)
+        attended, _ = self.cross_attention(
+            queries,
+            token,
+            token,
+            key_padding_mask=~safe_mask,
+            need_weights=False,
+        )
+        latents = self.attention_norm(queries + attended)
+        latents = self.latent_encoder(latents)
+        out = self.out_proj(self.norm(latents).mean(dim=1))
+        return out * has_tokens.unsqueeze(-1).to(dtype=out.dtype)
 
 
 class BarRowEncoder(nn.Module):
