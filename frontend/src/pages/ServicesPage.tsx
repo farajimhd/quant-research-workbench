@@ -759,7 +759,7 @@ function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDet
   const qualityFlags = stringArrayMetric(dbRow, ["content_quality_flags"]).length ? stringArrayMetric(dbRow, ["content_quality_flags"]) : row.contentQualityFlags;
   const textCandidates = newsDetailTextCandidates(dbRow, row);
   const primaryText = textCandidates[0] ?? { label: "No Body Text", value: row.textPreview || "No readable body text was returned for this news row." };
-  const paragraphs = newsArticleParagraphs(primaryText.value);
+  const articleBlocks = newsArticleBlocks(primaryText.value);
   const statRows = [
     { label: "Full text", value: numericMetric(dbRow, ["full_text_chars"]) || row.fullTextChars },
     { label: "Body", value: numericMetric(dbRow, ["body_chars"]) || row.bodyChars },
@@ -815,7 +815,15 @@ function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDet
               <strong>{primaryText.label}</strong>
             </div>
             <div className="news-full-readable-body">
-              {paragraphs.map((paragraph, index) => <p key={`${primaryText.label}-${index}`}>{paragraph}</p>)}
+              {articleBlocks.map((block, index) => (
+                block.kind === "list" ? (
+                  <ul className="news-full-readable-list" key={`${primaryText.label}-${index}`}>
+                    {block.items.map((item, itemIndex) => <li key={`${item}-${itemIndex}`}>{item}</li>)}
+                  </ul>
+                ) : (
+                  <p className={`news-full-readable-${block.kind}`} key={`${primaryText.label}-${index}`}>{block.text}</p>
+                )
+              ))}
             </div>
           </section>
           <aside className="news-full-readable-side">
@@ -911,7 +919,13 @@ function newsDetailTextCandidates(dbRow: Record<string, unknown>, row: NewsToday
 }
 
 function cleanNewsArticleText(value: string) {
-  return value
+  const normalizedMarkup = value
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\/\s*p\s*>/gi, "\n\n")
+    .replace(/<\s*li\s*>/gi, "\n- ")
+    .replace(/<\/\s*li\s*>/gi, "\n")
+    .replace(/<[^>]+>/g, " ");
+  return decodeNewsHtmlEntities(normalizedMarkup)
     .replace(/\r\n/g, "\n")
     .replace(/\t/g, " ")
     .replace(/[ \u00a0]{2,}/g, " ")
@@ -919,12 +933,20 @@ function cleanNewsArticleText(value: string) {
     .trim();
 }
 
-function newsArticleParagraphs(value: string) {
+type NewsArticleBlock = { items: string[]; kind: "list"; text?: never } | { items?: never; kind: "lead" | "paragraph" | "subhead"; text: string };
+
+function newsArticleBlocks(value: string): NewsArticleBlock[] {
   const cleaned = cleanNewsArticleText(value);
-  if (!cleaned) return ["No readable body text was returned for this news row."];
+  if (!cleaned) return [{ kind: "paragraph", text: "No readable body text was returned for this news row." }];
   const paragraphBlocks = cleaned.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
   const blocks = paragraphBlocks.length > 1 ? paragraphBlocks : splitLongNewsParagraph(cleaned);
-  return blocks.slice(0, 48);
+  return blocks.slice(0, 48).map((block, index) => {
+    const listItems = newsListItems(block);
+    if (listItems.length >= 2) return { items: listItems, kind: "list" };
+    if (index === 0 && block.length > 80) return { kind: "lead", text: block };
+    if (isNewsSubhead(block)) return { kind: "subhead", text: block.replace(/:$/, "") };
+    return { kind: "paragraph", text: block };
+  });
 }
 
 function splitLongNewsParagraph(value: string) {
@@ -942,6 +964,46 @@ function splitLongNewsParagraph(value: string) {
   }
   if (current) chunks.push(current);
   return chunks;
+}
+
+function newsListItems(value: string) {
+  const lines = value.split("\n").map((line) => line.trim()).filter(Boolean);
+  const items = lines
+    .map((line) => line.match(/^[-*]\s+(.+)$/)?.[1]?.trim() ?? "")
+    .filter(Boolean);
+  return items.length === lines.length ? items : [];
+}
+
+function isNewsSubhead(value: string) {
+  const trimmed = value.trim();
+  if (trimmed.length > 96) return false;
+  if (trimmed.endsWith(":")) return true;
+  const letters = trimmed.replace(/[^A-Za-z]/g, "");
+  if (letters.length < 6) return false;
+  const uppercase = letters.replace(/[^A-Z]/g, "").length;
+  return uppercase / letters.length > 0.72;
+}
+
+function decodeNewsHtmlEntities(value: string) {
+  if (!value.includes("&")) return value;
+  const named: Record<string, string> = {
+    amp: "&",
+    apos: "'",
+    gt: ">",
+    ldquo: "\"",
+    lsquo: "'",
+    lt: "<",
+    mdash: "-",
+    nbsp: " ",
+    ndash: "-",
+    quot: "\"",
+    rdquo: "\"",
+    rsquo: "'",
+  };
+  return value
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(Number.parseInt(code, 16)))
+    .replace(/&([a-z]+);/gi, (match, name) => named[String(name).toLowerCase()] ?? match);
 }
 
 function NewsMetadataTable({ rows }: { rows: Array<{ key: string; value: string }> }) {
