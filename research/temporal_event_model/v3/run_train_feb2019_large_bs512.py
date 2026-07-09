@@ -27,6 +27,7 @@ DEFAULT_ARGS: dict[str, str | int | float | bool] = {
     "materialize-workers": 4,
     "loaded-parts-per-group": 2,
     "materialize-chunk-size": 128,
+    "prefetch-batches": 1,
     "chronological-replay": True,
     "time-window-seconds": 1.0,
     "scanner-index-cache-entries": 4,

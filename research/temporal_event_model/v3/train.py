@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import random
 import signal
 import sys
+import threading
 import time
 import csv
 import traceback
@@ -90,6 +92,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--materialize-workers", type=int, default=default_loader.materialize_workers)
     parser.add_argument("--loaded-parts-per-group", type=int, default=default_loader.loaded_parts_per_group)
     parser.add_argument("--materialize-chunk-size", type=int, default=default_loader.materialize_chunk_size)
+    parser.add_argument("--prefetch-batches", type=int, default=default_loader.prefetch_batches, help="Raw CPU batches to keep prefetched ahead of GPU training. 0 disables training prefetch.")
     parser.add_argument("--chronological-replay", action=argparse.BooleanOptionalAction, default=default_loader.chronological_replay)
     parser.add_argument("--time-window-seconds", type=float, default=default_loader.time_window_seconds)
     parser.add_argument("--scanner-index-cache-entries", type=int, default=default_loader.scanner_index_cache_entries)
@@ -220,6 +223,7 @@ def main() -> int:
     train_iter = _batch_iterator(config, train_loader, device=device, dummy=bool(args.dummy_data))
     val_metrics: dict[str, float] = {}
     cadence = SampleCadence()
+    samples_seen_total = int(start_samples)
     interrupted = False
     exit_code = 0
     try:
@@ -230,19 +234,20 @@ def main() -> int:
                 active_reporter.update(_loader_state_metrics(summary=train_loader.summary(), batch_profile={}), step=0, validation_metrics=val_metrics)
                 if hasattr(active_reporter, "set_loader_metrics_provider") and hasattr(train_loader, "telemetry_snapshot"):
                     active_reporter.set_loader_metrics_provider(
-                        lambda loader=train_loader: _loader_state_metrics(
+                        lambda loader=train_loader, iterator=train_iter: _loader_state_metrics(
                             summary=loader.summary(),
-                            batch_profile=loader.telemetry_snapshot(),
+                            batch_profile={**loader.telemetry_snapshot(), **_iterator_telemetry(iterator)},
                         )
                     )
             update_count = int(train_loader.state.emitted_batches if train_loader is not None else 0)
             while True:
                 if _INTERRUPT_REQUESTED:
                     raise KeyboardInterrupt
-                prior_total_samples = int(train_loader.state.seen_origins_total if train_loader is not None else update_count * int(config.loader.batch_size))
+                prior_total_samples = int(samples_seen_total)
                 if int(config.train.max_samples) > 0 and prior_total_samples >= int(config.train.max_samples):
                     break
-                if int(config.train.max_samples) <= 0 and train_loader is not None and int(train_loader.state.completed_epochs) >= int(config.train.epochs):
+                effective_summary = _effective_loader_summary(train_loader, train_iter)
+                if int(config.train.max_samples) <= 0 and train_loader is not None and int(effective_summary.get("completed_epochs", 0) or 0) >= int(config.train.epochs):
                     break
                 update_count += 1
                 if update_count == 1:
@@ -279,7 +284,7 @@ def main() -> int:
                 if device.type == "cuda":
                     torch.cuda.synchronize()
                 gpu_seconds = time.perf_counter() - gpu_start
-                samples_seen_total = int(train_loader.state.seen_origins_total if train_loader is not None else update_count * int(config.loader.batch_size))
+                samples_seen_total = int(prior_samples_seen) + int(batch.sample_count)
                 metrics = dict(loss_result.metrics)
                 metrics.update(
                     {
@@ -298,9 +303,8 @@ def main() -> int:
                 )
                 metrics.update({f"profile/model/{key}_seconds": float(value) for key, value in model_profile.items()})
                 if train_loader is not None:
-                    summary = train_loader.summary()
+                    summary = _effective_loader_summary(train_loader, train_iter)
                     ledger.update_batch(batch, loader_summary=summary)
-                    samples_seen_total = int(summary.get("seen_origins_total", samples_seen_total))
                     metrics["train/samples_seen_total"] = float(samples_seen_total)
                     metrics["train/samples_clock"] = float(samples_seen_total)
                     metrics.update(
@@ -350,15 +354,16 @@ def main() -> int:
                         train_metrics=metrics,
                         val_metrics=val_metrics,
                         run_paths=paths,
+                        train_loader_state_override=_effective_loader_state(train_loader, train_iter),
                     ),
                         train_metrics=metrics,
                         val_metrics=val_metrics,
                     )
             final_metrics = val_metrics or {}
-            final_samples = int(train_loader.state.seen_origins_total if train_loader is not None else update_count * int(config.loader.batch_size))
+            final_samples = int(samples_seen_total)
             checkpointer.maybe_save(
                 step=final_samples,
-                payload_factory=lambda: checkpoint_payload(model, optimizer, scaler, config, final_samples, train_loader, validation_loader, ledger, {}, final_metrics, paths),
+                payload_factory=lambda: checkpoint_payload(model, optimizer, scaler, config, final_samples, train_loader, validation_loader, ledger, {}, final_metrics, paths, train_loader_state_override=_effective_loader_state(train_loader, train_iter)),
                 train_metrics={"train/loss": progress.loss},
                 val_metrics=final_metrics,
                 force=True,
@@ -368,7 +373,8 @@ def main() -> int:
         exit_code = 130
         _cancel_loader(train_loader)
         _cancel_loader(validation_loader)
-        samples_seen = int(train_loader.state.seen_origins_total if train_loader is not None else 0)
+        _cancel_iterator(train_iter)
+        samples_seen = int(samples_seen_total)
         message = f"Interrupt received; cancelling training at sample {samples_seen:,}."
         print(message, flush=True)
         paths.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -380,6 +386,7 @@ def main() -> int:
     finally:
         _cancel_loader(train_loader)
         _cancel_loader(validation_loader)
+        _cancel_iterator(train_iter)
         checkpointer.close(wait=not interrupted, timeout=2.0 if interrupted else None)
         if wandb_run is not None:
             wandb_run.finish()
@@ -392,22 +399,25 @@ def run_validation(model: torch.nn.Module, config: ExperimentConfig, validation_
         return {}
     model.eval()
     metrics: list[dict[str, float]] = []
-    iterator = _batch_iterator(config, validation_loader, device=device, dummy=dummy)
-    for _ in range(max(1, int(config.train.validation_batches))):
-        batch = next(iterator)
-        if profile_detail and hasattr(model, "forward_with_timings"):
-            output, model_profile = model.forward_with_timings(batch.x, sync_cuda=device.type == "cuda")  # type: ignore[attr-defined]
-        else:
-            output = model(batch.x)
-            model_profile = {}
-        loss = compute_loss(output, batch)
-        row = {key.replace("train/", "val/"): value for key, value in loss.metrics.items()}
-        row.update(prediction_metrics(batch, output, prefix="val"))
-        row.update(cohort_metrics(batch, output, prefix="val"))
-        row.update(fast_batch_metrics(batch, output, prefix="val"))
-        row.update({f"profile/val_model/{key}_seconds": float(value) for key, value in model_profile.items()})
-        metrics.append(row)
-    model.train()
+    iterator = _dummy_batch_iterator(config=config, device=device) if dummy else _synchronous_batch_iterator(config=config, loader=validation_loader, device=device)
+    try:
+        for _ in range(max(1, int(config.train.validation_batches))):
+            batch = next(iterator)
+            if profile_detail and hasattr(model, "forward_with_timings"):
+                output, model_profile = model.forward_with_timings(batch.x, sync_cuda=device.type == "cuda")  # type: ignore[attr-defined]
+            else:
+                output = model(batch.x)
+                model_profile = {}
+            loss = compute_loss(output, batch)
+            row = {key.replace("train/", "val/"): value for key, value in loss.metrics.items()}
+            row.update(prediction_metrics(batch, output, prefix="val"))
+            row.update(cohort_metrics(batch, output, prefix="val"))
+            row.update(fast_batch_metrics(batch, output, prefix="val"))
+            row.update({f"profile/val_model/{key}_seconds": float(value) for key, value in model_profile.items()})
+            metrics.append(row)
+    finally:
+        _cancel_iterator(iterator)
+        model.train()
     return _mean_metrics(metrics)
 
 
@@ -423,8 +433,10 @@ def checkpoint_payload(
     train_metrics: dict[str, float],
     val_metrics: dict[str, float],
     run_paths: RunPaths,
+    train_loader_state_override: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     fallback_batches_seen = (int(step) + max(1, int(config.loader.batch_size)) - 1) // max(1, int(config.loader.batch_size))
+    train_loader_state = dict(train_loader_state_override or (train_loader.state_dict() if train_loader is not None else {}))
     model_card = {
         "model_family": MODEL_FAMILY,
         "model_version": MODEL_VERSION,
@@ -434,9 +446,9 @@ def checkpoint_payload(
         "cache_root": str(config.loader.cache_root),
         "period": {"start_utc": config.loader.start_utc, "end_utc": config.loader.end_utc, "months": list(config.loader.months)},
         "validation_period": {"start_utc": config.loader.val_start_utc, "end_utc": config.loader.val_end_utc},
-        "samples_seen": int(train_loader.state.seen_origins_total if train_loader is not None else step),
-        "batches_seen": int(train_loader.state.emitted_batches if train_loader is not None else fallback_batches_seen),
-        "loader_state": train_loader.state_dict() if train_loader is not None else {},
+        "samples_seen": int(step),
+        "batches_seen": int(train_loader_state.get("emitted_batches", fallback_batches_seen) or fallback_batches_seen),
+        "loader_state": train_loader_state,
         "validation_loader_state": validation_loader.state_dict() if validation_loader is not None else {},
         "training_schedule": ledger.schedule_payload(),
         "training_ledger": ledger.snapshot(),
@@ -457,7 +469,7 @@ def checkpoint_payload(
         "sample_clock": int(step),
         "step": int(step),
         "rng_state": checkpoint_rng_state(),
-        "train_loader_state": train_loader.state_dict() if train_loader is not None else {},
+        "train_loader_state": train_loader_state,
         "validation_loader_state": validation_loader.state_dict() if validation_loader is not None else {},
         "training_schedule": ledger.schedule_payload(),
         "training_ledger": ledger.snapshot(),
@@ -521,6 +533,15 @@ def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[
         "chronological_time_window_seconds": "loader/window/seconds",
         "prefetch_materialize_max_pending_batches": "loader/prefetch/materialize_max_pending_batches",
         "prefetch_materialize_pending_batches": "loader/prefetch/materialize_pending_batches",
+        "raw_prefetch_enabled": "loader/prefetch/raw_enabled",
+        "raw_prefetch_queue_size": "loader/prefetch/raw_queue_size",
+        "raw_prefetch_queue_limit": "loader/prefetch/raw_queue_limit",
+        "raw_prefetch_produced_batches": "loader/prefetch/raw_produced_batches",
+        "raw_prefetch_produced_samples": "loader/prefetch/raw_produced_samples",
+        "raw_prefetch_consumed_batches": "loader/prefetch/raw_consumed_batches",
+        "raw_prefetch_consumed_samples": "loader/prefetch/raw_consumed_samples",
+        "raw_prefetch_thread_alive": "loader/prefetch/raw_thread_alive",
+        "raw_prefetch_exception": "loader/prefetch/raw_exception",
     }
     for source, target in mapping.items():
         value = batch_profile.get(source)
@@ -566,6 +587,7 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         materialize_workers=int(args.materialize_workers),
         loaded_parts_per_group=int(args.loaded_parts_per_group),
         materialize_chunk_size=int(args.materialize_chunk_size),
+        prefetch_batches=int(args.prefetch_batches),
         chronological_replay=bool(args.chronological_replay),
         time_window_seconds=float(args.time_window_seconds),
         scanner_index_cache_entries=int(args.scanner_index_cache_entries),
@@ -896,13 +918,124 @@ def _make_loader(config: LoaderConfig, *, validation: bool, optional: bool = Fal
 
 
 def _batch_iterator(config: ExperimentConfig, loader: Any, *, device: torch.device, dummy: bool) -> Iterator[TemporalBatch]:
+    prefetch_batches = 0 if dummy else int(config.loader.prefetch_batches)
+    if prefetch_batches > 0:
+        return _PrefetchingTemporalBatchIterator(config=config, loader=loader, device=device, max_prefetch=prefetch_batches)
     if dummy:
-        while True:
-            yield make_dummy_temporal_batch(model_config=config.model, batch_size=config.loader.batch_size, device=device)
+        return _dummy_batch_iterator(config=config, device=device)
+    return _synchronous_batch_iterator(config=config, loader=loader, device=device)
+
+
+def _dummy_batch_iterator(*, config: ExperimentConfig, device: torch.device) -> Iterator[TemporalBatch]:
+    while True:
+        yield make_dummy_temporal_batch(model_config=config.model, batch_size=config.loader.batch_size, device=device)
+
+
+def _synchronous_batch_iterator(*, config: ExperimentConfig, loader: Any, device: torch.device) -> Iterator[TemporalBatch]:
     while True:
         assert loader is not None
         for raw in loader.iter_batches():
             yield batch_to_torch(raw, model_config=config.model, device=device)
+
+
+class _PrefetchingTemporalBatchIterator:
+    _SENTINEL = object()
+
+    def __init__(self, *, config: ExperimentConfig, loader: Any, device: torch.device, max_prefetch: int) -> None:
+        self.config = config
+        self.loader = loader
+        self.device = device
+        self.max_prefetch = max(1, int(max_prefetch))
+        self._queue: queue.Queue[Any] = queue.Queue(maxsize=self.max_prefetch)
+        self._stop = threading.Event()
+        self._exception: BaseException | None = None
+        self._produced_batches = 0
+        self._produced_samples = 0
+        self._consumed_batches = 0
+        self._consumed_samples = 0
+        self._last_consumed_loader_state: Mapping[str, Any] | None = None
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._produce, name="temporal-v3-raw-batch-prefetch", daemon=True)
+        self._thread.start()
+
+    def __iter__(self) -> "_PrefetchingTemporalBatchIterator":
+        return self
+
+    def __next__(self) -> TemporalBatch:
+        while True:
+            if _INTERRUPT_REQUESTED:
+                self.close()
+                raise KeyboardInterrupt
+            try:
+                item = self._queue.get(timeout=0.25)
+                break
+            except queue.Empty:
+                if self._exception is not None and self._queue.empty():
+                    raise self._exception
+                if not self._thread.is_alive() and self._queue.empty():
+                    raise StopIteration
+        if item is self._SENTINEL:
+            if self._exception is not None:
+                raise self._exception
+            raise StopIteration
+        raw = item
+        with self._lock:
+            self._consumed_batches += 1
+            self._consumed_samples += int(raw.sample_count)
+            state = raw.profile.get("_loader_state_after_yield")
+            if isinstance(state, Mapping):
+                self._last_consumed_loader_state = dict(state)
+        raw.profile.update(self.telemetry_snapshot())
+        return batch_to_torch(raw, model_config=self.config.model, device=self.device)
+
+    def close(self) -> None:
+        self._stop.set()
+        _cancel_loader(self.loader)
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+    def loader_state_dict(self) -> Mapping[str, Any] | None:
+        with self._lock:
+            return dict(self._last_consumed_loader_state) if self._last_consumed_loader_state is not None else None
+
+    def telemetry_snapshot(self) -> dict[str, float | int]:
+        with self._lock:
+            return {
+                "raw_prefetch_enabled": int(1),
+                "raw_prefetch_queue_size": int(self._queue.qsize()),
+                "raw_prefetch_queue_limit": int(self.max_prefetch),
+                "raw_prefetch_produced_batches": int(self._produced_batches),
+                "raw_prefetch_produced_samples": int(self._produced_samples),
+                "raw_prefetch_consumed_batches": int(self._consumed_batches),
+                "raw_prefetch_consumed_samples": int(self._consumed_samples),
+                "raw_prefetch_thread_alive": int(self._thread.is_alive()),
+                "raw_prefetch_exception": int(self._exception is not None),
+            }
+
+    def _produce(self) -> None:
+        try:
+            for raw in self.loader.iter_batches():
+                if self._stop.is_set():
+                    break
+                raw.profile["_loader_state_after_yield"] = self.loader.state_dict()
+                with self._lock:
+                    self._produced_batches += 1
+                    self._produced_samples += int(raw.sample_count)
+                while not self._stop.is_set():
+                    try:
+                        self._queue.put(raw, timeout=0.25)
+                        break
+                    except queue.Full:
+                        continue
+        except BaseException as exc:  # noqa: BLE001
+            self._exception = exc
+        finally:
+            while not self._stop.is_set():
+                try:
+                    self._queue.put(self._SENTINEL, timeout=0.25)
+                    break
+                except queue.Full:
+                    continue
 
 
 def _cancel_loader(loader: Any) -> None:
@@ -918,6 +1051,43 @@ def _cancel_loader(loader: Any) -> None:
             cancel()
     except Exception:
         return
+
+
+def _cancel_iterator(iterator: Any) -> None:
+    close = getattr(iterator, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            return
+
+
+def _iterator_telemetry(iterator: Any) -> Mapping[str, Any]:
+    snapshot = getattr(iterator, "telemetry_snapshot", None)
+    if callable(snapshot):
+        return snapshot()
+    return {}
+
+
+def _effective_loader_state(loader: Any, iterator: Any) -> Mapping[str, Any]:
+    state_fn = getattr(iterator, "loader_state_dict", None)
+    if callable(state_fn):
+        state = state_fn()
+        if isinstance(state, Mapping):
+            return dict(state)
+    if loader is not None:
+        return loader.state_dict()
+    return {}
+
+
+def _effective_loader_summary(loader: Any, iterator: Any) -> Mapping[str, Any]:
+    summary = loader.summary() if loader is not None else {}
+    state = _effective_loader_state(loader, iterator)
+    if state:
+        merged = dict(summary)
+        merged.update(state)
+        return merged
+    return summary
 
 
 def _restore_if_requested(args: argparse.Namespace, model: torch.nn.Module, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, train_loader: Any, validation_loader: Any, device: torch.device) -> int:
