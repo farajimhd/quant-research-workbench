@@ -1084,7 +1084,7 @@ class NewsGateway:
                 canonical_news_ids.append(canonical_news_id)
             url_tasks = result.url_resolution.fetch_tasks if result.url_resolution else []
             attachments = result.url_resolution.attachments if result.url_resolution else []
-            item_url_sample, item_domain_sample = self._news_url_log_samples(url_tasks, attachments, limit=6)
+            item_url_sample, item_domain_sample = self._news_url_log_samples(row, url_tasks, attachments, limit=6)
             urls.extend(item_url_sample[:4])
             domains.extend(item_domain_sample)
             item_rows.append(
@@ -1288,7 +1288,7 @@ class NewsGateway:
             flags = [flags]
         url_tasks = result.url_resolution.fetch_tasks if result.url_resolution else []
         attachments = result.url_resolution.attachments if result.url_resolution else []
-        url_sample, domain_sample = self._news_url_log_samples(url_tasks, attachments, limit=6)
+        url_sample, domain_sample = self._news_url_log_samples(row, url_tasks, attachments, limit=6)
         title = str(row.get("title") or row.get("headline") or "")[:180]
         return {
             "canonical_news_id": canonical_news_id,
@@ -1308,14 +1308,21 @@ class NewsGateway:
             "quality_flags": [str(flag)[:80] for flag in flags[:6]],
         }
 
-    def _news_url_log_samples(self, url_tasks: list[Any], attachments: list[Any], *, limit: int) -> tuple[list[str], list[str]]:
+    def _news_url_log_samples(self, row: dict[str, Any], url_tasks: list[Any], attachments: list[Any], *, limit: int) -> tuple[list[str], list[str]]:
         urls: list[str] = []
         domains: list[str] = []
+        for url in self._news_row_urls(row):
+            urls.append(url[:260])
+            domain = urlparse(url).netloc.lower().removeprefix("www.")
+            if domain:
+                domains.append(domain)
         for source in [*url_tasks, *attachments]:
             if not isinstance(source, dict):
                 continue
             url = str(
-                source.get("url")
+                source.get("fetch_url")
+                or source.get("normalized_url")
+                or source.get("url")
                 or source.get("canonical_url")
                 or source.get("resolved_url")
                 or source.get("source_url")
@@ -1329,6 +1336,47 @@ class NewsGateway:
             if domain:
                 domains.append(domain)
         return list(dict.fromkeys(urls))[:limit], sorted(set(domains))[:limit]
+
+    def _news_row_urls(self, row: dict[str, Any]) -> list[str]:
+        urls: list[str] = []
+        for key in ("article_url", "url", "source_url"):
+            value = str(row.get(key) or "").strip()
+            if value:
+                urls.append(value)
+        for key in ("pdf_urls", "links"):
+            value = row.get(key)
+            if isinstance(value, list):
+                urls.extend(str(item or "").strip() for item in value)
+            elif isinstance(value, str) and value.strip().startswith("["):
+                try:
+                    parsed = json.loads(value)
+                except json.JSONDecodeError:
+                    parsed = []
+                if isinstance(parsed, list):
+                    urls.extend(str(item or "").strip() for item in parsed)
+        for key in ("external_metadata_json", "pdf_metadata_json"):
+            value = row.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, list):
+                continue
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                url = str(
+                    item.get("url")
+                    or item.get("source_url")
+                    or item.get("canonical_url")
+                    or item.get("final_url")
+                    or ""
+                ).strip()
+                if url:
+                    urls.append(url)
+        return [url for url in dict.fromkeys(urls) if url]
 
     def _news_ticker_sample(self, ticker_links: list[Any]) -> list[str]:
         tickers = {
