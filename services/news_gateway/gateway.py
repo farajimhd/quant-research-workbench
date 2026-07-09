@@ -1105,7 +1105,7 @@ class NewsGateway:
             self.metrics.publish_last_message = f"No processed rows to publish for {coverage_mode} poll {poll_id}."
             return self._empty_publish_summary()
 
-        publish_context = self._publish_log_context(processed)
+        publish_context = self._publish_log_context(processed, item_status="pending")
         task = asyncio.create_task(
             asyncio.to_thread(self._write_processed, processed),
             name=f"benzinga-news-publish-{poll_id}",
@@ -1137,7 +1137,7 @@ class NewsGateway:
                 poll_id=poll_id,
                 coverage_mode=coverage_mode,
                 processed_rows=row_count,
-                **publish_context,
+                **self._publish_log_context(processed, item_status="failed"),
             )
             raise
         finally:
@@ -1166,7 +1166,7 @@ class NewsGateway:
             skipped_existing=getattr(summary, "skipped_existing", 0),
             input_duplicate_ids_total=len(getattr(summary, "input_duplicate_ids", []) or []),
             active_jobs=len(self._publish_tasks),
-            **publish_context,
+            **self._publish_log_context(processed, summary=summary),
         )
         return summary
 
@@ -1180,12 +1180,14 @@ class NewsGateway:
             skipped_existing=0,
         )
 
-    def _publish_log_context(self, processed: list[ProcessedNewsItem]) -> dict[str, Any]:
-        items = [self._publish_item_log_payload(item) for item in processed[:8]]
+    def _publish_log_context(self, processed: list[ProcessedNewsItem], *, item_status: str = "", summary: NewsBatchWriteSummary | None = None) -> dict[str, Any]:
+        items = [self._publish_item_log_payload(item, item_status=item_status, summary=summary) for item in processed[:50]]
         tickers = sorted({ticker for item in items for ticker in item.get("tickers", []) if isinstance(ticker, str) and ticker})
         published_values = [str(item.get("published_at_utc") or "") for item in items if item.get("published_at_utc")]
         return {
             "items": items,
+            "items_logged": len(items),
+            "items_total": len(processed),
             "ticker_sample": tickers[:12],
             "ticker_count": len(tickers),
             "published_at_start_utc": min(published_values) if published_values else "",
@@ -1196,9 +1198,11 @@ class NewsGateway:
             "title_sample": str(items[0].get("title") or "") if items else "",
         }
 
-    def _publish_item_log_payload(self, item: ProcessedNewsItem) -> dict[str, Any]:
+    def _publish_item_log_payload(self, item: ProcessedNewsItem, *, item_status: str = "", summary: NewsBatchWriteSummary | None = None) -> dict[str, Any]:
         result = item.result
         row = result.normalized_row or {}
+        canonical_news_id = str(result.canonical_news_id or "")
+        publish_status = item_status or self._publish_item_status(canonical_news_id, summary)
         ticker_links = result.ticker_links or []
         tickers = sorted(
             {
@@ -1214,8 +1218,11 @@ class NewsGateway:
         attachments = result.url_resolution.attachments if result.url_resolution else []
         title = str(row.get("title") or row.get("headline") or "")[:180]
         return {
-            "canonical_news_id": result.canonical_news_id,
+            "canonical_news_id": canonical_news_id,
             "provider_article_id": result.provider_article_id,
+            "publish_status": publish_status,
+            "inserted_rows": 1 if publish_status == "inserted" else 0,
+            "skipped_rows": 1 if publish_status in {"input_duplicate", "skipped_existing"} else 0,
             "published_at_utc": str(row.get("published_at_utc") or row.get("published_utc") or row.get("published") or ""),
             "tickers": tickers[:8],
             "title": title,
@@ -1225,6 +1232,17 @@ class NewsGateway:
             or any(str(attachment.get("content_type") or attachment.get("url") or "").lower().find("pdf") >= 0 for attachment in attachments if isinstance(attachment, dict)),
             "quality_flags": [str(flag)[:80] for flag in flags[:6]],
         }
+
+    def _publish_item_status(self, canonical_news_id: str, summary: NewsBatchWriteSummary | None) -> str:
+        if summary is None:
+            return "unknown"
+        if canonical_news_id in set(getattr(summary, "input_duplicate_ids", []) or []):
+            return "input_duplicate"
+        if canonical_news_id in set(getattr(summary, "skipped_existing_ids", []) or []):
+            return "skipped_existing"
+        if not getattr(summary, "execute", False):
+            return "dry_run"
+        return "inserted"
 
     def _count_run_unique_news(self, processed: list[ProcessedNewsItem]) -> tuple[int, int]:
         unique_rows = 0

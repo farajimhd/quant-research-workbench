@@ -717,14 +717,14 @@ function NewsPublishHistoryTable({ rows }: { rows: NewsPublishHistoryRow[] }) {
         <thead>
           <tr>
             <th title="When the publish event was logged, shown in your local browser timezone.">Time</th>
-            <th title="Publish lifecycle event reported by the news gateway.">Event</th>
+            <th title="Per-news-row publish status reported by the news gateway.">Status</th>
             <th title="Live, live-background, gap-fill, or coverage mode for this publish.">Mode</th>
-            <th title="Ticker sample from the rows passed to the database writer.">Tickers</th>
-            <th title="Published timestamp from the first item in this publish batch.">Published</th>
-            <th title="Whether the batch needed URL/PDF enrichment and its enrichment state.">Enrichment</th>
-            <th title="Processed canonical rows passed to the database writer.">News</th>
-            <th title="Normalized news rows inserted into ClickHouse.">Inserted</th>
-            <th title="Rows skipped because they already existed.">Skipped</th>
+            <th title="Ticker symbols linked to this news item.">Tickers</th>
+            <th title="Published timestamp for this news item.">Published</th>
+            <th title="Whether this item needed URL/PDF enrichment and its enrichment state.">Enrichment</th>
+            <th title="Canonical news title or batch fallback detail.">News</th>
+            <th title="One when this news row was inserted into ClickHouse, otherwise zero.">Inserted</th>
+            <th title="One when this news row was skipped because it was already present or duplicated in the input batch.">Skipped</th>
           </tr>
         </thead>
         <tbody>
@@ -736,7 +736,7 @@ function NewsPublishHistoryTable({ rows }: { rows: NewsPublishHistoryRow[] }) {
               <td title={row.tickers}>{row.tickers}</td>
               <td title={row.publishedAt}>{row.publishedAt ? formatLogTime(row.publishedAt) : "-"}</td>
               <td title={row.enrichment}>{row.enrichment}</td>
-              <td title={row.title}>{formatCompactNumber(row.processedRows)}{row.title ? ` - ${row.title}` : ""}</td>
+              <td title={row.title}>{row.title || "-"}</td>
               <td>{formatCompactNumber(row.insertedRows)}</td>
               <td>{formatCompactNumber(row.skippedRows)}</td>
             </tr>
@@ -864,83 +864,104 @@ function newsPollHistorySummary(rows: NewsPollHistoryRow[]) {
 }
 
 function newsPublishHistoryRows(service: ServiceStatusPayload): NewsPublishHistoryRow[] {
-  const currentRow = newsCurrentPublishStateRow(service);
-  return (service.logs?.rows ?? [])
-    .filter((row) => (
-      row.event === "publish_started"
-      || row.event === "publish_completed"
-      || row.event === "publish_failed"
-      || row.event === "background_batch_completed"
-      || row.event === "poll_completed"
-    ))
-    .map((row) => {
-      const fields = isRecord(row.fields) ? row.fields : {};
-      const items = Array.isArray(fields.items) ? fields.items.filter(isRecord) : [];
-      const firstItem = items[0] ?? {};
-      const processedRows = numericMetric(fields, ["processed_rows", "article_count"]);
-      const insertedRows = numericMetric(fields, ["normalized_rows_inserted"]);
-      const tickerRows = numericMetric(fields, ["ticker_rows_inserted", "ticker_count"]);
-      const skippedRows = numericMetric(fields, ["skipped_existing"]);
-      const providerRows = numericMetric(fields, ["provider_rows"]);
-      const hasUsefulPublishWork = providerRows > 0 || processedRows > 0 || insertedRows > 0 || tickerRows > 0 || skippedRows > 0 || items.length > 0;
-      if (!hasUsefulPublishWork) return null;
-      const event = row.event || "publish";
-      return {
-        activeJobs: numericMetric(fields, ["active_jobs"]),
-        coverageMode: stringMetric(fields, ["coverage_mode"]),
-        enrichment: publishEnrichmentLabel(fields, firstItem),
-        event,
-        insertedRows,
-        pendingRows: numericMetric(fields, ["pending_rows"]),
-        pollId: stringMetric(fields, ["poll_id"]),
-        processedRows,
-        publishedAt: stringMetric(firstItem, ["published_at_utc"]) || stringMetric(fields, ["published_at_start_utc"]),
-        skippedRows,
-        status: event.includes("failed") ? "failed" : event.includes("completed") ? "complete" : "running",
-        tickerRows,
-        tickers: publishTickerLabel(fields, firstItem),
-        title: publishTitleLabel(event, fields, firstItem),
-        time: row.ts_utc || "",
-      };
-    })
-    .filter((row): row is NewsPublishHistoryRow => Boolean(row))
-    .concat(currentRow ? [currentRow] : [])
+  const rows: NewsPublishHistoryRow[] = [];
+  for (const logRow of service.logs?.rows ?? []) {
+    if (!isNewsPublishLogEvent(logRow.event || "")) continue;
+    const fields = isRecord(logRow.fields) ? logRow.fields : {};
+    const items = Array.isArray(fields.items) ? fields.items.filter(isRecord) : [];
+    if (items.length) {
+      items.forEach((item, index) => rows.push(newsPublishItemHistoryRow(logRow, fields, item, index)));
+      continue;
+    }
+    const fallback = newsPublishBatchFallbackRow(logRow, fields);
+    if (fallback) rows.push(fallback);
+  }
+  return rows
     .sort((a, b) => (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0))
     .slice(0, 50);
 }
 
-function newsCurrentPublishStateRow(service: ServiceStatusPayload): NewsPublishHistoryRow | null {
-  const metrics = serviceMetricsRecord(service);
-  const status = stringMetric(metrics, ["publish_status"]) || "idle";
-  const activeJobs = numericMetric(metrics, ["publish_active_jobs"]);
-  const pendingRows = numericMetric(metrics, ["publish_pending_rows"]);
-  const failedJobs = numericMetric(metrics, ["publish_failed_jobs"]);
-  const completedJobs = numericMetric(metrics, ["publish_completed_jobs"]);
-  const message = stringMetric(metrics, ["publish_last_message"]) || (status === "idle" ? "Publisher is idle; no rows are waiting for database write." : "Current database publisher state.");
-  if (!status && !activeJobs && !pendingRows && !failedJobs && !completedJobs) return null;
+function isNewsPublishLogEvent(event: string) {
+  return event === "publish_started"
+    || event === "publish_completed"
+    || event === "publish_failed"
+    || event === "background_batch_completed"
+    || event === "poll_completed";
+}
+
+function newsPublishItemHistoryRow(logRow: ServiceRuntimeLogRow, fields: Record<string, unknown>, item: Record<string, unknown>, index: number): NewsPublishHistoryRow {
+  const event = logRow.event || "publish";
+  const publishStatus = publishItemStatus(event, item);
   return {
-    activeJobs,
-    coverageMode: "current",
-    enrichment: "-",
-    event: "publish_state",
-    insertedRows: numericMetric(metrics, ["last_cycle_written_rows"]),
-    pendingRows,
-    pollId: "current",
-    processedRows: pendingRows,
-    publishedAt: "",
-    skippedRows: numericMetric(metrics, ["last_cycle_skipped_existing"]),
-    status: failedJobs > 0 ? "warning" : activeJobs > 0 || pendingRows > 0 ? "running" : status,
+    activeJobs: numericMetric(fields, ["active_jobs"]),
+    coverageMode: stringMetric(fields, ["coverage_mode"]),
+    enrichment: publishEnrichmentLabel(fields, item),
+    event: publishStatus,
+    insertedRows: numericMetric(item, ["inserted_rows"]),
+    pendingRows: publishStatus === "pending" ? 1 : 0,
+    pollId: `${stringMetric(fields, ["poll_id"])}:${index}`,
+    processedRows: 1,
+    publishedAt: stringMetric(item, ["published_at_utc"]) || stringMetric(fields, ["published_at_start_utc"]),
+    skippedRows: numericMetric(item, ["skipped_rows"]),
+    status: publishItemVisualStatus(publishStatus),
     tickerRows: 0,
-    tickers: "-",
-    title: message,
-    time: service.checked_at_utc || new Date().toISOString(),
+    tickers: publishTickerLabel(fields, item),
+    title: stringMetric(item, ["title"]) || publishTitleLabel(event, fields, item),
+    time: logRow.ts_utc || "",
   };
 }
 
+function newsPublishBatchFallbackRow(logRow: ServiceRuntimeLogRow, fields: Record<string, unknown>): NewsPublishHistoryRow | null {
+  const processedRows = numericMetric(fields, ["processed_rows", "article_count"]);
+  const insertedRows = numericMetric(fields, ["normalized_rows_inserted"]);
+  const tickerRows = numericMetric(fields, ["ticker_rows_inserted", "ticker_count"]);
+  const skippedRows = numericMetric(fields, ["skipped_existing"]);
+  const providerRows = numericMetric(fields, ["provider_rows"]);
+  const hasUsefulPublishWork = providerRows > 0 || processedRows > 0 || insertedRows > 0 || tickerRows > 0 || skippedRows > 0;
+  if (!hasUsefulPublishWork) return null;
+  const event = logRow.event || "publish";
+  const publishStatus = event.includes("failed") ? "failed" : event.includes("started") ? "pending" : "batch_summary";
+  return {
+    activeJobs: numericMetric(fields, ["active_jobs"]),
+    coverageMode: stringMetric(fields, ["coverage_mode"]),
+    enrichment: publishEnrichmentLabel(fields, {}),
+    event: publishStatus,
+    insertedRows,
+    pendingRows: numericMetric(fields, ["pending_rows"]),
+    pollId: stringMetric(fields, ["poll_id"]),
+    processedRows,
+    publishedAt: stringMetric(fields, ["published_at_start_utc"]),
+    skippedRows,
+    status: publishItemVisualStatus(publishStatus),
+    tickerRows,
+    tickers: publishTickerLabel(fields, {}),
+    title: `${formatCompactNumber(processedRows)} row batch; restart News Gateway for per-row publish status.`,
+    time: logRow.ts_utc || "",
+  };
+}
+
+function publishItemStatus(event: string, item: Record<string, unknown>) {
+  const explicit = stringMetric(item, ["publish_status"]);
+  if (explicit) return explicit;
+  if (event.includes("failed")) return "failed";
+  if (event.includes("started")) return "pending";
+  if (event.includes("completed")) return "unknown";
+  return event || "unknown";
+}
+
+function publishItemVisualStatus(status: string) {
+  const normalized = status.toLowerCase();
+  if (normalized.includes("failed")) return "failed";
+  if (normalized.includes("pending")) return "running";
+  if (normalized.includes("inserted") || normalized.includes("dry_run")) return "complete";
+  if (normalized.includes("skipped") || normalized.includes("duplicate") || normalized.includes("summary")) return "idle";
+  return "waiting";
+}
+
 function newsPublishSummary(rows: NewsPublishHistoryRow[]) {
-  const completedRows = rows.filter((row) => row.event === "publish_completed" || row.event === "background_batch_completed");
-  const fallbackRows = completedRows.length ? completedRows : rows.filter((row) => row.event === "poll_completed");
-  return fallbackRows.reduce(
+  const completedRows = rows.filter((row) => row.event !== "pending" && row.event !== "failed");
+  const summaryRows = completedRows.length ? completedRows : rows;
+  return summaryRows.reduce(
     (totals, row) => {
       return {
         insertedRows: totals.insertedRows + row.insertedRows,
