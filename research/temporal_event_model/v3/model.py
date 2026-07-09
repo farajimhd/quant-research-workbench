@@ -374,33 +374,86 @@ class TextContextEncoder(nn.Module):
         super().__init__()
         d = int(config.d_model)
         h = _side_hidden_dim(config)
+        item_dim = max(8, int(config.text_item_dim))
+        latent_count = max(1, int(config.text_latents))
+        attention_heads = max(1, int(config.text_attention_heads))
+        if item_dim % attention_heads != 0:
+            raise ValueError(f"text_item_dim={item_dim} must be divisible by text_attention_heads={attention_heads}.")
         self.time_encoder = time_encoder
         self.time_feature_count = int(config.text_time_feature_count)
-        self.chunk_proj = nn.Sequential(nn.LayerNorm(int(config.text_embedding_dim)), nn.Linear(int(config.text_embedding_dim), h), nn.GELU(), nn.Dropout(float(config.dropout)))
-        self.item_proj = MLP(h + int(config.time_encoder_dim), h, d, dropout=float(config.dropout))
+        self.item_dim = item_dim
+        self.latent_count = latent_count
+        self.group_to_id = {"ticker_news": 0, "market_news": 1, "sec_filings": 2}
+        self.chunk_proj = nn.Sequential(nn.LayerNorm(int(config.text_embedding_dim)), nn.Linear(int(config.text_embedding_dim), item_dim), nn.GELU(), nn.Dropout(float(config.dropout)))
+        self.time_proj = MLP(int(config.time_encoder_dim), max(item_dim, h), item_dim, dropout=float(config.dropout))
+        self.group_embedding = nn.Embedding(len(self.group_to_id), item_dim)
+        self.item_position_embedding = nn.Embedding(max(1, int(max(config.ticker_news_items, config.market_news_items, config.sec_filing_items))), item_dim)
+        self.chunk_position_embedding = nn.Embedding(max(1, int(max(config.ticker_news_chunks, config.market_news_chunks, config.sec_filing_chunks))), item_dim)
+        self.token_norm = nn.LayerNorm(item_dim)
+        self.latent_queries = nn.Parameter(torch.randn(len(self.group_to_id), latent_count, item_dim) * 0.02)
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim=item_dim,
+            num_heads=attention_heads,
+            dropout=float(config.dropout),
+            batch_first=True,
+        )
+        self.attention_norm = nn.LayerNorm(item_dim)
+        self.latent_ffn = MLP(item_dim, max(item_dim, h), item_dim, dropout=float(config.dropout))
+        self.latent_ffn_norm = nn.LayerNorm(item_dim)
+        self.out_proj = MLP(item_dim, h, d, dropout=float(config.dropout))
+        self.out_dim = d
 
     def forward(self, payload: Mapping[str, Any], *, group: str) -> torch.Tensor:
         embeddings = payload.get("embeddings")
         if not torch.is_tensor(embeddings) or embeddings.numel() == 0:
-            return _zero_like_batch(payload, self.item_proj.out_dim)
+            return _zero_like_batch(payload, self.out_dim)
         chunk_mask = payload.get("chunk_mask")
         item_mask = payload.get("item_mask")
         item_time = payload.get("item_time_features")
         if not torch.is_tensor(chunk_mask):
             chunk_mask = torch.ones(embeddings.shape[:3], dtype=torch.bool, device=embeddings.device)
+        else:
+            chunk_mask = chunk_mask.to(device=embeddings.device, dtype=torch.bool)
         if not torch.is_tensor(item_mask):
             item_mask = chunk_mask.any(dim=-1)
-        chunks = self.chunk_proj(embeddings.float())
-        items = masked_mean(chunks, chunk_mask.bool(), dim=2)
+        else:
+            item_mask = item_mask.to(device=embeddings.device, dtype=torch.bool)
         item_time = _required_time_features(
             item_time,
-            reference=items,
+            reference=item_mask,
             width=self.time_feature_count,
             name=f"{group}.item_time_features",
         )
-        time_token = self.time_encoder(item_time, role="text_available")
-        items = self.item_proj(torch.cat([items, time_token], dim=-1))
-        return masked_mean(items, item_mask.bool(), dim=1)
+        group_id = self.group_to_id.get(str(group), 0)
+        chunks = self.chunk_proj(embeddings.float())
+        item_positions = torch.arange(embeddings.shape[1], device=embeddings.device).clamp(max=self.item_position_embedding.num_embeddings - 1)
+        chunk_positions = torch.arange(embeddings.shape[2], device=embeddings.device).clamp(max=self.chunk_position_embedding.num_embeddings - 1)
+        time_token = self.time_proj(self.time_encoder(item_time, role="text_available")).unsqueeze(2)
+        chunks = chunks + time_token
+        chunks = chunks + self.group_embedding.weight[group_id].view(1, 1, 1, -1)
+        chunks = chunks + self.item_position_embedding(item_positions).view(1, -1, 1, self.item_dim)
+        chunks = chunks + self.chunk_position_embedding(chunk_positions).view(1, 1, -1, self.item_dim)
+        token_mask = chunk_mask & item_mask.unsqueeze(-1)
+        tokens = self.token_norm(chunks).reshape(embeddings.shape[0], -1, self.item_dim)
+        token_mask = token_mask.reshape(embeddings.shape[0], -1)
+        tokens = tokens * token_mask.unsqueeze(-1).to(dtype=tokens.dtype)
+        has_tokens = token_mask.any(dim=1)
+        safe_mask = token_mask.clone()
+        safe_mask[:, 0] = safe_mask[:, 0] | ~has_tokens
+        tokens = tokens.clone()
+        tokens[:, 0, :] = torch.where(has_tokens[:, None], tokens[:, 0, :], torch.zeros_like(tokens[:, 0, :]))
+        queries = self.latent_queries[group_id].unsqueeze(0).expand(embeddings.shape[0], -1, -1)
+        attended, _ = self.cross_attention(
+            queries,
+            tokens,
+            tokens,
+            key_padding_mask=~safe_mask,
+            need_weights=False,
+        )
+        latents = self.attention_norm(queries + attended)
+        latents = self.latent_ffn_norm(latents + self.latent_ffn(latents))
+        out = self.out_proj(latents.mean(dim=1))
+        return out * has_tokens.unsqueeze(-1).to(dtype=out.dtype)
 
 
 class XbrlEncoder(nn.Module):

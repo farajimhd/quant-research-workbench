@@ -166,6 +166,9 @@ class ModelConfig:
     market_news_chunks: int = 2
     sec_filing_chunks: int = 8
     text_time_feature_count: int = 10
+    text_item_dim: int = 128
+    text_latents: int = 4
+    text_attention_heads: int = 4
     xbrl_max_items: int = 4096
     corporate_action_max_items: int = 128
     ticker_bar_offsets: int = 8

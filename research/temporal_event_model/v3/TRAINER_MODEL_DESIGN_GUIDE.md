@@ -154,6 +154,11 @@ sec_filing_chunk_mask   [B, 4, 8]
 sec_filing_item_time_features [B, 4, text_time_features]
 ```
 
+Each text item has one availability timestamp feature vector. All chunks under
+that item inherit the same `item_time_features[b,i,:]`, so
+`embeddings[b,i,j,:]`, `chunk_mask[b,i,j]`, `item_mask[b,i]`, and
+`item_time_features[b,i,:]` remain aligned.
+
 The stored embedding source is:
 
 ```text
@@ -489,6 +494,9 @@ Default dimensions:
 | `ticker_news_items` | 8 | Latest as-of ticker news items. |
 | `market_news_items` | 16 | Latest as-of market/news items. |
 | `sec_filing_items` | 4 | Latest as-of SEC filing text items. |
+| `text_item_dim` | 128 | Internal text chunk/item token width before attention pooling. |
+| `text_latents` | 4 | Learned text latent/query tokens per text group. |
+| `text_attention_heads` | 4 | Cross-attention heads for text latent pooling. |
 | `xbrl_max_items` | 4096 | Latest as-of XBRL rows. |
 | `xbrl_item_dim` | 64 | Internal XBRL item width before attention pooling. |
 | `xbrl_latents` | 8 | Learned XBRL latent/query tokens used to attend over the 4096 item slots. |
@@ -634,9 +642,9 @@ Important current behavior:
 | `BarContextEncoder` for `ticker_intraday_bars` | Family payloads `trade_values [B,H,6]`, `quote_bid_values [B,H,9]`, `quote_ask_values [B,H,9]`, family masks, family time features `[B,H,9]` | For each family, value features are padded/trimmed to width 9. Family time features are validated and encoded by `TimeFeatureEncoder(role="bar_start")`. Value projection and time embedding are concatenated, projected by MLP, plus learned family embedding. Family/horizon rows are flattened and masked-mean pooled. No price normalization or z-score is applied here. | One intraday-bar modality token `[B,256]`. |
 | `BarContextEncoder` for `ticker_daily_bars` | Same family payload pattern with daily offsets `O=8`: `[B,O,*]` | Same as intraday bars, using the `bar_start` time role. Raw completed daily bar values and encoded bar-start/age time are projected directly. | One ticker-daily-bar modality token `[B,256]`. |
 | `BarContextEncoder` for `global_daily_bars` | Same family payload pattern with symbols and offsets: `[B,S,O,*]` | Same as ticker bars, using the `bar_start` time role. Symbol ids are not currently embedded by `model.py`; the current encoder consumes flattened family values, masks, and encoded time features. | One global-daily-bar modality token `[B,256]`. |
-| `TextContextEncoder` for ticker news | `embeddings [B,8,2,1024]`, `chunk_mask [B,8,2]`, `item_mask [B,8]`, `item_time_features [B,8,10]` | Each Qwen chunk embedding is `LayerNorm(1024) -> Linear(1024,256) -> GELU -> Dropout`. Chunks are masked-mean pooled into items. Item time features are validated and encoded by `TimeFeatureEncoder(role="text_available")`. Item vectors are concatenated with the time embedding and passed through MLP. Items are masked-mean pooled. The model does not run Qwen and does not z-score embeddings. | One ticker-news modality token `[B,256]`. |
-| `TextContextEncoder` for market news | `embeddings [B,16,2,1024]`, masks, item time features | Same text encoder and transforms as ticker news. | One market-news modality token `[B,256]`. |
-| `TextContextEncoder` for SEC filings | `embeddings [B,4,8,1024]`, masks, item time features | Same text encoder and transforms as ticker news. | One SEC-text modality token `[B,256]`. |
+| `TextContextEncoder` for ticker news | `embeddings [B,8,2,1024]`, `chunk_mask [B,8,2]`, `item_mask [B,8]`, `item_time_features [B,8,10]` | Each Qwen chunk embedding is `LayerNorm(1024) -> Linear(1024,128) -> GELU -> Dropout`. `item_time_features[b,i,:]` is validated, encoded by `TimeFeatureEncoder(role="text_available")`, projected to `text_item_dim=128`, and broadcast to every chunk token for item `i`. Group, item-position, and chunk-position embeddings are added. `text_latents=4` learned group-specific query tokens use 4-head cross-attention over all valid chunk tokens. The model does not run Qwen and does not z-score embeddings. | One ticker-news modality token `[B,256]`. |
+| `TextContextEncoder` for market news | `embeddings [B,16,2,1024]`, masks, item time features | Same attention encoder as ticker news, with a different group embedding and group-specific latent queries. | One market-news modality token `[B,256]`. |
+| `TextContextEncoder` for SEC filings | `embeddings [B,4,8,1024]`, masks, item time features | Same attention encoder as ticker news, with SEC-specific group embedding and latent queries. Each filing chunk receives the filing item's accepted/published time features before attention. | One SEC-text modality token `[B,256]`. |
 | `XbrlEncoder` | `value [B,4096]`, `mask [B,4096]`, scalar fields `mapping_confidence`, `fiscal_year`, `period_end_days`, `age_days`, `timestamp_us`, XBRL scalar time helper fields, availability time features `[B,4096,10]`, period-end time features `[B,4096,7]`, and category id fields | Each index `i` is one aligned XBRL item slot: `value[b,i]`, `time_features[b,i,:]`, `period_end_time_features[b,i,:]`, ids, and mask all refer to the same item. Scalar item input is the raw emitted scalar set listed above, LayerNormed together; the previous synthetic `log1p(abs(value))` duplicate is not part of the current contract. Availability time uses `TimeFeatureEncoder(role="xbrl_available")`; period-end time uses `TimeFeatureEncoder(role="xbrl_period_end")`, with role-specific raw widths padded inside the shared time encoder. Category ids are dense ids from `training_category_reference`; id `0` is missing/unknown, and ids outside the configured table are treated as unknown rather than modulo-hashed. Item features project to `xbrl_item_dim=64`; `xbrl_latents=8` learned query tokens use 4-head cross-attention over the 4096 masked item slots, then the latent summary is projected to `d_model`. No z-score or per-tag/unit normalization is currently applied. | One XBRL modality token `[B,d_model]`. |
 | `CorporateActionEncoder` | `numeric_features [B,128,13]`, `mask [B,128]`, availability time features `[B,128,10]`, effective time features `[B,128,10]`, action/dividend/currency/frequency ids | Numeric corporate-action features are concatenated with `TimeFeatureEncoder(role="corporate_available")`, `TimeFeatureEncoder(role="corporate_effective")`, and four category embeddings, passed through row MLP, then masked mean pooled. No z-score is currently applied. IPO-like action types can participate as historical context if present in the corporate-action input rows, but IPO is not a prediction target. | One corporate-action modality token `[B,256]`. |
 | `ScannerContextEncoder` | `leader_values [B,G,K,S,3,F]`, `leader_mask [B,G,K]`, `leader_horizon_mask [B,G,K,S]`, `leader_time_features [B,G,K,S,9]`, origin-comparison tensors `origin_values [B,G,S,3,F]`, `origin_mask [B,G]`, `origin_horizon_mask [B,G,S]`, rank/top-k fields, and scanner numeric features `[B,G,6]` | Leader and origin rows use padded trade/bid/ask bar-family values plus `TimeFeatureEncoder(role="scanner_bar_end")`. Rank ids and scanner-group ids are embedded. Leader rows are pooled with `leader_horizon_mask`, origin rows are pooled with `origin_horizon_mask`, and numeric comparison rows are pooled only where `origin_mask` is true. Zero value plus false scanner mask is missing/padded, not a real zero bar. Older caches without scanner artifacts emit masked zeros unless strict scanner mode is enabled in the loader. | One scanner modality token `[B,256]`. |
@@ -879,10 +887,13 @@ Qwen chunk embeddings + item/chunk masks + timestamps + metadata category ids
 
 Design:
 
-- project `1024 -> d_model`
-- add modality, item-position, chunk-position, and adapted time embeddings
-- pool chunks into item embeddings using masked attention or gated pooling
-- pool items into one modality token per group:
+- project Qwen chunk embeddings `1024 -> text_item_dim=128`
+- encode every `item_time_features[b,i,:]` with `TimeFeatureEncoder(role="text_available")`
+- broadcast that time embedding to every chunk token `embeddings[b,i,j,:]`
+- add group, item-position, and chunk-position embeddings
+- use `text_latents=4` learned group-specific query tokens with `text_attention_heads=4`
+- cross-attend over all valid chunk tokens instead of mean-pooling chunks/items
+- output one modality token per group:
   - ticker news
   - market news
   - SEC filings
