@@ -241,7 +241,8 @@ class LoaderConfig:
 class TrainConfig:
     run_name: str = ""
     output_root: Path = DEFAULT_OUTPUT_ROOT
-    max_steps: int = 1000
+    max_samples: int = 0
+    max_steps: int = 0
     epochs: int = 1
     learning_rate: float = 3e-4
     weight_decay: float = 0.01

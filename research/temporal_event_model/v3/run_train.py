@@ -15,7 +15,7 @@ DEFAULT_ARGS: dict[str, str | int | float | bool] = {
     "val-split": "validation",
     "months": "2019-02",
     "batch-size": 256,
-    "max-steps": 1000,
+    "max-samples": 1_000_000,
     "max-origins-per-epoch": 1000000,
     "read-workers": 4,
     "materialize-workers": 8,

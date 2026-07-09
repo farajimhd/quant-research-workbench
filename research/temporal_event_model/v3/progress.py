@@ -14,16 +14,17 @@ class TemporalProgressState:
     precision: str
     output_dir: str
     model_parameters: int
-    step: int = 0
+    samples_clock: int = 0
+    update_count: int = 0
     epoch: int = 0
     samples_seen: int = 0
     loss: float = 0.0
     active_task_count: float = 0.0
     lr: float = 0.0
-    step_seconds: float = 0.0
+    batch_seconds: float = 0.0
     samples_per_second: float = 0.0
     loader_wait_seconds: float = 0.0
-    gpu_step_seconds: float = 0.0
+    gpu_batch_seconds: float = 0.0
     materialize_seconds: float = 0.0
     gpu_memory_gib: float = 0.0
     cpu_rss_gib: float = 0.0
@@ -85,16 +86,17 @@ class TemporalTrainingReporter:
 
     def update(self, metrics: dict[str, float], *, step: int, validation_metrics: dict[str, float] | None = None) -> None:
         s = self.state
-        s.step = int(step)
+        s.samples_clock = int(metrics.get("train/samples_clock", step))
+        s.update_count = int(metrics.get("train/update_count", s.update_count))
         s.epoch = int(metrics.get("loader/epoch", s.epoch))
         s.samples_seen = int(metrics.get("train/samples_seen_total", s.samples_seen))
         s.loss = float(metrics.get("train/loss", s.loss))
         s.active_task_count = float(metrics.get("train/active_task_count", s.active_task_count))
         s.lr = float(metrics.get("train/learning_rate", s.lr))
-        s.step_seconds = float(metrics.get("train/step_seconds", s.step_seconds))
+        s.batch_seconds = float(metrics.get("train/batch_seconds", metrics.get("train/step_seconds", s.batch_seconds)))
         s.samples_per_second = float(metrics.get("train/samples_per_second", s.samples_per_second))
         s.loader_wait_seconds = float(metrics.get("train/loader_wait_seconds", s.loader_wait_seconds))
-        s.gpu_step_seconds = float(metrics.get("train/gpu_step_seconds", s.gpu_step_seconds))
+        s.gpu_batch_seconds = float(metrics.get("train/gpu_batch_seconds", metrics.get("train/gpu_step_seconds", s.gpu_batch_seconds)))
         s.materialize_seconds = float(metrics.get("train/materialize_seconds", s.materialize_seconds))
         s.gpu_memory_gib = float(metrics.get("train/gpu_memory_allocated_gib", s.gpu_memory_gib))
         s.cpu_rss_gib = float(metrics.get("train/cpu_rss_gib", s.cpu_rss_gib))
@@ -108,8 +110,8 @@ class TemporalTrainingReporter:
             s.validation_metrics = {key: float(value) for key, value in validation_metrics.items()}
             if "val/loss" in validation_metrics:
                 s.validation_loss = float(validation_metrics["val/loss"])
-        if s.step_seconds > 0:
-            self.history.append(s.step_seconds)
+        if s.batch_seconds > 0:
+            self.history.append(s.batch_seconds)
         self.refresh()
 
     def message(self, text: str) -> None:
@@ -143,7 +145,7 @@ class TemporalTrainingReporter:
         summary.add_column(ratio=1)
         summary.add_row(f"run: {s.run_name}", f"dataset: {s.dataset_id}")
         summary.add_row(f"device: {s.device} {s.precision}", f"params: {s.model_parameters:,}")
-        summary.add_row(f"step: {s.step:,}", f"samples: {s.samples_seen:,}")
+        summary.add_row(f"samples: {s.samples_clock:,}", f"updates: {s.update_count:,}")
         summary.add_row(f"days: {s.day_index + 1:,}/{max(s.day_count, 1):,}", f"day samples: {s.current_day_samples_seen:,}/{max(s.current_day_sample_count, 1):,}")
         summary.add_row(f"out: {s.output_dir}", f"elapsed: {_duration(time.perf_counter() - self.started)}")
 
@@ -161,9 +163,9 @@ class TemporalTrainingReporter:
         speed.add_column("value", justify="right")
         for key, value in (
             ("samples/s", s.samples_per_second),
-            ("step sec", s.step_seconds),
+            ("batch sec", s.batch_seconds),
             ("loader wait", s.loader_wait_seconds),
-            ("gpu step", s.gpu_step_seconds),
+            ("gpu batch", s.gpu_batch_seconds),
             ("materialize", s.materialize_seconds),
             ("gpu GiB", s.gpu_memory_gib),
             ("rss GiB", s.cpu_rss_gib),
@@ -194,7 +196,7 @@ class TemporalTrainingReporter:
 
     def _text_line(self) -> str:
         s = self.state
-        return f"step={s.step:,} loss={s.loss:.5f} samples={s.samples_seen:,} sps={s.samples_per_second:.1f}"
+        return f"samples={s.samples_clock:,} updates={s.update_count:,} loss={s.loss:.5f} sps={s.samples_per_second:.1f}"
 
 
 def _duration(seconds: float) -> str:

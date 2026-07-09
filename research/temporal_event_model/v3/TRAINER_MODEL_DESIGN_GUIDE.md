@@ -252,7 +252,7 @@ numeric value in the model guide/config instead of reusing a symbolic length.
 
 | Symbol | Meaning |
 | --- | --- |
-| `B` | Batch size emitted by the loader/trainer step. |
+| `B` | Batch size emitted by the loader/trainer update. |
 | `O` | Number of completed daily-bar offsets requested for ticker/global bar context. |
 | `S` | Number of configured global symbols in global daily-bar context. |
 | `H` | Number of intraday future horizons in `future_intraday_bar_horizons`. |
@@ -1024,7 +1024,7 @@ total_loss = active_task_losses / max(active_task_count, 1)
 
 All terms are mask-aware. If a label group is absent from the batch, or if all
 targets for a task are masked unavailable, that task contributes zero loss and
-reports zero valid count for the step. The trainer should still log raw losses,
+reports zero valid count for the batch. The trainer should still log raw losses,
 valid counts, positive rates for binary labels, and the active task count.
 
 Bar price loss:
@@ -1073,7 +1073,7 @@ default unless there is a clear diagnostic need.
 ## Metrics
 
 Metrics should be emitted to Rich terminal, JSONL, and W&B, but not every
-metric should be calculated every optimizer step. Loss is the high-frequency
+metric should be calculated every optimizer update. Loss is the high-frequency
 signal and is computed every batch. Expensive metrics are aggregated from
 buffered predictions at a slower sample-count cadence so training does not
 stall on validation-style analysis and so runs remain comparable when batch
@@ -1107,9 +1107,9 @@ W&B grouping rules:
 
 | Panel | Keys | Cadence | Notes |
 | --- | --- | --- | --- |
-| `loss/core` | `train/loss`, `train/loss_ema`, `train/active_task_count`, `train/grad_norm`, `train/learning_rate`, `train/loss_scale`, `train/skipped_step`, `train/nan_guard_triggered` | every batch | Keep this as the first dashboard panel. |
+| `loss/core` | `train/loss`, `train/loss_ema`, `train/active_task_count`, `train/grad_norm`, `train/learning_rate`, `train/loss_scale`, `train/skipped_update`, `train/nan_guard_triggered` | every batch | Keep this as the first dashboard panel. |
 | `loss/task` | `train/loss_price`, `train/loss_event_count`, `train/loss_event_size`, `train/loss_event_state`, `train/loss_external_arrival`, `train/loss_corporate_action` | every batch | Raw task losses only by default. Loss weighting metrics belong only in explicit ablation runs. |
-| `train/speed` | `train/samples_per_second`, `train/tokens_or_events_per_second`, `train/step_seconds`, `train/gpu_step_seconds`, `train/loader_wait_seconds`, `train/materialize_seconds`, `train/host_to_device_seconds`, `train/backward_seconds`, `train/optimizer_seconds` | fast train summary | All timing values should be moving averages. |
+| `train/speed` | `train/samples_per_second`, `train/tokens_or_events_per_second`, `train/batch_seconds`, `train/gpu_batch_seconds`, `train/loader_wait_seconds`, `train/materialize_seconds`, `train/host_to_device_seconds`, `train/backward_seconds`, `train/optimizer_seconds` | fast train summary | All timing values should be moving averages. |
 | `train/memory` | `train/gpu_memory_allocated_gib`, `train/gpu_memory_reserved_gib`, `train/gpu_memory_peak_gib`, `train/cpu_rss_gib`, `train/loader_rss_gib`, `train/pinned_memory_gib` | fast train summary | Record memory after synchronization only at summary cadence. |
 | `data/loader_state` | `loader/epoch`, `loader/package_position`, `loader/origin_cursor`, `loader/emitted_batches`, `loader/emitted_samples`, `loader/seen_origins_total`, `loader/seen_origins_this_epoch`, `loader/replay_seed`, `loader/cache_manifest_changed` | fast train summary | String identifiers stay in JSONL/run manifest, not W&B scalar panels. |
 | `data/availability` | `data/event_window_valid_fraction`, `data/daily_bars_available_fraction`, `data/global_bars_available_fraction`, `data/ticker_news_available_fraction`, `data/market_news_available_fraction`, `data/sec_filings_available_fraction`, `data/xbrl_available_fraction`, `data/corporate_action_available_fraction`, `data/label_available_fraction` | fast train summary | Use masks from the emitted batch, not post-hoc DB checks. |
@@ -1149,7 +1149,7 @@ The trainer logs these timing families to JSONL and W&B when collected:
 | `profile/val_model/*` | Same model timings collected during validation. |
 
 The training/profiler rows also include loader wait, host-to-device conversion,
-loss calculation, backward pass, optimizer step, checkpoint write messages,
+loss calculation, backward pass, optimizer update, checkpoint write messages,
 CPU RSS, and CUDA allocated/reserved/peak memory. Use these timing families to
 find bottlenecks before changing model architecture or loader materialization.
 
@@ -1243,7 +1243,7 @@ For future strict daily resume, an incomplete day should be restarted from the
 beginning rather than trying to replay from an arbitrary origin inside the day.
 
 Metrics and logs use `samples_seen` as the primary x-axis. Every metric row
-should include `samples_seen`, `global_step`, `epoch_index`, `schedule_index`,
+should include `samples_seen`, `sample_clock`, `update_count`, `epoch_index`, `schedule_index`,
 and current-day sample progress so runs with different batch sizes remain
 comparable.
 
@@ -1255,7 +1255,8 @@ model.state_dict
 optimizer.state_dict
 scheduler.state_dict
 scaler.state_dict
-global_step
+sample_clock
+update_count
 epoch
 samples_seen
 best_metric_state
@@ -1375,10 +1376,10 @@ The model artifact export should include:
 The terminal should show:
 
 - run summary: run name, dataset id, device, precision, params
-- state panel: epoch, global step, samples seen, loader cursor, checkpoint path
+- state panel: epoch, sample clock, update count, samples seen, loader cursor, checkpoint path
 - loss/metrics panel: current and moving-average training metrics
 - validation panel: latest validation metrics
-- throughput panel: samples/s, loader wait, GPU step time, memory
+- throughput panel: samples/s, loader wait, GPU batch time, memory
 - data availability panel: event/text/XBRL/bar availability fractions
 - message panel: recent warnings, checkpoints, validation, audit messages
 

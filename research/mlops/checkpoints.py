@@ -24,6 +24,8 @@ class CheckpointPolicy:
     monitor_train_key: str = "pretrain/loss_total"
     monitor_val_key: str = "validation/pretrain/loss_total"
     skip_latest_if_busy: bool = True
+    clock_name: str = "step"
+    archive_prefix: str = "checkpoint_step"
 
 
 class AsyncCheckpointManager:
@@ -68,7 +70,7 @@ class AsyncCheckpointManager:
         val_loss = val_metrics.get(self.policy.monitor_val_key)
         if has_nonfinite_monitor(train_loss, val_loss):
             self._message(
-                f"Skipped checkpoint at step {step}; monitored loss is non-finite "
+                f"Skipped checkpoint at {self.policy.clock_name} {step}; monitored loss is non-finite "
                 f"(train={train_loss}, val={val_loss})."
             )
             return
@@ -79,12 +81,12 @@ class AsyncCheckpointManager:
             self.best_val_loss = float(val_loss)
             reasons.append((self.checkpoint_dir / "checkpoint_best_val.pt", "best_val"))
         if force or self.policy.archive_steps > 0 and step % self.policy.archive_steps == 0:
-            reasons.append((self.checkpoint_dir / f"checkpoint_step_{step:09d}.pt", "archive"))
+            reasons.append((self.checkpoint_dir / f"{self.policy.archive_prefix}_{step:012d}.pt", "archive"))
         if not reasons:
             return
         latest_only = all(reason == "latest" for _, reason in reasons)
         if latest_only and self.policy.skip_latest_if_busy and self.jobs.qsize() > 0:
-            self._message(f"Skipped latest checkpoint at step {step}; checkpoint writer is still busy.")
+            self._message(f"Skipped latest checkpoint at {self.policy.clock_name} {step}; checkpoint writer is still busy.")
             return
         if payload is None:
             if payload_factory is None:
@@ -93,6 +95,7 @@ class AsyncCheckpointManager:
         cpu_payload = to_cpu_payload(payload)
         event = {
             "step": step,
+            self.policy.clock_name: step,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "train_loss": train_loss,
             "val_loss": val_loss,

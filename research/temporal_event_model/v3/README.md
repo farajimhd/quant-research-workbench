@@ -7,6 +7,9 @@
 
 - `run_train.py` is the recommended launcher. It embeds workstation defaults and
   forwards any override arguments to `train.py`.
+- `run_train_feb2019_large_bs512.py` launches the full large-model February
+  2019 cache run with batch size 512. It derives `max_samples` from the cache
+  manifests and reserves the last cached day for validation by default.
 - `train.py` contains the stateful trainer, checkpointing, W&B logging, local
   JSONL metrics, Rich progress panels, and model artifact export.
 - `run_profile_training.py` profiles the real training loop on the daily-index
@@ -36,7 +39,7 @@ python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_e
 Useful overrides:
 
 ```powershell
-python research\temporal_event_model\v3\run_train.py -- --months 2019-02,2019-03,2019-04 --batch-size 512 --max-steps 10000
+python research\temporal_event_model\v3\run_train.py -- --months 2019-02,2019-03,2019-04 --batch-size 512 --max-samples 10000000
 ```
 
 The trainer builds an explicit day schedule from the selected cache manifests.
@@ -57,10 +60,16 @@ For a local shape smoke:
 python research\temporal_event_model\v3\test_smoke.py
 ```
 
-For a one-step trainer smoke:
+For a tiny trainer smoke:
 
 ```powershell
-python research\temporal_event_model\v3\train.py --dummy-data --wandb-mode disabled --progress-layout text --batch-size 2 --max-steps 1 --validation-samples 2 --validation-batches 1 --d-model 32 --event-layers 1 --event-heads 4 --fusion-layers 1 --fusion-heads 4 --output-root C:\tmp\temporal_v3_train_smoke
+python research\temporal_event_model\v3\train.py --dummy-data --wandb-mode disabled --progress-layout text --batch-size 2 --max-samples 2 --validation-samples 2 --validation-batches 1 --d-model 32 --event-layers 1 --event-heads 4 --fusion-layers 1 --fusion-heads 4 --output-root C:\tmp\temporal_v3_train_smoke
+```
+
+For the full February 2019 large-model run on the workstation:
+
+```powershell
+python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_train_feb2019_large_bs512.py
 ```
 
 ## Training Profiler
@@ -113,7 +122,7 @@ Each JSONL row includes:
 
 Training uses `samples_seen` as the primary clock. Loss is computed every batch,
 but expensive summaries, prediction metrics, validation, and periodic
-checkpoints are triggered by sample thresholds rather than optimizer steps. This
+checkpoints are triggered by sample thresholds rather than optimizer updates. This
 keeps comparisons fair when batch size changes.
 
 Default cadences:
@@ -126,8 +135,8 @@ Default cadences:
 | Latest checkpoint | `--checkpoint-latest-samples 250000` |
 | Archive checkpoint | `--checkpoint-archive-samples 2000000` |
 
-Backward-compatible hidden `--*-steps` aliases still parse, but they are
-converted to sample counts as `steps * batch_size`.
+Older checkpoint payloads may still contain a legacy `step` field, but new v3
+runs use the sample clock for scheduling, logging, and checkpoint filenames.
 
 Detailed model timing is active on the first batch and at validation/profile
 points only. It logs encoder timings for event, intraday bars, daily bars,
@@ -204,7 +213,7 @@ requested modalities are exercised.
 
 The CSV contains both `wall_clock_samples_per_second` and
 `samples_per_second`. Use wall-clock speed to judge end-to-end feasibility;
-use the steady samples/s field to compare model-step behavior after warmup and
+use the steady samples/s field to compare batch behavior after warmup and
 prefetch effects.
 
 The sweep includes production-path fields in `sweep_results.csv`, including
