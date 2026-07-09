@@ -130,6 +130,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-archive-steps", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--progress-layout", choices=("auto", "rich", "text", "none"), default=default_train.progress_layout)
     parser.add_argument("--loader-telemetry-log-seconds", type=float, default=default_train.loader_telemetry_log_seconds, help="Minimum seconds between loader cache telemetry JSONL snapshots. 0 logs every panel poll.")
+    parser.add_argument("--cache-state-log-seconds", type=float, default=default_train.cache_state_log_seconds, help="Minimum seconds between cache-state JSONL snapshots. 0 logs every panel poll.")
     parser.add_argument("--wandb-project", default=default_train.wandb_project)
     parser.add_argument("--wandb-entity", default=default_train.wandb_entity)
     parser.add_argument("--wandb-mode", choices=("auto", "online", "offline", "disabled"), default=default_train.wandb_mode)
@@ -222,6 +223,7 @@ def main() -> int:
     )
     reporter = None if config.train.progress_layout == "none" else TemporalTrainingReporter(layout=config.train.progress_layout, state=progress)
     loader_telemetry_logger = LoaderTelemetryJsonlLogger(paths.logs_dir / "loader_cache_telemetry.jsonl", interval_seconds=float(config.train.loader_telemetry_log_seconds))
+    cache_state_logger = LoaderTelemetryJsonlLogger(paths.logs_dir / "cache_state.jsonl", interval_seconds=float(config.train.cache_state_log_seconds))
     train_window = MetricWindow(max_batches=32)
     train_iter = _batch_iterator(config, train_loader, device=device, dummy=bool(args.dummy_data))
     val_metrics: dict[str, float] = {}
@@ -237,10 +239,11 @@ def main() -> int:
                 active_reporter.update(_loader_state_metrics(summary=train_loader.summary(), batch_profile={}, batch_size=int(config.loader.batch_size)), step=0, validation_metrics=val_metrics)
                 if hasattr(active_reporter, "set_loader_metrics_provider") and hasattr(train_loader, "telemetry_snapshot"):
                     active_reporter.set_loader_metrics_provider(
-                        lambda loader=train_loader, iterator=train_iter, telemetry_logger=loader_telemetry_logger, reporter=active_reporter: _loader_telemetry_provider(
+                        lambda loader=train_loader, iterator=train_iter, telemetry_logger=loader_telemetry_logger, cache_logger=cache_state_logger, reporter=active_reporter: _loader_telemetry_provider(
                             loader=loader,
                             iterator=iterator,
                             telemetry_logger=telemetry_logger,
+                            cache_state_logger=cache_logger,
                             reporter=reporter,
                             batch_size=int(config.loader.batch_size),
                         )
@@ -591,6 +594,45 @@ def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[
     return metrics
 
 
+def _cache_state_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    mapping = {
+        "loader/cache/event_ticker_states": "cache/state/event_tickers",
+        "loader/cache/event_stream_rows_per_ticker": "cache/state/event_rows_per_ticker",
+        "loader/cache/event_feature_count": "cache/state/event_feature_count",
+        "loader/cache/event_estimated_mib": "cache/state/event_estimated_mib",
+        "loader/cache/origin_parts": "cache/state/origin_parts",
+        "loader/cache/origin_rows": "cache/state/origin_rows",
+        "loader/cache/payload_parts": "cache/state/payload_parts",
+        "loader/cache/payload_limit": "cache/state/payload_limit",
+        "loader/cache/ready_batches": "cache/state/ready_batches",
+        "loader/cache/ready_buffer_chunks": "cache/state/ready_chunks",
+        "loader/cache/ready_buffer_samples": "cache/state/ready_samples",
+        "loader/cache/text_index_entries": "cache/state/text_index_entries",
+        "loader/cache/label_index_entries": "cache/state/label_index_entries",
+        "loader/cache/scanner_index_entries": "cache/state/scanner_index_entries",
+        "loader/cache/bar_index_entries": "cache/state/bar_index_entries",
+        "loader/cache/xbrl_index_entries": "cache/state/xbrl_index_entries",
+        "loader/cache/xbrl_category_entries": "cache/state/xbrl_category_entries",
+        "loader/cache/corporate_action_index_entries": "cache/state/corporate_action_index_entries",
+        "loader/prefetch/raw_queue_size": "cache/state/raw_ready_batches",
+        "loader/prefetch/raw_queue_limit": "cache/state/raw_ready_limit",
+        "loader/prefetch/raw_produced_batches": "cache/state/raw_produced_batches",
+        "loader/prefetch/raw_consumed_batches": "cache/state/raw_consumed_batches",
+        "loader/prefetch/raw_thread_alive": "cache/state/raw_thread_alive",
+        "loader/prefetch/materialize_pending_batches": "cache/state/materialize_pending_batches",
+        "loader/prefetch/materialize_max_pending_batches": "cache/state/materialize_max_pending_batches",
+    }
+    out = {target: metrics[source] for source, target in mapping.items() if source in metrics}
+    for source, target in {
+        "loader/status/phase": "cache/state/loader_phase",
+        "loader/status/current_day": "cache/state/current_day",
+        "train/status/phase": "cache/state/trainer_phase",
+    }.items():
+        if source in metrics:
+            out[target] = metrics[source]
+    return out
+
+
 def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
     model = ModelConfig(
         d_model=int(args.d_model),
@@ -662,6 +704,7 @@ def config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         detail_profile_samples=max(0, int(args.detail_profile_samples)),
         progress_layout=str(args.progress_layout),
         loader_telemetry_log_seconds=max(0.0, float(args.loader_telemetry_log_seconds)),
+        cache_state_log_seconds=max(0.0, float(args.cache_state_log_seconds)),
         wandb_project=str(args.wandb_project),
         wandb_entity=str(args.wandb_entity),
         wandb_mode=str(args.wandb_mode),
@@ -793,6 +836,7 @@ def _loader_telemetry_provider(
     loader: Any,
     iterator: Any,
     telemetry_logger: LoaderTelemetryJsonlLogger,
+    cache_state_logger: LoaderTelemetryJsonlLogger,
     reporter: TemporalTrainingReporter,
     batch_size: int,
 ) -> Mapping[str, Any]:
@@ -804,9 +848,11 @@ def _loader_telemetry_provider(
     trainer_phase = reporter.state.trainer_status.get("phase") if hasattr(reporter, "state") else None
     if trainer_phase:
         metrics["train/status/phase"] = str(trainer_phase)
+    cache_metrics = _cache_state_metrics(metrics)
     step = int(getattr(reporter.state, "samples_clock", 0) or 0)
     telemetry_logger.log(metrics, step=step)
-    return metrics
+    cache_state_logger.log(cache_metrics, step=step)
+    return {**metrics, **cache_metrics}
 
 
 def save_checkpoint_reasons(

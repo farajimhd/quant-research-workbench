@@ -42,6 +42,7 @@ class TemporalProgressState:
     loader_state: dict[str, float] = field(default_factory=dict)
     loader_status: dict[str, Any] = field(default_factory=dict)
     trainer_status: dict[str, Any] = field(default_factory=dict)
+    cache_state: dict[str, Any] = field(default_factory=dict)
     day_index: int = 0
     day_count: int = 0
     current_day_samples_seen: int = 0
@@ -180,6 +181,9 @@ class TemporalTrainingReporter:
         trainer_status = {key.replace("train/status/", ""): value for key, value in metrics.items() if key.startswith("train/status/")}
         if trainer_status:
             s.trainer_status = trainer_status
+        cache_state = {key.replace("cache/state/", ""): value for key, value in metrics.items() if key.startswith("cache/state/")}
+        if cache_state:
+            s.cache_state = cache_state
         s.day_index = int(metrics.get("schedule/day_index", s.day_index))
         s.day_count = int(metrics.get("schedule/day_count", s.day_count))
         s.current_day_samples_seen = int(metrics.get("schedule/current_day_samples_seen", s.current_day_samples_seen))
@@ -310,82 +314,79 @@ class TemporalTrainingReporter:
         memory.add_row("GPU allocated", f"{s.gpu_memory_gib:.2f}")
         memory.add_row("process RSS", f"{s.cpu_rss_gib:.2f}")
 
-        loader_cache = Table.grid(expand=False, padding=(0, 1))
-        loader_cache.add_column("Metric", justify="right", no_wrap=True)
-        loader_cache.add_column("Value", justify="left", no_wrap=True)
-        loader_cache.add_column("Metric", justify="right", no_wrap=True)
-        loader_cache.add_column("Value", justify="left", no_wrap=True)
-        formatted_cache_rows: list[tuple[str, str]] = [("phase", str(s.loader_status.get("phase", "waiting")))]
+        loader_progress = Table.grid(expand=False, padding=(0, 1))
+        loader_progress.add_column("Metric", justify="right", no_wrap=True)
+        loader_progress.add_column("Value", justify="left", no_wrap=True)
+        loader_progress.add_column("Metric", justify="right", no_wrap=True)
+        loader_progress.add_column("Value", justify="left", no_wrap=True)
+        progress_rows: list[tuple[str, str]] = [("phase", str(s.loader_status.get("phase", "waiting")))]
         if s.loader_status.get("current_day"):
-            formatted_cache_rows.append(("day", str(s.loader_status.get("current_day"))))
+            progress_rows.append(("day", str(s.loader_status.get("current_day"))))
         if s.loader_window.get("start_timestamp_us") is not None or s.loader_window.get("end_timestamp_us") is not None:
-            formatted_cache_rows.append(
+            progress_rows.append(
                 (
                     "window UTC",
                     f"{_timestamp_us_text(s.loader_window.get('start_timestamp_us'))} -> {_timestamp_us_text(s.loader_window.get('end_timestamp_us'))}",
                 )
             )
-        ready_batches = s.loader_cache.get("ready_batches")
-        if ready_batches is None:
-            ready_batches = s.loader_prefetch.get("raw_queue_size")
-        if ready_batches is None:
-            ready_samples = s.loader_cache.get("ready_buffer_samples")
-            ready_batches = float(ready_samples) / float(max(1, int(s.batch_size))) if ready_samples is not None else None
-        cache_rows = [
+        progress_items = [
             ("total origins", s.loader_cache.get("total_available_origins")),
             ("ticker folders", s.loader_cache.get("ticker_package_count")),
             ("unique tickers", s.loader_cache.get("ticker_count")),
             ("origin parts", s.loader_cache.get("part_count")),
-            ("event tickers", s.loader_cache.get("event_ticker_states")),
-            ("event cache MiB", s.loader_cache.get("event_estimated_mib")),
             ("day parts", s.loader_window.get("day_package_count")),
             ("day tickers", s.loader_window.get("day_ticker_count")),
             ("day refs", s.loader_window.get("day_refs_total")),
             ("day remaining", s.loader_window.get("day_refs_remaining_before_window")),
-            ("window origin parts", s.loader_cache.get("origin_parts")),
-            ("origin rows", s.loader_cache.get("origin_rows")),
-            ("origin read sec", s.loader_cache.get("origin_window_load_seconds")),
-            ("payload parts", s.loader_cache.get("payload_parts")),
-            ("ready batches", ready_batches),
-            ("ready samples", s.loader_cache.get("ready_buffer_samples")),
-            ("text idx", s.loader_cache.get("text_index_entries")),
-            ("label idx", s.loader_cache.get("label_index_entries")),
-            ("scanner idx", s.loader_cache.get("scanner_index_entries")),
-            ("bar idx", s.loader_cache.get("bar_index_entries")),
-            ("xbrl idx", s.loader_cache.get("xbrl_index_entries")),
-            ("corp idx", s.loader_cache.get("corporate_action_index_entries")),
             ("window refs", s.loader_window.get("active_refs")),
             ("window parts", s.loader_window.get("active_parts")),
             ("window tickers", s.loader_window.get("active_tickers")),
             ("window seconds", s.loader_window.get("seconds")),
-            ("raw queue", s.loader_prefetch.get("raw_queue_size")),
-            ("raw queue limit", s.loader_prefetch.get("raw_queue_limit")),
-            ("raw produced", s.loader_prefetch.get("raw_produced_batches")),
-            ("raw consumed", s.loader_prefetch.get("raw_consumed_batches")),
-            ("raw thread alive", s.loader_prefetch.get("raw_thread_alive")),
-            ("pending batches", s.loader_prefetch.get("materialize_pending_batches")),
-            ("max pending", s.loader_prefetch.get("materialize_max_pending_batches")),
             ("chrono cursor", s.loader_state.get("chronological_origin_cursor")),
         ]
-        for label, value in cache_rows:
-            if value is None:
-                continue
-            if label.endswith("MiB") or label.endswith("sec") or label == "window seconds":
-                rendered_value = f"{value:,.2f}"
-            else:
-                rendered_value = f"{value:,.0f}"
-            formatted_cache_rows.append((label, rendered_value))
-        if not formatted_cache_rows:
-            formatted_cache_rows.append(("waiting", "--"))
-        left_count = (len(formatted_cache_rows) + 1) // 2
-        left_rows = formatted_cache_rows[:left_count]
-        right_rows = formatted_cache_rows[left_count:]
-        for index, (left_label, left_value) in enumerate(left_rows):
-            if index < len(right_rows):
-                right_label, right_value = right_rows[index]
-                loader_cache.add_row(left_label, left_value, right_label, right_value)
-            else:
-                loader_cache.add_row(left_label, left_value, "", "")
+        progress_rows.extend(_formatted_metric_rows(progress_items))
+        _add_two_column_rows(loader_progress, progress_rows)
+
+        cache_state = Table.grid(expand=False, padding=(0, 1))
+        cache_state.add_column("Cache", justify="right", no_wrap=True)
+        cache_state.add_column("State", justify="left", no_wrap=True)
+        cache_state.add_column("Cache", justify="right", no_wrap=True)
+        cache_state.add_column("State", justify="left", no_wrap=True)
+        cache_rows = _formatted_metric_rows(
+            [
+                ("loader phase", s.cache_state.get("loader_phase")),
+                ("trainer phase", s.cache_state.get("trainer_phase")),
+                ("current day", s.cache_state.get("current_day")),
+                ("event tickers", s.cache_state.get("event_tickers")),
+                ("event rows/ticker", s.cache_state.get("event_rows_per_ticker")),
+                ("event features", s.cache_state.get("event_feature_count")),
+                ("event MiB", s.cache_state.get("event_estimated_mib")),
+                ("origin parts", s.cache_state.get("origin_parts")),
+                ("origin rows", s.cache_state.get("origin_rows")),
+                ("payload parts", s.cache_state.get("payload_parts")),
+                ("payload limit", s.cache_state.get("payload_limit")),
+                ("ready batches", s.cache_state.get("ready_batches")),
+                ("ready samples", s.cache_state.get("ready_samples")),
+                ("ready chunks", s.cache_state.get("ready_chunks")),
+                ("raw ready", s.cache_state.get("raw_ready_batches")),
+                ("raw limit", s.cache_state.get("raw_ready_limit")),
+                ("raw produced", s.cache_state.get("raw_produced_batches")),
+                ("raw consumed", s.cache_state.get("raw_consumed_batches")),
+                ("raw thread", s.cache_state.get("raw_thread_alive")),
+                ("mat pending", s.cache_state.get("materialize_pending_batches")),
+                ("mat max", s.cache_state.get("materialize_max_pending_batches")),
+                ("text idx", s.cache_state.get("text_index_entries")),
+                ("label idx", s.cache_state.get("label_index_entries")),
+                ("scanner idx", s.cache_state.get("scanner_index_entries")),
+                ("bar idx", s.cache_state.get("bar_index_entries")),
+                ("xbrl idx", s.cache_state.get("xbrl_index_entries")),
+                ("xbrl cats", s.cache_state.get("xbrl_category_entries")),
+                ("corp idx", s.cache_state.get("corporate_action_index_entries")),
+            ]
+        )
+        if not cache_rows:
+            cache_rows = [("waiting", "--")]
+        _add_two_column_rows(cache_state, cache_rows)
 
         retained_messages = list(self.messages) if self.messages else [s.last_message or "waiting for first update"]
         retained_messages.extend([""] * max(0, self.messages.maxlen - len(retained_messages)))
@@ -402,7 +403,8 @@ class TemporalTrainingReporter:
             Panel(Align.center(task_losses), title="Task Losses", border_style="green"),
             Panel(Align.center(availability), title="Data Availability", border_style="blue"),
             Panel(Align.center(profile), title="Batch Profile", border_style="yellow"),
-            Panel(Align.center(loader_cache), title="Loader Cache", border_style="green"),
+            Panel(Align.center(loader_progress), title="Loader Progress", border_style="green"),
+            Panel(Align.center(cache_state), title="Cache State", border_style="yellow"),
             Panel(Align.center(memory), title="Memory", border_style="cyan", height=6),
             Panel(messages, title="Messages", border_style="blue", height=9),
             Text("\n" * self._bottom_padding_lines),
@@ -432,3 +434,44 @@ def _timestamp_us_text(value: Any) -> str:
     if timestamp_us <= 0:
         return "--"
     return dt.datetime.fromtimestamp(timestamp_us / 1_000_000.0, tz=dt.timezone.utc).strftime("%H:%M:%S")
+
+
+def _format_metric_value(label: str, value: Any) -> str:
+    if value is None:
+        return "--"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, str):
+        return value
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if not numeric.is_integer():
+        return f"{numeric:,.2f}"
+    if label.endswith("MiB") or label.endswith("sec") or "seconds" in label:
+        return f"{numeric:,.2f}"
+    return f"{numeric:,.0f}"
+
+
+def _formatted_metric_rows(items: list[tuple[str, Any]]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for label, value in items:
+        if value is None:
+            continue
+        rows.append((label, _format_metric_value(label, value)))
+    return rows
+
+
+def _add_two_column_rows(table: Any, rows: list[tuple[str, str]]) -> None:
+    if not rows:
+        rows = [("waiting", "--")]
+    left_count = (len(rows) + 1) // 2
+    left_rows = rows[:left_count]
+    right_rows = rows[left_count:]
+    for index, (left_label, left_value) in enumerate(left_rows):
+        if index < len(right_rows):
+            right_label, right_value = right_rows[index]
+            table.add_row(left_label, left_value, right_label, right_value)
+        else:
+            table.add_row(left_label, left_value, "", "")
