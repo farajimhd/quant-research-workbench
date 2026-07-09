@@ -901,34 +901,23 @@ function NewsMetadataTable({ rows }: { rows: Array<{ key: string; value: string 
 
 function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
   const groups = serviceWorkGroups(service);
+  const visibleGroups = visibleServiceWorkGroups(groups, service.registry.id);
   const newsPollHistory = useNewsPollHistory(service);
   const setupRows = serviceSetupRows(service);
   const dependencyRows = setupRows.filter((row) => isPreflightSetupRow(row));
   const contractRows = setupRows.filter((row) => !isPreflightSetupRow(row));
-  const liveCounts = groups.reduce(
-    (summary, row) => {
-      const status = workStatusClass(row.status);
-      summary.total += 1;
-      if (status === "active") summary.running += 1;
-      else if (status === "ok") summary.healthy += 1;
-      else if (status === "warn" || status === "error") summary.needsAttention += 1;
-      return summary;
-    },
-    { healthy: 0, needsAttention: 0, running: 0, total: 0 },
-  );
-  const latestLiveAt = latestWorkTimestamp(groups.flatMap((group) => group.rows));
-  const setupProblems = setupRows.filter((row) => ["error", "warn"].includes(workStatusClass(row.status))).length;
+  const liveCounts = serviceWorkPlanSummary(visibleGroups);
   return (
     <Panel className="service-work-plan-panel" title="Service Work Plan">
       <div className="service-work-plan-summary">
         <WorkPlanSummaryItem label="Live Areas" value={String(liveCounts.total)} />
         <WorkPlanSummaryItem label="Active Now" value={String(liveCounts.running)} />
-        <WorkPlanSummaryItem label="Last Live Report" value={latestLiveAt || "-"} />
-        <WorkPlanSummaryItem label="Setup Issues" value={String(setupProblems)} tone={setupProblems ? "warn" : "ok"} />
+        <WorkPlanSummaryItem label="Healthy" value={String(liveCounts.healthy)} tone={liveCounts.healthy ? "ok" : undefined} />
+        <WorkPlanSummaryItem label="Needs Attention" value={String(liveCounts.needsAttention)} tone={liveCounts.needsAttention ? "warn" : "ok"} />
       </div>
       <div className="service-work-plan-layout">
         <section className="service-work-live-section">
-          <ServiceWorkResponsibilityGrid groups={groups} newsPollHistory={newsPollHistory} service={service} />
+          <ServiceWorkResponsibilityGrid groups={visibleGroups} newsPollHistory={newsPollHistory} service={service} />
         </section>
         <aside className="service-work-static-panel">
           <ServiceCollapsedWorkSection
@@ -948,7 +937,7 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
 }
 
 function ServiceWorkResponsibilityGrid({ groups, newsPollHistory, service }: { groups: ServiceWorkGroup[]; newsPollHistory: NewsPollHistoryRow[]; service: ServiceStatusPayload }) {
-  const visibleGroups = orderedServiceWorkGroups(groups, service.registry.id).filter((group) => group.id !== "other" || group.rows.length);
+  const visibleGroups = visibleServiceWorkGroups(groups, service.registry.id);
   return (
     <div className="service-work-responsibility-grid">
       {visibleGroups.map((group) => group.id === "live" && service.registry.id === "news" ? (
@@ -2722,6 +2711,27 @@ function orderedServiceWorkGroups(groups: ServiceWorkGroup[], serviceId: Service
     ["other", 4],
   ]);
   return [...groups].sort((left, right) => (order.get(left.id) ?? 50) - (order.get(right.id) ?? 50));
+}
+
+function visibleServiceWorkGroups(groups: ServiceWorkGroup[], serviceId: ServiceId) {
+  return orderedServiceWorkGroups(groups, serviceId).filter((group) => group.id !== "other" || group.rows.length);
+}
+
+function serviceWorkPlanSummary(groups: ServiceWorkGroup[]) {
+  return groups.reduce(
+    (summary, group) => {
+      const normalized = normalizedStatus(group.status);
+      const status = workStatusClass(group.status);
+      summary.total += 1;
+      if (status === "active") summary.running += 1;
+      else if (status === "ok") summary.healthy += 1;
+      else if ((status === "warn" || status === "error") && normalized !== "waiting" && normalized !== "not_reported") {
+        summary.needsAttention += 1;
+      }
+      return summary;
+    },
+    { healthy: 0, needsAttention: 0, running: 0, total: 0 },
+  );
 }
 
 function newsPollHistoryRow(service: ServiceStatusPayload): NewsPollHistoryRow | null {

@@ -1146,6 +1146,7 @@ button {
 
 .news-service-work-and-rows-grid .service-work-plan-panel,
 .news-service-work-and-rows-grid .news-today-panel {
+  height: 100%;
   min-width: 0;
 }
 
@@ -1153,6 +1154,7 @@ button {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 
 .news-service-work-and-rows-grid .service-work-plan-summary {
@@ -1296,7 +1298,7 @@ button {
 }
 
 .news-today-table-wrap {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   height: auto;
   min-height: 0;
   overflow: auto;
