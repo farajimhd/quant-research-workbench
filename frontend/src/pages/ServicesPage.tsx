@@ -561,8 +561,8 @@ function NewsDailyHistogram({
   const effectiveWindowStartUtc = windowStartUtc || defaultWindow.windowStartUtc;
   const effectiveWindowEndUtc = windowEndUtc || defaultWindow.windowEndUtc;
   const effectiveData = useMemo(
-    () => data.length ? elapsedNewsHistogramRows(data, effectiveWindowStartUtc, effectiveWindowEndUtc) : defaultWindow.rows,
-    [data, defaultWindow.rows, effectiveWindowEndUtc, effectiveWindowStartUtc],
+    () => data.length ? elapsedNewsHistogramRows(data, effectiveWindowStartUtc, effectiveWindowEndUtc, binSeconds) : defaultWindow.rows,
+    [binSeconds, data, defaultWindow.rows, effectiveWindowEndUtc, effectiveWindowStartUtc],
   );
   const displayData = useMemo(
     () => newsHistogramFullWindowRows(effectiveData, effectiveWindowStartUtc, effectiveWindowEndUtc, binSeconds),
@@ -577,7 +577,7 @@ function NewsDailyHistogram({
   return (
     <div className="news-live-histogram">
       <div className="news-live-histogram-label">
-        <span>Today from DB / 24h fixed axis / {binSeconds}s bins</span>
+        <span>Today from DB / {formatNewsBinDuration(binSeconds)} bins</span>
         <div className="news-live-histogram-legend">
           <span className="single">1 ticker <strong>{formatCompactNumber(singleTotal)}</strong></span>
           <span className="broad">0 or 2+ tickers <strong>{formatCompactNumber(broadTotal)}</strong></span>
@@ -594,7 +594,11 @@ function NewsDailyHistogram({
         </div>
       ) : null}
       {error ? <div className="news-live-histogram-error">{error}</div> : null}
-      <div className="news-live-histogram-chart" onMouseLeave={() => setHover(null)}>
+      <div
+        className="news-live-histogram-chart"
+        onMouseLeave={() => setHover(null)}
+        style={{ "--histogram-bin-count": displayData.length } as CSSProperties}
+      >
         {displayData.map((row) => (
           <div
             aria-label={`${formatZoneDateTime(new Date(Date.parse(row.bucketUtc)), EXCHANGE_TIME_ZONE)}: ${row.singleTickerRows} one-ticker, ${row.broadOrNoneRows} broad`}
@@ -867,6 +871,7 @@ function useNewsDailyHistogram(enabled: boolean) {
               .filter((row) => row.bucketUtc),
             windowStartUtc,
             windowEndUtc,
+            binSeconds,
           ),
           windowEndUtc,
           windowStartUtc,
@@ -970,13 +975,21 @@ function newsHistogramHover(row: NewsDailyHistogramDatum) {
   };
 }
 
+function formatNewsBinDuration(binSeconds: number) {
+  if (binSeconds > 0 && binSeconds % 60 === 0) {
+    const minutes = binSeconds / 60;
+    return `${formatCompactNumber(minutes)} minute${minutes === 1 ? "" : "s"}`;
+  }
+  return `${formatCompactNumber(binSeconds)} second${binSeconds === 1 ? "" : "s"}`;
+}
+
 function defaultNewsHistogramWindow(binSeconds: number): NewsDailyHistogramState {
   const { day, month, year } = exchangeDateParts(new Date());
   const start = zonedDateTimeToUtc(year, month, day, 0, 0, EXCHANGE_TIME_ZONE);
   const nextDay = nextCalendarDate(year, month, day);
   const end = zonedDateTimeToUtc(nextDay.year, nextDay.month, nextDay.day, 0, 0, EXCHANGE_TIME_ZONE);
-  const totalBins = Math.max(0, Math.ceil((end.getTime() - start.getTime()) / (binSeconds * 1000)));
-  const elapsedBins = Math.max(0, Math.min(totalBins, Math.ceil((Date.now() - start.getTime()) / (binSeconds * 1000))));
+  const totalBins = Math.max(0, Math.ceil((end.getTime() - start.getTime()) / (binSeconds * 1000)) + 1);
+  const elapsedBins = Math.max(0, Math.min(totalBins, Math.ceil((Date.now() - start.getTime()) / (binSeconds * 1000)) + 1));
   const rows = Array.from({ length: elapsedBins }, (_, index) => {
     const bucketUtc = new Date(start.getTime() + index * binSeconds * 1000).toISOString();
     return { broadOrNoneRows: 0, bucketUtc, singleTickerRows: 0, totalRows: 0 };
@@ -990,16 +1003,17 @@ function defaultNewsHistogramWindow(binSeconds: number): NewsDailyHistogramState
   };
 }
 
-function elapsedNewsHistogramRows(rows: NewsDailyHistogramDatum[], windowStartUtc: string, windowEndUtc: string) {
+function elapsedNewsHistogramRows(rows: NewsDailyHistogramDatum[], windowStartUtc: string, windowEndUtc: string, binSeconds: number) {
   const start = Date.parse(windowStartUtc);
   const end = Date.parse(windowEndUtc);
   const cutoff = Math.min(Number.isFinite(end) ? end : Date.now(), Date.now());
+  const halfBinMs = Math.max(0, binSeconds * 500);
   return rows.filter((row) => {
     const bucket = Date.parse(row.bucketUtc);
     if (!Number.isFinite(bucket)) return false;
     if (Number.isFinite(start) && bucket < start) return false;
     if (Number.isFinite(end) && bucket >= end) return false;
-    if (bucket >= cutoff) return false;
+    if (bucket - halfBinMs >= cutoff) return false;
     return row.totalRows > 0 || row.singleTickerRows > 0 || row.broadOrNoneRows > 0;
   });
 }
@@ -1013,7 +1027,7 @@ function newsHistogramFullWindowRows(rows: NewsDailyHistogramDatum[], windowStar
     const timestamp = Date.parse(row.bucketUtc);
     if (Number.isFinite(timestamp)) byTime.set(timestamp, row);
   }
-  const totalBins = Math.max(1, Math.ceil((end - start) / (binSeconds * 1000)));
+  const totalBins = Math.max(1, Math.ceil((end - start) / (binSeconds * 1000)) + 1);
   return Array.from({ length: totalBins }, (_, index) => {
     const timestamp = start + index * binSeconds * 1000;
     return byTime.get(timestamp) ?? { broadOrNoneRows: 0, bucketUtc: new Date(timestamp).toISOString(), singleTickerRows: 0, totalRows: 0 };

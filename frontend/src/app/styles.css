@@ -1333,8 +1333,8 @@ button {
     linear-gradient(to right, color-mix(in oklab, var(--border) 38%, transparent) 1px, transparent 1px) 0 0 / 12.5% 100%;
   display: grid;
   gap: 1px;
-  grid-template-columns: repeat(96, minmax(0, 1fr));
-  height: 144px;
+  grid-template-columns: repeat(var(--histogram-bin-count, 97), minmax(0, 1fr));
+  height: 101px;
   min-width: 0;
   width: 100%;
 }

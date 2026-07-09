@@ -1397,7 +1397,7 @@ def service_news_histogram() -> dict[str, Any]:
             news_counts AS
             (
                 SELECT
-                    toUInt64(intDiv(dateDiff('second', window_start, n.published_at_utc), {safe_bin_seconds})) AS bucket_index,
+                    toUInt64(intDiv(dateDiff('second', window_start, n.published_at_utc) + {safe_bin_seconds // 2}, {safe_bin_seconds})) AS bucket_index,
                     toUInt64(countIf(ifNull(t.ticker_count, toUInt64(0)) = 1)) AS single_ticker_rows,
                     toUInt64(countIf(ifNull(t.ticker_count, toUInt64(0)) != 1)) AS broad_or_none_rows,
                     toUInt64(count()) AS total_rows
@@ -1409,14 +1409,18 @@ def service_news_histogram() -> dict[str, Any]:
                 GROUP BY bucket_index
             )
         SELECT
-            formatDateTime(window_start + toIntervalSecond(toInt64(b.bucket_index) * {safe_bin_seconds}), '%Y-%m-%dT%H:%i:%S.000Z', 'UTC') AS bucket_utc,
+            formatDateTime(
+                window_start + toIntervalSecond(toInt64(b.bucket_index) * {safe_bin_seconds}),
+                '%Y-%m-%dT%H:%i:%S.000Z',
+                'UTC'
+            ) AS bucket_utc,
             toUInt64(ifNull(c.single_ticker_rows, 0)) AS single_ticker_rows,
             toUInt64(ifNull(c.broad_or_none_rows, 0)) AS broad_or_none_rows,
             toUInt64(ifNull(c.total_rows, 0)) AS total_rows
         FROM
         (
             SELECT toUInt64(number) AS bucket_index
-            FROM numbers({bin_count})
+            FROM numbers({bin_count + 1})
         ) AS b
         LEFT JOIN news_counts AS c
             ON c.bucket_index = b.bucket_index
