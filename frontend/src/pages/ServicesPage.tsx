@@ -420,14 +420,17 @@ type NewsPollHistoryRow = {
 
 type NewsPublishHistoryRow = {
   activeJobs: number;
+  canonicalNewsId: string;
   coverageMode: string;
   enrichment: string;
   event: string;
   insertedRows: number;
   pendingRows: number;
   pollId: string;
+  providerArticleId: string;
   publishedAt: string;
   processedRows: number;
+  qualityFlags: string[];
   skippedRows: number;
   status: string;
   tickerRows: number;
@@ -711,42 +714,120 @@ function NewsPollHistoryTable({ rows }: { rows: NewsPollHistoryRow[] }) {
 }
 
 function NewsPublishHistoryTable({ rows }: { rows: NewsPublishHistoryRow[] }) {
+  const [selectedRow, setSelectedRow] = useState<NewsPublishHistoryRow | null>(null);
   return (
-    <div className="news-publish-history-table-wrap">
-      <table className="news-publish-history-table">
-        <thead>
-          <tr>
-            <th title="When the publish event was logged, shown in your local browser timezone.">Time</th>
-            <th title="Per-news-row publish status reported by the news gateway.">Status</th>
-            <th title="Live, live-background, gap-fill, or coverage mode for this publish.">Mode</th>
-            <th title="Ticker symbols linked to this news item.">Tickers</th>
-            <th title="Published timestamp for this news item.">Published</th>
-            <th title="Whether this item needed URL/PDF enrichment and its enrichment state.">Enrichment</th>
-            <th title="Canonical news title or batch fallback detail.">News</th>
-            <th title="One when this news row was inserted into ClickHouse, otherwise zero.">Inserted</th>
-            <th title="One when this news row was skipped because it was already present or duplicated in the input batch.">Skipped</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(rows.length ? rows : [null]).map((row, index) => row ? (
-            <tr className={workStatusClass(row.status)} key={`${row.event}-${row.pollId}-${row.time}-${index}`}>
-              <td title={row.time}>{formatLogTime(row.time)}</td>
-              <td>{displayName(row.event)}</td>
-              <td>{displayName(row.coverageMode)}</td>
-              <td title={row.tickers}>{row.tickers}</td>
-              <td title={row.publishedAt}>{row.publishedAt ? formatLogTime(row.publishedAt) : "-"}</td>
-              <td title={row.enrichment}>{row.enrichment}</td>
-              <td title={row.title}>{row.title || "-"}</td>
-              <td>{formatCompactNumber(row.insertedRows)}</td>
-              <td>{formatCompactNumber(row.skippedRows)}</td>
+    <>
+      <div className="news-publish-history-table-wrap">
+        <table className="news-publish-history-table">
+          <thead>
+            <tr>
+              <th title="When the publish event was logged, shown in your local browser timezone.">Time</th>
+              <th title="Per-news-row publish status reported by the news gateway.">Status</th>
+              <th title="Live, live-background, gap-fill, or coverage mode for this publish.">Mode</th>
+              <th title="Ticker symbols linked to this news item.">Ticker</th>
+              <th title="Whether this item needed URL/PDF enrichment and its enrichment state.">Enrichment</th>
+              <th title="One when this news row was inserted into ClickHouse, otherwise zero.">Inserted</th>
+              <th title="One when this news row was skipped because it was already present or duplicated in the input batch.">Skipped</th>
             </tr>
-          ) : (
-            <tr key={`empty-${index}`}>
-              <td colSpan={9}>No non-empty publish event has been observed by this dashboard yet.</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {(rows.length ? rows : [null]).map((row, index) => row ? (
+              <tr
+                className={workStatusClass(row.status)}
+                key={`${row.event}-${row.pollId}-${row.time}-${index}`}
+                onClick={() => setSelectedRow(row)}
+                tabIndex={0}
+                title={row.title || "Open publish detail"}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelectedRow(row);
+                  }
+                }}
+              >
+                <td title={row.time}>{formatLogTime(row.time)}</td>
+                <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.event)}</span></td>
+                <td>{displayName(row.coverageMode)}</td>
+                <td title={row.tickers}>{row.tickers}</td>
+                <td title={row.enrichment}>{row.enrichment}</td>
+                <td>{formatCompactNumber(row.insertedRows)}</td>
+                <td>{formatCompactNumber(row.skippedRows)}</td>
+              </tr>
+            ) : (
+              <tr key={`empty-${index}`}>
+                <td colSpan={7}>No non-empty publish event has been observed by this dashboard yet.</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {selectedRow ? (
+        <Modal className="news-publish-detail-modal-panel" onClose={() => setSelectedRow(null)} title="News Publish Detail">
+          <NewsPublishDetailModal row={selectedRow} />
+        </Modal>
+      ) : null}
+    </>
+  );
+}
+
+function NewsPublishDetailModal({ row }: { row: NewsPublishHistoryRow }) {
+  const statusClass = workStatusClass(row.status);
+  return (
+    <div className="news-publish-detail">
+      <div className={`news-publish-detail-status ${statusClass}`}>
+        <span>{displayName(row.event)}</span>
+        <strong>{row.title || "Untitled news row"}</strong>
+      </div>
+      <dl className="service-log-detail-grid">
+        <div>
+          <dt>Logged At</dt>
+          <dd>{row.time ? formatLogTime(row.time) : "-"}</dd>
+        </div>
+        <div>
+          <dt>Published At</dt>
+          <dd>{row.publishedAt ? formatLogTime(row.publishedAt) : "-"}</dd>
+        </div>
+        <div>
+          <dt>Mode</dt>
+          <dd>{displayName(row.coverageMode)}</dd>
+        </div>
+        <div>
+          <dt>Tickers</dt>
+          <dd>{row.tickers || "-"}</dd>
+        </div>
+        <div>
+          <dt>Inserted</dt>
+          <dd>{formatCompactNumber(row.insertedRows)}</dd>
+        </div>
+        <div>
+          <dt>Skipped</dt>
+          <dd>{formatCompactNumber(row.skippedRows)}</dd>
+        </div>
+        <div>
+          <dt>Ticker Links</dt>
+          <dd>{formatCompactNumber(row.tickerRows)}</dd>
+        </div>
+        <div>
+          <dt>Poll ID</dt>
+          <dd>{row.pollId || "-"}</dd>
+        </div>
+        <div>
+          <dt>Provider Article ID</dt>
+          <dd>{row.providerArticleId || "-"}</dd>
+        </div>
+        <div>
+          <dt>Canonical News ID</dt>
+          <dd>{row.canonicalNewsId || "-"}</dd>
+        </div>
+        <div className="wide">
+          <dt>Enrichment</dt>
+          <dd>{row.enrichment || "-"}</dd>
+        </div>
+        <div className="wide">
+          <dt>Quality Flags</dt>
+          <dd>{row.qualityFlags.length ? row.qualityFlags.join(", ") : "-"}</dd>
+        </div>
+      </dl>
     </div>
   );
 }
@@ -891,17 +972,20 @@ function newsPublishItemHistoryRow(logRow: ServiceRuntimeLogRow, fields: Record<
   const publishStatus = publishItemStatus(event, item);
   return {
     activeJobs: numericMetric(fields, ["active_jobs"]),
+    canonicalNewsId: stringMetric(item, ["canonical_news_id"]),
     coverageMode: stringMetric(fields, ["coverage_mode"]),
     enrichment: publishEnrichmentLabel(fields, item),
     event: publishStatus,
     insertedRows: numericMetric(item, ["inserted_rows"]),
     pendingRows: publishStatus === "pending" ? 1 : 0,
     pollId: `${stringMetric(fields, ["poll_id"])}:${index}`,
+    providerArticleId: stringMetric(item, ["provider_article_id"]),
     processedRows: 1,
     publishedAt: stringMetric(item, ["published_at_utc"]) || stringMetric(fields, ["published_at_start_utc"]),
+    qualityFlags: Array.isArray(item.quality_flags) ? item.quality_flags.map(String).filter(Boolean) : [],
     skippedRows: numericMetric(item, ["skipped_rows"]),
     status: publishItemVisualStatus(publishStatus),
-    tickerRows: 0,
+    tickerRows: Array.isArray(item.tickers) ? item.tickers.length : 0,
     tickers: publishTickerLabel(fields, item),
     title: stringMetric(item, ["title"]) || publishTitleLabel(event, fields, item),
     time: logRow.ts_utc || "",
@@ -920,14 +1004,17 @@ function newsPublishBatchFallbackRow(logRow: ServiceRuntimeLogRow, fields: Recor
   const publishStatus = event.includes("failed") ? "failed" : event.includes("started") ? "pending" : "batch_summary";
   return {
     activeJobs: numericMetric(fields, ["active_jobs"]),
+    canonicalNewsId: "",
     coverageMode: stringMetric(fields, ["coverage_mode"]),
     enrichment: publishEnrichmentLabel(fields, {}),
     event: publishStatus,
     insertedRows,
     pendingRows: numericMetric(fields, ["pending_rows"]),
     pollId: stringMetric(fields, ["poll_id"]),
+    providerArticleId: "",
     processedRows,
     publishedAt: stringMetric(fields, ["published_at_start_utc"]),
+    qualityFlags: [],
     skippedRows,
     status: publishItemVisualStatus(publishStatus),
     tickerRows,
