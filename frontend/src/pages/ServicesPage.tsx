@@ -657,12 +657,35 @@ function NewsTodayRowsPanel({ state }: { state: NewsTodayRowsState }) {
                 }}
                 tabIndex={0}
               >
-                <td title={row.publishedAtUtc}>{formatLogTime(row.publishedAtUtc)}</td>
-                <td title={newsTodayTickerLabel(row)}>{newsTodayTickerLabel(row)}</td>
-                <td title={row.title}>{row.title || row.normalizedTitle || "-"}</td>
-                <td title={row.articleUrl || row.urlDomain}>{row.urlDomain || "-"}</td>
-                <td title={newsTodayTextLabel(row)}>{newsTodayTextLabel(row)}</td>
-                <td title={row.contentQualityFlags.join(", ")}>{newsTodayFlagLabel(row)}</td>
+                <td className="news-today-time-cell" title={row.publishedAtUtc}>
+                  <div className="news-today-cell-stack">
+                    <strong>{formatLogTime(row.publishedAtUtc)}</strong>
+                    <span>UTC {formatUtcDateTime(row.publishedAtUtc)}</span>
+                  </div>
+                </td>
+                <td className="news-today-ticker-cell" title={newsTodayTickerLabel(row)}>
+                  <div className="news-today-chip-row">
+                    {newsTodayTickerChips(row).map((ticker) => <span key={ticker}>{ticker}</span>)}
+                  </div>
+                </td>
+                <td className="news-today-title-cell" title={row.title}>
+                  <div className="news-today-cell-stack">
+                    <strong>{row.title || row.normalizedTitle || "-"}</strong>
+                    <span>{row.textPreview || row.normalizedTitle || "No text preview reported."}</span>
+                  </div>
+                </td>
+                <td className="news-today-source-cell" title={row.articleUrl || row.urlDomain}>
+                  <div className="news-today-cell-stack">
+                    <strong>{row.urlDomain || "-"}</strong>
+                    <span>{row.author || row.channels.slice(0, 2).join(", ") || "Benzinga"}</span>
+                  </div>
+                </td>
+                <td className="news-today-text-cell" title={newsTodayTextLabel(row)}>{newsTodayTextLabel(row)}</td>
+                <td className="news-today-flag-cell" title={row.contentQualityFlags.join(", ")}>
+                  <div className="news-today-chip-row muted">
+                    {newsTodayFlagChips(row).map((flag) => <span key={flag}>{flag}</span>)}
+                  </div>
+                </td>
               </tr>
             ) : (
               <tr key={`empty-${index}`}>
@@ -709,6 +732,19 @@ function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDet
     { label: "Raw Artifact", value: stringMetric(dbRow, ["raw_artifact_path"]) },
     { label: "Normalizer", value: stringMetric(dbRow, ["normalizer_version"]) },
   ].filter((item) => item.value);
+  const statRows = [
+    { label: "Full Text", value: numericMetric(dbRow, ["full_text_chars"]) || row.fullTextChars },
+    { label: "Body", value: numericMetric(dbRow, ["body_chars"]) || row.bodyChars },
+    { label: "External", value: numericMetric(dbRow, ["external_chars"]) || row.externalChars },
+    { label: "PDF", value: numericMetric(dbRow, ["pdf_chars"]) || row.pdfChars },
+  ].filter((item) => item.value).map((item) => ({ ...item, value: `${formatCompactNumber(item.value)} chars` }));
+  const sourceRows = [
+    { label: "Provider", value: "Benzinga" },
+    { label: "Domain", value: stringMetric(dbRow, ["url_domain"]) || row.urlDomain || "-" },
+    { label: "Article URL", value: stringMetric(dbRow, ["article_url"]) || row.articleUrl || "-" },
+    { label: "External Fetch", value: stringMetric(dbRow, ["external_fetch_status", "external_fetch_error"]) || row.externalFetchStatus || "-" },
+    { label: "PDF Extract", value: stringMetric(dbRow, ["pdf_extract_status", "pdf_extract_error"]) || row.pdfExtractStatus || "-" },
+  ];
   const hiddenKeys = new Set(["title", "normalized_title", "teaser", "body_text", "external_text", "pdf_text", "normalized_full_text"]);
   const remainingRows = Object.entries(dbRow)
     .filter(([key]) => !hiddenKeys.has(key))
@@ -716,12 +752,47 @@ function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDet
   return (
     <div className="news-full-detail">
       <div className="news-full-detail-hero">
-        <span>{row.tickers.length ? row.tickers.join(", ") : "Market-wide"}</span>
+        <div className="news-full-detail-kicker">
+          <span>{row.tickers.length ? row.tickers.join(", ") : "Market-wide"}</span>
+          <span>{formatLogTime(stringMetric(dbRow, ["published_at_utc"]) || row.publishedAtUtc)}</span>
+        </div>
         <h3>{title}</h3>
         <p>{row.textPreview || stringMetric(dbRow, ["teaser"]) || "No preview text reported."}</p>
+        <div className="news-full-detail-badges">
+          {[
+            row.hasExternalText ? "external text" : "",
+            row.hasPdf ? "pdf" : "",
+            row.isTitleOnly ? "title only" : "",
+            ...row.contentQualityFlags.slice(0, 4),
+          ].filter(Boolean).map((label) => <span key={label}>{label}</span>)}
+        </div>
       </div>
       {loading ? <div className="news-full-detail-notice">Loading complete row from ClickHouse...</div> : null}
       {error ? <div className="news-full-detail-notice error">{error}</div> : null}
+      <div className="news-full-detail-overview">
+        <section>
+          <h4>Source And Processing</h4>
+          <dl>
+            {sourceRows.map((item) => (
+              <div className={item.label === "Article URL" ? "wide" : ""} key={item.label}>
+                <dt>{item.label}</dt>
+                <dd>{item.label === "Article URL" && item.value !== "-" ? <a href={item.value} rel="noreferrer" target="_blank">{item.value}</a> : item.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+        <section>
+          <h4>Text Size</h4>
+          <dl>
+            {(statRows.length ? statRows : [{ label: "Reported Text", value: "No text length metadata reported." }]).map((item) => (
+              <div key={item.label}>
+                <dt>{item.label}</dt>
+                <dd>{item.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      </div>
       <dl className="news-full-detail-meta">
         {metaRows.map((item) => (
           <div className={item.label === "Article URL" || item.label === "Raw Artifact" ? "wide" : ""} key={item.label}>
@@ -744,8 +815,32 @@ function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDet
       ) : null}
       <section className="news-full-table-section">
         <h4>All Metadata</h4>
-        <DataTable fitToContent rows={remainingRows} />
+        <NewsMetadataTable rows={remainingRows} />
       </section>
+    </div>
+  );
+}
+
+function NewsMetadataTable({ rows }: { rows: Array<{ key: string; value: string }> }) {
+  const visibleRows = rows.length ? rows : [{ key: "metadata", value: "No complete database row has been loaded yet." }];
+  return (
+    <div className="news-full-metadata-wrap">
+      <table className="news-full-metadata-table">
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          {visibleRows.map((row) => (
+            <tr key={row.key}>
+              <td><code>{row.key}</code></td>
+              <td><pre>{row.value}</pre></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -2417,6 +2512,14 @@ function newsTodayTickerLabel(row: NewsTodayRow) {
   return extra ? `${label} +${extra}` : label;
 }
 
+function newsTodayTickerChips(row: NewsTodayRow) {
+  const tickers = row.tickers.length ? row.tickers : row.tickerLinkSample;
+  if (!tickers.length) return ["-"];
+  const labels = tickers.slice(0, 3);
+  const extra = Math.max(0, tickers.length - labels.length);
+  return extra ? [...labels, `+${extra}`] : labels;
+}
+
 function newsTodayTextLabel(row: NewsTodayRow) {
   const parts = [
     row.bodyChars ? `body ${formatCompactNumber(row.bodyChars)}` : "",
@@ -2432,6 +2535,14 @@ function newsTodayFlagLabel(row: NewsTodayRow) {
   const label = flags.slice(0, 2).join(", ");
   const extra = Math.max(0, flags.length - 2);
   return extra ? `${label} +${extra}` : label;
+}
+
+function newsTodayFlagChips(row: NewsTodayRow) {
+  const flags = row.contentQualityFlags;
+  if (!flags.length) return ["-"];
+  const labels = flags.slice(0, 2);
+  const extra = Math.max(0, flags.length - labels.length);
+  return extra ? [...labels, `+${extra}`] : labels;
 }
 
 function orderedServiceWorkGroups(groups: ServiceWorkGroup[], serviceId: ServiceId) {
