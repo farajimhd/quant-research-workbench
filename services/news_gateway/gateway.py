@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from pipelines.news.benzinga.core.coverage_manifest import (
@@ -946,6 +947,7 @@ class NewsGateway:
             article_count=article_count,
             fetch_task_count=fetch_task_count,
             queue_size=self._background_queue.qsize(),
+            **self._background_enrichment_log_context(batch.items),
         )
 
     async def _background_worker(self, worker_index: int) -> None:
@@ -980,6 +982,7 @@ class NewsGateway:
             coverage_mode=batch.coverage_mode,
             article_count=len(batch.items),
             queue_size=self._background_queue.qsize(),
+            **self._background_enrichment_log_context(batch.items),
         )
         final_items: list[ProcessedNewsItem] = []
         article_failures = 0
@@ -1007,6 +1010,7 @@ class NewsGateway:
                         poll_id=batch.poll_id,
                         provider_article_id=live_item.initial_item.result.provider_article_id,
                         canonical_news_id=live_item.initial_item.result.canonical_news_id,
+                        **self._background_enrichment_log_context([live_item]),
                     )
             write_summary = await self._publish_processed(final_items, poll_id=batch.poll_id, coverage_mode="live_background")
             await self.state.upsert_rows([item.result.normalized_row for item in final_items])
@@ -1050,6 +1054,7 @@ class NewsGateway:
                 input_duplicate_ids_total=len(getattr(write_summary, "input_duplicate_ids", []) or []),
                 saturated=batch.saturated,
                 wall_seconds=time.perf_counter() - started,
+                **self._background_enrichment_log_context(batch.items),
                 **self._publish_log_context(final_items, summary=write_summary),
             )
         finally:
@@ -1057,6 +1062,42 @@ class NewsGateway:
             self.metrics.background_pending_articles = max(0, self.metrics.background_pending_articles - len(batch.items))
             if not self._stop_event.is_set() and self.metrics.background_active_batches == 0 and self._background_queue.qsize() == 0:
                 self._set_phase("polling", "Background processing is idle; waiting for the next scheduled poll.")
+
+    def _background_enrichment_log_context(self, items: list[LiveNewsPayload]) -> dict[str, Any]:
+        titles: list[str] = []
+        urls: list[str] = []
+        domains: list[str] = []
+        provider_article_ids: list[str] = []
+        canonical_news_ids: list[str] = []
+        for item in items[:12]:
+            result = item.initial_item.result
+            row = result.normalized_row or {}
+            title = str(row.get("title") or row.get("headline") or item.payload.get("title") or "")[:180]
+            if title:
+                titles.append(title)
+            provider_article_id = str(result.provider_article_id or item.payload.get("id") or item.payload.get("article_id") or "")
+            canonical_news_id = str(result.canonical_news_id or "")
+            if provider_article_id:
+                provider_article_ids.append(provider_article_id)
+            if canonical_news_id:
+                canonical_news_ids.append(canonical_news_id)
+            for task in result.url_resolution.fetch_tasks[:4] if result.url_resolution else []:
+                if not isinstance(task, dict):
+                    continue
+                url = str(task.get("url") or task.get("canonical_url") or "").strip()
+                if not url:
+                    continue
+                urls.append(url[:260])
+                domain = urlparse(url).netloc.lower().removeprefix("www.")
+                if domain:
+                    domains.append(domain)
+        return {
+            "enrichment_title_sample": titles[:6],
+            "enrichment_url_sample": urls[:10],
+            "enrichment_domain_sample": sorted(set(domains))[:8],
+            "enrichment_provider_article_id_sample": provider_article_ids[:8],
+            "enrichment_canonical_news_id_sample": canonical_news_ids[:8],
+        }
 
     def _enrich_live_item(self, live_item: LiveNewsPayload) -> list[dict[str, Any]]:
         if not self.config.live_enrichment_enabled:
@@ -1082,6 +1123,7 @@ class NewsGateway:
                     status_reason=download_result.get("status_reason") or "",
                     http_status=download_result.get("http_status") or 0,
                     error_type=download_result.get("error_type") or "",
+                    **self._background_enrichment_log_context([live_item]),
                 )
                 continue
             extraction = extract_row(download_result, self.config.text_limit_chars, self.config.live_url_max_pdf_bytes)

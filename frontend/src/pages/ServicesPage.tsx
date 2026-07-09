@@ -443,6 +443,7 @@ type NewsPublishHistoryRow = {
 type NewsEnrichmentHistoryRow = {
   articleCount: number;
   detail: string;
+  domainSample: string[];
   enrichedUrls: number;
   event: string;
   failedArticles: number;
@@ -454,6 +455,8 @@ type NewsEnrichmentHistoryRow = {
   status: string;
   time: string;
   title: string;
+  titleSample: string[];
+  urlSample: string[];
   wallSeconds: number;
   worker: string;
 };
@@ -836,8 +839,8 @@ function NewsEnrichmentHistoryTable({ rows }: { rows: NewsEnrichmentHistoryRow[]
               <th title="When the enrichment event was logged, shown in your local browser timezone.">Time</th>
               <th title="Background enrichment status for this batch or article.">Status</th>
               <th title="Queue, active worker, completed batch, or failed article stage.">Stage</th>
-              <th title="Articles included in this background batch.">Articles</th>
-              <th title="External URL/PDF fetch tasks discovered for the batch.">URLs</th>
+              <th title="First news title included in this enrichment batch.">Title</th>
+              <th title="External domains or URLs being enriched.">URLs</th>
               <th title="External URLs that produced extracted text.">Text</th>
               <th title="Articles that failed enrichment and were published with fallback flags.">Failed</th>
             </tr>
@@ -860,8 +863,8 @@ function NewsEnrichmentHistoryTable({ rows }: { rows: NewsEnrichmentHistoryRow[]
                 <td title={row.time}>{formatLogTime(row.time)}</td>
                 <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span></td>
                 <td title={row.title}>{row.title}</td>
-                <td>{formatCompactNumber(row.articleCount)}</td>
-                <td>{formatCompactNumber(row.fetchTasks)}</td>
+                <td title={row.titleSample.join(" | ")}>{row.titleSample[0] || "-"}</td>
+                <td title={row.urlSample.join(" | ")}>{enrichmentUrlLabel(row)}</td>
                 <td>{formatCompactNumber(row.enrichedUrls)}</td>
                 <td>{formatCompactNumber(row.failedArticles)}</td>
               </tr>
@@ -1000,6 +1003,18 @@ function NewsEnrichmentDetailModal({ row }: { row: NewsEnrichmentHistoryRow }) {
         <div>
           <dt>Provider Article ID</dt>
           <dd>{row.providerArticleId || "-"}</dd>
+        </div>
+        <div className="wide">
+          <dt>News Titles</dt>
+          <dd>{row.titleSample.length ? row.titleSample.join(" | ") : "-"}</dd>
+        </div>
+        <div className="wide">
+          <dt>Enrichment URLs</dt>
+          <dd>{row.urlSample.length ? row.urlSample.join(" | ") : "-"}</dd>
+        </div>
+        <div className="wide">
+          <dt>Domains</dt>
+          <dd>{row.domainSample.length ? row.domainSample.join(", ") : "-"}</dd>
         </div>
         <div className="wide">
           <dt>Detail</dt>
@@ -1159,6 +1174,7 @@ function isNewsEnrichmentLogEvent(event: string) {
     || event === "background_batch_completed"
     || event === "background_article_enrichment_failed"
     || event === "background_batch_failed_uncaught"
+    || event === "live_url_download_not_downloaded"
     || event === "shutdown_waiting_for_background_news"
     || event === "shutdown_background_drained"
     || event === "shutdown_background_timeout";
@@ -1174,9 +1190,13 @@ function newsEnrichmentHistoryRow(logRow: ServiceRuntimeLogRow): NewsEnrichmentH
   const fetchTasks = numericMetric(fields, ["fetch_task_count", "url_tasks"]);
   const queueSize = numericMetric(fields, ["queue_size", "pending_batches"]);
   const pollId = stringMetric(fields, ["poll_id"]);
+  const titleSample = stringArrayMetric(fields, ["enrichment_title_sample", "title_sample"]);
+  const urlSample = stringArrayMetric(fields, ["enrichment_url_sample", "url_sample"]);
+  const domainSample = stringArrayMetric(fields, ["enrichment_domain_sample", "domain_sample"]);
   return {
     articleCount,
     detail: enrichmentEventDetail(event, fields),
+    domainSample,
     enrichedUrls,
     event,
     failedArticles,
@@ -1188,13 +1208,28 @@ function newsEnrichmentHistoryRow(logRow: ServiceRuntimeLogRow): NewsEnrichmentH
     status,
     time: logRow.ts_utc || "",
     title: enrichmentEventTitle(event, fields),
+    titleSample,
+    urlSample,
     wallSeconds: numericMetric(fields, ["wall_seconds"]),
     worker: stringMetric(fields, ["worker_index"]),
   };
 }
 
+function enrichmentUrlLabel(row: NewsEnrichmentHistoryRow) {
+  if (row.domainSample.length) {
+    const label = row.domainSample.slice(0, 2).join(", ");
+    const extra = Math.max(0, row.domainSample.length - 2);
+    return extra ? `${label} +${extra}` : label;
+  }
+  if (row.urlSample.length) {
+    const label = row.urlSample[0].replace(/^https?:\/\//i, "").replace(/^www\./i, "");
+    return label.length > 34 ? `${label.slice(0, 31)}...` : label;
+  }
+  return row.fetchTasks ? `${formatCompactNumber(row.fetchTasks)} tasks` : "-";
+}
+
 function enrichmentEventVisualStatus(event: string) {
-  if (event.includes("failed") || event.includes("timeout")) return "failed";
+  if (event.includes("failed") || event.includes("timeout") || event.includes("not_downloaded")) return "failed";
   if (event.includes("started") || event.includes("waiting")) return "running";
   if (event.includes("queued")) return "queued";
   if (event.includes("completed") || event.includes("drained")) return "complete";
@@ -1207,6 +1242,7 @@ function enrichmentEventTitle(event: string, fields: Record<string, unknown>) {
   if (event === "background_batch_completed") return "completed batch";
   if (event === "background_article_enrichment_failed") return "article failed";
   if (event === "background_batch_failed_uncaught") return "batch failed";
+  if (event === "live_url_download_not_downloaded") return "url not downloaded";
   if (event === "shutdown_waiting_for_background_news") return "shutdown drain";
   if (event === "shutdown_background_drained") return "queue drained";
   if (event === "shutdown_background_timeout") return "drain timeout";
@@ -1571,6 +1607,15 @@ function stringMetric(record: Record<string, unknown>, keys: string[]) {
     if (value !== undefined && value !== null && String(value).trim()) return String(value);
   }
   return "";
+}
+
+function stringArrayMetric(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+    if (value !== undefined && value !== null && String(value).trim()) return [String(value).trim()];
+  }
+  return [];
 }
 
 function newsHistogramBarHeight(totalRows: number, maxRows: number) {
