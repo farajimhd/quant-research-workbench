@@ -238,7 +238,7 @@ npm --prefix frontend install
 Run the backend API:
 
 ```powershell
-uvicorn src.backend.app:app --reload
+uvicorn src.backend.app:app --reload --reload-dir src
 ```
 
 Run the React development server:

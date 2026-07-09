@@ -810,20 +810,29 @@ button {
   border: 1px solid var(--border);
   border-radius: 999px;
   box-shadow: var(--shadow-sm);
-  color: var(--primary);
+  color: var(--foreground);
   display: inline-flex;
-  height: 42px;
+  gap: 9px;
+  min-height: 42px;
   justify-content: center;
   left: 50%;
+  padding: 0 15px;
   position: fixed;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 42px;
   z-index: 20;
 }
 
 .services-page-loading-overlay svg {
   animation: spin 0.9s linear infinite;
+  color: var(--primary);
+  flex: 0 0 auto;
+}
+
+.services-page-loading-overlay span {
+  font-size: 13px;
+  font-weight: 560;
+  white-space: nowrap;
 }
 
 .service-detail-shell {

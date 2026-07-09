@@ -204,6 +204,7 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
       {loading || detailLoading ? (
         <div className="services-page-loading-overlay" aria-label="Loading service data">
           <Loader2 size={22} />
+          <span>{loading ? "Loading service status..." : "Loading service details..."}</span>
         </div>
       ) : null}
     </div>
