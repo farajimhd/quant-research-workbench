@@ -1702,6 +1702,60 @@ def service_status_payload(service_id: str, *, include_database_tables: bool = T
     }
 
 
+def safe_service_status_payload(service_id: str, *, include_database_tables: bool = True, include_logs: bool = True, include_recent: bool = True) -> dict[str, Any]:
+    try:
+        return service_status_payload(
+            service_id,
+            include_database_tables=include_database_tables,
+            include_logs=include_logs,
+            include_recent=include_recent,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return service_status_error_payload(service_id, exc)
+
+
+def service_status_error_payload(service_id: str, exc: Exception) -> dict[str, Any]:
+    service = SERVICE_REGISTRY.get(service_id, {})
+    try:
+        base_url = service_base_url(service) if service else ""
+    except Exception:
+        base_url = ""
+    detail = redact_log_text(f"{type(exc).__name__}: {exc}")
+    return {
+        "registry": {
+            "id": service.get("id", service_id),
+            "label": service.get("label", service_id),
+            "kind": service.get("kind", "service"),
+            "description": service.get("description", "Service status collection failed."),
+            "base_url": base_url,
+        },
+        "online": False,
+        "status": "DEGRADED",
+        "header": {},
+        "current_operation": {
+            "phase": "status_collection",
+            "status": "FAILED",
+            "message": detail,
+        },
+        "snapshot": {},
+        "health": {},
+        "metrics": {},
+        "recent": {},
+        "logs": {"path": "", "rows": [], "error": ""},
+        "database_tables": {"rows": [], "error": ""},
+        "errors": {
+            "collection": detail,
+            "snapshot": None,
+            "health": None,
+            "metrics": None,
+            "recent": None,
+        },
+        "checked_at_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {"status": "ok", "app": "quant-research-workbench"}
@@ -1713,7 +1767,7 @@ def services_status(include_recent: bool = False, include_database_tables: bool 
     with ThreadPoolExecutor(max_workers=max(1, min(len(service_ids), 8))) as executor:
         services = list(
             executor.map(
-                lambda service_id: service_status_payload(
+                lambda service_id: safe_service_status_payload(
                     service_id,
                     include_database_tables=include_database_tables,
                     include_logs=include_logs,
@@ -1730,7 +1784,9 @@ def services_status(include_recent: bool = False, include_database_tables: bool 
 
 @app.get("/api/services/{service_id}/status")
 def service_status(service_id: str, include_database_tables: bool = True, include_logs: bool = True, include_recent: bool = True) -> dict[str, Any]:
-    return service_status_payload(service_id, include_database_tables=include_database_tables, include_logs=include_logs, include_recent=include_recent)
+    if service_id not in SERVICE_REGISTRY:
+        raise HTTPException(status_code=404, detail="Unknown service")
+    return safe_service_status_payload(service_id, include_database_tables=include_database_tables, include_logs=include_logs, include_recent=include_recent)
 
 
 @app.get("/api/services/{service_id}/tables/{database}/{table}/preview")

@@ -1,25 +1,34 @@
 export type ApiError = Error & { status?: number };
+export type ApiRequestInit = RequestInit & { timeoutMs?: number };
 
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    },
-    ...init
-  });
-  const text = await response.text();
-  const payload = parseJsonPayload(text);
-  if (!response.ok) {
-    const detail = payload === undefined ? response.statusText : formatApiErrorDetail(payload);
-    const error = new Error(detail) as ApiError;
-    error.status = response.status;
-    throw error;
+export async function api<T>(path: string, init?: ApiRequestInit): Promise<T> {
+  const { timeoutMs, ...requestInit } = init ?? {};
+  const controller = timeoutMs ? new AbortController() : null;
+  const timeout = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetch(path, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(requestInit.headers ?? {})
+      },
+      ...requestInit,
+      signal: requestInit.signal ?? controller?.signal
+    });
+    const text = await response.text();
+    const payload = parseJsonPayload(text);
+    if (!response.ok) {
+      const detail = payload === undefined ? response.statusText : formatApiErrorDetail(payload);
+      const error = new Error(detail) as ApiError;
+      error.status = response.status;
+      throw error;
+    }
+    if (payload === undefined) {
+      throw new Error(formatNonJsonApiResponse(path, text));
+    }
+    return payload as T;
+  } finally {
+    if (timeout !== null) window.clearTimeout(timeout);
   }
-  if (payload === undefined) {
-    throw new Error(formatNonJsonApiResponse(path, text));
-  }
-  return payload as T;
 }
 
 function parseJsonPayload(text: string): unknown | undefined {

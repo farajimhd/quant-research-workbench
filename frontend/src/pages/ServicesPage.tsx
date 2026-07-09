@@ -115,7 +115,7 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
     async function load() {
       try {
         setError("");
-        const next = await api<ServicesStatusPayload>("/api/services/status");
+        const next = await api<ServicesStatusPayload>("/api/services/status", { timeoutMs: 15000 });
         if (cancelled) return;
         setPayload(next);
         setLoading(false);
@@ -151,7 +151,7 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
         const query = options.full
           ? "include_database_tables=true&include_recent=true&include_logs=true"
           : "include_database_tables=false&include_recent=false&include_logs=false";
-        const next = await api<ServiceStatusPayload>(`/api/services/${serviceId}/status?${query}`);
+        const next = await api<ServiceStatusPayload>(`/api/services/${serviceId}/status?${query}`, { timeoutMs: options.full ? 30000 : 10000 });
         if (!cancelled) {
           setSelectedPayload((current) => mergeServiceDetailPayload(next, current, options.full));
         }
@@ -179,9 +179,10 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
   const services = useMemo(() => sortServices(payload?.services ?? []), [payload]);
   const selectedPayloadForMode = selectedPayload?.registry.id === serviceId ? selectedPayload : null;
   const selected = serviceId ? selectedPayloadForMode ?? services.find((service) => service.registry.id === serviceId) ?? null : null;
+  const showBlockingLoader = loading || (detailLoading && !selected);
 
   return (
-    <div className={`services-page ${loading || detailLoading ? "is-page-loading" : ""}`}>
+    <div className={`services-page ${showBlockingLoader ? "is-page-loading" : ""}`}>
       <section className="services-header">
         <div>
           <span className="page-kicker">Services</span>
@@ -198,16 +199,33 @@ export function ServicesPage({ mode, onNavigate }: { mode: ServicePageMode; onNa
         <div className="service-detail-shell">
           <ServiceDetail pageError={error} service={selected} />
         </div>
+      ) : error && !services.length ? (
+        <ServicePageApiFailure message={error} />
       ) : (
         <ServicesDashboard services={services} onNavigate={onNavigate} />
       )}
-      {loading || detailLoading ? (
+      {showBlockingLoader ? (
         <div className="services-page-loading-overlay" aria-label="Loading service data">
           <Loader2 size={22} />
           <span>{loading ? "Loading service status..." : "Loading service details..."}</span>
         </div>
       ) : null}
     </div>
+  );
+}
+
+function ServicePageApiFailure({ message }: { message: string }) {
+  return (
+    <section className="service-page-api-failure">
+      <div className="service-page-api-failure-icon">
+        <AlertTriangle size={18} />
+      </div>
+      <div>
+        <h2>Service status could not be loaded</h2>
+        <p>{message}</p>
+        <span>The dashboard will keep retrying in the background. Confirm the backend is running on port 8000 and refresh once it is healthy.</span>
+      </div>
+    </section>
   );
 }
 
@@ -549,13 +567,17 @@ function NewsDailyHistogram({
     () => data.length ? elapsedNewsHistogramRows(data, effectiveWindowStartUtc, effectiveWindowEndUtc) : defaultWindow.rows,
     [data, defaultWindow.rows, effectiveWindowEndUtc, effectiveWindowStartUtc],
   );
-  const dataRef = useRef<NewsDailyHistogramDatum[]>(effectiveData);
+  const displayData = useMemo(
+    () => newsHistogramFullWindowRows(effectiveData, effectiveWindowStartUtc, effectiveWindowEndUtc, binSeconds),
+    [binSeconds, effectiveData, effectiveWindowEndUtc, effectiveWindowStartUtc],
+  );
+  const dataRef = useRef<NewsDailyHistogramDatum[]>(displayData);
   const binSecondsRef = useRef(binSeconds);
   const windowRef = useRef({ end: effectiveWindowEndUtc, start: effectiveWindowStartUtc });
   const singleSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const broadSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const [hover, setHover] = useState<{ broad: number; et: string; single: number; utc: string; van: string } | null>(null);
-  dataRef.current = effectiveData;
+  dataRef.current = displayData;
   binSecondsRef.current = binSeconds;
   windowRef.current = { end: effectiveWindowEndUtc, start: effectiveWindowStartUtc };
 
@@ -634,10 +656,10 @@ function NewsDailyHistogram({
     const chart = chartRef.current;
     if (!singleSeries || !broadSeries || !chart) return;
     const offset = Math.max(1, Math.floor(binSeconds / 3));
-    singleSeries.setData(effectiveData.map((row) => ({ time: newsBucketChartTime(row.bucketUtc, offset), value: row.singleTickerRows })));
-    broadSeries.setData(effectiveData.map((row) => ({ time: newsBucketChartTime(row.bucketUtc, offset * 2), value: row.broadOrNoneRows })));
+    singleSeries.setData(displayData.map((row) => ({ time: newsBucketChartTime(row.bucketUtc, offset), value: row.singleTickerRows })));
+    broadSeries.setData(displayData.map((row) => ({ time: newsBucketChartTime(row.bucketUtc, offset * 2), value: row.broadOrNoneRows })));
     setNewsHistogramVisibleRange(chart, effectiveWindowStartUtc, effectiveWindowEndUtc);
-  }, [binSeconds, effectiveData, effectiveWindowEndUtc, effectiveWindowStartUtc]);
+  }, [binSeconds, displayData, effectiveWindowEndUtc, effectiveWindowStartUtc]);
 
   const singleTotal = effectiveData.reduce((sum, row) => sum + row.singleTickerRows, 0);
   const broadTotal = effectiveData.reduce((sum, row) => sum + row.broadOrNoneRows, 0);
@@ -1015,10 +1037,14 @@ function setNewsHistogramVisibleRange(chart: IChartApi, windowStartUtc: string, 
   const first = Date.parse(windowStartUtc);
   const last = Date.parse(windowEndUtc);
   if (!Number.isFinite(first) || !Number.isFinite(last) || last <= first) return;
-  chart.timeScale().setVisibleRange({
-    from: Math.floor(first / 1000) as Time,
-    to: Math.floor(last / 1000) as Time,
-  });
+  try {
+    chart.timeScale().setVisibleRange({
+      from: Math.floor(first / 1000) as Time,
+      to: Math.floor(last / 1000) as Time,
+    });
+  } catch {
+    chart.timeScale().fitContent();
+  }
 }
 
 function defaultNewsHistogramWindow(binSeconds: number): NewsDailyHistogramState {
@@ -1052,6 +1078,22 @@ function elapsedNewsHistogramRows(rows: NewsDailyHistogramDatum[], windowStartUt
     if (Number.isFinite(end) && bucket >= end) return false;
     if (bucket >= cutoff) return false;
     return row.totalRows > 0 || row.singleTickerRows > 0 || row.broadOrNoneRows > 0;
+  });
+}
+
+function newsHistogramFullWindowRows(rows: NewsDailyHistogramDatum[], windowStartUtc: string, windowEndUtc: string, binSeconds: number) {
+  const start = Date.parse(windowStartUtc);
+  const end = Date.parse(windowEndUtc);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || binSeconds <= 0) return rows;
+  const byTime = new Map<number, NewsDailyHistogramDatum>();
+  for (const row of rows) {
+    const timestamp = Date.parse(row.bucketUtc);
+    if (Number.isFinite(timestamp)) byTime.set(timestamp, row);
+  }
+  const totalBins = Math.max(1, Math.ceil((end - start) / (binSeconds * 1000)));
+  return Array.from({ length: totalBins }, (_, index) => {
+    const timestamp = start + index * binSeconds * 1000;
+    return byTime.get(timestamp) ?? { broadOrNoneRows: 0, bucketUtc: new Date(timestamp).toISOString(), singleTickerRows: 0, totalRows: 0 };
   });
 }
 

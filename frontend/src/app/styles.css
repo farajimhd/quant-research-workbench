@@ -835,6 +835,48 @@ button {
   white-space: nowrap;
 }
 
+.service-page-api-failure {
+  align-items: flex-start;
+  background: color-mix(in oklab, var(--danger) 6%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--danger) 24%, var(--border));
+  border-radius: var(--radius-md);
+  color: var(--foreground);
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 16px;
+}
+
+.service-page-api-failure-icon {
+  align-items: center;
+  background: color-mix(in oklab, var(--danger) 12%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--danger) 28%, var(--border));
+  border-radius: 999px;
+  color: var(--danger);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+.service-page-api-failure h2 {
+  font-size: 15px;
+  font-weight: 650;
+  margin: 0 0 4px;
+}
+
+.service-page-api-failure p {
+  color: var(--danger);
+  font-size: 13px;
+  margin: 0 0 6px;
+}
+
+.service-page-api-failure span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
 .service-detail-shell {
   display: grid;
   gap: 12px;
