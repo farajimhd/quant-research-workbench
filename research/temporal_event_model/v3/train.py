@@ -226,6 +226,8 @@ def main() -> int:
         with reporter if reporter is not None else _NullReporter() as active_reporter:
             checkpointer.set_message_callback(active_reporter.message)
             active_reporter.message("Trainer initialized; waiting for first training batch.")
+            if train_loader is not None:
+                active_reporter.update(_loader_state_metrics(summary=train_loader.summary(), batch_profile={}), step=0, validation_metrics=val_metrics)
             update_count = int(train_loader.state.emitted_batches if train_loader is not None else 0)
             while True:
                 if _INTERRUPT_REQUESTED:
@@ -467,12 +469,18 @@ def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[
         "loader/state/emitted_samples": float(summary.get("emitted_samples", 0) or 0),
         "loader/state/seen_origins_total": float(summary.get("seen_origins_total", 0) or 0),
         "loader/state/seen_origins_this_epoch": float(summary.get("seen_origins_this_epoch", 0) or 0),
+        "loader/cache/package_count": float(summary.get("package_count", 0) or 0),
     }
+    summary_config = summary.get("config") if isinstance(summary.get("config"), Mapping) else {}
+    if isinstance(summary_config, Mapping):
+        metrics["loader/window/seconds"] = float(summary_config.get("time_window_seconds", 0.0) or 0.0)
     mapping = {
         "event_cache_ticker_states": "loader/cache/event_ticker_states",
         "event_cache_stream_rows_per_ticker": "loader/cache/event_stream_rows_per_ticker",
         "event_cache_feature_count": "loader/cache/event_feature_count",
         "event_cache_estimated_bytes": "loader/cache/event_estimated_mib",
+        "origin_cache_parts": "loader/cache/origin_parts",
+        "origin_cache_limit": "loader/cache/origin_limit",
         "payload_cache_parts": "loader/cache/payload_parts",
         "payload_cache_limit": "loader/cache/payload_limit",
         "ready_buffer_chunks": "loader/cache/ready_buffer_chunks",
@@ -487,6 +495,8 @@ def _loader_state_metrics(*, summary: Mapping[str, Any], batch_profile: Mapping[
         "window_active_refs": "loader/window/active_refs",
         "window_active_parts": "loader/window/active_parts",
         "window_active_tickers": "loader/window/active_tickers",
+        "window_start_timestamp_us": "loader/window/start_timestamp_us",
+        "window_end_timestamp_us": "loader/window/end_timestamp_us",
         "day_refs_total": "loader/window/day_refs_total",
         "day_refs_remaining_before_window": "loader/window/day_refs_remaining_before_window",
         "chronological_time_window_seconds": "loader/window/seconds",

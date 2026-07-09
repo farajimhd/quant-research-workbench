@@ -317,6 +317,8 @@ class DailyIndexPartPlan:
     fetch_ordinal_start: int
     fetch_ordinal_end: int
     source_date: str = ""
+    origin_timestamp_start_us: int = 0
+    origin_timestamp_end_us: int = 0
 
 
 @dataclass(slots=True)
@@ -685,6 +687,8 @@ class DailyIndexCacheIndex:
                         fetch_ordinal_start=int(part.get("ordinal_min") or 0),
                         fetch_ordinal_end=int(part.get("ordinal_max") or 0),
                         source_date=str(source_date),
+                        origin_timestamp_start_us=int(part.get("origin_timestamp_min_us") or part.get("timestamp_min_us") or 0),
+                        origin_timestamp_end_us=int(part.get("origin_timestamp_max_us") or part.get("timestamp_max_us") or 0),
                     )
                 )
         if not plans:
@@ -874,7 +878,7 @@ class DailyIndexBatchMaterializer:
         with self._text_index_lock:
             text_indexes = len(self._text_index_cache) + len(self._global_text_index_cache)
         with self._label_index_lock:
-            label_indexes = len(self._label_index_cache) + len(self._compact_label_index_cache) + len(self._intraday_compact_label_cache)
+            label_indexes = len(self._label_index_cache) + len(self._intraday_compact_label_cache)
         with self._scanner_artifact_index_lock:
             scanner_indexes = len(self._scanner_artifact_index_cache)
         with self._bar_index_lock:
@@ -2627,6 +2631,7 @@ class AsyncDailyIndexBatchLoader:
         event_cache = _RollingEventStreamCache(config=self.config)
         payload_cache: OrderedDict[str, LoadedDailyIndexPart] = OrderedDict()
         payload_cache_limit = max(1, int(self.config.loaded_parts_per_group))
+        window_us = max(1, int(float(self.config.time_window_seconds) * 1_000_000.0))
         previous_day_key: str | None = None
         try:
             for day_position in range(int(self.state.chronological_day_position), len(days)):
@@ -2640,33 +2645,64 @@ class AsyncDailyIndexBatchLoader:
                     payload_cache.clear()
                 previous_day_key = source_date
                 day_start = time.perf_counter()
-                loaded_origins = _collect_ordered_futures(read_pool, self.reader.load_origins, day_plans, stop_event=self._stop_event)
-                refs = _sample_refs_for_loaded_parts(
-                    loaded_origins,
-                    config=self.config,
-                    seed=int(self.state.seed),
-                    dataset_plan_id=self.dataset_plan_id,
-                    start_us=start_us,
-                    end_us=end_us,
-                )
-                refs.sort(key=lambda ref: _ref_sort_key(loaded_origins, ref))
-                if int(self.state.chronological_origin_cursor) > 0:
-                    refs = refs[int(self.state.chronological_origin_cursor) :]
-                if not refs:
-                    self.state.chronological_origin_cursor = 0
-                    self.state.chronological_window_start_us = 0
+                day_plans = sorted(day_plans, key=lambda plan: (_plan_timestamp_start_us(plan), str(plan.ticker), int(plan.part_id)))
+                day_bounds = _day_origin_timestamp_bounds(day_plans, start_us=start_us, end_us=end_us)
+                if day_bounds is None:
                     continue
-                day_total_refs = len(refs) + int(self.state.chronological_origin_cursor)
+                day_window_start, day_window_end = day_bounds
+                if int(self.state.chronological_window_start_us) > 0:
+                    window_start = max(int(self.state.chronological_window_start_us), int(day_window_start))
+                else:
+                    window_start = int(day_window_start)
+                day_total_refs = int(sum(max(0, int(plan.origin_count)) for plan in day_plans))
                 emitted_from_day = 0
                 materialize_size = int(self.config.materialize_chunk_size) or min(int(self.config.batch_size), 256)
-                for window_refs in _windowed_refs_by_time(loaded_origins, refs, time_window_seconds=float(self.config.time_window_seconds)):
+                while window_start < int(day_window_end):
                     if self._stop_event.is_set():
                         return
+                    window_end = min(int(window_start) + int(window_us), int(day_window_end))
+                    self.state.chronological_window_start_us = int(window_start)
+                    active_plans = [
+                        plan
+                        for plan in day_plans
+                        if _plan_intersects_window(plan, start_us=int(window_start), end_us=int(window_end))
+                    ]
+                    if not active_plans:
+                        self.state.chronological_origin_cursor = 0
+                        window_start = int(window_end)
+                        continue
+                    origin_window_start = time.perf_counter()
+                    loaded_origins = _load_window_origins(
+                        read_pool=read_pool,
+                        reader=self.reader,
+                        plans=active_plans,
+                        start_us=int(window_start),
+                        end_us=int(window_end),
+                        stop_event=self._stop_event,
+                    )
+                    origin_window_load_seconds = time.perf_counter() - origin_window_start
+                    if not loaded_origins:
+                        self.state.chronological_origin_cursor = 0
+                        window_start = int(window_end)
+                        continue
+                    window_refs = _sample_refs_for_loaded_parts(
+                        loaded_origins,
+                        config=self.config,
+                        seed=int(self.state.seed),
+                        dataset_plan_id=self.dataset_plan_id,
+                        start_us=int(window_start),
+                        end_us=int(window_end),
+                    )
+                    if window_refs:
+                        window_refs.sort(key=lambda ref: _ref_sort_key(loaded_origins, ref))
+                    if int(self.state.chronological_origin_cursor) > 0:
+                        window_refs = window_refs[int(self.state.chronological_origin_cursor) :]
                     if not window_refs:
+                        self.state.chronological_origin_cursor = 0
+                        window_start = int(window_end)
                         continue
                     first_ts = int(_ref_origin_timestamp(loaded_origins, window_refs[0]))
                     last_ts = int(_ref_origin_timestamp(loaded_origins, window_refs[-1]))
-                    self.state.chronological_window_start_us = first_ts
                     active_indices = sorted({int(ref.part_index) for ref in window_refs})
                     loaded_parts = _load_active_payloads(
                         read_pool=read_pool,
@@ -2700,7 +2736,10 @@ class AsyncDailyIndexBatchLoader:
                             "window_start_timestamp_us": int(first_ts),
                             "window_end_timestamp_us": int(last_ts),
                             "day_refs_total": int(day_total_refs),
-                            "day_refs_remaining_before_window": int(len(refs) - int(emitted_from_day)),
+                            "day_refs_remaining_before_window": int(max(0, int(day_total_refs) - int(emitted_from_day))),
+                            "origin_window_load_seconds": float(origin_window_load_seconds),
+                            "origin_cache_parts": int(len(loaded_origins)),
+                            "origin_cache_limit": int(len(active_plans)),
                             "payload_cache_parts": int(len(payload_cache)),
                             "payload_cache_limit": int(payload_cache_limit),
                             **event_cache.telemetry_snapshot(),
@@ -2727,6 +2766,8 @@ class AsyncDailyIndexBatchLoader:
                                 return
                             if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
                                 return
+                    self.state.chronological_origin_cursor = 0
+                    window_start = int(window_end)
                 self.state.chronological_origin_cursor = 0
                 self.state.chronological_window_start_us = 0
             for batch in ready.flush():
@@ -4392,6 +4433,90 @@ def _origin_rows_for_refs(refs: Sequence[DailyIndexSampleRef], rows: np.ndarray)
     return np.fromiter((int(refs[int(row)].origin_row) for row in rows), dtype=np.int64, count=int(rows.shape[0]))
 
 
+def _plan_timestamp_start_us(plan: DailyIndexPartPlan) -> int:
+    return int(getattr(plan, "origin_timestamp_start_us", 0) or 0)
+
+
+def _plan_timestamp_end_us(plan: DailyIndexPartPlan) -> int:
+    return int(getattr(plan, "origin_timestamp_end_us", 0) or 0)
+
+
+def _day_origin_timestamp_bounds(
+    plans: Sequence[DailyIndexPartPlan],
+    *,
+    start_us: int | None,
+    end_us: int | None,
+) -> tuple[int, int] | None:
+    starts = [int(_plan_timestamp_start_us(plan)) for plan in plans if int(plan.origin_count) > 0 and _plan_timestamp_start_us(plan) > 0]
+    ends = [int(_plan_timestamp_end_us(plan)) for plan in plans if int(plan.origin_count) > 0 and _plan_timestamp_end_us(plan) > 0]
+    if not starts or not ends:
+        return None
+    day_start = min(starts)
+    day_end = max(ends) + 1
+    if start_us is not None:
+        day_start = max(day_start, int(start_us))
+    if end_us is not None:
+        day_end = min(day_end, int(end_us))
+    if day_start >= day_end:
+        return None
+    return int(day_start), int(day_end)
+
+
+def _plan_intersects_window(plan: DailyIndexPartPlan, *, start_us: int, end_us: int) -> bool:
+    if int(plan.origin_count) <= 0:
+        return False
+    plan_start = _plan_timestamp_start_us(plan)
+    plan_end = _plan_timestamp_end_us(plan)
+    if plan_start <= 0 or plan_end <= 0:
+        return True
+    return int(plan_start) < int(end_us) and int(plan_end) >= int(start_us)
+
+
+def _load_window_origins(
+    *,
+    read_pool: ThreadPoolExecutor,
+    reader: DailyIndexPartReader,
+    plans: Sequence[DailyIndexPartPlan],
+    start_us: int,
+    end_us: int,
+    stop_event: threading.Event | None,
+) -> list[LoadedDailyIndexPart]:
+    futures = [
+        read_pool.submit(_load_plan_window_origins, reader, plan, int(start_us), int(end_us))
+        for plan in plans
+    ]
+    loaded_parts: list[LoadedDailyIndexPart] = []
+    for future in futures:
+        if stop_event is not None and stop_event.is_set():
+            for pending in futures:
+                pending.cancel()
+            raise KeyboardInterrupt()
+        loaded = future.result()
+        if loaded is not None:
+            loaded_parts.append(loaded)
+    return loaded_parts
+
+
+def _load_plan_window_origins(
+    reader: DailyIndexPartReader,
+    plan: DailyIndexPartPlan,
+    start_us: int,
+    end_us: int,
+) -> LoadedDailyIndexPart | None:
+    pl = _polars()
+    origin_path = _plan_file_path(plan, plan.files["origins"])
+    frame = (
+        pl.scan_parquet(str(origin_path))
+        .filter((pl.col("origin_timestamp_us") >= int(start_us)) & (pl.col("origin_timestamp_us") < int(end_us)))
+        .collect()
+    )
+    if frame.height <= 0:
+        return None
+    loaded = LoadedDailyIndexPart(plan=plan)
+    loaded.origins = frame
+    return loaded
+
+
 def _ref_origin_timestamp(parts: Sequence[LoadedDailyIndexPart], ref: DailyIndexSampleRef) -> int:
     part = parts[int(ref.part_index)]
     return int(part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[int(ref.origin_row)])
@@ -4460,6 +4585,8 @@ def _load_active_payloads(
     for index in active_indices:
         key = _part_key(loaded_origins[int(index)].plan)
         loaded = payload_cache[key]
+        loaded.origins = loaded_origins[int(index)].origins
+        loaded._origin_arrays.clear()
         payload_cache.move_to_end(key)
         out.append(loaded)
     return out
