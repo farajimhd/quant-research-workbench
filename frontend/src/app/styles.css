@@ -1538,14 +1538,16 @@ button {
   text-overflow: ellipsis;
 }
 
-.news-poll-history-table-wrap {
+.news-poll-history-table-wrap,
+.news-publish-history-table-wrap {
   height: 124px;
   min-height: 0;
   min-width: 0;
   overflow: auto;
 }
 
-.news-poll-history-table {
+.news-poll-history-table,
+.news-publish-history-table {
   border-collapse: collapse;
   font-size: 11px;
   line-height: 1.25;
@@ -1555,7 +1557,9 @@ button {
 }
 
 .news-poll-history-table th,
-.news-poll-history-table td {
+.news-poll-history-table td,
+.news-publish-history-table th,
+.news-publish-history-table td {
   border-bottom: 1px solid var(--border);
   overflow: hidden;
   padding: 5px 7px;
@@ -1565,7 +1569,8 @@ button {
   white-space: nowrap;
 }
 
-.news-poll-history-table th {
+.news-poll-history-table th,
+.news-publish-history-table th {
   background: color-mix(in oklab, var(--surface-alt) 78%, var(--surface));
   color: var(--muted-foreground);
   cursor: help;
@@ -1578,7 +1583,8 @@ button {
   z-index: 1;
 }
 
-.news-poll-history-table th[title]::after {
+.news-poll-history-table th[title]::after,
+.news-publish-history-table th[title]::after {
   color: color-mix(in oklab, var(--muted-foreground) 70%, transparent);
   content: "?";
   font-size: 8.5px;
@@ -1587,7 +1593,8 @@ button {
   vertical-align: 1px;
 }
 
-.news-poll-history-table tbody tr {
+.news-poll-history-table tbody tr,
+.news-publish-history-table tbody tr {
   height: 31px;
 }
 
@@ -1627,16 +1634,49 @@ button {
   width: 64px;
 }
 
-.news-poll-history-table tr.running {
+.news-publish-history-table th:nth-child(1),
+.news-publish-history-table td:nth-child(1) {
+  text-align: left;
+  width: 128px;
+}
+
+.news-publish-history-table th:nth-child(2),
+.news-publish-history-table td:nth-child(2),
+.news-publish-history-table th:nth-child(3),
+.news-publish-history-table td:nth-child(3),
+.news-publish-history-table th:nth-child(4),
+.news-publish-history-table td:nth-child(4) {
+  text-align: left;
+  width: 98px;
+}
+
+.news-publish-history-table th:nth-child(5),
+.news-publish-history-table td:nth-child(5),
+.news-publish-history-table th:nth-child(6),
+.news-publish-history-table td:nth-child(6),
+.news-publish-history-table th:nth-child(7),
+.news-publish-history-table td:nth-child(7),
+.news-publish-history-table th:nth-child(8),
+.news-publish-history-table td:nth-child(8),
+.news-publish-history-table th:nth-child(9),
+.news-publish-history-table td:nth-child(9) {
+  width: 72px;
+}
+
+.news-poll-history-table tr.running,
+.news-publish-history-table tr.running {
   background: color-mix(in oklab, var(--badge-info-bg) 12%, transparent);
 }
 
 .news-poll-history-table tr.warn,
-.news-poll-history-table tr.waiting {
+.news-poll-history-table tr.waiting,
+.news-publish-history-table tr.warn,
+.news-publish-history-table tr.waiting {
   background: color-mix(in oklab, var(--badge-warning-bg) 12%, transparent);
 }
 
-.news-poll-history-table tr.error {
+.news-poll-history-table tr.error,
+.news-publish-history-table tr.error {
   background: color-mix(in oklab, var(--badge-danger-bg) 13%, transparent);
 }
 

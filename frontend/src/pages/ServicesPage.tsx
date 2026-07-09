@@ -416,6 +416,21 @@ type NewsPollHistoryRow = {
   writtenRows: number;
 };
 
+type NewsPublishHistoryRow = {
+  activeJobs: number;
+  coverageMode: string;
+  event: string;
+  insertedRows: number;
+  pendingRows: number;
+  pollId: string;
+  processedRows: number;
+  skippedRows: number;
+  status: string;
+  tickerRows: number;
+  time: string;
+  wallSeconds?: number;
+};
+
 type NewsDailyHistogramDatum = {
   broadOrNoneRows: number;
   bucketUtc: string;
@@ -502,6 +517,8 @@ function ServiceWorkResponsibilityGrid({ groups, newsPollHistory, service }: { g
     <div className="service-work-responsibility-grid">
       {visibleGroups.map((group) => group.id === "live" && service.registry.id === "news" ? (
         <NewsBenzingaLiveCard group={group} history={newsPollHistory} key={group.id} service={service} />
+      ) : group.id === "publish" && service.registry.id === "news" ? (
+        <NewsDatabasePublishingCard group={group} key={group.id} service={service} />
       ) : (
         <ServiceWorkResponsibilityCard group={group} key={group.id} />
       ))}
@@ -515,6 +532,7 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
   const histogramData = histogram.rows;
   const summary = newsPollHistorySummary(history);
   const backgroundPending = numericMetric(metrics, ["background_pending_articles", "publish_pending_rows", "background_queue_size"]);
+  const liveBadge = newsLiveBadge(service, history);
   return (
     <section className={`service-work-responsibility-card news-live-card ${workStatusClass(group.status)}`}>
       <div className="news-live-card-header">
@@ -522,6 +540,7 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
           <h3>{group.title}</h3>
           <p>{group.description}</p>
         </div>
+        <span className={`service-work-status ${liveBadge.className}`}>{liveBadge.label}</span>
       </div>
       <NewsDailyHistogram
         binSeconds={histogram.binSeconds}
@@ -539,6 +558,33 @@ function NewsBenzingaLiveCard({ group, history, service }: { group: ServiceWorkG
         <span><small>Pending</small><strong>{formatCompactNumber(backgroundPending)}</strong></span>
       </div>
       <NewsPollHistoryTable rows={history} />
+    </section>
+  );
+}
+
+function NewsDatabasePublishingCard({ group, service }: { group: ServiceWorkGroup; service: ServiceStatusPayload }) {
+  const metrics = serviceMetricsRecord(service);
+  const history = newsPublishHistoryRows(service);
+  const summary = newsPublishSummary(history);
+  const status = String(metrics.publish_status || group.status || "idle");
+  return (
+    <section className={`service-work-responsibility-card news-publish-card ${workStatusClass(status)}`}>
+      <div className="service-work-responsibility-header">
+        <div>
+          <h3>{group.title}</h3>
+          <p>{group.description}</p>
+        </div>
+        <span className={`service-work-status ${workStatusClass(status)}`}>{displayName(status)}</span>
+      </div>
+      <div className="news-live-summary news-publish-summary">
+        <span><small>Active</small><strong>{formatCompactNumber(numericMetric(metrics, ["publish_active_jobs"]))}</strong></span>
+        <span><small>Pending Rows</small><strong>{formatCompactNumber(numericMetric(metrics, ["publish_pending_rows"]))}</strong></span>
+        <span><small>Inserted</small><strong>{formatCompactNumber(summary.insertedRows)}</strong></span>
+        <span><small>Ticker Links</small><strong>{formatCompactNumber(summary.tickerRows)}</strong></span>
+        <span><small>Skipped</small><strong>{formatCompactNumber(summary.skippedRows)}</strong></span>
+        <span><small>Failed Jobs</small><strong>{formatCompactNumber(numericMetric(metrics, ["publish_failed_jobs"]))}</strong></span>
+      </div>
+      <NewsPublishHistoryTable rows={history} />
     </section>
   );
 }
@@ -658,6 +704,47 @@ function NewsPollHistoryTable({ rows }: { rows: NewsPollHistoryRow[] }) {
   );
 }
 
+function NewsPublishHistoryTable({ rows }: { rows: NewsPublishHistoryRow[] }) {
+  return (
+    <div className="news-publish-history-table-wrap">
+      <table className="news-publish-history-table">
+        <thead>
+          <tr>
+            <th title="When the publish event was logged, shown in your local browser timezone.">Time</th>
+            <th title="Publish lifecycle event reported by the news gateway.">Event</th>
+            <th title="Poll or gap-fill job that created this publish task.">Poll</th>
+            <th title="Live, live-background, gap-fill, or coverage mode for this publish.">Mode</th>
+            <th title="Processed canonical rows passed to the database writer.">Rows</th>
+            <th title="Normalized news rows inserted into ClickHouse.">Inserted</th>
+            <th title="Ticker-link rows inserted into ClickHouse.">Tickers</th>
+            <th title="Rows skipped because they already existed.">Skipped</th>
+            <th title="Active publish jobs after this event.">Active</th>
+          </tr>
+        </thead>
+        <tbody>
+          {(rows.length ? rows : [null]).map((row, index) => row ? (
+            <tr className={workStatusClass(row.status)} key={`${row.event}-${row.pollId}-${row.time}-${index}`}>
+              <td title={row.time}>{formatLogTime(row.time)}</td>
+              <td>{displayName(row.event)}</td>
+              <td title={row.pollId}>{shortPollId(row.pollId)}</td>
+              <td>{displayName(row.coverageMode)}</td>
+              <td>{formatCompactNumber(row.processedRows)}</td>
+              <td>{formatCompactNumber(row.insertedRows)}</td>
+              <td>{formatCompactNumber(row.tickerRows)}</td>
+              <td>{formatCompactNumber(row.skippedRows)}</td>
+              <td>{formatCompactNumber(row.activeJobs)}</td>
+            </tr>
+          ) : (
+            <tr key={`empty-${index}`}>
+              <td colSpan={9}>No publish event has been observed by this dashboard yet.</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function ServiceWorkResponsibilityCard({ group }: { group: ServiceWorkGroup }) {
   const latestRow = groupPrimaryRow(group);
   return (
@@ -768,6 +855,57 @@ function newsPollHistorySummary(rows: NewsPollHistoryRow[]) {
     avgUniqueRows: sum.uniqueRows / count,
     avgWallSeconds: sum.wallSeconds / count,
   };
+}
+
+function newsPublishHistoryRows(service: ServiceStatusPayload): NewsPublishHistoryRow[] {
+  return (service.logs?.rows ?? [])
+    .filter((row) => row.event === "publish_started" || row.event === "publish_completed" || row.event === "publish_failed")
+    .map((row) => {
+      const fields = isRecord(row.fields) ? row.fields : {};
+      const event = row.event || "publish";
+      return {
+        activeJobs: numericMetric(fields, ["active_jobs"]),
+        coverageMode: stringMetric(fields, ["coverage_mode"]),
+        event,
+        insertedRows: numericMetric(fields, ["normalized_rows_inserted"]),
+        pendingRows: numericMetric(fields, ["pending_rows"]),
+        pollId: stringMetric(fields, ["poll_id"]),
+        processedRows: numericMetric(fields, ["processed_rows"]),
+        skippedRows: numericMetric(fields, ["skipped_existing"]),
+        status: event.includes("failed") ? "failed" : event.includes("completed") ? "complete" : "running",
+        tickerRows: numericMetric(fields, ["ticker_rows_inserted"]),
+        time: row.ts_utc || "",
+      };
+    })
+    .sort((a, b) => (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0))
+    .slice(0, 50);
+}
+
+function newsPublishSummary(rows: NewsPublishHistoryRow[]) {
+  return rows.reduce(
+    (totals, row) => ({
+      insertedRows: totals.insertedRows + row.insertedRows,
+      skippedRows: totals.skippedRows + row.skippedRows,
+      tickerRows: totals.tickerRows + row.tickerRows,
+    }),
+    { insertedRows: 0, skippedRows: 0, tickerRows: 0 },
+  );
+}
+
+function newsLiveBadge(service: ServiceStatusPayload, history: NewsPollHistoryRow[]) {
+  if (!service.online) return { className: "error", label: "offline" };
+  const metrics = serviceMetricsRecord(service);
+  const latest = history[0];
+  const failed = latest?.failedRows ?? numericMetric(metrics, ["last_cycle_failed_rows"]);
+  if (failed > 0) return { className: "warn", label: "poll issues" };
+  const fetched = latest?.providerRows ?? numericMetric(metrics, ["last_cycle_provider_rows"]);
+  if (fetched > 0) return { className: "running", label: "polling" };
+  return { className: "ok", label: "idle" };
+}
+
+function shortPollId(value: string) {
+  if (!value) return "-";
+  return value.length > 18 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
 }
 
 function useNewsPollHistory(service: ServiceStatusPayload) {
@@ -1836,9 +1974,62 @@ function serviceWorkRows(service: ServiceStatusPayload): ServiceWorkRow[] {
   rows.push(...arrayRows(snapshot.task_table_progress).map((row) => serviceWorkRow(row, "table", "live")));
   rows.push(...arrayRows(snapshot.queues).map((row) => serviceWorkRow(row, "queue", "live")));
   rows.push(...arrayRows(snapshot.sources_sinks).map((row) => serviceWorkRow(row, "source", "live")));
+  if (service.registry.id === "news") rows.push(...newsSyntheticWorkRows(service));
   return dedupeWorkRows(rows)
     .filter((row) => !isSetupLikeWorkRow(row))
     .sort((a, b) => workStatusRank(a.status) - workStatusRank(b.status) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+}
+
+function newsSyntheticWorkRows(service: ServiceStatusPayload): ServiceWorkRow[] {
+  const metrics = serviceMetricsRecord(service);
+  const pendingArticles = numericMetric(metrics, ["background_pending_articles"]);
+  const activeBatches = numericMetric(metrics, ["background_active_batches"]);
+  const completedBatches = numericMetric(metrics, ["background_completed_batches"]);
+  const failedBatches = numericMetric(metrics, ["background_failed_batches"]);
+  const urlTasks = numericMetric(metrics, ["background_fetch_tasks"]);
+  const enrichedUrls = numericMetric(metrics, ["background_enriched_urls"]);
+  const pendingPublishRows = numericMetric(metrics, ["publish_pending_rows"]);
+  const activePublishJobs = numericMetric(metrics, ["publish_active_jobs"]);
+  const completedPublishJobs = numericMetric(metrics, ["publish_completed_jobs"]);
+  const failedPublishJobs = numericMetric(metrics, ["publish_failed_jobs"]);
+  const publishStatus = stringMetric(metrics, ["publish_status"]) || "idle";
+  return [
+    syntheticWorkRow({
+      detail: `pending_articles=${formatCompactNumber(pendingArticles)} active_batches=${formatCompactNumber(activeBatches)} completed_batches=${formatCompactNumber(completedBatches)} failed_batches=${formatCompactNumber(failedBatches)}`,
+      kind: "background",
+      name: "Background enrichment queue",
+      rows: pendingArticles,
+      status: failedBatches > 0 ? "warning" : activeBatches > 0 || pendingArticles > 0 ? "running" : "complete",
+    }),
+    syntheticWorkRow({
+      detail: `url_tasks=${formatCompactNumber(urlTasks)} enriched_urls=${formatCompactNumber(enrichedUrls)}`,
+      kind: "enrichment",
+      name: "URL and external text enrichment",
+      rows: enrichedUrls,
+      status: failedBatches > 0 ? "warning" : activeBatches > 0 || pendingArticles > 0 ? "running" : "complete",
+    }),
+    syntheticWorkRow({
+      detail: `status=${publishStatus} pending_rows=${formatCompactNumber(pendingPublishRows)} active_jobs=${formatCompactNumber(activePublishJobs)} completed_jobs=${formatCompactNumber(completedPublishJobs)} failed_jobs=${formatCompactNumber(failedPublishJobs)}`,
+      kind: "publisher",
+      name: "Async database publisher",
+      rows: pendingPublishRows,
+      status: failedPublishJobs > 0 ? "warning" : activePublishJobs > 0 || pendingPublishRows > 0 ? "running" : publishStatus,
+    }),
+  ];
+}
+
+function syntheticWorkRow({ detail, kind, name, rows, status }: { detail: string; kind: string; name: string; rows: number; status: string }): ServiceWorkRow {
+  return {
+    detail,
+    kind,
+    lastAt: "-",
+    name,
+    progress: "-",
+    reportKind: "live",
+    rows: formatCompactNumber(rows),
+    schedule: "-",
+    status,
+  };
 }
 
 function serviceSetupRows(service: ServiceStatusPayload): ServiceWorkRow[] {
@@ -1905,26 +2096,26 @@ function serviceResponsibilitySpecs(serviceId: ServiceId): ServiceResponsibility
       {
         description: "Benzinga polling cadence, raw item intake, duplicate handling, and live news memory updates.",
         id: "live",
-        match: [/poll|benzinga|provider|news|raw|duplicate|skip|live|latest/],
+        match: [/poll|benzinga provider|provider rows|raw|duplicate|skip|live|latest/],
         title: "Live Benzinga Update",
+      },
+      {
+        description: "Database publishing for normalized rows, ticker links, coverage rows, and runtime logs.",
+        id: "publish",
+        match: [/publish|publisher|insert|write|database|table|sink|clickhouse|persist/],
+        title: "Database Publishing",
+      },
+      {
+        description: "URL handling, external text/PDF enrichment, canonicalization, ticker links, and quality flags.",
+        id: "processing",
+        match: [/background|enrich|canonical|normaliz|url|pdf|extract|text|ticker|quality|process|article/],
+        title: "Enrichment And Canonical Rows",
       },
       {
         description: "Coverage bootstrap, gap detection, gap fill, and historical catch-up for Benzinga news.",
         id: "coverage",
         match: [/coverage|manifest|gap|backfill|catch.?up|initial|bootstrap|historical/],
         title: "Coverage, Gap Fill, Backfill",
-      },
-      {
-        description: "URL handling, external text/PDF enrichment, canonicalization, ticker links, and quality flags.",
-        id: "processing",
-        match: [/enrich|canonical|normaliz|url|pdf|extract|text|ticker|quality|process|article/],
-        title: "Enrichment And Canonical Rows",
-      },
-      {
-        description: "Database publishing for normalized rows, ticker links, coverage rows, and runtime logs.",
-        id: "publish",
-        match: [/publish|insert|write|database|table|sink|clickhouse|persist/],
-        title: "Database Publishing",
       },
       common.other,
     ],
