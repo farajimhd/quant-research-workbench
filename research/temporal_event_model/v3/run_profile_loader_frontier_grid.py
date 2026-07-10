@@ -127,9 +127,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tickers", default="")
     parser.add_argument("--data-groups", default=",".join(DEFAULT_DATA_GROUPS))
     parser.add_argument("--batch-size", type=int, default=1024)
-    parser.add_argument("--warmup-batches", type=int, default=1)
-    parser.add_argument("--batches", type=int, default=4)
-    parser.add_argument("--max-origins-per-epoch", type=int, default=200_000)
+    parser.add_argument("--global-warmup-batches", type=int, default=1, help="Once-per-run preflight batches used to warm filesystem/page caches before the grid. These are not scored.")
+    parser.add_argument("--warmup-batches", type=int, default=1, help="Warmup batches per grid item. This is the loader's real cache warm path for that parameter set and is excluded from hot throughput.")
+    parser.add_argument("--batches", type=int, default=64, help="Measured hot batches per grid item.")
+    parser.add_argument("--max-origins-per-epoch", type=int, default=10_000_000)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--preset", choices=("quick", "balanced", "full", "custom"), default="quick")
     parser.add_argument("--time-window-seconds-grid", default="", help="Comma-separated override. Example: 5,15,30,60")
@@ -187,11 +188,37 @@ def main() -> int:
         },
     )
     print(f"LOADER FRONTIER GRID PROFILE {run_dir}", flush=True)
-    print(json.dumps({"grid_count": len(grid), "batch_size": int(args.batch_size), "warmup_batches": int(args.warmup_batches), "batches": int(args.batches), "preset": str(args.preset)}, sort_keys=True), flush=True)
+    print(json.dumps({"grid_count": len(grid), "batch_size": int(args.batch_size), "global_warmup_batches": int(args.global_warmup_batches), "warmup_batches": int(args.warmup_batches), "batches": int(args.batches), "preset": str(args.preset)}, sort_keys=True), flush=True)
 
     results: list[dict[str, Any]] = []
     started_all = time.perf_counter()
     try:
+        global_warmup_result: dict[str, Any] | None = None
+        if int(args.global_warmup_batches) > 0:
+            warmup_item = grid[0]
+            warmup_batches_path = run_dir / "loader_frontier_grid_global_warmup_batches.jsonl"
+            warmup_result_path = run_dir / "loader_frontier_grid_global_warmup_result.json"
+            warmup_args = argparse.Namespace(**vars(args))
+            warmup_args.warmup_batches = 0
+            warmup_args.batches = int(args.global_warmup_batches)
+            print(f"[warmup] START once-per-run filesystem/cache warmup {_grid_label(warmup_item)} batches={int(args.global_warmup_batches)}", flush=True)
+            global_warmup_result = _profile_one_grid_item(
+                args=warmup_args,
+                grid_item=warmup_item,
+                run_index=0,
+                run_dir=run_dir,
+                batches_path=warmup_batches_path,
+            )
+            global_warmup_result["profile_role"] = "global_warmup"
+            _write_json(warmup_result_path, global_warmup_result)
+            print(
+                "[warmup] DONE "
+                f"sps={float(global_warmup_result.get('measured_samples_per_sec', 0.0) or 0.0):,.1f} "
+                f"first={float(global_warmup_result.get('first_batch_seconds', 0.0) or 0.0):.1f}s "
+                f"rss={float(global_warmup_result.get('max_rss_mib', 0.0) or 0.0) / 1024.0:.1f}GiB",
+                flush=True,
+            )
+            gc.collect()
         for run_index, grid_item in enumerate(grid, start=1):
             label = _grid_label(grid_item)
             print(f"[{run_index:03d}/{len(grid):03d}] START {label}", flush=True)
@@ -217,7 +244,7 @@ def main() -> int:
             _append_jsonl(results_path, result)
             _write_csv(summary_csv_path, results)
             recommendations = _recommendations(results, args=args)
-            _write_json(summary_json_path, {"run_dir": str(run_dir), "elapsed_seconds": time.perf_counter() - started_all, "results": results, "recommendations": recommendations})
+            _write_json(summary_json_path, {"run_dir": str(run_dir), "elapsed_seconds": time.perf_counter() - started_all, "global_warmup": global_warmup_result, "results": results, "recommendations": recommendations})
             _write_json(recommendation_path, recommendations)
             _print_result_line(run_index, len(grid), result)
             gc.collect()
@@ -227,7 +254,7 @@ def main() -> int:
         return 130
 
     recommendations = _recommendations(results, args=args)
-    _write_json(summary_json_path, {"run_dir": str(run_dir), "status": "complete", "elapsed_seconds": time.perf_counter() - started_all, "results": results, "recommendations": recommendations})
+    _write_json(summary_json_path, {"run_dir": str(run_dir), "status": "complete", "elapsed_seconds": time.perf_counter() - started_all, "global_warmup": global_warmup_result, "results": results, "recommendations": recommendations})
     _write_json(recommendation_path, recommendations)
     _write_csv(summary_csv_path, results)
     print("SUMMARY", json.dumps(_compact_recommendations(recommendations), sort_keys=True), flush=True)
@@ -444,31 +471,31 @@ def _print_result_line(run_index: int, total: int, result: Mapping[str, Any]) ->
 def _grid_from_args(args: argparse.Namespace) -> list["GridItem"]:
     preset = str(args.preset)
     if preset == "quick":
-        time_windows = [15.0, 60.0]
-        caps = [0, 16_384, 65_536]
+        time_windows = [60.0, 120.0]
+        caps = [0, 131_072]
         chunks = [1024]
-        workers = [(16, 32)]
+        workers = [(16, 32), (32, 64), (64, 64)]
         loaded_parts = [256]
         cursor_rows = [1024]
     elif preset == "balanced":
-        time_windows = [5.0, 15.0, 30.0, 60.0]
-        caps = [0, 8_192, 16_384, 32_768, 65_536]
-        chunks = [512, 1024]
-        workers = [(16, 32)]
-        loaded_parts = [256]
-        cursor_rows = [1024]
+        time_windows = [30.0, 60.0, 120.0, 300.0]
+        caps = [0, 65_536, 131_072, 262_144]
+        chunks = [1024, 2048]
+        workers = [(16, 32), (32, 64), (64, 64), (64, 96)]
+        loaded_parts = [256, 512]
+        cursor_rows = [1024, 4096]
     elif preset == "full":
-        time_windows = [1.0, 5.0, 15.0, 30.0, 60.0]
-        caps = [0, 8_192, 16_384, 32_768, 65_536]
-        chunks = [128, 256, 512]
-        workers = [(16, 32), (16, 48)]
+        time_windows = [5.0, 15.0, 30.0, 60.0, 120.0, 300.0]
+        caps = [0, 32_768, 65_536, 131_072, 262_144]
+        chunks = [512, 1024, 2048]
+        workers = [(16, 32), (32, 32), (32, 64), (64, 64), (64, 96)]
         loaded_parts = [128, 256, 512]
-        cursor_rows = [512, 1024, 2048]
+        cursor_rows = [1024, 2048, 4096]
     else:
         time_windows = [60.0]
         caps = [0]
         chunks = [1024]
-        workers = [(16, 32)]
+        workers = [(32, 64)]
         loaded_parts = [256]
         cursor_rows = [1024]
 

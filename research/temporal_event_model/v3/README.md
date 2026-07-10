@@ -188,15 +188,23 @@ The no-arg run uses `preset=quick`:
 
 ```text
 batch_size: 1024
-warmup_batches: 1
-measured_batches: 4
-time_window_seconds_grid: 15,60
-frontier_max_origins_grid: 0,16384,65536
+global_warmup_batches: 1
+warmup_batches_per_grid_item: 1
+measured_batches_per_grid_item: 64
+max_origins_per_epoch: 10000000
+time_window_seconds_grid: 60,120
+frontier_max_origins_grid: 0,131072
 materialize_chunk_size_grid: 1024
-worker_grid: 16x32
+worker_grid: 16x32,32x64,64x64
 loaded_parts_per_group_grid: 256
 origin_cursor_chunk_rows_grid: 1024
 ```
+
+The once-per-run global warmup is a preflight read that warms the filesystem and
+page cache before the grid. It is saved separately and not scored. Each grid
+item still gets one real loader warmup batch because the event/context caches
+are owned by that loader instance and cannot be safely shared across different
+worker-pool sizes without changing the loader contract.
 
 It writes:
 
@@ -219,10 +227,11 @@ Use a custom focused grid to compare final candidates:
 ```powershell
 python D:\TradingML\codes\quant_research_workbench_pipelines\research\temporal_event_model\v3\run_profile_loader_frontier_grid.py `
   --preset custom `
-  --time-window-seconds-grid 15,30,60 `
-  --frontier-max-origins-grid 0,32768,65536 `
-  --materialize-chunk-size-grid 512,1024 `
-  --worker-grid 16x32,16x48
+  --time-window-seconds-grid 60,120,300 `
+  --frontier-max-origins-grid 0,131072,262144 `
+  --materialize-chunk-size-grid 1024,2048 `
+  --worker-grid 32x64,64x64,64x96 `
+  --batches 64
 ```
 
 ## Sample-Based Training Cadence
