@@ -1220,14 +1220,15 @@ function ServiceWorkPlanPanel({ service }: { service: ServiceStatusPayload }) {
   const groups = serviceWorkGroups(service);
   const visibleGroups = visibleServiceWorkGroups(groups, service.registry.id);
   const newsPollHistory = useNewsPollHistory(service);
-  const liveCounts = serviceWorkPlanSummary(visibleGroups);
+  const summaryItems = service.registry.id === "news"
+    ? newsWorkPlanSummaryItems(service)
+    : serviceWorkPlanSummaryItems(visibleGroups);
   return (
     <Panel className="service-work-plan-panel" title="Service Work Plan">
       <div className="service-work-plan-summary">
-        <WorkPlanSummaryItem label="Areas" value={String(liveCounts.areas)} />
-        <WorkPlanSummaryItem label="Active Tasks" value={formatCompactNumber(liveCounts.activeTasks)} tone={liveCounts.activeTasks ? "active" : undefined} />
-        <WorkPlanSummaryItem label="Completed Tasks" value={formatCompactNumber(liveCounts.completedTasks)} tone={liveCounts.completedTasks ? "ok" : undefined} />
-        <WorkPlanSummaryItem label="Warnings / Errors" value={formatCompactNumber(liveCounts.warningTasks)} tone={liveCounts.warningTasks ? "warn" : "ok"} />
+        {summaryItems.map((item) => (
+          <WorkPlanSummaryItem key={item.label} label={item.label} title={item.title} tone={item.tone} value={item.value} />
+        ))}
       </div>
       <div className="service-work-plan-layout">
         <section className="service-work-live-section">
@@ -3031,6 +3032,61 @@ function visibleServiceWorkGroups(groups: ServiceWorkGroup[], serviceId: Service
   return orderedServiceWorkGroups(groups, serviceId).filter((group) => group.id !== "other" || group.rows.length);
 }
 
+type WorkPlanSummaryMetric = {
+  label: string;
+  title?: string;
+  tone?: string;
+  value: string;
+};
+
+function serviceWorkPlanSummaryItems(groups: ServiceWorkGroup[]): WorkPlanSummaryMetric[] {
+  const liveCounts = serviceWorkPlanSummary(groups);
+  return [
+    { label: "Areas", value: String(liveCounts.areas) },
+    { label: "Active Tasks", tone: liveCounts.activeTasks ? "active" : undefined, value: formatCompactNumber(liveCounts.activeTasks) },
+    { label: "Completed Tasks", tone: liveCounts.completedTasks ? "ok" : undefined, value: formatCompactNumber(liveCounts.completedTasks) },
+    { label: "Warnings / Errors", tone: liveCounts.warningTasks ? "warn" : "ok", value: formatCompactNumber(liveCounts.warningTasks) },
+  ];
+}
+
+function newsWorkPlanSummaryItems(service: ServiceStatusPayload): WorkPlanSummaryMetric[] {
+  const metrics = serviceMetricsRecord(service);
+  const liveReceived = numericMetric(metrics, ["provider_rows", "raw_saved"]);
+  const enrichedUrls = numericMetric(metrics, ["background_enriched_urls"]);
+  const requiredDownloads = numericMetric(metrics, ["background_fetch_tasks"]);
+  const insertedRows = numericMetric(metrics, ["written_rows"]);
+  const gapFilled = numericMetric(metrics, ["gap_fill_flushed_chunks"]);
+  const gapTotal = numericMetric(metrics, ["gap_fill_total_chunks"]);
+  const coverageRows = newsCoverageHistoryRows(service).filter((row) => row.coverageId || row.event.includes("coverage") || row.event.includes("gap_fill"));
+  const coverageJobs = coverageRows.length;
+  return [
+    {
+      label: "Live Received",
+      title: "Total Benzinga rows received by the live polling path in this service run.",
+      tone: liveReceived > 0 ? "active" : undefined,
+      value: formatCompactNumber(liveReceived),
+    },
+    {
+      label: "Enriched / Required",
+      title: "External URL/PDF downloads that produced text compared with total required fetch tasks.",
+      tone: requiredDownloads > 0 && enrichedUrls >= requiredDownloads ? "ok" : requiredDownloads > 0 ? "warn" : undefined,
+      value: `${formatCompactNumber(enrichedUrls)} / ${formatCompactNumber(requiredDownloads)}`,
+    },
+    {
+      label: "Inserted",
+      title: "Total normalized news rows inserted into ClickHouse by this service run.",
+      tone: insertedRows > 0 ? "ok" : undefined,
+      value: formatCompactNumber(insertedRows),
+    },
+    {
+      label: "Coverage Filled",
+      title: "Coverage or gap-fill work completed in this service run. Shows chunks when a chunked fill ran; otherwise coverage jobs.",
+      tone: gapTotal > 0 && gapFilled >= gapTotal ? "ok" : gapTotal > 0 ? "active" : coverageJobs > 0 ? "ok" : undefined,
+      value: gapTotal > 0 ? `${formatCompactNumber(gapFilled)} / ${formatCompactNumber(gapTotal)}` : formatCompactNumber(coverageJobs),
+    },
+  ];
+}
+
 function serviceWorkPlanSummary(groups: ServiceWorkGroup[]) {
   return groups.reduce(
     (summary, group) => {
@@ -3507,11 +3563,11 @@ function zonedDateTimeToUtc(year: number, month: number, day: number, hour: numb
   return new Date(utc);
 }
 
-function WorkPlanSummaryItem({ label, tone = "", value }: { label: string; tone?: string; value: string }) {
+function WorkPlanSummaryItem({ label, title = "", tone = "", value }: { label: string; title?: string; tone?: string; value: string }) {
   return (
-    <div className={tone ? `service-work-plan-summary-item ${tone}` : "service-work-plan-summary-item"}>
+    <div className={tone ? `service-work-plan-summary-item ${tone}` : "service-work-plan-summary-item"} title={title || label}>
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong title={value}>{value}</strong>
     </div>
   );
 }
