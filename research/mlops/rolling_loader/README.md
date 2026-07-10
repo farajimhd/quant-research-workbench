@@ -87,14 +87,17 @@ In chronological replay it:
 
 1. Builds per-ticker origin cursors and loads only the current time window.
 2. Warms rolling event cache state from saved prior context rows.
-3. Warms rolling sparse context state for requested text, XBRL, and corporate-action modalities.
+3. Warms rolling context state for requested text, XBRL, corporate-action,
+   bar, and scanner modalities.
 4. Advances event and context caches in timestamp order for each window.
 5. Emits raw event streams from the rolling event cache.
 6. Emits text, XBRL, and corporate-action tensors from rolling final-tensor
    caches. Sparse ticker/global contexts carry forward when no new row is
    available and refresh relative time features for the current origin.
-7. Emits daily/global bars, intraday context bars, and scanner tensors through
-   vectorized/audited context snapshot materialization.
+7. Emits daily/global bars, intraday context bars, and scanner tensors from
+   rolling final-tensor caches keyed by selected bar/scanner state signatures.
+   Private loader-only `__cache_*` timestamps are used to refresh relative time
+   features and are stripped before model batches are emitted.
 8. Builds intraday and corporate-action labels from label/context payloads.
 9. Reads optional offline scanner artifacts and emits scanner context tensors.
    Existing caches that do not yet contain scanner artifacts emit padded, fully

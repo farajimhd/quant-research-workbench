@@ -4583,6 +4583,251 @@ def _context_source_timestamps_us(frame: Any, source_name: str) -> np.ndarray:
     return np.zeros((0,), dtype=np.int64)
 
 
+def _strip_internal_cache_fields(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _strip_internal_cache_fields(item)
+            for key, item in value.items()
+            if not str(key).startswith("__cache_")
+        }
+    if isinstance(value, list):
+        return [_strip_internal_cache_fields(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_internal_cache_fields(item) for item in value)
+    return value
+
+
+def _daily_bar_cache_signature(
+    materializer: DailyIndexBatchMaterializer,
+    part: LoadedDailyIndexPart,
+    origin_timestamp_us: int,
+    payload_name: str,
+    config: DailyIndexLoaderConfig,
+) -> tuple[Any, ...]:
+    group = "global_daily_bars" if str(payload_name) == "global_daily_bars" else "daily_bars"
+    frame = part.context.get(group)
+    if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+        return (str(payload_name), "empty")
+    index = materializer._daily_bar_context_index(frame)
+    offsets = np.asarray(_bar_offsets_for_group(config, group), dtype=np.int64)
+    cutoff_ms = np.asarray([int(origin_timestamp_us) // 1000 - int(max(0.0, float(config.daily_bar_completion_lag_hours)) * 3_600_000.0)], dtype=np.int64)
+    symbols = tuple(index.symbols) if str(payload_name) == "global_daily_bars" else (str(part.plan.ticker),)
+    signature: list[Any] = [str(payload_name)]
+    for symbol in symbols:
+        signature.append(str(symbol))
+        for family in BAR_FAMILY_KEYS:
+            starts = index.bar_start_ms_by_family_symbol.get(family, {}).get(str(symbol))
+            if starts is None or starts.size <= 0:
+                signature.extend((family, tuple(-1 for _ in offsets)))
+                continue
+            selected, selected_mask = _select_completed_bar_rows(starts, cutoff_ms, offsets)
+            values = np.where(selected_mask[0], starts[selected[0]], -1).astype(np.int64, copy=False)
+            signature.extend((family, tuple(int(value) for value in values)))
+    return tuple(signature)
+
+
+def _daily_bar_cache_timestamp_arrays(
+    materializer: DailyIndexBatchMaterializer,
+    part: LoadedDailyIndexPart,
+    origin_timestamp_us: int,
+    payload_name: str,
+    config: DailyIndexLoaderConfig,
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    group = "global_daily_bars" if str(payload_name) == "global_daily_bars" else "daily_bars"
+    frame = part.context.get(group)
+    offsets = np.asarray(_bar_offsets_for_group(config, group), dtype=np.int64)
+    if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+        shape = (0, int(offsets.shape[0])) if str(payload_name) == "global_daily_bars" else (int(offsets.shape[0]),)
+        return {family: (np.zeros(shape, dtype=np.int64), np.zeros(shape, dtype=np.int64)) for family in BAR_FAMILY_KEYS}
+    index = materializer._daily_bar_context_index(frame)
+    symbols = tuple(index.symbols) if str(payload_name) == "global_daily_bars" else (str(part.plan.ticker),)
+    cutoff_ms = np.asarray([int(origin_timestamp_us) // 1000 - int(max(0.0, float(config.daily_bar_completion_lag_hours)) * 3_600_000.0)], dtype=np.int64)
+    out: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for family in BAR_FAMILY_KEYS:
+        starts_shape = (len(symbols), int(offsets.shape[0])) if str(payload_name) == "global_daily_bars" else (int(offsets.shape[0]),)
+        starts_us = np.zeros(starts_shape, dtype=np.int64)
+        ends_us = np.zeros(starts_shape, dtype=np.int64)
+        for symbol_index, symbol in enumerate(symbols):
+            starts = index.bar_start_ms_by_family_symbol.get(family, {}).get(str(symbol))
+            if starts is None or starts.size <= 0:
+                continue
+            selected, selected_mask = _select_completed_bar_rows(starts, cutoff_ms, offsets)
+            selected_starts = np.where(selected_mask[0], starts[selected[0]], 0).astype(np.int64, copy=False)
+            selected_ends = np.where(selected_mask[0], selected_starts + 86_400_000, 0).astype(np.int64, copy=False)
+            if str(payload_name) == "global_daily_bars":
+                starts_us[symbol_index] = selected_starts * 1000
+                ends_us[symbol_index] = selected_ends * 1000
+            else:
+                starts_us[:] = selected_starts * 1000
+                ends_us[:] = selected_ends * 1000
+        out[family] = (starts_us, ends_us)
+    return out
+
+
+def _intraday_bar_cache_signature(part: LoadedDailyIndexPart, origin_row: int, config: DailyIndexLoaderConfig) -> tuple[Any, ...]:
+    timestamps = _intraday_bar_cache_timestamp_arrays(part, origin_row, config)
+    start_ts, end_ts = timestamps
+    return ("ticker_intraday_bars", tuple(int(value) for value in start_ts.reshape(-1)), tuple(int(value) for value in end_ts.reshape(-1)))
+
+
+def _intraday_bar_cache_timestamp_arrays(part: LoadedDailyIndexPart, origin_row: int, config: DailyIndexLoaderConfig) -> tuple[np.ndarray, np.ndarray]:
+    horizons = _cached_intraday_context_horizons([part], config=config)
+    specs = _intraday_horizon_specs(horizons)
+    horizon_count = int(len(specs))
+    start_ts = np.zeros((horizon_count,), dtype=np.int64)
+    end_ts = np.zeros((horizon_count,), dtype=np.int64)
+    if horizon_count <= 0 or part.origins is None:
+        return start_ts, end_ts
+    if "origin_local_session_us" not in part.origins.columns:
+        return start_ts, end_ts
+    origin_ts = int(part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[int(origin_row)])
+    local_session_us = int(part.origin_array("origin_local_session_us").astype(np.int64, copy=False)[int(origin_row)])
+    local_midnight_us = origin_ts - local_session_us
+    for horizon_index, (_horizon, _horizon_us, resolution_us, bucket_count, is_eod) in enumerate(specs):
+        origin_bucket = local_session_us // int(resolution_us)
+        last_bucket = origin_bucket - 1
+        first_bucket = 0 if is_eod else max(0, int(last_bucket) - int(bucket_count) + 1)
+        if int(last_bucket) < int(first_bucket):
+            continue
+        start_ts[horizon_index] = int(local_midnight_us) + int(first_bucket) * int(resolution_us)
+        end_ts[horizon_index] = int(local_midnight_us) + int(last_bucket + 1) * int(resolution_us)
+    return start_ts, end_ts
+
+
+def _scanner_cache_signature(
+    materializer: DailyIndexBatchMaterializer,
+    part: LoadedDailyIndexPart,
+    origin_row: int,
+    config: DailyIndexLoaderConfig,
+) -> tuple[Any, ...]:
+    frame = part.context.get("scanner_context")
+    if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+        return ("scanner_context", str(part.plan.ticker), "empty")
+    path = part.context_paths.get("scanner_context")
+    index = materializer._scanner_artifact_index(frame, cache_key=str(path.resolve()) if path else f"frame:{id(frame)}")
+    origin_date = str(part.origins.get_column("origin_local_date")[origin_row])[:10] if part.origins is not None and "origin_local_date" in part.origins.columns else str(part.plan.source_date)[:10]
+    origin_session_us = int(part.origin_array("origin_local_session_us")[origin_row]) if part.origins is not None and "origin_local_session_us" in part.origins.columns else 0
+    scanner_resolution_us = int(index.columns.get("scanner_resolution_us", np.asarray([1_000_000], dtype=np.int64))[0]) if index.columns else 1_000_000
+    bucket = int(max(0, origin_session_us - 1) // max(1, scanner_resolution_us))
+    return ("scanner_context", origin_date, bucket, str(part.plan.ticker))
+
+
+def _annotate_bar_cache_payloads(
+    materializer: DailyIndexBatchMaterializer,
+    payloads: dict[str, Any],
+    parts: Sequence[LoadedDailyIndexPart],
+    refs: Sequence[DailyIndexSampleRef],
+    config: DailyIndexLoaderConfig,
+) -> None:
+    if not refs:
+        return
+    origin_timestamps = _identity_arrays(parts, refs)[2]
+    for payload_name, payload in list(payloads.items()):
+        if not isinstance(payload, dict) or not str(payload_name).endswith("_bars"):
+            continue
+        sample_count = int(len(refs))
+        if str(payload_name) == "ticker_intraday_bars":
+            mask = payload.get("mask")
+            if not isinstance(mask, np.ndarray) or not mask.shape[:1]:
+                continue
+            starts = np.zeros(mask.shape, dtype=np.int64)
+            ends = np.zeros(mask.shape, dtype=np.int64)
+            for row, ref in enumerate(refs):
+                part = parts[int(ref.part_index)]
+                start_ts, end_ts = _intraday_bar_cache_timestamp_arrays(part, int(ref.origin_row), config)
+                width = min(int(starts.shape[1]), int(start_ts.shape[0]))
+                if width:
+                    starts[row, :width] = start_ts[:width]
+                    ends[row, :width] = end_ts[:width]
+            payload["__cache_start_timestamp_us"] = starts
+            payload["__cache_end_timestamp_us"] = ends
+            for family in BAR_FAMILY_KEYS:
+                payload[f"__cache_{family}_start_timestamp_us"] = starts.copy()
+                payload[f"__cache_{family}_end_timestamp_us"] = ends.copy()
+            continue
+        mask = payload.get("mask")
+        if not isinstance(mask, np.ndarray) or not mask.shape[:1]:
+            continue
+        shape = mask.shape
+        family_starts = {family: np.zeros(shape, dtype=np.int64) for family in BAR_FAMILY_KEYS}
+        family_ends = {family: np.zeros(shape, dtype=np.int64) for family in BAR_FAMILY_KEYS}
+        for row, ref in enumerate(refs):
+            part = parts[int(ref.part_index)]
+            arrays = _daily_bar_cache_timestamp_arrays(materializer, part, int(origin_timestamps[row]), str(payload_name), config)
+            for family, (starts, ends) in arrays.items():
+                if str(payload_name) == "global_daily_bars":
+                    if starts.shape == shape[1:]:
+                        family_starts[family][row] = starts
+                        family_ends[family][row] = ends
+                else:
+                    width = min(int(shape[1]), int(starts.shape[0]))
+                    if width:
+                        family_starts[family][row, :width] = starts[:width]
+                        family_ends[family][row, :width] = ends[:width]
+        for family in BAR_FAMILY_KEYS:
+            payload[f"__cache_{family}_start_timestamp_us"] = family_starts[family]
+            payload[f"__cache_{family}_end_timestamp_us"] = family_ends[family]
+        payload["__cache_start_timestamp_us"] = family_starts.get("trade", np.zeros(shape, dtype=np.int64))
+        payload["__cache_end_timestamp_us"] = family_ends.get("trade", np.zeros(shape, dtype=np.int64))
+
+
+def _annotate_scanner_cache_payload(
+    materializer: DailyIndexBatchMaterializer,
+    payloads: dict[str, Any],
+    parts: Sequence[LoadedDailyIndexPart],
+    refs: Sequence[DailyIndexSampleRef],
+    config: DailyIndexLoaderConfig,
+) -> None:
+    payload = payloads.get("scanner_context")
+    if not isinstance(payload, dict) or not refs:
+        return
+    leader_mask = payload.get("leader_horizon_mask")
+    origin_mask = payload.get("origin_horizon_mask")
+    if not isinstance(leader_mask, np.ndarray) or not isinstance(origin_mask, np.ndarray):
+        return
+    leader_start = np.zeros(leader_mask.shape, dtype=np.int64)
+    leader_end = np.zeros(leader_mask.shape, dtype=np.int64)
+    origin_start = np.zeros(origin_mask.shape, dtype=np.int64)
+    origin_end = np.zeros(origin_mask.shape, dtype=np.int64)
+    group_names = tuple(str(group) for group in config.scanner_groups)
+    horizons = tuple(str(horizon) for horizon in config.scanner_horizons)
+    top_k = max(1, int(config.scanner_top_k))
+    for row, ref in enumerate(refs):
+        part = parts[int(ref.part_index)]
+        frame = part.context.get("scanner_context")
+        if frame is None or int(getattr(frame, "height", 0) or 0) <= 0:
+            continue
+        path = part.context_paths.get("scanner_context")
+        index = materializer._scanner_artifact_index(frame, cache_key=str(path.resolve()) if path else f"frame:{id(frame)}")
+        if index.bucket.shape[0] <= 0:
+            continue
+        origin_row = int(ref.origin_row)
+        origin_date = str(part.origins.get_column("origin_local_date")[origin_row])[:10] if part.origins is not None and "origin_local_date" in part.origins.columns else str(part.plan.source_date)[:10]
+        origin_session_us = int(part.origin_array("origin_local_session_us")[origin_row]) if part.origins is not None and "origin_local_session_us" in part.origins.columns else 0
+        scanner_resolution_us = int(index.columns.get("scanner_resolution_us", np.asarray([1_000_000], dtype=np.int64))[0])
+        bucket = int(max(0, origin_session_us - 1) // max(1, scanner_resolution_us))
+        origin_ticker = str(part.plan.ticker)
+        origin_artifact_row = index.row_by_key.get((origin_date, bucket, origin_ticker))
+        for group_index, group_name in enumerate(group_names):
+            leader_rows = index.leaders_by_key.get((origin_date, bucket, group_name))
+            if leader_rows is not None:
+                for leader_position, artifact_row in enumerate(leader_rows[:top_k]):
+                    artifact_row = int(artifact_row)
+                    for horizon_index, horizon in enumerate(horizons):
+                        start_us, end_us = _scanner_horizon_start_end_us(index=index, row=artifact_row, horizon=horizon)
+                        leader_start[row, group_index, leader_position, horizon_index] = int(start_us)
+                        leader_end[row, group_index, leader_position, horizon_index] = int(end_us)
+            if origin_artifact_row is not None:
+                for horizon_index, horizon in enumerate(horizons):
+                    start_us, end_us = _scanner_horizon_start_end_us(index=index, row=int(origin_artifact_row), horizon=horizon)
+                    origin_start[row, group_index, horizon_index] = int(start_us)
+                    origin_end[row, group_index, horizon_index] = int(end_us)
+    payload["__cache_leader_start_timestamp_us"] = leader_start
+    payload["__cache_leader_end_timestamp_us"] = leader_end
+    payload["__cache_origin_start_timestamp_us"] = origin_start
+    payload["__cache_origin_end_timestamp_us"] = origin_end
+
+
 def _refresh_text_payload_time_features(payload: Mapping[str, Any], row: int, origin_timestamp_us: int) -> None:
     timestamps = payload.get("item_timestamp_us")
     features = payload.get("item_time_features")
@@ -4656,6 +4901,98 @@ def _refresh_corporate_action_payload_time_features(payload: Mapping[str, Any], 
         refreshed = np.concatenate([absolute, _relative_time_feature_matrix(effective[int(row)], origins)], axis=-1).astype(np.float32, copy=False)
         refreshed[~selected_mask] = 0.0
         effective_time_features[int(row)] = refreshed
+
+
+def _refresh_bar_payload_time_features(payload: Mapping[str, Any], row: int, origin_timestamp_us: int) -> None:
+    origin_ts = int(origin_timestamp_us)
+    for family in BAR_FAMILY_KEYS:
+        start_ts = payload.get(f"__cache_{family}_start_timestamp_us")
+        end_ts = payload.get(f"__cache_{family}_end_timestamp_us")
+        family_mask = payload.get(f"{family}_mask")
+        if not isinstance(start_ts, np.ndarray) or not isinstance(end_ts, np.ndarray):
+            continue
+        if int(row) >= int(start_ts.shape[0]):
+            continue
+        starts = start_ts[int(row)].astype(np.int64, copy=False)
+        ends = end_ts[int(row)].astype(np.int64, copy=False)
+        origins = np.full(starts.shape, origin_ts, dtype=np.int64)
+        start_features = _bar_time_feature_matrix(starts, origins)
+        end_features = _bar_end_time_feature_matrix(ends, origins)
+        if isinstance(family_mask, np.ndarray) and family_mask.shape[:1] and int(row) < int(family_mask.shape[0]):
+            valid = family_mask[int(row)].astype(np.bool_, copy=False)
+            start_features[~valid] = 0.0
+            end_features[~valid] = 0.0
+        for key in (f"{family}_time_features", f"{family}_start_time_features"):
+            target = payload.get(key)
+            if isinstance(target, np.ndarray) and target.shape[:1] and int(row) < int(target.shape[0]):
+                target[int(row)] = start_features
+        target_end = payload.get(f"{family}_end_time_features")
+        if isinstance(target_end, np.ndarray) and target_end.shape[:1] and int(row) < int(target_end.shape[0]):
+            target_end[int(row)] = end_features
+    start_ts = payload.get("__cache_start_timestamp_us")
+    end_ts = payload.get("__cache_end_timestamp_us")
+    mask = payload.get("mask")
+    if isinstance(start_ts, np.ndarray) and isinstance(end_ts, np.ndarray) and start_ts.shape[:1] and int(row) < int(start_ts.shape[0]):
+        starts = start_ts[int(row)].astype(np.int64, copy=False)
+        ends = end_ts[int(row)].astype(np.int64, copy=False)
+        origins = np.full(starts.shape, origin_ts, dtype=np.int64)
+        start_features = _bar_time_feature_matrix(starts, origins)
+        end_features = _bar_end_time_feature_matrix(ends, origins)
+        if isinstance(mask, np.ndarray) and mask.shape[:1] and int(row) < int(mask.shape[0]):
+            valid = mask[int(row)].astype(np.bool_, copy=False)
+            start_features[~valid] = 0.0
+            end_features[~valid] = 0.0
+        for key in ("time_features", "start_time_features"):
+            target = payload.get(key)
+            if isinstance(target, np.ndarray) and target.shape[:1] and int(row) < int(target.shape[0]):
+                target[int(row)] = start_features
+        target_end = payload.get("end_time_features")
+        if isinstance(target_end, np.ndarray) and target_end.shape[:1] and int(row) < int(target_end.shape[0]):
+            target_end[int(row)] = end_features
+
+
+def _refresh_scanner_payload_time_features(payload: Mapping[str, Any], row: int, origin_timestamp_us: int) -> None:
+    origin_ts = int(origin_timestamp_us)
+    leader_start = payload.get("__cache_leader_start_timestamp_us")
+    leader_end = payload.get("__cache_leader_end_timestamp_us")
+    leader_mask = payload.get("leader_horizon_mask")
+    if isinstance(leader_start, np.ndarray) and isinstance(leader_end, np.ndarray) and leader_start.shape[:1] and int(row) < int(leader_start.shape[0]):
+        starts = leader_start[int(row)].astype(np.int64, copy=False)
+        ends = leader_end[int(row)].astype(np.int64, copy=False)
+        origins = np.full(starts.shape, origin_ts, dtype=np.int64)
+        start_features = _bar_time_feature_matrix(starts, origins)
+        end_features = _bar_end_time_feature_matrix(ends, origins)
+        if isinstance(leader_mask, np.ndarray) and leader_mask.shape[:1] and int(row) < int(leader_mask.shape[0]):
+            valid = leader_mask[int(row)].astype(np.bool_, copy=False)
+            start_features[~valid] = 0.0
+            end_features[~valid] = 0.0
+        for key in ("leader_time_features", "leader_start_time_features"):
+            target = payload.get(key)
+            if isinstance(target, np.ndarray) and target.shape[:1]:
+                target[int(row)] = start_features
+        target_end = payload.get("leader_end_time_features")
+        if isinstance(target_end, np.ndarray) and target_end.shape[:1]:
+            target_end[int(row)] = end_features
+    origin_start = payload.get("__cache_origin_start_timestamp_us")
+    origin_end = payload.get("__cache_origin_end_timestamp_us")
+    origin_mask = payload.get("origin_horizon_mask")
+    if isinstance(origin_start, np.ndarray) and isinstance(origin_end, np.ndarray) and origin_start.shape[:1] and int(row) < int(origin_start.shape[0]):
+        starts = origin_start[int(row)].astype(np.int64, copy=False)
+        ends = origin_end[int(row)].astype(np.int64, copy=False)
+        origins = np.full(starts.shape, origin_ts, dtype=np.int64)
+        start_features = _bar_time_feature_matrix(starts, origins)
+        end_features = _bar_end_time_feature_matrix(ends, origins)
+        if isinstance(origin_mask, np.ndarray) and origin_mask.shape[:1] and int(row) < int(origin_mask.shape[0]):
+            valid = origin_mask[int(row)].astype(np.bool_, copy=False)
+            start_features[~valid] = 0.0
+            end_features[~valid] = 0.0
+        for key in ("origin_time_features", "origin_start_time_features"):
+            target = payload.get(key)
+            if isinstance(target, np.ndarray) and target.shape[:1]:
+                target[int(row)] = start_features
+        target_end = payload.get("origin_end_time_features")
+        if isinstance(target_end, np.ndarray) and target_end.shape[:1]:
+            target_end[int(row)] = end_features
 
 
 def _slice_profile(profile: Mapping[str, float | int], source_samples: int, output_samples: int) -> dict[str, float | int]:
@@ -5044,6 +5381,7 @@ class _RollingContextTensorCache:
         self._state_by_key: dict[tuple[str, str], _RollingContextState] = {}
         self._global_state_by_key: dict[str, _RollingContextState] = {}
         self._source_timestamp_cache: dict[tuple[int, str], np.ndarray] = {}
+        self._signature_cache: dict[tuple[Any, ...], Any] = {}
         self._evictions = 0
         self._last_evicted_key = ""
         self._last_window_refs = 0
@@ -5056,6 +5394,7 @@ class _RollingContextTensorCache:
         self._state_by_key.clear()
         self._global_state_by_key.clear()
         self._source_timestamp_cache.clear()
+        self._signature_cache.clear()
         self._last_evicted_key = ""
         self._last_window_refs = 0
         self._last_window_tickers = 0
@@ -5122,6 +5461,7 @@ class _RollingContextTensorCache:
         refs: Sequence[DailyIndexSampleRef],
     ) -> _RollingContextBatch:
         start = time.perf_counter()
+        self._signature_cache.clear()
         profile: dict[str, float | int] = {"rolling_context_rows": int(len(refs))}
         text_inputs: dict[str, dict[str, np.ndarray]] | None = None
         xbrl_inputs: dict[str, np.ndarray] | None = None
@@ -5146,15 +5486,12 @@ class _RollingContextTensorCache:
             profile["rolling_corporate_action_seconds"] = time.perf_counter() - section_start
         if BAR_CONTEXT_GROUPS.union(INTRADAY_BAR_CONTEXT_GROUPS).intersection(set(self.config.data_groups)):
             section_start = time.perf_counter()
-            bar_inputs, bar_profile = materializer._materialize_bar_inputs(parts, refs)
-            intraday_bar_inputs, intraday_bar_profile = materializer._materialize_intraday_bar_inputs(parts, refs)
-            bar_inputs.update(intraday_bar_inputs)
+            bar_inputs, bar_profile = self._materialize_bar_inputs_with_cache(materializer, parts, refs)
             profile.update({f"rolling_{key}": value for key, value in bar_profile.items()})
-            profile.update({f"rolling_{key}": value for key, value in intraday_bar_profile.items()})
             profile["rolling_bar_seconds"] = time.perf_counter() - section_start
         if "scanner_context" in self.config.data_groups:
             section_start = time.perf_counter()
-            scanner_inputs, scanner_profile = materializer._materialize_scanner_inputs(parts, refs)
+            scanner_inputs, scanner_profile = self._materialize_scanner_inputs_with_cache(materializer, parts, refs)
             profile.update({f"rolling_{key}": value for key, value in scanner_profile.items()})
             profile["rolling_scanner_seconds"] = time.perf_counter() - section_start
 
@@ -5189,8 +5526,8 @@ class _RollingContextTensorCache:
             text_inputs=text_inputs,
             xbrl_inputs=xbrl_inputs,
             corporate_action_inputs=corporate_inputs,
-            bar_inputs=bar_inputs,
-            scanner_inputs=scanner_inputs,
+            bar_inputs=_strip_internal_cache_fields(bar_inputs) if bar_inputs is not None else None,
+            scanner_inputs=_strip_internal_cache_fields(scanner_inputs) if scanner_inputs is not None else None,
             profile=profile,
         )
 
@@ -5262,6 +5599,83 @@ class _RollingContextTensorCache:
             profile_prefix="corporate_action_cache",
         )
 
+    def _materialize_bar_inputs_with_cache(
+        self,
+        materializer: DailyIndexBatchMaterializer,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+    ) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, float | int]]:
+        out: dict[str, dict[str, np.ndarray]] = {}
+        profile: dict[str, float | int] = {}
+        requested_daily = [BAR_INPUT_GROUP_TO_KEY[group] for group in ("daily_bars", "global_daily_bars") if group in self.config.data_groups]
+        if requested_daily:
+            daily_payloads, daily_profile = self._materialize_signature_payloads_with_cache(
+                materializer,
+                parts,
+                refs,
+                materialize_fn=materializer._materialize_bar_inputs,
+                requested_payloads=tuple(requested_daily),
+                payload_to_group={
+                    "ticker_daily_bars": "ticker_daily_bars",
+                    "global_daily_bars": "global_daily_bars",
+                },
+                global_payloads={"global_daily_bars"},
+                signature_fn=lambda part, ref, payload_name: self._bar_payload_signature(materializer, part, ref, str(payload_name)),
+                annotate_fn=lambda payloads, subset_parts, subset_refs: _annotate_bar_cache_payloads(materializer, payloads, subset_parts, subset_refs, self.config),
+                refresh_fn=_refresh_bar_payload_time_features,
+                profile_prefix="bar_cache",
+            )
+            out.update(daily_payloads)
+            profile.update(daily_profile)
+        if "intraday_bars" in self.config.data_groups:
+            intraday_payloads, intraday_profile = self._materialize_signature_payloads_with_cache(
+                materializer,
+                parts,
+                refs,
+                materialize_fn=materializer._materialize_intraday_bar_inputs,
+                requested_payloads=("ticker_intraday_bars",),
+                payload_to_group={"ticker_intraday_bars": "ticker_intraday_bars"},
+                global_payloads=set(),
+                signature_fn=lambda part, ref, payload_name: self._bar_payload_signature(materializer, part, ref, str(payload_name)),
+                annotate_fn=lambda payloads, subset_parts, subset_refs: _annotate_bar_cache_payloads(materializer, payloads, subset_parts, subset_refs, self.config),
+                refresh_fn=_refresh_bar_payload_time_features,
+                profile_prefix="intraday_bar_cache",
+            )
+            out.update(intraday_payloads)
+            profile.update(intraday_profile)
+        return out, profile
+
+    def _materialize_scanner_inputs_with_cache(
+        self,
+        materializer: DailyIndexBatchMaterializer,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+    ) -> tuple[dict[str, np.ndarray], dict[str, float | int]]:
+        if "scanner_context" not in self.config.data_groups:
+            return {}, {}
+
+        def wrapped_fn(
+            subset_parts: Sequence[LoadedDailyIndexPart],
+            subset_refs: Sequence[DailyIndexSampleRef],
+        ) -> tuple[dict[str, Any], dict[str, float | int]]:
+            payload, fn_profile = materializer._materialize_scanner_inputs(subset_parts, subset_refs)
+            return {"scanner_context": payload}, fn_profile
+
+        payloads, profile = self._materialize_signature_payloads_with_cache(
+            materializer,
+            parts,
+            refs,
+            materialize_fn=wrapped_fn,
+            requested_payloads=("scanner_context",),
+            payload_to_group={"scanner_context": "scanner_context"},
+            global_payloads=set(),
+            signature_fn=lambda part, ref, payload_name: self._scanner_payload_signature(materializer, part, ref),
+            annotate_fn=lambda payloads, subset_parts, subset_refs: _annotate_scanner_cache_payload(materializer, payloads, subset_parts, subset_refs, self.config),
+            refresh_fn=_refresh_scanner_payload_time_features,
+            profile_prefix="scanner_cache",
+        )
+        return payloads.get("scanner_context", {}), profile
+
     def _materialize_single_sparse_with_cache(
         self,
         materializer: DailyIndexBatchMaterializer,
@@ -5294,6 +5708,98 @@ class _RollingContextTensorCache:
             profile_prefix=profile_prefix,
         )
         return payloads.get(str(payload_group), {}), profile
+
+    def _materialize_signature_payloads_with_cache(
+        self,
+        materializer: DailyIndexBatchMaterializer,
+        parts: Sequence[LoadedDailyIndexPart],
+        refs: Sequence[DailyIndexSampleRef],
+        *,
+        materialize_fn: Callable[[Sequence[LoadedDailyIndexPart], Sequence[DailyIndexSampleRef]], tuple[dict[str, Any], dict[str, float | int]]],
+        requested_payloads: Sequence[str],
+        payload_to_group: Mapping[str, str],
+        global_payloads: set[str],
+        signature_fn: Callable[[LoadedDailyIndexPart, DailyIndexSampleRef, str], Any],
+        annotate_fn: Callable[[dict[str, Any], Sequence[LoadedDailyIndexPart], Sequence[DailyIndexSampleRef]], None],
+        refresh_fn: Callable[[Mapping[str, Any], int, int], None],
+        profile_prefix: str,
+    ) -> tuple[dict[str, Any], dict[str, float | int]]:
+        if not refs:
+            payloads, fn_profile = materialize_fn(parts, refs)
+            fn_profile[f"{profile_prefix}_hits"] = 0
+            fn_profile[f"{profile_prefix}_misses"] = 0
+            fn_profile[f"{profile_prefix}_stale"] = 0
+            return payloads, fn_profile
+        sample_count = int(len(refs))
+        tickers, _ordinals, timestamps = _identity_arrays(parts, refs)
+        output_by_payload: dict[str, Any] = {}
+        missing_rows_by_payload: dict[str, list[int]] = {str(payload): [] for payload in requested_payloads}
+        signature_by_payload_row: dict[tuple[str, int], Any] = {}
+        hits = 0
+        misses = 0
+        stale = 0
+        for row, ref in enumerate(refs):
+            part = parts[int(ref.part_index)]
+            ticker = str(tickers[int(row)])
+            origin_ts = int(timestamps[int(row)])
+            for payload_name in requested_payloads:
+                payload_name = str(payload_name)
+                group = str(payload_to_group[payload_name])
+                state_key = ("__global__", group) if payload_name in global_payloads else (ticker, group)
+                is_global = payload_name in global_payloads
+                signature = signature_fn(part, ref, payload_name)
+                signature_by_payload_row[(payload_name, int(row))] = signature
+                state = self._state_for_key(state_key, global_state=is_global)
+                if state is not None and state.payload is not None and state.signature == signature and origin_ts >= int(state.timestamp_us):
+                    if payload_name not in output_by_payload:
+                        output_by_payload[payload_name] = _empty_batch_payload_like(state.payload, sample_count)
+                    _restore_batch_row(output_by_payload[payload_name], state.payload, int(row), sample_count)
+                    refresh_fn(output_by_payload[payload_name], int(row), origin_ts)
+                    state.timestamp_us = origin_ts
+                    state.source_date = str(part.plan.source_date)
+                    hits += 1
+                    continue
+                if state is not None:
+                    stale += 1
+                missing_rows_by_payload[payload_name].append(int(row))
+                misses += 1
+        all_missing_rows = sorted({row for rows in missing_rows_by_payload.values() for row in rows})
+        base_profile: dict[str, float | int] = {}
+        materialized_by_payload: dict[str, Any] = {}
+        if all_missing_rows:
+            subset_refs = [refs[row] for row in all_missing_rows]
+            materialized_by_payload, base_profile = materialize_fn(parts, subset_refs)
+            annotate_fn(materialized_by_payload, parts, subset_refs)
+        for payload_name in requested_payloads:
+            payload_name = str(payload_name)
+            if payload_name in materialized_by_payload:
+                source_payload = materialized_by_payload[payload_name]
+                if payload_name not in output_by_payload:
+                    output_by_payload[payload_name] = _empty_batch_payload_from_batch(source_payload, sample_count, len(all_missing_rows))
+                source_positions = {row: index for index, row in enumerate(all_missing_rows)}
+                for target_row in missing_rows_by_payload[payload_name]:
+                    source_row = source_positions[int(target_row)]
+                    _copy_batch_row(output_by_payload[payload_name], source_payload, target_row=int(target_row), source_row=int(source_row), source_sample_count=len(all_missing_rows))
+                    group = str(payload_to_group[payload_name])
+                    ticker = str(tickers[int(target_row)])
+                    state_key = ("__global__", group) if payload_name in global_payloads else (ticker, group)
+                    is_global = payload_name in global_payloads
+                    self._store_payload_state(
+                        state_key,
+                        group=group,
+                        payload=_snapshot_batch_row(source_payload, int(source_row), len(all_missing_rows)),
+                        global_state=is_global,
+                        source_date="global" if is_global else str(parts[int(refs[int(target_row)].part_index)].plan.source_date),
+                        timestamp_us=int(timestamps[int(target_row)]),
+                        signature=signature_by_payload_row[(payload_name, int(target_row))],
+                    )
+            elif payload_name not in output_by_payload:
+                output_by_payload[payload_name] = {}
+        base_profile[f"{profile_prefix}_hits"] = int(hits)
+        base_profile[f"{profile_prefix}_misses"] = int(misses)
+        base_profile[f"{profile_prefix}_stale"] = int(stale)
+        base_profile[f"{profile_prefix}_payloads"] = int(len(requested_payloads))
+        return output_by_payload, base_profile
 
     def _materialize_sparse_with_cache(
         self,
@@ -5411,6 +5917,41 @@ class _RollingContextTensorCache:
         if global_state:
             return self._global_state_by_key.get(str(state_key[1]))
         return self._state_by_key.get((str(state_key[0]), str(state_key[1])))
+
+    def _bar_payload_signature(
+        self,
+        materializer: DailyIndexBatchMaterializer,
+        part: LoadedDailyIndexPart,
+        ref: DailyIndexSampleRef,
+        payload_name: str,
+    ) -> Any:
+        origin_row = int(ref.origin_row)
+        origin_ts = int(part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[origin_row])
+        cache_key = (id(part), id(part.origins), str(payload_name), int(origin_row))
+        cached = self._signature_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        if str(payload_name) == "ticker_intraday_bars":
+            signature = _intraday_bar_cache_signature(part, origin_row, self.config)
+        else:
+            signature = _daily_bar_cache_signature(materializer, part, origin_ts, str(payload_name), self.config)
+        self._signature_cache[cache_key] = signature
+        return signature
+
+    def _scanner_payload_signature(
+        self,
+        materializer: DailyIndexBatchMaterializer,
+        part: LoadedDailyIndexPart,
+        ref: DailyIndexSampleRef,
+    ) -> Any:
+        origin_row = int(ref.origin_row)
+        cache_key = (id(part), id(part.origins), "scanner_context", int(origin_row))
+        cached = self._signature_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        signature = _scanner_cache_signature(materializer, part, origin_row, self.config)
+        self._signature_cache[cache_key] = signature
+        return signature
 
     def _context_source_timestamps_us(self, frame: Any, source_name: str) -> np.ndarray:
         key = (id(frame), str(source_name))
@@ -5555,6 +6096,7 @@ class _RollingContextTensorCache:
         global_state: bool = False,
         source_date: str = "",
         timestamp_us: int = 0,
+        signature: Any | None = None,
     ) -> None:
         if global_state:
             state = self._global_state_by_key.get(str(state_key[1]))
@@ -5566,11 +6108,13 @@ class _RollingContextTensorCache:
                     timestamp_us=int(timestamp_us),
                     estimated_bytes=int(_nested_array_nbytes(payload)),
                     payload=payload,
+                    signature=signature,
                 )
                 return
             state.payload = payload
             state.source_date = str(source_date or state.source_date or "global")
             state.timestamp_us = int(timestamp_us)
+            state.signature = signature
             state.estimated_bytes = max(int(state.estimated_bytes), int(_nested_array_nbytes(payload)))
             return
         state = self._state_by_key.get((str(state_key[0]), str(state_key[1])))
@@ -5582,11 +6126,13 @@ class _RollingContextTensorCache:
                 timestamp_us=int(timestamp_us),
                 estimated_bytes=int(_nested_array_nbytes(payload)),
                 payload=payload,
+                signature=signature,
             )
             return
         state.payload = payload
         state.source_date = str(source_date or state.source_date)
         state.timestamp_us = int(timestamp_us)
+        state.signature = signature
         state.estimated_bytes = max(int(state.estimated_bytes), int(_nested_array_nbytes(payload)))
 
     def _restore_payload_state(
@@ -5724,6 +6270,7 @@ class _RollingContextState:
     timestamp_us: int
     estimated_bytes: int
     payload: Any | None = None
+    signature: Any | None = None
 
 
 class _RollingEventStreamCache:

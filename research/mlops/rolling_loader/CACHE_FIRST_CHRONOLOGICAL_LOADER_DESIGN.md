@@ -327,8 +327,8 @@ Current implementation note:
 - Origin rows are loaded through per-ticker cursors in small chunks and popped
   into `1s`/`5s` chronological windows. The loader no longer rescans every
   active origin parquet for every window.
-- Non-event context now flows through the chronological context override
-  boundary before worker submission. This prevents materializer workers from
+- Non-event context now flows through the chronological context cache boundary
+  before worker submission. This prevents materializer workers from
   independently rebuilding the same context path.
 - Sparse ticker/global contexts are true rolling tensor caches in final batch
   format. Ticker news, market news, SEC filings, XBRL, and corporate actions
@@ -339,21 +339,32 @@ Current implementation note:
   last cached tensor state and refreshes relative time/age features against the
   current origin timestamp. Masked zeros are emitted only when no valid prior
   context exists.
-- Daily/global bars, intraday bars, and scanner context are routed through the
-  same context override boundary and remain vectorized/audited snapshot
-  materializations. They are not yet restored from persisted final tensor rows,
-  because their relative start/end time features must be recomputed exactly for
-  each origin. Scanner remains artifact-based and must be available for the
-  source day unless the config permits fully masked scanner fallback.
+- Daily/global bars, intraday bars, and scanner context are also rolling tensor
+  caches. Their cache freshness is not based on sparse source-row availability;
+  it is based on a deterministic state signature:
+  - daily/global bars: selected completed bar starts by symbol, family, and
+    offset;
+  - intraday context bars: selected backward bar start/end grid timestamps by
+    horizon;
+  - scanner: source date, scanner bucket, and origin ticker.
+  If the signature is unchanged, the cached final tensor row is restored and
+  its relative start/end time features are refreshed against the current origin.
+  If the signature changes, the existing vectorized/audited selector creates a
+  new tensor row and updates the cache.
+- Operational cache metadata such as selected start/end timestamps is held only
+  inside the loader cache under private `__cache_*` keys and is stripped before
+  `DailyIndexTrainingBatch` is emitted. The model receives only the documented
+  X tensors and masks.
 - Implementation nuance: the cache still reuses the existing vectorized/audited
-  as-of selectors to create cache misses and stale sparse rows. The state
-  boundary and carried sparse tensors now match the production-style cache
-  contract, while selector math remains centralized for correctness and
-  auditability.
+  as-of selectors to create cache misses and stale rows. The state boundary and
+  carried tensors now match the production-style cache contract, while selector
+  math remains centralized for correctness and auditability.
 - Training telemetry reports `loader/cache/text_hits`,
   `loader/cache/text_misses`, `loader/cache/text_stale`,
-  `loader/cache/xbrl_*`, and `loader/cache/corporate_action_*` so runs can
-  verify whether the cache-first path is being used.
+  `loader/cache/xbrl_*`, `loader/cache/corporate_action_*`,
+  `loader/cache/bar_*`, `loader/cache/intraday_bar_*`, and
+  `loader/cache/scanner_*` so runs can verify whether the cache-first path is
+  being used.
 
 ## Back-of-Envelope Memory Target
 
