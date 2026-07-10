@@ -377,6 +377,13 @@ window, so the raw batch prefetch queue can fill instead of rebuilding payload
 state for sub-batch windows. This avoids repeatedly scanning all origin parquet
 files and avoids retaining a full day of origins in memory.
 
+Window refills are double-buffered. While the current replay window is being
+materialized into training batches, the loader prepares the next window's
+origin refs and payload views in a one-window lookahead worker. The lookahead
+does not advance event or sparse-context cache tensors; those caches are still
+mutated only in chronological order immediately before materializing the
+prepared window. This removes most boundary stalls without allowing lookahead.
+
 Sparse contexts follow the same production contract conceptually: ticker news,
 market news, SEC embeddings, XBRL, corporate actions, daily/global bars, and
 scanner state are as-of caches keyed by availability timestamp. Low-frequency

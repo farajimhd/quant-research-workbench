@@ -2760,6 +2760,7 @@ class AsyncDailyIndexBatchLoader:
         ready = _ReadyBatchBuffer(batch_size=int(self.config.batch_size), drop_last=bool(self.config.drop_last_batch))
         read_pool = ThreadPoolExecutor(max_workers=max(1, int(self.config.read_workers)), thread_name_prefix="tmc-chron-load")
         mat_pool = ThreadPoolExecutor(max_workers=max(1, int(self.config.materialize_workers)), thread_name_prefix="tmc-chron-materialize")
+        prep_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tmc-chron-window")
         event_cache = _RollingEventStreamCache(config=self.config)
         context_cache = _RollingContextTensorCache(config=self.config)
         payload_cache: OrderedDict[str, LoadedDailyIndexPart] = OrderedDict()
@@ -2867,91 +2868,77 @@ class AsyncDailyIndexBatchLoader:
                         **warm_profile,
                         **event_cache.telemetry_snapshot(),
                     )
-                while window_start < int(day_window_end):
-                    if self._stop_event.is_set():
-                        return
-                    window_end = min(int(window_start) + int(window_us), int(day_window_end))
-                    self.state.chronological_window_start_us = int(window_start)
+                prep_future: Future[_PreparedChronologicalWindow] | None = None
+
+                def submit_prepare_window(start_timestamp_us: int, origin_cursor_offset: int) -> Future[_PreparedChronologicalWindow]:
+                    end_timestamp_us = min(int(start_timestamp_us) + int(window_us), int(day_window_end))
                     self._update_telemetry(
-                        loader_phase="window_plan",
+                        loader_phase="window_prefetch_start",
                         current_source_date=str(source_date),
-                        window_start_timestamp_us=int(window_start),
-                        window_end_timestamp_us=int(window_end),
+                        window_start_timestamp_us=int(start_timestamp_us),
+                        window_end_timestamp_us=int(end_timestamp_us),
+                        payload_cache_parts=int(len(payload_cache)),
+                        payload_cache_limit=int(payload_cache_limit),
                         day_refs_remaining_before_window=int(max(0, int(day_total_refs) - int(emitted_from_day))),
                     )
-                    self._update_telemetry(
-                        loader_phase="origin_read",
-                        origin_cursor_count=int(len(cursors)),
-                    )
-                    origin_window_start = time.perf_counter()
-                    loaded_origins, cursor_window_profile = _load_window_origins_from_cursors(
+                    return prep_pool.submit(
+                        _prepare_chronological_window,
+                        read_pool=read_pool,
+                        reader=self.reader,
                         cursors=cursors,
-                        start_us=int(window_start),
-                        end_us=int(window_end),
-                        stop_event=self._stop_event,
-                    )
-                    origin_window_load_seconds = time.perf_counter() - origin_window_start
-                    origin_rows = int(sum(int(part.origins.height) for part in loaded_origins if part.origins is not None))
-                    self._update_telemetry(
-                        loader_phase="origin_ready",
-                        origin_window_load_seconds=float(origin_window_load_seconds),
-                        **cursor_window_profile,
-                    )
-                    if not loaded_origins:
-                        self.state.chronological_origin_cursor = 0
-                        self._update_telemetry(loader_phase="window_empty", window_active_parts=0, window_active_tickers=0)
-                        window_start = int(window_end)
-                        continue
-                    self._update_telemetry(loader_phase="sample_refs")
-                    window_refs = _sample_refs_for_loaded_parts(
-                        loaded_origins,
+                        payload_cache=payload_cache,
+                        payload_cache_limit=payload_cache_limit,
                         config=self.config,
                         seed=int(self.state.seed),
                         dataset_plan_id=self.dataset_plan_id,
-                        start_us=int(window_start),
-                        end_us=int(window_end),
-                    )
-                    if window_refs:
-                        sort_start = time.perf_counter()
-                        window_refs.sort(key=lambda ref: _ref_sort_key(loaded_origins, ref))
-                        origin_window_sort_seconds = time.perf_counter() - sort_start
-                    else:
-                        origin_window_sort_seconds = 0.0
-                    if int(self.state.chronological_origin_cursor) > 0:
-                        window_refs = window_refs[int(self.state.chronological_origin_cursor) :]
-                    if not window_refs:
-                        self.state.chronological_origin_cursor = 0
-                        self._update_telemetry(loader_phase="window_no_refs", window_active_refs=0)
-                        window_start = int(window_end)
-                        continue
-                    first_ts = int(_ref_origin_timestamp(loaded_origins, window_refs[0]))
-                    last_ts = int(_ref_origin_timestamp(loaded_origins, window_refs[-1]))
-                    active_indices = sorted({int(ref.part_index) for ref in window_refs})
-                    self._update_telemetry(
-                        loader_phase="payload_load",
-                        window_active_refs=int(len(window_refs)),
-                        window_active_parts=int(len(active_indices)),
-                        window_active_tickers=int(len({loaded_origins[int(index)].plan.ticker for index in active_indices})),
-                    )
-                    loaded_parts = _load_active_payloads(
-                        read_pool=read_pool,
-                        reader=self.reader,
-                        loaded_origins=loaded_origins,
-                        active_indices=active_indices,
-                        payload_cache=payload_cache,
-                        payload_cache_limit=payload_cache_limit,
+                        window_start_us=int(start_timestamp_us),
+                        window_end_us=int(end_timestamp_us),
+                        chronological_origin_cursor=int(origin_cursor_offset),
                         stop_event=self._stop_event,
                     )
+
+                prep_future = submit_prepare_window(int(window_start), int(self.state.chronological_origin_cursor))
+                while window_start < int(day_window_end):
+                    if self._stop_event.is_set():
+                        return
+                    wait_start = time.perf_counter()
+                    self._update_telemetry(loader_phase="window_prefetch_wait", window_start_timestamp_us=int(window_start))
+                    prepared = prep_future.result()
+                    prep_wait_seconds = time.perf_counter() - wait_start
+                    prep_future = None
+                    self.state.chronological_window_start_us = int(prepared.window_start_us)
+                    next_window_start = int(prepared.next_window_start_us)
+                    if next_window_start < int(day_window_end):
+                        prep_future = submit_prepare_window(next_window_start, 0)
                     self._update_telemetry(
-                        loader_phase="payload_ready",
+                        loader_phase="window_prefetch_ready",
+                        window_prefetch_wait_seconds=float(prep_wait_seconds),
+                        window_start_timestamp_us=int(prepared.window_start_us),
+                        window_end_timestamp_us=int(prepared.window_end_us),
+                        window_active_refs=int(len(prepared.remapped_refs)),
+                        window_active_parts=int(len(prepared.active_indices)),
+                        window_active_tickers=int(prepared.active_tickers),
+                        origin_window_load_seconds=float(prepared.origin_window_load_seconds),
+                        origin_window_sort_seconds=float(prepared.origin_window_sort_seconds),
                         payload_cache_parts=int(len(payload_cache)),
                         payload_cache_limit=int(payload_cache_limit),
+                        **prepared.cursor_window_profile,
                     )
-                    part_index_map = {old_index: new_index for new_index, old_index in enumerate(active_indices)}
-                    remapped_refs = [
-                        DailyIndexSampleRef(part_index=int(part_index_map[int(ref.part_index)]), origin_row=int(ref.origin_row))
-                        for ref in window_refs
-                    ]
+                    if not prepared.has_refs:
+                        self.state.chronological_origin_cursor = 0
+                        self._update_telemetry(
+                            loader_phase=str(prepared.empty_reason or "window_no_refs"),
+                            window_active_refs=0,
+                            window_active_parts=0,
+                            window_active_tickers=0,
+                        )
+                        window_start = int(next_window_start)
+                        if prep_future is None and window_start < int(day_window_end):
+                            prep_future = submit_prepare_window(int(window_start), 0)
+                        continue
+                    loaded_origins = prepared.loaded_origins
+                    loaded_parts = prepared.loaded_parts
+                    remapped_refs = prepared.remapped_refs
                     self._update_telemetry(loader_phase="cache_warm")
                     warm_profile = event_cache.warm(loaded_parts, remapped_refs)
                     context_warm_profile = context_cache.warm(self.materializer, loaded_parts, remapped_refs)
@@ -2980,21 +2967,22 @@ class AsyncDailyIndexBatchLoader:
                             "chronological_replay": int(1),
                             "chronological_day_load_seconds": time.perf_counter() - day_start,
                             "chronological_time_window_seconds": float(self.config.time_window_seconds),
-                            "window_active_refs": int(len(window_refs)),
-                            "window_active_parts": int(len(active_indices)),
-                            "window_active_tickers": int(len({loaded_origins[int(index)].plan.ticker for index in active_indices})),
-                            "window_start_timestamp_us": int(first_ts),
-                            "window_end_timestamp_us": int(last_ts),
+                            "window_prefetch_wait_seconds": float(prep_wait_seconds),
+                            "window_active_refs": int(len(remapped_refs)),
+                            "window_active_parts": int(len(prepared.active_indices)),
+                            "window_active_tickers": int(prepared.active_tickers),
+                            "window_start_timestamp_us": int(prepared.first_timestamp_us),
+                            "window_end_timestamp_us": int(prepared.last_timestamp_us),
                             "day_refs_total": int(day_total_refs),
                             "day_refs_remaining_before_window": int(max(0, int(day_total_refs) - int(emitted_from_day))),
-                            "origin_window_load_seconds": float(origin_window_load_seconds),
+                            "origin_window_load_seconds": float(prepared.origin_window_load_seconds),
                             "origin_cache_parts": int(len(loaded_origins)),
                             "origin_cache_limit": int(len(cursors)),
                             "payload_cache_parts": int(len(payload_cache)),
                             "payload_cache_limit": int(payload_cache_limit),
-                            "origin_window_sort_seconds": float(origin_window_sort_seconds),
+                            "origin_window_sort_seconds": float(prepared.origin_window_sort_seconds),
                             **day_warm_profile,
-                            **cursor_window_profile,
+                            **prepared.cursor_window_profile,
                             **event_cache.telemetry_snapshot(),
                             **context_cache.telemetry_snapshot(),
                             **self.materializer.telemetry_snapshot(),
@@ -3031,7 +3019,7 @@ class AsyncDailyIndexBatchLoader:
                             if int(self.config.max_origins_per_epoch) > 0 and int(self.state.seen_origins_this_epoch) >= int(self.config.max_origins_per_epoch):
                                 return
                     self.state.chronological_origin_cursor = 0
-                    window_start = int(window_end)
+                    window_start = int(next_window_start)
                 self.state.chronological_origin_cursor = 0
                 self.state.chronological_window_start_us = 0
             for batch in ready.flush():
@@ -3051,6 +3039,7 @@ class AsyncDailyIndexBatchLoader:
             self.state.chronological_window_start_us = 0
             self.state.seen_origins_this_epoch = 0
         finally:
+            prep_pool.shutdown(wait=False, cancel_futures=True)
             read_pool.shutdown(wait=False, cancel_futures=True)
             mat_pool.shutdown(wait=False, cancel_futures=True)
 
@@ -6052,6 +6041,133 @@ def _load_plan_window_origins(
     return loaded
 
 
+@dataclass(slots=True)
+class _PreparedChronologicalWindow:
+    window_start_us: int
+    window_end_us: int
+    next_window_start_us: int
+    loaded_origins: list[LoadedDailyIndexPart]
+    loaded_parts: list[LoadedDailyIndexPart]
+    remapped_refs: list[DailyIndexSampleRef]
+    cursor_window_profile: dict[str, float | int]
+    origin_window_load_seconds: float
+    origin_window_sort_seconds: float
+    first_timestamp_us: int
+    last_timestamp_us: int
+    active_indices: list[int]
+    active_tickers: int
+    empty_reason: str = ""
+
+    @property
+    def has_refs(self) -> bool:
+        return bool(self.remapped_refs)
+
+
+def _prepare_chronological_window(
+    *,
+    read_pool: ThreadPoolExecutor,
+    reader: DailyIndexPartReader,
+    cursors: Sequence[_OriginTickerCursor],
+    payload_cache: OrderedDict[str, LoadedDailyIndexPart],
+    payload_cache_limit: int,
+    config: DailyIndexLoaderConfig,
+    seed: int,
+    dataset_plan_id: str,
+    window_start_us: int,
+    window_end_us: int,
+    chronological_origin_cursor: int,
+    stop_event: threading.Event | None,
+) -> _PreparedChronologicalWindow:
+    origin_window_start = time.perf_counter()
+    loaded_origins, cursor_window_profile = _load_window_origins_from_cursors(
+        cursors=cursors,
+        start_us=int(window_start_us),
+        end_us=int(window_end_us),
+        stop_event=stop_event,
+    )
+    origin_window_load_seconds = time.perf_counter() - origin_window_start
+    if not loaded_origins:
+        return _PreparedChronologicalWindow(
+            window_start_us=int(window_start_us),
+            window_end_us=int(window_end_us),
+            next_window_start_us=int(window_end_us),
+            loaded_origins=[],
+            loaded_parts=[],
+            remapped_refs=[],
+            cursor_window_profile=cursor_window_profile,
+            origin_window_load_seconds=float(origin_window_load_seconds),
+            origin_window_sort_seconds=0.0,
+            first_timestamp_us=0,
+            last_timestamp_us=0,
+            active_indices=[],
+            active_tickers=0,
+            empty_reason="window_empty",
+        )
+    window_refs = _sample_refs_for_loaded_parts(
+        loaded_origins,
+        config=config,
+        seed=int(seed),
+        dataset_plan_id=dataset_plan_id,
+        start_us=int(window_start_us),
+        end_us=int(window_end_us),
+    )
+    if window_refs:
+        sort_start = time.perf_counter()
+        window_refs.sort(key=lambda ref: _ref_sort_key(loaded_origins, ref))
+        origin_window_sort_seconds = time.perf_counter() - sort_start
+    else:
+        origin_window_sort_seconds = 0.0
+    if int(chronological_origin_cursor) > 0:
+        window_refs = window_refs[int(chronological_origin_cursor) :]
+    if not window_refs:
+        return _PreparedChronologicalWindow(
+            window_start_us=int(window_start_us),
+            window_end_us=int(window_end_us),
+            next_window_start_us=int(window_end_us),
+            loaded_origins=loaded_origins,
+            loaded_parts=[],
+            remapped_refs=[],
+            cursor_window_profile=cursor_window_profile,
+            origin_window_load_seconds=float(origin_window_load_seconds),
+            origin_window_sort_seconds=float(origin_window_sort_seconds),
+            first_timestamp_us=0,
+            last_timestamp_us=0,
+            active_indices=[],
+            active_tickers=0,
+            empty_reason="window_no_refs",
+        )
+    active_indices = sorted({int(ref.part_index) for ref in window_refs})
+    loaded_parts = _load_active_payloads(
+        read_pool=read_pool,
+        reader=reader,
+        loaded_origins=loaded_origins,
+        active_indices=active_indices,
+        payload_cache=payload_cache,
+        payload_cache_limit=payload_cache_limit,
+        stop_event=stop_event,
+    )
+    part_index_map = {old_index: new_index for new_index, old_index in enumerate(active_indices)}
+    remapped_refs = [
+        DailyIndexSampleRef(part_index=int(part_index_map[int(ref.part_index)]), origin_row=int(ref.origin_row))
+        for ref in window_refs
+    ]
+    return _PreparedChronologicalWindow(
+        window_start_us=int(window_start_us),
+        window_end_us=int(window_end_us),
+        next_window_start_us=int(window_end_us),
+        loaded_origins=loaded_origins,
+        loaded_parts=loaded_parts,
+        remapped_refs=remapped_refs,
+        cursor_window_profile=cursor_window_profile,
+        origin_window_load_seconds=float(origin_window_load_seconds),
+        origin_window_sort_seconds=float(origin_window_sort_seconds),
+        first_timestamp_us=int(_ref_origin_timestamp(loaded_origins, window_refs[0])),
+        last_timestamp_us=int(_ref_origin_timestamp(loaded_origins, window_refs[-1])),
+        active_indices=list(active_indices),
+        active_tickers=int(len({loaded_origins[int(index)].plan.ticker for index in active_indices})),
+    )
+
+
 def _ref_origin_timestamp(parts: Sequence[LoadedDailyIndexPart], ref: DailyIndexSampleRef) -> int:
     part = parts[int(ref.part_index)]
     return int(part.origin_array("origin_timestamp_us").astype(np.int64, copy=False)[int(ref.origin_row)])
@@ -6122,12 +6238,28 @@ def _load_active_payloads(
         loaded = payload_cache.get(key)
         if loaded is None:
             raise RuntimeError(f"Active payload was not loaded or was evicted unexpectedly: {key}")
-        loaded.origins = loaded_origins[int(index)].origins
-        loaded._origin_arrays.clear()
+        loaded = _active_payload_view(loaded, origins=loaded_origins[int(index)].origins)
         payload_cache.move_to_end(key)
         out.append(loaded)
     _trim_payload_cache(payload_cache, limit=payload_cache_limit, protected_keys=protected_keys)
     return out
+
+
+def _active_payload_view(cached: LoadedDailyIndexPart, *, origins: Any | None) -> LoadedDailyIndexPart:
+    view = LoadedDailyIndexPart(
+        plan=cached.plan,
+        events=cached.events,
+        origins=origins,
+        windows=cached.windows,
+        labels=cached.labels,
+        context=cached.context,
+        context_paths=cached.context_paths,
+    )
+    view._event_arrays = cached._event_arrays
+    view._event_matrices = cached._event_matrices
+    view._label_arrays = cached._label_arrays
+    view._context_arrays = cached._context_arrays
+    return view
 
 
 def _trim_payload_cache(payload_cache: OrderedDict[str, LoadedDailyIndexPart], *, limit: int, protected_keys: set[str]) -> None:
