@@ -866,7 +866,7 @@ function ServiceActivityPanel({ service }: { service: ServiceStatusPayload }) {
           <tbody>
             {visibleRows.map((row, index) => (
               <tr
-                className={workStatusClass(row.status)}
+                className={`${workStatusClass(row.status)} ${tableRowRecencyClass(row.timeMs)}`}
                 key={`${row.kind}-${row.subject}-${row.time}-${index}`}
                 onClick={() => setSelectedRow(row)}
                 onKeyDown={(event) => {
@@ -878,7 +878,7 @@ function ServiceActivityPanel({ service }: { service: ServiceStatusPayload }) {
                 role="button"
                 tabIndex={0}
               >
-                <td title={row.time}>{row.time || "-"}</td>
+                <ServiceTableTimeCell timeMs={row.timeMs} value={row.time} />
                 <td><span className={`service-work-status ${workStatusClass(row.status)}`}>{displayName(row.status || "waiting")}</span></td>
                 <td title={row.subject}><strong>{row.subject}</strong><span>{displayName(row.kind)}</span></td>
                 <td>{row.rows || "-"}</td>
@@ -932,6 +932,29 @@ function ServiceActivityDetailModal({ row, service }: { row: ServiceActivityRow;
       </dl>
       <DebugObjectBlock title="Raw Service Activity Row" value={row.raw} />
     </div>
+  );
+}
+
+function ServiceTableTimeCell({ className = "", compact = false, timeMs, value }: { className?: string; compact?: boolean; timeMs?: number; value: string }) {
+  const resolvedMs = tableTimestampMs(value, timeMs);
+  const title = tableTimeTitle(value, resolvedMs);
+  const timeClassName = `service-table-time-cell ${compact ? "is-compact" : ""} ${className}`.trim();
+  return (
+    <td className={timeClassName} title={title}>
+      {Number.isFinite(resolvedMs) ? (
+        <div className="service-table-time-stack">
+          <strong>{formatTableZoneTime(resolvedMs, EXCHANGE_TIME_ZONE)}</strong>
+          <span>VAN {formatTableZoneTime(resolvedMs, VANCOUVER_TIME_ZONE)}</span>
+          {!compact ? <span>ET {formatTableZoneDate(resolvedMs, EXCHANGE_TIME_ZONE)}</span> : null}
+        </div>
+      ) : (
+        <div className="service-table-time-stack">
+          <strong>{value || "-"}</strong>
+          <span>VAN -</span>
+          {!compact ? <span>ET -</span> : null}
+        </div>
+      )}
+    </td>
   );
 }
 
@@ -1014,7 +1037,7 @@ function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: News
           <tbody>
             {(filteredRows.length ? filteredRows : [null]).map((row, index) => row ? (
               <tr
-                className={newsTodayRowTone(row)}
+                className={`${newsTodayRowTone(row)} ${tableRowRecencyClass(row.publishedAtUtc)}`}
                 key={`${row.canonicalNewsId}-${index}`}
                 onClick={() => void openNews(row)}
                 onKeyDown={(event) => {
@@ -1025,13 +1048,7 @@ function NewsTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: News
                 }}
                 tabIndex={0}
               >
-                <td className="news-today-time-cell" title={row.publishedAtUtc}>
-                  <div className="news-today-cell-stack">
-                    <strong className="news-today-time-main">{formatTime(row.publishedAtUtc)}</strong>
-                    <span className="news-today-date-muted">{formatNewsTableDate(row.publishedAtUtc)}</span>
-                    <span>UTC {formatUtcDateTime(row.publishedAtUtc)}</span>
-                  </div>
-                </td>
+                <ServiceTableTimeCell className="news-today-time-cell" value={row.publishedAtUtc} />
                 <td className="news-today-ticker-cell" title={newsTodayTickerLabel(row)}>
                   <div className="news-today-chip-row">
                     {newsTodayTickerChips(row).map((ticker) => <span key={ticker}>{ticker}</span>)}
@@ -1161,7 +1178,7 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
           <tbody>
             {(filteredRows.length ? filteredRows : [null]).map((row, index) => row ? (
               <tr
-                className={secTodayRowTone(row)}
+                className={`${secTodayRowTone(row)} ${tableRowRecencyClass(row.acceptedAtUtc)}`}
                 key={`${row.cik}-${row.accessionNumber}-${index}`}
                 onClick={() => void openFiling(row)}
                 onKeyDown={(event) => {
@@ -1172,13 +1189,7 @@ function SecTodayRowsPanel({ onSortChange, state }: { onSortChange: (sort: NewsT
                 }}
                 tabIndex={0}
               >
-                <td className="news-today-time-cell" title={row.acceptedAtUtc}>
-                  <div className="news-today-cell-stack">
-                    <strong className="news-today-time-main">{formatTime(row.acceptedAtUtc)}</strong>
-                    <span className="news-today-date-muted">{formatNewsTableDate(row.acceptedAtUtc)}</span>
-                    <span>UTC {formatUtcDateTime(row.acceptedAtUtc)}</span>
-                  </div>
-                </td>
+                <ServiceTableTimeCell className="news-today-time-cell" value={row.acceptedAtUtc} />
                 <td className="sec-filing-ticker-cell" title={secTickerTitle(row)}>
                   <div className="news-today-cell-stack">
                     {row.primaryTicker ? <strong>{row.primaryTicker}</strong> : <strong className="muted-value">-</strong>}
@@ -2221,9 +2232,9 @@ function NewsPollHistoryTable({ rows }: { rows: NewsPollHistoryRow[] }) {
         </thead>
         <tbody>
           {(rows.length ? rows : [null]).map((row, index) => row ? (
-            <tr className={workStatusClass(row.status)} key={row.signature}>
+            <tr className={`${workStatusClass(row.status)} ${tableRowRecencyClass(row.pollAt)}`} key={row.signature}>
               <td>{formatCompactNumber(row.pollRun)}</td>
-              <td title={row.pollAt}>{formatLogTime(row.pollAt)}</td>
+              <ServiceTableTimeCell compact value={row.pollAt} />
               <td>{formatCompactNumber(row.providerRows)}</td>
               <td>{formatCompactNumber(row.uniqueRows)}</td>
               <td>{formatCompactNumber(row.duplicateRows)}</td>
@@ -2260,8 +2271,8 @@ function SecLiveFeedTable({ rows }: { rows: SecLiveFeedRow[] }) {
         </thead>
         <tbody>
           {(rows.length ? rows : [null]).map((row, index) => row ? (
-            <tr className={workStatusClass(row.status)} key={`${row.accession}-${row.time}-${index}`}>
-              <td title={row.time}>{row.time}</td>
+            <tr className={`${workStatusClass(row.status)} ${tableRowRecencyClass(row.timeMs)}`} key={`${row.accession}-${row.time}-${index}`}>
+              <ServiceTableTimeCell compact timeMs={row.timeMs} value={row.time} />
               <td title={row.cik}>{row.cik || "-"}</td>
               <td>{row.form || "-"}</td>
               <td title={row.accession}>{row.accession || "-"}</td>
@@ -2301,7 +2312,7 @@ function NewsPublishHistoryTable({ rows }: { rows: NewsPublishHistoryRow[] }) {
           <tbody>
             {(rows.length ? rows : [null]).map((row, index) => row ? (
               <tr
-                className={workStatusClass(row.status)}
+                className={`${workStatusClass(row.status)} ${tableRowRecencyClass(row.time)}`}
                 key={`${row.event}-${row.pollId}-${row.time}-${index}`}
                 onClick={() => setSelectedRow(row)}
                 tabIndex={0}
@@ -2313,7 +2324,7 @@ function NewsPublishHistoryTable({ rows }: { rows: NewsPublishHistoryRow[] }) {
                   }
                 }}
               >
-                <td title={row.time}>{formatLogTime(row.time)}</td>
+                <ServiceTableTimeCell compact value={row.time} />
                 <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.event)}</span></td>
                 <td>{displayName(row.coverageMode)}</td>
                 <td title={row.tickers}>{row.tickers}</td>
@@ -2358,7 +2369,7 @@ function NewsEnrichmentHistoryTable({ rows }: { rows: NewsEnrichmentHistoryRow[]
           <tbody>
             {(rows.length ? rows : [null]).map((row, index) => row ? (
               <tr
-                className={workStatusClass(row.status)}
+                className={`${workStatusClass(row.status)} ${tableRowRecencyClass(row.time)}`}
                 key={`${row.event}-${row.pollId}-${row.time}-${index}`}
                 onClick={() => setSelectedRow(row)}
                 tabIndex={0}
@@ -2370,7 +2381,7 @@ function NewsEnrichmentHistoryTable({ rows }: { rows: NewsEnrichmentHistoryRow[]
                   }
                 }}
               >
-                <td title={row.time}>{formatLogTime(row.time)}</td>
+                <ServiceTableTimeCell compact value={row.time} />
                 <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span></td>
                 <td title={row.title}>{row.title}</td>
                 <td title={row.titleSample.join(" | ")}>{row.titleSample[0] || "-"}</td>
@@ -2415,7 +2426,7 @@ function NewsCoverageHistoryTable({ rows }: { rows: NewsCoverageHistoryRow[] }) 
           <tbody>
             {(rows.length ? rows : [null]).map((row, index) => row ? (
               <tr
-                className={workStatusClass(row.status)}
+                className={`${workStatusClass(row.status)} ${tableRowRecencyClass(row.time)}`}
                 key={`${row.event}-${row.time}-${index}`}
                 onClick={() => setSelectedRow(row)}
                 tabIndex={0}
@@ -2427,7 +2438,7 @@ function NewsCoverageHistoryTable({ rows }: { rows: NewsCoverageHistoryRow[] }) 
                   }
                 }}
               >
-                <td title={row.time}>{formatLogTime(row.time)}</td>
+                <ServiceTableTimeCell compact value={row.time} />
                 <td><span className={`service-work-mini-status ${workStatusClass(row.status)}`}>{displayName(row.status)}</span></td>
                 <td title={row.stage}>{row.stage}</td>
                 <td title={row.window}>{row.window}</td>
@@ -4086,7 +4097,7 @@ function newsTodayFlagChips(row: NewsTodayRow) {
 
 function newsTodayRowTone(row: NewsTodayRow) {
   const tickerCount = row.tickerLinkCount || row.tickers.length;
-  const baseTone = row.hasPdf
+  return row.hasPdf
     ? "has-pdf"
     : row.hasExternalText
       ? "has-external-text"
@@ -4097,14 +4108,6 @@ function newsTodayRowTone(row: NewsTodayRow) {
           : row.isTitleOnly
             ? "title-only"
             : "broad-news";
-  return newsTodayIsRecent(row.publishedAtUtc) ? `${baseTone} recent-news` : baseTone;
-}
-
-function newsTodayIsRecent(publishedAtUtc: string) {
-  const publishedAtMs = parseServiceTimestamp(publishedAtUtc);
-  if (!Number.isFinite(publishedAtMs)) return false;
-  const ageMs = Date.now() - publishedAtMs;
-  return ageMs >= 0 && ageMs <= 60 * 60 * 1000;
 }
 
 function orderedServiceWorkGroups(groups: ServiceWorkGroup[], serviceId: ServiceId) {
@@ -6244,6 +6247,41 @@ function formatNewsTableDate(value: string) {
 function parseLogTime(value: string) {
   const parsed = parseServiceTimestamp(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function tableTimestampMs(value: string, explicitMs?: number) {
+  if (Number.isFinite(explicitMs)) return Number(explicitMs);
+  return parseServiceTimestamp(value);
+}
+
+function tableRowRecencyClass(value: string | number | undefined) {
+  const timestamp = typeof value === "number" ? value : tableTimestampMs(String(value || ""));
+  if (!Number.isFinite(timestamp)) return "row-age-unknown";
+  const ageMinutes = (Date.now() - timestamp) / 60000;
+  if (ageMinutes < -1) return "row-age-future";
+  if (ageMinutes <= 1) return "row-age-now";
+  if (ageMinutes <= 5) return "row-age-1m";
+  if (ageMinutes <= 10) return "row-age-5m";
+  if (ageMinutes <= 15) return "row-age-10m";
+  if (ageMinutes <= 30) return "row-age-15m";
+  if (ageMinutes <= 60) return "row-age-30m";
+  return "row-age-old";
+}
+
+function tableTimeTitle(value: string, timestamp: number) {
+  if (!Number.isFinite(timestamp)) return value || "-";
+  return [
+    `ET ${formatReadableDateTime(new Date(timestamp).toISOString(), EXCHANGE_TIME_ZONE)}`,
+    `VAN ${formatReadableDateTime(new Date(timestamp).toISOString(), VANCOUVER_TIME_ZONE)}`,
+  ].join(" | ");
+}
+
+function formatTableZoneTime(timestamp: number, timeZone: string) {
+  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone }).format(new Date(timestamp));
+}
+
+function formatTableZoneDate(timestamp: number, timeZone: string) {
+  return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", year: "numeric", timeZone }).format(new Date(timestamp));
 }
 
 function formatZoneTime(value: Date, timeZone: string) {
