@@ -71,11 +71,28 @@ Build and profile from Python:
 python research\mlops\rolling_loader\run_profile_rust_chrono_loader.py
 ```
 
+The no-argument profile runs the default workstation grid:
+
+| Parameter | Default |
+| --- | ---: |
+| `ticker_count` | `8000` |
+| `prefetch_ticker_count` | `4000` |
+| `origins_per_ticker` | `512`, `1024`, `2048` |
+| `batch_size` | `1024` |
+| `realtime_read_workers` | `32` |
+| `prefetch_read_workers` | `16` |
+| `realtime_process_workers` | `32` |
+| `prefetch_process_workers` | `16` |
+
+Pass one value to `--origins-per-ticker` for a single-point profile, or multiple
+values for a custom grid.
+
 The profiler writes:
 
 ```text
 D:/TradingML/runtimes/rolling_loader/rust_chrono_loader_profiles/rust_chrono_loader_YYYYMMDD_HHMMSS/
   rust_chrono_loader_profile.json
+  rust_chrono_loader_profile.jsonl
 ```
 
 Important counters:

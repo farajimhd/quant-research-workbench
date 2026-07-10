@@ -28,16 +28,16 @@ pub struct RustQueueProfileConfig {
 impl Default for RustQueueProfileConfig {
     fn default() -> Self {
         Self {
-            ticker_count: 2_000,
+            ticker_count: 8_000,
             origins_per_ticker: 512,
             event_stream_len: 1_024,
             event_feature_count: 25,
             batch_size: 1_024,
-            realtime_read_workers: 16,
+            realtime_read_workers: 32,
             prefetch_read_workers: 16,
-            realtime_process_workers: 16,
+            realtime_process_workers: 32,
             prefetch_process_workers: 16,
-            prefetch_ticker_count: 2_000,
+            prefetch_ticker_count: 4_000,
             read_sleep_us: 0,
             process_sleep_us: 0,
         }

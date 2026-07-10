@@ -15,16 +15,16 @@ RUST_CRATE_DIR = Path(__file__).resolve().parent / "rust_chrono_loader"
 
 @dataclass(slots=True)
 class RustQueueRuntimeConfig:
-    ticker_count: int = 2_000
+    ticker_count: int = 8_000
     origins_per_ticker: int = 512
     event_stream_len: int = 1_024
     event_feature_count: int = 25
     batch_size: int = 1_024
-    realtime_read_workers: int = 16
+    realtime_read_workers: int = 32
     prefetch_read_workers: int = 16
-    realtime_process_workers: int = 16
+    realtime_process_workers: int = 32
     prefetch_process_workers: int = 16
-    prefetch_ticker_count: int = 2_000
+    prefetch_ticker_count: int = 4_000
     read_sleep_us: int = 0
     process_sleep_us: int = 0
 
