@@ -1293,46 +1293,50 @@ function NewsTodayDetailModal({ detail, error, loading, row }: { detail: NewsDet
             </section>
           </aside>
         </div>
-        {articleUrl ? (
-          <a className="news-full-source-link" href={articleUrl} rel="noreferrer" target="_blank">
-            Open source article
-          </a>
-        ) : null}
+        <footer className="news-full-article-footer">
+          {articleUrl ? (
+            <a className="news-full-source-link" href={articleUrl} rel="noreferrer" target="_blank">
+              Open source article
+            </a>
+          ) : (
+            <span className="news-full-source-link news-full-source-link-disabled">No source article URL</span>
+          )}
+          <details className="news-full-technical-section">
+            <summary>
+              <span>Technical details</span>
+              <strong>Raw fields, alternate text, ticker links</strong>
+            </summary>
+            <div className="news-full-technical-content">
+              <section className="news-full-text-metrics">
+                {(statRows.length ? statRows : [{ label: "Reported text", value: "No text length metadata reported." }]).map((item) => (
+                  <div key={item.label}>
+                    <span>{item.label}</span>
+                    <strong>{item.value}</strong>
+                  </div>
+                ))}
+              </section>
+              {textCandidates.slice(1).map((section) => (
+                <details className="news-full-text-section" key={section.label}>
+                  <summary>{section.label}</summary>
+                  <pre>{section.value}</pre>
+                </details>
+              ))}
+              {tickerRows.length ? (
+                <section className="news-full-table-section">
+                  <h4>Ticker Relations</h4>
+                  <DataTable fitToContent rows={tickerRows.map(normalizeRow)} />
+                </section>
+              ) : null}
+              <section className="news-full-table-section">
+                <h4>Actual Database Values</h4>
+                <NewsMetadataTable rows={remainingRows} />
+              </section>
+            </div>
+          </details>
+        </footer>
       </article>
       {loading ? <div className="news-full-detail-notice">Loading complete row from ClickHouse...</div> : null}
       {error ? <div className="news-full-detail-notice error">{error}</div> : null}
-      <details className="news-full-technical-section">
-        <summary>
-          <span>Technical details</span>
-          <strong>Raw fields, alternate text, ticker links</strong>
-        </summary>
-        <div className="news-full-technical-content">
-          <section className="news-full-text-metrics">
-            {(statRows.length ? statRows : [{ label: "Reported text", value: "No text length metadata reported." }]).map((item) => (
-              <div key={item.label}>
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
-              </div>
-            ))}
-          </section>
-          {textCandidates.slice(1).map((section) => (
-            <details className="news-full-text-section" key={section.label}>
-              <summary>{section.label}</summary>
-              <pre>{section.value}</pre>
-            </details>
-          ))}
-          {tickerRows.length ? (
-            <section className="news-full-table-section">
-              <h4>Ticker Relations</h4>
-              <DataTable fitToContent rows={tickerRows.map(normalizeRow)} />
-            </section>
-          ) : null}
-          <section className="news-full-table-section">
-            <h4>Actual Database Values</h4>
-            <NewsMetadataTable rows={remainingRows} />
-          </section>
-        </div>
-      </details>
     </div>
   );
 }

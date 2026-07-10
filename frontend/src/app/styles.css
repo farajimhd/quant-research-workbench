@@ -2846,7 +2846,7 @@ button {
   display: grid;
   flex: 1 1 auto;
   gap: 10px;
-  grid-template-rows: minmax(0, 1fr) auto auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   min-height: 0;
   overflow: hidden;
   padding: 12px;
@@ -2859,7 +2859,7 @@ button {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   min-height: 0;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .news-full-article-header {
@@ -2992,13 +2992,16 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1.42fr) minmax(340px, 0.58fr);
   min-height: 0;
+  overflow: hidden;
 }
 
 .news-full-readable-main {
   border-right: 1px solid var(--border);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
 }
 
 .news-full-section-heading {
@@ -3033,12 +3036,12 @@ button {
 
 .news-full-readable-body {
   font-size: 15px;
-  height: 100%;
   line-height: 1.66;
-  max-height: none;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 18px 22px 20px;
+  scrollbar-gutter: stable;
 }
 
 .news-full-readable-body p {
@@ -3098,8 +3101,11 @@ button {
   background: color-mix(in oklab, var(--surface-alt) 35%, var(--surface));
   display: grid;
   grid-auto-rows: max-content;
+  min-height: 0;
   min-width: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .news-full-readable-side section {
@@ -3147,10 +3153,18 @@ button {
   white-space: pre-wrap;
 }
 
+.news-full-article-footer {
+  background: color-mix(in oklab, var(--surface-alt) 45%, var(--surface));
+  border-top: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: minmax(180px, 280px) minmax(0, 1fr);
+  min-height: 0;
+}
+
 .news-full-source-link {
   align-items: center;
-  background: color-mix(in oklab, var(--badge-info-bg) 32%, var(--surface));
-  border-top: 1px solid var(--border);
+  background: color-mix(in oklab, var(--badge-info-bg) 34%, var(--surface));
+  border-right: 1px solid var(--border);
   color: var(--primary);
   display: flex;
   font-size: 12px;
@@ -3163,6 +3177,14 @@ button {
 .news-full-source-link:hover {
   background: color-mix(in oklab, var(--badge-info-bg) 54%, var(--surface));
   text-decoration: underline;
+}
+
+.news-full-source-link-disabled,
+.news-full-source-link-disabled:hover {
+  background: color-mix(in oklab, var(--surface-alt) 62%, var(--surface));
+  color: var(--muted-foreground);
+  cursor: default;
+  text-decoration: none;
 }
 
 .news-full-detail-notice {
@@ -3181,9 +3203,9 @@ button {
 }
 
 .news-full-technical-section {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   flex: 0 0 auto;
   min-height: 0;
   overflow: hidden;
@@ -3191,7 +3213,7 @@ button {
 
 .news-full-technical-section > summary {
   align-items: center;
-  background: color-mix(in oklab, var(--surface-alt) 74%, var(--surface));
+  background: transparent;
   cursor: pointer;
   display: flex;
   gap: 12px;
@@ -3221,7 +3243,7 @@ button {
   border-top: 1px solid var(--border);
   display: grid;
   gap: 8px;
-  max-height: min(320px, 34vh);
+  max-height: min(260px, 28vh);
   overflow: auto;
   padding: 10px;
 }
@@ -5233,6 +5255,15 @@ button {
   .news-full-time-card,
   .news-full-readable-main {
     border-bottom: 1px solid var(--border);
+  }
+
+  .news-full-article-footer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .news-full-source-link {
+    border-bottom: 1px solid var(--border);
+    border-right: 0;
   }
 
   .news-full-metadata-table th:first-child,
