@@ -190,6 +190,11 @@ def main() -> int:
     )
     print(f"LOADER FRONTIER GRID PROFILE {run_dir}", flush=True)
     print(json.dumps({"grid_count": len(grid), "batch_size": int(args.batch_size), "global_warmup_batches": int(args.global_warmup_batches), "grid_warm_all_ticker_caches": bool(args.grid_warm_all_ticker_caches), "warmup_batches": int(args.warmup_batches), "batches": int(args.batches), "preset": str(args.preset)}, sort_keys=True), flush=True)
+    if bool(args.grid_warm_all_ticker_caches):
+        print(
+            "WARNING grid_warm_all_ticker_caches=true: every scored grid row will repeat the full all-ticker cache warmup.",
+            flush=True,
+        )
 
     results: list[dict[str, Any]] = []
     started_all = time.perf_counter()
@@ -328,6 +333,7 @@ def _profile_one_grid_item(*, args: argparse.Namespace, grid_item: "GridItem", r
                 "samples_per_sec": float(samples / next_seconds) if next_seconds > 0 else 0.0,
                 "rss_mib": float(_rss_mib()),
                 "batch_estimated_mib": float(_nested_nbytes(batch) / (1024.0 * 1024.0)),
+                "warm_all_ticker_caches": int(bool(active_warm_all_ticker_caches)),
                 **asdict(grid_item),
                 **_selected_profile_metrics(batch.profile),
             }
