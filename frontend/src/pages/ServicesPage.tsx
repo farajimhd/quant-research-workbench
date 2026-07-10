@@ -1601,25 +1601,32 @@ function SecFilingDetailModal({ detail, error, loading, row }: { detail: SecDeta
         </aside>
       </section>
       <section className="sec-filing-data-sections">
-        <details open>
+        <header className="sec-filing-data-section-header">
+          <div>
+            <span>Technical row data</span>
+            <strong>Documents, XBRL, market bridge, and raw filing parent</strong>
+          </div>
+          <p>Collapsed by default so the readable filing stays primary. Open a section when you need raw rows.</p>
+        </header>
+        <details>
           <summary><span>Filing Documents</span><strong>{formatCompactNumber(documentRows.length)}</strong></summary>
           <div className="sec-filing-data-table-wrap">
             <DataTable empty="No document rows returned for this filing." fitToContent rows={documentRows.map(normalizeRow)} />
           </div>
         </details>
-        <details open={companyFactRows.length > 0}>
+        <details>
           <summary><span>XBRL Company Facts</span><strong>{formatCompactNumber(companyFactRows.length)}</strong></summary>
           <div className="sec-filing-data-table-wrap">
             <DataTable empty="No XBRL company fact rows returned for this filing." fitToContent rows={companyFactRows.map(normalizeRow)} />
           </div>
         </details>
-        <details open={frameRows.length > 0}>
+        <details>
           <summary><span>XBRL Frame Observations</span><strong>{formatCompactNumber(frameRows.length)}</strong></summary>
           <div className="sec-filing-data-table-wrap">
             <DataTable empty="No XBRL frame rows returned for this filing." fitToContent rows={frameRows.map(normalizeRow)} />
           </div>
         </details>
-        <details open={identityRows.length > 0}>
+        <details>
           <summary><span>SEC Market Bridge And Listing Identity</span><strong>{formatCompactNumber(identityRows.length)}</strong></summary>
           <div className="sec-filing-data-table-wrap">
             <DataTable empty="No SEC market bridge rows returned for this filing CIK." fitToContent rows={identityRows.map(normalizeRow)} />

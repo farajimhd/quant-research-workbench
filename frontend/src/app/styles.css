@@ -3601,10 +3601,11 @@ button {
   background: var(--surface);
   display: flex;
   flex-direction: column;
-  max-height: min(900px, calc(100vh - 56px));
+  height: min(900px, calc(100vh - 56px));
+  max-height: calc(100vh - 56px);
   overflow: hidden;
   padding: 0;
-  width: min(1540px, calc(100vw - 72px));
+  width: min(1500px, calc(100vw - 72px));
 }
 
 .modal-panel.sec-filing-detail-modal-panel .modal-header {
@@ -3621,20 +3622,21 @@ button {
 }
 
 .sec-filing-detail {
+  background: color-mix(in oklab, var(--surface-alt) 34%, var(--surface));
   display: grid;
   flex: 1 1 auto;
-  gap: 14px;
+  gap: 12px;
   max-height: none;
   min-height: 0;
   overflow: auto;
-  padding: 14px;
+  padding: 14px 16px 18px;
   scrollbar-gutter: stable;
 }
 
 .sec-filing-hero-card {
-  background: var(--surface);
-  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
-  border-radius: 10px;
+  background: linear-gradient(180deg, var(--surface) 0%, color-mix(in oklab, var(--surface) 86%, var(--surface-alt)) 100%);
+  border: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+  border-radius: 8px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   overflow: hidden;
@@ -3642,8 +3644,8 @@ button {
 
 .sec-filing-hero-main {
   display: grid;
-  gap: 8px;
-  padding: 22px 24px 18px;
+  gap: 7px;
+  padding: 18px 20px 16px;
 }
 
 .sec-filing-hero-actions {
@@ -3652,7 +3654,7 @@ button {
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
-  padding: 22px 24px 0 12px;
+  padding: 18px 20px 0 12px;
 }
 
 .sec-filing-hero-actions a {
@@ -3675,8 +3677,8 @@ button {
   color: var(--muted-foreground);
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
-  font-size: 11px;
+  gap: 6px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -3686,7 +3688,7 @@ button {
   background: color-mix(in oklab, var(--surface-alt) 68%, var(--surface));
   border: 1px solid color-mix(in oklab, var(--border) 76%, transparent);
   border-radius: 999px;
-  padding: 5px 9px;
+  padding: 4px 8px;
 }
 
 .sec-filing-meta-line .sec-provider-pill {
@@ -3698,7 +3700,7 @@ button {
 .sec-filing-hero-main h3 {
   color: var(--foreground);
   font-family: "Segoe UI", Arial, sans-serif;
-  font-size: clamp(26px, 3.6vw, 42px);
+  font-size: clamp(24px, 3vw, 34px);
   font-weight: 540;
   letter-spacing: 0;
   line-height: 1.08;
@@ -3728,7 +3730,7 @@ button {
 .sec-filing-stat-grid div {
   display: grid;
   gap: 3px;
-  padding: 13px 18px;
+  padding: 11px 16px;
 }
 
 .sec-filing-stat-grid div + div {
@@ -3754,8 +3756,8 @@ button {
 .sec-filing-reader-layout {
   align-items: start;
   display: grid;
-  gap: 14px;
-  grid-template-columns: minmax(0, 1.65fr) minmax(330px, 0.7fr);
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
   min-height: 0;
 }
 
@@ -3764,7 +3766,7 @@ button {
 .sec-filing-data-sections details {
   background: var(--surface);
   border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
-  border-radius: 10px;
+  border-radius: 8px;
 }
 
 .sec-filing-reader-card {
@@ -3814,12 +3816,12 @@ button {
 .sec-filing-readable-body {
   color: var(--foreground);
   font-family: "Segoe UI", Arial, sans-serif;
-  font-size: 16px;
-  line-height: 1.68;
-  max-height: clamp(360px, 42vh, 560px);
+  font-size: 15px;
+  line-height: 1.6;
+  max-height: clamp(340px, 42vh, 560px);
   min-height: 0;
   overflow: auto;
-  padding: 24px 30px 32px;
+  padding: 22px 28px 30px;
   scrollbar-gutter: stable;
 }
 
@@ -3832,15 +3834,15 @@ button {
 .sec-filing-context-rail {
   align-content: start;
   display: grid;
-  gap: 12px;
+  gap: 10px;
   min-height: 0;
 }
 
 .sec-filing-side-card {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   min-height: 0;
-  padding: 14px;
+  padding: 12px;
 }
 
 .sec-filing-side-card h4 {
@@ -3947,6 +3949,45 @@ button {
   gap: 10px;
 }
 
+.sec-filing-data-section-header {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: 8px;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+
+.sec-filing-data-section-header div {
+  display: grid;
+  gap: 3px;
+}
+
+.sec-filing-data-section-header span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  font-weight: 740;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sec-filing-data-section-header strong {
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 680;
+}
+
+.sec-filing-data-section-header p {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 0;
+  max-width: 520px;
+  text-align: right;
+}
+
 .sec-filing-data-sections details {
   overflow: hidden;
 }
@@ -3973,8 +4014,8 @@ button {
 }
 
 .sec-filing-data-table-wrap {
-  max-height: 330px;
-  min-height: 180px;
+  max-height: 360px;
+  min-height: 0;
   overflow: auto;
 }
 
